@@ -18,6 +18,9 @@
     "BossanovaProse.EmDashCluster": 1,
     "BossanovaProse.FunctionWordBold": 1
   },
+  "docs/guides/inbound-triggers.md": {
+    "BossanovaProse.FunctionWordBold": 2
+  },
   "docs/guides/logging.md": {
     "BossanovaProse.BannedWords": 5
   },
@@ -37,7 +40,7 @@
     "BossanovaProse.BannedWords": 4,
     "BossanovaProse.FunctionWordBold": 13
   },
-  "docs/guides/scheduled-sessions.md": {
+  "docs/guides/cron-jobs.md": {
     "BossanovaProse.BannedWords": 6,
     "BossanovaProse.FunctionWordBold": 7
   },
@@ -48,6 +51,9 @@
   "docs/guides/web.md": {
     "BossanovaProse.BannedWords": 9,
     "BossanovaProse.FunctionWordBold": 2
+  },
+  "docs/guides/webhooks.md": {
+    "BossanovaProse.BannedWords": 2
   },
   "docs/help/faq.md": {
     "BossanovaProse.BannedWords": 13

@@ -78,6 +78,16 @@ func IsQuestionLabel(label string) bool {
 // so operators can see the wait is active without mislabeling it as working.
 const WaitingLabel = "waiting"
 
+// WorkingLabel is the display label emitted while a chat is actively working.
+// Session webhooks key their session.working event on a transition into it.
+const WorkingLabel = "working"
+
+// ReadyLabel marks a settled hand-off certified by the current head receipt.
+const ReadyLabel = "✓ ready"
+
+// IsReadyLabel reports whether label is the computed hand-off label.
+func IsReadyLabel(label string) bool { return label == ReadyLabel }
+
 // IsWaitingLabel reports whether label is the display status used for a chat
 // blocked on an external event.
 func IsWaitingLabel(label string) bool {
@@ -156,7 +166,7 @@ func WasWaitingDemoted(in Input, out Output) bool {
 	}
 	undemoted := in
 	undemoted.AllWaitingChatsIdle = false
-	return IsWaitingLabel(baseStatus(undemoted).Label) && !IsWaitingLabel(out.Label)
+	return IsWaitingLabel(cascade(undemoted, false).Label) && !IsWaitingLabel(cascade(in, false).Label)
 }
 
 // CallbackWaitingReason renders the canonical human-readable reason for a chat
@@ -179,9 +189,20 @@ func CallbackWaitingReason(trigger, repoOwner, repoName string, prNumber int) st
 // (prOutput) and the errored-recolor guard (isMutedTerminalPR) so the literal
 // text lives in exactly one place.
 const (
-	labelMerged = "✓ merged"
-	labelClosed = "closed"
+	labelMerged   = "✓ merged"
+	labelClosed   = "closed"
+	labelChecking = "checking"
 )
+
+// VerifyingLabel is the PR-derived label for DISPLAY_STATUS_VERIFYING: ordinary
+// CI settled and a pending boss/verify status holds the head (BOS-1382). It
+// carries a spinner because verification is in progress.
+const VerifyingLabel = "verifying"
+
+// NeedsHumanLabel is the PR-derived label for DISPLAY_STATUS_NEEDS_HUMAN: the
+// verify stage parked the head for a human (BOS-1382). No spinner — nothing is
+// running; the row waits on a person.
+const NeedsHumanLabel = "needs human"
 
 // draftPRFailedLabel is the composite emitted when a session's blocked reason
 // records a failed draft-PR creation. Shared by the cascade branch, the
@@ -207,7 +228,8 @@ const draftPRFailedLabel = "? PR failed"
 // False for every other label the cascade can emit — "? PR failed", "paused
 // L/M", "failed L/M", "cancelled", the PR-derived labels ("✓ merged", "closed",
 // "✓ approved", "✓ passing", "✓ review", "⨯ failing", "⨯ conflict",
-// "⨯ rejected", "draft", "checking"), "idle", "stopped" — and for the empty
+// "⨯ rejected", "draft", "checking", "verifying", "needs human"), "idle",
+// "stopped" — and for the empty
 // string and any label this package does not recognise. Unknown labels are NOT
 // live on purpose: the failure mode of this predicate must always be "the hint
 // stayed too loud", never "the hint went quiet".
@@ -220,7 +242,7 @@ func IsLiveActivityLabel(label string) bool {
 	switch label {
 	case QuestionLabel,
 		WaitingLabel,
-		"working",
+		WorkingLabel,
 		"initializing",
 		"merging",
 		"archiving",
@@ -387,7 +409,7 @@ func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent 
 	if out, ok := workflowOutput(sess); ok && out.Label == servedLabel {
 		return out.Intent
 	}
-	if servedLabel == "working" {
+	if servedLabel == WorkingLabel {
 		if prNeedsFix(sess) {
 			return pb.DisplayIntent_DISPLAY_INTENT_DANGER
 		}
@@ -521,6 +543,52 @@ func PreWaitingDemotionOutput(sess *pb.Session) Output {
 	return out
 }
 
+// PreVerifyStatusOutput reproduces the display Output Compute produced BEFORE
+// BOS-1382 split DISPLAY_STATUS_VERIFYING and DISPLAY_STATUS_NEEDS_HUMAN out of
+// DISPLAY_STATUS_CHECKING. It is the hand-written inverse of that split and
+// exists so the OrchestratorService apiversion down-convert
+// (VerifyDisplayStatusChange, V20260916) can restore the prior composite for
+// clients pinned to an older version. sess is a served Session whose
+// DisplayStatus/DisplayLabel/DisplayIntent/DisplaySpinner are the current
+// values.
+//
+// Only a composite that came from one of the two new prOutput branches changes:
+// its served label is "verifying" or "needs human" and its DisplayStatus is the
+// matching new value. Every other composite (a live chat, a workflow leg,
+// "repairing", ...) outranked the PR branch both before and after, and the
+// prNeedsFix rule is the same for the new statuses as for Checking, so those
+// are returned unchanged. The restored tuple is the checking branch's — WARNING,
+// or DANGER when changes are requested or checks failed — with its spinner.
+//
+// Like PreDraftPRFailureOutput this runs FIRST in the newest-first chain, so it
+// emits the full Current-shape composite with the BOS-430 errored recolor
+// applied; ErroredStatusChange strips that afterwards for a client old enough
+// to predate it. A nil session or an empty label comes back unchanged.
+func PreVerifyStatusOutput(sess *pb.Session) Output {
+	served := Output{
+		Label:   sess.GetDisplayLabel(),
+		Intent:  sess.GetDisplayIntent(),
+		Spinner: sess.GetDisplaySpinner(),
+	}
+	switch {
+	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING && served.Label == VerifyingLabel,
+		sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN && served.Label == NeedsHumanLabel:
+	default:
+		return served
+	}
+	intent := pb.DisplayIntent_DISPLAY_INTENT_WARNING
+	if sess.GetDisplayHasChangesRequested() || sess.GetDisplayHasFailures() {
+		intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	out := Output{Label: labelChecking, Intent: intent, Spinner: true}
+	// "checking" is not a muted terminal PR label, so the BOS-430 overlay
+	// recolored it on an errored session before the split too.
+	if erroredSession(sess) {
+		out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	return out
+}
+
 // baseStatus runs the precedence cascade that determines a session's base
 // display status, before the errored-recolor overlay in Compute.
 //
@@ -536,6 +604,8 @@ func PreWaitingDemotionOutput(sess *pb.Session) Output {
 //     2c. ArchivePending  → "archiving" / WARNING / spinner (an archive in
 //     flight; wins over the stale MERGED label so an auto-archiving session
 //     shows "archiving" until the archive completes or errors)
+//     2d. Successful build receipt on a settled green PR → "✓ ready" / SUCCESS.
+//     Ready wins over waiting, green PR labels, idle and stopped only.
 //  3. ChatStatus WAITING  → "waiting"    / INFO    / spinner, EXCEPT when
 //     BOS-1269's demotion conjunction holds (every waiting-resolved chat was
 //     idle-derived AND the PR is verified-positive), in which case this branch
@@ -549,10 +619,63 @@ func PreWaitingDemotionOutput(sess *pb.Session) Output {
 //     "failed L/M", "cancelled" with matching intents
 //  7. DisplayIsRepairing  → "repairing" / WARNING / spinner
 //  8. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
-//     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking"
+//     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking",
+//     "verifying" (INFO, spinner; DANGER like checking when changes are
+//     requested), "needs human" (WARNING, no spinner)
 //  9. ChatStatus IDLE     → "idle" / WARNING
 //  10. default            → "stopped" / MUTED
-func baseStatus(in Input) Output {
+func baseStatus(in Input) Output { return cascade(in, true) }
+
+// handoffReady is restricted to settled green PRs. Live work, failures and
+// transient operations keep their existing composites even with a receipt.
+func handoffReady(in Input) bool {
+	s := in.Session
+	if !s.GetHasBuildReceipt() || s.GetDisplaySettingUp() || s.GetDisplayMerging() || s.GetArchivePending() || s.GetDisplayIsRepairing() || s.GetBlockedReason() != "" || erroredSession(s) {
+		return false
+	}
+	switch s.GetDisplayStatus() {
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING, pb.DisplayStatus_DISPLAY_STATUS_APPROVED, pb.DisplayStatus_DISPLAY_STATUS_REVIEW:
+	default:
+		return false
+	}
+	switch in.ChatStatus {
+	case pb.ChatStatus_CHAT_STATUS_WAITING, pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
+	default:
+		return false
+	}
+	_, active := workflowOutput(s)
+	return !active
+}
+
+// WasReadyOverWaiting records the pre-Ready waiting composite for API inverses.
+func WasReadyOverWaiting(in Input, out Output) bool {
+	return IsReadyLabel(out.Label) && IsWaitingLabel(cascade(in, false).Label)
+}
+
+// PreReadyOutput is the frozen, total inverse of the Ready composite. The
+// transport mark restores undemoted waits; otherwise the underlying green PR
+// status determines the previous tuple without invoking the live cascade.
+func PreReadyOutput(sess *pb.Session) Output {
+	served := Output{Label: sess.GetDisplayLabel(), Intent: sess.GetDisplayIntent(), Spinner: sess.GetDisplaySpinner()}
+	if !IsReadyLabel(served.Label) {
+		return served
+	}
+	if sess.GetIsReadyOverWaiting() {
+		return Output{Label: WaitingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+	}
+	switch sess.GetDisplayStatus() {
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
+		return Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	case pb.DisplayStatus_DISPLAY_STATUS_APPROVED:
+		return Output{Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	case pb.DisplayStatus_DISPLAY_STATUS_REVIEW:
+		return Output{Label: "✓ review", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	default:
+		return served
+	}
+}
+
+func cascade(in Input, withReady bool) Output {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: QuestionLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
@@ -590,6 +713,11 @@ func baseStatus(in Input) Output {
 	if in.Session != nil && in.Session.ArchivePending {
 		return Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
 	}
+	// A current-head build receipt certifies hand-off. The predicate excludes
+	// every live, transient and failure state, preserving their precedence.
+	if withReady && handoffReady(in) {
+		return Output{Label: ReadyLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	}
 	// BOS-668: a chat parked on an external event occupies exactly the slot
 	// WORKING used to — above the workflow/PR-derived labels, below the
 	// transient in-flight overrides — so a parked chat neither claims to be
@@ -623,7 +751,7 @@ func baseStatus(in Input) Output {
 		if prNeedsFix(in.Session) {
 			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
 		}
-		return Output{Label: "working", Intent: intent, Spinner: true}
+		return Output{Label: WorkingLabel, Intent: intent, Spinner: true}
 	}
 	// BOS-855: a failed draft-PR creation is a PAST outcome, not a present
 	// activity. It used to sit directly below the LIMITED branch, which let a row
@@ -662,7 +790,11 @@ func prNeedsFix(sess *pb.Session) bool {
 		pb.DisplayStatus_DISPLAY_STATUS_CONFLICT,
 		pb.DisplayStatus_DISPLAY_STATUS_REJECTED:
 		return true
-	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:
+	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		// The verify statuses replace the Checking a pending boss/verify used
+		// to produce (BOS-1382), so they keep its needs-fix rule.
 		return sess.DisplayHasFailures || sess.DisplayHasChangesRequested
 	default:
 		return false
@@ -736,7 +868,15 @@ func prOutput(sess *pb.Session) (Output, bool) {
 		if sess.DisplayHasChangesRequested || sess.DisplayHasFailures {
 			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
 		}
-		return Output{Label: "checking", Intent: intent, Spinner: true}, true
+		return Output{Label: labelChecking, Intent: intent, Spinner: true}, true
+	case pb.DisplayStatus_DISPLAY_STATUS_VERIFYING:
+		intent := pb.DisplayIntent_DISPLAY_INTENT_INFO
+		if sess.DisplayHasChangesRequested || sess.DisplayHasFailures {
+			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		}
+		return Output{Label: VerifyingLabel, Intent: intent, Spinner: true}, true
+	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		return Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}, true
 	default:
 		return Output{}, false
 	}

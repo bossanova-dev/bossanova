@@ -79,7 +79,12 @@ type BossClient interface {
 	// strategy substitution — and is empty when the merge ran exactly as
 	// configured. RemoteClient always returns "": ProxyMergeSessionResponse
 	// carries no detail field, and adding one would be an observable API change.
-	MergeSession(ctx context.Context, id string) (*pb.Session, string, error)
+	//
+	// matchHead, when non-empty, is a validated 40-hex head SHA: the daemon
+	// refuses with a HEAD_MISMATCH FailedPrecondition unless the PR head is
+	// exactly that commit. RemoteClient refuses a non-empty matchHead with
+	// Unimplemented rather than merge unpinned.
+	MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	// MoveSession moves one session up or down relative to its neighbours in
@@ -100,7 +105,11 @@ type BossClient interface {
 	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
 
 	// Archive / Resurrect
-	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)
+	// ArchiveSession requests an archive. The daemon defers it while a chat in
+	// the session is still working (BOS-1380): the response's is_deferred then
+	// reports the archive as pending and blocking_agent_session_id names the
+	// chat it waits on. should_force archives now regardless.
+	ArchiveSession(ctx context.Context, req *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error)
 	// ResurrectSession restores an archived session. Server-streaming for the
 	// same reason CreateSession is (BOS-984): the repo's setup script runs
 	// inside this call and may take minutes, which no unary response survives.
@@ -155,6 +164,8 @@ type BossClient interface {
 
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
+	// SetChatPhase sets an in-memory working phase; an empty phase clears it. Local-only.
+	SetChatPhase(ctx context.Context, sessionID, agentSessionID, phase string) error
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
 
@@ -198,6 +209,10 @@ type BossClient interface {
 	ListNotes(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error)
 	UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
 	DeleteNote(ctx context.Context, repoID, id string) error
+	// SyncNotesNow nudges the local daemon's note sync worker and returns the
+	// cloud-sync outbox's per-state counts (BOS-1435). Local-daemon only: a
+	// RemoteClient answers CodeUnimplemented.
+	SyncNotesNow(ctx context.Context) (*pb.SyncNotesNowResponse, error)
 
 	// Broadcasts (BOS-551): one message fanned out to the audience a selector
 	// resolves to, plus standing subscriptions that fire one when a session

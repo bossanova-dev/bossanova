@@ -273,9 +273,34 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// fact agents kept missing before inventing an env flag. It paid for that by
 	// dropping "so the work can run" and "the result reports", which restated
 	// what agent_launched=true already says.
+	// RE-PINNED DOWN 2026-10-06 (BOS-1381): 70 tools / 58,750 bytes, same
+	// method. merge_session gained a `match_head` argument (refuse unless the PR
+	// head is the pinned SHA), +92 bytes, and stopped sharing ConfirmIDArgs. It
+	// was paid for, with 72 bytes to spare, out of create_session's `attended`
+	// doc, which restated the tool description's own "by default a prompt runs
+	// unattended; pass attended:true to idle for boss attach" paragraph almost
+	// clause for clause. The doc now states only what the flag does.
+	// RE-PINNED DOWN 2026-10-08 (BOS-1443): 70 tools / 58,645 bytes, same
+	// method, schema-share self-check green in the same run. create_cron_job and
+	// update_cron_job gained a `concurrency_policy` argument (+270 bytes with
+	// the docs cut to naming the three values). It was paid for, with 105 bytes
+	// to spare, out of the repo_id field doc shared by get_note, update_note and
+	// delete_note, which repeated the tool description's own "daemon-local repo
+	// id, NOT a git origin URL" sentence on all three tools. The field still
+	// says it is required and that it routes but does not scope.
+	// RAISED 2026-10-08 (BOS-1433): 76 tools / 63,752 bytes, same method,
+	// schema-share self-check green in the same run. This is the one deliberate
+	// exception to "only moves down", taken by the planned decision to give
+	// organization notes their OWN six tools rather than overloading the
+	// daemon-local *_note tools, whose repo_id routing contract the organization
+	// store does not share (it is keyed by organization_id, paginated, and
+	// quota-bound). Folding them behind an argument would have made every
+	// existing note tool's schema describe two incompatible stores. The new
+	// tools were written to the minimum: one short shared organization_id
+	// doc, and descriptions that state only what no argument doc can.
 	const (
-		maxToolCount   = 70
-		maxSchemaBytes = 58822
+		maxToolCount   = 76
+		maxSchemaBytes = 63752
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."
@@ -387,6 +412,78 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 		case tc.got < tc.ceiling:
 			t.Errorf("MCP %s = %d, ceiling %d (under by %d): the surface shrank but the reduction was never banked. Left unpinned it is silent headroom — the surface could regrow all %d back, and every intermediate value, without this test going red, which is not a ratchet. Re-pin %s to %d in the same change that earned the reduction. %s",
 				tc.metric, tc.got, tc.ceiling, tc.ceiling-tc.got, tc.ceiling-tc.got, tc.constName, tc.got, tc.bank)
+		}
+	}
+}
+
+// TestHostedToolSurfaceSizeRatchet pins the hosted-only tier (HostedToolNames)
+// the way TestToolSurfaceSizeRatchet pins the default surface, and by the same
+// METHOD: listedToolDefinitions under Options{IncludeHostedTools}, keep only
+// the hosted tools, json.Marshal the slice. Only the hosted gateway pays these
+// bytes, but it pays them on every turn of every hosted session, so they are
+// rent too and get the same exact two-sided rule: over is a regression (shorten
+// a description or an argument doc; do not raise the number), under is an
+// unbanked saving (re-pin the constant down in the change that earned it).
+//
+// MEASURED 2026-10-09 (BOS-1424): 6 tools / 5,752 bytes. save_trigger is most
+// of it, because it folds create, update and rotate into one schema rather
+// than spending three tools' names and descriptions on them.
+//
+// RAISED 2026-10-09 (BOS-1455), deliberately: the session webhook family adds
+// seven tools, measured at 13 tools / 10,319 bytes in total. It follows the
+// same folding rule — save_session_webhook covers create, update and rotate —
+// so three write RPCs cost one schema. This is a new family's first pin, not
+// headroom: the exact two-sided rule below still applies from here.
+//
+// LOWERED 2026-10-09: save_trigger's repo_origin_url description was trimmed
+// to fit the cancel_in_progress concurrency wording, banking 5 bytes (10,314).
+func TestHostedToolSurfaceSizeRatchet(t *testing.T) {
+	t.Parallel()
+
+	const (
+		maxHostedToolCount   = 13
+		maxHostedSchemaBytes = 10314
+	)
+
+	hosted := map[string]bool{}
+	for _, name := range HostedToolNames() {
+		hosted[name] = true
+	}
+	var tools []*mcp.Tool
+	for _, tool := range listedToolDefinitions(t, Options{IncludeHostedTools: true}) {
+		if !hosted[tool.Name] {
+			continue
+		}
+		// Same measurement self-check as the default ratchet: an empty
+		// description or a collapsed schema would shrink the bytes without
+		// shrinking the surface.
+		if tool.Description == "" {
+			t.Errorf("hosted tool %q has an empty description", tool.Name)
+		}
+		if schema, ok := tool.InputSchema.(map[string]any); !ok || len(schema) == 0 {
+			t.Errorf("hosted tool %q input schema is %T (%v): the measurement no longer reflects the surface", tool.Name, tool.InputSchema, tool.InputSchema)
+		}
+		tools = append(tools, tool)
+	}
+	serialized, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatalf("marshal hosted tool definitions: %v", err)
+	}
+
+	for _, tc := range []struct {
+		metric, constName string
+		got, ceiling      int
+	}{
+		{"hosted tool count", "maxHostedToolCount", len(tools), maxHostedToolCount},
+		{"hosted serialized definition bytes", "maxHostedSchemaBytes", len(serialized), maxHostedSchemaBytes},
+	} {
+		switch {
+		case tc.got > tc.ceiling:
+			t.Errorf("MCP %s = %d, ceiling %d (over by %d). This ratchet only moves DOWN: shorten a description or argument doc, or fold a tool, rather than raising %s.",
+				tc.metric, tc.got, tc.ceiling, tc.got-tc.ceiling, tc.constName)
+		case tc.got < tc.ceiling:
+			t.Errorf("MCP %s = %d, ceiling %d (under by %d): bank the reduction by re-pinning %s to %d in the same change, after confirming the surface shrank and not the measurement.",
+				tc.metric, tc.got, tc.ceiling, tc.ceiling-tc.got, tc.constName, tc.got)
 		}
 	}
 }

@@ -25,8 +25,12 @@ go_test(
     name = "credmaterialize_test",
     srcs = [
         "ambientauth_test.go",
+        "codexauth_complete_test.go",
         "credmaterialize_test.go",
     ],
     embed = [":credmaterialize"],
-    deps = ["@com_github_rs_zerolog//:zerolog"],
+    deps = [
+        "//lib/bossalib/agentcred",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
 )

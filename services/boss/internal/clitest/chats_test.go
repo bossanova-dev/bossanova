@@ -23,6 +23,7 @@ type chatJSON struct {
 	Status         string `json:"status"`
 	LastOutputAt   string `json:"last_output_at"`
 	WaitingReason  string `json:"waiting_reason"`
+	Phase          string `json:"phase"`
 	// The three liveness discriminators the daemon computes on
 	// ChatStatusEntry. Declared here rather than shared with the CLI's own
 	// struct: this copy is the wire contract a driver reads, so a rename in the
@@ -91,6 +92,7 @@ func chatsHarness(t *testing.T) *clitest.Harness {
 		LastOutputAt:     timestamppb.New(chatsLastOutput),
 		SpinnerPresent:   true,
 		LastOutputSeeded: true,
+		Phase:            "reviewing",
 	})
 	h.Daemon.AddChatStatus(&pb.ChatStatusEntry{
 		AgentSessionId: waitingChatID,
@@ -196,6 +198,13 @@ func TestCLI_Chats_JSONShape(t *testing.T) {
 		t.Errorf("waiting_reason = %q, want empty for a non-WAITING chat", idle.WaitingReason)
 	}
 
+	if got := byID[workingChatID].Phase; got != "reviewing" {
+		t.Errorf("working phase = %q, want reviewing", got)
+	}
+	if idle.Phase != "" {
+		t.Errorf("idle phase = %q, want empty", idle.Phase)
+	}
+
 	unknown, ok := byID[unknownChatID]
 	if !ok {
 		t.Fatalf("no row for %s; got %+v", unknownChatID, env.Chats)
@@ -233,7 +242,7 @@ func TestCLI_Chats_JSONEmitsNoSettledBoolean(t *testing.T) {
 	}
 	want := map[string]bool{
 		"agent_session_id": true, "title": true, "created_at": true,
-		"status": true, "last_output_at": true, "waiting_reason": true,
+		"status": true, "last_output_at": true, "waiting_reason": true, "phase": true,
 		"spinner_present": true, "last_substantive_output_at": true,
 		"last_output_seeded": true,
 	}

@@ -56,6 +56,26 @@ export function valeBinary(minimum = minimumVersion()) {
   return 'vale'
 }
 
+export function valeVersion(binary, minimum) {
+  let versionOutput
+  try {
+    versionOutput = execFileSync(binary, ['--version'], { cwd: ROOT, encoding: 'utf8' })
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(
+        `Vale ${minimum}+ is not installed (looked for "${binary}"); run \`make deps\` (installs it via Homebrew) or set VALE_BIN`,
+        { cause: error },
+      )
+    }
+    throw error
+  }
+  const actualVersion = versionOutput.match(/(\d+\.\d+\.\d+)/)?.[1]
+  if (!actualVersion || !versionAtLeast(actualVersion, minimum)) {
+    throw new Error(`Vale ${minimum}+ is required; found ${versionOutput.trim()}`)
+  }
+  return actualVersion
+}
+
 export function runVale(binary, args) {
   try {
     return execFileSync(binary, args, { cwd: ROOT, encoding: 'utf8' })
@@ -91,11 +111,7 @@ export function compareAlertCounts(actual, baseline) {
 function main() {
   const minimum = minimumVersion()
   const binary = valeBinary(minimum)
-  const versionOutput = execFileSync(binary, ['--version'], { cwd: ROOT, encoding: 'utf8' })
-  const actualVersion = versionOutput.match(/(\d+\.\d+\.\d+)/)?.[1]
-  if (!actualVersion || !versionAtLeast(actualVersion, minimum)) {
-    throw new Error(`Vale ${minimum}+ is required; found ${versionOutput.trim()}`)
-  }
+  const actualVersion = valeVersion(binary, minimum)
 
   const report = JSON.parse(runVale(binary, ['--config=.vale.ini', '--output=JSON', 'docs']))
   const actual = alertCounts(report)

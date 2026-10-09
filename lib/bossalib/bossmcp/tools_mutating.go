@@ -365,6 +365,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Description: "Create a scheduled cron job for a repo.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateCronJobArgs) (*mcp.CallToolResult, any, error) {
+		policy, err := cronConcurrencyPolicyArg(args.ConcurrencyPolicy)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
 		req := &pb.CreateCronJobRequest{
 			RepoId:      args.RepoID,
 			Name:        args.Name,
@@ -378,6 +382,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			// *bool: nil stays unset so the server applies its own default.
 			ShouldRunSetupCommand: args.ShouldRunSetupCommand,
 			IsZeroOutput:          args.IsZeroOutput,
+			ConcurrencyPolicy:     policy,
 		}
 		out, err := backend.CreateCronJob(ctx, req)
 		if err != nil {
@@ -392,6 +397,10 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Description: "Update an existing cron job.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateCronJobArgs) (*mcp.CallToolResult, any, error) {
+		policy, err := cronConcurrencyPolicyArg(args.ConcurrencyPolicy)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
 		req := &pb.UpdateCronJobRequest{
 			Id:        args.ID,
 			Name:      args.Name,
@@ -405,6 +414,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			GateCommand:           args.GateCommand,
 			ShouldRunSetupCommand: args.ShouldRunSetupCommand,
 			IsZeroOutput:          args.IsZeroOutput,
+			ConcurrencyPolicy:     policy,
 		}
 		out, err := backend.UpdateCronJob(ctx, req)
 		if err != nil {
@@ -814,6 +824,60 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(note)
 		return r, nil, err
 	})
+
+	registerOrganizationNoteMutatingTools(server, backend, opts)
+}
+
+// registerOrganizationNoteMutatingTools installs create_organization_note and
+// update_organization_note. A quota refusal comes back as the API's
+// ResourceExhausted with the decoded usage and reset time appended.
+func registerOrganizationNoteMutatingTools(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
+		Name: "create_organization_note",
+		Description: "Write a note to an organization's cloud store, visible to every member. Spends one unit of the " +
+			"organization's hourly write quota; a spent quota is ResourceExhausted with usage and reset time. " +
+			"The note expires 90 days after creation. The body is not a secret and is returned in full.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args CreateOrganizationNoteArgs) (*mcp.CallToolResult, any, error) {
+		note, err := backend.CreateOrganizationNote(ctx, &pb.CreateOrganizationNoteRequest{
+			OrganizationId: args.OrganizationID,
+			Body:           args.Body,
+			Tags:           args.Tags,
+			RepoOriginUrl:  optionalString(args.RepoOriginURL),
+			SessionId:      optionalString(args.SessionID),
+			ChatId:         optionalString(args.ChatID),
+			IdempotencyKey: optionalString(args.IdempotencyKey),
+		})
+		if err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(note)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "update_organization_note",
+		Description: "Edit an organization note's body and/or tags; omitted fields are left alone. Only the author or " +
+			"an organization owner may. A synced note is FailedPrecondition — edit it at its source daemon. " +
+			"A change spends one quota unit; expires_at is never extended.",
+		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateOrganizationNoteArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.UpdateOrganizationNoteRequest{OrganizationId: args.OrganizationID, Id: args.ID}
+		if args.Body != nil {
+			v := *args.Body
+			req.Body = &v
+		}
+		// nil leaves the tags alone; a set-but-empty list clears them.
+		if args.Tags != nil {
+			req.Tags = &pb.NoteTagSet{Tags: *args.Tags}
+		}
+		note, err := backend.UpdateOrganizationNote(ctx, req)
+		if err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(note)
+		return r, nil, err
+	})
 }
 
 // parseBroadcastSelector turns the textual `to` argument into a validated
@@ -905,7 +969,7 @@ type CreateNoteArgs struct {
 // difference, so flattening either field would silently wipe tags on a
 // body-only edit.
 type UpdateNoteArgs struct {
-	RepoID string    `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	RepoID string    `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
 	ID     string    `json:"id" jsonschema:"the note id to update (required)"`
 	Body   *string   `json:"body,omitempty" jsonschema:"replacement note text; omit to leave the body unchanged"`
 	Tags   *[]string `json:"tags,omitempty" jsonschema:"REPLACES the note's entire tag set — it does not append. Supply an empty list to clear every tag, or omit the field entirely to leave the existing tags unchanged"`
@@ -1038,7 +1102,7 @@ type CreateSessionArgs struct {
 	Force            bool    `json:"force,omitempty" jsonschema:"bypass tracker-issue dedup and create a second session for a tracker/PR/branch that already has an active one"`
 	IsQuickChat      bool    `json:"quick_chat,omitempty" jsonschema:"quick chat session: no worktree, branch, or PR"`
 	Detach           bool    `json:"detach,omitempty" jsonschema:"run the initial agent pass headlessly (claude --print / codex exec) instead of leaving the session idle until attach; set true for unattended orchestration"`
-	Attended         bool    `json:"attended,omitempty" jsonschema:"opt into the idle-until-attach behavior: create the session but do NOT launch an agent, awaiting a human boss attach. By default a prompt-carrying create launches headless (mirroring the CLI's implicit --detach); set attended:true only when a human will attach and drive the session interactively"`
+	Attended         bool    `json:"attended,omitempty" jsonschema:"create the session idle, launching no agent, for a human to boss attach and drive; without it a prompt-carrying create runs headless"`
 	IsTmuxUnattended bool    `json:"tmux_unattended,omitempty" jsonschema:"run the session in a durable tmux-hosted pane that survives a daemon restart and is attach-safe (used by /boss-epic); a distinct autonomous-unattended path from detach's headless runs"`
 	DeferPR          bool    `json:"defer_pr,omitempty" jsonschema:"create a worktree-backed session but do NOT open a draft PR up front; a PR is opened at finalize only if the run produces commits. Meaningful only alongside detach/tmux_unattended (which install the finalize hook); use for read-only/planning sessions"`
 	Model            string  `json:"model,omitempty" jsonschema:"model id; empty=default"`
@@ -1119,6 +1183,7 @@ type CreateCronJobArgs struct {
 	GateCommand           string `json:"gate_command,omitempty" jsonschema:"command run before each fire; non-zero exit skips the run, empty = no gate"`
 	ShouldRunSetupCommand *bool  `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent; omitted = server default"`
 	IsZeroOutput          *bool  `json:"zero_output,omitempty" jsonschema:"run with no worktree, branch, or PR; for jobs expected to change nothing in the repo. omitted = false"`
+	ConcurrencyPolicy     string `json:"concurrency_policy,omitempty" jsonschema:"what a fire does while the previous run is still working: skip (default), cancel_in_progress, or allow_concurrent"`
 }
 
 // SendChatMessageArgs is the typed argument struct for send_chat_message.
@@ -1151,6 +1216,23 @@ type UpdateCronJobArgs struct {
 	GateCommand           *string `json:"gate_command,omitempty" jsonschema:"new gate command; empty = no gate"`
 	ShouldRunSetupCommand *bool   `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script before the agent"`
 	IsZeroOutput          *bool   `json:"zero_output,omitempty" jsonschema:"run with no worktree, branch, or PR; for jobs expected to change nothing in the repo"`
+	ConcurrencyPolicy     string  `json:"concurrency_policy,omitempty" jsonschema:"skip, cancel_in_progress, or allow_concurrent"`
+}
+
+// cronConcurrencyPolicyArg maps the cron tools' concurrency_policy argument
+// onto the request field. Empty means omitted and stays nil (create resolves
+// it to skip, update leaves the stored value alone). Matching is lenient —
+// case-insensitive, '-' accepted for '_' — and anything else is an error
+// naming the valid values rather than a silent default.
+func cronConcurrencyPolicyArg(raw string) (*pb.CronJobConcurrencyPolicy, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	policy, ok := models.ParseCronJobConcurrencyPolicyInput(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid concurrency_policy %q: want one of skip, cancel_in_progress, allow_concurrent", raw)
+	}
+	return models.CronJobConcurrencyPolicyToProto(policy).Enum(), nil
 }
 
 // AddAccountArgs is the typed argument struct for add_account. It maps 1:1 onto

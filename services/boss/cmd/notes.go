@@ -29,6 +29,11 @@ type noteJSON struct {
 	Tags      []string `json:"tags"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
+	// SyncState is the note's cloud-sync outbox state (pending, synced, ...);
+	// empty when the daemon predates the outbox. SyncedAt is when the cloud
+	// last accepted a version, empty if never.
+	SyncState string `json:"sync_state"`
+	SyncedAt  string `json:"synced_at"`
 }
 
 // noteToJSON maps a proto Note to the stable JSON schema. The mapping is
@@ -51,7 +56,23 @@ func noteToJSON(n *pb.Note) noteJSON {
 		Tags:      tags,
 		CreatedAt: rfc3339OrEmpty(n.GetCreatedAt()),
 		UpdatedAt: rfc3339OrEmpty(n.GetUpdatedAt()),
+		SyncState: n.GetSyncState(),
+		SyncedAt:  rfc3339OrEmpty(n.GetSyncedAt()),
 	}
+}
+
+// noteSyncLine renders the human `Sync:` value: the state (or "-" when the
+// daemon predates the outbox), the last accepted sync time, and the last
+// recorded error.
+func noteSyncLine(n *pb.Note) string {
+	line := orDash(n.GetSyncState())
+	if at := rfc3339OrEmpty(n.GetSyncedAt()); at != "" {
+		line += " (synced " + at + ")"
+	}
+	if msg := n.GetSyncLastError(); msg != "" {
+		line += " — " + msg
+	}
+	return line
 }
 
 // noteContext resolves the repo/session/chat a notes command defaults to.
@@ -337,6 +358,7 @@ func runNotesShow(cmd *cobra.Command, c client.BossClient, id string) error {
 	fmt.Fprintf(&b, "Tags:     %s\n", orDash(strings.Join(note.GetTags(), ", ")))
 	fmt.Fprintf(&b, "Created:  %s\n", orDash(rfc3339OrEmpty(note.GetCreatedAt())))
 	fmt.Fprintf(&b, "Updated:  %s\n", orDash(rfc3339OrEmpty(note.GetUpdatedAt())))
+	fmt.Fprintf(&b, "Sync:     %s\n", noteSyncLine(note))
 	// The body goes last, unindented and verbatim: it is the payload, and any
 	// reflowing here would misrepresent what was stored.
 	fmt.Fprintf(&b, "\n%s\n", note.GetBody())
@@ -380,6 +402,47 @@ func runNotesRemove(cmd *cobra.Command, c client.BossClient, id string) error {
 	return nil
 }
 
+// noteSyncJSON is the stable `boss notes sync --json` schema. counts always
+// carries every sync state, zero included, in the daemon's fixed order.
+type noteSyncJSON struct {
+	WorkerConfigured bool                `json:"worker_configured"`
+	Counts           []noteSyncCountJSON `json:"counts"`
+}
+
+type noteSyncCountJSON struct {
+	State string `json:"state"`
+	Count int64  `json:"count"`
+}
+
+// noteSyncNotConfigured explains why a local-only daemon's notes stay pending.
+const noteSyncNotConfigured = "Note sync is not running: this daemon is not connected to Bossanova Cloud, so notes stay pending."
+
+func runNotesSync(cmd *cobra.Command, c client.BossClient) error {
+	resp, err := c.SyncNotesNow(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("sync notes: %w", err)
+	}
+	out := noteSyncJSON{WorkerConfigured: resp.GetIsWorkerConfigured(), Counts: []noteSyncCountJSON{}}
+	for _, sc := range resp.GetStateCounts() {
+		out.Counts = append(out.Counts, noteSyncCountJSON{State: sc.GetState(), Count: sc.GetNoteCount()})
+	}
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return emitJSON(cmd, out)
+	}
+
+	var b strings.Builder
+	if out.WorkerConfigured {
+		b.WriteString("Note sync nudged; counts are from before this drain (run again to see it move).\n\n")
+	} else {
+		b.WriteString(noteSyncNotConfigured + "\n\n")
+	}
+	for _, sc := range out.Counts {
+		fmt.Fprintf(&b, "%-14s %d\n", sc.State, sc.Count)
+	}
+	_, _ = fmt.Fprint(cmd.OutOrStdout(), b.String())
+	return nil
+}
+
 func notesCmd() *cobra.Command {
 	notes := &cobra.Command{
 		Use:   "notes",
@@ -388,7 +451,10 @@ func notesCmd() *cobra.Command {
 			"with the session and chat that recorded them. Inside a registered repo or session " +
 			"worktree the repo and session default from the working directory, and the chat from " +
 			"the ambient BOSS_AGENT_SESSION_ID, so an agent can leave a durable note with one " +
-			"command and no ids to look up.",
+			"command and no ids to look up. Notes older than 180 days, and a repo's notes " +
+			"beyond its newest 10,000, are pruned automatically when a new note is written in " +
+			"that repo (override with notes.retention_days / notes.max_per_repo in " +
+			"settings.json; 0 = unlimited).",
 	}
 
 	add := &cobra.Command{
@@ -488,6 +554,23 @@ func notesCmd() *cobra.Command {
 	}
 	remove.Flags().String("repo", "", "Owning repository id for remote routing (default: $BOSS_REPO_ID, else the working directory's repo; ignored locally)")
 
-	notes.AddCommand(add, list, show, edit, remove)
+	syncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Nudge cloud note sync and show counts per sync state",
+		Long: "Ask the local daemon to sync pending notes to Bossanova Cloud now, and print how " +
+			"many notes (including deletes not yet propagated) are in each sync state. The " +
+			"counts are read as the nudge is sent, so run it again to see the drain move them.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := newClient(cmd)
+			if err != nil {
+				return err
+			}
+			return runNotesSync(cmd, c)
+		},
+	}
+	syncCmd.Flags().Bool("json", false, "Emit the counts as a stable JSON schema")
+
+	notes.AddCommand(add, list, show, edit, remove, syncCmd, notesOrgCmd())
 	return notes
 }

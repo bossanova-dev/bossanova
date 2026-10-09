@@ -49,6 +49,14 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 	if err := s.validateModel(model); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	// Absent or UNSPECIFIED resolves to skip, today's overlap suppression.
+	concurrencyPolicy, policySet, err := cronConcurrencyPolicyFromProto(msg.ConcurrencyPolicy)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if !policySet {
+		concurrencyPolicy = models.CronJobConcurrencyPolicySkip
+	}
 
 	params := db.CreateCronJobParams{
 		RepoID:   msg.RepoId,
@@ -58,10 +66,11 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		// Resolve a blank agent the same way CreateSession does, so a cron job
 		// created with no explicit agent lands on the daemon's actual runner
 		// rather than a hardcoded "claude" that may not be loaded.
-		AgentName:   s.resolveAgentName(agentName),
-		Model:       model,
-		IsEnabled:   msg.IsEnabled,
-		GateCommand: strings.TrimSpace(msg.GateCommand),
+		AgentName:         s.resolveAgentName(agentName),
+		Model:             model,
+		IsEnabled:         msg.IsEnabled,
+		GateCommand:       strings.TrimSpace(msg.GateCommand),
+		ConcurrencyPolicy: concurrencyPolicy,
 	}
 	runSetup := true
 	if msg.ShouldRunSetupCommand != nil {
@@ -209,6 +218,14 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 	}
 	if msg.IsZeroOutput != nil {
 		params.IsZeroOutput = msg.IsZeroOutput
+	}
+	// Absent or UNSPECIFIED leaves the stored policy unchanged.
+	policy, policySet, err := cronConcurrencyPolicyFromProto(msg.ConcurrencyPolicy)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if policySet {
+		params.ConcurrencyPolicy = &policy
 	}
 	if nextIsEnabled {
 		if err := s.validateExplicitAgentName(nextAgentName); err != nil {

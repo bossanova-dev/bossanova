@@ -30,16 +30,21 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 // into maps keyed by Claude ID. The third map carries the reason a chat is
 // parked on an external event (BOS-668) and is populated only for the chats
 // that have one — it stays empty against a daemon too old to stamp the field.
-func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time, map[string]string) {
+// The fourth map carries skill-reported phases for working chats.
+func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time, map[string]string, map[string]string) {
 	entries, err := c.GetChatStatuses(ctx, sessionID)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	statuses := make(map[string]string, len(entries))
 	lastOutput := make(map[string]time.Time, len(entries))
 	waitingReasons := make(map[string]string)
+	phases := make(map[string]string)
 	for _, e := range entries {
 		statuses[e.AgentSessionId] = chatStatusString(e.Status)
+		if phase := e.GetPhase(); phase != "" {
+			phases[e.AgentSessionId] = phase
+		}
 		if e.LastOutputAt != nil {
 			lastOutput[e.AgentSessionId] = e.LastOutputAt.AsTime()
 		}
@@ -47,7 +52,7 @@ func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID strin
 			waitingReasons[e.AgentSessionId] = reason
 		}
 	}
-	return statuses, lastOutput, waitingReasons
+	return statuses, lastOutput, waitingReasons, phases
 }
 
 func (m ChatPickerModel) listChats() tea.Cmd {
@@ -56,8 +61,8 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 		if err != nil {
 			return chatsListedMsg{err: err}
 		}
-		statuses, lastOutput, waitingReasons := parseChatStatuses(m.client, m.ctx, m.sessionID)
-		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput, daemonWaitingReasons: waitingReasons}
+		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput, daemonWaitingReasons: waitingReasons, daemonPhases: phases}
 	}
 }
 
@@ -100,12 +105,13 @@ func (m ChatPickerModel) refreshStatuses() tea.Cmd {
 		if err != nil {
 			return chatPickerRefreshMsg{}
 		}
-		statuses, lastOutput, waitingReasons := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
 		return chatPickerRefreshMsg{
 			session:              sess,
 			daemonStatuses:       statuses,
 			daemonLastOutput:     lastOutput,
 			daemonWaitingReasons: waitingReasons,
+			daemonPhases:         phases,
 		}
 	}
 }
@@ -188,7 +194,7 @@ func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	ctx := m.ctx
 	id := m.sessionID
 	return func() tea.Msg {
-		_, _, err := client.MergeSession(ctx, id)
+		_, _, err := client.MergeSession(ctx, id, "")
 		return mergeResultMsg{sessionID: id, err: err}
 	}
 }
@@ -198,7 +204,10 @@ func (m ChatPickerModel) archiveCmd() tea.Cmd {
 	ctx := m.ctx
 	id := m.sessionID
 	return func() tea.Msg {
-		_, err := client.ArchiveSession(ctx, id)
-		return archiveResultMsg{sessionID: id, err: err}
+		// The TUI archive defers like `boss archive` (BOS-1380): a session with
+		// a working chat archives once every chat is idle. There is no TUI
+		// force key; `boss archive --force` is the escape.
+		resp, err := client.ArchiveSession(ctx, &pb.ArchiveSessionRequest{Id: id})
+		return archiveResultMsg{sessionID: id, err: err, deferred: err == nil && resp.GetIsDeferred()}
 	}
 }

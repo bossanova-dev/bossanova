@@ -177,6 +177,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	if c.display != nil {
 		if e := c.display.Get(sessionID); e != nil {
 			pbSess.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
+			pbSess.HasBuildReceipt = e.HasBuildReceipt
 			pbSess.DisplayHasFailures = e.HasFailures
 			pbSess.DisplayHasChangesRequested = e.HasChangesRequested
 			pbSess.DisplayIsRepairing = e.IsRepairing
@@ -326,7 +327,10 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// matching them too. Closing it is a design decision this comment does not
 	// make: persist the mark (a column plus migration, against KTD-2's
 	// transport-only intent), or hydrate it on the single-session read paths
-	// the way ListSessions already does.
+	// the way ListSessions already does. Ready also persists its label without the
+	// is_ready_over_waiting mark. The receipt is hydrated on every read path,
+	// but only ListSessions stamps that mark, so pinned single-session reads
+	// restore the green PR tuple instead of the pre-Ready "waiting" tuple.
 
 	// Skip the UPDATE when nothing changed — keeps recompute idempotent and
 	// avoids spurious updated_at bumps.

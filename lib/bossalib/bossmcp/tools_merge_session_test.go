@@ -33,7 +33,7 @@ func callMergeSession(t *testing.T, backend Backend) *mcp.CallToolResult {
 func TestMergeSessionEmitsDetail(t *testing.T) {
 	const detail = "requested rebase was refused; merged with squash instead"
 	backend := &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return &pb.Session{Id: "s1", Title: "a session"}, detail, nil
 		},
 	}
@@ -76,7 +76,7 @@ func TestMergeSessionEmitsDetail(t *testing.T) {
 // presence is meaningful rather than a field every caller tests against "".
 func TestMergeSessionOmitsEmptyDetail(t *testing.T) {
 	backend := &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return &pb.Session{Id: "s1"}, "", nil
 		},
 	}
@@ -109,7 +109,7 @@ func TestMergeSessionSessionShapeUnchanged(t *testing.T) {
 	session := &pb.Session{Id: "s1", Title: "a session", BranchName: "feat/x", BaseBranch: "main"}
 
 	merged := callMergeSession(t, &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return session, "", nil
 		},
 	})
@@ -139,12 +139,12 @@ func TestMergeSessionDetailIsASiblingKey(t *testing.T) {
 	session := &pb.Session{Id: "s1", Title: "a session"}
 
 	withDetail := callMergeSession(t, &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return session, "requested rebase was refused; merged with squash instead", nil
 		},
 	})
 	withoutDetail := callMergeSession(t, &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return session, "", nil
 		},
 	})
@@ -176,7 +176,7 @@ func TestMergeSessionDetailIsASiblingKey(t *testing.T) {
 func TestMergeSessionRefusalTextReachesCaller(t *testing.T) {
 	const refusal = "merge blocked: MERGE_STRATEGY_INCOMPATIBLE: repo requires rebase but the PR cannot be rebased"
 	backend := &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			return nil, "", errors.New(refusal)
 		},
 	}
@@ -199,7 +199,7 @@ func TestMergeSessionRefusalTextReachesCaller(t *testing.T) {
 func TestMergeSessionRequiresConfirm(t *testing.T) {
 	called := false
 	backend := &fakeBackend{
-		mergeSession: func(_ context.Context, _ string) (*pb.Session, string, error) {
+		mergeSession: func(_ context.Context, _, _ string) (*pb.Session, string, error) {
 			called = true
 			return &pb.Session{Id: "s1"}, "", nil
 		},
@@ -217,5 +217,37 @@ func TestMergeSessionRequiresConfirm(t *testing.T) {
 	}
 	if called {
 		t.Fatal("merge_session ran the backend without confirm:true")
+	}
+}
+
+// TestMergeSessionForwardsMatchHead pins BOS-1381: the optional match_head
+// argument reaches the backend verbatim, and an omitted one reaches it as "".
+func TestMergeSessionForwardsMatchHead(t *testing.T) {
+	const pin = "0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b"
+	for name, args := range map[string]map[string]any{
+		"pinned":   {"id": "s1", "confirm": true, "match_head": pin},
+		"unpinned": {"id": "s1", "confirm": true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got *string
+			backend := &fakeBackend{
+				mergeSession: func(_ context.Context, _, matchHead string) (*pb.Session, string, error) {
+					got = &matchHead
+					return &pb.Session{Id: "s1"}, "", nil
+				},
+			}
+			cs := newConnectedClient(t, backend, Options{})
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "merge_session", Arguments: args})
+			if err != nil || res.IsError {
+				t.Fatalf("merge_session: err=%v isError=%v", err, res != nil && res.IsError)
+			}
+			want := ""
+			if _, ok := args["match_head"]; ok {
+				want = pin
+			}
+			if got == nil || *got != want {
+				t.Fatalf("backend matchHead = %v, want %q", got, want)
+			}
+		})
 	}
 }

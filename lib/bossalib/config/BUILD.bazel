@@ -30,6 +30,7 @@ go_test(
         "displayhostname_test.go",
         "env_test.go",
         "heal_test.go",
+        "notes_config_test.go",
         "perms_unix_test.go",
         "pluginsum_test.go",
         "plugintrust_test.go",

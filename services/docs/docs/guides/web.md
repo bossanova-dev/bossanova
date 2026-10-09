@@ -30,6 +30,10 @@ can also see and drive from the web.
   hostname) so a laptop and a workstation can both appear,
   side-by-side.
 
+Organization owners on a Bossanova Cloud plan also get
+[session webhooks](./webhooks.md), which send a signed HTTPS request to
+their own server whenever a session changes state.
+
 ## Routes
 
 Four URL routes make up the web app, each mapping onto a feature

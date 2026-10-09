@@ -226,8 +226,21 @@ type CommandHandlerAdapter struct {
 	// Broadcasts materialises an inbound cross-daemon broadcast locally
 	// (BOS-558). Nil when the daemon has no upstream, in which case no
 	// BroadcastCommand can arrive to need it.
-	Broadcasts   BroadcastReceiver
+	Broadcasts BroadcastReceiver
+	// Triggers answers LaunchTriggerSessionCommand (BOS-1418). Nil when the
+	// daemon has no upstream, in which case no such command can arrive.
+	Triggers     *TriggerSessionLauncher
 	OnCompletion func(ctx context.Context, sessionID string) // optional, mirrors task orchestrator hook
+}
+
+// LaunchTriggerSession implements SessionCommandHandler.LaunchTriggerSession by
+// delegating to the configured TriggerSessionLauncher, which owns the
+// idempotency claim and the create (see trigger_launch.go).
+func (a *CommandHandlerAdapter) LaunchTriggerSession(ctx context.Context, cmd *pb.LaunchTriggerSessionCommand) (*pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error) {
+	if a.Triggers == nil {
+		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("launch_trigger_session: launcher not wired")
+	}
+	return a.Triggers.Launch(ctx, cmd)
 }
 
 // BroadcastReceiver is the one method the inbound cross-daemon broadcast path
@@ -811,8 +824,9 @@ func (a *CommandHandlerAdapter) ListCronJobs(ctx context.Context) (*pb.ListCronJ
 
 // CreateCronJob implements SessionCommandHandler.CreateCronJob, translating the
 // stream command into the daemon's CreateCronJobRequest field-for-field. The
-// run_setup_command and is_zero_output optional bools are copied as pointers so
-// their unset/true/false tri-state reaches the daemon unchanged.
+// run_setup_command and is_zero_output optional bools and the optional
+// concurrency_policy enum are copied as pointers so their unset/set state
+// reaches the daemon unchanged.
 func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.CreateCronJobCommand) (*pb.CreateCronJobResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("create_cron_job: command server not wired")
@@ -829,6 +843,7 @@ func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.Creat
 		GateCommand:           cmd.GetGateCommand(),
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 		IsZeroOutput:          cmd.IsZeroOutput,
+		ConcurrencyPolicy:     cmd.ConcurrencyPolicy,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create cron job: %w", err)
@@ -856,6 +871,7 @@ func (a *CommandHandlerAdapter) UpdateCronJob(ctx context.Context, cmd *pb.Updat
 		GateCommand:           cmd.GateCommand,
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 		IsZeroOutput:          cmd.IsZeroOutput,
+		ConcurrencyPolicy:     cmd.ConcurrencyPolicy,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("update cron job: %w", err)

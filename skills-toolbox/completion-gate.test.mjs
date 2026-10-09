@@ -4,19 +4,23 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   computeEligibility,
   parseFollowUps,
   classifyLaunchOrigin,
   classifyWatchers,
+  classifyVerifyConsent,
   settleCompletion,
   buildEnvelope,
-  mergeCompletion,
+  fastPath,
   reviewedTreeDrift,
   commandReader,
   main,
   INELIGIBLE_REASONS,
+  VERIFY_GATE,
 } from './completion-gate.mjs'
+import { SHARED_INELIGIBLE_REASONS, sharedEligibility } from './merge-eligibility.mjs'
 
 const HEAD = 'a'.repeat(40),
   MERGED = 'b'.repeat(40),
@@ -68,8 +72,7 @@ function green() {
     launchOrigin: 'standalone',
     watchers: 'own-chat-only',
     archiveAfterMerge: false,
-    config: { completionDefaults: { allowMerge: true } },
-    extensionCount: 1,
+    verifyConsent: 'present',
     callbacksAvailable: true,
   }
 }
@@ -99,7 +102,6 @@ const falseCases = [
   ['openQuestions', { status: 'ok', open: 1 }, 'open-questions-open'],
   ['launchOrigin', 'epic-child', 'epic-child'],
   ['watchers', 'foreign-pr-watcher', 'foreign-pr-watcher'],
-  ['archiveAfterMerge', true, 'archive-after-merge'],
 ]
 for (const [field, value, reason] of falseCases) {
   test(`eligibility rejects ${field}: ${reason}`, () => {
@@ -125,7 +127,6 @@ const unknownCases = [
   ['openQuestions', 'open-questions-section-missing'],
   ['launchOrigin', 'launch-origin-unknown'],
   ['watchers', 'pr-watchers-unknown'],
-  ['archiveAfterMerge', 'archive-after-merge-unknown'],
 ]
 for (const [field, reason] of unknownCases) {
   test(`eligibility fails closed when ${field} is unknown`, () => {
@@ -140,7 +141,6 @@ for (const [field, value, reason] of [
   ['reviewCoverage', {}, 'coverage-unknown'],
   ['crossModelReview', [], 'cross-model-unknown'],
   ['criteria', { total: '1', met: 1 }, 'criteria-unknown'],
-  ['archiveAfterMerge', 'false', 'archive-after-merge-unknown'],
   ['treeDrift', true, 'tree-drift-unknown'],
   ['launchOrigin', true, 'launch-origin-unknown'],
   ['watchers', true, 'pr-watchers-unknown'],
@@ -215,23 +215,30 @@ for (const state of ['HAS_HOOKS', 'UNSTABLE'])
     fixture.prView.mergeStateStatus = state
     assert.equal(computeEligibility(fixture).mergeEligible, true)
   })
-for (const config of [
-  undefined,
-  {},
-  { completionDefaults: { allowMerge: 'true' } },
-  { completionDefaults: { allowMerge: false } },
+for (const [verifyConsent, reason] of [
+  ['absent', 'no-verify-cron'],
+  ['unknown', 'verify-consent-unknown'],
+  [undefined, 'verify-consent-unknown'],
+  [true, 'verify-consent-unknown'],
 ]) {
-  test(`literal opt-in is required: ${JSON.stringify(config)}`, () => {
-    const result = computeEligibility({ ...green(), config })
+  test(`verify consent ${String(verifyConsent)} withholds authorization as ${reason}`, () => {
+    const result = computeEligibility({ ...green(), verifyConsent })
     assert.equal(result.mergeEligible, true)
     assert.equal(result.mergeAuthorized, false)
-    assert.deepEqual(result.authorizationReasons, ['not-opted-in'])
+    assert.deepEqual(result.authorizationReasons, [reason])
   })
 }
-test('merge authorization requires an extension', () => {
-  const result = computeEligibility({ ...green(), extensionCount: 0 })
-  assert.equal(result.mergeEligible, true)
-  assert.deepEqual(result.authorizationReasons, ['no-completion-extension'])
+test('the retired completion consent reasons are gone from the vocabulary and every output', () => {
+  for (const retired of ['not-opted-in', 'no-completion-extension']) {
+    assert.equal(INELIGIBLE_REASONS.includes(retired), false, retired)
+    for (const fixture of [{}, green(), { ...green(), verifyConsent: 'absent' }]) {
+      const result = computeEligibility(fixture)
+      assert.equal(result.ineligibleReasons.includes(retired), false, retired)
+      assert.equal(result.authorizationReasons.includes(retired), false, retired)
+    }
+  }
+  assert.ok(INELIGIBLE_REASONS.includes('no-verify-cron'))
+  assert.ok(INELIGIBLE_REASONS.includes('verify-consent-unknown'))
 })
 test('missing evidence never authorizes a merge', () =>
   assert.equal(computeEligibility({}).mergeAuthorized, false))
@@ -312,19 +319,19 @@ test('watchers distinguish own, foreign, failed and unavailable reads', () => {
   )
 })
 
-// All subprocesses below are fake, including boss merge. Unexpected calls fail the test.
+// All subprocesses below are fake. Unexpected calls — including any `boss merge` — fail the test.
 function harness(t, changes = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'completion-gate-test-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   writeFileSync(join(dir, 'boss-build-review-verdict'), 'REVIEW_VERDICT=clean\n')
   writeFileSync(join(dir, 'boss-build-reviewed-head'), HEAD + '\n')
   const state = {
-    merged: false,
-    mergeCount: 0,
     calls: [],
-    config: { completionDefaults: { allowMerge: true } },
     pr: view(),
     mode: 'managed',
+    repoId: 'repo-1',
+    cronJobs: [{ repo_id: 'repo-1', prompt: '/boss-verify', enabled: true }],
+    cronError: false,
     archive: false,
     watches: [],
     ...changes,
@@ -333,32 +340,19 @@ function harness(t, changes = {}) {
   const spawn = (command, args, options) => {
     state.calls.push([command, args])
     if (command === 'gh' && args[0] === 'repo') return answer({ nameWithOwner: 'owner/repo' })
-    if (command === 'gh' && args[0] === 'pr') {
-      if (state.merged && state.shaReadErrors > 0) {
-        state.shaReadErrors--
-        return { status: 1, stdout: '' }
-      }
-      return answer(
-        state.merged ? { ...state.pr, state: 'MERGED', mergeCommit: { oid: MERGED } } : state.pr,
-      )
-    }
+    if (command === 'gh' && args[0] === 'pr') return answer(state.pr)
     if (command === 'boss' && args[0] === 'env')
       return answer({
         mode: state.mode,
-        session: { session_id: 'session', agent_session_id: 'chat' },
+        session: { session_id: 'session', agent_session_id: 'chat', repo_id: state.repoId },
       })
+    if (command === 'boss' && args[0] === 'cron')
+      return state.cronError ? { status: 1, stdout: '' } : answer(state.cronJobs)
     if (command === 'boss' && args[0] === 'show')
       return answer({
         session: { id: 'session', repo_should_archive_sessions_after_merge: state.archive },
       })
     if (command === 'boss' && args[0] === 'callback') return answer(state.watches)
-    if (command === 'boss' && args[0] === 'merge') {
-      state.mergeCount++
-      assert.deepEqual(args, ['merge', 'session', '--yes', '--json'])
-      if (state.mergeError) return answer({ error: { code: state.mergeError } }, 1)
-      state.merged = true
-      return answer({ session: { id: 'session' }, pr: { number: 42 } })
-    }
     if (command === 'git' && args[0] === 'rev-parse')
       return { status: 0, stdout: args[1] === '--absolute-git-dir' ? dir : HEAD }
     if (command === 'git' && args[0] === 'merge-base') return { status: 0, stdout: OTHER }
@@ -370,135 +364,80 @@ function harness(t, changes = {}) {
     }
     assert.fail(`unexpected command ${command} ${args.join(' ')}`)
   }
-  const deps = { spawn, cwd: dir, loadConfig: () => state.config }
+  const deps = { spawn, cwd: dir }
   const options = {
     runId: 'run',
     outcome: 'REVIEW_READY',
     pr: 42,
     ciWaitState: 'settled',
     checkVerdict: green().checkVerdict,
-    extensionCount: 1,
     callbacksAvailable: true,
-    out: join(dir, 'envelope.json'),
   }
   return { dir, state, deps, options, envelope: () => buildEnvelope(options, deps) }
 }
-for (const [archive, reason] of [
-  [false, null],
-  [true, 'archive-after-merge'],
-  [null, 'archive-after-merge-unknown'],
-])
-  test(`boss show session wrapper archive policy ${archive} controls merge execution`, (t) => {
+// BOS-1380: bossd defers an archive until every chat is idle, so the repo's
+// archive-after-merge policy — on, off or unknown — is envelope context only
+// and never withholds merge authorization.
+for (const archive of [false, true, null])
+  test(`boss show session wrapper archive policy ${archive} does not withhold authorization`, (t) => {
     const h = harness(t, { archive }),
       envelope = h.envelope()
     assert.equal(envelope.archiveAfterMerge, archive)
-    assert.equal(envelope.mergeAuthorized, reason === null)
-    const result = mergeCompletion(envelope, h.deps)
-    assert.equal(result.action, reason === null ? 'merged' : 'skipped')
-    if (reason !== null) assert.equal(result.reason, reason)
-    assert.equal(h.state.mergeCount, reason === null ? 1 : 0)
+    assert.equal(envelope.mergeAuthorized, true)
   })
-test('envelope reads live PR, env, archive and patch-ids through spawn seam', (t) => {
+for (const value of [true, null, undefined, 'false'])
+  test(`eligibility ignores archiveAfterMerge ${String(value)}`, () => {
+    const result = computeEligibility({ ...green(), archiveAfterMerge: value })
+    assert.equal(result.mergeEligible, true)
+    assert.deepEqual(result.ineligibleReasons, [])
+  })
+test('archiveAfterMerge: true leaves mergeEligible true', () => {
+  assert.equal(computeEligibility({ ...green(), archiveAfterMerge: true }).mergeEligible, true)
+})
+test('INELIGIBLE_REASONS no longer lists the archive-after-merge reasons', () => {
+  assert.equal(INELIGIBLE_REASONS.includes('archive-after-merge'), false)
+  assert.equal(INELIGIBLE_REASONS.includes('archive-after-merge-unknown'), false)
+})
+test('envelope reads live PR, env, cron consent, archive and patch-ids through spawn seam', (t) => {
   const h = harness(t),
     envelope = h.envelope()
   assert.equal(envelope.mergeAuthorized, true)
   assert.equal(envelope.sessionId, 'session')
   assert.equal(envelope.treeDrift, 'none')
-  assert.deepEqual(envelope.mergeCommand.slice(2), [
-    'merge',
-    '--envelope',
-    h.options.out,
-    '--attempt-file',
-    join(h.dir, 'boss-build-completion-attempt-run.json'),
-  ])
-})
-for (const [changes, reason] of [
-  [{ config: {} }, 'not-opted-in'],
-  [{ config: { completionDefaults: { allowMerge: 'true' } } }, 'not-opted-in'],
-  [{ mode: 'unattended' }, 'epic-child'],
-  [{ archive: true }, 'archive-after-merge'],
-  [{ archive: null }, 'archive-after-merge-unknown'],
-])
-  test(`merge refuses without subprocess when ${reason}`, (t) => {
-    const h = harness(t),
-      envelope = h.envelope()
-    Object.assign(h.state, changes)
-    const result = mergeCompletion(envelope, h.deps)
-    assert.equal(result.reason, reason)
-    assert.equal(h.state.mergeCount, 0)
-  })
-for (const [field, value, reason] of [
-  ['headRefOid', OTHER, 'ci-not-green-on-head'],
-  ['isDraft', true, 'pr-draft'],
-  ['mergeStateStatus', 'BLOCKED', 'merge-state-blocked'],
-])
-  test(`merge re-reads changed live ${field}`, (t) => {
-    const h = harness(t),
-      envelope = h.envelope()
-    h.state.pr[field] = value
-    assert.equal(mergeCompletion(envelope, h.deps).reason, reason)
-    assert.equal(h.state.mergeCount, 0)
-  })
-test('merge re-read vetoes a check that turned red', (t) => {
-  const h = harness(t),
-    envelope = h.envelope()
-  h.state.pr.statusCheckRollup[0].conclusion = 'FAILURE'
-  assert.equal(mergeCompletion(envelope, h.deps).reason, 'ci-not-green-on-head')
-  assert.equal(h.state.mergeCount, 0)
-})
-test('merge executes once and returns the observed merge SHA', (t) => {
-  const h = harness(t),
-    envelope = h.envelope()
-  const result = mergeCompletion(envelope, h.deps)
-  assert.deepEqual(result, { action: 'merged', reason: 'merged-by-completion', mergeSha: MERGED })
-  assert.equal(h.state.mergeCount, 1)
-  assert.equal(JSON.parse(readFileSync(envelope.attemptFile, 'utf8')).runId, 'run')
-  assert.equal(mergeCompletion(envelope, h.deps).reason, 'already-attempted')
-  assert.equal(h.state.mergeCount, 1)
-})
-test('existing attempt file prevents every merge subprocess', (t) => {
-  const h = harness(t),
-    envelope = h.envelope()
-  writeFileSync(envelope.attemptFile, '{}')
-  assert.equal(mergeCompletion(envelope, h.deps).reason, 'already-attempted')
-  assert.equal(h.state.mergeCount, 0)
-})
-test('daemon refusal retains its structured error code', (t) => {
-  const h = harness(t, { mergeError: 'MERGE_GATE_REFUSED' })
-  assert.deepEqual(mergeCompletion(h.envelope(), h.deps), {
-    action: 'skipped',
-    reason: 'merge-refused:MERGE_GATE_REFUSED',
-    mergeSha: '',
-  })
-  assert.equal(h.state.mergeCount, 1)
-})
-test('merge SHA read failure requires a confirming reread', (t) => {
-  const h = harness(t, { shaReadErrors: 1 })
-  assert.equal(mergeCompletion(h.envelope(), h.deps).mergeSha, MERGED)
-  assert.equal(h.state.mergeCount, 1)
-})
-test('unconfirmed merge stays skipped until live settle verifies it', (t) => {
-  const h = harness(t, { shaReadErrors: 2 }),
-    envelope = h.envelope()
-  assert.equal(mergeCompletion(envelope, h.deps).action, 'skipped')
-  const attempt = JSON.parse(readFileSync(envelope.attemptFile, 'utf8'))
-  assert.equal(
-    settleCompletion({
-      runId: 'run',
-      livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
-      attempt,
-    }).action,
-    'merged',
+  assert.equal(envelope.verifyConsent, 'present')
+  assert.equal('mergeCommand' in envelope, false)
+  assert.equal('attemptFile' in envelope, false)
+  assert.deepEqual(
+    h.state.calls.filter(([command, args]) => command === 'boss' && args[0] === 'cron'),
+    [['boss', ['cron', 'ls', '--repo', 'repo-1', '--json']]],
   )
-  assert.equal(h.state.mergeCount, 1)
+})
+for (const [changes, consent, reason] of [
+  [{ cronJobs: [] }, 'absent', 'no-verify-cron'],
+  [{ cronError: true }, 'unknown', 'verify-consent-unknown'],
+  [{ cronJobs: { jobs: [] } }, 'unknown', 'verify-consent-unknown'],
+])
+  test(`envelope maps cron consent ${consent} to ${reason}`, (t) => {
+    const envelope = harness(t, changes).envelope()
+    assert.equal(envelope.verifyConsent, consent)
+    assert.equal(envelope.mergeEligible, true)
+    assert.deepEqual(envelope.authorizationReasons, [reason])
+  })
+test('envelope without a session repo id never reads cron and is consent-unknown', (t) => {
+  const h = harness(t, { repoId: '' }),
+    envelope = h.envelope()
+  assert.equal(envelope.verifyConsent, 'unknown')
+  assert.deepEqual(envelope.authorizationReasons, ['verify-consent-unknown'])
+  assert.equal(
+    h.state.calls.some(([command, args]) => command === 'boss' && args[0] === 'cron'),
+    false,
+  )
 })
 test('live foreign watches make a standalone launch ineligible', (t) => {
   const h = harness(t, {
     watches: [{ pr_number: 42, state: 'active', target_chat_id: 'coordinator' }],
   })
   assert.deepEqual(h.envelope().ineligibleReasons, ['foreign-pr-watcher'])
-  assert.equal(mergeCompletion(h.envelope(), h.deps).reason, 'foreign-pr-watcher')
-  assert.equal(h.state.mergeCount, 0)
 })
 test('patch-id distinguishes rebases from changed cumulative work and read failure', () => {
   let count = 0
@@ -532,67 +471,419 @@ test('spawn exceptions and malformed JSON are unreadable', () => {
 
 for (const [name, opts, expected] of [
   [
-    'verified gate merge',
+    'merge named by verify-gate',
     {
-      results: [{ action: 'merged', reason: 'ok', mergeSha: MERGED }],
-      attempt: { runId: 'run', action: 'merged', mergeSha: MERGED },
+      mergeResult: { merged: true, mergeSha: MERGED },
       livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
     },
-    ['merged', 'merged-by-completion'],
+    ['merged', 'merged-by-verify'],
   ],
   [
-    'claimed merge did not land',
-    { results: [{ action: 'merged' }], livePr: { state: 'OPEN' } },
-    ['skipped', 'claimed-merge-not-observed'],
-  ],
-  [
-    'skipped extension but externally merged',
-    { results: [{ action: 'skipped' }], livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } } },
+    'merge observed but not named by verify-gate',
+    { reason: 'human:no-receipt', livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } } },
     ['merged', 'merged-outside-gate'],
   ],
   [
-    'invalid extension result',
-    { results: [{}], livePr: { state: 'OPEN' } },
-    ['skipped', 'extension-result-invalid'],
+    'verify-gate named another SHA',
+    {
+      mergeResult: { merged: true, mergeSha: OTHER },
+      livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
+    },
+    ['merged', 'merged-outside-gate'],
   ],
   [
-    'no extension',
-    { results: [], extensionCount: 0, livePr: { state: 'OPEN' } },
-    ['skipped', 'no-completion-extension'],
+    'claimed merge did not land',
+    { mergeResult: { merged: true, mergeSha: MERGED }, livePr: { state: 'OPEN' } },
+    ['skipped', 'merge-not-observed'],
+  ],
+  [
+    'reverify merge result',
+    {
+      mergeResult: { merged: false, verdict: 'reverify', reason: 'head-moved' },
+      livePr: { state: 'OPEN' },
+    },
+    ['skipped', 'reverify'],
+  ],
+  [
+    'lost claim at merge',
+    { mergeResult: { merged: false, abandoned: 'claim-lost' }, livePr: { state: 'OPEN' } },
+    ['skipped', 'claim-lost'],
+  ],
+  [
+    'wait merge result with reasons',
+    {
+      mergeResult: { merged: false, verdict: 'wait', reasons: ['merge-state-blocked'] },
+      livePr: { state: 'OPEN' },
+    },
+    ['skipped', 'merge-state-blocked'],
+  ],
+  [
+    'no merge attempted',
+    { reason: 'defect:findings', livePr: { state: 'OPEN' } },
+    ['skipped', 'defect:findings'],
   ],
   [
     'unreadable live state',
-    { results: [{ action: 'merged' }], livePr: null },
+    { mergeResult: { merged: true, mergeSha: MERGED }, livePr: null },
     ['skipped', 'merge-state-unreadable'],
   ],
   [
     'merged state missing SHA',
-    { results: [{ action: 'merged' }], livePr: { state: 'MERGED' } },
+    { mergeResult: { merged: true, mergeSha: MERGED }, livePr: { state: 'MERGED' } },
     ['skipped', 'merge-state-unreadable'],
-  ],
-  [
-    'foreign attempt record',
-    {
-      attempt: { runId: 'another-run', invoked: true },
-      livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
-    },
-    ['merged', 'merged-outside-gate'],
   ],
 ])
   test(`settle ${name}`, () => {
     const result = settleCompletion({ runId: 'run', ...opts })
+    assert.equal(result.runId, 'run')
     assert.equal(result.action, expected[0])
     assert.equal(result.reason, expected[1])
     assert.equal(result.mergeSha, result.action === 'merged' ? MERGED : '')
   })
-test('CLI envelope and settle persist run-keyed records, followups validates body files', (t) => {
+test('settle keeps a degraded tracker write beside an observed verify merge', () => {
+  const result = settleCompletion({
+    runId: 'run',
+    mergeResult: { merged: true, mergeSha: MERGED, trackerWrites: 'unavailable' },
+    livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
+  })
+  assert.equal(result.reason, 'merged-by-verify')
+  assert.equal(result.trackerWrites, 'unavailable')
+})
+
+test('classifyVerifyConsent requires an enabled /boss-verify job for this repo', () => {
+  const job = (changes = {}) => ({
+    repo_id: 'repo-1',
+    prompt: '/boss-verify',
+    enabled: true,
+    ...changes,
+  })
+  for (const jobs of [
+    [],
+    [job({ enabled: false })],
+    [job({ enabled: 'true' })],
+    [job({ prompt: '/boss-verify-x' })],
+    [job({ prompt: '/boss-verifyx' })],
+    [job({ prompt: '/boss-build' })],
+    [job({ prompt: 'run boss-verify' })],
+    [job({ repo_id: 'repo-2' })],
+  ])
+    assert.equal(classifyVerifyConsent({ jobs, repoId: 'repo-1' }), 'absent', JSON.stringify(jobs))
+  for (const prompt of [
+    '/boss-verify',
+    '/boss-verify --dry-run',
+    'please /boss-verify\n',
+    '$boss-verify',
+  ])
+    assert.equal(classifyVerifyConsent({ jobs: [job({ prompt })], repoId: 'repo-1' }), 'present')
+  assert.equal(
+    classifyVerifyConsent({
+      jobs: [job({ enabled: false }), job({ repo_id: 'repo-2' }), job(), job()],
+      repoId: 'repo-1',
+    }),
+    'present',
+  )
+  for (const [jobs, repoId] of [
+    [[job()], ''],
+    [[job()], undefined],
+    [{ jobs: [job()] }, 'repo-1'],
+    [null, 'repo-1'],
+    [[job(), null], 'repo-1'],
+    [[job(), ['nested']], 'repo-1'],
+  ])
+    assert.equal(
+      classifyVerifyConsent({ jobs, repoId }),
+      'unknown',
+      JSON.stringify({ jobs, repoId }),
+    )
+  assert.equal(classifyVerifyConsent(), 'unknown')
+})
+
+// The fast path. Every verify-gate call is recorded as [verb, ...flags]; the only other subprocess
+// it may spawn is the live `gh pr view` settle read. Anything else — including `boss merge` — fails.
+function fastHarness(t, gate = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'completion-fast-path-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const state = { live: view(), liveReads: 0, calls: [] }
+  const spawn = (command, args) => {
+    if (command === process.execPath && args[0] === VERIFY_GATE) {
+      const [, verb, ...rest] = args
+      state.calls.push([verb, ...rest])
+      const reply = typeof gate[verb] === 'function' ? gate[verb](rest, state) : gate[verb]
+      if (reply === undefined) assert.fail(`unexpected verify-gate ${verb} ${rest.join(' ')}`)
+      if (reply.raw) return reply.raw
+      const { exit = 0, ...payload } = reply
+      return { status: exit, stdout: `${JSON.stringify(payload)}\n` }
+    }
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'view') {
+      state.liveReads++
+      return { status: 0, stdout: JSON.stringify(state.live) }
+    }
+    assert.fail(`unexpected command ${command} ${args.join(' ')}`)
+  }
+  const out = join(dir, 'boss-build-completion.json')
+  const run = (opts = {}) => fastPath({ envelope: green(), out, ...opts }, { spawn, cwd: dir })
+  const record = () => {
+    try {
+      return JSON.parse(readFileSync(out, 'utf8'))
+    } catch {
+      return null
+    }
+  }
+  return { dir, state, out, run, record }
+}
+const pr = ['--pr', '42']
+const repoFlags = ['--repo', 'owner/repo']
+const judge = (extra = []) => ['judge', ...pr, ...repoFlags, ...extra]
+const postCall = (verdict, extra = []) => [
+  'post',
+  ...pr,
+  '--head',
+  HEAD,
+  '--verdict',
+  verdict,
+  ...extra,
+  ...repoFlags,
+]
+const mergeCall = (extra = []) => ['merge', ...pr, '--head', HEAD, ...extra, ...repoFlags]
+const mergeReply = (_args, state) => {
+  state.live = { ...state.live, state: 'MERGED', mergeCommit: { oid: MERGED } }
+  return { merged: true, mergeSha: MERGED, writes: [] }
+}
+const passGate = {
+  judge: { verdict: 'pass', reason: 'verified', headSha: HEAD },
+  post: { verdict: 'pass', posted: true, writes: [] },
+  merge: mergeReply,
+}
+
+test('fast path: green, consented, session-eligible pass judges, posts and merges via verify-gate', (t) => {
+  const h = fastHarness(t, passGate)
+  const result = h.run()
+  assert.deepEqual(h.state.calls, [judge(), postCall('pass'), mergeCall()])
+  assert.deepEqual(result, {
+    runId: 'test-run',
+    action: 'merged',
+    reason: 'merged-by-verify',
+    mergeSha: MERGED,
+  })
+  assert.deepEqual(h.record(), result)
+})
+test('fast path runs at most once per run id', (t) => {
+  const h = fastHarness(t, passGate)
+  const first = h.run()
+  const calls = h.state.calls.length
+  assert.deepEqual(h.run(), first)
+  assert.equal(h.state.calls.length, calls)
+})
+for (const [label, changes, reason] of [
+  ['CI not settled', { ciWaitState: 'pending' }, 'ci-not-settled'],
+  ['epic-child launch', { launchOrigin: 'epic-child' }, 'epic-child'],
+  ['review not clean', { reviewVerdict: 'capped' }, 'review-not-clean'],
+  ['tree drift', { treeDrift: 'changed' }, 'tree-changed-since-review'],
+  ['no verify cron', { verifyConsent: 'absent' }, 'no-verify-cron'],
+  ['unknown consent', { verifyConsent: 'unknown' }, 'verify-consent-unknown'],
+])
+  test(`fast path: ${label} makes zero verify-gate calls`, (t) => {
+    const h = fastHarness(t)
+    const result = fastPath(
+      { envelope: { ...green(), ...changes }, out: h.out },
+      { spawn: () => assert.fail('spawned') },
+    )
+    assert.deepEqual(result, { runId: 'test-run', action: 'skipped', reason, mergeSha: '' })
+    assert.deepEqual(h.record(), result)
+  })
+test('fast path re-derives authorization rather than trusting the envelope booleans', (t) => {
+  const h = fastHarness(t)
+  const envelope = {
+    ...green(),
+    ciWaitState: 'pending',
+    mergeAuthorized: true,
+    authorizationReasons: [],
+  }
+  assert.equal(
+    fastPath({ envelope, out: h.out }, { spawn: () => assert.fail('spawned') }).reason,
+    'ci-not-settled',
+  )
+})
+test('fast path: extensions-required claims, returns the envelope, then judges with results', (t) => {
+  const extensionEnvelope = { pr: { number: 42 }, headSha: HEAD, changedPaths: ['a.go'] }
+  let phase = 1
+  const h = fastHarness(t, {
+    judge: () =>
+      phase === 1
+        ? {
+            verdict: 'extensions-required',
+            reason: 'extensions-installed',
+            headSha: HEAD,
+            extensionEnvelope,
+          }
+        : { verdict: 'pass', reason: 'verified', headSha: HEAD },
+    post: (args) =>
+      args.includes('claim') ? { won: true, token: 'tok' } : { verdict: 'pass', posted: true },
+    merge: mergeReply,
+  })
+  const first = h.run()
+  assert.deepEqual(first, {
+    runId: 'test-run',
+    action: 'extensions-required',
+    token: 'tok',
+    extensionEnvelope,
+  })
+  assert.equal(h.record(), null, 'a won claim writes no record')
+  assert.deepEqual(h.state.calls, [judge(), postCall('claim')])
+  phase = 2
+  const results = join(h.dir, 'results.json')
+  writeFileSync(results, '[]')
+  const second = h.run({ extensionResults: results, token: 'tok' })
+  assert.deepEqual(h.state.calls.slice(2), [
+    judge(['--extension-results', results]),
+    postCall('pass', ['--token', 'tok']),
+    mergeCall(['--token', 'tok']),
+  ])
+  assert.equal(second.reason, 'merged-by-verify')
+})
+test('fast path: a lost claim records claim-lost and makes no further calls', (t) => {
+  const h = fastHarness(t, {
+    judge: {
+      verdict: 'extensions-required',
+      reason: 'extensions-installed',
+      headSha: HEAD,
+      extensionEnvelope: { headSha: HEAD },
+    },
+    post: { won: false, reason: 'claim-held' },
+  })
+  assert.equal(h.run().reason, 'claim-lost')
+  assert.deepEqual(h.state.calls, [judge(), postCall('claim')])
+  assert.equal(h.record().reason, 'claim-lost')
+})
+test('fast path: an invalid extension envelope never claims the head', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'extensions-required', headSha: HEAD, extensionEnvelope: { invalid: ['x'] } },
+  })
+  assert.equal(h.run().reason, 'extension-envelope-invalid')
+  assert.deepEqual(h.state.calls, [judge()])
+})
+test('fast path: human posts the verdict with its reason and never merges', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'human', reason: 'no-receipt', headSha: HEAD },
+    post: { verdict: 'human', reason: 'no-receipt', posted: true },
+  })
+  assert.deepEqual(h.run(), {
+    runId: 'test-run',
+    action: 'skipped',
+    reason: 'human:no-receipt',
+    mergeSha: '',
+  })
+  assert.deepEqual(h.state.calls, [judge(), postCall('human', ['--reason', 'no-receipt'])])
+})
+test('fast path: defect posts the verdict, reason and findings file and never merges', (t) => {
+  const findings = [{ title: 'broken', detail: 'x' }]
+  const h = fastHarness(t, {
+    judge: { verdict: 'defect', reason: 'findings', headSha: HEAD, findings },
+    post: { verdict: 'defect', posted: true },
+  })
+  const result = h.run()
+  const file = join(h.dir, 'boss-build-verify-findings-test-run.json')
+  assert.deepEqual(h.state.calls, [
+    judge(),
+    postCall('defect', ['--reason', 'findings', '--findings', file]),
+  ])
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), findings)
+  assert.equal(result.reason, 'defect:findings')
+})
+test('fast path: wait without a token posts nothing', (t) => {
+  const h = fastHarness(t, { judge: { verdict: 'wait', reason: 'receipt-pending', headSha: HEAD } })
+  assert.equal(h.run().reason, 'wait:receipt-pending')
+  assert.deepEqual(h.state.calls, [judge()])
+})
+test('fast path: wait with a token clears the claim', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'wait', reason: 'base-ci-red', headSha: HEAD },
+    post: { verdict: 'wait', reason: 'base-ci-red', posted: true },
+  })
+  const results = join(h.dir, 'results.json')
+  assert.equal(h.run({ extensionResults: results, token: 'tok' }).reason, 'wait:base-ci-red')
+  assert.deepEqual(h.state.calls, [
+    judge(['--extension-results', results]),
+    postCall('wait', ['--reason', 'base-ci-red', '--token', 'tok']),
+  ])
+})
+for (const verdict of ['pass', 'human'])
+  test(`fast path: ${verdict} post with tracker writes unavailable stops without a merge`, (t) => {
+    const h = fastHarness(t, {
+      judge: { verdict, reason: verdict === 'pass' ? 'verified' : 'ledger-open', headSha: HEAD },
+      post: { verdict, posted: false, trackerWrites: 'unavailable' },
+    })
+    assert.equal(h.run().reason, 'tracker-writes-unavailable')
+    assert.equal(
+      h.state.calls.some(([verb]) => verb === 'merge'),
+      false,
+    )
+  })
+test('fast path: a lost claim at post time stops without a merge', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'pass', reason: 'verified', headSha: HEAD },
+    post: { verdict: 'pass', abandoned: 'claim-lost' },
+  })
+  assert.equal(h.run().reason, 'claim-lost')
+  assert.equal(h.state.calls.length, 2)
+})
+test('fast path: merge returning reverify records skipped reverify', (t) => {
+  const h = fastHarness(t, {
+    ...passGate,
+    merge: { merged: false, verdict: 'reverify', reason: 'head-moved' },
+  })
+  assert.deepEqual(h.run(), {
+    runId: 'test-run',
+    action: 'skipped',
+    reason: 'reverify',
+    mergeSha: '',
+  })
+})
+test('fast path: a non-zero verify-gate exit with JSON is still read for its verdict', (t) => {
+  const h = fastHarness(t, {
+    ...passGate,
+    merge: { exit: 1, merged: false, verdict: 'wait', reason: 'not-verified' },
+  })
+  assert.equal(h.run().reason, 'not-verified')
+})
+for (const verb of ['judge', 'post', 'merge'])
+  test(`fast path: verify-gate ${verb} exiting non-zero with no JSON is unreadable, never merged`, (t) => {
+    const h = fastHarness(t, {
+      ...passGate,
+      [verb]: { raw: { status: 2, stdout: '', stderr: 'boom' } },
+    })
+    const result = h.run()
+    assert.equal(result.action, 'skipped')
+    assert.equal(result.reason, 'verify-gate-unreadable')
+    assert.equal(h.state.calls.at(-1)[0], verb)
+  })
+test('fast path: a judged head other than the pushed head posts nothing', (t) => {
+  const h = fastHarness(t, { judge: { verdict: 'pass', reason: 'verified', headSha: OTHER } })
+  assert.equal(h.run().reason, 'head-mismatch')
+  assert.deepEqual(h.state.calls, [judge()])
+})
+test('fast path: --dry-run reaches post and merge and writes no record', (t) => {
+  const h = fastHarness(t, {
+    judge: { verdict: 'pass', reason: 'verified', headSha: HEAD },
+    post: { dryRun: true, verdict: 'pass', posted: true, writes: [] },
+    merge: { dryRun: true, merged: false, planned: true, writes: [] },
+  })
+  const result = h.run({ dryRun: true })
+  assert.deepEqual(h.state.calls, [
+    judge(),
+    [...postCall('pass'), '--dry-run'],
+    [...mergeCall(), '--dry-run'],
+  ])
+  assert.equal(result.reason, 'dry-run')
+  assert.equal(h.record(), null)
+})
+test('CLI: envelope persists a run-keyed record, fast-path parses bare --dry-run, followups validates', (t) => {
   const h = harness(t)
   const verdictFile = join(h.dir, 'checks.json'),
-    resultsFile = join(h.dir, 'results.json'),
+    envelopeFile = join(h.dir, 'envelope.json'),
     out = join(h.dir, 'completion.json'),
     bodyFile = join(h.dir, 'body.md')
   writeFileSync(verdictFile, JSON.stringify(green().checkVerdict))
-  writeFileSync(resultsFile, '[]')
   writeFileSync(bodyFile, body)
   assert.equal(main(['followups', '--body-file', bodyFile], h.deps).ok, true)
   const envelope = main(
@@ -608,68 +899,61 @@ test('CLI envelope and settle persist run-keyed records, followups validates bod
       'settled',
       '--check-verdict-file',
       verdictFile,
-      '--extension-count',
-      '1',
       '--callbacks-available',
       'true',
       '--out',
-      h.options.out,
+      envelopeFile,
     ],
     h.deps,
   )
   assert.equal(envelope.mergeAuthorized, true)
-  assert.equal(JSON.parse(readFileSync(h.options.out, 'utf8')).runId, 'run')
-  const result = main(
-    ['settle', '--envelope', h.options.out, '--results-file', resultsFile, '--out', out],
+  assert.equal(JSON.parse(readFileSync(envelopeFile, 'utf8')).runId, 'run')
+  h.state.cronJobs = []
+  const absent = main(
+    [
+      'envelope',
+      '--run-id',
+      'run',
+      '--outcome',
+      'REVIEW_READY',
+      '--pr',
+      '42',
+      '--ci-wait-state',
+      'settled',
+      '--check-verdict-file',
+      verdictFile,
+      '--callbacks-available',
+      'true',
+      '--out',
+      envelopeFile,
+    ],
     h.deps,
   )
-  assert.equal(result.action, 'skipped')
-  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), result)
-  h.state.merged = true
-  assert.equal(
-    main(
-      ['settle', '--envelope', h.options.out, '--results-file', resultsFile, '--out', out],
-      h.deps,
-    ).action,
-    'merged',
-  )
-})
-
-test('ineligible snapshot cannot become mergeable through favorable live rereads', (t) => {
-  const h = harness(t),
-    envelope = h.envelope()
-  envelope.humanFollowUp = { status: 'ok', open: 1 }
-  assert.equal(mergeCompletion(envelope, h.deps).reason, 'human-follow-up-open')
-  assert.equal(h.state.mergeCount, 0)
-})
-
-test('alternate attempt paths cannot bypass the same-run guard', (t) => {
-  const h = harness(t),
-    envelope = h.envelope()
-  assert.equal(
-    mergeCompletion(envelope, { ...h.deps, attemptFile: join(h.dir, 'first.json') }).action,
-    'merged',
-  )
-  assert.equal(
-    mergeCompletion(envelope, { ...h.deps, attemptFile: join(h.dir, 'second.json') }).reason,
-    'already-attempted',
-  )
-  assert.equal(h.state.mergeCount, 1)
-})
-test('settle does not attribute an externally observed merge to a refused gate', () => {
-  const result = settleCompletion({
+  assert.deepEqual(absent.authorizationReasons, ['no-verify-cron'])
+  const calls = h.state.calls.length
+  const result = main(['fast-path', '--envelope', envelopeFile, '--out', out, '--dry-run'], h.deps)
+  assert.deepEqual(result, {
     runId: 'run',
-    livePr: { state: 'MERGED', mergeCommit: { oid: MERGED } },
-    attempt: { runId: 'run', invoked: true, daemonAccepted: false, action: 'skipped' },
+    action: 'skipped',
+    reason: 'no-verify-cron',
+    mergeSha: '',
   })
-  assert.equal(result.reason, 'merged-outside-gate')
+  assert.equal(h.state.calls.length, calls, 'no subprocess for an unconsented repo')
+  assert.throws(
+    () => main(['fast-path', '--envelope', envelopeFile, '--out', out, '--token', 't'], h.deps),
+    /together/,
+  )
+  assert.throws(() => main(['fast-path', '--envelope', envelopeFile], h.deps), /--out/)
+  assert.throws(() => main(['envelope', '--out'], h.deps), /--option value/)
 })
-test('envelope does not expose unrelated repo configuration', (t) => {
-  const h = harness(t)
-  h.state.config.secret = 'do-not-copy-to-envelope'
-  assert.equal(JSON.stringify(h.envelope()).includes('do-not-copy-to-envelope'), false)
-})
-
+for (const retired of ['merge', 'settle'])
+  test(`the retired ${retired} verb is a usage error`, () =>
+    assert.throws(
+      () => main([retired, '--envelope', '/nonexistent', '--out', '/nonexistent']),
+      /usage: completion-gate\.mjs followups\|envelope\|fast-path/,
+    ))
+test('VERIFY_GATE is the sibling verify-gate.mjs', () =>
+  assert.equal(VERIFY_GATE, fileURLToPath(new URL('./verify-gate.mjs', import.meta.url))))
 test('real cumulative patch-ids survive a rebase but detect a repair commit', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'completion-patch-id-test-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -713,4 +997,106 @@ test('real cumulative patch-ids survive a rebase but detect a repair commit', (t
   git(['add', 'feature'])
   git(['commit', '-m', 'repair'])
   assert.equal(reviewedTreeDrift(read, 'main', reviewed, git(['rev-parse', 'HEAD'])), 'changed')
+})
+
+// Parity: the shared library yields exactly the shared subset of computeEligibility's reasons, in
+// the same order, on every fixture this suite builds. The two anonymous row tables above are
+// restated here because naming them would edit existing lines.
+function sharedFactsOf(f) {
+  return {
+    criteria: f.criteria,
+    ciWaitState: f.ciWaitState,
+    checkVerdict: f.checkVerdict,
+    headSha: f.pushedHead,
+    prView: f.prView,
+    heads: [f.pushedHead, f.localHead, f.upstreamHead, f.prView?.headRefOid],
+    humanFollowUp: f.humanFollowUp,
+    openQuestions: f.openQuestions,
+  }
+}
+function parityFixtures() {
+  const withPr = (changes) => {
+    const fixture = green()
+    Object.assign(fixture.prView, changes)
+    return fixture
+  }
+  return [
+    ['green', green()],
+    ['empty', {}],
+    ...falseCases.map(([field, value, reason]) => [
+      `false ${field}:${reason}`,
+      { ...green(), [field]: value },
+    ]),
+    ...unknownCases.map(([field]) => [`unknown ${field}`, { ...green(), [field]: undefined }]),
+    ...[
+      ['pr', '42'],
+      ['reviewVerdict', {}],
+      ['reviewCoverage', {}],
+      ['crossModelReview', []],
+      ['criteria', { total: '1', met: 1 }],
+      ['treeDrift', true],
+      ['launchOrigin', true],
+      ['watchers', true],
+      ['humanFollowUp', { status: 'ok', open: '0' }],
+      ['openQuestions', { status: 'malformed', open: 0 }],
+    ].map(([field, value]) => [`malformed ${field}`, { ...green(), [field]: value }]),
+    ...[
+      ['state', 'CLOSED'],
+      ['isDraft', true],
+      ['title', 'Feature (partial scope)'],
+      ['body', body + '\nDo Not Merge'],
+      ['headRefOid', OTHER],
+      ['headRefOid', undefined],
+      ['mergeStateStatus', 'BLOCKED'],
+      ['mergeStateStatus', 'BEHIND'],
+      ['mergeStateStatus', undefined],
+      ['mergeStateStatus', {}],
+      ['mergeStateStatus', 'HAS_HOOKS'],
+      ['mergeStateStatus', 'UNSTABLE'],
+      ['state', undefined],
+      ['isDraft', undefined],
+      ['title', undefined],
+      ['body', undefined],
+    ].map(([field, value]) => [`live PR ${field}=${String(value)}`, withPr({ [field]: value })]),
+    ...['localHead', 'upstreamHead'].flatMap((field) => [
+      [`missing ${field}`, { ...green(), [field]: undefined }],
+      [`changed ${field}`, { ...green(), [field]: OTHER }],
+    ]),
+    ['no pushed head', { ...green(), pushedHead: undefined }],
+    ['verdict on other head', { ...green(), checkVerdict: { state: 'green', observedSHA: OTHER } }],
+    ['verdict without head', { ...green(), checkVerdict: { state: 'green' } }],
+    ['quick coverage', { ...green(), reviewCoverage: 'quick: no configured lens' }],
+    ['reduced coverage', { ...green(), reviewCoverage: 'quick: reduced (round)' }],
+    [
+      'several shared reasons at once',
+      {
+        ...withPr({ isDraft: true, mergeStateStatus: 'BEHIND', headRefOid: OTHER }),
+        criteria: { met: 0, total: 2 },
+        ciWaitState: 'timeout',
+        treeDrift: 'changed',
+        humanFollowUp: { status: 'ok', open: 1 },
+        openQuestions: undefined,
+      },
+    ],
+  ]
+}
+test('SHARED_INELIGIBLE_REASONS is one vocabulary with INELIGIBLE_REASONS', () => {
+  assert.equal(Object.isFrozen(SHARED_INELIGIBLE_REASONS), true)
+  for (const reason of SHARED_INELIGIBLE_REASONS)
+    assert.ok(INELIGIBLE_REASONS.includes(reason), reason)
+})
+test('sharedEligibility matches the shared subset of computeEligibility on every fixture', () => {
+  const fixtures = parityFixtures()
+  assert.ok(fixtures.length > 60, `expected the full fixture set, got ${fixtures.length}`)
+  let sawShared = 0
+  for (const [label, fixture] of fixtures) {
+    const expected = computeEligibility(fixture).ineligibleReasons.filter((reason) =>
+      SHARED_INELIGIBLE_REASONS.includes(reason),
+    )
+    const shared = sharedEligibility(sharedFactsOf(fixture))
+    assert.deepEqual(shared.reasons, expected, label)
+    assert.equal(shared.eligible, expected.length === 0, label)
+    if (expected.length > 1) sawShared++
+  }
+  assert.ok(sawShared >= 2, 'parity must cover multi-reason orderings')
 })

@@ -379,32 +379,41 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // documented results carry, which is what stopped `validateResult` answering `unknown role` for a
   // role discovery had just handed the core.
   // BOS-1376 (2026-10-06): nine → ten; completion has its own validated result contract.
+  // BOS-1386: ten → eleven; verify is the boss-verify stage's judgment role.
+  // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
-    'completion',
     'draft',
     'knowledge',
     'lens',
     'methodology',
     'notes',
     'plan-reviewer',
+    'release',
     'round',
     'surface',
+    'verify',
   ])
   assert.deepEqual(ROLE_SCHEMAS.notes, ['tag', 'body', 'noteId'])
   assert.deepEqual(ROLE_SCHEMAS.knowledge, ['path', 'title', 'kind'])
   assert.deepEqual(ROLE_SCHEMAS.draft, ['planPath'])
 })
 
-test('repo-authored notes extensions are discoverable for each terminal core', () => {
+test('published built-in notes extensions are discoverable for each terminal core', () => {
   const root = path.resolve(import.meta.dirname, '..')
   const cores = ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']
 
   for (const core of cores) {
-    const { extensions, skipped } = discoverExtensions({ core, root, role: 'notes' })
+    const { extensions, skipped } = discoverExtensions({
+      core,
+      root,
+      role: 'notes',
+      builtinDir: path.join(root, 'services/boss/internal/skillinstall/skills', core, 'extensions'),
+    })
     const found = extensions.find((extension) => extension.name === `${core}-notes`)
     assert.ok(found, core)
     assert.equal(found.role, 'notes', core)
+    assert.equal(found.builtin, true, core)
     assert.deepEqual(skipped, [], core)
   }
 })
@@ -599,7 +608,19 @@ function missingExtensionNames(markdown, root) {
   return extensionNameTokens(markdown).filter(
     (name) =>
       !ILLUSTRATIVE_EXTENSION_NAMES.has(name) &&
-      !fs.existsSync(path.join(root, '.claude', 'skills', name, 'SKILL.md')),
+      !fs.existsSync(path.join(root, '.claude', 'skills', name, 'SKILL.md')) &&
+      !['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair'].some((core) =>
+        fs.existsSync(
+          path.join(
+            root,
+            'services/boss/internal/skillinstall/skills',
+            core,
+            'extensions',
+            name,
+            'EXTENSION.md',
+          ),
+        ),
+      ),
   )
 }
 
@@ -633,7 +654,7 @@ test('a renamed extension still named in a doc is reported as missing', () => {
   )
 })
 
-test('completion extensions are discoverable and validate conditional merge results', () => {
+test('the retired completion role is rejected by discovery, validation and the CLI', () => {
   const root = scratchRoot()
   writeSkill(root, 'boss-build-merge', [
     'name: boss-build-merge',
@@ -641,11 +662,13 @@ test('completion extensions are discoverable and validate conditional merge resu
     '  extends: boss-build',
     '  role: completion',
   ])
-  assert.equal(
-    discoverExtensions({ core: 'boss-build', root, role: 'completion' }).extensions.length,
-    1,
+  const requested = discoverExtensions({ core: 'boss-build', root, role: 'completion' })
+  assert.deepEqual(requested.extensions, [])
+  assert.deepEqual(
+    requested.skipped.map((skip) => skip.code),
+    ['unknown-requested-role'],
   )
-  const merged = {
+  const former = {
     ok: true,
     extension: 'boss-build-merge',
     role: 'completion',
@@ -653,32 +676,81 @@ test('completion extensions are discoverable and validate conditional merge resu
     reason: 'eligible',
     mergeSha: 'a'.repeat(40),
   }
-  const skipped = { ...merged, action: 'skipped', reason: 'not-opted-in', mergeSha: '' }
-  for (const result of [merged, skipped])
-    assert.equal(validateResult(result, 'completion').ok, true)
-  for (const result of [
-    { ...merged, mergeSha: '' },
-    { ...merged, mergeSha: 'bad' },
-    { ...skipped, mergeSha: merged.mergeSha },
-    { ...merged, action: 'other' },
-    { ...skipped, reason: '' },
-    { ...skipped, ok: false },
-  ])
-    assert.equal(validateResult(result, 'completion').ok, false, JSON.stringify(result))
-  const file = path.join(root, 'result.json')
-  fs.writeFileSync(file, JSON.stringify(merged))
+  const validated = validateResult(former, 'completion')
+  assert.equal(validated.ok, false)
+  assert.deepEqual(validated.errors, ['unknown role "completion"'])
   const cli = spawnSync(
     process.execPath,
     [
       path.join(import.meta.dirname, 'skill-extensions.mjs'),
-      'validate',
+      'discover',
+      '--core',
+      'boss-build',
       '--role',
       'completion',
-      '--file',
-      file,
+      '--root',
+      root,
+      '--json',
     ],
     { encoding: 'utf8' },
   )
-  assert.equal(cli.status, 0, cli.stderr)
-  assert.equal(JSON.parse(cli.stdout).ok, true)
+  assert.notEqual(cli.status, 0)
+  assert.match(cli.stderr, /unknown --role "completion"/)
+})
+
+test('verify extensions are discoverable through the CLI and validate through validate --role verify', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-verify-scratch', [
+    'name: boss-verify-scratch',
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: verify',
+    '  optional: true',
+  ])
+  writeSkill(root, 'boss-verify-required', [
+    'name: boss-verify-required',
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: verify',
+  ])
+  const cli = (args) =>
+    spawnSync(process.execPath, [path.join(import.meta.dirname, 'skill-extensions.mjs'), ...args], {
+      encoding: 'utf8',
+    })
+  const discovered = cli([
+    'discover',
+    '--core',
+    'boss-verify',
+    '--role',
+    'verify',
+    '--root',
+    root,
+    '--json',
+  ])
+  assert.equal(discovered.status, 0, discovered.stderr)
+  const { extensions, skipped } = JSON.parse(discovered.stdout)
+  assert.deepEqual(skipped, [])
+  const byName = Object.fromEntries(extensions.map((e) => [e.name, e]))
+  assert.equal(byName['boss-verify-scratch'].optional, true)
+  assert.equal(byName['boss-verify-scratch'].role, 'verify')
+  assert.equal('optional' in byName['boss-verify-required'], false)
+
+  const valid = {
+    ok: true,
+    extension: 'boss-verify-scratch',
+    role: 'verify',
+    verdict: 'pass',
+    evidence: [{ kind: 'test', ref: 'make test' }],
+    findings: [],
+  }
+  const validFile = path.join(root, 'valid.json')
+  const evidenceless = path.join(root, 'evidenceless.json')
+  fs.writeFileSync(validFile, JSON.stringify(valid))
+  fs.writeFileSync(evidenceless, JSON.stringify({ ...valid, evidence: [] }))
+  const ok = cli(['validate', '--role', 'verify', '--file', validFile])
+  assert.equal(ok.status, 0, ok.stdout)
+  assert.equal(JSON.parse(ok.stdout).ok, true)
+  const refused = cli(['validate', '--role', 'verify', '--file', evidenceless])
+  assert.equal(refused.status, 1, refused.stdout)
+  assert.deepEqual(JSON.parse(refused.stdout).errors, ['pass requires at least one evidence item'])
 })

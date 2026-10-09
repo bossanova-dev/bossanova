@@ -731,25 +731,12 @@ func lastTurnIsUser(path string) bool {
 			if err := json.Unmarshal(env.Payload, &p); err != nil {
 				continue
 			}
-			// function_call_output is bookkeeping protocol plumbing; never
-			// counts as a user turn.
-			if p.Type == "function_call_output" {
-				continue
+			if p.Type == "message" && p.Role == "assistant" {
+				return false
 			}
-			if p.Type == "message" {
-				switch p.Role {
-				case "assistant":
-					return false
-				case "user":
-					// Real user input — but codex also emits an
-					// `<environment_context>` synthetic user message at the
-					// top of every session. The event_msg/user_message path
-					// above is the authoritative signal; if we get here, the
-					// user just hasn't reached an event_msg envelope yet, so
-					// don't mark it "user". Keep walking.
-					continue
-				}
-			}
+			// Keep walking past protocol bookkeeping and user messages.
+			// Codex emits synthetic `<environment_context>` user messages,
+			// so event_msg/user_message above is the authoritative user signal.
 		}
 	}
 	return false

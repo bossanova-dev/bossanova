@@ -77,19 +77,33 @@ function baseState(overrides = {}) {
 }
 
 // A snapshot of a child that is genuinely merge-eligible: passing, non-draft, in the review state,
-// no partial marker, settled chat. Every "held" test flips exactly one of these.
+// no partial marker, an IDLE chat with no spinner. Every "held" test flips exactly one of these.
+// The driver computes "settled" itself from two agreeing polls, so a single-cycle green test seeds
+// the prior poll with `seedSettled` rather than running an extra cycle.
 function greenSnapshot(overrides = {}) {
   return {
     chatStatus: 'IDLE',
     chatStatusReadable: true,
+    spinnerPresent: false,
     sessionState: 'READY_FOR_REVIEW',
-    chatSettled: true,
     checkVerdict: { state: 'passing' },
     prView: { number: 10, repo: 'acme/app', url: 'https://example.test/pr/10', isDraft: false },
     reviewStateMatches: true,
     partialMarker: false,
     ...overrides,
   }
+}
+
+// A still-working child: never settled, whatever else the snapshot says.
+function workingSnapshot(overrides = {}) {
+  return greenSnapshot({ chatStatus: 'WORKING', ...overrides })
+}
+
+// Seed the previous poll's settle observation, as if the child had already been read once IDLE.
+function seedSettled(state, ticketIds, observation = { idleEligible: true, readyEligible: false }) {
+  const sessions = { ...state.sessions }
+  for (const id of ticketIds) sessions[id] = { ...sessions[id], settleObservation: observation }
+  return normalizeEpicState({ ...state, sessions })
 }
 
 function subscriptionRow(overrides = {}) {
@@ -505,19 +519,17 @@ test('verifySubscriptionRow checks ownership and liveness, not just presence', (
 // --- green admission -------------------------------------------------------
 
 test('green admission holds a draft, an unsettled chat and a partial marker', () => {
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot()), [])
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ prView: { isDraft: true } })), [
+  // The pure blocker list takes the driver-computed verdict as `chatSettled`.
+  const admitted = (overrides = {}) => greenSnapshot({ chatSettled: true, ...overrides })
+  assert.deepEqual(greenAdmissionBlockers(admitted()), [])
+  assert.deepEqual(greenAdmissionBlockers(admitted({ prView: { isDraft: true } })), [
     'pr:draft-or-unknown',
   ])
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ chatSettled: false })), [
-    'chat:unsettled',
-  ])
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ partialMarker: true })), [
-    'pr:partial-marker',
-  ])
+  assert.deepEqual(greenAdmissionBlockers(admitted({ chatSettled: false })), ['chat:unsettled'])
+  assert.deepEqual(greenAdmissionBlockers(admitted({ partialMarker: true })), ['pr:partial-marker'])
   // The ticket's tracker state never holds a green PR.
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ reviewStateMatches: false })), [])
-  assert.deepEqual(greenAdmissionBlockers(greenSnapshot({ checkVerdict: { state: 'pending' } })), [
+  assert.deepEqual(greenAdmissionBlockers(admitted({ reviewStateMatches: false })), [])
+  assert.deepEqual(greenAdmissionBlockers(admitted({ checkVerdict: { state: 'pending' } })), [
     'checks:pending',
   ])
   // Missing evidence is never admission.
@@ -697,7 +709,7 @@ test('adoption never creates a second session for the same ticket', async () => 
         agent_session_id: 'live-chat',
       },
     ],
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   const result = await reconcileEpic({ state: baseState({ parallel: 1 }), io, now: NOW })
   assert.ok(result.actions.includes('adopt:T-1'))
@@ -712,7 +724,7 @@ test('adoption matches on the [TICKET] title convention when tracker_id is absen
     listSessions: () => [
       { id: 'live-sess', title: '[T-1] work T-1', agent_session_id: 'live-chat' },
     ],
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   const result = await reconcileEpic({ state: baseState({ parallel: 1 }), io, now: NOW })
   assert.equal(result.state.sessions['T-1'].sessionId, 'live-sess')
@@ -721,7 +733,7 @@ test('adoption matches on the [TICKET] title convention when tracker_id is absen
 
 test('every wake kind enters the same cycle and re-reads authoritative state', async () => {
   for (const wake of ['callback', 'subscription', 'fallback', 'retry', 'manual-resume']) {
-    const io = makeIo({ readSessionSnapshot: () => greenSnapshot({ chatSettled: false }) })
+    const io = makeIo({ readSessionSnapshot: () => workingSnapshot() })
     const launched = recordLaunch(baseState({ parallel: 1 }), {
       ticketId: 'T-1',
       sessionId: 'sess-1',
@@ -741,7 +753,7 @@ test('every wake kind enters the same cycle and re-reads authoritative state', a
 test('a draft green and an unsettled chat are held out of greens on a wake', async () => {
   for (const snapshot of [
     greenSnapshot({ prView: { number: 10, repo: 'acme/app', isDraft: true } }),
-    greenSnapshot({ chatSettled: false }),
+    workingSnapshot(),
   ]) {
     const io = makeIo({ readSessionSnapshot: () => snapshot })
     const launched = recordLaunch(baseState({ parallel: 1 }), {
@@ -765,6 +777,7 @@ test('two greens issue exactly one merge, and the verified merge unblocks its de
   })
   state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
   state = recordLaunch(state, { ticketId: 'T-2', sessionId: 'sess-2', chatId: 'chat-2', at: NOW })
+  state = seedSettled(state, ['T-1', 'T-2'])
   const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
   assert.equal(io.count('mergeChild'), 1, 'merges must be serialized: one per cycle')
   assert.equal(io.count('moveTicketDone'), 1)
@@ -795,6 +808,7 @@ test('an unverified merge is demoted rather than recorded, and writes no Done', 
   })
   let state = baseState({ parallel: 2, tickets: [ticket('T-1')] })
   state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
+  state = seedSettled(state, ['T-1'])
   const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
   assert.equal(io.count('moveTicketDone'), 0, 'only a verified merge may write Done')
   assert.deepEqual(result.state.merged, [])
@@ -807,6 +821,7 @@ test('a merge is skipped while the target has a still-open external blocker', as
   const io = makeIo({ readExternalBlockers: () => ({ 'EXT-9': 'open' }) })
   let state = baseState({ parallel: 2, tickets: [ticket('T-1', { blockedBy: ['EXT-9'] })] })
   state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
+  state = seedSettled(state, ['T-1'])
   const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
   assert.equal(io.count('mergeChild'), 0)
   assert.ok(result.actions.some((a) => a.startsWith('merge-skip:T-1:external:EXT-9')))
@@ -820,7 +835,7 @@ test('watch registration failure yields a fallback RUNNING, or unwatched — nev
       mechanism: 'in-session-wake',
       nextWakeAt: '2026-01-01T00:05:00Z',
     }),
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   let state = recordLaunch(baseState({ parallel: 1 }), {
     ticketId: 'T-1',
@@ -843,7 +858,7 @@ test('watch registration failure yields a fallback RUNNING, or unwatched — nev
     subscribeSessionOutcome: () => ({ error: 'no durable transport' }),
     listSessionSubscriptions: () => [],
     scheduleFallbackWake: () => null,
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   result = await reconcileEpic({ state, wake: 'callback', io: noFallback, now: NOW })
   assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING_BUT_UNWATCHED)
@@ -861,7 +876,7 @@ test('an arm that returns clean but does not appear in the list read is not cove
     listWatches: () => [],
     armWatches: () => ({ callbacks: [] }),
     scheduleFallbackWake: () => ({ mechanism: 'in-session-wake', nextWakeAt: NOW }),
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   const state = recordLaunch(baseState({ parallel: 1 }), {
     ticketId: 'T-1',
@@ -883,7 +898,7 @@ test('a fired subscription is re-armed while the child stays in flight', async (
       return [subscriptionRow({ id: 'sub-2', owner_session_id: 'sess-1' })]
     },
     subscribeSessionOutcome: () => ({ subscription: subscriptionRow({ id: 'sub-2' }) }),
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   let state = recordLaunch(baseState({ parallel: 1 }), {
     ticketId: 'T-1',
@@ -907,7 +922,7 @@ test('a fired subscription is re-armed while the child stays in flight', async (
 
 test('a fail-isolated child retains its evidence watch through terminal cleanup', async () => {
   const io = makeIo({
-    readSessionSnapshot: () => greenSnapshot({ wallClockExceeded: true, chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot({ wallClockExceeded: true }),
   })
   let state = baseState({
     parallel: 1,
@@ -934,6 +949,7 @@ test('a full run reaches DONE only after cleanup and the final progress upsert',
   const io = makeIo()
   let state = baseState({ parallel: 1, tickets: [ticket('T-1')] })
   state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
+  state = seedSettled(state, ['T-1'])
   const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
   assert.equal(result.status, EPIC_RUN_STATUSES.DONE)
   assert.deepEqual(result.blockers, [])
@@ -973,7 +989,7 @@ test('reconcileEpic refuses an unknown wake kind and an unwired io', async () =>
 test('a fresh process reconstructs the same in-flight record and does not relaunch', async () => {
   const fs = makeFs()
   const dir = '/store'
-  const firstIo = makeIo({ readSessionSnapshot: () => greenSnapshot({ chatSettled: false }) })
+  const firstIo = makeIo({ readSessionSnapshot: () => workingSnapshot() })
   const first = await reconcileEpic({
     state: baseState({ parallel: 1 }),
     wake: 'initial',
@@ -999,7 +1015,7 @@ test('a fresh process reconstructs the same in-flight record and does not relaun
         agent_session_id: 'chat-T-1',
       },
     ],
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: false }),
+    readSessionSnapshot: () => workingSnapshot(),
   })
   const second = await reconcileEpic({
     state: rehydrated,
@@ -1046,6 +1062,7 @@ test('a duplicate late wake is idempotent: no relaunch, no second merge', async 
   const dir = '/store'
   let state = baseState({ parallel: 1, tickets: [ticket('T-1')] })
   state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-1', chatId: 'chat-1', at: NOW })
+  state = seedSettled(state, ['T-1'])
   saveEpicState(state, { dir, fs })
 
   const io = makeIo({
@@ -1074,6 +1091,155 @@ test('a duplicate late wake is idempotent: no relaunch, no second merge', async 
   assert.equal(io.count('mergeChild'), 1, 'a repeat delivery must not merge again')
   assert.equal(io.count('createSession'), 0)
   assert.deepEqual(second.state.merged, ['T-1'])
+})
+
+// --- settled is the driver's verdict ----------------------------------------
+//
+// The driver computes "settled" from two agreeing polls of raw chat facts; a Ready session (the
+// daemon's computed `✓ ready` label) settles even while its chat stays WAITING on its own pipeline
+// watches.
+
+function readySnapshot(overrides = {}) {
+  return greenSnapshot({ chatStatus: 'WAITING', displayLabel: '✓ ready', ...overrides })
+}
+
+test('three Ready children parked WAITING are admitted on the second cycle and merge to DONE', async () => {
+  const fs = makeFs()
+  const dir = '/store'
+  const save = (next) => saveEpicState(next, { dir, fs })
+  const load = () => loadEpicState({ epicId: EPIC, runId: 'run-1', dir, fs })
+  const statusesRead = []
+  const io = makeIo({
+    readSessionSnapshot: ({ sessionId }) => {
+      const snapshot = readySnapshot({
+        prView: { number: 10, repo: 'acme/app', url: `https://example.test/${sessionId}` },
+      })
+      snapshot.prView.isDraft = false
+      statusesRead.push(snapshot.chatStatus)
+      return snapshot
+    },
+  })
+  let state = baseState({
+    parallel: 3,
+    tickets: [ticket('T-1'), ticket('T-2'), ticket('T-3')],
+  })
+  for (const id of ['T-1', 'T-2', 'T-3']) {
+    state = recordLaunch(state, {
+      ticketId: id,
+      sessionId: `sess-${id}`,
+      chatId: `c-${id}`,
+      at: NOW,
+    })
+  }
+  save(state)
+
+  // Cycle 1: one poll is not enough. Each child is held, pending.
+  let result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
+  for (const id of ['T-1', 'T-2', 'T-3']) {
+    assert.ok(result.actions.includes(`settle:${id}:pending`), result.actions.join('\n'))
+    assert.ok(result.actions.includes(`hold:${id}:chat:unsettled`), result.actions.join('\n'))
+    assert.deepEqual(result.state.sessions[id].settleObservation, {
+      idleEligible: false,
+      readyEligible: true,
+    })
+  }
+  assert.deepEqual(result.state.greens, [])
+  assert.equal(io.count('mergeChild'), 0)
+
+  // Cycle 2: the second agreeing poll admits every child; merges stay serialized.
+  result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
+  for (const id of ['T-1', 'T-2', 'T-3']) {
+    assert.ok(result.actions.includes(`settle:${id}:settled-ready`), result.actions.join('\n'))
+    assert.ok(result.actions.includes(`green:${id}`), result.actions.join('\n'))
+  }
+  assert.equal(io.count('mergeChild'), 1)
+  assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+
+  // Later cycles merge the rest, one per cycle, to a terminal DONE.
+  result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
+  assert.equal(io.count('mergeChild'), 2)
+  result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
+  assert.equal(io.count('mergeChild'), 3)
+  assert.deepEqual([...result.state.merged].sort(), ['T-1', 'T-2', 'T-3'])
+  assert.equal(result.status, EPIC_RUN_STATUSES.DONE)
+  assert.equal(assertEpicCanTerminate(result.state), true)
+  assert.ok(!statusesRead.includes('IDLE'), 'no child ever had to read IDLE')
+})
+
+test('a WAITING child that loses its Ready label between cycles is not admitted', async () => {
+  let label = '✓ ready'
+  const io = makeIo({ readSessionSnapshot: () => readySnapshot({ displayLabel: label }) })
+  let state = recordLaunch(baseState({ parallel: 1, tickets: [ticket('T-1')] }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  let result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.ok(result.actions.includes('settle:T-1:pending'))
+  label = '✗ failing'
+  result = await reconcileEpic({ state: result.state, wake: 'callback', io, now: NOW })
+  assert.ok(result.actions.includes('settle:T-1:alive'))
+  assert.deepEqual(result.state.greens, [])
+  assert.equal(io.count('mergeChild'), 0)
+})
+
+test('a caller-supplied chatSettled is ignored: the driver owns the settled verdict', async () => {
+  const io = makeIo({ readSessionSnapshot: () => workingSnapshot({ chatSettled: true }) })
+  const state = seedSettled(
+    recordLaunch(baseState({ parallel: 1, tickets: [ticket('T-1')] }), {
+      ticketId: 'T-1',
+      sessionId: 'sess-1',
+      chatId: 'chat-1',
+      at: NOW,
+    }),
+    ['T-1'],
+  )
+  const result = await reconcileEpic({ state, wake: 'callback', io, now: NOW })
+  assert.ok(result.actions.includes('hold:T-1:chat:unsettled'), result.actions.join('\n'))
+  assert.deepEqual(result.state.greens, [])
+  assert.equal(io.count('mergeChild'), 0)
+})
+
+test('settleObservation round-trips through normalize, save and load; absent loads as null', () => {
+  const fs = makeFs()
+  const dir = '/store'
+  let state = recordLaunch(baseState({ parallel: 1 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  assert.equal(state.sessions['T-1'].settleObservation, null, 'a fresh launch has no prior poll')
+  state = seedSettled(state, ['T-1'], { idleEligible: false, readyEligible: true })
+  const observation = { idleEligible: false, readyEligible: true }
+  assert.deepEqual(normalizeEpicState(state).sessions['T-1'].settleObservation, observation)
+  saveEpicState(state, { dir, fs })
+  const loaded = loadEpicState({ epicId: EPIC, runId: 'run-1', dir, fs })
+  assert.deepEqual(loaded.sessions['T-1'].settleObservation, observation)
+  assert.deepEqual(validateEpicState(loaded), { ok: true, errors: [] })
+
+  // A state file written before the field existed, or carrying a malformed value, loads as null.
+  for (const legacy of [undefined, 'yes', [], { idleEligible: 'true' }]) {
+    const raw = JSON.parse(JSON.stringify(state))
+    if (legacy === undefined) delete raw.sessions['T-1'].settleObservation
+    else raw.sessions['T-1'].settleObservation = legacy
+    fs.files.set(epicStatePath({ epicId: EPIC, runId: 'run-1', dir }), JSON.stringify(raw))
+    const reloaded = loadEpicState({ epicId: EPIC, runId: 'run-1', dir, fs })
+    assert.equal(reloaded.sessions['T-1'].settleObservation, null, JSON.stringify(legacy))
+  }
+})
+
+test('a relaunch starts a fresh settle history', () => {
+  let state = recordLaunch(baseState({ parallel: 1 }), {
+    ticketId: 'T-1',
+    sessionId: 'sess-1',
+    chatId: 'chat-1',
+    at: NOW,
+  })
+  state = seedSettled(state, ['T-1'])
+  state = recordLaunch(state, { ticketId: 'T-1', sessionId: 'sess-2', chatId: 'chat-2', at: NOW })
+  assert.equal(state.sessions['T-1'].settleObservation, null)
 })
 
 // --- CLI -------------------------------------------------------------------
@@ -1122,7 +1288,7 @@ test('dry run: launch -> wake -> one merge -> dependent launch -> terminal, RUNN
   let settled = false
   const io = makeIo({
     listSessions: () => [...live.values()],
-    readSessionSnapshot: () => greenSnapshot({ chatSettled: settled }),
+    readSessionSnapshot: () => (settled ? greenSnapshot() : workingSnapshot()),
     createSession: ({ ticket: t }) => {
       const record = {
         id: `sess-${t.id}`,
@@ -1158,9 +1324,17 @@ test('dry run: launch -> wake -> one merge -> dependent launch -> terminal, RUNN
   assert.equal(io.count('mergeChild'), 0)
   assert.throws(() => assertEpicCanTerminate(result.state), /non-terminal/)
 
-  // --- cycle 3: the settled subscription fires. Now the root is admissible and merges once.
+  // --- cycle 3: the settled subscription fires. One IDLE poll is not yet settled: held, pending.
   settled = true
   result = await reconcileEpic({ state: load(), wake: 'subscription', io, now: NOW, save })
+  assert.equal(io.count('mergeChild'), 0, 'one agreeing poll is not enough to admit')
+  assert.ok(result.actions.includes('settle:T-1:pending'))
+  assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
+  assert.throws(() => assertEpicCanTerminate(result.state), /non-terminal/)
+
+  // --- cycle 4: the second agreeing poll settles the root; it is admissible and merges once.
+  result = await reconcileEpic({ state: load(), wake: 'fallback', io, now: NOW, save })
+  assert.ok(result.actions.includes('settle:T-1:settled-idle'))
   assert.equal(io.count('mergeChild'), 1, 'exactly one merge per cycle')
   assert.equal(io.count('moveTicketDone'), 1, 'only a verified merge writes Done')
   assert.deepEqual(result.state.merged, ['T-1'])
@@ -1171,7 +1345,11 @@ test('dry run: launch -> wake -> one merge -> dependent launch -> terminal, RUNN
   assert.equal(io.count('createSession'), 2)
   assert.throws(() => assertEpicCanTerminate(result.state), /non-terminal/)
 
-  // --- cycle 4: the dependent settles and merges; nothing remains, so this is terminal.
+  // --- cycle 5: the dependent's first poll is pending; cycle 6 settles and merges it, terminal.
+  result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
+  assert.equal(io.count('mergeChild'), 1)
+  assert.ok(result.actions.includes('settle:T-2:pending'))
+  assert.equal(result.status, EPIC_RUN_STATUSES.RUNNING)
   result = await reconcileEpic({ state: load(), wake: 'callback', io, now: NOW, save })
   assert.equal(io.count('mergeChild'), 2, 'one merge per cycle, never two')
   assert.deepEqual(result.state.merged.sort(), ['T-1', 'T-2'])

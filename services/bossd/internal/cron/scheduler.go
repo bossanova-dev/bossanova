@@ -7,11 +7,12 @@
 // 3); extra fires block until a slot frees up. Stop(ctx) drains the cron-managed
 // goroutines plus any direct fire/RunNow calls before returning.
 //
-// Overlap suppression: at each fire, the scheduler checks cron_jobs.last_run_session_id.
-// If the previous session is still actively running, the fire is skipped.
-// last_run_session_id is persisted on every successful CreateSession via
-// MarkFireStarted; last_run_outcome is written later by the finalize path
-// (flight leg 4).
+// Overlap policies: skip (the default) drops a fire while the last run is
+// actively working; allow_concurrent fires without inspecting it;
+// cancel_in_progress stops it after the gate passes, then fires. Cancellation
+// requires ImplementingPlan and keeps the worktree and branch. Only the job's
+// last_run_session_id is tracked; older concurrent runs are not cancelled.
+// MarkFireStarted updates that pointer; finalize writes the outcome later.
 package cron
 
 import (
@@ -53,6 +54,19 @@ type ActivityChecker interface {
 	RunActive(sess *models.Session) bool
 }
 
+// RunCanceller stops an in-progress cron run before it is replaced.
+// Nil disables cancellation: cancel_in_progress then behaves as skip.
+type RunCanceller interface {
+	CancelRun(ctx context.Context, sessionID string) error
+}
+
+// RunCancellerFunc adapts a function to RunCanceller.
+type RunCancellerFunc func(ctx context.Context, sessionID string) error
+
+func (f RunCancellerFunc) CancelRun(ctx context.Context, sessionID string) error {
+	return f(ctx, sessionID)
+}
+
 // GateProofEnvResolver resolves the allowlisted proof env overlay from which
 // the cron gate takes ONLY PROOF_ANTHROPIC_API_KEY. Kept as an interface so
 // tests inject a fake without a real keyring. Backed in production by
@@ -65,11 +79,12 @@ type GateProofEnvResolver interface {
 // load/overlap checks; Repos resolves the per-job base branch; Creator spawns
 // the actual session.
 type Config struct {
-	Store    db.CronJobStore
-	Sessions db.SessionStore
-	Repos    db.RepoStore
-	Creator  taskorchestrator.SessionCreator
-	Activity ActivityChecker
+	Store     db.CronJobStore
+	Sessions  db.SessionStore
+	Repos     db.RepoStore
+	Creator   taskorchestrator.SessionCreator
+	Activity  ActivityChecker
+	Canceller RunCanceller
 	// GateProofEnv resolves the proof overlay for the single credential that
 	// pre-session gates may receive. Nil means no proof injection.
 	GateProofEnv  GateProofEnvResolver
@@ -89,6 +104,7 @@ type Scheduler struct {
 	repos        db.RepoStore
 	creator      taskorchestrator.SessionCreator
 	activity     ActivityChecker
+	canceller    RunCanceller
 	gateProofEnv GateProofEnvResolver
 	logger       zerolog.Logger
 
@@ -146,6 +162,7 @@ func New(cfg Config) *Scheduler {
 		repos:        cfg.Repos,
 		creator:      cfg.Creator,
 		activity:     cfg.Activity,
+		canceller:    cfg.Canceller,
 		gateProofEnv: cfg.GateProofEnv,
 		logger:       logger,
 		cron: cron.New(
@@ -446,12 +463,10 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		return nil, SkipReasonDisabled, nil
 	}
 	zeroOutput = job.IsZeroOutput
-	if reason, active := s.previousRunActive(ctx, job); active {
-		logger.Info().
-			Str("reason", reason).
-			Str("last_run_session_id", strOrEmpty(job.LastRunSessionID)).
-			Msg("fire: previous run still active; skipping")
-		return nil, reason, nil
+	previous, blocked := s.overlapDecision(ctx, job)
+	if blocked {
+		logger.Info().Str("last_run_session_id", strOrEmpty(job.LastRunSessionID)).Msg("fire: previous run still active; skipping")
+		return nil, SkipReasonOverlapPrevActive, nil
 	}
 
 	// Generate a per-fire hook token so the Stop hook can authenticate back
@@ -590,6 +605,16 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		opts.BranchName = cronBranchName(job.Name, s.nowFunc())
 	}
 
+	if previous != nil {
+		if err := s.canceller.CancelRun(ctx, previous.ID); err != nil {
+			logger.Warn().Err(err).Str("previous_session_id", previous.ID).
+				Str("last_run_session_id", strOrEmpty(job.LastRunSessionID)).
+				Msg("fire: failed to cancel previous run; skipping replacement")
+			return nil, SkipReasonOverlapPrevActive, nil
+		}
+		logger.Info().Str("previous_session_id", previous.ID).Msg("cancelled in-progress previous run before replacement")
+	}
+
 	sess, err := s.creator.CreateSession(ctx, opts)
 	if err != nil {
 		logger.Error().Err(err).Msg("fire: session create failed")
@@ -597,6 +622,11 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 			logger.Warn().Err(markErr).Msg("fire: also failed to mark outcome=fire_failed")
 		}
 		return nil, "", fmt.Errorf("create session for cron job %s: %w", job.ID, err)
+	}
+
+	if previous != nil {
+		logger.Info().Str("previous_session_id", previous.ID).Str("session_id", sess.ID).
+			Msg("cancelled in-progress previous run")
 	}
 
 	// Persist last_run_session_id and the resolved session agent so the next
@@ -664,29 +694,44 @@ func (s *Scheduler) unmarkGating(jobID string) {
 	s.gatingMu.Unlock()
 }
 
-// previousRunActive reports whether the job's most recent session is still
-// in a non-terminal, non-archived state. A missing last_run_session_id or a
-// deleted session row are both treated as "not active".
-func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) (string, bool) {
+// overlapDecision keeps policy selection separate from the spawn pipeline.
+// No dated API bump: local CLI/TUI and cloud clients may be version-skewed,
+// but these policies are explicit opt-ins restoring their documented behavior;
+// skip retains the default. Spawn/cancel side effects cannot be down-converted
+// by a response transform or handler gate for an older client.
+// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+// A returned session must be cancelled after the gate passes. Blocked fires
+// skip before running the gate, including bootstrap and a nil canceller.
+func (s *Scheduler) overlapDecision(ctx context.Context, job *models.CronJob) (*models.Session, bool) {
+	if job.ConcurrencyPolicy == models.CronJobConcurrencyPolicyAllowConcurrent {
+		return nil, false
+	}
+	previous := s.previousRunActive(ctx, job)
+	if previous == nil {
+		return nil, false
+	}
+	if job.ConcurrencyPolicy == models.CronJobConcurrencyPolicyCancelInProgress &&
+		s.canceller != nil && previous.State == machine.ImplementingPlan {
+		return previous, false
+	}
+	return nil, true
+}
+
+// previousRunActive returns the last run only while it is actively working.
+// A missing/deleted, archived, terminal or idle session does not block a fire.
+func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) *models.Session {
 	if job.LastRunSessionID == nil || *job.LastRunSessionID == "" {
-		return "", false
+		return nil
 	}
 	sess, err := s.sessions.Get(ctx, *job.LastRunSessionID)
-	if err != nil {
-		// Session row is gone (cleanup outcome, manual delete). Safe to fire.
-		return "", false
+	if err != nil || sess.ArchivedAt != nil || isTerminalState(sess.State) {
+		return nil
 	}
-	if sess.ArchivedAt != nil || isTerminalState(sess.State) {
-		return "", false
-	}
-	// A non-terminal session blocks the next fire only while its agent is still
-	// actively producing output. Once idle (e.g. it opened a PR and handed off),
-	// the next scheduled fire proceeds on its own per-fire branch. Nil checker
-	// preserves the legacy block-on-any-non-terminal behavior.
+	// Nil checker preserves the legacy block-on-any-non-terminal behavior.
 	if s.activity != nil && !s.activity.RunActive(sess) {
-		return "", false
+		return nil
 	}
-	return SkipReasonOverlapPrevActive, true
+	return sess
 }
 
 // markFireFailed records last_run_outcome = fire_failed when CreateSession

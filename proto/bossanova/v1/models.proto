@@ -520,6 +520,13 @@ message Session {
   // pinned client has nothing else to key on. Compare
   // last_check_state_observed (field 65), carried for exactly that reason.
   bool is_waiting_demoted = 75;
+
+  // Transport-only fact from the current PR head: a successful boss/build receipt.
+  // Refreshed from GitHub checks, never persisted; a new head clears it.
+  bool has_build_receipt = 76;
+  // Transport-only inverse mark: Ready replaced an undemoted waiting composite.
+  // Computed with the served label, never persisted.
+  bool is_ready_over_waiting = 77;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -688,6 +695,14 @@ enum DisplayStatus {
   DISPLAY_STATUS_DRAFT = 9;
   DISPLAY_STATUS_APPROVED = 10;
   DISPLAY_STATUS_REVIEW = 11;
+  // Ordinary CI settled and a pending boss/verify commit status holds the
+  // head: a live verification claim or an unclaimed head. Served from
+  // API version 2026-09-16; older pins receive DISPLAY_STATUS_CHECKING.
+  DISPLAY_STATUS_VERIFYING = 12;
+  // Ordinary CI settled and the verify stage parked the head for a human
+  // (pending boss/verify "needs human: <reason>"). Served from API version
+  // 2026-09-16; older pins receive DISPLAY_STATUS_CHECKING.
+  DISPLAY_STATUS_NEEDS_HUMAN = 13;
 }
 
 // MergeBlock explains why a session's PR cannot currently be merged, so an
@@ -781,6 +796,16 @@ enum CronJobStatus {
   CRON_JOB_STATUS_GATING      = 5;  // gate command currently running (transient, in-memory)
 }
 
+// CronJobConcurrencyPolicy decides what a fire does while the same job's
+// previous run is still in progress. Wording follows GitHub Actions
+// (`cancel-in-progress`) and Kestra (`allowConcurrent`).
+enum CronJobConcurrencyPolicy {
+  CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED        = 0; // not set: create => SKIP, update => unchanged
+  CRON_JOB_CONCURRENCY_POLICY_SKIP               = 1; // skip the new fire (default)
+  CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS = 2; // cancel the in-progress run, then fire
+  CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT   = 3; // fire regardless
+}
+
 // CronJob represents a scheduled prompt that fires on a cron expression.
 //
 // At fire time, bossd spawns a new session in a fresh worktree with
@@ -815,6 +840,9 @@ message CronJob {
   // with this set still fires exactly as it does today (BOS-543).
   bool   is_zero_output = 19;
   string last_run_agent_name = 20;  // resolved agent used by the last spawned run; empty = unknown/legacy
+  // What a fire does while this job's previous run is still in progress.
+  // Always a concrete value on read (never UNSPECIFIED); defaults to SKIP.
+  CronJobConcurrencyPolicy concurrency_policy = 21;
 }
 
 // GithubCallback is a durable one-shot registration that delivers a chat
@@ -936,4 +964,280 @@ message ChatMessage {
   string text = 2;       // flattened text content of the turn
   string timestamp = 3;  // RFC3339, best-effort from the transcript ("" if unknown)
   string kind = 4;       // optional: text | tool_use | tool_result
+}
+
+// --- Inbound triggers (BOS-1348) ---
+//
+// An inbound trigger is a bosso-owned, Postgres-backed rule that launches a
+// configured Boss session when bosso receives an authenticated HTTP request or
+// a GitHub App event. These messages are the shared model that persistence,
+// ingestion, the launch worker, the daemon launch command, and the web / MCP /
+// CLI surfaces all build against.
+
+// Trigger is one inbound trigger as returned to its creator. It NEVER carries
+// the HTTP signing secret: the secret is returned exactly once, by
+// CreateTriggerResponse or RotateTriggerSecretResponse, so List and Get can
+// never leak it.
+message Trigger {
+  string id = 1;
+  // Organization the trigger belongs to; sessions it launches are filed there.
+  string organization_id = 2;
+  // bosso users.id of the creator. Only the creator can read or change it.
+  string creator_user_id = 3;
+  string name = 4;
+  // A disabled trigger records invocations as SKIPPED and launches nothing.
+  bool is_enabled = 5;
+  // Trigger type name from the catalog: "http" or "github" today. A string,
+  // not an enum, so adding a type needs no change to this common model; the
+  // type's own settings live in the type_config oneof below.
+  string trigger_type = 6;
+  // Version of the type_config schema the stored config was written against.
+  // Output-only: bosso stamps the version the catalog advertises for
+  // trigger_type (TriggerTypeSpec.config_version) when the config is saved.
+  int32 config_version = 7;
+  // Type-specific configuration. Exactly one arm is set, and it matches
+  // trigger_type. A new trigger type adds a new arm, which is wire-safe.
+  oneof type_config {
+    HttpTriggerConfig http = 8;
+    GithubTriggerConfig github = 9;
+  }
+  // Canonical origin URL of the repo the launched session works in
+  // (e.g. "https://github.com/owner/repo").
+  string repo_origin_url = 10;
+  // What to launch.
+  TriggerLaunchSettings launch = 11;
+  // Which daemon launches it.
+  TriggerPlacement placement = 12;
+  // What happens when an invocation arrives while a prior launch is running.
+  TriggerConcurrencyPolicy concurrency_policy = 13;
+  // Minimum gap between two launches; 0 disables the cooldown. An invocation
+  // inside the window is recorded as SKIPPED with decision_reason "cooldown".
+  int32 cooldown_seconds = 14;
+  // Every filter must match (logical AND) for an invocation to launch; an
+  // empty list matches everything.
+  repeated TriggerFilter filters = 15;
+  // Payload field paths (catalog filter-field syntax, e.g. "body.ref") copied
+  // into the launch prompt context and TriggerInvocation.payload_excerpt. Only
+  // the selected fields are retained; the raw payload is never stored.
+  repeated string payload_fields = 16;
+  // Output-only. HTTP triggers only: the path to POST to, relative to the bosso
+  // public base URL, e.g. "/triggers/http/<public_id>". Empty for other types.
+  string endpoint_path = 17;
+  // Output-only. The most recent invocation, absent when none has arrived.
+  TriggerInvocationSummary last_invocation = 18;
+  google.protobuf.Timestamp created_at = 19;
+  google.protobuf.Timestamp updated_at = 20;
+}
+
+// HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
+// authenticated with the trigger's signing secret.
+message HttpTriggerConfig {
+  // Accepted HTTP methods (upper case). Empty means POST only.
+  repeated string allowed_methods = 1;
+  // Request header carrying the caller's idempotency key. Empty means
+  // "Idempotency-Key".
+  string idempotency_header = 2;
+  // How long a seen idempotency key suppresses a repeat as DEDUPLICATED.
+  // 0 means 300.
+  int32 dedup_window_seconds = 3;
+}
+
+// GithubTriggerConfig is config version 1 for trigger_type "github". Events
+// arrive through the Bossanova GitHub App installation on repo_origin_url.
+message GithubTriggerConfig {
+  // Canonical catalog event ids (TriggerEventTypeSpec.id), e.g.
+  // "pull_request.opened". At least one is required.
+  repeated string event_types = 1;
+}
+
+// TriggerLaunchSettings is what a trigger launches.
+message TriggerLaunchSettings {
+  // Prompt sent to the agent. May reference selected payload fields.
+  string prompt_template = 1;
+  // Optional skill to invoke as a slash command, without the leading "/".
+  // Empty means the prompt is sent as-is.
+  string skill_name = 2;
+  // Agent runner plugin name; empty means claude.
+  string agent_name = 3;
+  // Opaque agent model id; absent means the plugin default.
+  optional string model = 4;
+  // Opaque agent reasoning-effort level; absent means the plugin default.
+  optional string effort = 5;
+  // Branch the session's worktree is cut from; empty means the repo default.
+  string base_branch = 6;
+}
+
+// TriggerPlacementMode chooses how a trigger picks its daemon.
+enum TriggerPlacementMode {
+  // Rejected by CreateTrigger / UpdateTrigger rather than defaulted.
+  TRIGGER_PLACEMENT_MODE_UNSPECIFIED = 0;
+  // Launch only on TriggerPlacement.daemon_id. If that daemon is offline the
+  // invocation fails with decision_reason "placement_unavailable".
+  TRIGGER_PLACEMENT_MODE_SPECIFIC_DAEMON = 1;
+  // Launch on the first ready daemon in the trigger's organization that
+  // manages repo_origin_url.
+  TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE = 2;
+}
+
+// TriggerPlacement is where a trigger launches its session.
+message TriggerPlacement {
+  TriggerPlacementMode mode = 1;
+  // Required for TRIGGER_PLACEMENT_MODE_SPECIFIC_DAEMON; ignored otherwise.
+  string daemon_id = 2;
+}
+
+// TriggerConcurrencyPolicy decides what happens when an invocation arrives
+// while the trigger's previous launch is still running.
+enum TriggerConcurrencyPolicy {
+  // Treated as SKIP_IF_RUNNING, the default, so a default-constructed message
+  // is safe.
+  TRIGGER_CONCURRENCY_POLICY_UNSPECIFIED = 0;
+  // Record the invocation as SKIPPED ("prior_session_running").
+  TRIGGER_CONCURRENCY_POLICY_SKIP_IF_RUNNING = 1;
+  // Launch another session alongside the running one.
+  TRIGGER_CONCURRENCY_POLICY_ALLOW_PARALLEL = 2;
+  // Retired before release and rejected by CreateTrigger / UpdateTrigger.
+  // Kept, not reserved, because buf breaking forbids deleting an enum value.
+  TRIGGER_CONCURRENCY_POLICY_QUEUE_LATEST = 3 [deprecated = true];
+  // Stop the trigger's still-running previous session, then launch. A stop
+  // that fails is retried and never launches alongside the running session.
+  TRIGGER_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS = 4;
+}
+
+// TriggerFilterOperator compares a payload field against TriggerFilter.values.
+enum TriggerFilterOperator {
+  // Rejected by CreateTrigger / UpdateTrigger rather than defaulted.
+  TRIGGER_FILTER_OPERATOR_UNSPECIFIED = 0;
+  // Field equals values[0].
+  TRIGGER_FILTER_OPERATOR_EQUALS = 1;
+  // Field does not equal values[0].
+  TRIGGER_FILTER_OPERATOR_NOT_EQUALS = 2;
+  // Field equals any of values.
+  TRIGGER_FILTER_OPERATOR_IN = 3;
+  // Field equals none of values.
+  TRIGGER_FILTER_OPERATOR_NOT_IN = 4;
+  // Field contains values[0] as a substring.
+  TRIGGER_FILTER_OPERATOR_CONTAINS = 5;
+  // Field starts with values[0].
+  TRIGGER_FILTER_OPERATOR_PREFIX = 6;
+}
+
+// TriggerFilter is one condition an invocation's payload must satisfy.
+message TriggerFilter {
+  // Field path in catalog syntax: a TriggerFilterFieldSpec.field, or a
+  // prefix family plus a name (e.g. "header.X-Env", "body.ref").
+  string field = 1;
+  TriggerFilterOperator operator = 2;
+  // Comparison values. Single-value operators read values[0].
+  repeated string values = 3;
+}
+
+// TriggerInvocationStatus is the lifecycle of one received invocation.
+enum TriggerInvocationStatus {
+  TRIGGER_INVOCATION_STATUS_UNSPECIFIED = 0;
+  // Received and authenticated; not yet decided.
+  TRIGGER_INVOCATION_STATUS_ACCEPTED = 1;
+  // A filter did not match; nothing launches.
+  TRIGGER_INVOCATION_STATUS_FILTERED = 2;
+  // A repeat of an already-seen delivery or idempotency key.
+  TRIGGER_INVOCATION_STATUS_DEDUPLICATED = 3;
+  // Retired with TRIGGER_CONCURRENCY_POLICY_QUEUE_LATEST; never returned.
+  // Kept, not reserved, because buf breaking forbids deleting an enum value.
+  TRIGGER_INVOCATION_STATUS_QUEUED = 4 [deprecated = true];
+  // Not launched by policy (disabled, cooldown, prior session running);
+  // decision_reason says which.
+  TRIGGER_INVOCATION_STATUS_SKIPPED = 5;
+  // The launch command has been sent to a daemon.
+  TRIGGER_INVOCATION_STATUS_LAUNCHING = 6;
+  // The daemon created the session; session_id is set.
+  TRIGGER_INVOCATION_STATUS_LAUNCHED = 7;
+  // The launch could not complete; decision_reason and error_detail say why.
+  TRIGGER_INVOCATION_STATUS_FAILED = 8;
+}
+
+// TriggerInvocation is the durable record of one received request or event
+// and what bosso decided to do with it.
+message TriggerInvocation {
+  string id = 1;
+  string trigger_id = 2;
+  // Where it came from: "http" | "github" | "test".
+  string source = 3;
+  // Catalog event id for GitHub events, the HTTP method for HTTP requests, or
+  // TestTriggerRequest.sample_event_type for tests.
+  string event_type = 4;
+  TriggerInvocationStatus status = 5;
+  // Stable machine-readable code for the decision, e.g. "filter_mismatch",
+  // "cooldown", "prior_session_running", "duplicate_delivery",
+  // "placement_unavailable", "daemon_unsupported". Empty while ACCEPTED and
+  // on a plain LAUNCHED. A plain string, so clients must render an unknown
+  // code generically rather than fail.
+  string decision_reason = 6;
+  // Human-readable, actionable detail for FAILED and SKIPPED outcomes. Never
+  // contains a secret, a signature, or a raw header value.
+  string error_detail = 7;
+  // Bounded JSON object holding only the trigger's payload_fields, truncated
+  // by bosso; "" when nothing was selected.
+  string payload_excerpt = 8;
+  // Daemon the launch was placed on; empty before placement.
+  string daemon_id = 9;
+  // Session the daemon created; empty until LAUNCHED.
+  string session_id = 10;
+  // Number of launch attempts made so far.
+  int32 attempt_count = 11;
+  google.protobuf.Timestamp received_at = 12;
+  // When bosso reached a terminal decision; absent while ACCEPTED.
+  google.protobuf.Timestamp decided_at = 13;
+  // When the daemon confirmed the session; absent unless LAUNCHED.
+  google.protobuf.Timestamp launched_at = 14;
+}
+
+// TriggerInvocationSummary is the slice of the latest invocation shown next to
+// a trigger in lists.
+message TriggerInvocationSummary {
+  TriggerInvocationStatus status = 1;
+  string decision_reason = 2;
+  google.protobuf.Timestamp received_at = 3;
+  string session_id = 4;
+}
+
+// TriggerCatalog describes every trigger type bosso accepts, so clients can
+// build trigger forms without hard-coding types, events, or filter fields.
+message TriggerCatalog {
+  repeated TriggerTypeSpec types = 1;
+}
+
+// TriggerTypeSpec describes one trigger type.
+message TriggerTypeSpec {
+  // Value for Trigger.trigger_type, e.g. "http".
+  string name = 1;
+  string display_name = 2;
+  // Current config version for this type; bosso stamps it on save.
+  int32 config_version = 3;
+  // Event types the type can subscribe to; empty for types with no event
+  // selection (HTTP).
+  repeated TriggerEventTypeSpec event_types = 4;
+  // Payload fields a TriggerFilter or payload_fields entry may reference.
+  repeated TriggerFilterFieldSpec filter_fields = 5;
+}
+
+// TriggerEventTypeSpec is one subscribable event.
+message TriggerEventTypeSpec {
+  // Canonical id used in GithubTriggerConfig.event_types, e.g.
+  // "pull_request.opened".
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+}
+
+// TriggerFilterFieldSpec is one filterable payload field, or a family of them.
+message TriggerFilterFieldSpec {
+  // Field path, e.g. "event_type". For a prefix family this is the prefix
+  // including its trailing dot, e.g. "header." or "body.".
+  string field = 1;
+  string description = 2;
+  // Operators valid for this field.
+  repeated TriggerFilterOperator operators = 3;
+  // True when field is a prefix family and a filter names a member of it
+  // (e.g. "body.ref") rather than the field itself.
+  bool is_prefix = 4;
 }

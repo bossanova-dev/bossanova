@@ -202,7 +202,9 @@ func (m *reconcileMockProvider) MarkReadyForReview(context.Context, string, int)
 func (m *reconcileMockProvider) GetReviewComments(context.Context, string, int) ([]vcs.ReviewComment, error) {
 	return nil, nil
 }
-func (m *reconcileMockProvider) MergePR(context.Context, string, int, string) error { return nil }
+func (m *reconcileMockProvider) MergePR(context.Context, string, int, vcs.MergePROpts) error {
+	return nil
+}
 func (m *reconcileMockProvider) UpdatePRTitle(context.Context, string, int, string) error {
 	return nil
 }

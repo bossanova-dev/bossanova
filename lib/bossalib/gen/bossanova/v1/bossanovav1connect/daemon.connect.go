@@ -148,6 +148,9 @@ const (
 	// DaemonServiceReportChatStatusProcedure is the fully-qualified name of the DaemonService's
 	// ReportChatStatus RPC.
 	DaemonServiceReportChatStatusProcedure = "/bossanova.v1.DaemonService/ReportChatStatus"
+	// DaemonServiceSetChatPhaseProcedure is the fully-qualified name of the DaemonService's
+	// SetChatPhase RPC.
+	DaemonServiceSetChatPhaseProcedure = "/bossanova.v1.DaemonService/SetChatPhase"
 	// DaemonServiceGetChatStatusesProcedure is the fully-qualified name of the DaemonService's
 	// GetChatStatuses RPC.
 	DaemonServiceGetChatStatusesProcedure = "/bossanova.v1.DaemonService/GetChatStatuses"
@@ -212,6 +215,9 @@ const (
 	// DaemonServiceDeleteNoteProcedure is the fully-qualified name of the DaemonService's DeleteNote
 	// RPC.
 	DaemonServiceDeleteNoteProcedure = "/bossanova.v1.DaemonService/DeleteNote"
+	// DaemonServiceSyncNotesNowProcedure is the fully-qualified name of the DaemonService's
+	// SyncNotesNow RPC.
+	DaemonServiceSyncNotesNowProcedure = "/bossanova.v1.DaemonService/SyncNotesNow"
 	// DaemonServiceCreateBroadcastSubscriptionProcedure is the fully-qualified name of the
 	// DaemonService's CreateBroadcastSubscription RPC.
 	DaemonServiceCreateBroadcastSubscriptionProcedure = "/bossanova.v1.DaemonService/CreateBroadcastSubscription"
@@ -359,6 +365,7 @@ type DaemonServiceClient interface {
 	SendChatMessage(context.Context, *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
+	SetChatPhase(context.Context, *connect.Request[v1.SetChatPhaseRequest]) (*connect.Response[v1.SetChatPhaseResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
@@ -441,6 +448,13 @@ type DaemonServiceClient interface {
 	// DeleteNote removes a note and its tags by id. Idempotent: deleting an
 	// absent id succeeds.
 	DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error)
+	// SyncNotesNow nudges the note sync worker (BOS-1435) to drain the cloud-sync
+	// outbox now rather than at its next tick, and returns how many outbox rows
+	// sit in each sync state. It does not wait for the drain: the counts are read
+	// when the nudge is sent, so a second call shows what the drain changed. A
+	// daemon that is not connected to Bosso runs no worker; it still answers with
+	// the counts and reports is_worker_configured = false.
+	SyncNotesNow(context.Context, *connect.Request[v1.SyncNotesNowRequest]) (*connect.Response[v1.SyncNotesNowResponse], error)
 	// CreateBroadcastSubscription registers a STANDING rule: when the owning
 	// session reaches an outcome matching trigger_event, the daemon broadcasts
 	// the registered message to the audience the selector resolves — resolved at
@@ -773,6 +787,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ReportChatStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		setChatPhase: connect.NewClient[v1.SetChatPhaseRequest, v1.SetChatPhaseResponse](
+			httpClient,
+			baseURL+DaemonServiceSetChatPhaseProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SetChatPhase")),
+			connect.WithClientOptions(opts...),
+		),
 		getChatStatuses: connect.NewClient[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse](
 			httpClient,
 			baseURL+DaemonServiceGetChatStatusesProcedure,
@@ -903,6 +923,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceDeleteNoteProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteNote")),
+			connect.WithClientOptions(opts...),
+		),
+		syncNotesNow: connect.NewClient[v1.SyncNotesNowRequest, v1.SyncNotesNowResponse](
+			httpClient,
+			baseURL+DaemonServiceSyncNotesNowProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SyncNotesNow")),
 			connect.WithClientOptions(opts...),
 		),
 		createBroadcastSubscription: connect.NewClient[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse](
@@ -1051,6 +1077,7 @@ type daemonServiceClient struct {
 	getChatTranscript           *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
 	sendChatMessage             *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
 	reportChatStatus            *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
+	setChatPhase                *connect.Client[v1.SetChatPhaseRequest, v1.SetChatPhaseResponse]
 	getChatStatuses             *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
 	getSessionStatuses          *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
 	deliverVCSEvent             *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
@@ -1073,6 +1100,7 @@ type daemonServiceClient struct {
 	listNotes                   *connect.Client[v1.ListNotesRequest, v1.ListNotesResponse]
 	updateNote                  *connect.Client[v1.UpdateNoteRequest, v1.UpdateNoteResponse]
 	deleteNote                  *connect.Client[v1.DeleteNoteRequest, v1.DeleteNoteResponse]
+	syncNotesNow                *connect.Client[v1.SyncNotesNowRequest, v1.SyncNotesNowResponse]
 	createBroadcastSubscription *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
 	listBroadcastSubscriptions  *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
 	deleteBroadcastSubscription *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
@@ -1287,6 +1315,11 @@ func (c *daemonServiceClient) ReportChatStatus(ctx context.Context, req *connect
 	return c.reportChatStatus.CallUnary(ctx, req)
 }
 
+// SetChatPhase calls bossanova.v1.DaemonService.SetChatPhase.
+func (c *daemonServiceClient) SetChatPhase(ctx context.Context, req *connect.Request[v1.SetChatPhaseRequest]) (*connect.Response[v1.SetChatPhaseResponse], error) {
+	return c.setChatPhase.CallUnary(ctx, req)
+}
+
 // GetChatStatuses calls bossanova.v1.DaemonService.GetChatStatuses.
 func (c *daemonServiceClient) GetChatStatuses(ctx context.Context, req *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error) {
 	return c.getChatStatuses.CallUnary(ctx, req)
@@ -1395,6 +1428,11 @@ func (c *daemonServiceClient) UpdateNote(ctx context.Context, req *connect.Reque
 // DeleteNote calls bossanova.v1.DaemonService.DeleteNote.
 func (c *daemonServiceClient) DeleteNote(ctx context.Context, req *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error) {
 	return c.deleteNote.CallUnary(ctx, req)
+}
+
+// SyncNotesNow calls bossanova.v1.DaemonService.SyncNotesNow.
+func (c *daemonServiceClient) SyncNotesNow(ctx context.Context, req *connect.Request[v1.SyncNotesNowRequest]) (*connect.Response[v1.SyncNotesNowResponse], error) {
+	return c.syncNotesNow.CallUnary(ctx, req)
 }
 
 // CreateBroadcastSubscription calls bossanova.v1.DaemonService.CreateBroadcastSubscription.
@@ -1576,6 +1614,7 @@ type DaemonServiceHandler interface {
 	SendChatMessage(context.Context, *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
+	SetChatPhase(context.Context, *connect.Request[v1.SetChatPhaseRequest]) (*connect.Response[v1.SetChatPhaseResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
@@ -1658,6 +1697,13 @@ type DaemonServiceHandler interface {
 	// DeleteNote removes a note and its tags by id. Idempotent: deleting an
 	// absent id succeeds.
 	DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error)
+	// SyncNotesNow nudges the note sync worker (BOS-1435) to drain the cloud-sync
+	// outbox now rather than at its next tick, and returns how many outbox rows
+	// sit in each sync state. It does not wait for the drain: the counts are read
+	// when the nudge is sent, so a second call shows what the drain changed. A
+	// daemon that is not connected to Bosso runs no worker; it still answers with
+	// the counts and reports is_worker_configured = false.
+	SyncNotesNow(context.Context, *connect.Request[v1.SyncNotesNowRequest]) (*connect.Response[v1.SyncNotesNowResponse], error)
 	// CreateBroadcastSubscription registers a STANDING rule: when the owning
 	// session reaches an outcome matching trigger_event, the daemon broadcasts
 	// the registered message to the audience the selector resolves — resolved at
@@ -1986,6 +2032,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ReportChatStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceSetChatPhaseHandler := connect.NewUnaryHandler(
+		DaemonServiceSetChatPhaseProcedure,
+		svc.SetChatPhase,
+		connect.WithSchema(daemonServiceMethods.ByName("SetChatPhase")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetChatStatusesHandler := connect.NewUnaryHandler(
 		DaemonServiceGetChatStatusesProcedure,
 		svc.GetChatStatuses,
@@ -2116,6 +2168,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceDeleteNoteProcedure,
 		svc.DeleteNote,
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSyncNotesNowHandler := connect.NewUnaryHandler(
+		DaemonServiceSyncNotesNowProcedure,
+		svc.SyncNotesNow,
+		connect.WithSchema(daemonServiceMethods.ByName("SyncNotesNow")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceCreateBroadcastSubscriptionHandler := connect.NewUnaryHandler(
@@ -2300,6 +2358,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceSendChatMessageHandler.ServeHTTP(w, r)
 		case DaemonServiceReportChatStatusProcedure:
 			daemonServiceReportChatStatusHandler.ServeHTTP(w, r)
+		case DaemonServiceSetChatPhaseProcedure:
+			daemonServiceSetChatPhaseHandler.ServeHTTP(w, r)
 		case DaemonServiceGetChatStatusesProcedure:
 			daemonServiceGetChatStatusesHandler.ServeHTTP(w, r)
 		case DaemonServiceGetSessionStatusesProcedure:
@@ -2344,6 +2404,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateNoteHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteNoteProcedure:
 			daemonServiceDeleteNoteHandler.ServeHTTP(w, r)
+		case DaemonServiceSyncNotesNowProcedure:
+			daemonServiceSyncNotesNowHandler.ServeHTTP(w, r)
 		case DaemonServiceCreateBroadcastSubscriptionProcedure:
 			daemonServiceCreateBroadcastSubscriptionHandler.ServeHTTP(w, r)
 		case DaemonServiceListBroadcastSubscriptionsProcedure:
@@ -2543,6 +2605,10 @@ func (UnimplementedDaemonServiceHandler) ReportChatStatus(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ReportChatStatus is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) SetChatPhase(context.Context, *connect.Request[v1.SetChatPhaseRequest]) (*connect.Response[v1.SetChatPhaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SetChatPhase is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetChatStatuses is not implemented"))
 }
@@ -2629,6 +2695,10 @@ func (UnimplementedDaemonServiceHandler) UpdateNote(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) DeleteNote(context.Context, *connect.Request[v1.DeleteNoteRequest]) (*connect.Response[v1.DeleteNoteResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteNote is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SyncNotesNow(context.Context, *connect.Request[v1.SyncNotesNowRequest]) (*connect.Response[v1.SyncNotesNowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SyncNotesNow is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) CreateBroadcastSubscription(context.Context, *connect.Request[v1.CreateBroadcastSubscriptionRequest]) (*connect.Response[v1.CreateBroadcastSubscriptionResponse], error) {

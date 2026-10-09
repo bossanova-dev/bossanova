@@ -90,7 +90,7 @@ func (s *stubSessionSettingsClient) RetrySession(context.Context, string) (*pb.S
 func (s *stubSessionSettingsClient) CloseSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) MergeSession(context.Context, string) (*pb.Session, string, error) {
+func (s *stubSessionSettingsClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RemoveSession(context.Context, string) error { panic("unused") }
@@ -100,7 +100,7 @@ func (s *stubSessionSettingsClient) LinkSessionPR(context.Context, string, strin
 func (s *stubSessionSettingsClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
+func (s *stubSessionSettingsClient) ArchiveSession(context.Context, *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
@@ -185,6 +185,9 @@ func (s *stubSessionSettingsClient) UpdateNote(context.Context, string, *pb.Upda
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) DeleteNote(context.Context, string, string) error {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) SyncNotesNow(context.Context) (*pb.SyncNotesNowResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
@@ -573,5 +576,9 @@ func (s *stubSessionSettingsClient) ListSessionsWithReadFailures(ctx context.Con
 // MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
 // of a reorder test, so a call is a bug in the view under test.
 func (s *stubSessionSettingsClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
+}
+
+func (s *stubSessionSettingsClient) SetChatPhase(context.Context, string, string, string) error {
 	panic("unused")
 }

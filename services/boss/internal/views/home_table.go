@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -16,6 +17,8 @@ import (
 // Declared here rather than inlined at the one call site so the two cannot
 // drift: widen the block's padding and this is the single number to follow.
 const homeTableBlockPadding = 1
+
+const homeStatusWidth = 16
 
 // tableAvailWidth returns the rendered columns the session table may occupy —
 // the terminal width less renderSessionTable's block padding on either side.
@@ -77,6 +80,15 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
+	if sess != nil && sess.GetDisplayLabel() == statusWorking {
+		if phase := h.daemonPhases[sess.GetId()]; phase != "" {
+			label := phase
+			if sess.GetDisplaySpinner() {
+				label = h.spinner.View() + label
+			}
+			return styleForIntent(sess.GetDisplayIntent()).Render(ansi.Truncate(label, homeStatusWidth, "…"))
+		}
+	}
 	return renderDisplayStatus(sess, h.spinner)
 }
 
@@ -133,7 +145,7 @@ func (h *HomeModel) buildTableRows() {
 		if sessionHasEndpointRow(sess) {
 			nameWidthLabels = append(nameWidthLabels, sessionEndpointLabels(sess))
 		}
-		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), sess.GetIsWaitingDemoted()); waitingHint != "" {
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); waitingHint != "" {
 			nameWidthLabels = append(nameWidthLabels, waitingHint)
 		}
 		nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
@@ -192,7 +204,7 @@ func (h *HomeModel) buildTableRows() {
 		{col: table.Column{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep}, priority: 3, minWidth: 6},
 		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep}, priority: 0, minWidth: homeNameMinWidth(h.width)},
 		{col: table.Column{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep}, priority: 2, minWidth: 3},
-		{col: table.Column{Title: "STATUS", Width: 16 + tableColumnSep}, priority: 1, minWidth: 8},
+		{col: table.Column{Title: "STATUS", Width: homeStatusWidth + tableColumnSep}, priority: 1, minWidth: 8},
 	}
 
 	fitted := fitColumnsIndexed(rcols, h.tableAvailWidth())
@@ -264,7 +276,7 @@ func (h *HomeModel) buildTableRows() {
 		// danger-styled warning block. Same emit-and-count discipline as the
 		// endpoint row: the predicate here is waitingHintLine != "", which is
 		// exactly what sessionSubRowCount counts.
-		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), sess.GetIsWaitingDemoted()); waitingHint != "" {
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); waitingHint != "" {
 			rows = append(rows, project(table.Row{"", "", "", styleStatusInfo.Render(waitingHint), "", ""}))
 		}
 		// Warning sub-rows. The style is resolved PER HINT through the shared

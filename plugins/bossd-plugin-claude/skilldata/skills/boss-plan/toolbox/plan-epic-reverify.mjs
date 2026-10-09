@@ -44,8 +44,8 @@ const asArray = (value) => (Array.isArray(value) ? value : [])
 
 // The label roles whose presence on the epic PARENT is a failure. `agentPlan` is
 // optional (null ⇒ unmapped ⇒ forbids nothing); the other two are required roles.
-const PARENT_FORBIDDEN_LABEL_ROLES = ['agentFriendly', 'needsHuman', 'agentPlan']
-const REQUIRED_REVERIFY_ROLES = ['planned', 'unplanned', 'epic', 'agentFriendly', 'needsHuman']
+const PARENT_FORBIDDEN_LABEL_ROLES = ['agentBuild', 'needsHuman', 'agentPlan']
+const REQUIRED_REVERIFY_ROLES = ['planned', 'unplanned', 'epic', 'agentBuild', 'needsHuman']
 const OPTIONAL_REVERIFY_ROLES = ['agentPlan', 'agentQuestion', 'inProgress', 'inReview']
 
 // The `class` vocabulary of `epicReverifyVerdict`, exported so a caller maps a class to its exit
@@ -72,7 +72,7 @@ const entriesOf = (value) => (Array.isArray(value?.nodes) ? value.nodes : asArra
  * the epic that exists. Pure and never throws; every failed conjunct is named, not the first.
  *
  * Input: `{parentId, childIds, parent, children, spec, roles, config, parentOverview, childBodies}`.
- * `roles` holds the RESOLVED display names (`planned`, `unplanned`, `epic`, `agentFriendly`,
+ * `roles` holds the RESOLVED display names (`planned`, `unplanned`, `epic`, `agentBuild`,
  * `needsHuman` required; `agentPlan`, `agentQuestion`, `inProgress`, `inReview` may be null). Every
  * `description` it judges must come from a code-written stored read-back, never a retyped payload —
  * `childBodies[<childId>]` is `{intended, stored}`, `parentOverview` is `{intended, stored}`.
@@ -409,17 +409,17 @@ function judgeChildShape({ m, specEntry, role, block, note }) {
   }
 
   const labels = readLabels(issue)
-  const friendly = Boolean(role.agentFriendly) && labels.includes(role.agentFriendly)
+  const friendly = Boolean(role.agentBuild) && labels.includes(role.agentBuild)
   const human = Boolean(role.needsHuman) && labels.includes(role.needsHuman)
-  if (role.agentFriendly && role.needsHuman && friendly === human) {
+  if (role.agentBuild && role.needsHuman && friendly === human) {
     block(
       'child-exposure-label',
-      `${key}: carries ${friendly ? 'both' : 'neither'} of "${role.agentFriendly}"/"${role.needsHuman}" — exactly one is required`,
+      `${key}: carries ${friendly ? 'both' : 'neither'} of "${role.agentBuild}"/"${role.needsHuman}" — exactly one is required`,
     )
-  } else if (specEntry && friendly !== (specEntry.agentFriendly !== false)) {
+  } else if (specEntry && friendly !== (specEntry.agentBuild !== false)) {
     block(
       'child-exposure-mismatch',
-      `${key}: exposed ${friendly ? role.agentFriendly : role.needsHuman} but its spec entry decided agentFriendly: ${specEntry.agentFriendly !== false}`,
+      `${key}: exposed ${friendly ? role.agentBuild : role.needsHuman} but its spec entry decided agentBuild: ${specEntry.agentBuild !== false}`,
     )
   }
   if (role.agentQuestion) {

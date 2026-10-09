@@ -10,7 +10,15 @@ import (
 
 // DisplayEntry is a cached display status for a single session.
 type DisplayEntry struct {
-	Status              vcs.DisplayStatus
+	Status vcs.DisplayStatus
+	// HasBuildReceipt is refreshed on each poll; it is never latched across heads.
+	HasBuildReceipt bool
+	// ReceiptHeadSHA is deliberately latched: the last head a Set saw carrying
+	// a build receipt. Unlike HasBuildReceipt it survives a Set for a new,
+	// unreceipted head, so whichever tracker writer sees a push first cannot
+	// erase the receipted ancestor the display poller carries the receipt from
+	// (BOS-1452). Daemon-internal and in-memory only.
+	ReceiptHeadSHA      string
 	HasFailures         bool
 	HasChangesRequested bool
 	ChangesRequestedBy  []string
@@ -33,7 +41,11 @@ type DisplayEntry struct {
 	// every poll via Set — unlike IsRepairing, it is not preserved across a
 	// Set that omits it, because each poll carries the authoritative value.
 	Mergeable *bool
-	UpdatedAt time.Time
+	// VerifyReason is the verify stage's park reason, set only when Status is
+	// DisplayStatusNeedsHuman (and possibly empty there). Like Mergeable it is
+	// refreshed by every poll via Set, not preserved.
+	VerifyReason string
+	UpdatedAt    time.Time
 }
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.
@@ -81,8 +93,21 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	if existed {
 		archiving = oldEntry.Archiving
 	}
+	var receiptHeadSHA string
+	if existed {
+		receiptHeadSHA = oldEntry.ReceiptHeadSHA
+	}
+	if info.HasBuildReceipt && info.HeadSHA != "" {
+		receiptHeadSHA = info.HeadSHA
+	} else if info.BuildReceiptSeen && info.HeadSHA != "" && info.HeadSHA != receiptHeadSHA {
+		// A pending or failed boss/build on a newer head supersedes the
+		// latched success: carrying from it would skip that head's verdict.
+		receiptHeadSHA = ""
+	}
 	newEntry := &DisplayEntry{
 		Status:              info.Status,
+		HasBuildReceipt:     info.HasBuildReceipt,
+		ReceiptHeadSHA:      receiptHeadSHA,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
 		ChangesRequestedBy:  info.ChangesRequestedBy,
@@ -92,6 +117,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		Archiving:           archiving,
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
+		VerifyReason:        info.VerifyReason,
 		UpdatedAt:           time.Now(),
 	}
 	t.entries[sessionID] = newEntry
@@ -120,6 +146,8 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 	}
 	return &DisplayEntry{
 		Status:              e.Status,
+		HasBuildReceipt:     e.HasBuildReceipt,
+		ReceiptHeadSHA:      e.ReceiptHeadSHA,
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
 		ChangesRequestedBy:  e.ChangesRequestedBy,
@@ -129,6 +157,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		Archiving:           e.Archiving,
 		HeadSHA:             e.HeadSHA,
 		Mergeable:           e.Mergeable,
+		VerifyReason:        e.VerifyReason,
 		UpdatedAt:           e.UpdatedAt,
 	}
 }
@@ -145,6 +174,8 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 		}
 		result[id] = &DisplayEntry{
 			Status:              e.Status,
+			HasBuildReceipt:     e.HasBuildReceipt,
+			ReceiptHeadSHA:      e.ReceiptHeadSHA,
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
 			ChangesRequestedBy:  e.ChangesRequestedBy,
@@ -154,6 +185,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			Archiving:           e.Archiving,
 			HeadSHA:             e.HeadSHA,
 			Mergeable:           e.Mergeable,
+			VerifyReason:        e.VerifyReason,
 			UpdatedAt:           e.UpdatedAt,
 		}
 	}

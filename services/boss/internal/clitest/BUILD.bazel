@@ -23,6 +23,7 @@ go_test(
         "chats_test.go",
         "cron_test.go",
         "daemon_install_test.go",
+        "init_test.go",
         "json_reads_test.go",
         "ls_agent_test.go",
         "ls_test.go",

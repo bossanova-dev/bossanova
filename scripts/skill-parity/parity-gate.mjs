@@ -38,7 +38,7 @@ const SNAPSHOT_SKILL_LABELS = {
   'dag-schedule.snapshot.json': 'boss-epic',
 }
 
-/** The authored dogfood extensions each generalized core must discover. */
+/** Repo-authored extensions and published notes built-ins each core must discover. */
 const EXPECTED_EXTENSIONS = [
   {
     core: 'boss-review',
@@ -96,6 +96,7 @@ const EXPECTED_EXTENSIONS = [
     role: 'notes',
     skill: 'boss-build',
     names: ['boss-build-notes'],
+    builtin: true,
   },
   {
     core: 'boss-build',
@@ -114,24 +115,28 @@ const EXPECTED_EXTENSIONS = [
     role: 'notes',
     skill: 'boss-plan',
     names: ['boss-plan-notes'],
+    builtin: true,
   },
   {
     core: 'boss-review',
     role: 'notes',
     skill: 'boss-review',
     names: ['boss-review-notes'],
+    builtin: true,
   },
   {
     core: 'boss-epic',
     role: 'notes',
     skill: 'boss-epic',
     names: ['boss-epic-notes'],
+    builtin: true,
   },
   {
     core: 'boss-repair',
     role: 'notes',
     skill: 'boss-repair',
     names: ['boss-repair-notes'],
+    builtin: true,
   },
 ]
 
@@ -218,7 +223,21 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
   for (const spec of EXPECTED_EXTENSIONS) {
     const { core, role, skill } = spec
     const expected = resolveExpectedNames(spec, root)
-    const { extensions, skipped } = discoverExtensions({ core, role, root })
+    const { extensions, skipped } = discoverExtensions({
+      core,
+      role,
+      root,
+      ...(spec.builtin
+        ? {
+            builtinDir: join(
+              REPO_ROOT,
+              'services/boss/internal/skillinstall/skills',
+              core,
+              'extensions',
+            ),
+          }
+        : {}),
+    })
     // In THIS repo's curated dogfood tree, every skip is drift. There is no exemption, and the
     // absence of one is deliberate — see the `no x-boss-extension marker still reports DRIFT` case
     // in parity-gate.test.mjs, which pins it.

@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-15**. The engineering procedure for adding a new
+The current version is **2026-09-16**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -512,7 +512,7 @@ to choose a severity, so clients pinned to 2026-09-13 or older are
 down-converted back to that pair rather than being shown a token they were never
 built to read.
 
-### 2026-09-15 — Sessions honour a manual list order (Current)
+### 2026-09-15 — Sessions honour a manual list order
 
 Session listings are ordered by the manual list rank a user sets with the
 reorder shortcut: a ranked session sorts before every unranked one, and two
@@ -559,6 +559,91 @@ Clients pinned to 2026-09-14 or older are served the previous `waiting` /
 PR label replaced a waiting one; the down-convert restores the label rather
 than clearing that mark, for the same reason the list ordering is re-sorted
 rather than stripped.
+
+### 2026-09-16 — Verifying, Needs human and Ready statuses (Current)
+
+`Session.display_status` and `Session.merge_block.display_status` serve two new
+values, `DISPLAY_STATUS_VERIFYING` and `DISPLAY_STATUS_NEEDS_HUMAN`, with the
+matching `verifying` and `needs human` composite on `display_label`,
+`display_intent` and `display_spinner`. Both come from the `boss/verify` commit
+status the verify stage writes on a pull request head:
+
+- `verifying` (info, spinner) means ordinary CI has settled and a verification
+  run has claimed the head, or the head is waiting for one.
+- `needs human` (warning, no spinner) means the verify stage parked the head for
+  a person. The session also gets an `ATTENTION_REASON_AWAITING_HUMAN_INPUT`
+  attention whose summary carries the park reason, unless it already has
+  another attention.
+
+Before this version a pending `boss/verify` counted as an ordinary pending
+check, so such a session read `DISPLAY_STATUS_CHECKING` / `checking` for as long
+as verify held the head, and a parked head never surfaced its reason. Failing
+CI, a conflict and still-running ordinary CI keep their existing statuses. Both
+new values report `GATE_PENDING` on `merge_block.gate`, the gate `checking`
+reported.
+
+Clients pinned to 2026-09-15 or older receive `DISPLAY_STATUS_CHECKING`, the
+`checking` composite, Checking's merge-block detail, and no verify-park
+attention, on every session-bearing response including the streamed
+`ProxyCreateSession` created message.
+
+The daemon also stops treating a pending `boss/verify` as unsettled CI when it
+decides a session's checks have passed, so the matching session transition and
+`checks_passed` callbacks arrive while verify holds the head. That is timing,
+not a response shape, and is the same for every version.
+
+A settled session with a successful `boss/build` receipt on its current PR head
+serves the composite `✓ ready` (success, no spinner). Ready replaces waiting or
+the green PR composite; live work, transient operations, failures, Verifying
+and Needs human retain precedence. `Session.display_status` and merge gating
+keep their existing PR-derived meaning. A new push clears Ready until the new
+head receives a receipt.
+
+The additive transport facts `Session.has_build_receipt` and
+`Session.is_ready_over_waiting` are never persisted. Clients pinned to
+2026-09-15 or older receive the preceding composite on session-bearing unary
+responses. The waiting inverse mark is stamped by list recomputation; a
+single-session read without that mark restores the underlying green PR label.
+
+## Additive changes
+
+An additive change adds procedures, messages or fields and leaves every
+existing procedure behaving as before, so it ships without a new version and
+every version sees it.
+
+### Organization notes procedures
+
+The OrchestratorService declares seven new procedures for notes that the cloud
+stores per organization: `CreateOrganizationNote`, `GetOrganizationNote`,
+`ListOrganizationNotes`, `UpdateOrganizationNote`, `DeleteOrganizationNote`,
+`GetOrganizationNoteQuota` and `SyncDaemonNotes`, with the `OrganizationNote`,
+`OrganizationNoteQuota` and `OrganizationNoteQuotaExceeded` messages and the
+`OrganizationNoteOrigin` and `NoteSyncOutcome` enums. The `ProxyCreateNote`
+family that relays note calls to your daemons is unchanged.
+
+The six user procedures behave the same on every version:
+
+- Each requires a signed-in user who is a member of `organization_id`, and that
+  organization must hold the paid cloud entitlement. A non-member gets
+  `PERMISSION_DENIED` before the request is validated.
+- Any member reads and lists the organization's unexpired notes. Only a note's
+  author or an organization owner updates or deletes it. `UpdateOrganizationNote`
+  answers `FAILED_PRECONDITION` for a note synced from a daemon.
+- `DeleteOrganizationNote` removes an API-written note and tombstones a synced
+  one, so its daemon cannot sync it back.
+- A create, or an update that changes the body or tags, spends one unit of the
+  organization's hourly quota: 1,000 writes per fixed UTC clock hour by default.
+  Reads, deletes, unchanged updates and idempotent create retries spend none. A
+  write over the quota answers `RESOURCE_EXHAUSTED` with an
+  `OrganizationNoteQuotaExceeded` detail carrying the usage and reset time.
+- Every note expires 90 days after it was created. Edits never extend it, and an
+  expired note reads as `NOT_FOUND`.
+
+`SyncDaemonNotes` is for daemons only. It accepts at most 50 items, and answers
+each with a per-item `NoteSyncOutcome` (synced, stale, rate limited, not
+entitled, organization refused, expired, rejected or suppressed), so one bad
+item never fails the batch. Resending a version comes back stale and spends no
+quota.
 
 ## See also
 

@@ -9,6 +9,16 @@ export const TOOL_SOURCE_FILES = [
   path.join('lib', 'bossalib', 'bossmcp', 'tools_destructive.go'),
 ]
 
+// The hosted-only tool families. They register only on the hosted Bossanova
+// Cloud MCP endpoint (bossmcp Options.IncludeHostedTools), so they sit outside
+// TOOL_SOURCE_FILES: the local catalog and every doc that states its size count
+// the default surface alone. A caller opts in with { includeHosted: true } when
+// a hosted tool is a legitimate answer, as a docs `mcp` prop can be.
+export const HOSTED_TOOL_SOURCE_FILES = [
+  path.join('lib', 'bossalib', 'bossmcp', 'tools_triggers.go'),
+  path.join('lib', 'bossalib', 'bossmcp', 'tools_session_webhooks.go'),
+]
+
 // MCP tool names are snake_case. Used to tell a tool name apart from the other
 // string literals sitting beside it (descriptions, display names, ids).
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
@@ -36,9 +46,16 @@ export function parseToolNames(goSource) {
   return names
 }
 
-export function readRegisteredToolNames(repoRoot, missing = []) {
+// Every tool name the default surface registers, plus the hosted-only tier when
+// includeHosted is set. A missing source file is pushed to `missing` (hosted
+// ones included) so a caller can fail loudly rather than check against a
+// silently shrunken set.
+export function readRegisteredToolNames(repoRoot, missing = [], { includeHosted = false } = {}) {
+  const sources = includeHosted
+    ? [...TOOL_SOURCE_FILES, ...HOSTED_TOOL_SOURCE_FILES]
+    : TOOL_SOURCE_FILES
   const registered = new Set()
-  for (const relativeSource of TOOL_SOURCE_FILES) {
+  for (const relativeSource of sources) {
     const sourcePath = path.join(repoRoot, relativeSource)
     if (!fs.existsSync(sourcePath)) {
       missing.push(relativeSource)

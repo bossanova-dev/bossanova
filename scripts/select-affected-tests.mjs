@@ -508,6 +508,14 @@ export function selectTargets(files) {
       continue
     }
 
+    // The warehouse growth contract reads marketing list prices. Not terminal:
+    // test-scripts already checks price parity, and test-web owns the app tests.
+    // Mirrors test-warehouse.yml's pricing.ts input, before isWebPath claims it.
+    if (file === 'services/marketing/src/lib/pricing.ts') {
+      selectWholeTarget(selections, 'test-warehouse')
+      selectedPrimaryTarget = true
+    }
+
     // The TS workspace (web, marketing, ui-tokens) is tested via turbo behind
     // `make test-web`. lib/ui-tokens is an internal dependency of both apps, and
     // the lockfile / turbo.json are workspace-wide inputs, so any of them route
@@ -608,6 +616,14 @@ export function selectTargets(files) {
     // Without this rule a workspace Go bump runs green locally and on every PR, and fails
     // at release time -- the 1.25 -> 1.26 drift this gate was written for. No `continue`:
     // go.work must still reach its graph-wide Go selection.
+    // Root Makefile edits must run the script gates that read its targets. Keep
+    // smoke explicitly: adding scripts must not suppress the previous fallback.
+    if (file === 'Makefile') {
+      selectWholeTarget(selections, 'test-scripts')
+      selectWholeTarget(selections, 'test-smoke')
+      selectedPrimaryTarget = true
+    }
+
     if (file === 'go.work' || /^services\/[^/]+\/Dockerfile\.k8s$/.test(file)) {
       selectWholeTarget(selections, 'test-scripts')
       // go.work matched no rule before this one, so it fell through to the empty-selection

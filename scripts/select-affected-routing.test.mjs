@@ -89,11 +89,6 @@ export const workflowRouteExemptions = [
   },
   {
     workflow: 'test-scripts.yml',
-    pattern: 'Makefile',
-    reason: 'Makefile is a graph-wide Bazel trigger; CI scripts coverage is a superset',
-  },
-  {
-    workflow: 'test-scripts.yml',
     pattern: '**/go.mod',
     reason: 'CI is deliberately broad; local mirroring would run scripts on every module edit',
   },

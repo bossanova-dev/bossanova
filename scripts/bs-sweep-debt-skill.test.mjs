@@ -4,10 +4,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   parseDetectorFindings,
   candidateKey,
+  classifyCandidate,
+  complexityAxis,
   validateSurveyCandidate,
   runCli as runSurveyCli,
   DEBT_SURVEY_USAGE,
@@ -15,6 +19,79 @@ import {
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const read = (p) => fs.readFileSync(path.join(rootDir, p), 'utf8')
+
+test('dupl extraction retains every clone in multiline groups and legacy pairs', () => {
+  const candidates = parseDetectorFindings(
+    [
+      '$ make debt-dupl-bosso',
+      'cd services/bosso && go run github.com/mibk/dupl@latest -t 150 .',
+      'found 2 clones:',
+      '  internal/live/ownership.go:858,891',
+      '  internal/live/ownership.go:925,956',
+      'found 3 clones:',
+      '  internal/server/billing_test.go:3552,3574',
+      '  internal/server/billing_test.go:3579,3601',
+      '  internal/server/billing_test.go:3663,3685',
+      'internal/server/proxy_cross_org_cron.go:89,115 internal/server/proxy_cross_org_repos.go:148,185',
+      'Found total 3 clone groups.',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    candidates.map((c) => [c.path, c.evidence]),
+    [
+      [
+        'services/bosso/internal/live/ownership.go',
+        'services/bosso/internal/live/ownership.go:925,956',
+      ],
+      [
+        'services/bosso/internal/server/billing_test.go',
+        'services/bosso/internal/server/billing_test.go:3579,3601',
+      ],
+      [
+        'services/bosso/internal/server/billing_test.go',
+        'services/bosso/internal/server/billing_test.go:3663,3685',
+      ],
+      [
+        'services/bosso/internal/server/proxy_cross_org_cron.go',
+        'services/bosso/internal/server/proxy_cross_org_repos.go',
+      ],
+    ],
+  )
+  assert.equal(new Set(candidates.map(candidateKey)).size, 4)
+  for (const candidate of candidates) {
+    assert.equal(candidate.category, 'duplication')
+    assert.equal(candidate.module, 'bosso')
+    assert.equal(candidate.confirmationCommand, 'make debt-dupl-bosso')
+  }
+})
+
+test('dupl extraction resets clone groups at headers and detector commands', () => {
+  const candidates = parseDetectorFindings(
+    [
+      '$ make debt-dupl-bosso',
+      'found 2 clones:',
+      '  internal/live/ownership.go:858,891',
+      'found 2 clones:',
+      '  internal/server/proxy_cross_org_cron.go:89,115',
+      '  internal/server/proxy_cross_org_repos.go:148,185',
+      '$ make debt-dupl-bossd',
+      '  internal/server/other.go:1,10',
+      'found 2 clones:',
+      '  internal/server/one.go:11,20',
+      '  internal/server/two.go:21,30',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    candidates.map((c) => [c.path, c.evidence]),
+    [
+      [
+        'services/bosso/internal/server/proxy_cross_org_cron.go',
+        'services/bosso/internal/server/proxy_cross_org_repos.go:148,185',
+      ],
+      ['services/bossd/internal/server/one.go', 'services/bossd/internal/server/two.go:21,30'],
+    ],
+  )
+})
 
 // ---------------------------------------------------------------------------
 // Loss parity — the cheap-tier survey extraction drops no detector finding.
@@ -62,10 +139,7 @@ test('survey candidates carry module attribution, repo-root path, and confirmati
   const filesize = surfaced.find((c) => c.path === 'services/boss/internal/views/home.go')
   assert.equal(filesize.module, 'boss')
   assert.equal(filesize.confirmationCommand, 'make debt-filesize-boss')
-  assert.equal(
-    filesize.excluded,
-    'file-axis decomposition candidate: 1778 lines exceeds 2x limit 800',
-  )
+  assert.equal(filesize.excluded, 'decomposition: 1778 lines exceeds 2x limit 800')
 })
 
 test('survey candidate validation accepts only existing paths inside the declared module', () => {
@@ -226,4 +300,229 @@ test('survey validate-candidates still succeeds and prints JSON', () => {
   })
   assert.equal(code, 0)
   assert.deepEqual(JSON.parse(out), [])
+})
+
+test('extraction normalizes real module-local paths without weakening path rejection', () => {
+  const candidates = parseDetectorFindings(
+    [
+      '$ make debt-cyclo-bossd',
+      '287 main run cmd/main.go:1326:1',
+      '$ make debt-filesize-bossd',
+      'cmd/main.go:1326: file length is 1200 lines, which exceeds the limit of 800',
+      '$ pnpm -C services/web knip',
+      'Unused files (1)',
+      'src/legacy.ts',
+      '$ make debt-deadcode-bossalib',
+      'lib/bossalib/x.go:1:1: unreachable func: helperUnused',
+      '$ make debt-cyclo-bossd',
+      '20 p escape ../outside.go:1:1',
+      '20 p wrong services/bosso/main.go:1:1',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    candidates.map((c) => c.path),
+    [
+      'services/bossd/cmd/main.go',
+      'services/bossd/cmd/main.go',
+      'services/web/src/legacy.ts',
+      'lib/bossalib/x.go',
+      '../outside.go',
+      'services/bosso/main.go',
+    ],
+  )
+  assert.equal(candidates[0].area, 'services/bossd')
+  assert.equal(candidates[0].findingLine, '287 main run cmd/main.go:1326:1')
+  assert.equal(validateSurveyCandidate(candidates[0]).ok, true)
+  assert.equal(validateSurveyCandidate(candidates[4]).reason, 'path must be repo-root-relative')
+})
+
+test('Go exported dead-code is excluded conservatively; knip exports remain eligible', () => {
+  for (const symbol of ['ExportedFunc', '(*Manager).Transition', 'hidden.Transition']) {
+    assert.match(
+      classifyCandidate({ category: 'dead-code', path: 'lib/bossalib/x.go', evidence: symbol })
+        .excluded,
+      /^exported-symbol:/,
+    )
+  }
+  for (const symbol of ['helperUnused', '(*Manager).transition']) {
+    assert.equal(
+      classifyCandidate({ category: 'dead-code', path: 'lib/bossalib/x.go', evidence: symbol })
+        .excluded,
+      undefined,
+    )
+  }
+  assert.equal(
+    classifyCandidate({
+      category: 'dead-code',
+      path: 'services/web/x.ts',
+      evidence: 'ExportedFunc',
+    }).excluded,
+    undefined,
+  )
+})
+
+test('stdlib vuln scope and fixed version survive extraction without excluding module vulns', () => {
+  const candidates = parseDetectorFindings(
+    read('scripts/fixtures/bs-sweep-debt/detector-output.txt'),
+  )
+  const stdlib = candidates.find((c) => c.vulnScope === 'stdlib')
+  assert.ok(stdlib)
+  assert.match(stdlib.evidence, /Fixed in: go1/)
+  assert.match(classifyCandidate(stdlib).excluded, /^toolchain-only:/)
+  const module = candidates.find((c) => c.evidence.startsWith('GO-2023-1571'))
+  assert.equal(module.vulnScope, 'module')
+  assert.equal(classifyCandidate(module).excluded, undefined)
+})
+
+test('path-scoped intentional literals exclude only matching portability findings and warn when stale', () => {
+  const base = { category: 'portability', path: 'scripts/format-staged.sh' }
+  assert.match(
+    classifyCandidate({ ...base, findingLine: 'SCRIPT_DIR=$(CDPATH= cd "x")' }).excluded,
+    /^known-intentional:/,
+  )
+  assert.equal(classifyCandidate({ ...base, findingLine: 'readlink -f x' }).excluded, undefined)
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'debt-intentional-'))
+  try {
+    fs.mkdirSync(path.join(fixture, 'scripts/debt'), { recursive: true })
+    fs.writeFileSync(path.join(fixture, base.path), 'unrelated literal')
+    fs.writeFileSync(
+      path.join(fixture, 'scripts/debt/portability-known-intentional.json'),
+      JSON.stringify([
+        { path: base.path, contains: 'ABSENT-LITERAL', reason: 'test' },
+        { path: 'scripts/missing.sh', contains: 'x', reason: 'gone' },
+      ]),
+    )
+    const run = spawnSync(
+      process.execPath,
+      [path.join(rootDir, 'scripts/bs-sweep-debt-survey.mjs'), 'validate-candidates', '[]'],
+      { cwd: fixture, encoding: 'utf8' },
+    )
+    assert.equal(run.status, 0, run.stderr)
+    assert.deepEqual(JSON.parse(run.stdout), [])
+    assert.equal(run.stderr.match(/stale intentional entry/g).length, 2)
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true })
+  }
+})
+
+test('complexity axis prefers eligible files and excludes decomposition and build constraints', () => {
+  const repoRoot = fs.mkdtempSync(path.join(rootDir, '.tmp-bs-sweep-debt-'))
+  try {
+    fs.writeFileSync(path.join(repoRoot, 'plain.go'), 'package p')
+    fs.writeFileSync(path.join(repoRoot, 'tag.go'), '//go:build custom\npackage p')
+    fs.writeFileSync(path.join(repoRoot, 'plain_linux.go'), 'package p')
+    const file = (p) => ({
+      category: 'complexity-hotspot',
+      path: p,
+      evidence: '1200 lines (limit 800)',
+      confirmationCommand: 'make debt-filesize-boss',
+    })
+    const cyclo = {
+      category: 'complexity-hotspot',
+      evidence: 'f',
+      confirmationCommand: 'make debt-cyclo-boss',
+    }
+    assert.equal(
+      complexityAxis([classifyCandidate(file('plain.go'), { repoRoot }), cyclo]).axis,
+      'file',
+    )
+    for (const p of ['tag.go', 'plain_linux.go']) {
+      const c = classifyCandidate(file(p), { repoRoot })
+      assert.match(c.excluded, /^build-constrained:/)
+      assert.equal(complexityAxis([c, cyclo]).axis, 'function')
+    }
+    const oversized = classifyCandidate(
+      { ...file('plain.go'), evidence: '1601 lines (limit 800)' },
+      { repoRoot },
+    )
+    assert.match(oversized.excluded, /^decomposition:/)
+    assert.equal(complexityAxis([oversized]).axis, 'none')
+    assert.equal(complexityAxis([]).axis, 'none')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('CLI extract, validation and axis apply guardrails without losing excluded candidates', () => {
+  let out = ''
+  const io = { write: (s) => (out += s), errWrite: () => {} }
+  assert.equal(
+    runSurveyCli(
+      ['extract', path.join(rootDir, 'scripts/fixtures/bs-sweep-debt/detector-output.txt')],
+      io,
+    ),
+    0,
+  )
+  assert.ok(JSON.parse(out).some((c) => c.excluded?.startsWith('toolchain-only:')))
+  out = ''
+  assert.equal(
+    runSurveyCli(
+      [
+        'validate-candidates',
+        JSON.stringify([
+          {
+            category: 'dead-code',
+            module: 'scripts',
+            path: 'scripts/bs-sweep-debt-survey.mjs',
+            evidence: 'ExportedFunc',
+            confirmationCommand: 'make debt-deadcode-boss',
+          },
+        ]),
+      ],
+      io,
+    ),
+    0,
+  )
+  assert.match(JSON.parse(out)[0].excluded, /^exported-symbol:/)
+  out = ''
+  assert.equal(runSurveyCli(['axis', '[]'], io), 0)
+  assert.equal(JSON.parse(out).axis, 'none')
+  for (const verb of ['extract', 'validate-candidates', 'axis', 'no-change-evidence'])
+    assert.ok(DEBT_SURVEY_USAGE.includes(verb))
+})
+
+test('NO_CHANGE evidence preserves ranked rejection reasons and validation drops before cleanup', () => {
+  const payload = {
+    surveyedCategories: ['dead-code', 'security'],
+    surveyedAreas: ['a', 'b', 'c'],
+    candidates: [
+      { path: 'a.go', category: 'dead-code', excluded: 'exported-symbol: API' },
+      { path: 'b.go', category: 'security', score: 5, rejected: 'no safe mitigation' },
+    ],
+  }
+  let out = '',
+    err = ''
+  const io = { write: (s) => (out += s), errWrite: (s) => (err += s) }
+  assert.equal(
+    runSurveyCli(
+      [
+        'no-change-evidence',
+        JSON.stringify({ status: 'ok', kind: 'none', payload }),
+        'bs-sweep-debt survey: dropped c.go: invalid module',
+      ],
+      io,
+    ),
+    0,
+  )
+  assert.match(out, /- b.go \(security\): no safe mitigation/)
+  assert.match(out, /- c.go \(validation\): invalid module/)
+  assert.ok(out.indexOf('b.go') < out.indexOf('a.go'))
+  payload.candidates.push({ path: 'c.go', category: 'dead-code', rejected: 'requires API change' })
+  assert.equal(
+    runSurveyCli(
+      ['no-change-evidence', JSON.stringify({ status: 'ok', kind: 'none', payload })],
+      io,
+    ),
+    0,
+  )
+  out = ''
+  err = ''
+  assert.equal(
+    runSurveyCli(
+      ['no-change-evidence', JSON.stringify({ status: 'ok', payload: { candidates: [] } })],
+      io,
+    ),
+    3,
+  )
+  assert.equal(err.match(/incomplete:/g).length, 3)
 })

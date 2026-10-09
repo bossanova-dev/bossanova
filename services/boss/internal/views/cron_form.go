@@ -75,7 +75,11 @@ type cronFormData struct {
 	gateCommand     string
 	runSetupCommand bool
 	zeroOutput      bool
-	confirm         bool // true = save, false = cancel (mapped from the terminal Confirm field)
+	// concurrencyPolicy is what a fire does while this job's previous run is
+	// still working. Never UNSPECIFIED once buildForm has run: create defaults
+	// it to SKIP and edit maps a legacy UNSPECIFIED to SKIP.
+	concurrencyPolicy pb.CronJobConcurrencyPolicy
+	confirm           bool // true = save, false = cancel (mapped from the terminal Confirm field)
 }
 
 // cronZeroOutputHelp is the help text for the "Zero output" confirm. The web
@@ -83,6 +87,32 @@ type cronFormData struct {
 // string so the two surfaces read as one product; a web-side parity test reads
 // this file and asserts they stay byte-identical.
 const cronZeroOutputHelp = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."
+
+// cronConcurrencyHelp is the help text for the "Concurrency" select. Like
+// cronZeroOutputHelp it has a byte-identical twin (CONCURRENCY_HELP in
+// services/web/src/components/CronJobForm.tsx), and
+// CronJobForm.concurrencyHelp.test.ts fails if the two drift.
+const cronConcurrencyHelp = "What a fire does while this job's previous run is still working. Skip (default) skips the fire. Cancel in progress stops the previous run, then starts a new one. Allow concurrent starts a new run alongside it. Use Allow concurrent for jobs that claim their own work, like boss-build."
+
+// cronConcurrencyOptions are the "Concurrency" select's choices, in display
+// order. The labels match the web form's options.
+func cronConcurrencyOptions() []huh.Option[pb.CronJobConcurrencyPolicy] {
+	return []huh.Option[pb.CronJobConcurrencyPolicy]{
+		huh.NewOption("Skip while previous run is active", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP),
+		huh.NewOption("Cancel in progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS),
+		huh.NewOption("Allow concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT),
+	}
+}
+
+// cronEffectiveConcurrency maps UNSPECIFIED (a job stored before the policy
+// existed, or a peer that never set it) to SKIP, the policy the daemon applies
+// to it, so the form shows and diffs against what actually happens.
+func cronEffectiveConcurrency(p pb.CronJobConcurrencyPolicy) pb.CronJobConcurrencyPolicy {
+	if p == pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED {
+		return pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP
+	}
+	return p
+}
 
 // --- Model ---
 
@@ -114,6 +144,10 @@ type CronFormModel struct {
 	// its content after every keystroke (resizePrompt). Like fd it is a pointer,
 	// so it survives bubbletea's value-receiver copies of this model.
 	promptField *huh.Text
+	// concurrencyField is the Concurrency select, retained so a resize can
+	// reset it to its content-derived height before huh re-clamps it; without
+	// that, a short terminal shrinks it for good (see the WindowSizeMsg case).
+	concurrencyField *huh.Select[pb.CronJobConcurrencyPolicy]
 
 	// Live schedule preview rendered below the form.
 	schedulePreview string // empty if invalid or blank
@@ -184,7 +218,12 @@ func (m CronFormModel) fetchAgents() tea.Cmd {
 // buildForm constructs the huh form once repos are available.
 func (m *CronFormModel) buildForm() {
 	if m.fd == nil {
-		m.fd = &cronFormData{enabled: true, runSetupCommand: true, confirm: true}
+		m.fd = &cronFormData{
+			enabled:           true,
+			runSetupCommand:   true,
+			concurrencyPolicy: pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP,
+			confirm:           true,
+		}
 	}
 
 	// Pre-populate fields from existing job in edit mode.
@@ -202,6 +241,7 @@ func (m *CronFormModel) buildForm() {
 		m.fd.gateCommand = m.job.GateCommand
 		m.fd.runSetupCommand = m.job.ShouldRunSetupCommand
 		m.fd.zeroOutput = m.job.IsZeroOutput
+		m.fd.concurrencyPolicy = cronEffectiveConcurrency(m.job.ConcurrencyPolicy)
 		m.fd.confirm = true
 		m.fdPopulated = true
 	}
@@ -274,6 +314,14 @@ func (m *CronFormModel) buildForm() {
 			return nil
 		})
 
+	// The help text wraps to several lines, which bossSelect's capped height
+	// would subtract from the option viewport; see bossDescribedSelect.
+	m.concurrencyField = bossDescribedSelect[pb.CronJobConcurrencyPolicy]().
+		Title("Concurrency").
+		Description(cronConcurrencyHelp).
+		Options(cronConcurrencyOptions()...).
+		Value(&m.fd.concurrencyPolicy)
+
 	fields = append(fields,
 		m.promptField,
 
@@ -310,6 +358,8 @@ func (m *CronFormModel) buildForm() {
 			Title("Gate command").
 			Description("Optional. Runs before each scheduled fire; a non-zero exit skips the run. Treated as a path if it starts with /, ./, or ../, otherwise run via the shell.").
 			Value(&m.fd.gateCommand),
+
+		m.concurrencyField,
 
 		bossConfirm().
 			Title("Run setup command").
@@ -483,12 +533,16 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// keystroke. Seeding it back to its content height first lets
 			// resizeForm re-clamp only if the new height still demands it.
 			//
-			// The Prompt is the only field re-seeded because it is the only one
-			// this view holds a pointer to, and the only one whose height is
-			// content-derived rather than fixed at build time. The selects
-			// carry the same shrink-only asymmetry — that predates BOS-567 and
-			// costs at most one hidden option — so it is left alone here.
+			// The Concurrency select is content-sized too (bossDescribedSelect
+			// sets no Height), and its wrapped help makes it tall enough that a
+			// short terminal clamps it to one option; Height(0) restores huh's
+			// options-derived viewport so it regrows with the terminal. The
+			// fixed-height bossSelect fields keep the shrink-only asymmetry
+			// (it predates BOS-567) and are left alone here.
 			m.resizePrompt()
+			if m.concurrencyField != nil {
+				m.concurrencyField.Height(0)
+			}
 			return m, resizeForm(m.form, m.formHeight(), msg)
 		}
 		return m, nil
@@ -631,6 +685,7 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 				GateCommand:           strings.TrimSpace(fd.gateCommand),
 				ShouldRunSetupCommand: &fd.runSetupCommand,
 				IsZeroOutput:          &fd.zeroOutput,
+				ConcurrencyPolicy:     cronEffectiveConcurrency(fd.concurrencyPolicy).Enum(),
 			})
 			return cronFormSavedMsg{job: job, err: err}
 		}
@@ -679,6 +734,9 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 	if fd.zeroOutput != original.IsZeroOutput {
 		zo := fd.zeroOutput
 		req.IsZeroOutput = &zo
+	}
+	if cp := cronEffectiveConcurrency(fd.concurrencyPolicy); cp != cronEffectiveConcurrency(original.ConcurrencyPolicy) {
+		req.ConcurrencyPolicy = &cp
 	}
 
 	return m, func() tea.Msg {

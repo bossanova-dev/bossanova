@@ -57,6 +57,14 @@ type mergeGateProvider struct {
 	// order, so substitution and the one-shot squash retry can be asserted
 	// exactly rather than by call count alone.
 	mergeStrategies []string
+	// mergeOpts records the full MergePROpts of every MergePR call, in order,
+	// so the head pin (BOS-1381) can be asserted on each attempt.
+	mergeOpts []vcs.MergePROpts
+	// prStatusCalls counts GetPRStatus reads.
+	prStatusCalls int
+	// checksCalls counts GetCheckResults reads, so a head-mismatch pre-check
+	// can be shown to skip the remaining gate reads.
+	checksCalls int
 	// mergeErrByStrategy lets a single test fail one strategy and succeed on
 	// another (the rebase-refused → squash-retry case). It takes precedence
 	// over mergeErr when the strategy has an entry.
@@ -83,12 +91,14 @@ type mergeGateProvider struct {
 }
 
 func (p *mergeGateProvider) GetPRStatus(ctx context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	p.prStatusCalls++
 	if p.onPRStatus != nil {
 		p.onPRStatus(ctx)
 	}
 	return p.prStatus, p.prStatusErr
 }
 func (p *mergeGateProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
+	p.checksCalls++
 	return p.checks, p.checksErr
 }
 func (p *mergeGateProvider) GetReviewComments(context.Context, string, int) ([]vcs.ReviewComment, error) {
@@ -113,9 +123,11 @@ func (p *mergeGateProvider) GetAllowedMergeStrategies(context.Context, string) (
 	}
 	return []string{"merge"}, nil
 }
-func (p *mergeGateProvider) MergePR(_ context.Context, _ string, _ int, strategy string) error {
+func (p *mergeGateProvider) MergePR(_ context.Context, _ string, _ int, opts vcs.MergePROpts) error {
+	strategy := opts.Strategy
 	p.mergeCalled = true
 	p.mergeStrategies = append(p.mergeStrategies, strategy)
+	p.mergeOpts = append(p.mergeOpts, opts)
 	if p.onMerge != nil {
 		p.onMerge()
 	}
@@ -456,6 +468,98 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 	}
 }
 
+// TestMergeSessionVerifyStatusesTreatedAsChecking pins BOS-1382's merge-gate
+// treatment: a pending boss/verify status yields DisplayStatusVerifying or
+// DisplayStatusNeedsHuman, which replace the Checking it used to produce and
+// are treated exactly as that Checking was — they do not block an explicit
+// merge — while failing CI beside a pending verify still blocks as gate=ci.
+func TestMergeSessionVerifyStatusesTreatedAsChecking(t *testing.T) {
+	green := vcs.CheckResult{
+		Name:       "build",
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
+	}
+	failed := vcs.CheckResult{
+		Name:       "build",
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: checkConclusionPtr(vcs.CheckConclusionFailure),
+	}
+	verify := func(desc string) vcs.CheckResult {
+		return vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: desc}
+	}
+	open := func(mss vcs.MergeStateStatus) *vcs.PRStatus {
+		return &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), MergeStateStatus: mss}
+	}
+
+	cases := []struct {
+		name        string
+		prStatus    *vcs.PRStatus
+		checks      []vcs.CheckResult
+		reviews     []vcs.ReviewComment
+		wantStatus  vcs.DisplayStatus
+		wantBlocked string // "" = merge proceeds; otherwise the expected gate prefix
+	}{
+		{
+			name:       "green CI with verifying claim is not blocked",
+			prStatus:   open(vcs.MergeStateStatusClean),
+			checks:     []vcs.CheckResult{green, verify("verifying… 3f2a")},
+			wantStatus: vcs.DisplayStatusVerifying,
+		},
+		{
+			name:       "green CI with needs-human park is not blocked",
+			prStatus:   open(vcs.MergeStateStatusClean),
+			checks:     []vcs.CheckResult{green, verify("needs human: always-human-path")},
+			wantStatus: vcs.DisplayStatusNeedsHuman,
+		},
+		{
+			name:        "failing CI with pending verify is still gate=ci",
+			prStatus:    open(vcs.MergeStateStatusUnstable),
+			checks:      []vcs.CheckResult{failed, verify("needs human: x")},
+			wantStatus:  vcs.DisplayStatusFailing,
+			wantBlocked: "merge blocked: gate=ci;",
+		},
+		{
+			name:       "changes requested with pending verify stays unblocked like checking",
+			prStatus:   open(vcs.MergeStateStatusBlocked),
+			checks:     []vcs.CheckResult{green, verify("verifying… 3f2a")},
+			reviews:    []vcs.ReviewComment{{Author: "reviewer", State: vcs.ReviewStateChangesRequested}},
+			wantStatus: vcs.DisplayStatusVerifying,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vcs.ComputeDisplayStatus(tc.prStatus, tc.checks, tc.reviews).Status; got != tc.wantStatus {
+				t.Fatalf("precondition: display status = %d, want %d", got, tc.wantStatus)
+			}
+			prov := &mergeGateProvider{
+				prStatus: tc.prStatus,
+				checks:   tc.checks,
+				reviews:  tc.reviews,
+				mergeErr: errors.New("merge short-circuited in test"),
+			}
+			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			if tc.wantBlocked == "" {
+				if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+					t.Fatalf("merge gate blocked a pending-verify head it must treat like checking: %v", err)
+				}
+				if !prov.mergeCalled {
+					t.Fatal("expected execution to reach the actual merge (MergePR)")
+				}
+				return
+			}
+			if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), tc.wantBlocked) {
+				t.Fatalf("err = %v, want FailedPrecondition containing %q", err, tc.wantBlocked)
+			}
+			if prov.mergeCalled {
+				t.Fatal("a blocked PR must not reach the actual merge")
+			}
+		})
+	}
+}
+
 // TestMergeSessionRejectsUnverifiableLiveRead pins the fail-CLOSED contract
 // (BOS-644). The gate judges a PR from three live provider reads; before this
 // change every one of them discarded its error and fell through to `return nil`
@@ -537,7 +641,7 @@ func TestMergeSessionRejectsUnverifiableLiveRead(t *testing.T) {
 func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no provider", func(t *testing.T) {
 		srv := &Server{logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42)
+		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42, "")
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when no provider is configured", err)
 		}
@@ -548,7 +652,7 @@ func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no origin URL", func(t *testing.T) {
 		prov := &mergeGateProvider{prStatusErr: errors.New("must never be called")}
 		srv := &Server{provider: prov, logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "", 42)
+		block, err := srv.liveMergeBlock(context.Background(), "", 42, "")
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when the repo has no origin URL", err)
 		}
@@ -1201,5 +1305,222 @@ func TestMergeSessionHardFailsWhenMergeNotOnBase(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "merge verification failed") {
 		t.Fatalf("error = %v, want it to contain 'merge verification failed'", err)
+	}
+}
+
+// headPin is a valid 40-hex head SHA for the BOS-1381 head-pinned merge tests.
+var headPin = strings.Repeat("0a1b", 10)
+
+func pinnedMergeRequest(pin string) *connect.Request[pb.MergeSessionRequest] {
+	return connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: pin})
+}
+
+// TestMergeSessionHeadPinPreCheckRefusesMovedHead: when the live PR head
+// differs from the pin, the RPC refuses with a HEAD_MISMATCH FailedPrecondition
+// before any merge, and skips the gate's remaining reads.
+func TestMergeSessionHeadPinPreCheckRefusesMovedHead(t *testing.T) {
+	live := strings.Repeat("ffee", 10)
+	st := openCleanPRStatus()
+	st.HeadSHA = live
+	prov := &mergeGateProvider{prStatus: st, checks: livePassingChecks()}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+	}
+	for _, want := range []string{"HEAD_MISMATCH", headPin, live} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+	if prov.mergeCalled {
+		t.Fatal("MergePR was called despite a known head mismatch")
+	}
+	// The pre-gate display refresh also reads checks, so compare against an
+	// unpinned run of the same setup: the pinned run must make one fewer
+	// check read (the gate's own) because the mismatch short-circuits it.
+	unpinned := &mergeGateProvider{prStatus: st, checks: livePassingChecks(), mergeErr: errors.New("merge short-circuited in test")}
+	_, _ = mergeGateServer(t, unpinned, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(""))
+	if prov.checksCalls != unpinned.checksCalls-1 {
+		t.Errorf("GetCheckResults: pinned %d reads, unpinned %d; a head mismatch must skip the gate's remaining reads", prov.checksCalls, unpinned.checksCalls)
+	}
+}
+
+// TestMergeSessionHeadPinRefusesAlreadyMergedAtOtherHead: the already-merged
+// short-circuit must honour the pin. A PR merged upstream at a head other than
+// the pin is a HEAD_MISMATCH refusal, not an idempotent success; a PR merged at
+// the pinned head stays a success. Neither calls MergePR.
+func TestMergeSessionHeadPinRefusesAlreadyMergedAtOtherHead(t *testing.T) {
+	merged := strings.Repeat("ffee", 10)
+	prov := &mergeGateProvider{
+		prStatus: &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: merged},
+		checks:   livePassingChecks(),
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+	}
+	for _, want := range []string{"HEAD_MISMATCH", headPin, merged} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+	if prov.mergeCalled {
+		t.Fatal("MergePR was called for an already-merged PR")
+	}
+
+	same := &mergeGateProvider{
+		prStatus: &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: strings.ToUpper(headPin)},
+		checks:   livePassingChecks(),
+	}
+	if _, err := mergeGateServer(t, same, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(headPin)); err != nil {
+		t.Fatalf("PR already merged at the pinned head must succeed, got %v", err)
+	}
+	if same.mergeCalled {
+		t.Fatal("MergePR was called for an already-merged PR")
+	}
+}
+
+// TestMergeSessionHeadPinBeatsGateBlock: the gate's verdict is about a
+// different head, so a known mismatch takes precedence over a red gate.
+func TestMergeSessionHeadPinBeatsGateBlock(t *testing.T) {
+	st := openCleanPRStatus()
+	st.HeadSHA = strings.Repeat("ffee", 10)
+	prov := &mergeGateProvider{prStatus: st, checks: []vcs.CheckResult{{
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: checkConclusionPtr(vcs.CheckConclusionFailure),
+	}}}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+
+	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
+	if err == nil || !strings.Contains(err.Error(), "HEAD_MISMATCH") {
+		t.Fatalf("err = %v, want a HEAD_MISMATCH refusal", err)
+	}
+	if strings.Contains(err.Error(), "merge blocked: gate=") {
+		t.Errorf("err = %v, want the head mismatch, not the gate block", err)
+	}
+}
+
+// TestMergeSessionHeadPinThreadsToMergePR: a matching pin (in any case) and an
+// unknown live head both proceed, and MergePR receives the normalized pin.
+func TestMergeSessionHeadPinThreadsToMergePR(t *testing.T) {
+	for name, liveHead := range map[string]string{"matching live head": headPin, "unknown live head": ""} {
+		t.Run(name, func(t *testing.T) {
+			st := openCleanPRStatus()
+			st.HeadSHA = liveHead
+			prov := &mergeGateProvider{prStatus: st, checks: livePassingChecks(), mergeCommitSHA: "abc123"}
+			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
+				withMergeWorktrees(&mergePolicyWorktrees{isAncestor: true}))
+
+			if _, err := srv.MergeSession(context.Background(), pinnedMergeRequest(strings.ToUpper(headPin))); err != nil {
+				t.Fatalf("MergeSession: %v", err)
+			}
+			if len(prov.mergeOpts) != 1 || prov.mergeOpts[0].ExpectedHeadSHA != headPin {
+				t.Fatalf("MergePR opts = %+v, want one call with ExpectedHeadSHA %s", prov.mergeOpts, headPin)
+			}
+		})
+	}
+}
+
+// TestMergeSessionHeadPinCarriedIntoSquashRetry: the rebase-refused squash
+// retry carries the same pin as the first attempt.
+func TestMergeSessionHeadPinCarriedIntoSquashRetry(t *testing.T) {
+	st := openCleanPRStatus()
+	st.HeadSHA = headPin
+	prov := &mergeGateProvider{
+		prStatus: st,
+		checks:   livePassingChecks(),
+		allowed:  []string{"rebase", "squash"},
+		mergeErrByStrategy: map[string]error{
+			"rebase": errors.New("GraphQL: This branch can't be rebased"),
+		},
+		mergeCommitSHA: "abc123",
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
+		withRebaseStrategy(), withMergeWorktrees(&mergePolicyWorktrees{isAncestor: true}))
+
+	if _, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin)); err != nil {
+		t.Fatalf("expected the squash retry to succeed, got %v", err)
+	}
+	if len(prov.mergeOpts) != 2 {
+		t.Fatalf("MergePR calls = %+v, want 2 (rebase then squash)", prov.mergeOpts)
+	}
+	for i, o := range prov.mergeOpts {
+		if o.ExpectedHeadSHA != headPin {
+			t.Errorf("call %d (%s) ExpectedHeadSHA = %q, want %q", i, o.Strategy, o.ExpectedHeadSHA, headPin)
+		}
+	}
+}
+
+// TestMergeSessionRemoteHeadMismatchIsFailedPrecondition: a MergePR failure
+// wrapping vcs.ErrHeadMismatch maps to FailedPrecondition with the token and
+// the re-read live head, never CodeInternal, and is never retried with squash.
+func TestMergeSessionRemoteHeadMismatchIsFailedPrecondition(t *testing.T) {
+	st := openCleanPRStatus()
+	st.HeadSHA = headPin
+	prov := &mergeGateProvider{
+		prStatus: st,
+		checks:   livePassingChecks(),
+		allowed:  []string{"rebase", "squash"},
+		mergeErrByStrategy: map[string]error{
+			"rebase": fmt.Errorf("merge PR: %w: GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)", vcs.ErrHeadMismatch),
+		},
+	}
+	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
+		withRebaseStrategy(), withMergeWorktrees(&mergePolicyWorktrees{isAncestor: true}))
+
+	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+	}
+	if !strings.Contains(err.Error(), "HEAD_MISMATCH") || !strings.Contains(err.Error(), "live head "+headPin) {
+		t.Errorf("err = %v, want HEAD_MISMATCH with the re-read live head", err)
+	}
+	if !errors.Is(err, vcs.ErrHeadMismatch) {
+		t.Errorf("err = %v, want vcs.ErrHeadMismatch in the chain", err)
+	}
+	if got := prov.mergeStrategies; len(got) != 1 {
+		t.Fatalf("MergePR strategies = %v, want exactly one attempt (no squash retry)", got)
+	}
+}
+
+// TestMergeSessionRejectsInvalidHeadPin: a malformed pin is InvalidArgument
+// before any read.
+func TestMergeSessionRejectsInvalidHeadPin(t *testing.T) {
+	for _, pin := range []string{"abc", headPin[:39], headPin + "0", strings.Repeat("x", 40)} {
+		prov := &mergeGateProvider{prStatus: openCleanPRStatus()}
+		srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
+		_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(pin))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("pin %q: code = %v, want InvalidArgument (err=%v)", pin, connect.CodeOf(err), err)
+		}
+		if prov.prStatusCalls != 0 || prov.mergeCalled {
+			t.Errorf("pin %q: provider was read (%d status reads, merge=%v)", pin, prov.prStatusCalls, prov.mergeCalled)
+		}
+	}
+}
+
+// TestMergeSessionHeadPinRefusedForLocalOnlyMerge: a session without a PR has
+// no remote head to pin, so a pinned request fails closed without merging.
+func TestMergeSessionHeadPinRefusedForLocalOnlyMerge(t *testing.T) {
+	sess := blockedFixLoopSession()
+	sess.PRNumber = nil
+	merged := false
+	srv := mergeGateServer(t, &mergeGateProvider{}, vcs.DisplayStatusPassing,
+		withMergeWorktrees(&mergeLocalWorktrees{onMerge: func() { merged = true }}))
+	srv.sessions = &lifecycleSessionStoreFake{session: sess}
+
+	_, err := srv.MergeSession(context.Background(), pinnedMergeRequest(headPin))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
+	}
+	if strings.Contains(err.Error(), "HEAD_MISMATCH") {
+		t.Errorf("err = %v; nothing moved, so it must not carry HEAD_MISMATCH", err)
+	}
+	if merged {
+		t.Fatal("MergeLocalBranch was called for a pinned local-only merge")
 	}
 }

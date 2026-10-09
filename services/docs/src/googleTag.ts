@@ -57,17 +57,34 @@ const TAG_CONFIG = {
 }
 
 /**
- * Funnel events forwarded to GA; everything else stays PostHog-only. Signups
- * and purchases are not here: bosso sends those server-side (Measurement
- * Protocol) so they count even when the browser never reports them.
+ * Funnel events forwarded to GA, by their GA name; everything else stays
+ * PostHog-only. Signups and purchases are not here: bosso sends those
+ * server-side (Measurement Protocol) so they count even when the browser never
+ * reports them.
  */
 export const GOOGLE_UI_EVENTS = new Set([
   'app_cta_clicked',
   'signup_route_hit',
-  'cloud_subscription_gate_viewed',
-  'cloud_checkout_started',
+  'auth_redirect_started',
+  'view_item',
+  'begin_checkout',
   'cloud_checkout_returned',
 ])
+/**
+ * PostHog names GA receives under GA4's recommended ecommerce names, which its
+ * funnel steps and ecommerce reports read. PostHog keeps the original names.
+ */
+export const GOOGLE_EVENT_RENAMES: Readonly<Record<string, string>> = {
+  cloud_subscription_gate_viewed: 'view_item',
+  cloud_checkout_started: 'begin_checkout',
+}
+/**
+ * The one product, so view_item, begin_checkout and bosso's server-side
+ * purchase match in item-scoped reports. No price client-side: bosso values
+ * the purchase.
+ */
+export const GOOGLE_CLOUD_ITEM = { item_id: 'bossanova_cloud', item_name: 'Bossanova Cloud' }
+const GOOGLE_ITEM_EVENTS = new Set(['view_item', 'begin_checkout'])
 const GOOGLE_EVENT_PARAMS = [
   'app',
   'entry_point',
@@ -213,22 +230,49 @@ export function trackPageView(
   })
 }
 
-/** Forwards an allowlisted UI event with only its allowlisted parameters. */
-export function trackGoogleEvent(
-  name: string,
-  properties: Record<string, unknown> = {},
+/** True once loadGoogleTag has installed the tag on this window. */
+export function isGoogleTagLoaded(
   win: GoogleTagWindow = globalThis as unknown as GoogleTagWindow,
-): void {
-  const state = loaded.get(win)
-  if (!(state && GOOGLE_UI_EVENTS.has(name))) {
-    return
+): boolean {
+  return loaded.has(win)
+}
+
+// Resolves the GA name and the gtag parameters for an allowlisted event, or
+// null when the event (after renaming) is not forwarded to GA.
+function googleEventPayload(
+  name: string,
+  properties: Record<string, unknown>,
+): { googleName: string; params: Record<string, unknown> } | null {
+  const googleName = GOOGLE_EVENT_RENAMES[name] ?? name
+  if (!GOOGLE_UI_EVENTS.has(googleName)) {
+    return null
   }
-  const params: Record<string, string> = {}
+  const params: Record<string, unknown> = {}
   for (const key of GOOGLE_EVENT_PARAMS) {
     const value = properties[key]
     if (typeof value === 'string' && value !== '') {
       params[key] = value
     }
   }
-  state.gtag('event', name, { ...params, send_to: state.measurementId })
+  if (GOOGLE_ITEM_EVENTS.has(googleName)) {
+    params.items = [{ ...GOOGLE_CLOUD_ITEM }]
+  }
+  return { googleName, params }
+}
+
+/**
+ * Forwards an allowlisted UI event with only its allowlisted parameters,
+ * under its GA name (GOOGLE_EVENT_RENAMES).
+ */
+export function trackGoogleEvent(
+  name: string,
+  properties: Record<string, unknown> = {},
+  win: GoogleTagWindow = globalThis as unknown as GoogleTagWindow,
+): void {
+  const state = loaded.get(win)
+  const payload = state ? googleEventPayload(name, properties) : null
+  if (!(state && payload)) {
+    return
+  }
+  state.gtag('event', payload.googleName, { ...payload.params, send_to: state.measurementId })
 }

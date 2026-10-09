@@ -24,7 +24,7 @@ replacement loop.
 boss-build owns the worktree, branch, review and shipping. Tell `ce-work` so when you invoke it, and
 hold it to that:
 
-- Run its implementation phases and its local checks (tests, the repo's lint and test gates) only.
+- Run its implementation phases and its local checks (tests, the repo's lint gate and the tests relevant to the change (boss-build `## Verification`), never the full suite; report each command and its result in `testsAddedOrPassing`) only.
 - Stop before its shipping workflow: no push, no PR or tracker writes, no branch create, switch or
   rename, no merge or rebase, and no edits to the plan file.
 - Do not run `ce-code-review` from inside it; boss-build reviews the branch next.

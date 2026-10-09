@@ -150,6 +150,7 @@ const (
 func codexBlob(t *testing.T, access, id, refresh string) []byte {
 	t.Helper()
 	doc := map[string]any{
+		"auth_mode": codexChatGPTAuthMode,
 		"tokens": map[string]any{
 			"access_token":  access,
 			"id_token":      id,
@@ -3479,5 +3480,82 @@ func TestMaterializeClaudeReportsUnknownRefreshAssertion(t *testing.T) {
 	}
 	if mat.RefreshAssertion != RefreshAssertionUnknown {
 		t.Fatalf("claude Materialized.RefreshAssertion = %v, want Unknown", mat.RefreshAssertion)
+	}
+}
+
+// TestMaterializeCodexKeepsAppServerStateAccountLocal pins that the app-server
+// daemon's state directories are never projected from the base home. codex
+// refuses to start when its daemon state directory is a symlink, so a projected
+// one killed every managed pane at launch; a projection left by an earlier
+// materialization must be withdrawn, and the real directory codex then creates
+// must survive later materializations untouched.
+func TestMaterializeCodexKeepsAppServerStateAccountLocal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	accountLocal := []string{"app-server-daemon", "app-server-control"}
+	baseHome := t.TempDir()
+	for _, name := range accountLocal {
+		if err := os.MkdirAll(filepath.Join(baseHome, name), 0o700); err != nil {
+			t.Fatalf("mkdir base %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(baseHome, name, "daemon.pid"), []byte("base"), 0o600); err != nil {
+			t.Fatalf("write base %s fixture: %v", name, err)
+		}
+	}
+	canonicalBase, err := filepath.EvalSymlinks(baseHome)
+	if err != nil {
+		t.Fatalf("resolve base home: %v", err)
+	}
+	m := newTestMaterializerWithCodexHome(t, &fakeStore{blob: codexBlob(t, fakeAccess, fakeID, fakeRefresh)}, baseHome)
+
+	res, _, err := m.MaterializeCodex(context.Background(), "acct-1")
+	if err != nil {
+		t.Fatalf("MaterializeCodex: %v", err)
+	}
+	for _, name := range accountLocal {
+		if _, err := os.Lstat(filepath.Join(res.HomeDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was projected into a fresh account home: %v", name, err)
+		}
+	}
+
+	// An account home materialized before this rule carries the old projection.
+	for _, name := range accountLocal {
+		if err := os.Symlink(filepath.Join(canonicalBase, name), filepath.Join(res.HomeDir, name)); err != nil {
+			t.Fatalf("seed legacy %s projection: %v", name, err)
+		}
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("second MaterializeCodex: %v", err)
+	}
+	for _, name := range accountLocal {
+		if _, err := os.Lstat(filepath.Join(res.HomeDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("legacy %s projection was not withdrawn: %v", name, err)
+		}
+		if got, err := os.ReadFile(filepath.Join(baseHome, name, "daemon.pid")); err != nil || string(got) != "base" {
+			t.Fatalf("base %s state was disturbed by the withdrawal: %q, %v", name, got, err)
+		}
+	}
+
+	// codex then creates its own directory, which later runs must leave alone.
+	for _, name := range accountLocal {
+		if err := os.MkdirAll(filepath.Join(res.HomeDir, name), 0o700); err != nil {
+			t.Fatalf("mkdir account %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(res.HomeDir, name, "daemon.pid"), []byte("account"), 0o600); err != nil {
+			t.Fatalf("write account %s state: %v", name, err)
+		}
+	}
+	if _, _, err := m.MaterializeCodex(context.Background(), "acct-1"); err != nil {
+		t.Fatalf("third MaterializeCodex: %v", err)
+	}
+	for _, name := range accountLocal {
+		info, err := os.Lstat(filepath.Join(res.HomeDir, name))
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("account-local %s directory was replaced: %v", name, err)
+		}
+		if got, err := os.ReadFile(filepath.Join(res.HomeDir, name, "daemon.pid")); err != nil || string(got) != "account" {
+			t.Fatalf("account-local %s state was disturbed: %q, %v", name, got, err)
+		}
 	}
 }

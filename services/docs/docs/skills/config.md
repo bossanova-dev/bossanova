@@ -22,7 +22,10 @@ catalogue misses a language your repository uses.
 ## Where these values come from
 
 `team`, the `states` values, and the label values are display strings out of
-your own tracker. Copy them from the tracker rather than inventing them.
+your own tracker. `boss init` writes them for you: with a Linear key it pins the
+team, matches each state and label role to the team's real names, and writes
+`trackerConfig.linear.states` and `.labels` entries only where a name differs from
+the default. Otherwise copy them from the tracker rather than inventing them.
 `validateConfig` checks that each is a non-empty string and stops there, so a
 state name matching no real workflow state passes validation and fails much
 later, inside a tracker write.

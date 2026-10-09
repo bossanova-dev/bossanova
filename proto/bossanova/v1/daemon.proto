@@ -111,6 +111,7 @@ service DaemonService {
 
   // Chat status (cross-client heartbeat sharing)
   rpc ReportChatStatus(ReportChatStatusRequest) returns (ReportChatStatusResponse);
+  rpc SetChatPhase(SetChatPhaseRequest) returns (SetChatPhaseResponse);
   rpc GetChatStatuses(GetChatStatusesRequest) returns (GetChatStatusesResponse);
   rpc GetSessionStatuses(GetSessionStatusesRequest) returns (GetSessionStatusesResponse);
 
@@ -226,6 +227,14 @@ service DaemonService {
   // DeleteNote removes a note and its tags by id. Idempotent: deleting an
   // absent id succeeds.
   rpc DeleteNote(DeleteNoteRequest) returns (DeleteNoteResponse);
+
+  // SyncNotesNow nudges the note sync worker (BOS-1435) to drain the cloud-sync
+  // outbox now rather than at its next tick, and returns how many outbox rows
+  // sit in each sync state. It does not wait for the drain: the counts are read
+  // when the nudge is sent, so a second call shows what the drain changed. A
+  // daemon that is not connected to Bosso runs no worker; it still answers with
+  // the counts and reports is_worker_configured = false.
+  rpc SyncNotesNow(SyncNotesNowRequest) returns (SyncNotesNowResponse);
 
   // --- Standing broadcast subscriptions (BOS-557) ---
 
@@ -695,6 +704,9 @@ message CloseSessionResponse {
 
 message MergeSessionRequest {
   string id = 1;
+  // Optional 40-hex commit SHA. When set, the merge is refused with a
+  // HEAD_MISMATCH FailedPrecondition unless the PR's head is exactly this commit.
+  string expected_head_sha = 2;
 }
 
 message MergeSessionResponse {
@@ -756,10 +768,24 @@ message SwitchSessionAccountResponse {
 
 message ArchiveSessionRequest {
   string id = 1;
+  // Archive now even if a chat in the session is still working. Without it the
+  // daemon defers the archive until every chat is idle (BOS-1380).
+  bool should_force = 2;
+  // The agent session id of the chat making the request, when the request comes
+  // from inside a session (the CLI sends $BOSS_AGENT_SESSION_ID). That chat is
+  // mid-turn by definition, so it counts as busy until the tracker observes it
+  // settle.
+  string requester_agent_session_id = 3;
 }
 
 message ArchiveSessionResponse {
   Session session = 1;
+  // True when the archive is pending until every chat in the session is idle;
+  // the session is not yet archived and carries archive_pending.
+  bool is_deferred = 2;
+  // The agent session id of the chat the deferred archive is waiting on. Empty
+  // when the archive ran immediately.
+  string blocking_agent_session_id = 3;
 }
 
 message ResurrectSessionRequest {
@@ -1079,6 +1105,15 @@ message ReportChatStatusRequest {
 
 message ReportChatStatusResponse {}
 
+// Sets an ephemeral skill-reported stage, distinct from AgentProgressPhase.
+message SetChatPhaseRequest {
+  string agent_session_id = 1;
+  string session_id = 2;
+  string phase = 3; // Empty clears the phase.
+}
+
+message SetChatPhaseResponse {}
+
 message GetChatStatusesRequest {
   string session_id = 1;       // Fetch statuses for chats in this session
 }
@@ -1115,6 +1150,9 @@ message ChatStatusEntry {
   // true, because last_substantive_output_at is still the seed even though
   // last_output_at has moved.
   bool last_output_seeded = 7;
+  // Skill-reported stage, distinct from AgentProgressPhase.
+  // Empty unless status is CHAT_STATUS_WORKING.
+  string phase = 8;
 }
 
 message GetChatStatusesResponse {
@@ -1133,6 +1171,9 @@ message SessionStatusEntry {
   // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
   // CHAT_STATUS_WAITING.
   string waiting_reason = 3;
+  // Skill-reported stage, distinct from AgentProgressPhase.
+  // Empty unless status is CHAT_STATUS_WORKING.
+  string phase = 4;
 }
 
 message GetSessionStatusesResponse {
@@ -1251,6 +1292,9 @@ message CreateCronJobRequest {
   // thing (default false). Persisted and echoed back only — nothing honours it
   // yet, so a job with this set still fires exactly as it does today (BOS-543).
   optional bool is_zero_output = 11;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = SKIP.
+  optional CronJobConcurrencyPolicy concurrency_policy = 12;
 }
 
 message CreateCronJobResponse {
@@ -1289,6 +1333,9 @@ message UpdateCronJobRequest {
   // because the run is expected to produce no repo changes. Persisted and echoed
   // back only — nothing honours it yet (BOS-543).
   optional bool   is_zero_output = 11;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = leave unchanged.
+  optional CronJobConcurrencyPolicy concurrency_policy = 12;
 }
 
 message UpdateCronJobResponse {
@@ -1548,6 +1595,15 @@ message Note {
   repeated string tags = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+  // Cloud-sync outbox state of the note's latest local version (BOS-1429):
+  // pending, synced, rejected, rate_limited, expired, not_entitled, refused,
+  // suppressed or failed. Empty when the daemon predates the outbox or the
+  // note has no outbox row.
+  string sync_state = 9;
+  // When the cloud last accepted a version of this note; unset if never.
+  google.protobuf.Timestamp synced_at = 10;
+  // Reason recorded by the last non-synced sync outcome; empty if none.
+  string sync_last_error = 11;
 }
 
 // NoteTagSet wraps a repeated tag field so UpdateNoteRequest can distinguish
@@ -1639,6 +1695,26 @@ message DeleteNoteRequest {
 }
 
 message DeleteNoteResponse {}
+
+message SyncNotesNowRequest {}
+
+message SyncNotesNowResponse {
+  // One entry per sync state (pending, synced, rejected, rate_limited, expired,
+  // not_entitled, refused, suppressed, failed), in that order, zero counts
+  // included, so a caller reads one stable shape.
+  repeated NoteSyncStateCount state_counts = 1;
+  // True when this daemon runs the note sync worker, i.e. it is wired to Bosso
+  // and the nudge was delivered. False on a local-only daemon, whose outbox
+  // rows stay pending.
+  bool is_worker_configured = 2;
+}
+
+// NoteSyncStateCount is how many note sync outbox rows (live notes and
+// unpurged delete tombstones) are in one sync state.
+message NoteSyncStateCount {
+  string state = 1;
+  int64 note_count = 2;
+}
 
 // --- Standing broadcast subscriptions (BOS-557) ---
 

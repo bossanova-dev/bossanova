@@ -158,22 +158,7 @@ const config: Config = {
     },
     footer: {
       style: 'dark',
-      links: [
-        {
-          title: 'Project',
-          items: [
-            {
-              label: 'GitHub',
-              href: 'https://github.com/bossanova-dev/bossanova',
-            },
-            {
-              label: 'docs.bossanova.dev',
-              href: 'https://docs.bossanova.dev',
-            },
-          ],
-        },
-      ],
-      copyright: `Copyright © ${new Date().getFullYear()} Recurser Inc.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Bossanova`,
     },
     prism: {
       theme: prismThemes.github,

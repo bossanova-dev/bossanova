@@ -93,8 +93,11 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
   assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, [
     'states',
     'selectPlanned',
+    'resolveSelection',
     'readDescription',
+    'selectMarked',
     'selectCandidates',
+    'applyIssueWrites',
   ])
   // The separation is the whole point: assertConforms REQUIRES every
   // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
@@ -114,6 +117,16 @@ test('selectCandidates is optional but a declared capability must be callable', 
   assert.doesNotThrow(() => assertConforms(adapter))
 })
 
+test('applyIssueWrites is optional but a declared capability must be callable', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.applyIssueWrites, undefined)
+  assert.doesNotThrow(() => assertConforms(adapter), 'an adapter without the write path conforms')
+  adapter.applyIssueWrites = { issueAddLabel: true }
+  assert.throws(() => assertConforms(adapter), /applyIssueWrites/)
+  adapter.applyIssueWrites = async () => ({ ok: true, applied: [], outcome: 'ok' })
+  assert.doesNotThrow(() => assertConforms(adapter))
+})
+
 test('optional operations — attachment AND adapter-discretion — validate only when declared', () => {
   assert.deepEqual(OPTIONAL_TRACKER_OPERATIONS, [
     'preparePlanAttachment',
@@ -124,6 +137,8 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'createLabel',
     'appendRelatedTo',
     'writeDescription',
+    'listTeams',
+    'createIssue',
   ])
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
 
@@ -331,6 +346,19 @@ test('assertConforms accepts two-argument resolveClaim implementations', () => {
 // valid operationMap (every REQUIRED_TRACKER_OPERATIONS key with a non-empty
 // tool + summary), so the operationMap-specific tests below isolate exactly
 // the mutation under test.
+test('an adapter without listTeams still conforms; a declared listTeams owes a usable tool', () => {
+  const map = validOperationMap()
+  assert.equal('listTeams' in map, false)
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  map.listTeams = { tool: 'mcp__stub__list_teams', summary: 'list teams' }
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  map.listTeams = { tool: '', summary: 'list teams' }
+  assert.throws(
+    () => assertConforms(stubAdapterWithOperationMap(map)),
+    /tracker adapter operation listTeams missing tool/,
+  )
+})
+
 function stubAdapterWithOperationMap(operationMap) {
   return {
     hasWork: () => {},
@@ -565,4 +593,19 @@ test('operationHasTool accepts only a non-empty trimmed string tool', () => {
     assert.equal(operationHasTool(op), false, JSON.stringify(op))
   }
   assert.equal(operationHasTool({ tool: 'mcp__x__y' }), true)
+})
+
+test('marked reads and issue creation are optional and validated when declared', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.ok(OPTIONAL_TRACKER_CAPABILITIES.includes('selectMarked'))
+  assert.ok(OPTIONAL_TRACKER_OPERATIONS.includes('createIssue'))
+  adapter.selectMarked = async () => []
+  adapter.operationMap.createIssue = { tool: 'mcp__stub__create', summary: '{title} -> issue' }
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.selectMarked = true
+  assert.throws(() => assertConforms(adapter), /selectMarked/)
+  adapter.selectMarked = async () => []
+  adapter.operationMap.createIssue = { tool: '' }
+  assert.throws(() => assertConforms(adapter), /createIssue/)
 })

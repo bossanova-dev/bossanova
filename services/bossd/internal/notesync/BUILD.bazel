@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "notesync",
+    srcs = ["worker.go"],
+    importpath = "github.com/recurser/bossd/internal/notesync",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/upstream",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "notesync_test",
+    srcs = [
+        "contract_test.go",
+        "worker_test.go",
+    ],
+    embed = [":notesync"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/models",
+        "//lib/bossalib/safego",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/dbtest",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

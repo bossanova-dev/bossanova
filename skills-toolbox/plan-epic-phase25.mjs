@@ -248,7 +248,7 @@ export function detectEpicParent(issue) {
  * value: falling through to the single-ticket path must not be expressible in
  * the return type, because a fall-through re-plans a finished or partial epic
  * as a normal buildable ticket — giving it an implementation-plan artifact and
- * an agent-friendly label, on top of children that already exist.
+ * an agent-build label, on top of children that already exist.
  *
  * `'noop'` requires ALL of: the parent sits in `plannedState`; the parent
  * carries `epicLabel`; there is at least one child; at least one enumerated
@@ -451,7 +451,7 @@ export function stalePlanAttachmentSweep(attachments, options = {}) {
  *   1. `label-strip` — one `moveState` carrying `stripLabels` and NO state.
  *      A pure label strip: non-destructive, cheap, reversible, and sufficient on
  *      its own, because it breaks one conjunct of boss-build's
- *      planned + agent-friendly + plan-artifact selection. Emitted even when
+ *      planned + agent-build + plan-artifact selection. Emitted even when
  *      there is nothing to strip, so the sequence has a fixed shape.
  *   2. `spec-upload` — prepare, put, finalize.
  *   3. `stale-delete` — one `deletePlanAttachment` per stale id. THESE ARE THE
@@ -466,7 +466,7 @@ export function stalePlanAttachmentSweep(attachments, options = {}) {
  * `labelsToStrip` is PARENT-SCOPED — it is stage 1's `stripLabels` and nothing
  * else. This emitter deliberately does NOT emit a child `labels` field: a
  * child's label set is not derivable from the spec. `serializeEpicSpec` persists
- * only `agentFriendly`/`agentQuestion`, never a `labels` array, so any
+ * only `agentBuild`/`agentQuestion`, never a `labels` array, so any
  * subtraction performed here would run against a field that round-tripped spec
  * data never carries — a no-op dressed as a rule. Worse, emitting a computed
  * `labels` would invite a caller to treat it as complete and create every child

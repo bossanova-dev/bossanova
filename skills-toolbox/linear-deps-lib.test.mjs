@@ -86,14 +86,14 @@ test('runUnblockedGate: true when at least one candidate is unblocked', async ()
   const result = await runUnblockedGate({
     apiKey: 'k',
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     fetchImpl,
   })
   assert.equal(result, true)
   const body = JSON.parse(fetchImpl.calls[0].options.body)
   assert.deepEqual(body.variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
   // The candidate window mirrors the skill's `list_issues ... limit=250` universe.
   assert.equal(body.variables.first, 250)
@@ -104,7 +104,7 @@ test('runUnblockedGate: honors an explicit maxCandidates', async () => {
   await runUnblockedGate({
     apiKey: 'k',
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     maxCandidates: 7,
     fetchImpl,
   })
@@ -114,7 +114,7 @@ test('runUnblockedGate: honors an explicit maxCandidates', async () => {
 test('runUnblockedGate: false on a malformed (null issues) payload', async () => {
   const fetchImpl = fakeFetch({ json: { data: null } })
   assert.equal(
-    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-friendly', fetchImpl }),
+    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-build', fetchImpl }),
     false,
   )
 })
@@ -124,7 +124,7 @@ test('runUnblockedGate: false when every candidate is blocked', async () => {
     json: { data: { issues: { nodes: [issueWith('started'), issueWith('unstarted')] } } },
   })
   assert.equal(
-    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-friendly', fetchImpl }),
+    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-build', fetchImpl }),
     false,
   )
 })
@@ -132,7 +132,7 @@ test('runUnblockedGate: false when every candidate is blocked', async () => {
 test('runUnblockedGate: false when no candidates at all', async () => {
   const fetchImpl = fakeFetch({ json: { data: { issues: { nodes: [] } } } })
   assert.equal(
-    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-friendly', fetchImpl }),
+    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-build', fetchImpl }),
     false,
   )
 })
@@ -199,7 +199,7 @@ function selectorFetch(viewerId = 'usr_me', nodes = [issueWith()]) {
 test('runUnblockedGate: no selector issues exactly one request and the pre-BOS-1292 filter', async () => {
   const fetchImpl = selectorFetch()
   assert.equal(
-    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-friendly', fetchImpl }),
+    await runUnblockedGate({ apiKey: 'k', state: 'Todo', label: 'agent-build', fetchImpl }),
     true,
   )
   assert.equal(fetchImpl.bodies.length, 1, 'no stray viewer lookup when no selector is set')
@@ -207,7 +207,7 @@ test('runUnblockedGate: no selector issues exactly one request and the pre-BOS-1
   // merged tree built before the selectors existed.
   assert.deepEqual(fetchImpl.bodies[0].variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
 })
 
@@ -236,13 +236,13 @@ test('runUnblockedGate: forwards assigneeOrCreator as a top-level or', async () 
   await runUnblockedGate({
     apiKey: 'k',
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     assigneeOrCreator: 'me',
     fetchImpl,
   })
   assert.deepEqual(fetchImpl.bodies[1].variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
     or: [{ assignee: { id: { eq: 'usr_owner' } } }, { creator: { id: { eq: 'usr_owner' } } }],
   })
   // The candidate window is untouched by the selectors.

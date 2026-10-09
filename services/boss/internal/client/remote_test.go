@@ -448,6 +448,93 @@ func assertZeroOutputPointer(t *testing.T, want, got *bool) {
 	}
 }
 
+// TestRemoteClient_CronJobConcurrencyPolicyPassThrough pins the BOS-1441 optional
+// concurrency_policy enum across the boss remote client → orchestrator hop for both create and
+// update. Unset stays nil and every explicit value — UNSPECIFIED included, which
+// only the daemon resolves — arrives unchanged, so a hardcoded or dropped value
+// on either side cannot pass.
+func TestRemoteClient_CronJobConcurrencyPolicyPassThrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		in   *pb.CronJobConcurrencyPolicy
+	}{
+		{"unset stays nil", nil},
+		{"explicit unspecified", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED.Enum()},
+		{"explicit skip", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP.Enum()},
+		{"explicit cancel in progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS.Enum()},
+		{"explicit allow concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT.Enum()},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
+				RepoId:            "repo-1",
+				Name:              "nightly",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			got := fake.createCronReq
+			if got == nil {
+				t.Fatal("ProxyCreateCronJob was not called")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{
+				Id:                "cj-1",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob: %v", err)
+			}
+			got := fake.updateCronReq
+			if got == nil {
+				t.Fatal("ProxyUpdateCronJob was not called")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+	}
+}
+
+// assertConcurrencyPolicyPointer compares a concurrency_policy pointer against
+// the value the caller supplied, treating nil (unset) as distinct from a pointer
+// to UNSPECIFIED: pass-through hops copy the pointer and never resolve it.
+func assertConcurrencyPolicyPointer(t *testing.T, want, got *pb.CronJobConcurrencyPolicy) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("concurrency_policy = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("concurrency_policy = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("concurrency_policy = %v, want %v", *got, *want)
+	}
+}
+
+// TestRemoteClient_MergeSession_RefusesHeadPin pins BOS-1381: the orchestrator
+// API has no head-pin field, so a pinned merge over --remote is refused with
+// Unimplemented before any RPC rather than silently merged unpinned.
+func TestRemoteClient_MergeSession_RefusesHeadPin(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	_, _, err := c.MergeSession(context.Background(), "sess-1", strings.Repeat("0a1b", 10))
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("code = %v, want Unimplemented (err=%v)", connect.CodeOf(err), err)
+	}
+	if fake.mergeSessReq != nil {
+		t.Fatalf("ProxyMergeSession was called with %+v; a pinned remote merge must issue no RPC", fake.mergeSessReq)
+	}
+}
+
 // TestRemoteClient_MergeSession_ProxiesToOrchestrator pins BOS-816: MergeSession
 // used to be the one stubbed method in the session-mutator block, returning
 // errLocalOnly while bosso already implemented ProxyMergeSession. This asserts
@@ -456,7 +543,7 @@ func TestRemoteClient_MergeSession_ProxiesToOrchestrator(t *testing.T) {
 	t.Parallel()
 	c, fake := newTestRemote(t)
 
-	sess, detail, err := c.MergeSession(context.Background(), "sess-1")
+	sess, detail, err := c.MergeSession(context.Background(), "sess-1", "")
 	if err != nil {
 		t.Fatalf("MergeSession: %v", err)
 	}

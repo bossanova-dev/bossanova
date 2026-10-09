@@ -21,7 +21,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "ready-handoff", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "session-phase", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -666,6 +666,46 @@ func TestWaitingDemotedWorldSeedsTheContrast(t *testing.T) {
 	for _, entry := range w.ChatStatuses {
 		if entry.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
 			t.Errorf("%s chat status = %v, want WAITING", entry.GetAgentSessionId(), entry.GetStatus())
+		}
+	}
+}
+
+func TestSessionPhaseWorld(t *testing.T) {
+	w := Presets()["session-phase"].World()
+	if len(w.Sessions) != 2 || len(w.Chats) != 2 || len(w.ChatStatuses) != 2 || len(w.SessionStatuses) != 2 {
+		t.Fatal("phase world must contain two sessions with one chat each")
+	}
+	for i, sess := range w.Sessions {
+		if sess.GetDisplayLabel() != "working" || !sess.GetDisplaySpinner() {
+			t.Errorf("session %d is not working with a spinner", i)
+		}
+		want := ""
+		if i == 0 {
+			want = "reviewing"
+		}
+		if w.ChatStatuses[i].GetPhase() != want || w.SessionStatuses[i].GetPhase() != want {
+			t.Errorf("phase %d must be %q", i, want)
+		}
+	}
+}
+
+func TestReadyHandoffWorld(t *testing.T) {
+	w := Presets()["ready-handoff"].World()
+	if len(w.Sessions) != 4 || len(w.Chats) != 4 || len(w.ChatStatuses) != 4 || len(w.SessionStatuses) != 4 {
+		t.Fatal("hand-off world must include all four contrasts and their chat/status facts")
+	}
+	labels := []string{displaystatus.ReadyLabel, displaystatus.ReadyLabel, "✓ passing", displaystatus.VerifyingLabel}
+	demoted := []bool{true, false, true, false}
+	overWaiting := []bool{false, true, false, false}
+	for i, sess := range w.Sessions {
+		if sess.GetDisplayLabel() != labels[i] || sess.GetIsWaitingDemoted() != demoted[i] || sess.GetIsReadyOverWaiting() != overWaiting[i] {
+			t.Errorf("row %d label/marks = %q/%v/%v", i, sess.GetDisplayLabel(), sess.GetIsWaitingDemoted(), sess.GetIsReadyOverWaiting())
+		}
+		if i < 3 && w.SessionStatuses[i].GetWaitingReason() == "" {
+			t.Errorf("row %d lost its waiting reason", i)
+		}
+		if i < 2 && (sess.GetDisplaySpinner() || sess.GetDisplayIntent() != pb.DisplayIntent_DISPLAY_INTENT_SUCCESS) {
+			t.Errorf("Ready row %d must be success without spinner", i)
 		}
 	}
 }

@@ -44,7 +44,43 @@ func (f *fakeDaemonRPC) DeleteNote(_ context.Context, req *connect.Request[pb.De
 	})
 }
 
+func (f *fakeDaemonRPC) SyncNotesNow(_ context.Context, _ *connect.Request[pb.SyncNotesNowRequest]) (*connect.Response[pb.SyncNotesNowResponse], error) {
+	return sessionResp(f, func() *pb.SyncNotesNowResponse {
+		return &pb.SyncNotesNowResponse{
+			IsWorkerConfigured: true,
+			StateCounts:        []*pb.NoteSyncStateCount{{State: "pending", NoteCount: 3}},
+		}
+	})
+}
+
 // --- LocalClient: Notes ---
+
+func TestLocalClientSyncNotesNow(t *testing.T) {
+	t.Parallel()
+
+	c := &LocalClient{rpc: &fakeDaemonRPC{}}
+	resp, err := c.SyncNotesNow(context.Background())
+	if err != nil {
+		t.Fatalf("SyncNotesNow: unexpected error: %v", err)
+	}
+	if !resp.GetIsWorkerConfigured() || len(resp.GetStateCounts()) != 1 || resp.GetStateCounts()[0].GetNoteCount() != 3 {
+		t.Fatalf("SyncNotesNow: unexpected response: %+v", resp)
+	}
+
+	c = &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+	if _, err := c.SyncNotesNow(context.Background()); !errors.Is(err, errRPC) {
+		t.Fatalf("SyncNotesNow: expected errRPC, got %v", err)
+	}
+}
+
+func TestRemoteClientSyncNotesNowIsLocalOnly(t *testing.T) {
+	t.Parallel()
+
+	_, err := (&RemoteClient{}).SyncNotesNow(context.Background())
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("code = %v, want Unimplemented (err=%v)", connect.CodeOf(err), err)
+	}
+}
 
 func TestLocalClientCreateNote(t *testing.T) {
 	t.Parallel()

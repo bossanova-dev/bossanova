@@ -1191,7 +1191,7 @@
       "id": "web-cron-form",
       "surface": "web",
       "title": "Web Cron Job Form",
-      "description": "Opening the New cron job create form on /settings/cron: the modal with Name, Repo, Agent, Model, Prompt, Schedule, Timezone, and Gate command fields plus the Run setup / Zero output / Enabled toggles.",
+      "description": "Opening the New cron job create form on /settings/cron: the modal with Name, Repo, Agent, Model, Prompt, Schedule, Timezone, and Gate command fields, the Concurrency select directly below Gate command defaulting to Skip while previous run is active, plus the Run setup / Zero output / Enabled toggles.",
       "privacy": "fixture",
       "capture": "video",
       "slowMo": 350,
@@ -1227,7 +1227,7 @@
       "id": "web-accounts-list",
       "surface": "web",
       "title": "Web Accounts",
-      "description": "Accounts settings page (/settings/accounts): the cross-organization rotation-accounts table with Provider, Label, Organization, Daemon, Health, Last checked, and Usage columns plus the per-row action group. Organization and Daemon identify where each account is registered, so accounts aggregated from more than one organization and daemon stay attributable. Disabled rows use the shared dormant treatment; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%. The Last checked column dates every credential verdict and keeps three states apart that used to render as one green row: 'personal' was checked 15m ago and came back failed (auth_invalidated), so its Health pill reads Failed even though its stored health field still says ok; 'saturated@anthropic.com' shows unavailable (runner_unavailable), a check that could not be evaluated and is therefore never reported as a rejected credential; and 'retired@anthropic.com' reads Never checked rather than borrowing the clean row's ok. Only the daemon's closed-set failure-class token is shown — never a credential and never raw provider text.",
+      "description": "Accounts settings page (/settings/accounts): the cross-organization rotation-accounts table with Provider, Label, Daemon, Health, and Usage columns plus the per-row Test / Edit / Remove action group. Daemon identifies where each account is registered and never wraps mid-name; the header filter still narrows by organization and daemon. Usage shows one line per window, 5h above 7d, each with its reset countdown. Disabled rows use the shared dormant treatment, which also fades the daemon chip and Health pill; no Active/Disabled status column is rendered. One account's provider cannot determine utilization, so its Usage cell shows an em dash rather than a fabricated 0%. The Health pill keeps three credential states apart that would otherwise render as one green row: 'personal' reads Failed because its last check came back auth_invalidated even though its stored health field still says ok; 'saturated@anthropic.com' reads Unverified, a check that could not be evaluated and is therefore never reported as a rejected credential; and 'retired@anthropic.com' reads Unchecked rather than borrowing the clean row's OK.",
       "privacy": "fixture",
       "capture": "still",
       "route": "/settings/accounts",
@@ -3089,12 +3089,12 @@
       "viewport": { "width": 1280, "height": 1000 }
     },
     {
-      "id": "docs-scheduled-sessions",
+      "id": "docs-cron-jobs",
       "surface": "docs",
-      "title": "Docs — Scheduled Sessions Guide",
-      "description": "Rendered Scheduled Sessions guide page (services/docs/docs/guides/scheduled-sessions.md), including the gate-command Outcome table that separates a `gated` skip from a `gate_failed` gate that could not run.",
+      "title": "Docs — Cron Jobs Guide",
+      "description": "Rendered Cron Jobs guide page (services/docs/docs/guides/cron-jobs.md), including the gate-command Outcome table that separates a `gated` skip from a `gate_failed` gate that could not run.",
       "privacy": "fixture",
-      "route": "/guides/scheduled-sessions",
+      "route": "/guides/cron-jobs",
       "selector": "article",
       "viewport": { "width": 1280, "height": 1600 }
     },
@@ -3382,9 +3382,9 @@
       "recipeIds": ["docs-logging-guide"]
     },
     {
-      "name": "Docs Scheduled Sessions guide",
-      "patterns": ["services/docs/docs/guides/scheduled-sessions"],
-      "recipeIds": ["docs-scheduled-sessions"]
+      "name": "Docs Cron Jobs guide",
+      "patterns": ["services/docs/docs/guides/cron-jobs"],
+      "recipeIds": ["docs-cron-jobs"]
     },
     {
       "name": "Docs Signing In guide",

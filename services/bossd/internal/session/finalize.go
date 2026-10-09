@@ -1171,7 +1171,7 @@ func (l *Lifecycle) hardDeleteSession(ctx context.Context, session *models.Sessi
 	// agent_chats.session_id has ON DELETE CASCADE, so once the row is gone
 	// we lose the tmux_session_name needed to find and kill the tmux session
 	// — leaving a stranded `claude` process with no DB pointer back to it.
-	l.killAllChatTmuxSessions(ctx, session.ID)
+	_ = l.killAllChatTmuxSessions(ctx, session.ID)
 
 	if err := l.sessions.Delete(ctx, session.ID); err != nil {
 		return fmt.Errorf("delete session: %w", err)

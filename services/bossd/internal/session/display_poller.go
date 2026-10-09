@@ -32,9 +32,11 @@ type DisplayPoller struct {
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
 	completionNotifier SessionCompletionNotifier
-	health             WebhookHealth        // optional; nil polls every repo at interval
-	archiver           SessionArchiver      // optional; nil disables archive-after-merge
-	archiveTracker     ArchiveWorkerTracker // optional; nil leaves archives outside shutdown coordination
+	health             WebhookHealth          // optional; nil polls every repo at interval
+	archiver           SessionArchiver        // optional; nil disables archive-after-merge
+	archiveTracker     ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
+	receiptPoster      vcs.CommitStatusPoster // optional; nil (or nil receiptProbe) disables receipt carrying
+	receiptProbe       ReceiptPushProbe       // optional; see SetReceiptCarrier
 	interval           time.Duration
 	logger             zerolog.Logger
 	done               chan struct{}
@@ -75,6 +77,24 @@ func NewDisplayPoller(
 // tests that don't want SQLite writes on every tick).
 func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
 	p.snapshots = s
+}
+
+// ReceiptPushProbe reports whether a session's own worktree pushed newSHA on
+// top of fromSHA. *git.Manager satisfies it with SessionPushedHead; it is
+// declared here so the poller needs no dependency on the large worktree
+// interface.
+type ReceiptPushProbe interface {
+	SessionPushedHead(ctx context.Context, worktreePath, branch, fromSHA, newSHA string) (bool, error)
+}
+
+// SetReceiptCarrier wires boss/build receipt carrying (BOS-1452): when a
+// session's own worktree pushes a head descending from the last receipted
+// head, the poller posts a carried receipt on the new head so the hand-off
+// status survives the session's follow-up commits. nil-safe: either argument
+// nil disables carrying.
+func (p *DisplayPoller) SetReceiptCarrier(poster vcs.CommitStatusPoster, probe ReceiptPushProbe) {
+	p.receiptPoster = poster
+	p.receiptProbe = probe
 }
 
 // SetWebhookHealth wires the webhook-delivery tracker. Sessions in a repo whose
@@ -266,7 +286,7 @@ func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prN
 		if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
 			continue
 		}
-		if p.pollSession(ctx, repo, sess.ID, *sess.PRNumber) {
+		if p.pollSession(ctx, repo, sess, *sess.PRNumber) {
 			refreshed++
 			refreshedSessions = append(refreshedSessions, sess.ID)
 		}
@@ -325,7 +345,7 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 			if !p.shouldPollSession(repo.OriginURL, sess.ID, now) {
 				continue
 			}
-			p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)
+			p.pollSession(ctx, repo, sess, *sess.PRNumber)
 		}
 	}
 	p.pruneLastPoll(activeSessions)
@@ -333,7 +353,8 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 
 // pollSession fetches PR status, checks, and reviews for a single session
 // and updates the tracker with the computed display status.
-func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sessionID string, prNumber int) bool {
+func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int) bool {
+	sessionID := sess.ID
 	repoPath := repo.OriginURL
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prNumber)
 	if err != nil {
@@ -382,7 +403,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// disabling the repair plugin (which only triggers on
 	// FAILING/CONFLICT/REJECTED). The previous tracker entry sticks; the
 	// next poll cycle retries.
-	checks, err := p.provider.GetCheckResults(ctx, repoPath, prNumber)
+	checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
 		return false
@@ -394,7 +415,15 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		return false
 	}
 
+	checks := checkSet.Checks
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	info.HasBuildReceipt = checkSet.HasBuildReceipt
+	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
+	// Carry the receipt BEFORE Set, so Ready shows on this same tick and the
+	// tracker latch moves to the carried head.
+	if p.maybeCarryReceipt(ctx, repo, sess, prNumber, prStatus.HeadSHA, checkSet) {
+		info.HasBuildReceipt = true
+	}
 	if repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "display poller") {
 		info.Status = vcs.DisplayStatusConflict
 	}
@@ -412,6 +441,81 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	// here, so downgrade it (BOS-235 Bug 1, direction 2).
 	p.maybeClearStaleFixLoopBlock(ctx, sessionID, prStatus, checks, info)
 	return true
+}
+
+// carriedReceiptDescriptionPrefix marks a boss/build receipt bossd carried
+// forward rather than one a skill posted. Documented in
+// docs/skills/commit-status-receipts.md.
+const carriedReceiptDescriptionPrefix = "carried by bossd from "
+
+// maybeCarryReceipt posts a carried boss/build receipt on head when the
+// session's own worktree pushed it on top of the last receipted head
+// (BOS-1452), and reports whether a receipt is now on head. Conditions are
+// checked cheapest first; the git probe runs only for a session whose head
+// moved off a latched receipt with no boss/build status of its own. A failed
+// probe or post is never fatal: it claims no receipt and the next poll
+// retries.
+func (p *DisplayPoller) maybeCarryReceipt(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int, head string, checkSet vcs.CheckSet) bool {
+	if p.receiptPoster == nil || p.receiptProbe == nil {
+		return false
+	}
+	prev := p.tracker.Get(sess.ID)
+	if prev == nil || prev.ReceiptHeadSHA == "" {
+		return false
+	}
+	from := prev.ReceiptHeadSHA
+	if head == "" || head == from {
+		return false
+	}
+	if checkSet.BuildReceiptSeen {
+		return false
+	}
+	if sess.WorktreePath == "" || sess.BranchName == "" {
+		return false
+	}
+	pushed, err := p.receiptProbe.SessionPushedHead(ctx, sess.WorktreePath, sess.BranchName, from, head)
+	if err != nil || !pushed {
+		// Evaluated every tick for a session in this state: Debug only.
+		p.logger.Debug().Err(err).
+			Str("session_id", sess.ID).
+			Int("pr_number", prNumber).
+			Str("from", from).
+			Str("to", head).
+			Msg("display poller: head not carried; not this session's own push on the receipted head")
+		return false
+	}
+	err = p.receiptPoster.PostCommitStatus(ctx, repo.OriginURL, head, vcs.CommitStatus{
+		Context:     vcs.BuildReceiptContext,
+		State:       "success",
+		Description: carriedReceiptDescriptionPrefix + shortSHA(from),
+	})
+	if err != nil {
+		p.logger.Warn().Err(err).
+			Str("session_id", sess.ID).
+			Int("pr_number", prNumber).
+			Str("from", from).
+			Str("to", head).
+			Msg("display poller: post carried boss/build receipt failed; will retry next poll")
+		return false
+	}
+	if inv, ok := p.provider.(vcs.ReadInvalidator); ok {
+		inv.InvalidatePR(repo.OriginURL, prNumber)
+	}
+	p.logger.Info().
+		Str("session_id", sess.ID).
+		Int("pr_number", prNumber).
+		Str("from", from).
+		Str("to", head).
+		Msg("carried boss/build receipt")
+	return true
+}
+
+// shortSHA is the first 12 characters of sha (all of it when shorter).
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // maybeClearStaleFixLoopBlock auto-unblocks a session sitting in Blocked with

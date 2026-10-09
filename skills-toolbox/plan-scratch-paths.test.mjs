@@ -347,3 +347,41 @@ test('BOS-1335: the epic reverify bundle and child stored read-back are declared
     'image-guard-stored',
   ])
 })
+
+test('BOS-1374: the child fan-out route, ledger and child precheck are declared families', () => {
+  // The fan-out orchestrator writes the hydrated route bundle, its ledger, and one post-settle
+  // idempotence payload per child. Each must resolve to its own family in templated AND concrete
+  // form, and the child precheck must not be swallowed by — nor swallow — the parent `precheck`.
+  for (const [family, templated, concrete, parts] of [
+    [
+      'fanout-route',
+      '<ISSUE-ID>.fanout-route.json',
+      'ABC-1.fanout-route.json',
+      { issueId: 'ABC-1' },
+    ],
+    [
+      'fanout-ledger',
+      '<ISSUE-ID>.fanout-ledger.json',
+      'ABC-1.fanout-ledger.json',
+      { issueId: 'ABC-1' },
+    ],
+    [
+      'child-precheck',
+      '<ISSUE-ID>.child-<CHILD-ID>.precheck.json',
+      'ABC-1.child-ABC-2.precheck.json',
+      { issueId: 'ABC-1', childId: 'ABC-2' },
+    ],
+  ]) {
+    assert.equal(planScratchFamily(family).template, templated)
+    for (const basename of [templated, concrete]) {
+      const result = planScratchToken(`.linear-plans/run-X/${basename}`)
+      assert.ok(result.ok, `${basename}: ${result.ok ? '' : result.reason}`)
+      assert.deepEqual(result.families, [family], `${basename} resolved to the wrong family`)
+    }
+    assert.equal(planScratchPath('X', family, parts), `.linear-plans/run-X/${concrete}`)
+  }
+  assert.deepEqual(planScratchToken('.linear-plans/run-X/ABC-1.precheck.json').families, [
+    'precheck',
+  ])
+  assert.throws(() => planScratchPath('X', 'child-precheck', { issueId: 'ABC-1' }), /unusable/)
+})

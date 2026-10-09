@@ -42,6 +42,7 @@ type Evaluator struct {
 	provider prStatusProvider
 	now      func() time.Time
 	logger   zerolog.Logger
+	retirer  *Retirer
 	health   webhookHealth // optional; nil reconciles every PR every pass
 
 	evalMu    sync.Mutex
@@ -71,6 +72,10 @@ type prKey struct {
 func (e *Evaluator) SetWebhookHealth(h webhookHealth) {
 	e.health = h
 }
+
+// SetRetirer wires terminal-session reconciliation. Call before sharing the evaluator.
+// A nil retirer preserves the existing PR-only evaluation behavior.
+func (e *Evaluator) SetRetirer(r *Retirer) { e.retirer = r }
 
 func (e *Evaluator) markEvaluated(k prKey, at time.Time) {
 	e.evalMu.Lock()
@@ -140,6 +145,12 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	if err != nil {
 		return fmt.Errorf("list active github callbacks for %s/%s#%d: %w", repoOwner, repoName, prNumber, err)
 	}
+	// Terminal owners must settle even when GitHub is open or unavailable.
+	if e.retirer != nil {
+		if err := e.retirer.reconcilePR(ctx, cbs); err != nil {
+			return err
+		}
+	}
 	if len(cbs) == 0 {
 		return nil
 	}
@@ -199,6 +210,16 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 			continue
 		}
 		if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
+			if e.retirer != nil && cb.Trigger == models.GithubCallbackTriggerMerged {
+				retiring, err := e.retirer.retiresMergedBaseline(ctx, cb)
+				if err != nil {
+					e.logger.Warn().Err(err).Str("callback_id", cb.ID).Msg("callback evaluator: classify merge baseline retirement failed")
+					return fmt.Errorf("classify merge baseline retirement %s: %w", cb.ID, err)
+				}
+				if retiring {
+					continue
+				}
+			}
 			if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
 				if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
 					continue
@@ -222,6 +243,9 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 		e.logger.Info().Str("callback_id", cb.ID).Str("trigger", string(cb.Trigger)).
 			Str("repo", rp).Int("pr", prNumber).Msg("callback evaluator: triggered")
 	}
+	if e.retirer != nil && status != nil && (status.State == vcs.PRStateMerged || status.State == vcs.PRStateClosed) {
+		return e.retirer.reconcilePR(ctx, cbs)
+	}
 	return nil
 }
 
@@ -240,6 +264,12 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 	cbs, err := e.store.List(ctx, db.ListGithubCallbacksFilter{State: &active})
 	if err != nil {
 		return fmt.Errorf("list active github callbacks: %w", err)
+	}
+	// Terminal owners must settle even when GitHub is open or unavailable.
+	if e.retirer != nil {
+		if err := e.retirer.reconcilePR(ctx, cbs); err != nil {
+			return err
+		}
 	}
 	now := e.now()
 	seen := make(map[prKey]struct{}, len(cbs))

@@ -69,10 +69,11 @@ func tailFile(f *os.File, size int64, maxLines int) (string, error) {
 
 	if size <= tailReadAllThreshold {
 		data := make([]byte, size)
-		if _, err := f.ReadAt(data, 0); err != nil && !errors.Is(err, io.EOF) {
+		n, err := f.ReadAt(data, 0)
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", err
 		}
-		return lastLines(data, maxLines), nil
+		return lastLines(data[:n], maxLines), nil
 	}
 
 	return tailReaderAt(f, size, maxLines)

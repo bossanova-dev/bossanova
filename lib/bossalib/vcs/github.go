@@ -54,3 +54,42 @@ func ownerRepo(path string) string {
 	}
 	return parts[0] + "/" + strings.TrimSuffix(parts[1], ".git")
 }
+
+// ParseGitHubCheckState converts a GitHub check state into a status, an
+// optional conclusion and a "recognized" flag. The input is the combined
+// vocabulary `gh pr checks` reports (SUCCESS, FAILURE, PENDING,
+// STARTUP_FAILURE, CANCELLED, SKIPPED, ACTION_REQUIRED, ERROR, TIMED_OUT, ...),
+// which is also what a REST check run's conclusion (or, while it is not
+// completed, its status) and a commit status's state spell, case aside.
+//
+// Unrecognized values are deliberately surfaced as completed but unclassified:
+// they are neither green nor red, and the recognized return lets the caller
+// preserve that distinction for the aggregate verdict (EvaluateChecks).
+func ParseGitHubCheckState(s string) (CheckStatus, *CheckConclusion, bool) {
+	switch strings.ToUpper(s) {
+	case "SUCCESS":
+		c := CheckConclusionSuccess
+		return CheckStatusCompleted, &c, true
+	case "FAILURE", "STARTUP_FAILURE", "STALE", "ACTION_REQUIRED", "ERROR":
+		c := CheckConclusionFailure
+		return CheckStatusCompleted, &c, true
+	case "NEUTRAL":
+		c := CheckConclusionNeutral
+		return CheckStatusCompleted, &c, true
+	case "CANCELLED":
+		c := CheckConclusionCancelled
+		return CheckStatusCompleted, &c, true
+	case "SKIPPED":
+		c := CheckConclusionSkipped
+		return CheckStatusCompleted, &c, true
+	case "TIMED_OUT":
+		c := CheckConclusionTimedOut
+		return CheckStatusCompleted, &c, true
+	case "IN_PROGRESS":
+		return CheckStatusInProgress, nil, true
+	case "QUEUED", "PENDING", "WAITING":
+		return CheckStatusQueued, nil, true
+	default:
+		return CheckStatusCompleted, nil, false
+	}
+}

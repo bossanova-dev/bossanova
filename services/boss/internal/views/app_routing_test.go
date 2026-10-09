@@ -624,7 +624,7 @@ func TestReEnterArchivingSessionSeedsArchiving(t *testing.T) {
 func TestReEnterAfterArchiveSuccessDoesNotSeedArchiving(t *testing.T) {
 	a := NewApp(nil, nil)
 	a.home.markArchiving("s1")
-	a.home.resolveArchive("s1", nil)
+	a.home.resolveArchive("s1", nil, false)
 
 	model, _ := a.Update(switchViewMsg{view: ViewChatPicker, sessionID: "s1"})
 	got := model.(App)
@@ -658,14 +658,14 @@ func TestNewHomeModelCopiesArchiveStateWithoutAliasing(t *testing.T) {
 	a.home.markArchiving("s1")
 	a.home.markArchiving("s2")
 	a.home.markArchiving("s3")
-	a.home.resolveArchive("s3", nil)
+	a.home.resolveArchive("s3", nil, false)
 
 	rebuilt := a.newHomeModel()
 
 	if !rebuilt.isArchiving("s1") || !rebuilt.isArchiving("s2") || !rebuilt.isArchiving("s3") || !rebuilt.archiveInFlight("s1") || !rebuilt.archiveInFlight("s2") || rebuilt.archiveInFlight("s3") {
 		t.Fatal("rebuilt Home did not preserve per-session archive state")
 	}
-	rebuilt.resolveArchive("s1", errors.New("boom"))
+	rebuilt.resolveArchive("s1", errors.New("boom"), false)
 	if !a.home.isArchiving("s1") || !a.home.archiveInFlight("s1") {
 		t.Fatal("rebuilt Home aliases archive state from prior Home")
 	}
@@ -855,7 +855,7 @@ func TestUpdateLoginInvalidatesPreLoginAuthStatus(t *testing.T) {
 func TestNewHomeModelPreservesResolvedArchiveOverride(t *testing.T) {
 	a := NewApp(nil, nil)
 	a.home.markArchiving("s1")
-	a.home.resolveArchive("s1", nil)
+	a.home.resolveArchive("s1", nil, false)
 
 	rebuilt := a.newHomeModel()
 

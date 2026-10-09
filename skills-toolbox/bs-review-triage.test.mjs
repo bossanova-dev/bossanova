@@ -11,6 +11,8 @@ import {
   appendCarriedObservation,
   classifyMonoclassRound,
   triageFindings,
+  normalizeCategory,
+  mustFixCategories,
 } from './bs-review-triage.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-review-triage.mjs', import.meta.url))
@@ -1817,4 +1819,87 @@ test('CLI categorize still reads a PRESENT non-rostered Tier 1 lens envelope', (
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('normalizes category names without throwing', () => {
+  for (const [input, expected] of [
+    ['Error Handling', 'error-handling'],
+    ['__foo...bar!!', 'foo-bar'],
+    ['x'.repeat(39) + ' !!suffix', 'x'.repeat(39)],
+    ['', ''],
+    ['   ', ''],
+    [null, ''],
+    [42, ''],
+  ])
+    assert.equal(normalizeCategory(input), expected)
+})
+test('triage carries the first nonblank category normalized', () => {
+  const result = triageFindings([
+    finding({ severity: 'Warning', category: ' ', lens: 'one' }),
+    finding({ severity: 'Warning', category: 'Error Handling', lens: 'two' }),
+  ])
+  assert.equal(result.mustFix[0].category, 'error-handling')
+  assert.equal(triageFindings([finding({ severity: 'Warning' })]).mustFix[0].category, '')
+})
+test('extracts must-fix reviewer categories across passes, promotions and refutations', () => {
+  const a = {
+    file: 'a',
+    line: 1,
+    title: 'first',
+    category: 'Error Handling',
+    severity: 'Warning',
+    lenses: ['one', 'two'],
+  }
+  const b = { file: 'b', line: 2, title: 'critical', severity: 'Critical', lenses: ['one'] }
+  const c = {
+    file: 'c',
+    line: 3,
+    title: 'promoted',
+    category: 'API',
+    severity: 'Suggestion',
+    lenses: ['three'],
+  }
+  const refuted = { ...a, file: 'refuted', category: 'discard' }
+  const passes = [
+    { mustFix: [a, b, refuted], pool: [c] },
+    { mustFix: [{ ...a, title: 'second', severity: 'Critical' }] },
+  ]
+  const report = {
+    mustfix: {
+      items: [{ ...a }, { ...b }, { ...c }, { ...refuted, premises: [{ verdict: 'refuted' }] }],
+    },
+  }
+  assert.deepEqual(mustFixCategories(passes, { report }), [
+    { where: 'one/error-handling', detail: 'first', severity: 'Critical' },
+    { where: 'two/error-handling', detail: 'first', severity: 'Critical' },
+    { where: 'one/uncategorized', detail: 'critical', severity: 'Critical' },
+    { where: 'three/api', detail: 'promoted', severity: 'Suggestion' },
+  ])
+  assert.ok(!mustFixCategories(passes).some((x) => x.where === 'three/api'))
+  assert.deepEqual(mustFixCategories(null), [])
+  assert.deepEqual(mustFixCategories([null, {}, { mustFix: [null, {}] }], { report: null }), [])
+})
+test('categories CLI reads persisted passes and skips malformed or missing files nonfatally', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-categories-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const entry = { title: 'defect', category: 'API', severity: 'Warning', lenses: ['reviewer'] }
+  writeFileSync(join(dir, 'triage.json'), JSON.stringify({ mustFix: [entry] }))
+  mkdirSync(join(dir, 'round2'))
+  writeFileSync(
+    join(dir, 'round2', 'triage.json'),
+    JSON.stringify({ mustFix: [{ ...entry, category: 'other' }] }),
+  )
+  mkdirSync(join(dir, 'round3'))
+  const run = () =>
+    spawnSync(process.execPath, [scriptPath, 'categories', dir, '--report', join(dir, 'missing')], {
+      encoding: 'utf8',
+    })
+  let result = run()
+  assert.equal(result.status, 0)
+  assert.equal(JSON.parse(result.stdout).length, 2)
+  assert.match(result.stderr, /triage.json/)
+  writeFileSync(join(dir, 'triage.json'), 'invalid')
+  result = run()
+  assert.equal(result.status, 0)
+  assert.equal(JSON.parse(result.stdout).length, 1)
 })

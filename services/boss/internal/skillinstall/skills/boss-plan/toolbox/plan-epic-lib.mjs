@@ -17,14 +17,14 @@
 //                                                           // can never pass validateSpecIdentity
 //     parent:   { title, goal, keyChanges[] },              // the epic overview
 //     children: [
-//       { key, title, goal, keyChanges[], blockedByKeys[], estimate, priority, layer?, agentFriendly?, openQuestions? },
+//       { key, title, goal, keyChanges[], blockedByKeys[], estimate, priority, layer?, agentBuild?, openQuestions? },
 //       ...
 //     ]
 //
-// - `agentFriendly` is the child plan's agent-friendliness call (optional;
+// - `agentBuild` is the child plan's agent-friendliness call (optional;
 //   default true). It is NOT structurally validated, but it IS persisted in the
 //   spec so a fresh-worktree resume can re-derive each ALREADY-created child's
-//   deferred-exposure label (`agent-friendly` vs `needs-human`) without the
+//   deferred-exposure label (`agent-build` vs `needs-human`) without the
 //   `.linear-plans/` scratch.
 // - `openQuestions` is the child plan's list of genuinely controversial open
 //   questions (optional). A non-empty list drives the `agent-question` label
@@ -218,13 +218,11 @@ export function normalizeDecomposition(spec) {
       warnings.push(`${where}: dropped unknown layer ${JSON.stringify(child.layer)}`)
       delete child.layer
     }
-    if (child.agentFriendly != null && typeof child.agentFriendly !== 'boolean') {
-      const text = String(child.agentFriendly).trim().toLowerCase()
+    if (child.agentBuild != null && typeof child.agentBuild !== 'boolean') {
+      const text = String(child.agentBuild).trim().toLowerCase()
       // Anything other than an explicit "true" goes to a human rather than the unattended queue.
-      child.agentFriendly = text === 'true'
-      warnings.push(
-        `${where}: agentFriendly ${JSON.stringify(text)} read as ${child.agentFriendly}`,
-      )
+      child.agentBuild = text === 'true'
+      warnings.push(`${where}: agentBuild ${JSON.stringify(text)} read as ${child.agentBuild}`)
     }
     for (const field of ['blockedByKeys', 'keyChanges', 'openQuestions']) {
       if (typeof child[field] === 'string') child[field] = [child[field]]
@@ -601,7 +599,7 @@ const EPIC_SPEC_MARKER_LEGACY_RE = /<!--\s*boss-plan-epic-spec:(\{[\s\S]*?\})\s*
  * spec ATTACHMENT: `{ schemaVersion, parentId, parent, children }` — the
  * `parent` overview (title, goal, keyChanges, priority) AND every child's full
  * metadata (key, title, goal, keyChanges, blockedByKeys, estimate, priority,
- * layer, agentFriendly, agentQuestion) — everything needed to finish the
+ * layer, agentBuild, agentQuestion) — everything needed to finish the
  * original epic WITHOUT re-decomposing, INCLUDING each child's
  * deferred-exposure agent-friendliness call so a resume re-stamps an
  * already-created child correctly.
@@ -641,13 +639,13 @@ export function serializeEpicSpec(spec) {
     // Persist the per-child agent-friendliness decision so a fresh-worktree
     // resume (whose `.linear-plans/` child plans are gone) exposes each
     // ALREADY-created-but-unexposed child correctly — a child whose plan
-    // concluded it needs a human (`agentFriendly:false`) is re-stamped
-    // `needs-human`, never `agent-friendly`. Without this the spec carried
+    // concluded it needs a human (`agentBuild:false`) is re-stamped
+    // `needs-human`, never `agent-build`. Without this the spec carried
     // only `priority`, so a crash in the create→expose window left resume
-    // unable to recover the call. Default true (agent-friendly) per the
+    // unable to recover the call. Default true (agent-build) per the
     // plan-contract convention when the spec omits it; only an explicit
     // `false` is a needs-human child.
-    agentFriendly: c?.agentFriendly !== false,
+    agentBuild: c?.agentBuild !== false,
     // Persist whether the child plan recorded genuinely controversial open
     // questions, so a fresh-worktree resume re-applies the `agent-question` label
     // (the Phase 4 contract: `openQuestions` non-empty ⇒ `agent-question`) even
@@ -744,12 +742,12 @@ function normalizeParsedSpec(json) {
   // Normalize the per-child agent-friendliness decision to a definite boolean
   // so the resume/exposure path never has to guess. An OLD marker (written
   // before this field was persisted) simply lacks it and degrades to true
-  // (agent-friendly) — the plan-contract default; only an explicit `false`
+  // (agent-build) — the plan-contract default; only an explicit `false`
   // recovers a needs-human child. Non-object entries are left untouched
   // (callers already tolerate a garbled child list).
   for (const child of parsed.children) {
     if (child && typeof child === 'object') {
-      child.agentFriendly = child.agentFriendly !== false
+      child.agentBuild = child.agentBuild !== false
       // Normalize the open-questions decision to a definite boolean too. An OLD
       // marker lacks it and degrades to false (no `agent-question`); only an
       // explicit `true` re-applies the label on resume.

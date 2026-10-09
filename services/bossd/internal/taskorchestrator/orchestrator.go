@@ -960,7 +960,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Msg("auto-merge: substituted squash for rebase")
 	}
 
-	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, strategy); err != nil {
+	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, vcs.MergePROpts{Strategy: strategy}); err != nil {
 		if mergepolicy.IsRebaseRefusal(strategy, err) {
 			o.logger.Info().Err(err).
 				Int("pr", prNumber).

@@ -261,3 +261,32 @@ func TestChatPicker_WaitingRendersReasonAndBadge(t *testing.T) {
 		}
 	}
 }
+
+func TestReadyWaitingHints(t *testing.T) {
+	sess := &pb.Session{DisplayLabel: displaystatus.ReadyLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}
+	if got := renderDisplayStatus(sess, newStatusSpinner()); got != styleStatusSuccess.Render(displaystatus.ReadyLabel) {
+		t.Fatalf("Ready style = %q", got)
+	}
+	if !waitingBadgeSuperseded(sess) {
+		t.Fatal("Ready must restore the waiting antecedent")
+	}
+	m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": testWaitingReason}}
+	if got := m.waitingReasonLine(); got != "waiting: "+testWaitingReason {
+		t.Fatalf("Ready chat picker hint = %q", got)
+	}
+	h := NewHomeModel(nil, context.Background(), nil)
+	updated, _ := h.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	h = updated.(HomeModel)
+	sess.Id, sess.Title = "s1", "Hand off the importer"
+	updated, _ = h.Update(sessionListMsg{sessions: []*pb.Session{sess}, daemonStatuses: map[string]string{"s1": statusWaiting}, daemonWaitingReasons: map[string]string{"s1": testWaitingReason}})
+	h = updated.(HomeModel)
+	rendered := stripANSI(h.View().Content)
+	for _, token := range []string{displaystatus.ReadyLabel, "waiting: " + testWaitingReason} {
+		if !strings.Contains(rendered, token) {
+			t.Fatalf("missing %q in %s", token, rendered)
+		}
+	}
+	if waitingBadgeSuperseded(nil) || waitingBadgeSuperseded(&pb.Session{DisplayLabel: displaystatus.WaitingLabel}) {
+		t.Fatal("ordinary waiting rows retain their bare reason")
+	}
+}

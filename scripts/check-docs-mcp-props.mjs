@@ -25,6 +25,14 @@
 // registration written in a third form fails loudly there instead of silently
 // shrinking the set here.
 //
+// The hosted-only tool tier (triggers, session webhooks) is included. Those
+// tools register only on the hosted Bossanova Cloud MCP endpoint, but a doc may
+// still offer one as the MCP equivalent of a CLI command, so the gate reads
+// mcp-tool-registry.mjs HOSTED_TOOL_SOURCE_FILES too. The local tool-count gate
+// (check-docs-tool-counts.mjs) deliberately does not: the documented totals
+// count the local catalog only. The test file pins the hosted parse against
+// bossmcp manifest.go hostedToolNames the same way it pins the default set.
+//
 // Exercised by scripts/check-docs-mcp-props.test.mjs and runnable via
 // `node scripts/check-docs-mcp-props.mjs`.
 
@@ -105,7 +113,7 @@ export function discoverDocFiles(docsDir) {
 
 export function checkDocsMcpProps(repoRoot = REPO_ROOT) {
   const missingSources = []
-  const registered = readRegisteredToolNames(repoRoot, missingSources)
+  const registered = readRegisteredToolNames(repoRoot, missingSources, { includeHosted: true })
   if (missingSources.length > 0) {
     // Bail loudly rather than checking props against a half-built tool set,
     // which would report every prop in that class as unregistered.
@@ -185,7 +193,7 @@ export function checkDocsMcpProps(repoRoot = REPO_ROOT) {
   }
 
   console.log(
-    `Docs MCP props OK (${checked} props checked against ${registered.size} registered tools)`,
+    `Docs MCP props OK (${checked} props checked against ${registered.size} registered tools, hosted included)`,
   )
   return true
 }

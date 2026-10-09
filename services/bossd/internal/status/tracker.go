@@ -144,6 +144,9 @@ type Tracker struct {
 	// showing its reason merely because nothing recomputed for 15 seconds.
 	waiting map[string]string // agent_session_id -> waiting reason
 
+	// phases are skill-reported working stages, cleared on the first resting heartbeat.
+	phases map[string]string // agent_session_id -> phase
+
 	// capturedOutput holds, per agent session ID, the bounded final tail the
 	// tmux poller grabbed from a chat pane at process death before reaping it
 	// (BOS-477). It is an ephemeral diagnostic — not durable state — read by the
@@ -242,6 +245,7 @@ func NewTracker() *Tracker {
 		stalled:           make(map[string]time.Time),
 		liveness:          make(map[string]*livenessMarker),
 		waiting:           make(map[string]string),
+		phases:            make(map[string]string),
 		capturedOutput:    make(map[string]string),
 	}
 }
@@ -316,6 +320,7 @@ func (t *Tracker) SetCapturedOutput(agentSessionID, tail string) {
 	defer t.mu.Unlock()
 	if tail == "" {
 		delete(t.capturedOutput, agentSessionID)
+		delete(t.phases, agentSessionID)
 		return
 	}
 	t.capturedOutput[agentSessionID] = tail
@@ -348,6 +353,9 @@ func (t *Tracker) UpdateLimited(agentSessionID string, resetAt, lastOutputAt tim
 func (t *Tracker) update(agentSessionID string, status pb.ChatStatus, lastOutputAt, resetAt time.Time) {
 	t.mu.Lock()
 	prev, hadPrev := t.entries[agentSessionID]
+	if status == pb.ChatStatus_CHAT_STATUS_IDLE || status == pb.ChatStatus_CHAT_STATUS_STOPPED {
+		delete(t.phases, agentSessionID)
+	}
 	t.entries[agentSessionID] = &Entry{
 		Status:       status,
 		LastOutputAt: lastOutputAt,
@@ -536,6 +544,24 @@ func (t *Tracker) Stalled(agentSessionID string) bool {
 		return false
 	}
 	return time.Since(at) <= StaleThreshold
+}
+
+// SetPhase records a working stage; an empty phase clears it.
+func (t *Tracker) SetPhase(agentSessionID, phase string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if phase == "" {
+		delete(t.phases, agentSessionID)
+	} else {
+		t.phases[agentSessionID] = phase
+	}
+}
+
+// Phase returns the stored stage, independent of the current served status.
+func (t *Tracker) Phase(agentSessionID string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.phases[agentSessionID]
 }
 
 // SetWaiting records (or, when reason is empty, clears) the reason a chat is
@@ -813,6 +839,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	delete(t.liveness, agentSessionID)
 	delete(t.waiting, agentSessionID)
 	delete(t.capturedOutput, agentSessionID)
+	delete(t.phases, agentSessionID)
 	hook := t.onAuthChange
 	transientHook := t.onTransientAPIErrorChange
 	stalledHook := t.onStalledChange
@@ -868,6 +895,11 @@ func (t *Tracker) Cleanup() {
 				delete(t.waiting, id)
 				clearedWaitingMarkers = append(clearedWaitingMarkers, id)
 			}
+		}
+	}
+	for id := range t.phases {
+		if _, exists := t.entries[id]; !exists {
+			delete(t.phases, id)
 		}
 	}
 	var clearedAuthMarkers []string

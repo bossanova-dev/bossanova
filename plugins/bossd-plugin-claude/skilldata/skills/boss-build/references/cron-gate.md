@@ -10,8 +10,15 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 node "$BOSS_BUILD_TOOLBOX/cron-gates/boss-build.mjs"
 ```
 
+Append any shared selection flags (`--label`, `--exclude-label`, `--assignee`, `--creator`,
+`--project` and their `--exclude-` forms) to narrow the scan, and pass the **same** flags in the
+job's `/boss-build` prompt so the worker's `list-planned` scans identically; any other argument
+makes the gate exit non-zero.
+
 It exits `0` (run) iff at least one Linear issue is in the **planned** state, carries the
-**`agent-friendly`** label, **and is not blocked by an uncleared blocker** (a blocker whose
+**`agent-build`** label but not `needs-human`, matches the effective selection (config
+`trackerConfig.<tracker>.selection`, then the flags), **and is not blocked by an uncleared
+blocker** (a blocker whose
 state is not `Done`/`Canceled` — i.e. its PR is unmerged), and non-zero (skip) otherwise. This
 keeps the cron from waking to a fully-blocked backlog and burning a run that only exits
 `NO_CHANGE`. It is still a deliberately **loose superset** of Step 2's exact selection: the

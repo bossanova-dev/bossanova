@@ -225,31 +225,31 @@ test('validateDecomposition: layer case is folded and an unknown layer is droppe
   assert.match(res.warnings.join('\n'), /dropped unknown layer "frontend"/)
 })
 
-test('validateDecomposition: a non-boolean agentFriendly is read strictly, never coerced to true', () => {
-  // serializeEpicSpec persists `agentFriendly !== false`, so the string "false" left as-is would make
+test('validateDecomposition: a non-boolean agentBuild is read strictly, never coerced to true', () => {
+  // serializeEpicSpec persists `agentBuild !== false`, so the string "false" left as-is would make
   // a needs-human child boss-build-eligible. Only an explicit "true" reads as true.
   const spec = {
     parent: { title: 't', goal: 'g', priority: 2 },
     children: [
-      child('c1', { agentFriendly: 'false' }),
-      child('c2', { agentFriendly: 1 }),
-      child('c3', { agentFriendly: 'TRUE' }),
+      child('c1', { agentBuild: 'false' }),
+      child('c2', { agentBuild: 1 }),
+      child('c3', { agentBuild: 'TRUE' }),
     ],
   }
   assert.equal(validateDecomposition(spec).ok, true)
   assert.deepEqual(
-    spec.children.map((c) => c.agentFriendly),
+    spec.children.map((c) => c.agentBuild),
     [false, false, true],
   )
 })
 
-test('validateDecomposition: a real boolean agentFriendly (or omitted) is accepted', () => {
+test('validateDecomposition: a real boolean agentBuild (or omitted) is accepted', () => {
   const res = validateDecomposition({
     parent: { title: 't', goal: 'g', priority: 2 },
-    children: [child('c1', { agentFriendly: false }), child('c2', { agentFriendly: true })],
+    children: [child('c1', { agentBuild: false }), child('c2', { agentBuild: true })],
   })
   assert.deepEqual(res, { ok: true, errors: [], warnings: [] })
-  // Omitted entirely (the linearSpec children carry no agentFriendly) also passes.
+  // Omitted entirely (the linearSpec children carry no agentBuild) also passes.
   assert.equal(validateDecomposition(linearSpec(2)).ok, true)
 })
 
@@ -557,27 +557,27 @@ test('serializeEpicSpec + parseEpicSpec: round-trips the full parent + children 
     estimate: 5,
     priority: 1,
     // A child with no explicit agent-friendliness call defaults to true
-    // (agent-friendly), matching the plan-contract convention.
-    agentFriendly: true,
+    // (agent-build), matching the plan-contract convention.
+    agentBuild: true,
     // No recorded open questions ⇒ no agent-question.
     agentQuestion: false,
   })
 })
 
-test('serializeEpicSpec + parseEpicSpec: persists a needs-human child (agentFriendly:false) so resume re-stamps it correctly', () => {
+test('serializeEpicSpec + parseEpicSpec: persists a needs-human child (agentBuild:false) so resume re-stamps it correctly', () => {
   const spec = {
     parent: { title: 'Epic parent', goal: 'Ship it', keyChanges: ['services/x'] },
     children: [
-      child('agent-child', { agentFriendly: true }),
+      child('agent-child', { agentBuild: true }),
       // A child whose plan concluded it needs a human — deferred exposure must
-      // stamp `needs-human`, NEVER `agent-friendly`. The decision has to survive
+      // stamp `needs-human`, NEVER `agent-build`. The decision has to survive
       // the marker so a fresh-worktree resume (scratch gone) recovers it.
-      child('human-child', { agentFriendly: false }),
+      child('human-child', { agentBuild: false }),
     ],
   }
   const parsed = parseEpicSpec(serializeEpicSpec(spec))
-  assert.equal(parsed.children[0].agentFriendly, true)
-  assert.equal(parsed.children[1].agentFriendly, false)
+  assert.equal(parsed.children[0].agentBuild, true)
+  assert.equal(parsed.children[1].agentBuild, false)
 })
 
 test('G2 REGRESSION serializeEpicSpec: a child planMarkdown is never persisted', () => {
@@ -717,8 +717,8 @@ test('parseEpicSpec: an OLD marker without parent priority degrades to a defined
   assert.equal(parseEpicSpec(legacy).parent.priority, 3)
 })
 
-test('parseEpicSpec: an OLD marker without agentFriendly degrades to agent-friendly (backward-compat)', () => {
-  // A marker written before the field was persisted: no agentFriendly key. It
+test('parseEpicSpec: an OLD marker without agentBuild degrades to agent-build (backward-compat)', () => {
+  // A marker written before the field was persisted: no agentBuild key. It
   // must still parse and degrade to the plan-contract default (true), never null.
   const legacy =
     '<!-- boss-plan-epic-spec:{"parent":{"title":"t","goal":"g","keyChanges":[]},' +
@@ -726,7 +726,7 @@ test('parseEpicSpec: an OLD marker without agentFriendly degrades to agent-frien
     '"blockedByKeys":[],"estimate":3,"priority":2}]} -->'
   const parsed = parseEpicSpec(legacy)
   assert.ok(parsed, 'a legacy marker must still parse')
-  assert.equal(parsed.children[0].agentFriendly, true)
+  assert.equal(parsed.children[0].agentBuild, true)
 })
 
 test('serializeEpicSpec + parseEpicSpec: round-trips a child architectural layer', () => {
@@ -825,7 +825,7 @@ const twelveChildSpec = () => ({
       // Mixed layers, including the two consumer layers and an omitted layer.
       layer: ['contract', 'persistence', 'producer', 'read', 'ui', undefined][i % 6],
       // Mixed agent-friendliness: every third child needs a human.
-      agentFriendly: i % 3 !== 0,
+      agentBuild: i % 3 !== 0,
       // Mixed open questions: every other child recorded one.
       openQuestions: i % 2 === 0 ? [`question ${i}`] : [],
     }),
@@ -852,7 +852,7 @@ test('G1 serializeEpicSpec + parseEpicSpec: a full 12-child spec round-trips eve
     priority: c.priority,
     // An omitted/unknown layer is dropped entirely rather than carried as null.
     ...(c.layer === undefined ? {} : { layer: c.layer }),
-    agentFriendly: c.agentFriendly,
+    agentBuild: c.agentBuild,
     agentQuestion: c.openQuestions.length > 0,
   }))
   assert.deepEqual(parsed.children, expected)
@@ -959,14 +959,14 @@ test('G7 parseEpicSpec: a non-canonical base64 marker is rejected and the legacy
 //   {"parent":{"title":"Legacy epic","goal":"Recover the base64 marker",
 //     "keyChanges":["services/x"],"priority":2},
 //    "children":[{"key":"c1",…},{"key":"c2",…,"layer":"read",
-//     "agentFriendly":false,"agentQuestion":true}]}
+//     "agentBuild":false,"agentQuestion":true}]}
 const LEGACY_BASE64_PAYLOAD =
   'eyJwYXJlbnQiOnsidGl0bGUiOiJMZWdhY3kgZXBpYyIsImdvYWwiOiJSZWNvdmVyIHRoZSBiYXNlNjQgbWFya2VyIiwia2' +
   'V5Q2hhbmdlcyI6WyJzZXJ2aWNlcy94Il0sInByaW9yaXR5IjoyfSwiY2hpbGRyZW4iOlt7ImtleSI6ImMxIiwidGl0bGUi' +
   'OiJ0MSIsImdvYWwiOiJnMSIsImtleUNoYW5nZXMiOlsieCJdLCJibG9ja2VkQnlLZXlzIjpbXSwiZXN0aW1hdGUiOjMsIn' +
   'ByaW9yaXR5IjoyfSx7ImtleSI6ImMyIiwidGl0bGUiOiJ0MiIsImdvYWwiOiJnMiIsImtleUNoYW5nZXMiOlsieSJdLCJi' +
-  'bG9ja2VkQnlLZXlzIjpbImMxIl0sImVzdGltYXRlIjoyLCJwcmlvcml0eSI6NCwibGF5ZXIiOiJyZWFkIiwiYWdlbnRGcm' +
-  'llbmRseSI6ZmFsc2UsImFnZW50UXVlc3Rpb24iOnRydWV9XX0='
+  'bG9ja2VkQnlLZXlzIjpbImMxIl0sImVzdGltYXRlIjoyLCJwcmlvcml0eSI6NCwibGF5ZXIiOiJyZWFkIiwiYWdlbnRCdW' +
+  'lsZCI6ZmFsc2UsImFnZW50UXVlc3Rpb24iOnRydWV9XX0='
 const LEGACY_BASE64_MARKER = `<!-- boss-plan-epic-spec:${LEGACY_BASE64_PAYLOAD} -->`
 
 test('G4 REGRESSION parseEpicSpec: a legacy base64 inline marker still parses', () => {
@@ -984,7 +984,7 @@ test('G4 REGRESSION parseEpicSpec: a legacy base64 inline marker still parses', 
   )
   // The recovered metadata drives resume, so pin more than the keys.
   assert.equal(parsed.children[1].layer, 'read')
-  assert.equal(parsed.children[1].agentFriendly, false)
+  assert.equal(parsed.children[1].agentBuild, false)
   assert.equal(parsed.children[1].agentQuestion, true)
   assert.deepEqual(parsed.children[1].blockedByKeys, ['c1'])
   // Found embedded in surrounding parent-description prose too, which is how it

@@ -669,6 +669,9 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'main-module.mjs',
     'pr-check-state.mjs',
     'progress-comment.mjs',
+    // selection.mjs (BOS-1378) is imported by skill-config.mjs, linear-gate-lib.mjs and
+    // tracker/cli.mjs, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-config.mjs',
@@ -683,12 +686,29 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'tracker/preflight.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
+  // Asserted BY NAME: every core that vendors skill-config.mjs must vendor its selection.mjs import,
+  // and boss-plan ships its own canonical cron gate (BOS-1378) as boss-build does.
+  for (const [core, files] of Object.entries(VENDOR_MAP)) {
+    if (files.includes('skill-config.mjs')) {
+      assert.ok(
+        files.includes('selection.mjs'),
+        `${core} must vendor selection.mjs beside skill-config.mjs`,
+      )
+    }
+  }
+  assert.ok(VENDOR_MAP['boss-plan'].includes('cron-gates/boss-plan.mjs'))
   // Every core that ships a built-in notes extension must ship the helper it runs.
   for (const core of ['boss-build', 'boss-epic', 'boss-plan', 'boss-repair', 'boss-review']) {
     assert.ok(
       VENDOR_MAP[core].includes('bs-record-notes.mjs'),
       `${core} must vendor bs-record-notes.mjs`,
     )
+  }
+  // Mechanical trigger recording ships beside its sibling imports in every consuming core.
+  for (const core of ['boss-plan', 'boss-build', 'boss-repair']) {
+    for (const helper of ['notes-record.mjs', 'bs-record-notes.mjs', 'boss-binary.mjs']) {
+      assert.ok(VENDOR_MAP[core].includes(helper), `${core} must vendor ${helper}`)
+    }
   }
   // Asserted BY NAME, not by count: the planning core's finalize phase invokes the write-back
   // verification by path, so an installed tree without it is a gate that cannot RUN rather than a
@@ -713,6 +733,14 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     assert.ok(
       VENDOR_MAP[core].includes('pr-check-state.mjs'),
       `${core} must vendor pr-check-state.mjs`,
+    )
+  }
+  // Asserted BY NAME for each consuming core: commit-status.mjs posts and reads the boss/build
+  // receipt (BOS-1385), and both bodies invoke it by path from their own installed toolbox.
+  for (const core of ['boss-build', 'boss-repair']) {
+    assert.ok(
+      VENDOR_MAP[core].includes('commit-status.mjs'),
+      `${core} must vendor commit-status.mjs`,
     )
   }
   // Asserted BY NAME for each consuming core: ci-wait.mjs is the bounded fallback CI wait the
@@ -761,6 +789,12 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
       !files.includes('callback/ci-watch.mjs'),
       `${skill} must not vendor callback/ci-watch.mjs`,
     )
+  }
+  // Asserted BY NAME for boss-verify: the verify stage's three entry points — the gate verbs, the
+  // sweep/router, and the dispatching cron gate — are invoked by path from its installed toolbox
+  // (the cron job runs the gate from there), so a tree missing one is a stage that cannot RUN.
+  for (const entry of ['verify-gate.mjs', 'verify-route.mjs', 'cron-gates/boss-verify.mjs']) {
+    assert.ok(VENDOR_MAP['boss-verify'].includes(entry), `boss-verify must vendor ${entry}`)
   }
   // Asserted BY NAME for each consuming core, and exclusively: bs-dispatch-claims.mjs is the
   // single adjudicator of a dispatch report's checkable claims, invoked by path from boss-build's core spine and imported by boss-review's findings triage. An
@@ -856,14 +890,18 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
   // transitive dep of bs-review-detect.mjs, boss-build vendors it as a direct
   // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204), and every
   // core that runs a post-terminal notes phase vendors it for notesSampleRate (BOS-1099)
-  // — boss-repair included, which reads the knob to take its per-run sampling roll. It
-  // must still not leak into any skill that consumes none of those.
+  // — boss-repair included, which reads the knob to take its per-run sampling roll — and
+  // boss-verify imports it directly from verify-gate.mjs for the tracker role names, the verify
+  // selection query and the always-human paths. It must still not leak into any skill that
+  // consumes none of those.
   const skillConfigConsumers = new Set([
+    'boss-retro',
     'boss-review',
     'boss-build',
     'boss-epic',
     'boss-plan',
     'boss-repair',
+    'boss-verify',
   ])
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     if (skillConfigConsumers.has(skill)) {
@@ -876,6 +914,8 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
   for (const helper of [
     'bs-review-caps.mjs',
     'bs-review-report.mjs',
+    'notes-record.mjs',
+    'boss-binary.mjs',
     'skill-config.mjs',
     ...reviewOnly,
   ]) {
@@ -975,4 +1015,17 @@ test('vendorToolbox preserves and --check detects executable-mode drift', () => 
   assert.equal(drift.changed, true)
   assert.ok(drift.differences.some((d) => d.startsWith('mode mismatch')))
   rmSync(root, { recursive: true, force: true })
+})
+
+test('boss-retro vendors its mechanical entry points and gate', () => {
+  for (const file of [
+    'retro-run.mjs',
+    'retro-notes.mjs',
+    'retro-write.mjs',
+    'retro-ladder.mjs',
+    'retro-signals.mjs',
+    'guidance-audit.mjs',
+    'cron-gates/boss-retro.mjs',
+  ])
+    assert.ok(VENDOR_MAP['boss-retro'].includes(file))
 })

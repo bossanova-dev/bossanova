@@ -78,6 +78,11 @@ const (
 	// on `code` sees one name whether the rejection happened locally or at the
 	// daemon, rather than the UNKNOWN an untagged local error would resolve to.
 	codeInvalidArgument = "INVALID_ARGUMENT"
+	// codeHeadMismatch mirrors the daemon's vcs.ErrHeadMismatch sentinel: a
+	// `boss merge --match-head` refused because the PR head is not the pinned
+	// commit. It travels as FailedPrecondition, like a gate refusal, so the
+	// token is the only discriminator.
+	codeHeadMismatch = "HEAD_MISMATCH"
 )
 
 // The stable `--json` SUCCESS-outcome vocabulary for `boss daemon restart`.
@@ -120,6 +125,7 @@ const (
 // apart. Tokens are therefore resolved BEFORE the connect code.
 var daemonErrorTokens = []string{
 	codeMergeStrategyIncompatible,
+	codeHeadMismatch,
 }
 
 // cliError tags an error with a stable envelope code while leaving its message

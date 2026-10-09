@@ -211,3 +211,26 @@ func TestComputeAttentionStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestComputeAttentionStatus_AwaitingHumanInputOnlyForOrphaned pins the
+// invariant apiversion's isVerifyParkAttention relies on (BOS-1382): the only
+// AWAITING_HUMAN_INPUT that ComputeAttentionStatus emits is for an orphaned
+// session, so a non-orphaned NEEDS_HUMAN session carrying that reason can only
+// have come from bossd's verify-park overlay. Iterate every state under both
+// repair settings so a new emitter fails here rather than silently making the
+// down-convert strip a real attention signal.
+func TestComputeAttentionStatus_AwaitingHumanInputOnlyForOrphaned(t *testing.T) {
+	for _, state := range machine.AllStates() {
+		for _, canRepair := range []bool{true, false} {
+			got := ComputeAttentionStatus(
+				&models.Session{State: state, UpdatedAt: time.Now()},
+				&models.Repo{CanAutoRepair: canRepair},
+			)
+			awaiting := got.Reason == AttentionReasonAwaitingHumanInput
+			if awaiting != (state == machine.Orphaned) {
+				t.Errorf("state %v (CanAutoRepair=%v): AwaitingHumanInput = %v, want %v",
+					state, canRepair, awaiting, state == machine.Orphaned)
+			}
+		}
+	}
+}

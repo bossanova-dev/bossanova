@@ -17,6 +17,7 @@
 // policies that drift apart; putting it here means the work gate, the blocked-work gate and every
 // sweep dedupe fetch inherit one policy with no edit of their own and no way to opt out by accident.
 
+import { isTrackerId } from './selection.mjs'
 import {
   TRACKER_RETRY_CAPS,
   TRACKER_VERDICTS,
@@ -284,6 +285,10 @@ export async function resolveGateSelectors({
 // All three identity selectors are accepted here, not two: `hasWork` on the tracker adapter
 // forwards whatever it is handed, and a selector this signature omits is one destructuring drops
 // in silence — widening the gate to the whole board, which is the fail-open direction.
+//
+// `filter` is the alternative to the legacy keys: a caller that already rendered its IssueFilter
+// (the selection path, `renderLinearIssueFilter`) hands it over whole. Mixing the two throws — a
+// legacy key silently ignored beside a rendered filter is a clause the caller asked for and lost.
 export async function runLinearGate({
   apiKey,
   state,
@@ -291,26 +296,32 @@ export async function runLinearGate({
   assignee,
   creator,
   assigneeOrCreator,
+  filter: rendered,
   fetchImpl = fetch,
   endpoint = LINEAR_ENDPOINT,
   sleep,
 }) {
-  const { assigneeId, creatorId, assigneeOrCreatorId } = await resolveGateSelectors({
-    apiKey,
-    assignee,
-    creator,
-    assigneeOrCreator,
-    fetchImpl,
-    endpoint,
-    sleep,
-  })
-  const filter = buildIssueCountFilter({
-    state,
-    label,
-    assigneeId,
-    creatorId,
-    assigneeOrCreatorId,
-  })
+  let filter = rendered
+  if (filter !== undefined) {
+    assertNoLegacyGateKeys('runLinearGate', { state, label, assignee, creator, assigneeOrCreator })
+  } else {
+    const { assigneeId, creatorId, assigneeOrCreatorId } = await resolveGateSelectors({
+      apiKey,
+      assignee,
+      creator,
+      assigneeOrCreator,
+      fetchImpl,
+      endpoint,
+      sleep,
+    })
+    filter = buildIssueCountFilter({
+      state,
+      label,
+      assigneeId,
+      creatorId,
+      assigneeOrCreatorId,
+    })
+  }
   const data = await linearRequest({
     apiKey,
     query: GATE_QUERY,
@@ -331,6 +342,177 @@ export async function runLinearGate({
     )
   }
   return exists
+}
+
+/**
+ * Throw when any legacy gate key is set beside a pre-rendered `filter`. Exported so the
+ * blocked-work gate applies the identical rule.
+ */
+export function assertNoLegacyGateKeys(caller, keys) {
+  const set = Object.entries(keys).filter(([, value]) => value !== undefined && value !== null)
+  if (set.length > 0) {
+    throw new Error(
+      `${caller}: a rendered filter cannot be combined with legacy key(s) ${set.map(([key]) => key).join(', ')}`,
+    )
+  }
+}
+
+// The one batched lookup behind a configured selection. Only the parts a ref set needs are
+// selected, so a selection that names only labels never asks for users.
+function selectionRefsQuery({ wantViewer, wantUsers, wantLabels, wantProjects }) {
+  const defs = []
+  const fields = []
+  if (wantViewer) fields.push('viewer { id }')
+  if (wantUsers) {
+    defs.push('$users: UserFilter')
+    fields.push(
+      'users(first: 250, includeDisabled: true, filter: $users) { nodes { id email } pageInfo { hasNextPage } }',
+    )
+  }
+  if (wantLabels) {
+    defs.push('$labels: IssueLabelFilter')
+    fields.push(
+      'issueLabels(first: 250, filter: $labels) { nodes { name } pageInfo { hasNextPage } }',
+    )
+  }
+  if (wantProjects) {
+    defs.push('$projects: ProjectFilter')
+    fields.push(
+      'projects(first: 250, filter: $projects) { nodes { id name } pageInfo { hasNextPage } }',
+    )
+  }
+  const vars = defs.length > 0 ? `(${defs.join(', ')})` : ''
+  return `query SelectionRefs${vars} {\n  ${fields.join('\n  ')}\n}`
+}
+
+const lower = (value) => String(value).toLowerCase()
+
+/**
+ * Resolve every user, label and project a selection names, in ONE batched GraphQL request:
+ *
+ *   - users: `me` -> `viewer.id`; a UUID -> verified to exist; an email -> its user id
+ *     (case-insensitive). Disabled users resolve too, so an excluded departed bot still matches.
+ *   - labels: every label whose name equals the value case-insensitively; EVERY case variant
+ *     found is kept, so `Infra` and `infra` in two teams are both excluded.
+ *   - projects: a UUID -> verified; anything else -> every project with that name
+ *     (case-insensitive).
+ *
+ * Throws naming EVERY value that did not resolve — never drops a slot, which would widen the scan.
+ * An empty ref set makes NO request, so the zero-config path costs nothing.
+ *
+ * @param {{apiKey: string, refs: {users?: string[], labels?: string[], projects?: string[]},
+ *   fetchImpl?: typeof fetch, endpoint?: string, sleep?: Function}} opts
+ * @returns {Promise<{users: Record<string,string>, labels: Record<string,string[]>,
+ *   projects: Record<string,string[]>}>}
+ */
+export async function resolveLinearSelectionRefs({
+  apiKey,
+  refs = {},
+  fetchImpl = fetch,
+  endpoint = LINEAR_ENDPOINT,
+  sleep,
+}) {
+  const users = [...new Set(refs.users ?? [])]
+  const labels = [...new Set(refs.labels ?? [])]
+  const projects = [...new Set(refs.projects ?? [])]
+  const resolved = { users: {}, labels: {}, projects: {} }
+  if (users.length + labels.length + projects.length === 0) return resolved
+
+  const userIds = users.filter((user) => isTrackerId(user))
+  const emails = users.filter((user) => user !== 'me' && !isTrackerId(user))
+  const projectIds = projects.filter((project) => isTrackerId(project))
+  const projectNames = projects.filter((project) => !isTrackerId(project))
+  const wanted = {
+    wantViewer: users.includes('me'),
+    wantUsers: userIds.length + emails.length > 0,
+    wantLabels: labels.length > 0,
+    wantProjects: projects.length > 0,
+  }
+  const variables = {}
+  if (wanted.wantUsers) {
+    variables.users = {
+      or: [
+        ...(userIds.length > 0 ? [{ id: { in: userIds } }] : []),
+        ...emails.map((email) => ({ email: { eqIgnoreCase: email } })),
+      ],
+    }
+  }
+  if (wanted.wantLabels) {
+    variables.labels = { or: labels.map((name) => ({ name: { eqIgnoreCase: name } })) }
+  }
+  if (wanted.wantProjects) {
+    variables.projects = {
+      or: [
+        ...(projectIds.length > 0 ? [{ id: { in: projectIds } }] : []),
+        ...projectNames.map((name) => ({ name: { eqIgnoreCase: name } })),
+      ],
+    }
+  }
+  const data = await linearRequest({
+    apiKey,
+    query: selectionRefsQuery(wanted),
+    variables,
+    fetchImpl,
+    endpoint,
+    sleep,
+  })
+
+  // A truncated page would resolve only SOME matches, so an exclude would silently admit the
+  // rest: fail closed rather than paginate a lookup that should match a handful of nodes.
+  const truncated = ['users', 'issueLabels', 'projects'].filter(
+    (key) => data?.[key]?.pageInfo?.hasNextPage === true,
+  )
+  if (truncated.length > 0) {
+    throw new Error(
+      `selection lookup truncated (${truncated.join(', ')} matched more than 250 nodes); narrow the selection values`,
+    )
+  }
+  const userNodes = Array.isArray(data?.users?.nodes) ? data.users.nodes : []
+  const labelNodes = Array.isArray(data?.issueLabels?.nodes) ? data.issueLabels.nodes : []
+  const projectNodes = Array.isArray(data?.projects?.nodes) ? data.projects.nodes : []
+  const missing = []
+  for (const user of users) {
+    let id
+    if (user === 'me') id = data?.viewer?.id
+    else if (isTrackerId(user)) id = userNodes.find((node) => node?.id === user)?.id
+    else id = userNodes.find((node) => node?.email && lower(node.email) === lower(user))?.id
+    if (typeof id === 'string' && id !== '') resolved.users[user] = id
+    else missing.push(`user ${JSON.stringify(user)}`)
+  }
+  for (const label of labels) {
+    const names = [
+      ...new Set(
+        labelNodes
+          .map((node) => node?.name)
+          .filter((name) => typeof name === 'string' && lower(name) === lower(label)),
+      ),
+    ]
+    if (names.length > 0) resolved.labels[label] = names
+    else missing.push(`label ${JSON.stringify(label)}`)
+  }
+  for (const project of projects) {
+    const ids = [
+      ...new Set(
+        projectNodes
+          .filter((node) =>
+            isTrackerId(project)
+              ? node?.id === project
+              : typeof node?.name === 'string' && lower(node.name) === lower(project),
+          )
+          .map((node) => node?.id)
+          .filter((id) => typeof id === 'string' && id !== ''),
+      ),
+    ]
+    if (ids.length > 0) resolved.projects[project] = ids
+    else missing.push(`project ${JSON.stringify(project)}`)
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Linear selection could not resolve ${missing.join(', ')}; failing closed rather than ` +
+        'dropping the filter and widening the scan',
+    )
+  }
+  return resolved
 }
 
 // Terminal helper for gate entry scripts: write a one-line reason to stderr (only

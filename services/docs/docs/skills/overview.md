@@ -44,6 +44,13 @@ its flow, and `boss-epic` orchestrates many `boss-build` runs and drives
 | `boss-repair`   | Automated PR repair — fixes merge conflicts, failing checks, and review feedback.                                                                                                                                                                     |
 | `boss-finalize` | End-of-session workflow ensuring all work is committed and pushed ("land the plane").                                                                                                                                                                 |
 
+## Run the pipeline unattended
+
+The [software factory setup guide](https://github.com/recurser/bossanova/blob/main/docs/skills/factory.md)
+walks through an unattended plan → build → verify and merge pipeline with one cron
+job per stage. It covers prerequisites, labels and commit statuses, human approvals,
+selection filters, extensions, and troubleshooting.
+
 ## The adapter model
 
 The suite keeps its Bossanova coupling confined to **four seams**. Each seam is an
@@ -82,6 +89,8 @@ validates all of it before a skill acts on it.
 
 ## Learn more
 
+- [Software Factory](../guides/software-factory.md) shows the skills working
+  together: tickets go from plan to build, verification and merge on a schedule.
 - [Skill Configuration](/skills/config) covers every section of
   `.boss-skills.json`, the smallest config that switches the tracker-driven skills
   on, and what happens when a section is absent or wrong.

@@ -42,9 +42,11 @@ type Provider interface {
 	// filtering by state (e.g. treating only open/merged PRs as blocking).
 	SearchPRsByTitleTag(ctx context.Context, repoPath, tag string) ([]PRSummary, error)
 
-	// MergePR merges a pull/merge request using the given strategy
-	// ("merge", "rebase", or "squash"). An empty strategy defaults to "merge".
-	MergePR(ctx context.Context, repoPath string, prID int, strategy string) error
+	// MergePR merges a pull/merge request. opts.Strategy is "merge",
+	// "rebase", or "squash" (empty defaults to "merge"). When
+	// opts.ExpectedHeadSHA is set the remote refuses the merge unless the PR
+	// head is exactly that commit, and the refusal wraps ErrHeadMismatch.
+	MergePR(ctx context.Context, repoPath string, prID int, opts MergePROpts) error
 
 	// UpdatePRTitle updates the title of an existing pull/merge request.
 	UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error
@@ -61,6 +63,44 @@ type Provider interface {
 	// upstream.
 	GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error)
 }
+
+// CheckSetReader is an optional capability that exposes the build receipt from
+// the same read as CI checks, without widening Provider.
+type CheckSetReader interface {
+	GetCheckSet(ctx context.Context, repoPath string, prID int) (CheckSet, error)
+}
+
+// CommitStatusPoster is an optional capability: post one commit status on a
+// SHA. Like CheckSetReader it does not widen Provider; callers type-assert or
+// receive it explicitly and skip the write when it is absent.
+type CommitStatusPoster interface {
+	PostCommitStatus(ctx context.Context, repoPath, sha string, s CommitStatus) error
+}
+
+// CommitStatus is one commit status to post. State is one of success, failure,
+// pending or error; Description and TargetURL are optional.
+type CommitStatus struct {
+	Context     string
+	State       string
+	Description string
+	TargetURL   string
+}
+
+// ReadCheckSet uses the receipt-aware capability when available. A legacy
+// provider supplies checks only, so it cannot claim a build receipt.
+func ReadCheckSet(ctx context.Context, p Provider, repoPath string, prID int) (CheckSet, error) {
+	if reader, ok := p.(CheckSetReader); ok {
+		return reader.GetCheckSet(ctx, repoPath, prID)
+	}
+	checks, err := p.GetCheckResults(ctx, repoPath, prID)
+	return CheckSet{Checks: checks}, err
+}
+
+// ErrHeadMismatch is returned (wrapped) when a head-pinned merge is refused
+// because the PR head is not the expected commit. The error text is the wire
+// token callers match on, the same idiom as
+// mergepolicy.ErrMergeStrategyIncompatible.
+var ErrHeadMismatch = errors.New("HEAD_MISMATCH")
 
 // ErrPRNotMerged is returned by GetPRMergeCommit when the PR is not in a
 // merged state (still open, closed without merge, etc.).

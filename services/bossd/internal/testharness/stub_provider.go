@@ -14,11 +14,12 @@ var _ vcs.Provider = (*StubProvider)(nil)
 type StubProvider struct {
 	mu sync.Mutex
 
-	statuses     map[int]*vcs.PRStatus
-	checks       map[int][]vcs.CheckResult
-	reviews      map[int][]vcs.ReviewComment
-	blockingBots map[int]map[string]bool
-	counts       StubProviderCallCounts
+	statuses      map[int]*vcs.PRStatus
+	checks        map[int][]vcs.CheckResult
+	buildReceipts map[int]bool
+	reviews       map[int][]vcs.ReviewComment
+	blockingBots  map[int]map[string]bool
+	counts        StubProviderCallCounts
 }
 
 // StubProviderCallCounts snapshots provider method invocation counts.
@@ -35,9 +36,10 @@ func NewStubProvider() *StubProvider {
 		statuses: map[int]*vcs.PRStatus{
 			0: {State: vcs.PRStateOpen, Mergeable: &mergeable},
 		},
-		checks:       make(map[int][]vcs.CheckResult),
-		reviews:      make(map[int][]vcs.ReviewComment),
-		blockingBots: make(map[int]map[string]bool),
+		checks:        make(map[int][]vcs.CheckResult),
+		buildReceipts: make(map[int]bool),
+		reviews:       make(map[int][]vcs.ReviewComment),
+		blockingBots:  make(map[int]map[string]bool),
 	}
 }
 
@@ -59,6 +61,13 @@ func (p *StubProvider) SetCheckResults(prID int, checks []vcs.CheckResult) {
 		return
 	}
 	p.checks[prID] = append([]vcs.CheckResult(nil), checks...)
+}
+
+// SetHasBuildReceipt seeds whether the current head carries a build receipt.
+func (p *StubProvider) SetHasBuildReceipt(prID int, present bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.buildReceipts[prID] = present
 }
 
 func (p *StubProvider) SetReviewComments(prID int, reviews []vcs.ReviewComment) {
@@ -129,6 +138,13 @@ func (p *StubProvider) GetCheckResults(_ context.Context, _ string, prID int) ([
 	return append([]vcs.CheckResult(nil), p.checks[prID]...), nil
 }
 
+func (p *StubProvider) GetCheckSet(_ context.Context, _ string, prID int) (vcs.CheckSet, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.counts.GetCheckResults++
+	return vcs.CheckSet{Checks: append([]vcs.CheckResult(nil), p.checks[prID]...), HasBuildReceipt: p.buildReceipts[prID]}, nil
+}
+
 func (p *StubProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	return nil, fmt.Errorf("stub provider: CreateDraftPR not implemented")
 }
@@ -160,7 +176,7 @@ func (p *StubProvider) SearchPRsByTitleTag(context.Context, string, string) ([]v
 	return nil, fmt.Errorf("stub provider: SearchPRsByTitleTag not implemented")
 }
 
-func (p *StubProvider) MergePR(context.Context, string, int, string) error {
+func (p *StubProvider) MergePR(context.Context, string, int, vcs.MergePROpts) error {
 	return fmt.Errorf("stub provider: MergePR not implemented")
 }
 

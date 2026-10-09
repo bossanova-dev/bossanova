@@ -39,7 +39,7 @@
     "category": "security",
     "area": "services/bosso",
     "file": "services/bosso/internal/stream/pump.go",
-    "evidence": "GO-2023-1571"
+    "evidence": "GO-2023-1571; Fixed in: golang.org/x/net@v0.7.0"
   },
   {
     "category": "dead-code",
@@ -76,5 +76,10 @@
     "area": "services/boss",
     "file": "services/boss/internal/views/app.go",
     "evidence": "858 lines (limit 800)"
+  },
+  {
+    "category": "security",
+    "path": "services/bosso/internal/stream/pump.go",
+    "evidence": "GO-2026-0001; Fixed in: go1.25.1"
   }
 ]

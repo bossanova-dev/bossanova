@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Glob, Grep, Skill
 
 # boss-epic
 
-Drive every eligible ticket of an epic — a parent's planned, agent-friendly sub-issues, or an
+Drive every eligible ticket of an epic — a parent's planned, agent-build sub-issues, or an
 explicit list — from planned to a **merged PR**, with no human present. `boss-build` ships one
 ticket; `boss-epic` schedules a fleet of them in dependency order, caps concurrency, repairs red PRs
 and merges one at a time so the base never races itself. It schedules and merges; it never
@@ -127,25 +127,34 @@ echo "$TICKETS_JSON" | node --input-type=module -e '
   }))
   const tickets = raw.map(normalizeTicket)
   process.stdout.write(JSON.stringify(classifyTickets(tickets, process.env.BOSS_EPIC_PLANNED_STATE, {
-    agentFriendlyLabel: optionalLabelName(config, "agentFriendly") ?? "agent-friendly",
+    agentBuildLabel: optionalLabelName(config, "agentBuild") ?? "agent-build",
     needsHumanLabel: optionalLabelName(config, "needsHuman") ?? "needs-human",
+    selection: process.env.BOSS_EPIC_SELECTION ? JSON.parse(process.env.BOSS_EPIC_SELECTION).selection : null,
   })))
 '
 ```
 
+When a `trackerConfig.<tracker>.selection` block or any `selectionFlags` is present, first set
+`BOSS_EPIC_SELECTION="$(node "$BOSS_EPIC_TOOLBOX/tracker/cli.mjs" resolve-selection --stage epic
+<selection flags>)"` (non-zero exit ⇒ `BLOCKED` quoting its stderr), then `export BOSS_EPIC_SELECTION`
+as a separate statement (`export VAR="$(cmd)"` reports `export`'s status and hides the failure);
+excluded tickets are skipped `excluded by selection: <reason>`.
+
 Exports: `normalizeTicket`, `classifyTickets`, `buildGraph`, `readyTickets`, `transitiveDependents`,
 `transitiveDependentCounts`, `nextToMerge`, `parseEpicArgs`, `parseTicketRef`, `buildCombinedRun`,
 `mergeBlockedExternalBlockers`, `resolveStateRole`, `resolvePlannedState`, `classifyChildLiveness`,
-`classifyRepairLease`, `BLOCKER_CLEARED_STATE_TYPES`. `buildGraph`/`readyTickets`/`nextToMerge` return
-`Map`/`Set`s, so run each poll cycle's scheduling in **one** node process and persist only ticket JSON
-and id lists.
+`classifyChildSettled`, `classifyRepairLease`, `BLOCKER_CLEARED_STATE_TYPES`.
+`buildGraph`/`readyTickets`/`nextToMerge` return `Map`/`Set`s, so run each poll cycle's scheduling in
+**one** node process and persist only ticket JSON and id lists.
 
 ## Phase 0 — Preflight
 
 1. **Arguments** — `parseEpicArgs` returns `{mode, parentId, parentIds, ids, parallel, agent,
-assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are an explicit list,
+assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-label` and the other
+   selection flags are filters, never refs): one positional is a parent, several are an explicit list,
    repeated `--epic <REF>` select several roots (never mixed with positionals). Refs may be ids or
-   pasted Linear URLs. `--parallel` 1..8 (default 4), `--agent` (default `claude`).
+   pasted Linear URLs. `--parallel` 1..8 (default 4), `--agent` (default `claude`), `--team`
+   (tracker team, step 3).
    `--assume-cleared <ref>` unparks a blocked dependent for launch only;
    `--assume-cleared-and-merge <ref>` also lets the merge step pass that blocker. A throw stops
    `BLOCKED: <message>`.
@@ -179,7 +188,8 @@ assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are 
    rm -f "$BOSS_WHY"; export BOSS
    ```
 
-3. **Tracker** — a cheap `selectPlanned` read, classified with `trackerMcpPreflight` so a failure says
+3. **Tracker** — a cheap `selectPlanned` read (when config names no team, `listTeams` with
+   `limit=50` instead), classified with `trackerMcpPreflight` so a failure says
    whether to fix the repo's declaration (`absent`) or credentials/network (`unreachable`). Log
    `tracker preflight: <status> (declared: <true|false|no report>)` either way and call tracker
    tools through `resolvedServer`. MCP servers can still be connecting when a session starts: if no
@@ -214,6 +224,11 @@ assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are 
    '
    ```
 
+   Then `resolveTrackerTeam(config, {preflight, visibleTeams: <raw list_teams result>, teamFlag})`
+   (`skill-config.mjs`; `--team <name>` is an argument, never a ticket id): unconfigured stops
+   cleanly with its `message` and no writes; otherwise use `team` for the `selectPlanned` read, and
+   when its `source` is not `config`, append ` --team <team>` to every child `/boss-build` prompt.
+
 4. **Transport** — the CLI is preferred; MCP when the CLI set is incomplete; `BLOCKED` only when
    neither is complete. Compare `boss env --json` (`.capabilities.cli`, `.capabilities.mcp`) against:
 
@@ -233,10 +248,9 @@ assumeCleared, assumeClearedAndMerge}`: one positional is a parent, several are 
    `bossEpicTransportPreflight({availableTools, availableCliCommands})` → `{ok, transport, missing,
 degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening line, plus
    `cli-only mode (expected): resolveContext, getSessionStatuses, createPlanningChat` (no CLI
-   equivalents; use their fallbacks) and any `partial:` fields (`boss show --json` lacks
-   `repair_active`, `attention_status.reason`, `pr_mergeable`, `merge_block` — an unreadable signal
-   is "not settled", never green). The chosen `--agent` must appear in `list_agents` /
-   `boss agents --json`.
+   equivalents; use their fallbacks) and any `partial:` fields (`boss show --json` lacks each
+   `missingResponse` field — an unreadable signal is "not settled", never green). The chosen
+   `--agent` must appear in `list_agents` / `boss agents --json`.
 
 5. **Repo** — `$BOSS_REPO_ID`, else `resolve_context {working_dir}` (MCP) or `boss env --json` →
    `session.repo_id` (CLI). None ⇒ `BLOCKED`. Never infer it from a directory name.
@@ -249,7 +263,7 @@ degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening
    each id. Several roots: read **every** root and its children first (fail closed on an unreadable
    root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. Then `get_issue
 includeRelations=true` each unique child once and `normalizeTicket` it.
-2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-friendly`, an
+2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-build`, an
    `Implementation plan (<id>)` attachment, not `needs-human`), `done` (Done/Canceled), `skipped`
    (with reasons). Print the table. When there is work, post the initial progress comment on each
    root before anything launches.
@@ -345,16 +359,17 @@ loop. A failed arm or verification is a recorded transition (mechanism, next tim
 reported as `RUNNING_BUT_UNWATCHED` or `BLOCKED` when no wake can be armed.
 
 Each cycle, per in-flight ticket, read `get_session` (state, `last_agent_activity_at`,
-`AGENT_AUTH_FAILED`), `list_check_snapshots`, the real PR state, and the tracked chat's entry in
-`get_chat_statuses {session_id}`; classify with `classifyChildLiveness` and route on its `action`.
+`AGENT_AUTH_FAILED`, `display_label`), `list_check_snapshots`, the real PR state, and the tracked
+chat's entry in `get_chat_statuses {session_id}`; classify with `classifyChildLiveness` and route on
+its `action`.
 
 - **Session state says nothing about pushes.** It moves when the daemon re-polls existing checks.
   The push oracle is the remote (`git rev-list --count origin/<base>..origin/<branch>`); see
   [`references/epic-driver.md`](references/epic-driver.md).
-- **Settled** = the tracked chat is `IDLE` or `STOPPED` on two consecutive polls with no spinner.
-  `WORKING`/`QUESTION`/`WAITING` are alive; `LIMITED` is the resume lane; `UNSPECIFIED` or
-  unreadable is unknown. Never gate on timestamps or on the session-wide `get_session_statuses`
-  aggregate. [`references/merge-recovery.md`](references/merge-recovery.md).
+- **Settled** is `classifyChildSettled`'s verdict, computed by the driver: two agreeing polls, no
+  spinner, the tracked chat `IDLE`/`STOPPED` — or `WAITING` too when `display_label` is Ready.
+  Never gate on timestamps or the `get_session_statuses` aggregate.
+  [`references/merge-recovery.md`](references/merge-recovery.md).
 
 ### 3c. Transitions
 
@@ -503,7 +518,7 @@ resume without the previous turn.
 
 ## Setup
 
-Plan the children first (planned, `agent-friendly`, a plan attachment — `boss-plan`). Then
+Plan the children first (planned, `agent-build`, a plan attachment — `boss-plan`). Then
 `/boss-epic <TICKET>` (a parent id or URL), `/boss-epic <A> <B> …` (a list), or `--epic <A> --epic
 <B>` (several roots), with optional `--parallel N`, `--agent <name>` and the `--assume-cleared*`
 overrides.

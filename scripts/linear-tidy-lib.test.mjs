@@ -989,7 +989,7 @@ const tk = (id, identifier, stateName, labels = [], attachments = []) => ({
 
 const RECONCILE_IDS = {
   agentPlanId: 'label-agent-plan',
-  agentFriendlyId: 'label-agent-friendly',
+  agentBuildId: 'label-agent-build',
   todoStateId: 's-todo',
 }
 
@@ -1011,23 +1011,21 @@ test("hasImplementationPlan: accepts only the ticket's native canonical attachme
   assert.equal(hasImplementationPlan('BOS-7', undefined), false)
 })
 
-test('computePlanningReconcile: agent-friendly + Unplanned + no plan → drop agent-friendly, add agent-plan', () => {
-  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly'), lbl('bug')])]
+test('computePlanningReconcile: agent-build + Unplanned + no plan → drop agent-build, add agent-plan', () => {
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build'), lbl('bug')])]
   const r = computePlanningReconcile(tickets, RECONCILE_IDS)
   assert.deepEqual(r.toTodo, [])
   assert.deepEqual(
     r.toAgentPlan.map((t) => t.identifier),
     ['BOS-1'],
   )
-  // Kept bug, dropped agent-friendly, added agent-plan (full replacement set).
+  // Kept bug, dropped agent-build, added agent-plan (full replacement set).
   assert.deepEqual(r.toAgentPlan[0].newLabelIds, ['label-bug', 'label-agent-plan'])
   assert.deepEqual(r.escalate, [])
 })
 
-test('computePlanningReconcile: agent-friendly + Unplanned + plan attached → move to Todo, labels untouched', () => {
-  const tickets = [
-    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-1')]),
-  ]
+test('computePlanningReconcile: agent-build + Unplanned + plan attached → move to Todo, labels untouched', () => {
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build')], [planAttachment('BOS-1')])]
   const r = computePlanningReconcile(tickets, RECONCILE_IDS)
   assert.deepEqual(r.toAgentPlan, [])
   assert.deepEqual(
@@ -1037,9 +1035,7 @@ test('computePlanningReconcile: agent-friendly + Unplanned + plan attached → m
 })
 
 test('computePlanningReconcile: a different ticket’s attachment queues the ticket for planning', () => {
-  const tickets = [
-    tk('i1', 'BOS-7', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-8')]),
-  ]
+  const tickets = [tk('i1', 'BOS-7', 'Unplanned', [lbl('agent-build')], [planAttachment('BOS-8')])]
   const r = computePlanningReconcile(tickets, RECONCILE_IDS)
   assert.deepEqual(r.toTodo, [])
   assert.deepEqual(
@@ -1049,9 +1045,7 @@ test('computePlanningReconcile: a different ticket’s attachment queues the tic
 })
 
 test('computePlanningReconcile: legacy proof link is missing and requeues for agent-plan', () => {
-  const tickets = [
-    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [legacyPlanLink('BOS-1')]),
-  ]
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build')], [legacyPlanLink('BOS-1')])]
   const r = computePlanningReconcile(tickets, RECONCILE_IDS)
   assert.deepEqual(r.toTodo, [])
   assert.deepEqual(
@@ -1060,13 +1054,13 @@ test('computePlanningReconcile: legacy proof link is missing and requeues for ag
   )
 })
 
-test('computePlanningReconcile: needs-human, already-agent-plan, non-Unplanned, epic parent, and non-agent-friendly are all skipped', () => {
+test('computePlanningReconcile: needs-human, already-agent-plan, non-Unplanned, epic parent, and non-agent-build are all skipped', () => {
   const tickets = [
-    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly'), lbl('needs-human')]),
-    tk('i2', 'BOS-2', 'Unplanned', [lbl('agent-friendly'), lbl('agent-plan')]),
-    tk('i3', 'BOS-3', 'Todo', [lbl('agent-friendly')]),
-    tk('i4', 'BOS-4', 'Unplanned', [lbl('agent-friendly')]), // epic parent (blocked)
-    tk('i5', 'BOS-5', 'Unplanned', [lbl('bug')]), // no agent-friendly
+    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build'), lbl('needs-human')]),
+    tk('i2', 'BOS-2', 'Unplanned', [lbl('agent-build'), lbl('agent-plan')]),
+    tk('i3', 'BOS-3', 'Todo', [lbl('agent-build')]),
+    tk('i4', 'BOS-4', 'Unplanned', [lbl('agent-build')]), // epic parent (blocked)
+    tk('i5', 'BOS-5', 'Unplanned', [lbl('bug')]), // no agent-build
   ]
   const r = computePlanningReconcile(tickets, {
     ...RECONCILE_IDS,
@@ -1078,7 +1072,7 @@ test('computePlanningReconcile: needs-human, already-agent-plan, non-Unplanned, 
 })
 
 test('computePlanningReconcile: absent agent-plan label id escalates a no-plan case (never guesses)', () => {
-  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')])]
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build')])]
   const r = computePlanningReconcile(tickets, { ...RECONCILE_IDS, agentPlanId: undefined })
   assert.deepEqual(r.toAgentPlan, [])
   assert.deepEqual(
@@ -1088,9 +1082,7 @@ test('computePlanningReconcile: absent agent-plan label id escalates a no-plan c
 })
 
 test('computePlanningReconcile: absent Todo state id escalates a has-plan case', () => {
-  const tickets = [
-    tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-friendly')], [planAttachment('BOS-1')]),
-  ]
+  const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build')], [planAttachment('BOS-1')])]
   const r = computePlanningReconcile(tickets, { ...RECONCILE_IDS, todoStateId: null })
   assert.deepEqual(r.toTodo, [])
   assert.deepEqual(
@@ -1110,7 +1102,7 @@ test('parseTidyData: extracts per-ticket labels/attachments, todoStateId, and la
     issueLabels: {
       nodes: [
         { id: 'label-agent-plan', name: 'agent-plan' },
-        { id: 'label-agent-friendly', name: 'agent-friendly' },
+        { id: 'label-agent-build', name: 'agent-build' },
       ],
     },
     issues: {
@@ -1119,7 +1111,7 @@ test('parseTidyData: extracts per-ticket labels/attachments, todoStateId, and la
           id: 'i1',
           identifier: 'BOS-1',
           state: st('Unplanned'),
-          labels: { nodes: [{ id: 'label-agent-friendly', name: 'agent-friendly' }] },
+          labels: { nodes: [{ id: 'label-agent-build', name: 'agent-build' }] },
           attachments: {
             nodes: [{ title: 'Implementation plan (BOS-1)', url: 'https://proof.bossanova.dev/x' }],
           },
@@ -1132,10 +1124,8 @@ test('parseTidyData: extracts per-ticket labels/attachments, todoStateId, and la
   const parsed = parseTidyData(data)
   assert.equal(parsed.todoStateId, 's-todo')
   assert.equal(parsed.labelIdsByName.get('agent-plan'), 'label-agent-plan')
-  assert.equal(parsed.labelIdsByName.get('agent-friendly'), 'label-agent-friendly')
-  assert.deepEqual(parsed.tickets[0].labels, [
-    { id: 'label-agent-friendly', name: 'agent-friendly' },
-  ])
+  assert.equal(parsed.labelIdsByName.get('agent-build'), 'label-agent-build')
+  assert.deepEqual(parsed.tickets[0].labels, [{ id: 'label-agent-build', name: 'agent-build' }])
   assert.equal(parsed.tickets[0].attachments[0].title, 'Implementation plan (BOS-1)')
 })
 
@@ -1150,7 +1140,7 @@ function reconcileData() {
     issueLabels: {
       nodes: [
         { id: 'label-agent-plan', name: 'agent-plan' },
-        { id: 'label-agent-friendly', name: 'agent-friendly' },
+        { id: 'label-agent-build', name: 'agent-build' },
       ],
     },
     issues: {
@@ -1162,7 +1152,7 @@ function reconcileData() {
           state: st('Unplanned'),
           labels: {
             nodes: [
-              { id: 'label-agent-friendly', name: 'agent-friendly' },
+              { id: 'label-agent-build', name: 'agent-build' },
               { id: 'label-bug', name: 'bug' },
             ],
           },
@@ -1174,7 +1164,7 @@ function reconcileData() {
           id: 'i-planned',
           identifier: 'BOS-2',
           state: st('Unplanned'),
-          labels: { nodes: [{ id: 'label-agent-friendly', name: 'agent-friendly' }] },
+          labels: { nodes: [{ id: 'label-agent-build', name: 'agent-build' }] },
           attachments: {
             nodes: [
               {
@@ -1246,7 +1236,7 @@ test('runTidy: --dry-run reconcile computes actions but writes nothing', async (
 
 test('runTidy: reconcile idempotent — converted tickets yield no further actions', async () => {
   const settled = reconcileData()
-  // BOS-1 now carries agent-plan instead of agent-friendly.
+  // BOS-1 now carries agent-plan instead of agent-build.
   settled.issues.nodes[0].labels.nodes = [
     { id: 'label-bug', name: 'bug' },
     { id: 'label-agent-plan', name: 'agent-plan' },

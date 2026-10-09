@@ -29,7 +29,9 @@ type chatsListedMsg struct {
 	// external event (BOS-668), e.g. "awaiting checks_passed_ready on
 	// acme/widget#123". Only waiting chats appear.
 	daemonWaitingReasons map[string]string
-	err                  error
+	// daemonPhases carries the skill-reported working phase from status polling.
+	daemonPhases map[string]string
+	err          error
 }
 
 // chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
@@ -43,6 +45,8 @@ type chatPickerRefreshMsg struct {
 	daemonStatuses       map[string]string
 	daemonLastOutput     map[string]time.Time
 	daemonWaitingReasons map[string]string
+	// daemonPhases carries the skill-reported working phase from status polling.
+	daemonPhases map[string]string
 }
 
 // chatDeletedMsg signals that a chat was deleted (or failed to delete).
@@ -102,6 +106,11 @@ type mergeResultMsg struct {
 type archiveResultMsg struct {
 	sessionID string
 	err       error
+	// deferred reports that the daemon accepted the archive but is holding it
+	// until every chat in the session is idle (BOS-1380). The session is not
+	// archived yet; its row renders "archiving" from the daemon's
+	// archive_pending, which clears if the pending archive is cancelled.
+	deferred bool
 }
 
 // confirmKind identifies which destructive action a y/n confirmation prompt

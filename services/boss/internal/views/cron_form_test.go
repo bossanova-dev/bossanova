@@ -1299,3 +1299,323 @@ func TestCronFormView_PromptRegrowsAfterTheTerminalGrows(t *testing.T) {
 			got, want, m.View().Content)
 	}
 }
+
+// --- BOS-1443: the "Concurrency" select ---
+
+const (
+	cpUnspecified = pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED
+	cpSkip        = pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP
+	cpCancel      = pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS
+	cpAllow       = pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT
+)
+
+func TestCronFormBuildForm_DefaultsConcurrencyToSkip(t *testing.T) {
+	m := CronFormModel{ctx: context.Background()}
+
+	m.buildForm()
+
+	if m.fd.concurrencyPolicy != cpSkip {
+		t.Fatalf("default concurrencyPolicy = %v, want SKIP", m.fd.concurrencyPolicy)
+	}
+}
+
+func TestCronFormBuildForm_PrefillsConcurrencyOnEdit(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		job  pb.CronJobConcurrencyPolicy
+		want pb.CronJobConcurrencyPolicy
+	}{
+		{name: "allow concurrent", job: cpAllow, want: cpAllow},
+		{name: "cancel in progress", job: cpCancel, want: cpCancel},
+		// A job stored before the policy existed reads as UNSPECIFIED, which
+		// the daemon applies as SKIP; the form shows what actually happens.
+		{name: "unspecified maps to skip", job: cpUnspecified, want: cpSkip},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := CronFormModel{
+				ctx: context.Background(),
+				job: &pb.CronJob{
+					Id: "cron-1", Name: "Build job", RepoId: "repo-1", Prompt: "p", Schedule: "@daily",
+					ConcurrencyPolicy: tt.job,
+				},
+			}
+
+			m.buildForm()
+
+			if m.fd.concurrencyPolicy != tt.want {
+				t.Fatalf("prefilled concurrencyPolicy = %v, want %v", m.fd.concurrencyPolicy, tt.want)
+			}
+		})
+	}
+}
+
+// TestCronFormBuildForm_ConcurrencySitsDirectlyBelowGateCommand pins the
+// position: the two settings that decide whether a fire starts sit together,
+// matching the web form.
+func TestCronFormBuildForm_ConcurrencySitsDirectlyBelowGateCommand(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "alpha"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      80,
+	}
+	m.buildForm()
+
+	indexOfTitle := func(title string) int {
+		for i, f := range m.formFields.fields {
+			if strings.Contains(f.View(), title) {
+				return i
+			}
+		}
+		return -1
+	}
+
+	gate := indexOfTitle("Gate command")
+	concurrency := indexOfTitle("Concurrency")
+	if gate < 0 || concurrency < 0 {
+		t.Fatalf("field indices: Gate command = %d, Concurrency = %d; both must be present", gate, concurrency)
+	}
+	if concurrency != gate+1 {
+		t.Fatalf("Concurrency at %d, Gate command at %d; want Concurrency directly below Gate command", concurrency, gate)
+	}
+}
+
+// TestCronFormConcurrencySelectRendersEveryOption guards the select's sizing:
+// the help text wraps to several lines, and an explicit Height that did not
+// account for it would clip the option viewport to a single row.
+func TestCronFormConcurrencySelectRendersEveryOption(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "alpha"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      80,
+	}
+	m.buildForm()
+
+	var view string
+	for _, f := range m.formFields.fields {
+		if v := f.View(); strings.Contains(v, "Concurrency") {
+			view = v
+			break
+		}
+	}
+	if view == "" {
+		t.Fatal("no Concurrency field rendered")
+	}
+	assertCronConcurrencyOptionRows(t, view)
+}
+
+// assertCronConcurrencyOptionRows fails unless view renders a row for every
+// Concurrency option. It matches whole rows, not substrings: two of the labels
+// also appear in the field's wrapped help text, so a substring check passes
+// on a select clipped to its first option.
+func assertCronConcurrencyOptionRows(t *testing.T, view string) {
+	t.Helper()
+	rows := map[string]bool{}
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		rows[strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯"))] = true
+	}
+	for _, label := range []string{"Skip while previous run is active", "Cancel in progress", "Allow concurrent"} {
+		if !rows[label] {
+			t.Errorf("Concurrency field has no option row %q:\n%s", label, view)
+		}
+	}
+}
+
+// TestCronFormConcurrencySelectRegrowsAfterTheTerminalGrows is the select's
+// counterpart to PromptRegrowsAfterTheTerminalGrows. The Concurrency field is
+// tall (title, wrapped help, three options), so a short terminal makes huh's
+// shrink-only Group.WithHeight give it an explicit height that leaves room for
+// a single option; the Update loop resets it to its content height before
+// re-sizing the form, so every option is back once the terminal grows again.
+func TestCronFormConcurrencySelectRegrowsAfterTheTerminalGrows(t *testing.T) {
+	m := cronFormWithPrompt(t, "p", 60)
+
+	// 10 rows clamps the select to its first option; 24 would not.
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 10}, {Width: 80, Height: 60}} {
+		updated, _ := m.Update(size)
+		next, ok := updated.(CronFormModel)
+		if !ok {
+			t.Fatalf("updated model = %T, want CronFormModel", updated)
+		}
+		m = next
+	}
+
+	assertCronConcurrencyOptionRows(t, m.concurrencyField.View())
+}
+
+func TestCronFormView_ConcurrencyKeepsActionBarOnScreen(t *testing.T) {
+	for _, termHeight := range []int{24, 40} {
+		m := CronFormModel{
+			ctx:         context.Background(),
+			repos:       []*pb.Repo{{Id: "r1", DisplayName: "alpha"}},
+			reposReady:  true,
+			agentsReady: true,
+			width:       80,
+			height:      termHeight,
+		}
+		m.buildForm()
+
+		view := m.View()
+		if !strings.Contains(view.Content, "[enter] save") {
+			t.Fatalf("height %d: rendered form missing save cue:\n%s", termHeight, view.Content)
+		}
+		if h := lipgloss.Height(view.Content); h > termHeight {
+			t.Fatalf("rendered form is %d lines, exceeds terminal height %d", h, termHeight)
+		}
+	}
+}
+
+func TestCronFormHandleSubmit_CreateSendsConcurrencySkipByDefault(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{ctx: context.Background(), client: c}
+	m.buildForm() // create mode: defaults
+	m.fd.name = "Plain job"
+	m.fd.repoID = "repo-1"
+	m.fd.prompt = "p"
+	m.fd.schedule = "@daily"
+
+	_, cmd := m.handleSubmit()
+	if cmd == nil {
+		t.Fatal("handleSubmit command = nil, want CreateCronJob command")
+	}
+	_ = cmd()
+
+	if c.createdCronReq == nil {
+		t.Fatal("CreateCronJob was not called")
+	}
+	if c.createdCronReq.ConcurrencyPolicy == nil {
+		t.Fatal("CreateCronJob.ConcurrencyPolicy = nil, want explicit SKIP")
+	}
+	if got := *c.createdCronReq.ConcurrencyPolicy; got != cpSkip {
+		t.Fatalf("CreateCronJob.ConcurrencyPolicy = %v, want SKIP", got)
+	}
+}
+
+func TestCronFormHandleSubmit_CreateIncludesChosenConcurrency(t *testing.T) {
+	c := &stubClient{}
+	m := CronFormModel{ctx: context.Background(), client: c}
+	m.buildForm()
+	m.fd.name = "Build job"
+	m.fd.repoID = "repo-1"
+	m.fd.prompt = "p"
+	m.fd.schedule = "@daily"
+	m.fd.concurrencyPolicy = cpAllow
+
+	_, cmd := m.handleSubmit()
+	_ = cmd()
+
+	if c.createdCronReq == nil || c.createdCronReq.ConcurrencyPolicy == nil {
+		t.Fatal("CreateCronJob.ConcurrencyPolicy not sent")
+	}
+	if got := *c.createdCronReq.ConcurrencyPolicy; got != cpAllow {
+		t.Fatalf("CreateCronJob.ConcurrencyPolicy = %v, want ALLOW_CONCURRENT", got)
+	}
+}
+
+func cronConcurrencyEditModel(c *stubClient, stored, chosen pb.CronJobConcurrencyPolicy) CronFormModel {
+	return CronFormModel{
+		client: c,
+		ctx:    context.Background(),
+		job: &pb.CronJob{
+			Id: "cron-1", Name: "Build job", RepoId: "repo-1", Prompt: "p", Schedule: "@daily",
+			IsEnabled: true, ConcurrencyPolicy: stored,
+		},
+		fd: &cronFormData{
+			name: "Build job", repoID: "repo-1", prompt: "p", schedule: "@daily",
+			enabled: true, concurrencyPolicy: chosen,
+		},
+	}
+}
+
+func TestCronFormHandleSubmit_UpdateIncludesChangedConcurrency(t *testing.T) {
+	c := &stubClient{}
+	m := cronConcurrencyEditModel(c, cpSkip, cpCancel)
+
+	_, cmd := m.handleSubmit()
+	_ = cmd()
+
+	if c.updatedCronReq == nil {
+		t.Fatal("UpdateCronJob was not called")
+	}
+	if c.updatedCronReq.ConcurrencyPolicy == nil {
+		t.Fatal("UpdateCronJob.ConcurrencyPolicy = nil, want changed policy")
+	}
+	if got := *c.updatedCronReq.ConcurrencyPolicy; got != cpCancel {
+		t.Fatalf("UpdateCronJob.ConcurrencyPolicy = %v, want CANCEL_IN_PROGRESS", got)
+	}
+}
+
+func TestCronFormHandleSubmit_UpdateOmitsUnchangedConcurrency(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		stored, chosen pb.CronJobConcurrencyPolicy
+	}{
+		{name: "same value", stored: cpAllow, chosen: cpAllow},
+		// The form shows UNSPECIFIED as SKIP; leaving it there is no change.
+		{name: "unspecified shown as skip", stored: cpUnspecified, chosen: cpSkip},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &stubClient{}
+			m := cronConcurrencyEditModel(c, tt.stored, tt.chosen)
+
+			_, cmd := m.handleSubmit()
+			_ = cmd()
+
+			if c.updatedCronReq == nil {
+				t.Fatal("UpdateCronJob was not called")
+			}
+			if c.updatedCronReq.ConcurrencyPolicy != nil {
+				t.Fatalf("UpdateCronJob.ConcurrencyPolicy = %v, want nil for an unchanged field", *c.updatedCronReq.ConcurrencyPolicy)
+			}
+		})
+	}
+}
+
+// TestCronFormConcurrencyHelpText pins the exact help string; its web twin is
+// held byte-identical by CronJobForm.concurrencyHelp.test.ts.
+func TestCronFormConcurrencyHelpText(t *testing.T) {
+	const want = "What a fire does while this job's previous run is still working. Skip (default) skips the fire. Cancel in progress stops the previous run, then starts a new one. Allow concurrent starts a new run alongside it. Use Allow concurrent for jobs that claim their own work, like boss-build."
+	if cronConcurrencyHelp != want {
+		t.Fatalf("cronConcurrencyHelp = %q, want %q", cronConcurrencyHelp, want)
+	}
+}
+
+// TestCronFormView_ConcurrencySelectHasNoTrailingBlankLines is the
+// bossDescribedSelect counterpart of the Agent-select regression above: the
+// block is title + wrapped help + exactly three option rows, followed only by
+// the inter-field separator.
+func TestCronFormView_ConcurrencySelectHasNoTrailingBlankLines(t *testing.T) {
+	m := CronFormModel{
+		ctx:         context.Background(),
+		repos:       []*pb.Repo{{Id: "r1", DisplayName: "repo-a"}},
+		reposReady:  true,
+		agentsReady: true,
+		width:       80,
+		height:      80,
+	}
+	m.buildForm()
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	lines := strings.Split(m.View().Content, "\n")
+	start := lineIndexContaining(t, lines, "Concurrency")
+	next := lineIndexContaining(t, lines, "Run setup command")
+	block := lines[start:next]
+	content := block
+	for len(content) > 0 && strings.TrimSpace(content[len(content)-1]) == "" {
+		content = content[:len(content)-1]
+	}
+	if !strings.Contains(content[len(content)-1], "Allow concurrent") {
+		t.Errorf("Concurrency block ends with %q, want the last option (Allow concurrent); view:\n%s",
+			content[len(content)-1], m.View().Content)
+	}
+	if blanks := len(block) - len(content); blanks != 1 {
+		t.Errorf("Concurrency select is followed by %d blank lines, want 1; view:\n%s", blanks, m.View().Content)
+	}
+}

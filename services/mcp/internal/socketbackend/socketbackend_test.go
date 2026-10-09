@@ -34,9 +34,13 @@ type fakeDaemon struct {
 	// mergeDetail is echoed on MergeSessionResponse.detail — the daemon's note
 	// about a merge-strategy substitution.
 	mergeDetail string
+	// mergeReq records the last MergeSessionRequest, so the head pin can be
+	// asserted on the wire.
+	mergeReq *pb.MergeSessionRequest
 }
 
 func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	f.mergeReq = req.Msg
 	return connect.NewResponse(&pb.MergeSessionResponse{
 		Session: &pb.Session{Id: req.Msg.GetId()},
 		Detail:  f.mergeDetail,
@@ -221,7 +225,7 @@ func TestMergeSessionDetail(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	session, got, err := backend.MergeSession(context.Background(), "sess-7")
+	session, got, err := backend.MergeSession(context.Background(), "sess-7", "")
 	if err != nil {
 		t.Fatalf("MergeSession: %v", err)
 	}
@@ -230,6 +234,27 @@ func TestMergeSessionDetail(t *testing.T) {
 	}
 	if got != detail {
 		t.Fatalf("detail = %q, want %q (the daemon's note must not be dropped)", got, detail)
+	}
+}
+
+// TestMergeSessionPin pins BOS-1381: merge_session's match_head reaches the
+// daemon as MergeSessionRequest.expected_head_sha. The name stays short on
+// purpose: t.TempDir embeds it in the Unix socket path, and macOS caps that
+// path at 104 bytes (a longer name fails bind with "invalid argument").
+func TestMergeSessionPin(t *testing.T) {
+	t.Parallel()
+
+	const pin = "0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b0a1b"
+	fake := &fakeDaemon{}
+	backend, err := New(serveFakeDaemon(t, fake))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, _, err := backend.MergeSession(context.Background(), "sess-8", pin); err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if got := fake.mergeReq.GetExpectedHeadSha(); got != pin {
+		t.Fatalf("expected_head_sha = %q, want %q", got, pin)
 	}
 }
 

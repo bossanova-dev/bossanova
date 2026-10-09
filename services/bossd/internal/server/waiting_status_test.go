@@ -513,3 +513,30 @@ func TestChatStatusAndWaitingAggregate_IsOrderIndependent(t *testing.T) {
 		t.Fatalf("aggregate = %v/%v for two idle-derived chats, want both true", bothA, bothB)
 	}
 }
+
+func TestReadyComposite_BothProducersAndPreReadyWaitingMarks(t *testing.T) {
+	for _, tc := range []struct {
+		name                              string
+		reported                          pb.ChatStatus
+		wantDemoted, wantReadyOverWaiting bool
+	}{
+		{"idle-derived wait retains old demotion mark", pb.ChatStatus_CHAT_STATUS_IDLE, true, false},
+		{"working-derived wait records Ready override", pb.ChatStatus_CHAT_STATUS_WORKING, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDemotionStores(t)
+			d.addChat(t, "parked", tc.reported, true)
+			d.display.Set(d.sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true})
+			if label := d.persisted(t); label != displaystatus.ReadyLabel {
+				t.Fatalf("persisted label = %q, want Ready", label)
+			}
+			got := d.served(t)
+			if got.GetDisplayLabel() != displaystatus.ReadyLabel || !got.GetHasBuildReceipt() {
+				t.Fatalf("served label/receipt = %q/%v, want Ready/true", got.GetDisplayLabel(), got.GetHasBuildReceipt())
+			}
+			if got.GetIsWaitingDemoted() != tc.wantDemoted || got.GetIsReadyOverWaiting() != tc.wantReadyOverWaiting {
+				t.Fatalf("demoted/ready-over-waiting = %v/%v, want %v/%v", got.GetIsWaitingDemoted(), got.GetIsReadyOverWaiting(), tc.wantDemoted, tc.wantReadyOverWaiting)
+			}
+		})
+	}
+}

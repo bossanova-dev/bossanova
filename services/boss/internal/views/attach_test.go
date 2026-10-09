@@ -929,3 +929,7 @@ func TestRenderTmuxAttachDiagnosticSanitizesTail(t *testing.T) {
 		t.Fatalf("diagnostic leaked raw escape sequences; got:\n%q", out)
 	}
 }
+
+func (s *attachLaunchOrderStub) SetChatPhase(context.Context, string, string, string) error {
+	panic("unused")
+}

@@ -70,11 +70,13 @@ type sessionDetailJSON struct {
 	sessionJSON
 	RepoDisplayName string `json:"repo_display_name"`
 	// Nil means repository hydration failed; false is known to be disabled.
-	RepoShouldArchiveSessionsAfterMerge *bool  `json:"repo_should_archive_sessions_after_merge"`
-	BaseBranch                          string `json:"base_branch"`
-	WorktreePath                        string `json:"worktree_path"`
-	AccountID                           string `json:"account_id"`
-	AccountLabel                        string `json:"account_label"`
+	RepoShouldArchiveSessionsAfterMerge *bool `json:"repo_should_archive_sessions_after_merge"`
+	// Nil means repository hydration failed; false is known to be disabled.
+	RepoCanAutoRepair *bool  `json:"repo_can_auto_repair"`
+	BaseBranch        string `json:"base_branch"`
+	WorktreePath      string `json:"worktree_path"`
+	AccountID         string `json:"account_id"`
+	AccountLabel      string `json:"account_label"`
 	// DisplayStatus reuses displayStatusName so the JSON speaks the same
 	// vocabulary as the TUI and `boss session checks` ("passing", "failing", …).
 	DisplayStatus string `json:"display_status"`
@@ -156,6 +158,8 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 	if s.GetRepoDisplayName() != "" {
 		archive := s.GetRepoShouldArchiveSessionsAfterMerge()
 		detail.RepoShouldArchiveSessionsAfterMerge = &archive
+		autoRepair := s.GetRepoCanAutoRepair()
+		detail.RepoCanAutoRepair = &autoRepair
 	}
 	if reason := s.GetBlockedReason(); reason != "" {
 		detail.BlockedReason = &reason

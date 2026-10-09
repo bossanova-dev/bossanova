@@ -51,7 +51,7 @@ const plainObject = (value) => value !== null && typeof value === 'object' && !A
 const ALLOWED_METADATA_KEYS = new Set([
   'planPath',
   'labels',
-  'agentFriendly',
+  'agentBuild',
   'estimate',
   'priority',
   'openQuestions',
@@ -195,14 +195,14 @@ export function validateDraftMetadata(
   }
   normalized.labels = labels
 
-  if (typeof object.agentFriendly === 'boolean') {
-    normalized.agentFriendly = object.agentFriendly
-  } else if (object.agentFriendly === 'true' || object.agentFriendly === 'false') {
-    normalized.agentFriendly = object.agentFriendly === 'true'
+  if (typeof object.agentBuild === 'boolean') {
+    normalized.agentBuild = object.agentBuild
+  } else if (object.agentBuild === 'true' || object.agentBuild === 'false') {
+    normalized.agentBuild = object.agentBuild === 'true'
   } else {
-    normalized.agentFriendly = true
-    if (Object.hasOwn(object, 'agentFriendly')) {
-      warn('agentFriendly', 'agentFriendly was not a boolean; defaulted to true')
+    normalized.agentBuild = true
+    if (Object.hasOwn(object, 'agentBuild')) {
+      warn('agentBuild', 'agentBuild was not a boolean; defaulted to true')
     }
   }
 
@@ -276,17 +276,17 @@ export function validateDraftMetadata(
       ),
     )
   }
-  // An oversized child is a split request for a human, so it can never be agent-friendly. The
+  // An oversized child is a split request for a human, so it can never be build-ready (`agentBuild`). The
   // helper enforces that even when the drafter's prose forgot to.
   if (
     descriptionText !== null &&
-    normalized.agentFriendly === true &&
+    normalized.agentBuild === true &&
     hasOversizedChildBullet(descriptionText)
   ) {
-    normalized.agentFriendly = false
+    normalized.agentBuild = false
     warn(
-      'agentFriendly',
-      'agentFriendly true with an "- Oversized-child:" bullet under ## Planning; coerced to false (a human splits it into siblings)',
+      'agentBuild',
+      'agentBuild true with an "- Oversized-child:" bullet under ## Planning; coerced to false (a human splits it into siblings)',
     )
   }
 
@@ -901,7 +901,7 @@ function runEpicReverify(bundlePath, { config = loadSkillConfig() } = {}) {
       inProgress: resolveRole(stateName, config, 'inProgress'),
       inReview: resolveRole(stateName, config, 'inReview'),
       epic: resolveRole(labelName, config, 'epic'),
-      agentFriendly: resolveRole(labelName, config, 'agentFriendly'),
+      agentBuild: resolveRole(labelName, config, 'agentBuild'),
       needsHuman: resolveRole(labelName, config, 'needsHuman'),
       agentQuestion: resolveRole(optionalLabelName, config, 'agentQuestion'),
       agentPlan: resolveRole(optionalLabelName, config, 'agentPlan'),

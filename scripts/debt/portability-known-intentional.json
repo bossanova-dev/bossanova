@@ -1,0 +1,22 @@
+[
+  {
+    "path": "scripts/format-staged.sh",
+    "contains": "CDPATH= cd",
+    "reason": "Suppress caller CDPATH output while locating script"
+  },
+  {
+    "path": "scripts/format-staged.sh",
+    "contains": "IFS='",
+    "reason": "Split staged paths on literal newlines"
+  },
+  {
+    "path": "scripts/format-staged.sh",
+    "contains": "printf '%s\\n'",
+    "reason": "Literal printf format"
+  },
+  {
+    "path": "scripts/format-staged.sh",
+    "contains": "grep -qxF -e",
+    "reason": "Fixed string whole-line path lookup"
+  }
+]

@@ -31,26 +31,67 @@ const BUILTIN_EXTENSION_FILE = 'EXTENSION.md'
 //                    header. False for the two roles whose documented result is a bare record:
 //                    `methodology` returns the core's fixed short task contract, and `agent-driver`
 //                    returns a `SurfaceRun` (see the agent-driver contract doc).
+// The verify role's one rule the outcome classifier must recognise without matching prose.
+export const VERIFY_PASS_WITHOUT_EVIDENCE = 'pass requires at least one evidence item'
+export const VERIFY_VERDICTS = Object.freeze(['pass', 'fail', 'abstain'])
+const nonEmptyString = (value) => typeof value === 'string' && value.trim() !== ''
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+function refineVerify(envelope) {
+  const errors = []
+  if (!VERIFY_VERDICTS.includes(envelope.verdict))
+    errors.push(`verdict must be one of ${VERIFY_VERDICTS.join(', ')}`)
+  if (!Array.isArray(envelope.evidence)) errors.push('evidence must be an array')
+  else
+    envelope.evidence.forEach((item, idx) => {
+      if (!plainObject(item) || !nonEmptyString(item.kind) || !nonEmptyString(item.ref))
+        errors.push(`evidence ${idx} needs non-empty string "kind" and "ref"`)
+    })
+  if (!Array.isArray(envelope.findings)) errors.push('findings must be an array')
+  else
+    envelope.findings.forEach((item, idx) => {
+      if (!plainObject(item) || !nonEmptyString(item.title))
+        errors.push(`finding ${idx} needs a non-empty string "title"`)
+    })
+  if (
+    envelope.verdict === 'pass' &&
+    Array.isArray(envelope.evidence) &&
+    envelope.evidence.length === 0
+  )
+    errors.push(VERIFY_PASS_WITHOUT_EVIDENCE)
+  if (
+    envelope.verdict === 'fail' &&
+    Array.isArray(envelope.findings) &&
+    envelope.findings.length === 0
+  )
+    errors.push('fail requires at least one finding')
+  return errors
+}
+
+function refineRelease(result) {
+  const errors = []
+  if (!['released', 'skipped', 'needs-human'].includes(result.action))
+    errors.push('action must be released, skipped, or needs-human')
+  if (!nonEmptyString(result.reason)) errors.push('reason must be a non-empty string')
+  if (!(
+    typeof result.ref === 'string' &&
+    (/^[0-9a-f]{40}$/i.test(result.ref) || (result.action !== 'released' && result.ref === ''))
+  ))
+    errors.push('ref must be a 40-hex SHA (or empty when not released)')
+  return errors
+}
+
 export const EXTENSION_ROLES = {
-  completion: {
+  release: {
     kind: 'fields',
-    keys: ['action', 'reason', 'mergeSha'],
-    refine(envelope) {
-      const errors = []
-      if (!['merged', 'skipped'].includes(envelope.action))
-        errors.push('action must be merged or skipped')
-      if (typeof envelope.reason !== 'string' || !envelope.reason.trim())
-        errors.push('reason must be a non-empty string')
-      if (
-        typeof envelope.mergeSha !== 'string' ||
-        (envelope.action === 'merged'
-          ? !/^[a-f0-9]{40}$/i.test(envelope.mergeSha)
-          : envelope.mergeSha !== '')
-      )
-        errors.push('mergeSha must be a 40-hex SHA when merged and empty when skipped')
-      return errors
-    },
+    header: false,
+    keys: ['action', 'reason', 'ref'],
+    refine: refineRelease,
   },
+  // A verify extension judges one PR head for the verify stage. `pass` must cite evidence and
+  // `fail` must name a finding; `abstain` is advisory. Outcome classification (crash, timeout,
+  // malformed result, optional extensions) lives in `classifyVerifyOutcome` below.
+  verify: { kind: 'fields', keys: ['verdict', 'evidence', 'findings'], refine: refineVerify },
   lens: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   round: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   surface: { kind: 'items', keys: ['path', 'caption', 'evidenceTokens'] },
@@ -132,6 +173,7 @@ export const SKIP_REASONS = {
   // `modes` is present but not a comma-separated subset of EXTENSION_MODES: a failed declaration,
   // reported like an unusable `lens` binding rather than read as "every mode".
   'invalid-modes': { deliberate: false },
+  'invalid-release-marker': { deliberate: false },
   // The extension declares `modes` and the requested mode is not among them — the declaration
   // working as intended, so a core's ledger must not report it as a recoverable miss.
   'mode-not-declared': { deliberate: true },
@@ -308,7 +350,31 @@ export function extensionMarker(frontmatter) {
   // existed; an unusable value is also omitted here and reported by discovery as `invalid-modes`.
   const modes = parseModes(block.modes)
   if (modes) marker.modes = modes
+  // Optional `optional: true` declaration, meaningful only for `role: verify`: a malfunction of an
+  // optional extension abstains instead of failing (see classifyVerifyOutcome). Only boolean true or
+  // the string "true" (any case) declares it; any other value means required, the stricter reading,
+  // and omits the field so an undeclared descriptor's JSON is byte-identical to before the key.
+  if (parseOptional(block.optional)) marker.optional = true
+  if (block.role === 'release') {
+    const environments = parseReleaseEnvironments(block.environments)
+    if (environments) marker.environments = environments
+    if (['tag', 'branch'].includes(block.state)) marker.state = block.state
+    if (nonEmptyString(block.tagPrefix)) marker.tagPrefix = block.tagPrefix
+  }
   return marker
+}
+
+function parseReleaseEnvironments(value) {
+  if (typeof value !== 'string') return null
+  const scalar = value.trim().replace(/^\[(.*)\]$/, '$1')
+  const names = scalar.split(',').map((name) => name.trim().replace(/^(["'])(.*)\1$/, '$2'))
+  if (names.some((name) => !/^[a-z0-9][a-z0-9._-]*$/.test(name))) return null
+  return [...new Set(names)]
+}
+
+function parseOptional(value) {
+  if (value === true) return true
+  return typeof value === 'string' && value.trim().toLowerCase() === 'true'
 }
 
 // A `modes` scalar is a comma-separated subset of EXTENSION_MODES (the frontmatter reader supports
@@ -478,6 +544,18 @@ function discoverExtensionsInRoot({
     // `capability` would therefore delete a working whole-branch reviewer to report a typo — strictly
     // worse than running it and ignoring the key. The right treatment there is a warning, which this
     // helper has no channel for; do not "restore the symmetry" by adding one here.
+    if (marker.role === 'release') {
+      const declared = parsed.data['x-boss-extension']
+      if (
+        (declared.environments !== undefined && marker.environments === undefined) ||
+        (declared.state !== undefined && marker.state === undefined)
+      ) {
+        skipped.push(
+          skipEntry(entry.name, 'invalid-release-marker', 'invalid release environments or state'),
+        )
+        continue
+      }
+    }
     if (marker.role === 'lens') {
       const declaredLens = parsed.data['x-boss-extension'].lens
       if (declaredLens !== undefined && marker.lens === undefined) {
@@ -524,6 +602,9 @@ function discoverExtensionsInRoot({
     if (marker.lens !== undefined) descriptor.lens = marker.lens
     if (marker.capability !== undefined) descriptor.capability = marker.capability
     if (marker.modes !== undefined) descriptor.modes = marker.modes
+    if (marker.optional === true) descriptor.optional = true
+    for (const key of ['environments', 'state', 'tagPrefix'])
+      if (marker[key] !== undefined) descriptor[key] = marker[key]
     if (builtin) descriptor.builtin = true
     extensions.push(descriptor)
   }
@@ -654,6 +735,97 @@ export function validateResult(envelope, role) {
     }
   })
   return withWarnings({ ok: errors.length === 0, errors }, warnings)
+}
+
+// Every reason classifyVerifyOutcome can return. The five malfunction reasons stay distinct from a
+// valid `fail` so the verify stage can route a broken extension to a human rather than to repair.
+export const VERIFY_OUTCOME_REASONS = Object.freeze([
+  'timed-out',
+  'crashed',
+  'reported-failure',
+  'pass-without-evidence',
+  'malformed-result',
+  'abstain',
+  'pass',
+  'fail',
+])
+
+// Classifies one dispatched verify extension: `{result, timedOut, crashed, optional}` →
+// `{outcome: ok|failed|abstain, reason, verdict}`. First match wins; `optional: true` turns every
+// malfunction into `abstain` while keeping its `reason`. Never throws.
+export function classifyVerifyOutcome({
+  result,
+  timedOut = false,
+  crashed = false,
+  optional = false,
+} = {}) {
+  const malfunction = (reason) => ({
+    outcome: optional === true ? 'abstain' : 'failed',
+    reason,
+    verdict: null,
+  })
+  if (timedOut === true) return malfunction('timed-out')
+  if (crashed === true) return malfunction('crashed')
+  if (plainObject(result) && result.ok === false) return malfunction('reported-failure')
+  const validation = validateResult(result, 'verify')
+  if (!validation.ok) {
+    const onlyMissingEvidence =
+      validation.errors.length === 1 && validation.errors[0] === VERIFY_PASS_WITHOUT_EVIDENCE
+    return malfunction(onlyMissingEvidence ? 'pass-without-evidence' : 'malformed-result')
+  }
+  if (result.verdict === 'abstain') return { outcome: 'abstain', reason: 'abstain', verdict: null }
+  return { outcome: 'ok', reason: result.verdict, verdict: result.verdict }
+}
+
+// The fields of a verify envelope's context that carry PR or ticket author text. A dispatcher
+// passes them to an extension as quoted data, never as instructions.
+export const VERIFY_UNTRUSTED_TEXT_FIELDS = Object.freeze([
+  'pr.title',
+  'pr.body',
+  'ticket.title',
+  'ticket.description',
+])
+const VERIFY_CONTEXT_KEYS = Object.freeze(['pr', 'headSha', 'baseSha', 'changedPaths', 'ticket'])
+const FULL_SHA = /^[0-9a-f]{40}$/i
+
+// Validates the verify role's envelope context `{pr, headSha, baseSha, changedPaths, ticket}`.
+// Any other top-level key is an error, so a caller cannot smuggle instructions in beside the data.
+// Returns `{ok, errors}` and never throws.
+export function validateVerifyContext(context) {
+  const errors = []
+  if (!plainObject(context)) return { ok: false, errors: ['context is not an object'] }
+  for (const key of Object.keys(context))
+    if (!VERIFY_CONTEXT_KEYS.includes(key)) errors.push(`unexpected context key "${key}"`)
+  for (const key of VERIFY_CONTEXT_KEYS)
+    if (!(key in context)) errors.push(`missing context key "${key}"`)
+  const optionalStrings = (value, label, keys) => {
+    for (const key of keys)
+      if (key in value && typeof value[key] !== 'string')
+        errors.push(`${label}.${key} must be a string`)
+  }
+  if ('pr' in context) {
+    if (!plainObject(context.pr)) errors.push('pr must be an object')
+    else {
+      if (!Number.isInteger(context.pr.number) || context.pr.number < 1)
+        errors.push('pr.number must be a positive integer')
+      optionalStrings(context.pr, 'pr', ['url', 'title', 'body'])
+    }
+  }
+  for (const key of ['headSha', 'baseSha'])
+    if (key in context && !(typeof context[key] === 'string' && FULL_SHA.test(context[key])))
+      errors.push(`${key} must be a 40-hex SHA`)
+  if ('changedPaths' in context) {
+    if (!Array.isArray(context.changedPaths)) errors.push('changedPaths must be an array')
+    else
+      context.changedPaths.forEach((entry, idx) => {
+        if (!nonEmptyString(entry)) errors.push(`changedPaths ${idx} must be a non-empty string`)
+      })
+  }
+  if ('ticket' in context && context.ticket !== null) {
+    if (!plainObject(context.ticket)) errors.push('ticket must be null or an object')
+    else optionalStrings(context.ticket, 'ticket', ['id', 'url', 'title', 'description'])
+  }
+  return { ok: errors.length === 0, errors }
 }
 
 function parseArgs(argv) {

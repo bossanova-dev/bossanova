@@ -478,3 +478,65 @@ func TestValidateTrackerSource(t *testing.T) {
 		}
 	}
 }
+
+// TestNewDetachRequestPRNumber pins the `--pr` wiring: a set PrNumber reaches
+// CreateSessionRequest.pr_number (the daemon's existing-pr path), and an
+// omitted flag leaves the optional field nil (a fresh branch).
+func TestNewDetachRequestPRNumber(t *testing.T) {
+	n := int32(42)
+	req := newDetachRequest(newSessionOpts{
+		RepoID: "repo-1", Prompt: "/boss-verify 42", Title: "verify #42", PrNumber: &n,
+	})
+	if req.PrNumber == nil || req.GetPrNumber() != 42 {
+		t.Fatalf("pr_number = %v, want 42 when --pr 42 is set", req.PrNumber)
+	}
+	if !req.GetDetach() {
+		t.Fatalf("detach = false; --pr must not clear Detach")
+	}
+
+	off := newDetachRequest(newSessionOpts{RepoID: "repo-1", Prompt: "do work", Title: "T"})
+	if off.PrNumber != nil {
+		t.Fatalf("pr_number = %d, want nil when --pr is omitted", off.GetPrNumber())
+	}
+}
+
+// TestNewCmdRegistersPRFlag guards the flag surface and the refusals that must
+// fire before any RPC: --pr with --quick-chat or --defer-pr, a non-positive
+// number, and the interactive path. Each case runs the real command; a
+// refusal that slipped past validation would reach newClient instead and fail
+// with a different message.
+func TestNewCmdRegistersPRFlag(t *testing.T) {
+	f := newCmd().Flags().Lookup("pr")
+	if f == nil {
+		t.Fatal("`boss new` is missing the --pr flag")
+	}
+	if f.Value.Type() != "int32" {
+		t.Errorf("--pr type = %q, want int32", f.Value.Type())
+	}
+	if f.Usage == "" {
+		t.Error("--pr has no usage text, so it documents nothing in --help")
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"quick-chat", []string{"--repo", "r", "--prompt", "p", "--pr", "42", "--quick-chat"}, "--pr and --quick-chat are mutually exclusive"},
+		{"defer-pr", []string{"--repo", "r", "--prompt", "p", "--pr", "42", "--defer-pr"}, "--pr and --defer-pr are mutually exclusive"},
+		{"non-positive", []string{"--repo", "r", "--prompt", "p", "--pr", "0"}, "--pr must be a positive"},
+		{"interactive", []string{"--pr", "42"}, "non-interactive --repo + --prompt path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}

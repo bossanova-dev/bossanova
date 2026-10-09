@@ -101,7 +101,8 @@ func ValidateCodexAuthJSON(data []byte) (CodexAuth, error) {
 // auth.json (nested under "tokens" with "*_token" keys) must be converted to it
 // before storing so an interactive registration verifies instead of being kept
 // unverified. account_id is intentionally omitted: it is not part of the
-// account-store shape and is backfilled during materialization.
+// account-store shape, and the daemon's materializer derives it from the
+// id_token's chatgpt_account_id claim when it writes auth.json.
 func CodexAccountStoreJSON(auth CodexAuth) ([]byte, error) {
 	return json.Marshal(map[string]string{
 		"access":   auth.AccessToken,

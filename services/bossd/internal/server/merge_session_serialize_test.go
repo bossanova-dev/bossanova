@@ -72,7 +72,7 @@ func newBlockingMergeProvider() *blockingMergeProvider {
 	}
 }
 
-func (p *blockingMergeProvider) MergePR(_ context.Context, _ string, _ int, _ string) error {
+func (p *blockingMergeProvider) MergePR(_ context.Context, _ string, _ int, _ vcs.MergePROpts) error {
 	p.mergeCalls.Add(1)
 	n := p.inFlight.Add(1)
 	for {

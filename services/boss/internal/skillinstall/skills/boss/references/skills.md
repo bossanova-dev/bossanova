@@ -8,8 +8,23 @@ Write a detected .boss-skills.json for this repository
 
 **Flags:**
 
+- `--agent` — Agent for the factory cron jobs: claude or codex (default: claude when both qualify)
+- `--assignee-me` — Include only my tickets when no shared assignee filter exists
+- `--create-labels` — Create missing pipeline labels in the resolved Linear team (needs LINEAR_API_KEY)
+- `--cron` — Create or converge the factory cron jobs for these stages (plan,build,verify)
 - `--dir` — Repository directory to inspect and write into (default: the working directory)
 - `--force` — Overwrite an existing .boss-skills.json instead of refusing
+- `--label` — Linear label override role=name (repeatable)
+- `--linear-key-stdin` — Read the Linear API key from stdin
+- `--merge` — Merge into an existing .boss-skills.json
+- `--no-register` — Require an existing repository registration
+- `--register` — Find or register this repository with local bossd
+- `--sentry-org` — Sentry organization slug (requires a token)
+- `--sentry-token-stdin` — Read the Sentry token from stdin
+- `--state` — Linear state override role=name (repeatable)
+- `--store-env-keys` — Store LINEAR_API_KEY and SENTRY_AUTH_TOKEN from the environment
+- `--team` — Linear team name to pin as trackerConfig.linear.team (a key or id resolves to the name only when LINEAR_API_KEY lists it)
+- `--update-crons` — Update an existing factory job's prompt, gate and agent when they differ
 
 ### `boss skills`
 

@@ -2,11 +2,12 @@
 // A single surface (.boss-skills.json at the repo root) that holds the
 // path-glob -> lens map, build/test commands, test-manifest path, headless
 // env-detection signals, and adapter selection the skills used to hard-code.
-// Node builtins ONLY: this module is vendored into the reusable toolbox
-// and runs in dependency-free cron worktrees.
+// Node builtins plus sibling toolbox modules (selection.mjs) only: this module is vendored into
+// the reusable toolbox and runs in dependency-free cron worktrees.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, isAbsolute, parse as parsePath, posix } from 'node:path'
+import { effectiveSelection, stageLabelRoles, validateSelectionBlock } from './selection.mjs'
 
 export const CONFIG_FILENAME = '.boss-skills.json'
 
@@ -57,7 +58,7 @@ export const DEFAULT_TRACKER_STATES = Object.freeze({
 
 /** Pipeline label names a tracker block gets when it does not name its own. */
 export const DEFAULT_PIPELINE_LABELS = Object.freeze({
-  agentFriendly: 'agent-friendly',
+  agentBuild: 'agent-build',
   needsHuman: 'needs-human',
   agentPlan: 'agent-plan',
   agentQuestion: 'agent-question',
@@ -67,14 +68,23 @@ export const DEFAULT_PIPELINE_LABELS = Object.freeze({
 /**
  * Fill each declared tracker block's defaults: the MCP server name (the adapter's own name — the
  * preflight resolves the session's actual spelling), the stock state names and the standard
- * pipeline labels, each overridable per key. A repo therefore declares only its team and whatever
- * differs. Blocks are filled only where declared: a repo with no tracker block stays unconfigured.
+ * pipeline labels, each overridable per key. A repo therefore declares only whatever differs.
+ *
+ * Zero-config (D11): when the SELECTED tracker is `linear` and the config declares no block for
+ * it, a default block is synthesized — the stock server name, states and labels, and NO `team`.
+ * The team is resolved per run (resolveTrackerTeam), so the synthesized block alone never makes a
+ * repo configured. Synthesis is Linear-only: another tracker's state names would be wrong, so a
+ * non-Linear repo keeps the explicit-config requirement and resolves no block.
  */
 export function withTrackerDefaults(config) {
-  const blocks = config?.trackerConfig
+  const declared = config?.trackerConfig
+  const blocks = declared === undefined ? {} : declared
   if (!blocks || typeof blocks !== 'object' || Array.isArray(blocks)) return config
+  const selected = config?.adapters?.tracker
+  const synthesize = selected === 'linear' && !Object.hasOwn(blocks, selected)
+  if (!synthesize && declared === undefined) return config
   const filled = {}
-  for (const [adapter, tc] of Object.entries(blocks)) {
+  for (const [adapter, tc] of Object.entries(synthesize ? { ...blocks, [selected]: {} } : blocks)) {
     if (!tc || typeof tc !== 'object' || Array.isArray(tc)) {
       filled[adapter] = tc
       continue
@@ -92,8 +102,6 @@ export function withTrackerDefaults(config) {
   return { ...config, trackerConfig: filled }
 }
 
-// completionDefaults.allowMerge is opt-in: only literal true authorizes a completion merge.
-// No default key is shipped; absent means off.
 export const DEFAULT_CONFIG = Object.freeze({
   // Deliberately NOT a copy of any one checkout's lensMap — the inverse of the pin this
   // block used to carry. The published cores install into every user's GLOBAL skill
@@ -218,13 +226,14 @@ export const DEFAULT_CONFIG = Object.freeze({
   // generated mirrors without dispatching every extension twice.
   extensionRoots: ['.claude/skills', '.codex/skills'],
   // Concrete tracker / publish identity, keyed by the selected adapter. These blocks
-  // deliberately DEFAULT TO EMPTY: the real values (MCP server name, team, project key, workflow
-  // state names, publish bucket, public base URL) are repo-private data that lives ONLY in a
-  // checkout's own .boss-skills.json, never as a literal in this vendored module — that is what
-  // keeps the published cores project-agnostic. An unconfigured repo (no .boss-skills.json, or one
-  // without a trackerConfig block for its selected tracker) therefore resolves to {} here and
-  // isConfiguredForRepo() returns false, so a core invoked in such a repo self-disables cleanly
-  // instead of demanding an MCP server that does not exist there.
+  // deliberately DEFAULT TO EMPTY: repo-private values (team, project key, publish bucket, public
+  // base URL) live ONLY in a checkout's own .boss-skills.json, never as a literal in this vendored
+  // module — that is what keeps the published cores project-agnostic. For the Linear tracker,
+  // loadSkillConfig() synthesizes a team-less default block (withTrackerDefaults), and each run
+  // resolves the team itself: an explicit `team` here, else a --team argument, else the single
+  // team the tracker MCP can see (resolveTrackerTeam). No MCP server, no team, or several teams
+  // with nothing picking one leaves the repo unconfigured, so a core self-disables cleanly instead
+  // of demanding an MCP server or a team that does not exist there.
   trackerConfig: {},
   publishConfig: {},
   // Plan storage is deliberately separate from publishConfig: proof artifacts
@@ -384,17 +393,6 @@ export const UNATTRIBUTED_DRIFT_SEVERITIES = Object.freeze(['warn', 'block'])
 /** The default severity. `warn`, because the write has already landed by the time it is known. */
 export const DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY = 'warn'
 
-/**
- * The CLOSED key vocabulary of a `trackerConfig.<adapter>.selection` block.
- *
- * Closed for the same reason `DESCRIPTION_NORMALIZATION_TRANSFORMS` is: the failure mode of an
- * open key set is a typo that silently disables the narrowing. `selection: { assigneeOrCreatr }`
- * or a singular `label` is well-formed JSON that no shape check rejects, and
- * `selectionConfigFor` then resolves it to all-nulls — a gate that runs completely un-narrowed
- * while the operator believes it is filtered, with nothing anywhere saying so.
- */
-const SELECTION_KEYS = Object.freeze(['assigneeOrCreator', 'labels'])
-
 export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'always',
   'needs-human',
@@ -445,6 +443,7 @@ export function validateConfig(config, source) {
   const fail = (msg) => {
     throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
   }
+  if (config.retro !== undefined) validateRetro(config.retro, fail)
   if (!Array.isArray(config.lensMap)) fail('lensMap must be an array')
   for (const rule of config.lensMap) {
     if (!rule || typeof rule !== 'object') fail('lensMap entries must be objects')
@@ -614,6 +613,27 @@ export function validateConfig(config, source) {
       config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
+  // verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
+  // DEFAULT_CONFIG (an absent block reads as an empty `alwaysHumanPaths`), but a PRESENT block must
+  // be an object and a present `alwaysHumanPaths` must be an array of non-empty globs. Unlike the
+  // numeric knobs above this one fails instead of coercing: a malformed list would silently drop the
+  // paths an operator declared must always reach a human, which is the unsafe direction.
+  if (config.verifyDefaults !== undefined) {
+    if (
+      !config.verifyDefaults ||
+      typeof config.verifyDefaults !== 'object' ||
+      Array.isArray(config.verifyDefaults)
+    ) {
+      fail('verifyDefaults must be an object when present')
+    }
+    const paths = config.verifyDefaults.alwaysHumanPaths
+    if (
+      paths !== undefined &&
+      (!Array.isArray(paths) || !paths.every((g) => typeof g === 'string' && g.length > 0))
+    ) {
+      fail('verifyDefaults.alwaysHumanPaths must be an array of non-empty glob strings')
+    }
+  }
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
   // declare no recognised target legitimately resolves with no `commands` key at all (absent,
   // not {}), and a test-command manifest is a project artifact rather than a portable concept.
@@ -696,14 +716,13 @@ export function validateConfig(config, source) {
     if (!tc || typeof tc !== 'object' || Array.isArray(tc)) {
       fail(`trackerConfig.${adapter} must be an object`)
     }
-    // mcpServer + team are the load-bearing identity a core needs to reach a real tracker;
-    // isConfiguredForRepo() keys on them, so an entry missing either is not a usable config.
-    for (const field of ['mcpServer', 'team']) {
-      if (typeof tc[field] !== 'string' || tc[field].length === 0) {
-        fail(`trackerConfig.${adapter}.${field} must be a non-empty string`)
-      }
+    // mcpServer is the load-bearing identity a core needs to reach a real tracker, so an entry
+    // missing it is not a usable config. `team` is optional: a run without one resolves its team
+    // from --team or the single visible team (resolveTrackerTeam); when present it must be usable.
+    if (typeof tc.mcpServer !== 'string' || tc.mcpServer.length === 0) {
+      fail(`trackerConfig.${adapter}.mcpServer must be a non-empty string`)
     }
-    for (const field of ['teamKey', 'workspace']) {
+    for (const field of ['team', 'teamKey', 'workspace']) {
       if (field in tc && (typeof tc[field] !== 'string' || tc[field].length === 0)) {
         fail(`trackerConfig.${adapter}.${field} must be a non-empty string when present`)
       }
@@ -822,86 +841,18 @@ export function validateConfig(config, source) {
         )
       }
     }
-    // selection: optional. Narrows WHICH CANDIDATES a sweep's gate considers, as a property of the
-    // repository rather than of a single run. That is the whole admission rule for this block: a
-    // knob that changes what a run does once it already HAS a candidate does not belong here.
-    //
-    // Both keys are optional and independent, and every "absent" spelling — no block, no key —
-    // resolves to NO narrowing through `selectionConfigFor`, so a repo that never heard of this
-    // key keeps exactly the behaviour it has.
-    //
-    //   - assigneeOrCreator: the literal `me` (the owner of the API key in the process
-    //     environment) or a concrete tracker user id. Matched as "assigned to X OR created by X".
-    //   - labels: a non-empty array of label display names, matched as a DISJUNCTION — a candidate
-    //     qualifies if it carries ANY of them. It SUPERSEDES the single `agentFriendly` label role
-    //     for the gate's candidate filter rather than unioning with it, because a union would
-    //     WIDEN and this seam exists to narrow.
-    //
-    // Structure faults throw, in the same style as `states`/`labels`/`followUpLabels` above; a
-    // value this copy does not recognise does NOT. This file is copy-distributed into every user's
-    // global skill directory, so rejecting an unfamiliar label name or user id would turn an
-    // additive widening into a crash for every consumer of the config. Reject SHAPES only.
-    //
-    // An EMPTY `labels` array is rejected rather than read as absent: "I configured a label set of
-    // nothing" is a repo that meant something and silently got nothing, which is the one failure
-    // mode an operator would never notice.
-    //
-    // SEQUENCING NOTE, stated where an operator setting the key will hit it: gate-side narrowing
-    // is safe only because the worker narrows identically. With this key set, boss-build's worker
-    // selects through the tracker CLI's `list-planned` verb (the same `plannedSelectionQuery` the
-    // gate reads) and stops rather than falling back to the UNFILTERED descriptor, whose result
-    // set is a strict superset of the gate's and would pick somebody else's ticket.
+    // selection: optional. Narrows WHICH CANDIDATES each pipeline stage considers — labels,
+    // assignees, creators and projects, each with include/exclude slots, a shared block and
+    // per-stage overrides (schema and rules: selection.mjs `validateSelectionBlock`, and
+    // docs/skills/skill-config.md). Every fault THROWS, unknown and legacy keys included: an
+    // ignored filter key silently WIDENS the scan, and under this schema an older installed copy
+    // already rejects the object-valued `labels`, so warn-and-ignore protects nobody.
     if ('selection' in tc) {
-      const sel = tc.selection
-      if (!sel || typeof sel !== 'object' || Array.isArray(sel)) {
-        fail(`trackerConfig.${adapter}.selection must be an object when present`)
-      }
-      if ('assigneeOrCreator' in sel) {
-        if (typeof sel.assigneeOrCreator !== 'string' || sel.assigneeOrCreator.length === 0) {
-          fail(
-            `trackerConfig.${adapter}.selection.assigneeOrCreator must be a non-empty string when present; got ${JSON.stringify(
-              sel.assigneeOrCreator,
-            )}`,
-          )
-        }
-      }
-      if ('labels' in sel) {
-        if (!Array.isArray(sel.labels)) {
-          fail(
-            `trackerConfig.${adapter}.selection.labels must be an array of label names when present; got ${JSON.stringify(
-              sel.labels,
-            )}`,
-          )
-        }
-        if (sel.labels.length === 0) {
-          fail(
-            `trackerConfig.${adapter}.selection.labels must not be empty; omit the key to apply no label narrowing`,
-          )
-        }
-        for (const name of sel.labels) {
-          if (typeof name !== 'string' || name.length === 0) {
-            fail(
-              `trackerConfig.${adapter}.selection.labels entries must be non-empty strings; got ${JSON.stringify(
-                name,
-              )}`,
-            )
-          }
-        }
-      }
-      // Same role split as `descriptionNormalization.tolerated` above, and for the same reason:
-      // the key vocabulary is closed, but a misspelled key WARNS rather than throwing. This file
-      // is copy-distributed into every user's global skill directory, so a newer repo declaring a
-      // key an older installed copy has not learned yet must not crash that copy — while a typo
-      // that leaves the block inert has to be audible somewhere, because the resolved
-      // all-nulls gate is byte-identical to a repo that configured nothing at all.
-      const unrecognisedKeys = Object.keys(sel).filter((key) => !SELECTION_KEYS.includes(key))
-      if (unrecognisedKeys.length > 0) {
-        console.warn(
-          `skill-config: ${source}: trackerConfig.${adapter}.selection names ` +
-            `${unrecognisedKeys.map((key) => JSON.stringify(key)).join(', ')}, which this copy of the ` +
-            `selection vocabulary does not recognise; ignoring it, which applies NO narrowing of that ` +
-            `kind. Known keys: ${SELECTION_KEYS.join(', ')}`,
-        )
+      for (const error of validateSelectionBlock(
+        tc.selection,
+        `trackerConfig.${adapter}.selection`,
+      )) {
+        fail(error)
       }
     }
   }
@@ -1011,7 +962,7 @@ export function validateConfig(config, source) {
 // not a language fact, so its absence stays the honest answer outside a repo that configures it.
 
 /** Command keys this layer can detect. `testModule` is deliberately absent. */
-const DETECTED_COMMAND_KEYS = ['build', 'lint', 'format', 'test']
+const DETECTED_COMMAND_KEYS = ['build', 'lint', 'format', 'test', 'testAffected']
 
 // A Makefile rule head: everything before `:` / `::`, excluding `:=` / `::=` assignments. One head
 // can declare SEVERAL targets (`build lint:`), so the names are captured as a group and split.
@@ -1132,7 +1083,7 @@ function packageManager(dir) {
 }
 
 /**
- * Detect a repo's build/lint/format/test commands from the files it declares.
+ * Detect a repo's commands from the files it declares, including Makefile affected tests.
  *
  * Pure and side-effect-free apart from reading the marker files in `cwd` itself: it never walks
  * the tree, never executes anything, and never mutates DEFAULT_CONFIG. Returns a PARTIAL config
@@ -1157,8 +1108,10 @@ export function detectRepoDefaults({ cwd = process.cwd(), keys = DETECTED_COMMAN
   const targets = makefileTargets(cwd)
   if (targets.size > 0) {
     for (const key of DETECTED_COMMAND_KEYS) {
+      if (key === 'testAffected') continue
       if (targets.has(key)) set(key, `make ${key}`)
     }
+    if (targets.has('test-affected')) set('testAffected', 'make test-affected')
     if (targets.has('fmt')) set('format', 'make fmt')
   }
 
@@ -1168,6 +1121,7 @@ export function detectRepoDefaults({ cwd = process.cwd(), keys = DETECTED_COMMAN
   if (scriptNames.length > 0) {
     const pm = packageManager(cwd)
     for (const key of DETECTED_COMMAND_KEYS) {
+      if (key === 'testAffected') continue
       if (typeof scripts[key] === 'string' && scripts[key].length > 0) set(key, `${pm} run ${key}`)
     }
     if (typeof scripts.fmt === 'string' && scripts.fmt.length > 0) set('format', `${pm} run fmt`)
@@ -1214,8 +1168,8 @@ export function loadSkillConfig({ cwd = process.cwd() } = {}) {
     }
   }
   // Detection fills only what nothing else declares, PER KEY: a config that declares just
-  // `commands.testModule` still gets the detected build/lint/format/test, matching the documented
-  // shallow-merge semantics rather than losing all four to an all-or-nothing short-circuit. When
+  // `commands.testModule` still gets the detected commands, matching the documented
+  // shallow-merge semantics rather than losing them to an all-or-nothing short-circuit. When
   // the config already declares every detectable key, no key is wanted and detectRepoDefaults()
   // returns without reading a marker file — a fully-configured repo still does no I/O at all.
   // Composition order is DEFAULT_CONFIG < detected < user: repo config beats detection, and
@@ -1362,6 +1316,18 @@ export function command(config, key) {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/** The fix-round gates in execution order, with unknown commands left for discovery. */
+export function fixRoundGates(config) {
+  const gates = []
+  const missing = []
+  for (const key of ['lint', 'testAffected']) {
+    const resolved = command(config, key)
+    if (resolved === null) missing.push(key)
+    else gates.push({ key, command: resolved })
+  }
+  return { gates, missing }
+}
+
 /**
  * The per-module test command with `{module}` substituted, or null when the repo declares no
  * `commands.testModule`. `testModule` is a repo-shaped convention rather than a language fact,
@@ -1466,96 +1432,59 @@ export function unattributedDriftSeverity(config, adapter = adapterFor(config, '
 }
 
 /**
- * The optional candidate-narrowing selectors this repo declares for its sweeps' gates.
- *
- * Returns BOTH fields always, each `null` when the repo declares no narrowing of that kind, so a
- * caller can spread the result without re-deriving absence. `null` — never `undefined`, never an
- * empty array — is the one spelling of "no narrowing", because a gate that forwards `undefined`
- * into a filter builder and one that forwards an empty array must produce the same inert filter.
- *
- * It NEVER throws. Unlike `stateName` / `labelName`, whose roles are required and whose throw is
- * the correct answer to a repo that failed to configure them, `selection` is genuinely optional:
- * a throw here would take down every core that merely LOADS the config, in every repo, over a key
- * none of them set. So this accessor is self-defending in the way `notesSampleRate` and
- * `toleratedDescriptionTransforms` already are — a hand-built config that never went through
- * `validateConfig` and carries garbage resolves to nulls rather than handing a caller a malformed
- * array or an `undefined`.
- *
- * A malformed `labels` array is rejected WHOLE — one bad entry nulls the key — rather than
- * salvaged entry by entry. This is the one place the self-defence deliberately diverges from
- * `toleratedDescriptionTransforms`, which drops unrecognised ids and keeps the rest. That
- * divergence is directional, not stylistic: dropping a tolerated transform makes a COMPARISON
- * stricter, so its worst case is one spurious triage look. Dropping a label makes a candidate
- * SCAN narrower, so its worst case is a gate that reports no work while work exists — a silent
- * false negative on exactly the axis this key controls. Applying `['label-a']` where the operator
- * wrote `['label-a', 7]` is a narrowing nobody configured; applying none is the documented
- * "no narrowing" the caller already handles.
- *
- * That self-defence is why the adapter default is read straight off `config` instead of through
- * `adapterFor(config, 'tracker')` like its siblings: `adapterFor` indexes `config.adapters`
- * unguarded, so the sibling spelling throws a raw TypeError on exactly the hand-built config this
- * accessor promises to survive. The resolved value is identical for every config that validated.
- *
- * A non-null result must narrow the gate AND the worker identically, so neither reads this
- * directly to build a candidate query: both go through `plannedSelectionQuery` below. The worker's
- * narrowed route is the tracker CLI's `list-planned` verb, and a worker that cannot take it stops
- * rather than falling back to the unfiltered descriptor — a strict superset of the gate's scan.
- *
- * @returns {{ assigneeOrCreator: string|null, labels: string[]|null }}
+ * The raw `trackerConfig.<adapter>.selection` block this repo declares, or `null` when it declares
+ * none. NEVER throws, even on a hand-built config that never went through `validateConfig`: a
+ * throw here would take down every core that merely LOADS the config. The adapter default is read
+ * straight off `config` (not through `adapterFor`, which indexes `config.adapters` unguarded) for
+ * the same reason. Callers build queries through `stageSelectionQuery`, which validates.
+ * @returns {object|null}
  */
-export function selectionConfigFor(config, adapter = config?.adapters?.tracker) {
-  // The adapter is checked before `trackerConfigFor` is reached, not merely defaulted. Passing an
-  // explicitly `undefined` argument RE-TRIGGERS that function's own `adapterFor` default, so
-  // forwarding an unresolved adapter would throw the exact TypeError this accessor exists to
-  // survive. An unresolved adapter also has no per-adapter block by construction, so there is
-  // nothing to compose on.
+export function selectionBlockFor(config, adapter = config?.adapters?.tracker) {
+  // Checked before `trackerConfigFor` is reached: an explicitly `undefined` adapter re-triggers
+  // that function's own `adapterFor` default and its TypeError.
   const tc =
     config && typeof config === 'object' && typeof adapter === 'string' && adapter.length > 0
       ? trackerConfigFor(config, adapter)
       : null
   const block = tc?.selection
-  const sel = block && typeof block === 'object' && !Array.isArray(block) ? block : null
-  const assigneeOrCreator =
-    typeof sel?.assigneeOrCreator === 'string' && sel.assigneeOrCreator.length > 0
-      ? sel.assigneeOrCreator
-      : null
-  // `every`, not `filter`: a partial salvage would hand the gate a narrowing the operator never
-  // wrote. See the note in the docblock for why this direction differs from `tolerated`.
-  const declared =
-    Array.isArray(sel?.labels) &&
-    sel.labels.length > 0 &&
-    sel.labels.every((name) => typeof name === 'string' && name.length > 0)
-      ? // A copy, as the previous `filter` produced: the caller must not be able to mutate the
-        // loaded config through the accessor's return value.
-        [...sel.labels]
-      : null
-  return { assigneeOrCreator, labels: declared }
+  return block && typeof block === 'object' && !Array.isArray(block) ? block : null
 }
 
 /**
- * The ONE derivation of the planned-candidate query that the boss-build cron gate and the worker's
- * `list-planned` verb both filter on, so the two narrow identically rather than merely sharing a
- * filter builder: `{state: <planned state>, label: <selection.labels, else the agentFriendly
- * role>}`, plus `assigneeOrCreator` only when one is configured.
+ * THE one derivation of a stage's candidate query, read by every gate and worker so a gate and its
+ * worker cannot narrow differently: `{state, selection, requireLabels, excludeLabels}`.
  *
- * A configured label set SUPERSEDES the single `agentFriendly` role rather than unioning with it —
- * a union would WIDEN, and `selection` exists to narrow. The identity key is added by conditional
- * assignment, never spread from a possibly-undefined value: a key present-and-undefined is a
- * different argument object from an absent key, and the un-narrowed gate is pinned on the exact
- * absent-key shape it emitted before the seam existed.
+ *   - `state`: the `unplanned` state for `plan`, the `planned` state for `build`/`epic`, and `null`
+ *     for the PR-oriented stages, which do not scan by state.
+ *   - `selection`: `effectiveSelection(block, stage, flags)` — per-slot precedence flag > stage >
+ *     shared. Unresolved (names, emails, `me`); the adapter resolves it.
+ *   - `requireLabels`: the stage's core label roles (`agent-plan` / the build label), ANDed in.
+ *   - `excludeLabels`: `needs-human`, always excluded by the core. A user's `labels.exclude`
+ *     replaces only their own list and never re-admits it.
  *
- * Throws (through `stateName` / `labelName`) when the planned state or the agentFriendly role is
- * unconfigured — the fail-closed answer, since a query without its state clause would scan the
- * whole board.
- *
- * @returns {{ state: string, label: string|string[], assigneeOrCreator?: string }}
+ * Throws on an invalid block (fail closed: a malformed filter must not become no filter) and,
+ * through `stateName` / `labelName`, on an unconfigured state or stage label.
+ * @param {object} config
+ * @param {string} stage one of SELECTION_STAGES
+ * @param {object} [flags] parsed selection flags (`parseSelectionFlags(...).flags`)
+ * @returns {{state: string|null, selection: object, requireLabels: string[], excludeLabels: string[]}}
  */
-export function plannedSelectionQuery(config) {
-  const state = stateName(config, 'planned')
-  const selection = selectionConfigFor(config)
-  const query = { state, label: selection.labels ?? labelName(config, 'agentFriendly') }
-  if (selection.assigneeOrCreator) query.assigneeOrCreator = selection.assigneeOrCreator
-  return query
+export function stageSelectionQuery(config, stage, flags = {}) {
+  const roles = stageLabelRoles(stage)
+  const block = selectionBlockFor(config)
+  if (block !== null) {
+    const errors = validateSelectionBlock(block, 'trackerConfig.selection')
+    if (errors.length > 0) throw new Error(`skill-config: ${errors.join('; ')}`)
+  }
+  const stateRole =
+    stage === 'plan' ? 'unplanned' : stage === 'build' || stage === 'epic' ? 'planned' : null
+  const needsHuman = optionalLabelName(config, 'needsHuman')
+  return {
+    state: stateRole === null ? null : stateName(config, stateRole),
+    selection: effectiveSelection(block, stage, flags),
+    requireLabels: roles.map((role) => labelName(config, role)),
+    excludeLabels: needsHuman ? [needsHuman] : [],
+  }
 }
 
 function trackerRoleName(config, field, role, required = true) {
@@ -1604,7 +1533,7 @@ export function optionalLabelName(config, role) {
 }
 
 // The content taxonomy a drafting dispatch may return in its bounded metadata `labels`. Pipeline
-// labels (agent-friendly, needs-human, agent-question, …) are orchestrator-owned and never
+// labels (agent-build, needs-human, agent-question, …) are orchestrator-owned and never
 // returned. The repo's skill-symbol lint keeps a CONTENT_LABELS denylist that must stay a subset of
 // this runtime list (it excludes `bug`, a configured role, by design).
 export const CONTENT_LABEL_ROLES = Object.freeze(['bug', 'feature', 'improvement', 'docs'])
@@ -1774,21 +1703,20 @@ export function planStorageFor(config) {
 
 /**
  * Is this checkout wired to a concrete tracker? True iff the selected tracker adapter has an
- * identity block carrying the load-bearing fields (a non-empty mcpServer + team). This is the
- * preflight self-disable probe: a repo with no .boss-skills.json (or one without a trackerConfig
- * block for its tracker) resolves false, and a core invoked there stops with one clear line and
- * makes no tracker write instead of demanding an MCP server that does not exist in that repo.
- * validateConfig() already rejects a present-but-partial block, so a truthy resolve is a usable one.
+ * identity block with a non-empty mcpServer AND a team: the configured `team`, or else the
+ * non-empty `team` the caller resolved for this run (resolveTrackerTeam — --team or the single
+ * visible team). This is the preflight self-disable probe. Called with no second argument it keeps
+ * its strict meaning — a configured team is required — so a caller that has not resolved a team
+ * stays fail-closed; a zero-config Linear repo carries a synthesized team-less block and is
+ * configured only once a run passes the team it resolved. Unconfigured means the core stops with
+ * one clear line and makes no tracker write.
  */
-export function isConfiguredForRepo(config) {
+export function isConfiguredForRepo(config, options = {}) {
   const tc = trackerConfigFor(config)
-  return Boolean(
-    tc &&
-    typeof tc.mcpServer === 'string' &&
-    tc.mcpServer.length > 0 &&
-    typeof tc.team === 'string' &&
-    tc.team.length > 0,
-  )
+  if (!tc || typeof tc.mcpServer !== 'string' || tc.mcpServer.length === 0) return false
+  if (typeof tc.team === 'string' && tc.team.length > 0) return true
+  const team = options?.team
+  return typeof team === 'string' && team.trim().length > 0
 }
 
 /**
@@ -1801,11 +1729,172 @@ export function isConfiguredForRepo(config) {
  * full role map here so boss-plan self-disables cleanly in such a repo instead of failing mid-run
  * after drafting work.
  */
-export function isConfiguredForPlanning(config) {
-  if (!isConfiguredForRepo(config)) return false
+export function isConfiguredForPlanning(config, options = {}) {
+  if (!isConfiguredForRepo(config, options)) return false
   const states = (trackerConfigFor(config) || {}).states || {}
   return ['unplanned', 'planned', 'inProgress', 'inReview'].every(
     (role) => typeof states[role] === 'string' && states[role].length > 0,
+  )
+}
+
+// --- Per-run tracker team resolution (zero-config, D11) ---------------------
+
+// How many team names an ambiguous / unknown-team message lists before eliding the rest.
+const TEAM_NAMES_SHOWN = 10
+
+/**
+ * Normalize a tracker's team listing into `{teams: [{id, name, key}], hasNextPage}`, or null when
+ * it is not a listing at all. Accepts the raw MCP `list_teams` result (`{teams: [...],
+ * hasNextPage}`) or a bare array of `{id, name, key?}`. Anything malformed — a non-object, a
+ * non-array `teams`, an entry without a non-empty `name` — is null ("not listed"), never a throw.
+ */
+function normalizeVisibleTeams(visibleTeams) {
+  let entries
+  let hasNextPage = false
+  if (Array.isArray(visibleTeams)) entries = visibleTeams
+  else if (visibleTeams && typeof visibleTeams === 'object' && Array.isArray(visibleTeams.teams)) {
+    entries = visibleTeams.teams
+    hasNextPage = visibleTeams.hasNextPage === true
+  } else return null
+  const text = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null)
+  const teams = []
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || text(entry.name) === null) return null
+    teams.push({ id: text(entry.id), name: text(entry.name), key: text(entry.key) })
+  }
+  return { teams, hasNextPage }
+}
+
+function oneLineMessage(value) {
+  return String(value ?? '')
+    .replace(/\s*\n\s*/g, ' ')
+    .trim()
+}
+
+/**
+ * Resolve this run's tracker team from facts the caller gathered — pure and synchronous, like
+ * trackerMcpPreflight. Precedence: a configured `trackerConfig.<tracker>.team` > `teamFlag`
+ * (--team) > the single visible team. Feed the result's `team` to
+ * `isConfiguredForRepo(config, {team})` / `isConfiguredForPlanning(config, {team})`.
+ *
+ * @param {object} config a loaded skill config
+ * @param {object} [facts]
+ * @param {{ok?: boolean, message?: string, mcpServer?: string}} [facts.preflight] a
+ *   trackerMcpPreflight result
+ * @param {unknown} [facts.visibleTeams] the raw MCP list_teams result or a bare `{id, name, key?}`
+ *   array; null/absent/malformed means "not listed"
+ * @param {string} [facts.teamFlag] the --team argument; blank counts as absent
+ * @returns {{configured: boolean, team: string|null, teamKey: string|null,
+ *   source: 'config'|'flag'|'detected'|null, reason: string|null, message: string}}
+ *   `reason` is null when configured, else one of `no-tracker-mcp`, `unknown-team`,
+ *   `ambiguous`, `no-teams`, `teams-unlisted`. `message` is one line: empty or a warning when
+ *   configured, and always non-empty when unconfigured.
+ */
+export function resolveTrackerTeam(config, { preflight, visibleTeams, teamFlag } = {}) {
+  const adapter = typeof config?.adapters?.tracker === 'string' ? config.adapters.tracker : 'linear'
+  const label = adapter === 'linear' ? 'Linear' : adapter
+  const teamPath = `trackerConfig.${adapter}.team`
+  let tc = null
+  try {
+    tc = trackerConfigFor(config)
+  } catch {
+    tc = null
+  }
+  const flag = typeof teamFlag === 'string' && teamFlag.trim() !== '' ? teamFlag.trim() : null
+  const configured = (team, teamKey, source, message = '') => ({
+    configured: true,
+    team,
+    teamKey: teamKey ?? null,
+    source,
+    reason: null,
+    message,
+  })
+  const unconfigured = (reason, message) => ({
+    configured: false,
+    team: null,
+    teamKey: null,
+    source: null,
+    reason,
+    message: oneLineMessage(message),
+  })
+  const same = (a, b) => typeof b === 'string' && a.toLowerCase() === b.toLowerCase()
+
+  // 1. An explicit configured team always wins — even over a failed preflight, which the caller
+  //    still treats as the hard stop it always was.
+  if (typeof tc?.team === 'string' && tc.team.trim() !== '') {
+    const teamKey = typeof tc.teamKey === 'string' && tc.teamKey !== '' ? tc.teamKey : null
+    const warning =
+      flag !== null && !same(flag, tc.team) && !same(flag, teamKey)
+        ? `--team ${flag} ignored: ${teamPath} is ${tc.team}`
+        : ''
+    return configured(tc.team, teamKey, 'config', warning)
+  }
+
+  // 2. No reachable tracker MCP server and no configured team: nothing can be resolved.
+  if (preflight?.ok !== true) {
+    const server =
+      (typeof preflight?.mcpServer === 'string' && preflight.mcpServer) ||
+      (typeof tc?.mcpServer === 'string' && tc.mcpServer) ||
+      adapter
+    const own = oneLineMessage(preflight?.message)
+    return unconfigured(
+      'no-tracker-mcp',
+      own !== ''
+        ? own
+        : `no ${label} MCP server "${server}" is reachable in this session — declare it to the harness, or set ${teamPath} in .boss-skills.json`,
+    )
+  }
+
+  const listing = normalizeVisibleTeams(visibleTeams)
+  const names = (teams, more) => {
+    const shown = teams.slice(0, TEAM_NAMES_SHOWN).map((team) => team.name)
+    return shown.join(', ') + (more || teams.length > TEAM_NAMES_SHOWN ? ', …' : '')
+  }
+
+  if (flag !== null) {
+    // 3. The operator named a team and nothing can check it: trust the explicit choice.
+    if (listing === null) return configured(flag, null, 'flag')
+    // 4. Match case-insensitively on name or key, exactly on id; answer with the canonical name.
+    const match = listing.teams.find(
+      (team) => same(flag, team.name) || same(flag, team.key) || flag === team.id,
+    )
+    if (match) return configured(match.name, match.key, 'flag')
+    // More teams exist than one page shows, so absence proves nothing: trust the explicit choice.
+    if (listing.hasNextPage) return configured(flag, null, 'flag')
+    // 5. A named team that is not visible is a typo or a missing grant, never a guess.
+    return unconfigured(
+      'unknown-team',
+      `--team ${flag} matches no visible ${label} team (visible: ${
+        listing.teams.length > 0 ? names(listing.teams, listing.hasNextPage) : 'none'
+      }) — pass a visible team name or set ${teamPath} in .boss-skills.json`,
+    )
+  }
+
+  if (listing !== null) {
+    const count = listing.teams.length
+    // 6. More than one team (or more than one page) and nothing picks one.
+    if (listing.hasNextPage || count >= 2) {
+      return unconfigured(
+        'ambiguous',
+        `${listing.hasNextPage ? `more than ${count}` : count} ${label} teams are visible (${names(
+          listing.teams,
+          listing.hasNextPage,
+        )}) — pass --team <name> or set ${teamPath} in .boss-skills.json`,
+      )
+    }
+    // 7. Exactly one visible team: the zero-config happy path.
+    if (count === 1) return configured(listing.teams[0].name, listing.teams[0].key, 'detected')
+    // 8. Nothing visible at all.
+    return unconfigured(
+      'no-teams',
+      `no ${label} teams are visible to the tracker MCP server — check its credentials, or set ${teamPath} in .boss-skills.json`,
+    )
+  }
+
+  // 9. No listing and no flag.
+  return unconfigured(
+    'teams-unlisted',
+    `the visible ${label} teams could not be listed — pass --team <name> or set ${teamPath} in .boss-skills.json`,
   )
 }
 
@@ -3313,38 +3402,61 @@ function parseCheckboxSection(config, description, heading, fn) {
   return parseCheckboxBody(section.bodyLines.join('\n'))
 }
 
-/** The checkbox bullets of one section BODY (no headings), with the same grammar for every caller. */
-function parseCheckboxBody(body) {
-  const outside = new Set(scanFences(body).lines.map(({ index }) => index))
-  const lines = body.split('\n')
-  const raw = []
+/** Leading-whitespace width in columns, with markdown's 4-column tab stops. */
+function indentWidth(line) {
+  let width = 0
+  for (const char of /^[ \t]*/.exec(line)[0]) {
+    width = char === '\t' ? width + 4 - (width % 4) : width + 1
+  }
+  return width
+}
+
+/**
+ * Group list entries with the one continuation rule every bullet parser here shares.
+ *
+ * `lines` are the body's lines OUTSIDE fences, in order (a fenced line is a sample, not an entry,
+ * and neither opens nor ends one). `opens(trimmed)` returns a match when a line opens an entry.
+ *
+ * A list item NESTED deeper than the item that opened the current entry continues it — ordinary
+ * markdown habit when evidence or a long command gets its own line — and so does a non-list
+ * (wrapped or lazy) line. Ending on ANY list item drops a clause written as a nested bullet, so
+ * evidence that is present reads as missing; letting ANY indented item continue folds a uniformly
+ * indented flat list (` - a\n - b`) into its first entry, so a sibling's defect is never seen. A
+ * blank line, a heading, or a list item at the opener's indent or shallower ends the entry, and the
+ * latter opens the next one when `opens` matches it.
+ *
+ * @returns {{ match: RegExpExecArray, parts: string[] }[]} `parts` are the continuation texts,
+ *   trimmed, with a continuation sub-bullet's own marker dropped so the joined text reads as one.
+ */
+function groupListEntries(lines, opens) {
+  const entries = []
   let current = null
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!outside.has(index)) continue // fenced sample, not a criterion
-    const trimmed = lines[index].trim()
-    const indented = /^[ \t]/.test(lines[index])
-    const match = CRITERION_RE.exec(trimmed)
-    // A criterion is a TOP-LEVEL bullet. Testing `CRITERION_RE` before the indent test let an
-    // indented `- [x]` sub-bullet — ordinary markdown habit when the evidence gets its own line —
-    // steal the evidence into a phantom criterion of its own, leaving the real one with no clause.
-    if (match && !(current && indented)) {
-      current = { box: match[1], parts: [match[2].trim()] }
-      raw.push(current)
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const listItem = LIST_ITEM_RE.test(trimmed)
+    const nested = current !== null && listItem && indentWidth(line) > current.indent
+    const match = nested ? null : opens(trimmed)
+    if (match) {
+      current = { match, parts: [], indent: indentWidth(line) }
+      entries.push(current)
       continue
     }
     if (!current) continue
-    // A blank line, a SIBLING (unindented) list item, or a heading ends the criterion; an INDENTED
-    // sub-bullet belongs to it. Ending on ANY list item drops a discharge clause written as a
-    // nested bullet — the natural shape when the command is long — so evidence that is genuinely
-    // present is reported as missing, and the gate BLOCKS a run that did everything right. A
-    // false negative here is as expensive as the false positive above, in the opposite direction.
-    if (trimmed === '' || /^#{1,6}\s/.test(trimmed) || (LIST_ITEM_RE.test(trimmed) && !indented)) {
+    if (trimmed === '' || /^#{1,6}\s/.test(trimmed) || (listItem && !nested)) {
       current = null
       continue
     }
-    // Drop a continuation sub-bullet's own marker so the joined text reads as one criterion.
     current.parts.push(trimmed.replace(LIST_ITEM_RE, ''))
   }
+  return entries.map(({ match, parts }) => ({ match, parts }))
+}
+
+/** The checkbox bullets of one section BODY (no headings), with the same grammar for every caller. */
+function parseCheckboxBody(body) {
+  const outside = scanFences(body).lines.map(({ line }) => line)
+  const raw = groupListEntries(outside, (trimmed) => CRITERION_RE.exec(trimmed)).map(
+    ({ match, parts }) => ({ box: match[1], parts: [match[2].trim(), ...parts] }),
+  )
 
   return raw.map(({ box, parts }) => {
     const text = parts.filter(Boolean).join(' ').trim()
@@ -3573,6 +3685,91 @@ export function validateVerifyOnlyEvidence(config, body) {
   }
 }
 
+/**
+ * Validate the structural local-test record in a PR body; this never proves execution.
+ * Findings carry remedies for body edits and do not determine a shipping route.
+ * @returns {{ ok: boolean, entries: object[], gaps: string[], missingEvidence: object[] }}
+ */
+export function validateLocalVerification(config, body) {
+  assertConfigFirst(config, 'validateLocalVerification')
+  const entries = []
+  const gaps = []
+  const missingEvidence = []
+  let found = false
+  let inSection = false
+  let bullets = 0
+  const remedies = {
+    'missing-section': 'Add a ## Local verification section.',
+    'empty-section': 'Record a command and its result, or a gap: explanation.',
+    'duplicate-section': 'Merge the ## Local verification sections into one.',
+    'undelimited-command':
+      'Use an optional phase: label, a backticked command, and → or -> followed by its result.',
+    'empty-command': 'Record a non-empty command between the backticks.',
+    'empty-result': 'Record the command final summary after → or ->.',
+    'empty-gap': 'Describe what could not be selected reliably and why after gap:.',
+    placeholder: 'Replace the template <…> placeholder with the real command, result or gap.',
+  }
+  // A field that is one whole `<…>` token is the publish template pasted unfilled.
+  const placeholder = (field) => /^<[^<>]*>$/.test(field.trim())
+  const finding = (reason, text) =>
+    missingEvidence.push({
+      reason,
+      remedy: remedies[reason],
+      ...(text === undefined ? {} : { text }),
+    })
+  const sectionLines = []
+  for (const { line } of scanFences(body).lines) {
+    const heading = markdownH2Heading(line)
+    if (heading) {
+      sectionLines.push('') // a heading ends any open entry
+      inSection = normaliseSectionHeading(heading) === 'local verification'
+      // Duplicates are undecidable, as in merge-eligibility.mjs `sections()`; a trailing colon
+      // names a different section there too, so it is not tolerated here either.
+      if (inSection && found) finding('duplicate-section', heading)
+      found ||= inSection
+      continue
+    }
+    // A parent heading ends the section as well.
+    if (/^ {0,3}#\s/.test(line)) inSection = false
+    if (inSection) sectionLines.push(line)
+  }
+  // The continuation rule is `parseCheckboxBody`'s, so a wrapped result or a nested detail line is
+  // part of its entry, while a same-indent sibling is an entry of its own.
+  const items = groupListEntries(sectionLines, (trimmed) => /^[-*+]\s+(.*)$/.exec(trimmed)).map(
+    ({ match, parts }) => [match[1], ...parts],
+  )
+  for (const parts of items) {
+    bullets += 1
+    const text = parts.filter(Boolean).join(' ').trim()
+    const gap = /^gap:\s*(.*)$/i.exec(text)
+    if (gap) {
+      if (!gap[1]) finding('empty-gap', text)
+      else if (placeholder(gap[1])) finding('placeholder', text)
+      else gaps.push(gap[1])
+      continue
+    }
+    const command = /^(?:([^`]+?):\s*)?`([^`]*)`\s*(?:→|->)\s*(.*)$/.exec(text)
+    if (!command) finding('undelimited-command', text)
+    else if (!command[2].trim()) finding('empty-command', text)
+    else if (!command[3].trim()) finding('empty-result', text)
+    else if (placeholder(command[2]) || placeholder(command[3])) finding('placeholder', text)
+    else
+      entries.push({
+        phase: command[1]?.trim() || null,
+        command: command[2].trim(),
+        result: command[3].trim(),
+      })
+  }
+  if (!found) finding('missing-section')
+  else if (!bullets) finding('empty-section')
+  return {
+    ok: missingEvidence.length === 0 && entries.length + gaps.length > 0,
+    entries,
+    gaps,
+    missingEvidence,
+  }
+}
+
 export function commandFindingRemedy(code) {
   if (code === 'make-goal-undefined') {
     return 'Use a goal defined by the named Makefile, or record the underlying check command.'
@@ -3599,7 +3796,81 @@ export function commandFindingRemedy(code) {
   return 'Use a command whose head resolves to an executable PATH binary or executable repo-relative script.'
 }
 
-/** A completion extension may merge only with an explicit boolean opt-in. */
-export function completionMergeAllowed(config) {
-  return config?.completionDefaults?.allowMerge === true
+/**
+ * The globs whose change always routes a verify run to a human, as a fresh copy. Absent or
+ * malformed (a hand-built config that skipped validateConfig) resolves to `[]`, which costs the
+ * verify stage nothing: it reads the PR diff only when this list is non-empty.
+ * @returns {string[]}
+ */
+export function verifyAlwaysHumanPaths(config) {
+  const paths = config?.verifyDefaults?.alwaysHumanPaths
+  return Array.isArray(paths) ? paths.filter((g) => typeof g === 'string' && g.length > 0) : []
+}
+
+function validateRetro(block, fail) {
+  if (!block || typeof block !== 'object' || Array.isArray(block))
+    return fail('retro must be an object')
+  for (const key of Object.keys(block))
+    if (
+      ![
+        'maxIssues',
+        'staleDays',
+        'minRuns',
+        'gateThreshold',
+        'pathAliases',
+        'guidanceAudit',
+      ].includes(key)
+    )
+      fail(`retro.${key} is unknown`)
+  for (const key of ['maxIssues', 'staleDays', 'minRuns', 'gateThreshold']) {
+    if (
+      block[key] !== undefined &&
+      (!Number.isSafeInteger(block[key]) ||
+        block[key] < (key === 'maxIssues' || key === 'staleDays' ? 0 : 1))
+    )
+      fail(`retro.${key} must be a valid integer`)
+  }
+  if (
+    block.pathAliases !== undefined &&
+    (!block.pathAliases ||
+      typeof block.pathAliases !== 'object' ||
+      Array.isArray(block.pathAliases) ||
+      Object.entries(block.pathAliases).some(
+        ([key, value]) => !key.trim() || typeof value !== 'string' || !value.trim(),
+      ))
+  )
+    fail('retro.pathAliases must map non-empty strings')
+  if (
+    block.guidanceAudit !== undefined &&
+    (!block.guidanceAudit ||
+      typeof block.guidanceAudit !== 'object' ||
+      Array.isArray(block.guidanceAudit))
+  )
+    fail('retro.guidanceAudit must be an object')
+}
+
+export function retroConfig(config) {
+  const block = config?.retro
+  const out = {}
+  for (const key of ['maxIssues', 'staleDays', 'minRuns', 'gateThreshold'])
+    out[key] =
+      Number.isSafeInteger(block?.[key]) &&
+      block[key] >= (key === 'maxIssues' || key === 'staleDays' ? 0 : 1)
+        ? block[key]
+        : null
+  out.pathAliases =
+    block?.pathAliases && typeof block.pathAliases === 'object' && !Array.isArray(block.pathAliases)
+      ? Object.fromEntries(
+          Object.entries(block.pathAliases).filter(
+            ([key, value]) => key.trim() && typeof value === 'string' && value.trim(),
+          ),
+        )
+      : {}
+  out.guidanceAudit =
+    block?.guidanceAudit &&
+    typeof block.guidanceAudit === 'object' &&
+    !Array.isArray(block.guidanceAudit)
+      ? structuredClone(block.guidanceAudit)
+      : null
+  return out
 }

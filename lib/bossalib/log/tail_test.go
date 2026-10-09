@@ -65,6 +65,45 @@ func TestTailShortFile(t *testing.T) {
 	}
 }
 
+func TestTailFileTruncatedAfterStat(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "trailing newline", content: "one\ntwo\n", want: "two\n"},
+		{name: "no trailing newline", content: "one\ntwo", want: "two"},
+		{name: "empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "truncated.log")
+			if err := os.WriteFile(path, []byte(tc.content+"removed\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			info, err := f.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, int64(len(tc.content))); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := tailFile(f, info.Size(), 1)
+			if err != nil {
+				t.Fatalf("tailFile: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("tail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTailLongFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "long.log")
 	var sb strings.Builder

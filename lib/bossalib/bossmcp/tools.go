@@ -183,10 +183,13 @@ const (
 	noteRepoIDRouting = "repo_id is REQUIRED even against a local daemon, which resolves the note from the id alone and ignores the value; the hosted gateway needs it to pick the daemon holding the note. It is the daemon-local repo id that list_repos and resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It ROUTES BUT DOES NOT SCOPE: the daemon addresses the note by id alone and never checks that the note belongs to repo_id, so naming one repo while passing an id that lives in another acts on that other note. Do not treat repo_id as a safety check — the id is what selects the note."
 
 	// noteRepoIDRoutingField is the same contract, worded for the repo_id field
-	// description on those three tools' argument structs. A struct tag must be a
+	// description on those three tools' argument structs. It keeps the required
+	// and routes-but-does-not-scope facts an agent reading only the field needs,
+	// and leaves the origin-URL warning to the tool description (noteRepoIDRouting)
+	// rather than paying for it twice per tool every turn. A struct tag must be a
 	// literal, so this constant cannot be interpolated into one — it exists to
 	// keep the three hand-copied tags reviewable against a single source.
-	noteRepoIDRoutingField = "the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"
+	noteRepoIDRoutingField = "the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"
 )
 
 // boolPtr returns a pointer to b. The MCP SDK's ToolAnnotations.DestructiveHint
@@ -196,14 +199,31 @@ func boolPtr(b bool) *bool { return &b }
 
 // RegisterTools installs every bossanova MCP tool on server. When opts.ReadOnly
 // is set, only read-only tools are registered; when opts.Only is non-nil, only
-// the named tools are registered (see Options.Only).
+// the named tools are registered (see Options.Only). The hosted-only tier is
+// added only under opts.IncludeHostedTools, one family per optional backend
+// interface the backend implements — TriggerBackend, SessionWebhookBackend —
+// each discovered independently (see Options.IncludeHostedTools).
 func RegisterTools(server *mcp.Server, backend Backend, opts Options) {
+	triggers := hostedTriggerBackend(backend, opts)
+	webhooks := hostedSessionWebhookBackend(backend, opts)
 	registerReadTools(server, backend, opts)
+	if triggers != nil {
+		registerTriggerReadTools(server, triggers, opts)
+	}
+	if webhooks != nil {
+		registerSessionWebhookReadTools(server, webhooks, opts)
+	}
 	if opts.ReadOnly {
 		return
 	}
 	registerMutatingTools(server, backend, opts)
 	registerDestructiveTools(server, backend, opts)
+	if triggers != nil {
+		registerTriggerWriteTools(server, triggers, opts)
+	}
+	if webhooks != nil {
+		registerSessionWebhookWriteTools(server, webhooks, opts)
+	}
 }
 
 // addTool registers a tool unless opts.Only is non-nil and omits its name. It
@@ -671,6 +691,68 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	registerOrganizationNoteReadTools(server, backend, opts)
+}
+
+// registerOrganizationNoteReadTools installs the three read-only
+// organization-note tools. Bodies are returned in full, exactly like the
+// daemon-local note tools: a note is the payload, not a secret.
+func registerOrganizationNoteReadTools(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
+		Name: "list_organization_notes",
+		Description: "List one page of an organization's cloud notes (synced from members' daemons or written to the " +
+			"API), not the daemon-local notes list_notes reads. Filters intersect. Pass next_page_token back as " +
+			"page_token; empty means the last page. Each note carries origin, sync provenance and 90-day expires_at.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListOrganizationNotesArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.ListOrganizationNotes(ctx, &pb.ListOrganizationNotesRequest{
+			OrganizationId: args.OrganizationID,
+			AuthorUserId:   optionalString(args.AuthorUserID),
+			RepoOriginUrl:  optionalString(args.RepoOriginURL),
+			SessionId:      optionalString(args.SessionID),
+			Tags:           args.Tags,
+			Search:         optionalString(args.Search),
+			PageSize:       args.PageSize,
+			PageToken:      args.PageToken,
+		})
+		if err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(organizationNotesPageFrom(out))
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "get_organization_note",
+		Description: "Get one organization note by id, body in full. An expired note, or an id from another organization, is NotFound.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args OrganizationNoteArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.GetOrganizationNote(ctx, &pb.GetOrganizationNoteRequest{
+			OrganizationId: args.OrganizationID,
+			Id:             args.ID,
+		})
+		if err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "get_organization_note_quota",
+		Description: "Report an organization's hourly note-write quota — limit, used count, and when the UTC-hour window resets — without spending any.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args OrganizationIDArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.GetOrganizationNoteQuota(ctx, &pb.GetOrganizationNoteQuotaRequest{
+			OrganizationId: args.OrganizationID,
+		})
+		if err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
 }
 
 // ListBroadcastsArgs is the typed argument struct for list_broadcasts. Every
@@ -742,7 +824,7 @@ type ListNotesArgs struct {
 // the field description, which must not read as optional just because the local
 // adapter ignores the value. Keep the tag in step with noteRepoIDRoutingField.
 type GetNoteArgs struct {
-	RepoID string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	RepoID string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
 	ID     string `json:"id" jsonschema:"the note id"`
 }
 

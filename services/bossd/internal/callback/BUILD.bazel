@@ -7,6 +7,7 @@ go_library(
         "intconv.go",
         "interests.go",
         "prompt.go",
+        "retire.go",
         "worker.go",
     ],
     importpath = "github.com/recurser/bossd/internal/callback",
@@ -14,6 +15,7 @@ go_library(
     deps = [
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/sqlutil",
         "//lib/bossalib/telemetry",
@@ -32,6 +34,7 @@ go_test(
         "helpers_test.go",
         "interests_test.go",
         "prompt_test.go",
+        "retire_test.go",
         "worker_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
@@ -40,6 +43,7 @@ go_test(
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/machine",
         "//lib/bossalib/migrate",
         "//lib/bossalib/models",
         "//lib/bossalib/telemetry",

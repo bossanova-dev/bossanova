@@ -172,7 +172,7 @@ func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error) 
 func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *stubClient) MergeSession(context.Context, string) (*pb.Session, string, error) {
+func (s *stubClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
 func (s *stubClient) RemoveSession(context.Context, string) error { panic("unused") }
@@ -185,7 +185,7 @@ func (s *stubClient) LinkSessionPR(context.Context, string, string) (*pb.Session
 func (s *stubClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
+func (s *stubClient) ArchiveSession(context.Context, *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
 	panic("unused")
 }
 func (s *stubClient) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
@@ -270,6 +270,9 @@ func (s *stubClient) UpdateNote(context.Context, string, *pb.UpdateNoteRequest) 
 	panic("unused")
 }
 func (s *stubClient) DeleteNote(context.Context, string, string) error { panic("unused") }
+func (s *stubClient) SyncNotesNow(context.Context) (*pb.SyncNotesNowResponse, error) {
+	panic("unused")
+}
 func (s *stubClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
 	panic("unused")
 }
@@ -3366,3 +3369,5 @@ func (s *stubClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.L
 func (s *stubClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
 }
+
+func (s *stubClient) SetChatPhase(context.Context, string, string, string) error { panic("unused") }

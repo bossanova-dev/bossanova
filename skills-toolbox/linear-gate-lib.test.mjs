@@ -9,6 +9,7 @@ import {
   buildIssueCountFilter,
   issuesExist,
   linearRequest,
+  resolveLinearSelectionRefs,
   resolveLinearUserId,
   runLinearGate,
   gateExit,
@@ -22,9 +23,9 @@ test('buildIssueCountFilter: state only', () => {
 })
 
 test('buildIssueCountFilter: state and label', () => {
-  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-friendly' }), {
+  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-build' }), {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
 })
 
@@ -80,7 +81,7 @@ test('runLinearGate: returns true when issues exist', async () => {
   const result = await runLinearGate({
     apiKey: 'key123',
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     fetchImpl,
   })
   assert.equal(result, true)
@@ -92,7 +93,7 @@ test('runLinearGate: returns true when issues exist', async () => {
   const body = JSON.parse(fetchImpl.calls[0].options.body)
   assert.deepEqual(body.variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
 })
 
@@ -408,9 +409,9 @@ test('runLinearGate still returns false for a genuine zero-row read', async () =
 // clauses. A later edit that made a selector default to something truthy would pass the first and
 // fail this one, which is the whole point of writing it twice.
 test('buildIssueCountFilter: no selector emits exactly the pre-BOS-1292 filter', () => {
-  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-friendly' }), {
+  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-build' }), {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
   assert.deepEqual(buildIssueCountFilter({ state: 'Unplanned' }), {
     state: { name: { eq: 'Unplanned' } },
@@ -422,15 +423,13 @@ test('buildIssueCountFilter: no selector emits exactly the pre-BOS-1292 filter',
 // whole safety argument for this widening is that a caller which passes a single label name emits
 // the byte-identical filter it emitted before the array form existed.
 test('buildIssueCountFilter: a string label still emits the single equality clause', () => {
-  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-friendly' }), {
+  assert.deepEqual(buildIssueCountFilter({ state: 'Todo', label: 'agent-build' }), {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
   // `eq` and nothing else: an implementation that promoted every label to the membership form
   // would still match "a labels clause is present", and only reading the comparator catches it.
-  assert.deepEqual(Object.keys(buildIssueCountFilter({ label: 'agent-friendly' }).labels.name), [
-    'eq',
-  ])
+  assert.deepEqual(Object.keys(buildIssueCountFilter({ label: 'agent-build' }).labels.name), ['eq'])
 })
 
 test('buildIssueCountFilter: an array label emits a disjunctive membership clause', () => {
@@ -502,12 +501,12 @@ test('buildIssueCountFilter: creatorId adds a single equality clause', () => {
 test('buildIssueCountFilter: assigneeOrCreatorId emits a two-element top-level or', () => {
   const filter = buildIssueCountFilter({
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     assigneeOrCreatorId: 'usr_1',
   })
   assert.deepEqual(filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
     or: [{ assignee: { id: { eq: 'usr_1' } } }, { creator: { id: { eq: 'usr_1' } } }],
   })
   // Spelled out separately from the deep-equal above: the `or` must AND WITH the state and label
@@ -646,7 +645,7 @@ test('runLinearGate: forwards assigneeOrCreator as a top-level or beside state a
     await runLinearGate({
       apiKey: 'k',
       state: 'Todo',
-      label: 'agent-friendly',
+      label: 'agent-build',
       assigneeOrCreator: 'me',
       fetchImpl,
     }),
@@ -656,7 +655,7 @@ test('runLinearGate: forwards assigneeOrCreator as a top-level or beside state a
   // The `or` ANDs with its siblings rather than replacing them: all three keys must survive.
   assert.deepEqual(calls[1].variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
     or: [{ assignee: { id: { eq: 'usr_owner' } } }, { creator: { id: { eq: 'usr_owner' } } }],
   })
 })
@@ -673,10 +672,174 @@ test('runLinearGate: a concrete assigneeOrCreator costs zero viewer round trips'
 
 test('runLinearGate: no selector issues exactly one request and the pre-BOS-1292 filter', async () => {
   const fetchImpl = fakeFetch({ json: { data: { issues: { nodes: [] } } } })
-  await runLinearGate({ apiKey: 'k', state: 'Todo', label: 'agent-friendly', fetchImpl })
+  await runLinearGate({ apiKey: 'k', state: 'Todo', label: 'agent-build', fetchImpl })
   assert.equal(fetchImpl.calls.length, 1, 'no stray viewer lookup on the unselected path')
   assert.deepEqual(JSON.parse(fetchImpl.calls[0].options.body).variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
+})
+
+// --- resolveLinearSelectionRefs (BOS-1378) ---------------------------------------------------
+// The one batched lookup behind a configured selection. The fake answers like the tracker: each
+// requested root field returns the nodes that exist, and nothing for values that do not.
+
+const U_ME = '11111111-1111-4111-8111-111111111111'
+const U_DEV = '22222222-2222-4222-8222-222222222222'
+const U_GONE = '44444444-4444-4444-8444-444444444444'
+const P_ID = '33333333-3333-4333-8333-333333333333'
+
+function refsFetch(data = {}) {
+  const bodies = []
+  const impl = async (url, init) => {
+    const body = JSON.parse(init.body)
+    bodies.push(body)
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          ...(body.query.includes('viewer') ? { viewer: { id: U_ME } } : {}),
+          ...(body.query.includes('users(') ? { users: { nodes: data.users ?? [] } } : {}),
+          ...(body.query.includes('issueLabels(')
+            ? { issueLabels: { nodes: data.labels ?? [] } }
+            : {}),
+          ...(body.query.includes('projects(') ? { projects: { nodes: data.projects ?? [] } } : {}),
+        },
+      }),
+    }
+  }
+  impl.bodies = bodies
+  return impl
+}
+
+test('resolveLinearSelectionRefs: a truncated lookup page fails closed instead of resolving a partial set', async () => {
+  const impl = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({
+      data: {
+        projects: { nodes: [{ id: P_ID, name: 'Platform' }], pageInfo: { hasNextPage: true } },
+      },
+    }),
+  })
+  await assert.rejects(
+    resolveLinearSelectionRefs({ apiKey: 'k', refs: { projects: ['Platform'] }, fetchImpl: impl }),
+    /selection lookup truncated \(projects matched more than 250 nodes\)/,
+  )
+})
+
+test('resolveLinearSelectionRefs: zero refs make zero requests', async () => {
+  const impl = refsFetch()
+  for (const refs of [undefined, {}, { users: [], labels: [], projects: [] }]) {
+    assert.deepEqual(await resolveLinearSelectionRefs({ apiKey: 'k', refs, fetchImpl: impl }), {
+      users: {},
+      labels: {},
+      projects: {},
+    })
+  }
+  assert.equal(impl.bodies.length, 0)
+})
+
+test("resolveLinearSelectionRefs: 'me' makes ONE batched request that asks for nothing else", async () => {
+  const impl = refsFetch()
+  const resolved = await resolveLinearSelectionRefs({
+    apiKey: 'k',
+    refs: { users: ['me'] },
+    fetchImpl: impl,
+  })
+  assert.equal(impl.bodies.length, 1)
+  assert.match(impl.bodies[0].query, /viewer \{ id \}/)
+  assert.doesNotMatch(impl.bodies[0].query, /users\(|issueLabels\(|projects\(/)
+  assert.deepEqual(resolved.users, { me: U_ME })
+})
+
+test('resolveLinearSelectionRefs: users, labels and projects resolve in ONE request', async () => {
+  const impl = refsFetch({
+    users: [
+      { id: U_DEV, email: 'Dev@Example.com' },
+      { id: U_GONE, email: 'gone@example.com' },
+    ],
+    labels: [{ name: 'Infra' }, { name: 'infra' }, { name: 'backend' }],
+    projects: [
+      { id: P_ID, name: 'Platform' },
+      { id: '55555555-5555-4555-8555-555555555555', name: 'platform' },
+    ],
+  })
+  const resolved = await resolveLinearSelectionRefs({
+    apiKey: 'k',
+    refs: {
+      users: ['me', 'dev@example.com', U_GONE],
+      labels: ['INFRA'],
+      projects: ['Platform', P_ID],
+    },
+    fetchImpl: impl,
+  })
+  assert.equal(impl.bodies.length, 1, 'one batched request')
+  const { variables } = impl.bodies[0]
+  assert.deepEqual(variables.users, {
+    or: [{ id: { in: [U_GONE] } }, { email: { eqIgnoreCase: 'dev@example.com' } }],
+  })
+  assert.deepEqual(variables.labels, { or: [{ name: { eqIgnoreCase: 'INFRA' } }] })
+  assert.deepEqual(variables.projects, {
+    or: [{ id: { in: [P_ID] } }, { name: { eqIgnoreCase: 'Platform' } }],
+  })
+  assert.deepEqual(resolved, {
+    users: { me: U_ME, 'dev@example.com': U_DEV, [U_GONE]: U_GONE },
+    labels: { INFRA: ['Infra', 'infra'] },
+    projects: { Platform: [P_ID, '55555555-5555-4555-8555-555555555555'], [P_ID]: [P_ID] },
+  })
+})
+
+test('resolveLinearSelectionRefs: an unresolvable user, email, label or project throws naming EVERY value', async () => {
+  const cases = [
+    [{ users: [U_DEV] }, /user "22222222-2222-4222-8222-222222222222"/],
+    [{ users: ['nobody@example.com'] }, /user "nobody@example.com"/],
+    [{ labels: ['ghost'] }, /label "ghost"/],
+    [{ projects: ['Nowhere'] }, /project "Nowhere"/],
+  ]
+  for (const [refs, pattern] of cases) {
+    await assert.rejects(
+      resolveLinearSelectionRefs({ apiKey: 'k', refs, fetchImpl: refsFetch() }),
+      pattern,
+    )
+  }
+  await assert.rejects(
+    resolveLinearSelectionRefs({
+      apiKey: 'k',
+      refs: { users: ['nobody@example.com'], labels: ['ghost'], projects: ['Nowhere'] },
+      fetchImpl: refsFetch(),
+    }),
+    /could not resolve user "nobody@example.com", label "ghost", project "Nowhere"; failing closed/,
+  )
+})
+
+test('resolveLinearSelectionRefs: a viewer payload with no id fails closed', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ data: { viewer: null } }) })
+  await assert.rejects(
+    resolveLinearSelectionRefs({ apiKey: 'k', refs: { users: ['me'] }, fetchImpl }),
+    /could not resolve user "me"/,
+  )
+})
+
+test('runLinearGate: a pre-rendered filter is sent as-is, and mixing it with legacy keys throws', async () => {
+  const bodies = []
+  const fetchImpl = async (url, init) => {
+    bodies.push(JSON.parse(init.body))
+    return {
+      ok: true,
+      json: async () => ({ data: { issues: { nodes: [{ id: 'x' }], pageInfo: {} } } }),
+    }
+  }
+  const filter = {
+    state: { name: { eq: 'Todo' } },
+    and: [{ labels: { some: { name: { eq: 'a' } } } }],
+  }
+  assert.equal(await runLinearGate({ apiKey: 'k', filter, fetchImpl }), true)
+  assert.deepEqual(bodies[0].variables.filter, filter)
+  await assert.rejects(
+    runLinearGate({ apiKey: 'k', filter, label: 'a', fetchImpl }),
+    /cannot be combined with legacy key\(s\) label/,
+  )
+  assert.equal(bodies.length, 1)
 })

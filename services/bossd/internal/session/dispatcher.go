@@ -518,7 +518,8 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	// side effects, all of which are idempotent: the tracker Set and the state
 	// Update are writes of the value already there, notifyCompletion is guarded
 	// against duplicates by the orchestrator, and ArchiveSession (as wired,
-	// Server.ArchiveSessionAndNotify) swallows the already-archived ErrNoRows.
+	// Server.RequestArchiveAutomatic in front of ArchiveSessionAndNotify)
+	// swallows the already-archived ErrNoRows.
 	// A duplicate delivery that arrives once the archive has landed cannot
 	// reach here at all — ListByRepoAndPR filters archived rows — and a
 	// resurrected session is back on ImplementingPlan, so it takes the normal
@@ -620,7 +621,10 @@ func archiveSessionAfterMergeIfEnabled(
 			logger.Warn().Err(err).Str("session", sessionID).Msg("archive-after-merge: archive failed")
 			return
 		}
-		logger.Info().Str("session", sessionID).Msg("archive-after-merge: session archived")
+		// "requested", not "archived": the wired archiver defers the archive
+		// while a chat in the session is still working (BOS-1380), so a nil
+		// error may only mean the archive is pending.
+		logger.Info().Str("session", sessionID).Msg("archive-after-merge: archive requested")
 	})
 	// Hand the completion channel to shutdown coordination instead of dropping
 	// it (BOS-923). The detachment above keeps the archive alive past its

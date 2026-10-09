@@ -152,9 +152,14 @@ func rootCmd() *cobra.Command {
 			// cmd.CommandPath(), deliberately distinct from the loose pre-cobra
 			// argv scanner isTailInvocation() used by setupCommandLogging before
 			// the command tree exists.
+			//
+			// init joins for a third reason: on a terminal it runs its own
+			// interview, and a startup [Y/n] would compete with its first
+			// question. It offers `boss skills install` itself, through the
+			// cron preflight remedy, exactly where the skills are needed.
 			path := cmd.CommandPath()
 			if path == "boss gen-skill" || path == "boss fix-terminal" ||
-				path == "boss tail" || path == "boss cost" ||
+				path == "boss tail" || path == "boss cost" || path == "boss init" ||
 				path == "boss skills" || strings.HasPrefix(path, "boss skills ") {
 				return nil
 			}
@@ -197,8 +202,10 @@ func rootCmd() *cobra.Command {
 	addGrouped("repo", repoCmd())
 	addGrouped("cron", cronCmd())
 	addGrouped("callback", callbackCmd())
+	addGrouped("trigger", triggerCmd())
 	addGrouped("broadcast", broadcastCmd())
 	addGrouped("notes", notesCmd())
+	addGrouped("webhook", webhookCmd())
 	addGrouped("account", accountCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
@@ -316,6 +323,7 @@ func sessionCmd() *cobra.Command {
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
 	checks.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
+	cmd.AddCommand(sessionPhaseCmd(newClient))
 	reviewLedger := &cobra.Command{
 		Use:   "review-ledger <session-id>",
 		Short: "Show a finished boss-review run's durable dispatch ledger",
@@ -490,6 +498,10 @@ func newCmd() *cobra.Command {
 			"The agent starts when you attach; unattended runs want --defer-pr. "+
 			"Mutually exclusive with --defer-pr. Non-interactive --repo + --prompt "+
 			"path only")
+	cmd.Flags().Int32("pr", 0,
+		"Create the session on an existing pull request's head branch, bound to that PR, "+
+			"instead of a fresh branch. Mutually exclusive with --quick-chat and --defer-pr. "+
+			"Non-interactive --repo + --prompt path only")
 	// The example is a generic placeholder on purpose: this usage string is
 	// harvested into the globally-installed `boss` skill core, which
 	// TestPublishedCoresAreProjectAgnostic forbids from carrying a real
@@ -618,6 +630,9 @@ func cronCmd() *cobra.Command {
 	// Unlike --enabled/--run-setup, this defaults to false: a zero-output job
 	// runs with no worktree, branch or PR, which is never a safe default.
 	add.Flags().Bool("zero-output", false, "Run with no worktree, branch, or PR (for jobs that change nothing in this repo)")
+	// Empty default: an omitted flag leaves the request field unset, which the
+	// daemon resolves to skip.
+	add.Flags().String("concurrency", "", "What a fire does while the previous run is still working: skip (default), cancel-in-progress, or allow-concurrent")
 
 	update := &cobra.Command{
 		Use:   "update <cron-id>",
@@ -642,6 +657,7 @@ func cronCmd() *cobra.Command {
 	update.Flags().Bool("enabled", false, "Enable or disable the job (unset preserves current)")
 	update.Flags().Bool("run-setup", false, "Run the repo setup script before the agent (unset preserves current)")
 	update.Flags().Bool("zero-output", false, "Run with no worktree, branch, or PR (unset preserves current)")
+	update.Flags().String("concurrency", "", "Set what a fire does while the previous run is still working: skip, cancel-in-progress, or allow-concurrent (unset preserves current)")
 
 	cron.AddCommand(
 		ls,
@@ -808,14 +824,22 @@ func accountCmd() *cobra.Command {
 }
 
 func archiveCmd() *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "archive <session-id>",
 		Short: "Archive a session (keep branch, remove worktree)",
-		Args:  cobra.ExactArgs(1),
+		Long: "Archive a session: stop its chats, remove the worktree, keep the branch.\n\n" +
+			"If a chat in the session is still working, the archive is deferred and runs once every chat is idle; " +
+			"the command reports it as pending and exits 0. --force archives now regardless.\n" +
+			"Run from inside a session, the calling chat ($BOSS_AGENT_SESSION_ID) counts as working until it settles, " +
+			"so a session can safely archive itself.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runArchive(cmd, args[0])
 		},
 	}
+	c.Flags().Bool("force", false, "Archive now even if a chat in the session is still working")
+	c.Flags().Bool("json", false, "Emit a stable JSON envelope instead of human-readable text")
+	return c
 }
 
 func mergeCmd() *cobra.Command {
@@ -829,6 +853,7 @@ func mergeCmd() *cobra.Command {
 	}
 	c.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
 	c.Flags().Bool("json", false, "Emit a stable JSON envelope instead of human-readable text (requires --yes)")
+	c.Flags().String("match-head", "", "Refuse the merge unless the PR head is exactly this commit SHA (40 hex)")
 	return c
 }
 

@@ -232,6 +232,7 @@ type fakeSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*models.Session
 	getErr   error // force every Get to return this error
+	getCalls int
 }
 
 type fakeActivity struct{ active bool }
@@ -250,6 +251,7 @@ func (f *fakeSessionStore) put(sess *models.Session) {
 
 func (f *fakeSessionStore) Get(ctx context.Context, id string) (*models.Session, error) {
 	f.mu.Lock()
+	f.getCalls++
 	defer f.mu.Unlock()
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -1806,5 +1808,109 @@ func TestGatingJobIDs_ReturnsCopy(t *testing.T) {
 	final := s.GatingJobIDs()
 	if len(final) != 0 {
 		t.Errorf("GatingJobIDs: expected empty after unmarkGating, got %v", final)
+	}
+}
+
+// The policy is shared by scheduled fires and RunNow; cancellation must happen
+// only after a successful gate and before any replacement session is created.
+func TestFire_ConcurrencyPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		policy       models.CronJobConcurrencyPolicy
+		state        machine.State
+		active       bool
+		gate         string
+		nilCanceller bool
+		cancelErr    bool
+		runNow       bool
+		wantSkip     string
+		wantCancel   bool
+	}{
+		{name: "skip", policy: models.CronJobConcurrencyPolicySkip, state: machine.ImplementingPlan, active: true, gate: "exit 1", wantSkip: SkipReasonOverlapPrevActive},
+		{name: "empty", state: machine.ImplementingPlan, active: true, wantSkip: SkipReasonOverlapPrevActive},
+		{name: "unknown", policy: "unknown", state: machine.ImplementingPlan, active: true, wantSkip: SkipReasonOverlapPrevActive},
+		{name: "allow", policy: models.CronJobConcurrencyPolicyAllowConcurrent, state: machine.ImplementingPlan, active: true},
+		{name: "cancel", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, gate: "exit 0", wantCancel: true},
+		{name: "gated", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, gate: "exit 1", wantSkip: SkipReasonGated},
+		{name: "gate_failed", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, gate: "exit 127", wantSkip: SkipReasonGateFailed},
+		{name: "starting_agent", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.StartingAgent, active: true, wantSkip: SkipReasonOverlapPrevActive},
+		{name: "creating_worktree", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.CreatingWorktree, active: true, wantSkip: SkipReasonOverlapPrevActive},
+		{name: "cancel_failed", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, cancelErr: true, wantSkip: SkipReasonOverlapPrevActive, wantCancel: true},
+		{name: "nil_canceller", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, nilCanceller: true, gate: "exit 1", wantSkip: SkipReasonOverlapPrevActive},
+		{name: "cancel_idle", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan},
+		{name: "cancel_closed", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.Closed, active: true},
+		{name: "cancel_merged", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.Merged, active: true},
+		{name: "allow_idle", policy: models.CronJobConcurrencyPolicyAllowConcurrent, state: machine.ImplementingPlan},
+		{name: "allow_closed", policy: models.CronJobConcurrencyPolicyAllowConcurrent, state: machine.Closed, active: true},
+		{name: "run_now_allow", policy: models.CronJobConcurrencyPolicyAllowConcurrent, state: machine.ImplementingPlan, active: true, runNow: true},
+		{name: "run_now_cancel", policy: models.CronJobConcurrencyPolicyCancelInProgress, state: machine.ImplementingPlan, active: true, runNow: true, wantCancel: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			job := makeJob("j", "@every 1m", true)
+			previousID := "previous"
+			job.LastRunSessionID = &previousID
+			job.ConcurrencyPolicy = tt.policy
+			job.GateCommand = tt.gate
+			store.put(job)
+			sessions := newFakeSessionStore()
+			sessions.put(&models.Session{ID: previousID, State: tt.state})
+			creator := newFakeCreator()
+			s := newTestScheduler(t, store, sessions, creator)
+			s.activity = fakeActivity{active: tt.active}
+			cancels := 0
+			if !tt.nilCanceller {
+				s.canceller = RunCancellerFunc(func(_ context.Context, id string) error {
+					cancels++
+					if id != previousID {
+						t.Errorf("cancel id = %q", id)
+					}
+					if creator.entered.Load() != 0 {
+						t.Error("created replacement before cancellation")
+					}
+					if tt.cancelErr {
+						return errors.New("stop failed")
+					}
+					return nil
+				})
+			}
+			// Allow bypasses the entire previous-run lookup, even when it fails.
+			if tt.policy == models.CronJobConcurrencyPolicyAllowConcurrent {
+				sessions.getErr = errors.New("must not read previous session")
+			}
+			var sess *models.Session
+			var reason string
+			var err error
+			if tt.runNow {
+				sess, reason, err = s.RunNow(context.Background(), job.ID)
+			} else {
+				sess, reason, err = s.fire(context.Background(), job.ID)
+			}
+			if err != nil || reason != tt.wantSkip {
+				t.Fatalf("fire = (_, %q, %v), want %q", reason, err, tt.wantSkip)
+			}
+			wantCancels := 0
+			if tt.wantCancel {
+				wantCancels = 1
+			}
+			if tt.policy == models.CronJobConcurrencyPolicyAllowConcurrent && sessions.getCalls != 0 {
+				t.Error("allow consulted previous session")
+			}
+			if cancels != wantCancels {
+				t.Errorf("cancel calls = %d, want %d", cancels, wantCancels)
+			}
+			if tt.wantSkip != "" {
+				if sess != nil || len(creator.calls) != 0 {
+					t.Fatal("skipped fire created a session")
+				}
+				return
+			}
+			if sess == nil || len(creator.calls) != 1 {
+				t.Fatal("fire did not create replacement")
+			}
+			if got := *store.jobs[job.ID].LastRunSessionID; got != sess.ID {
+				t.Errorf("last run = %q, want %q", got, sess.ID)
+			}
+		})
 	}
 }

@@ -12,7 +12,7 @@ each condition. A ticket is merge-eligible only when **all four** hold:
 | #   | Condition               | How to read it                                                                                                    |
 | --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | 1   | daemon merge gate clear | `get_session` / the display status reports `gate 1` / `Passing` — **authoritative**                               |
-| 2   | build chat SETTLED      | `get_chat_statuses` idle, no spinner, stable across two polls, real changed files                                 |
+| 2   | build chat SETTLED      | settled per `classifyChildSettled` (§5), real changed files                                                       |
 | 3   | PR is not a draft       | `gh pr view <n> --json isDraft -q .isDraft` → `false`                                                             |
 | 4   | no do-not-merge marker  | `gh pr view <n> --json title,body` carries no partial-slice / `do not merge` marker (a `PARTIAL` child writes it) |
 
@@ -158,24 +158,33 @@ resume committed state, then fail-isolate if it does not take.
 
 ## 5. The settled-chat status vocabulary
 
-A green is trustworthy only once the tracked chat has **settled**: `IDLE` or `STOPPED` on **two
-consecutive polls** with the spinner absent. STOPPED + missing `last_agent_activity_at` counts as
-settled once the second poll agrees.
+A green is trustworthy only once the tracked chat has **settled**. The verdict is
+`classifyChildSettled` (bs-epic-lib), which the epic driver computes each cycle from the tracked
+chat's `status` / `spinner_present` and the session's `display_label`, persisting each poll's
+observation so the next cycle can confirm it: `IDLE` or `STOPPED` on **two consecutive polls** with
+the spinner absent, or a **Ready** session (the daemon's computed `✓ ready` label) whose chat is
+`IDLE`/`STOPPED`/`WAITING` on two consecutive polls with the spinner absent. STOPPED + missing
+`last_agent_activity_at` counts as settled once the second poll agrees.
 
 **Never gate settled on timestamp staleness.** `last_output_at` is a floor that any pane change
 advances — a spinner's elapsed counter alone keeps it fresh — and chats seeded in one tick can share
 it to the nanosecond, so a staleness test can never pass.
 
-| Tracked chat status                       | Reading                                                     |
-| ----------------------------------------- | ----------------------------------------------------------- |
-| `IDLE` / `STOPPED` (×2 polls, no spinner) | settled — the only merge-eligible reading                   |
-| `WORKING` / `QUESTION` / `WAITING`        | alive and running, or parked; hold                          |
-| `LIMITED`                                 | usage-limit resume lane; never merge-settled                |
-| `UNSPECIFIED` or unreadable               | **unknown** — not settled and not dead; investigate/re-poll |
+| Tracked chat status                                 | Reading                                                                     |
+| --------------------------------------------------- | --------------------------------------------------------------------------- |
+| `IDLE` / `STOPPED` (×2 polls, no spinner)           | `settled-idle` — merge-eligible                                             |
+| Ready + `IDLE`/`STOPPED`/`WAITING` (×2, no spinner) | `settled-ready` — merge-eligible; the hand-off is parked on its own watches |
+| first eligible poll                                 | `pending` — hold; the next cycle confirms or refutes it                     |
+| `WORKING` / `QUESTION`, or `WAITING` unless Ready   | `alive` — running or parked; hold                                           |
+| `LIMITED`                                           | usage-limit resume lane; never merge-settled                                |
+| `UNSPECIFIED` or unreadable                         | **unknown** — not settled and not dead; investigate/re-poll                 |
 
 `get_session_statuses` is a session-level aggregate across all chats: display/diagnostic only.
 Never gate green/settled on it — an older implementation chat can sit at QUESTION/LIMITED while the
-tracked repair chat is IDLE/STOPPED and passing.
+tracked repair chat is IDLE/STOPPED and passing. Ready is not that aggregate: it is a fact pinned to
+the current head's build receipt, and it only adds an accept path for a tracked chat that is already
+not working. A failing, conflicting, verifying or needs-human session never carries it, and Ready
+never bypasses the other admission conditions.
 
 ## 6. Serialized-merge drift is expected, and absorbed elsewhere
 

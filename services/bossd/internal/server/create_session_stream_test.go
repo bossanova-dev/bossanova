@@ -1556,7 +1556,7 @@ func (setupStreamProvider) ListClosedPRs(context.Context, string) ([]vcs.PRSumma
 func (setupStreamProvider) SearchPRsByTitleTag(context.Context, string, string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
-func (setupStreamProvider) MergePR(context.Context, string, int, string) error { return nil }
+func (setupStreamProvider) MergePR(context.Context, string, int, vcs.MergePROpts) error { return nil }
 func (setupStreamProvider) UpdatePRTitle(context.Context, string, int, string) error {
 	return nil
 }

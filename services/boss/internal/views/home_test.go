@@ -1770,7 +1770,7 @@ func TestArchivingOverrideClearedWhenSessionGone(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.markArchiving("s1")
 	h.markArchiving("s2")
-	h.resolveArchive("s1", nil)
+	h.resolveArchive("s1", nil, false)
 
 	model, _ := h.Update(sessionListMsg{
 		sessions: []*pb.Session{{Id: "s2"}},
@@ -1832,7 +1832,7 @@ func TestArchiveStateTransitionsPreserveInFlightSubset(t *testing.T) {
 			transitions: []func(*HomeModel){
 				func(h *HomeModel) { h.markArchiving("s1") },
 				func(h *HomeModel) { h.markArchiving("s2") },
-				func(h *HomeModel) { h.resolveArchive("s1", nil) },
+				func(h *HomeModel) { h.resolveArchive("s1", nil, false) },
 			},
 			wantArchiving: []string{"s1", "s2"},
 			wantInFlight:  []string{"s2"},
@@ -1842,7 +1842,7 @@ func TestArchiveStateTransitionsPreserveInFlightSubset(t *testing.T) {
 			transitions: []func(*HomeModel){
 				func(h *HomeModel) { h.markArchiving("s1") },
 				func(h *HomeModel) { h.markArchiving("s2") },
-				func(h *HomeModel) { h.resolveArchive("s1", errors.New("boom")) },
+				func(h *HomeModel) { h.resolveArchive("s1", errors.New("boom"), false) },
 			},
 			wantArchiving:    []string{"s2"},
 			wantNotArchiving: []string{"s1"},
@@ -5471,5 +5471,45 @@ func TestHomeTableHasNoOrganizationColumn(t *testing.T) {
 			strings.EqualFold(strings.TrimSpace(col.Title), "ORGANIZATION") {
 			t.Fatalf("Home grew an organization column: %+v", h.table.Columns())
 		}
+	}
+}
+
+// archivePendingSession builds a row the way the daemon serves it: the label
+// comes from displaystatus.Compute, so ArchivePending=true renders "archiving"
+// and a cleared flag falls back to the chat's own status.
+func archivePendingSession(id string, pending bool) *pb.Session {
+	sess := &pb.Session{Id: id, Title: "t", ArchivePending: pending}
+	out := displaystatus.Compute(displaystatus.Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING})
+	sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = out.Label, out.Intent, out.Spinner
+	return sess
+}
+
+// TestDeferredArchive_RowRendersFromArchivePendingAndStopsWhenCleared covers
+// BOS-1380 on the list: a deferred archive drops the local override at once,
+// so the row's "archiving" comes only from the daemon's archive_pending — and
+// stops rendering when a poll reports it cleared (the pending archive was
+// cancelled), instead of sticking forever on a row that never leaves.
+func TestDeferredArchive_RowRendersFromArchivePendingAndStopsWhenCleared(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.home.sessions = []*pb.Session{archivePendingSession("s1", true)}
+	a.home.markArchiving("s1")
+	a.home.buildTableRows()
+
+	model, _ := a.Update(archiveResultMsg{sessionID: "s1", deferred: true})
+	got := model.(App)
+	if got.home.isArchiving("s1") || got.home.archiveInFlight("s1") {
+		t.Fatal("a deferred archive must drop the local archiving override")
+	}
+	if !strings.Contains(got.home.table.Rows()[0][5], "archiving") {
+		t.Fatalf("row status = %q, want archiving from archive_pending", got.home.table.Rows()[0][5])
+	}
+
+	model, _ = got.Update(sessionListMsg{sessions: []*pb.Session{archivePendingSession("s1", false)}})
+	got = model.(App)
+	if row := got.home.table.Rows()[0][5]; strings.Contains(row, "archiving") {
+		t.Fatalf("row status = %q after archive_pending cleared, want the normal status", row)
+	}
+	if !strings.Contains(got.home.table.Rows()[0][5], "working") {
+		t.Fatalf("row status = %q, want working", got.home.table.Rows()[0][5])
 	}
 }

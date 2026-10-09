@@ -193,13 +193,24 @@ func TestWaitingDemotion_ProcedureSetIsDerivedAndNonEmpty(t *testing.T) {
 
 // TestWaitingDemotion_RegisteredAfterSessionListRankOrderChange pins the
 // registration ORDER that KTD-5 depends on. Changes.Apply iterates in reverse,
-// so "registered last" is "runs first", and running first is what lets
-// WaitingChatStatusChange see a waiting label again.
+// so "registered later" is "runs earlier", and running before every other
+// change of its window and older is what lets WaitingChatStatusChange see a
+// waiting label again. Changes from a strictly newer version (BOS-1382's
+// VerifyDisplayStatusChange at V20260916) may follow it: they run earlier still
+// and never produce or consume the demotion mark.
 func TestWaitingDemotion_RegisteredAfterSessionListRankOrderChange(t *testing.T) {
 	registered := ProductionChanges().changes
-	last := registered[len(registered)-1]
-	if _, ok := last.(WaitingDemotionLabelChange); !ok {
-		t.Fatalf("last registered change is %T, want WaitingDemotionLabelChange (it must run FIRST)", last)
+	lastOfWindow := -1
+	for i, c := range registered {
+		if c.Version() <= V20260915 {
+			lastOfWindow = i
+		}
+	}
+	if lastOfWindow < 0 {
+		t.Fatal("no change registered at or before V20260915")
+	}
+	if _, ok := registered[lastOfWindow].(WaitingDemotionLabelChange); !ok {
+		t.Fatalf("last change registered at or before V20260915 is %T, want WaitingDemotionLabelChange (it must run FIRST among them)", registered[lastOfWindow])
 	}
 	waitingIdx, demotionIdx := -1, -1
 	for i, c := range registered {

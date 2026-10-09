@@ -9,6 +9,48 @@ import { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 export { withSkillSourceRewriteLock } from './skill-source-rewrite-lock.mjs'
 
 export const VENDOR_MAP = {
+  'boss-retro': [
+    'boss-binary.mjs',
+    'bs-dispatch-await.mjs',
+    'bs-epic-lib.mjs',
+    'bs-record-notes.mjs',
+    'bs-run-sentinel.mjs',
+    'commit-status.mjs',
+    'cron-gates/boss-retro.mjs',
+    'dag-scheduler.mjs',
+    'guidance-audit.mjs',
+    'linear-claim.mjs',
+    'linear-deps-lib.mjs',
+    'linear-gate-lib.mjs',
+    'main-module.mjs',
+    'merge-eligibility.mjs',
+    'plan-attachment.mjs',
+    'pr-check-state.mjs',
+    'retro-ladder.mjs',
+    'retro-notes.mjs',
+    'retro-run.mjs',
+    'retro-signals.mjs',
+    'retro-write.mjs',
+    'selection.mjs',
+    'skill-config.mjs',
+    'skill-extensions.mjs',
+    'tracker/adapter-core.mjs',
+    'tracker/adapter.mjs',
+    'tracker/cli.mjs',
+    'tracker/linear.mjs',
+    'tracker/outcome.mjs',
+    'verify-gate.mjs',
+  ],
+  'boss-release': [
+    'main-module.mjs',
+    'release-gate.mjs',
+    'skill-extensions.mjs',
+    'pr-check-state.mjs',
+    'cron-gates/boss-release.mjs',
+    'stage-chain.mjs',
+    'boss-binary.mjs',
+    'bossd-present.mjs',
+  ],
   // boss-review is the only skill that runs the review-specific helpers (its detect,
   // cross-agent, and report phases), so they vendor into its toolbox alone (BOS-196).
   // skill-config.mjs (BOS-192) is a transitive dependency of bs-review-detect.mjs and
@@ -57,13 +99,25 @@ export const VENDOR_MAP = {
     'codex-review.mjs',
     'claude-review.mjs',
     'skill-config.mjs',
+    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
+    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     'skill-extensions.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
+    // notes-record.mjs records Phase 8 categories; its imports ship beside it.
+    'notes-record.mjs',
+    'boss-binary.mjs',
   ],
   'boss-build': [
     'main-module.mjs',
     'completion-gate.mjs',
+    // completion-gate.mjs imports merge-eligibility.mjs (BOS-1386); BOS-1392/BOS-1395 import it from boss-verify.
+    'merge-eligibility.mjs',
+    // BOS-1396: completion-gate.mjs fast-path spawns its sibling verify-gate.mjs (judge/post/merge).
+    // Its import closure (commit-status, merge-eligibility, pr-check-state, skill-config,
+    // skill-extensions, tracker/adapter) already ships here.
+    'verify-gate.mjs',
     // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
     // the skill prose cites; it imports bs-run-sentinel.mjs and dag-scheduler.mjs,
     // both already ship here for the review sentinel and tracker scheduler.
@@ -103,6 +157,9 @@ export const VENDOR_MAP = {
     // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
+    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
+    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     'plan-attachment.mjs',
     // BOS-1251: Step 9's tag-state re-derivation grades the branch with the SAME
     // non-empty-work-commit predicate the injector uses, so the module has to resolve
@@ -159,6 +216,8 @@ export const VENDOR_MAP = {
     'skill-extensions.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
+    // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
+    'notes-record.mjs',
     'pr-ownership.mjs',
     // pr-check-state.mjs is the single agent-callable check-state verdict the finalize and
     // callback-watch references cite by path. Those steps run in user repos with no repo-root
@@ -187,6 +246,13 @@ export const VENDOR_MAP = {
     // adapter, so both files ship or neither resolves.
     'session/adapter.mjs',
     'session/boss.mjs',
+    // BOS-1385: commit-status.mjs posts and reads the boss/build receipt from an installed
+    // toolbox; it imports only main-module.mjs, which already ships here.
+    'commit-status.mjs',
+    // stage-chain.mjs (BOS-1388): Step 5/6 phase reports and Step 12's verify hand-off
+    // (`run-next`, `arm-verify`); completion-gate.mjs imports its consent matcher. Its imports
+    // (boss-binary, bossd-present, main-module) already ship here.
+    'stage-chain.mjs',
   ],
   // dag-scheduler.mjs is the pure scheduling core bs-epic-lib.mjs re-exports
   // (BOS-197); it must ship alongside bs-epic-lib.mjs so the vendored copy's
@@ -242,6 +308,9 @@ export const VENDOR_MAP = {
     'linear-deps-lib.mjs',
     'linear-claim.mjs',
     'skill-config.mjs',
+    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
+    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     // Callback + session reference seams are executable in every boss-epic
     // installation, including callback's bossd-presence dependency.
     'callback/adapter.mjs',
@@ -295,6 +364,9 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'skill-config.mjs',
+    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
+    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     'plan-attachment.mjs',
     'plan-epic-lib.mjs',
     'plan-epic-phase25.mjs',
@@ -344,6 +416,9 @@ export const VENDOR_MAP = {
     'linear-deps-lib.mjs',
     'linear-claim.mjs',
     'bs-epic-lib.mjs',
+    // BOS-1378: boss-plan ships its own cron gate, like boss-build. Its imports (linear-gate-lib,
+    // tracker/adapter, skill-config, selection, main-module) are all vendored above.
+    'cron-gates/boss-plan.mjs',
     // plan-scratch-paths.mjs (BOS-1193) is the canonical scratch contract the payload's
     // path citations and its Phase 5 cleanup both read: the scratch root, this run's
     // `run-<RUN-ID>/` directory, and the declared name of every artifact a run writes.
@@ -352,6 +427,9 @@ export const VENDOR_MAP = {
     // main-module.mjs, already vendored here.
     'plan-scratch-paths.mjs',
     'plan-scratch-reap.mjs',
+    // plan-child-fanout.mjs (BOS-1374) decides the child fan-out route — `/boss-plan <PARENT>`
+    // planning each `agent-plan` child — and owns its ledger; every import is vendored above.
+    'plan-child-fanout.mjs',
     // plan-secret-scan.mjs (BOS-1330) is the mechanical floor under Phase 4's secret gate: a node
     // file read, so a command-rewriting shell hook cannot satisfy the gate with a fabricated empty
     // grep. The gate runs it by path from a consuming repo with no repo-root skills-toolbox/; its
@@ -361,6 +439,8 @@ export const VENDOR_MAP = {
     'skill-extensions.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
+    // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
+    'notes-record.mjs',
     // Preflight drift probe: an installed toolbox can silently fall behind this source tree
     // (the install is a copy, not a link), so the skill compares the two at startup.
     'toolbox-drift.mjs',
@@ -384,6 +464,10 @@ export const VENDOR_MAP = {
     // ESM link time.
     'boss-binary.mjs',
     'session-self-archive.mjs',
+    // stage-chain.mjs (BOS-1388): the `planning` phase report and Phase 6's build hand-off
+    // (`run-next --stage plan`). It imports bossd-present.mjs, which boss-plan did not ship before.
+    'stage-chain.mjs',
+    'bossd-present.mjs',
   ],
   // session/boss.mjs backs the transport preflight boss-repair runs before Phase 1; like
   // boss-build's copy it ships here because a published core must resolve its own helpers,
@@ -415,12 +499,17 @@ export const VENDOR_MAP = {
     'skill-extensions.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
+    // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
+    'notes-record.mjs',
     // skill-config.mjs exposes notesSampleRate, which the post-terminal notes phase reads to
     // take its per-run sampling roll. boss-repair installs into user repos that have no
     // repo-root skills-toolbox/, and it cannot reach into another core's copy — that core may
     // not be installed at all — so the helper ships in its own toolbox. It is the last of the
     // five notes-taking cores to need it; the other four already vendor it for other callers.
     'skill-config.mjs',
+    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
+    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
+    'selection.mjs',
     // pr-check-state.mjs decides both of this core's check reads — the post-push poll and the
     // Watch Mode interpretation step — which previously restated their own bucket-only rule in
     // prose. Both run in a user repo with no repo-root skills-toolbox/, so the verdict ships here.
@@ -444,6 +533,11 @@ export const VENDOR_MAP = {
     'callback/ci-watch.mjs',
     'bossd-present.mjs',
     'boss-binary.mjs',
+    // BOS-1385: commit-status.mjs reads the start head's boss/build receipt and carries it to the
+    // pushed head; it imports only main-module.mjs, which already ships here.
+    'commit-status.mjs',
+    // stage-chain.mjs (BOS-1388): the `repairing` phase report; its imports already ship here.
+    'stage-chain.mjs',
   ],
   'boss-finalize': [
     'main-module.mjs',
@@ -466,6 +560,39 @@ export const VENDOR_MAP = {
     // entry. boss-finalize decides cleanliness by path from its own installed toolbox.
     'worktree-state.mjs',
   ],
+  // boss-verify (BOS-1395) is the verify stage: verify-gate.mjs judges, posts, merges and finds
+  // candidates; verify-route.mjs sweeps them and routes agent work into each PR's own session; the
+  // cron gate wraps the sweep. Everything below them is their import closure — the tracker adapter
+  // (and the Linear implementation it registers), the selection vocabulary, the CI and receipt
+  // reads, and extension discovery — because an installed core has no repo-root skills-toolbox/ to
+  // reach back into. selection.mjs and skill-extensions.mjs are also invoked by path from the body.
+  'boss-verify': [
+    'verify-gate.mjs',
+    'verify-route.mjs',
+    'cron-gates/boss-verify.mjs',
+    'main-module.mjs',
+    'boss-binary.mjs',
+    'selection.mjs',
+    'skill-config.mjs',
+    'skill-extensions.mjs',
+    'merge-eligibility.mjs',
+    'pr-check-state.mjs',
+    'commit-status.mjs',
+    'linear-gate-lib.mjs',
+    'linear-deps-lib.mjs',
+    'linear-claim.mjs',
+    'bs-epic-lib.mjs',
+    'dag-scheduler.mjs',
+    'tracker/adapter.mjs',
+    'tracker/adapter-core.mjs',
+    'tracker/linear.mjs',
+    'tracker/outcome.mjs',
+    // stage-chain.mjs (BOS-1388): the `verifying` phase report and the post-merge release
+    // hand-off; verify-route.mjs imports its verify-chat title and finder. It brings
+    // bossd-present.mjs, which boss-verify did not ship before.
+    'stage-chain.mjs',
+    'bossd-present.mjs',
+  ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-security': ['main-module.mjs', 'bs-run-sentinel.mjs'],
@@ -477,12 +604,15 @@ export const VENDOR_MAP = {
 // services/boss/internal/skillinstall/skills/<s>/toolbox/; every other VENDOR_MAP
 // entry (the repo-local bs-sweep-*) still vendors into .claude/skills/<s>/toolbox/.
 export const PUBLISHED_SKILLS = new Set([
+  'boss-retro',
+  'boss-release',
   'boss-review',
   'boss-build',
   'boss-epic',
   'boss-plan',
   'boss-repair',
   'boss-finalize',
+  'boss-verify',
 ])
 
 export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {

@@ -1,0 +1,4 @@
+interface:
+  display_name: 'boss-release'
+  short_description: 'Release merged work through ordered environments'
+  default_prompt: 'Use $boss-release to report and release eligible merged work through the repository release extension, enforcing CI and promotion bounds. With no extension, only report; with --dry-run, print candidates without running the extension.'

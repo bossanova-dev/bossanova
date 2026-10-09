@@ -193,7 +193,9 @@ func newRegistry() map[string]Prose {
 				"{error:{code, connect_code, message}} on stdout with a stable `code` such as " +
 				"MERGE_STRATEGY_INCOMPATIBLE, FAILED_PRECONDITION or NOT_FOUND, so a driver " +
 				"can branch on the outcome without matching message text. Every failure still " +
-				"exits 1; the code, not the exit status, is the discriminator.",
+				"exits 1; the code, not the exit status, is the discriminator. " +
+				"--match-head <sha> pins the merge to a 40-hex commit: the merge is refused " +
+				"with code HEAD_MISMATCH unless the PR head is exactly that commit.",
 			Examples: []Example{
 				{Command: "boss merge abc123"},
 				{
@@ -203,6 +205,10 @@ func newRegistry() map[string]Prose {
 				{
 					Command:     "boss merge abc123 --yes --json",
 					Explanation: "Machine-readable envelope; --json requires --yes",
+				},
+				{
+					Command:     "boss merge abc123 --yes --json --match-head <sha>",
+					Explanation: "Merge only if the PR head is still the commit you verified",
 				},
 			},
 		},
@@ -348,7 +354,11 @@ func newRegistry() map[string]Prose {
 				"nothing in the repository (a sweep or a report), so no worktree, branch " +
 				"or PR is created for it. A `--gate` command runs before each fire and " +
 				"skips it when it exits non-zero — use one to avoid waking an agent that " +
-				"would find no work to do.\n\n" +
+				"would find no work to do. `--concurrency` decides what a fire does while " +
+				"the job's previous run is still working: `skip` (the default) skips the " +
+				"fire, `cancel-in-progress` stops the previous run and starts a new one, " +
+				"and `allow-concurrent` starts a new run alongside it — the right choice " +
+				"for a job whose runs each claim their own work, like boss-build.\n\n" +
 				"Do not use this to wait for or monitor something already in flight; see " +
 				"`boss cron` above for why, and for the commands that do that job.",
 			Examples: []Example{
@@ -362,7 +372,97 @@ func newRegistry() map[string]Prose {
 						`--schedule "@weekly" --zero-output --prompt "Triage the open backlog and report."`,
 					Explanation: `a job that changes nothing in the repo — no worktree, branch or PR`,
 				},
+				{
+					Command: `boss cron add --repo <repo-id> --name "build next ticket" ` +
+						`--schedule "@hourly" --concurrency allow-concurrent --prompt "Run /boss-build."`,
+					Explanation: `a job whose runs claim their own work, so a fire need not wait for the previous run`,
+				},
 			},
+		},
+
+		// --- Triggers ---
+		"boss trigger": {
+			Long: "A trigger starts a NEW SESSION when an external event happens: an " +
+				"authenticated HTTP request to the trigger's endpoint (`http`), or a " +
+				"GitHub App event on the trigger's repository (`github`). Use one when " +
+				"something outside Boss — a deploy hook, an alert, an opened issue or " +
+				"PR — should begin independent work with no agent waiting for it.\n\n" +
+				"A trigger is NOT a way to watch work you already own. To be woken when a " +
+				"PR you are driving merges, goes green or goes red, use `boss callback " +
+				"add`; to wait on a running chat, use `boss chat wait`. A trigger keeps " +
+				"firing a fresh session on every matching event, and that session knows " +
+				"nothing about yours.\n\n" +
+				"Triggers live in the cloud, not the local daemon: every subcommand needs " +
+				"`boss login` (it fails with `run 'boss login' first` otherwise) and works " +
+				"with or without `--remote`. A trigger is visible only to its creator; " +
+				"anyone else's id reads as not found. Every subcommand accepts `--json`, " +
+				"which writes one object to stdout and, on failure, the standard " +
+				"`{\"error\":{code,connect_code,message}}` envelope. Run `boss trigger " +
+				"catalog` first to see the valid types, `--event` ids and `--filter` fields.",
+		},
+		"boss trigger add": {
+			Long: "Create a trigger. `--type`, `--name`, `--repo-url`, one of `--prompt` " +
+				"/ `--prompt-file`, and one of `--daemon <id>` / `--first-available` are " +
+				"required; `--org` defaults to your only organization. The prompt is read " +
+				"by a fresh agent, so write it as a complete standing instruction; " +
+				"`--payload-field` paths (e.g. `body.ref`) are copied into its context. " +
+				"Every `--filter 'field op value[,value…]'` must match for an event to " +
+				"launch (op: `=`, `!=`, `in`, `not-in`, `contains`, `prefix`; only `in` " +
+				"and `not-in` split on commas). `--concurrency` decides what an event does " +
+				"while the previous session is still working: `skip` (default), `cancel` " +
+				"(stop it, then launch), or `allow` (launch alongside). A github trigger " +
+				"needs at least one `--event`; " +
+				"`--methods`, `--idempotency-header` and `--dedup-window` are http only.\n\n" +
+				"An http create prints the endpoint and the signing secret ONCE — store it " +
+				"now; it can never be read back, only replaced with `rotate-secret`. " +
+				"`--json` carries it as `secret` beside `trigger`.",
+			Examples: []Example{
+				{
+					Command: `boss trigger add --type http --name "deploy failed" --repo-url https://github.com/acme/widget ` +
+						`--first-available --filter 'body.status = failed' --payload-field body.log_url ` +
+						`--prompt "Investigate the failed deploy and open a fix PR."`,
+					Explanation: `start a session whenever the deploy hook reports a failure`,
+				},
+				{
+					Command: `boss trigger add --type github --name "review new PRs" --repo-url https://github.com/acme/widget ` +
+						`--first-available --event pull_request.opened --concurrency allow --skill review --prompt "Review this pull request."`,
+					Explanation: `run a review skill on every newly opened pull request`,
+				},
+			},
+		},
+		"boss trigger update": {
+			Long: "Change only the settings whose flags are given; everything else is " +
+				"kept, including the rest of the launch settings when only `--prompt` " +
+				"changes. `--filter` and `--payload-field` REPLACE the whole list; " +
+				"`--clear-filters` / `--clear-payload-fields` empty it. The type cannot " +
+				"change. Use `enable` / `disable` to switch a trigger on or off.",
+		},
+		"boss trigger test": {
+			Long: "Run a sample payload (`--payload-file`, `-` for stdin, default `{}`) " +
+				"through the trigger's filters and policies and record the result as an " +
+				"invocation with source `test`. It is a dry run unless `--launch` is set, " +
+				"which starts a real session when the sample passes. github triggers need " +
+				"`--event <id>`.",
+			Examples: []Example{
+				{Command: `echo '{"status":"failed"}' | boss trigger test tr_123 --payload-file -`},
+			},
+		},
+		"boss trigger history": {
+			Long: "Show invocations newest first. `status` is the outcome — `launched` " +
+				"(with its session), `filtered`, `skipped`, `deduplicated`, " +
+				"`launching`, `failed` or `accepted` — and `decision_reason` says why: " +
+				"`filter_mismatch` (a filter did not match), `cooldown`, " +
+				"`prior_session_running` (concurrency `skip`), `prior_session_stop_failed` " +
+				"(concurrency `cancel` could not stop the previous session; it retries), " +
+				"`duplicate_delivery`, " +
+				"`placement_unavailable` (the daemon is offline or does not manage the " +
+				"repo) or `daemon_unsupported`. Treat an unknown reason as opaque. Failed " +
+				"and skipped rows also print an actionable detail line.",
+		},
+		"boss trigger rm": {
+			Long: "Delete a trigger, its secret and its history; the endpoint stops " +
+				"accepting requests at once. It prompts on a terminal; scripts and " +
+				"`--json` must pass `--yes`, or it refuses with `CONFIRMATION_REQUIRED`.",
 		},
 
 		// --- GitHub Callbacks ---
@@ -500,7 +600,11 @@ func newRegistry() map[string]Prose {
 				"verbatim. Tags are normalised — trimmed, lowercased and " +
 				"de-duplicated — so `Tech-Debt` and `tech-debt` are one tag; a note may " +
 				"carry up to 32 tags of 64 bytes each. Notes are listed OLDEST first. " +
-				"`add`, `ls`, `show` and `edit` all take `--json` for machine parsing.",
+				"`add`, `ls`, `show` and `edit` all take `--json` for machine parsing. " +
+				"Notes older than 180 days, and a repo's notes beyond its newest 10,000, " +
+				"are pruned automatically when a new note is written in that repo " +
+				"(override with `notes.retention_days` / `notes.max_per_repo` in " +
+				"settings.json; 0 = unlimited).",
 		},
 		"boss notes add": {
 			Long: "Record a note. `--repo`, `--session` and `--chat` are resolved in this " +
@@ -605,6 +709,24 @@ func newRegistry() map[string]Prose {
 				"re-run safely. Removing a note is permanent — there is no trash for " +
 				"notes.",
 			Examples: []Example{{Command: "boss notes rm abc123"}},
+		},
+		"boss notes sync": {
+			Long: "Nudge the local daemon to sync pending notes to Bossanova Cloud now, and " +
+				"print how many notes are in each sync state: `pending`, `synced`, " +
+				"`rejected`, `rate_limited`, `expired`, `not_entitled`, `refused`, " +
+				"`suppressed` and `failed`. Deletes not yet propagated count too. The " +
+				"daemon syncs on its own every 30 seconds and after every note write; this " +
+				"is for troubleshooting. It does not wait for the drain — the counts are " +
+				"read as the nudge is sent, so run it again to see them move. A daemon that " +
+				"is not connected to Bossanova Cloud runs no sync: the command says so and " +
+				"its notes stay `pending`. `--json` emits `{\"worker_configured\": bool, " +
+				"\"counts\": [{\"state\", \"count\"}]}` with every state listed. " +
+				"`boss notes ls --json` and `boss notes show` report each note's own " +
+				"`sync_state`. Local daemon only.",
+			Examples: []Example{
+				{Command: "boss notes sync"},
+				{Command: "boss notes sync --json"},
+			},
 		},
 
 		// --- Trash Management ---
@@ -758,6 +880,22 @@ func newRegistry() map[string]Prose {
 				"after the repair plugin was stopped or restarted and auto-repair " +
 				"is sitting disarmed — no bossd restart needed.",
 			Examples: []Example{{Command: "boss repair start"}},
+		},
+		"boss session phase": {
+			Long: "Report what a working chat is doing. Supply exactly one phase name or `--clear`. " +
+				"The chat defaults to `BOSS_AGENT_SESSION_ID` and the session to `BOSS_SESSION_ID`; " +
+				"`--chat` and `--session` override them. Conventional phases are `planning`, `building`, " +
+				"`reviewing`, `verifying`, `repairing`, and `releasing`. Free text is allowed: at most " +
+				"20 printable characters on one line, with surrounding whitespace trimmed.\n\n" +
+				"Phases are stored in memory and shown only while the chat is working. The first idle " +
+				"or stopped heartbeat clears the phase, including when a turn ends while background " +
+				"agents continue. A daemon restart also loses it; report again at the next stage boundary. " +
+				"This command requires a local daemon and returns a non-zero exit status on errors.",
+			Examples: []Example{
+				{Command: "boss session phase reviewing"},
+				{Command: "boss session phase 'fixing ci' --session abc123 --chat chat123"},
+				{Command: "boss session phase --clear"},
+			},
 		},
 		"boss session checks": {
 			Long: "Shows bossd's persisted view of a session's CI check snapshots, " +

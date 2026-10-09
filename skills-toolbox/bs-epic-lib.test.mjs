@@ -17,6 +17,8 @@ import {
   buildCombinedRun,
   mergeBlockedExternalBlockers,
   classifyChildLiveness,
+  classifyChildSettled,
+  isReadyDisplayLabel,
   CHILD_LIVENESS_VERDICTS,
   CHILD_LIVENESS_ACTIONS,
   classifyRepairLease,
@@ -36,7 +38,7 @@ const t = (id, over = {}) => ({
   createdAt: '2026-01-01T00:00:00Z',
   stateName: 'Todo',
   stateType: 'unstarted',
-  labels: ['agent-friendly'],
+  labels: ['agent-build'],
   planUrl: `https://proof.bossanova.dev/${id}`,
   planAttachment: { title: `Implementation plan (${id})`, url: `https://uploads.example/${id}.md` },
   blockedBy: [],
@@ -53,7 +55,7 @@ test('normalizeTicket: raw GraphQL shape uses extractBlockers + state.{name,type
     priority: 2,
     createdAt: '2026-01-01T00:00:00Z',
     state: { name: 'Todo', type: 'unstarted' },
-    labels: ['agent-friendly'],
+    labels: ['agent-build'],
     attachments: [
       { title: 'Implementation plan (BOS-5)', url: 'https://proof.bossanova.dev/BOS-5' },
     ],
@@ -76,7 +78,7 @@ test('normalizeTicket: raw GraphQL shape uses extractBlockers + state.{name,type
   assert.equal(ticket.priority, 2)
   assert.equal(ticket.stateName, 'Todo')
   assert.equal(ticket.stateType, 'unstarted')
-  assert.deepEqual(ticket.labels, ['agent-friendly'])
+  assert.deepEqual(ticket.labels, ['agent-build'])
   assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-5')
   assert.deepEqual(ticket.planAttachment, issue.attachments[0])
   assert.deepEqual(ticket.blockedBy, ['BOS-1'])
@@ -90,7 +92,7 @@ test('normalizeTicket: MCP get_issue includeRelations shape uses relations.block
     createdAt: '2026-02-01T00:00:00Z',
     status: 'Todo',
     statusType: 'unstarted',
-    labels: ['agent-friendly'],
+    labels: ['agent-build'],
     attachments: [
       { title: 'Implementation plan (BOS-6)', url: 'https://proof.bossanova.dev/BOS-6' },
     ],
@@ -197,7 +199,7 @@ test('normalizeTicket: planUrl is null when no matching attachment/link exists',
 
 // --- classifyTickets --------------------------------------------------------
 
-test('classifyTickets: planned-state + agent-friendly + plan is eligible', () => {
+test('classifyTickets: planned-state + agent-build + plan is eligible', () => {
   const { eligible } = classifyTickets([t('BOS-1')], 'Todo')
   assert.equal(eligible.length, 1)
 })
@@ -222,18 +224,18 @@ test('classifyTickets: needs-human, missing plan, not-planned, In Progress all s
 test('classifyTickets: labels and state match regardless of case and separators, and honour config names', () => {
   const { eligible, skipped } = classifyTickets(
     [
-      t('BOS-1', { labels: ['Agent-Friendly'], stateName: 'todo' }),
-      t('BOS-2', { labels: ['agent_friendly', 'Needs Human'] }),
+      t('BOS-1', { labels: ['Agent-Build'], stateName: 'todo' }),
+      t('BOS-2', { labels: ['agent_build', 'Needs Human'] }),
       t('BOS-3', { labels: ['ready-for-agents'] }),
     ],
     'Todo',
-    { agentFriendlyLabel: 'ready-for-agents' },
+    { agentBuildLabel: 'ready-for-agents' },
   )
   assert.deepEqual(
     eligible.map((tk) => tk.id),
     ['BOS-3'],
   )
-  const defaults = classifyTickets([t('BOS-1', { labels: ['Agent-Friendly'] })], 'Todo')
+  const defaults = classifyTickets([t('BOS-1', { labels: ['Agent-Build'] })], 'Todo')
   assert.equal(defaults.eligible.length, 1)
   assert.match(skipped.find((entry) => entry.ticket.id === 'BOS-2').reason, /needs-human/)
 })
@@ -449,6 +451,19 @@ test('parseEpicArgs: parent, list, parallel override, agent override, bounds', (
   assert.equal(parseEpicArgs(['BOS-100', '--agent', 'codex']).agent, 'codex')
   assert.throws(() => parseEpicArgs(['--parallel', '9', 'BOS-1']))
   assert.throws(() => parseEpicArgs([]))
+})
+test('parseEpicArgs: --team is a tracker team, never a ticket ref (BOS-1393)', () => {
+  assert.equal(parseEpicArgs(['BOS-100', '--team', ' Platform ']).team, 'Platform')
+  assert.deepEqual(parseEpicArgs(['--team', 'Platform', 'BOS-1', 'BOS-2']).ids, ['BOS-1', 'BOS-2'])
+  assert.equal('team' in parseEpicArgs(['BOS-100']), false, 'absent unless given')
+  for (const argv of [
+    ['BOS-1', '--team'],
+    ['BOS-1', '--team', ''],
+    ['BOS-1', '--team', '--parallel', '2'],
+    ['BOS-1', '--team', 'A', '--team', 'B'],
+  ]) {
+    assert.throws(() => parseEpicArgs(argv), /--team requires/, JSON.stringify(argv))
+  }
 })
 test('parseEpicArgs: rejects out-of-bounds and non-integer --parallel', () => {
   assert.throws(() => parseEpicArgs(['BOS-1', '--parallel', '0']))
@@ -935,6 +950,269 @@ test('classifyChildLiveness: is pure and does not mutate the payload', () => {
   assert.equal(JSON.stringify(payload), snapshot, 'must not mutate its argument')
 })
 
+// --- Ready as a settled hand-off: liveness ------------------------------------
+//
+// A Ready session (the daemon's computed `✓ ready` display label) has its work
+// on the head; it is never resumed or repaired, only held, and wall-clock expiry
+// still wins.
+
+const readyLivenessCases = [
+  {
+    name: 'Ready + WAITING holds with reason session-ready',
+    input: { chatStatus: 'WAITING', displayLabel: '✓ ready' },
+  },
+  {
+    name: 'Ready + usage-limit last message holds instead of resuming',
+    input: { chatStatus: 'IDLE', lastMessageKind: 'usage-limit', displayLabel: 'ready' },
+  },
+  {
+    name: 'Ready + transient API last message holds instead of resuming',
+    input: { chatStatus: 'IDLE', lastMessageKind: 'transient-api-error', displayLabel: '✓ ready' },
+  },
+  {
+    name: 'Ready + BLOCKED with agent conclusion holds instead of repairing',
+    input: {
+      chatStatus: 'STOPPED',
+      sessionState: 'BLOCKED',
+      lastMessageKind: 'agent-conclusion',
+      displayLabel: '✓ ready',
+    },
+  },
+]
+
+// Ready + LIMITED/UNSPECIFIED can never settle (classifyChildSettled), so a hold
+// would park the child until wall-clock expiry; it keeps its non-Ready lane.
+test('classifyChildLiveness: Ready + LIMITED resumes, since it can never settle', () => {
+  const result = classifyChildLiveness({ chatStatus: 'LIMITED', displayLabel: '✓ ready' })
+  assert.equal(result.verdict, 'environmental-death')
+  assert.equal(result.action, 'resume')
+})
+
+test('classifyChildLiveness: Ready + numeric UNSPECIFIED chat status investigates', () => {
+  const result = classifyChildLiveness({ chatStatus: 0, displayLabel: '✓ ready' })
+  assert.equal(result.verdict, 'unknown')
+  assert.equal(result.action, 'investigate')
+})
+
+for (const { name, input } of readyLivenessCases) {
+  test(`classifyChildLiveness: ${name}`, () => {
+    const result = classifyChildLiveness(input)
+    assert.equal(result.verdict, 'alive')
+    assert.equal(result.action, 'hold')
+    assert.ok(result.reasons.includes('session-ready'), 'missing reason: session-ready')
+  })
+}
+
+test('classifyChildLiveness: wall-clock expiry still wins over a Ready session', () => {
+  const result = classifyChildLiveness({
+    chatStatus: 'WAITING',
+    displayLabel: '✓ ready',
+    wallClockExceeded: true,
+  })
+  assert.equal(result.verdict, 'wall-clock-expired')
+  assert.equal(result.action, 'fail-isolate')
+})
+
+test('classifyChildLiveness: Ready with an unreadable chat status still investigates', () => {
+  for (const input of [
+    { chatStatusReadable: false, displayLabel: '✓ ready' },
+    { chatStatusUnreadable: true, displayLabel: '✓ ready' },
+    { displayLabel: '✓ ready' },
+  ]) {
+    const result = classifyChildLiveness(input)
+    assert.equal(result.verdict, 'unknown', JSON.stringify(input))
+    assert.equal(result.action, 'investigate', JSON.stringify(input))
+  }
+})
+
+test('classifyChildLiveness: a non-Ready label leaves every existing case unchanged', () => {
+  for (const { name, input, verdict, action } of childLivenessCases) {
+    for (const displayLabel of [undefined, '✗ failing', 'conflict', 'verifying', 'needs human']) {
+      const result = classifyChildLiveness({ ...input, displayLabel })
+      assert.equal(result.verdict, verdict, `${name} / ${displayLabel}`)
+      assert.equal(result.action, action, `${name} / ${displayLabel}`)
+      assert.ok(!result.reasons.includes('session-ready'), `${name} / ${displayLabel}`)
+    }
+  }
+})
+
+// --- isReadyDisplayLabel / classifyChildSettled -------------------------------
+//
+// "Settled" is a two-poll verdict. IDLE/STOPPED settle on two agreeing polls as
+// before; a Ready session also settles while its tracked chat is parked WAITING
+// on its own pipeline watches. A spinner, a working chat, missing evidence, or a
+// single poll never settles.
+
+test('isReadyDisplayLabel: matches the word ready, not the glyph', () => {
+  for (const label of ['✓ ready', 'ready', ' READY ', '\\u2713 ready', '✔ Ready']) {
+    assert.equal(isReadyDisplayLabel(label), true, JSON.stringify(label))
+  }
+  for (const label of [
+    'ready to merge',
+    'not ready',
+    '✓ passing',
+    'waiting',
+    '',
+    null,
+    undefined,
+    42,
+    '✗ failing',
+    'conflict',
+    'verifying',
+    'needs human',
+  ]) {
+    assert.equal(isReadyDisplayLabel(label), false, JSON.stringify(label))
+  }
+})
+
+const SETTLE_STATUS_SPELLINGS = {
+  idle: ['IDLE', 'CHAT_STATUS_IDLE', 2, 'idle'],
+  stopped: ['STOPPED', 'CHAT_STATUS_STOPPED', 3, 'stopped'],
+  waiting: ['WAITING', 'CHAT_STATUS_WAITING', 6, 'waiting'],
+  working: ['WORKING', 'CHAT_STATUS_WORKING', 1, 'working'],
+  question: ['QUESTION', 'CHAT_STATUS_QUESTION', 4, 'question'],
+  limited: ['LIMITED', 'CHAT_STATUS_LIMITED', 5, 'limited'],
+  unspecified: ['UNSPECIFIED', 'CHAT_STATUS_UNSPECIFIED', 0, 'unspecified'],
+}
+
+// Expected settled reading on an agreeing second poll, per status and Ready.
+const SETTLE_EXPECTED = {
+  idle: { ready: 'settled-idle', plain: 'settled-idle' },
+  stopped: { ready: 'settled-idle', plain: 'settled-idle' },
+  waiting: { ready: 'settled-ready', plain: 'alive' },
+  working: { ready: 'alive', plain: 'alive' },
+  question: { ready: 'alive', plain: 'alive' },
+  limited: { ready: 'limited', plain: 'limited' },
+  unspecified: { ready: 'unknown', plain: 'unknown' },
+}
+
+for (const [canonical, spellings] of Object.entries(SETTLE_STATUS_SPELLINGS)) {
+  for (const chatStatus of spellings) {
+    for (const ready of [true, false]) {
+      const displayLabel = ready ? '✓ ready' : '✓ passing'
+      const expected = SETTLE_EXPECTED[canonical][ready ? 'ready' : 'plain']
+      const settles = expected === 'settled-idle' || expected === 'settled-ready'
+      test(`classifyChildSettled: ${JSON.stringify(chatStatus)} ready=${ready} → ${expected}`, () => {
+        const first = classifyChildSettled({ chatStatus, displayLabel })
+        assert.equal(first.settled, false, 'one poll is never enough')
+        assert.equal(first.reading, settles ? 'pending' : expected)
+        if (settles) assert.ok(first.reasons.includes('first-poll'))
+
+        const second = classifyChildSettled({
+          chatStatus,
+          displayLabel,
+          previous: first.observation,
+        })
+        assert.equal(second.reading, expected)
+        assert.equal(second.settled, settles)
+        if (ready) assert.ok(second.reasons.includes('session-ready'))
+
+        const spun = classifyChildSettled({
+          chatStatus,
+          displayLabel,
+          spinnerPresent: true,
+          previous: first.observation,
+        })
+        assert.equal(spun.settled, false, 'a spinner blocks settling')
+        assert.ok(spun.reasons.includes('spinner'))
+        assert.deepEqual(spun.observation, { idleEligible: false, readyEligible: false })
+
+        const disagreeing = classifyChildSettled({
+          chatStatus,
+          displayLabel,
+          previous: { idleEligible: false, readyEligible: false },
+        })
+        assert.equal(disagreeing.settled, false, 'a disagreeing previous poll never settles')
+        assert.equal(disagreeing.reading, settles ? 'pending' : expected)
+      })
+    }
+  }
+}
+
+test('classifyChildSettled: Ready + WAITING is pending on the first poll and settled on the second', () => {
+  const first = classifyChildSettled({ chatStatus: 'WAITING', displayLabel: '✓ ready' })
+  assert.equal(first.reading, 'pending')
+  assert.deepEqual(first.observation, { idleEligible: false, readyEligible: true })
+  const second = classifyChildSettled({
+    chatStatus: 'WAITING',
+    displayLabel: '✓ ready',
+    previous: first.observation,
+  })
+  assert.equal(second.settled, true)
+  assert.equal(second.reading, 'settled-ready')
+})
+
+test('classifyChildSettled: a WAITING child that loses Ready between polls is not settled', () => {
+  const first = classifyChildSettled({ chatStatus: 'WAITING', displayLabel: '✓ ready' })
+  const second = classifyChildSettled({
+    chatStatus: 'WAITING',
+    displayLabel: '✗ failing',
+    previous: first.observation,
+  })
+  assert.equal(second.settled, false)
+  assert.equal(second.reading, 'alive')
+})
+
+test('classifyChildSettled: IDLE after a Ready+WAITING poll settles through the Ready path', () => {
+  const first = classifyChildSettled({ chatStatus: 'WAITING', displayLabel: '✓ ready' })
+  const second = classifyChildSettled({
+    chatStatus: 'IDLE',
+    displayLabel: '✓ ready',
+    previous: first.observation,
+  })
+  assert.equal(second.settled, true)
+  assert.equal(second.reading, 'settled-ready')
+})
+
+test('classifyChildSettled: failing, conflicting, verifying and needs-human children never settle while WAITING', () => {
+  for (const displayLabel of ['✗ failing', 'conflict', 'verifying', 'needs human', null]) {
+    const first = classifyChildSettled({ chatStatus: 'WAITING', displayLabel })
+    const second = classifyChildSettled({
+      chatStatus: 'WAITING',
+      displayLabel,
+      previous: first.observation,
+    })
+    assert.equal(second.settled, false, String(displayLabel))
+    assert.equal(second.reading, 'alive', String(displayLabel))
+  }
+})
+
+test('classifyChildSettled: an unreadable or missing chat status never settles, even when Ready', () => {
+  const previous = { idleEligible: true, readyEligible: true }
+  for (const input of [
+    { chatStatus: 'IDLE', chatStatusReadable: false, displayLabel: '✓ ready', previous },
+    { chatStatus: 'WAITING', chatStatusReadable: false, displayLabel: '✓ ready', previous },
+    { displayLabel: '✓ ready', previous },
+    { chatStatus: 'mystery', displayLabel: '✓ ready', previous },
+  ]) {
+    const result = classifyChildSettled(input)
+    assert.equal(result.settled, false, JSON.stringify(input))
+    assert.equal(result.reading, 'unknown', JSON.stringify(input))
+  }
+  assert.equal(classifyChildSettled().settled, false, 'missing evidence')
+})
+
+test('classifyChildSettled: a malformed previous observation is treated as absent', () => {
+  for (const previous of [null, 'yes', 7, [], { idleEligible: 'true' }]) {
+    const result = classifyChildSettled({ chatStatus: 'IDLE', previous })
+    assert.equal(result.settled, false, JSON.stringify(previous))
+    assert.equal(result.reading, 'pending', JSON.stringify(previous))
+  }
+})
+
+test('classifyChildSettled: is pure, JSON-shaped, and does not mutate its input', () => {
+  const payload = {
+    chatStatus: 'WAITING',
+    displayLabel: '✓ ready',
+    previous: { idleEligible: false, readyEligible: true },
+  }
+  const snapshot = JSON.stringify(payload)
+  const result = classifyChildSettled(payload)
+  assert.deepEqual(result, classifyChildSettled(payload))
+  assert.equal(JSON.stringify(payload), snapshot)
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result)
+})
+
 // --- classifyRepairLease (BOS-520: frozen-repair-lease escape) -------------
 //
 // Synthetic `get_session` payloads. The driver reads `repair_active`,
@@ -1323,7 +1601,7 @@ test('AC5: a needs-human child under TWO roots is excluded once, reported for ea
   })
   // Deduplicated child universe: BOS-42 is classified ONCE, not once per root.
   assert.deepEqual(run.childIds, ['BOS-41', 'BOS-42'])
-  const tickets = [t('BOS-41'), t('BOS-42', { labels: ['agent-friendly', 'needs-human'] })]
+  const tickets = [t('BOS-41'), t('BOS-42', { labels: ['agent-build', 'needs-human'] })]
   const { eligible, skipped } = classifyTickets(tickets, 'Todo')
   assert.deepEqual(
     eligible.map((ticket) => ticket.id),
@@ -1490,5 +1768,135 @@ test('AC7 restart: adopting in-flight work re-derives the same unique child set'
       externallyCleared: new Set(),
     }).map((node) => node.id),
     [],
+  )
+})
+
+// --- selection (BOS-1378) --------------------------------------------------------------------
+
+const planned = (id, extra = {}) => ({
+  id,
+  stateName: 'Todo',
+  stateType: 'unstarted',
+  labels: ['agent-build'],
+  planAttachment: { id: `att-${id}`, title: `Implementation plan (${id})` },
+  blockedBy: [],
+  assigneeId: null,
+  creatorId: 'usr_human',
+  projectId: null,
+  ...extra,
+})
+
+const resolvedSelection = (slots) => ({
+  labels: { include: [], exclude: [] },
+  assignees: { include: [], exclude: [] },
+  creators: { include: [], exclude: [] },
+  projects: { include: [], exclude: [] },
+  ...slots,
+})
+
+test('classifyTickets with a resolved selection skips non-matching tickets with an excluded-by-selection reason', () => {
+  const tickets = [
+    planned('APP-1'),
+    planned('APP-2', { labels: ['agent-build', 'infra'] }),
+    planned('APP-3', { creatorId: 'usr_bot' }),
+    planned('APP-4', { stateType: 'completed', stateName: 'Done', creatorId: 'usr_bot' }),
+  ]
+  const selection = resolvedSelection({
+    labels: { include: [], exclude: ['infra'] },
+    creators: { include: [], exclude: ['usr_bot'] },
+  })
+  const { eligible, done, skipped } = classifyTickets(tickets, 'Todo', { selection })
+  assert.deepEqual(
+    eligible.map((t) => t.id),
+    ['APP-1'],
+  )
+  // A merged sibling still clears its dependents, even when the selection would exclude it.
+  assert.deepEqual(
+    done.map((t) => t.id),
+    ['APP-4'],
+  )
+  assert.deepEqual(
+    skipped.map((s) => s.reason),
+    [
+      'APP-2: excluded by selection: labels.exclude: carries "infra"',
+      'APP-3: excluded by selection: creators.exclude: creator usr_bot is excluded',
+    ],
+  )
+  // Without a selection the classifier is unchanged.
+  assert.equal(classifyTickets(tickets, 'Todo').eligible.length, 3)
+})
+
+test('classifyTickets never admits a ticket whose fetched payload lacks a field the selection needs', () => {
+  const ticket = planned('APP-5')
+  delete ticket.projectId
+  const { eligible, skipped } = classifyTickets([ticket], 'Todo', {
+    selection: resolvedSelection({ projects: { include: [], exclude: ['prj_1'] } }),
+  })
+  assert.equal(eligible.length, 0)
+  assert.equal(
+    skipped[0].reason,
+    'APP-5: excluded by selection: projects: field absent on the fetched issue',
+  )
+})
+
+test('parseEpicArgs accepts the selection flags as filters, never as ticket refs', () => {
+  const parsed = parseEpicArgs([
+    'APP-1',
+    '--exclude-label',
+    'infra',
+    '--creator=me',
+    '--parallel',
+    '2',
+  ])
+  assert.equal(parsed.mode, 'parent')
+  assert.equal(parsed.parentId, 'APP-1')
+  assert.equal(parsed.parallel, 2)
+  assert.deepEqual(parsed.selectionFlags, {
+    labels: { exclude: ['infra'] },
+    creators: { include: ['me'] },
+  })
+  assert.equal(
+    'selectionFlags' in parseEpicArgs(['APP-1']),
+    false,
+    'absent when none given, like team',
+  )
+  assert.throws(
+    () => parseEpicArgs(['APP-1', '--exclude-label']),
+    /--exclude-label requires a non-empty value/,
+  )
+  assert.throws(() => parseEpicArgs(['APP-1', '--bogus']), /unknown flag --bogus/)
+})
+
+test('normalizeTicket carries assignee, creator and project ids from every issue shape', () => {
+  const graphql = normalizeTicket({
+    identifier: 'APP-1',
+    assignee: { id: 'usr_a' },
+    creator: { id: 'usr_c' },
+    project: null,
+  })
+  assert.deepEqual(
+    [graphql.assigneeId, graphql.creatorId, graphql.projectId],
+    ['usr_a', 'usr_c', null],
+  )
+  const mcp = normalizeTicket({
+    id: 'APP-2',
+    assignee: 'Display Name',
+    assigneeId: 'usr_a',
+    createdById: 'usr_c',
+    projectId: 'prj_1',
+  })
+  assert.deepEqual([mcp.assigneeId, mcp.creatorId, mcp.projectId], ['usr_a', 'usr_c', 'prj_1'])
+  const flat = normalizeTicket({
+    id: 'APP-3',
+    assigneeId: null,
+    creatorId: 'usr_c',
+    projectId: 'prj_2',
+  })
+  assert.deepEqual([flat.assigneeId, flat.creatorId, flat.projectId], [null, 'usr_c', 'prj_2'])
+  // A payload that never fetched the relation keeps it ABSENT, not null ("unassigned").
+  const bare = normalizeTicket({ id: 'APP-4', assignee: 'Display Name' })
+  assert.deepEqual(
+    [bare.assigneeId, bare.creatorId, bare.projectId],
+    [undefined, undefined, undefined],
   )
 })

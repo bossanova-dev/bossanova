@@ -281,6 +281,10 @@ func TestMockDaemonUnfixturedRPCsStayUnimplemented(t *testing.T) {
 			_, err := d.GetAuthState(ctx, connect.NewRequest(&pb.GetAuthStateRequest{}))
 			return err
 		}},
+		{"SyncNotesNow", func(d *tuitest.MockDaemon) error {
+			_, err := d.SyncNotesNow(ctx, connect.NewRequest(&pb.SyncNotesNowRequest{}))
+			return err
+		}},
 	}
 
 	for _, tt := range tests {

@@ -8,6 +8,8 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { DOC_FILES, SKILL_DOC_ROOTS } from './check-doc-make-targets.mjs'
+
 import {
   externalInputRules,
   moduleRules,
@@ -971,3 +973,26 @@ function makefileWithoutTarget(target) {
     '',
   )
 }
+
+test('selectTargets runs scripts for every documented Make target input', () => {
+  for (const file of [
+    ...DOC_FILES,
+    ...SKILL_DOC_ROOTS.map((root) => `${root}/x/SKILL.md`),
+    'Makefile',
+  ]) {
+    assert.ok(
+      selectTargets([file]).some(({ target }) => target === 'test-scripts'),
+      file,
+    )
+  }
+  assert.ok(selectTargets(['Makefile']).some(({ target }) => target === 'test-smoke'))
+})
+
+test('selectTargets runs warehouse, scripts and web tests for marketing pricing', () => {
+  assert.deepEqual(
+    selectTargets(['services/marketing/src/lib/pricing.ts'])
+      .map(({ target }) => target)
+      .sort(),
+    ['test-scripts', 'test-warehouse', 'test-web'],
+  )
+})

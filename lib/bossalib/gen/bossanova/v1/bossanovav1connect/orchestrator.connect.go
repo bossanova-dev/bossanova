@@ -232,6 +232,27 @@ const (
 	// OrchestratorServiceProxyDeleteNoteProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyDeleteNote RPC.
 	OrchestratorServiceProxyDeleteNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteNote"
+	// OrchestratorServiceCreateOrganizationNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateOrganizationNote RPC.
+	OrchestratorServiceCreateOrganizationNoteProcedure = "/bossanova.v1.OrchestratorService/CreateOrganizationNote"
+	// OrchestratorServiceGetOrganizationNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's GetOrganizationNote RPC.
+	OrchestratorServiceGetOrganizationNoteProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationNote"
+	// OrchestratorServiceListOrganizationNotesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListOrganizationNotes RPC.
+	OrchestratorServiceListOrganizationNotesProcedure = "/bossanova.v1.OrchestratorService/ListOrganizationNotes"
+	// OrchestratorServiceUpdateOrganizationNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateOrganizationNote RPC.
+	OrchestratorServiceUpdateOrganizationNoteProcedure = "/bossanova.v1.OrchestratorService/UpdateOrganizationNote"
+	// OrchestratorServiceDeleteOrganizationNoteProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteOrganizationNote RPC.
+	OrchestratorServiceDeleteOrganizationNoteProcedure = "/bossanova.v1.OrchestratorService/DeleteOrganizationNote"
+	// OrchestratorServiceGetOrganizationNoteQuotaProcedure is the fully-qualified name of the
+	// OrchestratorService's GetOrganizationNoteQuota RPC.
+	OrchestratorServiceGetOrganizationNoteQuotaProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationNoteQuota"
+	// OrchestratorServiceSyncDaemonNotesProcedure is the fully-qualified name of the
+	// OrchestratorService's SyncDaemonNotes RPC.
+	OrchestratorServiceSyncDaemonNotesProcedure = "/bossanova.v1.OrchestratorService/SyncDaemonNotes"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -325,6 +346,60 @@ const (
 	// OrchestratorServiceListRepoOrganizationsProcedure is the fully-qualified name of the
 	// OrchestratorService's ListRepoOrganizations RPC.
 	OrchestratorServiceListRepoOrganizationsProcedure = "/bossanova.v1.OrchestratorService/ListRepoOrganizations"
+	// OrchestratorServiceListSessionWebhookEventTypesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSessionWebhookEventTypes RPC.
+	OrchestratorServiceListSessionWebhookEventTypesProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhookEventTypes"
+	// OrchestratorServiceListSessionWebhooksProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSessionWebhooks RPC.
+	OrchestratorServiceListSessionWebhooksProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhooks"
+	// OrchestratorServiceCreateSessionWebhookProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateSessionWebhook RPC.
+	OrchestratorServiceCreateSessionWebhookProcedure = "/bossanova.v1.OrchestratorService/CreateSessionWebhook"
+	// OrchestratorServiceUpdateSessionWebhookProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateSessionWebhook RPC.
+	OrchestratorServiceUpdateSessionWebhookProcedure = "/bossanova.v1.OrchestratorService/UpdateSessionWebhook"
+	// OrchestratorServiceRotateSessionWebhookSecretProcedure is the fully-qualified name of the
+	// OrchestratorService's RotateSessionWebhookSecret RPC.
+	OrchestratorServiceRotateSessionWebhookSecretProcedure = "/bossanova.v1.OrchestratorService/RotateSessionWebhookSecret"
+	// OrchestratorServiceDeleteSessionWebhookProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteSessionWebhook RPC.
+	OrchestratorServiceDeleteSessionWebhookProcedure = "/bossanova.v1.OrchestratorService/DeleteSessionWebhook"
+	// OrchestratorServiceSendSessionWebhookTestEventProcedure is the fully-qualified name of the
+	// OrchestratorService's SendSessionWebhookTestEvent RPC.
+	OrchestratorServiceSendSessionWebhookTestEventProcedure = "/bossanova.v1.OrchestratorService/SendSessionWebhookTestEvent"
+	// OrchestratorServiceListSessionWebhookDeliveriesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSessionWebhookDeliveries RPC.
+	OrchestratorServiceListSessionWebhookDeliveriesProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhookDeliveries"
+	// OrchestratorServiceGetSessionWebhookDeliveryProcedure is the fully-qualified name of the
+	// OrchestratorService's GetSessionWebhookDelivery RPC.
+	OrchestratorServiceGetSessionWebhookDeliveryProcedure = "/bossanova.v1.OrchestratorService/GetSessionWebhookDelivery"
+	// OrchestratorServiceGetTriggerCatalogProcedure is the fully-qualified name of the
+	// OrchestratorService's GetTriggerCatalog RPC.
+	OrchestratorServiceGetTriggerCatalogProcedure = "/bossanova.v1.OrchestratorService/GetTriggerCatalog"
+	// OrchestratorServiceListTriggersProcedure is the fully-qualified name of the OrchestratorService's
+	// ListTriggers RPC.
+	OrchestratorServiceListTriggersProcedure = "/bossanova.v1.OrchestratorService/ListTriggers"
+	// OrchestratorServiceGetTriggerProcedure is the fully-qualified name of the OrchestratorService's
+	// GetTrigger RPC.
+	OrchestratorServiceGetTriggerProcedure = "/bossanova.v1.OrchestratorService/GetTrigger"
+	// OrchestratorServiceCreateTriggerProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateTrigger RPC.
+	OrchestratorServiceCreateTriggerProcedure = "/bossanova.v1.OrchestratorService/CreateTrigger"
+	// OrchestratorServiceUpdateTriggerProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateTrigger RPC.
+	OrchestratorServiceUpdateTriggerProcedure = "/bossanova.v1.OrchestratorService/UpdateTrigger"
+	// OrchestratorServiceDeleteTriggerProcedure is the fully-qualified name of the
+	// OrchestratorService's DeleteTrigger RPC.
+	OrchestratorServiceDeleteTriggerProcedure = "/bossanova.v1.OrchestratorService/DeleteTrigger"
+	// OrchestratorServiceRotateTriggerSecretProcedure is the fully-qualified name of the
+	// OrchestratorService's RotateTriggerSecret RPC.
+	OrchestratorServiceRotateTriggerSecretProcedure = "/bossanova.v1.OrchestratorService/RotateTriggerSecret"
+	// OrchestratorServiceTestTriggerProcedure is the fully-qualified name of the OrchestratorService's
+	// TestTrigger RPC.
+	OrchestratorServiceTestTriggerProcedure = "/bossanova.v1.OrchestratorService/TestTrigger"
+	// OrchestratorServiceListTriggerInvocationsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListTriggerInvocations RPC.
+	OrchestratorServiceListTriggerInvocationsProcedure = "/bossanova.v1.OrchestratorService/ListTriggerInvocations"
 	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
 	// ReportBug RPC.
 	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
@@ -501,6 +576,44 @@ type OrchestratorServiceClient interface {
 	ProxyListNotes(context.Context, *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error)
 	ProxyUpdateNote(context.Context, *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error)
 	ProxyDeleteNote(context.Context, *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error)
+	// Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
+	// remain the unchanged daemon-local relay, these read and write a note store
+	// that bosso itself owns, scoped to one organization, so an organization can
+	// see the notes all of its members' daemons recorded. See OrganizationNote.
+	//
+	// The six user RPCs authenticate a user. Every call requires membership of
+	// the request's organization_id (PermissionDenied otherwise) and the paid-plan
+	// entitlement for THAT organization, judged alone: paying through one
+	// organization grants nothing in another. An unentitled organization answers
+	// the same access-denied error other cloud features return. Any member reads
+	// every note in the organization; Update and Delete are allowed for the
+	// note's author or an organization owner, and PermissionDenied for anyone
+	// else. A note id from another organization, or an expired note, is NotFound.
+	//
+	// Writes are bounded by a per-organization hourly quota counted over a fixed
+	// UTC clock hour (see OrganizationNoteQuota). One accepted create, or one
+	// update that changes the body or tags, consumes one unit; deletes, reads and
+	// idempotent replays consume none. An exhausted quota is ResourceExhausted
+	// with an OrganizationNoteQuotaExceeded error detail.
+	CreateOrganizationNote(context.Context, *connect.Request[v1.CreateOrganizationNoteRequest]) (*connect.Response[v1.CreateOrganizationNoteResponse], error)
+	GetOrganizationNote(context.Context, *connect.Request[v1.GetOrganizationNoteRequest]) (*connect.Response[v1.GetOrganizationNoteResponse], error)
+	ListOrganizationNotes(context.Context, *connect.Request[v1.ListOrganizationNotesRequest]) (*connect.Response[v1.ListOrganizationNotesResponse], error)
+	UpdateOrganizationNote(context.Context, *connect.Request[v1.UpdateOrganizationNoteRequest]) (*connect.Response[v1.UpdateOrganizationNoteResponse], error)
+	DeleteOrganizationNote(context.Context, *connect.Request[v1.DeleteOrganizationNoteRequest]) (*connect.Response[v1.DeleteOrganizationNoteResponse], error)
+	// GetOrganizationNoteQuota reports the organization's current quota window
+	// without consuming any of it. Same membership and entitlement rules as the
+	// other organization-note RPCs.
+	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
+	// authenticates the daemon session, the same principal as
+	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
+	// the author of every synced note, and each item is routed to an
+	// organization by its repo_origin_url. The mirror is one-way and
+	// daemon-authoritative: a newer source_version wins, and the cloud copy of a
+	// synced note cannot be edited through UpdateOrganizationNote. See
+	// SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
+	// per-item results.
+	SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -572,6 +685,107 @@ type OrchestratorServiceClient interface {
 	GetRepoOrganization(context.Context, *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error)
 	ClearRepoOrganization(context.Context, *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error)
 	ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error)
+	// Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
+	// fired on session state changes. Distinct from the inbound GitHub
+	// CreateWebhookConfig / ListWebhookConfigs / DeleteWebhookConfig above.
+	// Every RPC below requires user authentication, passes the cloud access
+	// policy (PERMISSION_DENIED when it refuses), and requires the OWNER role in
+	// organization_id, which must be the caller's active organization (empty
+	// means the active organization). Reads are owner-only too: endpoint URLs can
+	// reveal internal infrastructure. An id that does not belong to
+	// organization_id answers NOT_FOUND, never PERMISSION_DENIED, so a
+	// webhook's existence is not disclosed. The signing secret is returned ONLY
+	// by CreateSessionWebhook and RotateSessionWebhookSecret.
+	//
+	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
+	// subscribe to, in canonical order.
+	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
+	// ListSessionWebhooks returns the organization's endpoints, oldest first.
+	// Never returns a secret.
+	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
+	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
+	// endpoint policy rejects (not https, credentials in the URL, a fragment, or
+	// a host that is or resolves to a private, loopback, link-local or metadata
+	// address), an empty or unknown event type set, a description over 200
+	// characters, or a caller-supplied secret that is not 16-256 visible ASCII
+	// characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
+	// UpdateSessionWebhook changes only the fields that are present and returns
+	// the endpoint without its secret. Disabling an endpoint or changing its URL
+	// cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+	UpdateSessionWebhook(context.Context, *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error)
+	// RotateSessionWebhookSecret replaces the signing secret; undelivered events
+	// are signed with the new one. The new secret is returned ONLY here.
+	RotateSessionWebhookSecret(context.Context, *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error)
+	// DeleteSessionWebhook permanently deletes an endpoint with its delivery
+	// history.
+	DeleteSessionWebhook(context.Context, *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error)
+	// SendSessionWebhookTestEvent sends one test delivery of event_type to the
+	// endpoint synchronously and returns it with its single attempt, or
+	// cancelled without one when the endpoint is disabled or changed while the
+	// attempt is in flight. The
+	// endpoint need not be subscribed to event_type, and a disabled endpoint may
+	// still be tested. An absent payload_json sends the catalog sample; a
+	// supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
+	// otherwise), and the server overwrites its id, type, organization_id and
+	// created_at and forces is_test to true. Test deliveries are never retried.
+	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
+	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
+	// first. INVALID_ARGUMENT for a page_token that does not decode, an
+	// unknown status, or a negative page_size.
+	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
+	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
+	// the exact request body and the request headers. Never returns a secret.
+	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
+	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
+	// when bosso receives an authenticated HTTP request or a GitHub App event.
+	// Triggers are bosso-owned, Postgres-backed state served by whichever
+	// instance receives the call, not daemon-proxied, so these carry no Proxy
+	// prefix. Every RPC below requires user authentication (daemon tokens are
+	// refused) and passes the cloud access policy for the trigger's organization
+	// (PERMISSION_DENIED when it refuses). A trigger is visible only to its
+	// creator: any id-addressed call on a trigger the caller did not create, or
+	// in an organization the caller is not a member of, returns NOT_FOUND so the
+	// trigger's existence is not disclosed.
+	//
+	// GetTriggerCatalog returns the trigger types, event types, and filter
+	// fields bosso accepts. Needs user authentication only; it is static
+	// metadata, so no cloud access or organization is required.
+	GetTriggerCatalog(context.Context, *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error)
+	// ListTriggers returns the caller's own triggers, in organization_id when
+	// set (the caller must be a member) or across every organization the caller
+	// belongs to. Never returns a secret.
+	ListTriggers(context.Context, *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error)
+	// GetTrigger returns one trigger the caller created. Never returns a secret.
+	GetTrigger(context.Context, *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error)
+	// CreateTrigger creates a trigger owned by the caller in organization_id,
+	// which the caller must be a member of. For an HTTP trigger the response
+	// carries the signing secret; it is returned ONLY in this response and can
+	// never be read back, only replaced with RotateTriggerSecret.
+	CreateTrigger(context.Context, *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error)
+	// UpdateTrigger changes fields of a trigger the caller created; absent
+	// fields are left unchanged. trigger_type is immutable. Never returns or
+	// changes the secret.
+	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error)
+	// DeleteTrigger permanently deletes a trigger the caller created, together
+	// with its secret and invocation history. Its endpoint stops accepting
+	// requests immediately.
+	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error)
+	// RotateTriggerSecret replaces the signing secret of an HTTP trigger the
+	// caller created; the old secret stops validating immediately. The new
+	// secret is returned ONLY in this response. FAILED_PRECONDITION for a
+	// trigger type with no secret.
+	RotateTriggerSecret(context.Context, *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error)
+	// TestTrigger runs a sample payload through a trigger the caller created,
+	// applying the same filters and policies as a real invocation, and records
+	// the result as a TriggerInvocation with source "test". It launches a
+	// session only when should_launch is set; otherwise the invocation stops at
+	// its decision.
+	TestTrigger(context.Context, *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error)
+	// ListTriggerInvocations returns the invocation history of a trigger the
+	// caller created, newest first.
+	ListTriggerInvocations(context.Context, *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -984,6 +1198,48 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteNote")),
 			connect.WithClientOptions(opts...),
 		),
+		createOrganizationNote: connect.NewClient[v1.CreateOrganizationNoteRequest, v1.CreateOrganizationNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateOrganizationNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateOrganizationNote")),
+			connect.WithClientOptions(opts...),
+		),
+		getOrganizationNote: connect.NewClient[v1.GetOrganizationNoteRequest, v1.GetOrganizationNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetOrganizationNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNote")),
+			connect.WithClientOptions(opts...),
+		),
+		listOrganizationNotes: connect.NewClient[v1.ListOrganizationNotesRequest, v1.ListOrganizationNotesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListOrganizationNotesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizationNotes")),
+			connect.WithClientOptions(opts...),
+		),
+		updateOrganizationNote: connect.NewClient[v1.UpdateOrganizationNoteRequest, v1.UpdateOrganizationNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateOrganizationNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateOrganizationNote")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteOrganizationNote: connect.NewClient[v1.DeleteOrganizationNoteRequest, v1.DeleteOrganizationNoteResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteOrganizationNoteProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteOrganizationNote")),
+			connect.WithClientOptions(opts...),
+		),
+		getOrganizationNoteQuota: connect.NewClient[v1.GetOrganizationNoteQuotaRequest, v1.GetOrganizationNoteQuotaResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetOrganizationNoteQuotaProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
+			connect.WithClientOptions(opts...),
+		),
+		syncDaemonNotes: connect.NewClient[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSyncDaemonNotesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SyncDaemonNotes")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -1170,6 +1426,114 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListRepoOrganizations")),
 			connect.WithClientOptions(opts...),
 		),
+		listSessionWebhookEventTypes: connect.NewClient[v1.ListSessionWebhookEventTypesRequest, v1.ListSessionWebhookEventTypesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSessionWebhookEventTypesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookEventTypes")),
+			connect.WithClientOptions(opts...),
+		),
+		listSessionWebhooks: connect.NewClient[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSessionWebhooksProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhooks")),
+			connect.WithClientOptions(opts...),
+		),
+		createSessionWebhook: connect.NewClient[v1.CreateSessionWebhookRequest, v1.CreateSessionWebhookResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateSessionWebhookProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateSessionWebhook")),
+			connect.WithClientOptions(opts...),
+		),
+		updateSessionWebhook: connect.NewClient[v1.UpdateSessionWebhookRequest, v1.UpdateSessionWebhookResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateSessionWebhookProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSessionWebhook")),
+			connect.WithClientOptions(opts...),
+		),
+		rotateSessionWebhookSecret: connect.NewClient[v1.RotateSessionWebhookSecretRequest, v1.RotateSessionWebhookSecretResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRotateSessionWebhookSecretProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RotateSessionWebhookSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSessionWebhook: connect.NewClient[v1.DeleteSessionWebhookRequest, v1.DeleteSessionWebhookResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteSessionWebhookProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteSessionWebhook")),
+			connect.WithClientOptions(opts...),
+		),
+		sendSessionWebhookTestEvent: connect.NewClient[v1.SendSessionWebhookTestEventRequest, v1.SendSessionWebhookTestEventResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSendSessionWebhookTestEventProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SendSessionWebhookTestEvent")),
+			connect.WithClientOptions(opts...),
+		),
+		listSessionWebhookDeliveries: connect.NewClient[v1.ListSessionWebhookDeliveriesRequest, v1.ListSessionWebhookDeliveriesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSessionWebhookDeliveriesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookDeliveries")),
+			connect.WithClientOptions(opts...),
+		),
+		getSessionWebhookDelivery: connect.NewClient[v1.GetSessionWebhookDeliveryRequest, v1.GetSessionWebhookDeliveryResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetSessionWebhookDeliveryProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetSessionWebhookDelivery")),
+			connect.WithClientOptions(opts...),
+		),
+		getTriggerCatalog: connect.NewClient[v1.GetTriggerCatalogRequest, v1.GetTriggerCatalogResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetTriggerCatalogProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetTriggerCatalog")),
+			connect.WithClientOptions(opts...),
+		),
+		listTriggers: connect.NewClient[v1.ListTriggersRequest, v1.ListTriggersResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListTriggersProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListTriggers")),
+			connect.WithClientOptions(opts...),
+		),
+		getTrigger: connect.NewClient[v1.GetTriggerRequest, v1.GetTriggerResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetTriggerProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetTrigger")),
+			connect.WithClientOptions(opts...),
+		),
+		createTrigger: connect.NewClient[v1.CreateTriggerRequest, v1.CreateTriggerResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateTriggerProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateTrigger")),
+			connect.WithClientOptions(opts...),
+		),
+		updateTrigger: connect.NewClient[v1.UpdateTriggerRequest, v1.UpdateTriggerResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateTriggerProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateTrigger")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteTrigger: connect.NewClient[v1.DeleteTriggerRequest, v1.DeleteTriggerResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDeleteTriggerProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteTrigger")),
+			connect.WithClientOptions(opts...),
+		),
+		rotateTriggerSecret: connect.NewClient[v1.RotateTriggerSecretRequest, v1.RotateTriggerSecretResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRotateTriggerSecretProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RotateTriggerSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		testTrigger: connect.NewClient[v1.TestTriggerRequest, v1.TestTriggerResponse](
+			httpClient,
+			baseURL+OrchestratorServiceTestTriggerProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("TestTrigger")),
+			connect.WithClientOptions(opts...),
+		),
+		listTriggerInvocations: connect.NewClient[v1.ListTriggerInvocationsRequest, v1.ListTriggerInvocationsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListTriggerInvocationsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListTriggerInvocations")),
+			connect.WithClientOptions(opts...),
+		),
 		reportBug: connect.NewClient[v1.ReportBugRequest, v1.ReportBugResponse](
 			httpClient,
 			baseURL+OrchestratorServiceReportBugProcedure,
@@ -1247,6 +1611,13 @@ type orchestratorServiceClient struct {
 	proxyListNotes                       *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
 	proxyUpdateNote                      *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
 	proxyDeleteNote                      *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
+	createOrganizationNote               *connect.Client[v1.CreateOrganizationNoteRequest, v1.CreateOrganizationNoteResponse]
+	getOrganizationNote                  *connect.Client[v1.GetOrganizationNoteRequest, v1.GetOrganizationNoteResponse]
+	listOrganizationNotes                *connect.Client[v1.ListOrganizationNotesRequest, v1.ListOrganizationNotesResponse]
+	updateOrganizationNote               *connect.Client[v1.UpdateOrganizationNoteRequest, v1.UpdateOrganizationNoteResponse]
+	deleteOrganizationNote               *connect.Client[v1.DeleteOrganizationNoteRequest, v1.DeleteOrganizationNoteResponse]
+	getOrganizationNoteQuota             *connect.Client[v1.GetOrganizationNoteQuotaRequest, v1.GetOrganizationNoteQuotaResponse]
+	syncDaemonNotes                      *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
 	proxyStreamChats                     *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken                     *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream                       *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -1278,6 +1649,24 @@ type orchestratorServiceClient struct {
 	getRepoOrganization                  *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
 	clearRepoOrganization                *connect.Client[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse]
 	listRepoOrganizations                *connect.Client[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse]
+	listSessionWebhookEventTypes         *connect.Client[v1.ListSessionWebhookEventTypesRequest, v1.ListSessionWebhookEventTypesResponse]
+	listSessionWebhooks                  *connect.Client[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse]
+	createSessionWebhook                 *connect.Client[v1.CreateSessionWebhookRequest, v1.CreateSessionWebhookResponse]
+	updateSessionWebhook                 *connect.Client[v1.UpdateSessionWebhookRequest, v1.UpdateSessionWebhookResponse]
+	rotateSessionWebhookSecret           *connect.Client[v1.RotateSessionWebhookSecretRequest, v1.RotateSessionWebhookSecretResponse]
+	deleteSessionWebhook                 *connect.Client[v1.DeleteSessionWebhookRequest, v1.DeleteSessionWebhookResponse]
+	sendSessionWebhookTestEvent          *connect.Client[v1.SendSessionWebhookTestEventRequest, v1.SendSessionWebhookTestEventResponse]
+	listSessionWebhookDeliveries         *connect.Client[v1.ListSessionWebhookDeliveriesRequest, v1.ListSessionWebhookDeliveriesResponse]
+	getSessionWebhookDelivery            *connect.Client[v1.GetSessionWebhookDeliveryRequest, v1.GetSessionWebhookDeliveryResponse]
+	getTriggerCatalog                    *connect.Client[v1.GetTriggerCatalogRequest, v1.GetTriggerCatalogResponse]
+	listTriggers                         *connect.Client[v1.ListTriggersRequest, v1.ListTriggersResponse]
+	getTrigger                           *connect.Client[v1.GetTriggerRequest, v1.GetTriggerResponse]
+	createTrigger                        *connect.Client[v1.CreateTriggerRequest, v1.CreateTriggerResponse]
+	updateTrigger                        *connect.Client[v1.UpdateTriggerRequest, v1.UpdateTriggerResponse]
+	deleteTrigger                        *connect.Client[v1.DeleteTriggerRequest, v1.DeleteTriggerResponse]
+	rotateTriggerSecret                  *connect.Client[v1.RotateTriggerSecretRequest, v1.RotateTriggerSecretResponse]
+	testTrigger                          *connect.Client[v1.TestTriggerRequest, v1.TestTriggerResponse]
+	listTriggerInvocations               *connect.Client[v1.ListTriggerInvocationsRequest, v1.ListTriggerInvocationsResponse]
 	reportBug                            *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
 }
 
@@ -1614,6 +2003,41 @@ func (c *orchestratorServiceClient) ProxyDeleteNote(ctx context.Context, req *co
 	return c.proxyDeleteNote.CallUnary(ctx, req)
 }
 
+// CreateOrganizationNote calls bossanova.v1.OrchestratorService.CreateOrganizationNote.
+func (c *orchestratorServiceClient) CreateOrganizationNote(ctx context.Context, req *connect.Request[v1.CreateOrganizationNoteRequest]) (*connect.Response[v1.CreateOrganizationNoteResponse], error) {
+	return c.createOrganizationNote.CallUnary(ctx, req)
+}
+
+// GetOrganizationNote calls bossanova.v1.OrchestratorService.GetOrganizationNote.
+func (c *orchestratorServiceClient) GetOrganizationNote(ctx context.Context, req *connect.Request[v1.GetOrganizationNoteRequest]) (*connect.Response[v1.GetOrganizationNoteResponse], error) {
+	return c.getOrganizationNote.CallUnary(ctx, req)
+}
+
+// ListOrganizationNotes calls bossanova.v1.OrchestratorService.ListOrganizationNotes.
+func (c *orchestratorServiceClient) ListOrganizationNotes(ctx context.Context, req *connect.Request[v1.ListOrganizationNotesRequest]) (*connect.Response[v1.ListOrganizationNotesResponse], error) {
+	return c.listOrganizationNotes.CallUnary(ctx, req)
+}
+
+// UpdateOrganizationNote calls bossanova.v1.OrchestratorService.UpdateOrganizationNote.
+func (c *orchestratorServiceClient) UpdateOrganizationNote(ctx context.Context, req *connect.Request[v1.UpdateOrganizationNoteRequest]) (*connect.Response[v1.UpdateOrganizationNoteResponse], error) {
+	return c.updateOrganizationNote.CallUnary(ctx, req)
+}
+
+// DeleteOrganizationNote calls bossanova.v1.OrchestratorService.DeleteOrganizationNote.
+func (c *orchestratorServiceClient) DeleteOrganizationNote(ctx context.Context, req *connect.Request[v1.DeleteOrganizationNoteRequest]) (*connect.Response[v1.DeleteOrganizationNoteResponse], error) {
+	return c.deleteOrganizationNote.CallUnary(ctx, req)
+}
+
+// GetOrganizationNoteQuota calls bossanova.v1.OrchestratorService.GetOrganizationNoteQuota.
+func (c *orchestratorServiceClient) GetOrganizationNoteQuota(ctx context.Context, req *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
+	return c.getOrganizationNoteQuota.CallUnary(ctx, req)
+}
+
+// SyncDaemonNotes calls bossanova.v1.OrchestratorService.SyncDaemonNotes.
+func (c *orchestratorServiceClient) SyncDaemonNotes(ctx context.Context, req *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {
+	return c.syncDaemonNotes.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -1769,6 +2193,96 @@ func (c *orchestratorServiceClient) ClearRepoOrganization(ctx context.Context, r
 // ListRepoOrganizations calls bossanova.v1.OrchestratorService.ListRepoOrganizations.
 func (c *orchestratorServiceClient) ListRepoOrganizations(ctx context.Context, req *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error) {
 	return c.listRepoOrganizations.CallUnary(ctx, req)
+}
+
+// ListSessionWebhookEventTypes calls bossanova.v1.OrchestratorService.ListSessionWebhookEventTypes.
+func (c *orchestratorServiceClient) ListSessionWebhookEventTypes(ctx context.Context, req *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error) {
+	return c.listSessionWebhookEventTypes.CallUnary(ctx, req)
+}
+
+// ListSessionWebhooks calls bossanova.v1.OrchestratorService.ListSessionWebhooks.
+func (c *orchestratorServiceClient) ListSessionWebhooks(ctx context.Context, req *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error) {
+	return c.listSessionWebhooks.CallUnary(ctx, req)
+}
+
+// CreateSessionWebhook calls bossanova.v1.OrchestratorService.CreateSessionWebhook.
+func (c *orchestratorServiceClient) CreateSessionWebhook(ctx context.Context, req *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error) {
+	return c.createSessionWebhook.CallUnary(ctx, req)
+}
+
+// UpdateSessionWebhook calls bossanova.v1.OrchestratorService.UpdateSessionWebhook.
+func (c *orchestratorServiceClient) UpdateSessionWebhook(ctx context.Context, req *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error) {
+	return c.updateSessionWebhook.CallUnary(ctx, req)
+}
+
+// RotateSessionWebhookSecret calls bossanova.v1.OrchestratorService.RotateSessionWebhookSecret.
+func (c *orchestratorServiceClient) RotateSessionWebhookSecret(ctx context.Context, req *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error) {
+	return c.rotateSessionWebhookSecret.CallUnary(ctx, req)
+}
+
+// DeleteSessionWebhook calls bossanova.v1.OrchestratorService.DeleteSessionWebhook.
+func (c *orchestratorServiceClient) DeleteSessionWebhook(ctx context.Context, req *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error) {
+	return c.deleteSessionWebhook.CallUnary(ctx, req)
+}
+
+// SendSessionWebhookTestEvent calls bossanova.v1.OrchestratorService.SendSessionWebhookTestEvent.
+func (c *orchestratorServiceClient) SendSessionWebhookTestEvent(ctx context.Context, req *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error) {
+	return c.sendSessionWebhookTestEvent.CallUnary(ctx, req)
+}
+
+// ListSessionWebhookDeliveries calls bossanova.v1.OrchestratorService.ListSessionWebhookDeliveries.
+func (c *orchestratorServiceClient) ListSessionWebhookDeliveries(ctx context.Context, req *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error) {
+	return c.listSessionWebhookDeliveries.CallUnary(ctx, req)
+}
+
+// GetSessionWebhookDelivery calls bossanova.v1.OrchestratorService.GetSessionWebhookDelivery.
+func (c *orchestratorServiceClient) GetSessionWebhookDelivery(ctx context.Context, req *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error) {
+	return c.getSessionWebhookDelivery.CallUnary(ctx, req)
+}
+
+// GetTriggerCatalog calls bossanova.v1.OrchestratorService.GetTriggerCatalog.
+func (c *orchestratorServiceClient) GetTriggerCatalog(ctx context.Context, req *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error) {
+	return c.getTriggerCatalog.CallUnary(ctx, req)
+}
+
+// ListTriggers calls bossanova.v1.OrchestratorService.ListTriggers.
+func (c *orchestratorServiceClient) ListTriggers(ctx context.Context, req *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error) {
+	return c.listTriggers.CallUnary(ctx, req)
+}
+
+// GetTrigger calls bossanova.v1.OrchestratorService.GetTrigger.
+func (c *orchestratorServiceClient) GetTrigger(ctx context.Context, req *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error) {
+	return c.getTrigger.CallUnary(ctx, req)
+}
+
+// CreateTrigger calls bossanova.v1.OrchestratorService.CreateTrigger.
+func (c *orchestratorServiceClient) CreateTrigger(ctx context.Context, req *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error) {
+	return c.createTrigger.CallUnary(ctx, req)
+}
+
+// UpdateTrigger calls bossanova.v1.OrchestratorService.UpdateTrigger.
+func (c *orchestratorServiceClient) UpdateTrigger(ctx context.Context, req *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error) {
+	return c.updateTrigger.CallUnary(ctx, req)
+}
+
+// DeleteTrigger calls bossanova.v1.OrchestratorService.DeleteTrigger.
+func (c *orchestratorServiceClient) DeleteTrigger(ctx context.Context, req *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error) {
+	return c.deleteTrigger.CallUnary(ctx, req)
+}
+
+// RotateTriggerSecret calls bossanova.v1.OrchestratorService.RotateTriggerSecret.
+func (c *orchestratorServiceClient) RotateTriggerSecret(ctx context.Context, req *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error) {
+	return c.rotateTriggerSecret.CallUnary(ctx, req)
+}
+
+// TestTrigger calls bossanova.v1.OrchestratorService.TestTrigger.
+func (c *orchestratorServiceClient) TestTrigger(ctx context.Context, req *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error) {
+	return c.testTrigger.CallUnary(ctx, req)
+}
+
+// ListTriggerInvocations calls bossanova.v1.OrchestratorService.ListTriggerInvocations.
+func (c *orchestratorServiceClient) ListTriggerInvocations(ctx context.Context, req *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error) {
+	return c.listTriggerInvocations.CallUnary(ctx, req)
 }
 
 // ReportBug calls bossanova.v1.OrchestratorService.ReportBug.
@@ -1947,6 +2461,44 @@ type OrchestratorServiceHandler interface {
 	ProxyListNotes(context.Context, *connect.Request[v1.ProxyListNotesRequest]) (*connect.Response[v1.ProxyListNotesResponse], error)
 	ProxyUpdateNote(context.Context, *connect.Request[v1.ProxyUpdateNoteRequest]) (*connect.Response[v1.ProxyUpdateNoteResponse], error)
 	ProxyDeleteNote(context.Context, *connect.Request[v1.ProxyDeleteNoteRequest]) (*connect.Response[v1.ProxyDeleteNoteResponse], error)
+	// Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
+	// remain the unchanged daemon-local relay, these read and write a note store
+	// that bosso itself owns, scoped to one organization, so an organization can
+	// see the notes all of its members' daemons recorded. See OrganizationNote.
+	//
+	// The six user RPCs authenticate a user. Every call requires membership of
+	// the request's organization_id (PermissionDenied otherwise) and the paid-plan
+	// entitlement for THAT organization, judged alone: paying through one
+	// organization grants nothing in another. An unentitled organization answers
+	// the same access-denied error other cloud features return. Any member reads
+	// every note in the organization; Update and Delete are allowed for the
+	// note's author or an organization owner, and PermissionDenied for anyone
+	// else. A note id from another organization, or an expired note, is NotFound.
+	//
+	// Writes are bounded by a per-organization hourly quota counted over a fixed
+	// UTC clock hour (see OrganizationNoteQuota). One accepted create, or one
+	// update that changes the body or tags, consumes one unit; deletes, reads and
+	// idempotent replays consume none. An exhausted quota is ResourceExhausted
+	// with an OrganizationNoteQuotaExceeded error detail.
+	CreateOrganizationNote(context.Context, *connect.Request[v1.CreateOrganizationNoteRequest]) (*connect.Response[v1.CreateOrganizationNoteResponse], error)
+	GetOrganizationNote(context.Context, *connect.Request[v1.GetOrganizationNoteRequest]) (*connect.Response[v1.GetOrganizationNoteResponse], error)
+	ListOrganizationNotes(context.Context, *connect.Request[v1.ListOrganizationNotesRequest]) (*connect.Response[v1.ListOrganizationNotesResponse], error)
+	UpdateOrganizationNote(context.Context, *connect.Request[v1.UpdateOrganizationNoteRequest]) (*connect.Response[v1.UpdateOrganizationNoteResponse], error)
+	DeleteOrganizationNote(context.Context, *connect.Request[v1.DeleteOrganizationNoteRequest]) (*connect.Response[v1.DeleteOrganizationNoteResponse], error)
+	// GetOrganizationNoteQuota reports the organization's current quota window
+	// without consuming any of it. Same membership and entitlement rules as the
+	// other organization-note RPCs.
+	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
+	// authenticates the daemon session, the same principal as
+	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
+	// the author of every synced note, and each item is routed to an
+	// organization by its repo_origin_url. The mirror is one-way and
+	// daemon-authoritative: a newer source_version wins, and the cloud copy of a
+	// synced note cannot be edited through UpdateOrganizationNote. See
+	// SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
+	// per-item results.
+	SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -2018,6 +2570,107 @@ type OrchestratorServiceHandler interface {
 	GetRepoOrganization(context.Context, *connect.Request[v1.GetRepoOrganizationRequest]) (*connect.Response[v1.GetRepoOrganizationResponse], error)
 	ClearRepoOrganization(context.Context, *connect.Request[v1.ClearRepoOrganizationRequest]) (*connect.Response[v1.ClearRepoOrganizationResponse], error)
 	ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error)
+	// Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
+	// fired on session state changes. Distinct from the inbound GitHub
+	// CreateWebhookConfig / ListWebhookConfigs / DeleteWebhookConfig above.
+	// Every RPC below requires user authentication, passes the cloud access
+	// policy (PERMISSION_DENIED when it refuses), and requires the OWNER role in
+	// organization_id, which must be the caller's active organization (empty
+	// means the active organization). Reads are owner-only too: endpoint URLs can
+	// reveal internal infrastructure. An id that does not belong to
+	// organization_id answers NOT_FOUND, never PERMISSION_DENIED, so a
+	// webhook's existence is not disclosed. The signing secret is returned ONLY
+	// by CreateSessionWebhook and RotateSessionWebhookSecret.
+	//
+	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
+	// subscribe to, in canonical order.
+	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
+	// ListSessionWebhooks returns the organization's endpoints, oldest first.
+	// Never returns a secret.
+	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
+	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
+	// endpoint policy rejects (not https, credentials in the URL, a fragment, or
+	// a host that is or resolves to a private, loopback, link-local or metadata
+	// address), an empty or unknown event type set, a description over 200
+	// characters, or a caller-supplied secret that is not 16-256 visible ASCII
+	// characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
+	// UpdateSessionWebhook changes only the fields that are present and returns
+	// the endpoint without its secret. Disabling an endpoint or changing its URL
+	// cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+	UpdateSessionWebhook(context.Context, *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error)
+	// RotateSessionWebhookSecret replaces the signing secret; undelivered events
+	// are signed with the new one. The new secret is returned ONLY here.
+	RotateSessionWebhookSecret(context.Context, *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error)
+	// DeleteSessionWebhook permanently deletes an endpoint with its delivery
+	// history.
+	DeleteSessionWebhook(context.Context, *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error)
+	// SendSessionWebhookTestEvent sends one test delivery of event_type to the
+	// endpoint synchronously and returns it with its single attempt, or
+	// cancelled without one when the endpoint is disabled or changed while the
+	// attempt is in flight. The
+	// endpoint need not be subscribed to event_type, and a disabled endpoint may
+	// still be tested. An absent payload_json sends the catalog sample; a
+	// supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
+	// otherwise), and the server overwrites its id, type, organization_id and
+	// created_at and forces is_test to true. Test deliveries are never retried.
+	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
+	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
+	// first. INVALID_ARGUMENT for a page_token that does not decode, an
+	// unknown status, or a negative page_size.
+	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
+	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
+	// the exact request body and the request headers. Never returns a secret.
+	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
+	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
+	// when bosso receives an authenticated HTTP request or a GitHub App event.
+	// Triggers are bosso-owned, Postgres-backed state served by whichever
+	// instance receives the call, not daemon-proxied, so these carry no Proxy
+	// prefix. Every RPC below requires user authentication (daemon tokens are
+	// refused) and passes the cloud access policy for the trigger's organization
+	// (PERMISSION_DENIED when it refuses). A trigger is visible only to its
+	// creator: any id-addressed call on a trigger the caller did not create, or
+	// in an organization the caller is not a member of, returns NOT_FOUND so the
+	// trigger's existence is not disclosed.
+	//
+	// GetTriggerCatalog returns the trigger types, event types, and filter
+	// fields bosso accepts. Needs user authentication only; it is static
+	// metadata, so no cloud access or organization is required.
+	GetTriggerCatalog(context.Context, *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error)
+	// ListTriggers returns the caller's own triggers, in organization_id when
+	// set (the caller must be a member) or across every organization the caller
+	// belongs to. Never returns a secret.
+	ListTriggers(context.Context, *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error)
+	// GetTrigger returns one trigger the caller created. Never returns a secret.
+	GetTrigger(context.Context, *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error)
+	// CreateTrigger creates a trigger owned by the caller in organization_id,
+	// which the caller must be a member of. For an HTTP trigger the response
+	// carries the signing secret; it is returned ONLY in this response and can
+	// never be read back, only replaced with RotateTriggerSecret.
+	CreateTrigger(context.Context, *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error)
+	// UpdateTrigger changes fields of a trigger the caller created; absent
+	// fields are left unchanged. trigger_type is immutable. Never returns or
+	// changes the secret.
+	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error)
+	// DeleteTrigger permanently deletes a trigger the caller created, together
+	// with its secret and invocation history. Its endpoint stops accepting
+	// requests immediately.
+	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error)
+	// RotateTriggerSecret replaces the signing secret of an HTTP trigger the
+	// caller created; the old secret stops validating immediately. The new
+	// secret is returned ONLY in this response. FAILED_PRECONDITION for a
+	// trigger type with no secret.
+	RotateTriggerSecret(context.Context, *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error)
+	// TestTrigger runs a sample payload through a trigger the caller created,
+	// applying the same filters and policies as a real invocation, and records
+	// the result as a TriggerInvocation with source "test". It launches a
+	// session only when should_launch is set; otherwise the invocation stops at
+	// its decision.
+	TestTrigger(context.Context, *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error)
+	// ListTriggerInvocations returns the invocation history of a trigger the
+	// caller created, newest first.
+	ListTriggerInvocations(context.Context, *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -2426,6 +3079,48 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteNote")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceCreateOrganizationNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateOrganizationNoteProcedure,
+		svc.CreateOrganizationNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateOrganizationNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetOrganizationNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetOrganizationNoteProcedure,
+		svc.GetOrganizationNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListOrganizationNotesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListOrganizationNotesProcedure,
+		svc.ListOrganizationNotes,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListOrganizationNotes")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateOrganizationNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateOrganizationNoteProcedure,
+		svc.UpdateOrganizationNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateOrganizationNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDeleteOrganizationNoteHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteOrganizationNoteProcedure,
+		svc.DeleteOrganizationNote,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteOrganizationNote")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetOrganizationNoteQuotaHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetOrganizationNoteQuotaProcedure,
+		svc.GetOrganizationNoteQuota,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSyncDaemonNotesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSyncDaemonNotesProcedure,
+		svc.SyncDaemonNotes,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SyncDaemonNotes")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -2612,6 +3307,114 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListRepoOrganizations")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceListSessionWebhookEventTypesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSessionWebhookEventTypesProcedure,
+		svc.ListSessionWebhookEventTypes,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookEventTypes")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListSessionWebhooksHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSessionWebhooksProcedure,
+		svc.ListSessionWebhooks,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhooks")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateSessionWebhookHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateSessionWebhookProcedure,
+		svc.CreateSessionWebhook,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateSessionWebhook")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateSessionWebhookHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateSessionWebhookProcedure,
+		svc.UpdateSessionWebhook,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSessionWebhook")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRotateSessionWebhookSecretHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRotateSessionWebhookSecretProcedure,
+		svc.RotateSessionWebhookSecret,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RotateSessionWebhookSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDeleteSessionWebhookHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteSessionWebhookProcedure,
+		svc.DeleteSessionWebhook,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteSessionWebhook")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSendSessionWebhookTestEventHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSendSessionWebhookTestEventProcedure,
+		svc.SendSessionWebhookTestEvent,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SendSessionWebhookTestEvent")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListSessionWebhookDeliveriesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSessionWebhookDeliveriesProcedure,
+		svc.ListSessionWebhookDeliveries,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookDeliveries")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetSessionWebhookDeliveryHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetSessionWebhookDeliveryProcedure,
+		svc.GetSessionWebhookDelivery,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetSessionWebhookDelivery")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetTriggerCatalogHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetTriggerCatalogProcedure,
+		svc.GetTriggerCatalog,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetTriggerCatalog")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListTriggersHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListTriggersProcedure,
+		svc.ListTriggers,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListTriggers")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetTriggerHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetTriggerProcedure,
+		svc.GetTrigger,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetTrigger")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateTriggerHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateTriggerProcedure,
+		svc.CreateTrigger,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateTrigger")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateTriggerHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateTriggerProcedure,
+		svc.UpdateTrigger,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateTrigger")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDeleteTriggerHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDeleteTriggerProcedure,
+		svc.DeleteTrigger,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteTrigger")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRotateTriggerSecretHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRotateTriggerSecretProcedure,
+		svc.RotateTriggerSecret,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RotateTriggerSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceTestTriggerHandler := connect.NewUnaryHandler(
+		OrchestratorServiceTestTriggerProcedure,
+		svc.TestTrigger,
+		connect.WithSchema(orchestratorServiceMethods.ByName("TestTrigger")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListTriggerInvocationsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListTriggerInvocationsProcedure,
+		svc.ListTriggerInvocations,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListTriggerInvocations")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceReportBugHandler := connect.NewUnaryHandler(
 		OrchestratorServiceReportBugProcedure,
 		svc.ReportBug,
@@ -2752,6 +3555,20 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyUpdateNoteHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyDeleteNoteProcedure:
 			orchestratorServiceProxyDeleteNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateOrganizationNoteProcedure:
+			orchestratorServiceCreateOrganizationNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetOrganizationNoteProcedure:
+			orchestratorServiceGetOrganizationNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListOrganizationNotesProcedure:
+			orchestratorServiceListOrganizationNotesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateOrganizationNoteProcedure:
+			orchestratorServiceUpdateOrganizationNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteOrganizationNoteProcedure:
+			orchestratorServiceDeleteOrganizationNoteHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetOrganizationNoteQuotaProcedure:
+			orchestratorServiceGetOrganizationNoteQuotaHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSyncDaemonNotesProcedure:
+			orchestratorServiceSyncDaemonNotesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -2814,6 +3631,42 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceClearRepoOrganizationHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListRepoOrganizationsProcedure:
 			orchestratorServiceListRepoOrganizationsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSessionWebhookEventTypesProcedure:
+			orchestratorServiceListSessionWebhookEventTypesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSessionWebhooksProcedure:
+			orchestratorServiceListSessionWebhooksHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateSessionWebhookProcedure:
+			orchestratorServiceCreateSessionWebhookHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateSessionWebhookProcedure:
+			orchestratorServiceUpdateSessionWebhookHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRotateSessionWebhookSecretProcedure:
+			orchestratorServiceRotateSessionWebhookSecretHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteSessionWebhookProcedure:
+			orchestratorServiceDeleteSessionWebhookHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSendSessionWebhookTestEventProcedure:
+			orchestratorServiceSendSessionWebhookTestEventHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSessionWebhookDeliveriesProcedure:
+			orchestratorServiceListSessionWebhookDeliveriesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetSessionWebhookDeliveryProcedure:
+			orchestratorServiceGetSessionWebhookDeliveryHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetTriggerCatalogProcedure:
+			orchestratorServiceGetTriggerCatalogHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListTriggersProcedure:
+			orchestratorServiceListTriggersHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetTriggerProcedure:
+			orchestratorServiceGetTriggerHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateTriggerProcedure:
+			orchestratorServiceCreateTriggerHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateTriggerProcedure:
+			orchestratorServiceUpdateTriggerHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDeleteTriggerProcedure:
+			orchestratorServiceDeleteTriggerHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRotateTriggerSecretProcedure:
+			orchestratorServiceRotateTriggerSecretHandler.ServeHTTP(w, r)
+		case OrchestratorServiceTestTriggerProcedure:
+			orchestratorServiceTestTriggerHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListTriggerInvocationsProcedure:
+			orchestratorServiceListTriggerInvocationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReportBugProcedure:
 			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
 		default:
@@ -3089,6 +3942,34 @@ func (UnimplementedOrchestratorServiceHandler) ProxyDeleteNote(context.Context, 
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteNote is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) CreateOrganizationNote(context.Context, *connect.Request[v1.CreateOrganizationNoteRequest]) (*connect.Response[v1.CreateOrganizationNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateOrganizationNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetOrganizationNote(context.Context, *connect.Request[v1.GetOrganizationNoteRequest]) (*connect.Response[v1.GetOrganizationNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListOrganizationNotes(context.Context, *connect.Request[v1.ListOrganizationNotesRequest]) (*connect.Response[v1.ListOrganizationNotesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListOrganizationNotes is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateOrganizationNote(context.Context, *connect.Request[v1.UpdateOrganizationNoteRequest]) (*connect.Response[v1.UpdateOrganizationNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateOrganizationNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteOrganizationNote(context.Context, *connect.Request[v1.DeleteOrganizationNoteRequest]) (*connect.Response[v1.DeleteOrganizationNoteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteOrganizationNote is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationNoteQuota is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SyncDaemonNotes is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStreamChats is not implemented"))
 }
@@ -3211,6 +4092,78 @@ func (UnimplementedOrchestratorServiceHandler) ClearRepoOrganization(context.Con
 
 func (UnimplementedOrchestratorServiceHandler) ListRepoOrganizations(context.Context, *connect.Request[v1.ListRepoOrganizationsRequest]) (*connect.Response[v1.ListRepoOrganizationsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListRepoOrganizations is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSessionWebhookEventTypes is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSessionWebhooks is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateSessionWebhook is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateSessionWebhook(context.Context, *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateSessionWebhook is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RotateSessionWebhookSecret(context.Context, *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RotateSessionWebhookSecret is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteSessionWebhook(context.Context, *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteSessionWebhook is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SendSessionWebhookTestEvent is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSessionWebhookDeliveries is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetSessionWebhookDelivery is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetTriggerCatalog(context.Context, *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetTriggerCatalog is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListTriggers(context.Context, *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListTriggers is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetTrigger(context.Context, *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetTrigger is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateTrigger(context.Context, *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateTrigger is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateTrigger is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteTrigger is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RotateTriggerSecret(context.Context, *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RotateTriggerSecret is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) TestTrigger(context.Context, *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.TestTrigger is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListTriggerInvocations(context.Context, *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListTriggerInvocations is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {

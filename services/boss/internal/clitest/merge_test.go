@@ -572,3 +572,71 @@ func TestCLI_Merge_JSONDaemonNotFound(t *testing.T) {
 		t.Errorf("error.connect_code = %q, want not_found", env.Error.ConnectCode)
 	}
 }
+
+// matchHeadPin is a valid 40-hex head SHA for the BOS-1381 --match-head tests.
+var matchHeadPin = strings.Repeat("0a1b", 10)
+
+// TestCLI_Merge_MatchHeadSendsPin: --match-head reaches the daemon as
+// expected_head_sha, normalized to lowercase; without it the request is unpinned.
+func TestCLI_Merge_MatchHeadSendsPin(t *testing.T) {
+	h := mergeHarness(t)
+	res := h.Run("merge", "sess-aaa-111", "--yes", "--json", "--match-head", strings.ToUpper(matchHeadPin))
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if got := h.Daemon.MergeSessionExpectedHeads(); len(got) != 1 || got[0] != matchHeadPin {
+		t.Fatalf("expected_head_sha = %v, want [%s]", got, matchHeadPin)
+	}
+
+	h2 := mergeHarness(t)
+	if res := h2.Run("merge", "sess-aaa-111", "--yes", "--json"); res.ExitCode != 0 {
+		t.Fatalf("unpinned exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if got := h2.Daemon.MergeSessionExpectedHeads(); len(got) != 1 || got[0] != "" {
+		t.Fatalf("unpinned expected_head_sha = %v, want [\"\"]", got)
+	}
+}
+
+// TestCLI_Merge_JSONHeadMismatch: the daemon's HEAD_MISMATCH token wins over
+// the FailedPrecondition it rides on, like MERGE_STRATEGY_INCOMPATIBLE.
+func TestCLI_Merge_JSONHeadMismatch(t *testing.T) {
+	h := mergeHarness(t)
+	msg := "HEAD_MISMATCH: expected head " + matchHeadPin + ", live head " + strings.Repeat("ffee", 10)
+	h.Daemon.SetMergeError(connect.CodeFailedPrecondition, msg)
+
+	res := h.Run("merge", "sess-aaa-111", "--yes", "--json", "--match-head", matchHeadPin)
+	if res.ExitCode != 1 {
+		t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	env := decodeMergeError(t, res.Stdout)
+	if env.Error.Code != "HEAD_MISMATCH" {
+		t.Errorf("error.code = %q, want HEAD_MISMATCH", env.Error.Code)
+	}
+	if env.Error.ConnectCode != "failed_precondition" {
+		t.Errorf("error.connect_code = %q, want failed_precondition", env.Error.ConnectCode)
+	}
+	if env.Error.Message != msg {
+		t.Errorf("error.message = %q, want the daemon's message verbatim", env.Error.Message)
+	}
+}
+
+// TestCLI_Merge_MatchHeadInvalidIssuesNoRPC: a malformed pin is rejected
+// locally as INVALID_ARGUMENT and never reaches the daemon.
+func TestCLI_Merge_MatchHeadInvalidIssuesNoRPC(t *testing.T) {
+	for _, pin := range []string{"nothex", matchHeadPin[:39], matchHeadPin + "0"} {
+		t.Run(pin, func(t *testing.T) {
+			h := mergeHarness(t)
+			res := h.Run("merge", "sess-aaa-111", "--yes", "--json", "--match-head", pin)
+			if res.ExitCode != 1 {
+				t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			env := decodeMergeError(t, res.Stdout)
+			if env.Error.Code != "INVALID_ARGUMENT" {
+				t.Errorf("error.code = %q, want INVALID_ARGUMENT", env.Error.Code)
+			}
+			if got := h.Daemon.MergeSessionCalls(); len(got) != 0 {
+				t.Fatalf("MergeSessionCalls = %v, want none", got)
+			}
+		})
+	}
+}

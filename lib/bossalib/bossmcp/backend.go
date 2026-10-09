@@ -52,7 +52,9 @@ type Backend interface {
 	// most importantly a merge-strategy substitution (a rebase that was refused
 	// and squashed instead). The shape mirrors client.BossClient.MergeSession
 	// deliberately: neither surface should silently narrow the other.
-	MergeSession(ctx context.Context, id string) (*pb.Session, string, error)
+	// matchHead, when non-empty, pins the merge to that head SHA; a backend
+	// that cannot carry the pin must refuse it rather than merge unpinned.
+	MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
@@ -118,6 +120,20 @@ type Backend interface {
 	UpdateNote(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
 	DeleteNote(ctx context.Context, repoID, id string) error
 
+	// Organization notes: the bosso-owned, organization-scoped note store
+	// (OrchestratorService *OrganizationNote RPCs), distinct from the
+	// daemon-local notes above. Every method passes the generated request
+	// through unchanged so authorization, validation and quota errors are the
+	// API's own. ListOrganizationNotes returns the whole response because
+	// next_page_token is part of the contract. Only the hosted gateway can serve
+	// them; the local socket adapter refuses each with FailedPrecondition.
+	CreateOrganizationNote(ctx context.Context, req *pb.CreateOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	GetOrganizationNote(ctx context.Context, req *pb.GetOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	ListOrganizationNotes(ctx context.Context, req *pb.ListOrganizationNotesRequest) (*pb.ListOrganizationNotesResponse, error)
+	UpdateOrganizationNote(ctx context.Context, req *pb.UpdateOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	DeleteOrganizationNote(ctx context.Context, req *pb.DeleteOrganizationNoteRequest) error
+	GetOrganizationNoteQuota(ctx context.Context, req *pb.GetOrganizationNoteQuotaRequest) (*pb.OrganizationNoteQuota, error)
+
 	// Broadcasts (one message addressed at the set of chats a selector resolves
 	// to, plus the standing subscriptions that fire one when a session settles).
 	// SendBroadcast and CreateBroadcastSubscription carry a SECRET message body
@@ -179,4 +195,57 @@ type Options struct {
 	// advertises exactly the tools that work. Only composes with ReadOnly:
 	// both filters must admit a tool for it to register.
 	Only map[string]bool
+
+	// IncludeHostedTools registers the hosted-only tool tier (HostedToolNames).
+	// The tier has one family per optional backend interface — inbound
+	// triggers (TriggerBackend) and session webhooks (SessionWebhookBackend) —
+	// and each family registers when this option is set AND the backend
+	// implements that family's interface, independently of the other family.
+	// Without the option no hosted tool registers. It is off by default so the Options{} surface — the one every local
+	// session pays for per turn — never carries tools only the hosted gateway
+	// can serve. ReadOnly and Only still apply to the hosted tools.
+	IncludeHostedTools bool
+}
+
+// TriggerBackend is the optional, hosted-only backend for inbound triggers
+// (the bosso-owned OrchestratorService *Trigger RPCs). It is deliberately NOT
+// part of Backend: only a backend that can reach bosso as the caller (the
+// hosted gateway) implements it, and RegisterTools discovers it by type
+// assertion, so local backends need no stubs. Every method passes the
+// caller's input through unchanged so authorization and validation errors are
+// the API's own.
+type TriggerBackend interface {
+	GetTriggerCatalog(ctx context.Context) (*pb.TriggerCatalog, error)
+	ListTriggers(ctx context.Context, req *pb.ListTriggersRequest) (*pb.ListTriggersResponse, error)
+	GetTrigger(ctx context.Context, id string) (*pb.Trigger, error)
+	ListTriggerInvocations(ctx context.Context, req *pb.ListTriggerInvocationsRequest) (*pb.ListTriggerInvocationsResponse, error)
+	// CreateTrigger and RotateTriggerSecret return the whole response because
+	// the one-time signing secret travels beside the trigger, never on it.
+	CreateTrigger(ctx context.Context, req *pb.CreateTriggerRequest) (*pb.CreateTriggerResponse, error)
+	UpdateTrigger(ctx context.Context, req *pb.UpdateTriggerRequest) (*pb.Trigger, error)
+	RotateTriggerSecret(ctx context.Context, id string) (*pb.RotateTriggerSecretResponse, error)
+	TestTrigger(ctx context.Context, req *pb.TestTriggerRequest) (*pb.TriggerInvocation, error)
+	DeleteTrigger(ctx context.Context, id string) error
+}
+
+// SessionWebhookBackend is the optional, hosted-only backend for outbound
+// session webhooks (the bosso-owned OrchestratorService *SessionWebhook* RPCs).
+// Like TriggerBackend it is deliberately NOT part of Backend, and it is
+// discovered by its own type assertion, so a hosted backend implements only the
+// families it can serve. Every method passes the caller's request through
+// unchanged so the owner-only authorization, the active-organization rule and
+// all validation errors are the API's own.
+type SessionWebhookBackend interface {
+	ListSessionWebhookEventTypes(ctx context.Context, req *pb.ListSessionWebhookEventTypesRequest) (*pb.ListSessionWebhookEventTypesResponse, error)
+	ListSessionWebhooks(ctx context.Context, req *pb.ListSessionWebhooksRequest) (*pb.ListSessionWebhooksResponse, error)
+	ListSessionWebhookDeliveries(ctx context.Context, req *pb.ListSessionWebhookDeliveriesRequest) (*pb.ListSessionWebhookDeliveriesResponse, error)
+	GetSessionWebhookDelivery(ctx context.Context, req *pb.GetSessionWebhookDeliveryRequest) (*pb.GetSessionWebhookDeliveryResponse, error)
+	// CreateSessionWebhook and RotateSessionWebhookSecret return the whole
+	// response because the one-time signing secret travels beside the
+	// webhook, never on it.
+	CreateSessionWebhook(ctx context.Context, req *pb.CreateSessionWebhookRequest) (*pb.CreateSessionWebhookResponse, error)
+	UpdateSessionWebhook(ctx context.Context, req *pb.UpdateSessionWebhookRequest) (*pb.SessionWebhook, error)
+	RotateSessionWebhookSecret(ctx context.Context, req *pb.RotateSessionWebhookSecretRequest) (*pb.RotateSessionWebhookSecretResponse, error)
+	SendSessionWebhookTestEvent(ctx context.Context, req *pb.SendSessionWebhookTestEventRequest) (*pb.SendSessionWebhookTestEventResponse, error)
+	DeleteSessionWebhook(ctx context.Context, req *pb.DeleteSessionWebhookRequest) error
 }

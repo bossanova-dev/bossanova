@@ -241,6 +241,42 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				s.GetDisplaySpinner() &&
 				s.GetIsWaitingDemoted()
 		})
+	case ReadyDisplayLabelChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{DisplayLabel: displaystatus.ReadyLabel, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, HasBuildReceipt: true}
+		}, func(s *pb.Session) bool { return s.GetDisplayLabel() == "✓ passing" && s.GetHasBuildReceipt() })
+	case VerifyDisplayStatusChange:
+		verifySession := func() *pb.Session {
+			return &pb.Session{
+				State:         pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
+				DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+				DisplayLabel:  displaystatus.NeedsHumanLabel,
+				DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+				MergeBlock:    &pb.MergeBlock{Gate: pb.MergeBlock_GATE_PENDING, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+				},
+			}
+		}
+		downconverted := func(s *pb.Session) bool {
+			return s.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CHECKING &&
+				s.GetMergeBlock().GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CHECKING &&
+				s.GetDisplayLabel() == "checking" &&
+				s.GetAttentionStatus() == nil
+		}
+		return append([]responseProbe{{
+			procedure: bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure,
+			build: func() any {
+				return &pb.ProxyCreateSessionResponse{
+					Body: &pb.ProxyCreateSessionResponse_Created{Created: verifySession()},
+				}
+			},
+			mutated: func(msg any) bool {
+				body := msg.(*pb.ProxyCreateSessionResponse).GetBody().(*pb.ProxyCreateSessionResponse_Created)
+				return downconverted(body.Created)
+			},
+		}}, sessionProbes(verifySession, downconverted)...)
 	case AcceptedInvitationResponseChange:
 		return []responseProbe{{
 			procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,

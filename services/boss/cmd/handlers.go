@@ -35,6 +35,7 @@ import (
 	"github.com/recurser/bossalib/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // newClient picks the transport: the cloud orchestrator (--remote), a bossd on
@@ -1604,6 +1605,13 @@ func runNew(cmd *cobra.Command) error {
 	trackerSource, _ := cmd.Flags().GetString("tracker-source")
 	trackerURL, _ := cmd.Flags().GetString("tracker-url")
 	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+	// --pr carries flag PRESENCE: nil = absent (a fresh branch), non-nil = the
+	// daemon's existing-pr path, which checks out that PR's head and binds it.
+	var prNumber *int32
+	if cmd.Flags().Changed("pr") {
+		n, _ := cmd.Flags().GetInt32("pr")
+		prNumber = &n
+	}
 
 	// Reject an unknown --tracker-source before any RPC is issued, on BOTH the
 	// interactive and the scripting path. The daemon neither validates nor
@@ -1648,6 +1656,14 @@ func runNew(cmd *cobra.Command) error {
 				"unattended run that may produce commits")))
 	}
 
+	// --pr targets an existing PR, which contradicts both a quick chat (no
+	// branch at all) and a deferred PR (a PR that does not exist yet). Refuse
+	// before any RPC, as with the pair above, rather than letting the daemon
+	// silently pick one shape.
+	if err := validatePRFlag(prNumber, quickChat, deferPR, repo != "" && prompt != ""); err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
+
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
 		return runNewDetach(cmd, newSessionOpts{
@@ -1664,6 +1680,7 @@ func runNew(cmd *cobra.Command) error {
 			TrackerID:      trackerID,
 			TrackerSource:  trackerSource,
 			TrackerURL:     trackerURL,
+			PrNumber:       prNumber,
 		}, asJSON)
 	}
 
@@ -1748,6 +1765,12 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 	if opts.TrackerURL != "" {
 		req.TrackerUrl = &opts.TrackerURL
 	}
+	// pr_number is `optional`: nil keeps the fresh-branch path, a value selects
+	// the daemon's existing-pr path.
+	if opts.PrNumber != nil {
+		n := *opts.PrNumber
+		req.PrNumber = &n
+	}
 	return req
 }
 
@@ -1783,6 +1806,32 @@ type newSessionOpts struct {
 	TrackerID     string
 	TrackerSource string
 	TrackerURL    string
+	// PrNumber creates the session on an existing PR's head branch, bound to
+	// that PR. nil = flag absent (a fresh branch from base).
+	PrNumber *int32
+}
+
+// validatePRFlag rejects a --pr the request cannot honour: a non-positive
+// number, a pairing with --quick-chat or --defer-pr, or the interactive path,
+// which has no PR picker to carry it.
+func validatePRFlag(pr *int32, quickChat, deferPR, nonInteractive bool) error {
+	if pr == nil {
+		return nil
+	}
+	switch {
+	case *pr <= 0:
+		return codedError(codeInvalidArgument, fmt.Errorf("--pr must be a positive pull request number, got %d", *pr))
+	case quickChat:
+		return codedError(codeInvalidArgument, fmt.Errorf(
+			"--pr and --quick-chat are mutually exclusive: a quick chat has no branch to check the PR out on"))
+	case deferPR:
+		return codedError(codeInvalidArgument, fmt.Errorf(
+			"--pr and --defer-pr are mutually exclusive: --pr names a PR that already exists"))
+	case !nonInteractive:
+		return codedError(codeInvalidArgument, fmt.Errorf(
+			"--pr is supported only on the non-interactive --repo + --prompt path"))
+	}
+	return nil
 }
 
 // trackerSources is the tracker_source vocabulary the proto documents
@@ -2450,6 +2499,19 @@ func mergeTargetDescription(sess *pb.Session) string {
 func runMerge(cmd *cobra.Command, sessionID string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 
+	// --match-head pins the merge to the head the caller verified (BOS-1381).
+	// Validated before any RPC, including session-id resolution, so a bad pin
+	// never reaches the daemon and never degrades to an unpinned merge.
+	matchHead, _ := cmd.Flags().GetString("match-head")
+	if matchHead != "" {
+		normalized, ok := vcs.NormalizeHeadSHA(matchHead)
+		if !ok {
+			return emitJSONFailure(cmd, asJSON, codedError(codeInvalidArgument,
+				fmt.Errorf("merge: --match-head %q is not a 40-character hex commit SHA", matchHead)))
+		}
+		matchHead = normalized
+	}
+
 	c, err := newClient(cmd)
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, err)
@@ -2483,7 +2545,7 @@ func runMerge(cmd *cobra.Command, sessionID string) error {
 		}
 	}
 
-	sess, detail, err := c.MergeSession(ctx, sessionID)
+	sess, detail, err := c.MergeSession(ctx, sessionID, matchHead)
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, fmt.Errorf("merge session: %w", err))
 	}
@@ -2585,22 +2647,82 @@ func newMergeJSON(sess, settled *pb.Session, detail string) mergeJSON {
 	return env
 }
 
+// runArchive requests an archive. The daemon defers it while a chat in the
+// session is still working (BOS-1380), so both outcomes — archived now, or
+// pending until every chat is idle — are successes and exit 0. Run from inside
+// a session, the ambient $BOSS_AGENT_SESSION_ID is sent as the requester so the
+// daemon treats the calling chat as busy until it settles.
 func runArchive(cmd *cobra.Command, sessionID string) error {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	force, _ := cmd.Flags().GetBool("force")
+
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 	ctx := context.Background()
 	sessionID, err = resolveSessionID(c, ctx, sessionID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
-	sess, err := c.ArchiveSession(ctx, sessionID)
+	resp, err := c.ArchiveSession(ctx, &pb.ArchiveSessionRequest{
+		Id:                      sessionID,
+		ShouldForce:             force,
+		RequesterAgentSessionId: strings.TrimSpace(osGetenv("BOSS_AGENT_SESSION_ID")),
+	})
 	if err != nil {
-		return fmt.Errorf("archive session: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("archive session: %w", err))
 	}
-	fmt.Printf("Session %s archived (%s).\n", sess.Id, sess.Title)
+	sess := resp.GetSession()
+	if sess == nil {
+		sess = &pb.Session{Id: sessionID}
+	}
+	if asJSON {
+		return emitJSON(cmd, newArchiveJSON(sess, resp))
+	}
+	line := fmt.Sprintf("Session %s archived (%s).\n", sess.GetId(), sess.GetTitle())
+	if resp.GetIsDeferred() {
+		line = fmt.Sprintf("Session %s archive pending (chat %s working).\n", sess.GetId(), resp.GetBlockingAgentSessionId())
+	}
+	if _, err := io.WriteString(cmd.OutOrStdout(), line); err != nil {
+		return fmt.Errorf("write archive output: %w", err)
+	}
 	return nil
+}
+
+// Archive outcomes reported by `boss archive --json`.
+const (
+	archiveOutcomeArchived = "archived"
+	archiveOutcomePending  = "pending"
+)
+
+// archiveJSON is the `boss archive --json` success envelope.
+type archiveJSON struct {
+	Session archiveSessionJSON `json:"session"`
+	// Outcome is "archived" when the archive ran now, or "pending" when the
+	// daemon is holding it until every chat in the session is idle.
+	Outcome string `json:"outcome"`
+	// BlockingChatID is the agent session id of the chat a pending archive is
+	// waiting on. Always emitted — empty when archived — so a caller never has
+	// to probe for the key.
+	BlockingChatID string `json:"blocking_chat_id"`
+}
+
+type archiveSessionJSON struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+func newArchiveJSON(sess *pb.Session, resp *pb.ArchiveSessionResponse) archiveJSON {
+	env := archiveJSON{
+		Session: archiveSessionJSON{ID: sess.GetId(), Title: sess.GetTitle()},
+		Outcome: archiveOutcomeArchived,
+	}
+	if resp.GetIsDeferred() {
+		env.Outcome = archiveOutcomePending
+		env.BlockingChatID = resp.GetBlockingAgentSessionId()
+	}
+	return env
 }
 
 func runRename(cmd *cobra.Command, sessionID, title string) error {
@@ -4058,6 +4180,7 @@ type chatJSON struct {
 	// WaitingReason explains a WAITING chat's block; empty for every other
 	// status.
 	WaitingReason string `json:"waiting_reason"`
+	Phase         string `json:"phase"`
 	// The three liveness discriminators the daemon already computes on
 	// ChatStatusEntry. Without them LastOutputAt above cannot be read: a
 	// spinner redraw advances it, so a pane whose only sign of life is the
@@ -4091,6 +4214,7 @@ func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntr
 			Status:         chatStatusName(st.GetStatus()),
 			LastOutputAt:   rfc3339OrEmpty(st.GetLastOutputAt()),
 			WaitingReason:  st.GetWaitingReason(),
+			Phase:          st.GetPhase(),
 			// GetX on a nil entry yields the zero value, which is the honest
 			// reading for a chat the status read did not cover.
 			SpinnerPresent:          st.GetSpinnerPresent(),

@@ -150,3 +150,154 @@ func TestCheckVerdictAt(t *testing.T) {
 		t.Fatalf("At(empty) = %s/%s, want Unknown/stale-sha", got.State, got.Reason)
 	}
 }
+
+func TestEvaluateChecks_PendingVerifyExcluded(t *testing.T) {
+	success := CheckConclusionSuccess
+	failure := CheckConclusionFailure
+
+	tests := []struct {
+		name        string
+		checks      []CheckResult
+		wantState   CheckVerdictState
+		wantReason  string
+		wantTotal   int
+		wantPassed  int
+		wantFailed  int
+		wantPending int
+	}{
+		{
+			name: "pending verify claim on green CI is green",
+			checks: []CheckResult{
+				{Name: "build", Status: CheckStatusCompleted, Conclusion: &success},
+				{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "verifying… tok"},
+			},
+			wantState:  CheckVerdictGreen,
+			wantReason: CheckVerdictReasonOK,
+			wantTotal:  1,
+			wantPassed: 1,
+		},
+		{
+			name: "pending verify park on green CI is green",
+			checks: []CheckResult{
+				{Name: "build", Status: CheckStatusCompleted, Conclusion: &success},
+				{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "needs human: ledger-open"},
+			},
+			wantState:  CheckVerdictGreen,
+			wantReason: CheckVerdictReasonOK,
+			wantTotal:  1,
+			wantPassed: 1,
+		},
+		{
+			name: "ordinary pending still pending beside pending verify",
+			checks: []CheckResult{
+				{Name: "build", Status: CheckStatusInProgress},
+				{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "waiting: checks-pending"},
+			},
+			wantState:   CheckVerdictPending,
+			wantReason:  CheckVerdictReasonPending,
+			wantTotal:   1,
+			wantPending: 1,
+		},
+		{
+			name: "lone pending verify judges nothing",
+			checks: []CheckResult{
+				{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "verifying… tok"},
+			},
+			wantState:  CheckVerdictUnknown,
+			wantReason: CheckVerdictReasonNoChecks,
+		},
+		{
+			name: "completed verify failure is still failing",
+			checks: []CheckResult{
+				{Name: "build", Status: CheckStatusCompleted, Conclusion: &success},
+				{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &failure, Description: "defect: tests red"},
+			},
+			wantState:  CheckVerdictFailing,
+			wantReason: CheckVerdictReasonFailed,
+			wantTotal:  2,
+			wantPassed: 1,
+			wantFailed: 1,
+		},
+		{
+			name: "completed verify success counts as a pass",
+			checks: []CheckResult{
+				{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "verified"},
+			},
+			wantState:  CheckVerdictGreen,
+			wantReason: CheckVerdictReasonOK,
+			wantTotal:  1,
+			wantPassed: 1,
+		},
+		{
+			name: "differently cased context is ordinary pending",
+			checks: []CheckResult{
+				{Name: "build", Status: CheckStatusCompleted, Conclusion: &success},
+				{Name: "Boss/Verify", Status: CheckStatusQueued, Description: "verifying…"},
+			},
+			wantState:   CheckVerdictPending,
+			wantReason:  CheckVerdictReasonPending,
+			wantTotal:   2,
+			wantPassed:  1,
+			wantPending: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateChecks("sha", tt.checks, nil)
+			if got.State != tt.wantState || got.Reason != tt.wantReason {
+				t.Fatalf("verdict = %s/%s, want %s/%s", got.State, got.Reason, tt.wantState, tt.wantReason)
+			}
+			if got.Total != tt.wantTotal {
+				t.Errorf("Total = %d, want %d", got.Total, tt.wantTotal)
+			}
+			if got.Passed != tt.wantPassed || got.Failed != tt.wantFailed || got.Pending != tt.wantPending {
+				t.Errorf("passed/failed/pending = %d/%d/%d, want %d/%d/%d",
+					got.Passed, got.Failed, got.Pending, tt.wantPassed, tt.wantFailed, tt.wantPending)
+			}
+		})
+	}
+}
+
+func TestClassifyVerify(t *testing.T) {
+	success := CheckConclusionSuccess
+	failure := CheckConclusionFailure
+	pending := func(desc string) CheckResult {
+		return CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: desc}
+	}
+
+	tests := []struct {
+		name       string
+		checks     []CheckResult
+		wantKind   VerifyPhaseKind
+		wantReason string
+	}{
+		{name: "no checks", wantKind: VerifyPhaseNone},
+		{name: "verifying claim", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying},
+		{name: "waiting unclaimed head", checks: []CheckResult{pending("waiting: checks-pending")}, wantKind: VerifyPhaseVerifying},
+		{name: "needs human with reason", checks: []CheckResult{pending("needs human: always-human-path")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path"},
+		{name: "needs human colon no reason", checks: []CheckResult{pending("needs human:")}, wantKind: VerifyPhaseNeedsHuman},
+		{name: "needs human no colon", checks: []CheckResult{pending("needs human")}, wantKind: VerifyPhaseNeedsHuman},
+		{name: "needs human space then reason", checks: []CheckResult{pending("needs human ledger-open")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "ledger-open"},
+		{name: "upper case and leading whitespace", checks: []CheckResult{pending("  NEEDS HUMAN:  repair-exhausted  ")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "repair-exhausted"},
+		{name: "mixed case", checks: []CheckResult{pending("Needs Human: no-receipt")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "no-receipt"},
+		{name: "needs humans is not a park", checks: []CheckResult{pending("needs humans")}, wantKind: VerifyPhaseVerifying},
+		{name: "empty description", checks: []CheckResult{pending("")}, wantKind: VerifyPhaseVerifying},
+		{name: "unknown description", checks: []CheckResult{pending("something else")}, wantKind: VerifyPhaseVerifying},
+		{name: "in-progress status counts as pending", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusInProgress, Description: "needs human: x"}}, wantKind: VerifyPhaseNeedsHuman, wantReason: "x"},
+		{name: "completed success ignored", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "verified"}}, wantKind: VerifyPhaseNone},
+		{name: "completed failure ignored", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &failure, Description: "defect: x, needs human"}}, wantKind: VerifyPhaseNone},
+		{name: "other context ignored", checks: []CheckResult{{Name: "boss/build", Status: CheckStatusQueued, Description: "needs human: x"}}, wantKind: VerifyPhaseNone},
+		{name: "case-variant context ignored", checks: []CheckResult{{Name: "BOSS/VERIFY", Status: CheckStatusQueued, Description: "needs human: x"}}, wantKind: VerifyPhaseNone},
+		{name: "needs human wins over verifying", checks: []CheckResult{pending("verifying…"), pending("needs human: park")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "park"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyVerify(tt.checks)
+			if got.Kind != tt.wantKind || got.Reason != tt.wantReason {
+				t.Fatalf("ClassifyVerify = %+v, want {Kind:%d Reason:%q}", got, tt.wantKind, tt.wantReason)
+			}
+		})
+	}
+}

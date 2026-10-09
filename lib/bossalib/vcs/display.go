@@ -23,10 +23,23 @@ const (
 	DisplayStatusDraft       DisplayStatus = 9
 	DisplayStatusApproved    DisplayStatus = 10
 	DisplayStatusReview      DisplayStatus = 11
+	// DisplayStatusVerifying: ordinary CI settled and a pending boss/verify
+	// status holds the head (a live claim or an unclaimed head).
+	DisplayStatusVerifying DisplayStatus = 12
+	// DisplayStatusNeedsHuman: ordinary CI settled and the verify stage parked
+	// the head for a human (pending boss/verify "needs human: <reason>").
+	DisplayStatusNeedsHuman DisplayStatus = 13
 )
 
 // DisplayInfo holds the computed display status and metadata for a session.
 type DisplayInfo struct {
+	// HasBuildReceipt reports a success receipt on the current PR head. It is
+	// hydrated by check readers and never changes the PR-derived Status.
+	HasBuildReceipt bool
+	// BuildReceiptSeen reports a boss/build status in any state on the current
+	// head. Seen without HasBuildReceipt is an unsuccessful receipt, which
+	// retires the tracker's carry latch.
+	BuildReceiptSeen    bool
 	Status              DisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
@@ -41,10 +54,27 @@ type DisplayInfo struct {
 	// conflict-after-green is detectable without attempting a merge. Set by the
 	// display poller from the PR fetch, not derived by ComputeDisplayStatus.
 	Mergeable *bool
+	// VerifyReason is the verify stage's park reason. Populated only for
+	// DisplayStatusNeedsHuman, and may be empty there when the boss/verify
+	// description names no reason.
+	VerifyReason string
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
-// and review comments. Priority: Merged > Closed > Draft > Conflict > Failing > Checking > Rejected > Review > Approved > Passing > Idle.
+// and review comments. Priority:
+//
+//	Merged > Closed > Draft > Conflict > Failing >
+//	Checking (ordinary checks pending/unclassified/unreadable) >
+//	NeedsHuman > Verifying >
+//	Rejected > Review > Approved > Passing >
+//	Checking (mergeable unknown) > Idle
+//
+// A pending boss/verify status is excluded from the ordinary CI verdict (see
+// EvaluateChecks) and classified by ClassifyVerify instead. The two verify
+// statuses sit exactly where that pending check used to force Checking, so
+// every input that produced Checking only because of it now produces one of
+// them, and nothing else moves. Like Checking, both carry the changes-requested
+// metadata for styling.
 func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) DisplayInfo {
 	if pr == nil {
 		return DisplayInfo{Status: DisplayStatusIdle}
@@ -115,6 +145,15 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	// If checks are still running or unclassifiable, it's checking (with metadata flags for styling).
 	if checksChecking {
 		return DisplayInfo{Status: DisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
+	}
+
+	// Ordinary CI has settled; a pending boss/verify now holds the head.
+	switch verify := ClassifyVerify(checks); verify.Kind {
+	case VerifyPhaseNeedsHuman:
+		return DisplayInfo{Status: DisplayStatusNeedsHuman, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy, VerifyReason: verify.Reason}
+	case VerifyPhaseVerifying:
+		return DisplayInfo{Status: DisplayStatusVerifying, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
+	case VerifyPhaseNone:
 	}
 
 	// Rejected takes priority — any outstanding changes_requested blocks approval.
@@ -196,7 +235,10 @@ type MergeBlockReason struct {
 // DeriveMergeBlock maps a DisplayStatus (+ metadata) to a structured merge-block
 // reason. This is the single source of truth for the enum→gate mapping (do not
 // duplicate it). It is pure: it only reads the passed display state.
-func DeriveMergeBlock(status DisplayStatus, hasFailures bool, changesRequestedBy []string) MergeBlockReason {
+// verifyReason is DisplayInfo.VerifyReason; it is read only for
+// DisplayStatusNeedsHuman. Both verify statuses map to MergeGatePending, which
+// already means "wait, do not repair".
+func DeriveMergeBlock(status DisplayStatus, hasFailures bool, changesRequestedBy []string, verifyReason string) MergeBlockReason {
 	reason := MergeBlockReason{
 		Status:            status,
 		BlockingReviewers: changesRequestedBy,
@@ -212,6 +254,15 @@ func DeriveMergeBlock(status DisplayStatus, hasFailures bool, changesRequestedBy
 	case DisplayStatusChecking:
 		reason.Gate = MergeGatePending
 		reason.Detail = "CI checks are still running or mergeability is unknown"
+	case DisplayStatusVerifying:
+		reason.Gate = MergeGatePending
+		reason.Detail = "verification is in progress on this head"
+	case DisplayStatusNeedsHuman:
+		reason.Gate = MergeGatePending
+		reason.Detail = "the verify stage parked this head for a human"
+		if verifyReason != "" {
+			reason.Detail += ": " + verifyReason
+		}
 	case DisplayStatusConflict:
 		reason.Gate = MergeGateConflict
 		reason.Detail = "the PR has a merge conflict with its base branch"

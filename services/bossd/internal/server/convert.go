@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -47,6 +48,7 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 		p.LastCheckState = p.GetLastCheckStateObserved()
 	}
 	p.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
+	p.HasBuildReceipt = e.HasBuildReceipt
 	p.DisplayHasFailures = e.HasFailures
 	p.DisplayHasChangesRequested = e.HasChangesRequested
 	p.DisplayIsRepairing = e.IsRepairing
@@ -64,7 +66,7 @@ func displayEntryToMergeBlock(e *status.DisplayEntry) *pb.MergeBlock {
 	if e == nil {
 		return nil
 	}
-	mb := vcs.DeriveMergeBlock(e.Status, e.HasFailures, e.ChangesRequestedBy)
+	mb := vcs.DeriveMergeBlock(e.Status, e.HasFailures, e.ChangesRequestedBy, e.VerifyReason)
 	return &pb.MergeBlock{
 		Gate:              pb.MergeBlock_Gate(clampInt32(int(mb.Gate))),
 		Detail:            mb.Detail,
@@ -276,6 +278,46 @@ func SessionToProto(s *models.Session) *pb.Session {
 	return p
 }
 
+// verifyParkSummaryNoReason is the attention summary for a verify park whose
+// boss/verify description named no reason.
+const verifyParkSummaryNoReason = "needs human — parked by the verify stage"
+
+// HydrateVerifyAttention overlays the verify stage's park on attention_status
+// (BOS-1382). A session whose PR the verify stage parked for a human
+// (DISPLAY_STATUS_NEEDS_HUMAN) gets ATTENTION_REASON_AWAITING_HUMAN_INPUT with
+// the park reason in its summary.
+//
+// ComputeAttentionStatus has no PR axis, so it cannot see the park; this
+// follows the overlay pattern of suppressStaleConflictAttention and
+// HydrateAgentObservability instead. It is the LOWEST-ranked attention: it
+// fills only an empty attention_status, so Blocked/Orphaned base attention and
+// the AGENT_AUTH_FAILED / AGENT_STALLED overlays always win. Call it AFTER
+// HydrateDisplayEntry and the agent-observability overlay on every read path.
+//
+// Reusing AWAITING_HUMAN_INPUT needs no new proto reason or client mapping, and
+// it stays discriminable for the apiversion down-convert: ComputeAttentionStatus
+// emits that reason only for an orphaned session, so the reason on a
+// non-orphaned NEEDS_HUMAN session identifies this overlay exactly.
+//
+// e supplies the park reason and may be nil (no reason known). No-op when p is
+// nil, the display status is not NEEDS_HUMAN, or an attention is already set.
+func HydrateVerifyAttention(p *pb.Session, e *status.DisplayEntry) {
+	if p == nil || p.GetAttentionStatus() != nil ||
+		p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		return
+	}
+	summary := verifyParkSummaryNoReason
+	if e != nil && e.VerifyReason != "" {
+		summary = "needs human: " + protoString(e.VerifyReason)
+	}
+	p.AttentionStatus = &pb.AttentionStatus{
+		NeedsAttention: true,
+		Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+		Summary:        summary,
+		Since:          p.GetUpdatedAt(),
+	}
+}
+
 func suppressStaleConflictAttention(p *pb.Session) {
 	if p == nil || p.GetAttentionStatus() == nil {
 		return
@@ -312,6 +354,44 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	return out
 }
 
+// cronConcurrencyPolicyToProto maps a stored concurrency policy onto the wire
+// enum. The read side always carries a concrete value: anything outside the
+// known set (impossible under the column CHECK) reads as SKIP, never
+// UNSPECIFIED.
+func cronConcurrencyPolicyToProto(p models.CronJobConcurrencyPolicy) pb.CronJobConcurrencyPolicy {
+	switch p {
+	case models.CronJobConcurrencyPolicyCancelInProgress:
+		return pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS
+	case models.CronJobConcurrencyPolicyAllowConcurrent:
+		return pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT
+	default:
+		return pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP
+	}
+}
+
+// cronConcurrencyPolicyFromProto maps a request's optional concurrency policy
+// onto the stored value. set is false when the field is absent or UNSPECIFIED —
+// "not set", which Create resolves to skip and Update treats as "leave
+// unchanged" — so the proto zero value can never reach storage. A number
+// outside the known enum is an error the caller reports as InvalidArgument.
+func cronConcurrencyPolicyFromProto(p *pb.CronJobConcurrencyPolicy) (policy models.CronJobConcurrencyPolicy, set bool, err error) {
+	if p == nil {
+		return "", false, nil
+	}
+	switch *p {
+	case pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED:
+		return "", false, nil
+	case pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP:
+		return models.CronJobConcurrencyPolicySkip, true, nil
+	case pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS:
+		return models.CronJobConcurrencyPolicyCancelInProgress, true, nil
+	case pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT:
+		return models.CronJobConcurrencyPolicyAllowConcurrent, true, nil
+	default:
+		return "", false, fmt.Errorf("unknown concurrency_policy %d", int32(*p))
+	}
+}
+
 // cronJobToProto converts a domain CronJob to its protobuf representation.
 // The sessions store is consulted to derive last_run_status (RUNNING vs.
 // FAILED vs. IDLE) — the proto's last_run_status field is computed, not
@@ -336,6 +416,7 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 		GateCommand:           c.GateCommand,
 		ShouldRunSetupCommand: c.ShouldRunSetupCommand,
 		IsZeroOutput:          c.IsZeroOutput,
+		ConcurrencyPolicy:     cronConcurrencyPolicyToProto(c.ConcurrencyPolicy),
 		LastRunAgentName:      protoString(c.LastRunAgentName),
 		CreatedAt:             timestamppb.New(c.CreatedAt),
 		UpdatedAt:             timestamppb.New(c.UpdatedAt),
@@ -428,6 +509,15 @@ func noteToProto(n *models.Note) *pb.Note {
 	}
 	if n.ChatID != nil {
 		p.ChatId = *n.ChatID
+	}
+	if n.Sync != nil {
+		p.SyncState = string(n.Sync.State)
+		if n.Sync.SyncedAt != nil {
+			p.SyncedAt = timestamppb.New(*n.Sync.SyncedAt)
+		}
+		if n.Sync.LastError != nil {
+			p.SyncLastError = *n.Sync.LastError
+		}
 	}
 	return p
 }

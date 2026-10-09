@@ -36,7 +36,8 @@
 //     repository. Tracker names, state names, session ids and prompts are all supplied by the
 //     caller — nothing project-specific is baked in.
 //   - Scheduling is NOT reimplemented here. `dag-scheduler.mjs` owns ready/cascade/merge ordering
-//     and `bs-epic-lib.mjs`'s `classifyChildLiveness` owns liveness. This module composes them.
+//     and `bs-epic-lib.mjs`'s `classifyChildLiveness` / `classifyChildSettled` own liveness and the
+//     two-poll settled verdict. This module composes them.
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
@@ -48,7 +49,7 @@ import {
   transitiveDependents,
   mergeBlockedExternalBlockers,
 } from './dag-scheduler.mjs'
-import { classifyChildLiveness } from './bs-epic-lib.mjs'
+import { classifyChildLiveness, classifyChildSettled } from './bs-epic-lib.mjs'
 import { bossCallbackPolicy } from './callback/boss.mjs'
 import { isMainModule } from './main-module.mjs'
 
@@ -117,7 +118,10 @@ export const EPIC_WAKE_KINDS = Object.freeze([
 export const EPIC_DRIVER_IO = Object.freeze([
   /** `() => Array<{id, title, tracker_id?, agent_session_id?, state?}>` — repo sessions, for adoption. */
   'listSessions',
-  /** `({ticketId, sessionId, chatId}) => ChildSnapshot` — ONE authoritative re-read per tracked child. */
+  /** `({ticketId, sessionId, chatId}) => ChildSnapshot` — ONE authoritative re-read per tracked child.
+   *  Settle facts: `chatStatus` / `chatStatusReadable` / `spinnerPresent` from the tracked chat's
+   *  `get_chat_statuses` row (`status`, `spinner_present`), `displayLabel` from `get_session`'s
+   *  `display_label`. The driver computes `chatSettled` itself; a supplied one is ignored. */
   'readSessionSnapshot',
   /** `(ids) => Record<id, 'cleared'|'open'>` — current tracker state of each external blocker. */
   'readExternalBlockers',
@@ -231,6 +235,16 @@ export function createEpicState({
   })
 }
 
+/** The previous poll's settle observation (`classifyChildSettled`'s `observation`): two booleans,
+ *  or `null` when absent or malformed. */
+function normalizeSettleObservation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  if (typeof value.idleEligible !== 'boolean' || typeof value.readyEligible !== 'boolean') {
+    return null
+  }
+  return { idleEligible: value.idleEligible, readyEligible: value.readyEligible }
+}
+
 /**
  * Canonicalize a state object: fill defaults, de-duplicate every id list, and coerce the record
  * maps. Idempotent — `normalizeEpicState(normalizeEpicState(s))` is byte-equal, which is what makes
@@ -310,6 +324,7 @@ export function normalizeEpicState(state = {}) {
       liveness: typeof record?.liveness === 'string' ? record.liveness : '',
       repairRounds: Number.isFinite(record?.repairRounds) ? record.repairRounds : 0,
       note: typeof record?.note === 'string' ? record.note : '',
+      settleObservation: normalizeSettleObservation(record?.settleObservation),
     }
   }
 
@@ -697,6 +712,8 @@ export function recordLaunch(
         prNumber,
         prRepo,
         prUrl,
+        // A new session's settle history starts fresh: the prior poll belonged to another chat.
+        settleObservation: null,
       },
     },
   })
@@ -1070,7 +1087,8 @@ function progressStatusForTicket(state, id) {
 
 /**
  * Green admission conditions, each judged on an authoritative re-read: checks passing, PR out of
- * draft, no do-not-merge marker, child chat settled. The ticket's tracker state is not one of them —
+ * draft, no do-not-merge marker, child chat settled (`chatSettled`, which `reconcileEpic` computes
+ * with `classifyChildSettled`). The ticket's tracker state is not one of them —
  * a green PR whose child forgot to move the ticket is moved by the driver, not held.
  */
 export function greenAdmissionBlockers(snapshot = {}) {
@@ -1214,7 +1232,24 @@ export async function reconcileEpic({ state, wake = 'initial', io, now = '', sav
       continue
     }
 
-    const blockers = greenAdmissionBlockers(snapshot)
+    // Settled is the driver's verdict over two agreeing polls, never a caller-supplied boolean.
+    const settle = classifyChildSettled({
+      chatStatus: snapshot.chatStatus,
+      chatStatusReadable: snapshot.chatStatusReadable,
+      spinnerPresent: snapshot.spinnerPresent,
+      displayLabel: snapshot.displayLabel,
+      previous: s.sessions[ticketId].settleObservation,
+    })
+    s = normalizeEpicState({
+      ...s,
+      sessions: {
+        ...s.sessions,
+        [ticketId]: { ...s.sessions[ticketId], settleObservation: settle.observation },
+      },
+    })
+    actions.push(`settle:${ticketId}:${settle.reading}`)
+
+    const blockers = greenAdmissionBlockers({ ...snapshot, chatSettled: settle.settled })
     if (blockers.length === 0) {
       s = recordGreen(s, { ticketId })
       actions.push(`green:${ticketId}`)

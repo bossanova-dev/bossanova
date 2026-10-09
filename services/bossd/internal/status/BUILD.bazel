@@ -38,6 +38,7 @@ go_test(
     srcs = [
         "display_computer_test.go",
         "display_tracker_test.go",
+        "phase_test.go",
         "repair_lease_test.go",
         "tmux_idle_reap_test.go",
         "tmux_poller_test.go",

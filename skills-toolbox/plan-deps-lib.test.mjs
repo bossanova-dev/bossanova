@@ -2785,7 +2785,7 @@ test('BOS-1327 transitive warnings: downstream fires, and escalates for a needs-
       text: 'blocks TCK-2, which itself blocks open TCK-7',
     },
   ])
-  const [escalated] = transitiveBlockWarnings({ ...input, subjectAgentFriendly: false })
+  const [escalated] = transitiveBlockWarnings({ ...input, subjectAgentBuild: false })
   assert.equal(escalated.severity, 'escalated')
   assert.deepEqual(
     transitiveBlockWarnings({ ...input, relationsById: { 'TCK-2': { blocks: [] } } }),

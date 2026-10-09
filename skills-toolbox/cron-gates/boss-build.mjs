@@ -3,7 +3,7 @@
 //
 // Exit 0 (run the implementer) iff at least one Linear issue is in the configured
 // planned state (`trackerConfigFor(config).states.planned`), carries the
-// `agent-friendly` label, AND is not blocked by an uncleared
+// `agent-build` label, AND is not blocked by an uncleared
 // blocker (a blocker whose PR is unmerged — state not Done/Canceled). This keeps
 // the cron from waking to find every candidate blocked and exiting with no work.
 //
@@ -14,67 +14,52 @@
 // so within that window it is never a false-negative — it cannot skip a run while
 // an unblocked candidate the skill would have picked exists.
 //
-// A repo MAY narrow that candidate scan through `trackerConfig.<adapter>.selection` (see
-// docs/skills/skill-config.md). The block is absent in every repo in this tree, and while it is
-// absent this gate emits byte-identically what it emitted before the seam existed.
+// Selection: the scan is `stageSelectionQuery(config, 'build', flags)` — the planned
+// state, AND the build label, AND NOT `needs-human`, narrowed by `trackerConfig.<adapter>.selection`
+// (shared block, then `stages.build`) and by the shared selection flags passed on the gate command
+// line (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their `--exclude-`
+// forms), per slot, flag first. Any other argument is refused (exit 1): a token this gate ignored
+// would be a filter the operator believes is applied.
 //
-// NARROWING IS NOT SAFE ON ITS OWN. This gate is only half the pair: when a selection is
-// configured, the worker must select through the tracker CLI's `list-planned` verb, which derives
-// its query from the same `plannedSelectionQuery` helper, and it stops rather than falling back to
-// the unfiltered descriptor — a strict SUPERSET of this scan that would pick an unowned ticket.
+// NARROWING IS NOT SAFE ON ITS OWN. The worker must select through the tracker CLI's
+// `list-planned` verb with the same flags, which derives its query from the same
+// `stageSelectionQuery`, and stop rather than fall back to the unfiltered descriptor.
 //
 // Fail-closed: missing key, network failure, or API error exits non-zero with a
 // one-line reason on stderr (captured in the scheduler's gate_output log).
 //
 // Register on the cron job (gate cwd = repo root):
-//   node skills-toolbox/cron-gates/boss-build.mjs
+//   node skills-toolbox/cron-gates/boss-build.mjs [selection flags...]
 // A repo that carries no skills-toolbox/ (and a launcher wrapper that execs this gate) runs the
 // INSTALLED global copy instead, via the recipe in boss-build's references/cron-gate.md:
 //   ~/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs   (Codex: ~/.codex/skills/...)
 // That copy picks up a repo-side edit to this file only after the install is refreshed
 // (`boss skills sync`); toolbox-drift.mjs is the probe that reports the two diverging.
-//
-// Selection-aware registration: the command is unchanged — `selection` is read from the
-// .boss-skills.json at the gate cwd. Set that key only once the boss-build tree the job runs
-// ships the `list-planned` verb (see NARROWING above).
 
 import { gateExit } from '../linear-gate-lib.mjs'
 import { isMainModule } from '../main-module.mjs'
+import { describeEmptyScan, gateSelectionFlags } from '../selection.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
-import { loadSkillConfig, plannedSelectionQuery } from '../skill-config.mjs'
+import { loadSkillConfig, stageSelectionQuery } from '../skill-config.mjs'
 
 /**
- * Decide the gate from an injected config and tracker, and say what it filtered on.
+ * Decide the gate from an injected config, tracker and argv, and say what it filtered on.
  *
- * Split out of the entry point below purely so the decision is reachable from a unit test with a
- * synthetic config: the module-level code exits the process, so a read of it was previously
- * unobservable and this gate's argument shape could drift with nothing to catch it.
+ * Split out of the entry point below so the decision is reachable from a unit test with a synthetic
+ * config: the module-level code exits the process.
  *
  * @returns {Promise<{hasWork: boolean, reason: string|null}>} `reason` is null when there IS work.
  */
-export async function evaluateBossBuildGate({ config, tracker }) {
-  // The planned state is repo-private data (config-driven, never hard-coded here) so the gate
-  // matches the skill's own selection filter in any adopting repo. Fail-closed (skip) when it is
-  // not configured. The whole query — state, the label set that SUPERSEDES the agentFriendly role,
-  // and the optional identity selector as an absent-when-unset key — comes from the one helper the
-  // worker's `list-planned` verb also reads, so the gate and the worker cannot narrow differently.
-  const query = plannedSelectionQuery(config)
+export async function evaluateBossBuildGate({ config, tracker, argv = [] }) {
+  // The whole query — state, the build label, the needs-human exclusion and the selection — comes
+  // from the one helper the worker's `list-planned` verb also reads, so the gate and the worker
+  // cannot narrow differently.
+  const query = stageSelectionQuery(config, 'build', gateSelectionFlags('boss-build', argv))
   const hasWork = await tracker.hasUnblockedWork(query)
-  return { hasWork, reason: hasWork ? null : describeEmptyScan(query.state, query) }
-}
-
-/**
- * The one-line skip reason, naming the filter the scan ACTUALLY applied.
- *
- * An operator reading the scheduler's gate-output log has to be able to tell a narrowed skip from
- * a genuinely empty backlog — those call for opposite responses, and a reason that named only the
- * state and a single label would read identically in both cases. With no `selection` configured
- * this renders the string it rendered before the seam existed.
- */
-function describeEmptyScan(plannedState, { label, assigneeOrCreator }) {
-  const labelText = Array.isArray(label) ? `[${label.join('|')}]` : label
-  const owner = assigneeOrCreator ? ` assigned to or created by ${assigneeOrCreator}` : ''
-  return `boss-build gate: no unblocked ${plannedState} ${labelText} issues${owner}`
+  return {
+    hasWork,
+    reason: hasWork ? null : describeEmptyScan('boss-build', query, { unblocked: true }),
+  }
 }
 
 if (isMainModule(import.meta.url)) {
@@ -82,6 +67,7 @@ if (isMainModule(import.meta.url)) {
     const { hasWork, reason } = await evaluateBossBuildGate({
       config: loadSkillConfig(),
       tracker: resolveTrackerAdapter(),
+      argv: process.argv.slice(2),
     })
     gateExit(hasWork, reason)
   } catch (err) {

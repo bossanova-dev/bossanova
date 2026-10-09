@@ -41,6 +41,8 @@ type ChatPickerModel struct {
 	// external event (BOS-668). Rendered as the session-detail waiting line so an
 	// operator can see WHY a chat is idle-looking without opening it.
 	daemonWaitingReasons map[string]string
+	// daemonPhases carries the skill-reported working phase from status polling.
+	daemonPhases map[string]string
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat

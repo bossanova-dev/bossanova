@@ -148,11 +148,34 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.epic-reverify\\.json$',
   ),
   fam(
+    // The child fan-out route (plan-child-fanout.mjs): the selected issue plus every child, each
+    // hydrated with get_issue, that `route` and `init` read.
+    'fanout-route',
+    '<ISSUE-ID>.fanout-route.json',
+    'the hydrated parent + children bundle the child fan-out route and init read',
+    ({ issueId }) => `${issueId}.fanout-route.json`,
+    '^SEG\\.fanout-route\\.json$',
+  ),
+  fam(
+    'fanout-ledger',
+    '<ISSUE-ID>.fanout-ledger.json',
+    "the child fan-out's only state: per-child status, order and scratch",
+    ({ issueId }) => `${issueId}.fanout-ledger.json`,
+    '^SEG\\.fanout-ledger\\.json$',
+  ),
+  fam(
     'attachment-headers',
     '<ISSUE-ID>.attachment-headers-<n>.json',
     'signed upload headers for one plan attachment PUT',
     ({ issueId, n }) => `${issueId}.attachment-headers-${n}.json`,
     '^SEG\\.attachment-headers-SEG\\.json$',
+  ),
+  fam(
+    'child-precheck',
+    '<ISSUE-ID>.child-<CHILD-ID>.precheck.json',
+    "a fanned-out child's post-settle payload the idempotence check reads",
+    ({ issueId, childId }) => `${issueId}.child-${childId}.precheck.json`,
+    '^SEG\\.child-SEG\\.precheck\\.json$',
   ),
   fam(
     'child-image-guard-orig',

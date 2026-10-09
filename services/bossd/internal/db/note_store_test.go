@@ -1,16 +1,22 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
+	"github.com/rs/zerolog"
 )
 
 func newTestNoteParams(repoID string) CreateNoteParams {
@@ -393,7 +399,7 @@ func TestNoteStore_ListFilters(t *testing.T) {
 }
 
 // TestNoteStore_ListAttachesTagsAcrossBatchBoundary pins that tag attachment
-// still works when the result set spans more than one attachTags chunk. The
+// still works when the result set spans more than one attach batch. The
 // batching exists so an unlimited List over a large repo cannot exceed SQLite's
 // bind-parameter limit; this test crosses the boundary so a broken chunk loop
 // (a dropped remainder, or an off-by-one) shows up as notes missing their tags
@@ -887,4 +893,343 @@ func TestNoteStore_TagFilterUsesIndex(t *testing.T) {
 func storeDB(t *testing.T, s *SQLiteNoteStore) *sql.DB {
 	t.Helper()
 	return s.db
+}
+
+// seedNoteAt inserts a note row directly with an explicit created_at, so a
+// retention test can place notes in the past without a clock seam. Optional
+// tags land in note_tags so the cascade can be asserted.
+func seedNoteAt(t *testing.T, db *sql.DB, id, repoID string, createdAt time.Time, tags ...string) {
+	t.Helper()
+	ts := createdAt.UTC().Format(sqlutil.TimeLayout)
+	if _, err := db.Exec(
+		`INSERT INTO notes (id, repo_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		id, repoID, "seeded "+id, ts, ts,
+	); err != nil {
+		t.Fatalf("seed note %s: %v", id, err)
+	}
+	for _, tag := range tags {
+		if _, err := db.Exec(`INSERT INTO note_tags (note_id, tag) VALUES (?, ?)`, id, tag); err != nil {
+			t.Fatalf("seed tag %s/%s: %v", id, tag, err)
+		}
+	}
+}
+
+// noteExists reports whether a notes row with id is present.
+func noteExists(t *testing.T, db *sql.DB, id string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM notes WHERE id = ?`, id).Scan(&n); err != nil {
+		t.Fatalf("count note %s: %v", id, err)
+	}
+	return n == 1
+}
+
+// repoNoteIDs returns a repo's note ids in List order (created_at, id).
+func repoNoteIDs(t *testing.T, store *SQLiteNoteStore, repoID string) []string {
+	t.Helper()
+	notes, err := store.List(context.Background(), ListNotesFilter{RepoID: &repoID})
+	if err != nil {
+		t.Fatalf("list %s: %v", repoID, err)
+	}
+	return noteIDs(notes)
+}
+
+const day = 24 * time.Hour
+
+// TestNoteStore_PruneExpiredOnInsert covers the TTL leg: a fresh Create with the
+// default policy deletes the inserting repo's notes older than 180 days (and,
+// by cascade, their tag rows) while leaving newer notes and other repos alone.
+func TestNoteStore_PruneExpiredOnInsert(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewNoteStore(db)
+	now := time.Now()
+
+	seedNoteAt(t, db, "old-1", "repo-1", now.Add(-200*day), "stale", "tagged")
+	seedNoteAt(t, db, "recent-1", "repo-1", now.Add(-10*day))
+	seedNoteAt(t, db, "old-2", "repo-2", now.Add(-200*day))
+
+	created := mustCreateNote(t, store, newTestNoteParams("repo-1"))
+
+	if noteExists(t, db, "old-1") {
+		t.Error("200-day-old repo-1 note survived the TTL prune")
+	}
+	var tagRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM note_tags WHERE note_id = 'old-1'`).Scan(&tagRows); err != nil {
+		t.Fatalf("count tags: %v", err)
+	}
+	if tagRows != 0 {
+		t.Errorf("pruned note left %d note_tags rows, want 0 (cascade)", tagRows)
+	}
+	if !noteExists(t, db, "recent-1") {
+		t.Error("10-day-old note was pruned, want kept")
+	}
+	if !noteExists(t, db, "old-2") {
+		t.Error("repo-2 note was pruned by a repo-1 insert, want the TTL scoped per repo")
+	}
+	if !noteExists(t, db, created.ID) {
+		t.Error("the created note is missing")
+	}
+}
+
+// TestNoteStore_PruneCapTrimsOldestPerRepo covers the cap leg: the inserting
+// repo keeps the new note plus its newest cap-1 others, oldest removed first,
+// and another repo over the cap is untouched.
+func TestNoteStore_PruneCapTrimsOldestPerRepo(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewNoteStore(db, WithNoteRetention(NoteRetention{MaxPerRepo: 3}))
+	now := time.Now()
+
+	for i := range 4 {
+		seedNoteAt(t, db, fmt.Sprintf("r1-%d", i), "repo-1", now.Add(time.Duration(i-10)*time.Minute))
+	}
+	for i := range 5 {
+		seedNoteAt(t, db, fmt.Sprintf("r2-%d", i), "repo-2", now.Add(time.Duration(i-10)*time.Minute))
+	}
+
+	created := mustCreateNote(t, store, newTestNoteParams("repo-1"))
+
+	if got, want := repoNoteIDs(t, store, "repo-1"), []string{"r1-2", "r1-3", created.ID}; !reflect.DeepEqual(got, want) {
+		t.Errorf("repo-1 notes = %v, want %v (oldest two trimmed)", got, want)
+	}
+	if got := repoNoteIDs(t, store, "repo-2"); len(got) != 5 {
+		t.Errorf("repo-2 notes = %v, want all 5 untouched", got)
+	}
+
+	// The cap is applied to whichever repo is written: a repo-2 insert trims
+	// repo-2 and leaves the already-capped repo-1 exactly as it was.
+	created2 := mustCreateNote(t, store, newTestNoteParams("repo-2"))
+	if got, want := repoNoteIDs(t, store, "repo-2"), []string{"r2-3", "r2-4", created2.ID}; !reflect.DeepEqual(got, want) {
+		t.Errorf("repo-2 notes after its own insert = %v, want %v", got, want)
+	}
+	if got, want := repoNoteIDs(t, store, "repo-1"), []string{"r1-2", "r1-3", created.ID}; !reflect.DeepEqual(got, want) {
+		t.Errorf("repo-1 notes after a repo-2 insert = %v, want %v unchanged", got, want)
+	}
+}
+
+// TestNoteStore_PruneNeverRemovesJustInsertedNote pins the self-protection rule:
+// with a cap of 1 and back-to-back creates (likely sharing a millisecond, with
+// random ids), each Create still returns its own note and the repo ends up
+// holding exactly the latest one.
+func TestNoteStore_PruneNeverRemovesJustInsertedNote(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewNoteStore(db, WithNoteRetention(NoteRetention{MaxPerRepo: 1}))
+	ctx := context.Background()
+
+	var last *models.Note
+	for i := range 20 {
+		note, err := store.Create(ctx, newTestNoteParams("repo-1"))
+		if err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		if note == nil || note.ID == "" {
+			t.Fatalf("create %d returned no note", i)
+		}
+		last = note
+	}
+	if got := repoNoteIDs(t, store, "repo-1"); !reflect.DeepEqual(got, []string{last.ID}) {
+		t.Errorf("repo-1 notes = %v, want only the latest %s", got, last.ID)
+	}
+}
+
+// TestNoteStore_PruneZeroMeansUnlimited proves a zero policy (and settings
+// carrying explicit zeros) prunes nothing.
+func TestNoteStore_PruneZeroMeansUnlimited(t *testing.T) {
+	zero := 0
+	policies := map[string]NoteRetention{
+		"zero policy": {},
+		"zero settings": NoteRetentionFromSettings(config.NotesConfig{
+			RetentionDays: &zero, MaxPerRepo: &zero,
+		}),
+	}
+	for name, policy := range policies {
+		t.Run(name, func(t *testing.T) {
+			db := setupTestDB(t)
+			store := NewNoteStore(db, WithNoteRetention(policy))
+			seedNoteAt(t, db, "ancient", "repo-1", time.Now().Add(-200*day))
+			for range 3 {
+				mustCreateNote(t, store, newTestNoteParams("repo-1"))
+			}
+			if !noteExists(t, db, "ancient") {
+				t.Error("200-day note pruned under an unlimited policy")
+			}
+			if got := repoNoteIDs(t, store, "repo-1"); len(got) != 4 {
+				t.Errorf("repo-1 holds %d notes, want 4", len(got))
+			}
+		})
+	}
+}
+
+// TestNoteRetentionFromSettings maps the settings block onto a policy: unset
+// and negative take the defaults, 0 is unlimited, positive is honoured.
+func TestNoteRetentionFromSettings(t *testing.T) {
+	ptr := func(v int) *int { return &v }
+	tests := []struct {
+		name string
+		cfg  config.NotesConfig
+		want NoteRetention
+	}{
+		{"unset", config.NotesConfig{}, NoteRetention{MaxAge: 180 * day, MaxPerRepo: 10000}},
+		{"zero", config.NotesConfig{RetentionDays: ptr(0), MaxPerRepo: ptr(0)}, NoteRetention{}},
+		{"positive", config.NotesConfig{RetentionDays: ptr(30), MaxPerRepo: ptr(7)}, NoteRetention{MaxAge: 30 * day, MaxPerRepo: 7}},
+		{"negative", config.NotesConfig{RetentionDays: ptr(-1), MaxPerRepo: ptr(-1)}, NoteRetention{MaxAge: 180 * day, MaxPerRepo: 10000}},
+		{"overflowing days clamp", config.NotesConfig{RetentionDays: ptr(213504), MaxPerRepo: ptr(1)}, NoteRetention{MaxAge: time.Duration(maxNoteRetentionDays) * day, MaxPerRepo: 1}},
+		{"max int days clamp", config.NotesConfig{RetentionDays: ptr(math.MaxInt), MaxPerRepo: ptr(1)}, NoteRetention{MaxAge: time.Duration(maxNoteRetentionDays) * day, MaxPerRepo: 1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NoteRetentionFromSettings(tt.cfg); got != tt.want {
+				t.Errorf("NoteRetentionFromSettings() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNoteStore_PruneHonoursSettingsOverride drives a settings-derived 30-day
+// window end to end: a 31-day note goes, a 29-day note stays.
+func TestNoteStore_PruneHonoursSettingsOverride(t *testing.T) {
+	db := setupTestDB(t)
+	thirty := 30
+	store := NewNoteStore(db, WithNoteRetention(NoteRetentionFromSettings(config.NotesConfig{RetentionDays: &thirty})))
+	now := time.Now()
+	seedNoteAt(t, db, "day-31", "repo-1", now.Add(-31*day))
+	seedNoteAt(t, db, "day-29", "repo-1", now.Add(-29*day))
+
+	mustCreateNote(t, store, newTestNoteParams("repo-1"))
+
+	if noteExists(t, db, "day-31") {
+		t.Error("31-day note survived a 30-day retention override")
+	}
+	if !noteExists(t, db, "day-29") {
+		t.Error("29-day note pruned under a 30-day retention override")
+	}
+}
+
+// TestNoteStore_PruneErrorDoesNotFailInsert forces both prune deletes to fail
+// with a BEFORE DELETE trigger and asserts the insert still succeeds, the
+// failure is logged at warn level, and the expired note really survived (so the
+// prune genuinely failed rather than silently doing nothing).
+func TestNoteStore_PruneErrorDoesNotFailInsert(t *testing.T) {
+	db := setupTestDB(t)
+	var buf bytes.Buffer
+	store := NewNoteStore(db,
+		WithNoteRetention(NoteRetention{MaxAge: 180 * day, MaxPerRepo: 1}),
+		WithNoteLogger(zerolog.New(&buf)),
+	)
+	ctx := context.Background()
+	seedNoteAt(t, db, "expired", "repo-1", time.Now().Add(-200*day))
+	if _, err := db.Exec(
+		`CREATE TRIGGER notes_prune_fail BEFORE DELETE ON notes BEGIN SELECT RAISE(ABORT, 'prune boom'); END;`,
+	); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	created, err := store.Create(ctx, newTestNoteParams("repo-1"))
+	if err != nil {
+		t.Fatalf("create with failing prune = %v, want nil", err)
+	}
+	if _, err := store.Get(ctx, created.ID); err != nil {
+		t.Fatalf("get created note: %v", err)
+	}
+	if !noteExists(t, db, "expired") {
+		t.Fatal("expired note is gone, so the prune did not actually fail")
+	}
+	out := buf.String()
+	for _, want := range []string{`"level":"warn"`, `"prune":"expired"`, `"prune":"over_cap"`, "prune boom", `"repo_id":"repo-1"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+// TestNoteStore_IdempotentRetryDoesNotPrune proves the retry branch, which
+// inserts nothing, also prunes nothing.
+func TestNoteStore_IdempotentRetryDoesNotPrune(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewNoteStore(db)
+	params := newTestNoteParams("repo-1")
+	params.IdempotencyKey = strPtr("retry-key")
+	first := mustCreateNote(t, store, params)
+
+	seedNoteAt(t, db, "expired", "repo-1", time.Now().Add(-200*day))
+
+	again := mustCreateNote(t, store, params)
+	if again.ID != first.ID {
+		t.Fatalf("retry returned %s, want the original %s", again.ID, first.ID)
+	}
+	if !noteExists(t, db, "expired") {
+		t.Error("idempotent retry pruned an expired note, want no prune when nothing was inserted")
+	}
+}
+
+// TestNoteStore_PruneStatementsUseIndex asserts every prune statement (note and
+// outbox) is served by idx_notes_repo_created rather than scanning notes.
+func TestNoteStore_PruneStatementsUseIndex(t *testing.T) {
+	db := setupTestDB(t)
+	cases := map[string][]any{
+		notePruneExpiredSQL: {"repo-1", "2026-01-01T00:00:00.000Z"},
+		notePruneOverCapSQL: {"repo-1", "new-id", 9999},
+		// The outbox deletes select the same notes through the same predicate,
+		// so their subqueries must stay on the index too.
+		noteSyncPruneExpiredSQL: {"repo-1", "2026-01-01T00:00:00.000Z"},
+		noteSyncPruneOverCapSQL: {"repo-1", "new-id", 9999},
+	}
+	for stmt, args := range cases {
+		rows, err := db.Query("EXPLAIN QUERY PLAN "+stmt, args...)
+		if err != nil {
+			t.Fatalf("explain %q: %v", stmt, err)
+		}
+		var plan string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			plan += detail + "\n"
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		_ = rows.Close()
+		if !strings.Contains(plan, "idx_notes_repo_created") {
+			t.Errorf("%q does not use idx_notes_repo_created:\n%s", stmt, plan)
+		}
+	}
+}
+
+// TestNoteStore_ConcurrentCreatesUnderCapOneKeepANote races fresh creates in
+// one repo under a cap of 1 on a multi-connection pool. Every create must read
+// back its own note, and the repo must end holding exactly one note: an
+// unserialised insert/prune lets two creates delete each other's new note.
+func TestNoteStore_ConcurrentCreatesUnderCapOneKeepANote(t *testing.T) {
+	db := setupFileDB(t)
+	store := NewNoteStore(db, WithNoteRetention(NoteRetention{MaxPerRepo: 1}))
+	const writers = 8
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := store.Create(context.Background(), CreateNoteParams{
+				RepoID: "repo-1",
+				Body:   fmt.Sprintf("writer %d", i),
+			}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent create under cap 1: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM notes WHERE repo_id = ?`, "repo-1").Scan(&count); err != nil {
+		t.Fatalf("count notes: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("repo holds %d notes after concurrent creates under cap 1, want 1", count)
+	}
 }

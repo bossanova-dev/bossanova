@@ -382,7 +382,15 @@ func (c *RemoteClient) CloseSession(ctx context.Context, id string) (*pb.Session
 // carries only the session, so a merge-strategy substitution note cannot cross
 // the remote boundary. Adding the field would be an observable API change
 // requiring a date-based apiversion bump plus a down-convert transform.
-func (c *RemoteClient) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
+//
+// A head pin cannot cross the remote boundary either: ProxyMergeSessionRequest
+// has no field for it. Dropping it silently would report an unverified merge as
+// pinned, so a non-empty matchHead is refused before any RPC.
+func (c *RemoteClient) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
+	if matchHead != "" {
+		return nil, "", connect.NewError(connect.CodeUnimplemented,
+			errors.New("--match-head is not supported over the remote transport; refusing to merge unpinned"))
+	}
 	resp, err := c.rpc.ProxyMergeSession(ctx, connect.NewRequest(&pb.ProxyMergeSessionRequest{Id: id}))
 	if err != nil {
 		return nil, "", err
@@ -441,7 +449,7 @@ func (c *RemoteClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRReq
 
 // --- Archive / Resurrect (local only) ---
 
-func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {
+func (c *RemoteClient) ArchiveSession(_ context.Context, _ *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
 	return nil, errLocalOnly("ArchiveSession")
 }
 
@@ -671,6 +679,10 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 
 // --- Chat Status ---
 
+func (c *RemoteClient) SetChatPhase(_ context.Context, _, _, _ string) error {
+	return errLocalOnly("set chat phase")
+}
+
 func (c *RemoteClient) ReportChatStatus(ctx context.Context, reports []*pb.ChatStatusReport) error {
 	_, err := c.rpc.ProxyReportChatStatus(ctx, connect.NewRequest(&pb.ProxyReportChatStatusRequest{Reports: reports}))
 	return err
@@ -825,6 +837,269 @@ func (c *RemoteClient) ClearRepoOrganization(ctx context.Context, repoOriginURL,
 	return err
 }
 
+// --- Organization notes (cloud only) ---
+//
+// Like the organization methods above, these hang off RemoteClient only: the
+// note store is bosso-owned. Each passes the generated request through
+// unchanged, so authorization, validation, pagination and quota errors are the
+// API's own (a spent quota is a *connect.Error carrying an
+// OrganizationNoteQuotaExceeded detail). repo_origin_url is canonicalised by
+// the server on both create and the list filter, so it is not rewritten here.
+
+// CreateOrganizationNote writes a note to an organization's store.
+func (c *RemoteClient) CreateOrganizationNote(ctx context.Context, req *pb.CreateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	resp, err := c.rpc.CreateOrganizationNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// GetOrganizationNote reads one organization note by id.
+func (c *RemoteClient) GetOrganizationNote(ctx context.Context, organizationID, id string) (*pb.OrganizationNote, error) {
+	resp, err := c.rpc.GetOrganizationNote(ctx, connect.NewRequest(&pb.GetOrganizationNoteRequest{
+		OrganizationId: organizationID,
+		Id:             id,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// ListOrganizationNotes returns one page of an organization's notes. The whole
+// response is returned because next_page_token is part of the contract.
+func (c *RemoteClient) ListOrganizationNotes(ctx context.Context, req *pb.ListOrganizationNotesRequest) (*pb.ListOrganizationNotesResponse, error) {
+	resp, err := c.rpc.ListOrganizationNotes(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// UpdateOrganizationNote edits an API-origin organization note.
+func (c *RemoteClient) UpdateOrganizationNote(ctx context.Context, req *pb.UpdateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	resp, err := c.rpc.UpdateOrganizationNote(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetNote(), nil
+}
+
+// DeleteOrganizationNote deletes an API-origin note, or tombstones a synced one.
+func (c *RemoteClient) DeleteOrganizationNote(ctx context.Context, organizationID, id string) error {
+	_, err := c.rpc.DeleteOrganizationNote(ctx, connect.NewRequest(&pb.DeleteOrganizationNoteRequest{
+		OrganizationId: organizationID,
+		Id:             id,
+	}))
+	return err
+}
+
+// GetOrganizationNoteQuota reports the organization's current write-quota
+// window without consuming any of it.
+func (c *RemoteClient) GetOrganizationNoteQuota(ctx context.Context, organizationID string) (*pb.OrganizationNoteQuota, error) {
+	resp, err := c.rpc.GetOrganizationNoteQuota(ctx, connect.NewRequest(&pb.GetOrganizationNoteQuotaRequest{
+		OrganizationId: organizationID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetQuota(), nil
+}
+
+// --- Inbound triggers (cloud only) ---
+//
+// Triggers are bosso-owned, so like the organization notes above these hang off
+// RemoteClient only and are deliberately NOT on BossClient: a daemon-local
+// client could never serve them. Each is a thin pass-through, so authorization
+// and validation errors are the API's own. Create and rotate return the whole
+// response because the one-time secret travels beside the trigger.
+
+// GetTriggerCatalog returns the trigger types, event ids and filter fields.
+func (c *RemoteClient) GetTriggerCatalog(ctx context.Context) (*pb.TriggerCatalog, error) {
+	resp, err := c.rpc.GetTriggerCatalog(ctx, connect.NewRequest(&pb.GetTriggerCatalogRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetCatalog(), nil
+}
+
+// ListTriggers returns the caller's own triggers.
+func (c *RemoteClient) ListTriggers(ctx context.Context, req *pb.ListTriggersRequest) ([]*pb.Trigger, error) {
+	resp, err := c.rpc.ListTriggers(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetTriggers(), nil
+}
+
+// GetTrigger returns one trigger the caller created.
+func (c *RemoteClient) GetTrigger(ctx context.Context, id string) (*pb.Trigger, error) {
+	resp, err := c.rpc.GetTrigger(ctx, connect.NewRequest(&pb.GetTriggerRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetTrigger(), nil
+}
+
+// CreateTrigger creates a trigger. For an HTTP trigger the response carries the
+// one-time signing secret.
+func (c *RemoteClient) CreateTrigger(ctx context.Context, req *pb.CreateTriggerRequest) (*pb.CreateTriggerResponse, error) {
+	resp, err := c.rpc.CreateTrigger(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// UpdateTrigger changes the fields present in req.
+func (c *RemoteClient) UpdateTrigger(ctx context.Context, req *pb.UpdateTriggerRequest) (*pb.Trigger, error) {
+	resp, err := c.rpc.UpdateTrigger(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetTrigger(), nil
+}
+
+// DeleteTrigger permanently deletes a trigger and its history.
+func (c *RemoteClient) DeleteTrigger(ctx context.Context, id string) error {
+	_, err := c.rpc.DeleteTrigger(ctx, connect.NewRequest(&pb.DeleteTriggerRequest{Id: id}))
+	return err
+}
+
+// RotateTriggerSecret replaces an HTTP trigger's signing secret; the response
+// carries the new one-time secret.
+func (c *RemoteClient) RotateTriggerSecret(ctx context.Context, id string) (*pb.RotateTriggerSecretResponse, error) {
+	resp, err := c.rpc.RotateTriggerSecret(ctx, connect.NewRequest(&pb.RotateTriggerSecretRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// TestTrigger runs a sample payload through a trigger and returns the recorded
+// invocation.
+func (c *RemoteClient) TestTrigger(ctx context.Context, req *pb.TestTriggerRequest) (*pb.TriggerInvocation, error) {
+	resp, err := c.rpc.TestTrigger(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetInvocation(), nil
+}
+
+// ListTriggerInvocations returns a trigger's invocation history, newest first.
+func (c *RemoteClient) ListTriggerInvocations(ctx context.Context, req *pb.ListTriggerInvocationsRequest) ([]*pb.TriggerInvocation, error) {
+	resp, err := c.rpc.ListTriggerInvocations(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetInvocations(), nil
+}
+
+// --- Session webhooks (cloud only) ---
+//
+// Session webhooks are bosso-owned, so like the triggers above these hang off
+// RemoteClient only and are deliberately NOT on BossClient. Each is a thin
+// pass-through, so authorization and validation errors are the API's own.
+// Create, rotate, test-send and get-delivery return the whole response: the
+// first two carry the one-time secret beside the webhook, the last two carry
+// attempts (and request detail) beside the delivery.
+
+// ListSessionWebhookEventTypes returns the event catalog an endpoint can
+// subscribe to, in canonical order.
+func (c *RemoteClient) ListSessionWebhookEventTypes(ctx context.Context, organizationID string) ([]*pb.SessionWebhookEventType, error) {
+	resp, err := c.rpc.ListSessionWebhookEventTypes(ctx, connect.NewRequest(&pb.ListSessionWebhookEventTypesRequest{
+		OrganizationId: organizationID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetEventTypes(), nil
+}
+
+// ListSessionWebhooks returns the organization's endpoints, oldest first.
+func (c *RemoteClient) ListSessionWebhooks(ctx context.Context, organizationID string) ([]*pb.SessionWebhook, error) {
+	resp, err := c.rpc.ListSessionWebhooks(ctx, connect.NewRequest(&pb.ListSessionWebhooksRequest{
+		OrganizationId: organizationID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWebhooks(), nil
+}
+
+// CreateSessionWebhook registers an endpoint; the response carries the
+// one-time signing secret.
+func (c *RemoteClient) CreateSessionWebhook(ctx context.Context, req *pb.CreateSessionWebhookRequest) (*pb.CreateSessionWebhookResponse, error) {
+	resp, err := c.rpc.CreateSessionWebhook(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// UpdateSessionWebhook changes the fields present in req.
+func (c *RemoteClient) UpdateSessionWebhook(ctx context.Context, req *pb.UpdateSessionWebhookRequest) (*pb.SessionWebhook, error) {
+	resp, err := c.rpc.UpdateSessionWebhook(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWebhook(), nil
+}
+
+// RotateSessionWebhookSecret replaces an endpoint's signing secret; the
+// response carries the new one-time secret.
+func (c *RemoteClient) RotateSessionWebhookSecret(ctx context.Context, req *pb.RotateSessionWebhookSecretRequest) (*pb.RotateSessionWebhookSecretResponse, error) {
+	resp, err := c.rpc.RotateSessionWebhookSecret(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// DeleteSessionWebhook permanently deletes an endpoint with its delivery
+// history.
+func (c *RemoteClient) DeleteSessionWebhook(ctx context.Context, organizationID, id string) error {
+	_, err := c.rpc.DeleteSessionWebhook(ctx, connect.NewRequest(&pb.DeleteSessionWebhookRequest{
+		OrganizationId: organizationID,
+		Id:             id,
+	}))
+	return err
+}
+
+// SendSessionWebhookTestEvent sends one test delivery synchronously and returns
+// it with its single attempt (absent when the delivery was cancelled).
+func (c *RemoteClient) SendSessionWebhookTestEvent(ctx context.Context, req *pb.SendSessionWebhookTestEventRequest) (*pb.SendSessionWebhookTestEventResponse, error) {
+	resp, err := c.rpc.SendSessionWebhookTestEvent(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
+// first. It returns the whole response so the caller keeps next_page_token.
+func (c *RemoteClient) ListSessionWebhookDeliveries(ctx context.Context, req *pb.ListSessionWebhookDeliveriesRequest) (*pb.ListSessionWebhookDeliveriesResponse, error) {
+	resp, err := c.rpc.ListSessionWebhookDeliveries(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// GetSessionWebhookDelivery returns one delivery with its attempts, the exact
+// request body and the request headers.
+func (c *RemoteClient) GetSessionWebhookDelivery(ctx context.Context, organizationID, deliveryID string) (*pb.GetSessionWebhookDeliveryResponse, error) {
+	resp, err := c.rpc.GetSessionWebhookDelivery(ctx, connect.NewRequest(&pb.GetSessionWebhookDeliveryRequest{
+		OrganizationId: organizationID,
+		DeliveryId:     deliveryID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // canonicalRepoOriginURLPasses bounds the canonicalization loop below, matching
 // the bound bosso's validateRepoOriginURL uses. The loop exists because
 // vcs.NormalizeRepoURL is not idempotent on every input: ".../alpha.git/"
@@ -886,6 +1161,7 @@ func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobR
 		GateCommand:           req.GetGateCommand(),
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 		IsZeroOutput:          req.IsZeroOutput,
+		ConcurrencyPolicy:     req.ConcurrencyPolicy,
 	}))
 	if err != nil {
 		return nil, err
@@ -939,6 +1215,7 @@ func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobR
 		GateCommand:           req.GateCommand,
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 		IsZeroOutput:          req.IsZeroOutput,
+		ConcurrencyPolicy:     req.ConcurrencyPolicy,
 	}))
 	if err != nil {
 		return nil, err
@@ -1106,6 +1383,12 @@ func (c *RemoteClient) DeleteNote(ctx context.Context, repoID, id string) error 
 		Id:     id,
 	}))
 	return err
+}
+
+// SyncNotesNow is local-daemon only: the outbox and its worker live on the
+// daemon that wrote the notes, and the orchestrator proxies no sync trigger.
+func (c *RemoteClient) SyncNotesNow(_ context.Context) (*pb.SyncNotesNowResponse, error) {
+	return nil, errLocalOnly("SyncNotesNow")
 }
 
 // --- Broadcasts (local only) ---

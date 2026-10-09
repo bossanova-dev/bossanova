@@ -6,7 +6,7 @@
 
 Record and search repo-scoped notes
 
-A note is durable free-text recorded against a REPOSITORY so a later sweep can harvest what a run learned — a gotcha, a decision, a piece of tech debt worth filing. Notes are repo-scoped and session and chat are provenance ONLY: they record who wrote the note, and archiving or removing that session never removes its notes. A note outlives the run that wrote it. Inside a registered repo or a session worktree the repo and session default from the working directory, so an agent can leave a note with one command and no ids to look up. A body is REQUIRED (a blank or whitespace-only one is rejected), may be up to 64 KiB, and is stored verbatim. Tags are normalised — trimmed, lowercased and de-duplicated — so `Tech-Debt` and `tech-debt` are one tag; a note may carry up to 32 tags of 64 bytes each. Notes are listed OLDEST first. `add`, `ls`, `show` and `edit` all take `--json` for machine parsing.
+A note is durable free-text recorded against a REPOSITORY so a later sweep can harvest what a run learned — a gotcha, a decision, a piece of tech debt worth filing. Notes are repo-scoped and session and chat are provenance ONLY: they record who wrote the note, and archiving or removing that session never removes its notes. A note outlives the run that wrote it. Inside a registered repo or a session worktree the repo and session default from the working directory, so an agent can leave a note with one command and no ids to look up. A body is REQUIRED (a blank or whitespace-only one is rejected), may be up to 64 KiB, and is stored verbatim. Tags are normalised — trimmed, lowercased and de-duplicated — so `Tech-Debt` and `tech-debt` are one tag; a note may carry up to 32 tags of 64 bytes each. Notes are listed OLDEST first. `add`, `ls`, `show` and `edit` all take `--json` for machine parsing. Notes older than 180 days, and a repo's notes beyond its newest 10,000, are pruned automatically when a new note is written in that repo (override with `notes.retention_days` / `notes.max_per_repo` in settings.json; 0 = unlimited).
 
 ### `boss notes add <body> [flags]`
 
@@ -80,6 +80,78 @@ boss notes ls --repo my-repo --json
 boss notes ls --repo ""
 ```
 
+### `boss notes org`
+
+Read and write your organization's cloud notes
+
+### `boss notes org add <body> [flags]`
+
+Write a note to an organization
+
+**Flags:**
+
+- `--chat` — Chat provenance
+- `--idempotency-key` — Return the original note instead of creating a duplicate when retried with the same key
+- `--json` — Emit the created note as a stable JSON schema
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+- `--repo` — Repository origin URL the note is about
+- `--session` — Session provenance
+- `--tag` — Tag to attach; repeat for several (normalised to lowercase)
+
+### `boss notes org edit <note-id> [flags]`
+
+Change an organization note's body and/or tags
+
+**Flags:**
+
+- `--body` — Replacement body (omit to leave the body unchanged)
+- `--json` — Emit the updated note as a stable JSON schema
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+- `--tag` — Tag for the REPLACEMENT set; repeat for several, omit to leave tags unchanged
+
+### `boss notes org ls [flags]`
+
+List one page of organization notes
+
+**Flags:**
+
+- `--author` — Filter by author user id
+- `--json` — Emit a stable JSON schema ({notes, next_page_token}) instead of a table
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+- `--page-size` — Notes per page (0 = server default 50, max 200) (default: 0)
+- `--page-token` — Page token from a previous listing with the same filters
+- `--repo` — Filter by repository origin URL
+- `--search` — Filter to notes whose body contains this substring
+- `--session` — Filter by the session that recorded the note
+- `--tag` — Filter to notes carrying any of these tags; repeat for several
+
+### `boss notes org quota [flags]`
+
+Show the organization's hourly note-write quota
+
+**Flags:**
+
+- `--json` — Emit the quota as a stable JSON schema
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+
+### `boss notes org rm <note-id> [flags]`
+
+Remove an organization note
+
+**Flags:**
+
+- `--json` — Emit the removed note id as a stable JSON schema
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+
+### `boss notes org show <note-id> [flags]`
+
+Show one organization note in full
+
+**Flags:**
+
+- `--json` — Emit the note as a stable JSON schema
+- `--org` — Organization id (default: your only organization; required when you belong to several)
+
 ### `boss notes rm <note-id> [flags]`
 
 Remove a note by id
@@ -108,4 +180,19 @@ Print one note in full: its ids, provenance, tags, timestamps, and then the body
 ```bash
 boss notes show abc123
 boss notes show abc123 --json
+```
+
+### `boss notes sync [flags]`
+
+Nudge cloud note sync and show counts per sync state
+
+Nudge the local daemon to sync pending notes to Bossanova Cloud now, and print how many notes are in each sync state: `pending`, `synced`, `rejected`, `rate_limited`, `expired`, `not_entitled`, `refused`, `suppressed` and `failed`. Deletes not yet propagated count too. The daemon syncs on its own every 30 seconds and after every note write; this is for troubleshooting. It does not wait for the drain — the counts are read as the nudge is sent, so run it again to see them move. A daemon that is not connected to Bossanova Cloud runs no sync: the command says so and its notes stay `pending`. `--json` emits `{"worker_configured": bool, "counts": [{"state", "count"}]}` with every state listed. `boss notes ls --json` and `boss notes show` report each note's own `sync_state`. Local daemon only.
+
+**Flags:**
+
+- `--json` — Emit the counts as a stable JSON schema
+
+```bash
+boss notes sync
+boss notes sync --json
 ```

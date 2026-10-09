@@ -256,3 +256,40 @@ func assertCronMismatchPayload(t *testing.T, payload map[string]any, wantID stri
 		t.Fatalf("last_run_agent_mismatch = %v, want true; payload=%v", got, payload)
 	}
 }
+
+// Proto fields are forwarded by the read tools without adding schema/tool bytes.
+func TestStatusReadToolsExposePhase(t *testing.T) {
+	backend := &fakeBackend{
+		getChatStatuses: func(context.Context, string) ([]*pb.ChatStatusEntry, error) {
+			return []*pb.ChatStatusEntry{{AgentSessionId: "chat", Status: pb.ChatStatus_CHAT_STATUS_WORKING, Phase: "reviewing"}}, nil
+		},
+		getSessionStatuses: func(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
+			return []*pb.SessionStatusEntry{{SessionId: "session", Status: pb.ChatStatus_CHAT_STATUS_WORKING, Phase: "reviewing"}}, nil
+		},
+	}
+	cs := newConnectedClient(t, backend, Options{})
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"get_chat_statuses", map[string]any{"session_id": "session"}},
+		{"get_session_statuses", map[string]any{"session_ids": []string{"session"}}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			result, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tc.tool, Arguments: tc.args})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError {
+				t.Fatal(textOf(t, result))
+			}
+			var rows []map[string]any
+			if err := json.Unmarshal([]byte(textOf(t, result)), &rows); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0]["phase"] != "reviewing" {
+				t.Fatalf("phase missing: %v", rows)
+			}
+		})
+	}
+}

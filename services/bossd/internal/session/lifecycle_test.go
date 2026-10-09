@@ -1457,6 +1457,7 @@ type mockAgentRunner struct {
 	running  map[string]bool
 	nextID   string
 	startErr error // if set, Start returns this error
+	stopErr  error
 
 	preflightCalls int
 	preflightErr   error
@@ -1511,6 +1512,9 @@ func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume 
 }
 
 func (m *mockAgentRunner) Stop(sessionID string) error {
+	if m.stopErr != nil {
+		return m.stopErr
+	}
 	m.stopped = append(m.stopped, sessionID)
 	m.mu.Lock()
 	delete(m.running, sessionID)
@@ -1715,7 +1719,7 @@ func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, repoPath string, prID
 	return m.updatePRTitleErr
 }
 
-func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int, _ string) error {
+func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int, _ vcs.MergePROpts) error {
 	m.mergePRCalls = append(m.mergePRCalls, prID)
 	return m.mergePRErr
 }
@@ -10286,5 +10290,113 @@ func TestRedactedInjectionKeepsTypedOutcomeAndMasksText(t *testing.T) {
 
 	if redactedInjection(nil) != nil {
 		t.Error("redactedInjection(nil) must stay nil")
+	}
+}
+
+func TestStopSessionRunnerFailurePreservesActiveState(t *testing.T) {
+	sessions := newMockSessionStore()
+	runner := newMockAgentRunner()
+	id := "agent-active"
+	runner.running[id] = true
+	runner.stopErr = errors.New("runner unavailable")
+	sessions.sessions["previous"] = &models.Session{ID: "previous", State: machine.ImplementingPlan, AgentSessionID: &id, WorktreePath: "/tmp/kept"}
+	lifecycle := newTestLifecycle(sessions, newMockRepoStore(), nil, nil, &mockWorktreeManager{}, runner, nil, newMockVCSProvider(), zerolog.Nop())
+	if err := lifecycle.StopSession(context.Background(), "previous"); !errors.Is(err, runner.stopErr) {
+		t.Fatalf("StopSession = %v, want runner failure", err)
+	}
+	if got := sessions.sessions["previous"].State; got != machine.ImplementingPlan {
+		t.Fatalf("state = %v, want ImplementingPlan", got)
+	}
+	if !runner.IsRunning(id) {
+		t.Fatal("runner should remain active")
+	}
+}
+
+// A failed tmux cancellation must leave the run active and discoverable. Otherwise
+// cancel_in_progress treats StopSession's success as permission to stack a run.
+func TestStopSessionTmuxCleanup(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		kind := "chat"
+		if legacy {
+			kind = "legacy"
+		}
+		for _, tc := range []struct {
+			name          string
+			killFails     bool
+			present       bool
+			presenceFails bool
+			unavailable   bool
+			wantError     bool
+		}{
+			{name: "kill succeeds"},
+			{name: "kill failure with live pane", killFails: true, present: true, wantError: true},
+			{name: "already absent pane", killFails: true},
+			{name: "presence unknown", killFails: true, presenceFails: true, wantError: true},
+			{name: "tmux unavailable", killFails: true, presenceFails: true, unavailable: true, wantError: true},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				sessions := newMockSessionStore()
+				pane := "boss-previous"
+				sess := &models.Session{ID: "previous", State: machine.ImplementingPlan, WorktreePath: "/tmp/kept"}
+				sessions.sessions[sess.ID] = sess
+				chat := &models.AgentChat{AgentSessionID: "agent-previous", SessionID: sess.ID, TmuxSessionName: &pane}
+				chats := &mockAgentChatStore{}
+				if legacy {
+					sess.TmuxSessionName = &pane
+				} else {
+					chats.chatsBySession = map[string][]*models.AgentChat{sess.ID: {chat}}
+				}
+				fake := newFakeTmux()
+				fake.failSubcommand["kill-session"] = tc.killFails
+				fake.failSubcommand["has-session"] = !tc.present
+				if !tc.present && !tc.presenceFails {
+					fake.failStderr["has-session"] = "can't find session: " + pane
+				}
+				fake.available = !tc.unavailable
+				if tc.unavailable {
+					fake.failStderr["has-session"] = "tmux command unavailable"
+				}
+				lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithCommandFactory(fake.factory)), newMockVCSProvider(), zerolog.Nop())
+				err := lc.StopSession(ctx, sess.ID)
+				if (err != nil) != tc.wantError {
+					t.Fatalf("StopSession error = %v, want error %v", err, tc.wantError)
+				}
+				wantState := machine.Closed
+				if tc.wantError {
+					wantState = machine.ImplementingPlan
+				}
+				if got := sessions.sessions[sess.ID].State; got != wantState {
+					t.Errorf("state = %v, want %v", got, wantState)
+				}
+				name := chat.TmuxSessionName
+				if legacy {
+					name = sessions.sessions[sess.ID].TmuxSessionName
+				}
+				if tc.wantError {
+					if name == nil || *name != pane {
+						t.Errorf("failed cleanup lost pane pointer: %v", name)
+					}
+				} else if name != nil {
+					t.Errorf("successful cleanup retained pane pointer: %v", *name)
+				}
+				if sessions.sessions[sess.ID].WorktreePath != "/tmp/kept" {
+					t.Error("stop discarded the worktree")
+				}
+			})
+		}
+	}
+}
+
+func TestStopSessionChatListFailurePreservesActiveState(t *testing.T) {
+	sessions := newMockSessionStore()
+	sessions.sessions["previous"] = &models.Session{ID: "previous", State: machine.ImplementingPlan}
+	chats := &mockAgentChatStore{listBySessionErr: errors.New("database unavailable")}
+	lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory)), newMockVCSProvider(), zerolog.Nop())
+	if err := lc.StopSession(context.Background(), "previous"); !errors.Is(err, chats.listBySessionErr) {
+		t.Fatalf("StopSession = %v, want chat list failure", err)
+	}
+	if sessions.sessions["previous"].State != machine.ImplementingPlan {
+		t.Fatal("chat list failure closed the run")
 	}
 }

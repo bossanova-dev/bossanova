@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -42,7 +43,15 @@ func (m *ChatPickerModel) buildTableRows() {
 	agentWidth := maxColWidth("AGENT", agents, 12)
 	createdWidth := maxColWidth("CREATED", createds, 12)
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
-	statusWidth := 12 // enough for spinner + "working"
+	statusWidth := 12 // preserve the default width for unphased chats
+	for _, chat := range m.chats {
+		if m.daemonStatuses[chat.AgentSessionId] == statusWorking {
+			if phase := m.daemonPhases[chat.AgentSessionId]; phase != "" {
+				statusWidth = max(statusWidth, lipgloss.Width(m.spinner.View()+phase))
+			}
+		}
+	}
+	statusWidth = min(statusWidth, 2+displaystatus.MaxPhaseRunes)
 
 	rcols := []responsiveColumn{
 		{col: cursorColumn, priority: 0, minWidth: 1},
@@ -64,6 +73,11 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
+		if daemon == statusWorking {
+			if phase := m.daemonPhases[chat.AgentSessionId]; phase != "" {
+				statusStr = styleStatusSuccess.Render(ansi.Truncate(m.spinner.View()+phase, statusWidth, "…"))
+			}
+		}
 		// A chat with start_error set never came up — the agent_chats
 		// row was created but StartTmuxChat hit a failure (e.g.
 		// SendPlan timeout from claude's broken --print regression
@@ -414,8 +428,8 @@ func (m ChatPickerModel) limitedLineHeight() int {
 // waitingReasonLine returns the session-detail hint naming why a chat in this
 // session is parked on an external event, e.g.
 // "awaiting checks_passed_ready on acme/widget#123" (BOS-668, BOS-863 — the
-// reason alone, since the chat table below already badges the parked chat
-// "waiting"). It returns "" when nothing in the session is waiting, so callers
+// reason alone for a waiting session, or prefixed when Ready or a green PR
+// badge supersedes waiting). It returns "" when nothing is waiting, so callers
 // can skip the line entirely and the layout does not shift.
 //
 // Only the FIRST waiting chat's reason is shown. Sessions park on at most one
@@ -430,10 +444,7 @@ func (m ChatPickerModel) waitingReasonLine() string {
 		if m.daemonStatuses[chat.AgentSessionId] != statusWaiting {
 			continue
 		}
-		// demoted=false: the per-chat badge on this very row still reads
-		// "waiting", so the reason keeps its antecedent here whatever the
-		// SESSION row's badge says (BOS-1269 demotes the session row only).
-		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId], false); line != "" {
+		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId], waitingBadgeSuperseded(m.session)); line != "" {
 			return m.fitProseLine(line)
 		}
 	}

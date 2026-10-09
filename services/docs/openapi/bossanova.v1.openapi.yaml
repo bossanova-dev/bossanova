@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-15'
+  version: '2026-09-16'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -182,6 +182,142 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.CreateOrganizationResponse'
+  /bossanova.v1.OrchestratorService/CreateOrganizationNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: |-
+        Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
+         remain the unchanged daemon-local relay, these read and write a note store
+         that bosso itself owns, scoped to one organization, so an organization can
+         see the notes all of its members' daemons recorded. See OrganizationNote.
+      description: |-
+        The six user RPCs authenticate a user. Every call requires membership of
+         the request's organization_id (PermissionDenied otherwise) and the paid-plan
+         entitlement for THAT organization, judged alone: paying through one
+         organization grants nothing in another. An unentitled organization answers
+         the same access-denied error other cloud features return. Any member reads
+         every note in the organization; Update and Delete are allowed for the
+         note's author or an organization owner, and PermissionDenied for anyone
+         else. A note id from another organization, or an expired note, is NotFound.
+
+         Writes are bounded by a per-organization hourly quota counted over a fixed
+         UTC clock hour (see OrganizationNoteQuota). One accepted create, or one
+         update that changes the body or tags, consumes one unit; deletes, reads and
+         idempotent replays consume none. An exhausted quota is ResourceExhausted
+         with an OrganizationNoteQuotaExceeded error detail.
+      operationId: bossanova.v1.OrchestratorService.CreateOrganizationNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateOrganizationNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/CreateSessionWebhook:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: CreateSessionWebhook
+      description: |-
+        CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
+         endpoint policy rejects (not https, credentials in the URL, a fragment, or
+         a host that is or resolves to a private, loopback, link-local or metadata
+         address), an empty or unknown event type set, a description over 200
+         characters, or a caller-supplied secret that is not 16-256 visible ASCII
+         characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+      operationId: bossanova.v1.OrchestratorService.CreateSessionWebhook
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateSessionWebhookRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateSessionWebhookResponse'
+  /bossanova.v1.OrchestratorService/CreateTrigger:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: CreateTrigger
+      description: |-
+        CreateTrigger creates a trigger owned by the caller in organization_id,
+         which the caller must be a member of. For an HTTP trigger the response
+         carries the signing secret; it is returned ONLY in this response and can
+         never be read back, only replaced with RotateTriggerSecret.
+      operationId: bossanova.v1.OrchestratorService.CreateTrigger
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateTriggerRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateTriggerResponse'
   /bossanova.v1.OrchestratorService/CreateWebhookConfig:
     post:
       tags:
@@ -258,6 +394,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationResponse'
+  /bossanova.v1.OrchestratorService/DeleteOrganizationNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteOrganizationNote
+      operationId: bossanova.v1.OrchestratorService.DeleteOrganizationNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/DeleteSessionWebhook:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteSessionWebhook
+      description: |-
+        DeleteSessionWebhook permanently deletes an endpoint with its delivery
+         history.
+      operationId: bossanova.v1.OrchestratorService.DeleteSessionWebhook
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteSessionWebhookRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteSessionWebhookResponse'
+  /bossanova.v1.OrchestratorService/DeleteTrigger:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: DeleteTrigger
+      description: |-
+        DeleteTrigger permanently deletes a trigger the caller created, together
+         with its secret and invocation history. Its endpoint stops accepting
+         requests immediately.
+      operationId: bossanova.v1.OrchestratorService.DeleteTrigger
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.DeleteTriggerRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.DeleteTriggerResponse'
   /bossanova.v1.OrchestratorService/DeleteWebhookConfig:
     post:
       tags:
@@ -474,6 +722,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetOrganizationResponse'
+  /bossanova.v1.OrchestratorService/GetOrganizationNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetOrganizationNote
+      operationId: bossanova.v1.OrchestratorService.GetOrganizationNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetOrganizationNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/GetOrganizationNoteQuota:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetOrganizationNoteQuota
+      description: |-
+        GetOrganizationNoteQuota reports the organization's current quota window
+         without consuming any of it. Same membership and entitlement rules as the
+         other organization-note RPCs.
+      operationId: bossanova.v1.OrchestratorService.GetOrganizationNoteQuota
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetOrganizationNoteQuotaRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetOrganizationNoteQuotaResponse'
   /bossanova.v1.OrchestratorService/GetRepoOrganization:
     post:
       tags:
@@ -509,6 +831,129 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.GetRepoOrganizationResponse'
+  /bossanova.v1.OrchestratorService/GetSessionWebhookDelivery:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetSessionWebhookDelivery
+      description: |-
+        GetSessionWebhookDelivery returns one delivery with its attempts in order,
+         the exact request body and the request headers. Never returns a secret.
+      operationId: bossanova.v1.OrchestratorService.GetSessionWebhookDelivery
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetSessionWebhookDeliveryRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetSessionWebhookDeliveryResponse'
+  /bossanova.v1.OrchestratorService/GetTrigger:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetTrigger
+      description: GetTrigger returns one trigger the caller created. Never returns a secret.
+      operationId: bossanova.v1.OrchestratorService.GetTrigger
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetTriggerRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetTriggerResponse'
+  /bossanova.v1.OrchestratorService/GetTriggerCatalog:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: |-
+        Inbound triggers (BOS-1348). A trigger launches a configured Boss session
+         when bosso receives an authenticated HTTP request or a GitHub App event.
+         Triggers are bosso-owned, Postgres-backed state served by whichever
+         instance receives the call, not daemon-proxied, so these carry no Proxy
+         prefix. Every RPC below requires user authentication (daemon tokens are
+         refused) and passes the cloud access policy for the trigger's organization
+         (PERMISSION_DENIED when it refuses). A trigger is visible only to its
+         creator: any id-addressed call on a trigger the caller did not create, or
+         in an organization the caller is not a member of, returns NOT_FOUND so the
+         trigger's existence is not disclosed.
+      description: |-
+        GetTriggerCatalog returns the trigger types, event types, and filter
+         fields bosso accepts. Needs user authentication only; it is static
+         metadata, so no cloud access or organization is required.
+      operationId: bossanova.v1.OrchestratorService.GetTriggerCatalog
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetTriggerCatalogRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetTriggerCatalogResponse'
   /bossanova.v1.OrchestratorService/InviteOrganizationMember:
     post:
       tags:
@@ -727,6 +1172,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListOrganizationMembersResponse'
+  /bossanova.v1.OrchestratorService/ListOrganizationNotes:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListOrganizationNotes
+      operationId: bossanova.v1.OrchestratorService.ListOrganizationNotes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListOrganizationNotesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListOrganizationNotesResponse'
   /bossanova.v1.OrchestratorService/ListOrganizations:
     post:
       tags:
@@ -798,6 +1278,209 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListRepoOrganizationsResponse'
+  /bossanova.v1.OrchestratorService/ListSessionWebhookDeliveries:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListSessionWebhookDeliveries
+      description: |-
+        ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
+         first. INVALID_ARGUMENT for a page_token that does not decode, an
+         unknown status, or a negative page_size.
+      operationId: bossanova.v1.OrchestratorService.ListSessionWebhookDeliveries
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookDeliveriesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookDeliveriesResponse'
+  /bossanova.v1.OrchestratorService/ListSessionWebhookEventTypes:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: |-
+        Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
+         fired on session state changes. Distinct from the inbound GitHub
+         CreateWebhookConfig / ListWebhookConfigs / DeleteWebhookConfig above.
+         Every RPC below requires user authentication, passes the cloud access
+         policy (PERMISSION_DENIED when it refuses), and requires the OWNER role in
+         organization_id, which must be the caller's active organization (empty
+         means the active organization). Reads are owner-only too: endpoint URLs can
+         reveal internal infrastructure. An id that does not belong to
+         organization_id answers NOT_FOUND, never PERMISSION_DENIED, so a
+         webhook's existence is not disclosed. The signing secret is returned ONLY
+         by CreateSessionWebhook and RotateSessionWebhookSecret.
+      description: |-
+        ListSessionWebhookEventTypes returns the event catalog an endpoint can
+         subscribe to, in canonical order.
+      operationId: bossanova.v1.OrchestratorService.ListSessionWebhookEventTypes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookEventTypesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookEventTypesResponse'
+  /bossanova.v1.OrchestratorService/ListSessionWebhooks:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListSessionWebhooks
+      description: |-
+        ListSessionWebhooks returns the organization's endpoints, oldest first.
+         Never returns a secret.
+      operationId: bossanova.v1.OrchestratorService.ListSessionWebhooks
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSessionWebhooksRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSessionWebhooksResponse'
+  /bossanova.v1.OrchestratorService/ListTriggerInvocations:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListTriggerInvocations
+      description: |-
+        ListTriggerInvocations returns the invocation history of a trigger the
+         caller created, newest first.
+      operationId: bossanova.v1.OrchestratorService.ListTriggerInvocations
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListTriggerInvocationsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListTriggerInvocationsResponse'
+  /bossanova.v1.OrchestratorService/ListTriggers:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListTriggers
+      description: |-
+        ListTriggers returns the caller's own triggers, in organization_id when
+         set (the caller must be a member) or across every organization the caller
+         belongs to. Never returns a secret.
+      operationId: bossanova.v1.OrchestratorService.ListTriggers
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListTriggersRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListTriggersResponse'
   /bossanova.v1.OrchestratorService/ListWebhookConfigs:
     post:
       tags:
@@ -3230,6 +3913,130 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReportBugResponse'
+  /bossanova.v1.OrchestratorService/RotateSessionWebhookSecret:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RotateSessionWebhookSecret
+      description: |-
+        RotateSessionWebhookSecret replaces the signing secret; undelivered events
+         are signed with the new one. The new secret is returned ONLY here.
+      operationId: bossanova.v1.OrchestratorService.RotateSessionWebhookSecret
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RotateSessionWebhookSecretRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RotateSessionWebhookSecretResponse'
+  /bossanova.v1.OrchestratorService/RotateTriggerSecret:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RotateTriggerSecret
+      description: |-
+        RotateTriggerSecret replaces the signing secret of an HTTP trigger the
+         caller created; the old secret stops validating immediately. The new
+         secret is returned ONLY in this response. FAILED_PRECONDITION for a
+         trigger type with no secret.
+      operationId: bossanova.v1.OrchestratorService.RotateTriggerSecret
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RotateTriggerSecretRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RotateTriggerSecretResponse'
+  /bossanova.v1.OrchestratorService/SendSessionWebhookTestEvent:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SendSessionWebhookTestEvent
+      description: |-
+        SendSessionWebhookTestEvent sends one test delivery of event_type to the
+         endpoint synchronously and returns it with its single attempt, or
+         cancelled without one when the endpoint is disabled or changed while the
+         attempt is in flight. The
+         endpoint need not be subscribed to event_type, and a disabled endpoint may
+         still be tested. An absent payload_json sends the catalog sample; a
+         supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
+         otherwise), and the server overwrites its id, type, organization_id and
+         created_at and forces is_test to true. Test deliveries are never retried.
+         RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+      operationId: bossanova.v1.OrchestratorService.SendSessionWebhookTestEvent
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SendSessionWebhookTestEventRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SendSessionWebhookTestEventResponse'
   /bossanova.v1.OrchestratorService/SetOrganizationMemberRole:
     post:
       tags:
@@ -3378,7 +4185,93 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SwitchActiveOrganizationResponse'
       deprecated: true
+  /bossanova.v1.OrchestratorService/SyncDaemonNotes:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SyncDaemonNotes
+      description: |-
+        SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
+         authenticates the daemon session, the same principal as
+         PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
+         the author of every synced note, and each item is routed to an
+         organization by its repo_origin_url. The mirror is one-way and
+         daemon-authoritative: a newer source_version wins, and the cloud copy of a
+         synced note cannot be edited through UpdateOrganizationNote. See
+         SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
+         per-item results.
+      operationId: bossanova.v1.OrchestratorService.SyncDaemonNotes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SyncDaemonNotesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SyncDaemonNotesResponse'
   /bossanova.v1.OrchestratorService/TerminalStream: {}
+  /bossanova.v1.OrchestratorService/TestTrigger:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: TestTrigger
+      description: |-
+        TestTrigger runs a sample payload through a trigger the caller created,
+         applying the same filters and policies as a real invocation, and records
+         the result as a TriggerInvocation with source "test". It launches a
+         session only when should_launch is set; otherwise the invocation stops at
+         its decision.
+      operationId: bossanova.v1.OrchestratorService.TestTrigger
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.TestTriggerRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.TestTriggerResponse'
   /bossanova.v1.OrchestratorService/TransferSession:
     post:
       tags:
@@ -3415,6 +4308,119 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.TransferSessionResponse'
+  /bossanova.v1.OrchestratorService/UpdateOrganizationNote:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateOrganizationNote
+      operationId: bossanova.v1.OrchestratorService.UpdateOrganizationNote
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateOrganizationNoteRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateOrganizationNoteResponse'
+  /bossanova.v1.OrchestratorService/UpdateSessionWebhook:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateSessionWebhook
+      description: |-
+        UpdateSessionWebhook changes only the fields that are present and returns
+         the endpoint without its secret. Disabling an endpoint or changing its URL
+         cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+      operationId: bossanova.v1.OrchestratorService.UpdateSessionWebhook
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateSessionWebhookRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateSessionWebhookResponse'
+  /bossanova.v1.OrchestratorService/UpdateTrigger:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateTrigger
+      description: |-
+        UpdateTrigger changes fields of a trigger the caller created; absent
+         fields are left unchanged. trigger_type is immutable. Never returns or
+         changes the secret.
+      operationId: bossanova.v1.OrchestratorService.UpdateTrigger
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateTriggerRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateTriggerResponse'
 components:
   schemas:
     bossanova.v1.Account:
@@ -3929,6 +4935,20 @@ components:
         id:
           type: string
           title: id
+        shouldForce:
+          type: boolean
+          title: should_force
+          description: |-
+            Archive now even if a chat in the session is still working. Without it the
+             daemon defers the archive until every chat is idle (BOS-1380).
+        requesterAgentSessionId:
+          type: string
+          title: requester_agent_session_id
+          description: |-
+            The agent session id of the chat making the request, when the request comes
+             from inside a session (the CLI sends $BOSS_AGENT_SESSION_ID). That chat is
+             mid-turn by definition, so it counts as busy until the tracker observes it
+             settle.
       title: ArchiveSessionRequest
       additionalProperties: false
     bossanova.v1.ArchiveSessionResponse:
@@ -3937,6 +4957,18 @@ components:
         session:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
+        isDeferred:
+          type: boolean
+          title: is_deferred
+          description: |-
+            True when the archive is pending until every chat in the session is idle;
+             the session is not yet archived and carries archive_pending.
+        blockingAgentSessionId:
+          type: string
+          title: blocking_agent_session_id
+          description: |-
+            The agent session id of the chat the deferred archive is waiting on. Empty
+             when the archive ran immediately.
       title: ArchiveSessionResponse
       additionalProperties: false
     bossanova.v1.AttachScope:
@@ -4755,6 +5787,12 @@ components:
              and never re-arms after that. A spinner-only redraw therefore leaves it
              true, because last_substantive_output_at is still the seed even though
              last_output_at has moved.
+        phase:
+          type: string
+          title: phase
+          description: |-
+            Skill-reported stage, distinct from AgentProgressPhase.
+             Empty unless status is CHAT_STATUS_WORKING.
       title: ChatStatusEntry
       additionalProperties: false
       description: ChatStatusEntry is a single chat's cached status.
@@ -5267,6 +6305,17 @@ components:
                 - getSessionStatuses
             - type: object
               properties:
+                launchTriggerSession:
+                  title: launch_trigger_session
+                  description: |-
+                    LaunchTriggerSession returns the session created (or previously created)
+                     for an inbound trigger invocation.
+                  $ref: '#/components/schemas/bossanova.v1.LaunchTriggerSessionResult'
+              title: launch_trigger_session
+              required:
+                - launchTriggerSession
+            - type: object
+              properties:
                 listAccounts:
                   title: list_accounts
                   description: |-
@@ -5763,6 +6812,14 @@ components:
             - boolean
             - "null"
           title: is_zero_output
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = SKIP.
       title: CreateCronJobCommand
       additionalProperties: false
       description: |-
@@ -5823,6 +6880,14 @@ components:
              symmetry with UpdateCronJobRequest; omitted and explicit false mean the same
              thing (default false). Persisted and echoed back only — nothing honours it
              yet, so a job with this set still fires exactly as it does today (BOS-543).
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = SKIP.
       title: CreateCronJobRequest
       additionalProperties: false
     bossanova.v1.CreateCronJobResponse:
@@ -6058,6 +7123,67 @@ components:
           title: note
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: CreateNoteResponse
+      additionalProperties: false
+    bossanova.v1.CreateOrganizationNoteRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+          description: Target organization. Required; the caller must be a member.
+        body:
+          type: string
+          title: body
+          description: |-
+            Must be non-empty after trimming and within the same 64 KiB cap as the
+             daemon Note, else InvalidArgument. Stored verbatim.
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Normalised like the daemon Note. At most 32 tags of at most 64 bytes each
+             (measured after trimming), else InvalidArgument.
+        repoOriginUrl:
+          type:
+            - string
+            - "null"
+          title: repo_origin_url
+          description: |-
+            Optional repository the note is about. Canonicalised the same way as a
+             repository-organization mapping; a malformed URL is InvalidArgument.
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+          description: Optional provenance.
+        chatId:
+          type:
+            - string
+            - "null"
+          title: chat_id
+        idempotencyKey:
+          type:
+            - string
+            - "null"
+          title: idempotency_key
+          description: |-
+            Optional key for an idempotent create, scoped to (organization_id, caller).
+             A retry with the same key returns the original note unchanged and consumes
+             no quota. The key is remembered for as long as that note exists (until it
+             is deleted or expires). Reusing a key with a different body or tags is
+             AlreadyExists.
+      title: CreateOrganizationNoteRequest
+      additionalProperties: false
+    bossanova.v1.CreateOrganizationNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNote'
+      title: CreateOrganizationNoteResponse
       additionalProperties: false
     bossanova.v1.CreateOrganizationRequest:
       type: object
@@ -6374,6 +7500,132 @@ components:
             - setupOutput
       title: CreateSessionResponse
       additionalProperties: false
+    bossanova.v1.CreateSessionWebhookRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        url:
+          type: string
+          title: url
+        description:
+          type: string
+          title: description
+        eventTypes:
+          type: array
+          items:
+            type: string
+          title: event_types
+          description: Required, non-empty; each must be a catalog type. Duplicates collapse.
+        secret:
+          type:
+            - string
+            - "null"
+          title: secret
+          description: Signing secret to use. Absent generates a random one.
+        isEnabled:
+          type: boolean
+          title: is_enabled
+          description: False creates the endpoint disabled.
+      title: CreateSessionWebhookRequest
+      additionalProperties: false
+    bossanova.v1.CreateSessionWebhookResponse:
+      type: object
+      properties:
+        webhook:
+          title: webhook
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhook'
+        secret:
+          type: string
+          title: secret
+          description: |-
+            The signing secret, returned ONLY here and by rotation. Callers must show
+             it once and never log it.
+      title: CreateSessionWebhookResponse
+      additionalProperties: false
+    bossanova.v1.CreateTriggerRequest:
+      type: object
+      allOf:
+        - properties:
+            organizationId:
+              type: string
+              title: organization_id
+              description: Required. The caller must be a member.
+            name:
+              type: string
+              title: name
+            isEnabled:
+              type: boolean
+              title: is_enabled
+            triggerType:
+              type: string
+              title: trigger_type
+              description: Required catalog type name, e.g. "http" or "github".
+            repoOriginUrl:
+              type: string
+              title: repo_origin_url
+            launch:
+              title: launch
+              $ref: '#/components/schemas/bossanova.v1.TriggerLaunchSettings'
+            placement:
+              title: placement
+              $ref: '#/components/schemas/bossanova.v1.TriggerPlacement'
+            concurrencyPolicy:
+              title: concurrency_policy
+              $ref: '#/components/schemas/bossanova.v1.TriggerConcurrencyPolicy'
+            cooldownSeconds:
+              type: integer
+              title: cooldown_seconds
+              format: int32
+            filters:
+              type: array
+              items:
+                $ref: '#/components/schemas/bossanova.v1.TriggerFilter'
+              title: filters
+            payloadFields:
+              type: array
+              items:
+                type: string
+              title: payload_fields
+        - oneOf:
+            - type: object
+              properties:
+                github:
+                  title: github
+                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+              title: github
+              required:
+                - github
+            - type: object
+              properties:
+                http:
+                  title: http
+                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+              title: http
+              required:
+                - http
+      title: CreateTriggerRequest
+      additionalProperties: false
+      description: |-
+        CreateTriggerRequest carries the writable Trigger fields. The output-only
+         fields (id, creator_user_id, config_version, endpoint_path,
+         last_invocation, timestamps) are assigned by bosso.
+    bossanova.v1.CreateTriggerResponse:
+      type: object
+      properties:
+        trigger:
+          title: trigger
+          $ref: '#/components/schemas/bossanova.v1.Trigger'
+        secret:
+          type: string
+          title: secret
+          description: |-
+            One-time signing secret. Set only for HTTP triggers, and returned ONLY
+             here: bosso stores a form it cannot reverse, so it can never be read back.
+             Callers must show it once and never log it.
+      title: CreateTriggerResponse
+      additionalProperties: false
     bossanova.v1.CreateWebhookConfigRequest:
       type: object
       properties:
@@ -6479,6 +7731,12 @@ components:
           type: string
           title: last_run_agent_name
           description: resolved agent used by the last spawned run; empty = unknown/legacy
+        concurrencyPolicy:
+          title: concurrency_policy
+          description: |-
+            What a fire does while this job's previous run is still in progress.
+             Always a concrete value on read (never UNSPECIFIED); defaults to SKIP.
+          $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
       title: CronJob
       additionalProperties: false
       description: |-
@@ -6488,6 +7746,18 @@ components:
          PR creation deferred. When Claude's Stop hook fires, the daemon
          finalizes the run: empty diff -> delete worktree; non-empty diff +
          GitHub origin -> push and open PR; otherwise preserve the worktree.
+    bossanova.v1.CronJobConcurrencyPolicy:
+      type: string
+      title: CronJobConcurrencyPolicy
+      enum:
+        - CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED
+        - CRON_JOB_CONCURRENCY_POLICY_SKIP
+        - CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS
+        - CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT
+      description: |-
+        CronJobConcurrencyPolicy decides what a fire does while the same job's
+         previous run is still in progress. Wording follows GitHub Actions
+         (`cancel-in-progress`) and Kestra (`allowConcurrent`).
     bossanova.v1.CronJobStatus:
       type: string
       title: CronJobStatus
@@ -6984,6 +8254,24 @@ components:
       type: object
       title: DeleteNoteResponse
       additionalProperties: false
+    bossanova.v1.DeleteOrganizationNoteRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+      title: DeleteOrganizationNoteRequest
+      additionalProperties: false
+      description: |-
+        DeleteOrganizationNoteRequest hard-deletes an API-origin note, and
+         tombstones a synced one so the source daemon cannot sync it back.
+    bossanova.v1.DeleteOrganizationNoteResponse:
+      type: object
+      title: DeleteOrganizationNoteResponse
+      additionalProperties: false
     bossanova.v1.DeleteOrganizationRequest:
       type: object
       properties:
@@ -6995,6 +8283,33 @@ components:
     bossanova.v1.DeleteOrganizationResponse:
       type: object
       title: DeleteOrganizationResponse
+      additionalProperties: false
+    bossanova.v1.DeleteSessionWebhookRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+      title: DeleteSessionWebhookRequest
+      additionalProperties: false
+    bossanova.v1.DeleteSessionWebhookResponse:
+      type: object
+      title: DeleteSessionWebhookResponse
+      additionalProperties: false
+    bossanova.v1.DeleteTriggerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: DeleteTriggerRequest
+      additionalProperties: false
+    bossanova.v1.DeleteTriggerResponse:
+      type: object
+      title: DeleteTriggerResponse
       additionalProperties: false
     bossanova.v1.DeleteWebhookConfigRequest:
       type: object
@@ -7257,6 +8572,8 @@ components:
         - DISPLAY_STATUS_DRAFT
         - DISPLAY_STATUS_APPROVED
         - DISPLAY_STATUS_REVIEW
+        - DISPLAY_STATUS_VERIFYING
+        - DISPLAY_STATUS_NEEDS_HUMAN
       description: DisplayStatus represents the unified display status for a session in the TUI.
     bossanova.v1.EmptyTrashCommand:
       type: object
@@ -7746,6 +9063,41 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: GetNoteResponse
       additionalProperties: false
+    bossanova.v1.GetOrganizationNoteQuotaRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: GetOrganizationNoteQuotaRequest
+      additionalProperties: false
+    bossanova.v1.GetOrganizationNoteQuotaResponse:
+      type: object
+      properties:
+        quota:
+          title: quota
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNoteQuota'
+      title: GetOrganizationNoteQuotaResponse
+      additionalProperties: false
+    bossanova.v1.GetOrganizationNoteRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+      title: GetOrganizationNoteRequest
+      additionalProperties: false
+    bossanova.v1.GetOrganizationNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNote'
+      title: GetOrganizationNoteResponse
+      additionalProperties: false
     bossanova.v1.GetOrganizationRequest:
       type: object
       properties:
@@ -7984,6 +9336,45 @@ components:
           title: statuses
       title: GetSessionStatusesResponse
       additionalProperties: false
+    bossanova.v1.GetSessionWebhookDeliveryRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        deliveryId:
+          type: string
+          title: delivery_id
+      title: GetSessionWebhookDeliveryRequest
+      additionalProperties: false
+    bossanova.v1.GetSessionWebhookDeliveryResponse:
+      type: object
+      properties:
+        delivery:
+          title: delivery
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhookDelivery'
+        attempts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhookDeliveryAttempt'
+          title: attempts
+          description: Every attempt, in attempt order.
+        requestBody:
+          type: string
+          title: request_body
+          description: The exact signed request body.
+        requestHeaders:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhookRequestHeader'
+          title: request_headers
+          description: |-
+            The request headers each attempt sends, sorted by name. The signature is
+             computed with the endpoint's current secret, so it differs from the one
+             an attempt made before a rotation carried. The secret itself is never
+             included.
+      title: GetSessionWebhookDeliveryResponse
+      additionalProperties: false
     bossanova.v1.GetSettingsRequest:
       type: object
       title: GetSettingsRequest
@@ -7995,6 +9386,34 @@ components:
           title: settings
           $ref: '#/components/schemas/bossanova.v1.GlobalSettings'
       title: GetSettingsResponse
+      additionalProperties: false
+    bossanova.v1.GetTriggerCatalogRequest:
+      type: object
+      title: GetTriggerCatalogRequest
+      additionalProperties: false
+    bossanova.v1.GetTriggerCatalogResponse:
+      type: object
+      properties:
+        catalog:
+          title: catalog
+          $ref: '#/components/schemas/bossanova.v1.TriggerCatalog'
+      title: GetTriggerCatalogResponse
+      additionalProperties: false
+    bossanova.v1.GetTriggerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: GetTriggerRequest
+      additionalProperties: false
+    bossanova.v1.GetTriggerResponse:
+      type: object
+      properties:
+        trigger:
+          title: trigger
+          $ref: '#/components/schemas/bossanova.v1.Trigger'
+      title: GetTriggerResponse
       additionalProperties: false
     bossanova.v1.GetWorkflowStatusRequest:
       type: object
@@ -8133,6 +9552,22 @@ components:
          domain model; timestamps use google.protobuf.Timestamp and enum-like fields
          are stable lowercase strings. The message body is a secret payload — it is
          carried here for the registering owner but must never be logged.
+    bossanova.v1.GithubTriggerConfig:
+      type: object
+      properties:
+        eventTypes:
+          type: array
+          items:
+            type: string
+          title: event_types
+          description: |-
+            Canonical catalog event ids (TriggerEventTypeSpec.id), e.g.
+             "pull_request.opened". At least one is required.
+      title: GithubTriggerConfig
+      additionalProperties: false
+      description: |-
+        GithubTriggerConfig is config version 1 for trigger_type "github". Events
+         arrive through the Bossanova GitHub App installation on repo_origin_url.
     bossanova.v1.GlobalSettings:
       type: object
       properties:
@@ -8271,6 +9706,33 @@ components:
          CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
          commands, and every bosso/orchestrator surface leave Session.http_endpoints
          empty.
+    bossanova.v1.HttpTriggerConfig:
+      type: object
+      properties:
+        allowedMethods:
+          type: array
+          items:
+            type: string
+          title: allowed_methods
+          description: Accepted HTTP methods (upper case). Empty means POST only.
+        idempotencyHeader:
+          type: string
+          title: idempotency_header
+          description: |-
+            Request header carrying the caller's idempotency key. Empty means
+             "Idempotency-Key".
+        dedupWindowSeconds:
+          type: integer
+          title: dedup_window_seconds
+          format: int32
+          description: |-
+            How long a seen idempotency key suppresses a repeat as DEDUPLICATED.
+             0 means 300.
+      title: HttpTriggerConfig
+      additionalProperties: false
+      description: |-
+        HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
+         authenticated with the trigger's signing secret.
     bossanova.v1.InstalledPlugin:
       type: object
       properties:
@@ -8431,6 +9893,85 @@ components:
           title: is_user
       title: LastTurnIsUserResponse
       additionalProperties: false
+    bossanova.v1.LaunchTriggerSessionCommand:
+      type: object
+      properties:
+        invocationId:
+          type: string
+          title: invocation_id
+          description: TriggerInvocation.id; the idempotency key.
+        triggerId:
+          type: string
+          title: trigger_id
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: Canonical origin URL of the repo to launch in.
+        title:
+          type: string
+          title: title
+          description: Session title.
+        prompt:
+          type: string
+          title: prompt
+          description: Fully rendered prompt (skill slash command and payload fields applied).
+        agentName:
+          type: string
+          title: agent_name
+          description: Agent runner plugin name; empty means claude.
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+          description: Opaque agent model id; absent means the plugin default.
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
+          description: Opaque agent reasoning-effort level; absent means the plugin default.
+        baseBranch:
+          type: string
+          title: base_branch
+          description: Branch to cut the worktree from; empty means the repo default.
+      title: LaunchTriggerSessionCommand
+      additionalProperties: false
+      description: |-
+        LaunchTriggerSessionCommand asks the daemon to start the session for one
+         inbound trigger invocation (BOS-1348). bosso has already authenticated the
+         request, applied the trigger's filters and policies, rendered the prompt, and
+         chosen this daemon; the daemon only creates the session.
+
+         Contract:
+           - Idempotent on invocation_id. bosso may resend after a timeout or a
+             reconnect; a repeat for an invocation the daemon already launched creates
+             nothing and replies with the original session_id and is_replay = true.
+           - Replies ok = false with ERROR_CODE_NOT_FOUND when the daemon manages no
+             repo whose origin matches repo_origin_url.
+           - Runs asynchronously: the daemon acknowledges by replying when the session
+             exists, and never blocks its command reader while the worktree and agent
+             start.
+           - A daemon that predates this command drops the unknown oneof arm and sends
+             no reply, so bosso bounds its own wait and records the invocation as
+             FAILED with decision_reason "daemon_unsupported".
+    bossanova.v1.LaunchTriggerSessionResult:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        isReplay:
+          type: boolean
+          title: is_replay
+          description: |-
+            True when the session already existed for this invocation_id and nothing
+             new was launched.
+      title: LaunchTriggerSessionResult
+      additionalProperties: false
+      description: |-
+        LaunchTriggerSessionResult is the reply to LaunchTriggerSessionCommand
+         (launch_trigger_session = 42).
     bossanova.v1.LeaveOrganizationRequest:
       type: object
       properties:
@@ -9116,6 +10657,80 @@ components:
           title: members
       title: ListOrganizationMembersResponse
       additionalProperties: false
+    bossanova.v1.ListOrganizationNotesRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+          description: Target organization. Required; the caller must be a member.
+        authorUserId:
+          type:
+            - string
+            - "null"
+          title: author_user_id
+        repoOriginUrl:
+          type:
+            - string
+            - "null"
+          title: repo_origin_url
+        sessionId:
+          type:
+            - string
+            - "null"
+          title: session_id
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+          description: |-
+            Matches notes carrying ANY of these tags (OR), normalised like the daemon
+             ListNotesRequest.tags filter.
+        search:
+          type:
+            - string
+            - "null"
+          title: search
+          description: |-
+            Substring match on the body. A term that is blank after trimming means no
+             search.
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            Maximum notes per page. Zero or negative means the server default (50);
+             values above 200 are clamped to 200.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            Opaque next_page_token from a previous response with the same filters.
+             Empty asks for the first page; a malformed token is InvalidArgument.
+      title: ListOrganizationNotesRequest
+      additionalProperties: false
+      description: |-
+        ListOrganizationNotesRequest lists one organization's unexpired notes. Every
+         filter is optional; an unset filter is unconstrained and set filters
+         intersect (AND).
+    bossanova.v1.ListOrganizationNotesResponse:
+      type: object
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.OrganizationNote'
+          title: notes
+          description: |-
+            One page, in a stable server-defined order that does not shift between
+             pages.
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: Pass as page_token to fetch the next page. Empty on the last page.
+      title: ListOrganizationNotesResponse
+      additionalProperties: false
     bossanova.v1.ListOrganizationsRequest:
       type: object
       title: ListOrganizationsRequest
@@ -9220,6 +10835,96 @@ components:
           title: repos
       title: ListReposResponse
       additionalProperties: false
+    bossanova.v1.ListSessionWebhookDeliveriesRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        webhookId:
+          type: string
+          title: webhook_id
+        status:
+          type:
+            - string
+            - "null"
+          title: status
+          description: Only deliveries in this status (see SessionWebhookDelivery.status).
+        eventType:
+          type:
+            - string
+            - "null"
+          title: event_type
+          description: Only deliveries of this event type.
+        isTest:
+          type:
+            - boolean
+            - "null"
+          title: is_test
+          description: Only test (true) or only live (false) deliveries.
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            Default 25, at most 100; larger values are clamped and a negative value
+             is INVALID_ARGUMENT.
+        pageToken:
+          type: string
+          title: page_token
+          description: Opaque next_page_token from a previous response with the same filters.
+      title: ListSessionWebhookDeliveriesRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhookDeliveriesResponse:
+      type: object
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhookDelivery'
+          title: deliveries
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: Pass as page_token to fetch the next page. Empty on the last page.
+      title: ListSessionWebhookDeliveriesResponse
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhookEventTypesRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: ListSessionWebhookEventTypesRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhookEventTypesResponse:
+      type: object
+      properties:
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhookEventType'
+          title: event_types
+      title: ListSessionWebhookEventTypesResponse
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhooksRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: ListSessionWebhooksRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhooksResponse:
+      type: object
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhook'
+          title: webhooks
+      title: ListSessionWebhooksResponse
+      additionalProperties: false
     bossanova.v1.ListSessionsRequest:
       type: object
       properties:
@@ -9313,6 +11018,74 @@ components:
             $ref: '#/components/schemas/bossanova.v1.TrackerIssue'
           title: issues
       title: ListTrackerIssuesResponse
+      additionalProperties: false
+    bossanova.v1.ListTriggerInvocationsRequest:
+      type: object
+      properties:
+        triggerId:
+          type: string
+          title: trigger_id
+        limit:
+          type: integer
+          title: limit
+          format: int32
+          description: |-
+            Maximum invocations to return. 0 means 50; values above 200 are capped
+             at 200.
+        beforeReceivedAt:
+          oneOf:
+            - $ref: '#/components/schemas/google.protobuf.Timestamp'
+            - type: "null"
+          title: before_received_at
+          description: |-
+            Page cursor, paired with before_id: pass the received_at and id of the
+             last invocation of the previous page. Returns only invocations that sort
+             after that one in (received_at DESC, id DESC) order, so invocations that
+             share a received_at are never skipped at a page boundary.
+        beforeId:
+          type:
+            - string
+            - "null"
+          title: before_id
+          description: |-
+            Tiebreak for before_received_at: the id of the last invocation of the
+             previous page. Ignored unless before_received_at is set; when it is empty,
+             every invocation received at exactly before_received_at is excluded.
+      title: ListTriggerInvocationsRequest
+      additionalProperties: false
+    bossanova.v1.ListTriggerInvocationsResponse:
+      type: object
+      properties:
+        invocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TriggerInvocation'
+          title: invocations
+          description: Newest first by received_at, then by id descending.
+      title: ListTriggerInvocationsResponse
+      additionalProperties: false
+    bossanova.v1.ListTriggersRequest:
+      type: object
+      properties:
+        organizationId:
+          type:
+            - string
+            - "null"
+          title: organization_id
+          description: |-
+            Restrict to one organization the caller belongs to. Absent lists the
+             caller's triggers across every organization they belong to.
+      title: ListTriggersRequest
+      additionalProperties: false
+    bossanova.v1.ListTriggersResponse:
+      type: object
+      properties:
+        triggers:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Trigger'
+          title: triggers
+      title: ListTriggersResponse
       additionalProperties: false
     bossanova.v1.ListWebhookConfigsRequest:
       type: object
@@ -9538,6 +11311,12 @@ components:
         id:
           type: string
           title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+          description: |-
+            Optional 40-hex commit SHA. When set, the merge is refused with a
+             HEAD_MISMATCH FailedPrecondition unless the PR's head is exactly this commit.
       title: MergeSessionRequest
       additionalProperties: false
     bossanova.v1.MergeSessionResponse:
@@ -9724,6 +11503,22 @@ components:
         updatedAt:
           title: updated_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        syncState:
+          type: string
+          title: sync_state
+          description: |-
+            Cloud-sync outbox state of the note's latest local version (BOS-1429):
+             pending, synced, rejected, rate_limited, expired, not_entitled, refused,
+             suppressed or failed. Empty when the daemon predates the outbox or the
+             note has no outbox row.
+        syncedAt:
+          title: synced_at
+          description: When the cloud last accepted a version of this note; unset if never.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        syncLastError:
+          type: string
+          title: sync_last_error
+          description: Reason recorded by the last non-synced sync outcome; empty if none.
       title: Note
       additionalProperties: false
       description: |-
@@ -9737,6 +11532,132 @@ components:
 
          Unlike GithubCallback.message and Broadcast.message, a note's body is NOT a
          secret: it exists to be read back, so it is populated on every read surface.
+    bossanova.v1.NoteSyncItem:
+      type: object
+      properties:
+        sourceNoteId:
+          type: string
+          title: source_note_id
+          description: |-
+            The note's id in the daemon's store. Together with the authenticated
+             daemon it identifies the cloud copy.
+        sourceVersion:
+          type:
+            - integer
+            - string
+          title: source_version
+          format: int64
+          description: |-
+            Monotonic per source note; the cloud keeps the highest version it has
+             applied and answers STALE for anything not newer.
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: |-
+            Canonical origin URL of the note's repository. Picks the organization: an
+             unmapped repository routes to the daemon owner's personal organization; a
+             mapped one routes to its mapped organization when the owner is a member of
+             it, and is ORGANIZATION_REFUSED otherwise.
+        sessionId:
+          type: string
+          title: session_id
+        chatId:
+          type: string
+          title: chat_id
+        body:
+          type: string
+          title: body
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+        sourceCreatedAt:
+          title: source_created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sourceUpdatedAt:
+          title: source_updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        isDeleted:
+          type: boolean
+          title: is_deleted
+          description: |-
+            True when the note was deleted on the daemon. The cloud copy is
+             tombstoned, no quota is consumed, and the result is SYNCED even when no
+             cloud copy existed.
+      title: NoteSyncItem
+      additionalProperties: false
+      description: NoteSyncItem is the current state of one daemon-local note.
+    bossanova.v1.NoteSyncOutcome:
+      type: string
+      title: NoteSyncOutcome
+      enum:
+        - NOTE_SYNC_OUTCOME_UNSPECIFIED
+        - NOTE_SYNC_OUTCOME_SYNCED
+        - NOTE_SYNC_OUTCOME_STALE
+        - NOTE_SYNC_OUTCOME_REJECTED
+        - NOTE_SYNC_OUTCOME_RATE_LIMITED
+        - NOTE_SYNC_OUTCOME_EXPIRED
+        - NOTE_SYNC_OUTCOME_NOT_ENTITLED
+        - NOTE_SYNC_OUTCOME_ORGANIZATION_REFUSED
+        - NOTE_SYNC_OUTCOME_SUPPRESSED
+      description: NoteSyncOutcome is the result for one NoteSyncItem.
+    bossanova.v1.NoteSyncResult:
+      type: object
+      properties:
+        sourceNoteId:
+          type: string
+          title: source_note_id
+          description: Echo of the item's source_note_id and source_version.
+        sourceVersion:
+          type:
+            - integer
+            - string
+          title: source_version
+          format: int64
+        outcome:
+          title: outcome
+          $ref: '#/components/schemas/bossanova.v1.NoteSyncOutcome'
+        organizationId:
+          type: string
+          title: organization_id
+          description: |-
+            The organization the item resolved to, and the cloud note id. Set on
+             SYNCED; otherwise set when known.
+        organizationNoteId:
+          type: string
+          title: organization_note_id
+        reason:
+          type: string
+          title: reason
+          description: |-
+            Human-readable explanation for REJECTED (and any other non-SYNCED outcome
+             when available). Never contains the note body.
+        retryAt:
+          title: retry_at
+          description: |-
+            Set on RATE_LIMITED: the end of the organization's quota window
+             (OrganizationNoteQuota.window_resets_at).
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: NoteSyncResult
+      additionalProperties: false
+    bossanova.v1.NoteSyncStateCount:
+      type: object
+      properties:
+        state:
+          type: string
+          title: state
+        noteCount:
+          type:
+            - integer
+            - string
+          title: note_count
+          format: int64
+      title: NoteSyncStateCount
+      additionalProperties: false
+      description: |-
+        NoteSyncStateCount is how many note sync outbox rows (live notes and
+         unpurged delete tombstones) are in one sync state.
     bossanova.v1.NoteTagSet:
       type: object
       properties:
@@ -10032,6 +11953,19 @@ components:
               title: get_session_statuses
               required:
                 - getSessionStatuses
+            - type: object
+              properties:
+                launchTriggerSession:
+                  title: launch_trigger_session
+                  description: |-
+                    bosso → daemon: launch the session for one inbound trigger invocation
+                     (BOS-1348). Idempotent on invocation_id and handled asynchronously.
+                     Replies CommandResult{launch_trigger_session}; see
+                     LaunchTriggerSessionCommand.
+                  $ref: '#/components/schemas/bossanova.v1.LaunchTriggerSessionCommand'
+              title: launch_trigger_session
+              required:
+                - launchTriggerSession
             - type: object
               properties:
                 linkSessionPr:
@@ -10554,6 +12488,154 @@ components:
              landed as a local organization member through sign-in reconciliation.
       title: OrganizationMember
       additionalProperties: false
+    bossanova.v1.OrganizationNote:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        organizationId:
+          type: string
+          title: organization_id
+          description: bosso-local organization row id (Organization.id).
+        authorUserId:
+          type: string
+          title: author_user_id
+          description: |-
+            The user who wrote the note: the caller of CreateOrganizationNote, or the
+             owner of the daemon that synced it.
+        origin:
+          title: origin
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNoteOrigin'
+        sourceDaemonId:
+          type: string
+          title: source_daemon_id
+          description: |-
+            Provenance of a synced note: the daemon that sent it, the note's id in
+             that daemon's store, and the version last applied. Meaningful only when
+             origin is SYNCED; clients must not interpret them for API notes.
+        sourceNoteId:
+          type: string
+          title: source_note_id
+        sourceVersion:
+          type:
+            - integer
+            - string
+          title: source_version
+          format: int64
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: |-
+            Canonical repository origin URL the note is about; empty when the note is
+             not repository-scoped.
+        sessionId:
+          type: string
+          title: session_id
+          description: |-
+            Provenance only, never foreign keys: the session and chat that recorded the
+             note, which may no longer exist. Empty when not session- or chat-scoped.
+        chatId:
+          type: string
+          title: chat_id
+        body:
+          type: string
+          title: body
+        tags:
+          type: array
+          items:
+            type: string
+          title: tags
+        sourceCreatedAt:
+          title: source_created_at
+          description: |-
+            Creation and last-edit time at the source daemon. Meaningful only when
+             origin is SYNCED.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sourceUpdatedAt:
+          title: source_updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        createdAt:
+          title: created_at
+          description: When bosso first stored the note, and when bosso last changed it.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          description: The hard 90-day TTL deadline (see the message comment).
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: OrganizationNote
+      additionalProperties: false
+      description: |-
+        OrganizationNote is a note held by bosso on behalf of one organization: the
+         aggregate of what its members' daemons recorded (origin SYNCED) plus notes
+         written straight to the API (origin API).
+
+         body is user content. It is returned on every read surface, exactly like the
+         daemon Note, but bosso never writes it (or the tags) to logs or metrics.
+
+         tags are normalised exactly like the daemon Note: trimmed, lowercased,
+         de-duplicated, and returned in ascending order.
+
+         Every note has a hard 90-day time to live. expires_at is fixed when the note
+         is first stored (from the source note's creation time for a synced note) and
+         is not extended by later edits or syncs. Once it passes, reads treat the note
+         as absent (NotFound on Get, omitted from List) and the row is deleted.
+    bossanova.v1.OrganizationNoteOrigin:
+      type: string
+      title: OrganizationNoteOrigin
+      enum:
+        - ORGANIZATION_NOTE_ORIGIN_UNSPECIFIED
+        - ORGANIZATION_NOTE_ORIGIN_SYNCED
+        - ORGANIZATION_NOTE_ORIGIN_API
+      description: OrganizationNoteOrigin records how a note entered the organization store.
+    bossanova.v1.OrganizationNoteQuota:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        hourlyLimit:
+          type: integer
+          title: hourly_limit
+          format: int32
+          description: Writes the organization may make per window.
+        usedCount:
+          type: integer
+          title: used_count
+          format: int32
+          description: Writes consumed in the current window.
+        windowStartedAt:
+          title: window_started_at
+          description: Start of the current window (the top of the UTC hour).
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        windowResetsAt:
+          title: window_resets_at
+          description: End of the current window, when used_count resets. Retry after this time.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: OrganizationNoteQuota
+      additionalProperties: false
+      description: |-
+        OrganizationNoteQuota is one organization's write quota for the current
+         window. The window is a fixed UTC clock hour (for example 14:00:00 to
+         15:00:00 UTC), not a rolling 60 minutes: used_count resets to zero at
+         window_resets_at. The limit is configured server-side and is the same for
+         every organization.
+    bossanova.v1.OrganizationNoteQuotaExceeded:
+      type: object
+      properties:
+        quota:
+          title: quota
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNoteQuota'
+      title: OrganizationNoteQuotaExceeded
+      additionalProperties: false
+      description: |-
+        OrganizationNoteQuotaExceeded is the error detail attached to the
+         ResourceExhausted error a write returns when the organization's quota for
+         the current window is spent, so a client can show usage and the reset time
+         without a second call.
     bossanova.v1.OrganizationRepoReadFailure:
       type: object
       properties:
@@ -11163,6 +13245,14 @@ components:
             - boolean
             - "null"
           title: is_zero_output
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = SKIP.
       title: ProxyCreateCronJobRequest
       additionalProperties: false
       description: |-
@@ -12964,6 +15054,14 @@ components:
             - boolean
             - "null"
           title: is_zero_output
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = leave unchanged.
       title: ProxyUpdateCronJobRequest
       additionalProperties: false
       description: |-
@@ -14355,6 +16453,59 @@ components:
           title: comments
       title: ReviewSubmittedEvent
       additionalProperties: false
+    bossanova.v1.RotateSessionWebhookSecretRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+        secret:
+          type:
+            - string
+            - "null"
+          title: secret
+          description: New signing secret to use. Absent generates a random one.
+      title: RotateSessionWebhookSecretRequest
+      additionalProperties: false
+    bossanova.v1.RotateSessionWebhookSecretResponse:
+      type: object
+      properties:
+        webhook:
+          title: webhook
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhook'
+        secret:
+          type: string
+          title: secret
+          description: |-
+            The new signing secret, returned ONLY here. Callers must show it once and
+             never log it.
+      title: RotateSessionWebhookSecretResponse
+      additionalProperties: false
+    bossanova.v1.RotateTriggerSecretRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: RotateTriggerSecretRequest
+      additionalProperties: false
+    bossanova.v1.RotateTriggerSecretResponse:
+      type: object
+      properties:
+        trigger:
+          title: trigger
+          $ref: '#/components/schemas/bossanova.v1.Trigger'
+        secret:
+          type: string
+          title: secret
+          description: |-
+            The new one-time signing secret, returned ONLY here. Callers must show it
+             once and never log it.
+      title: RotateTriggerSecretResponse
+      additionalProperties: false
     bossanova.v1.RotationCapabilityRequest:
       type: object
       title: RotationCapabilityRequest
@@ -14880,6 +17031,46 @@ components:
         TurnStartState reports the optional, bounded post-submit observation of
          whether the agent began work after this message was submitted. It is not a
          delivery receipt: delivered and delivery_state remain authoritative.
+    bossanova.v1.SendSessionWebhookTestEventRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        webhookId:
+          type: string
+          title: webhook_id
+        eventType:
+          type: string
+          title: event_type
+          description: A catalog event type; the endpoint need not be subscribed to it.
+        payloadJson:
+          type:
+            - string
+            - "null"
+          title: payload_json
+          description: |-
+            The body to send, a JSON object of at most 64 KiB. Absent or empty sends
+             the catalog sample for event_type.
+      title: SendSessionWebhookTestEventRequest
+      additionalProperties: false
+    bossanova.v1.SendSessionWebhookTestEventResponse:
+      type: object
+      properties:
+        delivery:
+          title: delivery
+          description: |-
+            The persisted test delivery, already finished: succeeded or failed, or
+             cancelled when the endpoint was disabled or changed mid-attempt.
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhookDelivery'
+        attempt:
+          title: attempt
+          description: |-
+            The delivery's single attempt; absent only when the endpoint was disabled
+             or changed while the attempt was in flight, which cancels the delivery.
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhookDeliveryAttempt'
+      title: SendSessionWebhookTestEventResponse
+      additionalProperties: false
     bossanova.v1.Session:
       type: object
       properties:
@@ -15345,6 +17536,18 @@ components:
              row, and the apiversion down-convert that must restore "waiting" for a
              pinned client has nothing else to key on. Compare
              last_check_state_observed (field 65), carried for exactly that reason.
+        hasBuildReceipt:
+          type: boolean
+          title: has_build_receipt
+          description: |-
+            Transport-only fact from the current PR head: a successful boss/build receipt.
+             Refreshed from GitHub checks, never persisted; a new head clears it.
+        isReadyOverWaiting:
+          type: boolean
+          title: is_ready_over_waiting
+          description: |-
+            Transport-only inverse mark: Ready replaced an undemoted waiting composite.
+             Computed with the served label, never persisted.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -15581,6 +17784,12 @@ components:
             Short human-readable reason the session's chats are waiting, e.g.
              "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
              CHAT_STATUS_WAITING.
+        phase:
+          type: string
+          title: phase
+          description: |-
+            Skill-reported stage, distinct from AgentProgressPhase.
+             Empty unless status is CHAT_STATUS_WORKING.
       title: SessionStatusEntry
       additionalProperties: false
       description: SessionStatusEntry is an aggregate status for a session.
@@ -15616,6 +17825,197 @@ components:
       title: SessionSummary
       additionalProperties: false
       description: SessionSummary is a lightweight view of a Session for report context.
+    bossanova.v1.SessionWebhook:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        organizationId:
+          type: string
+          title: organization_id
+        url:
+          type: string
+          title: url
+          description: The https URL deliveries are POSTed to.
+        description:
+          type: string
+          title: description
+        eventTypes:
+          type: array
+          items:
+            type: string
+          title: event_types
+          description: Subscribed event types (SessionWebhookEventType.type), sorted.
+        isEnabled:
+          type: boolean
+          title: is_enabled
+          description: A disabled endpoint is sent nothing.
+        createdByUserId:
+          type: string
+          title: created_by_user_id
+          description: bosso users.id of the owner who created the endpoint.
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        secretRotatedAt:
+          title: secret_rotated_at
+          description: When the secret was last rotated; absent until the first rotation.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: SessionWebhook
+      additionalProperties: false
+      description: |-
+        SessionWebhook is one outbound session webhook endpoint. It NEVER carries
+         the signing secret: the secret is returned exactly once per issue, by
+         CreateSessionWebhookResponse or RotateSessionWebhookSecretResponse.
+    bossanova.v1.SessionWebhookDelivery:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        webhookId:
+          type: string
+          title: webhook_id
+        eventId:
+          type: string
+          title: event_id
+          description: The event id, also sent as the X-Bossanova-Event-Id header.
+        eventType:
+          type: string
+          title: event_type
+        isTest:
+          type: boolean
+          title: is_test
+          description: True for a SendSessionWebhookTestEvent delivery.
+        status:
+          type: string
+          title: status
+          description: One of pending, in_flight, succeeded, failed, cancelled.
+        attemptCount:
+          type: integer
+          title: attempt_count
+          format: int32
+        lastResponseStatusCode:
+          type:
+            - integer
+            - "null"
+          title: last_response_status_code
+          format: int32
+          description: |-
+            HTTP status of the latest attempt; absent before the first attempt and
+             after a transport failure.
+        lastError:
+          type: string
+          title: last_error
+        nextAttemptAt:
+          title: next_attempt_at
+          description: When the next attempt is due; absent unless the delivery is pending.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        completedAt:
+          title: completed_at
+          description: When the delivery finished; absent while it is pending or in flight.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: SessionWebhookDelivery
+      additionalProperties: false
+      description: SessionWebhookDelivery is one event's delivery to one endpoint.
+    bossanova.v1.SessionWebhookDeliveryAttempt:
+      type: object
+      properties:
+        attemptNumber:
+          type: integer
+          title: attempt_number
+          format: int32
+          description: 1-based.
+        startedAt:
+          title: started_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        durationMs:
+          type:
+            - integer
+            - string
+          title: duration_ms
+          format: int64
+        responseStatusCode:
+          type:
+            - integer
+            - "null"
+          title: response_status_code
+          format: int32
+          description: Absent on a transport failure.
+        responseBodyExcerpt:
+          type: string
+          title: response_body_excerpt
+          description: A prefix of the response body, at most 2 KiB.
+        errorMessage:
+          type: string
+          title: error_message
+        isSuccess:
+          type: boolean
+          title: is_success
+      title: SessionWebhookDeliveryAttempt
+      additionalProperties: false
+      description: SessionWebhookDeliveryAttempt is one HTTP attempt of a delivery.
+    bossanova.v1.SessionWebhookEventType:
+      type: object
+      properties:
+        type:
+          type: string
+          title: type
+          description: Wire event type, e.g. "session.passing".
+        displayLabel:
+          type: string
+          title: display_label
+          description: The session status label the event announces, as the web and TUI show it.
+        description:
+          type: string
+          title: description
+          description: One user-facing sentence saying when the event fires.
+        samplePayloadJson:
+          type: string
+          title: sample_payload_json
+          description: A fully populated sample delivery body (JSON), marked is_test.
+      title: SessionWebhookEventType
+      additionalProperties: false
+      description: SessionWebhookEventType is one entry of the event catalog.
+    bossanova.v1.SessionWebhookRequestHeader:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        value:
+          type: string
+          title: value
+      title: SessionWebhookRequestHeader
+      additionalProperties: false
+      description: SessionWebhookRequestHeader is one HTTP request header of a delivery.
+    bossanova.v1.SetChatPhaseRequest:
+      type: object
+      properties:
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        sessionId:
+          type: string
+          title: session_id
+        phase:
+          type: string
+          title: phase
+          description: Empty clears the phase.
+      title: SetChatPhaseRequest
+      additionalProperties: false
+      description: Sets an ephemeral skill-reported stage, distinct from AgentProgressPhase.
+    bossanova.v1.SetChatPhaseResponse:
+      type: object
+      title: SetChatPhaseResponse
+      additionalProperties: false
     bossanova.v1.SetOrganizationMemberRoleRequest:
       type: object
       properties:
@@ -16165,6 +18565,60 @@ components:
           type: string
           title: notice_text
       title: SwitchSessionAccountResponse
+      additionalProperties: false
+    bossanova.v1.SyncDaemonNotesRequest:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.NoteSyncItem'
+          title: items
+      title: SyncDaemonNotesRequest
+      additionalProperties: false
+      description: |-
+        SyncDaemonNotesRequest is one batch of daemon note changes. At most 50 items,
+         each within the per-note body and tag limits. Only a malformed batch as a
+         whole fails the call with InvalidArgument: more than 50 items, an empty
+         source_note_id, a non-positive source_version, or the same source_note_id
+         twice. Every other problem is a per-item NoteSyncOutcome, so a batch is never
+         all-or-nothing and is safe to resend: replays come back STALE and never
+         duplicate a note.
+    bossanova.v1.SyncDaemonNotesResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.NoteSyncResult'
+          title: results
+          description: Exactly one result per request item, in request order.
+      title: SyncDaemonNotesResponse
+      additionalProperties: false
+    bossanova.v1.SyncNotesNowRequest:
+      type: object
+      title: SyncNotesNowRequest
+      additionalProperties: false
+    bossanova.v1.SyncNotesNowResponse:
+      type: object
+      properties:
+        stateCounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.NoteSyncStateCount'
+          title: state_counts
+          description: |-
+            One entry per sync state (pending, synced, rejected, rate_limited, expired,
+             not_entitled, refused, suppressed, failed), in that order, zero counts
+             included, so a caller reads one stable shape.
+        isWorkerConfigured:
+          type: boolean
+          title: is_worker_configured
+          description: |-
+            True when this daemon runs the note sync worker, i.e. it is wired to Bosso
+             and the nudge was delivered. False on a local-only daemon, whose outbox
+             rows stay pending.
+      title: SyncNotesNowResponse
       additionalProperties: false
     bossanova.v1.TaskAction:
       type: string
@@ -16774,6 +19228,40 @@ components:
           description: human-readable outcome detail
       title: TestAccountResponse
       additionalProperties: false
+    bossanova.v1.TestTriggerRequest:
+      type: object
+      properties:
+        triggerId:
+          type: string
+          title: trigger_id
+        samplePayloadJson:
+          type: string
+          title: sample_payload_json
+          description: |-
+            Sample payload as a JSON object, evaluated as the request body (HTTP) or
+             event payload (GitHub).
+        sampleEventType:
+          type: string
+          title: sample_event_type
+          description: |-
+            Catalog event id the sample is treated as; required for GitHub triggers,
+             ignored for HTTP.
+        shouldLaunch:
+          type: boolean
+          title: should_launch
+          description: |-
+            Launch a real session when the sample passes every filter and policy.
+             False evaluates and records the decision only.
+      title: TestTriggerRequest
+      additionalProperties: false
+    bossanova.v1.TestTriggerResponse:
+      type: object
+      properties:
+        invocation:
+          title: invocation
+          $ref: '#/components/schemas/bossanova.v1.TriggerInvocation'
+      title: TestTriggerResponse
+      additionalProperties: false
     bossanova.v1.TokenRefresh:
       type: object
       properties:
@@ -16922,6 +19410,423 @@ components:
           title: target_daemon_id
       title: TransferSessionResponse
       additionalProperties: false
+    bossanova.v1.Trigger:
+      type: object
+      allOf:
+        - properties:
+            id:
+              type: string
+              title: id
+            organizationId:
+              type: string
+              title: organization_id
+              description: Organization the trigger belongs to; sessions it launches are filed there.
+            creatorUserId:
+              type: string
+              title: creator_user_id
+              description: bosso users.id of the creator. Only the creator can read or change it.
+            name:
+              type: string
+              title: name
+            isEnabled:
+              type: boolean
+              title: is_enabled
+              description: A disabled trigger records invocations as SKIPPED and launches nothing.
+            triggerType:
+              type: string
+              title: trigger_type
+              description: |-
+                Trigger type name from the catalog: "http" or "github" today. A string,
+                 not an enum, so adding a type needs no change to this common model; the
+                 type's own settings live in the type_config oneof below.
+            configVersion:
+              type: integer
+              title: config_version
+              format: int32
+              description: |-
+                Version of the type_config schema the stored config was written against.
+                 Output-only: bosso stamps the version the catalog advertises for
+                 trigger_type (TriggerTypeSpec.config_version) when the config is saved.
+            repoOriginUrl:
+              type: string
+              title: repo_origin_url
+              description: |-
+                Canonical origin URL of the repo the launched session works in
+                 (e.g. "https://github.com/owner/repo").
+            launch:
+              title: launch
+              description: What to launch.
+              $ref: '#/components/schemas/bossanova.v1.TriggerLaunchSettings'
+            placement:
+              title: placement
+              description: Which daemon launches it.
+              $ref: '#/components/schemas/bossanova.v1.TriggerPlacement'
+            concurrencyPolicy:
+              title: concurrency_policy
+              description: What happens when an invocation arrives while a prior launch is running.
+              $ref: '#/components/schemas/bossanova.v1.TriggerConcurrencyPolicy'
+            cooldownSeconds:
+              type: integer
+              title: cooldown_seconds
+              format: int32
+              description: |-
+                Minimum gap between two launches; 0 disables the cooldown. An invocation
+                 inside the window is recorded as SKIPPED with decision_reason "cooldown".
+            filters:
+              type: array
+              items:
+                $ref: '#/components/schemas/bossanova.v1.TriggerFilter'
+              title: filters
+              description: |-
+                Every filter must match (logical AND) for an invocation to launch; an
+                 empty list matches everything.
+            payloadFields:
+              type: array
+              items:
+                type: string
+              title: payload_fields
+              description: |-
+                Payload field paths (catalog filter-field syntax, e.g. "body.ref") copied
+                 into the launch prompt context and TriggerInvocation.payload_excerpt. Only
+                 the selected fields are retained; the raw payload is never stored.
+            endpointPath:
+              type: string
+              title: endpoint_path
+              description: |-
+                Output-only. HTTP triggers only: the path to POST to, relative to the bosso
+                 public base URL, e.g. "/triggers/http/<public_id>". Empty for other types.
+            lastInvocation:
+              title: last_invocation
+              description: Output-only. The most recent invocation, absent when none has arrived.
+              $ref: '#/components/schemas/bossanova.v1.TriggerInvocationSummary'
+            createdAt:
+              title: created_at
+              $ref: '#/components/schemas/google.protobuf.Timestamp'
+            updatedAt:
+              title: updated_at
+              $ref: '#/components/schemas/google.protobuf.Timestamp'
+        - oneOf:
+            - type: object
+              properties:
+                github:
+                  title: github
+                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+              title: github
+              required:
+                - github
+            - type: object
+              properties:
+                http:
+                  title: http
+                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+              title: http
+              required:
+                - http
+      title: Trigger
+      additionalProperties: false
+      description: |-
+        Trigger is one inbound trigger as returned to its creator. It NEVER carries
+         the HTTP signing secret: the secret is returned exactly once, by
+         CreateTriggerResponse or RotateTriggerSecretResponse, so List and Get can
+         never leak it.
+    bossanova.v1.TriggerCatalog:
+      type: object
+      properties:
+        types:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TriggerTypeSpec'
+          title: types
+      title: TriggerCatalog
+      additionalProperties: false
+      description: |-
+        TriggerCatalog describes every trigger type bosso accepts, so clients can
+         build trigger forms without hard-coding types, events, or filter fields.
+    bossanova.v1.TriggerConcurrencyPolicy:
+      type: string
+      title: TriggerConcurrencyPolicy
+      enum:
+        - TRIGGER_CONCURRENCY_POLICY_UNSPECIFIED
+        - TRIGGER_CONCURRENCY_POLICY_SKIP_IF_RUNNING
+        - TRIGGER_CONCURRENCY_POLICY_ALLOW_PARALLEL
+        - TRIGGER_CONCURRENCY_POLICY_QUEUE_LATEST
+        - TRIGGER_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS
+      description: |-
+        TriggerConcurrencyPolicy decides what happens when an invocation arrives
+         while the trigger's previous launch is still running.
+    bossanova.v1.TriggerEventTypeSpec:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: |-
+            Canonical id used in GithubTriggerConfig.event_types, e.g.
+             "pull_request.opened".
+        displayName:
+          type: string
+          title: display_name
+        description:
+          type: string
+          title: description
+      title: TriggerEventTypeSpec
+      additionalProperties: false
+      description: TriggerEventTypeSpec is one subscribable event.
+    bossanova.v1.TriggerFilter:
+      type: object
+      properties:
+        field:
+          type: string
+          title: field
+          description: |-
+            Field path in catalog syntax: a TriggerFilterFieldSpec.field, or a
+             prefix family plus a name (e.g. "header.X-Env", "body.ref").
+        operator:
+          title: operator
+          $ref: '#/components/schemas/bossanova.v1.TriggerFilterOperator'
+        values:
+          type: array
+          items:
+            type: string
+          title: values
+          description: Comparison values. Single-value operators read values[0].
+      title: TriggerFilter
+      additionalProperties: false
+      description: TriggerFilter is one condition an invocation's payload must satisfy.
+    bossanova.v1.TriggerFilterFieldSpec:
+      type: object
+      properties:
+        field:
+          type: string
+          title: field
+          description: |-
+            Field path, e.g. "event_type". For a prefix family this is the prefix
+             including its trailing dot, e.g. "header." or "body.".
+        description:
+          type: string
+          title: description
+        operators:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TriggerFilterOperator'
+          title: operators
+          description: Operators valid for this field.
+        isPrefix:
+          type: boolean
+          title: is_prefix
+          description: |-
+            True when field is a prefix family and a filter names a member of it
+             (e.g. "body.ref") rather than the field itself.
+      title: TriggerFilterFieldSpec
+      additionalProperties: false
+      description: TriggerFilterFieldSpec is one filterable payload field, or a family of them.
+    bossanova.v1.TriggerFilterOperator:
+      type: string
+      title: TriggerFilterOperator
+      enum:
+        - TRIGGER_FILTER_OPERATOR_UNSPECIFIED
+        - TRIGGER_FILTER_OPERATOR_EQUALS
+        - TRIGGER_FILTER_OPERATOR_NOT_EQUALS
+        - TRIGGER_FILTER_OPERATOR_IN
+        - TRIGGER_FILTER_OPERATOR_NOT_IN
+        - TRIGGER_FILTER_OPERATOR_CONTAINS
+        - TRIGGER_FILTER_OPERATOR_PREFIX
+      description: TriggerFilterOperator compares a payload field against TriggerFilter.values.
+    bossanova.v1.TriggerInvocation:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        triggerId:
+          type: string
+          title: trigger_id
+        source:
+          type: string
+          title: source
+          description: 'Where it came from: "http" | "github" | "test".'
+        eventType:
+          type: string
+          title: event_type
+          description: |-
+            Catalog event id for GitHub events, the HTTP method for HTTP requests, or
+             TestTriggerRequest.sample_event_type for tests.
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.TriggerInvocationStatus'
+        decisionReason:
+          type: string
+          title: decision_reason
+          description: |-
+            Stable machine-readable code for the decision, e.g. "filter_mismatch",
+             "cooldown", "prior_session_running", "duplicate_delivery",
+             "placement_unavailable", "daemon_unsupported". Empty while ACCEPTED and
+             on a plain LAUNCHED. A plain string, so clients must render an unknown
+             code generically rather than fail.
+        errorDetail:
+          type: string
+          title: error_detail
+          description: |-
+            Human-readable, actionable detail for FAILED and SKIPPED outcomes. Never
+             contains a secret, a signature, or a raw header value.
+        payloadExcerpt:
+          type: string
+          title: payload_excerpt
+          description: |-
+            Bounded JSON object holding only the trigger's payload_fields, truncated
+             by bosso; "" when nothing was selected.
+        daemonId:
+          type: string
+          title: daemon_id
+          description: Daemon the launch was placed on; empty before placement.
+        sessionId:
+          type: string
+          title: session_id
+          description: Session the daemon created; empty until LAUNCHED.
+        attemptCount:
+          type: integer
+          title: attempt_count
+          format: int32
+          description: Number of launch attempts made so far.
+        receivedAt:
+          title: received_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        decidedAt:
+          title: decided_at
+          description: When bosso reached a terminal decision; absent while ACCEPTED.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        launchedAt:
+          title: launched_at
+          description: When the daemon confirmed the session; absent unless LAUNCHED.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: TriggerInvocation
+      additionalProperties: false
+      description: |-
+        TriggerInvocation is the durable record of one received request or event
+         and what bosso decided to do with it.
+    bossanova.v1.TriggerInvocationStatus:
+      type: string
+      title: TriggerInvocationStatus
+      enum:
+        - TRIGGER_INVOCATION_STATUS_UNSPECIFIED
+        - TRIGGER_INVOCATION_STATUS_ACCEPTED
+        - TRIGGER_INVOCATION_STATUS_FILTERED
+        - TRIGGER_INVOCATION_STATUS_DEDUPLICATED
+        - TRIGGER_INVOCATION_STATUS_QUEUED
+        - TRIGGER_INVOCATION_STATUS_SKIPPED
+        - TRIGGER_INVOCATION_STATUS_LAUNCHING
+        - TRIGGER_INVOCATION_STATUS_LAUNCHED
+        - TRIGGER_INVOCATION_STATUS_FAILED
+      description: TriggerInvocationStatus is the lifecycle of one received invocation.
+    bossanova.v1.TriggerInvocationSummary:
+      type: object
+      properties:
+        status:
+          title: status
+          $ref: '#/components/schemas/bossanova.v1.TriggerInvocationStatus'
+        decisionReason:
+          type: string
+          title: decision_reason
+        receivedAt:
+          title: received_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        sessionId:
+          type: string
+          title: session_id
+      title: TriggerInvocationSummary
+      additionalProperties: false
+      description: |-
+        TriggerInvocationSummary is the slice of the latest invocation shown next to
+         a trigger in lists.
+    bossanova.v1.TriggerLaunchSettings:
+      type: object
+      properties:
+        promptTemplate:
+          type: string
+          title: prompt_template
+          description: Prompt sent to the agent. May reference selected payload fields.
+        skillName:
+          type: string
+          title: skill_name
+          description: |-
+            Optional skill to invoke as a slash command, without the leading "/".
+             Empty means the prompt is sent as-is.
+        agentName:
+          type: string
+          title: agent_name
+          description: Agent runner plugin name; empty means claude.
+        model:
+          type:
+            - string
+            - "null"
+          title: model
+          description: Opaque agent model id; absent means the plugin default.
+        effort:
+          type:
+            - string
+            - "null"
+          title: effort
+          description: Opaque agent reasoning-effort level; absent means the plugin default.
+        baseBranch:
+          type: string
+          title: base_branch
+          description: Branch the session's worktree is cut from; empty means the repo default.
+      title: TriggerLaunchSettings
+      additionalProperties: false
+      description: TriggerLaunchSettings is what a trigger launches.
+    bossanova.v1.TriggerPlacement:
+      type: object
+      properties:
+        mode:
+          title: mode
+          $ref: '#/components/schemas/bossanova.v1.TriggerPlacementMode'
+        daemonId:
+          type: string
+          title: daemon_id
+          description: Required for TRIGGER_PLACEMENT_MODE_SPECIFIC_DAEMON; ignored otherwise.
+      title: TriggerPlacement
+      additionalProperties: false
+      description: TriggerPlacement is where a trigger launches its session.
+    bossanova.v1.TriggerPlacementMode:
+      type: string
+      title: TriggerPlacementMode
+      enum:
+        - TRIGGER_PLACEMENT_MODE_UNSPECIFIED
+        - TRIGGER_PLACEMENT_MODE_SPECIFIC_DAEMON
+        - TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE
+      description: TriggerPlacementMode chooses how a trigger picks its daemon.
+    bossanova.v1.TriggerTypeSpec:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: Value for Trigger.trigger_type, e.g. "http".
+        displayName:
+          type: string
+          title: display_name
+        configVersion:
+          type: integer
+          title: config_version
+          format: int32
+          description: Current config version for this type; bosso stamps it on save.
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TriggerEventTypeSpec'
+          title: event_types
+          description: |-
+            Event types the type can subscribe to; empty for types with no event
+             selection (HTTP).
+        filterFields:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TriggerFilterFieldSpec'
+          title: filter_fields
+          description: Payload fields a TriggerFilter or payload_fields entry may reference.
+      title: TriggerTypeSpec
+      additionalProperties: false
+      description: TriggerTypeSpec describes one trigger type.
     bossanova.v1.UpdateAccountCommand:
       type: object
       properties:
@@ -17082,6 +19987,14 @@ components:
             - boolean
             - "null"
           title: is_zero_output
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = leave unchanged.
       title: UpdateCronJobCommand
       additionalProperties: false
       description: |-
@@ -17151,6 +20064,14 @@ components:
             mark the job "zero output": intended to fire with no worktree/branch/PR,
              because the run is expected to produce no repo changes. Persisted and echoed
              back only — nothing honours it yet (BOS-543).
+        concurrencyPolicy:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+            - type: "null"
+          title: concurrency_policy
+          description: |-
+            What a fire does while the job's previous run is still in progress.
+             Omitted or UNSPECIFIED = leave unchanged.
       title: UpdateCronJobRequest
       additionalProperties: false
     bossanova.v1.UpdateCronJobResponse:
@@ -17213,6 +20134,42 @@ components:
           title: note
           $ref: '#/components/schemas/bossanova.v1.Note'
       title: UpdateNoteResponse
+      additionalProperties: false
+    bossanova.v1.UpdateOrganizationNoteRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+        body:
+          type:
+            - string
+            - "null"
+          title: body
+          description: Unset = leave the body alone.
+        tags:
+          oneOf:
+            - $ref: '#/components/schemas/bossanova.v1.NoteTagSet'
+            - type: "null"
+          title: tags
+          description: |-
+            Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+             list, including replacing it with nothing when the list is empty.
+      title: UpdateOrganizationNoteRequest
+      additionalProperties: false
+      description: |-
+        UpdateOrganizationNoteRequest edits an API-origin note. A synced note is
+         FailedPrecondition: edit it at its source daemon.
+    bossanova.v1.UpdateOrganizationNoteResponse:
+      type: object
+      properties:
+        note:
+          title: note
+          $ref: '#/components/schemas/bossanova.v1.OrganizationNote'
+      title: UpdateOrganizationNoteResponse
       additionalProperties: false
     bossanova.v1.UpdateRepoCommand:
       type: object
@@ -17438,6 +20395,53 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: UpdateSessionResponse
       additionalProperties: false
+    bossanova.v1.UpdateSessionWebhookRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+        id:
+          type: string
+          title: id
+        url:
+          type:
+            - string
+            - "null"
+          title: url
+        description:
+          type:
+            - string
+            - "null"
+          title: description
+        eventTypes:
+          type: array
+          items:
+            type: string
+          title: event_types
+        shouldReplaceEventTypes:
+          type: boolean
+          title: should_replace_event_types
+        isEnabled:
+          type:
+            - boolean
+            - "null"
+          title: is_enabled
+      title: UpdateSessionWebhookRequest
+      additionalProperties: false
+      description: |-
+        UpdateSessionWebhookRequest changes only the fields that are present.
+         event_types is replaced as a whole set, and only when
+         should_replace_event_types is set (it must then be non-empty); a non-empty
+         event_types without the flag is INVALID_ARGUMENT.
+    bossanova.v1.UpdateSessionWebhookResponse:
+      type: object
+      properties:
+        webhook:
+          title: webhook
+          $ref: '#/components/schemas/bossanova.v1.SessionWebhook'
+      title: UpdateSessionWebhookResponse
+      additionalProperties: false
     bossanova.v1.UpdateSettingsRequest:
       type: object
       properties:
@@ -17514,6 +20518,95 @@ components:
     bossanova.v1.UpdateTaskStatusResponse:
       type: object
       title: UpdateTaskStatusResponse
+      additionalProperties: false
+    bossanova.v1.UpdateTriggerRequest:
+      type: object
+      allOf:
+        - properties:
+            id:
+              type: string
+              title: id
+            name:
+              type:
+                - string
+                - "null"
+              title: name
+            isEnabled:
+              type:
+                - boolean
+                - "null"
+              title: is_enabled
+              description: Enable or disable the trigger.
+            repoOriginUrl:
+              type:
+                - string
+                - "null"
+              title: repo_origin_url
+            launch:
+              title: launch
+              $ref: '#/components/schemas/bossanova.v1.TriggerLaunchSettings'
+            placement:
+              title: placement
+              $ref: '#/components/schemas/bossanova.v1.TriggerPlacement'
+            concurrencyPolicy:
+              oneOf:
+                - $ref: '#/components/schemas/bossanova.v1.TriggerConcurrencyPolicy'
+                - type: "null"
+              title: concurrency_policy
+            cooldownSeconds:
+              type:
+                - integer
+                - "null"
+              title: cooldown_seconds
+              format: int32
+            filters:
+              type: array
+              items:
+                $ref: '#/components/schemas/bossanova.v1.TriggerFilter'
+              title: filters
+            shouldClearFilters:
+              type: boolean
+              title: should_clear_filters
+            payloadFields:
+              type: array
+              items:
+                type: string
+              title: payload_fields
+            shouldClearPayloadFields:
+              type: boolean
+              title: should_clear_payload_fields
+        - oneOf:
+            - type: object
+              properties:
+                github:
+                  title: github
+                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+              title: github
+              required:
+                - github
+            - type: object
+              properties:
+                http:
+                  title: http
+                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+              title: http
+              required:
+                - http
+      title: UpdateTriggerRequest
+      additionalProperties: false
+      description: |-
+        UpdateTriggerRequest changes only the fields that are present. A message
+         field (launch, placement) replaces the whole message when set. Repeated
+         fields cannot express "absent", so a non-empty list replaces the stored
+         list, an empty list leaves it unchanged, and the matching should_clear_*
+         flag clears it; a non-empty list together with its flag is INVALID_ARGUMENT.
+    bossanova.v1.UpdateTriggerResponse:
+      type: object
+      properties:
+        trigger:
+          title: trigger
+          $ref: '#/components/schemas/bossanova.v1.Trigger'
+      title: UpdateTriggerResponse
       additionalProperties: false
     bossanova.v1.UsageSnapshot:
       type: object

@@ -31,24 +31,26 @@ Every `boss` command is documented in one of the reference files below, grouped 
 groups them. **Open the matching reference before using a command** — never infer a command's
 syntax, arguments or flags from an index row.
 
-| Reference                   | Read it when…                                                   |
-| --------------------------- | --------------------------------------------------------------- |
-| `references/session.md`     | Creating, listing, attaching to, merging or archiving a session |
-| `references/chat.md`        | Starting a chat, sending it a message, or reading a transcript  |
-| `references/repo.md`        | Registering, cloning, updating or removing a repository         |
-| `references/cron.md`        | Creating, editing, listing or firing a scheduled job            |
-| `references/callback.md`    | Arming or inspecting a one-shot GitHub PR callback              |
-| `references/broadcast.md`   | Sending a broadcast or registering an outcome subscription      |
-| `references/notes.md`       | Recording or harvesting durable repo-scoped notes               |
-| `references/account.md`     | Adding, testing, rotating or switching a provider account       |
-| `references/trash.md`       | Resurrecting an archived session or emptying the trash          |
-| `references/daemon.md`      | Starting, stopping or inspecting bossd                          |
-| `references/mcp.md`         | Running or configuring the MCP server or the Hermes plugin      |
-| `references/skills.md`      | Installing or syncing the boss skill payload                    |
-| `references/settings.md`    | Changing global settings or authenticating                      |
-| `references/diagnostics.md` | Running the repair doctor, checks or other diagnostics          |
-| `references/plugins.md`     | Listing or inspecting loaded bossd plugins                      |
-| `references/other.md`       | Anything unclassified (e.g. `boss version`)                     |
+| Reference                   | Read it when…                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| `references/session.md`     | Creating, listing, attaching to, merging or archiving a session                  |
+| `references/chat.md`        | Starting a chat, sending it a message, or reading a transcript                   |
+| `references/repo.md`        | Registering, cloning, updating or removing a repository                          |
+| `references/cron.md`        | Creating, editing, listing or firing a scheduled job                             |
+| `references/callback.md`    | Arming or inspecting a one-shot GitHub PR callback                               |
+| `references/trigger.md`     | Creating, testing or inspecting an inbound HTTP or GitHub trigger                |
+| `references/broadcast.md`   | Sending a broadcast or registering an outcome subscription                       |
+| `references/notes.md`       | Recording or harvesting durable repo-scoped notes                                |
+| `references/webhook.md`     | Registering, testing or inspecting an outbound session webhook (Bossanova Cloud) |
+| `references/account.md`     | Adding, testing, rotating or switching a provider account                        |
+| `references/trash.md`       | Resurrecting an archived session or emptying the trash                           |
+| `references/daemon.md`      | Starting, stopping or inspecting bossd                                           |
+| `references/mcp.md`         | Running or configuring the MCP server or the Hermes plugin                       |
+| `references/skills.md`      | Installing or syncing the boss skill payload                                     |
+| `references/settings.md`    | Changing global settings or authenticating                                       |
+| `references/diagnostics.md` | Running the repair doctor, checks or other diagnostics                           |
+| `references/plugins.md`     | Listing or inspecting loaded bossd plugins                                       |
+| `references/other.md`       | Anything unclassified (e.g. `boss version`)                                      |
 
 <!-- END GENERATED -->
 

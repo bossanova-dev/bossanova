@@ -6,6 +6,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
@@ -646,5 +647,188 @@ func TestUpdateCronJobZeroOutputExplicitFalseClears(t *testing.T) {
 	}
 	if got.Msg.CronJob.IsZeroOutput {
 		t.Fatalf("persisted IsZeroOutput = true, want false after explicit-false update")
+	}
+}
+
+func concurrencyPolicyPtr(v pb.CronJobConcurrencyPolicy) *pb.CronJobConcurrencyPolicy { return &v }
+
+// TestCreateCronJobConcurrencyPolicyDefaultsSkip verifies that omitting
+// concurrency_policy — or sending UNSPECIFIED — stores skip, today's overlap
+// suppression. Mapping the zero value straight through would violate the column
+// CHECK; this is that guard.
+func TestCreateCronJobConcurrencyPolicyDefaultsSkip(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   *pb.CronJobConcurrencyPolicy
+	}{
+		{"omitted", nil},
+		{"unspecified", concurrencyPolicyPtr(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, repoID, ctx := newCronTestServer(t)
+
+			created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+				RepoId:            repoID,
+				Name:              "Default concurrency",
+				Prompt:            "do it",
+				Schedule:          "@daily",
+				AgentName:         "codex",
+				ConcurrencyPolicy: tt.in,
+			}))
+			if err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			want := pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP
+			if got := created.Msg.CronJob.ConcurrencyPolicy; got != want {
+				t.Fatalf("ConcurrencyPolicy = %v, want %v", got, want)
+			}
+
+			stored, err := srv.cronJobs.Get(ctx, created.Msg.CronJob.Id)
+			if err != nil {
+				t.Fatalf("store Get: %v", err)
+			}
+			if stored.ConcurrencyPolicy != models.CronJobConcurrencyPolicySkip {
+				t.Fatalf("stored ConcurrencyPolicy = %q, want skip", stored.ConcurrencyPolicy)
+			}
+		})
+	}
+}
+
+// TestCreateCronJobConcurrencyPolicyKnownValues verifies each known enum value is
+// stored as its matching domain value and echoed back.
+func TestCreateCronJobConcurrencyPolicyKnownValues(t *testing.T) {
+	for _, tt := range []struct {
+		in   pb.CronJobConcurrencyPolicy
+		want models.CronJobConcurrencyPolicy
+	}{
+		{pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP, models.CronJobConcurrencyPolicySkip},
+		{pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS, models.CronJobConcurrencyPolicyCancelInProgress},
+		{pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT, models.CronJobConcurrencyPolicyAllowConcurrent},
+	} {
+		t.Run(string(tt.want), func(t *testing.T) {
+			srv, repoID, ctx := newCronTestServer(t)
+
+			created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+				RepoId:            repoID,
+				Name:              "Concurrency " + string(tt.want),
+				Prompt:            "do it",
+				Schedule:          "@daily",
+				AgentName:         "codex",
+				ConcurrencyPolicy: concurrencyPolicyPtr(tt.in),
+			}))
+			if err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			if got := created.Msg.CronJob.ConcurrencyPolicy; got != tt.in {
+				t.Fatalf("response ConcurrencyPolicy = %v, want %v", got, tt.in)
+			}
+			stored, err := srv.cronJobs.Get(ctx, created.Msg.CronJob.Id)
+			if err != nil {
+				t.Fatalf("store Get: %v", err)
+			}
+			if stored.ConcurrencyPolicy != tt.want {
+				t.Fatalf("stored ConcurrencyPolicy = %q, want %q", stored.ConcurrencyPolicy, tt.want)
+			}
+		})
+	}
+}
+
+// TestCreateCronJobConcurrencyPolicyUnknownRejected verifies an enum number
+// outside the known set is InvalidArgument and creates no row.
+func TestCreateCronJobConcurrencyPolicyUnknownRejected(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	_, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:            repoID,
+		Name:              "Unknown concurrency",
+		Prompt:            "do it",
+		Schedule:          "@daily",
+		AgentName:         "codex",
+		ConcurrencyPolicy: concurrencyPolicyPtr(pb.CronJobConcurrencyPolicy(99)),
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("CreateCronJob err = %v (code %v), want InvalidArgument", err, connect.CodeOf(err))
+	}
+	jobs, err := srv.cronJobs.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("rejected create left %d rows, want 0", len(jobs))
+	}
+}
+
+// TestUpdateCronJobConcurrencyPolicy verifies the update contract: omitted or
+// UNSPECIFIED leaves the stored policy unchanged, a known value replaces it, and
+// an unknown number is InvalidArgument without touching the row.
+func TestUpdateCronJobConcurrencyPolicy(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:            repoID,
+		Name:              "Concurrency update target",
+		Prompt:            "do it",
+		Schedule:          "@daily",
+		AgentName:         "codex",
+		ConcurrencyPolicy: concurrencyPolicyPtr(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT),
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	id := created.Msg.CronJob.Id
+	allow := pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT
+
+	newPrompt := "do it again"
+	omitted, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{Id: id, Prompt: &newPrompt}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(omitted): %v", err)
+	}
+	if got := omitted.Msg.CronJob.ConcurrencyPolicy; got != allow {
+		t.Fatalf("after omitted update: ConcurrencyPolicy = %v, want %v (unchanged)", got, allow)
+	}
+
+	unspecified, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:                id,
+		ConcurrencyPolicy: concurrencyPolicyPtr(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED),
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(unspecified): %v", err)
+	}
+	if got := unspecified.Msg.CronJob.ConcurrencyPolicy; got != allow {
+		t.Fatalf("after UNSPECIFIED update: ConcurrencyPolicy = %v, want %v (unchanged)", got, allow)
+	}
+
+	_, err = srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:                id,
+		ConcurrencyPolicy: concurrencyPolicyPtr(pb.CronJobConcurrencyPolicy(42)),
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("UpdateCronJob(unknown) err = %v (code %v), want InvalidArgument", err, connect.CodeOf(err))
+	}
+	stored, err := srv.cronJobs.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("store Get: %v", err)
+	}
+	if stored.ConcurrencyPolicy != models.CronJobConcurrencyPolicyAllowConcurrent {
+		t.Fatalf("after rejected update: stored = %q, want allow_concurrent (unchanged)", stored.ConcurrencyPolicy)
+	}
+
+	cancel := pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:                id,
+		ConcurrencyPolicy: &cancel,
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(cancel): %v", err)
+	}
+	if got := updated.Msg.CronJob.ConcurrencyPolicy; got != cancel {
+		t.Fatalf("after explicit update: ConcurrencyPolicy = %v, want %v", got, cancel)
+	}
+	stored, err = srv.cronJobs.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("store Get: %v", err)
+	}
+	if stored.ConcurrencyPolicy != models.CronJobConcurrencyPolicyCancelInProgress {
+		t.Fatalf("stored ConcurrencyPolicy = %q, want cancel_in_progress", stored.ConcurrencyPolicy)
 	}
 }

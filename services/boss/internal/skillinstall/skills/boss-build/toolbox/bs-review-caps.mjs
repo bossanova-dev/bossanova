@@ -497,6 +497,149 @@ function agreementEvidence(agreement) {
   }
 }
 
+/** Required fix commands whose latest execution-order row has no evidence of execution. */
+export function unrunFixGates(evidence = {}) {
+  if (!(evidence?.mustfix?.fixed > 0) || !Array.isArray(evidence?.requiredGates)) return []
+  const gates = Array.isArray(evidence.gates) ? evidence.gates : []
+  return evidence.requiredGates.filter((command) => {
+    if (typeof command !== 'string') return false
+    const row = gates.findLast(
+      (candidate) => typeof candidate === 'string' && candidate.startsWith(`${command}:`),
+    )
+    if (!row) return true
+    const result = row.slice(command.length + 1).trim()
+    return result.length === 0 || /^(not[ -]run|unrun|skipped|pending|unknown)\b/i.test(result)
+  })
+}
+
+/**
+ * Derive fix admission flags, scope retries, and severity-guarded terminal reverts.
+ * Input findings are already must-fix, including convergence-promoted Suggestions.
+ * Input identities are [file,line,title]; commit order is landing order. No Git or clock reads.
+ * Reopened findings are walked through their own attribution, so regression chains unwind.
+ */
+export function fixLoopState(input) {
+  const invalid = {
+    unattemptedMustFix: false,
+    selfInflictedMustFix: false,
+    widenScope: [],
+    causes: [{ cause: 'unreadable fix-loop evidence' }],
+    reverts: [],
+  }
+  const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  const string = (value) => typeof value === 'string' && value.trim().length > 0
+  const located = (finding) =>
+    object(finding) &&
+    string(finding.file) &&
+    string(finding.title) &&
+    (finding.line === null || (Number.isInteger(finding.line) && finding.line > 0))
+  const severity = (finding) =>
+    typeof finding?.severity === 'string'
+      ? ({ critical: 3, warning: 2, suggestion: 1 }[finding.severity.toLowerCase()] ?? 0)
+      : 0
+  const finding = (value) => located(value) && severity(value) > 0
+  const key = (value) => JSON.stringify([value.file, value.line, value.title])
+  if (
+    !object(input) ||
+    !['open', 'attempts', 'introducedBy', 'fixCommits'].every((name) =>
+      Array.isArray(input[name]),
+    ) ||
+    (input.terminal !== undefined && typeof input.terminal !== 'boolean')
+  )
+    return invalid
+  const { open, attempts, introducedBy, fixCommits, terminal = false } = input
+  if (
+    !open.every(finding) ||
+    !attempts.every(
+      (attempt) =>
+        located(attempt) &&
+        Number.isInteger(attempt.round) &&
+        attempt.round > 0 &&
+        ['fixed', 'verified', 'declined', 'failed'].includes(attempt.outcome) &&
+        (attempt.declineReason === undefined || string(attempt.declineReason)),
+    ) ||
+    !introducedBy.every((row) => located(row) && string(row.commit)) ||
+    !fixCommits.every(
+      (commit) =>
+        object(commit) &&
+        string(commit.sha) &&
+        Array.isArray(commit.addresses) &&
+        commit.addresses.length > 0 &&
+        commit.addresses.every(finding),
+    )
+  )
+    return invalid
+  const commits = new Map(fixCommits.map((commit, index) => [commit.sha, { ...commit, index }]))
+  if (commits.size !== fixCommits.length) return invalid
+  const attribution = new Map()
+  for (const row of introducedBy) {
+    if (attribution.has(key(row)) && attribution.get(key(row)) !== row.commit) return invalid
+    attribution.set(key(row), row.commit)
+  }
+  const tries = new Map()
+  for (const attempt of attempts) {
+    const rows = tries.get(key(attempt)) ?? []
+    rows.push(attempt)
+    tries.set(key(attempt), rows)
+  }
+  const cause = (item) => {
+    const rows = tries.get(key(item)) ?? []
+    return rows.length >= 2 &&
+      rows.every((row) => row.outcome === 'declined' && row.declineReason === 'out-of-diff')
+      ? 'out-of-diff root cause'
+      : rows.length
+        ? 'fixes not clearing'
+        : 'round cap'
+  }
+  const widenScope = open.filter((item) => {
+    const rows = tries.get(key(item)) ?? []
+    return (
+      rows.length === 1 && rows[0].outcome === 'declined' && rows[0].declineReason === 'out-of-diff'
+    )
+  })
+  const state = {
+    unattemptedMustFix: open.some((item) => !tries.has(key(item))) || widenScope.length > 0,
+    selfInflictedMustFix: open.some((item) => commits.has(attribution.get(key(item)))),
+    widenScope,
+    causes: open.map((item) => ({ ...item, cause: cause(item) })),
+    reverts: [],
+  }
+  if (!terminal) return state
+  const active = new Map(open.map((item) => [key(item), item]))
+  const reopenedCauses = new Map()
+  // Descending landing order makes the revert plan directly executable and prevents cycles.
+  for (const commit of [...fixCommits].reverse()) {
+    const introduced = [...active.values()].filter(
+      (item) => attribution.get(key(item)) === commit.sha,
+    )
+    if (!introduced.length) continue
+    const highestAddressed = Math.max(...commit.addresses.map(severity))
+    const trigger = introduced.find((item) => severity(item) >= highestAddressed)
+    if (!trigger) continue
+    // An address attributed to this or a newer commit is inconsistent causal evidence.
+    if (
+      commit.addresses.some((item) => {
+        const origin = commits.get(attribution.get(key(item)))
+        return origin && origin.index >= commits.get(commit.sha).index
+      })
+    )
+      return invalid
+    state.reverts.push(commit.sha)
+    for (const item of introduced) active.delete(key(item))
+    for (const item of commit.addresses) {
+      active.set(key(item), item)
+      reopenedCauses.set(key(item), {
+        ...item,
+        cause: `fix reverted (introduced ${trigger.title})`,
+      })
+    }
+  }
+  state.causes = [...active.values()].map(
+    (item) => reopenedCauses.get(key(item)) ?? { ...item, cause: cause(item) },
+  )
+  return state
+}
+
 /**
  * Derive review confidence from panel and agreement evidence.
  * @param {unknown} evidence
@@ -526,6 +669,8 @@ export function reviewConfidence(evidence = {}) {
   }
   if (agreement.ok && agreement.vanishedFindings.length > 0) reasons.push('vanished-finding')
 
+  if (unrunFixGates(evidence).length) reasons.push('fix-gate-unrun')
+
   const lowReasons = new Set([
     'unreadable-panel-evidence',
     'unreadable-vanished-history',
@@ -536,6 +681,7 @@ export function reviewConfidence(evidence = {}) {
     'not-reached-reviewer',
     'timed-out-reviewer',
     'vanished-finding',
+    'fix-gate-unrun',
   ])
   const low = reasons.filter((reason) => lowReasons.has(reason))
   if (low.length) return { grade: 'Low', reasons: low }
@@ -1164,6 +1310,14 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(`${JSON.stringify(reviewConfidence(report))}\n`)
   } else if (cmd === 'classify') {
     process.stdout.write(`${JSON.stringify(classifySentinels(readInputFile()))}\n`)
+  } else if (cmd === 'fix-loop-state') {
+    let input
+    try {
+      input = JSON.parse(readInputFile())
+    } catch {
+      input = undefined
+    }
+    process.stdout.write(`${JSON.stringify(fixLoopState(input))}\n`)
   } else if (cmd === 'oscillation') {
     const raw = rest[0] === '--in' ? readInputFile() : (rest[0] ?? '')
     let input
@@ -1284,7 +1438,7 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(`${JSON.stringify(sentinelPayload(requested))}\n`)
   } else {
     process.stderr.write(
-      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean --in <report.json> | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> [--payload [<reason>]] | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
+      "usage: bs-review-caps.mjs <rounds | dispatched-rounds | sentinel clean --in <report.json> | sentinel capped <N> | match \"<line>\" | verdict --in <report.json> [--payload [<reason>]] | confidence --in <report.json> | classify --in <file> | oscillation --in <payload.json> | fix-loop-state --in <file> | admit-fix-round '<json>' | admit-dispatched-round '<json>' | admit-confirming-round '<json>' | funding '<json>' | sentinel-payload [<reason>]>\n",
     )
     process.exit(2)
   }

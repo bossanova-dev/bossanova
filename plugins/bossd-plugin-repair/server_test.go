@@ -1044,6 +1044,44 @@ func TestAssessPostRepairStatus_ClassifiesDisplayStatus(t *testing.T) {
 			wantReason: "checks passed",
 		},
 		{
+			name: "verifying is clean",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+			},
+			wantStatus: postRepairStatusClean,
+			wantReason: "checks passed; verification in progress",
+		},
+		{
+			name: "needs human is clean",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+			},
+			wantStatus: postRepairStatusClean,
+			wantReason: "parked for a human",
+		},
+		{
+			name: "verifying with changes requested needs another repair",
+			session: &bossanovav1.Session{
+				Id:                         "s1",
+				DisplayStatus:              bossanovav1.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+				DisplayHasChangesRequested: true,
+			},
+			wantStatus: postRepairStatusNeedsRepair,
+			wantReason: "review feedback",
+		},
+		{
+			name: "needs human with changes requested needs another repair",
+			session: &bossanovav1.Session{
+				Id:                         "s1",
+				DisplayStatus:              bossanovav1.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+				DisplayHasChangesRequested: true,
+			},
+			wantStatus: postRepairStatusNeedsRepair,
+			wantReason: "review feedback",
+		},
+		{
 			name: "approved is clean",
 			session: &bossanovav1.Session{
 				Id:            "s1",
@@ -1210,6 +1248,33 @@ func TestMaybeRepair_SkipsNonRepairableStatus(t *testing.T) {
 
 	startCalls, _, _, _ := mock.snapshot()
 	assert.Equal(t, 0, startCalls)
+}
+
+// TestMaybeRepair_SkipsVerifyHoldsWithChangesRequested pins that the verify
+// holds never start a repair, even when an open changes-requested review rides
+// on them. assessPostRepairStatus counts that review as unresolved, but only
+// after a repair has already started; the verify stage owns a held head.
+func TestMaybeRepair_SkipsVerifyHoldsWithChangesRequested(t *testing.T) {
+	for _, status := range []bossanovav1.DisplayStatus{
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+	} {
+		t.Run(status.String(), func(t *testing.T) {
+			mock := newTestMock()
+			mock.sessions = []*bossanovav1.Session{{
+				Id:                         "s1",
+				State:                      bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+				DisplayStatus:              status,
+				DisplayHasChangesRequested: true,
+			}}
+			rm := newTestMonitor(mock)
+			rm.maybeRepair("s1", status, false)
+
+			time.Sleep(50 * time.Millisecond)
+			startCalls, _, _, _ := mock.snapshot()
+			require.Zero(t, startCalls, "verify holds are not repair triggers")
+		})
+	}
 }
 
 func TestMaybeRepair_TriggersForFailing(t *testing.T) {

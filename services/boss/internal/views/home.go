@@ -41,6 +41,8 @@ type HomeModel struct {
 	// proto carries only the composite label, not why. Empty/absent for every
 	// session that is not parked.
 	daemonWaitingReasons map[string]string
+	// daemonPhases carries the skill-reported working phase from status polling.
+	daemonPhases map[string]string
 	// sessionReadFailures holds the organizations whose sessions the last
 	// successful poll could not read (BOS-1151). A cloud session read fans out
 	// across every organization the caller belongs to and returns what it could

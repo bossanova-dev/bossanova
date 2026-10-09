@@ -29,6 +29,11 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("daemon auth probe is stubbed out in this test package")
 	}
 
+	// boss init interviews only on a terminal. `go test` run from a shell can
+	// inherit that terminal as stdin, which would turn every initCmd test into
+	// a blocked interview; tests that want the interview force it on.
+	initIsTerminal = func() bool { return false }
+
 	dir, err := os.MkdirTemp("", "boss-cmd-settings-*")
 	if err != nil {
 		panic(err)

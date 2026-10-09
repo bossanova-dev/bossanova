@@ -115,16 +115,105 @@ export function validateSurveyCandidate(candidate, options = {}) {
   return { ok: true, reason: null }
 }
 
-function fileAxisExclusion(detector, evidence) {
-  if (detector !== 'filesize') return null
-  const m = /^(\d+)\s+lines\s+\(limit\s+(\d+)\)$/.exec(evidence)
-  if (!m) return null
-  const lines = Number(m[1])
-  const limit = Number(m[2])
-  if (lines > limit * DECOMPOSITION_MULTIPLE) {
-    return `file-axis decomposition candidate: ${lines} lines exceeds ${DECOMPOSITION_MULTIPLE}x limit ${limit}`
+const FILE_SIZE = /^(\d+)\s+lines\s+\(limit\s+(\d+)\)$/
+const PLATFORM_SUFFIX =
+  /_(?:aix|android|darwin|dragonfly|freebsd|illumos|ios|js|linux|netbsd|openbsd|plan9|solaris|wasip1|windows|386|amd64|arm|arm64|loong64|mips|mipsle|mips64|mips64le|ppc64|ppc64le|riscv64|s390x|wasm)(?:_test)?\.go$/
+
+function loadAllowlist(repoRoot, errWrite) {
+  const file = path.join(repoRoot, 'scripts/debt/portability-known-intentional.json')
+  const entries = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
+  warnStaleAllowlist(entries, repoRoot, errWrite)
+  return entries
+}
+
+function warnStaleAllowlist(entries, repoRoot, errWrite) {
+  for (const entry of entries) {
+    const file = path.join(repoRoot, entry.path)
+    if (!fs.existsSync(file) || !fs.readFileSync(file, 'utf8').includes(entry.contains)) {
+      errWrite(`bs-sweep-debt survey: stale intentional entry ${entry.path}: ${entry.contains}\n`)
+    }
   }
-  return null
+}
+
+/** Stamp hard exclusions without dropping detector evidence. */
+export function classifyCandidate(candidate, { repoRoot = process.cwd(), allowlist } = {}) {
+  const c = { ...candidate }
+  const command = String(c.confirmationCommand || '')
+  const goDeadcode =
+    c.category === 'dead-code' &&
+    !/\bknip\b/.test(command) &&
+    (String(c.path).endsWith('.go') || /debt-deadcode-/.test(command))
+  const symbol = String(c.evidence || '')
+    .split('.')
+    .at(-1)
+  if (goDeadcode && /^\p{Lu}/u.test(symbol)) {
+    c.excluded = `exported-symbol: ${c.evidence}`
+  } else if (c.category === 'security' && c.vulnScope === 'stdlib') {
+    c.excluded = `toolchain-only: ${c.evidence}`
+  } else if (c.category === 'portability') {
+    const entry = (allowlist || loadAllowlist(repoRoot, () => {})).find(
+      (e) => e.path === c.path && String(c.findingLine || '').includes(e.contains),
+    )
+    if (entry) c.excluded = `known-intentional: ${entry.reason}`
+  } else if (c.category === 'complexity-hotspot' && FILE_SIZE.test(c.evidence)) {
+    const [, lines, limit] = FILE_SIZE.exec(c.evidence).map(Number)
+    if (lines > limit * DECOMPOSITION_MULTIPLE) {
+      c.excluded = `decomposition: ${lines} lines exceeds ${DECOMPOSITION_MULTIPLE}x limit ${limit}`
+    } else {
+      const file = isRepoRelativePath(c.path) ? path.join(repoRoot, c.path) : null
+      if (
+        PLATFORM_SUFFIX.test(c.path) ||
+        (file && fs.existsSync(file) && /^\s*\/\/go:build\s/m.test(fs.readFileSync(file, 'utf8')))
+      ) {
+        c.excluded = `build-constrained: ${c.path}`
+      }
+    }
+  }
+  return c
+}
+
+export function complexityAxis(candidates) {
+  const eligible = candidates.filter((c) => c.category === 'complexity-hotspot' && !c.excluded)
+  if (
+    eligible.some((c) => {
+      const match = FILE_SIZE.exec(c.evidence)
+      return (
+        match &&
+        Number(match[1]) > Number(match[2]) &&
+        Number(match[1]) <= Number(match[2]) * DECOMPOSITION_MULTIPLE
+      )
+    })
+  )
+    return { axis: 'file', reason: 'eligible file-axis finding' }
+  if (eligible.some((c) => /debt-cyclo-/.test(c.confirmationCommand || '')))
+    return { axis: 'function', reason: 'only function-axis findings remain' }
+  return { axis: 'none', reason: 'no eligible complexity finding' }
+}
+
+export function noChangeEvidence(read, validationDrops = '') {
+  const payload = read.status === 'ok' ? read.payload || {} : {}
+  const categories = [...new Set(payload.surveyedCategories || [])]
+  const areas = [...new Set(payload.surveyedAreas || [])]
+  const rejected = (payload.candidates || [])
+    .filter((c) => c.rejected || c.excluded)
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.rejected)) - Number(Boolean(a.rejected)) ||
+        (b.score || 0) - (a.score || 0),
+    )
+    .map((c) => `- ${c.path || c.file} (${c.category}): ${c.rejected || c.excluded}`)
+  for (const line of validationDrops.split('\n')) {
+    const m = /dropped (.+?): (.+)$/.exec(line)
+    if (m) rejected.push(`- ${m[1]} (validation): ${m[2]}`)
+  }
+  const gaps = []
+  if (categories.length < 2) gaps.push('surveyed categories floor (2) not proven')
+  if (areas.length < 3) gaps.push('surveyed areas floor (3) not proven')
+  if (rejected.length < 3) gaps.push('fewer than 3 reasoned rejections')
+  return {
+    body: `Surveyed categories: ${categories.join(', ')}\nSurveyed areas: ${areas.join(', ')}\nTop rejected candidates:\n${rejected.join('\n')}\n`,
+    gaps,
+  }
 }
 
 /**
@@ -140,7 +229,10 @@ export function parseDetectorFindings(text) {
   let command = ''
   let module = ''
   let jscpdPrimary = null
+  let duplPrimary = null
   let vulnId = null
+  let vulnScope
+  let fixedIn
   for (const raw of String(text).split('\n')) {
     const line = raw.trim()
     if (!line) continue
@@ -149,11 +241,29 @@ export function parseDetectorFindings(text) {
       detector = cmd
       ;({ command, module } = moduleForCommand(raw))
       jscpdPrimary = null
+      duplPrimary = null
       vulnId = null
+      vulnScope = undefined
+      fixedIn = undefined
       continue
     }
     if (!detector) continue
+    const normalizeDetectorPath = (file) => {
+      if (path.isAbsolute(file)) {
+        const relative = path.relative(process.cwd(), file)
+        return isRepoRelativePath(relative) ? relative : file
+      }
+      const relative = file.replace(/^\.\//, '')
+      if (!isRepoRelativePath(relative)) return relative
+      if (/^(?:services|lib|plugins|scripts|proto|docs)\//.test(relative)) return relative
+      const root = moduleRoot(module)
+      const runsAtRepoRoot =
+        detector === 'jscpd' || (detector === 'deadcode' && root.startsWith('lib/'))
+      return runsAtRepoRoot ? relative : root + '/' + relative
+    }
     const push = (candidatePath, evidence) => {
+      candidatePath = normalizeDetectorPath(candidatePath)
+      if (detector === 'dupl' || detector === 'jscpd') evidence = normalizeDetectorPath(evidence)
       const candidate = {
         category: CATEGORY_OF[detector],
         area: areaOf(candidatePath),
@@ -164,9 +274,11 @@ export function parseDetectorFindings(text) {
         confirmationCommand: command,
         findingLine: line,
       }
-      const excluded = fileAxisExclusion(detector, evidence)
-      if (excluded) candidate.excluded = excluded
-      out.push(candidate)
+      if (detector === 'vuln') {
+        candidate.vulnScope = vulnScope
+        candidate.fixedIn = fixedIn
+      }
+      out.push(classifyCandidate(candidate))
     }
 
     let m
@@ -177,8 +289,20 @@ export function parseDetectorFindings(text) {
       push(m[1], m[2])
     } else if (detector === 'cyclo' && (m = /^\d+\s+\S+\s+(\S+)\s+(\S+\.go):\d+/.exec(line))) {
       push(m[2], m[1])
-    } else if (detector === 'dupl' && (m = /^(\S+\.go):\d+,\d+\s+(\S+\.go):\d+,\d+/.exec(line))) {
-      push(m[1], m[2])
+    } else if (detector === 'dupl') {
+      if (/^found \d+ clones:$/.test(line)) {
+        duplPrimary = null
+      } else if ((m = /^(\S+\.go):\d+,\d+\s+(\S+\.go):\d+,\d+/.exec(line))) {
+        push(m[1], m[2])
+        duplPrimary = null
+      } else if ((m = /^(\S+\.go):\d+,\d+$/.exec(line))) {
+        // dupl's default reporter lists all clones beneath a group header. Keep the
+        // first as the anchor and surface every partner, including groups larger than two.
+        if (duplPrimary) push(duplPrimary, line)
+        else duplPrimary = m[1]
+      } else {
+        duplPrimary = null
+      }
     } else if (detector === 'vuln') {
       // govulncheck's default text output is multi-line: the advisory ID sits on a
       // `Vulnerability #N: GO-YYYY-NNNN` header, and each reachable call site on an indented
@@ -186,16 +310,22 @@ export function parseDetectorFindings(text) {
       // ID across lines so every reachable trace surfaces as a candidate (loss-free).
       if ((m = /^Vulnerability #\d+:\s+(GO-\d+-\d+|CVE-\d+-\d+)/.exec(line))) {
         vulnId = m[1]
+        vulnScope = undefined
+        fixedIn = undefined
+      } else if (/^Standard library\b/.test(line)) {
+        vulnScope = 'stdlib'
+      } else if (/^Module:/.test(line)) {
+        vulnScope = 'module'
+      } else if ((m = /^Fixed in:\s*(.+)/.exec(line))) {
+        fixedIn = m[1]
       } else if (vulnId && (m = /^#\d+:\s+(\S+\.go):\d+/.exec(line))) {
-        push(m[1], vulnId)
+        push(m[1], fixedIn ? `${vulnId}; Fixed in: ${fixedIn}` : vulnId)
       }
     } else if (
       detector === 'filesize' &&
       // revive's `default` formatter emits ONE line per finding carrying all three values:
-      // "<file>.go:<pos>: file length is N lines, which exceeds the limit of M". Keeping the
-      // limit in the evidence is load-bearing — the complexity-hotspot playbook selects its
-      // axis on "an eligible file exceeds 2x the detector's limit", and the threshold is
-      // overridable, so a bare line count would leave that rule uncomputable downstream.
+      // "<file>.go:<pos>: file length is N lines, which exceeds the limit of M".
+      // Both count and overridable limit are needed for the classification verdict.
       (m =
         /^(\S+\.go):\d+(?::\d+)?:\s+file length is\s+(\d+)\s+lines,\s+which exceeds the limit of\s+(\d+)/.exec(
           line,
@@ -232,7 +362,7 @@ export function filterValidSurveyCandidates(candidates, options = {}) {
   for (const candidate of candidates) {
     const verdict = validateSurveyCandidate(candidate, options)
     if (verdict.ok) {
-      valid.push(candidate)
+      valid.push(classifyCandidate(candidate, options))
     } else {
       dropped.push({ candidate, reason: verdict.reason })
     }
@@ -247,6 +377,12 @@ export function filterValidSurveyCandidates(candidates, options = {}) {
 export const DEBT_SURVEY_USAGE = `usage: node scripts/bs-sweep-debt-survey.mjs <command> [args]
 
 commands:
+  extract <detector-output-file>
+      Print classified detector candidates as JSON; retain exclusions.
+  axis <json-array>
+      Print the eligible complexity axis verdict.
+  no-change-evidence <survey-read-json> [validation-drop-lines]
+      Print rejection evidence before cleanup; exit 3 when breadth/reasons are incomplete.
   validate-candidates <json-array>
       Filter a raw detector candidate list to the module-attributed, repo-relative
       candidates the survey is allowed to report. Prints the surviving candidates as
@@ -268,26 +404,55 @@ export function runCli(
   argv,
   { write = (s) => process.stdout.write(s), errWrite = (s) => process.stderr.write(s) } = {},
 ) {
-  const [cmd, json = '[]'] = argv
+  const [cmd, arg = '[]', drops = ''] = argv
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
     write(DEBT_SURVEY_USAGE)
     return 0
   }
-  if (cmd !== 'validate-candidates') {
+  if (!['extract', 'axis', 'no-change-evidence', 'validate-candidates'].includes(cmd)) {
     errWrite(`bs-sweep-debt survey: unknown command: ${cmd ?? '(none)'}\n`)
     errWrite(DEBT_SURVEY_USAGE)
     return 2
   }
-  const { dropped, valid } = filterValidSurveyCandidates(JSON.parse(json), {
-    repoRoot: process.cwd(),
-  })
-  for (const drop of dropped) {
-    errWrite(
-      `bs-sweep-debt survey: dropped ${drop.candidate.path || drop.candidate.file || '<missing path>'}: ${drop.reason}\n`,
-    )
+  try {
+    const repoRoot = process.cwd()
+    const allowlist = loadAllowlist(repoRoot, errWrite)
+    if (cmd === 'extract') {
+      if (!argv[1]) throw new Error('extract requires a detector-output file')
+      write(
+        JSON.stringify(
+          parseDetectorFindings(fs.readFileSync(arg, 'utf8')).map((c) =>
+            classifyCandidate(c, { repoRoot, allowlist }),
+          ),
+        ),
+      )
+    } else if (cmd === 'axis') {
+      write(
+        JSON.stringify(
+          complexityAxis(JSON.parse(arg).map((c) => classifyCandidate(c, { repoRoot, allowlist }))),
+        ),
+      )
+    } else if (cmd === 'no-change-evidence') {
+      const { body, gaps } = noChangeEvidence(JSON.parse(arg), drops)
+      write(body)
+      for (const gap of gaps) errWrite(`incomplete: ${gap}\n`)
+      return gaps.length ? 3 : 0
+    } else if (cmd === 'validate-candidates') {
+      const { dropped, valid } = filterValidSurveyCandidates(JSON.parse(arg), {
+        repoRoot,
+        allowlist,
+      })
+      for (const drop of dropped)
+        errWrite(
+          `bs-sweep-debt survey: dropped ${drop.candidate.path || drop.candidate.file || '<missing path>'}: ${drop.reason}\n`,
+        )
+      write(JSON.stringify(valid))
+    }
+    return 0
+  } catch (error) {
+    errWrite(`bs-sweep-debt survey: ${error.message}\n`)
+    return 2
   }
-  write(JSON.stringify(valid))
-  return 0
 }
 
 if (isMainModule(import.meta.url)) {

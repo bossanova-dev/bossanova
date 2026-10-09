@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -99,7 +103,7 @@ func TestInit(t *testing.T) {
 			writeFixture(t, dir, tc.files)
 
 			var out bytes.Buffer
-			if err := runInit(&out, dir, false); err != nil {
+			if err := runInit(&out, dir, false, initOptions{}); err != nil {
 				t.Fatalf("runInit: %v", err)
 			}
 
@@ -256,7 +260,7 @@ func TestInitNodeBridgeFailures(t *testing.T) {
 			}
 
 			var out bytes.Buffer
-			err := runInit(&out, dir, false)
+			err := runInit(&out, dir, false, initOptions{})
 			if err == nil {
 				t.Fatalf("runInit succeeded; want %v", tc.want)
 			}
@@ -292,7 +296,7 @@ esac
 `)
 
 	var out bytes.Buffer
-	err := runInit(&out, dir, false)
+	err := runInit(&out, dir, false, initOptions{})
 	if err == nil {
 		t.Fatal("runInit succeeded despite failing validation")
 	}
@@ -410,7 +414,7 @@ func TestInitOverwriteSemantics(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runInit(&out, dir, false); err == nil {
+	if err := runInit(&out, dir, false, initOptions{}); err == nil {
 		t.Fatal("runInit overwrote an existing config without --force")
 	} else if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("refusal does not name --force: %v", err)
@@ -425,7 +429,7 @@ func TestInitOverwriteSemantics(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runInit(&out, dir, true); err != nil {
+	if err := runInit(&out, dir, true, initOptions{}); err != nil {
 		t.Fatalf("runInit --force: %v", err)
 	}
 	replaced, err := os.ReadFile(target)
@@ -452,7 +456,7 @@ func TestInitDeterminism(t *testing.T) {
 	target := filepath.Join(dir, ".boss-skills.json")
 
 	var first, second bytes.Buffer
-	if err := runInit(&first, dir, false); err != nil {
+	if err := runInit(&first, dir, false, initOptions{}); err != nil {
 		t.Fatalf("first runInit: %v", err)
 	}
 	firstBytes, err := os.ReadFile(target)
@@ -460,7 +464,7 @@ func TestInitDeterminism(t *testing.T) {
 		t.Fatalf("read first: %v", err)
 	}
 
-	if err := runInit(&second, dir, true); err != nil {
+	if err := runInit(&second, dir, true, initOptions{}); err != nil {
 		t.Fatalf("second runInit: %v", err)
 	}
 	secondBytes, err := os.ReadFile(target)
@@ -574,7 +578,7 @@ process.stdout.write(JSON.stringify(Object.keys(mod.DEFAULT_CONFIG)))
 	for _, block := range skippedBlocks {
 		named[block.name] = true
 	}
-	report := initReport("/repo/.boss-skills.json", detectedConfig{}, supportedHarnesses, "")
+	report := initReport("/repo/.boss-skills.json", detectedConfig{}, initTracker{}, supportedHarnesses, "")
 	for _, key := range defaultKeys {
 		if !named[key] {
 			t.Errorf("DEFAULT_CONFIG block %q is never written and never reported as skipped", key)
@@ -730,7 +734,7 @@ func TestDetectHarnesses(t *testing.T) {
 // TestInitReportShowsEachHarnessDeclaration asserts the printed report carries the
 // placeholder key and each harness's declaration file.
 func TestInitReportShowsEachHarnessDeclaration(t *testing.T) {
-	report := initReport("/repo/.boss-skills.json", detectedConfig{}, supportedHarnesses, "")
+	report := initReport("/repo/.boss-skills.json", detectedConfig{}, initTracker{}, supportedHarnesses, "")
 	for _, want := range []string{
 		`"` + mcpServerPlaceholder + `"`,
 		".mcp.json",
@@ -759,7 +763,7 @@ func TestInitReportPrintsDetectedHarnessesThroughRunInit(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := runInit(&out, dir, false); err != nil {
+	if err := runInit(&out, dir, false, initOptions{}); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
 	report := out.String()
@@ -825,7 +829,7 @@ func TestInitReportEmitsOneKeyAcrossEveryHarness(t *testing.T) {
 	writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n"})
 
 	var out bytes.Buffer
-	if err := runInit(&out, dir, false); err != nil {
+	if err := runInit(&out, dir, false, initOptions{}); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
 	report := out.String()
@@ -858,7 +862,7 @@ func TestInitRefusesDanglingConfigSymlink(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runInit(&out, dir, false); err == nil {
+	if err := runInit(&out, dir, false, initOptions{}); err == nil {
 		t.Fatal("runInit wrote through a dangling config symlink")
 	} else if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("refusal does not name --force: %v", err)
@@ -885,7 +889,7 @@ func TestInitReportWarnsAboutShadowedAncestorConfig(t *testing.T) {
 	writeFixture(t, sub, map[string]string{"Makefile": "build:\n\t@true\n"})
 
 	var out bytes.Buffer
-	if err := runInit(&out, sub, false); err != nil {
+	if err := runInit(&out, sub, false, initOptions{}); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
 	report := out.String()
@@ -897,7 +901,7 @@ func TestInitReportWarnsAboutShadowedAncestorConfig(t *testing.T) {
 	plain := t.TempDir()
 	writeFixture(t, plain, map[string]string{"Makefile": "build:\n\t@true\n"})
 	var quiet bytes.Buffer
-	if err := runInit(&quiet, plain, false); err != nil {
+	if err := runInit(&quiet, plain, false, initOptions{}); err != nil {
 		t.Fatalf("runInit (no ancestor): %v", err)
 	}
 	if strings.Contains(quiet.String(), "shadows") {
@@ -907,7 +911,7 @@ func TestInitReportWarnsAboutShadowedAncestorConfig(t *testing.T) {
 
 // TestInitReportSeparatesSections: the report is four sections, not one wall.
 func TestInitReportSeparatesSections(t *testing.T) {
-	report := initReport("/repo/.boss-skills.json", detectedConfig{}, supportedHarnesses, "")
+	report := initReport("/repo/.boss-skills.json", detectedConfig{}, initTracker{}, supportedHarnesses, "")
 	// Two newlines, not one: a single leading \n is just the previous line's
 	// terminator, so the one-newline form is already true of an unseparated
 	// report and would assert nothing.
@@ -1052,5 +1056,418 @@ func TestFindAncestorConfigAtRootReportsNoShadow(t *testing.T) {
 	}
 	if got := findAncestorConfig(root, name); got != "" {
 		t.Errorf("findAncestorConfig(%q, %q) = %q; want \"\" — the root was treated as its own ancestor", root, name, got)
+	}
+}
+
+// --- Linear team resolution (BOS-1393) -------------------------------------
+
+// fakeTeamLister is the injected teamLister: no test here reaches the network,
+// and none reads LINEAR_API_KEY (only the cobra RunE does).
+type fakeTeamLister struct {
+	teams   []linearTeam
+	hasNext bool
+	err     error
+	calls   int
+}
+
+func (f *fakeTeamLister) ListTeams(context.Context) ([]linearTeam, bool, error) {
+	f.calls++
+	return f.teams, f.hasNext, f.err
+}
+
+// runInitWithTracker runs boss init over a one-target Makefile fixture and
+// returns the error, the report, and the on-disk trackerConfig (nil if absent).
+func runInitWithTracker(t *testing.T, opts initOptions) (string, map[string]any, error) {
+	t.Helper()
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n"})
+	var out bytes.Buffer
+	err := runInit(&out, dir, false, opts)
+	raw, readErr := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
+	if err != nil {
+		if !os.IsNotExist(readErr) {
+			t.Fatalf("runInit failed (%v) but a config exists on disk (read err: %v)", err, readErr)
+		}
+		return out.String(), nil, err
+	}
+	if readErr != nil {
+		t.Fatalf("read written config: %v", readErr)
+	}
+	var onDisk map[string]any
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("written config is not JSON: %v (%s)", err, raw)
+	}
+	// Every written config must pass the real bridge validation.
+	bridge, cleanup, err := newNodeBridge()
+	if err != nil {
+		t.Fatalf("newNodeBridge: %v", err)
+	}
+	defer cleanup()
+	if err := bridge.validate(raw, "test"); err != nil {
+		t.Fatalf("written config fails bridge validation: %v (%s)", err, raw)
+	}
+	tracker, _ := onDisk["trackerConfig"].(map[string]any)
+	return out.String(), tracker, nil
+}
+
+// skippedSection is the report's "Blocks skipped" section alone.
+func skippedSection(t *testing.T, report string) string {
+	t.Helper()
+	start := strings.Index(report, "Blocks skipped")
+	end := strings.Index(report, "Harness MCP declarations")
+	if start < 0 || end < start {
+		t.Fatalf("report has no skipped section:\n%s", report)
+	}
+	return report[start:end]
+}
+
+func TestInitTrackerWritesTheSingleVisibleTeam(t *testing.T) {
+	lister := &fakeTeamLister{teams: []linearTeam{{ID: "id-1", Name: "Example", Key: "EX"}}}
+	report, tracker, err := runInitWithTracker(t, initOptions{lister: lister})
+	if err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	linear, _ := tracker["linear"].(map[string]any)
+	if linear["team"] != "Example" || linear["teamKey"] != "EX" || len(linear) != 2 {
+		t.Fatalf("trackerConfig.linear = %v; want exactly {team: Example, teamKey: EX}", linear)
+	}
+	if !strings.Contains(report, "Tracker team: Example (EX) — detected") {
+		t.Errorf("report does not name the detected team:\n%s", report)
+	}
+	if strings.Contains(skippedSection(t, report), "trackerConfig") {
+		t.Errorf("a written trackerConfig is still listed as skipped:\n%s", report)
+	}
+	// The declarations use the effective mcpServer, byte-identical in both harnesses.
+	if got := claudeDeclarationKey(t, report); got != `"linear"` {
+		t.Errorf("Claude key = %s, want \"linear\"\n%s", got, report)
+	}
+	if got := codexDeclarationKey(t, report); got != `"linear"` {
+		t.Errorf("Codex key = %s, want \"linear\"\n%s", got, report)
+	}
+	if lister.calls != 1 {
+		t.Errorf("lister called %d times, want 1", lister.calls)
+	}
+}
+
+func TestInitTrackerSeveralTeamsWriteNothing(t *testing.T) {
+	cases := []struct {
+		name   string
+		lister *fakeTeamLister
+		want   string
+	}{
+		{"two teams", &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}, "2 Linear teams are visible (Alpha, Beta)"},
+		{"hasNextPage", &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, hasNext: true}, "more than 1 Linear teams are visible (Alpha, …)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report, tracker, err := runInitWithTracker(t, initOptions{lister: tc.lister})
+			if err != nil {
+				t.Fatalf("runInit: %v", err)
+			}
+			if tracker != nil {
+				t.Fatalf("several teams wrote a tracker block: %v", tracker)
+			}
+			skipped := skippedSection(t, report)
+			if !strings.Contains(skipped, "trackerConfig") {
+				t.Errorf("trackerConfig not reported as skipped:\n%s", report)
+			}
+			if !strings.Contains(report, "--team") || !strings.Contains(strings.Join(strings.Fields(report), " "), tc.want) {
+				t.Errorf("report lacks the --team guidance %q:\n%s", tc.want, report)
+			}
+			if got := claudeDeclarationKey(t, report); got != strconv.Quote(mcpServerPlaceholder) {
+				t.Errorf("no team written, but the declaration key is %s", got)
+			}
+		})
+	}
+}
+
+func TestInitTrackerTeamFlagMatchingAListedTeam(t *testing.T) {
+	teams := []linearTeam{{ID: "id-a", Name: "Alpha", Key: "ALP"}, {ID: "id-b", Name: "Beta", Key: "BET"}}
+	for _, flag := range []string{"beta", "BET", "id-b", " Beta "} {
+		t.Run(flag, func(t *testing.T) {
+			report, tracker, err := runInitWithTracker(t, initOptions{team: flag, lister: &fakeTeamLister{teams: teams}})
+			if err != nil {
+				t.Fatalf("runInit: %v", err)
+			}
+			linear, _ := tracker["linear"].(map[string]any)
+			if linear["team"] != "Beta" || linear["teamKey"] != "BET" {
+				t.Fatalf("trackerConfig.linear = %v; want the canonical Beta / BET", linear)
+			}
+			if !strings.Contains(report, "Tracker team: Beta (BET) — --team\n") {
+				t.Errorf("report does not name the --team source:\n%s", report)
+			}
+		})
+	}
+}
+
+func TestInitTrackerUnknownTeamFlagErrorsAndWritesNothing(t *testing.T) {
+	lister := &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}
+	_, _, err := runInitWithTracker(t, initOptions{team: "Nope", lister: lister})
+	if !errors.Is(err, errUnknownTeam) {
+		t.Fatalf("err = %v; want errUnknownTeam", err)
+	}
+	if !strings.Contains(err.Error(), "Alpha, Beta") {
+		t.Errorf("error does not name the visible teams: %v", err)
+	}
+}
+
+func TestInitTrackerTeamFlagBeyondTheFirstPageIsWrittenUnverified(t *testing.T) {
+	lister := &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, hasNext: true}
+	report, tracker, err := runInitWithTracker(t, initOptions{team: "Zeta", lister: lister})
+	if err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	linear, _ := tracker["linear"].(map[string]any)
+	if linear["team"] != "Zeta" {
+		t.Fatalf("trackerConfig.linear = %v; want team Zeta", linear)
+	}
+	if !strings.Contains(report, "--team, unverified") || !strings.Contains(report, "team not verified") {
+		t.Errorf("report does not flag the unverified team:\n%s", report)
+	}
+}
+
+func TestInitTrackerWithoutAListing(t *testing.T) {
+	const secret = "SECRET-RESPONSE-BODY"
+	listErr := &linearAPIError{op: "list Linear teams", class: "HTTP status 401", err: errors.New(secret)}
+	cases := []struct {
+		name      string
+		lister    teamLister
+		wantGuide string
+	}{
+		{"no key", nil, "LINEAR_API_KEY is not set"},
+		{"lister error", &fakeTeamLister{err: listErr}, "could not be listed (HTTP status 401)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" without --team", func(t *testing.T) {
+			report, tracker, err := runInitWithTracker(t, initOptions{lister: tc.lister})
+			if err != nil {
+				t.Fatalf("a missing listing must never fail boss init: %v", err)
+			}
+			if tracker != nil {
+				t.Fatalf("no listing and no --team wrote a tracker block: %v", tracker)
+			}
+			flat := strings.Join(strings.Fields(report), " ")
+			if !strings.Contains(flat, tc.wantGuide) || !strings.Contains(flat, "auto-detect") {
+				t.Errorf("report lacks the guidance %q:\n%s", tc.wantGuide, report)
+			}
+			if strings.Contains(report, secret) {
+				t.Errorf("report echoes the lister error body:\n%s", report)
+			}
+		})
+		t.Run(tc.name+" with --team", func(t *testing.T) {
+			report, tracker, err := runInitWithTracker(t, initOptions{team: "Example", lister: tc.lister})
+			if err != nil {
+				t.Fatalf("runInit: %v", err)
+			}
+			linear, _ := tracker["linear"].(map[string]any)
+			if linear["team"] != "Example" || len(linear) != 1 {
+				t.Fatalf("trackerConfig.linear = %v; want exactly {team: Example}", linear)
+			}
+			if !strings.Contains(report, "Tracker team: Example — --team, unverified") ||
+				!strings.Contains(report, "team not verified (no Linear listing available") {
+				t.Errorf("report does not flag the unverified team:\n%s", report)
+			}
+			if strings.Contains(report, secret) {
+				t.Errorf("report echoes the lister error body:\n%s", report)
+			}
+		})
+	}
+}
+
+func TestInitTrackerZeroTeamsWriteNothing(t *testing.T) {
+	report, tracker, err := runInitWithTracker(t, initOptions{lister: &fakeTeamLister{}})
+	if err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	if tracker != nil {
+		t.Fatalf("zero teams wrote a tracker block: %v", tracker)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(report), " "), "no Linear teams are visible") {
+		t.Errorf("report lacks the zero-teams guidance:\n%s", report)
+	}
+}
+
+// TestInitBridgeAcceptsTeamOnlyTrackerBlock pins Recon finding 2: the bridge
+// composes withTrackerDefaults, so a team-only block validates exactly as the
+// real loader accepts it, while a blank team still fails.
+func TestInitBridgeAcceptsTeamOnlyTrackerBlock(t *testing.T) {
+	bridge, cleanup, err := newNodeBridge()
+	if err != nil {
+		t.Fatalf("newNodeBridge: %v", err)
+	}
+	defer cleanup()
+	if err := bridge.validate([]byte(`{"trackerConfig":{"linear":{"team":"Example"}}}`+"\n"), "src"); err != nil {
+		t.Fatalf("bridge rejected a team-only tracker block: %v", err)
+	}
+	if err := bridge.validate([]byte(`{"trackerConfig":{"linear":{"team":""}}}`+"\n"), "src"); err == nil {
+		t.Fatal("bridge accepted a blank team")
+	}
+}
+
+func TestInitRejectsADetectorThatEmitsTrackerConfig(t *testing.T) {
+	dir := t.TempDir()
+	fakeNode(t, `printf '%s' '{"configFilename":".boss-skills.json","detected":{"trackerConfig":{"linear":{"team":"X"}}}}'`+"\n")
+	var out bytes.Buffer
+	err := runInit(&out, dir, false, initOptions{})
+	if !errors.Is(err, errDetectionShape) {
+		t.Fatalf("err = %v; want errDetectionShape", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".boss-skills.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("a rejected detection left a config on disk (stat err: %v)", statErr)
+	}
+}
+
+func TestTeamListerFromEnv(t *testing.T) {
+	if l := linearAdminFromEnv(func(string) string { return "  " }); l != nil {
+		t.Fatalf("a blank key built a lister: %#v", l)
+	}
+	l, ok := linearAdminFromEnv(func(k string) string {
+		if k == "LINEAR_API_KEY" {
+			return "lin_test_key"
+		}
+		return ""
+	}).(*graphQLLinearAdmin)
+	if !ok || l.endpoint != linearGraphQLEndpoint || l.apiKey != "lin_test_key" || l.client == nil {
+		t.Fatalf("lister = %#v; want the production GraphQL lister", l)
+	}
+}
+
+func TestTeamListerGraphQL(t *testing.T) {
+	const key = "lin_test_key"
+	const secret = "SECRET-RESPONSE-BODY"
+	var gotAuth, gotBody, gotMethod string
+	status, response := http.StatusOK, ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotMethod = r.Header.Get("Authorization"), r.Method
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, response)
+	}))
+	defer srv.Close()
+	lister := &graphQLLinearAdmin{endpoint: srv.URL, apiKey: key, client: srv.Client()}
+
+	response = `{"data":{"teams":{"nodes":[{"id":"a","name":"Alpha","key":"ALP"},{"id":"b","name":"Beta","key":"BET"}],"pageInfo":{"hasNextPage":true}}}}`
+	teams, hasNext, err := lister.ListTeams(context.Background())
+	if err != nil {
+		t.Fatalf("ListTeams: %v", err)
+	}
+	want := []linearTeam{{ID: "a", Name: "Alpha", Key: "ALP"}, {ID: "b", Name: "Beta", Key: "BET"}}
+	if !slices.Equal(teams, want) || !hasNext {
+		t.Fatalf("ListTeams = %v, %v; want %v, true", teams, hasNext, want)
+	}
+	if gotAuth != key {
+		t.Errorf("Authorization = %q; want the raw key with no Bearer prefix", gotAuth)
+	}
+	if gotMethod != http.MethodPost || !strings.Contains(gotBody, "teams(first: 250)") {
+		t.Errorf("request = %s %s; want a POST of the teams query", gotMethod, gotBody)
+	}
+
+	for _, tc := range []struct {
+		name, class string
+		status      int
+		response    string
+	}{
+		{"non-200", "HTTP status 500", http.StatusInternalServerError, secret},
+		{"GraphQL errors", "GraphQL error", http.StatusOK, `{"errors":[{"message":"` + secret + `"}]}`},
+		{"unreadable", "unreadable response", http.StatusOK, `not json ` + secret},
+		{"no teams", "unreadable response", http.StatusOK, `{"data":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, response = tc.status, tc.response
+			_, _, err := lister.ListTeams(context.Background())
+			if err == nil {
+				t.Fatal("ListTeams succeeded")
+			}
+			var listErr *linearAPIError
+			if !errors.As(err, &listErr) || listErr.class != tc.class {
+				t.Fatalf("err = %v; want a linearAPIError of class %q", err, tc.class)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("error echoes the response body: %v", err)
+			}
+		})
+	}
+}
+
+func TestInitOverrideUsageErrors(t *testing.T) {
+	for _, args := range [][]string{{"--merge", "--force"}, {"--state", "bogus=X"}, {"--state", "planned="}, {"--state", "planned=", "--state", "planned=Ready"}, {"--label", "needsHuman="}, {"--label", "bogus=X"}, {"--state", "planned"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			dir := t.TempDir()
+			original := `{ "commands": {} }`
+			writeFixture(t, dir, map[string]string{".boss-skills.json": original})
+			t.Setenv("LINEAR_API_KEY", "not-used")
+			cmd := initCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(append([]string{"--dir", dir}, args...))
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected usage error")
+			}
+			if strings.Contains(strings.Join(args, " "), "bogus=") && !strings.Contains(err.Error(), "valid roles:") {
+				t.Fatal(err)
+			}
+			data, readErr := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(data) != original {
+				t.Fatal("usage error changed config")
+			}
+		})
+	}
+}
+
+func TestInitOverrideCreate(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINEAR_API_KEY", "")
+	cmd := initCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--dir", dir, "--state", "planned=Ready", "--label", "agentBuild=Agent-Build", "--assignee-me", "--team", "Example"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"planned": "Ready"`, `"agentBuild": "Agent-Build"`, `"me"`, `"team": "Example"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatal(string(data))
+		}
+	}
+}
+
+func TestInitForceWithOverridesReplacesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINEAR_API_KEY", "")
+	destination := filepath.Join(dir, "original")
+	if err := os.WriteFile(destination, []byte(`{"unknown":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, ".boss-skills.json")
+	if err := os.Symlink(destination, target); err != nil {
+		t.Fatal(err)
+	}
+	cmd := initCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--dir", dir, "--force", "--state", "planned=Ready"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"unknown":true}` {
+		t.Fatal("force wrote through symlink")
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("force did not replace symlink")
 	}
 }

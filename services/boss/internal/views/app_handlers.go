@@ -253,11 +253,12 @@ func (a *App) handleArchiveResult(msg archiveResultMsg) {
 		// for rendering until the row leaves the list, but the archive is no
 		// longer in flight, so re-entering the session must not seed a stuck
 		// archiving picker.
-		a.home.resolveArchive(msg.sessionID, msg.err)
-		if msg.err != nil {
+		a.home.resolveArchive(msg.sessionID, msg.err, msg.deferred)
+		if msg.err != nil || msg.deferred {
 			// The table rows cache rendered status text. Rebuild immediately so
 			// a failed archive stops showing its optimistic label before the next
-			// spinner tick or session poll.
+			// spinner tick or session poll, and a deferred one renders from the
+			// daemon's archive_pending rather than the local override.
 			a.home.buildTableRows()
 		}
 	}

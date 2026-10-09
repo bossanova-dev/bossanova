@@ -2379,6 +2379,78 @@ func assertZeroOutputPointer(t *testing.T, want, got *bool) {
 	}
 }
 
+// TestCommandHandlerAdapter_CronJobConcurrencyPolicyPassThrough pins the BOS-1441 optional
+// concurrency_policy enum across the stream-command → daemon-request hop for both create and
+// update. Unset stays nil and every explicit value — UNSPECIFIED included, which
+// only the daemon resolves — arrives unchanged, so a hardcoded or dropped value
+// on either side cannot pass.
+func TestCommandHandlerAdapter_CronJobConcurrencyPolicyPassThrough(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   *pb.CronJobConcurrencyPolicy
+	}{
+		{"unset stays nil", nil},
+		{"explicit unspecified", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED.Enum()},
+		{"explicit skip", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP.Enum()},
+		{"explicit cancel in progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS.Enum()},
+		{"explicit allow concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT.Enum()},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeSessionCommandServer{}
+			adapter := &CommandHandlerAdapter{Commands: fake}
+			if _, err := adapter.CreateCronJob(context.Background(), &pb.CreateCronJobCommand{
+				RepoId:            "repo-1",
+				Name:              "nightly",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob returned error: %v", err)
+			}
+			got := fake.lastCreateCron
+			if got == nil {
+				t.Fatal("no CreateCronJobRequest captured by the fake")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeSessionCommandServer{}
+			adapter := &CommandHandlerAdapter{Commands: fake}
+			if _, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{
+				Id:                "cj-1",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob returned error: %v", err)
+			}
+			got := fake.lastUpdateCron
+			if got == nil {
+				t.Fatal("no UpdateCronJobRequest captured by the fake")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+	}
+}
+
+// assertConcurrencyPolicyPointer compares a concurrency_policy pointer against
+// the value the caller supplied, treating nil (unset) as distinct from a pointer
+// to UNSPECIFIED: pass-through hops copy the pointer and never resolve it.
+func assertConcurrencyPolicyPointer(t *testing.T, want, got *pb.CronJobConcurrencyPolicy) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("concurrency_policy = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("concurrency_policy = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("concurrency_policy = %v, want %v", *got, *want)
+	}
+}
+
 func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
 	t.Parallel()
 

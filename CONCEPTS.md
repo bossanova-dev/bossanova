@@ -406,6 +406,21 @@ is absent or missing any of its parts is rendered as nothing at all rather than 
 callers skip the line entirely, so the layout does not shift and no unselectable row is left for a
 cursor to strand on.
 
+### Ready (hand-off status)
+
+`✓ ready` means boss-build finished the current PR head and handed it off for verification or a
+human. It is computed from that head's successful `boss/build` receipt, never stored or set by a
+command. A new push clears it until a build, a repair, or bossd (for the session's own descending
+push) posts a receipt on the new head. Ready wins over waiting, idle, stopped and green PR labels;
+live work, transient operations, failures, Verifying and Needs human keep their own status.
+
+### Session phase
+
+A short skill-reported name for what a working chat is doing, such as `planning`, `building`, or
+`reviewing`. `boss session phase` sets it in daemon memory; the first idle or stopped heartbeat
+clears it, and a daemon restart loses it. It is served only while working and shown beside the TUI
+spinner. It is distinct from the stall detector's agent progress phase, which the daemon infers.
+
 ### Chat title
 
 The human-readable name of a chat. It has **several writers** — a user rename, a caller-supplied
@@ -454,6 +469,14 @@ A session can also archive _itself_ — a finished unattended planning run asks 
 Because archiving closes the session's chat panes first, that request kills its own caller midway, so
 an archive that has started must run to completion without depending on the caller staying
 connected, and the request must be launched from outside anything the archive is about to release.
+
+An archive waits for idle chats. A request — automatic or explicit — for a session with a chat still
+mid-turn becomes a **pending archive**: the session shows as archiving, and the archive runs once every
+chat is idle, so a merge made from inside a session no longer tears the workspace out from under the
+agent finishing its steps. The chat that asked for its own session's archive counts as mid-turn until
+it is observed to settle. A pending archive is cancelled by resurrecting the session or opening a new
+chat in it, and is bypassed by a forced archive. Pending archives are not durable: a daemon restart
+drops them, and the repair pass above re-derives the merge-driven ones.
 
 ### Resurrect
 
@@ -762,6 +785,9 @@ and is separate from — never a substitute for — recording _why_ the fire was
 signal "no work" with a plain non-zero exit; the shell's own "could not run what you asked" codes are
 reserved, and a gate that borrows one is reported as broken rather than as a skip.
 
+A manual run evaluates a job's gate the way a scheduled fire does, but only when the job is enabled.
+A disabled job is skipped before its gate runs, so to test a gate by hand, enable the job first.
+
 Because the verdict travels only as an exit status, a gate's whole observable contract is the exit
 code of the **process**, not the return value of whatever decision procedure it calls. Every path a
 job can register as its gate command is therefore itself a gate — including a compatibility
@@ -808,6 +834,23 @@ other changes an existing client's observable answer even when no schema field c
 behavioural API change that must be versioned and served through a **Down-convert transform** for
 older clients.
 
+### Stage chaining
+
+A finished pipeline stage (plan, build, verify) handing its work straight to the next stage instead
+of leaving it for that stage's next scheduled tick. Chaining only **accelerates** work that still
+fires on schedule, so it is never fatal: a failed or skipped hand-off changes nothing about the
+finished stage's own outcome.
+
+**Consent is the schedule itself.** A stage is chained into only when the repo has an enabled
+scheduled job for it, identified by the first skill named in the job's prompt matching that stage's
+skill exactly — a name that merely starts with it is a different skill. Starting the next job now
+also requires that exactly one job matches, otherwise the hand-off is ambiguous and nothing fires.
+The hand-off into verify is deferred rather than immediate: it arms a **Callback** on the session's
+chat titled `verify` that sends the verify request once checks pass, so verify judges a settled
+head. Everything that might pick that chat — the hand-off and the verify router — must agree on
+which chat it is, so they share one selection rule rather than each finding their own. Duplicate
+hand-offs are harmless because each downstream stage claims its own work.
+
 ## Epic runs (boss-epic)
 
 ### Epic run
@@ -831,6 +874,21 @@ re-launched with the identical command and resume.
 A bossd session the driver creates for one epic ticket (prompt
 `/boss-build BOS-NN`, tracker fields set, `claude` agent by default —
 codex-exec sessions have no chat row for mid-run delivery).
+
+### Settled child
+
+A **Child session** whose tracked chat has stopped producing work, judged by the **Driver** — never
+taken from a caller-supplied flag — and required before a green PR may enter the
+**Serialized merge**. It takes two consecutive polls agreeing: either the chat is idle or stopped
+with no activity spinner, or the session reads **Ready (hand-off status)** while its chat is idle,
+stopped or waiting, because Ready means the head is already delivered and a waiting chat is
+parked rather than working. Settled is one green-admission condition among several; Ready never
+bypasses the others.
+
+The states in which liveness holds a Ready child must be exactly the states in which it can
+settle. A Ready child on any other chat status (usage-limited, unknown) is routed to the ordinary
+resume or investigate lanes, because a hold with no reachable settle only ends when the
+**Child wall clock** expires and the child is isolated.
 
 ### Child wall clock
 
@@ -923,17 +981,22 @@ this adapter simply does not offer: only the latter is a real capability gap.
 
 ### Planned selection
 
-A repo's configured narrowing of which planned tickets its scheduled build is allowed to take — for
-example a label set, or tickets assigned to or created by one identity — derived once and applied
-identically by the **Cron gate** that decides whether to fire and by the build worker that then picks
-the ticket, so the two scan exactly the same set.
+A repo's configured narrowing of which tickets a pipeline stage (planning, building, an epic run and
+the later stages) may take, expressed as include and exclude lists over labels, assignees, creators
+and projects, and applied identically by the **Cron gate** that decides whether to fire and by the
+worker that then picks the ticket, so the two scan exactly the same set.
+_Avoid:_ candidate filter
 
-Whether a selection is configured is decided by its presence, not by what it resolves to, and a
-configured selection can only be narrowed further, never replaced or widened. Every layer it passes
-through must either carry each of its clauses to the tracker or refuse to run: a layer that silently
-drops a clause, or a caller-supplied override that substitutes a different set, turns a read that
-should match the gate into a strictly wider one, and the worker then acts on a ticket the gate never
-saw. A refusal stops the run; it never falls back to an unfiltered read.
+Each dimension-and-polarity pair is an independent slot whose value comes from the first source that
+sets it — an invocation flag, then the stage's own override, then the shared block — and a higher
+source replaces only that one slot, never merging into it or touching the opposite polarity. An
+exclude slot keeps tickets that have no value for its field: an unassigned or unlabelled ticket is
+not excluded by an assignee or label exclude. Every named user, label and project is resolved before
+the scan, and a value that cannot be resolved — or a lookup that returned only part of its matches —
+stops the run rather than dropping the slot. Every layer the selection passes through must either
+carry each of its clauses to the tracker or refuse: a dropped clause turns a read that should match
+the gate into a strictly wider one, and the worker then acts on a ticket the gate never saw. A
+refusal stops the run; it never falls back to an unfiltered read.
 
 ### Plan contract
 
@@ -1536,6 +1599,14 @@ checks-passed once one failed — is canceled at the next evaluation instead of 
 it expires. Checks still running keep both check watches live. A closed but unmerged PR can be
 reopened, so its watches are left to expire.
 
+When a session merges, its own chats' watches on its own PR are retired after the intended
+`merged` wake fires. When a session stops or closes, every watch its chats hold is retired.
+The delivery worker drops stale firings when it checks terminal ownership before acquiring a
+lease. This check does not fence an already approved delivery against a concurrent terminal
+transition: an in-flight delivery can still wake a chat after retirement. The intended merge wake
+and a merged session's watches on other PRs can still deliver. Other sessions' watches,
+including an epic coordinator's watches on the child's PR, are never retired by this reconciliation.
+
 ### Callback group
 
 A cancellation scope shared by callbacks armed for the same pull request: when one member is selected
@@ -1876,6 +1947,19 @@ rule and re-sort, keeping its own frozen copy of that rule, since the live one i
 changed. The new field stays populated: a pinned client that does not read it is unaffected by its
 presence, and one that later learns to read it needs no renegotiation.
 
+### Pending procedure
+
+An orchestrator procedure whose wire contract has shipped while its handler has not, so it answers
+"unimplemented" and is declared as such, with a reason naming the work that will serve it.
+_Avoid:_ stub RPC, unimplemented RPC
+
+Declaring it pending is what lets a contract land ahead of its handlers without changing any existing
+procedure's answer, so it owes no **Dated API version**. A pending procedure still has to be
+classified everywhere the orchestrator classifies procedures (how a request is routed, whether it is
+recorded as a user action), because those classifications are exhaustive and an unclassified
+procedure fails them. The change that adds the handler is the one that declares it served, and the
+reason disappears in that change rather than lingering after the procedure starts answering.
+
 ## Review and verification
 
 ### Dispatch record
@@ -1988,6 +2072,18 @@ sound at every one of these layers, answering correctly the question it was buil
 corpus that does contain the damaged artifact — and still green, because the defect does not violate
 the property that check tests. That is a **Laundered defect**, not a vacuous gate, and the two want
 opposite responses: one is repaired, the other needs a new detector.
+
+### Inherited red
+
+A failing check on a branch whose cause is already present on the base the branch was cut from, so the
+failure says nothing about the branch's own change. It is established by reproducing the failure on the
+unmodified base, never by noticing that the failing file is one the branch did not touch, because a
+change can break a file it never edits.
+
+Inherited reds collect behind gates that run on a narrower trigger than the code they read, such as a
+check that only release promotions run. Such a red surfaces in whichever later branch first runs the
+gate, often long after the change that caused it. A branch that fixes one should say so in its own
+history, so the fix is not mistaken for part of the feature and is not reverted with it.
 
 ### String-space consumer
 
@@ -2836,6 +2932,12 @@ A short, repo-scoped observation a completed run records about a defect or frict
 
 A note is evidence, not work: it is never implemented directly, and it leaves the backlog in exactly one of two ways — deleted once a filed ticket carries it, or retagged out of the active backlog as retired. Duplicates are judged against the note's code pointer, not its whole body, because many unrelated notes mention the same skill or file in passing.
 
+### Organization note
+
+A note held in the cloud for one organization on a paid plan, readable by every member of it: either a copy a member's daemon synced from its local notes, or a note written straight to the cloud API. It is the cloud aggregate, not the local **Improvement note** backlog, which stays per daemon whether or not anything syncs.
+
+A synced copy belongs to the daemon that recorded it. The cloud never edits one, and deleting it in the cloud tombstones it so its daemon cannot sync it back, while the daemon keeps its local note. A synced note lands in the organization its repository is mapped to when the daemon's owner is a member, in the owner's personal organization when the repository is unmapped, and nowhere when the owner is not a member of the mapped organization. Every organization note expires a fixed span after its original creation that edits never extend, and writes that change content count against a per-organization hourly quota that both API writes and sync spend.
+
 ### Theme
 
 A group of **Improvement notes** judged to describe the same underlying problem, and the unit a **Notes sweep** ranks, judges, and files as one ticket. Themes are re-authored on every sweep, so a theme has no identity that survives from one run to the next; anything that must persist across runs has to be keyed on the notes, never on the theme.
@@ -2845,6 +2947,22 @@ A theme's age is its newest member's, which makes theme age a measure of whether
 ### Notes sweep
 
 The scheduled pass that groups the **Improvement note** backlog into **Themes**, judges each theme's currency against the code, files the highest-ranked live themes as tickets, and retires notes that are demonstrably fixed or have aged past the stale window without being filed.
+
+### Note retention
+
+The daemon-side policy that deletes stored notes by age and by a per-repo count cap, applied to a repo each time a new note is written there. It is separate from a **Notes sweep**'s retirement, which judges notes, and it does not count toward a sweep's **Drain**.
+
+Retention is best-effort and runs only after the new note is durable, so a failed prune never loses the note being written; a missed prune is caught up by the repo's next write. Each limit can be set to zero to mean unlimited, which is distinct from leaving it unset (the shipped default applies). A pruned note leaves no **Note tombstone**. Retention is a local-storage decision, so it removes the note's **Note sync outbox** record in the same transaction, and any cloud copy expires on the cloud's own schedule.
+
+### Note sync outbox
+
+The daemon's durable per-note record of what still has to reach the cloud. It is written in the same transaction as every note create, update and delete, so the sync worker can never miss a committed change or send one that rolled back.
+
+Each local write bumps the note's source version and makes it pending again. The worker reports an outcome against the version it sent, and the outcome applies only while that version is still current, so a slow response can never mark a newer local edit as synced. Writing a note never waits on the network; sync state is advisory and shown alongside the note.
+
+### Note tombstone
+
+The **Note sync outbox** record a user-initiated note delete leaves behind, which outlives the deleted note until the delete has reached the cloud. Because the note itself is gone, the delete records the note's repository and creation time on the tombstone so the delete can still be routed to the right organization and dated against the cloud's retention window; a tombstone written before that capture existed is settled locally as rejected rather than sent. A tombstone is dropped once it is settled. An unsettled one is dropped only after the cloud copy it targets must already have expired, so no delete is lost while that copy may still be live. Deleting a note that does not exist writes no tombstone.
 
 ### Drain
 
@@ -2885,6 +3003,73 @@ A candidate set is _complete_ only when the fetch that produced it scanned every
 ### Epic expansion
 
 Replacing an epic parent in the **Candidate set** with its active children, because the parent itself names no change site and only its children can overlap or block. The children may be supplied by the caller, read off a complete candidate set (every child that could produce an edge is already in it), or still owed; only the last leaves an instruction to fetch them. A depth cap bounds how far nested epics expand, and a parent stopped by the cap is reported as unexamined even when its children were supplied.
+
+## Inbound triggers
+
+### Trigger
+
+A server-owned definition that turns an inbound external event into a launched agent session: which
+events it accepts, the repository and prompt it launches with, where the session is placed, and how
+overlapping launches are handled. Triggers live on the server rather than on a daemon because events
+arrive whether or not any daemon is connected. Distinct from a scheduled (cron) job, which a daemon
+fires on a timetable.
+
+A trigger belongs to one organization and is readable and editable only by its creator. A disabled trigger still records each arriving event but launches nothing. Everything the event carries is untrusted: it reaches the prompt only through allow-listed placeholders and the **Payload excerpt**, never as raw request data.
+
+A trigger reached over HTTP is addressed by a public identifier, which is not a credential: the sender proves itself with the trigger's own secret. Nothing charged against a trigger — its rate budget included — may be spent before that secret checks out, so a caller who knows only the identifier can neither exhaust the real sender's budget nor make the server hold per-trigger state on its behalf. A secret is revealed only once, in the response that minted it — the trigger's creation or a rotation — and can never be read back afterwards, only replaced; every other read of a trigger omits it, so a lost secret is recovered by rotation, which immediately invalidates the old one.
+
+### Trigger invocation
+
+The durable record of one event received for a **Trigger**, kept for every event that reaches
+ingestion, including events that filters reject and redeliveries of an event already recorded. A
+redelivery collapses onto the first record instead of creating a second one, so recording is
+idempotent. Requests turned away at the door — unauthenticated, rate-limited, oversized, or for an
+unknown trigger — record nothing, so unauthenticated noise cannot fill an owner's history.
+
+An invocation that is still due is worked through a lease: a worker claims it for a bounded time,
+and if the lease runs out the invocation can be claimed again. Each claim is a new **attempt**, and
+only the current attempt may write the outcome. A worker whose attempt has been superseded is
+fenced out even if it carries the same worker identity as the new claim, because worker identity
+names who holds a lease, not which grant it is.
+
+### Trigger type
+
+The kind of external source a **Trigger** listens to — for example a signed HTTP call or a repository-hosting webhook. Each type supplies its own configuration rules, the fields its filters may reference, and the events a trigger can subscribe to; adding a type changes neither how triggers are stored nor how events are matched.
+
+### Aggregate check event
+
+A repository-hosting trigger event that no single webhook delivery carries — "every check on an open pull request's head is green and every workflow run for it has finished", optionally also "and the pull request is out of draft" — which the server derives by reading the head's current check state when a delivery could have turned it green. It is judged by the same verdict the daemon's checks-passed callback triggers use, so the two cannot disagree about what a check state means.
+
+It fires at most once per head commit; later deliveries for an already-green head are recorded as deduplicated, and new commits start a fresh head. The derivation is best-effort: a failed read records the delivery's own events and leaves the next delivery to try again. Because the reads are separate requests with no shared snapshot, the check content is re-read after the workflow runs are seen finished, so a check that fails while they finish cannot produce a stale green.
+
+### Payload excerpt
+
+The bounded, sanitized record of an event that a **Trigger** keeps at ingestion: fixed event context plus only the payload fields the trigger declared, never request headers. Control and invisible formatting characters are stripped, each value and the whole record are size-capped, and the record says when anything was cut.
+
+The excerpt is the only event data a launch can see. The prompt reads its placeholders from it in a single pass that never re-expands substituted text, and appends the excerpt itself inside a labelled fence that the data cannot close, so the agent receives it as data rather than as instructions.
+
+## Outbound session webhooks
+
+### Session webhook delivery
+
+One queued send of one session event to one organization-configured webhook endpoint, worked through
+as a series of attempts until it succeeds, fails terminally, or exhausts its retries. Every attempt
+carries the same event and delivery identity, so a receiver can recognise a retry as the same
+notification. Distinct from a chat **Delivery state**, which describes submitting a message into an
+agent pane.
+
+Delivery is at-least-once. A delivery is claimed under a lease that always outlasts one attempt and
+its recording, so no second worker can take it over mid-attempt. An attempt cut short by shutdown is
+left for the lease to expire and be retried, but an attempt that already succeeded is recorded even
+during shutdown so it is not sent again. A delivery whose endpoint was disabled after it was queued
+is cancelled without being sent.
+
+### Webhook signing secret
+
+The shared secret a receiver uses to verify that a **Session webhook delivery** came from
+Bossanova. It is revealed exactly once, when the webhook is created or when the secret is rotated,
+and is never readable afterwards; losing it means rotating again. Rotation takes effect for
+deliveries still waiting to be sent, not only for events that occur later.
 
 ## Flagged ambiguities
 

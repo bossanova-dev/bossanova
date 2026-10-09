@@ -150,7 +150,11 @@ rather than adding to it. Pass an empty `--tag` value to clear the tags.
 
 Add `--json` to `add`, `ls`, `show`, or `edit` for stable machine-readable
 output. A note has `id`, `repo_id`, `session_id`, `chat_id`, `body`, `tags`,
-`created_at`, and `updated_at` fields.
+`created_at`, `updated_at`, `sync_state`, and `synced_at` fields. `sync_state`
+is the note's cloud-sync state (for example `pending` or `synced`) and
+`synced_at` is when the cloud last accepted it; both are empty when the daemon
+predates note sync or the note has never synced.
+[Sync states](#sync-states) lists every value.
 
 ## MCP reference
 
@@ -181,6 +185,194 @@ The body must be non-empty and no larger than 64 KiB. Tags are trimmed,
 lowercased, deduplicated, and returned in ascending order. A note can have up
 to 32 tags, each at most 64 bytes long.
 
+Notes are not kept forever. Each time a note is written, bossd deletes that
+repo's notes older than 180 days and then trims the repo to its newest 10,000
+notes, oldest first. The note just written is always kept. To change either
+limit, set `notes.retention_days` or `notes.max_per_repo` in `settings.json`
+(`0` means unlimited) and restart the daemon. See
+[`notes` fields](../reference/settings.md#notes-fields).
+
 Note bodies are returned in full by MCP and JSON output. Do not use notes for
 secrets, credentials, or other values that should not be exposed to readers of
 the repository's notes.
+
+## Organization notes (paid plans)
+
+Organizations on a paid Bossanova Cloud plan also get organization notes: one
+shared store in Bossanova Cloud that holds the notes every member's daemon
+records, plus notes written straight to the cloud API. It gives a weekly sweep
+one place to search across every machine instead of one daemon at a time.
+
+An organization note is a copy. Each daemon keeps its own local notes, with the
+local retention described above, whether or not they sync. Without a paid plan
+nothing changes: local notes work exactly as the rest of this page describes.
+
+### Who gets it
+
+The paid entitlement is judged per organization. Only an organization that
+holds it stores notes; paying through one organization grants nothing in
+another.
+
+Notes sync only from a daemon connected to Bossanova Cloud (see
+[Signing In](./login.md)). A local-only daemon runs no sync worker, so its notes
+stay `pending`. Reading and writing organization notes yourself needs
+`boss login`; the `boss notes org` commands call the cloud directly, so they work
+without `--remote`.
+
+### Which organization a synced note lands in
+
+The daemon sends each note with its repository's origin URL, and Bossanova
+Cloud routes it with the same rule it uses for sessions:
+
+- A repository mapped to an organization you belong to sends its notes to that
+  organization.
+- A repository with no organization mapping sends its notes to your personal
+  organization.
+- A repository mapped to an organization you do not belong to is not synced.
+  Its notes become `refused`, and the daemon asks again every hour.
+
+A note whose repository has no origin URL is never sent and is marked
+`rejected` locally. The daemon's owner, the account the daemon signed in as, is
+the author of every note it syncs.
+
+### Permissions
+
+Every member of an organization lists, searches and reads every unexpired note
+in it. Editing or deleting a note is limited to its author and the
+organization's owners; anyone else gets `permission_denied`. A non-member gets `permission_denied`
+before anything else is checked.
+
+### How sync works
+
+Sync is automatic and asynchronous. Writing a local note never waits on the
+network: the daemon records the change in its sync outbox in the same
+transaction as the note, and a background worker sends it. The worker drains the
+outbox when the daemon starts, every 30 seconds, and right after every local
+write. It sends up to 50 notes per request and at most 10 requests per pass, so
+a large backlog drains over several passes.
+
+Any local edit or delete makes the note `pending` again, whatever state it was
+in. A failed request is retried after a delay that starts at 30 seconds and
+doubles with each attempt, up to 30 minutes. Each delay is randomised between
+half and all of that value so daemons do not retry in step.
+
+`boss notes show` prints the sync state on its `Sync:` line, with the time the
+cloud last accepted the note and the last error. To sync now and see how many
+notes, including deletes not yet sent, are in each state:
+
+<CommandTabs
+cli="boss notes sync"
+/>
+
+The counts are read as the request goes out, so run it again to see them move.
+On a daemon that is not connected to Bossanova Cloud it reports that sync is not
+running. Add `--json` for `worker_configured` and a `counts` list that always
+carries every state.
+
+### Sync states
+
+| State          | Meaning                                                            | What happens next                                     |
+| -------------- | ------------------------------------------------------------------ | ----------------------------------------------------- |
+| `pending`      | This version has not reached the cloud yet.                        | Sent on the next pass.                                |
+| `synced`       | The cloud holds this version.                                      | Nothing, until the note changes.                      |
+| `failed`       | The last attempt hit a transient error, such as a network failure. | Retried with backoff.                                 |
+| `rate_limited` | The organization's hourly limit is spent.                          | Retried when the hour resets, plus up to 30 seconds.  |
+| `not_entitled` | The organization does not have the paid entitlement.               | Checked again every hour, so an upgrade is picked up. |
+| `refused`      | The repository is mapped to an organization you do not belong to.  | Checked again every hour.                             |
+| `rejected`     | The cloud refused the note as invalid, or it has no origin URL.    | Not retried until the note changes.                   |
+| `expired`      | The note is older than the 90-day retention window.                | Never synced; it stays local.                         |
+| `suppressed`   | Someone deleted the cloud copy.                                    | Never synced again; the local note is kept.           |
+
+### Conflicts and deletes
+
+The daemon that recorded a note is the authority for it:
+
+- Edit a synced note on its daemon. The cloud refuses edits to synced notes
+  with `failed_precondition`; it edits only notes written through the cloud
+  API.
+- A newer local version replaces the cloud copy. An older or repeated version
+  is ignored, so resending is safe.
+- Deleting a local note deletes its cloud copy.
+- Deleting a synced note in the cloud removes it from the organization but not
+  from its daemon. That note is never accepted again, and its local state
+  becomes `suppressed`.
+- Deleting a note written through the cloud API removes it permanently.
+
+### Reading and writing organization notes
+
+`boss notes org` reads and writes the organization's notes in Bossanova Cloud
+with `ls`, `show`, `add`, `edit`, `rm` and `quota`. When you belong to one
+organization it is the default; with several, pass `--org <id>`. Agents use the
+six organization-note tools on the hosted MCP endpoint (see
+[MCP](./mcp.md)). In the web app, **Settings → Notes** lists the same notes with
+the organization's quota and each note's expiry.
+
+<CommandTabs
+chat='"add an organization note that the deploy fixture needs a configurable timeout, tagged flaky, using idempotency key nightly-2026-10-09"'
+cli='boss notes org add "The deploy fixture needs a configurable timeout." --tag flaky --idempotency-key nightly-2026-10-09'
+mcp="create_organization_note"
+/>
+
+With an idempotency key (at most 255 bytes), a retry returns the original note
+instead of creating a duplicate and spends no quota. Reusing the key with a
+different body, tags, repository, session or chat fails with `already_exists`.
+
+<CommandTabs
+chat='"list our organization notes tagged flaky that mention timeout"'
+cli="boss notes org ls --tag flaky --search timeout"
+mcp="list_organization_notes"
+/>
+
+`ls` returns one page, newest first: 50 notes by default and at most 200 with
+`--page-size`. Pass the page token it prints to `--page-token`, with the same
+filters, for the next page. It filters by `--author`, `--repo`, `--session`,
+any of several `--tag` values, and `--search`, a case-insensitive body
+substring.
+
+### Limits and the hourly window
+
+Organization notes have the same content limits as local notes: a non-empty
+body of at most 64 KiB, and at most 32 tags of at most 64 bytes each.
+
+Each organization gets 1,000 note writes an hour by default. A write is
+creating a note or changing its body or tags, whether through the API or by
+sync. Reads, deletes, idempotent retries, edits that change nothing and syncs
+of unchanged content are free. Whoever runs the Bosso server sets a
+different limit with the `BOSSO_ORGANIZATION_NOTE_HOURLY_LIMIT` environment
+variable; a value that is not a positive integer falls back to 1,000.
+
+The hour is a fixed UTC clock hour, such as 14:00 to 15:00 UTC, not a rolling 60
+minutes. Usage resets to zero at the top of each hour. A write over the limit
+fails with `resource_exhausted`, and the error reports the usage and the reset
+time. Check the current window without spending any of it:
+
+<CommandTabs
+chat='"how much of our organization note quota is used this hour?"'
+cli="boss notes org quota"
+mcp="get_organization_note_quota"
+/>
+
+It prints a line such as
+`12 of 1000 writes used this hour; resets at 2026-10-09T15:00:00Z`.
+
+### Retention
+
+Every organization note expires 90 days after it was created. For a synced note
+that is when it was written on its daemon, not when it synced. Edits never
+extend it. An expired note disappears from every read at once, and a background
+job deletes expired notes and their tags every 10 minutes. Expiry in the cloud
+does not touch the daemon's local copy.
+
+### Existing local notes
+
+A daemon upgraded to a version with note sync marks every existing local note
+`pending`, so it syncs once the daemon connects. A note already older than 90
+days comes back `expired` and stays local.
+
+### Privacy
+
+Bosso and the sync worker log ids, counts and outcomes, never a note's body or
+tags. Every note in an organization is readable by all of its members, so the advice
+about secrets above applies to the whole organization. Deleting a user account
+deletes every organization note that user authored, and deleting an
+organization deletes all of its notes.

@@ -22,7 +22,6 @@ const SKILL_ROOTS = [
 const SWEEP_SKILLS = [
   'bs-sweep-debt',
   'bs-sweep-mutation',
-  'bs-sweep-notes',
   'bs-sweep-plan',
   'bs-sweep-prettify',
   'bs-sweep-releases',

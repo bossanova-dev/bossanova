@@ -265,7 +265,7 @@ func (m *mockProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([]vc
 	return nil, nil
 }
 
-func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
+func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, _ vcs.MergePROpts) error {
 	if m.mergeFn != nil {
 		return m.mergeFn(ctx, repoPath, prID)
 	}
@@ -941,9 +941,9 @@ type strategyCapturingProvider struct {
 	captured *string
 }
 
-func (p *strategyCapturingProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
-	*p.captured = strategy
-	return p.Provider.MergePR(ctx, repoPath, prID, strategy)
+func (p *strategyCapturingProvider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
+	*p.captured = opts.Strategy
+	return p.Provider.MergePR(ctx, repoPath, prID, opts)
 }
 
 func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {

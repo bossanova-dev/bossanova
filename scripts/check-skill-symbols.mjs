@@ -16,7 +16,7 @@
 // each skill's `toolbox/` subdirectory (vendored `.mjs`, not prose).
 //
 // Three checks:
-//   1. tracker role citations  — `labelName(config, 'agentFriendly')` and friends,
+//   1. tracker role citations  — `labelName(config, 'agentBuild')` and friends,
 //      resolved through loadSkillConfig + adapterFor/trackerConfigFor (NOT a
 //      hard-coded `linear` branch), plus the bidirectional taxonomy assertion that
 //      content labels are never routed through `labelName`.
@@ -34,7 +34,7 @@
 //   * Bare (non-call) symbol citations. Widening check 2 to bare `camelCaseToken`
 //     inside the 9 toolbox-owning skills yields 353 candidates of which **210 do not
 //     resolve** (63 unique names — JSON fields, MCP tool names, config keys, role
-//     keys: `registerWatch`, `agentFriendly`, `blockedBy`, `descriptionSummary`,
+//     keys: `registerWatch`, `agentBuild`, `blockedBy`, `descriptionSummary`,
 //     `openQuestions`, ...). Rejected outright. Known cost: bare citations such as
 //     `assertAcyclic`, `validateLayering` and the four plan-attachment operations
 //     are unchecked.
@@ -100,12 +100,15 @@ const EXCLUDED_PATH_SEGMENTS = ['.codex/skills', 'plugins/bossd-plugin-claude/sk
 // check 2 degrades to asserting nothing on the skills it was written for — the same
 // silent-vacuity class the roleForms floor below guards for check 1.
 export const TOOLBOX_OWNING_SKILLS = new Set([
+  'boss-retro',
+  'boss-release',
   'boss-build',
   'boss-epic',
   'boss-finalize',
   'boss-plan',
   'boss-repair',
   'boss-review',
+  'boss-verify',
   'bs-sweep-debt',
   'bs-sweep-mutation',
   'bs-sweep-security',
@@ -123,13 +126,7 @@ export const TOOLBOX_OWNING_SKILLS = new Set([
 // is the authority, so `bug` is a configured role and direction 2 does not apply to it.
 // assertTaxonomySplit below is what caught the divergence — leave it armed.
 export const CONTENT_LABELS = ['feature', 'improvement', 'docs']
-const PIPELINE_LABELS = new Set([
-  'agentPlan',
-  'agentFriendly',
-  'needsHuman',
-  'agentQuestion',
-  'epic',
-])
+const PIPELINE_LABELS = new Set(['agentPlan', 'agentBuild', 'needsHuman', 'agentQuestion', 'epic'])
 
 // Role-resolving helpers and the trackerConfig field each reads.
 export const ROLE_FIELDS = Object.freeze({

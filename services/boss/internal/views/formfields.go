@@ -57,6 +57,18 @@ func bossSelect[T comparable](numOptions, headerLines int) *huh.Select[T] {
 	return huh.NewSelect[T]().Height(bossSelectHeight(numOptions, headerLines))
 }
 
+// bossDescribedSelect builds a huh Select for a short, fixed option list that
+// carries a Description. It is left unsized on purpose: huh subtracts the
+// description's *wrapped* height from an explicit Height before sizing the
+// option viewport, and that wrapped height is only known once huh lays the
+// field out at its width, so any Height computed here would either clip the
+// options or pad blank rows under them. Unsized, huh fits the viewport to the
+// options exactly. Only for lists short enough never to need scrolling —
+// anything open-ended goes through bossSelect and its bossSelectMaxHeight cap.
+func bossDescribedSelect[T comparable]() *huh.Select[T] {
+	return huh.NewSelect[T]()
+}
+
 func bossMultiSelect[T comparable](numOptions, headerLines int) *huh.MultiSelect[T] {
 	return huh.NewMultiSelect[T]().Height(bossSelectHeight(numOptions, headerLines))
 }

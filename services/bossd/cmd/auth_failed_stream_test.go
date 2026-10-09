@@ -452,3 +452,30 @@ func TestStreamHydrator_StampsDisplayStatus(t *testing.T) {
 		t.Fatalf("unknown session display_status = %v, want UNSPECIFIED", unknown.GetDisplayStatus())
 	}
 }
+
+// TestStreamHydrator_VerifyParkAttentionOnNoChatsBranch proves the
+// reverse-stream projection applies the BOS-1382 verify-park attention even on
+// the early-return branch with no chat store wired: the cloud/web read model is
+// fed only by this stream.
+func TestStreamHydrator_VerifyParkAttentionOnNoChatsBranch(t *testing.T) {
+	t.Parallel()
+
+	tracker := status.NewDisplayTracker()
+	tracker.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "repair-exhausted"})
+	tracker.Set("sess-2", vcs.DisplayInfo{Status: vcs.DisplayStatusVerifying})
+
+	h := &streamSessionHydrator{displayTracker: tracker, logger: zerolog.Nop()}
+
+	parked := &bossanovav1.Session{Id: "sess-1"}
+	h.Hydrate(t.Context(), parked)
+	att := parked.GetAttentionStatus()
+	if att.GetReason() != bossanovav1.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT || att.GetSummary() != "needs human: repair-exhausted" {
+		t.Fatalf("attention = %+v, want AWAITING_HUMAN_INPUT / needs human: repair-exhausted", att)
+	}
+
+	verifying := &bossanovav1.Session{Id: "sess-2"}
+	h.Hydrate(t.Context(), verifying)
+	if verifying.GetAttentionStatus() != nil {
+		t.Fatalf("verifying session attention = %+v, want nil", verifying.GetAttentionStatus())
+	}
+}

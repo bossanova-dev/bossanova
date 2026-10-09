@@ -1151,3 +1151,52 @@ func TestGithubCallbackStore_CreateReportsLeasedConflict(t *testing.T) {
 		t.Fatal("a leased callback is still armed and must be reported")
 	}
 }
+
+func TestGithubCallbackStore_CancelTriggered(t *testing.T) {
+	ctx := context.Background()
+	for _, state := range []models.GithubCallbackState{models.GithubCallbackStateActive, models.GithubCallbackStateTriggered, models.GithubCallbackStateLeased, models.GithubCallbackStateDelivered} {
+		t.Run(string(state), func(t *testing.T) {
+			database := setupTestDB(t)
+			store := NewGithubCallbackStore(database)
+			cb, _, err := store.Create(ctx, newTestCallbackParams())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.ExecContext(ctx, "UPDATE github_callbacks SET state = ? WHERE id = ?", state, cb.ID); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			err = store.CancelTriggered(ctx, cb.ID, "dropped: session closed", now)
+			if state != models.GithubCallbackStateTriggered {
+				if !errors.Is(err, ErrGithubCallbackTriggerConflict) {
+					t.Fatalf("error = %v, want conflict", err)
+				}
+				got, getErr := store.Get(ctx, cb.ID)
+				if getErr != nil {
+					t.Fatal(getErr)
+				}
+				if got.State != state {
+					t.Fatalf("state = %s, want %s", got.State, state)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.Get(ctx, cb.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != models.GithubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "dropped: session closed" {
+				t.Fatalf("canceled row = %+v", got)
+			}
+			if err := store.CancelTriggered(ctx, cb.ID, "again", now); !errors.Is(err, ErrGithubCallbackTriggerConflict) {
+				t.Fatalf("second cancellation = %v", err)
+			}
+		})
+	}
+	store := NewGithubCallbackStore(setupTestDB(t))
+	if err := store.CancelTriggered(ctx, "missing", "gone", time.Now()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing = %v", err)
+	}
+}

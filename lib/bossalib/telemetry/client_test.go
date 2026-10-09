@@ -491,7 +491,10 @@ func TestTelemetryDocumentationMatchesRegistry(t *testing.T) {
 	}
 	for event := range documentedEvents {
 		documented := documentedEvents[event]
-		if documentedOnlyHasSurface(documented, "web") {
+		// Client-only events have no Go registry entry: the web app's are
+		// checked against ANALYTICS_EVENT_PROPERTIES below, and the marketing
+		// site's are captured by its own PostHog snippet.
+		if documentedOnlyHasSurface(documented, "web") || documentedOnlyHasSurface(documented, "marketing") {
 			continue
 		}
 		if _, ok := Registry[event]; !ok {

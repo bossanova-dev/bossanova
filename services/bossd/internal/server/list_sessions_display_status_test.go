@@ -931,3 +931,35 @@ func (f *listSessionsAgentChatStoreFake) ListBySessions(_ context.Context, sessi
 	}
 	return chats, nil
 }
+
+// TestListSessions_HydratesVerifyParkAttention pins the ListSessions wiring of
+// the BOS-1382 overlay: a NEEDS_HUMAN tracker entry surfaces as
+// AWAITING_HUMAN_INPUT carrying the park reason.
+func TestListSessions_HydratesVerifyParkAttention(t *testing.T) {
+	sess := &models.Session{
+		ID:        "sess-1",
+		RepoID:    "repo-1",
+		Title:     "parked",
+		State:     machine.AwaitingChecks,
+		CreatedAt: time.Now(),
+	}
+	displayTracker := status.NewDisplayTracker()
+	displayTracker.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "ledger-open"})
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, nil, displayTracker, status.NewTracker())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := onlySession(t, resp.Msg.Sessions)
+	if got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		t.Fatalf("DisplayStatus = %v, want NEEDS_HUMAN", got.GetDisplayStatus())
+	}
+	att := got.GetAttentionStatus()
+	if att.GetReason() != pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT || att.GetSummary() != "needs human: ledger-open" {
+		t.Fatalf("AttentionStatus = %+v, want AWAITING_HUMAN_INPUT / needs human: ledger-open", att)
+	}
+	if got.GetMergeBlock().GetGate() != pb.MergeBlock_GATE_PENDING {
+		t.Errorf("MergeBlock.Gate = %v, want GATE_PENDING", got.GetMergeBlock().GetGate())
+	}
+}

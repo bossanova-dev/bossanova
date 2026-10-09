@@ -2,9 +2,14 @@
 
 ## Session Management
 
-### `boss archive <session-id>`
+### `boss archive <session-id> [flags]`
 
 Archive a session (keep branch, remove worktree)
+
+**Flags:**
+
+- `--force` — Archive now even if a chat in the session is still working
+- `--json` — Emit a stable JSON envelope instead of human-readable text
 
 ```bash
 boss archive abc123
@@ -62,11 +67,12 @@ boss ls --json | jq -r '.sessions[] | select(.state=="READY_FOR_REVIEW") | .pr_u
 
 Merge a session's pull request (or its local-only branch)
 
-Merges the session's pull request through the daemon, which owns the merge gate, the per-repo merge serialization, and the merge-strategy resolution. A session with no PR takes the local-only-branch merge path. Prompts for confirmation unless -y/--yes is given; when the gate refuses, the command exits non-zero with the daemon's `merge blocked: gate=<slug>` message naming the gate that stopped it. Use --json for a machine-readable envelope: success prints {session, pr, detail}, failure prints {error:{code, connect_code, message}} on stdout with a stable `code` such as MERGE_STRATEGY_INCOMPATIBLE, FAILED_PRECONDITION or NOT_FOUND, so a driver can branch on the outcome without matching message text. Every failure still exits 1; the code, not the exit status, is the discriminator.
+Merges the session's pull request through the daemon, which owns the merge gate, the per-repo merge serialization, and the merge-strategy resolution. A session with no PR takes the local-only-branch merge path. Prompts for confirmation unless -y/--yes is given; when the gate refuses, the command exits non-zero with the daemon's `merge blocked: gate=<slug>` message naming the gate that stopped it. Use --json for a machine-readable envelope: success prints {session, pr, detail}, failure prints {error:{code, connect_code, message}} on stdout with a stable `code` such as MERGE_STRATEGY_INCOMPATIBLE, FAILED_PRECONDITION or NOT_FOUND, so a driver can branch on the outcome without matching message text. Every failure still exits 1; the code, not the exit status, is the discriminator. --match-head <sha> pins the merge to a 40-hex commit: the merge is refused with code HEAD_MISMATCH unless the PR head is exactly that commit.
 
 **Flags:**
 
 - `--json` — Emit a stable JSON envelope instead of human-readable text (requires --yes)
+- `--match-head` — Refuse the merge unless the PR head is exactly this commit SHA (40 hex)
 - `--yes`, `-y` — Skip confirmation prompt
 
 ```bash
@@ -75,6 +81,8 @@ boss merge abc123
 boss merge abc123 --yes
 # Machine-readable envelope; --json requires --yes
 boss merge abc123 --yes --json
+# Merge only if the PR head is still the commit you verified
+boss merge abc123 --yes --json --match-head <sha>
 ```
 
 ### `boss new [flags]`
@@ -101,6 +109,7 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 - `--json` — Emit the created session as a stable JSON schema instead of the two-line output
 - `--model` — Agent model id to run this session under (e.g. an Opus id); empty = agent default
 - `--no-attach` — Alias for --detach
+- `--pr` — Create the session on an existing pull request's head branch, bound to that PR, instead of a fresh branch. Mutually exclusive with --quick-chat and --defer-pr. Non-interactive --repo + --prompt path only (default: 0)
 - `--prompt` — Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)
 - `--quick-chat` — Create a session with no worktree, branch, or PR, in the repository checkout. The agent starts when you attach; unattended runs want --defer-pr. Mutually exclusive with --defer-pr. Non-interactive --repo + --prompt path only
 - `--repo` — Repository id, name, or local path (enables non-interactive mode when combined with --prompt)

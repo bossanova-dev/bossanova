@@ -8,7 +8,12 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { checkDocsMcpProps, discoverDocFiles, extractMcpProps } from './check-docs-mcp-props.mjs'
-import { parseToolNames } from './mcp-tool-registry.mjs'
+import { checkDocsToolCounts } from './check-docs-tool-counts.mjs'
+import {
+  HOSTED_TOOL_SOURCE_FILES,
+  parseToolNames,
+  readRegisteredToolNames,
+} from './mcp-tool-registry.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -34,9 +39,10 @@ function makeTempRepo(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`))
 }
 
-// Write the three bossmcp registration files a temp repo needs, registering
-// exactly `names` through the plain struct-literal form.
-function writeToolSources(repoRoot, names) {
+// Write the bossmcp registration files a temp repo needs, registering exactly
+// `names` on the default surface and `hostedNames` in the hosted-only tier,
+// both through the plain struct-literal form.
+function writeToolSources(repoRoot, names, hostedNames = []) {
   const bossmcp = path.join(repoRoot, 'lib', 'bossalib', 'bossmcp')
   fs.mkdirSync(bossmcp, { recursive: true })
   const body = (registered) =>
@@ -46,6 +52,8 @@ function writeToolSources(repoRoot, names) {
   fs.writeFileSync(path.join(bossmcp, 'tools.go'), body(names))
   fs.writeFileSync(path.join(bossmcp, 'tools_mutating.go'), '')
   fs.writeFileSync(path.join(bossmcp, 'tools_destructive.go'), '')
+  fs.writeFileSync(path.join(bossmcp, 'tools_triggers.go'), '')
+  fs.writeFileSync(path.join(bossmcp, 'tools_session_webhooks.go'), body(hostedNames))
 }
 
 function writeDoc(repoRoot, relativePath, contents) {
@@ -166,8 +174,81 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
   assert.ok(block, 'expectedTools declaration not found in contract_test.go')
   const expected = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
 
-  assert.equal(expected.length, 70, 'contract_test.go should list 70 tools')
+  assert.equal(expected.length, 76, 'contract_test.go should list 76 tools')
   assert.deepEqual([...parsed].sort(), [...expected].sort())
+})
+
+// The hosted-only tier is parsed from its own registration files, which are
+// kept out of TOOL_SOURCE_FILES so the local catalog size does not move. Pin
+// that parse against bossmcp manifest.go hostedToolNames, the authoritative
+// list HostedToolNames() returns, so a hosted registration in a form the
+// parser misses fails here rather than as a false docs miss.
+test('the hosted parse over the real bossmcp sources equals manifest.go hostedToolNames', () => {
+  const parsed = new Set()
+  for (const source of HOSTED_TOOL_SOURCE_FILES) {
+    for (const name of parseToolNames(fs.readFileSync(path.join(REPO_ROOT, source), 'utf8'))) {
+      parsed.add(name)
+    }
+  }
+
+  const manifestSource = fs.readFileSync(
+    path.join(REPO_ROOT, 'lib', 'bossalib', 'bossmcp', 'manifest.go'),
+    'utf8',
+  )
+  const block = /var hostedToolNames = \[\]string\{([\s\S]*?)\n\}/.exec(manifestSource)
+  assert.ok(block, 'hostedToolNames declaration not found in manifest.go')
+  const expected = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
+
+  assert.ok(expected.length > 0, 'manifest.go hostedToolNames should list hosted tools')
+  assert.deepEqual([...parsed].sort(), [...expected].sort())
+
+  // The opt-in reads the hosted tier on top of the default surface; the
+  // default read stays the local catalog alone.
+  const withHosted = readRegisteredToolNames(REPO_ROOT, [], { includeHosted: true })
+  const local = readRegisteredToolNames(REPO_ROOT, [])
+  assert.equal(local.size, 76, 'the default read should stay the 76-tool local catalog')
+  assert.equal(withHosted.size, local.size + expected.length)
+  for (const name of expected) assert.ok(!local.has(name), `${name} leaked into the default set`)
+})
+
+test('checkDocsMcpProps accepts a hosted tool while checkDocsToolCounts counts only the default set', () => {
+  const repoRoot = makeTempRepo('check-docs-mcp-props')
+  writeToolSources(repoRoot, ['list_notes', 'get_note'], ['save_session_webhook'])
+  writeDoc(repoRoot, 'guides/webhooks.md', '<CommandTabs\n  mcp="save_session_webhook"\n/>\n')
+  fs.writeFileSync(path.join(repoRoot, 'README.md'), 'The MCP server exposes 2 tools.\n')
+
+  const props = captureConsole(() => checkDocsMcpProps(repoRoot))
+  assert.equal(props.result, true, props.err.join('\n'))
+  assert.match(
+    props.out.join('\n'),
+    /Docs MCP props OK \(1 props checked against 3 registered tools, hosted included\)/,
+  )
+
+  const counts = captureConsole(() => checkDocsToolCounts(repoRoot, ['README.md']))
+  assert.equal(counts.result, true, counts.err.join('\n'))
+  assert.match(counts.out.join('\n'), /against 2 registered tools/)
+})
+
+test('the real repository tool-count claims still count only the 76-tool local catalog', () => {
+  const { result, out, err } = captureConsole(() => checkDocsToolCounts(REPO_ROOT))
+
+  assert.equal(result, true, err.join('\n'))
+  assert.match(out.join('\n'), /against 76 registered tools/)
+})
+
+test('checkDocsMcpProps fails loudly when a hosted tool source file is missing', () => {
+  const repoRoot = makeTempRepo('check-docs-mcp-props')
+  writeToolSources(repoRoot, ['list_notes'], ['save_session_webhook'])
+  fs.rmSync(path.join(repoRoot, 'lib', 'bossalib', 'bossmcp', 'tools_session_webhooks.go'))
+  writeDoc(repoRoot, 'guides/notes.md', '<CommandTabs mcp="list_notes" />\n')
+
+  const { result, err } = captureConsole(() => checkDocsMcpProps(repoRoot))
+
+  assert.equal(result, false)
+  assert.match(
+    err.join('\n'),
+    /Missing MCP tool source lib\/bossalib\/bossmcp\/tools_session_webhooks\.go/,
+  )
 })
 
 test('checkDocsMcpProps passes when every prop names a registered tool', () => {
@@ -179,7 +260,10 @@ test('checkDocsMcpProps passes when every prop names a registered tool', () => {
   const { result, out } = captureConsole(() => checkDocsMcpProps(repoRoot))
 
   assert.equal(result, true)
-  assert.match(out.join('\n'), /Docs MCP props OK \(2 props checked against 2 registered tools\)/)
+  assert.match(
+    out.join('\n'),
+    /Docs MCP props OK \(2 props checked against 2 registered tools, hosted included\)/,
+  )
 })
 
 test('checkDocsMcpProps names the file, line, and value of an unregistered tool', () => {
@@ -235,9 +319,10 @@ test('checkDocsMcpProps passes the real repository over a non-empty prop set', (
   // returns, so asserting the boolean alone cannot tell today's 57-prop run
   // from a gate that checked nothing at all — which is precisely what a moved
   // docs tree would produce. Pin both counts above zero so that reds here.
-  const counts = /Docs MCP props OK \((\d+) props checked against (\d+) registered tools\)/.exec(
-    out.join('\n'),
-  )
+  const counts =
+    /Docs MCP props OK \((\d+) props checked against (\d+) registered tools, hosted included\)/.exec(
+      out.join('\n'),
+    )
   assert.ok(counts, `expected the OK line with counts, got:\n${out.join('\n')}`)
   assert.ok(Number(counts[1]) > 0, `expected a non-zero prop count, got ${counts[1]}`)
   assert.ok(Number(counts[2]) > 0, `expected a non-zero tool count, got ${counts[2]}`)

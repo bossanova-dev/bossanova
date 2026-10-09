@@ -70,10 +70,10 @@ func (p *testVCSProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([
 
 // MergePR records the call under mu so concurrent callers (the plugin
 // subprocess and the orchestrator goroutine) can't race on the slice.
-func (p *testVCSProvider) MergePR(_ context.Context, repoPath string, prID int, strategy string) error {
+func (p *testVCSProvider) MergePR(_ context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.mergeCalls = append(p.mergeCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: strategy})
+	p.mergeCalls = append(p.mergeCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: opts.Strategy})
 	return p.mergeErr
 }
 

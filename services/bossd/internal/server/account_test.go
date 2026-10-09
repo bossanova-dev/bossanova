@@ -1533,6 +1533,89 @@ func TestTestAccountLiveRunnerSuccess(t *testing.T) {
 	}
 }
 
+// TestTestAccountPassRestoresFailedHealth pins the stuck-account regression: a
+// passing live verification on a health=failed row must restore health=ok.
+// Recording the pass empties last_test_error, so leaving health untouched
+// stranded the row failed with no reason — skipped by rotation and binding
+// ("not eligible (status/health/cooldown)"), and, for a self-clearing injection
+// failure, with the prefix ClearInjectionFailure keys on erased.
+func TestTestAccountPassRestoresFailedHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(t *testing.T, accts db.AccountStore, id string)
+	}{
+		{"reasonless failed health", func(t *testing.T, accts db.AccountStore, id string) {
+			failed := models.AccountHealthFailed
+			if _, err := accts.Update(context.Background(), id, db.UpdateAccountParams{Health: &failed}); err != nil {
+				t.Fatalf("mark failed: %v", err)
+			}
+		}},
+		{"self-clearing injection failure", func(t *testing.T, accts db.AccountStore, id string) {
+			if err := accts.RecordInjectionFailure(context.Background(), id, "materialize: boom"); err != nil {
+				t.Fatalf("record injection failure: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, accts := newAccountServer(t, newFakeCredStore(), &fakeSmoke{})
+			acct := mustAddClaude(t, srv, "restore", []byte("setup-token"))
+			tc.fail(t, accts, acct.Id)
+
+			resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+			if err != nil {
+				t.Fatalf("TestAccount: %v", err)
+			}
+			if got := resp.Msg.GetAccount().GetHealth(); got != string(models.AccountHealthOK) {
+				t.Errorf("response health = %q, want ok after a passing verification", got)
+			}
+			got, err := accts.Get(context.Background(), acct.Id)
+			if err != nil {
+				t.Fatalf("get account: %v", err)
+			}
+			if got.Health != models.AccountHealthOK {
+				t.Errorf("stored health = %q, want ok after a passing verification", got.Health)
+			}
+			if got.LastTestError != "" {
+				t.Errorf("last_test_error = %q, want empty", got.LastTestError)
+			}
+		})
+	}
+}
+
+// TestTestAccountNonPassLeavesFailedHealth is the other half: only a live
+// verification that actually PASSED may restore health. A smoke failure, or a
+// run that produced no verdict, leaves a failed row failed.
+func TestTestAccountNonPassLeavesFailedHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		smoke AccountSmokeRunner
+	}{
+		{"smoke failure", &fakeSmoke{err: errors.New("provider rejected token")}},
+		{"inconclusive", &fakeSmoke{err: fmt.Errorf("%w", accountwiring.ErrVerificationInconclusive)}},
+		{"no runner", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, accts := newAccountServer(t, newFakeCredStore(), tc.smoke)
+			acct := mustAddClaude(t, srv, "stay-failed", []byte("setup-token"))
+			failed := models.AccountHealthFailed
+			if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+				t.Fatalf("mark failed: %v", err)
+			}
+
+			if _, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id})); err != nil {
+				t.Fatalf("TestAccount: %v", err)
+			}
+			got, err := accts.Get(context.Background(), acct.Id)
+			if err != nil {
+				t.Fatalf("get account: %v", err)
+			}
+			if got.Health != models.AccountHealthFailed {
+				t.Errorf("health = %q, want failed: no passing verification ran", got.Health)
+			}
+		})
+	}
+}
+
 func TestTestAccountLiveRunnerFailure(t *testing.T) {
 	creds := newFakeCredStore()
 	smoke := &fakeSmoke{err: errors.New("provider rejected token")}

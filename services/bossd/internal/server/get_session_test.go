@@ -6,7 +6,9 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 	dbpkg "github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 )
 
 // TestGetSession_HydratesShouldArchiveSessionsAfterMerge verifies GetSession carries
@@ -64,5 +66,106 @@ func TestGetSession_HydratesShouldArchiveSessionsAfterMerge(t *testing.T) {
 	}
 	if resp2.Msg.Session.GetRepoShouldArchiveSessionsAfterMerge() {
 		t.Error("expected RepoShouldArchiveSessionsAfterMerge false after toggling off")
+	}
+}
+
+// TestGetSession_HydratesRepoCanAutoRepair verifies GetSession carries the repo's
+// auto-repair flag onto the session proto, so `boss show --json` can report it:
+// true when the repo defaults on, and false once the repo is toggled off.
+func TestGetSession_HydratesRepoCanAutoRepair(t *testing.T) {
+	sqlDB := setupServerTestDB(t)
+	repos := dbpkg.NewRepoStore(sqlDB)
+	sessions := dbpkg.NewSessionStore(sqlDB)
+	s := New(Config{Repos: repos, Sessions: sessions})
+	ctx := context.Background()
+
+	repo, err := repos.Create(ctx, dbpkg.CreateRepoParams{
+		DisplayName:       "r",
+		LocalPath:         "/tmp/r",
+		OriginURL:         "https://github.com/acme/r.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	if !repo.CanAutoRepair {
+		t.Fatalf("precondition: new repo CanAutoRepair = false, want default true")
+	}
+
+	sess, err := sessions.Create(ctx, dbpkg.CreateSessionParams{
+		RepoID:     repo.ID,
+		Title:      "session",
+		BranchName: "feature",
+		BaseBranch: "main",
+		AgentName:  "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	resp, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !resp.Msg.Session.GetRepoCanAutoRepair() {
+		t.Error("expected RepoCanAutoRepair true (repo default on)")
+	}
+
+	off := false
+	if _, err := repos.Update(ctx, repo.ID, dbpkg.UpdateRepoParams{CanAutoRepair: &off}); err != nil {
+		t.Fatalf("update repo: %v", err)
+	}
+
+	resp2, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSession (after toggle): %v", err)
+	}
+	if resp2.Msg.Session.GetRepoCanAutoRepair() {
+		t.Error("expected RepoCanAutoRepair false after toggling off")
+	}
+}
+
+// TestGetSession_HydratesVerifyParkAttention pins the GetSession wiring of the
+// BOS-1382 overlay: a NEEDS_HUMAN tracker entry surfaces as
+// AWAITING_HUMAN_INPUT carrying the park reason.
+func TestGetSession_HydratesVerifyParkAttention(t *testing.T) {
+	sqlDB := setupServerTestDB(t)
+	repos := dbpkg.NewRepoStore(sqlDB)
+	sessions := dbpkg.NewSessionStore(sqlDB)
+	s := New(Config{Repos: repos, Sessions: sessions})
+	ctx := context.Background()
+
+	repo, err := repos.Create(ctx, dbpkg.CreateRepoParams{
+		DisplayName:       "r",
+		LocalPath:         "/tmp/r",
+		OriginURL:         "https://github.com/acme/r.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	sess, err := sessions.Create(ctx, dbpkg.CreateSessionParams{
+		RepoID:     repo.ID,
+		Title:      "session",
+		BranchName: "feature",
+		BaseBranch: "main",
+		AgentName:  "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	tracker := status.NewDisplayTracker()
+	tracker.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "no-receipt"})
+	s.displayTracker = tracker
+
+	resp, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	att := resp.Msg.Session.GetAttentionStatus()
+	if att.GetReason() != pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT || att.GetSummary() != "needs human: no-receipt" {
+		t.Fatalf("AttentionStatus = %+v, want AWAITING_HUMAN_INPUT / needs human: no-receipt", att)
 	}
 }

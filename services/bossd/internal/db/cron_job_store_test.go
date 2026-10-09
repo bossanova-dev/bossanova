@@ -1227,3 +1227,161 @@ func TestCronJobStore_ZeroOutput_DefaultRow(t *testing.T) {
 		t.Errorf("IsZeroOutput = true, want false (migration default 0)")
 	}
 }
+
+// TestCronJobStore_ConcurrencyPolicy_RoundTrip round-trips every stored policy
+// through Create, Get, List and a partial Update (BOS-1441), and proves an empty
+// create value stores the default, skip.
+func TestCronJobStore_ConcurrencyPolicy_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(db))
+
+	policies := []models.CronJobConcurrencyPolicy{
+		models.CronJobConcurrencyPolicySkip,
+		models.CronJobConcurrencyPolicyCancelInProgress,
+		models.CronJobConcurrencyPolicyAllowConcurrent,
+	}
+
+	byID := map[string]models.CronJobConcurrencyPolicy{}
+	for _, p := range policies {
+		job, err := store.Create(ctx, CreateCronJobParams{
+			RepoID: repo.ID, Name: "policy-" + string(p), Prompt: "noop", Schedule: "@daily",
+			IsEnabled: true, ConcurrencyPolicy: p,
+		})
+		if err != nil {
+			t.Fatalf("create(%q): %v", p, err)
+		}
+		if job.ConcurrencyPolicy != p {
+			t.Errorf("create(%q): ConcurrencyPolicy = %q", p, job.ConcurrencyPolicy)
+		}
+		got, err := store.Get(ctx, job.ID)
+		if err != nil {
+			t.Fatalf("get(%q): %v", p, err)
+		}
+		if got.ConcurrencyPolicy != p {
+			t.Errorf("get(%q): ConcurrencyPolicy = %q", p, got.ConcurrencyPolicy)
+		}
+		byID[job.ID] = p
+	}
+
+	defaulted, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "policy-default", Prompt: "noop", Schedule: "@daily", IsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create(default): %v", err)
+	}
+	if defaulted.ConcurrencyPolicy != models.CronJobConcurrencyPolicySkip {
+		t.Errorf("create(empty): ConcurrencyPolicy = %q, want %q", defaulted.ConcurrencyPolicy, models.CronJobConcurrencyPolicySkip)
+	}
+	byID[defaulted.ID] = models.CronJobConcurrencyPolicySkip
+
+	all, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := 0
+	for _, j := range all {
+		want, ok := byID[j.ID]
+		if !ok {
+			continue
+		}
+		seen++
+		if j.ConcurrencyPolicy != want {
+			t.Errorf("list: ConcurrencyPolicy for %q = %q, want %q", j.Name, j.ConcurrencyPolicy, want)
+		}
+	}
+	if seen != len(byID) {
+		t.Errorf("list returned %d of %d created jobs", seen, len(byID))
+	}
+
+	// Partial Update: walk one job through every value, touching nothing else.
+	target := defaulted
+	for _, p := range []models.CronJobConcurrencyPolicy{
+		models.CronJobConcurrencyPolicyAllowConcurrent,
+		models.CronJobConcurrencyPolicyCancelInProgress,
+		models.CronJobConcurrencyPolicySkip,
+	} {
+		p := p
+		updated, err := store.Update(ctx, target.ID, UpdateCronJobParams{ConcurrencyPolicy: &p})
+		if err != nil {
+			t.Fatalf("update(%q): %v", p, err)
+		}
+		if updated.ConcurrencyPolicy != p {
+			t.Errorf("update(%q): ConcurrencyPolicy = %q", p, updated.ConcurrencyPolicy)
+		}
+		if updated.Name != target.Name || updated.Prompt != target.Prompt {
+			t.Errorf("update(%q) touched unrelated fields: name=%q prompt=%q", p, updated.Name, updated.Prompt)
+		}
+	}
+}
+
+// TestCronJobStore_ConcurrencyPolicy_NilUpdateLeavesUnchanged guards the
+// partial-update contract: an Update whose ConcurrencyPolicy pointer is nil must
+// not touch the column.
+func TestCronJobStore_ConcurrencyPolicy_NilUpdateLeavesUnchanged(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(db))
+
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "policy-nil-update", Prompt: "noop", Schedule: "@daily",
+		IsEnabled: true, ConcurrencyPolicy: models.CronJobConcurrencyPolicyAllowConcurrent,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	renamed := "policy-nil-update (renamed)"
+	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{Name: &renamed})
+	if err != nil {
+		t.Fatalf("unrelated update: %v", err)
+	}
+	if updated.ConcurrencyPolicy != models.CronJobConcurrencyPolicyAllowConcurrent {
+		t.Errorf("after unrelated Update: ConcurrencyPolicy = %q, want allow_concurrent (unchanged)", updated.ConcurrencyPolicy)
+	}
+
+	noop, err := store.Update(ctx, job.ID, UpdateCronJobParams{})
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if noop.ConcurrencyPolicy != models.CronJobConcurrencyPolicyAllowConcurrent {
+		t.Errorf("after no-op Update: ConcurrencyPolicy = %q, want allow_concurrent (unchanged)", noop.ConcurrencyPolicy)
+	}
+}
+
+// TestCronJobStore_ConcurrencyPolicy_RejectsUnknownValue proves the store does
+// not silently persist an out-of-set policy: the column CHECK rejects it on
+// both Create and Update.
+func TestCronJobStore_ConcurrencyPolicy_RejectsUnknownValue(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(db))
+
+	if _, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "policy-bogus", Prompt: "noop", Schedule: "@daily",
+		IsEnabled: true, ConcurrencyPolicy: models.CronJobConcurrencyPolicy("bogus"),
+	}); err == nil {
+		t.Error("create with bogus policy succeeded, want CHECK constraint failure")
+	}
+
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "policy-update-bogus", Prompt: "noop", Schedule: "@daily", IsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	bogus := models.CronJobConcurrencyPolicy("bogus")
+	if _, err := store.Update(ctx, job.ID, UpdateCronJobParams{ConcurrencyPolicy: &bogus}); err == nil {
+		t.Error("update with bogus policy succeeded, want CHECK constraint failure")
+	}
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ConcurrencyPolicy != models.CronJobConcurrencyPolicySkip {
+		t.Errorf("after rejected update: ConcurrencyPolicy = %q, want skip", got.ConcurrencyPolicy)
+	}
+}

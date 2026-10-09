@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 
@@ -827,7 +829,7 @@ func TestMergePR_RetriesBadGateway(t *testing.T) {
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
-	if err := p.MergePR(context.Background(), "owner/repo", 42, "rebase"); err != nil {
+	if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "rebase"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := calls.Load(); got != 2 {
@@ -847,7 +849,7 @@ func TestMergePR_DoesNotRetryPermanentError(t *testing.T) {
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
-	err := p.MergePR(context.Background(), "owner/repo", 42, "rebase")
+	err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "rebase"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -866,7 +868,7 @@ func TestMergePR_ClassifiesWorkflowScopeError(t *testing.T) {
 		WithSleepFunc(func(time.Duration) {}),
 	)
 
-	err := p.MergePR(context.Background(), "freshclaim/marketing", 4, "rebase")
+	err := p.MergePR(context.Background(), "freshclaim/marketing", 4, vcs.MergePROpts{Strategy: "rebase"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -888,6 +890,100 @@ func TestMergePR_ClassifiesWorkflowScopeError(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Errorf("operator message missing %q:\n%s", want, message)
 		}
+	}
+}
+
+// testPin is a valid 40-hex head SHA used by the head-pinned merge tests.
+var testPin = strings.Repeat("0a1b", 10)
+
+func TestMergePR_MatchHeadCommitArgv(t *testing.T) {
+	for _, strategy := range []string{"merge", "squash", "rebase"} {
+		t.Run(strategy, func(t *testing.T) {
+			var pinned, unpinned []string
+			p := New(zerolog.Nop(),
+				WithRunGH(func(_ context.Context, args ...string) (string, error) {
+					if pinned == nil {
+						pinned = append([]string(nil), args...)
+					} else {
+						unpinned = append([]string(nil), args...)
+					}
+					return "", nil
+				}),
+				WithSleepFunc(func(time.Duration) {}),
+			)
+
+			// An upper-case pin is normalized before it reaches gh.
+			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: strategy, ExpectedHeadSHA: strings.ToUpper(testPin)}); err != nil {
+				t.Fatalf("pinned MergePR: %v", err)
+			}
+			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: strategy}); err != nil {
+				t.Fatalf("unpinned MergePR: %v", err)
+			}
+
+			want := []string{"pr", "merge", "42", "--repo", "owner/repo", "--" + strategy, "--delete-branch"}
+			if !slices.Equal(unpinned, want) {
+				t.Errorf("unpinned argv = %v, want exactly %v", unpinned, want)
+			}
+			wantPinned := append(append([]string(nil), want...), "--match-head-commit", testPin)
+			if !slices.Equal(pinned, wantPinned) {
+				t.Errorf("pinned argv = %v, want %v", pinned, wantPinned)
+			}
+		})
+	}
+}
+
+func TestMergePR_HeadBranchModifiedIsHeadMismatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		ghErr   string
+		wantHit bool
+	}{
+		{"head moved", "gh pr merge 42: exit status 1: GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)", true},
+		{"base moved", "gh pr merge 42: exit status 1: GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			p := New(zerolog.Nop(),
+				WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+					calls.Add(1)
+					return "", errors.New(tt.ghErr)
+				}),
+				WithSleepFunc(func(time.Duration) {}),
+			)
+
+			err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{Strategy: "squash", ExpectedHeadSHA: testPin})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if got := errors.Is(err, vcs.ErrHeadMismatch); got != tt.wantHit {
+				t.Errorf("errors.Is(err, ErrHeadMismatch) = %v, want %v (err: %v)", got, tt.wantHit, err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("got %d gh calls, want exactly 1 (no transient retry)", got)
+			}
+		})
+	}
+}
+
+func TestMergePR_MalformedPinMakesNoGHCall(t *testing.T) {
+	for _, pin := range []string{"abc", testPin[:39], testPin + "a", strings.Repeat("z", 40)} {
+		t.Run(pin, func(t *testing.T) {
+			var calls atomic.Int32
+			p := New(zerolog.Nop(),
+				WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+					calls.Add(1)
+					return "", nil
+				}),
+				WithSleepFunc(func(time.Duration) {}),
+			)
+			if err := p.MergePR(context.Background(), "owner/repo", 42, vcs.MergePROpts{ExpectedHeadSHA: pin}); err == nil {
+				t.Fatal("expected error for malformed pin, got nil")
+			}
+			if got := calls.Load(); got != 0 {
+				t.Errorf("got %d gh calls, want 0", got)
+			}
+		})
 	}
 }
 
@@ -1907,6 +2003,81 @@ func TestGetCheckResults_UnrecognizedStateIsUnclassified(t *testing.T) {
 	}
 }
 
+func TestGetCheckResults_DropsProvenanceReceipt(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return `[{"name":"boss/build","state":"SUCCESS","workflow":""}]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetCheckResults: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d check results, want 0 (boss/build receipt is not a gate): %+v", len(results), results)
+	}
+	if verdict := vcs.EvaluateChecks("sha", results, nil); verdict.DemonstratedPass() {
+		t.Fatalf("verdict = %s/%s demonstrated a pass from a lone receipt", verdict.State, verdict.Reason)
+	}
+}
+
+func TestGetCheckResults_KeepsWorkflowCheckNamedLikeReceipt(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return `[{"name":"boss/build","state":"FAILURE","workflow":"ci"}]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetCheckResults: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d check results, want 1 (an Actions job named boss/build is a real gate)", len(results))
+	}
+}
+
+func TestGetCheckResults_DecodesVerifyStatusDescription(t *testing.T) {
+	var gotArgs []string
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		gotArgs = args
+		return `[
+			{"name":"build","state":"SUCCESS","workflow":"ci","description":""},
+			{"name":"boss/verify","state":"PENDING","workflow":"","description":"needs human: always-human-path"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	results, err := p.GetCheckResults(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetCheckResults: %v", err)
+	}
+	if !slices.Contains(gotArgs, "name,state,workflow,description") {
+		t.Fatalf("gh args = %v, want --json name,state,workflow,description", gotArgs)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d check results, want 2: %+v", len(results), results)
+	}
+	verify := results[1]
+	if verify.Name != vcs.VerifyStatusContext {
+		t.Errorf("Name = %q, want %q", verify.Name, vcs.VerifyStatusContext)
+	}
+	if verify.Status == vcs.CheckStatusCompleted {
+		t.Errorf("Status = completed, want a pending status for a PENDING commit status")
+	}
+	if verify.Description != "needs human: always-human-path" {
+		t.Errorf("Description = %q, want the commit-status description verbatim", verify.Description)
+	}
+	if phase := vcs.ClassifyVerify(results); phase.Kind != vcs.VerifyPhaseNeedsHuman || phase.Reason != "always-human-path" {
+		t.Errorf("ClassifyVerify = %+v, want NeedsHuman/always-human-path", phase)
+	}
+	if verdict := vcs.EvaluateChecks("sha", results, nil); !verdict.IsGreen() || verdict.Total != 1 {
+		t.Errorf("verdict = %s/%s total=%d, want Green with the pending verify excluded", verdict.State, verdict.Reason, verdict.Total)
+	}
+}
+
 func TestGetCheckResults_NoChecksReportedIsEmptyNotError(t *testing.T) {
 	// `gh pr checks` exits non-zero when the head commit has no check runs.
 	// That is a normal empty state — GetCheckResults must surface it as an
@@ -2331,5 +2502,197 @@ func TestCreateDraftPRReturnsErrGitHubAuthUnavailableFor401(t *testing.T) {
 	// appeared.
 	if !strings.Contains(err.Error(), "Requires authentication") {
 		t.Fatalf("error = %v, dropped the raw gh text", err)
+	}
+}
+
+func TestGetCheckSet_BuildReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, workflow string
+		receipt               bool
+		gates                 int
+	}{
+		{"success", "SUCCESS", "", true, 0},
+		{"failure", "FAILURE", "", false, 0},
+		{"pending", "PENDING", "", false, 0},
+		{"unknown", "BOUNCED", "", false, 0},
+		{"actions", "SUCCESS", "ci", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) {
+				return fmt.Sprintf(`[{"name":"boss/build","state":%q,"workflow":%q}]`, tc.state, tc.workflow), nil
+			}))
+			got, err := p.GetCheckSet(context.Background(), "owner/repo", 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.HasBuildReceipt != tc.receipt || len(got.Checks) != tc.gates {
+				t.Fatalf("got %+v, want receipt=%v gates=%d", got, tc.receipt, tc.gates)
+			}
+		})
+	}
+}
+
+func TestGetCheckSet_CacheSharesReceiptAndClearsOnNewHead(t *testing.T) {
+	calls := 0
+	response := `[{"name":"boss/build","state":"SUCCESS","workflow":""},{"name":"build","state":"SUCCESS","workflow":"ci"}]`
+	p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) { calls++; return response, nil }))
+	ctx := vcs.WithCachedReads(context.Background())
+	results, err := p.GetCheckResults(ctx, "owner/repo", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results[0].Name = "mutated"
+	set, err := p.GetCheckSet(ctx, "owner/repo", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !set.HasBuildReceipt || set.Checks[0].Name != "build" {
+		t.Fatalf("calls=%d set=%+v", calls, set)
+	}
+	// The same PR's next head has no receipt; webhook invalidation must not retain it.
+	response = `[{"name":"build","state":"SUCCESS","workflow":"ci"}]`
+	p.InvalidatePR("owner/repo", 42)
+	set, err = p.GetCheckSet(ctx, "owner/repo", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || set.HasBuildReceipt {
+		t.Fatalf("calls=%d set=%+v", calls, set)
+	}
+}
+
+func TestGetCheckSet_BuildReceiptSeenForAnyState(t *testing.T) {
+	for _, tc := range []struct {
+		name, body    string
+		seen, receipt bool
+	}{
+		{"pending", `[{"name":"boss/build","state":"PENDING","workflow":""}]`, true, false},
+		{"failure", `[{"name":"boss/build","state":"FAILURE","workflow":""}]`, true, false},
+		{"success", `[{"name":"boss/build","state":"SUCCESS","workflow":""}]`, true, true},
+		{"absent", `[{"name":"build","state":"SUCCESS","workflow":"ci"}]`, false, false},
+		{"actions job named boss/build", `[{"name":"boss/build","state":"SUCCESS","workflow":"ci"}]`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) { return tc.body, nil }))
+			got, err := p.GetCheckSet(context.Background(), "owner/repo", 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.BuildReceiptSeen != tc.seen || got.HasBuildReceipt != tc.receipt {
+				t.Fatalf("got seen=%v receipt=%v, want seen=%v receipt=%v", got.BuildReceiptSeen, got.HasBuildReceipt, tc.seen, tc.receipt)
+			}
+		})
+	}
+}
+
+const postStatusSHA = "0123456789abcdef0123456789abcdef01234567"
+
+func recordingProvider(calls *[][]string) *Provider {
+	return New(zerolog.Nop(), WithRunGH(func(_ context.Context, args ...string) (string, error) {
+		*calls = append(*calls, append([]string(nil), args...))
+		return "{}", nil
+	}))
+}
+
+func TestPostCommitStatus_SendsRawFieldsToStatusesEndpoint(t *testing.T) {
+	var calls [][]string
+	p := recordingProvider(&calls)
+	err := p.PostCommitStatus(context.Background(), "https://github.com/owner/repo.git", postStatusSHA, vcs.CommitStatus{
+		Context:     vcs.BuildReceiptContext,
+		State:       "success",
+		Description: "@carried by bossd from 0123456789ab",
+		TargetURL:   "https://example.com/run/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"api", "-X", "POST", "repos/owner/repo/statuses/" + postStatusSHA,
+		"-f", "state=success",
+		"-f", "context=boss/build",
+		"-f", "description=@carried by bossd from 0123456789ab",
+		"-f", "target_url=https://example.com/run/1",
+	}
+	if len(calls) != 1 || !slices.Equal(calls[0], want) {
+		t.Fatalf("gh calls = %q, want one call %q", calls, want)
+	}
+	for _, a := range calls[0] {
+		if a == "-F" {
+			t.Fatalf("gh args %q use -F; every field must be raw -f", calls[0])
+		}
+	}
+}
+
+func TestPostCommitStatus_OmitsEmptyOptionalFields(t *testing.T) {
+	var calls [][]string
+	p := recordingProvider(&calls)
+	if err := p.PostCommitStatus(context.Background(), "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"api", "-X", "POST", "repos/owner/repo/statuses/" + postStatusSHA, "-f", "state=pending", "-f", "context=boss/build"}
+	if len(calls) != 1 || !slices.Equal(calls[0], want) {
+		t.Fatalf("gh calls = %q, want %q", calls, want)
+	}
+}
+
+func TestPostCommitStatus_CapsDescriptionAtCodePoints(t *testing.T) {
+	var calls [][]string
+	p := recordingProvider(&calls)
+	long := strings.Repeat("é", 200)
+	if err := p.PostCommitStatus(context.Background(), "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success", Description: long}); err != nil {
+		t.Fatal(err)
+	}
+	var desc string
+	for _, a := range calls[0] {
+		if v, ok := strings.CutPrefix(a, "description="); ok {
+			desc = v
+		}
+	}
+	if n := utf8.RuneCountInString(desc); n != 140 || !strings.HasSuffix(desc, "…") {
+		t.Fatalf("description has %d code points (suffix %q), want 140 ending in …", n, desc[len(desc)-3:])
+	}
+	exact := strings.Repeat("x", 140)
+	if got := capCommitStatusDescription(exact); got != exact {
+		t.Fatalf("a 140-code-point description was changed to %q", got)
+	}
+}
+
+func TestPostCommitStatus_RejectsBadInputWithoutRunningGH(t *testing.T) {
+	ok := vcs.CommitStatus{Context: "boss/build", State: "success"}
+	for _, tc := range []struct {
+		name, repo, sha string
+		status          vcs.CommitStatus
+	}{
+		{"short sha", "owner/repo", "0123456", ok},
+		{"uppercase sha", "owner/repo", strings.ToUpper(postStatusSHA), ok},
+		{"non-hex sha", "owner/repo", strings.Repeat("g", 40), ok},
+		{"bad state", "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "neutral"}},
+		{"empty state", "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build"}},
+		{"empty context", "owner/repo", postStatusSHA, vcs.CommitStatus{State: "success"}},
+		{"file url", "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success", TargetURL: "file:///etc/passwd"}},
+		{"relative url", "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success", TargetURL: "/run/1"}},
+		{"url with space", "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success", TargetURL: "https://example.com/a b"}},
+		{"bad repo", "not-a-repo", postStatusSHA, ok},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls [][]string
+			p := recordingProvider(&calls)
+			if err := p.PostCommitStatus(context.Background(), tc.repo, tc.sha, tc.status); err == nil {
+				t.Fatal("PostCommitStatus accepted bad input")
+			}
+			if len(calls) != 0 {
+				t.Fatalf("gh ran %q for rejected input", calls)
+			}
+		})
+	}
+}
+
+func TestPostCommitStatus_WrapsGHError(t *testing.T) {
+	p := New(zerolog.Nop(), WithRunGH(func(context.Context, ...string) (string, error) {
+		return "", errors.New("HTTP 422: Validation Failed")
+	}))
+	err := p.PostCommitStatus(context.Background(), "owner/repo", postStatusSHA, vcs.CommitStatus{Context: "boss/build", State: "success"})
+	if err == nil || !strings.Contains(err.Error(), "Validation Failed") {
+		t.Fatalf("err = %v, want the gh failure wrapped", err)
 	}
 }

@@ -26,6 +26,7 @@ func testCronJobs() []*pb.CronJob {
 			GateCommand:           "make lint",
 			ShouldRunSetupCommand: true,
 			IsZeroOutput:          true,
+			ConcurrencyPolicy:     pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT,
 			LastRunSessionId:      "sess-aaa-111",
 			LastRunAgentName:      "claude",
 			LastRunAt:             timestamppb.New(timestampDaysAgo(1)),
@@ -59,6 +60,7 @@ type cronJSON struct {
 	GateCommand           string `json:"gate_command"`
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
 	IsZeroOutput          bool   `json:"zero_output"`
+	ConcurrencyPolicy     string `json:"concurrency_policy"`
 	LastRunSessionID      string `json:"last_run_session_id"`
 	LastRunAgentName      string `json:"last_run_agent_name"`
 	LastRunAt             string `json:"last_run_at"`
@@ -560,5 +562,168 @@ func TestCLI_Cron_Show_ZeroOutput(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "Zero output:") {
 		t.Errorf("show output missing a %q line:\n%s", "Zero output:", res.Stdout)
+	}
+}
+
+// --- BOS-1443: --concurrency on cron add/update, show, and --json ---
+
+func TestCLI_Cron_Add_Concurrency(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  pb.CronJobConcurrencyPolicy
+	}{
+		{"allow-concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+		{"allow_concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+		{"ALLOW-CONCURRENT", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+		{"cancel-in-progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS},
+		{"skip", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			h := clitest.New(t, clitest.WithRepos(testRepos()...))
+			res := h.Run("cron", "add",
+				"--repo", "repo-1", "--name", "j", "--schedule", "@hourly",
+				"--prompt", "p", "--concurrency", tt.value,
+			)
+
+			if res.ExitCode != 0 {
+				t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+			}
+			calls := h.Daemon.CreateCronJobCalls()
+			if len(calls) != 1 {
+				t.Fatalf("expected 1 create call, got %d", len(calls))
+			}
+			if calls[0].ConcurrencyPolicy == nil {
+				t.Fatal("expected non-nil ConcurrencyPolicy")
+			}
+			if got := *calls[0].ConcurrencyPolicy; got != tt.want {
+				t.Errorf("ConcurrencyPolicy = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCLI_Cron_Add_ConcurrencyOmitted leaves the field unset so the daemon's
+// default (skip) applies.
+func TestCLI_Cron_Add_ConcurrencyOmitted(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	res := h.Run("cron", "add", "--repo", "repo-1", "--name", "j", "--schedule", "@hourly", "--prompt", "p")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.CreateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(calls))
+	}
+	if calls[0].ConcurrencyPolicy != nil {
+		t.Errorf("expected ConcurrencyPolicy nil when --concurrency omitted, got %v", *calls[0].ConcurrencyPolicy)
+	}
+}
+
+func TestCLI_Cron_Concurrency_InvalidValue(t *testing.T) {
+	for _, args := range [][]string{
+		{"cron", "add", "--repo", "repo-1", "--name", "j", "--schedule", "@hourly", "--prompt", "p", "--concurrency", "queue"},
+		{"cron", "update", "cron-aaa", "--concurrency", "queue"},
+	} {
+		t.Run(args[1], func(t *testing.T) {
+			h := clitest.New(t, clitest.WithRepos(testRepos()...), clitest.WithCronJobs(testCronJobs()...))
+			res := h.Run(args...)
+
+			if res.ExitCode == 0 {
+				t.Fatalf("expected a non-zero exit for --concurrency queue, got 0: %q", res.Stdout)
+			}
+			out := res.Stdout + res.Stderr
+			for _, want := range []string{"queue", "skip", "cancel-in-progress", "allow-concurrent"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("error does not name %q: %q", want, out)
+				}
+			}
+			if n := len(h.Daemon.CreateCronJobCalls()) + len(h.Daemon.UpdateCronJobCalls()); n != 0 {
+				t.Errorf("expected no RPC for an invalid value, got %d", n)
+			}
+		})
+	}
+}
+
+func TestCLI_Cron_Update_ConcurrencySkip(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa", "--concurrency", "skip")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.UpdateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 update call, got %d", len(calls))
+	}
+	if calls[0].ConcurrencyPolicy == nil {
+		t.Fatal("expected non-nil ConcurrencyPolicy")
+	}
+	if got := *calls[0].ConcurrencyPolicy; got != pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP {
+		t.Errorf("ConcurrencyPolicy = %v, want SKIP", got)
+	}
+}
+
+// TestCLI_Cron_Update_ConcurrencyOmitted: an update that does not name
+// --concurrency must leave it unset so the current value survives.
+func TestCLI_Cron_Update_ConcurrencyOmitted(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa", "--name", "renamed")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	calls := h.Daemon.UpdateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 update call, got %d", len(calls))
+	}
+	if calls[0].ConcurrencyPolicy != nil {
+		t.Errorf("expected ConcurrencyPolicy nil when --concurrency omitted, got %v", *calls[0].ConcurrencyPolicy)
+	}
+}
+
+func TestCLI_Cron_Update_NoFlagsErrorListsConcurrency(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "update", "cron-aaa")
+
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit for an update with no flags, got 0: %q", res.Stdout)
+	}
+	if out := res.Stdout + res.Stderr; !strings.Contains(out, "--concurrency") {
+		t.Errorf("no-flags error does not list --concurrency: %q", out)
+	}
+}
+
+// TestCLI_Cron_Show_Concurrency verifies the human output carries an aligned
+// Concurrency line, and that a job with no stored policy reads as skip.
+func TestCLI_Cron_Show_Concurrency(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	for id, want := range map[string]string{
+		"cron-aaa": "Concurrency:         allow_concurrent\n",
+		"cron-bbb": "Concurrency:         skip\n",
+	} {
+		res := h.Run("cron", "show", id)
+		if res.ExitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+		}
+		if !strings.Contains(res.Stdout, want) {
+			t.Errorf("show %s output missing %q:\n%s", id, want, res.Stdout)
+		}
+	}
+}
+
+func TestCLI_Cron_Show_JSONConcurrency(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	res := h.Run("cron", "show", "cron-aaa", "--json")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	var job cronJSON
+	if err := json.Unmarshal([]byte(res.Stdout), &job); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, res.Stdout)
+	}
+	if job.ConcurrencyPolicy != "allow_concurrent" {
+		t.Errorf("concurrency_policy = %q, want the stored string %q", job.ConcurrencyPolicy, "allow_concurrent")
 	}
 }

@@ -100,6 +100,10 @@ orchestrator grants per run.
 Step 4's epic arm still re-verifies every one of those writes against the tracker before accepting
 the sentinel. Authority is not trust: the subagent may write, and the orchestrator must check.
 
+The same precedent covers a child fan-out ([`child-fanout.md`](child-fanout.md)): each child-planner
+dispatch holds Phase 4 tracker-write authority for **its own child only**, and the orchestrator
+accepts a child as planned only when `plan-run-guards.mjs idempotence` over a fresh read says `noop`.
+
 ### Hydrate the epic reverify before step 4's block runs
 
 Step 4 accepts an epic only on `node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" epic-reverify`, and

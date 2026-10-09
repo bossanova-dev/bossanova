@@ -16,13 +16,14 @@ To observe work that is already running, address it directly. `boss chats <sessi
 
 Create a cron job
 
-Create a recurring job. Every fire starts a new session running `--prompt` against `--repo`, so write the prompt as a complete standing instruction: it is read by a fresh agent that cannot see what any previous fire did. Pass `--zero-output` for a job that changes nothing in the repository (a sweep or a report), so no worktree, branch or PR is created for it. A `--gate` command runs before each fire and skips it when it exits non-zero — use one to avoid waking an agent that would find no work to do.
+Create a recurring job. Every fire starts a new session running `--prompt` against `--repo`, so write the prompt as a complete standing instruction: it is read by a fresh agent that cannot see what any previous fire did. Pass `--zero-output` for a job that changes nothing in the repository (a sweep or a report), so no worktree, branch or PR is created for it. A `--gate` command runs before each fire and skips it when it exits non-zero — use one to avoid waking an agent that would find no work to do. `--concurrency` decides what a fire does while the job's previous run is still working: `skip` (the default) skips the fire, `cancel-in-progress` stops the previous run and starts a new one, and `allow-concurrent` starts a new run alongside it — the right choice for a job whose runs each claim their own work, like boss-build.
 
 Do not use this to wait for or monitor something already in flight; see `boss cron` above for why, and for the commands that do that job.
 
 **Flags:**
 
 - `--agent` — Agent runner plugin name (empty = claude)
+- `--concurrency` — What a fire does while the previous run is still working: skip (default), cancel-in-progress, or allow-concurrent
 - `--enabled` — Whether the job is enabled (default: true)
 - `--gate` — Gate command run before each fire (empty = no gate)
 - `--model` — Agent model id (empty = plugin default)
@@ -40,6 +41,8 @@ Do not use this to wait for or monitor something already in flight; see `boss cr
 boss cron add --repo <repo-id> --name "nightly deps" --schedule "17 3 * * *" --prompt "Review and update outdated dependencies."
 # a job that changes nothing in the repo — no worktree, branch or PR
 boss cron add --repo <repo-id> --name "backlog triage" --schedule "@weekly" --zero-output --prompt "Triage the open backlog and report."
+# a job whose runs claim their own work, so a fire need not wait for the previous run
+boss cron add --repo <repo-id> --name "build next ticket" --schedule "@hourly" --concurrency allow-concurrent --prompt "Run /boss-build."
 ```
 
 ### `boss cron disable <cron-id>`
@@ -82,6 +85,7 @@ Update cron job settings
 **Flags:**
 
 - `--agent` — Set the agent runner plugin name
+- `--concurrency` — Set what a fire does while the previous run is still working: skip, cancel-in-progress, or allow-concurrent (unset preserves current)
 - `--enabled` — Enable or disable the job (unset preserves current)
 - `--gate` — Set the gate command (empty string clears it)
 - `--model` — Set the agent model id (empty string clears it)

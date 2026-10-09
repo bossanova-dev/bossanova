@@ -183,6 +183,44 @@ service OrchestratorService {
   rpc ProxyListNotes(ProxyListNotesRequest) returns (ProxyListNotesResponse);
   rpc ProxyUpdateNote(ProxyUpdateNoteRequest) returns (ProxyUpdateNoteResponse);
   rpc ProxyDeleteNote(ProxyDeleteNoteRequest) returns (ProxyDeleteNoteResponse);
+  // Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
+  // remain the unchanged daemon-local relay, these read and write a note store
+  // that bosso itself owns, scoped to one organization, so an organization can
+  // see the notes all of its members' daemons recorded. See OrganizationNote.
+  //
+  // The six user RPCs authenticate a user. Every call requires membership of
+  // the request's organization_id (PermissionDenied otherwise) and the paid-plan
+  // entitlement for THAT organization, judged alone: paying through one
+  // organization grants nothing in another. An unentitled organization answers
+  // the same access-denied error other cloud features return. Any member reads
+  // every note in the organization; Update and Delete are allowed for the
+  // note's author or an organization owner, and PermissionDenied for anyone
+  // else. A note id from another organization, or an expired note, is NotFound.
+  //
+  // Writes are bounded by a per-organization hourly quota counted over a fixed
+  // UTC clock hour (see OrganizationNoteQuota). One accepted create, or one
+  // update that changes the body or tags, consumes one unit; deletes, reads and
+  // idempotent replays consume none. An exhausted quota is ResourceExhausted
+  // with an OrganizationNoteQuotaExceeded error detail.
+  rpc CreateOrganizationNote(CreateOrganizationNoteRequest) returns (CreateOrganizationNoteResponse);
+  rpc GetOrganizationNote(GetOrganizationNoteRequest) returns (GetOrganizationNoteResponse);
+  rpc ListOrganizationNotes(ListOrganizationNotesRequest) returns (ListOrganizationNotesResponse);
+  rpc UpdateOrganizationNote(UpdateOrganizationNoteRequest) returns (UpdateOrganizationNoteResponse);
+  rpc DeleteOrganizationNote(DeleteOrganizationNoteRequest) returns (DeleteOrganizationNoteResponse);
+  // GetOrganizationNoteQuota reports the organization's current quota window
+  // without consuming any of it. Same membership and entitlement rules as the
+  // other organization-note RPCs.
+  rpc GetOrganizationNoteQuota(GetOrganizationNoteQuotaRequest) returns (GetOrganizationNoteQuotaResponse);
+  // SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
+  // authenticates the daemon session, the same principal as
+  // PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
+  // the author of every synced note, and each item is routed to an
+  // organization by its repo_origin_url. The mirror is one-way and
+  // daemon-authoritative: a newer source_version wins, and the cloud copy of a
+  // synced note cannot be edited through UpdateOrganizationNote. See
+  // SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
+  // per-item results.
+  rpc SyncDaemonNotes(SyncDaemonNotesRequest) returns (SyncDaemonNotesResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -261,6 +299,109 @@ service OrchestratorService {
   rpc GetRepoOrganization(GetRepoOrganizationRequest) returns (GetRepoOrganizationResponse);
   rpc ClearRepoOrganization(ClearRepoOrganizationRequest) returns (ClearRepoOrganizationResponse);
   rpc ListRepoOrganizations(ListRepoOrganizationsRequest) returns (ListRepoOrganizationsResponse);
+
+  // Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
+  // fired on session state changes. Distinct from the inbound GitHub
+  // CreateWebhookConfig / ListWebhookConfigs / DeleteWebhookConfig above.
+  // Every RPC below requires user authentication, passes the cloud access
+  // policy (PERMISSION_DENIED when it refuses), and requires the OWNER role in
+  // organization_id, which must be the caller's active organization (empty
+  // means the active organization). Reads are owner-only too: endpoint URLs can
+  // reveal internal infrastructure. An id that does not belong to
+  // organization_id answers NOT_FOUND, never PERMISSION_DENIED, so a
+  // webhook's existence is not disclosed. The signing secret is returned ONLY
+  // by CreateSessionWebhook and RotateSessionWebhookSecret.
+  //
+  // ListSessionWebhookEventTypes returns the event catalog an endpoint can
+  // subscribe to, in canonical order.
+  rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse);
+  // ListSessionWebhooks returns the organization's endpoints, oldest first.
+  // Never returns a secret.
+  rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse);
+  // CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
+  // endpoint policy rejects (not https, credentials in the URL, a fragment, or
+  // a host that is or resolves to a private, loopback, link-local or metadata
+  // address), an empty or unknown event type set, a description over 200
+  // characters, or a caller-supplied secret that is not 16-256 visible ASCII
+  // characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+  rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse);
+  // UpdateSessionWebhook changes only the fields that are present and returns
+  // the endpoint without its secret. Disabling an endpoint or changing its URL
+  // cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+  rpc UpdateSessionWebhook(UpdateSessionWebhookRequest) returns (UpdateSessionWebhookResponse);
+  // RotateSessionWebhookSecret replaces the signing secret; undelivered events
+  // are signed with the new one. The new secret is returned ONLY here.
+  rpc RotateSessionWebhookSecret(RotateSessionWebhookSecretRequest) returns (RotateSessionWebhookSecretResponse);
+  // DeleteSessionWebhook permanently deletes an endpoint with its delivery
+  // history.
+  rpc DeleteSessionWebhook(DeleteSessionWebhookRequest) returns (DeleteSessionWebhookResponse);
+  // SendSessionWebhookTestEvent sends one test delivery of event_type to the
+  // endpoint synchronously and returns it with its single attempt, or
+  // cancelled without one when the endpoint is disabled or changed while the
+  // attempt is in flight. The
+  // endpoint need not be subscribed to event_type, and a disabled endpoint may
+  // still be tested. An absent payload_json sends the catalog sample; a
+  // supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
+  // otherwise), and the server overwrites its id, type, organization_id and
+  // created_at and forces is_test to true. Test deliveries are never retried.
+  // RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+  rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse);
+  // ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
+  // first. INVALID_ARGUMENT for a page_token that does not decode, an
+  // unknown status, or a negative page_size.
+  rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse);
+  // GetSessionWebhookDelivery returns one delivery with its attempts in order,
+  // the exact request body and the request headers. Never returns a secret.
+  rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse);
+
+  // Inbound triggers (BOS-1348). A trigger launches a configured Boss session
+  // when bosso receives an authenticated HTTP request or a GitHub App event.
+  // Triggers are bosso-owned, Postgres-backed state served by whichever
+  // instance receives the call, not daemon-proxied, so these carry no Proxy
+  // prefix. Every RPC below requires user authentication (daemon tokens are
+  // refused) and passes the cloud access policy for the trigger's organization
+  // (PERMISSION_DENIED when it refuses). A trigger is visible only to its
+  // creator: any id-addressed call on a trigger the caller did not create, or
+  // in an organization the caller is not a member of, returns NOT_FOUND so the
+  // trigger's existence is not disclosed.
+  //
+  // GetTriggerCatalog returns the trigger types, event types, and filter
+  // fields bosso accepts. Needs user authentication only; it is static
+  // metadata, so no cloud access or organization is required.
+  rpc GetTriggerCatalog(GetTriggerCatalogRequest) returns (GetTriggerCatalogResponse);
+  // ListTriggers returns the caller's own triggers, in organization_id when
+  // set (the caller must be a member) or across every organization the caller
+  // belongs to. Never returns a secret.
+  rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse);
+  // GetTrigger returns one trigger the caller created. Never returns a secret.
+  rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse);
+  // CreateTrigger creates a trigger owned by the caller in organization_id,
+  // which the caller must be a member of. For an HTTP trigger the response
+  // carries the signing secret; it is returned ONLY in this response and can
+  // never be read back, only replaced with RotateTriggerSecret.
+  rpc CreateTrigger(CreateTriggerRequest) returns (CreateTriggerResponse);
+  // UpdateTrigger changes fields of a trigger the caller created; absent
+  // fields are left unchanged. trigger_type is immutable. Never returns or
+  // changes the secret.
+  rpc UpdateTrigger(UpdateTriggerRequest) returns (UpdateTriggerResponse);
+  // DeleteTrigger permanently deletes a trigger the caller created, together
+  // with its secret and invocation history. Its endpoint stops accepting
+  // requests immediately.
+  rpc DeleteTrigger(DeleteTriggerRequest) returns (DeleteTriggerResponse);
+  // RotateTriggerSecret replaces the signing secret of an HTTP trigger the
+  // caller created; the old secret stops validating immediately. The new
+  // secret is returned ONLY in this response. FAILED_PRECONDITION for a
+  // trigger type with no secret.
+  rpc RotateTriggerSecret(RotateTriggerSecretRequest) returns (RotateTriggerSecretResponse);
+  // TestTrigger runs a sample payload through a trigger the caller created,
+  // applying the same filters and policies as a real invocation, and records
+  // the result as a TriggerInvocation with source "test". It launches a
+  // session only when should_launch is set; otherwise the invocation stops at
+  // its decision.
+  rpc TestTrigger(TestTriggerRequest) returns (TestTriggerResponse);
+  // ListTriggerInvocations returns the invocation history of a trigger the
+  // caller created, newest first.
+  rpc ListTriggerInvocations(ListTriggerInvocationsRequest) returns (ListTriggerInvocationsResponse);
 
   // Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
   // resolves the caller's identity when a bearer token is present.
@@ -986,6 +1127,9 @@ message ProxyCreateCronJobRequest {
   string gate_command = 10;
   optional bool should_run_setup_command = 11;
   optional bool is_zero_output = 12;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = SKIP.
+  optional CronJobConcurrencyPolicy concurrency_policy = 13;
 }
 message ProxyCreateCronJobResponse { CronJob job = 1; }
 
@@ -1004,6 +1148,9 @@ message ProxyUpdateCronJobRequest {
   optional string gate_command = 10;
   optional bool should_run_setup_command = 11;
   optional bool is_zero_output = 12;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = leave unchanged.
+  optional CronJobConcurrencyPolicy concurrency_policy = 13;
 }
 message ProxyUpdateCronJobResponse { CronJob job = 1; }
 
@@ -1166,6 +1313,263 @@ message ProxyDeleteNoteRequest {
   string id      = 2;
 }
 message ProxyDeleteNoteResponse {}
+
+// --- Organization notes (BOS-1349) ---
+
+// OrganizationNoteOrigin records how a note entered the organization store.
+enum OrganizationNoteOrigin {
+  ORGANIZATION_NOTE_ORIGIN_UNSPECIFIED = 0;
+  // Mirrored from a daemon by SyncDaemonNotes. The daemon stays the source of
+  // truth: UpdateOrganizationNote answers FailedPrecondition (edit the note at
+  // its source daemon), and DeleteOrganizationNote tombstones the source note
+  // so a later sync of it is SUPPRESSED rather than resurrected.
+  ORGANIZATION_NOTE_ORIGIN_SYNCED = 1;
+  // Created through CreateOrganizationNote. Fully editable, and hard-deleted by
+  // DeleteOrganizationNote.
+  ORGANIZATION_NOTE_ORIGIN_API = 2;
+}
+
+// OrganizationNote is a note held by bosso on behalf of one organization: the
+// aggregate of what its members' daemons recorded (origin SYNCED) plus notes
+// written straight to the API (origin API).
+//
+// body is user content. It is returned on every read surface, exactly like the
+// daemon Note, but bosso never writes it (or the tags) to logs or metrics.
+//
+// tags are normalised exactly like the daemon Note: trimmed, lowercased,
+// de-duplicated, and returned in ascending order.
+//
+// Every note has a hard 90-day time to live. expires_at is fixed when the note
+// is first stored (from the source note's creation time for a synced note) and
+// is not extended by later edits or syncs. Once it passes, reads treat the note
+// as absent (NotFound on Get, omitted from List) and the row is deleted.
+message OrganizationNote {
+  string id = 1;
+  // bosso-local organization row id (Organization.id).
+  string organization_id = 2;
+  // The user who wrote the note: the caller of CreateOrganizationNote, or the
+  // owner of the daemon that synced it.
+  string author_user_id = 3;
+  OrganizationNoteOrigin origin = 4;
+  // Provenance of a synced note: the daemon that sent it, the note's id in
+  // that daemon's store, and the version last applied. Meaningful only when
+  // origin is SYNCED; clients must not interpret them for API notes.
+  string source_daemon_id = 5;
+  string source_note_id = 6;
+  int64 source_version = 7;
+  // Canonical repository origin URL the note is about; empty when the note is
+  // not repository-scoped.
+  string repo_origin_url = 8;
+  // Provenance only, never foreign keys: the session and chat that recorded the
+  // note, which may no longer exist. Empty when not session- or chat-scoped.
+  string session_id = 9;
+  string chat_id = 10;
+  string body = 11;
+  repeated string tags = 12;
+  // Creation and last-edit time at the source daemon. Meaningful only when
+  // origin is SYNCED.
+  google.protobuf.Timestamp source_created_at = 13;
+  google.protobuf.Timestamp source_updated_at = 14;
+  // When bosso first stored the note, and when bosso last changed it.
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+  // The hard 90-day TTL deadline (see the message comment).
+  google.protobuf.Timestamp expires_at = 17;
+}
+
+// OrganizationNoteQuota is one organization's write quota for the current
+// window. The window is a fixed UTC clock hour (for example 14:00:00 to
+// 15:00:00 UTC), not a rolling 60 minutes: used_count resets to zero at
+// window_resets_at. The limit is configured server-side and is the same for
+// every organization.
+message OrganizationNoteQuota {
+  string organization_id = 1;
+  // Writes the organization may make per window.
+  int32 hourly_limit = 2;
+  // Writes consumed in the current window.
+  int32 used_count = 3;
+  // Start of the current window (the top of the UTC hour).
+  google.protobuf.Timestamp window_started_at = 4;
+  // End of the current window, when used_count resets. Retry after this time.
+  google.protobuf.Timestamp window_resets_at = 5;
+}
+
+// OrganizationNoteQuotaExceeded is the error detail attached to the
+// ResourceExhausted error a write returns when the organization's quota for
+// the current window is spent, so a client can show usage and the reset time
+// without a second call.
+message OrganizationNoteQuotaExceeded {
+  OrganizationNoteQuota quota = 1;
+}
+
+message CreateOrganizationNoteRequest {
+  // Target organization. Required; the caller must be a member.
+  string organization_id = 1;
+  // Must be non-empty after trimming and within the same 64 KiB cap as the
+  // daemon Note, else InvalidArgument. Stored verbatim.
+  string body = 2;
+  // Normalised like the daemon Note. At most 32 tags of at most 64 bytes each
+  // (measured after trimming), else InvalidArgument.
+  repeated string tags = 3;
+  // Optional repository the note is about. Canonicalised the same way as a
+  // repository-organization mapping; a malformed URL is InvalidArgument.
+  optional string repo_origin_url = 4;
+  // Optional provenance.
+  optional string session_id = 5;
+  optional string chat_id = 6;
+  // Optional key for an idempotent create, scoped to (organization_id, caller).
+  // A retry with the same key returns the original note unchanged and consumes
+  // no quota. The key is remembered for as long as that note exists (until it
+  // is deleted or expires). Reusing a key with a different body or tags is
+  // AlreadyExists.
+  optional string idempotency_key = 7;
+}
+message CreateOrganizationNoteResponse { OrganizationNote note = 1; }
+
+message GetOrganizationNoteRequest {
+  string organization_id = 1;
+  string id = 2;
+}
+message GetOrganizationNoteResponse { OrganizationNote note = 1; }
+
+// ListOrganizationNotesRequest lists one organization's unexpired notes. Every
+// filter is optional; an unset filter is unconstrained and set filters
+// intersect (AND).
+message ListOrganizationNotesRequest {
+  // Target organization. Required; the caller must be a member.
+  string organization_id = 1;
+  optional string author_user_id = 2;
+  optional string repo_origin_url = 3;
+  optional string session_id = 4;
+  // Matches notes carrying ANY of these tags (OR), normalised like the daemon
+  // ListNotesRequest.tags filter.
+  repeated string tags = 5;
+  // Substring match on the body. A term that is blank after trimming means no
+  // search.
+  optional string search = 6;
+  // Maximum notes per page. Zero or negative means the server default (50);
+  // values above 200 are clamped to 200.
+  int32 page_size = 7;
+  // Opaque next_page_token from a previous response with the same filters.
+  // Empty asks for the first page; a malformed token is InvalidArgument.
+  string page_token = 8;
+}
+message ListOrganizationNotesResponse {
+  // One page, in a stable server-defined order that does not shift between
+  // pages.
+  repeated OrganizationNote notes = 1;
+  // Pass as page_token to fetch the next page. Empty on the last page.
+  string next_page_token = 2;
+}
+
+// UpdateOrganizationNoteRequest edits an API-origin note. A synced note is
+// FailedPrecondition: edit it at its source daemon.
+message UpdateOrganizationNoteRequest {
+  string organization_id = 1;
+  string id = 2;
+  // Unset = leave the body alone.
+  optional string body = 3;
+  // Unset = leave the tags alone. SET = REPLACE the entire tag set with this
+  // list, including replacing it with nothing when the list is empty.
+  optional NoteTagSet tags = 4;
+}
+message UpdateOrganizationNoteResponse { OrganizationNote note = 1; }
+
+// DeleteOrganizationNoteRequest hard-deletes an API-origin note, and
+// tombstones a synced one so the source daemon cannot sync it back.
+message DeleteOrganizationNoteRequest {
+  string organization_id = 1;
+  string id = 2;
+}
+message DeleteOrganizationNoteResponse {}
+
+message GetOrganizationNoteQuotaRequest {
+  string organization_id = 1;
+}
+message GetOrganizationNoteQuotaResponse { OrganizationNoteQuota quota = 1; }
+
+// SyncDaemonNotesRequest is one batch of daemon note changes. At most 50 items,
+// each within the per-note body and tag limits. Only a malformed batch as a
+// whole fails the call with InvalidArgument: more than 50 items, an empty
+// source_note_id, a non-positive source_version, or the same source_note_id
+// twice. Every other problem is a per-item NoteSyncOutcome, so a batch is never
+// all-or-nothing and is safe to resend: replays come back STALE and never
+// duplicate a note.
+message SyncDaemonNotesRequest {
+  repeated NoteSyncItem items = 1;
+}
+
+// NoteSyncItem is the current state of one daemon-local note.
+message NoteSyncItem {
+  // The note's id in the daemon's store. Together with the authenticated
+  // daemon it identifies the cloud copy.
+  string source_note_id = 1;
+  // Monotonic per source note; the cloud keeps the highest version it has
+  // applied and answers STALE for anything not newer.
+  int64 source_version = 2;
+  // Canonical origin URL of the note's repository. Picks the organization: an
+  // unmapped repository routes to the daemon owner's personal organization; a
+  // mapped one routes to its mapped organization when the owner is a member of
+  // it, and is ORGANIZATION_REFUSED otherwise.
+  string repo_origin_url = 3;
+  string session_id = 4;
+  string chat_id = 5;
+  string body = 6;
+  repeated string tags = 7;
+  google.protobuf.Timestamp source_created_at = 8;
+  google.protobuf.Timestamp source_updated_at = 9;
+  // True when the note was deleted on the daemon. The cloud copy is
+  // tombstoned, no quota is consumed, and the result is SYNCED even when no
+  // cloud copy existed.
+  bool is_deleted = 10;
+}
+
+// NoteSyncOutcome is the result for one NoteSyncItem.
+enum NoteSyncOutcome {
+  NOTE_SYNC_OUTCOME_UNSPECIFIED = 0;
+  // Applied (or tombstoned). organization_id and organization_note_id are set.
+  NOTE_SYNC_OUTCOME_SYNCED = 1;
+  // The cloud already holds this source_version or a newer one; nothing
+  // changed and no quota was consumed. A replay or reorder, not an error.
+  NOTE_SYNC_OUTCOME_STALE = 2;
+  // The item failed per-item validation (for example an empty or oversized
+  // body, or invalid tags). reason says why. Do not retry unchanged.
+  NOTE_SYNC_OUTCOME_REJECTED = 3;
+  // The organization's hourly quota is spent. Retry at or after retry_at.
+  NOTE_SYNC_OUTCOME_RATE_LIMITED = 4;
+  // The source note is already past the 90-day TTL; nothing was stored.
+  NOTE_SYNC_OUTCOME_EXPIRED = 5;
+  // The resolved organization does not have the paid-plan entitlement.
+  NOTE_SYNC_OUTCOME_NOT_ENTITLED = 6;
+  // The repository is mapped to an organization the daemon owner is not a
+  // member of, so the note was refused rather than routed elsewhere.
+  NOTE_SYNC_OUTCOME_ORGANIZATION_REFUSED = 7;
+  // The cloud copy was deleted through DeleteOrganizationNote, which tombstoned
+  // this source note. It will never be accepted again; stop retrying it.
+  NOTE_SYNC_OUTCOME_SUPPRESSED = 8;
+}
+
+message SyncDaemonNotesResponse {
+  // Exactly one result per request item, in request order.
+  repeated NoteSyncResult results = 1;
+}
+
+message NoteSyncResult {
+  // Echo of the item's source_note_id and source_version.
+  string source_note_id = 1;
+  int64 source_version = 2;
+  NoteSyncOutcome outcome = 3;
+  // The organization the item resolved to, and the cloud note id. Set on
+  // SYNCED; otherwise set when known.
+  string organization_id = 4;
+  string organization_note_id = 5;
+  // Human-readable explanation for REJECTED (and any other non-SYNCED outcome
+  // when available). Never contains the note body.
+  string reason = 6;
+  // Set on RATE_LIMITED: the end of the organization's quota window
+  // (OrganizationNoteQuota.window_resets_at).
+  google.protobuf.Timestamp retry_at = 7;
+}
 
 message ProxyRunCronJobNowRequest { string daemon_id = 1; string id = 2; }
 message ProxyRunCronJobNowResponse { Session session = 1; string skipped_reason = 2; }
@@ -1665,6 +2069,366 @@ message ListRepoOrganizationsRequest {
 
 message ListRepoOrganizationsResponse {
   repeated RepoOrganizationMapping mappings = 1;
+}
+
+// --- Session webhooks (BOS-1347) ---
+//
+// Authorization for every RPC is documented on the service.
+
+// SessionWebhook is one outbound session webhook endpoint. It NEVER carries
+// the signing secret: the secret is returned exactly once per issue, by
+// CreateSessionWebhookResponse or RotateSessionWebhookSecretResponse.
+message SessionWebhook {
+  string id = 1;
+  string organization_id = 2;
+  // The https URL deliveries are POSTed to.
+  string url = 3;
+  string description = 4;
+  // Subscribed event types (SessionWebhookEventType.type), sorted.
+  repeated string event_types = 5;
+  // A disabled endpoint is sent nothing.
+  bool is_enabled = 6;
+  // bosso users.id of the owner who created the endpoint.
+  string created_by_user_id = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  // When the secret was last rotated; absent until the first rotation.
+  google.protobuf.Timestamp secret_rotated_at = 10;
+}
+
+// SessionWebhookEventType is one entry of the event catalog.
+message SessionWebhookEventType {
+  // Wire event type, e.g. "session.passing".
+  string type = 1;
+  // The session status label the event announces, as the web and TUI show it.
+  string display_label = 2;
+  // One user-facing sentence saying when the event fires.
+  string description = 3;
+  // A fully populated sample delivery body (JSON), marked is_test.
+  string sample_payload_json = 4;
+}
+
+message ListSessionWebhookEventTypesRequest {
+  string organization_id = 1;
+}
+
+message ListSessionWebhookEventTypesResponse {
+  repeated SessionWebhookEventType event_types = 1;
+}
+
+message ListSessionWebhooksRequest {
+  string organization_id = 1;
+}
+
+message ListSessionWebhooksResponse {
+  repeated SessionWebhook webhooks = 1;
+}
+
+message CreateSessionWebhookRequest {
+  string organization_id = 1;
+  string url = 2;
+  string description = 3;
+  // Required, non-empty; each must be a catalog type. Duplicates collapse.
+  repeated string event_types = 4;
+  // Signing secret to use. Absent generates a random one.
+  optional string secret = 5;
+  // False creates the endpoint disabled.
+  bool is_enabled = 6;
+}
+
+message CreateSessionWebhookResponse {
+  SessionWebhook webhook = 1;
+  // The signing secret, returned ONLY here and by rotation. Callers must show
+  // it once and never log it.
+  string secret = 2;
+}
+
+// UpdateSessionWebhookRequest changes only the fields that are present.
+// event_types is replaced as a whole set, and only when
+// should_replace_event_types is set (it must then be non-empty); a non-empty
+// event_types without the flag is INVALID_ARGUMENT.
+message UpdateSessionWebhookRequest {
+  string organization_id = 1;
+  string id = 2;
+  optional string url = 3;
+  optional string description = 4;
+  repeated string event_types = 5;
+  bool should_replace_event_types = 6;
+  optional bool is_enabled = 7;
+}
+
+message UpdateSessionWebhookResponse {
+  SessionWebhook webhook = 1;
+}
+
+message RotateSessionWebhookSecretRequest {
+  string organization_id = 1;
+  string id = 2;
+  // New signing secret to use. Absent generates a random one.
+  optional string secret = 3;
+}
+
+message RotateSessionWebhookSecretResponse {
+  SessionWebhook webhook = 1;
+  // The new signing secret, returned ONLY here. Callers must show it once and
+  // never log it.
+  string secret = 2;
+}
+
+message DeleteSessionWebhookRequest {
+  string organization_id = 1;
+  string id = 2;
+}
+
+message DeleteSessionWebhookResponse {}
+
+// SessionWebhookDelivery is one event's delivery to one endpoint.
+message SessionWebhookDelivery {
+  string id = 1;
+  string webhook_id = 2;
+  // The event id, also sent as the X-Bossanova-Event-Id header.
+  string event_id = 3;
+  string event_type = 4;
+  // True for a SendSessionWebhookTestEvent delivery.
+  bool is_test = 5;
+  // One of pending, in_flight, succeeded, failed, cancelled.
+  string status = 6;
+  int32 attempt_count = 7;
+  // HTTP status of the latest attempt; absent before the first attempt and
+  // after a transport failure.
+  optional int32 last_response_status_code = 8;
+  string last_error = 9;
+  // When the next attempt is due; absent unless the delivery is pending.
+  google.protobuf.Timestamp next_attempt_at = 10;
+  google.protobuf.Timestamp created_at = 11;
+  // When the delivery finished; absent while it is pending or in flight.
+  google.protobuf.Timestamp completed_at = 12;
+}
+
+// SessionWebhookDeliveryAttempt is one HTTP attempt of a delivery.
+message SessionWebhookDeliveryAttempt {
+  // 1-based.
+  int32 attempt_number = 1;
+  google.protobuf.Timestamp started_at = 2;
+  int64 duration_ms = 3;
+  // Absent on a transport failure.
+  optional int32 response_status_code = 4;
+  // A prefix of the response body, at most 2 KiB.
+  string response_body_excerpt = 5;
+  string error_message = 6;
+  bool is_success = 7;
+}
+
+// SessionWebhookRequestHeader is one HTTP request header of a delivery.
+message SessionWebhookRequestHeader {
+  string name = 1;
+  string value = 2;
+}
+
+message SendSessionWebhookTestEventRequest {
+  string organization_id = 1;
+  string webhook_id = 2;
+  // A catalog event type; the endpoint need not be subscribed to it.
+  string event_type = 3;
+  // The body to send, a JSON object of at most 64 KiB. Absent or empty sends
+  // the catalog sample for event_type.
+  optional string payload_json = 4;
+}
+
+message SendSessionWebhookTestEventResponse {
+  // The persisted test delivery, already finished: succeeded or failed, or
+  // cancelled when the endpoint was disabled or changed mid-attempt.
+  SessionWebhookDelivery delivery = 1;
+  // The delivery's single attempt; absent only when the endpoint was disabled
+  // or changed while the attempt was in flight, which cancels the delivery.
+  SessionWebhookDeliveryAttempt attempt = 2;
+}
+
+message ListSessionWebhookDeliveriesRequest {
+  string organization_id = 1;
+  string webhook_id = 2;
+  // Only deliveries in this status (see SessionWebhookDelivery.status).
+  optional string status = 3;
+  // Only deliveries of this event type.
+  optional string event_type = 4;
+  // Only test (true) or only live (false) deliveries.
+  optional bool is_test = 5;
+  // Default 25, at most 100; larger values are clamped and a negative value
+  // is INVALID_ARGUMENT.
+  int32 page_size = 6;
+  // Opaque next_page_token from a previous response with the same filters.
+  string page_token = 7;
+}
+
+message ListSessionWebhookDeliveriesResponse {
+  repeated SessionWebhookDelivery deliveries = 1;
+  // Pass as page_token to fetch the next page. Empty on the last page.
+  string next_page_token = 2;
+}
+
+message GetSessionWebhookDeliveryRequest {
+  string organization_id = 1;
+  string delivery_id = 2;
+}
+
+message GetSessionWebhookDeliveryResponse {
+  SessionWebhookDelivery delivery = 1;
+  // Every attempt, in attempt order.
+  repeated SessionWebhookDeliveryAttempt attempts = 2;
+  // The exact signed request body.
+  string request_body = 3;
+  // The request headers each attempt sends, sorted by name. The signature is
+  // computed with the endpoint's current secret, so it differs from the one
+  // an attempt made before a rotation carried. The secret itself is never
+  // included.
+  repeated SessionWebhookRequestHeader request_headers = 4;
+}
+
+// --- Inbound triggers (BOS-1348) ---
+//
+// Model messages (Trigger, TriggerInvocation, TriggerCatalog, ...) live in
+// models.proto. Authorization for every RPC is documented on the service.
+
+message GetTriggerCatalogRequest {}
+
+message GetTriggerCatalogResponse {
+  TriggerCatalog catalog = 1;
+}
+
+message ListTriggersRequest {
+  // Restrict to one organization the caller belongs to. Absent lists the
+  // caller's triggers across every organization they belong to.
+  optional string organization_id = 1;
+}
+
+message ListTriggersResponse {
+  repeated Trigger triggers = 1;
+}
+
+message GetTriggerRequest {
+  string id = 1;
+}
+
+message GetTriggerResponse {
+  Trigger trigger = 1;
+}
+
+// CreateTriggerRequest carries the writable Trigger fields. The output-only
+// fields (id, creator_user_id, config_version, endpoint_path,
+// last_invocation, timestamps) are assigned by bosso.
+message CreateTriggerRequest {
+  // Required. The caller must be a member.
+  string organization_id = 1;
+  string name = 2;
+  bool is_enabled = 3;
+  // Required catalog type name, e.g. "http" or "github".
+  string trigger_type = 4;
+  // Required; the arm must match trigger_type.
+  oneof type_config {
+    HttpTriggerConfig http = 5;
+    GithubTriggerConfig github = 6;
+  }
+  string repo_origin_url = 7;
+  TriggerLaunchSettings launch = 8;
+  TriggerPlacement placement = 9;
+  TriggerConcurrencyPolicy concurrency_policy = 10;
+  int32 cooldown_seconds = 11;
+  repeated TriggerFilter filters = 12;
+  repeated string payload_fields = 13;
+}
+
+message CreateTriggerResponse {
+  Trigger trigger = 1;
+  // One-time signing secret. Set only for HTTP triggers, and returned ONLY
+  // here: bosso stores a form it cannot reverse, so it can never be read back.
+  // Callers must show it once and never log it.
+  string secret = 2;
+}
+
+// UpdateTriggerRequest changes only the fields that are present. A message
+// field (launch, placement) replaces the whole message when set. Repeated
+// fields cannot express "absent", so a non-empty list replaces the stored
+// list, an empty list leaves it unchanged, and the matching should_clear_*
+// flag clears it; a non-empty list together with its flag is INVALID_ARGUMENT.
+message UpdateTriggerRequest {
+  string id = 1;
+  optional string name = 2;
+  // Enable or disable the trigger.
+  optional bool is_enabled = 3;
+  // Replaces the type config when set; the arm must match the trigger's
+  // existing trigger_type, which cannot change.
+  oneof type_config {
+    HttpTriggerConfig http = 4;
+    GithubTriggerConfig github = 5;
+  }
+  optional string repo_origin_url = 6;
+  TriggerLaunchSettings launch = 7;
+  TriggerPlacement placement = 8;
+  optional TriggerConcurrencyPolicy concurrency_policy = 9;
+  optional int32 cooldown_seconds = 10;
+  repeated TriggerFilter filters = 11;
+  bool should_clear_filters = 12;
+  repeated string payload_fields = 13;
+  bool should_clear_payload_fields = 14;
+}
+
+message UpdateTriggerResponse {
+  Trigger trigger = 1;
+}
+
+message DeleteTriggerRequest {
+  string id = 1;
+}
+
+message DeleteTriggerResponse {}
+
+message RotateTriggerSecretRequest {
+  string id = 1;
+}
+
+message RotateTriggerSecretResponse {
+  Trigger trigger = 1;
+  // The new one-time signing secret, returned ONLY here. Callers must show it
+  // once and never log it.
+  string secret = 2;
+}
+
+message TestTriggerRequest {
+  string trigger_id = 1;
+  // Sample payload as a JSON object, evaluated as the request body (HTTP) or
+  // event payload (GitHub).
+  string sample_payload_json = 2;
+  // Catalog event id the sample is treated as; required for GitHub triggers,
+  // ignored for HTTP.
+  string sample_event_type = 3;
+  // Launch a real session when the sample passes every filter and policy.
+  // False evaluates and records the decision only.
+  bool should_launch = 4;
+}
+
+message TestTriggerResponse {
+  TriggerInvocation invocation = 1;
+}
+
+message ListTriggerInvocationsRequest {
+  string trigger_id = 1;
+  // Maximum invocations to return. 0 means 50; values above 200 are capped
+  // at 200.
+  int32 limit = 2;
+  // Page cursor, paired with before_id: pass the received_at and id of the
+  // last invocation of the previous page. Returns only invocations that sort
+  // after that one in (received_at DESC, id DESC) order, so invocations that
+  // share a received_at are never skipped at a page boundary.
+  optional google.protobuf.Timestamp before_received_at = 3;
+  // Tiebreak for before_received_at: the id of the last invocation of the
+  // previous page. Ignored unless before_received_at is set; when it is empty,
+  // every invocation received at exactly before_received_at is excluded.
+  optional string before_id = 4;
+}
+
+message ListTriggerInvocationsResponse {
+  // Newest first by received_at, then by id descending.
+  repeated TriggerInvocation invocations = 1;
 }
 
 // --- Bug reporting ---

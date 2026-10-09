@@ -2022,7 +2022,7 @@ function entryKey(entry) {
  *   blocker that is not cleared or canceled — the subject waits on a chain.
  * - `downstream`: a write makes Y `blockedBy` the subject, and Y itself blocks ≥1
  *   open ticket — the subject now gates that work too. `escalated` when the
- *   subject is needs-human (`subjectAgentFriendly === false`), because nothing
+ *   subject is needs-human (`subjectAgentBuild === false`), because nothing
  *   unattended will ever clear the chain.
  *
  * "Cleared" is the `DEFAULT_CLEARED_STATE_TYPES` / `DEFAULT_CANCELED_STATE_TYPES`
@@ -2041,7 +2041,7 @@ export function transitiveBlockWarnings(input) {
     subjectId,
     writes = [],
     relationsById = {},
-    subjectAgentFriendly,
+    subjectAgentBuild,
     clearedStateTypes = DEFAULT_CLEARED_STATE_TYPES,
     canceledStateTypes = DEFAULT_CANCELED_STATE_TYPES,
   } = input && typeof input === 'object' ? input : {}
@@ -2092,7 +2092,7 @@ export function transitiveBlockWarnings(input) {
       const blockerId = blockers.find(isSubject)
       warnings.push({
         direction: 'downstream',
-        severity: subjectAgentFriendly === false ? 'escalated' : 'warning',
+        severity: subjectAgentBuild === false ? 'escalated' : 'warning',
         blockerId,
         blockedId,
         via,

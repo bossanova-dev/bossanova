@@ -65,8 +65,8 @@
 //
 // selectPlanned — the OPTIONAL executable, query-backed candidate read. The
 // `operationMap.selectPlanned` DESCRIPTOR stays required: it names an MCP tool that cannot
-// express an identity disjunction or a label set, so it is the path only for a repo with no
-// `trackerConfig.<tracker>.selection` narrowing. A repo that narrows must select through this
+// express include/exclude selection, so it is the path only for a run with no selection in
+// effect (no `trackerConfig.<tracker>.selection` block and no selection flags). A repo that narrows must select through this
 // capability (the tracker CLI's `list-planned` verb), and a run whose adapter omits it stops
 // rather than falling back to the unfiltered descriptor — that fallback would hand the worker a
 // strict superset of what the narrowed gate saw.
@@ -74,16 +74,16 @@
 /**
  * @typedef {Object} TrackerAdapter
  * @property {string} tracker           Stable adapter id (e.g. "linear").
- * @property {(opts: {state: string, label?: string|string[], assignee?: string, creator?: string, assigneeOrCreator?: string}) => Promise<boolean>} hasWork
+ * @property {(opts: SelectionQuery | LegacyGateQuery) => Promise<boolean>} hasWork
  *           Existence gate: does at least one matching issue exist? (select capability)
- *           `label` is a single display name, OR an array of names matched as a
- *           DISJUNCTION — a candidate qualifies if it carries ANY of them. An adapter
- *           must handle both spellings; emitting an equality clause against an array
- *           matches nothing and turns the gate into a silent permanent "no work".
- *           The identity selectors are optional and contribute no clause when unset.
- * @property {(opts: {state: string, label?: string|string[], assignee?: string, creator?: string, assigneeOrCreator?: string}) => Promise<boolean>} hasUnblockedWork
- *           Existence gate restricted to issues with no uncleared blocker. Same
- *           argument shape as `hasWork`, including the array `label` spelling.
+ *           The selection shape (`stageSelectionQuery`) is resolved, rendered and sent as one
+ *           filter; an unresolvable user/label/project throws. The legacy shape is kept for
+ *           callers that never adopted selection: `label` is a display name or an array matched as
+ *           a DISJUNCTION, and the identity selectors contribute no clause when unset. Mixing the
+ *           two shapes throws.
+ * @property {(opts: SelectionQuery | LegacyGateQuery) => Promise<boolean>} hasUnblockedWork
+ *           Existence gate restricted to issues with no uncleared blocker. Same argument shapes
+ *           as `hasWork`.
  * @property {(issue: object) => object[]} readDependencies
  *           Blocker issues of a raw tracker issue payload. (read dependency edges)
  * @property {(issue: object) => boolean} isUnblocked
@@ -100,13 +100,17 @@
  *           Declarative map of agent-driven capability -> tracker MCP operation.
  *           Must include every key in REQUIRED_TRACKER_OPERATIONS (readComments,
  *           writeComment, updateComment, ...) — see assertConforms.
- * @property {(opts: {state: string, label?: string|string[], assigneeOrCreator?: string, limit?: number}) => Promise<object[]>} [selectPlanned]
+ * @property {(opts: SelectionQuery & {limit?: number, team?: string}) => Promise<object[]>} [selectPlanned]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The executable candidate read behind the
  *           `operationMap.selectPlanned` descriptor, able to express every filter the gates apply.
  *           Resolves to the matching issues with the fields the worker ranks and walks on
  *           (identifier, title, priority, estimate, createdAt, state, label names, and attachments
  *           as a plain array). Must fail closed — throw — rather than widen: a missing state or
  *           team, or a payload it cannot read, is never answered with a broader or empty list.
+ * @property {(query: SelectionQuery) => Promise<object>} [resolveSelection]
+ *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The query's selection with every user,
+ *           label and project resolved to the tracker's ids / canonical names, for an in-memory
+ *           `matchIssue` over issues the caller already fetched. Throws naming any unresolved ref.
  * @property {(issueId: string) => Promise<{id: string, identifier: string, description: string}>} [readDescription]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The executable read of an issue's STORED
  *           description, accepting a UUID or a human identifier. Resolves to the resolved issue's
@@ -127,6 +131,36 @@
  *           the adapter cannot resolve that role; extra roles beyond that set are
  *           allowed. Must never throw: an adapter that cannot read its own source
  *           returns all-null so the caller falls back to configuration.
+ * @property {(query: {markerPrefix: string, updatedAfter?: string, maxPages?: number})
+ *           => Promise<{identifier: string, title: string, description: string, createdAt: string|null, resolution: "done"|"canceled"|null, resolvedAt: string|null}[]>} [selectMarked]
+ *           OPTIONAL executable read of complete descriptions containing the marker prefix,
+ *           including archived issues. Pagination must finish or throw; callers match exact
+ *           marker lines locally, never using truncated MCP list descriptions.
+ * @property {(writes: {issueId: string, addLabels?: string[], removeLabels?: string[],
+ *           comment?: string, mentionCreator?: boolean, marker?: string, stateName?: string})
+ *           => Promise<{ok: boolean, applied: object[], outcome: 'ok'|'failed'|'indeterminate',
+ *           reason?: string}>} [applyIssueWrites]
+ *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). Applies label adds/removes, one comment
+ *           (optionally @mentioning the issue's creator) and a state move, resolving every name
+ *           before writing anything. A write that may have applied is `indeterminate` and is
+ *           never re-sent; a `marker` makes the comment idempotent.
+ */
+
+/**
+ * @typedef {Object} SelectionQuery  `stageSelectionQuery`'s shape (skill-config.mjs).
+ * @property {string} state
+ * @property {Record<string, {include: string[], exclude: string[]}>} selection  effective, unresolved
+ * @property {string[]} requireLabels  stage labels the core ANDs in
+ * @property {string[]} excludeLabels  labels the core always excludes (needs-human)
+ */
+
+/**
+ * @typedef {Object} LegacyGateQuery
+ * @property {string} state
+ * @property {string|string[]} [label]
+ * @property {string} [assignee]
+ * @property {string} [creator]
+ * @property {string} [assigneeOrCreator]
  */
 
 /**
@@ -152,8 +186,9 @@ export const TRACKER_CAPABILITIES = [
 ]
 
 // Capabilities an adapter MAY expose: `states` (workflow-state names), `selectPlanned`
-// (the executable filtered candidate read) and `readDescription` (the executable
-// stored-description read), plus `selectCandidates` (full dependency candidates).
+// (the executable filtered candidate read), `resolveSelection` (selection refs -> ids) and
+// `readDescription` (the executable stored-description read), plus `selectCandidates` (full dependency candidates) and
+// `selectMarked` (complete marked descriptions) and `applyIssueWrites` (the verify stage's label/comment/state writes).
 // Never fold these into TRACKER_CAPABILITIES —
 // assertConforms requires every entry there, so promoting one would fail every
 // conforming adapter that legitimately omits it. assertConforms validates the SHAPE
@@ -161,11 +196,14 @@ export const TRACKER_CAPABILITIES = [
 export const OPTIONAL_TRACKER_CAPABILITIES = [
   'states',
   'selectPlanned',
+  'resolveSelection',
   'readDescription',
+  'selectMarked',
   'selectCandidates',
+  'applyIssueWrites',
 ]
 
-// Operations an adapter MAY declare. Two groups live here, for two different reasons:
+// Operations an adapter MAY declare, grouped by the callers that need them:
 //
 //   1. The native plan-attachment operations, which only plan-storage-aware skills use.
 //      Keeping them optional preserves unrelated adapters that implement no plan storage.
@@ -188,6 +226,10 @@ export const OPTIONAL_TRACKER_CAPABILITIES = [
 //      Its summary is where the argument shape lives, since TrackerOperation has no
 //      argument-shape field — the record must name the description argument key, because
 //      the descriptor emitter builds `args` from it and a wrong key writes nothing.
+//   5. listTeams, the zero-config team listing (D11). Optional because a tracker may have no team
+//      concept or no listing tool; a caller that finds it absent passes no listing to
+//      resolveTrackerTeam, which then trusts an explicit --team or self-disables cleanly.
+//   6. createIssue, the issue creation write used only by notes consumers.
 //
 // The invariant for every entry here: an ABSENT optional op conforms, while a DECLARED
 // one is validated exactly as strictly as a required op (non-empty tool and summary) —
@@ -203,6 +245,8 @@ export const OPTIONAL_TRACKER_OPERATIONS = [
   'createLabel',
   'appendRelatedTo',
   'writeDescription',
+  'listTeams',
+  'createIssue',
 ]
 
 // The stable, tracker-agnostic state roles the skills consume by name: the state a

@@ -67,7 +67,7 @@ over tight loops.
 Tools that discard work or data — `remove_repo`, `close_session`, `merge_session`, `remove_session`,
 `archive_session`, `resurrect_session`, `delete_chat`, `empty_trash`, `delete_cron_job`,
 `remove_account`, `delete_github_callback`, `delete_broadcast`, `delete_broadcast_subscription`,
-`delete_note` — refuse unless the call passes `confirm: true`. Only pass it when the user asked for
+`delete_note`, `delete_organization_note` — refuse unless the call passes `confirm: true`. Only pass it when the user asked for
 that specific action, and say what will be lost before you do.
 
 ## When a call fails

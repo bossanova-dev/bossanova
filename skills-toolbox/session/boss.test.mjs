@@ -84,6 +84,9 @@ test('getSession documents the Phase-3 routing signals', () => {
   for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block']) {
     assert.ok(response.includes(field), `getSession missing routing signal ${field}`)
   }
+  // display_label carries the daemon's computed Ready label, which boss-epic's
+  // settle helper reads.
+  assert.ok(response.includes('display_label'), 'getSession missing display_label')
   // attention_status.reason NESTS under attention_status — a flat
   // `attention_reason` key does not exist on the Session response.
   assert.ok(!response.includes('attention_reason'))
@@ -427,7 +430,7 @@ test('partially-covered cli transports name what the CLI cannot supply', () => {
     'session.last_agent_activity_at',
   ])
   assert.equal(missing.includes('last_agent_activity_at'), false)
-  for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block']) {
+  for (const field of ['attention_status.reason', 'pr_mergeable', 'merge_block', 'display_label']) {
     assert.ok(missing.includes(field), `getSession cli must declare ${field} unavailable`)
   }
   assert.equal(bossCliDegradedCapabilities().includes('getSession'), false)
@@ -455,6 +458,7 @@ test('bossEpicTransportPreflight reports partially-covered capabilities on the C
     'attention_status.reason',
     'pr_mergeable',
     'merge_block',
+    'display_label',
   ])
 })
 

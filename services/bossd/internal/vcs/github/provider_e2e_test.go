@@ -333,7 +333,7 @@ func TestE2E_GitHub_MergePR_AllStrategies(t *testing.T) {
 			})
 			p := newProvider(f)
 
-			if err := p.MergePR(context.Background(), testRepo, 42, tc.strategy); err != nil {
+			if err := p.MergePR(context.Background(), testRepo, 42, vcs.MergePROpts{Strategy: tc.strategy}); err != nil {
 				t.Fatalf("MergePR: %v", err)
 			}
 
@@ -355,7 +355,7 @@ func TestE2E_GitHub_MergePR_ConflictErrorParsed(t *testing.T) {
 	})
 	p := newProvider(f)
 
-	err := p.MergePR(context.Background(), testRepo, 42, "merge")
+	err := p.MergePR(context.Background(), testRepo, 42, vcs.MergePROpts{Strategy: "merge"})
 	if err == nil {
 		t.Fatal("expected error on conflict, got nil")
 	}

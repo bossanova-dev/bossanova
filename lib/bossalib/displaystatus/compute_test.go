@@ -1440,6 +1440,8 @@ func TestIsLiveActivityLabel_Classification(t *testing.T) {
 		"⨯ rejected",
 		"draft",
 		"checking",
+		VerifyingLabel,
+		NeedsHumanLabel,
 		"idle",
 		"stopped",
 		"",
@@ -1500,6 +1502,8 @@ func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
 		"⨯ rejected":                    false,
 		"draft":                         false,
 		"checking":                      false,
+		VerifyingLabel:                  false,
+		NeedsHumanLabel:                 false,
 		"idle":                          false,
 		"stopped":                       false,
 	}
@@ -1793,5 +1797,153 @@ func TestPreErroredBlockedIntent_DemotedGreenRestoresSuccess(t *testing.T) {
 	}
 	if got := PreErroredOutput(waiting); got.Intent != pb.DisplayIntent_DISPLAY_INTENT_INFO {
 		t.Fatalf("PreErroredOutput(waiting).Intent = %v, want INFO", got.Intent)
+	}
+}
+
+// TestCompute_VerifyStatuses pins BOS-1382's two PR-derived composites:
+// "verifying" spins with INFO (DANGER when changes are requested or checks
+// failed, mirroring checking) and "needs human" is a static WARNING.
+func TestCompute_VerifyStatuses(t *testing.T) {
+	tests := []struct {
+		name string
+		sess *pb.Session
+		want Output
+	}{
+		{
+			name: "verifying",
+			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
+			want: Output{Label: VerifyingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "verifying with changes requested is danger",
+			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, DisplayHasChangesRequested: true},
+			want: Output{Label: VerifyingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "needs human",
+			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
+			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "needs human with changes requested stays warning",
+			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayHasChangesRequested: true},
+			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "needs human on a blocked session is recolored danger",
+			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, State: pb.SessionState_SESSION_STATE_BLOCKED},
+			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Compute(Input{Session: tt.sess}); got != tt.want {
+				t.Fatalf("Compute() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPrNeedsFix_VerifyStatusesFollowChecking pins that the verify statuses
+// keep Checking's needs-fix rule: true only with failures or changes requested.
+func TestPrNeedsFix_VerifyStatusesFollowChecking(t *testing.T) {
+	for _, status := range []pb.DisplayStatus{
+		pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+	} {
+		if prNeedsFix(&pb.Session{DisplayStatus: status}) {
+			t.Errorf("prNeedsFix(%s) = true, want false without failures or changes requested", status)
+		}
+		if !prNeedsFix(&pb.Session{DisplayStatus: status, DisplayHasChangesRequested: true}) {
+			t.Errorf("prNeedsFix(%s, changes requested) = false, want true", status)
+		}
+		if !prNeedsFix(&pb.Session{DisplayStatus: status, DisplayHasFailures: true}) {
+			t.Errorf("prNeedsFix(%s, failures) = false, want true", status)
+		}
+	}
+	working := Compute(Input{
+		Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, DisplayHasChangesRequested: true},
+		ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+	})
+	if working != (Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true}) {
+		t.Errorf("working over verifying with changes requested = %+v, want DANGER working", working)
+	}
+}
+
+// TestPreVerifyStatusOutput pins the BOS-1382 inverse: a composite produced by
+// the new verifying / needs-human branches restores the checking tuple Compute
+// produced before the split; every other composite is untouched.
+func TestPreVerifyStatusOutput(t *testing.T) {
+	served := func(s *pb.Session) *pb.Session {
+		out := Compute(Input{Session: s})
+		s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = out.Label, out.Intent, out.Spinner
+		return s
+	}
+	checkingWarning := Output{Label: "checking", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
+	checkingDanger := Output{Label: "checking", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true}
+
+	tests := []struct {
+		name string
+		sess *pb.Session
+		want Output
+	}{
+		{"verifying restores checking", served(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING}), checkingWarning},
+		{"needs human restores checking", served(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN}), checkingWarning},
+		{"changes requested restores danger checking", served(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayHasChangesRequested: true}), checkingDanger},
+		{"errored session keeps the recolor", served(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, State: pb.SessionState_SESSION_STATE_BLOCKED}), checkingDanger},
+		{
+			"live chat composite untouched",
+			&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, DisplayLabel: "working", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, DisplaySpinner: true},
+			Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
+		},
+		{
+			"other PR status untouched",
+			served(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}),
+			Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		},
+		{
+			"label without matching status untouched",
+			&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, DisplayLabel: VerifyingLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO, DisplaySpinner: true},
+			Output{Label: VerifyingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{"empty label untouched", &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING}, Output{}},
+		{"nil session", nil, Output{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PreVerifyStatusOutput(tt.sess); got != tt.want {
+				t.Fatalf("PreVerifyStatusOutput() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	// The inverse equals what the old cascade computed for the same session
+	// with DisplayStatus CHECKING.
+	for _, s := range []*pb.Session{
+		{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
+		{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayHasFailures: true},
+		{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, State: pb.SessionState_SESSION_STATE_ORPHANED},
+	} {
+		old := Compute(Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, DisplayHasFailures: s.DisplayHasFailures, State: s.State}})
+		if got := PreVerifyStatusOutput(served(s)); got != old {
+			t.Errorf("PreVerifyStatusOutput(%s) = %+v, want the old cascade's %+v", s.GetDisplayStatus(), got, old)
+		}
+	}
+}
+
+// TestWorkingLabel pins the exported working label to the literal the
+// cascade emits for a working chat, so the session webhook catalog keyed on
+// it cannot drift from what Compute renders.
+func TestWorkingLabel(t *testing.T) {
+	if WorkingLabel != "working" {
+		t.Fatalf("WorkingLabel = %q, want %q", WorkingLabel, "working")
+	}
+	out := Compute(Input{Session: &pb.Session{}, ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING})
+	if out.Label != WorkingLabel {
+		t.Fatalf("Compute(working chat).Label = %q, want %q", out.Label, WorkingLabel)
+	}
+	if !IsLiveActivityLabel(WorkingLabel) {
+		t.Fatalf("IsLiveActivityLabel(%q) = false, want true", WorkingLabel)
 	}
 }

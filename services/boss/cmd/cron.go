@@ -15,6 +15,7 @@ import (
 
 	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 )
 
 // cronJobJSON is the stable, documented schema emitted by `boss cron ls --json`
@@ -34,6 +35,7 @@ type cronJobJSON struct {
 	GateCommand           string `json:"gate_command"`
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
 	IsZeroOutput          bool   `json:"zero_output"`
+	ConcurrencyPolicy     string `json:"concurrency_policy"`
 	LastRunSessionID      string `json:"last_run_session_id"`
 	LastRunAgentName      string `json:"last_run_agent_name"`
 	LastRunAt             string `json:"last_run_at"`
@@ -56,6 +58,7 @@ func cronJobToJSON(j *pb.CronJob) cronJobJSON {
 		GateCommand:           j.GetGateCommand(),
 		ShouldRunSetupCommand: j.GetShouldRunSetupCommand(),
 		IsZeroOutput:          j.GetIsZeroOutput(),
+		ConcurrencyPolicy:     string(models.CronJobConcurrencyPolicyFromProto(j.GetConcurrencyPolicy())),
 		LastRunSessionID:      j.GetLastRunSessionId(),
 		LastRunAgentName:      j.GetLastRunAgentName(),
 		LastRunAt:             rfc3339OrEmpty(j.GetLastRunAt()),
@@ -187,6 +190,7 @@ func runCronShow(cmd *cobra.Command, id string) error {
 	fmt.Fprintf(&b, "Gate command:        %s\n", orDash(job.GetGateCommand()))
 	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetShouldRunSetupCommand()))
 	fmt.Fprintf(&b, "Zero output:         %s\n", boolLabel(job.GetIsZeroOutput()))
+	fmt.Fprintf(&b, "Concurrency:         %s\n", models.CronJobConcurrencyPolicyFromProto(job.GetConcurrencyPolicy()))
 	fmt.Fprintf(&b, "Last run session ID: %s\n", orDash(job.GetLastRunSessionId()))
 	fmt.Fprintf(&b, "Last run agent:      %s\n", lastRunAgentLabel(job))
 	fmt.Fprintf(&b, "Last run at:         %s\n", orDash(rfc3339OrEmpty(job.GetLastRunAt())))
@@ -240,6 +244,11 @@ func runCronAdd(cmd *cobra.Command) error {
 		v, _ := cmd.Flags().GetBool("zero-output")
 		req.IsZeroOutput = &v
 	}
+	policy, err := concurrencyFlag(cmd)
+	if err != nil {
+		return err
+	}
+	req.ConcurrencyPolicy = policy
 
 	c, err := newClient(cmd)
 	if err != nil {
@@ -251,6 +260,26 @@ func runCronAdd(cmd *cobra.Command) error {
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created cron job %s\n", job.GetId())
 	return nil
+}
+
+// cronConcurrencyValues is the --concurrency spelling of each policy, in the
+// order the forms list them. Named in the usage error for a bad value.
+const cronConcurrencyValues = "skip, cancel-in-progress, allow-concurrent"
+
+// concurrencyFlag reads --concurrency. It returns nil when the flag was not
+// given (create resolves that to skip; update leaves the stored value alone).
+// The value is matched case-insensitively with '_' accepted for '-'; anything
+// else is a usage error naming the valid values.
+func concurrencyFlag(cmd *cobra.Command) (*pb.CronJobConcurrencyPolicy, error) {
+	if !cmd.Flags().Changed("concurrency") {
+		return nil, nil
+	}
+	raw, _ := cmd.Flags().GetString("concurrency")
+	policy, ok := models.ParseCronJobConcurrencyPolicyInput(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid --concurrency %q: want one of %s", raw, cronConcurrencyValues)
+	}
+	return models.CronJobConcurrencyPolicyToProto(policy).Enum(), nil
 }
 
 func runCronUpdate(cmd *cobra.Command, id string) error {
@@ -291,6 +320,14 @@ func runCronUpdate(cmd *cobra.Command, id string) error {
 		req.IsZeroOutput = proto.Bool(v)
 		anyChanged = true
 	}
+	policy, err := concurrencyFlag(cmd)
+	if err != nil {
+		return err
+	}
+	if policy != nil {
+		req.ConcurrencyPolicy = policy
+		anyChanged = true
+	}
 
 	// Prompt: set only when --prompt or --prompt-file was provided.
 	prompt, provided, err := readPromptFlag(cmd, false)
@@ -303,7 +340,7 @@ func runCronUpdate(cmd *cobra.Command, id string) error {
 	}
 
 	if !anyChanged {
-		return fmt.Errorf("no flags provided — use --name, --schedule, --prompt, --agent, --gate, --model, --tz, --enabled, --run-setup, or --zero-output")
+		return fmt.Errorf("no flags provided — use --name, --schedule, --prompt, --agent, --gate, --model, --tz, --enabled, --run-setup, --zero-output, or --concurrency")
 	}
 
 	c, err := newClient(cmd)

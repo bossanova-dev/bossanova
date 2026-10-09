@@ -41,13 +41,17 @@ func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobPar
 	if params.GateCommand != "" {
 		gateCommandVal = params.GateCommand
 	}
+	concurrencyPolicy := params.ConcurrencyPolicy
+	if concurrencyPolicy == "" {
+		concurrencyPolicy = models.CronJobConcurrencyPolicySkip
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, concurrency_policy, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
 		agentName, params.Model, sqlutil.BoolToInt(params.IsEnabled),
 		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand),
-		sqlutil.BoolToInt(params.IsZeroOutput), now, now,
+		sqlutil.BoolToInt(params.IsZeroOutput), string(concurrencyPolicy), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -142,6 +146,10 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 	if params.IsZeroOutput != nil {
 		sets = append(sets, "is_zero_output = ?")
 		args = append(args, sqlutil.BoolToInt(*params.IsZeroOutput))
+	}
+	if params.ConcurrencyPolicy != nil {
+		sets = append(sets, "concurrency_policy = ?")
+		args = append(args, string(*params.ConcurrencyPolicy))
 	}
 
 	args = append(args, id)
@@ -255,7 +263,7 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 }
 
 const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
-	gate_command, should_run_setup_command, is_zero_output,
+	gate_command, should_run_setup_command, is_zero_output, concurrency_policy,
 	last_run_session_id, last_run_agent_name, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -276,12 +284,13 @@ func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
 func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	var j models.CronJob
 	var enabledInt, runSetupInt, zeroOutputInt int
+	var concurrencyPolicy string
 	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAgentName, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
 		&timezone, &agentName, &model, &enabledInt,
-		&gateCommand, &runSetupInt, &zeroOutputInt,
+		&gateCommand, &runSetupInt, &zeroOutputInt, &concurrencyPolicy,
 		&lastRunSessionID, &lastRunAgentName, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)
@@ -292,6 +301,9 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	j.GateCommand = gateCommand.String
 	j.ShouldRunSetupCommand = runSetupInt != 0
 	j.IsZeroOutput = zeroOutputInt != 0
+	// The column CHECK makes an out-of-set value impossible; normalize anyway
+	// so a read never surfaces an unknown policy.
+	j.ConcurrencyPolicy = models.ParseCronJobConcurrencyPolicy(concurrencyPolicy)
 	if timezone.Valid {
 		s := timezone.String
 		j.Timezone = &s

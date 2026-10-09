@@ -6,12 +6,52 @@
 //
 //   node bs-record-notes.mjs --envelope <path> --notes <path> [--extension <name>]
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 
 export const MAX_NOTES_BYTES = 8 * 1024
 export const MAX_NOTES = 5
 const NOTE_TAG = 'improvement'
+
+export const RUN_TOKEN_PREFIX = 'run:'
+let adhocRunId
+
+export function sanitizeRunId(value) {
+  return (
+    String(value ?? '')
+      .replace(/[^A-Za-z0-9._:#@-]/g, '')
+      .slice(0, 80) || null
+  )
+}
+
+export function resetAdhocRunId() {
+  adhocRunId = undefined
+}
+
+export function resolveRunId({ runId, env = process.env } = {}) {
+  for (const value of [runId, env.BOSS_AGENT_SESSION_ID, env.BOSS_SESSION_ID]) {
+    const id = sanitizeRunId(value)
+    if (id) return id
+  }
+  return (adhocRunId ??= `adhoc-${randomBytes(4).toString('hex')}`)
+}
+
+export function formatRunLine(parts, runId) {
+  return `Run: ${parts.join(' / ')} / ${RUN_TOKEN_PREFIX}${sanitizeRunId(runId) || resolveRunId()}`
+}
+
+export function parseRunId(body) {
+  const lines = String(body ?? '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith('Run:'))
+  const segments = lines
+    .at(-1)
+    ?.trim()
+    .slice(4)
+    .split(/\s*[\/·]\s*/)
+  const token = segments?.findLast((part) => part.startsWith(RUN_TOKEN_PREFIX))
+  return token ? sanitizeRunId(token.slice(RUN_TOKEN_PREFIX.length)) : null
+}
 
 // Credential shapes a note must never carry. A note body is readable by everyone with repo access,
 // so a note matching one is dropped rather than redacted.
@@ -70,7 +110,7 @@ export function parseNotes(markdown, run) {
   return { bodies, rejected }
 }
 
-function idempotencyKey(body) {
+export function idempotencyKey(body) {
   return `bs-record-notes:${createHash('sha256').update(body).digest('hex').slice(0, 32)}`
 }
 
@@ -99,7 +139,10 @@ function defaultAddNote({ body, repoId }) {
 
 // Pure core of the helper: envelope and notes file in, result envelope out. `addNote` is injected
 // for tests.
-export function recordNotes(envelope, { notesPath, extension, addNote = defaultAddNote } = {}) {
+export function recordNotes(
+  envelope,
+  { notesPath, extension, addNote = defaultAddNote, env = process.env } = {},
+) {
   const context = envelope?.context ?? {}
   const core = context.core || envelope?.core || 'unknown'
   const name = extension || envelope?.extension || `${core}-notes`
@@ -124,9 +167,13 @@ export function recordNotes(envelope, { notesPath, extension, addNote = defaultA
   } catch (err) {
     return result({ ok: false, error: `cannot read notes file: ${err.message}` })
   }
-  const run = [core, context.outcome || 'unknown', context.mode || 'unknown'].join(' / ')
+  const run = formatRunLine(
+    [core, context.outcome || 'unknown', context.mode || 'unknown'],
+    resolveRunId({ runId: context.runId, env }),
+  ).slice(5)
   const { bodies, rejected } = parseNotes(markdown, run)
-  const kept = bodies.filter((body) => !isSecretBearing(body))
+  const unique = [...new Set(bodies)]
+  const kept = unique.filter((body) => !isSecretBearing(body))
   const capped = kept.slice(0, MAX_NOTES)
   const items = []
   const failures = []
@@ -139,8 +186,11 @@ export function recordNotes(envelope, { notesPath, extension, addNote = defaultA
   }
   const notes = [
     rejected.length > 0 ? `${rejected.length} note(s) not in the five-line shape` : '',
-    bodies.length > kept.length
-      ? `${bodies.length - kept.length} note(s) dropped (secret shape)`
+    bodies.length > unique.length
+      ? `${bodies.length - unique.length} note(s) repeated within this run`
+      : '',
+    unique.length > kept.length
+      ? `${unique.length - kept.length} note(s) dropped (secret shape)`
       : '',
     kept.length > capped.length
       ? `${kept.length - capped.length} note(s) over the cap of ${MAX_NOTES}`
@@ -166,22 +216,32 @@ function parseArgs(argv) {
   return args
 }
 
-export function main(argv) {
+export function main(argv, deps = {}) {
   const args = parseArgs(argv)
-  if (!args.envelope) {
+  if (!args.envelope && !args.core) {
     process.stderr.write(
-      'usage: bs-record-notes.mjs --envelope <path> --notes <path> [--extension <name>]\n',
+      'usage: bs-record-notes.mjs --envelope <path> --notes <path> [--extension <name>] | --notes <path> --core <skill> [--outcome <id|none>] [--mode headless|interactive] [--run-id <id>]\n',
     )
     return 0
   }
   let envelope
   try {
-    envelope = JSON.parse(fs.readFileSync(args.envelope, 'utf8'))
+    envelope = args.envelope
+      ? JSON.parse(fs.readFileSync(args.envelope, 'utf8'))
+      : {
+          core: args.core,
+          context: {
+            core: args.core,
+            outcome: args.outcome || 'none',
+            mode: args.mode || 'headless',
+            runId: args['run-id'],
+          },
+        }
   } catch (err) {
     process.stderr.write(`bs-record-notes: cannot read envelope: ${err.message}\n`)
     return 0
   }
-  const out = recordNotes(envelope, { notesPath: args.notes, extension: args.extension })
+  const out = recordNotes(envelope, { notesPath: args.notes, extension: args.extension, ...deps })
   const json = `${JSON.stringify(out)}\n`
   if (typeof envelope.outPath === 'string' && envelope.outPath !== '') {
     try {
@@ -190,7 +250,7 @@ export function main(argv) {
       process.stderr.write(`bs-record-notes: cannot write ${envelope.outPath}: ${err.message}\n`)
     }
   }
-  process.stdout.write(json)
+  ;(deps.stdout ?? ((text) => process.stdout.write(text)))(json)
   return 0
 }
 

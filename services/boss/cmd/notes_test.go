@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,13 @@ type fakeNotesClient struct {
 	resolved     *pb.ResolveContextResponse
 	resolveErr   error
 	resolveCalls int
+	syncResp     *pb.SyncNotesNowResponse
+	syncCalls    int
+}
+
+func (f *fakeNotesClient) SyncNotesNow(_ context.Context) (*pb.SyncNotesNowResponse, error) {
+	f.syncCalls++
+	return f.syncResp, f.err
 }
 
 func (f *fakeNotesClient) ResolveContext(_ context.Context, _ string) (*pb.ResolveContextResponse, error) {
@@ -107,6 +115,8 @@ func TestNoteToJSONMapsEveryField(t *testing.T) {
 		Body:      "remember the milk",
 		Tags:      []string{"a", "b"},
 		CreatedAt: created,
+		SyncState: "synced",
+		SyncedAt:  created,
 	})
 	want := noteJSON{
 		ID:        "note-1",
@@ -119,10 +129,12 @@ func TestNoteToJSONMapsEveryField(t *testing.T) {
 		// UpdatedAt is deliberately nil above: a nil timestamp must render as
 		// the empty string, never as a zero-time literal.
 		UpdatedAt: "",
+		SyncState: "synced",
+		SyncedAt:  created.AsTime().UTC().Format(time.RFC3339),
 	}
 	if got.ID != want.ID || got.RepoID != want.RepoID || got.SessionID != want.SessionID ||
 		got.ChatID != want.ChatID || got.Body != want.Body || got.CreatedAt != want.CreatedAt ||
-		got.UpdatedAt != want.UpdatedAt {
+		got.UpdatedAt != want.UpdatedAt || got.SyncState != want.SyncState || got.SyncedAt != want.SyncedAt {
 		t.Fatalf("noteToJSON() = %+v, want %+v", got, want)
 	}
 	if strings.Join(got.Tags, ",") != "a,b" {
@@ -147,7 +159,8 @@ func TestNoteJSONWireKeysArePinned(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
 		t.Fatalf("show --json emitted invalid JSON %q: %v", out.String(), err)
 	}
-	want := []string{"id", "repo_id", "session_id", "chat_id", "body", "tags", "created_at", "updated_at"}
+	want := []string{"id", "repo_id", "session_id", "chat_id", "body", "tags", "created_at", "updated_at",
+		"sync_state", "synced_at"}
 	for _, key := range want {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("--json output is missing the contract key %q: %v", key, raw)
@@ -518,6 +531,39 @@ func TestNotesShowRendersTheFullBody(t *testing.T) {
 	}
 }
 
+// TestNotesShowRendersSyncLine pins the human `Sync:` line: state, last sync
+// time and last error when present, and a dash when the daemon predates the
+// outbox fields.
+func TestNotesShowRendersSyncLine(t *testing.T) {
+	syncedAt := timestamppb.New(time.Unix(1_700_000_000, 0).UTC())
+	tests := []struct {
+		name string
+		note *pb.Note
+		want string
+	}{
+		{"old daemon", &pb.Note{Id: "note-1"}, "Sync:     -\n"},
+		{"pending", &pb.Note{Id: "note-1", SyncState: "pending"}, "Sync:     pending\n"},
+		{
+			"synced then failed",
+			&pb.Note{Id: "note-1", SyncState: "failed", SyncedAt: syncedAt, SyncLastError: "timeout"},
+			"Sync:     failed (synced 2023-11-14T22:13:20Z) — timeout\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubEnv(t, nil)
+			cmd, out := notesSubCmd(t, "show")
+			setFlag(t, cmd, "repo", "repo-1")
+			if err := runNotesShow(cmd, &fakeNotesClient{note: tt.note}, "note-1"); err != nil {
+				t.Fatalf("runNotesShow() error = %v", err)
+			}
+			if !strings.Contains(out.String(), tt.want) {
+				t.Errorf("show output missing %q:\n%s", tt.want, out.String())
+			}
+		})
+	}
+}
+
 // TestNotesShowWithoutRepoIsNotAnError pins that show/edit/rm resolve by note
 // id: an unresolvable repo is only a missing remote routing key, never a
 // failure.
@@ -847,5 +893,96 @@ func TestNotesEditRoutesRepoID(t *testing.T) {
 	}
 	if fake.updated.GetId() != "note-1" {
 		t.Errorf("UpdateNote id = %q, want note-1", fake.updated.GetId())
+	}
+}
+
+func syncCounts(pending, synced int64) []*pb.NoteSyncStateCount {
+	return []*pb.NoteSyncStateCount{
+		{State: "pending", NoteCount: pending},
+		{State: "synced", NoteCount: synced},
+		{State: "failed", NoteCount: 0},
+	}
+}
+
+func TestNotesSyncPrintsCountsPerState(t *testing.T) {
+	stubEnv(t, nil)
+	fake := &fakeNotesClient{syncResp: &pb.SyncNotesNowResponse{IsWorkerConfigured: true, StateCounts: syncCounts(2, 5)}}
+	cmd, out := notesSubCmd(t, "sync")
+
+	if err := runNotesSync(cmd, fake); err != nil {
+		t.Fatalf("runNotesSync() error = %v", err)
+	}
+	if fake.syncCalls != 1 {
+		t.Fatalf("SyncNotesNow calls = %d, want 1", fake.syncCalls)
+	}
+	got := out.String()
+	for _, want := range []string{"Note sync nudged", "pending        2", "synced         5", "failed         0"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "not running") {
+		t.Errorf("output %q claims sync is not running with a worker configured", got)
+	}
+}
+
+func TestNotesSyncExplainsLocalOnlyDaemon(t *testing.T) {
+	stubEnv(t, nil)
+	fake := &fakeNotesClient{syncResp: &pb.SyncNotesNowResponse{StateCounts: syncCounts(4, 0)}}
+	cmd, out := notesSubCmd(t, "sync")
+
+	if err := runNotesSync(cmd, fake); err != nil {
+		t.Fatalf("runNotesSync() error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, noteSyncNotConfigured) || !strings.Contains(got, "pending        4") {
+		t.Errorf("output %q, want the not-configured explanation and the pending count", got)
+	}
+}
+
+func TestNotesSyncJSONSchema(t *testing.T) {
+	stubEnv(t, nil)
+	fake := &fakeNotesClient{syncResp: &pb.SyncNotesNowResponse{IsWorkerConfigured: true, StateCounts: syncCounts(1, 2)}}
+	cmd, out := notesSubCmd(t, "sync")
+	setFlag(t, cmd, "json", "true")
+
+	if err := runNotesSync(cmd, fake); err != nil {
+		t.Fatalf("runNotesSync() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("sync --json emitted invalid JSON %q: %v", out.String(), err)
+	}
+	if raw["worker_configured"] != true {
+		t.Errorf("worker_configured = %v, want true", raw["worker_configured"])
+	}
+	counts, ok := raw["counts"].([]any)
+	if !ok || len(counts) != 3 {
+		t.Fatalf("counts = %#v, want three entries", raw["counts"])
+	}
+	first, _ := counts[0].(map[string]any)
+	if first["state"] != "pending" || first["count"] != float64(1) {
+		t.Errorf("first count = %v, want pending 1", first)
+	}
+
+	// An empty answer still emits a list, never null.
+	fake.syncResp = &pb.SyncNotesNowResponse{}
+	cmd, out = notesSubCmd(t, "sync")
+	setFlag(t, cmd, "json", "true")
+	if err := runNotesSync(cmd, fake); err != nil {
+		t.Fatalf("runNotesSync() error = %v", err)
+	}
+	if !strings.Contains(out.String(), `"counts": []`) {
+		t.Errorf("empty sync --json = %s, want an empty counts list", out.String())
+	}
+}
+
+func TestNotesSyncWrapsDaemonError(t *testing.T) {
+	stubEnv(t, nil)
+	fake := &fakeNotesClient{err: errors.New("daemon down")}
+	cmd, _ := notesSubCmd(t, "sync")
+
+	err := runNotesSync(cmd, fake)
+	if err == nil || !strings.Contains(err.Error(), "sync notes") || !strings.Contains(err.Error(), "daemon down") {
+		t.Errorf("runNotesSync() error = %v, want it wrapped as a sync failure", err)
 	}
 }

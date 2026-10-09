@@ -224,3 +224,96 @@ func (p *refreshPRProvider) GetReviewComments(context.Context, string, int) ([]v
 }
 
 func int32Ptr(i int32) *int32 { return &i }
+
+// TestRefreshSessionPRHydratesVerifyParkAttention pins the RefreshSessionPR
+// wiring of the BOS-1382 overlay end to end from a live provider read: green
+// ordinary CI plus a pending boss/verify park yields NEEDS_HUMAN and the
+// AWAITING_HUMAN_INPUT attention carrying the reason.
+func TestRefreshSessionPRHydratesVerifyParkAttention(t *testing.T) {
+	tracker := status.NewDisplayTracker()
+	provider := &refreshPRProvider{
+		prStatus: &vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+			HeadSHA:          "parked-sha",
+		},
+		checks: []vcs.CheckResult{
+			{Name: "build", Status: vcs.CheckStatusCompleted, Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess)},
+			{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "needs human: always-human-path"},
+		},
+	}
+	srv := newRefreshPRServer(tracker, provider, refreshPRSession())
+
+	resp, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr("s1")}))
+	if err != nil {
+		t.Fatalf("RefreshSessionPR: %v", err)
+	}
+	got := resp.Msg.GetSession()
+	if got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		t.Fatalf("display_status = %v, want NEEDS_HUMAN", got.GetDisplayStatus())
+	}
+	if att := got.GetAttentionStatus(); att.GetReason() != pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT ||
+		att.GetSummary() != "needs human: always-human-path" {
+		t.Fatalf("attention = %+v, want AWAITING_HUMAN_INPUT / needs human: always-human-path", att)
+	}
+	if detail := got.GetMergeBlock().GetDetail(); detail != "the verify stage parked this head for a human: always-human-path" {
+		t.Errorf("merge_block.detail = %q", detail)
+	}
+}
+
+// The capability must replace the legacy check read, never add a second read.
+type receiptRefreshPRProvider struct {
+	*refreshPRProvider
+	hasReceipt bool
+}
+
+func (p *receiptRefreshPRProvider) GetCheckSet(ctx context.Context, repo string, pr int) (vcs.CheckSet, error) {
+	checks, err := p.GetCheckResults(ctx, repo, pr)
+	return vcs.CheckSet{Checks: checks, HasBuildReceipt: p.hasReceipt}, err
+}
+
+func TestRefreshSessionPRBuildReceiptIsRefreshedAndTransportOnly(t *testing.T) {
+	provider := &receiptRefreshPRProvider{refreshPRProvider: &refreshPRProvider{
+		prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), HeadSHA: "head-a"},
+		checks:   []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess)}},
+	}, hasReceipt: true}
+	tracker := status.NewDisplayTracker()
+	srv := newRefreshPRServer(tracker, provider, refreshPRSession())
+	for _, tc := range []struct {
+		name           string
+		receipt, draft bool
+		state          vcs.PRState
+		want           bool
+	}{
+		{"build handoff", true, false, vcs.PRStateOpen, true},
+		{"human push", false, false, vcs.PRStateOpen, false},
+		{"repair repost", true, false, vcs.PRStateOpen, true},
+		{"draft", true, true, vcs.PRStateOpen, false},
+		{"merged", true, false, vcs.PRStateMerged, false},
+		{"closed", true, false, vcs.PRStateClosed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider.hasReceipt = tc.receipt
+			provider.prStatus.Draft, provider.prStatus.State = tc.draft, tc.state
+			before := provider.checkCalls
+			resp, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr("s1")}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Msg.Session.GetHasBuildReceipt(); got != tc.want {
+				t.Fatalf("wire receipt = %v, want %v", got, tc.want)
+			}
+			if got := tracker.Get("s1").HasBuildReceipt; got != tc.want {
+				t.Fatalf("tracker receipt = %v, want %v", got, tc.want)
+			}
+			wantReads := 1
+			if tc.draft || tc.state != vcs.PRStateOpen {
+				wantReads = 0
+			}
+			if got := provider.checkCalls - before; got != wantReads {
+				t.Fatalf("check reads = %d, want %d", got, wantReads)
+			}
+		})
+	}
+}

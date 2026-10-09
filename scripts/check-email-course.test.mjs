@@ -464,7 +464,9 @@ test('parsePublishedSkills agrees with the real manifest test', () => {
     'boss-epic',
     'boss-finalize',
     'boss-plan',
+    'boss-release',
     'boss-repair',
+    'boss-retro',
     'boss-review',
     'boss-verify',
   ])

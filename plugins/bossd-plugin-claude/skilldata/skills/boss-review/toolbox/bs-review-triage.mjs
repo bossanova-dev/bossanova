@@ -182,6 +182,100 @@ function findingCategory(item) {
   return typeof item?.category === 'string' ? item.category.trim() : ''
 }
 
+export function normalizeCategory(value) {
+  return typeof value === 'string'
+    ? value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40)
+        .replace(/-+$/g, '')
+    : ''
+}
+
+export function mustFixCategories(triageResults, { report } = {}) {
+  const categories = new Map()
+  const reportItems = Array.isArray(report?.mustfix?.items) ? report.mustfix.items : []
+  const matching = (record) =>
+    reportItems.filter(
+      (item) =>
+        item &&
+        item.file === record.file &&
+        item.line === record.line &&
+        item.title === record.title,
+    )
+  for (const pass of Array.isArray(triageResults) ? triageResults : []) {
+    const records = new Set(Array.isArray(pass?.mustFix) ? pass.mustFix : [])
+    for (const record of Array.isArray(pass?.pool) ? pass.pool : []) {
+      if (record && matching(record).length) records.add(record)
+    }
+    for (const record of records) {
+      if (!record || !Array.isArray(record.lenses)) continue
+      if (
+        matching(record).some(
+          (item) =>
+            Array.isArray(item.premises) &&
+            item.premises.length > 0 &&
+            item.premises.every((premise) => premise?.verdict === 'refuted'),
+        )
+      )
+        continue
+      const category = normalizeCategory(record.category) || 'uncategorized'
+      for (const reviewer of new Set(record.lenses)) {
+        if (typeof reviewer !== 'string' || !reviewer.trim()) continue
+        const where = `${reviewer}/${category}`
+        const entry = categories.get(where) ?? {
+          where,
+          detail: typeof record.title === 'string' ? record.title : '',
+          severity: record.severity,
+          count: 0,
+        }
+        entry.count += 1
+        if ((SEVERITY_RANK[record.severity] ?? 0) > (SEVERITY_RANK[entry.severity] ?? 0))
+          entry.severity = record.severity
+        categories.set(where, entry)
+      }
+    }
+  }
+  return [...categories.values()]
+    .sort(
+      (a, b) =>
+        Number(b.severity === 'Critical') - Number(a.severity === 'Critical') ||
+        b.count - a.count ||
+        a.where.localeCompare(b.where),
+    )
+    .map(({ count, ...entry }) => entry)
+}
+
+function readCategories(dir, reportPath) {
+  const warn = (error) =>
+    process.stderr.write(`bs-review-triage.mjs categories: ${error.message}\n`)
+  const passes = []
+  let report
+  const read = (file) => {
+    try {
+      return readJsonFile(file, 'categories input')
+    } catch (error) {
+      warn(error)
+      return undefined
+    }
+  }
+  if (reportPath) report = read(reportPath)
+  const directories = [dir]
+  try {
+    directories.push(
+      ...readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && /^round/.test(entry.name))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+        .map((entry) => join(dir, entry.name)),
+    )
+  } catch (error) {
+    warn(error)
+  }
+  for (const directory of directories) passes.push(read(join(directory, 'triage.json')))
+  return mustFixCategories(passes, { report })
+}
+
 /**
  * Classify the shape of one round's findings. A monoclass round needs a
  * machine-readable optional `category` on every finding, enough findings to be
@@ -461,6 +555,7 @@ export function triageFindings(
         // not merely empty: a whitespace-only detail explains nothing, so
         // letting it count as chosen would block the real detail behind it.
         detail: item.detail,
+        category: findingCategory(item),
         lenses: [],
         lensSeen: new Set(),
         // Every contributing occurrence, with the output file it came from.
@@ -479,6 +574,7 @@ export function triageFindings(
     if (group.detail.trim() === '' && item.detail.trim() !== '') {
       group.detail = item.detail
     }
+    if (!group.category) group.category = findingCategory(item)
     if (!group.lensSeen.has(item.lens)) {
       group.lensSeen.add(item.lens)
       group.lenses.push(item.lens)
@@ -535,6 +631,7 @@ export function triageFindings(
       line: group.line,
       title: group.title,
       detail: group.detail,
+      category: normalizeCategory(group.category),
       lenses: group.lenses,
       reviewerCount,
       promotedBy,
@@ -801,6 +898,7 @@ function addExpectedOutput(path, output) {
 }
 
 // Thin CLI (the surface the skill prose invokes):
+//   node bs-review-triage.mjs categories <run-tmp> [--report <file>]
 //   node bs-review-triage.mjs expect <expectedOutputsFile> <findingsFile>
 //   node bs-review-triage.mjs categorize <dir> [--lens-entries-file <path>] [--expected-outputs-file <path>]
 if (isMainModule(import.meta.url)) {
@@ -814,6 +912,19 @@ if (isMainModule(import.meta.url)) {
       )
       process.exit(2)
     }
+    process.exit(0)
+  }
+
+  if (cmd === 'categories') {
+    let categories = []
+    try {
+      if (!args[0] || (args.length > 1 && (args.length !== 3 || args[1] !== '--report')))
+        throw new Error('usage: categories <run-tmp> [--report <file>]')
+      categories = readCategories(args[0], args[2])
+    } catch (error) {
+      process.stderr.write(`bs-review-triage.mjs categories: ${error.message}\n`)
+    }
+    process.stdout.write(`${JSON.stringify(categories)}\n`)
     process.exit(0)
   }
 
@@ -849,7 +960,8 @@ if (isMainModule(import.meta.url)) {
     process.stdout.write(`${JSON.stringify(result)}\n`)
   } else {
     process.stderr.write(
-      'usage: bs-review-triage.mjs expect <expectedOutputsFile> <findingsFile>\\n' +
+      'usage: bs-review-triage.mjs categories <run-tmp> [--report <file>]\\n' +
+        '   or: bs-review-triage.mjs expect <expectedOutputsFile> <findingsFile>\\n' +
         '   or: bs-review-triage.mjs categorize <dir> [--lens-entries-file <path>] [--expected-outputs-file <path>]\\n',
     )
     process.exit(2)

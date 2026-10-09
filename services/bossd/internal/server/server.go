@@ -111,6 +111,12 @@ type Server struct {
 	// Optional (nil where the note surface is not exercised); the handlers
 	// report CodeUnavailable rather than panicking when it is absent.
 	notes db.NoteStore
+	// noteSyncStates and noteSyncWorker back the note cloud sync (BOS-1435):
+	// the outbox the SyncNotesNow counts come from, and the worker every
+	// successful note write nudges. Both optional; the worker is nil on a
+	// daemon with no upstream.
+	noteSyncStates NoteSyncCounter
+	noteSyncWorker NoteSyncNudger
 	// broadcastSubscriptions persists standing subscriptions (BOS-557): the
 	// rule that fires a broadcast when its owning session settles. Optional in
 	// the same way as broadcasts; the handlers report CodeUnavailable when it
@@ -144,6 +150,11 @@ type Server struct {
 	chatStatus       *status.Tracker
 	statusRecomputer status.Recomputer
 	displayTracker   *status.DisplayTracker
+	// archiveDeferrer holds archives deferred until every chat of their
+	// session is idle (BOS-1380). Built lazily by archiveDeferral so a Server
+	// assembled as a struct literal still has one.
+	archiveDeferrerOnce sync.Once
+	archiveDeferrer     *archiveDeferrer
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
 	// the SetMerging block there). Optional, may be nil in tests / older wiring.
@@ -341,6 +352,13 @@ type Config struct {
 	// nil in tests/contexts that do not exercise the note RPCs; the handlers
 	// then report CodeUnavailable.
 	Notes db.NoteStore
+	// NoteSyncStates is the note sync outbox (BOS-1435) that SyncNotesNow
+	// counts. May be nil; SyncNotesNow then reports CodeUnavailable.
+	NoteSyncStates NoteSyncCounter
+	// NoteSyncWorker is nudged after every successful note write and by
+	// SyncNotesNow. Nil on a daemon not wired to Bosso, which runs no worker;
+	// pass a nil interface, never a typed nil pointer.
+	NoteSyncWorker NoteSyncNudger
 	// BroadcastSubscriptions persists standing broadcast subscriptions
 	// (BOS-557). May be nil in tests/contexts that do not exercise the
 	// subscription RPCs; the handlers then report CodeUnavailable.
@@ -658,6 +676,8 @@ func New(cfg Config) *Server {
 		broadcastEgress:        cfg.BroadcastEgress,
 		daemonID:               cfg.DaemonID,
 		notes:                  cfg.Notes,
+		noteSyncStates:         cfg.NoteSyncStates,
+		noteSyncWorker:         cfg.NoteSyncWorker,
 		broadcastSubscriptions: cfg.BroadcastSubscriptions,
 
 		accounts:                cfg.Accounts,
@@ -2238,12 +2258,15 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		p.RepoDisplayName = repo.DisplayName
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 		p.RepoShouldArchiveSessionsAfterMerge = repo.ShouldArchiveSessionsAfterMerge
+		p.RepoCanAutoRepair = repo.CanAutoRepair
 		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
 	}
 
 	// Hydrate PR display status from the in-memory tracker.
+	var displayEntry *status.DisplayEntry
 	if s.displayTracker != nil {
-		HydrateDisplayEntry(p, s.displayTracker.Get(session.ID))
+		displayEntry = s.displayTracker.Get(session.ID)
+		HydrateDisplayEntry(p, displayEntry)
 	}
 	// Hydrate recent rotation audit events before the auth-failed overlay below:
 	// the overlay requires a corroborating auth-invalidation audit row and fails
@@ -2261,6 +2284,9 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 			HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
 		}
 	}
+	// The verify-park attention ranks below every attention above, so it only
+	// fills what they left empty (BOS-1382).
+	HydrateVerifyAttention(p, displayEntry)
 
 	// repair_active is the authoritative, lease-backed single-repairer signal;
 	// repair_stalled_at is its BOS-515 stall overlay (nil-safe when the lease
@@ -2399,6 +2425,8 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	for _, p := range pbSessions {
 		chats := chatsBySession[p.Id]
 		HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
+		// Lowest-ranked attention: applied after the agent overlay (BOS-1382).
+		HydrateVerifyAttention(p, entries[p.Id])
 	}
 
 	// repair_active + its BOS-515 repair_stalled_at stall overlay. Deliberately
@@ -2440,6 +2468,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		// the down-convert would then rewrite an ordinary green row into
 		// "waiting", manufacturing a wait that never happened.
 		p.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
+		p.IsReadyOverWaiting = displaystatus.WasReadyOverWaiting(in, out)
 	}
 
 	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
@@ -2762,9 +2791,30 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	// Head pin (BOS-1381): when set, the merge is refused with a HEAD_MISMATCH
+	// FailedPrecondition unless the PR head is exactly this commit. Validated
+	// before any read so a malformed pin never reaches the provider.
+	var pin string
+	if raw := req.Msg.GetExpectedHeadSha(); raw != "" {
+		normalized, ok := vcs.NormalizeHeadSHA(raw)
+		if !ok {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("expected_head_sha must be a 40-character hex commit SHA"))
+		}
+		pin = normalized
+	}
+
 	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
+	}
+
+	// A local-only branch merge has no remote head to pin against. Fail closed
+	// rather than merge unpinned; the message deliberately omits the
+	// HEAD_MISMATCH token because nothing moved.
+	if pin != "" && sess.PRNumber == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("expected_head_sha is only supported for PR merges"))
 	}
 
 	repo, err := s.repos.Get(ctx, sess.RepoID)
@@ -2896,7 +2946,14 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		// into a no-op success instead of a second MergePR the remote rejects.
 		// A stale "merged" read is safe (merged is terminal); a stale "open"
 		// read just proceeds to MergePR exactly as today.
-		if s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber) {
+		if merged, mergedHead := s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber); merged {
+			// A pinned caller must not be told its head merged when the PR
+			// landed at another head. An unknown head keeps the idempotent
+			// success; a matching head is the stranded-retry case.
+			if pin != "" && mergedHead != "" && !strings.EqualFold(mergedHead, pin) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("%w: expected head %s, merged head %s", vcs.ErrHeadMismatch, pin, mergedHead))
+			}
 			alreadyMerged = true
 			s.logger.Info().
 				Str("session_id", req.Msg.Id).
@@ -2922,8 +2979,13 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 					Msg("merge: pre-gate PR refresh failed; live gate will re-read")
 			}
 			cancel()
-			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber)
+			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber, pin)
 			if err != nil {
+				// A known head mismatch is a terminal refusal, not a dead
+				// context: test it first so it maps to FailedPrecondition.
+				if errors.Is(err, vcs.ErrHeadMismatch) {
+					return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+				}
 				// The gate read died with the caller's context, not against an
 				// unreachable provider. Preserve the cancellation semantics the
 				// queued-merge wait above already preserves, rather than telling
@@ -3010,7 +3072,14 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 				Msg("merge: substituted squash for rebase")
 		}
 
-		if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, strategy); err != nil {
+		if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, vcs.MergePROpts{Strategy: strategy, ExpectedHeadSHA: pin}); err != nil {
+			// The remote refused a head-pinned merge because the PR head moved
+			// (or has not yet settled after a push equal to the pin). Terminal:
+			// never fall back to squash and never surface it as CodeInternal,
+			// which drivers and the repair loop retry blindly.
+			if errors.Is(err, vcs.ErrHeadMismatch) {
+				return nil, s.remoteHeadMismatch(ctx, repo.OriginURL, *sess.PRNumber, pin, err)
+			}
 			// Backstop for a race the pre-check can miss (e.g. CountMergeCommits
 			// failed open, or a merge commit landed between the count and the
 			// merge): GitHub refused the rebase-merge itself. The policy for
@@ -3052,7 +3121,10 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 				Int("pr", *sess.PRNumber).
 				Str("strategy", fallback).
 				Msg("merge: rebase merge refused by the remote; retrying once with squash")
-			if retryErr := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, fallback); retryErr != nil {
+			if retryErr := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, vcs.MergePROpts{Strategy: fallback, ExpectedHeadSHA: pin}); retryErr != nil {
+				if errors.Is(retryErr, vcs.ErrHeadMismatch) {
+					return nil, s.remoteHeadMismatch(ctx, repo.OriginURL, *sess.PRNumber, pin, retryErr)
+				}
 				// Surface BOTH failures: the retry error alone hides why a
 				// second merge was attempted at all, which made the original
 				// incident hard to diagnose from logs.
@@ -3080,7 +3152,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 				return nil, connect.NewError(connect.CodeInternal,
 					fmt.Errorf("merge verification failed: %w", err))
 			case errors.Is(err, mergepolicy.ErrMergeVerifyInfra) &&
-				s.prAlreadyMerged(ctx, repo.OriginURL, *sess.PRNumber):
+				s.prMergedUpstream(ctx, repo.OriginURL, *sess.PRNumber):
 				// The check could not COMPLETE (provider query, fetch, or git
 				// invocation failed), but the API confirms the PR merged. Don't
 				// strand a merge that demonstrably landed.
@@ -3133,15 +3205,24 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 // exactly as it does today. That is safe precisely because liveMergeBlock no
 // longer fails open on those same uncertainties: an unreadable provider now
 // blocks with gate=pending further down the path rather than merging blind.
-func (s *Server) prAlreadyMerged(ctx context.Context, originURL string, prNumber int) bool {
+//
+// It also returns the merged PR's head SHA ("" when unknown) so a head-pinned
+// caller can refuse a merge that landed at another head.
+func (s *Server) prAlreadyMerged(ctx context.Context, originURL string, prNumber int) (bool, string) {
 	if s.provider == nil || originURL == "" {
-		return false
+		return false, ""
 	}
 	prStatus, err := s.provider.GetPRStatus(ctx, originURL, prNumber)
-	if err != nil || prStatus == nil {
-		return false
+	if err != nil || prStatus == nil || prStatus.State != vcs.PRStateMerged {
+		return false, ""
 	}
-	return prStatus.State == vcs.PRStateMerged
+	return true, prStatus.HeadSHA
+}
+
+// prMergedUpstream is prAlreadyMerged without the head, for boolean contexts.
+func (s *Server) prMergedUpstream(ctx context.Context, originURL string, prNumber int) bool {
+	merged, _ := s.prAlreadyMerged(ctx, originURL, prNumber)
+	return merged
 }
 
 // verifyAlreadyMergedOnBase runs the madverts-core PR #2222 base-ancestry check
@@ -3236,18 +3317,33 @@ func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch s
 //
 // Two fail-open paths remain by design and are documented in
 // docs/automation-troubleshooting.md: a still-settling DisplayStatusChecking
-// state (nil Mergeable or running checks) is permitted per BOS-235, and the
+// state (nil Mergeable or running checks) is permitted per BOS-235 — and so are
+// DisplayStatusVerifying and DisplayStatusNeedsHuman (BOS-1382), which replace
+// the Checking a pending boss/verify status used to produce and are treated
+// exactly as it was: a human merge past a verify claim or park is a legitimate
+// approval path, while failing CI or a conflict beside a pending verify still
+// outranks it and still blocks (a changes-requested review does not: the verify
+// statuses outrank Rejected, as Checking did) — and the
 // three reads are sequential and unpinned, so a push landing before MergePR
-// merges a head that was never gated.
+// merges a head that was never gated — unless the caller pinned the head
+// (expectedHead, BOS-1381), in which case MergePR carries the pin and the
+// remote refuses atomically.
 //
-// It returns a non-nil error, and no block, when the CALLER's context was
-// canceled or timed out mid-read. A canceled read is not an unverifiable gate:
+// When expectedHead is non-empty and the live PR head is known and differs, it
+// returns an error wrapping vcs.ErrHeadMismatch (and no block) right after the
+// GetPRStatus read, skipping the remaining reads: the gate's verdict would be
+// about a different head, so the mismatch takes precedence. An empty live head
+// is unknown, not mismatched; the merge proceeds and the remote pin is the
+// backstop.
+//
+// Otherwise it returns a non-nil error, and no block, when the CALLER's context
+// was canceled or timed out mid-read. A canceled read is not an unverifiable gate:
 // nobody is waiting for the answer, and reporting it as GATE_PENDING would
 // convert the caller's own cancellation into a FailedPrecondition telling them
 // to retry once the provider is reachable — losing the Canceled /
 // DeadlineExceeded semantics MergeSession preserves everywhere else. The caller
 // maps the error back to the matching Connect code.
-func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int) (*vcs.MergeBlockReason, error) {
+func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int, expectedHead string) (*vcs.MergeBlockReason, error) {
 	if s.provider == nil || originURL == "" {
 		return nil, nil
 	}
@@ -3267,6 +3363,9 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 	}
 	if prStatus == nil {
 		return unverifiable("PR status", errors.New("provider returned no PR status"))
+	}
+	if expectedHead != "" && prStatus.HeadSHA != "" && !strings.EqualFold(prStatus.HeadSHA, expectedHead) {
+		return nil, fmt.Errorf("%w: expected head %s, live head %s", vcs.ErrHeadMismatch, expectedHead, prStatus.HeadSHA)
 	}
 	checks, err := s.provider.GetCheckResults(ctx, originURL, prNumber)
 	if err != nil {
@@ -3291,7 +3390,7 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
 	switch info.Status {
 	case vcs.DisplayStatusFailing, vcs.DisplayStatusConflict, vcs.DisplayStatusRejected:
-		mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy)
+		mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy, info.VerifyReason)
 		if prStatus.HeadSHA != "" {
 			mb.Detail += fmt.Sprintf("; gated at head %s", prStatus.HeadSHA)
 		}
@@ -3299,6 +3398,21 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 	default:
 		return nil, nil
 	}
+}
+
+// remoteHeadMismatch maps a remote refusal of a head-pinned merge (an error
+// wrapping vcs.ErrHeadMismatch from MergePR) to the typed HEAD_MISMATCH
+// FailedPrecondition. It re-reads the PR head once, best-effort, so the caller
+// can tell a real move from GitHub's few-second lag after a push that equals
+// the pin. The daemon never retries: the caller re-verifies.
+func (s *Server) remoteHeadMismatch(ctx context.Context, originURL string, prNumber int, pin string, mergeErr error) error {
+	live := "unknown"
+	if st, err := s.provider.GetPRStatus(ctx, originURL, prNumber); err == nil && st != nil && st.HeadSHA != "" {
+		live = st.HeadSHA
+	}
+	return connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("%w: expected head %s, live head %s; remote refused the merge: %v",
+			vcs.ErrHeadMismatch, pin, live, mergeErr))
 }
 
 // unverifiableMergeBlock builds the block returned when the live merge gate
@@ -3555,14 +3669,24 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 	// context.Canceled, leaving dead panes on an unarchived session.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveRPCBudget)
 	defer cancel()
-	if err := s.ArchiveSessionAndNotify(ctx, req.Msg.Id); err != nil {
+	// Route through the deferral seam (BOS-1380): a session with a working
+	// chat is archived once every chat is idle rather than now.
+	outcome, err := s.RequestArchive(ctx, req.Msg.Id, ArchiveRequest{
+		Force:                   req.Msg.GetShouldForce(),
+		RequesterAgentSessionID: req.Msg.GetRequesterAgentSessionId(),
+	})
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	sess, err := s.sessions.Get(ctx, req.Msg.Id)
-	if err != nil {
-		return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
+	resp := &pb.ArchiveSessionResponse{
+		Session:                &pb.Session{Id: req.Msg.Id},
+		IsDeferred:             outcome.Pending,
+		BlockingAgentSessionId: outcome.BlockingAgentSessionID,
 	}
-	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: s.sessionProtoWithRepo(ctx, sess)}), nil
+	if sess, err := s.sessions.Get(ctx, req.Msg.Id); err == nil {
+		resp.Session = s.sessionProtoWithRepo(ctx, sess)
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // ResurrectSession is the thin ConnectRPC handler: it delegates to the
@@ -3586,6 +3710,13 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 func (s *Server) StreamResurrectSession(ctx context.Context, msg *pb.ResurrectSessionRequest, emit func(*pb.ResurrectSessionResponse) error) error {
 	if msg.GetId() == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	// Un-archiving a session whose archive is only pending (BOS-1380) cancels
+	// the pending archive. The session was never archived, so there is no
+	// setup to run and Lifecycle.ResurrectSession would refuse it.
+	if handled, err := s.cancelPendingArchiveForResurrect(ctx, msg.GetId(), emit); handled {
+		return err
 	}
 
 	out := newSetupLineEmitter(func(line string) {
@@ -3625,6 +3756,35 @@ func (s *Server) StreamResurrectSession(ctx context.Context, msg *pb.ResurrectSe
 	return emit(&pb.ResurrectSessionResponse{
 		Event: &pb.ResurrectSessionResponse_SessionResurrected{
 			SessionResurrected: &pb.SessionResurrected{Session: p, SetupError: setupError},
+		},
+	})
+}
+
+// cancelPendingArchiveForResurrect handles a resurrect of a session that is not
+// archived but has a pending archive: it cancels the pending archive and emits
+// the terminal SessionResurrected frame with the current session. handled is
+// false when there is nothing pending (or the session is already archived), in
+// which case the caller runs the ordinary resurrect.
+func (s *Server) cancelPendingArchiveForResurrect(ctx context.Context, id string, emit func(*pb.ResurrectSessionResponse) error) (bool, error) {
+	if !s.archiveDeferral().has(id) {
+		return false, nil
+	}
+	sess, err := s.sessions.Get(ctx, id)
+	if err != nil || sess == nil || sess.ArchivedAt != nil {
+		return false, nil
+	}
+	// Report only the cancel that happened: if the sweep claimed the archive
+	// since has(), fall through to the ordinary resurrect path.
+	if !s.CancelPendingArchive(id) {
+		return false, nil
+	}
+	p := s.sessionProtoWithRepo(ctx, sess)
+	if s.onSessionUpdated != nil {
+		s.onSessionUpdated(ctx, p)
+	}
+	return true, emit(&pb.ResurrectSessionResponse{
+		Event: &pb.ResurrectSessionResponse_SessionResurrected{
+			SessionResurrected: &pb.SessionResurrected{Session: p},
 		},
 	})
 }
@@ -4158,6 +4318,10 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
 		}
+		// New work in the session cancels a pending archive (BOS-1380). Only a
+		// NEW chat row does: a resumed chat, a prompt or a callback delivery
+		// just keeps a chat busy, so the archive keeps waiting.
+		s.CancelPendingArchive(msg.SessionId)
 	}
 
 	// Ensure a tmux session is alive to host the chat. The tmux server is
@@ -4912,6 +5076,35 @@ func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteC
 
 // --- Chat Status ---
 
+// SetChatPhase records the ephemeral stage a skill reports for its own chat.
+func (s *Server) SetChatPhase(ctx context.Context, req *connect.Request[pb.SetChatPhaseRequest]) (*connect.Response[pb.SetChatPhaseResponse], error) {
+	if req.Msg.AgentSessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.AgentSessionId)
+	if err != nil {
+		if isAgentChatNotFound(err) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get chat: %w", err))
+	}
+	if chat == nil || (req.Msg.SessionId != "" && chat.SessionID != req.Msg.SessionId) {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found in requested session"))
+	}
+	phase := req.Msg.Phase
+	if phase != "" {
+		phase, err = displaystatus.NormalizePhase(phase)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+	if s.chatStatus == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("chat status tracker is unavailable"))
+	}
+	s.chatStatus.SetPhase(req.Msg.AgentSessionId, phase)
+	return connect.NewResponse(&pb.SetChatPhaseResponse{}), nil
+}
+
 func (s *Server) ReportChatStatus(ctx context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
 	if s.chatStatus == nil {
 		return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
@@ -4990,6 +5183,9 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 			entry.Status = pb.ChatStatus_CHAT_STATUS_IDLE
 		}
 		applyWaitingMarker(entry, s.chatStatus.Waiting(id))
+		if entry.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+			entry.Phase = s.chatStatus.Phase(id)
+		}
 		spinnerPresent, substantiveAt, seeded := s.chatStatus.Liveness(id)
 		applyLivenessMarkers(entry, spinnerPresent, substantiveAt, seeded)
 		statuses = append(statuses, entry)
@@ -5038,10 +5234,36 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 			SessionId:     sessionID,
 			Status:        best,
 			WaitingReason: reason,
+			Phase:         s.phaseForSession(ctx, sessionID, best),
 		})
 	}
 
 	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: statuses}), nil
+}
+
+// phaseForSession picks the lowest-id working chat with a phase. Attention and
+// waiting statuses must not expose a working phase.
+func (s *Server) phaseForSession(ctx context.Context, sessionID string, served pb.ChatStatus) string {
+	if served != pb.ChatStatus_CHAT_STATUS_WORKING {
+		return ""
+	}
+	chats, err := s.agentChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	var winnerID, phase string
+	for _, chat := range chats {
+		entry := s.chatStatus.Get(chat.AgentSessionID)
+		if entry == nil {
+			continue
+		}
+		resolved, _ := status.PromoteWaiting(entry.Status, s.chatStatus.Waiting(chat.AgentSessionID))
+		candidate := s.chatStatus.Phase(chat.AgentSessionID)
+		if resolved == pb.ChatStatus_CHAT_STATUS_WORKING && candidate != "" && (winnerID == "" || chat.AgentSessionID < winnerID) {
+			winnerID, phase = chat.AgentSessionID, candidate
+		}
+	}
+	return phase
 }
 
 func (s *Server) chatsBySessionForStatuses(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, bool) {

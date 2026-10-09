@@ -96,6 +96,13 @@ func TestRecompute_Matrix(t *testing.T) {
 		wantSpinner bool
 	}{
 		{
+			name:       "build handoff outranks waiting",
+			chat:       pb.ChatStatus_CHAT_STATUS_WAITING,
+			display:    &DisplayEntry{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true},
+			wantLabel:  "✓ ready",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+		},
+		{
 			name:        "chat question wins",
 			chat:        pb.ChatStatus_CHAT_STATUS_QUESTION,
 			display:     &DisplayEntry{Status: vcs.DisplayStatusPassing},
@@ -228,8 +235,9 @@ func TestRecompute_Matrix(t *testing.T) {
 			if tc.display != nil {
 				if tc.display.Status != 0 {
 					disp.Set(sessID, vcs.DisplayInfo{
-						Status:      tc.display.Status,
-						HasFailures: tc.display.HasFailures,
+						Status:          tc.display.Status,
+						HasBuildReceipt: tc.display.HasBuildReceipt,
+						HasFailures:     tc.display.HasFailures,
 					})
 				}
 				if tc.display.IsRepairing {

@@ -12,10 +12,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// expectedTools is the complete set of 70 bossanova MCP tool names:
-// 24 read-only + 32 mutating + 14 destructive.
+// expectedTools is the complete set of 76 bossanova MCP tool names:
+// 27 read-only + 34 mutating + 15 destructive.
 var expectedTools = []string{
-	// read-only (24)
+	// read-only (27)
 	"list_sessions",
 	"resolve_context",
 	"validate_repo_path",
@@ -40,7 +40,10 @@ var expectedTools = []string{
 	"get_note",
 	"list_broadcasts",
 	"list_broadcast_subscriptions",
-	// mutating (32)
+	"list_organization_notes",
+	"get_organization_note",
+	"get_organization_note_quota",
+	// mutating (34)
 	"register_repo",
 	"clone_and_register_repo",
 	"update_repo",
@@ -73,7 +76,9 @@ var expectedTools = []string{
 	"register_broadcast_subscription",
 	"create_note",
 	"update_note",
-	// destructive (14)
+	"create_organization_note",
+	"update_organization_note",
+	// destructive (15)
 	"remove_repo",
 	"close_session",
 	"merge_session",
@@ -88,6 +93,7 @@ var expectedTools = []string{
 	"delete_broadcast",
 	"delete_broadcast_subscription",
 	"delete_note",
+	"delete_organization_note",
 }
 
 // contractBackend is a minimal bossmcp.Backend sufficient for the contract test:

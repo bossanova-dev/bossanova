@@ -128,6 +128,8 @@ export const bossSessionOperationMap = {
     // green) + merge_block.gate route a "Passing but conflicting" green to a
     // repair round instead of a merge, so the map-driven runner does not treat it
     // as ordinary mergeable work (SKILL Phase 3; codex P2 on PR #1112).
+    // display_label is the composite label; boss-epic's settle helper reads the
+    // daemon's computed Ready (`✓ ready`) from it.
     response: [
       'state',
       'last_agent_activity_at',
@@ -135,6 +137,7 @@ export const bossSessionOperationMap = {
       'attention_status.reason',
       'pr_mergeable',
       'merge_block',
+      'display_label',
     ],
     // PARTIAL. `boss show --json` carries the lifecycle state (trimmed of its
     // SESSION_STATE_ prefix, same vocabulary as the MCP enum) and
@@ -151,7 +154,15 @@ export const bossSessionOperationMap = {
       cmd: 'boss',
       args: ['show', '<id>', '--json'],
       response: ['session.state', 'session.last_agent_activity_at'],
-      missingResponse: ['repair_active', 'attention_status.reason', 'pr_mergeable', 'merge_block'],
+      // display_label absent ⇒ Ready reads absent and settling falls back to
+      // the IDLE/STOPPED rule (fail-safe).
+      missingResponse: [
+        'repair_active',
+        'attention_status.reason',
+        'pr_mergeable',
+        'merge_block',
+        'display_label',
+      ],
     },
   },
   listSessions: {

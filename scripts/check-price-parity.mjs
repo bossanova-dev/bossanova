@@ -300,13 +300,23 @@ const IGNORED_FILENAMES = new Set(['.DS_Store'])
  * the canonical amount. Every entry must still match something: a stale
  * exemption is itself a failure, so this list cannot quietly accumulate.
  */
-// Intentionally empty today. The one entry it held was an illustrative `$42/mo`
+// The first entry this list held was an illustrative `$42/mo`
 // in a PricingCard.astro docstring; registering that file as a render surface
 // made the example the only price literal on a surface that may hold none, so
 // the docstring was reworded instead of exempted. The mechanism stays, tested
 // on both paths (honoured, and ratcheted when stale), because the next reviewed
 // literal should be recorded here rather than quietly tolerated.
-export const EXEMPTIONS = []
+// Competitor prices on the Conductor alternatives comparison, each copied from
+// that vendor's own pricing page on 2026-10-09 and cited on the page. They are
+// other companies' prices, not Bossanova's, so they must not be rewritten to the
+// canonical amount. Re-check them whenever the page is updated.
+export const EXEMPTIONS = [
+  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$15' },
+  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$20' },
+  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$50' },
+  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$60' },
+  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$200' },
+]
 
 const PRICE_LITERAL = /\$\d[\d,]*(?:\.\d+)?/g
 

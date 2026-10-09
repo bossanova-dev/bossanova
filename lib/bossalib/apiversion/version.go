@@ -518,6 +518,27 @@ const V20260914 Version = "2026-09-14"
 // order. See SessionListRankOrderChange in transform.go.
 const V20260915 Version = "2026-09-15"
 
+// V20260916 ships VerifyDisplayStatusChange (BOS-1382): the OrchestratorService
+// began serving DISPLAY_STATUS_VERIFYING (12) and DISPLAY_STATUS_NEEDS_HUMAN
+// (13) on Session.display_status and Session.merge_block.display_status, the
+// matching "verifying" / "needs human" composite on display_label /
+// display_intent / display_spinner, and an ATTENTION_REASON_AWAITING_HUMAN_INPUT
+// attention on a non-orphaned session parked by the verify stage. Every one of
+// those used to read CHECKING / "checking" / no attention, because a pending
+// boss/verify commit status counted as an ordinary pending check. For any
+// request resolved older than V20260916 the transform restores exactly that.
+//
+// One part of the change is TIMING, not a response value, and no transform can
+// carry it: a pending boss/verify is now excluded from the ordinary CI verdict
+// (vcs.EvaluateChecks), so the state poller's ChecksPassed and the
+// checks_passed / checks_passed_ready callback triggers fire while verify holds
+// the head instead of waiting for verify to finish. It is daemon-internal
+// timing, observable only as a session transition or a callback arriving
+// sooner, and it applies only to heads that carry a boss/verify status — whose
+// producer is skills-toolbox/verify-gate.mjs (the boss-verify stage). Older
+// clients see the transition earlier; nothing they render changes shape.
+const V20260916 Version = "2026-09-16"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -668,8 +689,9 @@ func DefaultRegistry() *Registry {
 			V20260913,
 			V20260914,
 			V20260915,
+			V20260916,
 		},
-		V20260915,
+		V20260916,
 		Baseline,
 	)
 	if err != nil {

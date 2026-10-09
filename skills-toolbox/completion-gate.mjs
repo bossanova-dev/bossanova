@@ -1,11 +1,29 @@
-// Completion extensions may consent; this helper alone executes the sanctioned merge.
+// boss-build's Step 12 helper: the session-side merge envelope, and the verify fast path that judges,
+// posts and merges through the sibling verify-gate.mjs — the one head-pinned merge path.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './main-module.mjs'
-import { classifyChecks, isGreen, verdictAt, mergeStateVerdict } from './pr-check-state.mjs'
-import { completionMergeAllowed, loadSkillConfig } from './skill-config.mjs'
+import { classifyChecks, isGreen } from './pr-check-state.mjs'
+import { STAGE_SKILL, invokedSkill } from './stage-chain.mjs'
+import {
+  ciReasons,
+  criteriaReasons,
+  followUpReasons,
+  headReasons,
+  mergeStateReasons,
+  parseFollowUps,
+  parseLedger,
+  prShapeReasons,
+  sectionToken,
+  sections,
+} from './merge-eligibility.mjs'
+
+// Resolved beside this file, so the vendored boss-build toolbox calls its own vendored copy.
+export const VERIFY_GATE = fileURLToPath(new URL('./verify-gate.mjs', import.meta.url))
+// verify-gate's merge verb chains several reads, the daemon merge and the tracker writes.
+const VERIFY_GATE_TIMEOUT_MS = 180000
 
 const SHA = /^[0-9a-f]{40}$/i
 const text = (value) => typeof value === 'string' && value.trim() !== ''
@@ -45,67 +63,31 @@ export const INELIGIBLE_REASONS = Object.freeze([
   'launch-origin-unknown',
   'foreign-pr-watcher',
   'pr-watchers-unknown',
-  'archive-after-merge',
-  'archive-after-merge-unknown',
-  'not-opted-in',
-  'no-completion-extension',
+  'no-verify-cron',
+  'verify-consent-unknown',
 ])
 
-// Ignore fenced examples before recognizing headings or checkboxes.
-function sections(body) {
-  const result = new Map()
-  if (typeof body !== 'string') return result
-  let fence = null
-  let current = null
-  for (const line of body.split(/\r?\n/)) {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-    if (marker) {
-      if (!fence) fence = marker[1]
-      else if (
-        marker[1][0] === fence[0] &&
-        marker[1].length >= fence.length &&
-        /^\s*(`+|~+)\s*$/.test(line)
-      )
-        fence = null
-      continue
-    }
-    if (fence) continue
-    const heading = line.match(/^\s{0,3}##\s+(.+?)\s*#*\s*$/)
-    if (heading) {
-      current = heading[1].trim().toLowerCase()
-      // Duplicate sections are undecidable, rather than silently dropping open items.
-      if (result.has(current)) result.set(current, null)
-      else result.set(current, [])
-    } else if (current && result.get(current)) result.get(current).push(line)
-  }
-  return result
+// Merge consent (D12): the repo has opted into the verify stage when an enabled cron job for this
+// repo runs `/boss-verify` (or codex `$boss-verify`). The matcher is stage-chain.mjs's
+// `invokedSkill`, the one prefix-safe prompt matcher: `/boss-verify-x` and `/boss-verifyx` are
+// other prompts.
+export function classifyVerifyConsent({ jobs, repoId } = {}) {
+  if (!text(repoId)) return 'unknown'
+  if (
+    !Array.isArray(jobs) ||
+    jobs.some((job) => !job || typeof job !== 'object' || Array.isArray(job))
+  )
+    return 'unknown'
+  const consenting = (job) =>
+    job.enabled === true &&
+    job.repo_id === repoId &&
+    invokedSkill(job.prompt) === STAGE_SKILL.verify
+  return jobs.some(consenting) ? 'present' : 'absent'
 }
-function checklist(lines, allowNone = false) {
-  if (!Array.isArray(lines)) return { status: 'missing', open: null, done: null, total: null }
-  const items = lines.map((line) => line.trim()).filter(Boolean)
-  if (allowNone && items.length === 1 && /^- none$/i.test(items[0]))
-    return { status: 'ok', open: 0, done: 0, total: 0 }
-  let open = 0,
-    done = 0
-  for (const line of items) {
-    const item = line.match(/^- \[([ xX])\]\s+\S.*$/)
-    if (!item) return { status: 'malformed', open: null, done: null, total: null }
-    if (item[1] === ' ') open++
-    else done++
-  }
-  if (!items.length) return { status: 'malformed', open: null, done: null, total: null }
-  return { status: 'ok', open, done, total: open + done }
-}
-export function parseFollowUps(body) {
-  const parsed = sections(body)
-  const humanFollowUp = checklist(parsed.get('human follow-up'), true)
-  const openQuestions = checklist(parsed.get('open questions'), true)
-  return {
-    humanFollowUp,
-    openQuestions,
-    ok: humanFollowUp.status === 'ok' && openQuestions.status === 'ok',
-  }
-}
+
+// The PR body parsers live in merge-eligibility.mjs; parseFollowUps stays exported from here for
+// the `followups` verb and existing importers.
+export { parseFollowUps }
 export function classifyLaunchOrigin(report) {
   const mode = typeof report === 'string' ? report : report?.mode
   if (mode === 'cron' || mode === 'managed') return 'standalone'
@@ -161,64 +143,32 @@ export function computeEligibility(inputs = {}) {
     add('coverage-not-full')
   if (!text(i.crossModelReview)) add('cross-model-unknown')
   else if (/^error:/i.test(i.crossModelReview)) add('cross-model-error')
-  const c = i.criteria
-  if (
-    !c ||
-    !Number.isInteger(c.total) ||
-    c.total < 1 ||
-    !Number.isInteger(c.met) ||
-    c.met < 0 ||
-    c.met > c.total
+  reasons.push(...criteriaReasons(i.criteria))
+  reasons.push(
+    ...ciReasons({
+      ciWaitState: i.ciWaitState,
+      checkVerdict: i.checkVerdict,
+      headSha: i.pushedHead,
+    }),
   )
-    add('criteria-unknown')
-  else if (c.met !== c.total) add('criteria-unmet')
-  if (i.ciWaitState !== 'settled') add('ci-not-settled')
-  if (!sha(i.pushedHead) || !isGreen(verdictAt(i.checkVerdict ?? {}, i.pushedHead)))
-    add('ci-not-green-on-head')
-  const state =
-    typeof i.prView?.mergeStateStatus === 'string' ? i.prView.mergeStateStatus.toUpperCase() : ''
-  if (!state || state === 'UNKNOWN') add('merge-state-unknown')
-  else if (
-    !['CLEAN', 'HAS_HOOKS', 'UNSTABLE'].includes(state) ||
-    mergeStateVerdict({ mergeState: state }).blocking
-  )
-    add(
-      INELIGIBLE_REASONS.includes(`merge-state-${state.toLowerCase()}`)
-        ? `merge-state-${state.toLowerCase()}`
-        : 'merge-state-unknown',
-    )
-  if (i.prView?.state !== 'OPEN') add('pr-not-open')
-  if (i.prView?.isDraft !== false) add('pr-draft')
-  if (
-    typeof i.prView?.title !== 'string' ||
-    typeof i.prView?.body !== 'string' ||
-    /do not merge/i.test(`${i.prView.title}\n${i.prView.body}`) ||
-    /\(partial\s/i.test(i.prView.title)
-  )
-    add('do-not-merge-marker')
-  const heads = [i.pushedHead, i.localHead, i.upstreamHead, i.prView?.headRefOid]
-  if (!heads.every(sha)) add('head-unknown')
-  else if (new Set(heads).size !== 1) add('head-mismatch')
+  reasons.push(...mergeStateReasons(i.prView))
+  reasons.push(...prShapeReasons(i.prView))
+  reasons.push(...headReasons([i.pushedHead, i.localHead, i.upstreamHead, i.prView?.headRefOid]))
   if (i.treeDrift === 'changed') add('tree-changed-since-review')
   else if (i.treeDrift !== 'none') add('tree-drift-unknown')
-  for (const [value, openReason, unknownReason] of [
-    [i.humanFollowUp, 'human-follow-up-open', 'follow-up-section-missing'],
-    [i.openQuestions, 'open-questions-open', 'open-questions-section-missing'],
-  ]) {
-    if (value?.status !== 'ok' || !Number.isInteger(value.open) || value.open < 0)
-      add(unknownReason)
-    else if (value.open !== 0) add(openReason)
-  }
+  reasons.push(
+    ...followUpReasons({ humanFollowUp: i.humanFollowUp, openQuestions: i.openQuestions }),
+  )
   if (i.launchOrigin === 'epic-child') add('epic-child')
   else if (i.launchOrigin !== 'standalone') add('launch-origin-unknown')
   if (i.watchers === 'foreign-pr-watcher') add('foreign-pr-watcher')
   else if (!['own-chat-only', 'not-checked'].includes(i.watchers)) add('pr-watchers-unknown')
-  if (i.archiveAfterMerge === true) add('archive-after-merge')
-  else if (i.archiveAfterMerge !== false) add('archive-after-merge-unknown')
+  // archiveAfterMerge is context only: bossd defers an archive until every chat
+  // in the session is idle, so archive-after-merge no longer tears the
+  // worktree out from under the agent that performed the merge.
   const authorizationReasons = [...reasons]
-  if (!completionMergeAllowed(i.config)) authorizationReasons.push('not-opted-in')
-  if (!Number.isInteger(i.extensionCount) || i.extensionCount < 1)
-    authorizationReasons.push('no-completion-extension')
+  if (i.verifyConsent === 'absent') authorizationReasons.push('no-verify-cron')
+  else if (i.verifyConsent !== 'present') authorizationReasons.push('verify-consent-unknown')
   return {
     mergeEligible: reasons.length === 0,
     ineligibleReasons: reasons,
@@ -229,14 +179,14 @@ export function computeEligibility(inputs = {}) {
 
 // The only subprocess seam. A failed read is unknown, never an empty successful payload.
 export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
-  return (command, args, { input, json = false } = {}) => {
+  return (command, args, { input, json = false, timeout = 30000 } = {}) => {
     let response
     try {
       response = spawn(command === 'boss' ? bossBin : command, args, {
         cwd,
         input,
         encoding: 'utf8',
-        timeout: 30000,
+        timeout,
         maxBuffer: 16 * 1024 * 1024,
         killSignal: 'SIGKILL',
       })
@@ -283,10 +233,6 @@ function writeJSON(path, value, options = {}) {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, ...options })
 }
-function token(body, heading) {
-  const lines = sections(body).get(heading)
-  return lines?.map((s) => s.trim()).find(Boolean) ?? ''
-}
 const PR_FIELDS =
   'state,mergeCommit,number,title,body,isDraft,headRefOid,baseRefName,mergeStateStatus,statusCheckRollup'
 function prRead(read, pr, repo) {
@@ -325,6 +271,10 @@ export function buildEnvelope(options, deps = {}) {
   const env = envResult.ok ? envResult.payload : null
   const sessionId = env?.session?.session_id ?? ''
   const targetChatId = env?.session?.agent_session_id ?? ''
+  const repoId = env?.session?.repo_id ?? ''
+  const cron = text(repoId)
+    ? read('boss', ['cron', 'ls', '--repo', repoId, '--json'], { json: true })
+    : { ok: false }
   const prResult = prRead(read, options.pr, repo)
   const prView = prResult.ok ? prResult.payload : null
   const local = read('git', ['rev-parse', 'HEAD'])
@@ -344,14 +294,7 @@ export function buildEnvelope(options, deps = {}) {
     options.reviewedHeadFile ?? (gitDir ? resolve(gitDir, 'boss-build-reviewed-head') : '')
   const reviewVerdict = readText(reviewFile).match(/^REVIEW_VERDICT=(.*)$/m)?.[1] ?? ''
   const reviewedHead = readText(reviewedFile)
-  const criteria = checklist(sections(prView?.body).get('acceptance criteria'))
-  let config
-  try {
-    const loaded = (deps.loadConfig ?? loadSkillConfig)({ cwd: deps.cwd ?? process.cwd() })
-    config = { completionDefaults: { allowMerge: loaded?.completionDefaults?.allowMerge } }
-  } catch {
-    config = null
-  }
+  const { criteria } = parseLedger(prView?.body)
   const envelope = {
     runId: options.runId,
     outcome: options.outcome,
@@ -366,11 +309,11 @@ export function buildEnvelope(options, deps = {}) {
     reviewedHead,
     reviewVerdictFile: reviewFile,
     reviewedHeadFile: reviewedFile,
-    reviewCoverage: token(prView?.body, 'review coverage'),
-    crossModelReview: token(prView?.body, 'cross-model review'),
+    reviewCoverage: sectionToken(prView?.body, 'review coverage'),
+    crossModelReview: sectionToken(prView?.body, 'cross-model review'),
     openFindings:
       reviewVerdict === 'clean' && !sections(prView?.body).has('review findings') ? 0 : null,
-    criteria: criteria.status === 'ok' ? { met: criteria.done, total: criteria.total } : null,
+    criteria,
     ciWaitState: options.ciWaitState,
     checkVerdict: options.checkVerdict,
     prView,
@@ -393,8 +336,8 @@ export function buildEnvelope(options, deps = {}) {
     archiveAfterMerge: show.ok
       ? show.payload?.session?.repo_should_archive_sessions_after_merge
       : null,
-    extensionCount: options.extensionCount,
-    config,
+    // A failed cron read is unknown, which never authorizes: fail toward a human.
+    verifyConsent: cron.ok ? classifyVerifyConsent({ jobs: cron.payload, repoId }) : 'unknown',
   }
   // Keep the settled two-SHA verdict, but also veto gates that have since gone red or disappeared.
   const liveChecks = classifyChecks({
@@ -404,147 +347,184 @@ export function buildEnvelope(options, deps = {}) {
     priorContexts: options.priorRollup ?? null,
   })
   if (!isGreen(liveChecks)) envelope.checkVerdict = liveChecks
-  const envelopePath = options.out ?? options.envelopePath
-  const attemptFile =
-    options.attemptFile ??
-    (gitDir && text(options.runId)
-      ? resolve(gitDir, `boss-build-completion-attempt-${encodeURIComponent(options.runId)}.json`)
-      : '')
-  envelope.attemptFile = attemptFile
-  envelope.mergeCommand =
-    envelopePath && attemptFile
-      ? [
-          process.execPath,
-          fileURLToPath(import.meta.url),
-          'merge',
-          '--envelope',
-          resolve(envelopePath),
-          '--attempt-file',
-          attemptFile,
-        ]
-      : []
   return { ...envelope, ...computeEligibility(envelope) }
 }
 
 const skipped = (reason) => ({ action: 'skipped', reason, mergeSha: '' })
-export function mergeCompletion(envelope, { attemptFile = envelope?.attemptFile, ...deps } = {}) {
-  if (!text(envelope?.runId) || !text(attemptFile)) return skipped('attempt-record-unknown')
-  if (existsSync(attemptFile)) return skipped('already-attempted')
-  const read = commandReader(deps)
-  const directory = read('git', ['rev-parse', '--absolute-git-dir'])
-  if (!directory.ok || !text(directory.output)) return skipped('attempt-record-unknown')
-  const guardFile = resolve(
-    directory.output,
-    `boss-build-completion-attempt-${encodeURIComponent(envelope.runId)}.json`,
-  )
-  if (existsSync(guardFile)) return skipped('already-attempted')
-  // Re-read even the local facts and opt-in; envelope booleans are advisory, never authority.
-  const fresh = buildEnvelope(
-    {
-      ...envelope,
-      pr: envelope.pr,
-      reviewedHeadFile: envelope.reviewedHeadFile,
-      reviewVerdictFile: envelope.reviewVerdictFile,
-    },
-    deps,
-  )
-  if (fresh.repo !== envelope.repo || fresh.sessionId !== envelope.sessionId)
-    return skipped('identity-mismatch')
-  const snapshot = computeEligibility({ ...envelope, config: fresh.config })
-  if (!snapshot.mergeAuthorized)
-    return skipped(
-      snapshot.authorizationReasons.includes('epic-child')
-        ? 'epic-child'
-        : snapshot.authorizationReasons[0],
-    )
-  if (!fresh.mergeAuthorized)
-    return skipped(
-      fresh.authorizationReasons.includes('epic-child')
-        ? 'epic-child'
-        : fresh.authorizationReasons[0],
-    )
-  if (fresh.pushedHead !== envelope.pushedHead) return skipped('head-mismatch')
-  const record = {
-    runId: envelope.runId,
-    attemptedAt: new Date().toISOString(),
-    invoked: true,
-    pushedHead: fresh.pushedHead,
-  }
-  try {
-    // The canonical git-dir guard cannot be bypassed with a different caller-supplied path.
-    writeJSON(guardFile, record, { flag: 'wx' })
-    if (resolve(attemptFile) !== guardFile) writeJSON(attemptFile, record, { flag: 'wx' })
-  } catch (error) {
-    return skipped(error.code === 'EEXIST' ? 'already-attempted' : 'attempt-record-unwritable')
-  }
-  const merged = read('boss', ['merge', fresh.sessionId, '--yes', '--json'], { json: true })
-  let result = skipped(merged.ok ? 'merge-not-observed' : `merge-refused:${merged.error}`)
-  // A daemon response is not evidence of a merge SHA. One bounded re-read handles transient reads.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const live = prRead(read, fresh.pr, fresh.repo)
-    if (live.ok && live.payload?.state === 'MERGED' && sha(live.payload?.mergeCommit?.oid)) {
-      result = {
-        action: 'merged',
-        reason: 'merged-by-completion',
-        mergeSha: live.payload.mergeCommit.oid,
-      }
-      break
-    }
-    if (live.ok && live.payload?.state !== 'MERGED') break
-  }
-  try {
-    writeJSON(attemptFile, {
-      runId: envelope.runId,
-      invoked: true,
-      daemonAccepted: merged.ok,
-      pushedHead: fresh.pushedHead,
-      ...result,
-    })
-  } catch {
-    /* Live settle remains authoritative. */
-  }
-  return result
-}
 
-export function settleCompletion({
-  runId,
-  livePr,
-  attempt,
-  results = [],
-  extensionCount = results.length,
-} = {}) {
-  const claimed = Array.isArray(results) && results.some((result) => result?.action === 'merged')
+// The final record, re-keyed on the verify-gate merge result: only an observed MERGED with a 40-hex
+// merge SHA is a merge, and it is `merged-by-verify` only when verify-gate's merge named that SHA.
+export function settleCompletion({ runId, livePr, mergeResult = null, reason = '' } = {}) {
   if (livePr?.state === 'MERGED' && sha(livePr?.mergeCommit?.oid)) {
-    const byGate =
-      attempt?.runId === runId &&
-      (attempt?.daemonAccepted === true ||
-        (attempt?.action === 'merged' && attempt.mergeSha === livePr.mergeCommit.oid))
+    const byGate = mergeResult?.merged === true && mergeResult.mergeSha === livePr.mergeCommit.oid
     return {
       runId,
       action: 'merged',
-      reason: byGate ? 'merged-by-completion' : 'merged-outside-gate',
+      reason: byGate ? 'merged-by-verify' : 'merged-outside-gate',
       mergeSha: livePr.mergeCommit.oid,
+      ...(text(mergeResult?.trackerWrites) && mergeResult.trackerWrites !== 'ok'
+        ? { trackerWrites: mergeResult.trackerWrites }
+        : {}),
     }
   }
   if (!livePr || !['OPEN', 'CLOSED', 'MERGED'].includes(livePr.state) || livePr.state === 'MERGED')
     return { runId, ...skipped('merge-state-unreadable') }
-  if (claimed) return { runId, ...skipped('claimed-merge-not-observed') }
-  if (!extensionCount) return { runId, ...skipped('no-completion-extension') }
-  const reason = Array.isArray(results)
-    ? results.find(
-        (result) => result?.action === 'skipped' && text(result.reason) && result.mergeSha === '',
-      )?.reason
-    : null
-  return { runId, ...skipped(reason ?? 'extension-result-invalid') }
+  if (!mergeResult) return { runId, ...skipped(text(reason) ? reason : 'merge-not-attempted') }
+  if (mergeResult.abandoned) return { runId, ...skipped('claim-lost') }
+  if (mergeResult.verdict === 'reverify') return { runId, ...skipped('reverify') }
+  if (mergeResult.dryRun === true) return { runId, ...skipped('dry-run') }
+  if (mergeResult.merged === true) return { runId, ...skipped('merge-not-observed') }
+  const why =
+    [mergeResult.reason, mergeResult.reasons?.[0], mergeResult.verdict].find(text) ??
+    'merge-not-observed'
+  return { runId, ...skipped(why) }
 }
 
+// A post result that must stop the fast path, or null when it may continue.
+function postStop(result) {
+  if (!result) return 'verify-gate-unreadable'
+  if (result.abandoned) return 'claim-lost'
+  if (result.verdict === 'reverify') return 'reverify'
+  if (text(result.trackerWrites) && result.trackerWrites !== 'ok')
+    return `tracker-writes-${result.trackerWrites}`
+  if (result.posted !== true && result.skipped !== 'already-posted')
+    return text(result.reason) ? result.reason : 'status-not-posted'
+  return null
+}
+
+/**
+ * Step 12's verify fast path. Judges the head through the sibling verify-gate.mjs, posts the
+ * verdict and, on `pass`, merges through `verify-gate.mjs merge`. Session-only and consent reasons
+ * stop it before any verify-gate call. `extensions-required` claims the head and returns the
+ * extension envelope WITHOUT a record; the caller runs the verify extensions and calls again with
+ * `extensionResults` and the claim `token`. Every other path writes the run-keyed record to `out`
+ * (never in dry-run) and returns it.
+ */
+export function fastPath(
+  { envelope, out, extensionResults, token, dryRun = false } = {},
+  deps = {},
+) {
+  if (!text(envelope?.runId) || !text(out))
+    throw new Error('fast-path requires valid --envelope and --out')
+  const runId = envelope.runId
+  const prior = readJSON(out)
+  if (prior?.runId === runId && ['merged', 'skipped'].includes(prior.action)) return prior
+  const finish = (result) => {
+    if (!dryRun) writeJSON(out, result)
+    return result
+  }
+  const stop = (reason) => finish({ runId, ...skipped(reason) })
+  // The envelope's booleans are advisory: re-derive authorization from its recorded facts.
+  const eligibility = computeEligibility(envelope)
+  if (!eligibility.mergeAuthorized) {
+    const reasons = eligibility.authorizationReasons
+    return stop(reasons.includes('epic-child') ? 'epic-child' : reasons[0])
+  }
+  const read = commandReader(deps)
+  const gate = (verb, args) => {
+    const r = read(process.execPath, [VERIFY_GATE, verb, ...args], {
+      json: true,
+      timeout: VERIFY_GATE_TIMEOUT_MS,
+    })
+    // A non-zero exit still carries its verdict when it printed one; no payload is unreadable.
+    return r.payload && typeof r.payload === 'object' && !Array.isArray(r.payload)
+      ? r.payload
+      : null
+  }
+  const { pr, repo, pushedHead: head } = envelope
+  const tail = (extra = []) => [
+    ...extra,
+    ...(text(token) ? ['--token', token] : []),
+    '--repo',
+    repo,
+    ...(dryRun ? ['--dry-run'] : []),
+  ]
+  const post = (verdict, extra = []) =>
+    gate('post', ['--pr', String(pr), '--head', head, '--verdict', verdict, ...tail(extra)])
+  const settle = (reason, mergeResult = null) => {
+    const live = prRead(read, pr, repo)
+    return finish(
+      settleCompletion({ runId, livePr: live.ok ? live.payload : null, mergeResult, reason }),
+    )
+  }
+
+  const judged = gate('judge', [
+    '--pr',
+    String(pr),
+    '--repo',
+    repo,
+    ...(text(extensionResults) ? ['--extension-results', extensionResults] : []),
+  ])
+  if (!judged || !text(judged.verdict)) return stop('verify-gate-unreadable')
+  if (sha(judged.headSha) && judged.headSha.toLowerCase() !== String(head).toLowerCase())
+    return stop('head-mismatch')
+  let verdict = judged.verdict
+  let reason = text(judged.reason) ? judged.reason : 'unknown'
+  // Results were supplied, so a second `extensions-required` cannot resolve here: release the claim.
+  if (verdict === 'extensions-required' && text(token)) {
+    verdict = 'wait'
+    reason = 'extensions-unresolved'
+  }
+  if (verdict === 'wait') {
+    if (!text(token)) return settle(`wait:${reason}`)
+    return settle(postStop(post('wait', ['--reason', reason])) ?? `wait:${reason}`)
+  }
+  if (verdict === 'extensions-required') {
+    if (!judged.extensionEnvelope || judged.extensionEnvelope.invalid)
+      return stop('extension-envelope-invalid')
+    const claim = post('claim')
+    if (!claim) return stop('verify-gate-unreadable')
+    if (claim.won !== true || !text(claim.token))
+      return stop(
+        !text(claim.reason) || claim.reason === 'claim-held' ? 'claim-lost' : claim.reason,
+      )
+    return {
+      runId,
+      action: 'extensions-required',
+      token: claim.token,
+      extensionEnvelope: judged.extensionEnvelope,
+    }
+  }
+  if (verdict === 'human' || verdict === 'defect') {
+    const extra = ['--reason', reason]
+    if (verdict === 'defect') {
+      const findingsFile = resolve(
+        dirname(out),
+        `boss-build-verify-findings-${encodeURIComponent(runId)}.json`,
+      )
+      writeJSON(findingsFile, Array.isArray(judged.findings) ? judged.findings : [])
+      extra.push('--findings', findingsFile)
+    }
+    const posted = post(verdict, extra)
+    return settle(
+      postStop(posted) ??
+        `${posted.verdict ?? verdict}:${text(posted.reason) ? posted.reason : reason}`,
+    )
+  }
+  if (verdict !== 'pass') return settle(verdict)
+  const stopped = postStop(post('pass'))
+  if (stopped) return settle(stopped)
+  const merged = gate('merge', ['--pr', String(pr), '--head', head, ...tail()])
+  if (!merged) return settle('verify-gate-unreadable')
+  return settle('', merged)
+}
+
+const BOOLEAN_FLAGS = new Set(['dry-run'])
+export const USAGE =
+  'usage: completion-gate.mjs followups|envelope|fast-path --option value [--dry-run]'
 export function main(argv, deps = {}) {
   const [subcommand, ...args] = argv
   const opts = {}
-  for (let index = 0; index < args.length; index += 2) {
-    if (!args[index]?.startsWith('--') || args[index + 1] === undefined)
-      throw new Error('expected --option value')
-    opts[args[index].slice(2)] = args[index + 1]
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index]
+    if (!flag?.startsWith('--')) throw new Error('expected --option value')
+    const name = flag.slice(2)
+    if (BOOLEAN_FLAGS.has(name)) {
+      opts[name] = true
+      continue
+    }
+    if (args[index + 1] === undefined) throw new Error('expected --option value')
+    opts[name] = args[++index]
   }
   if (subcommand === 'followups') return parseFollowUps(readText(opts['body-file']))
   if (subcommand === 'envelope') {
@@ -556,7 +536,6 @@ export function main(argv, deps = {}) {
         pr: Number(opts.pr),
         ciWaitState: opts['ci-wait-state'],
         checkVerdict: readJSON(opts['check-verdict-file']),
-        extensionCount: Number(opts['extension-count']),
         callbacksAvailable:
           opts['callbacks-available'] === 'true'
             ? true
@@ -565,33 +544,30 @@ export function main(argv, deps = {}) {
               : undefined,
         reviewedHeadFile: opts['reviewed-head-file'],
         reviewVerdictFile: opts['review-verdict-file'],
-        attemptFile: opts['attempt-file'],
-        out: opts.out,
       },
       deps,
     )
     writeJSON(opts.out, result)
     return result
   }
-  if (subcommand === 'merge')
-    return mergeCompletion(readJSON(opts.envelope), { ...deps, attemptFile: opts['attempt-file'] })
-  if (subcommand === 'settle') {
+  if (subcommand === 'fast-path') {
     const envelope = readJSON(opts.envelope)
-    if (!text(envelope?.runId) || !opts.out)
-      throw new Error('settle requires valid --envelope and --out')
-    const read = commandReader(deps)
-    const live = prRead(read, envelope.pr, envelope.repo)
-    const result = settleCompletion({
-      runId: envelope.runId,
-      livePr: live.payload,
-      attempt: readJSON(opts['attempt-file'] ?? envelope.attemptFile),
-      results: readJSON(opts['results-file']) ?? [],
-      extensionCount: envelope.extensionCount,
-    })
-    writeJSON(opts.out, result)
-    return result
+    if (!text(envelope?.runId) || !text(opts.out))
+      throw new Error('fast-path requires valid --envelope and --out')
+    if (text(opts['extension-results']) !== text(opts.token))
+      throw new Error('fast-path takes --extension-results and --token together')
+    return fastPath(
+      {
+        envelope,
+        out: opts.out,
+        extensionResults: opts['extension-results'],
+        token: opts.token,
+        dryRun: opts['dry-run'] === true,
+      },
+      deps,
+    )
   }
-  throw new Error('usage: completion-gate.mjs followups|envelope|merge|settle --option value')
+  throw new Error(USAGE)
 }
 if (isMainModule(import.meta.url)) {
   try {

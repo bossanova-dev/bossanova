@@ -36,6 +36,9 @@ var readOnlyToolNames = []string{
 	"get_note",
 	"list_broadcasts",
 	"list_broadcast_subscriptions",
+	"list_organization_notes",
+	"get_organization_note",
+	"get_organization_note_quota",
 }
 
 // writeToolNames is the canonical union of mutating + destructive tool names,
@@ -51,12 +54,48 @@ var writeToolNames = []string{
 	"start_repair_workflow", "register_github_callback",
 	"send_broadcast", "register_broadcast_subscription",
 	"create_note", "update_note",
+	"create_organization_note", "update_organization_note",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",
 	"delete_cron_job", "remove_account", "delete_github_callback",
 	"delete_broadcast", "delete_broadcast_subscription",
 	"delete_note",
+	"delete_organization_note",
+}
+
+// hostedToolNames is the hosted-only tool tier, in registration order: read
+// tools first, then mutating, then destructive, each grouped by family
+// (triggers, then session webhooks). A family registers only under
+// Options{IncludeHostedTools} with a backend that implements its interface
+// (TriggerBackend, SessionWebhookBackend), so these are NOT part of
+// ToolNames(), the default surface, or its size ratchet.
+var hostedToolNames = []string{
+	// read
+	"get_trigger_catalog", "list_triggers", "get_trigger",
+	"list_session_webhook_event_types", "list_session_webhooks",
+	"list_session_webhook_deliveries", "get_session_webhook_delivery",
+	// mutating
+	"save_trigger", "test_trigger",
+	"save_session_webhook", "test_session_webhook",
+	// destructive
+	"delete_trigger",
+	"delete_session_webhook",
+}
+
+// hostedReadOnlyToolNames is the subset of hostedToolNames that registers
+// under Options{ReadOnly}.
+var hostedReadOnlyToolNames = []string{
+	"get_trigger_catalog", "list_triggers", "get_trigger",
+	"list_session_webhook_event_types", "list_session_webhooks",
+	"list_session_webhook_deliveries", "get_session_webhook_delivery",
+}
+
+// HostedToolNames returns the hosted-only tool names (see
+// Options.IncludeHostedTools), in registration order. ToolNames() never
+// includes them. The returned slice is a copy.
+func HostedToolNames() []string {
+	return append([]string{}, hostedToolNames...)
 }
 
 // ToolNames returns every MCP tool name this package registers in full
@@ -86,7 +125,8 @@ func WriteToolNames() []string {
 
 // ToolDefinitions returns the full definitions — name, description, input
 // schema and annotations — of every tool RegisterTools installs under opts, in
-// ToolNames() order: the same tools a tools/list response carries. (The SDK
+// ToolNames() order (then HostedToolNames() order when opts.IncludeHostedTools
+// is set): the same tools a tools/list response carries. (The SDK
 // lists tools alphabetically; they are reordered here so callers get the
 // canonical inventory order, read-only tools first.)
 //
@@ -125,12 +165,13 @@ func ToolDefinitions(ctx context.Context, opts Options) ([]*mcp.Tool, error) {
 	return orderByToolNames(res.Tools), nil
 }
 
-// orderByToolNames sorts tools into ToolNames() order. A tool missing from the
-// static inventory (which TestToolNamesMatchesRegisteredSet forbids) sorts
-// after every known one, keeping the SDK's relative order.
+// orderByToolNames sorts tools into ToolNames() order, followed by
+// HostedToolNames() order for a listing made with IncludeHostedTools. A tool
+// missing from both static inventories (which TestToolNamesMatchesRegisteredSet
+// forbids) sorts after every known one, keeping the SDK's relative order.
 func orderByToolNames(tools []*mcp.Tool) []*mcp.Tool {
-	rank := make(map[string]int, len(readOnlyToolNames)+len(writeToolNames))
-	for i, name := range ToolNames() {
+	rank := make(map[string]int, len(readOnlyToolNames)+len(writeToolNames)+len(hostedToolNames))
+	for i, name := range append(ToolNames(), hostedToolNames...) {
 		rank[name] = i
 	}
 	rankOf := func(name string) int {
@@ -150,4 +191,11 @@ func orderByToolNames(tools []*mcp.Tool) []*mcp.Tool {
 // on a nil interface panics. Embedding the nil interface gives the struct a
 // full method set whose bound values are safe to take; calling one would
 // panic, but ToolDefinitions only lists tools and never calls a handler.
-type definitionsBackend struct{ Backend }
+// It embeds every hosted family's interface too (TriggerBackend,
+// SessionWebhookBackend), so ToolDefinitions(Options{IncludeHostedTools}) lists
+// the whole hosted tier; without that option the embeds change nothing.
+type definitionsBackend struct {
+	Backend
+	TriggerBackend
+	SessionWebhookBackend
+}

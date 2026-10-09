@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/apiversion"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeChange is a test-only VersionChange used to verify ordering and
@@ -1268,8 +1269,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260915 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260915)
+	if got := reg.Current(); got != apiversion.V20260916 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260916)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{
@@ -4658,5 +4659,253 @@ func TestRefreshChainUnprovenOutcomeChange_NoOpForUnrelatedMethods(t *testing.T)
 	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, resp)
 	if got := resp.GetAccounts()[0].GetAuthCheck().GetOutcome(); got != "refresh_chain_unproven" {
 		t.Errorf("outcome = %q, want it untouched for an unrelated procedure", got)
+	}
+}
+
+// verifyParkedSession is the Current (V20260916+) shape BOS-1382 serves for a
+// session the verify stage parked for a human: NEEDS_HUMAN on the session and
+// its merge block, the "needs human" composite, and the overlaid
+// AWAITING_HUMAN_INPUT attention.
+func verifyParkedSession(state pb.SessionState) *pb.Session {
+	return &pb.Session{
+		Id:            "sess-verify",
+		State:         state,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		DisplayLabel:  "needs human",
+		DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		MergeBlock: &pb.MergeBlock{
+			Gate:          pb.MergeBlock_GATE_PENDING,
+			Detail:        "the verify stage parked this head for a human: always-human-path",
+			DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		},
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			Summary:        "needs human: always-human-path",
+		},
+	}
+}
+
+func TestVerifyDisplayStatusChange_Version(t *testing.T) {
+	if got := (apiversion.VerifyDisplayStatusChange{}).Version(); got != apiversion.V20260916 {
+		t.Errorf("VerifyDisplayStatusChange.Version() = %q, want %q", got, apiversion.V20260916)
+	}
+}
+
+// TestVerifyDisplayStatusChange_DownConvertsToChecking walks the BOS-1382
+// shapes: both new statuses become CHECKING on the session and its merge block,
+// the composite is restored to "checking", and only the verify-park attention
+// is cleared.
+func TestVerifyDisplayStatusChange_DownConvertsToChecking(t *testing.T) {
+	verifying := func() *pb.Session {
+		return &pb.Session{
+			State:                      pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
+			DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+			DisplayHasChangesRequested: true,
+			DisplayLabel:               "verifying",
+			DisplayIntent:              pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			DisplaySpinner:             true,
+			MergeBlock: &pb.MergeBlock{
+				Gate:          pb.MergeBlock_GATE_PENDING,
+				Detail:        "verification is in progress on this head",
+				DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+			},
+		}
+	}
+	tests := []struct {
+		name          string
+		sess          *pb.Session
+		wantLabel     string
+		wantIntent    pb.DisplayIntent
+		wantAttention bool
+	}{
+		{
+			name:       "needs human park",
+			sess:       verifyParkedSession(pb.SessionState_SESSION_STATE_AWAITING_CHECKS),
+			wantLabel:  "checking",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		},
+		{
+			name:       "verifying with changes requested",
+			sess:       verifying(),
+			wantLabel:  "checking",
+			wantIntent: pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+		},
+		{
+			// An orphaned session's AWAITING_HUMAN_INPUT is ComputeAttentionStatus's
+			// own, which older clients always saw; it must survive.
+			name: "orphaned attention is kept",
+			sess: func() *pb.Session {
+				s := verifyParkedSession(pb.SessionState_SESSION_STATE_ORPHANED)
+				s.DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+				return s
+			}(),
+			wantLabel:     "checking",
+			wantIntent:    pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			wantAttention: true,
+		},
+		{
+			// A Blocked session's own attention outranks the overlay; its reason
+			// is not AWAITING_HUMAN_INPUT, so it is kept.
+			name: "blocked attention is kept",
+			sess: func() *pb.Session {
+				s := verifyParkedSession(pb.SessionState_SESSION_STATE_BLOCKED)
+				s.DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+				s.AttentionStatus = &pb.AttentionStatus{NeedsAttention: true, Reason: pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS}
+				return s
+			}(),
+			wantLabel:     "checking",
+			wantIntent:    pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			wantAttention: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := proto.Clone(tt.sess)
+			msg := &pb.ProxyGetSessionResponse{Session: tt.sess}
+			(apiversion.VerifyDisplayStatusChange{}).TransformResponse(
+				bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+			got := msg.GetSession()
+			if got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_CHECKING {
+				t.Errorf("display_status = %v, want CHECKING", got.GetDisplayStatus())
+			}
+			mb := got.GetMergeBlock()
+			if mb.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_CHECKING || mb.GetGate() != pb.MergeBlock_GATE_PENDING {
+				t.Errorf("merge_block = %v, want CHECKING / GATE_PENDING", mb)
+			}
+			if mb.GetDetail() != "CI checks are still running or mergeability is unknown" {
+				t.Errorf("merge_block.detail = %q, want Checking's wording", mb.GetDetail())
+			}
+			if got.GetDisplayLabel() != tt.wantLabel || got.GetDisplayIntent() != tt.wantIntent || !got.GetDisplaySpinner() {
+				t.Errorf("composite = %q/%v/%v, want %q/%v/spinner", got.GetDisplayLabel(), got.GetDisplayIntent(), got.GetDisplaySpinner(), tt.wantLabel, tt.wantIntent)
+			}
+			if (got.GetAttentionStatus() != nil) != tt.wantAttention {
+				t.Errorf("attention_status = %v, want present=%v", got.GetAttentionStatus(), tt.wantAttention)
+			}
+			if !proto.Equal(tt.sess, before) {
+				t.Error("the caller's session was mutated in place; the transform must clone")
+			}
+		})
+	}
+}
+
+// TestVerifyDisplayStatusChange_NoOpForOtherStatuses proves the transform leaves
+// non-verify sessions — including an ordinary CHECKING one and a non-verify
+// AWAITING_HUMAN_INPUT attention — untouched and unallocated.
+func TestVerifyDisplayStatusChange_NoOpForOtherStatuses(t *testing.T) {
+	sess := &pb.Session{
+		State:         pb.SessionState_SESSION_STATE_ORPHANED,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		DisplayLabel:  "checking",
+		MergeBlock:    &pb.MergeBlock{Gate: pb.MergeBlock_GATE_PENDING, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING},
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+		},
+	}
+	msg := &pb.ProxyGetSessionResponse{Session: sess}
+	(apiversion.VerifyDisplayStatusChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg)
+	if msg.GetSession() != sess {
+		t.Fatal("a non-verify session was cloned; the common path must stay allocation-free")
+	}
+	if sess.GetAttentionStatus() == nil {
+		t.Fatal("an orphaned session's own AWAITING_HUMAN_INPUT attention was cleared")
+	}
+}
+
+func TestVerifyDisplayStatusChange_DownConvertsStreamedCreatedSession(t *testing.T) {
+	created := verifyParkedSession(pb.SessionState_SESSION_STATE_AWAITING_CHECKS)
+	msg := &pb.ProxyCreateSessionResponse{
+		Body: &pb.ProxyCreateSessionResponse_Created{Created: created},
+	}
+	(apiversion.VerifyDisplayStatusChange{}).TransformResponse(
+		bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure, msg)
+	body, ok := msg.GetBody().(*pb.ProxyCreateSessionResponse_Created)
+	if !ok {
+		t.Fatalf("response body = %T, want the created variant", msg.GetBody())
+	}
+	if body.Created.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_CHECKING || body.Created.GetDisplayLabel() != "checking" {
+		t.Fatalf("streamed created session = %v/%q, want CHECKING/checking", body.Created.GetDisplayStatus(), body.Created.GetDisplayLabel())
+	}
+	if created.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		t.Error("caller's session was mutated in place")
+	}
+}
+
+// TestVerifyDisplayStatusChange_ProductionChainByVersion pushes one parked,
+// blocked-free session through the FULL chain: Current serves the new shape
+// untouched, every older pin sees CHECKING — and a Baseline pin, which also
+// predates BOS-430, composes with ErroredStatusChange exactly as a CHECKING
+// session always did.
+func TestVerifyDisplayStatusChange_ProductionChainByVersion(t *testing.T) {
+	current := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{verifyParkedSession(pb.SessionState_SESSION_STATE_AWAITING_CHECKS)}}
+	apiversion.ProductionChanges().Apply(
+		bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, current, apiversion.V20260916)
+	if got := current.GetSessions()[0]; got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN ||
+		got.GetDisplayLabel() != "needs human" || got.GetAttentionStatus() == nil {
+		t.Fatalf("at Current: %v/%q attention=%v, want the NEEDS_HUMAN shape untouched", got.GetDisplayStatus(), got.GetDisplayLabel(), got.GetAttentionStatus())
+	}
+
+	for _, v := range []apiversion.Version{apiversion.V20260915, apiversion.V20260812, apiversion.Baseline} {
+		t.Run(string(v), func(t *testing.T) {
+			msg := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{verifyParkedSession(pb.SessionState_SESSION_STATE_AWAITING_CHECKS)}}
+			apiversion.ProductionChanges().Apply(
+				bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg, v)
+			got := msg.GetSessions()[0]
+			if got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_CHECKING {
+				t.Errorf("display_status = %v, want CHECKING", got.GetDisplayStatus())
+			}
+			if got.GetDisplayLabel() != "checking" || got.GetDisplayIntent() != pb.DisplayIntent_DISPLAY_INTENT_WARNING || !got.GetDisplaySpinner() {
+				t.Errorf("composite = %q/%v/%v, want checking/WARNING/spinner", got.GetDisplayLabel(), got.GetDisplayIntent(), got.GetDisplaySpinner())
+			}
+			if got.GetAttentionStatus() != nil {
+				t.Errorf("attention_status = %v, want nil", got.GetAttentionStatus())
+			}
+		})
+	}
+}
+
+// Legacy limited down-conversion must not reintroduce Ready after its inverse ran.
+func TestProductionChanges_LimitedReceiptKeepsLegacyComposite(t *testing.T) {
+	cases := []struct {
+		name   string
+		status pb.DisplayStatus
+		label  string
+		intent pb.DisplayIntent
+	}{
+		{"passing", pb.DisplayStatus_DISPLAY_STATUS_PASSING, "✓ passing", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		{"approved", pb.DisplayStatus_DISPLAY_STATUS_APPROVED, "✓ approved", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		{"review", pb.DisplayStatus_DISPLAY_STATUS_REVIEW, "✓ review", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		{"failing", pb.DisplayStatus_DISPLAY_STATUS_FAILING, "⨯ failing", pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+		{"draft creation failure", pb.DisplayStatus_DISPLAY_STATUS_PASSING, "? PR failed", pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+	}
+	for _, tc := range cases {
+		for _, version := range []apiversion.Version{apiversion.Baseline, apiversion.V20260704, apiversion.V20260705, apiversion.DefaultRegistry().Current()} {
+			t.Run(tc.name+"/"+string(version), func(t *testing.T) {
+				source := &pb.Session{Id: "limited-receipt", DisplayStatus: tc.status, HasBuildReceipt: true, DisplayLabel: "usage-limited", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+				if tc.name == "draft creation failure" {
+					source.BlockedReason = strPtr(draftPRFailureReason)
+					source.DisplaySettingUp = true
+				}
+				before := proto.Clone(source)
+				msg := &pb.ProxyGetSessionResponse{Session: source}
+				apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, msg, version)
+				wantLabel, wantIntent := tc.label, tc.intent
+				if version == apiversion.DefaultRegistry().Current() {
+					wantLabel, wantIntent = "usage-limited", pb.DisplayIntent_DISPLAY_INTENT_WARNING
+				}
+				got := msg.GetSession()
+				if got.GetDisplayLabel() != wantLabel || got.GetDisplayIntent() != wantIntent || got.GetDisplaySpinner() {
+					t.Errorf("legacy limited composite = (%q, %v, %v), want (%q, %v, false)", got.GetDisplayLabel(), got.GetDisplayIntent(), got.GetDisplaySpinner(), wantLabel, wantIntent)
+				}
+				if !got.GetHasBuildReceipt() {
+					t.Error("transport receipt fact was lost")
+				}
+				if !proto.Equal(source, before) {
+					t.Error("source Session mutated")
+				}
+			})
+		}
 	}
 }

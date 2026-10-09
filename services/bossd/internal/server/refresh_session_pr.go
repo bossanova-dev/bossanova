@@ -13,6 +13,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+
+	"github.com/recurser/bossd/internal/status"
 )
 
 const refreshSessionPRTimeout = 20 * time.Second
@@ -36,12 +38,17 @@ func (s *Server) RefreshSessionPR(ctx context.Context, req *connect.Request[pb.R
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get refreshed session: %w", err))
 	}
 	p := s.sessionProtoWithRepo(ctx, refreshed)
+	var displayEntry *status.DisplayEntry
 	if s.displayTracker != nil {
-		HydrateDisplayEntry(p, s.displayTracker.Get(refreshed.ID))
+		displayEntry = s.displayTracker.Get(refreshed.ID)
+		HydrateDisplayEntry(p, displayEntry)
 	}
 	if s.onSessionUpdated != nil {
 		s.onSessionUpdated(ctx, p)
 	}
+	// After the hook: the stream hook re-asserts the agent-observability overlay
+	// in place, and the verify-park attention must rank below it (BOS-1382).
+	HydrateVerifyAttention(p, displayEntry)
 	return connect.NewResponse(&pb.RefreshSessionPRResponse{Session: p}), nil
 }
 
@@ -140,10 +147,10 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: provider returned no PR status"))
 	}
 
-	var checks []vcs.CheckResult
+	var checkSet vcs.CheckSet
 	var reviews []vcs.ReviewComment
 	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed && !prStatus.Draft {
-		checks, err = s.provider.GetCheckResults(ctx, repo.OriginURL, prNumber)
+		checkSet, err = vcs.ReadCheckSet(ctx, s.provider, repo.OriginURL, prNumber)
 		if err != nil {
 			return providerRefreshError(ctx, "check results", err)
 		}
@@ -153,7 +160,9 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 		}
 	}
 
-	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	info := vcs.ComputeDisplayStatus(prStatus, checkSet.Checks, reviews)
+	info.HasBuildReceipt = checkSet.HasBuildReceipt
+	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
 	info.HeadSHA = prStatus.HeadSHA
 	info.Mergeable = prStatus.Mergeable
 	s.displayTracker.Set(sessionID, info)

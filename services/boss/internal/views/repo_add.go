@@ -474,20 +474,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-populate fields from validation response.
 		m.isGithub = msg.resp.IsGithub
 		m.detectedOriginURL = msg.resp.OriginUrl
-		if msg.resp.DefaultBranch != "" {
-			m.detectedBaseBranch = msg.resp.DefaultBranch
-		}
-		if msg.resp.IsGithub {
-			if nwo := vcs.GitHubNWO(msg.resp.OriginUrl); nwo != "" {
-				m.fd.name = "@" + nwo
-			} else {
-				m.fd.name = filepath.Base(m.fd.localPath)
-			}
-		} else if n := parseRepoNameFromURL(msg.resp.OriginUrl); n != "" {
-			m.fd.name = n
-		} else {
-			m.fd.name = filepath.Base(m.fd.localPath)
-		}
+		m.fd.name, m.detectedBaseBranch = RepoNameAndBranch(m.fd.localPath, msg.resp)
 		// Advance to details phase.
 		m.phase = repoAddPhaseDetails
 		m.buildDetailsForm()

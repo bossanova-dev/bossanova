@@ -21,6 +21,7 @@ import {
   mergeStateVerdict,
   ABSENT_GATE_REMEDIES,
   absentGateRemedy,
+  PROVENANCE_CONTEXTS,
   PROVES_GREEN_REASONS,
   provesGreen,
   provesGreenAgrees,
@@ -421,6 +422,110 @@ test('classifyChecks — a SUCCESS prior context absent from the head still repo
   assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
   assert.deepEqual(verdict.absent, ['web-e2e'])
   assert.equal(provesGreenReason(verdict), PROVES_GREEN_REASONS.INCOMPLETE_HEAD_SET)
+})
+
+// The `boss/build` receipt is provenance, not a gate (PROVENANCE_CONTEXTS). A receipt on the prior
+// head that the new head does not carry yet must not hold the verdict at `absent-gate`, and a lone
+// receipt must not make a set in which nothing ran green.
+const receiptStatus = (state = 'SUCCESS') => ({
+  __typename: 'StatusContext',
+  context: 'boss/build',
+  state,
+})
+
+test('PROVENANCE_CONTEXTS is frozen and names exactly boss/build', () => {
+  assert.ok(Object.isFrozen(PROVENANCE_CONTEXTS))
+  assert.deepEqual([...PROVENANCE_CONTEXTS], ['boss/build'])
+})
+
+test('classifyChecks — a prior-head boss/build receipt missing from the head is green/ok, not absent-gate', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+    priorContexts: {
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        receiptStatus(),
+      ],
+    },
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
+  assert.deepEqual(verdict.absent, [])
+  assert.deepEqual(verdict.provenance, ['boss/build'])
+  assert.equal(provesGreen(verdict), true)
+})
+
+test('classifyChecks — a prior side of bare names drops boss/build too', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+    priorContexts: ['test-go', 'boss/build'],
+  })
+  assert.equal(verdict.reason, CHECK_REASONS.OK)
+  assert.deepEqual(verdict.absent, [])
+  assert.deepEqual(verdict.provenance, ['boss/build'])
+})
+
+test('classifyChecks — a head whose only passing context is boss/build is still no-gate-ran', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    rollup: {
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'test-go', status: 'COMPLETED', conclusion: 'SKIPPED' },
+        receiptStatus(),
+      ],
+    },
+    priorContexts: ['test-go'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.UNKNOWN)
+  assert.equal(verdict.reason, CHECK_REASONS.NO_GATE_RAN)
+  assert.equal(verdict.passed, 0, 'the receipt is not counted as a passing gate')
+  assert.equal(verdict.total, 1)
+  assert.deepEqual(verdict.provenance, ['boss/build'])
+})
+
+test('classifyChecks — a failing boss/build status is provenance, not a failed gate', () => {
+  const verdict = classifyChecks({
+    rollup: {
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        receiptStatus('FAILURE'),
+      ],
+    },
+    priorContexts: ['test-go'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.GREEN)
+  assert.equal(verdict.failed, 0)
+  assert.deepEqual(verdict.provenance, ['boss/build'])
+})
+
+test('classifyChecks — a non-provenance context missing from the head still yields absent-gate beside a receipt', () => {
+  const verdict = classifyChecks({
+    headSHA: 'abc',
+    observedSHA: 'abc',
+    rollup: {
+      statusCheckRollup: [
+        { __typename: 'CheckRun', name: 'test-go', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        receiptStatus(),
+      ],
+    },
+    priorContexts: ['test-go', 'web-e2e', 'boss/build'],
+  })
+  assert.equal(verdict.state, CHECK_STATES.PENDING)
+  assert.equal(verdict.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(verdict.absent, ['web-e2e'])
+  assert.deepEqual(verdict.provenance, ['boss/build'])
+})
+
+test('classifyChecks — provenance is empty when no receipt is seen', () => {
+  const verdict = classifyChecks({
+    checkRuns: { check_runs: [checkRun('test-go', 'completed', 'success')] },
+  })
+  assert.deepEqual(verdict.provenance, [])
 })
 
 // `absent-gate` names its remedy. The verdict says a gate the prior head carried is missing from

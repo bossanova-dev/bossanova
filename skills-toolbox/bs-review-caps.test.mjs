@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { triageFindings } from './bs-review-triage.mjs'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -21,6 +22,7 @@ import {
   reviewVerdict,
   reviewAgreement,
   reviewConfidence,
+  fixLoopState,
   vanishedFindings,
   classifyOscillation,
   classifySentinels,
@@ -2046,4 +2048,305 @@ test('sentinelPayload without a census is byte-identical to every existing write
   )
   // The `sentinel-payload` verb's own stdout is untouched by Unit 3.
   assert.equal(runCli(['sentinel-payload']).stdout, '{"provisional":false}')
+})
+
+const loopFinding = (title, severity = 'Warning') => ({
+  file: 'loop.mjs',
+  line: 1,
+  title,
+  severity,
+})
+const loopInput = (overrides = {}) => ({
+  open: [],
+  attempts: [],
+  introducedBy: [],
+  fixCommits: [],
+  terminal: false,
+  ...overrides,
+})
+
+function convergedLoopFinding(title) {
+  const result = triageFindings(
+    ['lens-a', 'lens-b'].map((lens) => ({
+      file: 'skills-toolbox/bs-review-caps.mjs',
+      line: 1,
+      title,
+      severity: 'Suggestion',
+      detail: 'Independent reviewers identified a durable defect.',
+      lens,
+    })),
+  )
+  assert.deepEqual(result.invalid, [])
+  assert.equal(result.mustFix.length, 1)
+  assert.equal(result.mustFix[0].promotedBy, 'convergence')
+  assert.equal(result.mustFix[0].severity, 'Suggestion')
+  return result.mustFix[0]
+}
+
+test('fixLoopState widens an actual convergence-promoted Suggestion', () => {
+  const finding = convergedLoopFinding('converged root cause')
+  const state = fixLoopState(
+    loopInput({
+      open: [finding],
+      attempts: [{ ...finding, round: 1, outcome: 'declined', declineReason: 'out-of-diff' }],
+    }),
+  )
+  assert.equal(state.unattemptedMustFix, true)
+  assert.deepEqual(state.widenScope, [finding])
+})
+
+test('fixLoopState unwinds convergence-promoted Suggestions with the severity guard', () => {
+  const original = convergedLoopFinding('converged original')
+  const regression = convergedLoopFinding('converged regression')
+  const input = loopInput({
+    open: [regression],
+    introducedBy: [{ ...regression, commit: 'c1' }],
+    fixCommits: [{ sha: 'c1', addresses: [original] }],
+    terminal: true,
+  })
+  const state = fixLoopState(input)
+  assert.equal(state.selfInflictedMustFix, true)
+  assert.deepEqual(state.reverts, ['c1'])
+  assert.deepEqual(state.causes, [
+    { ...original, cause: 'fix reverted (introduced converged regression)' },
+  ])
+  const guarded = fixLoopState({
+    ...input,
+    fixCommits: [{ sha: 'c1', addresses: [{ ...original, severity: 'Warning' }] }],
+  })
+  assert.equal(guarded.selfInflictedMustFix, true)
+  assert.deepEqual(guarded.reverts, [])
+})
+
+test('fixLoopState widens the first out-of-diff decline once', () => {
+  const finding = loopFinding('root cause')
+  const state = fixLoopState(
+    loopInput({
+      open: [finding],
+      attempts: [{ ...finding, round: 1, outcome: 'declined', declineReason: 'out-of-diff' }],
+    }),
+  )
+  assert.equal(state.unattemptedMustFix, true)
+  assert.deepEqual(state.widenScope, [finding])
+})
+
+test('fixLoopState names a second out-of-diff decline', () => {
+  const finding = loopFinding('root cause')
+  const state = fixLoopState(
+    loopInput({
+      open: [finding],
+      attempts: [1, 2].map((round) => ({
+        ...finding,
+        round,
+        outcome: 'declined',
+        declineReason: 'out-of-diff',
+      })),
+    }),
+  )
+  assert.equal(state.unattemptedMustFix, false)
+  assert.deepEqual(state.widenScope, [])
+  assert.deepEqual(state.causes, [{ ...finding, cause: 'out-of-diff root cause' }])
+})
+
+test('fixLoopState attributes only findings blamed to this runs fix commits', () => {
+  const finding = loopFinding('regression')
+  const input = loopInput({
+    open: [finding],
+    introducedBy: [{ ...finding, commit: 'c1' }],
+    fixCommits: [{ sha: 'c1', addresses: [loopFinding('original')] }],
+  })
+  assert.equal(fixLoopState(input).selfInflictedMustFix, true)
+  assert.deepEqual(fixLoopState(input).reverts, [])
+  assert.equal(
+    fixLoopState({ ...input, introducedBy: [{ ...finding, commit: 'base' }] }).selfInflictedMustFix,
+    false,
+  )
+})
+
+function regressionChain() {
+  const findings = [1, 2, 3, 4].map((i) => loopFinding(`F${i}`))
+  return loopInput({
+    open: [findings[3]],
+    introducedBy: findings.slice(1).map((finding, i) => ({ ...finding, commit: `c${i + 1}` })),
+    fixCommits: findings
+      .slice(0, 3)
+      .map((finding, i) => ({ sha: `c${i + 1}`, addresses: [finding] })),
+    terminal: true,
+  })
+}
+
+test('fixLoopState terminal unwind follows three links newest first', () => {
+  const state = fixLoopState(regressionChain())
+  assert.deepEqual(state.reverts, ['c3', 'c2', 'c1'])
+  assert.deepEqual(state.causes, [{ ...loopFinding('F1'), cause: 'fix reverted (introduced F2)' }])
+})
+
+test('fixLoopState severity guard prevents reopening a Critical for a Warning', () => {
+  const input = regressionChain()
+  input.fixCommits[1].addresses.push(loopFinding('critical', 'Critical'))
+  const state = fixLoopState(input)
+  assert.deepEqual(state.reverts, ['c3'])
+  assert.ok(
+    state.causes.some((row) => row.title === 'F3' && row.cause === 'fix reverted (introduced F4)'),
+  )
+})
+
+test('fixLoopState failed or mixed attempts do not widen scope', () => {
+  const finding = loopFinding('root cause')
+  const state = fixLoopState(
+    loopInput({
+      open: [finding],
+      attempts: [
+        { ...finding, round: 1, outcome: 'failed' },
+        { ...finding, round: 2, outcome: 'declined', declineReason: 'out-of-diff' },
+      ],
+    }),
+  )
+  assert.equal(state.unattemptedMustFix, false)
+  assert.deepEqual(state.widenScope, [])
+  assert.equal(state.causes[0].cause, 'fixes not clearing')
+})
+
+test('fixLoopState malformed evidence fails closed without reverts', () => {
+  for (const input of [
+    null,
+    {},
+    { ...regressionChain(), open: [{ title: 'no location' }] },
+    { ...regressionChain(), open: [{ ...loopFinding('malformed'), severity: { toLowerCase: 1 } }] },
+    {
+      ...regressionChain(),
+      fixCommits: [{ sha: 'c3', addresses: [loopFinding('unknown severity', 'unknown')] }],
+    },
+    { ...regressionChain(), attempts: [{ ...loopFinding('F4'), round: -1, outcome: 'failed' }] },
+  ]) {
+    const state = fixLoopState(input)
+    assert.equal(state.unattemptedMustFix, false)
+    assert.deepEqual(state.reverts, [])
+    assert.equal(state.causes[0].cause, 'unreadable fix-loop evidence')
+  }
+})
+
+test('fixLoopState CLI equals the pure helper', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'fix-loop-state-'))
+  try {
+    const path = join(scratch, 'input.json')
+    const input = regressionChain()
+    writeFileSync(path, JSON.stringify(input))
+    const output = runCli(['fix-loop-state', '--in', path])
+    assert.equal(output.status, 0, output.stderr)
+    assert.deepEqual(JSON.parse(output.stdout), fixLoopState(input))
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('reviewConfidence flags missing fix gates without changing clean verdict', () => {
+  const evidence = {
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    history: { rounds: [], fixed: [], leaveAsIs: [] },
+    mustfix: { fixed: 1, unresolved: 0, items: [] },
+    invalid: [],
+    ledger: cleanLedger,
+    requiredGates: ['make lint', 'make test-affected'],
+    gates: ['make test-affected: passed'],
+  }
+  assert.deepEqual(reviewConfidence(evidence), { grade: 'Low', reasons: ['fix-gate-unrun'] })
+  assert.equal(reviewVerdict(evidence).status, 'clean')
+  assert.deepEqual(
+    reviewConfidence({ ...evidence, gates: ['make lint: passed', 'make test-affected: passed'] }),
+    { grade: 'High', reasons: [] },
+  )
+  assert.deepEqual(
+    reviewConfidence({ ...evidence, mustfix: { fixed: 0, unresolved: 0, items: [] } }),
+    { grade: 'High', reasons: [] },
+  )
+  assert.ok(
+    reviewConfidence({
+      ...evidence,
+      gates: ['make lint: not run', 'make test-affected: passed'],
+    }).reasons.includes('fix-gate-unrun'),
+  )
+  assert.ok(
+    reviewConfidence({
+      ...evidence,
+      gates: ['make lint-extra: passed', 'make test-affected: passed'],
+    }).reasons.includes('fix-gate-unrun'),
+  )
+})
+
+test('fixLoopState permits a Critical regression to reopen a lower severity finding', () => {
+  const original = loopFinding('original')
+  const regression = loopFinding('regression', 'Critical')
+  const state = fixLoopState(
+    loopInput({
+      open: [regression],
+      introducedBy: [{ ...regression, commit: 'c1' }],
+      fixCommits: [{ sha: 'c1', addresses: [original] }],
+      terminal: true,
+    }),
+  )
+  assert.deepEqual(state.reverts, ['c1'])
+  assert.deepEqual(state.causes, [{ ...original, cause: 'fix reverted (introduced regression)' }])
+})
+
+test('fixLoopState terminal independent regressions revert in landing order', () => {
+  const a = loopFinding('regression A')
+  const b = loopFinding('regression B')
+  const state = fixLoopState(
+    loopInput({
+      open: [a, b],
+      introducedBy: [
+        { ...a, commit: 'c1' },
+        { ...b, commit: 'c2' },
+      ],
+      fixCommits: [
+        { sha: 'c1', addresses: [loopFinding('original A')] },
+        { sha: 'c2', addresses: [loopFinding('original B')] },
+      ],
+      terminal: true,
+    }),
+  )
+  assert.deepEqual(state.reverts, ['c2', 'c1'])
+})
+
+test('fixLoopState inconsistent attribution and causal cycles cannot authorize reverts', () => {
+  const input = regressionChain()
+  const contradictory = {
+    ...input,
+    introducedBy: [...input.introducedBy, { ...loopFinding('F4'), commit: 'c2' }],
+  }
+  const cycle = {
+    ...input,
+    introducedBy: [...input.introducedBy, { ...loopFinding('F1'), commit: 'c3' }],
+  }
+  for (const evidence of [contradictory, cycle])
+    assert.deepEqual(fixLoopState(evidence).reverts, [])
+})
+
+test('reviewConfidence uses the latest required fix gate result', () => {
+  const evidence = {
+    panel: { initial: ['a', 'b'], reviewers: ['a', 'b'] },
+    history: { rounds: [], fixed: [], leaveAsIs: [] },
+    mustfix: { fixed: 1, unresolved: 0, items: [] },
+    invalid: [],
+    ledger: cleanLedger,
+    requiredGates: ['make lint', 'make test-affected'],
+  }
+  for (const result of ['not run', 'skipped', 'pending', 'unknown', '']) {
+    assert.deepEqual(
+      reviewConfidence({
+        ...evidence,
+        gates: ['make lint: passed', `make lint: ${result}`, 'make test-affected: passed'],
+      }),
+      { grade: 'Low', reasons: ['fix-gate-unrun'] },
+      `latest ${result || 'empty'} result supersedes a historical pass`,
+    )
+  }
+  assert.deepEqual(
+    reviewConfidence({
+      ...evidence,
+      gates: ['make lint: not run', 'make lint: passed', 'make test-affected: passed'],
+    }),
+    { grade: 'High', reasons: [] },
+  )
 })

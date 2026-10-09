@@ -218,3 +218,27 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestAdoptReRegisteredToken(t *testing.T) {
+	t.Run("rotates the failed token", func(t *testing.T) {
+		h := NewSessionTokenHolder("old")
+		use, already := AdoptReRegisteredToken(h, "old", "new")
+		if use != "new" || already || h.Get() != "new" {
+			t.Fatalf("use=%q already=%v holder=%q, want new/false/new", use, already, h.Get())
+		}
+	})
+	t.Run("keeps a peer's rotation", func(t *testing.T) {
+		h := NewSessionTokenHolder("peer")
+		use, already := AdoptReRegisteredToken(h, "old", "new")
+		if use != "peer" || !already || h.Get() != "peer" {
+			t.Fatalf("use=%q already=%v holder=%q, want peer/true/peer", use, already, h.Get())
+		}
+	})
+	t.Run("sets a cleared holder", func(t *testing.T) {
+		h := NewSessionTokenHolder("")
+		use, already := AdoptReRegisteredToken(h, "old", "new")
+		if use != "new" || already || h.Get() != "new" {
+			t.Fatalf("use=%q already=%v holder=%q, want new/false/new", use, already, h.Get())
+		}
+	})
+}

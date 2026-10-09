@@ -305,8 +305,8 @@ func (b *Backend) CloseSession(ctx context.Context, id string) (*pb.Session, err
 // MergeSession returns the daemon's detail note alongside the merged session.
 // MergeSessionResponse already carries it, so the local socket path can report a
 // merge-strategy substitution to an MCP caller verbatim.
-func (b *Backend) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
-	resp, err := b.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
+func (b *Backend) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
+	resp, err := b.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: matchHead}))
 	if err != nil {
 		return nil, "", err
 	}
@@ -620,6 +620,50 @@ func (b *Backend) UpdateNote(ctx context.Context, _ string, req *pb.UpdateNoteRe
 func (b *Backend) DeleteNote(ctx context.Context, _ string, id string) error {
 	_, err := b.rpc.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: id}))
 	return err
+}
+
+// --- Organization notes ---
+//
+// Organization notes live in bosso, which the daemon socket cannot reach on a
+// caller's behalf. Relaying them through the daemon would add a second
+// authorization path beside the API's own membership, entitlement and quota
+// checks, so every method refuses with a typed FailedPrecondition that names
+// the two surfaces that do serve them.
+
+// organizationNotesCloudOnlyMessage is the guidance every organization-note
+// method returns on the local socket backend.
+const organizationNotesCloudOnlyMessage = "organization notes are a Bossanova Cloud feature the local daemon cannot serve: " +
+	"use `boss notes org` or the hosted MCP endpoint, which call the organization notes API with your own credentials"
+
+// errOrganizationNotesCloudOnly builds a fresh FailedPrecondition per call: a
+// *connect.Error is mutable (metadata, details), so one shared value must not
+// be handed to every caller.
+func errOrganizationNotesCloudOnly() error {
+	return connect.NewError(connect.CodeFailedPrecondition, errors.New(organizationNotesCloudOnlyMessage))
+}
+
+func (b *Backend) CreateOrganizationNote(context.Context, *pb.CreateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	return nil, errOrganizationNotesCloudOnly()
+}
+
+func (b *Backend) GetOrganizationNote(context.Context, *pb.GetOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	return nil, errOrganizationNotesCloudOnly()
+}
+
+func (b *Backend) ListOrganizationNotes(context.Context, *pb.ListOrganizationNotesRequest) (*pb.ListOrganizationNotesResponse, error) {
+	return nil, errOrganizationNotesCloudOnly()
+}
+
+func (b *Backend) UpdateOrganizationNote(context.Context, *pb.UpdateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	return nil, errOrganizationNotesCloudOnly()
+}
+
+func (b *Backend) DeleteOrganizationNote(context.Context, *pb.DeleteOrganizationNoteRequest) error {
+	return errOrganizationNotesCloudOnly()
+}
+
+func (b *Backend) GetOrganizationNoteQuota(context.Context, *pb.GetOrganizationNoteQuotaRequest) (*pb.OrganizationNoteQuota, error) {
+	return nil, errOrganizationNotesCloudOnly()
 }
 
 // --- Broadcasts ---

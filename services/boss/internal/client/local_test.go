@@ -28,6 +28,11 @@ type fakeDaemonRPC struct {
 	lastGetReq     *pb.GetSessionRequest
 	lastListReq    *pb.ListSessionsRequest
 
+	// ArchiveSession (BOS-1380): the request as sent, and an optional canned
+	// response carrying the deferral fields.
+	lastArchiveReq *pb.ArchiveSessionRequest
+	archiveResp    *pb.ArchiveSessionResponse
+
 	// Notes (BOS-553): captured so tests can assert LocalClient ignores the
 	// repoID argument on Get/Update/Delete — the daemon request carries only
 	// the id.
@@ -120,8 +125,12 @@ func (f *fakeDaemonRPC) RefreshSessionPR(_ context.Context, _ *connect.Request[p
 	})
 }
 
-func (f *fakeDaemonRPC) ArchiveSession(_ context.Context, _ *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+func (f *fakeDaemonRPC) ArchiveSession(_ context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+	f.lastArchiveReq = req.Msg
 	return sessionResp(f, func() *pb.ArchiveSessionResponse {
+		if f.archiveResp != nil {
+			return f.archiveResp
+		}
 		return &pb.ArchiveSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
 	})
 }
@@ -177,7 +186,7 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 		{"RetrySession", func(c *LocalClient) (*pb.Session, error) { return c.RetrySession(ctx, "id") }},
 		{"CloseSession", func(c *LocalClient) (*pb.Session, error) { return c.CloseSession(ctx, "id") }},
 		{"MergeSession", func(c *LocalClient) (*pb.Session, error) {
-			sess, _, err := c.MergeSession(ctx, "id")
+			sess, _, err := c.MergeSession(ctx, "id", "")
 			return sess, err
 		}},
 		{"UpdateSession", func(c *LocalClient) (*pb.Session, error) {
@@ -188,7 +197,10 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 			id := "id"
 			return c.RefreshSessionPR(ctx, &pb.RefreshSessionPRRequest{Id: &id})
 		}},
-		{"ArchiveSession", func(c *LocalClient) (*pb.Session, error) { return c.ArchiveSession(ctx, "id") }},
+		{"ArchiveSession", func(c *LocalClient) (*pb.Session, error) {
+			resp, err := c.ArchiveSession(ctx, &pb.ArchiveSessionRequest{Id: "id"})
+			return resp.GetSession(), err
+		}},
 	}
 
 	for _, w := range wrappers {
@@ -478,7 +490,7 @@ func TestLocalClientRecordChat(t *testing.T) {
 // covers the session return.
 func TestLocalClientMergeSessionReturnsDetail(t *testing.T) {
 	c := &LocalClient{rpc: &fakeDaemonRPC{}}
-	sess, detail, err := c.MergeSession(context.Background(), "id")
+	sess, detail, err := c.MergeSession(context.Background(), "id", "")
 	if err != nil {
 		t.Fatalf("MergeSession: %v", err)
 	}
@@ -515,5 +527,29 @@ func TestLocalClient_ListSessionsWithReadFailuresNeverPartial(t *testing.T) {
 	errClient := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
 	if _, _, err := errClient.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{}, SessionReadOptions{}); err == nil {
 		t.Fatal("a failed local read must return an error, not an empty partial result")
+	}
+}
+
+// TestLocalClientArchiveSessionPassesOptionsAndDeferral pins the BOS-1380
+// client contract: the request's force and requester options reach the daemon
+// untouched, and the response's deferral fields reach the caller.
+func TestLocalClientArchiveSessionPassesOptionsAndDeferral(t *testing.T) {
+	f := &fakeDaemonRPC{archiveResp: &pb.ArchiveSessionResponse{
+		Session:                &pb.Session{Id: fakeSessionID},
+		IsDeferred:             true,
+		BlockingAgentSessionId: "chat-1",
+	}}
+	c := &LocalClient{rpc: f}
+	resp, err := c.ArchiveSession(context.Background(), &pb.ArchiveSessionRequest{
+		Id: "id", ShouldForce: true, RequesterAgentSessionId: "chat-self",
+	})
+	if err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if !f.lastArchiveReq.GetShouldForce() || f.lastArchiveReq.GetRequesterAgentSessionId() != "chat-self" {
+		t.Fatalf("request = %v, want force + requester passed through", f.lastArchiveReq)
+	}
+	if !resp.GetIsDeferred() || resp.GetBlockingAgentSessionId() != "chat-1" {
+		t.Fatalf("response = %v, want the deferral fields", resp)
 	}
 }

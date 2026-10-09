@@ -468,6 +468,27 @@ func (s *SQLiteGithubCallbackStore) CancelUnreachable(ctx context.Context, id, e
 	return nil
 }
 
+// CancelTriggered implements GithubCallbackStore.
+func (s *SQLiteGithubCallbackStore) CancelTriggered(ctx context.Context, id, event string, now time.Time) error {
+	nowStr := sqlutil.FormatTime(now)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE github_callbacks
+		 SET state = ?, last_event = ?, updated_at = ?
+		 WHERE id = ? AND state = ?`,
+		string(models.GithubCallbackStateCanceled), event, nowStr, id, string(models.GithubCallbackStateTriggered),
+	)
+	if err != nil {
+		return fmt.Errorf("cancel triggered github callback: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, gerr := s.Get(ctx, id); gerr != nil {
+			return gerr
+		}
+		return ErrGithubCallbackTriggerConflict
+	}
+	return nil
+}
+
 // ExpiredGithubCallback is a callback made terminal by one expiry sweep.
 // It contains only the bounded fields needed for terminal-outcome telemetry.
 type ExpiredGithubCallback struct {

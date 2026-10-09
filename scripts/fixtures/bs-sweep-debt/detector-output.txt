@@ -24,6 +24,13 @@ Vulnerability #1: GO-2023-1571
     Example traces found:
       #1: services/bosso/internal/stream/pump.go:64:15: stream.copyLoop calls http2.Server.ServeConn
 
+Vulnerability #2: GO-2026-0001
+  Standard library
+    Found in: go1.25.0
+    Fixed in: go1.25.1
+    Example traces found:
+      #1: services/bosso/internal/stream/pump.go:65:15: stream.copyLoop calls net/http.ReadRequest
+
 $ pnpm -C services/web knip
 Unused files (1)
 services/web/src/lib/legacy-helpers.ts

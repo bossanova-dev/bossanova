@@ -251,7 +251,7 @@ const phase25Plan = () =>
     spec: roundTrip(linearSpec(3)),
     unplannedState: 'Backlog',
     staleAttachmentIds: ['att-stale'],
-    labelsToStrip: ['agent-friendly', 'needs-human'],
+    labelsToStrip: ['agent-build', 'needs-human'],
   })
 
 test('S2: a failed spec upload deletes nothing and creates no children', () => {
@@ -308,7 +308,7 @@ test('S2: children are created in topo order carrying the spec-persisted fields'
     parentId: PARENT_ID,
     spec,
     unplannedState: 'Backlog',
-    labelsToStrip: ['agent-friendly', 'needs-human'],
+    labelsToStrip: ['agent-build', 'needs-human'],
   })
   const creates = plan.filter((e) => e.op === 'createChild')
 
@@ -355,7 +355,7 @@ test('S2: the label strip is a pure label write — it carries no state field', 
   assert.deepEqual(first.args, { id: PARENT_ID })
   assert.ok(!('state' in first.args))
   assert.ok(!('removeLabels' in first.args), 'save_issue has no removeLabels argument')
-  assert.deepEqual(first.stripLabels, ['agent-friendly', 'needs-human'])
+  assert.deepEqual(first.stripLabels, ['agent-build', 'needs-human'])
   // Emitted even when there is nothing to strip.
   const empty = epicPhase25WritePlan({ parentId: PARENT_ID, spec: linearSpec(2) })
   assert.equal(empty[0].stage, 'label-strip')
@@ -935,7 +935,7 @@ const RV_ROLES = {
   inProgress: 'In Progress',
   inReview: 'In Review',
   epic: 'epic',
-  agentFriendly: 'agent-friendly',
+  agentBuild: 'agent-build',
   needsHuman: 'needs-human',
   agentQuestion: 'agent-question',
   agentPlan: 'agent-plan',
@@ -985,8 +985,8 @@ const rvSpec = () =>
       parentId: RV_PARENT,
       parent: { title: 'Epic', goal: 'g', keyChanges: ['x'], priority: 2 },
       children: [
-        child('c1', { agentFriendly: true }),
-        child('c2', { agentFriendly: false, openQuestions: ['why?'], blockedByKeys: ['c1'] }),
+        child('c1', { agentBuild: true }),
+        child('c2', { agentBuild: false, openQuestions: ['why?'], blockedByKeys: ['c1'] }),
       ],
     }),
   )
@@ -1003,11 +1003,11 @@ const rvChild = (n, key, labels, over = {}) => ({
   ...over,
 })
 
-// The conforming epic: one agent-friendly child, one needs-human + agent-question child, both
+// The conforming epic: one agent-build child, one needs-human + agent-question child, both
 // byte-identical to their intended bodies, an attachment-sourced spec and a single overview artifact.
 function rvInput(mutate = () => {}) {
   const children = [
-    rvChild(901, 'c1', ['agent-friendly']),
+    rvChild(901, 'c1', ['agent-build']),
     rvChild(902, 'c2', ['needs-human', 'agent-question']),
   ]
   const input = {
@@ -1140,7 +1140,7 @@ test('S6: every forbidden parent label is named; an unmapped agentPlan forbids n
   const all = epicReverifyVerdict(
     rvInput((input) =>
       input.parent.labels.push(
-        { name: 'agent-friendly' },
+        { name: 'agent-build' },
         { name: 'needs-human' },
         { name: 'agent-plan' },
       ),
@@ -1242,8 +1242,7 @@ test('S6: per-child state, artifact and label conjuncts', () => {
   assert.ok(blockerOf((i) => (childOf(i, 'BOS-901').labels = [])).includes('child-exposure-label'))
   assert.ok(
     blockerOf(
-      (i) =>
-        (childOf(i, 'BOS-902').labels = [{ name: 'agent-friendly' }, { name: 'agent-question' }]),
+      (i) => (childOf(i, 'BOS-902').labels = [{ name: 'agent-build' }, { name: 'agent-question' }]),
     ).includes('child-exposure-mismatch'),
   )
   assert.ok(

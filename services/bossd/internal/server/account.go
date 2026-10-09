@@ -612,6 +612,15 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 // last_test_ok_at); a non-empty detail records last_test_error and clears
 // last_test_ok_at. The account metadata is re-read so the response reflects the
 // recorded result.
+//
+// A passing live verification also restores health=ok. RecordTestResult empties
+// last_test_error, so without the restore a previously failed row is left
+// health=failed with NO reason: rotation and binding keep skipping it, and the
+// prefix that let ClearInjectionFailure heal a self-clearing failure is gone, so
+// nothing short of a credential refresh ever brings it back. A provider that
+// just accepted a real invocation on this credential is the strongest evidence
+// of health this daemon has — the same verdict RefreshAccount's test_after_save
+// already restores on.
 func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan bool, detail string) (*connect.Response[pb.TestAccountResponse], error) {
 	var okAt *time.Time
 	if detail == "" {
@@ -624,12 +633,22 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record account test result: %w", err))
 	}
-	account, err := s.accounts.Get(ctx, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+	var account *models.Account
+	if liveSmokeRan && detail == "" {
+		restored, err := s.restoreAccountHealth(ctx, id)
+		if err != nil {
+			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
+		account = restored
+	} else {
+		got, err := s.accounts.Get(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
+			}
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
+		}
+		account = got
 	}
 	respDetail := detail
 	if respDetail == "" {

@@ -21,6 +21,7 @@ export {
 } from './dag-scheduler.mjs'
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
 import { DEFAULT_TRACKER_STATES } from './skill-config.mjs'
+import { hasSelectionFlags, matchIssue, parseSelectionFlags } from './selection.mjs'
 
 // Inlined from the former linear-deps-lib.mjs so this toolbox module is
 // self-contained (a prior inlining). Linear state.type values that mean a blocker no
@@ -101,6 +102,13 @@ function normalizeBlockedBy(issue) {
  *     `issue.priority` as `{value, name}`, `issue.attachments`/`issue.links`)
  *   - an already-normalized ticket (flat `blockedBy`/`stateName`/`stateType`),
  *     which passes through unchanged.
+ *
+ * It also carries `assigneeId`, `creatorId` and `projectId` for selection matching, read from the
+ * raw GraphQL relation objects (`assignee.id`, ...), the MCP spellings (`assigneeId`,
+ * `createdById`, `projectId`) or the flat normalized ones. `null` means the source says there is
+ * none (unassigned, no project). A source that does not carry the field at all leaves it
+ * `undefined` — never `null` — so `matchIssue` reports it as absent instead of treating an
+ * unfetched field as "unassigned" and letting it through an exclude filter.
  */
 export function normalizeTicket(issue) {
   const id = issue.identifier ?? issue.id
@@ -122,7 +130,23 @@ export function normalizeTicket(issue) {
       canonicalPlanAttachment(issue.attachments, id) ??
       (issue.planAttachment?.title === `Implementation plan (${id})` ? issue.planAttachment : null),
     blockedBy: normalizeBlockedBy(issue),
+    assigneeId: relationIdOf(issue, ['assigneeId'], 'assignee'),
+    creatorId: relationIdOf(issue, ['creatorId', 'createdById'], 'creator'),
+    projectId: relationIdOf(issue, ['projectId'], 'project'),
   }
+}
+
+// One relation id off any issue shape: a flat key first, then the GraphQL object. `null` when the
+// source carries the relation as empty; `undefined` when it does not carry it. A string-valued
+// relation key (an MCP display name) is not an id and reads as not carried.
+function relationIdOf(issue, flatKeys, objectKey) {
+  for (const key of flatKeys) {
+    if (issue[key] !== undefined) return issue[key] ?? null
+  }
+  const value = issue[objectKey]
+  if (value === null) return null
+  if (value && typeof value === 'object' && typeof value.id === 'string') return value.id
+  return undefined
 }
 
 /**
@@ -174,7 +198,7 @@ export function resolvePlannedState({ adapterStates, trackerConfigStates } = {})
  * `trackerConfigFor(config).states.planned`) — the one workflow-state word this
  * pure module refuses to bake in, so the published core stays project-agnostic:
  *   - `eligible`: stateName is the planned state AND labels include
- *     `agent-friendly` AND a canonical native `planAttachment` present AND NOT
+ *     `agent-build` AND a canonical native `planAttachment` present AND NOT
  *     `needs-human`. A legacy link-only plan is skipped for migration/replanning.
  *   - `done`: state is Done/Canceled (`stateType` in BLOCKER_CLEARED_STATE_TYPES)
  *     — counts as already merged for scheduling purposes.
@@ -185,17 +209,22 @@ export function resolvePlannedState({ adapterStates, trackerConfigStates } = {})
  * tracker adapter config); an unresolved value throws rather than silently
  * marking every ticket eligible or none — a mis-configured repo must not spawn
  * sessions for unplanned work.
+ *
+ * `selection` (optional) is a RESOLVED selection (`tracker/cli.mjs resolve-selection --stage
+ * epic`). A non-done ticket it does not match goes to `skipped` with reason
+ * `excluded by selection: <matchIssue reason>`. It is checked after `done`, so a merged sibling
+ * still clears its dependents.
  */
 export function classifyTickets(
   tickets,
   plannedState,
-  { agentFriendlyLabel = 'agent-friendly', needsHumanLabel = 'needs-human' } = {},
+  { agentBuildLabel = 'agent-build', needsHumanLabel = 'needs-human', selection = null } = {},
 ) {
   if (typeof plannedState !== 'string' || plannedState.length === 0) {
     throw new Error('classifyTickets: plannedState (the configured planned-state name) is required')
   }
   // Label and state names are compared the way a person reads them: case, spacing, `-` and `_`
-  // do not make `Agent-Friendly` a different label from `agent_friendly`.
+  // do not make `Agent-Build` a different label from `agent_build`.
   const key = (value) =>
     String(value ?? '')
       .toLowerCase()
@@ -207,6 +236,13 @@ export function classifyTickets(
     if (BLOCKER_CLEARED_STATE_TYPES.has(ticket.stateType)) {
       done.push(ticket)
       continue
+    }
+    if (selection) {
+      const { matches, reason } = matchIssue(ticket, selection)
+      if (!matches) {
+        skipped.push({ ticket, reason: `${ticket.id}: excluded by selection: ${reason}` })
+        continue
+      }
     }
     const labels = new Set((ticket.labels ?? []).map(key))
     if (labels.has(key(needsHumanLabel))) {
@@ -227,8 +263,8 @@ export function classifyTickets(
       })
       continue
     }
-    if (!labels.has(key(agentFriendlyLabel))) {
-      skipped.push({ ticket, reason: `${ticket.id}: missing agent-friendly label` })
+    if (!labels.has(key(agentBuildLabel))) {
+      skipped.push({ ticket, reason: `${ticket.id}: missing agent-build label` })
       continue
     }
     eligible.push(ticket)
@@ -292,6 +328,11 @@ export function parseTicketRef(arg) {
  * [1, 8] or non-integer, on `--agent` / `--epic` / `--assume-cleared` /
  * `--assume-cleared-and-merge` missing or malformed value, or on a positional
  * that is neither a ticket id nor a Linear URL (catches typo'd flags).
+ * `--team <name>` is the tracker team for a repo whose config names
+ * none — never a ticket ref; `team` is present in the result only when given.
+ * The eight shared selection flags (`--label`, `--exclude-label`, `--assignee`, ...; see
+ * selection.mjs) are filters, never ticket refs: they are returned as `selectionFlags` (the
+ * parsed slot map) for `resolve-selection --stage epic`, present only when given, like `team`.
  */
 export function parseEpicArgs(argv) {
   const ids = []
@@ -300,6 +341,13 @@ export function parseEpicArgs(argv) {
   const assumeClearedAndMerge = []
   let parallel = 4
   let agent = 'claude'
+  let team = null
+  // Selection flags first, through the one shared parser, so `--exclude-label infra` is a filter
+  // here exactly as it is at every gate. What remains is parsed below as before.
+  const selectionParsed = parseSelectionFlags(argv)
+  if (selectionParsed.error) throw new Error(`parseEpicArgs: ${selectionParsed.error}`)
+  const selectionFlags = selectionParsed.flags
+  argv = selectionParsed.positionals
   const takeClearedRef = (raw, flag) => {
     const ref = parseTicketRef(raw)
     if (!ref) {
@@ -322,6 +370,12 @@ export function parseEpicArgs(argv) {
         throw new Error(`parseEpicArgs: --agent requires a runner name, got ${raw}`)
       }
       agent = raw
+    } else if (arg === '--team') {
+      const raw = argv[(i += 1)]
+      if (raw === undefined || raw.trim() === '' || raw.startsWith('--') || team !== null) {
+        throw new Error(`parseEpicArgs: --team requires one non-empty team name, got ${raw}`)
+      }
+      team = raw.trim()
     } else if (arg === '--epic') {
       epicRefs.push(takeClearedRef(argv[(i += 1)], '--epic'))
     } else if (arg === '--assume-cleared') {
@@ -338,7 +392,14 @@ export function parseEpicArgs(argv) {
       ids.push(ref)
     }
   }
-  const rest = { parallel, agent, assumeCleared, assumeClearedAndMerge }
+  const rest = {
+    parallel,
+    agent,
+    assumeCleared,
+    assumeClearedAndMerge,
+    ...(hasSelectionFlags(selectionFlags) ? { selectionFlags } : {}),
+    ...(team === null ? {} : { team }),
+  }
   if (epicRefs.length > 0) {
     if (ids.length > 0) {
       throw new Error(
@@ -611,14 +672,18 @@ function childLiveness(verdict, action, reasons) {
  *   - `headShaMoved`, `activityStale`, `attentionReasons` — corroborating-only
  *     liveness proxies used for reasons, never as deciding death evidence
  *   - `wallClockExceeded` — explicit epic budget expiry
+ *   - `displayLabel` — the session's composite display label; a Ready label
+ *     (see `isReadyDisplayLabel`) means the work is already on the head
  *
  * Rules, in order:
  *   1. wall-clock expiry                       → wall-clock-expired/fail-isolate
- *   2. WAITING/WORKING/QUESTION chat           → alive/hold
- *   3. LIMITED or usage-cap last message       → environmental-death/resume
- *   4. transient API/5xx last message          → environmental-death/resume
- *   5. BLOCKED + agent-conclusion last message → agent-blocked/repair
- *   6. unreadable/UNSPECIFIED/anything else    → unknown/investigate
+ *   2. Ready session, IDLE/STOPPED/WAITING chat → alive/hold (never resume/repair);
+ *      Ready + LIMITED/UNSPECIFIED falls through, since it can never settle
+ *   3. WAITING/WORKING/QUESTION chat           → alive/hold
+ *   4. LIMITED or usage-cap last message       → environmental-death/resume
+ *   5. transient API/5xx last message          → environmental-death/resume
+ *   6. BLOCKED + agent-conclusion last message → agent-blocked/repair
+ *   7. unreadable/UNSPECIFIED/anything else    → unknown/investigate
  */
 export function classifyChildLiveness({
   chatStatus,
@@ -634,9 +699,12 @@ export function classifyChildLiveness({
   activityStale,
   attentionReasons = [],
   wallClockExceeded = false,
+  displayLabel,
 } = {}) {
   const reasons = []
   const status = normalizeChatStatusToken(chatStatus)
+  const ready = isReadyDisplayLabel(displayLabel)
+  const statusUnreadable = chatStatusUnreadable || chatStatusReadable === false
   const state = normalizeSessionStateToken(sessionState)
   const messageKinds = [lastMessageKind, lastMessageClass]
   const messageIsAgentConclusion =
@@ -652,8 +720,9 @@ export function classifyChildLiveness({
   if (tokenListHas(attentionReasons, AGENT_STALLED_ATTENTION_REASONS)) {
     reasons.push('attention-agent-stalled')
   }
-  if (chatStatusUnreadable || chatStatusReadable === false) reasons.push('chat-status-unreadable')
+  if (statusUnreadable) reasons.push('chat-status-unreadable')
   if (status) reasons.push(`chat-status:${status}`)
+  if (ready) reasons.push('session-ready')
   if (state) reasons.push(`session-state:${state}`)
   if (messageIsUsageLimit) reasons.push('last-message:usage-limit')
   if (messageIsTransientApi) reasons.push('last-message:transient-api-error')
@@ -663,6 +732,9 @@ export function classifyChildLiveness({
     reasons.push('wall-clock-exceeded')
     return childLiveness('wall-clock-expired', 'fail-isolate', reasons)
   }
+  if (ready && !statusUnreadable && CHILD_READY_PARKED_CHAT_STATUSES.has(status)) {
+    return childLiveness('alive', 'hold', reasons)
+  }
   if (CHILD_ALIVE_CHAT_STATUSES.has(status)) return childLiveness('alive', 'hold', reasons)
   if (CHILD_USAGE_LIMIT_CHAT_STATUSES.has(status) || messageIsUsageLimit) {
     return childLiveness('environmental-death', 'resume', reasons)
@@ -671,14 +743,101 @@ export function classifyChildLiveness({
   if (state === 'blocked' && messageIsAgentConclusion) {
     return childLiveness('agent-blocked', 'repair', reasons)
   }
-  if (
-    CHILD_UNKNOWN_CHAT_STATUSES.has(status) ||
-    chatStatusUnreadable ||
-    chatStatusReadable === false
-  ) {
+  if (CHILD_UNKNOWN_CHAT_STATUSES.has(status) || statusUnreadable) {
     return childLiveness('unknown', 'investigate', reasons)
   }
   return childLiveness('unknown', 'investigate', reasons)
+}
+
+// A leading run of glyphs, whitespace, or JSON-escaped glyphs (`\u2713`) is
+// stripped before the word is compared, so a transport that escapes the check
+// mark still reads Ready.
+const DISPLAY_LABEL_LEADING_GLYPHS = /^(?:\\u[0-9a-f]{4}|[^\p{L}\p{N}])+/iu
+
+/**
+ * True iff a session's composite display label is the daemon's computed Ready
+ * label (`✓ ready`): the current head carries a successful build receipt, the
+ * PR is green, and no live, failing, conflicting, verifying or needs-human
+ * state outranks it. Matches the word, not the glyph; `ready to merge` and
+ * `not ready` do not match. Pure.
+ */
+export function isReadyDisplayLabel(label) {
+  if (typeof label !== 'string') return false
+  return label.replace(DISPLAY_LABEL_LEADING_GLYPHS, '').trim().toLowerCase() === 'ready'
+}
+
+const CHILD_IDLE_CHAT_STATUSES = new Set(['idle', 'stopped'])
+const CHILD_READY_PARKED_CHAT_STATUSES = new Set(['idle', 'stopped', 'waiting'])
+
+function priorSettleObservation(previous) {
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) return null
+  return {
+    idleEligible: previous.idleEligible === true,
+    readyEligible: previous.readyEligible === true,
+  }
+}
+
+/**
+ * Classifies whether a boss-epic child's tracked chat has settled — the green
+ * admission condition the epic driver owns. Two consecutive polls must agree:
+ * the caller persists `observation` and passes it back as `previous` on the
+ * next poll.
+ *
+ * Inputs: `chatStatus` (any spelling `classifyChildLiveness` accepts),
+ * `chatStatusReadable`, `spinnerPresent` (the tracked chat's
+ * `spinner_present`), `displayLabel` (the session's `display_label`), and
+ * `previous` (last poll's `observation`, or absent).
+ *
+ * Readings, in order:
+ *   1. `settled-idle`  — IDLE/STOPPED, readable, no spinner, on both polls
+ *   2. `settled-ready` — Ready label and IDLE/STOPPED/WAITING, readable, no
+ *                        spinner, on both polls (Ready supersedes waiting)
+ *   3. `pending`       — eligible this poll, previous absent or disagreeing
+ *   4. `alive`         — WORKING/QUESTION, WAITING without Ready, or a spinner
+ *   5. `limited`       — LIMITED
+ *   6. `unknown`       — UNSPECIFIED, unreadable, or anything else
+ *
+ * Only the two settled readings set `settled`. Missing evidence never settles.
+ * Ready never bypasses the other green-admission conditions. Pure.
+ */
+export function classifyChildSettled({
+  chatStatus,
+  chatStatusReadable = true,
+  spinnerPresent,
+  displayLabel,
+  previous,
+} = {}) {
+  const reasons = []
+  const status = normalizeChatStatusToken(chatStatus)
+  const readable = chatStatusReadable !== false && status !== null
+  const spinner = spinnerPresent === true
+  const ready = isReadyDisplayLabel(displayLabel)
+  const prior = priorSettleObservation(previous)
+
+  if (!readable) reasons.push('chat-status-unreadable')
+  if (status) reasons.push(`chat-status:${status}`)
+  if (spinner) reasons.push('spinner')
+  if (ready) reasons.push('session-ready')
+  if (!prior) reasons.push('first-poll')
+
+  const idleEligible = readable && !spinner && CHILD_IDLE_CHAT_STATUSES.has(status)
+  const readyEligible =
+    readable && !spinner && ready && CHILD_READY_PARKED_CHAT_STATUSES.has(status)
+  const observation = { idleEligible, readyEligible }
+  const verdict = (reading) => ({
+    settled: reading === 'settled-idle' || reading === 'settled-ready',
+    reading,
+    reasons,
+    observation,
+  })
+
+  if (idleEligible && prior?.idleEligible) return verdict('settled-idle')
+  if (readyEligible && prior?.readyEligible) return verdict('settled-ready')
+  if (idleEligible || readyEligible) return verdict('pending')
+  if (!readable) return verdict('unknown')
+  if (spinner || CHILD_ALIVE_CHAT_STATUSES.has(status)) return verdict('alive')
+  if (CHILD_USAGE_LIMIT_CHAT_STATUSES.has(status)) return verdict('limited')
+  return verdict('unknown')
 }
 
 /** Default driver-side stall window: the repair lease is presumed dead after

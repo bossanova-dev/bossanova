@@ -26,6 +26,7 @@ go_test(
     srcs = [
         "actionable_error_test.go",
         "attention_test.go",
+        "build_receipt_test.go",
         "checks_verdict_test.go",
         "conflict_block_test.go",
         "display_test.go",

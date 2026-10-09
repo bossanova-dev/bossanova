@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -1170,5 +1171,112 @@ func TestDispatcherPRClosed_SetsDisplayStatusClosed(t *testing.T) {
 	}
 	if got := setter.calls[0]; got.sessionID != "sess-1" || got.info.Status != vcs.DisplayStatusClosed {
 		t.Errorf("Set(%q, %v), want (sess-1, Closed)", got.sessionID, got.info.Status)
+	}
+}
+
+// fakeDeferringArchiver models the server's archive deferral contract
+// (BOS-1380) without importing it: while a chat is busy, ArchiveSession records
+// a pending archive and returns nil at once; once the chat goes idle the
+// pending archive runs exactly once through the executor.
+type fakeDeferringArchiver struct {
+	mu      sync.Mutex
+	busy    bool
+	pending map[string]bool
+	exec    *fakeArchiver
+}
+
+func (f *fakeDeferringArchiver) ArchiveSession(ctx context.Context, id string) error {
+	f.mu.Lock()
+	if f.busy {
+		f.pending[id] = true
+		f.mu.Unlock()
+		return nil
+	}
+	f.mu.Unlock()
+	return f.exec.ArchiveSession(ctx, id)
+}
+
+func (f *fakeDeferringArchiver) isPending(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pending[id]
+}
+
+// goIdle marks the chat idle and fires every pending archive once.
+func (f *fakeDeferringArchiver) goIdle(ctx context.Context) {
+	f.mu.Lock()
+	f.busy = false
+	ids := make([]string, 0, len(f.pending))
+	for id := range f.pending {
+		ids = append(ids, id)
+	}
+	f.pending = map[string]bool{}
+	f.mu.Unlock()
+	for _, id := range ids {
+		_ = f.exec.ArchiveSession(ctx, id)
+	}
+}
+
+// TestHandlePRMerged_ArchiveAfterMerge_DefersWhileChatWorking: a merged PR on an
+// archive-after-merge repo whose session still has a working chat must not
+// archive until that chat is idle (BOS-1380). The dispatcher stays unaware of
+// the deferral — its archive request simply returns while the archive is
+// pending — and the session is still Merged and completion-notified.
+func TestHandlePRMerged_ArchiveAfterMerge_DefersWhileChatWorking(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", ShouldArchiveSessionsAfterMerge: true}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", State: machine.AwaitingChecks}
+
+	arch := &fakeDeferringArchiver{busy: true, pending: map[string]bool{}, exec: newFakeArchiver()}
+	handles := make(chan (<-chan struct{}), 4)
+	d := NewDispatcher(sessions, repos, vp, zerolog.Nop())
+	d.SetArchiver(arch, func(_ string, done <-chan struct{}) { handles <- done })
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+	d.Run(ctx, ch)
+
+	if got := sessions.sessions["sess-1"].State; got != machine.Merged {
+		t.Fatalf("state = %v, want Merged", got)
+	}
+	// The archive request completes (the tracked worker returns) without the
+	// archive executing.
+	select {
+	case done := <-handles:
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("archive request never returned")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive-after-merge was not requested")
+	}
+	if !arch.isPending("sess-1") {
+		t.Fatal("archive was not left pending while the chat works")
+	}
+	select {
+	case id := <-arch.exec.calls:
+		t.Fatalf("session %q archived while its chat was still working", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	arch.goIdle(ctx)
+	select {
+	case id := <-arch.exec.calls:
+		if id != "sess-1" {
+			t.Fatalf("archived %q, want sess-1", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session was not archived once its chat went idle")
+	}
+	select {
+	case id := <-arch.exec.calls:
+		t.Fatalf("session archived more than once (extra: %q)", id)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

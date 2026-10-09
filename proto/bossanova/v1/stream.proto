@@ -218,6 +218,11 @@ message OrchestratorCommand {
     // arithmetic lives entirely in the daemon, so bosso forwards the direction
     // and never computes a position. Replies CommandResult{move_session}.
     MoveSessionCommand move_session = 63;
+    // bosso → daemon: launch the session for one inbound trigger invocation
+    // (BOS-1348). Idempotent on invocation_id and handled asynchronously.
+    // Replies CommandResult{launch_trigger_session}; see
+    // LaunchTriggerSessionCommand.
+    LaunchTriggerSessionCommand launch_trigger_session = 64;
   }
 }
 
@@ -493,6 +498,9 @@ message CommandResult {
     // no-op that must stay distinguishable from a move that changed the order,
     // and the bare Session payload has nowhere to say so.
     MoveSessionResponse move_session = 41;
+    // LaunchTriggerSession returns the session created (or previously created)
+    // for an inbound trigger invocation.
+    LaunchTriggerSessionResult launch_trigger_session = 42;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -711,6 +719,52 @@ message MoveSessionCommand {
   optional string repo_id = 3;
 }
 
+// LaunchTriggerSessionCommand asks the daemon to start the session for one
+// inbound trigger invocation (BOS-1348). bosso has already authenticated the
+// request, applied the trigger's filters and policies, rendered the prompt, and
+// chosen this daemon; the daemon only creates the session.
+//
+// Contract:
+//   - Idempotent on invocation_id. bosso may resend after a timeout or a
+//     reconnect; a repeat for an invocation the daemon already launched creates
+//     nothing and replies with the original session_id and is_replay = true.
+//   - Replies ok = false with ERROR_CODE_NOT_FOUND when the daemon manages no
+//     repo whose origin matches repo_origin_url.
+//   - Runs asynchronously: the daemon acknowledges by replying when the session
+//     exists, and never blocks its command reader while the worktree and agent
+//     start.
+//   - A daemon that predates this command drops the unknown oneof arm and sends
+//     no reply, so bosso bounds its own wait and records the invocation as
+//     FAILED with decision_reason "daemon_unsupported".
+message LaunchTriggerSessionCommand {
+  // TriggerInvocation.id; the idempotency key.
+  string invocation_id = 1;
+  string trigger_id = 2;
+  // Canonical origin URL of the repo to launch in.
+  string repo_origin_url = 3;
+  // Session title.
+  string title = 4;
+  // Fully rendered prompt (skill slash command and payload fields applied).
+  string prompt = 5;
+  // Agent runner plugin name; empty means claude.
+  string agent_name = 6;
+  // Opaque agent model id; absent means the plugin default.
+  optional string model = 7;
+  // Opaque agent reasoning-effort level; absent means the plugin default.
+  optional string effort = 8;
+  // Branch to cut the worktree from; empty means the repo default.
+  string base_branch = 9;
+}
+
+// LaunchTriggerSessionResult is the reply to LaunchTriggerSessionCommand
+// (launch_trigger_session = 42).
+message LaunchTriggerSessionResult {
+  string session_id = 1;
+  // True when the session already existed for this invocation_id and nothing
+  // new was launched.
+  bool is_replay = 2;
+}
+
 // RecordChatCommand asks the daemon to record or resume a chat.
 // Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
 message RecordChatCommand {
@@ -760,6 +814,9 @@ message CreateCronJobCommand {
   string gate_command = 9;
   optional bool should_run_setup_command = 10;
   optional bool is_zero_output = 11;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = SKIP.
+  optional CronJobConcurrencyPolicy concurrency_policy = 12;
 }
 
 // UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
@@ -777,6 +834,9 @@ message UpdateCronJobCommand {
   optional string gate_command = 9;
   optional bool should_run_setup_command = 10;
   optional bool is_zero_output = 11;
+  // What a fire does while the job's previous run is still in progress.
+  // Omitted or UNSPECIFIED = leave unchanged.
+  optional CronJobConcurrencyPolicy concurrency_policy = 12;
 }
 
 // DeleteCronJobCommand asks the daemon to remove a cron job.

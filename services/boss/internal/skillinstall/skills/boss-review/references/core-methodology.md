@@ -54,7 +54,7 @@ Every reviewer returns a JSON array of findings. Each item is:
     "old_string": "<verbatim>",
     "new_string": "<verbatim>"
   },
-  "category": "<optional defect class>",
+  "category": "<defect class, short kebab-case; set it on every Critical or Warning>",
   "lens": "<which reviewer produced it>"
 }
 ```
@@ -62,7 +62,7 @@ Every reviewer returns a JSON array of findings. Each item is:
 `line` is an integer or `null`. `lens` identifies the producing reviewer so the
 orchestrator can attribute findings and dedupe across rounds. A reviewer with nothing to
 report returns `[]` — never prose, never an error.
-`category` is optional and identifies the defect class for within-run monoclass detection; it is not
+`category` is optional and identifies the defect class for within-run monoclass detection and for recording recurring must-fix classes as notes; it is not
 used for reviewer attribution, and omitting it keeps the finding valid.
 
 `patch` is optional for non-prose findings and required for prose-class findings — comments, docs,

@@ -30,7 +30,7 @@ function configWith(selection) {
         mcpServer: 'demo-tracker',
         team: 'Demo',
         states: { planned: 'Planned' },
-        labels: { agentFriendly: 'agent-friendly' },
+        labels: { agentBuild: 'agent-build', needsHuman: 'needs-human' },
         ...(selection === undefined ? {} : { selection }),
       },
     },
@@ -41,102 +41,126 @@ function configWith(selection) {
   return config
 }
 
-// THE INERTNESS PIN. The seam ships with no switch, so a repo carrying no `selection` block must
-// hand the tracker the argument object the merged tree handed it before this ticket. Asserted as
-// an EXACT object — an extra key of any name, including one present and undefined, fails here.
-test('the gate passes exactly {state, label} when no selection is configured', async () => {
+// The three precedence cases the gate and the worker must agree on: config only, flags only, and
+// a flag overriding its one config slot. `cli.test.mjs` drives the SAME cases through
+// `list-planned` and asserts the identical query.
+const GATE_SELECTION_CASES = [
+  [
+    'config only',
+    { labels: { include: ['backend'] }, stages: { build: { labels: { exclude: ['infra'] } } } },
+    [],
+  ],
+  ['flags only', undefined, ['--exclude-label', 'infra', '--exclude-creator', 'bot@example.com']],
+  [
+    'flag over config',
+    {
+      labels: { include: ['backend'], exclude: ['shared-out'] },
+      stages: { build: { labels: { exclude: ['infra'] } } },
+    },
+    ['--exclude-label', 'flag-out'],
+  ],
+]
+
+test('with no selection the gate scans planned AND agent-build AND NOT needs-human, unnarrowed', async () => {
   const tracker = recordingTracker(true)
   const { hasWork, reason } = await evaluateBossBuildGate({
     config: configWith(undefined),
     tracker,
   })
   assert.equal(tracker.calls.length, 1)
-  assert.deepEqual(tracker.calls[0], { state: 'Planned', label: 'agent-friendly' })
-  // A present-but-undefined key serialises differently downstream, so read key PRESENCE and not
-  // just the value. `deepEqual` above already rejects it; this says so in the failure message.
-  assert.equal('assigneeOrCreator' in tracker.calls[0], false)
+  assert.deepEqual(tracker.calls[0], {
+    state: 'Planned',
+    selection: {
+      labels: { include: [], exclude: [] },
+      assignees: { include: [], exclude: [] },
+      creators: { include: [], exclude: [] },
+      projects: { include: [], exclude: [] },
+    },
+    requireLabels: ['agent-build'],
+    excludeLabels: ['needs-human'],
+  })
   assert.equal(hasWork, true)
   assert.equal(reason, null)
 })
 
-test('the skip reason for an un-narrowed scan is the pre-seam string', async () => {
-  const { hasWork, reason } = await evaluateBossBuildGate({
+test('config only: the shared block and stages.build reach the tracker per slot', async () => {
+  const tracker = recordingTracker(false)
+  await evaluateBossBuildGate({ config: configWith(GATE_SELECTION_CASES[0][1]), tracker })
+  assert.deepEqual(tracker.calls[0].selection.labels, { include: ['backend'], exclude: ['infra'] })
+  assert.deepEqual(tracker.calls[0].requireLabels, ['agent-build'])
+})
+
+test('flags only: the gate argv narrows exactly like a config block', async () => {
+  const tracker = recordingTracker(false)
+  await evaluateBossBuildGate({
     config: configWith(undefined),
-    tracker: recordingTracker(false),
+    tracker,
+    argv: GATE_SELECTION_CASES[1][2],
   })
-  assert.equal(hasWork, false)
-  assert.equal(reason, 'boss-build gate: no unblocked Planned agent-friendly issues')
+  assert.deepEqual(tracker.calls[0].selection.labels, { include: [], exclude: ['infra'] })
+  assert.deepEqual(tracker.calls[0].selection.creators, {
+    include: [],
+    exclude: ['bot@example.com'],
+  })
 })
 
-test('a configured label set SUPERSEDES the single agentFriendly label', async () => {
+test('flag over config: a flag replaces its one slot and keeps the other polarity', async () => {
   const tracker = recordingTracker(false)
   await evaluateBossBuildGate({
-    config: configWith({ labels: ['label-a', 'label-b'] }),
+    config: configWith(GATE_SELECTION_CASES[2][1]),
     tracker,
+    argv: GATE_SELECTION_CASES[2][2],
   })
-  assert.deepEqual(tracker.calls[0], {
-    state: 'Planned',
-    label: ['label-a', 'label-b'],
-  })
-  // Supersede, not union: `agent-friendly` is still the configured role and is still resolvable,
-  // and it must NOT appear in the selector. A union would widen the scan, which is the opposite
-  // of what this seam is for, and a merge bug would look identical without this assertion.
-  assert.equal(tracker.calls[0].label.includes('agent-friendly'), false)
-})
-
-test('a configured assigneeOrCreator is forwarded alongside the label selector', async () => {
-  const tracker = recordingTracker(false)
-  await evaluateBossBuildGate({
-    config: configWith({ assigneeOrCreator: 'me' }),
-    tracker,
-  })
-  // Identity narrowing alone leaves the label selector at the configured single role.
-  assert.deepEqual(tracker.calls[0], {
-    state: 'Planned',
-    label: 'agent-friendly',
-    assigneeOrCreator: 'me',
+  assert.deepEqual(tracker.calls[0].selection.labels, {
+    include: ['backend'],
+    exclude: ['flag-out'],
   })
 })
 
-test('both selectors are forwarded together when both are configured', async () => {
-  const tracker = recordingTracker(false)
-  await evaluateBossBuildGate({
-    config: configWith({ assigneeOrCreator: 'usr_1', labels: ['label-a', 'label-b'] }),
-    tracker,
-  })
-  assert.deepEqual(tracker.calls[0], {
-    state: 'Planned',
-    label: ['label-a', 'label-b'],
-    assigneeOrCreator: 'usr_1',
-  })
+test('the gate refuses a positional or unknown argument before any tracker call', async () => {
+  for (const argv of [['BOS-1'], ['--labels', 'x'], ['--label']]) {
+    const tracker = recordingTracker(true)
+    await assert.rejects(
+      evaluateBossBuildGate({ config: configWith(undefined), tracker, argv }),
+      /unexpected argument|requires a non-empty value/,
+    )
+    assert.equal(tracker.calls.length, 0, JSON.stringify(argv))
+  }
 })
 
-// The operator-facing half of the wiring. A narrowed scan that found nothing and an empty backlog
-// are different situations calling for opposite responses, and the gate-output log is the only
-// place either is visible — so the reason has to name what was actually filtered on.
+test('the gate refuses a legacy selection block (validation throws at load)', () => {
+  assert.throws(() => configWith({ assigneeOrCreator: 'me' }), /assigneeOrCreator was removed/)
+})
+
+// The operator-facing half of the wiring: a narrowed scan that found nothing and an empty backlog
+// call for opposite responses, and the gate-output log is the only place either is visible.
 test('the skip reason names the effective filter, distinguishing a narrowed scan', async () => {
-  const narrowed = await evaluateBossBuildGate({
-    config: configWith({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] }),
-    tracker: recordingTracker(false),
-  })
-  assert.equal(
-    narrowed.reason,
-    'boss-build gate: no unblocked Planned [label-a|label-b] issues assigned to or created by me',
-  )
   const unnarrowed = await evaluateBossBuildGate({
     config: configWith(undefined),
     tracker: recordingTracker(false),
   })
-  // The discriminating assertion, not merely two spellings: an operator must be able to tell the
-  // two logs apart, and a renderer that ignored the selection block would make them identical.
+  assert.equal(
+    unnarrowed.reason,
+    'boss-build gate: no unblocked Planned issues labelled agent-build without needs-human',
+  )
+  const narrowed = await evaluateBossBuildGate({
+    config: configWith({ stages: { build: { labels: { exclude: ['infra'] } } } }),
+    tracker: recordingTracker(false),
+    argv: ['--exclude-creator', 'bot@example.com'],
+  })
+  assert.equal(
+    narrowed.reason,
+    'boss-build gate: no unblocked Planned issues labelled agent-build without needs-human matching selection labels.exclude=[infra] creators.exclude=[bot@example.com]',
+  )
   assert.notEqual(narrowed.reason, unnarrowed.reason)
 })
 
 test('a gate that found work reports no reason, narrowed or not', async () => {
-  for (const selection of [undefined, { assigneeOrCreator: 'me', labels: ['label-a'] }]) {
+  for (const argv of [[], ['--exclude-label', 'infra']]) {
     const { hasWork, reason } = await evaluateBossBuildGate({
-      config: configWith(selection),
+      config: configWith(undefined),
       tracker: recordingTracker(true),
+      argv,
     })
     assert.equal(hasWork, true)
     assert.equal(reason, null, 'a gate with work must not render a skip reason')

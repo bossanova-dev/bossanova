@@ -359,6 +359,20 @@ test('an annotation whose reason is only whitespace reports', () => {
 
 // --- Corpus and helper units ------------------------------------------------------------------
 
+test('make lint reaches check-timing-bounds through lint-scripts', () => {
+  const rootMakefile = fs.readFileSync(new URL('../Makefile', import.meta.url), 'utf8')
+  const scriptsMakefile = fs.readFileSync(new URL('./Makefile', import.meta.url), 'utf8')
+  const recipe = (source, target) => {
+    const match = source.match(new RegExp(`^${target}:[^\\n]*\\n((?:[^\\n]+\\n)*)`, 'm'))
+    assert.ok(match, `missing ${target} recipe`)
+    return match[1]
+  }
+
+  assert.match(recipe(rootMakefile, 'lint'), /\$\(MAKE\) lint-scripts(?:\s|$)/)
+  assert.match(recipe(rootMakefile, 'lint-scripts'), /\$\(MAKE\) -C scripts lint(?:\s|$)/)
+  assert.match(recipe(scriptsMakefile, 'lint'), /(?:^|\n)\t@?node check-timing-bounds\.mjs(?:\s|$)/)
+})
+
 test('the default corpus is exactly *_test.go and *.test.mjs', () => {
   assert.equal(defaultIsTestSource('thing_test.go'), true)
   assert.equal(defaultIsTestSource('thing.test.mjs'), true)

@@ -42,6 +42,11 @@ type chatPickerStub struct {
 	deleteChatCalls    int
 	lastDeleteReason   pb.DeleteChatRequest_DeletionReason
 
+	// archiveResp opts this stub into answering ArchiveSession (BOS-1380);
+	// lastArchiveReq records the request the picker sent.
+	archiveResp    *pb.ArchiveSessionResponse
+	lastArchiveReq *pb.ArchiveSessionRequest
+
 	// Switch-account canned data (BOS-171). accounts is returned by
 	// ListAccounts; switchResp / switchErr drive SwitchSessionAccount; and
 	// switchCalls records the requests the TUI dispatched.
@@ -149,7 +154,7 @@ func (s *chatPickerStub) PauseSession(context.Context, string) (*pb.Session, err
 func (s *chatPickerStub) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *chatPickerStub) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *chatPickerStub) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *chatPickerStub) MergeSession(context.Context, string) (*pb.Session, string, error) {
+func (s *chatPickerStub) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) RemoveSession(context.Context, string) error { panic("unused") }
@@ -162,8 +167,14 @@ func (s *chatPickerStub) LinkSessionPR(context.Context, string, string) (*pb.Ses
 func (s *chatPickerStub) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ArchiveSession(context.Context, string) (*pb.Session, error) {
-	panic("unused")
+func (s *chatPickerStub) ArchiveSession(_ context.Context, req *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.archiveResp == nil {
+		panic("unused")
+	}
+	s.lastArchiveReq = req
+	return s.archiveResp, nil
 }
 func (s *chatPickerStub) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
 	panic("unused")
@@ -263,6 +274,9 @@ func (s *chatPickerStub) UpdateNote(context.Context, string, *pb.UpdateNoteReque
 	panic("unused")
 }
 func (s *chatPickerStub) DeleteNote(context.Context, string, string) error { panic("unused") }
+func (s *chatPickerStub) SyncNotesNow(context.Context) (*pb.SyncNotesNowResponse, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
 	panic("unused")
 }
@@ -3665,3 +3679,5 @@ func TestChatPicker_ExplicitDeleteStatesUserRequested(t *testing.T) {
 		t.Fatalf("explicit delete stated reason %v, want %v", stub.lastDeleteReason, want)
 	}
 }
+
+func (s *chatPickerStub) SetChatPhase(context.Context, string, string, string) error { panic("unused") }

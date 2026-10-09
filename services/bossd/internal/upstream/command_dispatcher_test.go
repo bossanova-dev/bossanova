@@ -85,6 +85,10 @@ type fakeCommandHandler struct {
 	switchAgentID     string // last agentSessionID passed to SwitchAccount
 	switchAccountID   string // last accountID passed to SwitchAccount
 	switchForce       bool   // last force flag passed to SwitchAccount
+	// launchBlock, when non-nil, makes LaunchTriggerSession block until the
+	// channel is closed (BOS-1418 reader-wedge test).
+	launchBlock  chan struct{}
+	launchResult *pb.LaunchTriggerSessionResult
 	// switchBlock, when non-nil, makes SwitchAccount block until the channel
 	// is closed. Used to prove a slow switch no longer wedges the command
 	// reader (BOS-897).
@@ -410,6 +414,12 @@ func (f *fakeCommandHandler) RemoveSession(_ context.Context, sessionID string) 
 func (f *fakeCommandHandler) MoveSession(_ context.Context, req *pb.MoveSessionCommand) (*pb.MoveSessionResponse, error) {
 	f.moveSessionCmd = req
 	return f.moveSessionResponse, f.returnErr
+}
+func (f *fakeCommandHandler) LaunchTriggerSession(_ context.Context, _ *pb.LaunchTriggerSessionCommand) (*pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error) {
+	if f.launchBlock != nil {
+		<-f.launchBlock
+	}
+	return f.launchResult, pb.CommandResult_ERROR_CODE_UNSPECIFIED, f.returnErr
 }
 func (f *fakeCommandHandler) EmptyTrash(_ context.Context, olderThan *timestamppb.Timestamp) (int32, error) {
 	f.emptyTrashOlderThan = olderThan

@@ -55,7 +55,13 @@ type reconciler interface {
 }
 
 // workerStore is the subset of db.GithubCallbackStore the worker uses.
+type deliveryGate interface {
+	DeliveryVerdict(context.Context, *models.GithubCallback) (bool, string)
+	DropDelivery(context.Context, *models.GithubCallback, string) error
+}
+
 type workerStore interface {
+	CancelTriggered(context.Context, string, string, time.Time) error
 	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
 	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []db.ExpiredGithubCallback, error)
 	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error)
@@ -77,6 +83,7 @@ type workerStore interface {
 type DeliveryWorker struct {
 	store        workerStore
 	deliverer    ChatDeliverer
+	gate         deliveryGate
 	reconciler   reconciler
 	now          func() time.Time
 	logger       zerolog.Logger
@@ -91,7 +98,8 @@ type DeliveryWorker struct {
 type WorkerConfig struct {
 	Store        workerStore
 	Deliverer    ChatDeliverer
-	Reconciler   reconciler // optional: periodic reconcile safety net
+	Gate         deliveryGate // optional: drops stale terminal-session deliveries
+	Reconciler   reconciler   // optional: periodic reconcile safety net
 	Now          func() time.Time
 	Logger       zerolog.Logger
 	Owner        string // lease owner id; generated when empty
@@ -126,6 +134,7 @@ func NewDeliveryWorker(cfg WorkerConfig) *DeliveryWorker {
 		store:        cfg.Store,
 		deliverer:    cfg.Deliverer,
 		reconciler:   cfg.Reconciler,
+		gate:         cfg.Gate,
 		now:          now,
 		logger:       cfg.Logger,
 		owner:        owner,
@@ -186,6 +195,14 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 	for _, cb := range cbs {
 		if ctx.Err() != nil {
 			return
+		}
+		if w.gate != nil {
+			if deliver, reason := w.gate.DeliveryVerdict(ctx, cb); !deliver {
+				if err := w.gate.DropDelivery(ctx, cb, reason); err != nil && !benignRetirementRace(err) {
+					w.logger.Warn().Err(err).Str("callback_id", cb.ID).Msg("callback worker: drop stale delivery failed")
+				}
+				continue
+			}
 		}
 		w.deliverOne(ctx, cb.ID)
 	}

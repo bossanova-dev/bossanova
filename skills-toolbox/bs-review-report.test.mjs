@@ -1533,3 +1533,30 @@ test('falsification: killing the renderSuggestions marker branch makes the marki
   )
   assert.match(renderReport(markerFixtures.suggestions()), /⚠️ Unverified premise record/)
 })
+
+test('unrun required fix gate suppresses all green claims', () => {
+  const data = {
+    ...cleanFixture(),
+    requiredGates: ['make lint', 'make test-affected'],
+    gates: ['make test-affected: passed'],
+  }
+  const md = renderReport(data)
+  assert.doesNotMatch(md, /Gates \(all green\)|required gates green|All gates green/)
+  assert.match(md, /fix-gate-unrun/)
+  assert.match(md, /Required gates unrun/)
+  assert.match(md, /make lint/)
+  const withoutPanel = renderReport({ ...data, panel: undefined })
+  assert.doesNotMatch(withoutPanel, /Gates \(all green\)|required gates green|All gates green/)
+})
+
+test('latest unrun fix gate suppresses historical all green claims', () => {
+  const data = {
+    ...cleanFixture(),
+    requiredGates: ['make lint', 'make test-affected'],
+    gates: ['make lint: passed', 'make test-affected: passed', 'make lint: not run'],
+  }
+  const md = renderReport(data)
+  assert.doesNotMatch(md, /Gates \(all green\)|required gates green|All gates green/)
+  assert.match(md, /Required gates unrun \(fix-gate-unrun\): `make lint`/)
+  assert.match(md, /\*\*Confidence:\*\* Low/)
+})

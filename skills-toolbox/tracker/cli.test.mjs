@@ -11,6 +11,8 @@ import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
 import { validateDependencyScanInput } from '../plan-deps-lib.mjs'
+import { evaluateBossBuildGate } from '../cron-gates/boss-build.mjs'
+import { evaluateBossPlanGate } from '../cron-gates/boss-plan.mjs'
 
 const fullCandidate = {
   id: 'uuid-1',
@@ -897,10 +899,10 @@ test('claim-verdict refuses any other --comments shape by name, not as a claim f
   assert.match(emptyErr, /an object with keys /, 'and an empty object still reads as an object')
 })
 
-// --- list-planned (BOS-1294) ----------------------------------------------------
-// The worker's narrowed candidate read. Defaults come from the repo config through the SAME helper
-// the cron gate reads; explicit flags override. Config and adapter are both injected, so no test
-// here reads this repo's real config or reaches a network.
+// --- list-planned / list-unplanned (BOS-1294, BOS-1378) ---------------------------
+// The worker's narrowed candidate reads. The query comes from the SAME `stageSelectionQuery` the
+// stage's cron gate reads, with the same flags, so a gate and a worker cannot narrow differently.
+// Config and adapter are both injected: no test here reads this repo's config or the network.
 
 /** A validated config whose tracker block carries the given `selection` (or none). */
 function plannedCliConfig(selection) {
@@ -910,8 +912,8 @@ function plannedCliConfig(selection) {
       demo: {
         mcpServer: 'demo-tracker',
         team: 'Demo',
-        states: { planned: 'Planned' },
-        labels: { agentFriendly: 'agent-friendly' },
+        states: { planned: 'Planned', unplanned: 'Unplanned' },
+        labels: { agentBuild: 'agent-build', agentPlan: 'agent-plan', needsHuman: 'needs-human' },
         ...(selection === undefined ? {} : { selection }),
       },
     },
@@ -920,8 +922,8 @@ function plannedCliConfig(selection) {
   return config
 }
 
-/** Run list-planned against a recording stub adapter; resolves to what it printed and was asked. */
-async function listPlanned(args, { result = [], config = plannedCliConfig(), adapter } = {}) {
+/** Run a list verb against a recording stub adapter; resolves to what it printed and was asked. */
+async function listStage(verb, args, { result = [], config = plannedCliConfig(), adapter } = {}) {
   const calls = []
   let out = ''
   let err = ''
@@ -932,7 +934,7 @@ async function listPlanned(args, { result = [], config = plannedCliConfig(), ada
       return typeof result === 'function' ? result() : result
     },
   }
-  const code = await runCli(['list-planned', ...args], {
+  const code = await runCli([verb, ...args], {
     write: (s) => (out += s),
     errWrite: (s) => (err += s),
     env: {},
@@ -946,82 +948,136 @@ async function listPlanned(args, { result = [], config = plannedCliConfig(), ada
   return { code, out, err, calls, configLoads }
 }
 
-test('list-planned with no flags queries the config-derived selection and prints a JSON array', async () => {
-  const nodes = [{ identifier: 'DEMO-1', labels: ['agent-friendly'], attachments: [] }]
+const listPlanned = (args, options) => listStage('list-planned', args, options)
+
+const EMPTY_SELECTION = {
+  labels: { include: [], exclude: [] },
+  assignees: { include: [], exclude: [] },
+  creators: { include: [], exclude: [] },
+  projects: { include: [], exclude: [] },
+}
+
+test('list-planned with no flags queries the build stage and prints a JSON array', async () => {
+  const nodes = [{ identifier: 'DEMO-1', labels: ['agent-build'], attachments: [] }]
   const { code, out, err, calls } = await listPlanned([], { result: nodes })
   assert.equal(code, 0)
   assert.equal(err, '')
   assert.ok(out.endsWith('\n'))
   assert.deepEqual(JSON.parse(out), nodes)
-  // Exactly the gate's un-narrowed query, plus the Step 2 window — no identity key at all.
-  assert.deepEqual(calls, [{ state: 'Planned', label: 'agent-friendly', limit: 250 }])
-})
-
-test('list-planned defaults pick up a configured selection block, identically to the gate', async () => {
-  const { code, calls } = await listPlanned([], {
-    config: plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] }),
-  })
-  assert.equal(code, 0)
   assert.deepEqual(calls, [
-    { state: 'Planned', label: ['label-a', 'label-b'], assigneeOrCreator: 'me', limit: 250 },
+    {
+      state: 'Planned',
+      selection: EMPTY_SELECTION,
+      requireLabels: ['agent-build'],
+      excludeLabels: ['needs-human'],
+      limit: 250,
+    },
   ])
 })
 
-test('list-planned parses all four flags; explicit flags override the config', async () => {
+test('list-unplanned queries the plan stage: unplanned AND agent-plan AND NOT needs-human', async () => {
+  const { code, calls } = await listStage('list-unplanned', ['--limit', '5'])
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [
+    {
+      state: 'Unplanned',
+      selection: EMPTY_SELECTION,
+      requireLabels: ['agent-plan'],
+      excludeLabels: ['needs-human'],
+      limit: 5,
+    },
+  ])
+})
+
+// THE GATE/WORKER PARITY PINS. The same config and flags go through each stage's cron gate and
+// its list verb into recording trackers; the queries must be identical apart from the worker's
+// own `limit` window. Config-only, flag-only and flag-over-config are each covered.
+const PARITY_CASES = [
+  [
+    'config only',
+    {
+      labels: { include: ['backend'] },
+      stages: {
+        build: { labels: { exclude: ['infra'] } },
+        plan: { creators: { exclude: ['bot@example.com'] } },
+      },
+    },
+    [],
+  ],
+  [
+    'flags only',
+    undefined,
+    ['--exclude-label', 'infra', '--exclude-creator=bot@example.com', '--project', 'Platform'],
+  ],
+  [
+    'flag over config',
+    { labels: { include: ['backend'], exclude: ['shared-out'] }, assignees: { include: ['me'] } },
+    ['--exclude-label', 'flag-out', '--assignee', 'dev@example.com'],
+  ],
+]
+
+for (const [name, selection, flags] of PARITY_CASES) {
+  for (const [verb, gateName, evaluate, method] of [
+    ['list-planned', 'boss-build', evaluateBossBuildGate, 'hasUnblockedWork'],
+    ['list-unplanned', 'boss-plan', evaluateBossPlanGate, 'hasWork'],
+  ]) {
+    test(`${verb} and the ${gateName} gate send an identical query: ${name}`, async () => {
+      const config = plannedCliConfig(selection)
+      const gateCalls = []
+      await evaluate({
+        config,
+        argv: flags,
+        tracker: { [method]: async (query) => (gateCalls.push(query), false) },
+      })
+      const { code, err, calls } = await listStage(verb, flags, { config })
+      assert.equal(code, 0, err)
+      assert.equal(gateCalls.length, 1)
+      const { limit, ...workerQuery } = calls[0]
+      assert.equal(limit, 250)
+      assert.deepEqual(workerQuery, gateCalls[0])
+    })
+  }
+}
+
+test('list-planned flags override their one config slot instead of exiting 2', async () => {
+  const { code, calls } = await listPlanned(['--exclude-label', 'flag-out', '--state', 'Ready'], {
+    config: plannedCliConfig({ labels: { include: ['backend'], exclude: ['a'] } }),
+  })
+  assert.equal(code, 0)
+  assert.equal(calls[0].state, 'Ready', '--state overrides the stage state')
+  assert.deepEqual(calls[0].selection.labels, { include: ['backend'], exclude: ['flag-out'] })
+})
+
+test('list-planned parses all eight selection flags, repeatable and comma-separated', async () => {
   const { code, calls } = await listPlanned([
-    '--state',
-    'Ready',
     '--label',
-    'label-a,label-b',
+    'a,b',
     '--label',
-    'label-c',
-    '--assignee-or-creator',
-    'usr_9',
+    'c',
+    '--exclude-label=x',
+    '--assignee',
+    'me',
+    '--exclude-assignee',
+    'a@b.co',
+    '--creator',
+    'c@b.co',
+    '--exclude-creator',
+    'd@b.co',
+    '--project',
+    'P',
+    '--exclude-project',
+    'Q',
     '--limit',
     '25',
   ])
   assert.equal(code, 0)
-  assert.deepEqual(calls, [
-    {
-      state: 'Ready',
-      label: ['label-a', 'label-b', 'label-c'],
-      assigneeOrCreator: 'usr_9',
-      limit: 25,
-    },
-  ])
-  assert.equal(typeof calls[0].limit, 'number', '--limit is parsed as an integer')
-})
-
-test('list-planned refuses selection override flags when a selection block is configured', async () => {
-  const config = plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a'] })
-  for (const [args, flag] of [
-    [['--label', 'agent-friendly'], '--label'],
-    [['--state', 'Other'], '--state'],
-    [['--assignee-or-creator', 'usr_other'], '--assignee-or-creator'],
-  ]) {
-    const { code, out, err, calls } = await listPlanned(args, { config })
-    assert.equal(code, 2, JSON.stringify(args))
-    assert.equal(out, '', `${JSON.stringify(args)} prints nothing on stdout`)
-    assert.match(err, /^list-planned: /, JSON.stringify(args))
-    assert.ok(err.includes(flag), `${JSON.stringify(args)} names the refused flag`)
-    assert.equal(err.trim().split('\n').length, 1, 'a one-line diagnostic')
-    assert.equal(calls.length, 0, `${JSON.stringify(args)} must never reach the adapter`)
-  }
-})
-
-test('list-planned still accepts --limit under a configured selection, keeping the narrowing', async () => {
-  const { code, calls } = await listPlanned(['--limit', '10'], {
-    config: plannedCliConfig({ assigneeOrCreator: 'me', labels: ['label-a'] }),
+  assert.deepEqual(calls[0].selection, {
+    labels: { include: ['a', 'b', 'c'], exclude: ['x'] },
+    assignees: { include: ['me'], exclude: ['a@b.co'] },
+    creators: { include: ['c@b.co'], exclude: ['d@b.co'] },
+    projects: { include: ['P'], exclude: ['Q'] },
   })
-  assert.equal(code, 0)
-  assert.deepEqual(calls, [
-    { state: 'Planned', label: ['label-a'], assigneeOrCreator: 'me', limit: 10 },
-  ])
-})
-
-test('list-planned keeps a single --label a single name, not a one-element set', async () => {
-  const { calls } = await listPlanned(['--label', 'label-a'])
-  assert.equal(calls[0].label, 'label-a')
+  assert.equal(calls[0].limit, 25)
 })
 
 test('list-planned exits 2 with EMPTY stdout when the adapter lacks the selectPlanned capability', async () => {
@@ -1040,7 +1096,7 @@ test('list-planned exits 2 with EMPTY stdout when the adapter lacks the selectPl
   }
 })
 
-test('list-planned rejects an invalid --limit, a bad --label, an unknown or valueless flag', async () => {
+test('list-planned rejects an invalid --limit, a bad flag value, an unknown or valueless flag', async () => {
   for (const args of [
     ['--limit', '0'],
     ['--limit', '251'],
@@ -1050,9 +1106,11 @@ test('list-planned rejects an invalid --limit, a bad --label, an unknown or valu
     ['--label', 'label-a,,label-b'],
     ['--label', ''],
     ['--state', ''],
-    ['--assignee-or-creator', ''],
     ['--state'],
-    ['--team', 'Other'],
+    ['--state', 'A', '--state', 'B'],
+    ['--assignee-or-creator', 'me'],
+    ['--labels', 'x'],
+    ['BOS-1'],
   ]) {
     const { code, out, err, calls } = await listPlanned(args)
     assert.equal(code, 2, JSON.stringify(args))
@@ -1076,13 +1134,206 @@ test('list-planned fails closed — exit 2, empty stdout — on config, adapter,
     assert.match(err, pattern)
     assert.equal(err.trim().split('\n').length, 1, 'the diagnostic stays on one line')
   }
-  // A config without the planned state cannot derive a default, so it fails rather than widening.
+  // A config without the planned state cannot derive the query, so it fails rather than widening.
   const noState = plannedCliConfig()
   delete noState.trackerConfig.demo.states.planned
   const { code, out, err } = await listPlanned([], { config: noState })
   assert.equal(code, 2)
   assert.equal(out, '')
   assert.match(err, /states\.planned/)
+})
+
+// --- resolve-selection (BOS-1378) ------------------------------------------------------------
+
+async function resolveSelectionCli(args, { config = plannedCliConfig(), adapter } = {}) {
+  const calls = []
+  let out = ''
+  let err = ''
+  const stub = adapter ?? {
+    resolveSelection: async (query) => {
+      calls.push(query)
+      return { ...query.selection, creators: { include: [], exclude: ['usr_bot'] } }
+    },
+  }
+  const code = await runCli(['resolve-selection', ...args], {
+    write: (s) => (out += s),
+    errWrite: (s) => (err += s),
+    env: {},
+    resolveAdapter: () => stub,
+    loadConfig: () => config,
+  })
+  return { code, out, err, calls }
+}
+
+test('resolve-selection prints the stage query with the adapter-resolved selection', async () => {
+  const { code, out, err, calls } = await resolveSelectionCli([
+    '--stage',
+    'epic',
+    '--exclude-creator',
+    'bot@example.com',
+  ])
+  assert.equal(code, 0, err)
+  assert.deepEqual(calls[0].selection.creators, { include: [], exclude: ['bot@example.com'] })
+  const printed = JSON.parse(out)
+  assert.equal(printed.stage, 'epic')
+  assert.equal(printed.narrowed, true)
+  assert.deepEqual(printed.selection.creators, { include: [], exclude: ['usr_bot'] })
+  assert.deepEqual(printed.requireLabels, [])
+  assert.deepEqual(printed.excludeLabels, ['needs-human'])
+})
+
+test('resolve-selection exits 2 with no stdout on a bad stage, a missing capability or a failed resolve', async () => {
+  for (const [args, options, pattern] of [
+    [['--stage', 'deploy'], {}, /--stage must be one of/],
+    [[], {}, /--stage must be one of/],
+    [['--stage', 'epic'], { adapter: {} }, /no resolveSelection capability/],
+    [
+      ['--stage', 'epic', '--label', 'nope'],
+      {
+        adapter: {
+          resolveSelection: async () => Promise.reject(new Error('could not resolve label "nope"')),
+        },
+      },
+      /could not resolve label "nope"/,
+    ],
+  ]) {
+    const { code, out, err } = await resolveSelectionCli(args, options)
+    assert.equal(code, 2, JSON.stringify(args))
+    assert.equal(out, '')
+    assert.match(err, pattern)
+  }
+})
+
+// --- --team on the team-scoped verbs (BOS-1393) -------------------------------------
+// A zero-config run passes its resolved team; a configured team always wins and a differing flag
+// is dropped with a stderr warning. --team is not a selection override.
+
+/** A validated config whose demo tracker block names NO team (the zero-config shape). */
+function teamlessCliConfig(selection) {
+  const config = plannedCliConfig(selection)
+  delete config.trackerConfig.demo.team
+  validateConfig(config, 'test')
+  return config
+}
+
+test('list-planned --team reaches the adapter when the config names no team', async () => {
+  const { code, err, calls } = await listPlanned(['--team', ' Resolved '], {
+    config: teamlessCliConfig(),
+  })
+  assert.equal(code, 0, err)
+  assert.equal(err, '')
+  assert.equal(calls[0].team, 'Resolved')
+  assert.equal(calls[0].state, 'Planned')
+})
+
+test('list-planned exits 2 on a blank --team, before reaching the adapter', async () => {
+  for (const value of ['', '   ']) {
+    const { code, out, err, calls } = await listPlanned(['--team', value], {
+      config: teamlessCliConfig(),
+    })
+    assert.equal(code, 2)
+    assert.equal(out, '')
+    assert.match(err, /--team requires a non-empty value/)
+    assert.equal(calls.length, 0)
+  }
+  const missing = await listPlanned(['--team'], { config: teamlessCliConfig() })
+  assert.equal(missing.code, 2)
+})
+
+test('list-planned allows --team under a configured selection block', async () => {
+  const { code, err, calls } = await listPlanned(['--team', 'Resolved'], {
+    config: teamlessCliConfig({ assignees: { include: ['me'] } }),
+  })
+  assert.equal(code, 0, err)
+  assert.equal(calls[0].team, 'Resolved')
+  assert.deepEqual(calls[0].selection.assignees, { include: ['me'], exclude: [] })
+})
+
+test('list-planned ignores a --team that differs from the configured team, with a warning', async () => {
+  const { code, out, err, calls } = await listPlanned(['--team', 'Other'])
+  assert.equal(code, 0)
+  assert.equal(err, 'list-planned: --team Other ignored: trackerConfig.demo.team is Demo\n')
+  assert.equal(calls.length, 1)
+  assert.equal('team' in calls[0], false)
+  assert.deepEqual(JSON.parse(out), [])
+  // Naming the configured team itself is not a conflict.
+  const same = await listPlanned(['--team', 'demo'])
+  assert.equal(same.err, '')
+})
+
+test('fetch-candidates --team reaches the adapter when the config names no team', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    const { code, err, query } = await fetchCandidates(['--out-file', file, '--team', 'Resolved'])
+    assert.equal(code, 0, err)
+    assert.equal(err, '')
+    assert.equal(query.team, 'Resolved')
+    // Without the flag no team key is sent at all.
+    const plain = await fetchCandidates(['--out-file', file])
+    assert.equal('team' in plain.query, false)
+  })
+})
+
+test('fetch-candidates exits 64 on a blank or repeated --team and never reaches the adapter', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    for (const args of [
+      ['--out-file', file, '--team', ''],
+      ['--out-file', file, '--team', '  '],
+      ['--out-file', file, '--team', 'A', '--team', 'B'],
+    ]) {
+      const { code, out, query } = await fetchCandidates(args)
+      assert.equal(code, 64, JSON.stringify(args))
+      assert.equal(out, '')
+      assert.equal(query, undefined)
+    }
+  })
+})
+
+test('fetch-candidates ignores a --team that differs from the configured team, with a warning', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    const { code, err, query } = await fetchCandidates(
+      ['--out-file', file, '--team', 'Other'],
+      undefined,
+      {
+        trackerConfig: {
+          linear: {
+            team: 'Pinned',
+            states: { planned: 'Todo', inProgress: 'Doing', inReview: 'Review' },
+          },
+        },
+      },
+    )
+    assert.equal(code, 0, err)
+    assert.equal(
+      err,
+      'fetch-candidates: --team Other ignored: trackerConfig.linear.team is Pinned\n',
+    )
+    assert.equal('team' in query, false)
+  })
+})
+
+test('fetch-candidates treats a --team naming the configured teamKey as no conflict', async () => {
+  await withScratch(async (dir) => {
+    const file = path.join(dir, 'candidates.json')
+    const { code, err, query } = await fetchCandidates(
+      ['--out-file', file, '--team', 'pin'],
+      undefined,
+      {
+        trackerConfig: {
+          linear: {
+            team: 'Pinned',
+            teamKey: 'PIN',
+            states: { planned: 'Todo', inProgress: 'Doing', inReview: 'Review' },
+          },
+        },
+      },
+    )
+    assert.equal(code, 0, err)
+    assert.equal(err, '')
+    assert.equal('team' in query, false)
+  })
 })
 
 // --- read-description (BOS-1303) -----------------------------------------------
@@ -1477,6 +1728,14 @@ test('operations --require over the four attachment ops exits 0 against the real
   assert.match(parsed.operationMap.deletePlanAttachment.tool, /__delete_attachment$/)
 })
 
+test('operations --require listTeams exits 0 against the real Linear adapter (BOS-1393)', () => {
+  const { code, out, err } = operations(['--require', 'listTeams'])
+  assert.equal(code, 0, err)
+  const parsed = JSON.parse(out)
+  assert.equal(parsed.outcome, 'operations-present')
+  assert.match(parsed.operationMap.listTeams.tool, /__list_teams$/)
+})
+
 test('operations --require is repeatable and comma-joined, and de-duplicates names', () => {
   const { code, out } = operations(
     ['--require', 'readPlanAttachment', '--require', 'deletePlanAttachment,readPlanAttachment'],
@@ -1734,4 +1993,187 @@ test('classify-outcome is a CLI capability and NOT a tracker operation', () => {
   const operationMap = buildLinearOperationMap('bossanova-linear')
   assert.equal('classifyOutcome' in operationMap, false)
   for (const key of Object.keys(operationMap)) assert.doesNotMatch(key, /classif/i)
+})
+
+async function retroCli(args, adapter, config = DEFAULT_CONFIG) {
+  let out = '',
+    err = ''
+  const code = await runCli(args, {
+    resolveAdapter: () => adapter,
+    loadConfig: () => config,
+    write: (s) => {
+      out += s
+    },
+    errWrite: (s) => {
+      err += s
+    },
+  })
+  return { code, out, err }
+}
+
+test('fetch-marked writes atomic marker snapshot and reports only its count', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marked-cli-'))
+  try {
+    const target = path.join(dir, 'marked.json')
+    let query
+    const rows = [{ identifier: 'APP-1', description: 'Notes: key' }]
+    const result = await retroCli(
+      [
+        'fetch-marked',
+        '--prefix',
+        'Notes: ',
+        '--updated-after',
+        '2026-01-01',
+        '--max-pages',
+        '3',
+        '--out-file',
+        target,
+      ],
+      {
+        selectMarked: async (q) => {
+          query = q
+          return rows
+        },
+      },
+    )
+    assert.equal(result.code, 0)
+    assert.deepEqual(JSON.parse(result.out), { count: 1, outcome: 'marked-fetched' })
+    assert.deepEqual(query, { markerPrefix: 'Notes: ', updatedAfter: '2026-01-01', maxPages: 3 })
+    assert.deepEqual(JSON.parse(fs.readFileSync(target)), rows)
+    for (const adapter of [
+      {},
+      {
+        selectMarked: async () => {
+          throw new Error('tracker failed')
+        },
+      },
+    ]) {
+      const failure = await retroCli(
+        ['fetch-marked', '--prefix', 'Notes: ', '--out-file', target],
+        adapter,
+      )
+      assert.equal(failure.code, 2)
+      assert.equal(failure.out, '')
+      assert.deepEqual(JSON.parse(fs.readFileSync(target)), rows)
+    }
+    assert.equal((await retroCli(['fetch-marked', '--wat', 'x'], {})).code, 64)
+    assert.equal(
+      (
+        await retroCli(
+          ['fetch-marked', '--prefix', 'Notes: ', '--max-pages', '0', '--out-file', target],
+          {},
+        )
+      ).code,
+      64,
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('create-issue emits configured team, roles, exact body bytes and parent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'create-cli-'))
+  try {
+    const bodyFile = path.join(dir, 'body.md')
+    const body = 'Source notes: café\n'
+    fs.writeFileSync(bodyFile, body)
+    const config = mergeConfig(DEFAULT_CONFIG, {
+      trackerConfig: {
+        linear: {
+          team: 'APP',
+          states: { unplanned: 'Backlog' },
+          labels: { agentPlan: 'agent-plan', epic: 'epic' },
+        },
+      },
+    })
+    const args = [
+      'create-issue',
+      '--title',
+      'Theme',
+      '--body-file',
+      bodyFile,
+      '--state-role',
+      'unplanned',
+      '--label-role',
+      'agentPlan',
+      '--label',
+      'extra',
+      '--parent',
+      'APP-9',
+    ]
+    const result = await retroCli(args, { operationMap: buildLinearOperationMap('test') }, config)
+    assert.equal(result.code, 0, result.err)
+    const descriptor = JSON.parse(result.out)
+    assert.deepEqual(descriptor.args, {
+      team: 'APP',
+      title: 'Theme',
+      description: body,
+      state: 'Backlog',
+      labels: ['agent-plan', 'extra'],
+      parentId: 'APP-9',
+    })
+    assert.equal(Object.hasOwn(descriptor.args, 'project'), false)
+    const withProject = await retroCli(
+      [...args, '--project', 'project-id'],
+      { operationMap: buildLinearOperationMap('test') },
+      config,
+    )
+    assert.equal(JSON.parse(withProject.out).args.project, 'project-id')
+    assert.equal((await retroCli([...args, '--project', ''], {}, config)).code, 64)
+    assert.equal(descriptor.bytes, Buffer.byteLength(body))
+    assert.equal(descriptor.outcome, 'descriptor-emitted')
+    assert.equal(descriptor.tool, 'mcp__test__save_issue')
+    assert.equal((await retroCli(args, {}, config)).code, 2)
+    assert.equal((await retroCli([...args, '--wat', 'x'], {}, config)).code, 64)
+    assert.equal(
+      (
+        await retroCli(
+          args.map((v) => (v === 'unplanned' ? 'unknown' : v)),
+          { operationMap: buildLinearOperationMap('test') },
+          config,
+        )
+      ).code,
+      2,
+    )
+    for (const content of ['', Buffer.from([0xff])]) {
+      fs.writeFileSync(bodyFile, content)
+      const failure = await retroCli(
+        args,
+        { operationMap: buildLinearOperationMap('test') },
+        config,
+      )
+      assert.equal(failure.code, 2)
+      assert.equal(failure.out, '')
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('retro selection resolution never resolves ignored shared exclusions', async () => {
+  const config = mergeConfig(DEFAULT_CONFIG, {
+    trackerConfig: {
+      linear: {
+        selection: {
+          labels: { include: ['Docs'], exclude: ['infra'] },
+          assignees: { include: ['me'] },
+        },
+      },
+    },
+  })
+  const result = await resolveSelectionCli(['--stage', 'retro'], {
+    config,
+    adapter: {
+      resolveSelection: async (query) => {
+        assert.deepEqual(query.selection.labels, { include: ['Docs'], exclude: [] })
+        assert.deepEqual(query.selection.assignees, { include: [], exclude: [] })
+        return query.selection
+      },
+    },
+  })
+  assert.equal(result.code, 0, result.err)
+  assert.equal(
+    (await resolveSelectionCli(['--stage', 'retro', '--exclude-label', 'infra'], { config })).code,
+    2,
+  )
 })

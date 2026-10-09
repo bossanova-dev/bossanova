@@ -75,6 +75,7 @@ are configured via environment variables. See
 | `plugins`                 | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                                                         |
 | `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
 | `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
+| `notes`                   | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
 | `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
 | `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
 
@@ -187,6 +188,24 @@ an agent explicitly.
 | `cooldown_minutes`       | int    | `1`           | Minimum gap between repair attempts on the same session. |
 | `poll_interval_seconds`  | int    | `5`           | Poll interval for repair status checks.                  |
 | `sweep_interval_minutes` | int    | `1`           | How often the plugin sweeps for sessions needing repair. |
+
+## `notes` fields
+
+bossd prunes notes so a repo that records them by default never accumulates
+them without bound. Pruning runs per repo, each time a new note is written in
+that repo: notes older than the retention window are deleted first, then the
+repo is trimmed to its newest `max_per_repo` notes, oldest removed first. The
+note just written is never pruned, and a pruning failure is logged as a warning
+without failing the write.
+
+| Field            | Type | Default | Description                                                               |
+| ---------------- | ---- | ------- | ------------------------------------------------------------------------- |
+| `retention_days` | int  | `180`   | Delete a repo's notes older than this many days. `0` keeps notes forever. |
+| `max_per_repo`   | int  | `10000` | Keep at most this many notes per repo. `0` means no cap.                  |
+
+A negative value is ignored and the default applies. bossd reads these values at
+startup, so restart the daemon (`boss daemon restart`) after changing them. A
+repo that receives no new notes keeps its existing ones until its next write.
 
 ## `tmux_delivery` fields
 

@@ -11,7 +11,12 @@
 // Node built-ins only — cron worktrees are dependency-free.
 
 import { readFileSync } from 'node:fs'
-import { reviewAgreement, reviewConfidence, reviewVerdict } from './bs-review-caps.mjs'
+import {
+  reviewAgreement,
+  reviewConfidence,
+  reviewVerdict,
+  unrunFixGates,
+} from './bs-review-caps.mjs'
 import { loadSkillConfig, trackerConfigFor } from './skill-config.mjs'
 
 // The idempotency marker: bs-implement upserts the single PR comment that
@@ -24,7 +29,7 @@ export const MARKER = '<!-- bs-review -->'
 // assessment is bad). Evidence is adapted to our gate wording.
 export const VERDICT_OK = {
   assessment: (v) => /^\s*sound/i.test(v), //                 Sound ✅ | Unsound ❌
-  evidence: (v) => !/(unsatisf|fail|red)/i.test(v), //        gates green ✅ | a gate failed ❌
+  evidence: (v) => !/(unsatisf|fail|red|not run|unrun)/i.test(v), //        gates green ✅ | a gate failed ❌
   confidence: (v) => !/^\s*low\b/i.test(v), //                High/Medium ✅ | Low ❌
   testing_assessment: (v) => !/^\s*unsatisf/i.test(v), //     Satisfactory/Unnecessary ✅ | Unsatisfactory ❌
   recommendation: (v) => /^\s*(merge|ship|approve)\b/i.test(v), // Merge/Ship/Approve ✅ | Fix/Hold ❌
@@ -72,7 +77,13 @@ function detailsSection(summary, content) {
   return `<details><summary>${summary}</summary>\n\n${content}\n\n</details>`
 }
 
-function renderHeader({ rounds = 1, status = 'clean', mustfix = {}, invalid = [] } = {}) {
+function renderHeader({
+  rounds = 1,
+  status = 'clean',
+  mustfix = {},
+  invalid = [],
+  unrunGates = [],
+} = {}) {
   const r = `${rounds} round(s)`
   if (status === 'capped') {
     // Two different things cap a run: open must-fix findings, and unrepaired
@@ -94,6 +105,8 @@ function renderHeader({ rounds = 1, status = 'clean', mustfix = {}, invalid = []
     const verb = open + bad === 1 ? 'remains' : 'remain'
     return `bs-review completed after ${r}. ${parts.join(' and ')} ${verb} (surfaced below); see gates.`
   }
+  if (unrunGates.length)
+    return `bs-review completed after ${r}. All must-fix findings fixed; required gates unrun.`
   return `bs-review completed after ${r}. All must-fix findings fixed; required gates green.`
 }
 
@@ -144,6 +157,8 @@ function evidenceForReport(data = {}) {
     panel: data.panel,
     agreement: data.agreement,
     history: data.history,
+    gates: data.gates,
+    requiredGates: data.requiredGates,
     capped: data.status === 'capped',
     status: data.status,
   }
@@ -253,7 +268,7 @@ function renderReviewers(reviewers = []) {
 }
 
 // "Evidence — rounds & gates": the per-round result table plus the gate roster.
-function renderEvidence({ evidenceRows = [], gates = [] } = {}) {
+function renderEvidence({ evidenceRows = [], gates = [], unrunGates = [] } = {}) {
   const parts = []
   if (evidenceRows.length) {
     const hasRoundState = evidenceRows.some(
@@ -275,8 +290,14 @@ function renderEvidence({ evidenceRows = [], gates = [] } = {}) {
     }
   }
   if (gates.length) {
-    parts.push(`Gates (all green): ${gates.map((g) => `\`${g}\``).join(' · ')}.`)
+    parts.push(
+      `Gates${unrunGates.length ? '' : ' (all green)'}: ${gates.map((g) => `\`${g}\``).join(' · ')}.`,
+    )
   }
+  if (unrunGates.length)
+    parts.push(
+      `Required gates unrun (fix-gate-unrun): ${unrunGates.map((g) => `\`${g}\``).join(' · ')}.`,
+    )
   return parts.join('\n\n')
 }
 
@@ -813,7 +834,9 @@ export function renderReport(data = {}) {
     : null
   const confidence = hasPanelEvidence ? reviewConfidence({ ...verdictEvidence, agreement }) : null
   const callerStatus = data.status === 'clean' || data.status === 'capped' ? data.status : null
+  const unrunGates = unrunFixGates(verdictEvidence)
   const displayVerdict = verdictForDisplay(verdict, derived.status, confidence)
+  if (unrunGates.length) displayVerdict.evidence = 'Required fix gates not run (fix-gate-unrun)'
   const tracker = data.tracker !== undefined ? data.tracker : trackerConfigFor(loadSkillConfig())
 
   const blocks = []
@@ -821,6 +844,7 @@ export function renderReport(data = {}) {
     `${MARKER}\n${renderHeader({
       ...data,
       status: derived.status,
+      unrunGates,
       mustfix: verdictEvidence.mustfix,
       invalid: verdictEvidence.invalid,
     })}`,
@@ -854,7 +878,7 @@ export function renderReport(data = {}) {
 
   if (agreement) blocks.push(detailsSection('Agreement', renderAgreement(agreement)))
 
-  const evidence = renderEvidence({ evidenceRows, gates })
+  const evidence = renderEvidence({ evidenceRows, gates, unrunGates })
   if (evidence) blocks.push(detailsSection('Evidence — rounds & gates', evidence))
 
   const reviewerBytes = renderReviewerInputBytes(reviewerInputBytes)

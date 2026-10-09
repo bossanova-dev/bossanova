@@ -1,0 +1,4 @@
+# The Scheduled Sessions guide was renamed to Cron Jobs. Cloudflare Pages keeps the
+# fragment (#gate-command) when it follows a redirect.
+/guides/scheduled-sessions /guides/cron-jobs 301
+/guides/scheduled-sessions/ /guides/cron-jobs 301

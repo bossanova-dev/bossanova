@@ -127,5 +127,5 @@ The flow lives in
 
 Each session gets its own worktree. Two sessions on the same repo run
 in two separate directories with independent indexes. Neither blocks
-the other. See [Scheduled Sessions](../guides/scheduled-sessions.md)
+the other. See [Cron Jobs](../guides/cron-jobs.md)
 for how the scheduler uses this.

@@ -10,6 +10,18 @@ func boolPtr(b bool) *bool { return &b }
 
 func conclusionPtr(c CheckConclusion) *CheckConclusion { return &c }
 
+func greenCheck() CheckResult {
+	return CheckResult{Name: "build", Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)}
+}
+
+func failedCheck() CheckResult {
+	return CheckResult{Name: "build", Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)}
+}
+
+func pendingVerify(description string) CheckResult {
+	return CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: description}
+}
+
 func TestComputeDisplayStatus(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -20,7 +32,167 @@ func TestComputeDisplayStatus(t *testing.T) {
 		wantHasFailure          bool
 		wantHasChangesRequested bool
 		wantChangesRequestedBy  []string
+		wantVerifyReason        string
 	}{
+		// Verify precedence edges (BOS-1382):
+		// Conflict > Failing > Checking(ordinary) > NeedsHuman > Verifying >
+		// Rejected > Review > Approved > Passing > Checking(mergeable unknown).
+		{
+			name:       "verify: conflict beats verifying",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(false)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusConflict,
+		},
+		{
+			name:       "verify: conflict beats needs human",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(false)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("needs human: x")},
+			wantStatus: DisplayStatusConflict,
+		},
+		{
+			name:       "verify: failing beats verifying",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{failedCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name:       "verify: failing beats needs human",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{failedCheck(), pendingVerify("needs human: x")},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name:       "verify: completed verify failure is failing",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), {Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: x"}},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name:       "verify: ordinary pending beats verifying",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{{Name: "build", Status: CheckStatusInProgress}, pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusChecking,
+		},
+		{
+			name:       "verify: ordinary pending beats needs human",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{{Name: "build", Status: CheckStatusInProgress}, pendingVerify("needs human: x")},
+			wantStatus: DisplayStatusChecking,
+		},
+		{
+			name:       "verify: unclassified ordinary beats needs human",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{{Name: "build", Status: CheckStatusCompleted, Unclassified: true}, pendingVerify("needs human: x")},
+			wantStatus: DisplayStatusChecking,
+		},
+		{
+			name:             "verify: needs human beats verifying",
+			pr:               &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:           []CheckResult{greenCheck(), pendingVerify("verifying… tok"), pendingVerify("needs human: ledger-open")},
+			wantStatus:       DisplayStatusNeedsHuman,
+			wantVerifyReason: "ledger-open",
+		},
+		{
+			name:       "verify: verifying beats passing",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:       "verify: waiting description is verifying",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("waiting: checks-pending")},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:             "verify: needs human beats passing",
+			pr:               &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:           []CheckResult{greenCheck(), pendingVerify("needs human: always-human-path")},
+			wantStatus:       DisplayStatusNeedsHuman,
+			wantVerifyReason: "always-human-path",
+		},
+		{
+			name:       "verify: needs human without reason",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("needs human:")},
+			wantStatus: DisplayStatusNeedsHuman,
+		},
+		{
+			name:       "verify: lone pending verify is verifying",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:                    "verify: verifying beats rejected and carries metadata",
+			pr:                      &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:                  []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			reviews:                 []ReviewComment{{Author: "alice", State: ReviewStateChangesRequested}},
+			wantStatus:              DisplayStatusVerifying,
+			wantHasChangesRequested: true,
+			wantChangesRequestedBy:  []string{"alice"},
+		},
+		{
+			name:                    "verify: needs human beats rejected and carries metadata",
+			pr:                      &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:                  []CheckResult{greenCheck(), pendingVerify("needs human: x")},
+			reviews:                 []ReviewComment{{Author: "bob", State: ReviewStateChangesRequested}},
+			wantStatus:              DisplayStatusNeedsHuman,
+			wantHasChangesRequested: true,
+			wantChangesRequestedBy:  []string{"bob"},
+			wantVerifyReason:        "x",
+		},
+		{
+			name: "verify: verifying beats review required",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				Mergeable:         boolPtr(true),
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:             "verify: needs human beats approved",
+			pr:               &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:           []CheckResult{greenCheck(), pendingVerify("needs human: x")},
+			reviews:          []ReviewComment{{Author: "alice", State: ReviewStateApproved}},
+			wantStatus:       DisplayStatusNeedsHuman,
+			wantVerifyReason: "x",
+		},
+		{
+			name:       "verify: verifying beats approved",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			reviews:    []ReviewComment{{Author: "alice", State: ReviewStateApproved}},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:       "verify: verifying beats mergeable unknown",
+			pr:         &PRStatus{State: PRStateOpen},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusVerifying,
+		},
+		{
+			name:             "verify: needs human beats mergeable unknown",
+			pr:               &PRStatus{State: PRStateOpen},
+			checks:           []CheckResult{greenCheck(), pendingVerify("needs human: x")},
+			wantStatus:       DisplayStatusNeedsHuman,
+			wantVerifyReason: "x",
+		},
+		{
+			name:       "verify: completed verify success is passing",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), {Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess), Description: "verified"}},
+			wantStatus: DisplayStatusPassing,
+		},
+		{
+			name:       "verify: draft beats verifying",
+			pr:         &PRStatus{State: PRStateOpen, Draft: true, Mergeable: boolPtr(true)},
+			checks:     []CheckResult{greenCheck(), pendingVerify("verifying… tok")},
+			wantStatus: DisplayStatusDraft,
+		},
 		{
 			name:       "nil PR returns Idle",
 			pr:         nil,
@@ -496,6 +668,9 @@ func TestComputeDisplayStatus(t *testing.T) {
 					t.Errorf("ChangesRequestedBy = %v, want %v", got.ChangesRequestedBy, tt.wantChangesRequestedBy)
 				}
 			}
+			if got.VerifyReason != tt.wantVerifyReason {
+				t.Errorf("VerifyReason = %q, want %q", got.VerifyReason, tt.wantVerifyReason)
+			}
 		})
 	}
 }
@@ -527,10 +702,38 @@ func TestDeriveMergeBlock(t *testing.T) {
 		status             DisplayStatus
 		hasFailures        bool
 		changesRequestedBy []string
+		verifyReason       string
 		wantGate           MergeGate
 		wantDetailEmpty    bool
+		wantDetail         string
 		wantReviewers      []string
 	}{
+		{
+			name:       "verifying maps to pending",
+			status:     DisplayStatusVerifying,
+			wantGate:   MergeGatePending,
+			wantDetail: "verification is in progress on this head",
+		},
+		{
+			name:         "needs human maps to pending with reason",
+			status:       DisplayStatusNeedsHuman,
+			verifyReason: "ledger-open",
+			wantGate:     MergeGatePending,
+			wantDetail:   "the verify stage parked this head for a human: ledger-open",
+		},
+		{
+			name:       "needs human without reason",
+			status:     DisplayStatusNeedsHuman,
+			wantGate:   MergeGatePending,
+			wantDetail: "the verify stage parked this head for a human",
+		},
+		{
+			name:         "verify reason ignored outside needs human",
+			status:       DisplayStatusVerifying,
+			verifyReason: "stray",
+			wantGate:     MergeGatePending,
+			wantDetail:   "verification is in progress on this head",
+		},
 		{
 			name:               "rejected with known reviewer",
 			status:             DisplayStatusRejected,
@@ -593,7 +796,10 @@ func TestDeriveMergeBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := DeriveMergeBlock(tt.status, tt.hasFailures, tt.changesRequestedBy)
+			got := DeriveMergeBlock(tt.status, tt.hasFailures, tt.changesRequestedBy, tt.verifyReason)
+			if tt.wantDetail != "" && got.Detail != tt.wantDetail {
+				t.Errorf("Detail = %q, want %q", got.Detail, tt.wantDetail)
+			}
 			if got.Gate != tt.wantGate {
 				t.Errorf("Gate = %d, want %d", got.Gate, tt.wantGate)
 			}
@@ -616,7 +822,7 @@ func TestDeriveMergeBlock(t *testing.T) {
 func TestDeriveMergeBlockReviewDetail(t *testing.T) {
 	// With a known reviewer the detail names the login and count and warns
 	// that the daemon's own tracker may diverge from GitHub's mergeability.
-	withLogin := DeriveMergeBlock(DisplayStatusRejected, false, []string{"alice"})
+	withLogin := DeriveMergeBlock(DisplayStatusRejected, false, []string{"alice"}, "")
 	if !strings.Contains(withLogin.Detail, "alice") {
 		t.Errorf("detail %q should name the reviewer", withLogin.Detail)
 	}
@@ -625,7 +831,7 @@ func TestDeriveMergeBlockReviewDetail(t *testing.T) {
 	}
 
 	// Without a login the detail degrades gracefully but keeps the note.
-	noLogin := DeriveMergeBlock(DisplayStatusRejected, false, nil)
+	noLogin := DeriveMergeBlock(DisplayStatusRejected, false, nil, "")
 	if strings.Contains(noLogin.Detail, "from ") {
 		t.Errorf("detail %q should omit the 'from ...' clause when no login is known", noLogin.Detail)
 	}

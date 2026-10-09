@@ -305,3 +305,41 @@ func TestChatPicker_AKey_ArchiveInErrorState(t *testing.T) {
 		t.Errorf("pressing a in the error state with a session id should arm confirmArchive, got %v", m.confirm)
 	}
 }
+
+// TestChatPicker_DeferredArchive covers BOS-1380 on the detail view: the
+// archive command reports a deferred response, and a deferred success still
+// marks the picker archived so the app routes back to the list (the BOS-46
+// return-to-list routing), where the row renders from archive_pending.
+func TestChatPicker_DeferredArchive(t *testing.T) {
+	t.Run("archiveCmd carries the deferred outcome", func(t *testing.T) {
+		stub := &chatPickerStub{archiveResp: &pb.ArchiveSessionResponse{
+			Session:                &pb.Session{Id: "session-1"},
+			IsDeferred:             true,
+			BlockingAgentSessionId: "chat-1",
+		}}
+		m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+		msg, ok := m.archiveCmd()().(archiveResultMsg)
+		if !ok {
+			t.Fatalf("archiveCmd produced %T, want archiveResultMsg", msg)
+		}
+		if msg.err != nil || !msg.deferred || msg.sessionID != "session-1" {
+			t.Fatalf("msg = %+v, want deferred success for session-1", msg)
+		}
+		if stub.lastArchiveReq.GetId() != "session-1" || stub.lastArchiveReq.GetShouldForce() {
+			t.Fatalf("archive request = %v, want an unforced request for session-1", stub.lastArchiveReq)
+		}
+	})
+
+	t.Run("deferred success routes back to the list", func(t *testing.T) {
+		a := NewApp(nil, nil)
+		a.activeView = ViewChatPicker
+		a.chatPicker = ChatPickerModel{archiving: true, sessionID: "s1", session: &pb.Session{Id: "s1"}}
+		a.home.markArchiving("s1")
+
+		model, _ := a.Update(archiveResultMsg{sessionID: "s1", deferred: true})
+		got := model.(App)
+		if got.activeView != ViewHome {
+			t.Fatalf("activeView = %v after a deferred archive, want ViewHome", got.activeView)
+		}
+	})
+}

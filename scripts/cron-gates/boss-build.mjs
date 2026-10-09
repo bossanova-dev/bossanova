@@ -18,6 +18,7 @@ try {
   const { hasWork, reason } = await evaluateBossBuildGate({
     config: loadSkillConfig(),
     tracker: resolveTrackerAdapter(),
+    argv: process.argv.slice(2),
   })
   gateExit(hasWork, reason)
 } catch (err) {

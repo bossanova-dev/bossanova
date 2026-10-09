@@ -1,6 +1,6 @@
 ---
 title: Extension System
-description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the nine extension roles available.
+description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the eleven extension roles available.
 slug: /skills/extensions
 ---
 
@@ -42,7 +42,7 @@ x-boss-extension:
 
 - `extends` — the core skill this extension joins. An extension is only accepted when
   `extends` equals the core being discovered.
-- `role` — one of the nine roles below; it decides which pipeline the extension
+- `role` — one of the ten roles below; it decides which pipeline the extension
   plugs into.
 - `order` — optional integer run order, default `100`. Extensions run in ascending
   `(order, name)` order, so runs are reproducible regardless of filesystem
@@ -120,24 +120,25 @@ Recording is all that is due; a discovery skip is never fatal and never changes 
 
 ## Extension roles
 
-There are nine roles. Each attaches to a specific core skill and plugs into a
+There are ten roles. Each attaches to a specific core skill and plugs into a
 specific step of that core's pipeline.
 
-| Role            | Extends       | What it adds                                                                           | Example extension                |
-| --------------- | ------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
-| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files. | `boss-review-golang`             |
-| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                  | `boss-review-thermonuclear`      |
-| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                   | `boss-proof-docs`                |
-| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                    | `boss-plan-<reviewer>`           |
-| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                 | `boss-proof-tui`                 |
-| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                      | `boss-plan-compound-engineering` |
-| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs.                                 | `boss-build-ce`                  |
-| `notes`         | `boss-build`  | Post-terminal persistence of end-of-run notes to an external store.                    | `boss-build-notes`               |
-| `knowledge`     | `boss-build`  | Pre-PR capture of what the run learned, committed as an artifact inside the PR.        | `boss-build-knowledge`           |
+| Role            | Extends       | What it adds                                                                                      | Example extension                |
+| --------------- | ------------- | ------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files.            | `boss-review-golang`             |
+| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                             | `boss-review-thermonuclear`      |
+| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                              | `boss-proof-docs`                |
+| `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                               | `boss-plan-<reviewer>`           |
+| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                            | `boss-proof-tui`                 |
+| `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                                 | `boss-plan-compound-engineering` |
+| `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs.                                            | `boss-build-ce`                  |
+| `notes`         | `boss-build`  | Post-terminal persistence of end-of-run notes to an external store.                               | `boss-build-notes`               |
+| `knowledge`     | `boss-build`  | Pre-PR capture of what the run learned, committed as an artifact inside the PR.                   | `boss-build-knowledge`           |
+| `verify`        | `boss-verify` | A verification judgment on one PR head: `pass` with evidence, `fail` with findings, or `abstain`. | `boss-verify-<verifier>`         |
 
-The `plan-reviewer` role has no default Bossanova extension shipped; the example name
-above is illustrative of the `<core>-<suffix>` convention. Every other role has a
-concrete reference extension committed under `.claude/skills/`.
+The `plan-reviewer` and `verify` roles have no default Bossanova extension
+shipped; their example names above are illustrative of the `<core>-<suffix>` convention. Every
+other role has a concrete reference extension committed under `.claude/skills/`.
 
 ### How a `lens` extension is dispatched
 

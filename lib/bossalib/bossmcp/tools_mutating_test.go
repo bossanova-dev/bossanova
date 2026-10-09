@@ -1371,3 +1371,119 @@ func TestRepoWorktreeBaseDirArgumentScope(t *testing.T) {
 		}
 	}
 }
+
+// --- BOS-1443: concurrency_policy on create_cron_job / update_cron_job ---
+
+// callCronTool calls a cron tool against a fake backend and returns the
+// captured create and update requests plus the tool result.
+func callCronTool(t *testing.T, tool string, args map[string]any) (*pb.CreateCronJobRequest, *pb.UpdateCronJobRequest, *mcp.CallToolResult) {
+	t.Helper()
+	var created *pb.CreateCronJobRequest
+	var updated *pb.UpdateCronJobRequest
+	backend := &fakeBackend{
+		createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+			created = req
+			return &pb.CronJob{Id: "c1"}, nil
+		},
+		updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+			updated = req
+			return &pb.CronJob{Id: "c1"}, nil
+		},
+	}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		t.Fatalf("call %s: %v", tool, err)
+	}
+	return created, updated, res
+}
+
+func TestCronJobToolsForwardConcurrencyPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  pb.CronJobConcurrencyPolicy
+	}{
+		{"skip", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP},
+		{"cancel_in_progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS},
+		{"allow_concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+		// Lenient like the CLI: the hyphenated spelling and any case match too.
+		{"Allow-Concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+	} {
+		t.Run("create/"+tt.value, func(t *testing.T) {
+			created, _, res := callCronTool(t, "create_cron_job", map[string]any{
+				"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *", "concurrency_policy": tt.value,
+			})
+			if res.IsError {
+				t.Fatalf("create_cron_job error: %s", textOf(t, res))
+			}
+			if created.ConcurrencyPolicy == nil {
+				t.Fatal("concurrency_policy should set the proto field, got nil")
+			}
+			if got := created.GetConcurrencyPolicy(); got != tt.want {
+				t.Errorf("ConcurrencyPolicy = %v, want %v", got, tt.want)
+			}
+		})
+		t.Run("update/"+tt.value, func(t *testing.T) {
+			_, updated, res := callCronTool(t, "update_cron_job", map[string]any{"id": "c1", "concurrency_policy": tt.value})
+			if res.IsError {
+				t.Fatalf("update_cron_job error: %s", textOf(t, res))
+			}
+			if updated.ConcurrencyPolicy == nil {
+				t.Fatal("concurrency_policy should set the proto field, got nil")
+			}
+			if got := updated.GetConcurrencyPolicy(); got != tt.want {
+				t.Errorf("ConcurrencyPolicy = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCronJobToolsOmitConcurrencyPolicyLeavesUnset: omitted means nil, so create
+// gets the server default (skip) and update leaves the stored value alone.
+func TestCronJobToolsOmitConcurrencyPolicyLeavesUnset(t *testing.T) {
+	created, _, res := callCronTool(t, "create_cron_job", map[string]any{
+		"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *",
+	})
+	if res.IsError {
+		t.Fatalf("create_cron_job error: %s", textOf(t, res))
+	}
+	if created.ConcurrencyPolicy != nil {
+		t.Errorf("omitted concurrency_policy should leave the create field nil, got %v", *created.ConcurrencyPolicy)
+	}
+
+	_, updated, res := callCronTool(t, "update_cron_job", map[string]any{"id": "c1", "name": "x"})
+	if res.IsError {
+		t.Fatalf("update_cron_job error: %s", textOf(t, res))
+	}
+	if updated.ConcurrencyPolicy != nil {
+		t.Errorf("omitted concurrency_policy should leave the update field nil, got %v", *updated.ConcurrencyPolicy)
+	}
+}
+
+// TestCronJobToolsRejectUnknownConcurrencyPolicy: an unknown value is an error
+// naming the valid values, and never reaches the backend.
+func TestCronJobToolsRejectUnknownConcurrencyPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"create_cron_job", map[string]any{"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *", "concurrency_policy": "queue"}},
+		{"update_cron_job", map[string]any{"id": "c1", "concurrency_policy": "queue"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			created, updated, res := callCronTool(t, tc.tool, tc.args)
+			if !res.IsError {
+				t.Fatalf("%s accepted concurrency_policy=queue", tc.tool)
+			}
+			msg := textOf(t, res)
+			for _, want := range []string{"queue", "skip", "cancel_in_progress", "allow_concurrent"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error %q does not name %q", msg, want)
+				}
+			}
+			if created != nil || updated != nil {
+				t.Error("an invalid concurrency_policy must not reach the backend")
+			}
+		})
+	}
+}

@@ -129,6 +129,11 @@ func emptyWorld() World { return World{} }
 //   - busy: every meaningful session state on the home board (truncation demo).
 func Presets() map[string]Preset {
 	return map[string]Preset{
+		"session-phase": {
+			World:      SessionPhaseWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"demo": {
 			World:      DemoWorld,
 			SeedKind:   SeedAcknowledged,
@@ -289,6 +294,11 @@ func Presets() map[string]Preset {
 		// with a spinner. The waiting-callback preset cannot show this — it
 		// seeds only a working-derived parked session. Carries the same
 		// cloud-access e2e pin as demo so boss lands on the home session list.
+		"ready-handoff": {
+			World:      ReadyHandoffWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"waiting-demoted": {
 			World:      WaitingDemotedWorld,
 			SeedKind:   SeedAcknowledged,

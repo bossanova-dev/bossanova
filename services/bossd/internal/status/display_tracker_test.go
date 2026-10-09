@@ -87,6 +87,24 @@ func TestDisplayTracker_Mergeable_ThreadsThroughSetGetBatch(t *testing.T) {
 	}
 }
 
+func TestDisplayTracker_VerifyReason_ThreadsThroughSetGetBatch(t *testing.T) {
+	tr := NewDisplayTracker()
+
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "ledger-open"})
+	if e := tr.Get("sess-1"); e == nil || e.VerifyReason != "ledger-open" {
+		t.Fatalf("Get VerifyReason = %+v, want ledger-open", e)
+	}
+	if b := tr.GetBatch([]string{"sess-1"})["sess-1"]; b == nil || b.VerifyReason != "ledger-open" {
+		t.Fatalf("GetBatch VerifyReason = %+v, want ledger-open", b)
+	}
+
+	// Refreshed by every poll, not preserved: a later Set without a reason clears it.
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusVerifying})
+	if e := tr.Get("sess-1"); e == nil || e.VerifyReason != "" {
+		t.Fatalf("Get VerifyReason after reset = %+v, want empty", e)
+	}
+}
+
 func TestDisplayTracker_Get_NotFound(t *testing.T) {
 	tr := NewDisplayTracker()
 	if e := tr.Get("nonexistent"); e != nil {
@@ -488,4 +506,84 @@ func TestSetPreservesArchiving(t *testing.T) {
 	if e := tr.Get("s1"); e == nil || !e.Archiving {
 		t.Fatalf("Set() clobbered Archiving; got %+v", e)
 	}
+}
+
+func TestDisplayTrackerBuildReceiptFollowsEachPoll(t *testing.T) {
+	tracker := NewDisplayTracker()
+	for _, receipt := range []bool{true, false, true} {
+		tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: receipt})
+		if got := tracker.Get("session").HasBuildReceipt; got != receipt {
+			t.Fatalf("Get receipt = %v, want %v", got, receipt)
+		}
+		if got := tracker.GetBatch([]string{"session"})["session"].HasBuildReceipt; got != receipt {
+			t.Fatalf("GetBatch receipt = %v, want %v", got, receipt)
+		}
+		tracker.SetMerging("session", true)
+		tracker.SetMerging("session", false)
+		if got := tracker.Get("session").HasBuildReceipt; got != receipt {
+			t.Fatalf("transient mutation changed receipt = %v, want %v", got, receipt)
+		}
+	}
+}
+
+func TestDisplayTrackerUnsuccessfulReceiptRetiresLatch(t *testing.T) {
+	tracker := NewDisplayTracker()
+	tracker.Set("session", vcs.DisplayInfo{HasBuildReceipt: true, BuildReceiptSeen: true, HeadSHA: "headA"})
+	// A pending/failed boss/build on the receipted head itself keeps it.
+	tracker.Set("session", vcs.DisplayInfo{BuildReceiptSeen: true, HeadSHA: "headA"})
+	if got := tracker.Get("session").ReceiptHeadSHA; got != "headA" {
+		t.Fatalf("ReceiptHeadSHA after unsuccessful receipt on the same head = %q, want headA", got)
+	}
+	// One on a newer head retires the latch, so a later push cannot carry
+	// headA's success past headB's verdict.
+	tracker.Set("session", vcs.DisplayInfo{BuildReceiptSeen: true, HeadSHA: "headB"})
+	if got := tracker.Get("session").ReceiptHeadSHA; got != "" {
+		t.Fatalf("ReceiptHeadSHA after unsuccessful receipt on headB = %q, want empty", got)
+	}
+	tracker.Set("session", vcs.DisplayInfo{HeadSHA: "headC"})
+	if got := tracker.Get("session").ReceiptHeadSHA; got != "" {
+		t.Fatalf("ReceiptHeadSHA on unreceipted headC = %q, want empty", got)
+	}
+}
+
+func TestDisplayTrackerReceiptHeadSHALatchesLastReceiptedHead(t *testing.T) {
+	tracker := NewDisplayTracker()
+	latch := func(want string) {
+		t.Helper()
+		if got := tracker.Get("session").ReceiptHeadSHA; got != want {
+			t.Fatalf("Get ReceiptHeadSHA = %q, want %q", got, want)
+		}
+		if got := tracker.GetBatch([]string{"session"})["session"].ReceiptHeadSHA; got != want {
+			t.Fatalf("GetBatch ReceiptHeadSHA = %q, want %q", got, want)
+		}
+	}
+
+	// A Set with no receipt on a fresh entry latches nothing.
+	tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: "head0"})
+	latch("")
+
+	// A receipted Set latches its head.
+	tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true, HeadSHA: "headA"})
+	latch("headA")
+
+	// A later Set for a new, unreceipted head keeps the latch while
+	// HasBuildReceipt follows the poll.
+	tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: "headB"})
+	latch("headA")
+	if e := tracker.Get("session"); e.HasBuildReceipt || e.HeadSHA != "headB" {
+		t.Fatalf("entry = %+v, want unreceipted headB", e)
+	}
+
+	// A receipt without a head cannot move the latch.
+	tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true})
+	latch("headA")
+
+	// The latch moves when the new head is itself receipted.
+	tracker.Set("session", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true, HeadSHA: "headB"})
+	latch("headB")
+
+	// Transient flag mutations do not disturb it.
+	tracker.SetRepairing("session", true)
+	tracker.SetMerging("session", true)
+	latch("headB")
 }

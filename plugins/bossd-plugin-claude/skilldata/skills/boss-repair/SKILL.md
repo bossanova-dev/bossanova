@@ -29,13 +29,14 @@ BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts
 if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
 ```
 
-| Question                                         | Ask                                                         |
-| ------------------------------------------------ | ----------------------------------------------------------- |
-| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`            |
-| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …` |
-| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                 |
-| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`      |
-| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …` |
+| Question                                         | Ask                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------ |
+| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`             |
+| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`  |
+| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                  |
+| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`       |
+| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`  |
+| Post or read the `boss/build` receipt            | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" post\|read …` |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
@@ -75,12 +76,14 @@ judgement.
    re-read it; if someone else moved the head, that CI result is stale — keep your commit, don't push
    it, and report it as built but unpushed. Your own pushes don't count: re-baseline after each one.
    Review-feedback fixes don't depend on CI, so they are not affected.
+   If someone else moved the head, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
 
 5. **Confirm your commits actually landed.** After pushing, `git fetch origin <branch>` and check
    that every commit you pushed is an ancestor of `origin/<branch>`
    (`git merge-base --is-ancestor <sha> origin/<branch>`). `Everything up-to-date` is not proof — it
    is also what you see when someone else moved your local HEAD. If local and remote have diverged,
    do not push and do not force-push; report it.
+   On local/remote divergence, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger human-push-on-agent-pr --where "boss-repair push guard"` (never fatal).
 
 6. **Unobserved is never green.** Read checks only through `pr-check-state.mjs classify`: `green`
    is the only pass, and `pending` (including reason `absent-gate`, a gate the previous head had that
@@ -96,19 +99,51 @@ judgement.
 
 ## A repair pass
 
-1. **Assess.** Record the PR head SHA. Read the PR, its checks (via the classifier), its open review
-   feedback (via the probe), mergeability, and the worktree state. Decide what is wrong: conflict,
+1. **Assess.** Report the phase (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal), then record the PR head SHA as `START_SHA` and read its receipt:
+   `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read --sha "$START_SHA" --context boss/build`.
+   `present` with `state: success` ⇒ this pass carries the receipt; `absent` or `unknown` ⇒ it does
+   not. Read the PR, its checks (via the classifier), its open review feedback (via the probe),
+   mergeability, and the worktree state. Decide what is wrong: conflict,
    failing checks, review feedback, a must-fix finding recorded only in the PR body or the
    dispatching core's review report, or nothing. A probe answer you could not read counts as "there
    may be something" — never report "nothing to repair" without having looked.
 2. **Repair**, review feedback first (its content does not go stale), then conflicts, then failing
    checks (re-check the head per rule 4 before acting on CI). See the notes below for each.
-3. **Verify locally.** Run the repo's formatter and the tests relevant to the change
-   (`commands.testAffected` when the repo has one, otherwise the tests covering what you changed);
-   CI re-runs the full suite after the push. Quote each gate's own final summary line in
-   the report; a result you did not run is reported as not run, never as a pass. Take a verdict from
-   the command's own exit status, not through a pipe (a pipeline reports its tail's status).
-4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions.
+3. **Verify locally.** Run the repo's formatter, then resolve the fix gates:
+
+   ```bash
+   FIX_ROUND_GATES=$(BOSS_REPAIR_TOOLBOX="$BOSS_REPAIR_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, fixRoundGates } = await import(pathToFileURL(process.env.BOSS_REPAIR_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(fixRoundGates(loadSkillConfig())))')
+   ```
+
+   Run every command in order (`lint`, then `testAffected`). For a `missing` key, discover the repo's
+   corresponding lint or affected-test command; never substitute the full suite (CI owns it).
+   Report resolved commands as `requiredGates` and execution results as `gates`
+   (`<command>: <result>`), quoting each gate's own final summary; boss-build rewrites each row as
+   ``repair: `<command>` → <result>`` in `## Local verification` (or report
+   `gap: <what could not be selected reliably and why>`). A command you did not run is
+   `not run`, never a pass. Take verdicts from the command's exit status, not a pipeline tail.
+
+4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions. When the
+   pass carries the receipt, rule 5 confirmed the push landed, and `HEAD` equals `origin/<branch>`,
+   carry it to the new head — in default mode and on every pushing Watch-mode pass, whose next start
+   head is then the receipted one. A non-zero exit only warns; it never changes the pass outcome or
+   its exit code:
+
+   ```bash
+   BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
+   if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
+   PR_URL="$(gh pr view --json url -q .url 2>/dev/null)"
+   BRANCH="$(git branch --show-current)"
+   if git fetch -q origin "$BRANCH" &&
+     [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$BRANCH")" ]; then
+     node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" post --context boss/build --state success \
+       --sha "$(git rev-parse HEAD)" --description "boss-repair pass pushed $(git rev-parse --short HEAD)" \
+       --target-url "$PR_URL" || echo "warning: boss/build receipt not posted — pass outcome unaffected" >&2
+   else
+     echo "warning: boss/build receipt not posted — fetch failed or HEAD is not origin/$BRANCH" >&2
+   fi
+   ```
+
 5. **Poll once** (default mode) and report.
 
 You may run a strategy in a dispatched subagent to keep diffs and CI logs out of your own context —
@@ -272,8 +307,10 @@ Report concisely:
 - **Actions** and **commits** (hash and subject), noting any pre-existing work you adopted.
 - **Gate results** — each gate's own quoted summary line, or "not run".
 - **Root causes** — the cause → checks table, when checks failed.
-- **Push state** — whether everything you committed is on `origin/<branch>`, or why not.
+- **Push state** — whether everything you committed is on `origin/<branch>`, or why not, and the
+  receipt: `boss/build` posted, not carried (the start head had none), or failed.
 - **Status** — checks green / failing / pending / unknown; review feedback clean / parked / open.
+  At the terminal report, for classifier `unknown` or `pending` with reason `absent-gate`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger gate-unknown --where "<check name>"` (never fatal).
 - **Residuals** — each with why this pass stopped short, or "none".
 
 ## Watch mode
@@ -335,8 +372,11 @@ End with the report plus a final line naming why the loop ended — exactly one 
 pending-check state. Callers parse this token. Ending short of green is still a residual and exits
 zero; only a true stop exits non-zero. When the 5-pass bound ends the loop, the residuals include
 pending checks and any review feedback that arrived after the final push.
+For terminal `no-progress` or `max-attempts`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger repair-exhausted --where "<failing check name, or review feedback>"` (never fatal).
 
 ## Post-terminal notes extensions (repo opt-in)
+
+Unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" flush --core boss-repair --outcome "<outcome>" --mode "<mode>"` once (unsampled, never fatal), then continue.
 
 Skip this phase when `BOSS_NOTES_SUPPRESSED=1` (a calling core owns the notes for its whole run).
 Otherwise, after the terminal outcome is decided:
@@ -375,3 +415,4 @@ its descriptor's `skillPath` (resources resolve from `dir`), passing:
 Validate each result with `node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" validate --role notes
 --file <outPath>`, record the persisted-note count or the skip reason, and remove the temp dir. This
 phase never changes the outcome, exit code, or any PR write.
+For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger extension-failed --where "<extension name>"` (never fatal).

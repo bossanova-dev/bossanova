@@ -8,7 +8,12 @@
 // "blocks" whose `issue` is X. A blocker clears only when its PR is merged
 // (state Done -> type "completed") or the work is dropped (Canceled -> "canceled").
 
-import { linearRequest, buildIssueCountFilter, resolveGateSelectors } from './linear-gate-lib.mjs'
+import {
+  assertNoLegacyGateKeys,
+  buildIssueCountFilter,
+  linearRequest,
+  resolveGateSelectors,
+} from './linear-gate-lib.mjs'
 
 // Linear state.type values that mean a blocker no longer blocks.
 export const BLOCKER_CLEARED_STATE_TYPES = new Set(['completed', 'canceled'])
@@ -74,6 +79,9 @@ export function countUnblocked(issues, opts) {
 // a concrete id costs zero, and a selector set to the literal `me` costs one viewer lookup of its
 // own — the resolver is not memoised, so two `me` selectors cost two lookups. That callers in this
 // tree set at most one selector is an assumption about the callers, not a property of this gate.
+//
+// `filter` is the pre-rendered alternative to the legacy keys (the selection path); combining the
+// two throws, exactly as `runLinearGate` does.
 export async function runUnblockedGate({
   apiKey,
   state,
@@ -81,25 +89,37 @@ export async function runUnblockedGate({
   assignee,
   creator,
   assigneeOrCreator,
+  filter: rendered,
   maxCandidates = 250,
   fetchImpl = fetch,
   endpoint,
 }) {
-  const { assigneeId, creatorId, assigneeOrCreatorId } = await resolveGateSelectors({
-    apiKey,
-    assignee,
-    creator,
-    assigneeOrCreator,
-    fetchImpl,
-    endpoint,
-  })
-  const filter = buildIssueCountFilter({
-    state,
-    label,
-    assigneeId,
-    creatorId,
-    assigneeOrCreatorId,
-  })
+  let filter = rendered
+  if (filter !== undefined) {
+    assertNoLegacyGateKeys('runUnblockedGate', {
+      state,
+      label,
+      assignee,
+      creator,
+      assigneeOrCreator,
+    })
+  } else {
+    const { assigneeId, creatorId, assigneeOrCreatorId } = await resolveGateSelectors({
+      apiKey,
+      assignee,
+      creator,
+      assigneeOrCreator,
+      fetchImpl,
+      endpoint,
+    })
+    filter = buildIssueCountFilter({
+      state,
+      label,
+      assigneeId,
+      creatorId,
+      assigneeOrCreatorId,
+    })
+  }
   const data = await linearRequest({
     apiKey,
     query: BLOCKING_GATE_QUERY,

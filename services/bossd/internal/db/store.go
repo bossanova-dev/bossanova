@@ -53,6 +53,11 @@ var ErrGithubCallbackNotOwned = errors.New("github callback belongs to another t
 // single invalid-argument code with errors.Is.
 var ErrNoteInvalid = errors.New("invalid note")
 
+// ErrNoteSyncInvalid is returned by NoteSyncStore.RecordOutcome for an outcome
+// state that is unknown or not a valid result (pending is the outbox's own
+// state, never an outcome the worker reports).
+var ErrNoteSyncInvalid = errors.New("invalid note sync outcome")
+
 // CreateRepoParams holds the parameters for creating a new repo.
 type CreateRepoParams struct {
 	DisplayName       string
@@ -499,6 +504,10 @@ type CreateCronJobParams struct {
 	// PR, because the run is expected to produce no repo changes. Persisted only —
 	// nothing honours it yet (BOS-543).
 	IsZeroOutput bool
+	// ConcurrencyPolicy decides what a fire does while the job's previous run is
+	// still in progress. Empty stores the default, skip. Persisted only — the
+	// scheduler does not honour it yet (BOS-1437).
+	ConcurrencyPolicy models.CronJobConcurrencyPolicy
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
@@ -511,10 +520,11 @@ type UpdateCronJobParams struct {
 	AgentName             *string
 	Model                 *string // nil = don't update; "" is a real value (plugin default)
 	IsEnabled             *bool
-	NextRunAt             **time.Time // double pointer: nil = don't update, *nil = clear
-	GateCommand           *string     // nil = don't update; "" = clear gate
-	ShouldRunSetupCommand *bool       // nil = don't update
-	IsZeroOutput          *bool       // nil = don't update
+	NextRunAt             **time.Time                      // double pointer: nil = don't update, *nil = clear
+	GateCommand           *string                          // nil = don't update; "" = clear gate
+	ShouldRunSetupCommand *bool                            // nil = don't update
+	IsZeroOutput          *bool                            // nil = don't update
+	ConcurrencyPolicy     *models.CronJobConcurrencyPolicy // nil = don't update
 }
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.
@@ -729,6 +739,9 @@ type GithubCallbackStore interface {
 	// returns ErrGithubCallbackTriggerConflict if the row is no longer active,
 	// or sql.ErrNoRows if absent.
 	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
+
+	// CancelTriggered cancels only a triggered callback, before delivery acquires its lease.
+	CancelTriggered(ctx context.Context, id, event string, now time.Time) error
 	// ExpireOverdue transitions every non-terminal callback whose expires_at is at
 	// or before now to the expired state, returning the number of rows changed.
 	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
@@ -849,23 +862,108 @@ type ListNotesFilter struct {
 // removes the notes that session wrote.
 type NoteStore interface {
 	// Create validates params, normalises tags, and inserts the note with its
-	// tag rows in one transaction. A non-nil IdempotencyKey atomically returns
-	// the existing repo-scoped note on retry without mutating it. Returns
-	// ErrNoteInvalid (wrapped) on validation failure.
+	// tag rows and its version-1 pending sync-outbox row in one transaction. A
+	// non-nil IdempotencyKey atomically returns the existing repo-scoped note on
+	// retry without mutating it or its outbox row. Returns ErrNoteInvalid
+	// (wrapped) on validation failure. After a successful fresh insert it
+	// best-effort prunes that repo's expired and over-cap notes (the store's
+	// retention policy) together with their outbox rows — pruning is local
+	// retention and deliberately leaves no tombstone; a prune failure is logged,
+	// never returned, and an idempotent retry prunes nothing.
 	Create(ctx context.Context, params CreateNoteParams) (*models.Note, error)
-	// Get returns a note (with its tags) by id, or sql.ErrNoRows if absent.
+	// Get returns a note (with its tags and sync state) by id, or sql.ErrNoRows
+	// if absent.
 	Get(ctx context.Context, id string) (*models.Note, error)
-	// List returns notes matching filter, ordered by created_at then id.
+	// List returns notes matching filter, ordered by created_at then id, each
+	// with its tags and sync state.
 	List(ctx context.Context, filter ListNotesFilter) ([]*models.Note, error)
-	// Update applies the non-nil fields of params in one transaction and bumps
-	// updated_at. A non-nil Tags slice REPLACES the tag set rather than merging
-	// into it. Returns sql.ErrNoRows if the note is absent and ErrNoteInvalid
-	// (wrapped) on validation failure. An update with no fields set is a no-op
-	// that returns the current note unchanged.
+	// Update applies the non-nil fields of params in one transaction, bumps
+	// updated_at, and in the same transaction bumps the note's sync-outbox
+	// source_version and resets it to pending. A non-nil Tags slice REPLACES the
+	// tag set rather than merging into it. Returns sql.ErrNoRows if the note is
+	// absent and ErrNoteInvalid (wrapped) on validation failure. An update with
+	// no fields set is a no-op that returns the current note unchanged and
+	// leaves the outbox alone.
 	Update(ctx context.Context, params UpdateNoteParams) (*models.Note, error)
-	// Delete removes a note and (by cascade) its tag rows. It is idempotent:
-	// deleting an absent id is a nil no-op.
+	// Delete removes a note and (by cascade) its tag rows and, in the same
+	// transaction, turns its sync-outbox row into a pending tombstone
+	// (is_deleted = 1, version bumped) that outlives the note until the delete
+	// is propagated. It is idempotent: deleting an absent id is a nil no-op that
+	// writes nothing.
 	Delete(ctx context.Context, id string) error
+}
+
+// NoteSyncChange is one due outbox row handed to the sync worker by
+// NoteSyncStore.ClaimDue.
+type NoteSyncChange struct {
+	NoteID string
+	// SourceVersion is the local version this change carries. The worker must
+	// pass it back to RecordOutcome unchanged.
+	SourceVersion int64
+	// IsDeleted marks a tombstone: the note was deleted locally and the cloud
+	// copy should be removed. Note is nil for a tombstone.
+	IsDeleted bool
+	// TombstoneRepoID and TombstoneNoteCreatedAt are the deleted note's
+	// repository and creation time, captured by the delete (BOS-1435) so the
+	// tombstone can still be routed and dated. Set only on a tombstone; empty
+	// and nil on one written before that capture existed.
+	TombstoneRepoID        string
+	TombstoneNoteCreatedAt *time.Time
+	// AttemptCount includes the attempt this claim represents.
+	AttemptCount int
+	// Note is the note's content (with tags) read in the claiming transaction,
+	// so it is exactly the content of SourceVersion. Nil for a tombstone.
+	Note *models.Note
+}
+
+// NoteSyncOutcomeDetails carries the optional parts of a sync outcome.
+type NoteSyncOutcomeDetails struct {
+	// NextAttemptAt schedules the next retry for a retryable outcome
+	// (rate_limited, failed). Nil makes the row due immediately; it is ignored
+	// for synced.
+	NextAttemptAt *time.Time
+	// OrganizationID records the Bosso organization the note synced to. Nil or
+	// blank keeps the previously recorded value.
+	OrganizationID *string
+	// Error is a human-readable reason for a non-synced outcome. Empty clears
+	// last_error; it is ignored for synced.
+	Error string
+}
+
+// NoteSyncStore is the sync worker's view of the note sync outbox
+// (note_sync_states) that NoteStore writes transactionally (BOS-1429). It never
+// talks to the network itself.
+type NoteSyncStore interface {
+	// ClaimDue returns up to limit outbox rows that are due at now — state
+	// pending, rate_limited, failed, not_entitled or refused with
+	// next_attempt_at unset or not after now — oldest change first, and records an attempt on each (attempt_count
+	// + 1, last_attempted_at = now) in the same transaction that reads the note
+	// content, so each live change's Note matches its SourceVersion. Tombstones
+	// are returned with a nil Note; a live row whose note is missing is skipped.
+	// A non-positive limit returns nil.
+	//
+	// It assumes a single sync worker: two concurrent claimers could both send
+	// the same version. That is harmless, because RecordOutcome's version guard
+	// makes a duplicate result for the same version idempotent.
+	ClaimDue(ctx context.Context, now time.Time, limit int) ([]NoteSyncChange, error)
+	// RecordOutcome applies the result of sending version of noteID, but ONLY
+	// while the row's source_version still equals version: a newer local write
+	// keeps its pending state and the stale outcome is dropped (applied =
+	// false, nil error). Synced records synced_version/synced_at and clears
+	// last_error and next_attempt_at; any other state records details.Error and
+	// details.NextAttemptAt. Returns ErrNoteSyncInvalid (wrapped) for pending
+	// or an unknown state.
+	RecordOutcome(ctx context.Context, noteID string, version int64, state models.NoteSyncStatus,
+		details NoteSyncOutcomeDetails) (applied bool, err error)
+	// PurgeSettledTombstones removes tombstone rows that are settled (synced or
+	// suppressed) or were last written before olderThan, plus orphaned live
+	// rows whose note no longer exists. It returns the number of rows removed.
+	// olderThan is clamped to now - NoteCloudTTL, so an unpropagated delete is
+	// only dropped once the cloud copy it targets has expired.
+	PurgeSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
+	// CountByState returns how many outbox rows (live notes and unpurged
+	// tombstones) are in each sync state. A state with no rows is absent.
+	CountByState(ctx context.Context) (map[models.NoteSyncStatus]int64, error)
 }
 
 // ProxyTokenStore persists the failover proxy's path-token registry (BOS-979)

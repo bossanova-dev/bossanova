@@ -689,7 +689,7 @@ func (s *stubRepoClient) RetrySession(context.Context, string) (*pb.Session, err
 func (s *stubRepoClient) CloseSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) MergeSession(context.Context, string) (*pb.Session, string, error) {
+func (s *stubRepoClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) RemoveSession(context.Context, string) error { panic("unused") }
@@ -702,7 +702,7 @@ func (s *stubRepoClient) LinkSessionPR(context.Context, string, string) (*pb.Ses
 func (s *stubRepoClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
+func (s *stubRepoClient) ArchiveSession(context.Context, *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) ResurrectSession(context.Context, string) (client.ResurrectSessionStream, error) {
@@ -788,6 +788,9 @@ func (s *stubRepoClient) UpdateNote(context.Context, string, *pb.UpdateNoteReque
 	panic("unused")
 }
 func (s *stubRepoClient) DeleteNote(context.Context, string, string) error { panic("unused") }
+func (s *stubRepoClient) SyncNotesNow(context.Context) (*pb.SyncNotesNowResponse, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) SendBroadcast(context.Context, *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {
 	panic("unused")
 }
@@ -856,3 +859,5 @@ func (s *stubRepoClient) ListSessionsWithReadFailures(ctx context.Context, req *
 func (s *stubRepoClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
 }
+
+func (s *stubRepoClient) SetChatPhase(context.Context, string, string, string) error { panic("unused") }

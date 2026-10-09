@@ -491,7 +491,13 @@ func (m *repairMonitor) NotifyStatusChange(ctx context.Context, req *bossanovav1
 // a background repair goroutine. It is called both from NotifyStatusChange
 // (edge-triggered) and sweepExistingSessions (level-triggered on startup).
 func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.DisplayStatus, hasFailures bool) {
-	// Only trigger repair for failing, conflict, or rejected states.
+	// Only trigger repair for failing, conflict, or rejected states. The verify
+	// holds (VERIFYING, NEEDS_HUMAN) are deliberately not triggers, even with an
+	// open changes-requested review: the verify stage owns a held head, and a
+	// verify failure re-enters here as FAILING. hasUnresolvedReviewFeedback only
+	// matters after a repair has started, so inside this trigger path review
+	// feedback means exactly REJECTED, which the duplicate-attempt guards below
+	// rely on when they compare review fingerprints.
 	needsRepair := displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING ||
 		displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT ||
 		displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED
@@ -954,6 +960,22 @@ func isRepairableState(state bossanovav1.SessionState, displayStatus bossanovav1
 	}
 }
 
+// hasUnresolvedReviewFeedback reports whether a PR still carries open
+// changes-requested review feedback. REJECTED always does. The verify statuses
+// outrank REJECTED (BOS-1382), so on them an open changes-requested review
+// rides along as metadata and still counts.
+func hasUnresolvedReviewFeedback(status bossanovav1.DisplayStatus, changesRequested bool) bool {
+	switch status {
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
+		return true
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		return changesRequested
+	default:
+		return false
+	}
+}
+
 func assessPostRepairStatus(session *bossanovav1.Session) postRepairAssessment {
 	if session == nil {
 		return postRepairAssessment{
@@ -968,6 +990,12 @@ func assessPostRepairStatus(session *bossanovav1.Session) postRepairAssessment {
 		HeadSHA:       session.GetPrDisplayHeadSha(),
 	}
 
+	if hasUnresolvedReviewFeedback(session.GetDisplayStatus(), session.GetDisplayHasChangesRequested()) {
+		assessment.Status = postRepairStatusNeedsRepair
+		assessment.Reason = "review feedback"
+		return assessment
+	}
+
 	switch session.GetDisplayStatus() {
 	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING:
 		assessment.Status = postRepairStatusPending
@@ -977,15 +1005,22 @@ func assessPostRepairStatus(session *bossanovav1.Session) postRepairAssessment {
 		bossanovav1.DisplayStatus_DISPLAY_STATUS_REVIEW:
 		assessment.Status = postRepairStatusClean
 		assessment.Reason = "checks passed"
+	// BOS-1382: both verify statuses mean ordinary CI is green and the verify
+	// stage holds the head. Waiting on them as "pending" could wait forever on a
+	// park; a later verify failure arrives as FAILING through the normal trigger.
+	// Open review feedback on them was handled above.
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_VERIFYING:
+		assessment.Status = postRepairStatusClean
+		assessment.Reason = "checks passed; verification in progress"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		assessment.Status = postRepairStatusClean
+		assessment.Reason = "parked for a human"
 	case bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING:
 		assessment.Status = postRepairStatusNeedsRepair
 		assessment.Reason = "checks failed"
 	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT:
 		assessment.Status = postRepairStatusNeedsRepair
 		assessment.Reason = "merge conflict"
-	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
-		assessment.Status = postRepairStatusNeedsRepair
-		assessment.Reason = "review feedback"
 	case bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED:
 		assessment.Status = postRepairStatusUnknown
 		assessment.Reason = "display status unspecified"

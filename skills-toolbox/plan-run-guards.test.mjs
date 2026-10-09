@@ -61,7 +61,7 @@ const descriptionSummary = (planningLines = ['- Contract: v1']) =>
 const metadata = (overrides = {}) => ({
   planPath: '.linear-plans/BOS-1-test.md',
   labels: ['improvement'],
-  agentFriendly: true,
+  agentBuild: true,
   estimate: 3,
   priority: 3,
   openQuestions: [],
@@ -96,7 +96,7 @@ test('validateDraftMetadata rejects missing descriptionSummary', () => {
 test('validateDraftMetadata normalizes cosmetic fields instead of refusing the plan', () => {
   const result = validateDraftMetadata(
     metadata({
-      agentFriendly: 'false',
+      agentBuild: 'false',
       estimate: 8,
       priority: 0,
       openQuestions: 'one question',
@@ -104,7 +104,7 @@ test('validateDraftMetadata normalizes cosmetic fields instead of refusing the p
     }),
   )
   assert.equal(result.ok, true, JSON.stringify(result.violations))
-  assert.equal(result.normalized.agentFriendly, false)
+  assert.equal(result.normalized.agentBuild, false)
   assert.equal(result.normalized.estimate, 5)
   assert.equal(result.normalized.priority, 3)
   assert.deepEqual(result.normalized.openQuestions, ['one question'])
@@ -114,11 +114,11 @@ test('validateDraftMetadata normalizes cosmetic fields instead of refusing the p
   assert.equal(validateDraftMetadata(metadata({ estimate: 4 })).normalized.estimate, 5)
   assert.equal(validateDraftMetadata(metadata({ priority: 9 })).normalized.priority, 4)
   const missingOptional = metadata()
-  delete missingOptional.agentFriendly
+  delete missingOptional.agentBuild
   delete missingOptional.priority
   const defaulted = validateDraftMetadata(missingOptional)
   assert.equal(defaulted.ok, true)
-  assert.equal(defaulted.normalized.agentFriendly, true)
+  assert.equal(defaulted.normalized.agentBuild, true)
   assert.equal(defaulted.normalized.priority, 3)
 })
 
@@ -142,13 +142,13 @@ test('BOS-1358 validateDraftMetadata accepts Oversized-child as the estimate-5 j
   const result = validateDraftMetadata(
     metadata({
       estimate: 5,
-      agentFriendly: false,
+      agentBuild: false,
       descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
     }),
   )
   assert.equal(result.ok, true, JSON.stringify(result.violations))
   assert.deepEqual(result.warnings, [])
-  assert.equal(result.normalized.agentFriendly, false)
+  assert.equal(result.normalized.agentBuild, false)
 
   const atomic = validateDraftMetadata(
     metadata({
@@ -157,20 +157,20 @@ test('BOS-1358 validateDraftMetadata accepts Oversized-child as the estimate-5 j
     }),
   )
   assert.deepEqual(atomic.warnings, [])
-  assert.equal(atomic.normalized.agentFriendly, true)
+  assert.equal(atomic.normalized.agentBuild, true)
 })
 
-test('BOS-1358 validateDraftMetadata coerces an agent-friendly Oversized-child to needs-human', () => {
+test('BOS-1358 validateDraftMetadata coerces an agent-build Oversized-child to needs-human', () => {
   const result = validateDraftMetadata(
     metadata({
       estimate: 5,
-      agentFriendly: true,
+      agentBuild: true,
       descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
     }),
   )
   assert.equal(result.ok, true, JSON.stringify(result.violations))
-  assert.equal(result.normalized.agentFriendly, false)
-  const warning = result.warnings.find((entry) => entry.field === 'agentFriendly')
+  assert.equal(result.normalized.agentBuild, false)
+  const warning = result.warnings.find((entry) => entry.field === 'agentBuild')
   assert.ok(warning, JSON.stringify(result.warnings))
   assert.match(warning.message, /Oversized-child/)
   assert.ok(!result.warnings.some((entry) => entry.field === 'estimate'))
@@ -185,7 +185,7 @@ test('BOS-1358 validateDraftMetadata coerces an agent-friendly Oversized-child t
       ),
     }),
   )
-  assert.equal(prose.normalized.agentFriendly, true)
+  assert.equal(prose.normalized.agentBuild, true)
 })
 
 test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', () => {
@@ -193,7 +193,7 @@ test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', 
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
   const returned = metadata({
     estimate: 5,
-    agentFriendly: true,
+    agentBuild: true,
     descriptionSummary: withPlanning('- Contract: v1', OVERSIZED_CHILD),
   })
   const run = spawnSync(
@@ -205,7 +205,7 @@ test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', 
   assert.match(run.stderr, /Oversized-child/)
   assert.doesNotMatch(run.stderr, /estimate 5 without/)
   const written = JSON.parse(readFileSync(metadataPath, 'utf8'))
-  assert.equal(written.agentFriendly, false)
+  assert.equal(written.agentBuild, false)
   assert.equal(written.estimate, 5)
 })
 
@@ -219,7 +219,7 @@ test('validateDraftMetadata maps labels onto the configured names and drops the 
     },
   }
   const result = validateDraftMetadata(
-    metadata({ labels: ['feature', 'BUG', 'docs', 'improvement', 'agent-friendly', 'refactor'] }),
+    metadata({ labels: ['feature', 'BUG', 'docs', 'improvement', 'agent-build', 'refactor'] }),
     { config: mapped },
   )
   assert.equal(result.ok, true, JSON.stringify(result.violations))
@@ -1363,7 +1363,7 @@ const RV_STATES = {
 }
 const RV_LABELS = {
   agentPlan: 'agent-plan',
-  agentFriendly: 'agent-friendly',
+  agentBuild: 'agent-build',
   needsHuman: 'needs-human',
   agentQuestion: 'agent-question',
   epic: 'epic',
@@ -1427,7 +1427,7 @@ function writeEpicFixture(edit = () => {}) {
         blockedByKeys: [],
         estimate: 2,
         priority: 2,
-        agentFriendly: true,
+        agentBuild: true,
         agentQuestion: false,
       },
       {
@@ -1438,7 +1438,7 @@ function writeEpicFixture(edit = () => {}) {
         blockedByKeys: ['c1'],
         estimate: 2,
         priority: 2,
-        agentFriendly: true,
+        agentBuild: true,
         agentQuestion: false,
       },
     ],
@@ -1448,7 +1448,7 @@ function writeEpicFixture(edit = () => {}) {
     identifier: `BOS-${n}`,
     title: `t ${key}`,
     state: { name: 'Todo' },
-    labels: [{ name: 'agent-friendly' }],
+    labels: [{ name: 'agent-build' }],
     attachments: [{ id: `p${n}`, title: `Implementation plan (BOS-${n})` }],
     links: [],
     ...(ctx.bundleChildDescription === null ? {} : { description: ctx.bundleChildDescription }),
@@ -1572,7 +1572,7 @@ test('epic-reverify: a paths field in the bundle cannot redirect a comparison', 
 test('epic-reverify: a config with no agentPlan or agentQuestion mapping runs and forbids nothing extra', () => {
   const res = runEpicReverifyCli(
     writeEpicFixture((ctx) => {
-      ctx.labels = { agentFriendly: 'agent-friendly', needsHuman: 'needs-human', epic: 'epic' }
+      ctx.labels = { agentBuild: 'agent-build', needsHuman: 'needs-human', epic: 'epic' }
     }),
   )
   assert.equal(res.status, 0, res.stderr)

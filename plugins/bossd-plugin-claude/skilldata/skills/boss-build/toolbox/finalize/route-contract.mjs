@@ -14,7 +14,6 @@ export const TERMINAL_ROUTES = Object.freeze({
     'premise-discharged',
     'required-deferred-asserted',
     'pr-ready',
-    'please-review-added',
     'claim-deleted',
     'notes-before-lock-release',
     'stop-hooks-removed',

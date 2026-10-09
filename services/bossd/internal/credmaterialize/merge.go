@@ -104,6 +104,11 @@ func mergePreservingIDToken(prev, next []byte) ([]byte, error) {
 // can fill. Anything that does not parse as a JSON object, or that normalization
 // leaves untouched, is returned unchanged — the write is never worse than the
 // previous verbatim behavior.
+//
+// "Complete" includes the fields codex itself writes for a ChatGPT login but the
+// account-store shape does not carry — tokens.account_id, auth_mode and
+// last_refresh — which completeCodexAuth fills. A blob that already holds them
+// all stays byte-identical.
 func codexAuthForWrite(blob []byte) []byte {
 	top, err := parseObject(blob)
 	if err != nil {
@@ -116,7 +121,8 @@ func codexAuthForWrite(blob []byte) []byte {
 		// No recognizable shape produced a tokens object; write verbatim.
 		return blob
 	}
-	if hadTokens && string(afterTokens) == string(beforeTokens) {
+	completed := completeCodexAuth(top)
+	if !completed && hadTokens && string(afterTokens) == string(beforeTokens) {
 		// tokens object unchanged (already complete); preserve byte-identical.
 		return blob
 	}
@@ -125,6 +131,91 @@ func codexAuthForWrite(blob []byte) []byte {
 		return blob
 	}
 	return out
+}
+
+// codexChatGPTAuthMode is the auth_mode codex writes for a ChatGPT login.
+const codexChatGPTAuthMode = "chatgpt"
+
+// openAIAuthClaim is the id_token / access_token claim object that carries the
+// ChatGPT account id codex sends as its account header.
+const openAIAuthClaim = "https://api.openai.com/auth"
+
+// completeCodexAuth fills, in place, the fields codex writes into a ChatGPT
+// auth.json that the account-store "{access,refresh,id_token}" shape drops, and
+// reports whether it changed anything. Present, non-empty values always win.
+//
+//   - tokens.account_id, from the id_token's chatgpt_account_id claim. Codex
+//     0.159 cannot recover from a 401 without it: its guarded auth reload
+//     ("Skipping auth reload because no account id is available") fails with
+//     "you have since logged out or signed in to another account", so a freshly
+//     captured, otherwise valid credential never verifies.
+//   - auth_mode, as "chatgpt".
+//   - last_refresh, from the access token's iat. Beyond matching what codex
+//     writes, it gives the stored side a generation marker, so
+//     storedCredentialIsNewer can order an operator reauth against a stale
+//     on-disk auth.json instead of folding the old tokens over it.
+func completeCodexAuth(top map[string]json.RawMessage) bool {
+	tokens, err := parseTokenObject(top["tokens"])
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	changed := false
+	known := decodeKnown(tokens)
+	if known.AccountID == "" {
+		if id := chatGPTAccountID(known.IDToken); id != "" {
+			setKnown(tokens, "account_id", id)
+			if raw, err := json.Marshal(tokens); err == nil {
+				top["tokens"] = raw
+				changed = true
+			}
+		}
+	}
+	if isEmptyJSON(top["auth_mode"]) {
+		if raw, err := json.Marshal(codexChatGPTAuthMode); err == nil {
+			top["auth_mode"] = raw
+			changed = true
+		}
+	}
+	if isEmptyJSON(top[authGenerationKey]) {
+		if issued, ok := tokenNumericClaim(known.AccessToken, "iat"); ok {
+			if raw, err := json.Marshal(issued.Format(time.RFC3339)); err == nil {
+				top[authGenerationKey] = raw
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// chatGPTAccountID reads the chatgpt_account_id claim from a JWT-shaped
+// id_token, or "" when it cannot. Like tokenNumericClaim it decodes without
+// verifying, and it returns no error so no token bytes can reach a log line.
+func chatGPTAccountID(idToken string) string {
+	claims, ok := jwtClaims(idToken)
+	if !ok {
+		return ""
+	}
+	var auth struct {
+		AccountID string `json:"chatgpt_account_id"`
+	}
+	if err := json.Unmarshal(claims[openAIAuthClaim], &auth); err != nil {
+		return ""
+	}
+	return auth.AccountID
+}
+
+// codexAuthAccountID returns the tokens.account_id of a codex auth.json blob,
+// or "" when it has none.
+func codexAuthAccountID(blob []byte) string {
+	top, err := parseObject(blob)
+	if err != nil {
+		return ""
+	}
+	tokens, err := parseTokenObject(top["tokens"])
+	if err != nil {
+		return ""
+	}
+	return decodeKnown(tokens).AccountID
 }
 
 // authGenerationKey is the codex auth.json field recording when the credential
@@ -634,16 +725,8 @@ func accessToken(blob []byte) (string, bool) {
 // and collapsing them onto one boolean is deliberate: distinguishing them in a
 // returned error is exactly how token bytes end up quoted in a log line.
 func tokenNumericClaim(token, claim string) (time.Time, bool) {
-	segments := strings.Split(token, ".")
-	if len(segments) != 3 || segments[1] == "" {
-		return time.Time{}, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(segments[1])
-	if err != nil {
-		return time.Time{}, false
-	}
-	claims, err := parseObject(payload)
-	if err != nil {
+	claims, ok := jwtClaims(token)
+	if !ok {
 		return time.Time{}, false
 	}
 	raw, ok := claims[claim]
@@ -655,4 +738,22 @@ func tokenNumericClaim(token, claim string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Unix(int64(seconds), 0).UTC(), true
+}
+
+// jwtClaims decodes the payload segment of a JWT-shaped token into its claims
+// object. The bool is false for any shape it cannot read.
+func jwtClaims(token string) (map[string]json.RawMessage, bool) {
+	segments := strings.Split(token, ".")
+	if len(segments) != 3 || segments[1] == "" {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
+		return nil, false
+	}
+	claims, err := parseObject(payload)
+	if err != nil {
+		return nil, false
+	}
+	return claims, true
 }

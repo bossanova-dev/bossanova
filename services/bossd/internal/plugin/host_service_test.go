@@ -83,7 +83,9 @@ func (m *mockVCSProvider) SearchPRsByTitleTag(_ context.Context, _, _ string) ([
 	}
 	return nil, nil
 }
-func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ vcs.MergePROpts) error {
+	return nil
+}
 func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
 }

@@ -500,32 +500,70 @@ See [Upgrade](/upgrade) for the full upgrade guide.
 ### `boss init`
 
 Write a detected `.boss-skills.json` for the repository, giving the `boss-*`
-skills a starting config.
+skills a starting config, and optionally set up the plan → build → verify
+factory: register the repository, store its Linear and Sentry credentials, map
+the Linear team's states and labels, and create the factory cron jobs.
 
-| Flag           | Description                                                                     |
-| -------------- | ------------------------------------------------------------------------------- |
-| `--dir <path>` | repository directory to inspect and write into (default: the working directory) |
-| `--force`      | replace an existing `.boss-skills.json` instead of refusing                     |
+On a terminal, `boss init` interviews for whatever its flags left open, in the
+order credentials → Linear mapping → filter → config → crons. Each question
+shows its default and the flag that answers it, and a flag you pass answers its
+question. Without a terminal the flags alone decide. If a run stops early it
+lists what it already applied; every step converges, so a re-run finishes the
+job. A successful interview ends with a summary and what is left to do.
 
-The file it writes carries only what detection produced, so in practice a
-`commands` block or an empty object. Every other block is left out and reported
-with the reason it is absent. The report also prints the MCP server declaration for
-each coding-agent harness it detects, and for both when it detects neither. It
-writes none of those harness files.
+| Flag                      | Description                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--dir <path>`            | repository directory to inspect and write into (default: the working directory)                        |
+| `--force`                 | replace an existing `.boss-skills.json` instead of refusing                                            |
+| `--merge`                 | merge into an existing `.boss-skills.json`, keeping every member it does not set                       |
+| `--team <name>`           | Linear team to pin as `trackerConfig.linear.team` (name, key or id)                                    |
+| `--state <role>=<name>`   | Linear state for a role (`unplanned`, `planned`, `inProgress`, `inReview`, `done`); repeatable         |
+| `--label <role>=<name>`   | Linear label for a role (`agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`); repeatable |
+| `--create-labels`         | create missing pipeline labels in the resolved Linear team                                             |
+| `--assignee-me`           | write the "only my tickets" filter, `selection.assignees.include: ["me"]`                              |
+| `--register`              | find or register this repository with local bossd                                                      |
+| `--no-register`           | require an existing repository registration                                                            |
+| `--linear-key-stdin`      | read the Linear API key from stdin and store it on the repository                                      |
+| `--sentry-token-stdin`    | read the Sentry token from stdin (with `--sentry-org`)                                                 |
+| `--sentry-org <slug>`     | Sentry organization slug (requires a token)                                                            |
+| `--store-env-keys`        | store `LINEAR_API_KEY` and `SENTRY_AUTH_TOKEN` from the environment                                    |
+| `--cron <stages>`         | create or converge the factory cron jobs for `plan`, `build` and/or `verify`                           |
+| `--agent <claude\|codex>` | agent for the factory cron jobs (default: Claude when both qualify)                                    |
+| `--update-crons`          | update an existing factory job's prompt, gate and agent when they differ                               |
 
-Without `--force` the command refuses to replace an existing file. It checks
-twice: a stat before any work, then the filesystem's own `O_EXCL` at the moment of
-writing, which closes the window between the two. Both decline a symlink standing
-where the config should be, a dangling one included, so the link is never written
-through. `--force` rewrites rather than refreshes. It writes detected output only,
-so the previous file is discarded whole, including hand-tuned values inside
-`commands`.
+The file it writes carries what detection produced (in practice a `commands`
+block or an empty object), plus the tracker block when a Linear team is
+resolved. Every other block is left out and reported with the reason it is
+absent. The report also prints the MCP server declaration for each coding-agent
+harness it detects, and for both when it detects neither. It writes none of those
+harness files, and it never commits or pushes.
+
+With `LINEAR_API_KEY` set (or a key given in the interview), the team's states
+and labels are matched to the roles case-insensitively and only names that differ
+from the defaults are written. Labels are the only thing `boss init` ever creates
+in Linear, and only with `--create-labels` or your consent.
+
+Factory cron jobs are created enabled after a gate preflight in the daemon's own
+environment; a job whose preflight fails is created disabled and the report names
+`boss skills install` as the remedy. An existing stage job is never duplicated,
+and its schedule, timezone and enabled state are never changed. Registration,
+credentials and crons need a local daemon, so `--remote` and `--host` skip them.
+
+Without `--force` or `--merge` the command refuses to replace an existing file.
+It checks twice: a stat before any work, then the filesystem's own `O_EXCL` at the
+moment of writing, which closes the window between the two. Both decline a symlink
+standing where the config should be, a dangling one included, so the link is never
+written through. `--force` rewrites rather than refreshes. It writes detected
+output only, so the previous file is discarded whole, including hand-tuned values
+inside `commands`.
 
 `boss init` is a different command from `boss config init`, which initialises
 bossd plugin settings in `settings.json` and touches no `.boss-skills.json`.
 
 See [Skill Configuration](/skills/config) for the sections this file carries and
 the smallest config that switches the tracker-driven skills on.
+`docs/skills/factory.md` in the Bossanova repository walks through the factory
+setup.
 
 ### `boss new` and `boss chat` (scripted chat control)
 

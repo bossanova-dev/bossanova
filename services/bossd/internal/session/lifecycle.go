@@ -1974,7 +1974,7 @@ func (l *Lifecycle) stopRunAbandonedByFailedBootstrap(ctx context.Context, sessi
 	// stopping the agent does not take its pane with it (StopSession kills the
 	// two separately for the same reason).
 	if tmuxHosted && l.tmux != nil && l.agentChats != nil {
-		l.killAllChatTmuxSessions(stopCtx, sessionID)
+		_ = l.killAllChatTmuxSessions(stopCtx, sessionID)
 	}
 }
 
@@ -3743,6 +3743,11 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 }
 
 // StopSession stops the Claude process for a session.
+// No dated API bump: local StopSession and cloud ProxyStopSession clients can
+// be version-skewed. This restores truthful stop failure reporting: a transform
+// or handler gate must not claim success/Closed while an agent is still running,
+// because callers use successful cancellation to authorize replacement runs.
+// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -3758,18 +3763,26 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
+			// Keep the run active so callers cannot replace an agent that failed to stop.
+			return fmt.Errorf("stop session agent: %w", err)
 		}
 	}
 
 	// Kill all per-chat tmux sessions.
-	l.killAllChatTmuxSessions(ctx, sessionID)
+	if err := l.killAllChatTmuxSessions(ctx, sessionID); err != nil {
+		return fmt.Errorf("stop chat tmux sessions: %w", err)
+	}
 
 	// Also kill the legacy per-session tmux session if it exists.
 	if session.TmuxSessionName != nil {
-		l.KillTmuxByName(ctx, sessionID, *session.TmuxSessionName)
+		if err := l.killTmuxByName(ctx, sessionID, *session.TmuxSessionName); err != nil {
+			return fmt.Errorf("stop legacy tmux session: %w", err)
+		}
 	}
 
-	// Update state to Closed.
+	// Update state to Closed. A concurrent Stop hook may start finalizing
+	// between stopping the runner and this write; Closed is still the intended
+	// terminal state for this explicit stop. The worktree and branch are kept.
 	closedState := int(machine.Closed)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		State: &closedState,
@@ -3815,7 +3828,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Kill all per-chat tmux sessions.
-	l.killAllChatTmuxSessions(ctx, sessionID)
+	_ = l.killAllChatTmuxSessions(ctx, sessionID)
 
 	// Also kill the legacy per-session tmux session if it exists.
 	if session.TmuxSessionName != nil {
@@ -4168,63 +4181,65 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) err
 	return nil
 }
 
-// killAllChatTmuxSessions kills the tmux session for every chat in the given
-// boss session and clears the tmux_session_name on each chat record.
-func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID string) {
-	if l.tmux == nil {
-		return
+// killAllChatTmuxSessions clears a chat's tmux pointer only after its process
+// stopped. Explicit StopSession consumes errors; other cleanup callers remain
+// best-effort and rely on the logged failures.
+func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID string) error {
+	if l.agentChats == nil {
+		return nil
 	}
 	chats, err := l.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sessionID).Msg("failed to list chats for tmux cleanup")
-		return
+		return fmt.Errorf("list chats: %w", err)
 	}
+	var cleanupErr error
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			continue
 		}
-		if err := l.tmux.KillSession(ctx, *chat.TmuxSessionName); err != nil {
-			l.logger.Warn().Err(err).
-				Str("session", sessionID).
-				Str("agentSessionID", chat.AgentSessionID).
-				Str("tmuxSession", *chat.TmuxSessionName).
-				Msg("failed to kill chat tmux session during cleanup")
-		} else {
-			l.logger.Info().
-				Str("session", sessionID).
-				Str("agentSessionID", chat.AgentSessionID).
-				Str("tmuxSession", *chat.TmuxSessionName).
-				Msg("killed chat tmux session")
+		if err := l.stopTmuxSession(ctx, *chat.TmuxSessionName); err != nil {
+			l.logger.Warn().Err(err).Str("session", sessionID).Str("agentSessionID", chat.AgentSessionID).Str("tmuxSession", *chat.TmuxSessionName).Msg("failed to kill chat tmux session during cleanup")
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop chat %s: %w", chat.AgentSessionID, err))
+			continue
 		}
 		if err := l.agentChats.UpdateTmuxSessionName(ctx, chat.AgentSessionID, nil); err != nil {
 			l.logger.Warn().Err(err).Str("agentSessionID", chat.AgentSessionID).Msg("failed to clear tmux name during cleanup")
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clear chat tmux name: %w", err))
 		}
+	}
+	return cleanupErr
+}
+
+// stopTmuxSession preserves KillSession's distinction between definite absence
+// (successful cleanup) and a failed or unavailable tmux liveness probe.
+func (l *Lifecycle) stopTmuxSession(ctx context.Context, name string) error {
+	if l.tmux == nil {
+		return errors.New("tmux client unavailable")
+	}
+	return l.tmux.KillSession(ctx, name)
+}
+
+// KillTmuxByName performs best-effort legacy cleanup for archive/finalize callers.
+// Explicit StopSession uses killTmuxByName to propagate cancellation failures.
+func (l *Lifecycle) KillTmuxByName(ctx context.Context, sessionID, tmuxName string) {
+	if err := l.killTmuxByName(ctx, sessionID, tmuxName); err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Str("tmuxSession", tmuxName).Msg("failed to clean up tmux session")
 	}
 }
 
-// KillTmuxByName kills a tmux session by name and clears the
-// TmuxSessionName field on the associated boss session record.
-func (l *Lifecycle) KillTmuxByName(ctx context.Context, sessionID, tmuxName string) {
-	if tmuxName == "" || l.tmux == nil || !l.tmux.Available(ctx) {
-		return
+func (l *Lifecycle) killTmuxByName(ctx context.Context, sessionID, tmuxName string) error {
+	if tmuxName == "" {
+		return nil
 	}
-	if err := l.tmux.KillSession(ctx, tmuxName); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", sessionID).
-			Str("tmuxSession", tmuxName).
-			Msg("failed to kill tmux session during cleanup")
-	} else {
-		l.logger.Info().
-			Str("session", sessionID).
-			Str("tmuxSession", tmuxName).
-			Msg("tmux session killed")
+	if err := l.stopTmuxSession(ctx, tmuxName); err != nil {
+		return err
 	}
 	var nilName *string
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		TmuxSessionName: &nilName,
-	}); err != nil {
-		l.logger.Warn().Err(err).Str("session", sessionID).Msg("failed to clear tmux name during cleanup")
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{TmuxSessionName: &nilName}); err != nil {
+		return fmt.Errorf("clear tmux name: %w", err)
 	}
+	return nil
 }
 
 // IsTmuxSessionAlive reports whether the given tmux session name is still

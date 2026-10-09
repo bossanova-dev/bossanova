@@ -27,7 +27,10 @@ const (
 	VCSModeCreatePRFail
 )
 
-var _ vcs.Provider = (*MockVCSProvider)(nil)
+var (
+	_ vcs.Provider           = (*MockVCSProvider)(nil)
+	_ vcs.CommitStatusPoster = (*MockVCSProvider)(nil)
+)
 
 // ErrNoGitHub is returned by CreateDraftPR when mode is VCSModeNoGitHub.
 var ErrNoGitHub = errors.New("no GitHub remote configured")
@@ -52,6 +55,20 @@ type MockVCSProvider struct {
 
 	// CheckResults is returned by GetCheckResults. Defaults to empty.
 	CheckResults []vcs.CheckResult
+
+	// HasBuildReceipt seeds the current head build provenance in GetCheckSet.
+	HasBuildReceipt bool
+
+	// BuildReceiptSeen seeds a boss/build status in any state on the current
+	// head. GetCheckSet also reports it whenever HasBuildReceipt is set.
+	BuildReceiptSeen bool
+
+	// PostCommitStatusErr is returned by PostCommitStatus when set.
+	PostCommitStatusErr error
+
+	// PostCommitStatusCalls records every PostCommitStatus invocation,
+	// mu-guarded.
+	PostCommitStatusCalls []PostCommitStatusCall
 
 	// FailedCheckLogs is returned by GetFailedCheckLogs.
 	FailedCheckLogs string
@@ -120,10 +137,18 @@ type markReadyCall struct {
 	PRID     int
 }
 
-type mergePRCall struct {
+// PostCommitStatusCall is one recorded PostCommitStatus invocation.
+type PostCommitStatusCall struct {
 	RepoPath string
-	PRID     int
-	Strategy string
+	SHA      string
+	Status   vcs.CommitStatus
+}
+
+type mergePRCall struct {
+	RepoPath        string
+	PRID            int
+	Strategy        string
+	ExpectedHeadSHA string
 }
 
 // NewMockVCSProvider creates a mock VCS provider with sensible defaults.
@@ -223,6 +248,19 @@ func (m *MockVCSProvider) GetCheckResults(ctx context.Context, repoPath string, 
 	return m.CheckResults, nil
 }
 
+func (m *MockVCSProvider) GetCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
+	checks, err := m.GetCheckResults(ctx, repoPath, prID)
+	return vcs.CheckSet{Checks: checks, HasBuildReceipt: m.HasBuildReceipt, BuildReceiptSeen: m.BuildReceiptSeen || m.HasBuildReceipt}, err
+}
+
+// PostCommitStatus records the post and returns PostCommitStatusErr.
+func (m *MockVCSProvider) PostCommitStatus(_ context.Context, repoPath, sha string, s vcs.CommitStatus) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PostCommitStatusCalls = append(m.PostCommitStatusCalls, PostCommitStatusCall{RepoPath: repoPath, SHA: sha, Status: s})
+	return m.PostCommitStatusErr
+}
+
 func (m *MockVCSProvider) GetFailedCheckLogs(ctx context.Context, repoPath string, checkID string) (string, error) {
 	return m.FailedCheckLogs, nil
 }
@@ -262,9 +300,9 @@ func (m *MockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ st
 	return nil
 }
 
-func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
+func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
 	m.mu.Lock()
-	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: strategy})
+	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: opts.Strategy, ExpectedHeadSHA: opts.ExpectedHeadSHA})
 	err := m.MergePRErr
 	m.mu.Unlock()
 	return err

@@ -233,7 +233,9 @@ wake must be a no-op, which it is because every step reads authoritative state f
 
 `greenAdmissionBlockers(snapshot)` must be empty. Four conditions, each on an authoritative
 re-read: checks `passing`; the PR is **not** a draft; no partial-slice / `do not merge` marker; the
-tracked chat has **settled**. Missing evidence is never admission. The ticket's tracker state is not
+tracked chat has **settled** per `classifyChildSettled`, which `reconcileEpic` computes itself over
+two consecutive cycles (a caller-supplied `chatSettled` is ignored). Missing evidence is never
+admission. The ticket's tracker state is not
 a condition — move it to the review state if the child did not.
 
 ### Merge verification

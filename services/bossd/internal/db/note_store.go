@@ -3,20 +3,102 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 var _ NoteStore = (*SQLiteNoteStore)(nil)
 
 // SQLiteNoteStore implements NoteStore using SQLite.
 type SQLiteNoteStore struct {
-	db *sql.DB
+	db        *sql.DB
+	retention NoteRetention
+	// createMu serialises Create's insert, prune and readback. Each prune
+	// spares only its own new note, so two interleaved creates under a small
+	// cap could otherwise delete each other's just-written note.
+	createMu sync.Mutex
+	// logger receives prune warnings. Nil means the process-global log.Logger,
+	// resolved at call time so a logger configured after construction is used.
+	logger *zerolog.Logger
 }
+
+// NoteRetention is the note-pruning policy (BOS-1384). A zero field means
+// unlimited: a zero MaxAge keeps notes forever, a zero MaxPerRepo never caps.
+type NoteRetention struct {
+	MaxAge     time.Duration
+	MaxPerRepo int
+}
+
+// NoteRetentionFromSettings resolves the settings.json notes block into a
+// policy, applying the shipped defaults (180 days, 10,000 per repo) for unset
+// or negative values and treating an explicit 0 as unlimited.
+func NoteRetentionFromSettings(c config.NotesConfig) NoteRetention {
+	// Clamp before multiplying: a larger day count overflows time.Duration and
+	// can wrap to a tiny positive window that would prune nearly every note.
+	days := min(c.RetentionDaysOrDefault(), maxNoteRetentionDays)
+	return NoteRetention{
+		MaxAge:     time.Duration(days) * 24 * time.Hour,
+		MaxPerRepo: c.MaxPerRepoOrDefault(),
+	}
+}
+
+// maxNoteRetentionDays is the largest day count time.Duration can represent
+// (about 292 years); larger settings are clamped to it.
+const maxNoteRetentionDays = int(math.MaxInt64 / int64(24*time.Hour))
+
+// NoteStoreOption configures a SQLiteNoteStore.
+type NoteStoreOption func(*SQLiteNoteStore)
+
+// WithNoteRetention overrides the store's pruning policy.
+func WithNoteRetention(r NoteRetention) NoteStoreOption {
+	return func(s *SQLiteNoteStore) { s.retention = r }
+}
+
+// WithNoteLogger routes the store's prune warnings to logger instead of the
+// process-global log.Logger.
+func WithNoteLogger(logger zerolog.Logger) NoteStoreOption {
+	return func(s *SQLiteNoteStore) { s.logger = &logger }
+}
+
+// notePruneExpiredSQL deletes the inserting repo's notes older than the
+// retention cutoff. It is a range scan on idx_notes_repo_created.
+const notePruneExpiredSQL = `DELETE FROM notes WHERE repo_id = ? AND created_at < ?`
+
+// notePruneOverCapSQL keeps the just-inserted note plus the newest cap-1 other
+// notes in the repo and deletes the rest, oldest first. It is bound as
+// (repoID, newID, cap-1). The new note is excluded by id rather than relying on
+// ordering: ids are random and created_at is millisecond-granular, so a
+// same-millisecond peer could otherwise outrank it and a small cap would trim
+// the note just written. The tiebreak is List's ORDER BY reversed.
+const notePruneOverCapSQL = `DELETE FROM notes WHERE id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
+	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
+
+// noteSyncPruneExpiredSQL and noteSyncPruneOverCapSQL delete the sync-outbox
+// rows of exactly the notes the matching prune statement deletes, bound with
+// the same arguments. Retention pruning is a local-storage concern, so it
+// removes the outbox row outright instead of leaving a tombstone: the cloud
+// expires its copy on its own schedule, and an age-pruned note is already past
+// that window. Each pair runs in one transaction, sync rows first, so a failed
+// note delete leaves the outbox untouched rather than orphaning live notes.
+const (
+	noteSyncPruneExpiredSQL = `DELETE FROM note_sync_states WHERE note_id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND created_at < ?)`
+	noteSyncPruneOverCapSQL = `DELETE FROM note_sync_states WHERE note_id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
+	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
+)
 
 // noteSQL is the read surface shared by *sql.DB and *sql.Conn, mirroring
 // repoSQL in repo_store.go. It lets one query helper serve both the pool and an
@@ -26,9 +108,75 @@ type noteSQL interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// NewNoteStore creates a new SQLite-backed NoteStore.
-func NewNoteStore(db *sql.DB) *SQLiteNoteStore {
-	return &SQLiteNoteStore{db: db}
+// NewNoteStore creates a new SQLite-backed NoteStore. With no options it
+// applies the shipped retention defaults (NoteRetentionFromSettings of an empty
+// config) and logs prune warnings to the global logger.
+func NewNoteStore(db *sql.DB, opts ...NoteStoreOption) *SQLiteNoteStore {
+	s := &SQLiteNoteStore{
+		db:        db,
+		retention: NoteRetentionFromSettings(config.NotesConfig{}),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+func (s *SQLiteNoteStore) pruneLogger() *zerolog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return &log.Logger
+}
+
+// prune best-effort applies the retention policy to repoID after a fresh note
+// insert has committed. It runs on the caller's still-checked-out conn, because
+// a pool lookup would deadlock a single-connection pool. Errors are logged,
+// never returned: the note is already durable, and pruning is idempotent, so
+// the next insert in the repo catches up.
+func (s *SQLiteNoteStore) prune(ctx context.Context, conn *sql.Conn, repoID, newID string) {
+	if s.retention.MaxAge > 0 {
+		cutoff := time.Now().UTC().Add(-s.retention.MaxAge).Format(sqlutil.TimeLayout)
+		if err := pruneTx(ctx, conn, noteSyncPruneExpiredSQL, notePruneExpiredSQL, repoID, cutoff); err != nil {
+			s.pruneLogger().Warn().Err(err).Str("repo_id", repoID).Str("prune", "expired").
+				Msg("note retention: prune of expired notes failed")
+		}
+	}
+	if s.retention.MaxPerRepo > 0 {
+		if err := pruneTx(ctx, conn, noteSyncPruneOverCapSQL, notePruneOverCapSQL,
+			repoID, newID, s.retention.MaxPerRepo-1); err != nil {
+			s.pruneLogger().Warn().Err(err).Str("repo_id", repoID).Str("prune", "over_cap").
+				Msg("note retention: prune of over-cap notes failed")
+		}
+	}
+}
+
+// pruneTx runs one prune kind — the outbox delete, then the note delete, both
+// bound with args — in a single immediate transaction on conn, which must be in
+// autocommit. Deleting the sync rows first is what lets both statements select
+// the same notes. A failure rolls back both, on a non-cancellable context so an
+// aborted request still releases the write lock.
+func pruneTx(ctx context.Context, conn *sql.Conn, syncSQL, noteSQL string, args ...any) error {
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin note prune: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, syncSQL, args...); err != nil {
+		return fmt.Errorf("prune note sync states: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, noteSQL, args...); err != nil {
+		return fmt.Errorf("prune notes: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit note prune: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // normalizeTags trims, lowercases, de-duplicates, and sorts tags, rejecting an
@@ -158,6 +306,9 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 	}
 	now := sqlutil.TimeNow()
 
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+
 	// The note row and its tag rows land together or not at all: a note that
 	// materialised without the tags the caller asked for would be silently
 	// invisible to the tag filter that is the whole point of the primitive.
@@ -200,10 +351,20 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 	if err := insertNoteTags(ctx, conn, id, tags); err != nil {
 		return nil, err
 	}
+	// The outbox row commits with the note or not at all, so the sync worker can
+	// never miss a created note or see one that rolled back.
+	if err := recordNoteChange(ctx, conn, id, false, now, nil); err != nil {
+		return nil, err
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, fmt.Errorf("commit note create: %w", err)
 	}
 	committed = true
+
+	// Prune only after the fresh insert is durable, so a prune failure can never
+	// fail or roll back the note. The idempotent-retry branch above inserted
+	// nothing and so never reaches here.
+	s.prune(ctx, conn, repoID, id)
 
 	// Read back on the same connection: it is still checked out (the deferred
 	// closeImmediate has not run yet), so calling s.Get here would deadlock on a
@@ -280,7 +441,10 @@ func (s *SQLiteNoteStore) List(ctx context.Context, filter ListNotesFilter) ([]*
 	if err != nil {
 		return nil, err
 	}
-	if err := s.attachTags(ctx, notes); err != nil {
+	if err := s.attachInBatches(ctx, notes, s.attachTagBatch); err != nil {
+		return nil, err
+	}
+	if err := s.attachInBatches(ctx, notes, s.attachSyncBatch); err != nil {
 		return nil, err
 	}
 	return notes, nil
@@ -353,6 +517,9 @@ func (s *SQLiteNoteStore) Update(ctx context.Context, params UpdateNoteParams) (
 			return nil, err
 		}
 	}
+	if err := recordNoteChange(ctx, conn, id, false, now, nil); err != nil {
+		return nil, err
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, fmt.Errorf("commit note update: %w", err)
 	}
@@ -361,12 +528,37 @@ func (s *SQLiteNoteStore) Update(ctx context.Context, params UpdateNoteParams) (
 }
 
 func (s *SQLiteNoteStore) Delete(ctx context.Context, id string) error {
-	// Idempotent: an already-absent row is a nil no-op. Tag rows go with it via
-	// the note_tags ON DELETE CASCADE foreign key (the pool runs with
-	// PRAGMA foreign_keys=ON).
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM notes WHERE id = ?", id); err != nil {
+	// The note delete and its tombstone land together: a delete that committed
+	// without a tombstone would never reach the cloud copy.
+	conn, err := beginImmediate(ctx, s.db, "note")
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer closeImmediate(ctx, conn, &committed)
+
+	// Tag rows go with the note via the note_tags ON DELETE CASCADE foreign key
+	// (the pool runs with PRAGMA foreign_keys=ON). RETURNING captures what the tombstone needs once the note row is gone:
+	// the repository that routes it and the creation time Bosso dates it by.
+	var source noteTombstoneSource
+	err = conn.QueryRowContext(ctx,
+		"DELETE FROM notes WHERE id = ? RETURNING repo_id, created_at", id,
+	).Scan(&source.repoID, &source.createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Idempotent: an already-absent note is a nil no-op that writes no
+		// tombstone (the deferred ROLLBACK ends the empty transaction).
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("delete note: %w", err)
 	}
+	if err := recordNoteChange(ctx, conn, id, true, sqlutil.TimeNow(), &source); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit note delete: %w", err)
+	}
+	committed = true
 	return nil
 }
 
@@ -382,7 +574,7 @@ func insertNoteTags(ctx context.Context, conn *sql.Conn, noteID string, tags []s
 	return nil
 }
 
-// getNote reads a note and its tags from any queryer. Parameterising on
+// getNote reads a note, its tags and its sync state from any queryer. Parameterising on
 // noteSQL rather than *sql.DB lets the pool-level Get and the
 // still-checked-out-connection read-backs in Create/Update share one
 // implementation: both *sql.DB and *sql.Conn satisfy it, so the single-note
@@ -397,6 +589,11 @@ func getNote(ctx context.Context, q noteSQL, id string) (*models.Note, error) {
 		return nil, err
 	}
 	note.Tags = tags
+	syncState, err := syncFor(ctx, q, id)
+	if err != nil {
+		return nil, err
+	}
+	note.Sync = syncState
 	return note, nil
 }
 
@@ -410,16 +607,19 @@ func tagsFor(ctx context.Context, q noteSQL, noteID string) ([]string, error) {
 	return collectTags(rows)
 }
 
-// noteTagBatchSize caps how many note ids one attachTags query binds. SQLite's
+// noteTagBatchSize caps how many note ids one batched List attach query binds. SQLite's
 // default SQLITE_MAX_VARIABLE_NUMBER is 32766, and an unlimited List can return
 // more notes than that, so the ids are chunked: without this an otherwise valid
 // list over a large repo would fail with a bind-parameter error rather than
 // simply doing a little more work.
 const noteTagBatchSize = 500
 
-// attachTags fills in the Tags of every listed note with batched queries rather
-// than a per-note round trip.
-func (s *SQLiteNoteStore) attachTags(ctx context.Context, notes []*models.Note) error {
+// attachInBatches runs attach over every listed note in chunks of
+// noteTagBatchSize ids, so List fills in tags and sync state with batched
+// queries rather than a per-note round trip.
+func (s *SQLiteNoteStore) attachInBatches(ctx context.Context, notes []*models.Note,
+	attach func(ctx context.Context, byID map[string]*models.Note, args []any) error,
+) error {
 	if len(notes) == 0 {
 		return nil
 	}
@@ -434,7 +634,7 @@ func (s *SQLiteNoteStore) attachTags(ctx context.Context, notes []*models.Note) 
 		for _, n := range batch {
 			args = append(args, n.ID)
 		}
-		if err := s.attachTagBatch(ctx, byID, args); err != nil {
+		if err := attach(ctx, byID, args); err != nil {
 			return err
 		}
 	}
@@ -463,6 +663,11 @@ func (s *SQLiteNoteStore) attachTagBatch(ctx context.Context, byID map[string]*m
 		}
 	}
 	return rows.Err()
+}
+
+// attachSyncBatch fills in the sync state for one chunk of note ids.
+func (s *SQLiteNoteStore) attachSyncBatch(ctx context.Context, byID map[string]*models.Note, args []any) error {
+	return attachSyncBatch(ctx, s.db, byID, args)
 }
 
 // listFilterTags applies the same trim+lowercase+de-dup normalisation to filter

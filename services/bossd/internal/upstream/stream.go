@@ -177,6 +177,40 @@ func (h *SessionTokenHolder) now() time.Time {
 	return h.clock.Now()
 }
 
+// TokenRotator is the shared-token surface AdoptReRegisteredToken rotates.
+// *SessionTokenHolder satisfies it.
+type TokenRotator interface {
+	Get() string
+	Set(tok string)
+	CompareAndSwap(old, tok string) bool
+}
+
+// AdoptReRegisteredToken publishes fresh — the token a re-register returned
+// after failed was rejected — to the shared holder, and returns the token the
+// caller should use. When another feed already rotated the holder away from
+// failed, that winner is kept and returned with alreadyRotated true; when the
+// holder was cleared meanwhile, fresh is set. Every auth self-heal (stream,
+// snapshot publisher, note sync) goes through here so they cannot diverge.
+func AdoptReRegisteredToken(h TokenRotator, failed, fresh string) (use string, alreadyRotated bool) {
+	if h.CompareAndSwap(failed, fresh) {
+		return fresh, false
+	}
+	if current := h.Get(); current != "" {
+		return current, true
+	}
+	h.Set(fresh)
+	return fresh, false
+}
+
+// sessionTokenRotator adapts a stream opener's token methods to TokenRotator.
+type sessionTokenRotator struct{ h sessionTokenHolder }
+
+func (r sessionTokenRotator) Get() string    { return r.h.SessionToken() }
+func (r sessionTokenRotator) Set(tok string) { r.h.SetSessionToken(tok) }
+func (r sessionTokenRotator) CompareAndSwap(old, tok string) bool {
+	return r.h.CompareAndSwapSessionToken(old, tok)
+}
+
 // LastSetAt reports when the holder last took a non-empty token, i.e. the
 // last successful upstream registration in this process. Zero when there has
 // never been one. Safe for concurrent callers.
@@ -491,6 +525,12 @@ type SessionCommandHandler interface {
 	// changed anything. A boundary move is a successful no-op, so the caller
 	// needs both halves: a Session alone cannot say "nothing moved".
 	MoveSession(ctx context.Context, req *pb.MoveSessionCommand) (*pb.MoveSessionResponse, error)
+	// LaunchTriggerSession starts the unattended session for one inbound
+	// trigger invocation and returns its id (BOS-1418). Idempotent on
+	// invocation_id: a replay returns the original session with is_replay set.
+	// errorCode classifies any failure (NOT_FOUND for an unregistered repo,
+	// FAILED_PRECONDITION for a failed create) for CommandResult.error_code.
+	LaunchTriggerSession(ctx context.Context, cmd *pb.LaunchTriggerSessionCommand) (*pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error)
 	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
 	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)
@@ -1694,16 +1734,11 @@ func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bo
 		c.logger.Warn().Msg("stream: re-register returned empty session token; skipping rotation")
 		return false
 	}
-	if holder.CompareAndSwapSessionToken(failedToken, tok) {
-		c.logger.Info().Msg("stream: rotated session_token after auth rejection")
-		return true
-	}
-	if holder.SessionToken() != "" {
+	if _, already := AdoptReRegisteredToken(sessionTokenRotator{h: holder}, failedToken, tok); already {
 		c.logger.Info().Msg("stream: session_token already rotated after auth rejection")
-		return true
+	} else {
+		c.logger.Info().Msg("stream: rotated session_token after auth rejection")
 	}
-	holder.SetSessionToken(tok)
-	c.logger.Info().Msg("stream: rotated session_token after auth rejection")
 	return true
 }
 

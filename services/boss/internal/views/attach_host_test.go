@@ -1549,3 +1549,7 @@ func TestAttach_CodexExitPreservesChatWithoutClaudeTranscript(t *testing.T) {
 		t.Fatalf("Codex cleanup read Claude transcripts: title=%d absence=%d", spy.titleCalls, spy.absenceCalls)
 	}
 }
+
+func (s *chatMutationSpy) SetChatPhase(context.Context, string, string, string) error {
+	panic("unused")
+}

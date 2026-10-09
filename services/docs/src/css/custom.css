@@ -168,3 +168,15 @@
 .asciinemaDemo .ap-control-bar {
   display: none !important;
 }
+
+/* Webhooks guide: keep every table column except the last (prose) one on a
+ * single line, so values such as `✓ passing` never break at their space. The
+ * prose column keeps a readable minimum width; on a narrow screen the table
+ * scrolls horizontally (Docusaurus tables do) instead of squeezing it. */
+.docs-doc-id-guides\/webhooks .markdown table td:not(:last-child) {
+  white-space: nowrap;
+}
+
+.docs-doc-id-guides\/webhooks .markdown table td:last-child {
+  min-width: 16rem;
+}

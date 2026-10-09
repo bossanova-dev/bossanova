@@ -41,7 +41,9 @@ func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
 		"boss-epic",
 		"boss-finalize",
 		"boss-plan",
+		"boss-release",
 		"boss-repair",
+		"boss-retro",
 		"boss-review",
 		"boss-verify",
 	}
@@ -68,12 +70,14 @@ func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
 // from the publish set) because it is the parent core of the boss-proof-* extensions,
 // so its prefix is needed to recognize them.
 var knownCores = map[string]bool{
+	"boss-retro":    true,
 	"boss":          true,
 	"boss-epic":     true,
 	"boss-finalize": true,
 	"boss-build":    true,
 	"boss-plan":     true,
 	"boss-proof":    true,
+	"boss-release":  true,
 	"boss-repair":   true,
 	"boss-review":   true,
 	"boss-verify":   true,
@@ -724,11 +728,8 @@ var knownUnshippedScriptRefs = map[string]map[string]bool{
 		// This is an in-repo authoring example, not a file boss-build executes.
 		"scripts/testdata/scenario-fixtures/valid-full.json": true,
 	},
-	"boss-epic": {},
-	"boss-plan": {
-		// The boss-plan cron gate is owned by its dedicated vendoring ticket.
-		"scripts/cron-gates/boss-plan.mjs": true,
-	},
+	"boss-epic":   {},
+	"boss-plan":   {},
 	"boss-review": {},
 }
 
@@ -1045,7 +1046,7 @@ func TestForeignSkillRefsDetection(t *testing.T) {
 		"dispatch one general-purpose subagent",
 		"diff the branch against its merge-base",
 		"the read-only probe is safe to repeat",
-		"an agent-friendly planned ticket",
+		"an agent-build planned ticket",
 		"invoke the boss-review skill with no args",
 		"boss-finalize injects the PR tag",
 		"the api-review lens covers proto changes",

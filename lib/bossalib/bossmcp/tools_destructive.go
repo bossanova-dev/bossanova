@@ -201,6 +201,25 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		r, err := jsonResult(map[string]string{"deleted_note": args.ID})
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "delete_organization_note",
+		Description: "Delete an organization note: an API-written note is erased, a synced one is tombstoned so its " +
+			"daemon cannot sync it back. Only the author or an organization owner may. Destructive — requires confirm:true.",
+		Annotations: destructiveAnnotations(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteOrganizationNoteArgs) (*mcp.CallToolResult, any, error) {
+		if r := requireConfirm(args.Confirm, "delete_organization_note"); r != nil {
+			return r, nil, nil
+		}
+		if err := backend.DeleteOrganizationNote(ctx, &pb.DeleteOrganizationNoteRequest{
+			OrganizationId: args.OrganizationID,
+			Id:             args.ID,
+		}); err != nil {
+			return organizationNoteErrorResult(err), nil, nil
+		}
+		r, err := jsonResult(map[string]string{"deleted_organization_note": args.ID})
+		return r, nil, err
+	})
 }
 
 // registerDestructiveSessionTool installs a confirm-gated id-keyed session tool
@@ -268,17 +287,28 @@ func registerMergeSessionTool(server *mcp.Server, backend Backend, opts Options)
 		// docs/mcp.md and services/docs/docs/guides/mcp.md instead.
 		Description: "Merge a session's pull request. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ConfirmIDArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args MergeSessionArgs) (*mcp.CallToolResult, any, error) {
 		if r := requireConfirm(args.Confirm, "merge_session"); r != nil {
 			return r, nil, nil
 		}
-		session, detail, err := backend.MergeSession(ctx, args.ID)
+		// The pin is passed through verbatim: the daemon validates and
+		// normalizes it (InvalidArgument on a malformed SHA), and a backend that
+		// cannot carry it refuses it.
+		session, detail, err := backend.MergeSession(ctx, args.ID, args.MatchHead)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(mergeSessionResult{Session: session, Detail: detail})
 		return r, nil, err
 	})
+}
+
+// MergeSessionArgs is merge_session's argument struct: ConfirmIDArgs plus the
+// optional head pin (BOS-1381). A mismatch is refused with HEAD_MISMATCH.
+type MergeSessionArgs struct {
+	ID        string `json:"id" jsonschema:"the resource id"`
+	MatchHead string `json:"match_head,omitempty" jsonschema:"refuse unless the PR head is this 40-hex SHA"`
+	Confirm   bool   `json:"confirm,omitempty" jsonschema:"must be true to actually perform the destructive action"`
 }
 
 // ConfirmIDArgs is the typed argument struct for confirm-gated id-keyed tools.
@@ -306,7 +336,7 @@ type DeleteGithubCallbackArgs struct {
 // description, which must not read as optional just because the local adapter
 // ignores the value. Keep the tag in step with noteRepoIDRoutingField.
 type DeleteNoteArgs struct {
-	RepoID  string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). Use the daemon-local repo id list_repos/resolve_context return, NOT a git origin URL — an origin URL resolves to NotFound. It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
+	RepoID  string `json:"repo_id" jsonschema:"the note's owning repo id (required, even on a local daemon that ignores it; the hosted gateway routes by it). It routes but does NOT scope: the id alone selects the note, and a mismatched repo_id is not checked, so this is not a safety check"`
 	ID      string `json:"id" jsonschema:"the note id to delete"`
 	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the note"`
 }

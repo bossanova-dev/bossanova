@@ -1,13 +1,13 @@
 ---
 name: boss-build
-description: Use when asked to implement a planned Linear ticket on a schedule, "implement the next ticket", "boss-build", or given a ticket ID to implement. Unattended cron-safe sibling of boss-plan — it consumes agent-friendly planned tickets and ships review-ready PRs.
+description: Use when asked to implement a planned Linear ticket on a schedule, "implement the next ticket", "boss-build", or given a ticket ID to implement. Unattended cron-safe sibling of boss-plan — it consumes agent-build planned tickets and ships review-ready PRs.
 ---
 
 # boss-build
 
 Implement exactly **one** planned ticket end to end, unattended, and hand off a review-ready PR. This
 is the second half of the pair whose first half is `boss-plan` (which turns tickets into
-`agent-friendly` planned tickets). You are a capable engineer: this document states the contract,
+`agent-build` planned tickets). You are a capable engineer: this document states the contract,
 the helpers that answer questions reliably, and the few rules that protect the branch and the
 truthfulness of the result. How you implement is up to you — **the plan is the specification**.
 
@@ -17,14 +17,14 @@ Print exactly one, as the first token of its own line, followed by the ticket id
 summary (cost extraction matches a line-leading token).
 
 - `REVIEW_READY` — PR pushed, green and ready; ticket moved to the **in-review** state; PR URL
-  commented on the ticket; `please-review` applied. Open review findings do **not** prevent this: a
+  commented on the ticket. Open review findings do **not** prevent this: a
   round-capped review ships here with the findings **published** (PR comment, ticket comment, a
   `## Review findings` pointer in the body). Human review is the next gate. A verified Step 12
   completion merge keeps the token and prints
   `REVIEW_READY <ticket> <pr-url> merged <sha> — <summary>`; the ticket moves to `.done`.
 - `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied **and**
   certified by the review, and everything left undone is an unmet in-scope criterion. Ticket stays
-  **in-progress**; PR ready but marked do-not-merge; never `please-review`.
+  **in-progress**; PR ready but marked do-not-merge.
 - `BLOCKED` — only when the run physically cannot finish: **(1)** quality gates are still red after
   the repair cap, or **(2)** the branch cannot be pushed. Ticket stays **in-progress** with a blocker
   comment (`file:line`, what was tried); PR left draft. Nothing else is BLOCKED — not open findings
@@ -81,10 +81,12 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Are the checks green / is the merge state blocking? | `node pr-check-state.mjs classify\|merge-state …`                           |
 | Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
 | May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
-| Is completion merge authorized?                     | `node completion-gate.mjs envelope\|merge\|settle`                          |
+| Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
 | Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
+| Is the local-verification record well-formed?       | `validateLocalVerification(config, body)` in `skill-config.mjs`             |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
 | What is left before this terminal state is honest?  | `node finalize/route-contract.mjs assert --outcome <state> …`               |
+| Post or read the boss/build commit-status receipt   | `node commit-status.mjs post\|read …`                                       |
 
 ## Rules
 
@@ -104,9 +106,9 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    pushed: every route that ends after implementation pushes first.
 4. **Rebase, never merge.** Never merge the base into the branch, never `git pull`, never
    `--rebase-merges`; force-push only with `--force-with-lease` over this run's own rewrite.
-5. **Never merge by default.** Only a Step 12 `completion` extension may request a merge, through
-   `completion-gate.mjs merge`, when the repo explicitly opts in and the helper certifies the run.
-   No other merge path is permitted; terminal success keeps `REVIEW_READY`.
+5. **Never merge by default.** The only merge path is Step 12's verify fast path
+   (`completion-gate.mjs fast-path` → `verify-gate.mjs merge`). It runs only when the repo has an
+   enabled `/boss-verify` cron job and verify-gate judges the head `pass`.
 6. **Await every subagent.** Dispatch with awaited `Task` (Claude) or `spawn_agent` + `wait_agent`
    (Codex); never background a dispatch and move on. Keep bulk output (diffs, CI logs, review
    transcripts) inside subagents that return short summaries.
@@ -206,9 +208,10 @@ fi
 A stale-but-present installed file warns and the run continues; an `absent`, `mode` or
 `broken-symlink` row from the drift gate, or no toolbox at all, stops (rule 10).
 
-**Tracker.** Make one cheap read through the adapter (e.g. the backlog team's statuses), then
-classify it with `trackerMcpPreflight` (`toolbox/tracker/preflight.mjs`), passing your **own tool
-list** — never a harness config file. MCP servers can still be connecting when a session starts: if
+**Tracker.** Make one cheap read through the adapter (e.g. the backlog team's statuses; when config
+names no team, the `listTeams` call with `limit=50` — an adapter without it gives
+`visibleTeams: null`), then classify it with `trackerMcpPreflight` (`toolbox/tracker/preflight.mjs`),
+passing your **own tool list** — never a harness config file. MCP servers can still be connecting when a session starts: if
 no tracker tools are in your tool list yet, wait about 20 seconds and look again, up to three times,
 before classifying.
 
@@ -228,6 +231,11 @@ has, which may be spelled differently from the config (`linear`, `acme-linear`, 
 `ok: false` stop `NO_CHANGE: <message>` with no writes: `absent` means the repo never declared the
 server for this harness (fix the repo), `unreachable` means it did not answer (fix
 credentials/network).
+
+**Team.** `--team <name>` is a skill argument, never a ticket id. Classify with
+`resolveTrackerTeam(config, {preflight, visibleTeams: <raw list_teams result>, teamFlag})`
+(`skill-config.mjs`): unconfigured stops `NO_CHANGE: <message>` with no writes; otherwise use `team`
+for `selectPlanned` and pass `--team <team>` to `list-planned`.
 
 Also require, before any tracker write, that `trackerConfigFor(config).states` resolves all three
 roles to non-empty names and that the adapter exposes `readPlanAttachment`; otherwise stop
@@ -272,6 +280,7 @@ its path forward: `BOSS_BUILD_ROUTE_RECEIPT="$(mktemp -t boss-build-route.XXXXXX
 
 - `ACQUIRED` / `TOOK_OVER_STALE` (exit 0) — you own the worktree. `TOOK_OVER_STALE` means a prior
   run here died: treat it as a resume candidate.
+  On `TOOK_OVER_STALE`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger stale-claim-taken-over --where "boss-build Step 2 worktree lock"` (never fatal).
 - `HELD_BY_PEER` (exit 3) — a live run owns it. Stop `NO_CHANGE` with zero writes; do **not** go
   through Step 12 (you hold nothing to release).
 
@@ -281,18 +290,22 @@ and 8).
 ## Step 2: Select one ticket
 
 - **A named ticket** (e.g. `<ISSUE-ID>`): `getIssue` with relations. Naming it bypasses the
-  `agent-friendly` label and estimate filters, and overrides — loudly — the `needs-human` and
+  `agent-build` label and estimate filters, and overrides — loudly — the `needs-human` and
   blocked-by skips:
   `WARNING: <ID> is labelled needs-human — implementing only because it was named explicitly` /
   `WARNING: <ID> is blocked by <BLOCKER-IDS> (unmerged) — implementing only because it was named explicitly`.
   It still needs a plan attachment; without one stop `NO_CHANGE` with no claim or state move.
-- **Otherwise**: candidates from `selectPlanned` (backlog team, planned state, limit 250) — or, when
-  `trackerConfigFor(config).selection` is set, from `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs"
-list-planned` (a non-zero exit stops `NO_CHANGE` quoting its stderr; never fall back to the
-  unfiltered call). Keep `agent-friendly` tickets with a plan attachment, drop `needs-human`, rank by
+- **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
+  `--exclude-` forms) are filters, never ticket ids: classify arguments with
+  `node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <args>`. With a named ticket they are
+  ignored with a one-line warning.
+- **Otherwise**: candidates from `selectPlanned` (resolved team, planned state, limit 250) — or, when
+  `trackerConfigFor(config).selection` is set or `selectionArgs` is non-empty, from
+  `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned --team <team> <selectionArgs>` (a
+  non-zero exit stops `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call). Keep `agent-build` tickets with a plan attachment, drop `needs-human`, rank by
   priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking and take
   the first ticket that is unblocked (`readDependencies` / `isUnblocked`), not an epic parent, and
-  has a plan. None ⇒ `NO_CHANGE` (`all agent-friendly planned tickets are blocked, ineligible, epic
+  has a plan. None ⇒ `NO_CHANGE` (`all agent-build planned tickets are blocked, ineligible, epic
 parents, or missing plans`).
 
 `agent-question` never blocks; copy the plan's open questions into `## Open questions` as open
@@ -397,6 +410,8 @@ shell hook's fabrication; confirm absence by reading the file.
 
 ## Step 5: Implement
 
+Report the phase: `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase building` (never fatal).
+
 Implement the scope Step 4.5 left (the full plan on a fresh run) through the first methodology tier
 that is available:
 
@@ -418,6 +433,7 @@ extension that fails to load) is recorded as `extension <name>: skipped (<reason
 skipped (<reason>)` and the next tier gets **only what is still open**. Recompute that remainder
 from the branch before every dispatch; where nothing remains, dispatch nothing and record
 `not dispatched (scope already satisfied)`. One successful extension suppresses tiers 2 and 3.
+For a non-deliberate methodology-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 
 **Task contract.** Each implementation subagent returns only: task id, files touched, tests
 added/passing, interface signatures, residual risks (checked against the prior art it cited),
@@ -452,6 +468,8 @@ and `scenario run --dry-run` green ([`references/proof-capture.md`](references/p
 
 ## Step 6: Review
 
+Report the phase: `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase reviewing` (never fatal).
+
 **Baseline.** Fresh/bootstrap-only: `REVIEW_BASE="$START_SHA"`. Resume: `REVIEW_BASE="$BASE_REF"`.
 
 **Anything to review?**
@@ -463,6 +481,7 @@ node "$BOSS_BUILD_TOOLBOX/worktree-state.mjs" --base "$REVIEW_BASE" \
 
 `clean` ⇒ nothing was built: restore the entry state, delete the claim, Step 12 `NO_CHANGE`.
 `unknown` ⇒ `BLOCKED`. `dirty` ⇒ commit what this run touched (path-scoped) so the review sees it.
+Whenever `worktree-state.mjs` returns `unknown`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build worktree-state"` (never fatal).
 
 **Base drift.** Immediately before the review, refresh the base and ask whether it moved under you:
 
@@ -595,12 +614,17 @@ printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" \
 - `clean` with no returned coverage token → `none: review coverage unknown (<reason>)`; routing
   still follows the file.
 
+On `dispatch-failure`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger dispatch-failed --where "boss-build Step 6 review dispatch"` (never fatal).
+For any `none: review coverage unknown` (including a moved post-review tip), run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build review coverage"` (never fatal).
+
 `BOSS_BS_REVIEW=0` is the one way to skip review: dispatch nothing, write `sentinel capped 1`, and
 publish `none: review stack did not run (disabled by BOSS_BS_REVIEW=0)` / cross-model
 `skipped: disabled`.
 
 An unreviewed or capped branch is never fatal: it ships, saying so in the PR. Only red gates and an
 unpushable branch block.
+
+When the review stack has returned, `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase building` (never fatal).
 
 ## Step 6.5: Knowledge extensions (repo opt-in)
 
@@ -609,6 +633,7 @@ each (instructions from `skillPath`), validate with `skill-extensions.mjs valida
 --file <outPath>`, and record `extension <name>: skipped (<reason>)` per failure. Extensions may
 commit a knowledge artifact, so Step 7 captures the reviewed tip **after** this. Never fatal.
 [`references/knowledge-extensions.md`](references/knowledge-extensions.md).
+For a non-deliberate knowledge-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 
 ## Step 7: Push and publish the PR
 
@@ -634,12 +659,13 @@ Every route from Step 6 comes through here.
 
 3. **PR.** Compose the body in a temp file outside the worktree
    ([`references/publish.md`](references/publish.md) has the template), then create a **draft**
-   (`gh pr create --draft --label agent-made --title "[<ISSUE-ID>] <issue title>" --body-file …`)
+   (`gh pr create --draft --title "[<ISSUE-ID>] <issue title>" --body-file …`)
    when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Run
-   `validateVerifyOnlyEvidence(config, body)` over the body before publishing it. Always include
-   the checklist sections `## Human follow-up` and
-   `## Open questions`; run `completion-gate.mjs followups --body-file <path>` alongside the
-   evidence validator and fix malformed sections before publishing. Never put the
+   `validateVerifyOnlyEvidence(config, body)` and `validateLocalVerification(config, body)` over the
+   body before publishing it. Fix local-verification findings in the body and validate again; they
+   never change the route or yield BLOCKED. Always include the checklist sections
+   `## Human follow-up` and `## Open questions`; run `completion-gate.mjs followups --body-file <path>`
+   alongside the evidence validators and fix malformed sections before publishing. Never put the
    phrase `do not merge` in a title or body except through the PARTIAL marker (boss-epic's merge
    gate matches it).
 
@@ -684,11 +710,14 @@ Then wait for CI (arm watches, bounded poll) and run **boss-repair** for failing
 and review comments, with `BOSS_NOTES_SUPPRESSED=1`, up to `policy.repairCap` (5) passes, re-arming
 the CI wait after every push. Still red after the cap ⇒ `BLOCKED` cause 1: PR stays draft, blocker
 comment names the failing check, `file:line`, and what was tried.
+When the repair cap leaves checks red, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger repair-exhausted --where "<failing check name>"` (never fatal).
 
 ## Step 9: Decide the route and finalize
 
 Re-inject the tag only if boss-repair added untagged non-empty commits (then push with lease and
-wait for CI again). Green CI on the head is the full test run; do not repeat it locally. Then
+wait for CI again). Add repair and readiness-rebase test re-runs to `## Local verification` as
+phase-labelled bullets (repair row `<command>: <result>` ⇒ ``repair: `<command>` → <result>``); fix findings from
+`validateLocalVerification(config, body)` and validate again before `gh pr ready`. Green CI on the head is the full test run; do not repeat it locally. Then
 decide:
 
 - **Every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or a
@@ -744,18 +773,18 @@ POST_READY_VERDICT="$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" merge-state 
 test "$(printf '%s' "$POST_READY_VERDICT" | jq -r .blocking)" = "false" || exit 1
 ```
 
-Then: `please-review` (not on `PARTIAL`), move the ticket `.inProgress → .inReview` (not on
-`PARTIAL`), comment the PR URL on the ticket, and publish what the route owes — findings ledger, or
+Then: move the ticket `.inProgress → .inReview` (not on `PARTIAL`), comment the PR URL on the ticket, and publish what the route owes — findings ledger, or
 the PARTIAL title/body/marker — per [`references/publish.md`](references/publish.md). The CI reading
 that makes a route green is `CI_WAIT_STATE=settled`; `timeout`/`unknown` is not green. A red reading
-after readying unwinds first (body back to the plain form, `gh pr ready --undo`, remove
-`please-review`), then reports `BLOCKED`.
+after readying unwinds first (body back to the plain form, `gh pr ready --undo`), then reports
+`BLOCKED`.
+When any CI wait ends `timeout` or `unknown`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger gate-unknown --where "boss-build CI wait"` (never fatal).
 
 Stamp each obligation into the route receipt (created in Step 1) as you complete it, on every route:
 `node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token <token> --run-id "$BLI_RUNID"`.
 Tokens:
 `REVIEW_READY` — `verify-only-evidence-validated`, `premise-discharged`, `required-deferred-asserted`,
-`pr-ready`, `please-review-added`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
+`pr-ready`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
 `do-not-merge-marked`; every route — `claim-deleted`, `notes-before-lock-release`,
 `stop-hooks-removed`, `completion-phase-done`, `lock-released`; optional — `blocked-pr-left-draft`,
 `entry-state-restored`,
@@ -774,8 +803,8 @@ bounded poll, capped by `policy.settleCap` (3) cycles. Then by source:
   at most one round per head SHA and three per run.
 - **Human change requests and red CI** go back to Step 8 and spend a cycle. `UNSTABLE` with no
   failing check and no open thread is pending, not red.
-- Feedback you cannot fix: respond per finding and stay `REVIEW_READY`. Re-quarantine (draft, remove
-  `please-review`, blocker comment, `BLOCKED`) only when a `BLOCKED` cause actually holds.
+- Feedback you cannot fix: respond per finding and stay `REVIEW_READY`. Re-quarantine (draft, blocker
+  comment, `BLOCKED`) only when a `BLOCKED` cause actually holds.
 
 ## Step 11: Proof (REVIEW_READY only, never fatal)
 
@@ -795,6 +824,7 @@ may change it.
   runner owns the ticket or the state is not one this run produced, and leave exactly one short
   breadcrumb comment naming the branch that fired and why (update it on a repeat; no transcripts,
   output or secrets). A failed restore is a warning.
+- Unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" flush --core boss-build --outcome "$OUTCOME" --mode "<mode>"` once (unsampled, never fatal), then continue.
 - **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
   `notesSampleRate` once per run (reuse the roll Step 6.5 left in
   `$(git rev-parse --git-dir)/boss-build-notes-roll` if it is under 12 h old, consuming it). Write at
@@ -802,14 +832,32 @@ may change it.
   awaited worker that runs every extension in `(order, name)` order with the envelope
   `{"role":"notes","core":"boss-build","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`,
   each bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`; validate with `--role notes`. Never fatal.
+  For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
+- **Receipt** (`REVIEW_READY` only, before Completion): post the `boss/build` commit status on the
+  head this run pushed. `posted` ⇒ done; a non-zero exit or a moved branch only warns — never
+  certify a head this run did not push. `OUTCOME` never changes.
+
+  ```bash
+  SESSION_BRANCH="${SESSION_BRANCH:-$(git branch --show-current)}"
+  PR_URL="$(gh pr view "${PR_NUMBER:-$SESSION_BRANCH}" --json url -q .url 2>/dev/null)"
+  if git fetch -q origin "$SESSION_BRANCH" &&
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")" ]; then
+    node "$BOSS_BUILD_TOOLBOX/commit-status.mjs" post --context boss/build --state success \
+      --sha "$(git rev-parse HEAD)" --description "boss-build REVIEW_READY run $(printf '%.12s' "$BLI_RUNID")" \
+      --target-url "$PR_URL" || echo "warning: boss/build receipt not posted — bookkeeping only, work state unaffected" >&2
+  else
+    echo "warning: boss/build receipt not posted — fetch failed or HEAD is not origin/$SESSION_BRANCH" >&2
+  fi
+  ```
+
 - **Completion**: after Stop-hook removal, before lock release, run the unsampled, non-fatal
-  [completion phase](references/completion-extensions.md) exactly once per run. It ignores
-  `BOSS_NOTES_SUPPRESSED`; no extension or no PR is a silent no-op. Stamp
+  [verify fast path](references/verify-fast-path.md) exactly once per run. It ignores
+  `BOSS_NOTES_SUPPRESSED`; no PR is a silent no-op. Stamp
   `completion-phase-done` on every route. A verified merge also stamps
-  `pr-merged-by-completion`, moves the ticket to `.done` and removes `please-review`
-  (bookkeeping failures warn). `OUTCOME` never changes.
+  `pr-merged-by-completion`, moves the ticket to `.done` (bookkeeping failures
+  warn). `OUTCOME` never changes.
 - Release the lock: `"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"`.
 - Assert the route receipt (an incomplete receipt only warns; a missing helper is a hard stop):
 
@@ -862,14 +910,19 @@ node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
 once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then print. Never
 arm twice.
 
+**Hand-off** ([`references/stage-chaining.md`](references/stage-chaining.md)), after that cleanup: a `merged` completion record ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" run-next --stage verify`; otherwise on `REVIEW_READY` ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" arm-verify --pr "$PR_NUMBER" --completion "$(git rev-parse --git-dir)/boss-build-completion.json" --run-id "$BLI_RUNID"`. Print its line; never fatal; `OUTCOME` never changes.
+
 Then print the terminal state, adding `merged <sha>` only for a verified completion merge.
 
 ## Verification
 
 Locally, run only the tests relevant to the change: `commands.testAffected` when the repo has one,
-otherwise the tests covering what you changed, through the repo's own runner. A selection that ran
-nothing is not a pass. Do not run the full suite locally: CI on the PR is the full check, and Step 8
-waits for it. Only when the PR gets no CI checks at all, run `commands.test` once before readying.
+otherwise the tests covering what you changed, through the repo's own runner. Record every local
+command and its final summary in `## Local verification`, including repair, rebase and no-CI runs.
+When selection is unreliable (no affected selector or mapped tests, or it ran nothing), run the
+closest covering tests you can identify and disclose what could not be selected and why with `gap:`.
+Do not substitute a full local suite: CI on the pushed head owns it, and Step 8 waits for it. Only
+when the PR gets no CI checks at all, run `commands.test` once before readying and record its result.
 
 ## Cron gate
 

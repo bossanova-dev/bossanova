@@ -18,8 +18,11 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
-// Compile-time interface check.
-var _ vcs.Provider = (*Provider)(nil)
+// Compile-time interface checks.
+var (
+	_ vcs.Provider           = (*Provider)(nil)
+	_ vcs.CommitStatusPoster = (*Provider)(nil)
+)
 
 // isReviewBotLogin reports whether a GitHub login belongs to a bot account whose
 // COMMENTED reviews may be promoted to CHANGES_REQUESTED so they surface as
@@ -503,18 +506,105 @@ func workflowRunsPath(nwo, headSHA string) string {
 	return fmt.Sprintf("repos/%s/actions/runs?%s", nwo, q.Encode())
 }
 
-// fetchCheckResults reads CI check results for a pull request from GitHub,
-// bypassing the read cache (see GetCheckResults).
+// provenanceContexts are commit-status contexts that record who produced a
+// head rather than gating it. Keep in sync with PROVENANCE_CONTEXTS in
+// skills-toolbox/pr-check-state.mjs.
+var provenanceContexts = map[string]bool{vcs.BuildReceiptContext: true}
+
+// commitStatusDescriptionLimit is GitHub's commit-status description cap, in
+// Unicode code points. Keep in sync with DESCRIPTION_LIMIT in
+// skills-toolbox/commit-status.mjs.
+const commitStatusDescriptionLimit = 140
+
+// commitStatusStates are the states GitHub accepts for a commit status.
+var commitStatusStates = map[string]bool{"success": true, "failure": true, "pending": true, "error": true}
+
+// capCommitStatusDescription caps text at commitStatusDescriptionLimit code
+// points without splitting one; a truncated result ends in "…" and stays within
+// the limit (the same rule as capDescription in commit-status.mjs).
+func capCommitStatusDescription(text string) string {
+	runes := []rune(text)
+	if len(runes) <= commitStatusDescriptionLimit {
+		return text
+	}
+	return string(runes[:commitStatusDescriptionLimit-1]) + "…"
+}
+
+// isFullLowerHexSHA reports whether sha is a 40-character lowercase hex SHA.
+func isFullLowerHexSHA(sha string) bool {
+	if len(sha) != 40 {
+		return false
+	}
+	for _, c := range sha {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// isHTTPURL reports whether raw is an absolute http(s) URL with a host and no
+// whitespace.
+func isHTTPURL(raw string) bool {
+	if strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// PostCommitStatus posts one commit status on sha through
+// `gh api -X POST repos/<nwo>/statuses/<sha>`. Inputs are validated before gh
+// runs. Every field is passed with a raw -f, never -F, which would read a
+// leading "@" as a file path. It does not invalidate the read cache (keyed by
+// PR, which it does not know); callers drop the PR's cached reads through
+// vcs.ReadInvalidator.
+func (p *Provider) PostCommitStatus(ctx context.Context, repoPath, sha string, s vcs.CommitStatus) error {
+	if !isFullLowerHexSHA(sha) {
+		return fmt.Errorf("post commit status: sha must be 40 lowercase hex characters, got %q", sha)
+	}
+	if !commitStatusStates[s.State] {
+		return fmt.Errorf("post commit status: state must be success, failure, pending or error, got %q", s.State)
+	}
+	if strings.TrimSpace(s.Context) == "" {
+		return errors.New("post commit status: context is empty")
+	}
+	if s.TargetURL != "" && !isHTTPURL(s.TargetURL) {
+		return fmt.Errorf("post commit status: target URL must be http(s), got %q", s.TargetURL)
+	}
+	nwo := repoFlag(repoPath)
+	if _, _, ok := splitNWO(nwo); !ok {
+		return fmt.Errorf("post commit status: invalid GitHub repo: %s", nwo)
+	}
+	args := []string{
+		"api", "-X", "POST", fmt.Sprintf("repos/%s/statuses/%s", nwo, sha),
+		"-f", "state=" + s.State,
+		"-f", "context=" + s.Context,
+	}
+	if s.Description != "" {
+		args = append(args, "-f", "description="+capCommitStatusDescription(s.Description))
+	}
+	if s.TargetURL != "" {
+		args = append(args, "-f", "target_url="+s.TargetURL)
+	}
+	if _, err := p.gh(ctx, args...); err != nil {
+		return fmt.Errorf("post commit status %s on %s: %w", s.Context, sha, err)
+	}
+	return nil
+}
+
+// fetchCheckSet reads CI checks and build provenance for a pull request from GitHub,
+// bypassing the read cache (see GetCheckSet).
 //
 // The gh CLI's "pr checks" command combines status and conclusion into a single
 // "state" field (SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, etc.) rather than
 // exposing them separately. We map these combined states back to our Status +
 // Conclusion model.
-func (p *Provider) fetchCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
+func (p *Provider) fetchCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
 	out, err := p.gh(ctx,
 		"pr", "checks", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "name,state,workflow",
+		"--json", "name,state,workflow,description",
 	)
 	if err != nil {
 		// A PR whose head commit has no check runs is a normal empty result,
@@ -522,23 +612,39 @@ func (p *Provider) fetchCheckResults(ctx context.Context, repoPath string, prID 
 		// poller bail before updating the tracker, freezing the row on its
 		// previous status (e.g. a stale "draft" after the PR became ready).
 		if isNoChecksReported(err) {
-			return []vcs.CheckResult{}, nil
+			return vcs.CheckSet{Checks: []vcs.CheckResult{}}, nil
 		}
-		return nil, fmt.Errorf("get check results: %w", err)
+		return vcs.CheckSet{}, fmt.Errorf("get check results: %w", err)
 	}
 
 	var raw []struct {
-		Name     string `json:"name"`
-		State    string `json:"state"`
-		Workflow string `json:"workflow"`
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Workflow    string `json:"workflow"`
+		Description string `json:"description"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parse check results: %w", err)
+		return vcs.CheckSet{}, fmt.Errorf("parse check results: %w", err)
 	}
 
-	results := make([]vcs.CheckResult, len(raw))
-	for i, r := range raw {
+	set := vcs.CheckSet{Checks: make([]vcs.CheckResult, 0, len(raw))}
+	for _, r := range raw {
 		status, conclusion, recognized := parseCheckState(r.State)
+		if r.Workflow == "" && provenanceContexts[r.Name] {
+			if r.Name == vcs.BuildReceiptContext {
+				// Any boss/build status, whatever its state, means a
+				// receipt carrier must not post over it.
+				set.BuildReceiptSeen = true
+			}
+			if r.Name == vcs.BuildReceiptContext && status == vcs.CheckStatusCompleted && conclusion != nil && *conclusion == vcs.CheckConclusionSuccess {
+				set.HasBuildReceipt = true
+			}
+			// A provenance receipt (a commit status a boss skill posts to say
+			// who produced the head) is not a gate. Counting it would turn a
+			// head with no CI into a demonstrated pass; skills-toolbox/
+			// pr-check-state.mjs drops the same contexts.
+			continue
+		}
 		if !recognized {
 			// An unrecognized state means GitHub introduced (or we missed)
 			// a value we don't enumerate. Surface the gap so we can add it
@@ -549,16 +655,19 @@ func (p *Provider) fetchCheckResults(ctx context.Context, repoPath string, prID 
 				Str("workflow", r.Workflow).
 				Msg("unknown gh pr checks state; treating check as unclassified")
 		}
-		results[i] = vcs.CheckResult{
+		set.Checks = append(set.Checks, vcs.CheckResult{
 			ID:           r.Workflow + "/" + r.Name,
 			Name:         r.Name,
 			Status:       status,
 			Unclassified: !recognized,
 			Conclusion:   conclusion,
-		}
+			// The description carries the boss/verify phase and park reason
+			// (vcs.ClassifyVerify); for an Actions job it is informational.
+			Description: r.Description,
+		})
 	}
 
-	return results, nil
+	return set, nil
 }
 
 // GetFailedCheckLogs returns the log output for a specific failed check run.
@@ -941,31 +1050,45 @@ func (p *Provider) SearchPRsByTitleTag(ctx context.Context, repoPath, tag string
 	return prs, nil
 }
 
-// MergePR merges a pull request using the given strategy.
+// MergePR merges a pull request using opts.Strategy.
 // Valid strategies are "rebase", "squash", and "merge". An empty string
-// defaults to "merge" (GitHub's default).
-func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
+// defaults to "merge" (GitHub's default). When opts.ExpectedHeadSHA is set,
+// --match-head-commit makes GitHub refuse the merge atomically unless the PR
+// head is exactly that commit; the refusal wraps vcs.ErrHeadMismatch.
+func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, opts vcs.MergePROpts) error {
 	flag := "--merge"
-	switch strategy {
+	switch opts.Strategy {
 	case "rebase":
 		flag = "--rebase"
 	case "squash":
 		flag = "--squash"
 	}
 
-	_, err := p.runGHWithTransientRetry(ctx, "merge PR",
+	args := []string{
 		"pr", "merge", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
 		flag,
 		"--delete-branch",
-	)
+	}
+	if opts.ExpectedHeadSHA != "" {
+		// Callers validate first, so a malformed pin here is a programming
+		// error: refuse it before any gh call rather than merge unpinned.
+		pin, ok := vcs.NormalizeHeadSHA(opts.ExpectedHeadSHA)
+		if !ok {
+			return fmt.Errorf("merge PR: invalid expected head SHA %q: must be 40 hex characters", opts.ExpectedHeadSHA)
+		}
+		args = append(args, "--match-head-commit", pin)
+	}
+
+	_, err := p.runGHWithTransientRetry(ctx, "merge PR", args...)
 	if err != nil {
 		return fmt.Errorf("merge PR: %w", classifyMergeError(err, repoPath, prID))
 	}
 
 	p.logger.Info().
 		Int("number", prID).
-		Str("strategy", strategy).
+		Str("strategy", opts.Strategy).
+		Str("expected_head", opts.ExpectedHeadSHA).
 		Msg("merged PR")
 
 	return nil
@@ -1361,38 +1484,9 @@ func parsePRState(s string) vcs.PRState {
 }
 
 // parseCheckState converts a gh pr checks "state" field into a status,
-// optional conclusion, and a "recognized" flag. The gh CLI combines status
-// and conclusion into a single field: SUCCESS, FAILURE, PENDING,
-// STARTUP_FAILURE, CANCELLED, SKIPPED, ACTION_REQUIRED, ERROR, TIMED_OUT, etc.
-//
-// Unrecognized values are deliberately surfaced as completed but unclassified:
-// they are neither green nor red, and the recognized return lets the caller
-// preserve that distinction for the aggregate verdict.
+// optional conclusion, and a "recognized" flag. The classification is shared
+// with bosso's aggregate trigger states through vcs.ParseGitHubCheckState, so
+// the daemon and the orchestrator cannot disagree on what a state means.
 func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion, bool) {
-	switch strings.ToUpper(s) {
-	case "SUCCESS":
-		c := vcs.CheckConclusionSuccess
-		return vcs.CheckStatusCompleted, &c, true
-	case "FAILURE", "STARTUP_FAILURE", "STALE", "ACTION_REQUIRED", "ERROR":
-		c := vcs.CheckConclusionFailure
-		return vcs.CheckStatusCompleted, &c, true
-	case "NEUTRAL":
-		c := vcs.CheckConclusionNeutral
-		return vcs.CheckStatusCompleted, &c, true
-	case "CANCELLED":
-		c := vcs.CheckConclusionCancelled
-		return vcs.CheckStatusCompleted, &c, true
-	case "SKIPPED":
-		c := vcs.CheckConclusionSkipped
-		return vcs.CheckStatusCompleted, &c, true
-	case "TIMED_OUT":
-		c := vcs.CheckConclusionTimedOut
-		return vcs.CheckStatusCompleted, &c, true
-	case "IN_PROGRESS":
-		return vcs.CheckStatusInProgress, nil, true
-	case "QUEUED", "PENDING", "WAITING":
-		return vcs.CheckStatusQueued, nil, true
-	default:
-		return vcs.CheckStatusCompleted, nil, false
-	}
+	return vcs.ParseGitHubCheckState(s)
 }

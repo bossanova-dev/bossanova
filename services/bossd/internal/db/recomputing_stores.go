@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,21 @@ type SessionRecomputer interface {
 //     silent in production.
 type SessionTransitionObserver interface {
 	OnSessionState(ctx context.Context, sessionID string, to machine.State) error
+}
+
+// TransitionObservers notifies observers in order, even when an earlier observer fails.
+// Each observer remains responsible for logging its own errors.
+type TransitionObservers []SessionTransitionObserver
+
+// OnSessionState implements SessionTransitionObserver.
+func (observers TransitionObservers) OnSessionState(ctx context.Context, sessionID string, to machine.State) error {
+	var errs []error
+	for _, observer := range observers {
+		if err := observer.OnSessionState(ctx, sessionID, to); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RecomputingSessionStore wraps a SessionStore so that any Update touching a

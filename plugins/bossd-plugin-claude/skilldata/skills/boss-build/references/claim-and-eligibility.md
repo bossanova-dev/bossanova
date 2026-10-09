@@ -84,20 +84,29 @@ human explicitly named. Do not post it on a related child, parent, dependency, o
 
 ## Filtered Selection
 
-Read this from Step 2's auto-queue branch when the repo narrows its sweep — that is, when
-`trackerConfigFor(config).selection` is **present**. Presence decides the route, not what the block
-resolves to: a present block always takes this route, so there is never a judgement call about
-whether a filter "counts".
+Read this from Step 2's auto-queue branch when a selection is in effect — that is, when
+`trackerConfigFor(config).selection` is **present** or the run was given any selection flag
+(`--label`, `--exclude-label`, `--assignee`, `--exclude-assignee`, `--creator`,
+`--exclude-creator`, `--project`, `--exclude-project`). Presence decides the route, not what the
+selection resolves to.
+
+**Classifying arguments.** A selection flag is a filter, never a ticket id:
+
+```bash
+node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <skill arguments>
+# -> {"tickets":[...],"selectionArgs":[...],"other":[...]}  (exit 2 + "error" on a malformed flag)
+```
+
+A ticket in `tickets` takes the named-ticket branch and bypasses the guards; any `selectionArgs`
+beside it are ignored with one warning line. Otherwise `selectionArgs` is forwarded verbatim.
 
 **Why a second route exists.** The adapter's `selectPlanned` operation descriptor names a tracker tool
-that can filter by team, state and one label, and nothing else: it has no creator filter and no OR,
-so neither "assigned to or created by me" nor a disjunctive label set is expressible through it. Its
-result set is therefore a strict **superset** of what a narrowed cron gate scanned. A worker that
-ranked that superset would wake on the operator's own unblocked ticket and then pick somebody
-else's — with every gate in the run green. That is why a configured filter makes the executable
-route mandatory rather than preferred.
+that can filter by team, state and one label, and nothing else: no exclusion, no creator or project
+filter, no OR. Its result set is a strict **superset** of what a narrowed cron gate scanned, so a
+worker ranking it would pick a ticket the gate excluded. A selection in effect makes the executable
+route mandatory.
 
-**The rule.** With a selection configured, the candidate list comes **only** from:
+**The rule.** With a selection in effect, the candidate list comes **only** from:
 
 ```bash
 if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
@@ -105,7 +114,9 @@ if [ -z "${BOSS_BUILD_TOOLBOX:-}" ]; then
     if [ -d "$candidate/boss-build/toolbox" ]; then BOSS_BUILD_TOOLBOX="$candidate/boss-build/toolbox"; break; fi
   done
 fi
-if CANDIDATES="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned)"; then
+# Pass --team "<team>" when the Tracker preflight resolved the team (no configured team), then the
+# split-args selectionArgs verbatim.
+if CANDIDATES="$(node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned <selectionArgs>)"; then
   printf '%s\n' "$CANDIDATES"
 else
   echo "NO_CHANGE: filtered selection unavailable (list-planned stderr above)"
@@ -114,28 +125,26 @@ fi
 
 A non-zero exit stops the run `NO_CHANGE`, routed through **Stop cleanly** (Step 12) like every exit
 after Step 1's lock, with the verb's one-line stderr quoted as the reason. That line names what
-failed: an adapter without the executable `selectPlanned` capability, a config the verb could not
-derive the selection from, or a tracker read it could not evaluate. **There is no fallback.** Do not
-re-run the selection through the operation descriptor, drop a filter that "did not work", or widen
-the label set: each of those reproduces exactly the superset read this route exists to prevent. An
-exit-0 empty array `[]` is a real answer — zero candidates — and ends in the ranked walk's clean
-`NO_CHANGE`, not in this stop.
+failed: an adapter without the executable `selectPlanned` capability, a config or flag the verb
+could not derive the selection from, a user/label/project that did not resolve, or a tracker read it
+could not evaluate. **There is no fallback.** Do not re-run the selection through the operation
+descriptor or drop a filter that "did not work": each reproduces the superset read this route
+exists to prevent. An exit-0 empty array `[]` is a real answer — zero candidates — and ends in the
+ranked walk's clean `NO_CHANGE`, not in this stop.
 
-**What `list-planned` applies.** Its query comes from `plannedSelectionQuery` in
-`toolbox/skill-config.mjs` — the one derivation the cron gate filters on too, so the two cannot
-narrow differently: the configured planned state; the selection's `labels` set, which
-**supersedes** the `agentFriendly` role rather than unioning with it (the role applies when no set is
-configured); the `assigneeOrCreator` identity, matched as assigned-to **or** created-by (`me` is the
-owner of the tracker API key); ANDed with the configured backlog team; window 250. Each returned
-candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`, `labels` as
-plain names and `attachments` as a plain array — the inputs Step 2's ranking and
+**What `list-planned` applies.** Its query comes from `stageSelectionQuery(config, 'build', flags)`
+in `toolbox/skill-config.mjs` — the one derivation the cron gate filters on too, so a gate and a
+worker given the same flags scan identically: the planned state, AND the `agentBuild` label, AND NOT
+`needs-human`, AND every non-empty selection slot (labels, assignees, creators, projects; include
+and exclude; flag over `stages.build` over the shared block, per slot), ANDed with the configured
+team (else `--team`); window 250. An exclude keeps a ticket with no assignee, creator or project.
+Each returned candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`,
+`labels` as plain names and `attachments` as a plain array — the inputs Step 2's ranking and
 `selectImplementationPlanAttachment` read directly.
 
-Everything after the candidate list is unchanged on this route: the `agent-friendly` label and
-native-plan-attachment requirements, the `needs-human` exclusion, the rank rule, the ranked walk and
-the epic-parent skip all apply exactly as on the unfiltered route. One consequence follows from the
-supersede rule: a configured label set that omits the `agent-friendly` label admits candidates the
-walk then drops, so such a run ends `NO_CHANGE` — it can only narrow, never widen.
+Everything after the candidate list is unchanged on this route: the native-plan-attachment
+requirement, the rank rule, the ranked walk and the epic-parent skip all apply exactly as on the
+unfiltered route.
 
 ## Claim Signals
 

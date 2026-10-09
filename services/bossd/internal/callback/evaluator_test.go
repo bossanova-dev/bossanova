@@ -552,6 +552,43 @@ func TestSatisfiedTriggers_RunsSettledGatesChecksPassed(t *testing.T) {
 	}
 }
 
+// TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI pins BOS-1382: a
+// pending boss/verify commit status (a live claim, an unclaimed head, or a park
+// awaiting a human) is not ordinary CI, so it never holds checks_passed /
+// checks_passed_ready once ordinary checks and workflow runs settled, while a
+// completed boss/verify failure is an ordinary failed check.
+func TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI(t *testing.T) {
+	open := prStatusDraft(vcs.PRStateOpen, false)
+	for _, desc := range []string{"verifying… 3f2a", "waiting: checks-pending", "needs human: always-human-path", ""} {
+		t.Run("pending "+desc, func(t *testing.T) {
+			checks := []vcs.CheckResult{
+				completedCheck("build", vcs.CheckConclusionSuccess),
+				{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: desc},
+			}
+			got := satisfiedTriggers(open, checks, true)
+			if !got[models.GithubCallbackTriggerChecksPassed] || !got[models.GithubCallbackTriggerChecksPassedReady] {
+				t.Errorf("checks_passed pair = %v, want both satisfied beside a pending boss/verify", got)
+			}
+			if got[models.GithubCallbackTriggerChecksFailed] {
+				t.Errorf("checks_failed satisfied by a pending boss/verify")
+			}
+		})
+	}
+	t.Run("completed verify failure", func(t *testing.T) {
+		checks := []vcs.CheckResult{
+			completedCheck("build", vcs.CheckConclusionSuccess),
+			{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionFailure), Description: "defect: tests red"},
+		}
+		got := satisfiedTriggers(open, checks, true)
+		if !got[models.GithubCallbackTriggerChecksFailed] {
+			t.Errorf("checks_failed = false, want a completed boss/verify failure to satisfy it")
+		}
+		if got[models.GithubCallbackTriggerChecksPassed] {
+			t.Errorf("checks_passed satisfied beside a completed boss/verify failure")
+		}
+	})
+}
+
 // TestEvaluatePR_WorkflowRunsGateChecksPassed drives EvaluatePR end to end
 // against the head workflow-run read.
 func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {

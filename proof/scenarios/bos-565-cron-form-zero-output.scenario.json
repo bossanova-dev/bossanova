@@ -57,6 +57,10 @@
         },
         {
           "key": "enter",
+          "caption": "[enter] advances to Agent (the demo daemon reports agent runners, so the Agent select renders)"
+        },
+        {
+          "key": "enter",
           "caption": "[enter] advances to Model"
         },
         {
@@ -85,6 +89,10 @@
         },
         {
           "key": "enter",
+          "caption": "[enter] advances to Concurrency (BOS-1443 added it directly below Gate command)"
+        },
+        {
+          "key": "enter",
           "caption": "[enter] advances to Run setup command — the form scrolls to its run-shape toggles"
         },
         {
@@ -94,6 +102,11 @@
         },
         {
           "expect": [
+            {
+              "text": "┃\\s*Run setup command",
+              "match": "regex",
+              "label": "focus is on Run setup command (the ┃ focus bar), so the field walk actually reached the run-shape toggles rather than stalling above them"
+            },
             {
               "text": "Run setup command",
               "match": "normalized",
@@ -168,6 +181,10 @@
         },
         {
           "key": "enter",
+          "caption": "[enter] advances to Agent (the demo daemon reports agent runners, so the Agent select renders)"
+        },
+        {
+          "key": "enter",
           "caption": "[enter] advances to Model"
         },
         {
@@ -188,6 +205,10 @@
         },
         {
           "key": "enter",
+          "caption": "[enter] advances to Concurrency (BOS-1443 added it directly below Gate command)"
+        },
+        {
+          "key": "enter",
           "caption": "[enter] advances to Run setup command — the form scrolls to its run-shape toggles"
         },
         {
@@ -197,6 +218,11 @@
         },
         {
           "expect": [
+            {
+              "text": "┃\\s*Run setup command",
+              "match": "regex",
+              "label": "focus is on Run setup command (the ┃ focus bar), so the field walk actually reached the run-shape toggles rather than stalling above them"
+            },
             {
               "text": "Morning PR triage",
               "match": "normalized",

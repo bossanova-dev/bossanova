@@ -100,8 +100,17 @@ format:
 # also listed in test-scripts.yml's two path filters (services/web/src/** is already there for the
 # price gate), or a copy edit would never reach this target in CI. Cheap (~0.5s, node built-ins
 # only, ~493 files read).
+# check-cli-flag-parsers.mjs ratchets hand-rolled argv parsers in scripts/ and skills-toolbox/: a new
+# CLI parses with node:util parseArgs (strict), which rejects the misnamed and value-less flags that
+# hand-rolled parsers silently accepted. Its baseline fails on stale entries, so it only shrinks.
+# check-published-core-identity.mjs applies TestPublishedCoresAreProjectAgnostic's forbiddenIdentity
+# rules (read from the Go file, not copied) to the skills-toolbox sources VENDOR_MAP ships into a
+# published core. That Go test is bazel-manual, so without this a ticket id in a toolbox comment
+# surfaces only in CI or review.
 lint:
 	@node lint-scripts.mjs
+# Guidance wording pins are baseline-relative; weight signals remain audit-only.
+	@cd .. && node skills-toolbox/guidance-audit.mjs --gate --baseline scripts/guidance-audit-baseline.json
 	@node check-skill-shell.mjs
 	@node check-skill-node-fences.mjs
 	@node check-dispatch-contract.mjs
@@ -116,6 +125,8 @@ lint:
 	@node check-email-course.mjs
 	@node check-price-parity.mjs
 	@node check-ellipsis-consistency.mjs
+	@node check-cli-flag-parsers.mjs
+	@node check-published-core-identity.mjs
 
 ## test: Run script tests
 test:

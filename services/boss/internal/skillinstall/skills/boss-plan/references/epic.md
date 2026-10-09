@@ -37,7 +37,7 @@ of ≤ 3 ⇒ `needs-human` ("too large to auto-plan"), never one oversized ticke
 ## The spec
 
 `{ parentId, parent: {title, goal, keyChanges[], priority}, children: [{key, title, goal,
-keyChanges[], blockedByKeys[], estimate, priority, layer, agentFriendly, openQuestions[]}] }`
+keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuestions[]}] }`
 
 - Decompose along seams, producer before consumer (`contract → persistence → producer → read → ui`);
   a read/ui child is `blockedBy` the producer that writes its rows. `validateLayering` warnings are
@@ -55,15 +55,15 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentFriendly, openQue
 
 1. `validateDecomposition` + `assertAcyclic` on the spec.
 2. Fully plan every child locally (`allowEpic: false`) — a plan file plus a description per child —
-   and copy each child plan's `agentFriendly` verdict and `openQuestions` back onto its spec entry
-   (`serializeEpicSpec` defaults a missing `agentFriendly` to `true` and derives `agent-question`
+   and copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry
+   (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and derives `agent-question`
    from `openQuestions`). Re-run `validateDecomposition` on the completed spec. Run the secret and
    image-parity gates on every child.
 3. Interactive only: confirm (create this epic / plan as one ticket / cancel).
 4. Execute `epicPhase25WritePlan({parentId, spec, unplannedState, staleAttachmentIds, labelsToStrip})`
    ops **in emitted order**, minus skipped stages (and, on a resume, minus every child
    `reconcileEpicChildren` does not report `missing`):
-   - **Stage 1, label strip:** read the parent's labels and save them minus `agent-friendly` /
+   - **Stage 1, label strip:** read the parent's labels and save them minus `agent-build` /
      `needs-human` (`save_issue` `labels` replaces the whole set). From this first write on, the
      parent is not `boss-build`-selectable.
    - **Stage 2, spec upload, exactly once:** if either store already holds a spec, skip stages 2 and
@@ -77,7 +77,7 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentFriendly, openQue
    - **Children:** in `topoOrderChildren` order, create each as an **unplanned, unexposed shell** —
      `parentId`, the config-resolved unplanned state, the child's `estimate` and `priority`, content
      labels (plus `agent-question` when it has open questions), and its description with
-     `epicChildMarker(key)` placed **before** `## Original notes`; never `agent-friendly` /
+     `epicChildMarker(key)` placed **before** `## Original notes`; never `agent-build` /
      `needs-human` yet. Rename its local plan to
      `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md` (`<slug>` is
      `issueSlug(child-id, child-title)`), attach it titled exactly `Implementation plan (<child id>)`, read it back, then move the shell to
@@ -91,9 +91,9 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentFriendly, openQue
    `plan-contract-guard.mjs --mode epic-parent` gates, attach it and read it back, re-assert unplanned,
    and save it as the parent description (still unplanned). Then link each child against the
    **non-epic** active backlog (SKILL.md Phase 4 step 5, excluding this epic's own ids), and only then
-   expose each child with its own call: `agent-friendly`, or `needs-human` when its plan said so.
+   expose each child with its own call: `agent-build`, or `needs-human` when its plan said so.
 7. **Flip the parent last:** union the `epic` label (`labelName(config, 'epic')`), drop
-   `agent-friendly` / `needs-human` and the planning-queue label, delete the ids
+   `agent-build` / `needs-human` and the planning-queue label, delete the ids
    `stalePlanAttachmentSweep(attachments, {keepAttachmentId: <overview id>})` returns, and move it to
    planned with `estimate = epicParentEstimate(spec)` and the parent's priority. Retry without the
    estimate if it is rejected; re-read and warn if the stored estimate differs (Linear clamps silently).
@@ -121,7 +121,7 @@ Enumerate children with `list_issues parentId=<parent> limit=250`, hydrate each 
 
 An adopted shell without its canonical `Implementation plan (<child id>)` attachment is always
 redrafted and attached before it is exposed. An adopted unexposed child takes its exposure label from
-the spec's `agentFriendly`. If the parent description is already the saved overview, reuse it verbatim
+the spec's `agentBuild`. If the parent description is already the saved overview, reuse it verbatim
 (never recompose `## Original notes` from it), re-assert unplanned, run the external links, then
 finish exposure and the flip. On a fully built epic this is a clean no-op.
 

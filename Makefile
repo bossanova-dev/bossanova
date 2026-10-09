@@ -295,7 +295,7 @@ deps:
 	@# buf-check-version. buf is installed from a GitHub release below instead.
 	@# bazelisk provides the `bazel` launcher the test facade delegates to (BOS-339);
 	@# `command -v bazelisk` is the right presence check (brew installs it as bazelisk).
-	@for pkg in go jq gh pnpm bazelisk; do \
+	@for pkg in go jq gh pnpm bazelisk vale; do \
 		if command -v $$pkg >/dev/null 2>&1; then \
 			echo "    $$pkg: already installed"; \
 		else \
@@ -1251,9 +1251,17 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
 ##   make debt-cyclo-boss       # functions over the cyclomatic-complexity threshold
 ##   make debt-vuln-bosso       # reachable known vulnerabilities (govulncheck)
 ##   make debt-filesize-boss    # files over the effective-line limit (revive file-length-limit)
+# Libraries have no executable roots of their own: include workspace consumers
+# in reachability analysis, then restrict reported packages to the library. This
+# loads more packages; uncalled exported APIs and their helpers can still appear.
+# Exported-symbol guardrails and the fix compile gate reject unsafe removals.
 define define-debt-targets
 debt-deadcode-$(2):
+ifneq ($(filter lib/%,$(1)),)
+	go run $$(DEADCODE_PKG) -test -filter '^$(subst .,\.,$(shell sed -n 's/^module[[:space:]][[:space:]]*//p' $(1)/go.mod))(/|$$$$)' $(addsuffix /...,$(addprefix ./,$(MODULES)))
+else
 	cd $(1) && go run $$(DEADCODE_PKG) -test ./...
+endif
 debt-dupl-$(2):
 	cd $(1) && go run $$(DUPL_PKG) -t $$(DEBT_DUPL_THRESHOLD) .
 debt-cyclo-$(2):
@@ -1435,6 +1443,10 @@ release-codex-check:
 ## clean-cache: Prune the Go build cache at GO_CACHE_MAX_GIB (100 GiB default).
 clean-cache:
 	node scripts/clean-go-build-cache.mjs
+
+recover-disk-space:
+	go clean -cache
+	docker image prune -a
 
 ## clean: Remove build artifacts and generated code
 clean:

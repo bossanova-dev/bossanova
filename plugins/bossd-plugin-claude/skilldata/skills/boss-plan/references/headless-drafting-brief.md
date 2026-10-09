@@ -59,7 +59,7 @@ claim in it against the file it names before relying on it.
   it by following [`epic.md`](epic.md) end to end — unless you were given `allowEpic: false` (you are
   drafting an epic's child), in which case plan it as one ticket, and a non-atomic honest ≥ 5 there
   gets estimate 5, a `- Oversized-child: <why not atomic; suggested sibling split>` bullet and
-  `agentFriendly: false`.
+  `agentBuild: false`.
 
 Set depth from the estimate. Keep a reporter-set priority, otherwise rank against the planned
 backlog.
@@ -144,7 +144,7 @@ checks it). Some things help the implementer and the guards:
   user".
 - **Agent-friendly by default.** Only when an agent genuinely could not do it (physical access,
   credentials only a human holds, a product call that cannot be made unattended) add
-  `## Why this needs a human` and return `agentFriendly: false`. Size is never the reason.
+  `## Why this needs a human` and return `agentBuild: false`. Size is never the reason.
 - Query-strip every upload URL anywhere in the plan. No tool-call scaffolding, wrapper tags or
   commentary before or after the plan.
 
@@ -170,7 +170,7 @@ orchestrator does). Template:
 
 ## Why this needs a human
 
-- <needs-human only: the specific blocker(s) that put this beyond an autonomous agent. Omit this entire `## Why this needs a human` heading when the plan is agent-friendly.>
+- <needs-human only: the specific blocker(s) that put this beyond an autonomous agent. Omit this entire `## Why this needs a human` heading when the plan is build-ready (`Agent-friendly: yes`).>
 
 ## Open Questions
 
@@ -270,7 +270,7 @@ Strict JSON, repo-relative paths, never plan text:
 {
   "planPath": ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md",
   "labels": ["improvement"],
-  "agentFriendly": true,
+  "agentBuild": true,
   "estimate": 3,
   "priority": 3,
   "openQuestions": [],
@@ -281,7 +281,7 @@ Strict JSON, repo-relative paths, never plan text:
 `labels` are content labels (`bug`, `feature`, `improvement`, `docs` — any spelling; the guard maps
 them). `estimate` is 0/1/2/3/5. `priority` is 1–4. `descriptionSummary` is the Step 7 artifact by
 reference (an inline string is still accepted for older extensions). The orchestrator derives
-`agent-friendly` / `needs-human` and `agent-question` itself.
+`agent-build` / `needs-human` and `agent-question` itself.
 
 Epic runs return instead:
 

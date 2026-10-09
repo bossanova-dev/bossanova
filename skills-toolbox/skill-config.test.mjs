@@ -16,8 +16,9 @@ import { fileURLToPath } from 'node:url'
 import {
   globToRegExp,
   DEFAULT_CONFIG,
-  completionMergeAllowed,
+  verifyAlwaysHumanPaths,
   DEFAULT_TRACKER_STATES,
+  DEFAULT_PIPELINE_LABELS,
   CONFIG_FILENAME,
   findConfigFile,
   mergeConfig,
@@ -39,14 +40,15 @@ import {
   reviewLedgerConfig,
   planDependencyDefaults,
   command,
+  fixRoundGates,
   moduleTestCommand,
   manifestPath,
   markdownH2Heading,
   isHeadless,
   adapterFor,
   trackerConfigFor,
-  selectionConfigFor,
-  plannedSelectionQuery,
+  selectionBlockFor,
+  stageSelectionQuery,
   toleratedDescriptionTransforms,
   DESCRIPTION_NORMALIZATION_TRANSFORMS,
   unattributedDriftSeverity,
@@ -75,6 +77,7 @@ import {
   parseAcceptanceCriteria,
   parsePremises,
   validateVerifyOnlyEvidence,
+  validateLocalVerification,
   classifyCheckCommand,
   COMMAND_BLOCKING_CODES,
   hasCountAssertion,
@@ -85,7 +88,9 @@ import {
   VERIFY_ONLY_CHECKED,
   VERIFY_ONLY_RESULT,
   withTrackerDefaults,
+  resolveTrackerTeam,
 } from './skill-config.mjs'
+import { sections } from './merge-eligibility.mjs'
 
 test('keyChangesSection preserves wrapped paths and ignores fenced or original-note headings', () => {
   const body = '\n- `app/api/file.mjs`: keep\n  wrapped wording.\n\n'
@@ -1486,6 +1491,49 @@ test('command and moduleTestCommand read a configured commands block', () => {
   assert.equal(moduleTestCommand(cfg, 'bossd'), 'make test-bossd')
 })
 
+test('fixRoundGates returns configured lint and affected tests in gate order', () => {
+  assert.deepEqual(
+    fixRoundGates({
+      commands: { test: 'make test-all', testAffected: 'make test-affected', lint: 'make lint' },
+    }),
+    {
+      gates: [
+        { key: 'lint', command: 'make lint' },
+        { key: 'testAffected', command: 'make test-affected' },
+      ],
+      missing: [],
+    },
+  )
+})
+
+test('fixRoundGates uses declared Makefile lint and affected test targets', () => {
+  withMarkers({ Makefile: 'lint:\n\ttrue\ntest-affected:\n\ttrue\ntest:\n\ttrue\n' }, (dir) => {
+    assert.deepEqual(fixRoundGates(loadSkillConfig({ cwd: dir })), {
+      gates: [
+        { key: 'lint', command: 'make lint' },
+        { key: 'testAffected', command: 'make test-affected' },
+      ],
+      missing: [],
+    })
+  })
+})
+
+test('fixRoundGates names absent gates and never falls back to the full test command', () => {
+  assert.deepEqual(fixRoundGates({}), { gates: [], missing: ['lint', 'testAffected'] })
+  assert.deepEqual(fixRoundGates({ commands: { test: 'make test-all' } }), {
+    gates: [],
+    missing: ['lint', 'testAffected'],
+  })
+  assert.deepEqual(fixRoundGates({ commands: { lint: 'make lint', testAffected: '' } }), {
+    gates: [{ key: 'lint', command: 'make lint' }],
+    missing: ['testAffected'],
+  })
+  assert.deepEqual(fixRoundGates({ commands: { testAffected: 'make test-affected' } }), {
+    gates: [{ key: 'testAffected', command: 'make test-affected' }],
+    missing: ['lint'],
+  })
+})
+
 test('BOS-850: the accessors return null (never throw) when the block is absent', () => {
   // Regression: moduleTestCommand() used to call .replace() on undefined and throw a
   // raw TypeError. `null` is the documented "not configured — go discover it" signal.
@@ -1953,7 +2001,7 @@ function configuredFixture() {
         },
         labels: {
           agentPlan: 'planning',
-          agentFriendly: 'friendly',
+          agentBuild: 'friendly',
           needsHuman: 'human-review',
           agentQuestion: 'question',
           bug: 'defect',
@@ -2038,7 +2086,7 @@ test('trackerConfigFor / publishConfigFor resolve the selected adapter, and acce
 test('stateName, labelName, and githubLabelName resolve tracker roles', () => {
   const cfg = configuredFixture()
   assert.equal(stateName(cfg, 'planned'), 'Ready')
-  assert.equal(labelName(cfg, 'agentFriendly'), 'friendly')
+  assert.equal(labelName(cfg, 'agentBuild'), 'friendly')
   assert.equal(githubLabelName(cfg, 'proofInvalid'), 'invalid-proof')
 })
 
@@ -2098,7 +2146,7 @@ test('scanUnmappedRoleClaims detects bounded tracker-role claim families', () =>
   const claims = scanUnmappedRoleClaims(
     [
       'The bug role is deliberately unmapped in this repo.',
-      "Calling labelName(config, 'agentFriendly') throws here.",
+      "Calling labelName(config, 'agentBuild') throws here.",
       'The release role is unavailable for this tracker.',
       'The epic role was deliberately unmapped before BOS-792.',
       "Calling `stateName(config, 'planned')` throws in this example.",
@@ -2108,7 +2156,7 @@ test('scanUnmappedRoleClaims detects bounded tracker-role claim families', () =>
     claims.map((claim) => [claim.role, claim.line]),
     [
       ['bug', 1],
-      ['agentFriendly', 2],
+      ['agentBuild', 2],
       ['release', 3],
       ['epic', 4],
       ['planned', 5],
@@ -2184,7 +2232,7 @@ test('the committed tracker config supplies every operational state and label ro
   // allowlist — it resolves whatever `trackerConfig.<tracker>.labels` supplies — so a taxonomy role
   // is resolvable exactly when a repo configures it, and unconfigured roles throw (see the
   // `bugfix` fail-closed case above). Nothing here is universal to the published core.
-  for (const role of ['agentPlan', 'agentFriendly', 'needsHuman', 'agentQuestion', 'epic', 'bug']) {
+  for (const role of ['agentPlan', 'agentBuild', 'needsHuman', 'agentQuestion', 'epic', 'bug']) {
     assert.ok(labelName(cfg, role).length > 0, `missing label role ${role}`)
   }
   assert.ok(githubLabelName(cfg, 'proofInvalid').length > 0)
@@ -2235,20 +2283,25 @@ test('BOS-458: adapters.tracker selects the config with TRACKER env unset (no ba
   }
 })
 
-test('validateConfig rejects a trackerConfig entry missing mcpServer or team', () => {
+test('validateConfig rejects a trackerConfig entry missing mcpServer or carrying a blank team', () => {
+  // Checked on the RAW (un-defaulted) config: mcpServer stays required there.
   assert.throws(
     () =>
       validateConfig(mergeConfig(DEFAULT_CONFIG, { trackerConfig: { demo: { team: 'T' } } }), 't'),
     /skill-config:.*trackerConfig\.demo\.mcpServer must be a non-empty string/,
   )
-  assert.throws(
-    () =>
-      validateConfig(
-        mergeConfig(DEFAULT_CONFIG, { trackerConfig: { demo: { mcpServer: 'x' } } }),
-        't',
-      ),
-    /skill-config:.*trackerConfig\.demo\.team must be a non-empty string/,
-  )
+  // team is optional (zero-config resolves it per run), but a present one must be usable.
+  validateConfig(mergeConfig(DEFAULT_CONFIG, { trackerConfig: { demo: { mcpServer: 'x' } } }), 't')
+  for (const team of ['', 7]) {
+    assert.throws(
+      () =>
+        validateConfig(
+          mergeConfig(DEFAULT_CONFIG, { trackerConfig: { demo: { mcpServer: 'x', team } } }),
+          't',
+        ),
+      /skill-config:.*trackerConfig\.demo\.team must be a non-empty string when present/,
+    )
+  }
 })
 
 test('validateConfig rejects malformed states / publishConfig', () => {
@@ -2448,7 +2501,7 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
   // tracker names that label differently remaps it here (`"bug": "defect"`); the seam is open,
   // so this pin records THIS repo's config, never a contract of the published core.
   assert.deepEqual(Object.keys(tc.labels).sort(), [
-    'agentFriendly',
+    'agentBuild',
     'agentPlan',
     'agentQuestion',
     'bug',
@@ -3836,11 +3889,11 @@ test('U3: that authoring guard REDS on a mistyped id — proven, not merely pass
   assert.ok(unrecognisedIn(['terminal-newline-trimming']).length === 0)
 })
 
-// --- trackerConfig.<adapter>.selection: candidate narrowing --------------------------
+// --- trackerConfig.<adapter>.selection: candidate narrowing (BOS-1378) ------------------------
 //
-// The seam ships INERT in every repo in this tree, so every assertion below is written against
-// synthetic configs. The one exception is the inertness probe at the end, which is deliberately
-// about THIS repo and keeps resolving to all-nulls until this repo deliberately opts in.
+// The schema's own rule table lives in selection.test.mjs. These pin the config seam: validateConfig
+// turns every selection error into a throw (unknown and legacy keys included), `selectionBlockFor`
+// never throws, and `stageSelectionQuery` is the one derivation every gate and worker reads.
 
 /** A config whose sole tracker adapter carries the given `selection` value (or none). */
 const withSelection = (selection) =>
@@ -3850,244 +3903,129 @@ const withSelection = (selection) =>
       demo: {
         mcpServer: 'demo-tracker',
         team: 'Demo',
+        states: { planned: 'Planned', unplanned: 'Unplanned' },
+        labels: { agentBuild: 'agent-build', agentPlan: 'agent-plan', needsHuman: 'needs-human' },
         ...(selection === undefined ? {} : { selection }),
       },
     },
   })
 
-test('selection: a well-formed block validates and resolves to the configured values', () => {
-  const config = withSelection({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] })
+const TICKET_EXAMPLE = {
+  labels: { include: [], exclude: [] },
+  assignees: { include: [], exclude: [] },
+  creators: { include: [], exclude: [] },
+  projects: { include: [], exclude: [] },
+  stages: { build: { labels: { exclude: ['infra'] } } },
+}
+
+test('selection: the ticket example validates and the block reads back unchanged', () => {
+  const config = withSelection(TICKET_EXAMPLE)
   validateConfig(config, 'test')
-  assert.deepEqual(selectionConfigFor(config), {
-    assigneeOrCreator: 'me',
-    labels: ['label-a', 'label-b'],
-  })
-  // A concrete tracker user id is equally well-formed: validation rejects SHAPES, never a value
-  // it does not recognise, because this file is copy-distributed to every consuming repo.
-  const byId = withSelection({ assigneeOrCreator: 'usr_1234' })
-  validateConfig(byId, 'test')
-  assert.deepEqual(selectionConfigFor(byId), { assigneeOrCreator: 'usr_1234', labels: null })
+  assert.deepEqual(selectionBlockFor(config), TICKET_EXAMPLE)
 })
 
-test('selection: each structural fault fails with a message naming the full config path', () => {
+test('selection: unknown, legacy and malformed keys THROW with a message naming the replacement', () => {
   const cases = [
     ['a non-object selection', [], /trackerConfig\.demo\.selection must be an object when present/],
     ['a null selection', null, /trackerConfig\.demo\.selection must be an object when present/],
     [
-      'an empty-string assigneeOrCreator',
-      { assigneeOrCreator: '' },
-      /trackerConfig\.demo\.selection\.assigneeOrCreator must be a non-empty string when present/,
+      'the legacy assigneeOrCreator',
+      { assigneeOrCreator: 'me' },
+      /trackerConfig\.demo\.selection\.assigneeOrCreator was removed; use trackerConfig\.demo\.selection\.assignees\.include and\/or trackerConfig\.demo\.selection\.creators\.include/,
     ],
     [
-      'a non-string assigneeOrCreator',
-      { assigneeOrCreator: 42 },
-      /trackerConfig\.demo\.selection\.assigneeOrCreator must be a non-empty string when present/,
+      'the legacy array-valued labels',
+      { labels: ['label-a'] },
+      /trackerConfig\.demo\.selection\.labels as an array was removed; use trackerConfig\.demo\.selection\.labels: \{include: \[\.\.\.\]\}/,
     ],
     [
-      'a non-array labels',
-      { labels: 'label-a' },
-      /trackerConfig\.demo\.selection\.labels must be an array of label names when present/,
+      'an unknown key',
+      { label: { include: ['a'] } },
+      /selection has unknown key "label"; allowed keys: labels, assignees, creators, projects, stages/,
     ],
     [
-      'an empty labels array',
-      { labels: [] },
-      /trackerConfig\.demo\.selection\.labels must not be empty/,
+      'an unknown stage',
+      { stages: { deploy: {} } },
+      /selection\.stages has unknown stage "deploy"/,
     ],
     [
-      'a non-string entry in labels',
-      { labels: ['label-a', 7] },
-      /trackerConfig\.demo\.selection\.labels entries must be non-empty strings/,
-    ],
-    [
-      'an empty-string entry in labels',
-      { labels: [''] },
-      /trackerConfig\.demo\.selection\.labels entries must be non-empty strings/,
+      'a display-name user',
+      { creators: { exclude: ['Some Bot'] } },
+      /"Some Bot" is not a user selector; use me, a user id \(UUID\), or an email/,
     ],
   ]
   for (const [label, selection, pattern] of cases) {
     assert.throws(() => validateConfig(withSelection(selection), 'test'), pattern, label)
-    // and every one of them is a `skill-config:` error, not a raw TypeError from an accessor.
     assert.throws(() => validateConfig(withSelection(selection), 'test'), /^Error: skill-config:/)
   }
 })
 
-test('selection: an unrecognised key WARNS rather than validating silently clean', () => {
-  // The defect this pins: `selection` has a closed two-key vocabulary, but the validator only
-  // inspects the keys it knows. A typo is well-formed JSON that no shape check rejects, and
-  // `selectionConfigFor` then resolves it to all-nulls — so the gate runs completely un-narrowed
-  // while the operator believes it is filtered, and nothing anywhere says so.
-  const cases = [
-    ['a misspelled assigneeOrCreator', { assigneeOrCreatr: 'me' }, /"assigneeOrCreatr"/],
-    ['a singular label', { label: ['label-a'] }, /"label"/],
-    // Alongside a RECOGNISED key: the known key must still validate and resolve normally.
-    [
-      'an unknown key beside a good one',
-      { labels: ['label-a'], assignee: 'me' },
-      /"assignee"/,
-      { assigneeOrCreator: null, labels: ['label-a'] },
-    ],
-  ]
-  for (const [label, selection, pattern, resolved] of cases) {
-    const originalWarn = console.warn
-    const warnings = []
-    console.warn = (message) => warnings.push(String(message))
-    const config = withSelection(selection)
-    try {
-      // A WARN, not a throw: this file is copy-distributed into every user's global skill
-      // directory, so a newer repo's key must not crash an older installed copy. That is the
-      // same role split `descriptionNormalization.tolerated` already makes.
-      validateConfig(config, 'test')
-    } finally {
-      console.warn = originalWarn
-    }
-    const joined = warnings.join('\n')
-    assert.match(joined, pattern, label)
-    // The message has to be actionable: the config path, the source, and the known set.
-    assert.match(joined, /trackerConfig\.demo\.selection/, label)
-    assert.match(joined, /skill-config: test:/, label)
-    assert.match(joined, /Known keys: assigneeOrCreator, labels/, label)
-    assert.deepEqual(
-      selectionConfigFor(config),
-      resolved ?? { assigneeOrCreator: null, labels: null },
-      label,
-    )
-  }
-  // The discriminating half: a block using only the known keys must emit NOTHING. Without this a
-  // validator that warned unconditionally would pass every assertion above.
-  const originalWarn = console.warn
-  const warnings = []
-  console.warn = (message) => warnings.push(String(message))
-  try {
-    validateConfig(withSelection({ assigneeOrCreator: 'me', labels: ['label-a'] }), 'test')
-  } finally {
-    console.warn = originalWarn
-  }
-  assert.deepEqual(warnings, [])
-})
-
-test('selection: an absent block loads clean and resolves to all-nulls', () => {
-  const config = withSelection(undefined)
-  validateConfig(config, 'test')
-  assert.deepEqual(selectionConfigFor(config), { assigneeOrCreator: null, labels: null })
-  // An absent KEY inside a present block is the same answer, per key and independently.
-  const partial = withSelection({ labels: ['label-a'] })
-  validateConfig(partial, 'test')
-  assert.deepEqual(selectionConfigFor(partial), { assigneeOrCreator: null, labels: ['label-a'] })
-})
-
-test('selection: the accessor returns nulls rather than throwing on an unvalidated config', () => {
-  // Hand-built objects that never went through validateConfig. Each would have thrown, or handed
-  // back `undefined` / a malformed array, under a naive accessor — and a THROW here would take
-  // down every core that merely loads the config.
-  const garbage = [
+test('selectionBlockFor: returns null for an absent block and never throws on garbage', () => {
+  assert.equal(selectionBlockFor(withSelection(undefined)), null)
+  for (const raw of [
     { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: [] } } },
     { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: 'me' } } },
     { adapters: { tracker: 'demo' }, trackerConfig: { demo: { selection: null } } },
-    {
-      adapters: { tracker: 'demo' },
-      trackerConfig: { demo: { selection: { assigneeOrCreator: 42, labels: 'label-a' } } },
-    },
-    {
-      adapters: { tracker: 'demo' },
-      trackerConfig: { demo: { selection: { assigneeOrCreator: '', labels: [] } } },
-    },
     { adapters: { tracker: 'demo' }, trackerConfig: {} },
-    { adapters: { tracker: 'demo' } },
-    // No `adapters` at all: the sibling accessors' `adapterFor(config, 'tracker')` default throws
-    // a raw TypeError on this input, which is precisely why this one resolves the adapter itself.
-    { trackerConfig: { demo: { selection: { labels: ['label-a'] } } } },
+    { trackerConfig: { demo: { selection: { labels: { include: ['a'] } } } } },
     {},
     null,
     undefined,
-  ]
-  for (const raw of garbage) {
-    assert.deepEqual(
-      selectionConfigFor(raw),
-      { assigneeOrCreator: null, labels: null },
-      `unvalidated config ${JSON.stringify(raw)} must resolve to nulls, not throw`,
-    )
+  ]) {
+    assert.equal(selectionBlockFor(raw), null, JSON.stringify(raw))
   }
-  // A malformed `labels` array is rejected WHOLE rather than salvaged entry by entry. A partial
-  // salvage would hand the gate `['label-a']` — a narrowing nobody configured — and a narrower
-  // candidate scan is a gate that reports no work while work exists. That is the opposite
-  // direction from `tolerated`, where dropping an unrecognised id only makes a comparison
-  // stricter, which is why the two self-defending accessors legitimately differ here.
-  assert.deepEqual(
-    selectionConfigFor({
-      adapters: { tracker: 'demo' },
-      trackerConfig: { demo: { selection: { labels: ['label-a', '', 9] } } },
-    }),
-    { assigneeOrCreator: null, labels: null },
-  )
-  // The garbage-in path must still DISCRIMINATE: a wholly well-formed block inside an otherwise
-  // unvalidated config resolves, rather than being flattened to null along with the rest.
-  assert.deepEqual(
-    selectionConfigFor({
-      adapters: { tracker: 'demo' },
-      trackerConfig: { demo: { selection: { labels: ['label-a', 'label-b'] } } },
-    }),
-    { assigneeOrCreator: null, labels: ['label-a', 'label-b'] },
-  )
-  // And the returned array is a COPY: a caller that mutates it must not reach the loaded config.
-  const live = {
-    adapters: { tracker: 'demo' },
-    trackerConfig: { demo: { selection: { labels: ['label-a'] } } },
-  }
-  selectionConfigFor(live).labels.push('label-b')
-  assert.deepEqual(live.trackerConfig.demo.selection.labels, ['label-a'])
 })
 
-// BOS-1294: the ONE derivation of the planned-candidate query, shared by the cron gate and the
-// worker's `list-planned` verb. Both must narrow identically, so the helper is pinned on its exact
-// output shapes — including key ABSENCE, which is what keeps the un-narrowed gate byte-identical.
-const plannedConfig = (selection) =>
-  mergeConfig(DEFAULT_CONFIG, {
-    adapters: { ...DEFAULT_CONFIG.adapters, tracker: 'demo' },
-    trackerConfig: {
-      demo: {
-        mcpServer: 'demo-tracker',
-        team: 'Demo',
-        states: { planned: 'Planned' },
-        labels: { agentFriendly: 'agent-friendly' },
-        ...(selection === undefined ? {} : { selection }),
-      },
-    },
-  })
-
-test('plannedSelectionQuery: no selection yields exactly {state, label} with no identity key', () => {
-  const query = plannedSelectionQuery(plannedConfig(undefined))
-  assert.deepEqual(query, { state: 'Planned', label: 'agent-friendly' })
-  assert.equal('assigneeOrCreator' in query, false)
-})
-
-test('plannedSelectionQuery: a label set supersedes agentFriendly and identity is added', () => {
-  assert.deepEqual(
-    plannedSelectionQuery(
-      plannedConfig({ assigneeOrCreator: 'me', labels: ['label-a', 'label-b'] }),
-    ),
-    { state: 'Planned', label: ['label-a', 'label-b'], assigneeOrCreator: 'me' },
-  )
-  assert.deepEqual(plannedSelectionQuery(plannedConfig({ assigneeOrCreator: 'usr_1' })), {
+test('stageSelectionQuery: the zero-config build query is planned AND agent-build AND NOT needs-human', () => {
+  const query = stageSelectionQuery(withSelection(undefined), 'build')
+  assert.deepEqual(query, {
     state: 'Planned',
-    label: 'agent-friendly',
-    assigneeOrCreator: 'usr_1',
+    selection: {
+      labels: { include: [], exclude: [] },
+      assignees: { include: [], exclude: [] },
+      creators: { include: [], exclude: [] },
+      projects: { include: [], exclude: [] },
+    },
+    requireLabels: ['agent-build'],
+    excludeLabels: ['needs-human'],
   })
+  assert.equal(stageSelectionQuery(withSelection(undefined), 'plan').state, 'Unplanned')
 })
 
-test('plannedSelectionQuery: an unconfigured planned state throws rather than widening', () => {
-  const config = plannedConfig(undefined)
+test('stageSelectionQuery: precedence is flag > stage > shared, per slot', () => {
+  const config = withSelection({
+    ...TICKET_EXAMPLE,
+    labels: { include: ['backend'], exclude: ['shared'] },
+  })
+  assert.deepEqual(stageSelectionQuery(config, 'build').selection.labels, {
+    include: ['backend'],
+    exclude: ['infra'],
+  })
+  assert.deepEqual(stageSelectionQuery(config, 'plan').selection.labels, {
+    include: ['backend'],
+    exclude: ['shared'],
+  })
+  assert.deepEqual(
+    stageSelectionQuery(config, 'build', { labels: { exclude: ['flag'] } }).selection.labels,
+    { include: ['backend'], exclude: ['flag'] },
+  )
+})
+
+test('stageSelectionQuery: an unconfigured state or an invalid hand-built block throws rather than widening', () => {
+  const config = withSelection(undefined)
   delete config.trackerConfig.demo.states.planned
-  assert.throws(() => plannedSelectionQuery(config), /trackerConfig\.demo\.states\.planned/)
+  assert.throws(() => stageSelectionQuery(config, 'build'), /trackerConfig\.demo\.states\.planned/)
+  const handBuilt = withSelection(undefined)
+  handBuilt.trackerConfig.demo.selection = { assigneeOrCreator: 'me' }
+  assert.throws(() => stageSelectionQuery(handBuilt, 'build'), /assigneeOrCreator was removed/)
+  assert.throws(
+    () => stageSelectionQuery(withSelection(undefined), 'deploy'),
+    /unknown stage "deploy"/,
+  )
 })
 
-test('selection: this repo ships the seam INERT, so no registered job narrows yet', () => {
-  // The verify-only acceptance criterion, as a test rather than a one-off shell probe. Worker-side
-  // filtered selection (the `list-planned` route, BOS-1294) ships without enabling the key here:
-  // opting this repo in is its own deliberate change, and that change is what revisits this test.
-  assert.deepEqual(selectionConfigFor(loadSkillConfig()), {
-    assigneeOrCreator: null,
-    labels: null,
-  })
+test('selection: this repo ships no selection block, so every stage scan is unnarrowed', () => {
+  assert.equal(selectionBlockFor(loadSkillConfig()), null)
 })
 
 // BOS-1328: an orchestrator-inserted Planning bullet merged into its neighbour passed every gate.
@@ -4255,7 +4193,7 @@ test('a team-only tracker block gets the default server, states and pipeline lab
       inReview: 'In Review',
       done: 'Done',
     })
-    assert.equal(labelName(config, 'agentFriendly'), 'agent-friendly')
+    assert.equal(labelName(config, 'agentBuild'), 'agent-build')
     assert.equal(labelName(config, 'epic'), 'epic')
     assert.equal(optionalLabelName(config, 'bug'), null, 'content labels stay literal')
     assert.equal(isConfiguredForPlanning(config), true)
@@ -4264,42 +4202,308 @@ test('a team-only tracker block gets the default server, states and pipeline lab
   }
 })
 
-test('tracker defaults never configure a repo that declares no tracker block', () => {
+test('tracker defaults synthesize a team-less linear block that alone never configures a repo', () => {
   const dir = mkdtempSync(join(tmpdir(), 'skill-config-none-'))
   try {
     writeFileSync(join(dir, '.boss-skills.json'), '{}')
     const config = loadSkillConfig({ cwd: dir })
-    assert.equal(trackerConfigFor(config), null)
+    const tc = trackerConfigFor(config)
+    assert.equal(tc.mcpServer, 'linear')
+    assert.equal('team' in tc, false, 'the synthesized block names no team')
+    assert.deepEqual(tc.states, { ...DEFAULT_TRACKER_STATES })
+    assert.deepEqual(tc.labels, { ...DEFAULT_PIPELINE_LABELS })
+    // No second argument keeps the strict meaning: a configured team is required.
+    assert.equal(isConfiguredForRepo(config), false)
     assert.equal(isConfiguredForPlanning(config), false)
+    // A team the run resolved satisfies the requirement.
+    assert.equal(isConfiguredForRepo(config, { team: 'T' }), true)
+    assert.equal(isConfiguredForPlanning(config, { team: 'T' }), true)
+    assert.equal(isConfiguredForPlanning(config, { team: '  ' }), false)
+    assert.equal(
+      DEFAULT_CONFIG.trackerConfig && Object.keys(DEFAULT_CONFIG.trackerConfig).length,
+      0,
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
+test('withTrackerDefaults synthesizes only for a selected linear tracker that declares no block', () => {
+  // Absent or empty trackerConfig both synthesize when linear is selected.
+  for (const config of [
+    { adapters: { tracker: 'linear' } },
+    { adapters: { tracker: 'linear' }, trackerConfig: {} },
+  ]) {
+    const tc = withTrackerDefaults(config).trackerConfig.linear
+    assert.equal(tc.mcpServer, 'linear')
+    assert.equal(tc.team, undefined)
+    assert.equal(tc.states.planned, 'Todo')
+    assert.equal(tc.labels.agentBuild, 'agent-build')
+  }
+  // A non-Linear selected tracker gets nothing — it keeps the explicit-config requirement.
+  const jira = withTrackerDefaults({ adapters: { tracker: 'jira' }, trackerConfig: {} })
+  assert.deepEqual(jira.trackerConfig, {})
+  assert.equal(
+    trackerConfigFor(mergeConfig(DEFAULT_CONFIG, { adapters: { tracker: 'jira' } })),
+    null,
+  )
+  // A declared linear block is filled, never replaced, and other blocks are untouched.
+  const declared = withTrackerDefaults({
+    adapters: { tracker: 'linear' },
+    trackerConfig: { linear: { team: 'T', mcpServer: 'acme' }, other: { mcpServer: 'o' } },
+  }).trackerConfig
+  assert.deepEqual(Object.keys(declared).sort(), ['linear', 'other'])
+  assert.equal(declared.linear.team, 'T')
+  assert.equal(declared.linear.mcpServer, 'acme')
+  // A malformed trackerConfig is left for validateConfig to reject.
+  const malformed = { adapters: { tracker: 'linear' }, trackerConfig: [] }
+  assert.equal(withTrackerDefaults(malformed), malformed)
+})
+
+// --- resolveTrackerTeam (BOS-1393) -------------------------------------------
+// Pure classifier over facts the agent gathered: its preflight, the raw MCP list_teams result,
+// and any --team. Precedence: configured team > --team > the single visible team.
+
+const ZERO_CONFIG = withTrackerDefaults(mergeConfig(DEFAULT_CONFIG, {}))
+const PINNED_CONFIG = withTrackerDefaults(
+  mergeConfig(DEFAULT_CONFIG, { trackerConfig: { linear: { team: 'Pinned', teamKey: 'PIN' } } }),
+)
+const OK = { ok: true, status: 'ok', mcpServer: 'linear', resolvedServer: 'linear', message: '' }
+const listed = (teams, hasNextPage = false) => ({ teams, hasNextPage })
+const ALPHA = { id: 'id-alpha', name: 'Alpha', icon: 'Rocket', visibility: 'public' }
+const BETA = { id: 'id-beta', name: 'Beta' }
+
+test('resolveTrackerTeam: a failed preflight is no-tracker-mcp, passing its message through', () => {
+  for (const status of ['absent', 'unreachable']) {
+    const message = `tracker MCP server "linear" is ${status} for claude`
+    const r = resolveTrackerTeam(ZERO_CONFIG, {
+      preflight: { ok: false, status, mcpServer: 'linear', message },
+      visibleTeams: listed([ALPHA]),
+    })
+    assert.equal(r.configured, false)
+    assert.equal(r.reason, 'no-tracker-mcp')
+    assert.equal(r.message, message)
+    assert.equal(r.team, null)
+  }
+  // No preflight at all, or one with no message, still yields a one-line message naming the server.
+  for (const preflight of [undefined, { ok: false, message: '' }]) {
+    const r = resolveTrackerTeam(ZERO_CONFIG, { preflight })
+    assert.equal(r.reason, 'no-tracker-mcp')
+    assert.match(r.message, /"linear"/)
+    assert.equal(r.message.includes('\n'), false)
+  }
+})
+
+test('resolveTrackerTeam: one visible team is detected, with that team', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: listed([ALPHA]) })
+  assert.deepEqual(r, {
+    configured: true,
+    team: 'Alpha',
+    teamKey: null,
+    source: 'detected',
+    reason: null,
+    message: '',
+  })
+  assert.equal(isConfiguredForPlanning(ZERO_CONFIG, { team: r.team }), true)
+  // A key is kept when the source supplies one (the Go GraphQL path does; MCP does not).
+  const keyed = resolveTrackerTeam(ZERO_CONFIG, {
+    preflight: OK,
+    visibleTeams: [{ id: 'x', name: 'Alpha', key: 'ALP' }],
+  })
+  assert.equal(keyed.teamKey, 'ALP')
+})
+
+test('resolveTrackerTeam: several teams are ambiguous with the actionable --team message', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: listed([ALPHA, BETA]) })
+  assert.equal(r.configured, false)
+  assert.equal(r.reason, 'ambiguous')
+  assert.equal(
+    r.message,
+    '2 Linear teams are visible (Alpha, Beta) — pass --team <name> or set trackerConfig.linear.team in .boss-skills.json',
+  )
+  assert.ok(r.message.includes('--team') && r.message.includes('trackerConfig.linear.team'))
+  assert.equal(isConfiguredForPlanning(ZERO_CONFIG, { team: r.team }), false)
+})
+
+test('resolveTrackerTeam: hasNextPage with one listed team is ambiguous, never a single team', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: listed([ALPHA], true) })
+  assert.equal(r.configured, false)
+  assert.equal(r.reason, 'ambiguous')
+  assert.match(r.message, /^more than 1 Linear teams are visible \(Alpha, …\)/)
+})
+
+test('resolveTrackerTeam: zero visible teams is no-teams', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: listed([]) })
+  assert.equal(r.configured, false)
+  assert.equal(r.reason, 'no-teams')
+  assert.ok(r.message.length > 0)
+})
+
+test('resolveTrackerTeam: an explicit configured team always wins', () => {
+  const cases = [
+    { preflight: OK, visibleTeams: listed([ALPHA]) },
+    { preflight: OK, visibleTeams: listed([ALPHA, BETA], true) },
+    { preflight: { ok: false, status: 'absent', message: 'absent' } },
+    { preflight: OK, visibleTeams: null },
+  ]
+  for (const facts of cases) {
+    const r = resolveTrackerTeam(PINNED_CONFIG, facts)
+    assert.equal(r.configured, true)
+    assert.equal(r.team, 'Pinned')
+    assert.equal(r.teamKey, 'PIN')
+    assert.equal(r.source, 'config')
+    assert.equal(r.message, '')
+  }
+  const flagged = resolveTrackerTeam(PINNED_CONFIG, {
+    preflight: OK,
+    visibleTeams: listed([ALPHA]),
+    teamFlag: 'Alpha',
+  })
+  assert.equal(flagged.team, 'Pinned')
+  assert.equal(flagged.source, 'config')
+  assert.equal(flagged.message, '--team Alpha ignored: trackerConfig.linear.team is Pinned')
+  // A flag naming the configured team (any case, or its key) is not a conflict.
+  for (const teamFlag of ['pinned', 'PIN']) {
+    assert.equal(resolveTrackerTeam(PINNED_CONFIG, { preflight: OK, teamFlag }).message, '')
+  }
+})
+
+test('resolveTrackerTeam: a flag matching a listed name (any case) or id resolves to the canonical name', () => {
+  for (const teamFlag of ['beta', 'BETA', ' Beta ', 'id-beta']) {
+    const r = resolveTrackerTeam(ZERO_CONFIG, {
+      preflight: OK,
+      visibleTeams: listed([ALPHA, BETA]),
+      teamFlag,
+    })
+    assert.equal(r.configured, true, teamFlag)
+    assert.equal(r.team, 'Beta')
+    assert.equal(r.source, 'flag')
+  }
+  const byKey = resolveTrackerTeam(ZERO_CONFIG, {
+    preflight: OK,
+    visibleTeams: [{ id: '1', name: 'Gamma', key: 'GAM' }],
+    teamFlag: 'gam',
+  })
+  assert.equal(byKey.team, 'Gamma')
+  assert.equal(byKey.teamKey, 'GAM')
+  // The id match is exact, never case-folded.
+  assert.equal(
+    resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: [BETA], teamFlag: 'ID-BETA' })
+      .reason,
+    'unknown-team',
+  )
+})
+
+test('resolveTrackerTeam: a flag absent from a listing with more pages is trusted, not unknown-team', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, {
+    preflight: OK,
+    visibleTeams: listed([ALPHA, BETA], true),
+    teamFlag: 'Zeta',
+  })
+  assert.equal(r.configured, true)
+  assert.equal(r.team, 'Zeta')
+  assert.equal(r.source, 'flag')
+})
+
+test('resolveTrackerTeam: a flag matching no listed team is unknown-team, naming the visible teams', () => {
+  const r = resolveTrackerTeam(ZERO_CONFIG, {
+    preflight: OK,
+    visibleTeams: listed([ALPHA, BETA]),
+    teamFlag: 'Delta',
+  })
+  assert.equal(r.configured, false)
+  assert.equal(r.reason, 'unknown-team')
+  assert.match(r.message, /Delta/)
+  assert.match(r.message, /Alpha, Beta/)
+})
+
+test('resolveTrackerTeam: a flag with no listing is trusted as given; no flag is teams-unlisted', () => {
+  const flagged = resolveTrackerTeam(ZERO_CONFIG, {
+    preflight: OK,
+    visibleTeams: null,
+    teamFlag: 'Example',
+  })
+  assert.deepEqual(
+    [flagged.configured, flagged.team, flagged.source, flagged.teamKey],
+    [true, 'Example', 'flag', null],
+  )
+  for (const teamFlag of [undefined, '', '   ']) {
+    const r = resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: null, teamFlag })
+    assert.equal(r.configured, false)
+    assert.equal(r.reason, 'teams-unlisted')
+    assert.ok(r.message.includes('--team') && r.message.includes('trackerConfig.linear.team'))
+  }
+})
+
+test('resolveTrackerTeam: the raw {teams, hasNextPage} shape and a bare array give the same verdicts', () => {
+  for (const [teams, teamFlag] of [
+    [[ALPHA], undefined],
+    [[ALPHA, BETA], undefined],
+    [[], undefined],
+    [[ALPHA, BETA], 'alpha'],
+    [[ALPHA], 'zeta'],
+  ]) {
+    assert.deepEqual(
+      resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: listed(teams), teamFlag }),
+      resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams: teams, teamFlag }),
+    )
+  }
+})
+
+test('resolveTrackerTeam: malformed listings are "not listed" and never throw', () => {
+  for (const visibleTeams of [
+    'Alpha',
+    { teams: 'x' },
+    [{ id: '1' }],
+    [ALPHA, { id: '2', name: '' }],
+    [null],
+    42,
+    { nodes: [ALPHA] },
+  ]) {
+    assert.equal(
+      resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams }).reason,
+      'teams-unlisted',
+      JSON.stringify(visibleTeams),
+    )
+    assert.equal(
+      resolveTrackerTeam(ZERO_CONFIG, { preflight: OK, visibleTeams, teamFlag: 'X' }).source,
+      'flag',
+    )
+  }
+  assert.doesNotThrow(() => resolveTrackerTeam(undefined))
+  assert.doesNotThrow(() => resolveTrackerTeam(ZERO_CONFIG))
+  // Every unconfigured verdict carries a non-empty, one-line message.
+  const r = resolveTrackerTeam(undefined, {})
+  assert.equal(r.configured, false)
+  assert.ok(r.message.length > 0 && !r.message.includes('\n'))
+})
+
 test('explicit tracker names override the defaults per key', () => {
   const config = withTrackerDefaults({
     trackerConfig: {
-      linear: { team: 'T', mcpServer: 'acme-linear', labels: { agentFriendly: 'Agent Friendly' } },
+      linear: { team: 'T', mcpServer: 'acme-linear', labels: { agentBuild: 'Agent Friendly' } },
     },
   })
   const tc = config.trackerConfig.linear
   assert.equal(tc.mcpServer, 'acme-linear')
-  assert.equal(tc.labels.agentFriendly, 'Agent Friendly')
+  assert.equal(tc.labels.agentBuild, 'Agent Friendly')
   assert.equal(tc.labels.needsHuman, 'needs-human')
 })
 
-test('completion merge opt-in accepts only literal true and defaults the done state', () => {
-  for (const config of [
-    undefined,
-    null,
-    {},
-    { completionDefaults: {} },
-    { completionDefaults: { allowMerge: false } },
-    { completionDefaults: { allowMerge: 'true' } },
-    { completionDefaults: { allowMerge: 1 } },
-  ])
-    assert.equal(completionMergeAllowed(config), false)
-  assert.equal(completionMergeAllowed({ completionDefaults: { allowMerge: true } }), true)
+test('completionMergeAllowed is retired; a stray completionDefaults key still validates and loads', async () => {
+  const module = await import('./skill-config.mjs')
+  assert.equal('completionMergeAllowed' in module, false)
+  const { nested, cleanup } = scratchRepo('{"completionDefaults":{"allowMerge":true}}')
+  try {
+    const cfg = loadSkillConfig({ cwd: nested })
+    assert.equal(cfg.adapters.tracker, 'linear')
+    assert.doesNotThrow(() => validateConfig(cfg, '.boss-skills.json'))
+  } finally {
+    cleanup()
+  }
+})
+
+test('the done tracker state defaults to Done and stays overridable', () => {
   assert.equal(DEFAULT_TRACKER_STATES.done, 'Done')
   assert.equal(
     withTrackerDefaults({ trackerConfig: { linear: {} } }).trackerConfig.linear.states.done,
@@ -4309,5 +4513,321 @@ test('completion merge opt-in accepts only literal true and defaults the done st
     withTrackerDefaults({ trackerConfig: { linear: { states: { done: 'Closed' } } } }).trackerConfig
       .linear.states.done,
     'Closed',
+  )
+})
+
+test('DEFAULT_PIPELINE_LABELS carries exactly the five pipeline roles, build intake as agentBuild (no alias)', () => {
+  // BOS-1379 renamed the build-intake role with no alias: the key set is pinned whole so a
+  // second spelling of that role cannot creep back in beside it.
+  assert.deepEqual(Object.keys(DEFAULT_PIPELINE_LABELS).sort(), [
+    'agentBuild',
+    'agentPlan',
+    'agentQuestion',
+    'epic',
+    'needsHuman',
+  ])
+  assert.equal(DEFAULT_PIPELINE_LABELS.agentBuild, 'agent-build')
+  // The default reaches a tracker block that names no labels of its own.
+  assert.equal(
+    withTrackerDefaults({ trackerConfig: { linear: { team: 'T' } } }).trackerConfig.linear.labels
+      .agentBuild,
+    'agent-build',
+  )
+})
+
+test('verifyAlwaysHumanPaths defaults to an empty list and returns configured globs', () => {
+  assert.deepEqual(verifyAlwaysHumanPaths(DEFAULT_CONFIG), [])
+  assert.deepEqual(verifyAlwaysHumanPaths(undefined), [])
+  assert.deepEqual(verifyAlwaysHumanPaths({ verifyDefaults: {} }), [])
+  assert.deepEqual(verifyAlwaysHumanPaths({ verifyDefaults: { alwaysHumanPaths: 'x' } }), [])
+  const config = { verifyDefaults: { alwaysHumanPaths: ['migrations/**', 'billing/*.go'] } }
+  const paths = verifyAlwaysHumanPaths(config)
+  assert.deepEqual(paths, ['migrations/**', 'billing/*.go'])
+  paths.push('mutated')
+  assert.equal(config.verifyDefaults.alwaysHumanPaths.length, 2)
+})
+
+test('validateConfig rejects a malformed verifyDefaults block', () => {
+  assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG }, 'test'))
+  assert.doesNotThrow(() =>
+    validateConfig({ ...DEFAULT_CONFIG, verifyDefaults: { alwaysHumanPaths: [] } }, 'test'),
+  )
+  assert.doesNotThrow(() =>
+    validateConfig({ ...DEFAULT_CONFIG, verifyDefaults: { alwaysHumanPaths: ['a/**'] } }, 'test'),
+  )
+  for (const verifyDefaults of [
+    [],
+    null,
+    'x',
+    { alwaysHumanPaths: 'a/**' },
+    { alwaysHumanPaths: { glob: 'a' } },
+    { alwaysHumanPaths: ['a/**', 3] },
+    { alwaysHumanPaths: [''] },
+  ]) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'),
+      /verifyDefaults/,
+      JSON.stringify(verifyDefaults),
+    )
+  }
+})
+
+test('retro config validates numbers, aliases and audit options', async () => {
+  const { retroConfig, validateConfig, DEFAULT_CONFIG, mergeConfig } =
+    await import('./skill-config.mjs')
+  const valid = {
+    maxIssues: 0,
+    staleDays: 0,
+    minRuns: 2,
+    gateThreshold: 5,
+    pathAliases: { 'old/': 'new/' },
+    guidanceAudit: { maxLines: 99 },
+  }
+  const config = mergeConfig(DEFAULT_CONFIG, { retro: valid })
+  assert.doesNotThrow(() => validateConfig(config, 'test'))
+  const copy = retroConfig(config)
+  copy.pathAliases['old/'] = 'other'
+  copy.guidanceAudit.maxLines = 1
+  assert.equal(config.retro.pathAliases['old/'], 'new/')
+  assert.equal(config.retro.guidanceAudit.maxLines, 99)
+  for (const retro of [
+    null,
+    [],
+    { wat: 1 },
+    { minRuns: 0 },
+    { staleDays: -1 },
+    { maxIssues: 1.5 },
+    { gateThreshold: '5' },
+    { pathAliases: { a: '' } },
+    { guidanceAudit: [] },
+  ])
+    assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, retro }, 'test'), /retro/)
+  assert.deepEqual(
+    retroConfig({ retro: { maxIssues: 'bad', guidanceAudit: [], pathAliases: null } }),
+    {
+      maxIssues: null,
+      staleDays: null,
+      minRuns: null,
+      gateThreshold: null,
+      pathAliases: {},
+      guidanceAudit: null,
+    },
+  )
+})
+
+test('validateLocalVerification accepts command summaries, phases, arrows and gaps', () => {
+  const body =
+    '## local verification   \n- `node --test unit.test.mjs` → pass 1, fail 0\n- after rebase: `make test-affected` -> ok 214\n- gap: selector matched no tests; ran closest covering unit test\n## Other\n- ignored'
+  const result = validateLocalVerification(DEFAULT_CONFIG, body)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.entries, [
+    { phase: null, command: 'node --test unit.test.mjs', result: 'pass 1, fail 0' },
+    { phase: 'after rebase', command: 'make test-affected', result: 'ok 214' },
+  ])
+  assert.deepEqual(result.gaps, ['selector matched no tests; ran closest covering unit test'])
+  assert.equal(
+    validateLocalVerification(DEFAULT_CONFIG, '## Local verification\n- gap: no reliable mapping')
+      .ok,
+    true,
+  )
+})
+
+test('validateLocalVerification reports missing and empty sections outside fences', () => {
+  for (const body of ['', '```md\n## Local verification\n- `test` → pass\n```']) {
+    assert.equal(
+      validateLocalVerification(DEFAULT_CONFIG, body).missingEvidence[0].reason,
+      'missing-section',
+    )
+  }
+  assert.equal(
+    validateLocalVerification(DEFAULT_CONFIG, '## Local verification\nNo commands yet')
+      .missingEvidence[0].reason,
+    'empty-section',
+  )
+})
+
+test('validateLocalVerification identifies malformed bullets without losing valid evidence', () => {
+  for (const [bullet, reason] of [
+    ['make test → passed', 'undelimited-command'],
+    ['`` → passed', 'empty-command'],
+    ['`make test` → ', 'empty-result'],
+    ['gap: ', 'empty-gap'],
+  ]) {
+    const result = validateLocalVerification(
+      DEFAULT_CONFIG,
+      '## Local verification\n- `unit-test` → pass 1\n- ' + bullet,
+    )
+    assert.equal(result.ok, false)
+    assert.equal(result.entries.length, 1)
+    assert.equal(result.missingEvidence.length, 1)
+    assert.equal(result.missingEvidence[0].reason, reason)
+    assert.ok(result.missingEvidence[0].remedy)
+  }
+})
+
+test('validateLocalVerification enforces config-first arguments', () => {
+  assert.throws(
+    () => validateLocalVerification('body', DEFAULT_CONFIG),
+    /skill-config.*validateLocalVerification\(config, description\)/,
+  )
+})
+
+test('validateLocalVerification rejects the publish template pasted unfilled', () => {
+  // Exact copy of the `## Local verification` block in boss-build references/publish.md.
+  const template = [
+    '## Local verification',
+    '- `<local command>` → <the command’s final summary line>',
+    '- after rebase: `<covering command>` → <final summary line>',
+    '- gap: <what could not be selected reliably and why>',
+  ].join('\n')
+  const result = validateLocalVerification(DEFAULT_CONFIG, template)
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.entries, [])
+  assert.deepEqual(result.gaps, [])
+  assert.deepEqual(
+    result.missingEvidence.map((f) => f.reason),
+    ['placeholder', 'placeholder', 'placeholder'],
+  )
+  assert.ok(result.missingEvidence.every((f) => f.remedy))
+  // Each field is checked on its own: one filled field does not excuse a placeholder beside it.
+  for (const bullet of ['`make test` → <final summary line>', '`<covering command>` → ok 3']) {
+    const one = validateLocalVerification(DEFAULT_CONFIG, '## Local verification\n- ' + bullet)
+    assert.equal(one.missingEvidence[0]?.reason, 'placeholder')
+  }
+  // Angle brackets inside real output are not a placeholder.
+  assert.equal(
+    validateLocalVerification(
+      DEFAULT_CONFIG,
+      '## Local verification\n- `make test` → <3 skipped> ok 5',
+    ).ok,
+    true,
+  )
+})
+
+test('validateLocalVerification ends the section at a parent # heading', () => {
+  const result = validateLocalVerification(
+    DEFAULT_CONFIG,
+    '## Local verification\n- `make test` → ok 5\n# Appendix\n- not a verification entry\n- gap: nor this',
+  )
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.entries, [{ phase: null, command: 'make test', result: 'ok 5' }])
+  assert.deepEqual(result.gaps, [])
+  assert.deepEqual(result.missingEvidence, [])
+})
+
+test('validateLocalVerification matches the PR-body section parser on duplicate and colon headings', () => {
+  const duplicate = validateLocalVerification(
+    DEFAULT_CONFIG,
+    '## Local verification\n- `make test` → ok 5\n## Notes\n## Local Verification\n- `make lint` → 0 issues',
+  )
+  assert.equal(duplicate.ok, false)
+  assert.deepEqual(
+    duplicate.missingEvidence.map((f) => f.reason),
+    ['duplicate-section'],
+  )
+  assert.ok(duplicate.missingEvidence[0].remedy)
+  // `sections()` keys `## Local verification:` as a different section, so it is not this one.
+  assert.equal(
+    validateLocalVerification(DEFAULT_CONFIG, '## Local verification:\n- `make test` → ok 5')
+      .missingEvidence[0].reason,
+    'missing-section',
+  )
+  assert.equal(sections('## Local verification:\n- x').has('local verification'), false)
+})
+
+test('validateLocalVerification attaches indented and wrapped lines to the entry above', () => {
+  const result = validateLocalVerification(
+    DEFAULT_CONFIG,
+    [
+      '## Local verification',
+      '- `make test` → ok 5',
+      '  - selected by the affected-test selector',
+      '- `make lint` →',
+      '  0 issues',
+      '- gap: no selector for docs',
+      '  so the closest covering test ran',
+      '',
+      'Trailing prose after a blank line is not an entry.',
+    ].join('\n'),
+  )
+  assert.deepEqual(result.missingEvidence, [])
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.entries, [
+    { phase: null, command: 'make test', result: 'ok 5 selected by the affected-test selector' },
+    { phase: null, command: 'make lint', result: '0 issues' },
+  ])
+  assert.deepEqual(result.gaps, ['no selector for docs so the closest covering test ran'])
+  // A blank line ends the entry, so a result separated from its bullet is still missing.
+  assert.equal(
+    validateLocalVerification(
+      DEFAULT_CONFIG,
+      '## Local verification\n- `make lint` →\n\n  0 issues',
+    ).missingEvidence[0].reason,
+    'empty-result',
+  )
+})
+
+test('validateLocalVerification keeps same-indent siblings as separate entries', () => {
+  // A uniformly indented list is still a FLAT list. Treating any indent as nesting folded every
+  // sibling into the first entry, so a later sibling's empty result or unfilled placeholder was
+  // swallowed into the first entry's result and the section passed.
+  for (const pad of [' ', '  ', '   ', '\t']) {
+    const emptyResult = validateLocalVerification(
+      DEFAULT_CONFIG,
+      `## Local verification\n${pad}- \`make lint\` → ok\n${pad}- \`make test\` → `,
+    )
+    assert.equal(emptyResult.ok, false, `indent ${JSON.stringify(pad)}`)
+    assert.deepEqual(emptyResult.entries, [{ phase: null, command: 'make lint', result: 'ok' }])
+    assert.deepEqual(
+      emptyResult.missingEvidence.map((finding) => [finding.reason, finding.text]),
+      [['empty-result', '`make test` →']],
+    )
+    const placeholder = validateLocalVerification(
+      DEFAULT_CONFIG,
+      `## Local verification\n${pad}- \`make test\` → ok 5\n${pad}- \`make lint\` →\n${pad}- gap: <…>`,
+    )
+    assert.equal(placeholder.ok, false, `indent ${JSON.stringify(pad)}`)
+    assert.deepEqual(
+      placeholder.missingEvidence.map((finding) => finding.reason),
+      ['empty-result', 'placeholder'],
+    )
+  }
+  // A sub-bullet indented DEEPER than its opener still continues it, even when the opener itself
+  // is indented; a shallower item after it is a new entry again.
+  const nested = validateLocalVerification(
+    DEFAULT_CONFIG,
+    '## Local verification\n  - `make test` →\n    - ok 5\n  - `make lint` → 0 issues',
+  )
+  assert.deepEqual(nested.missingEvidence, [])
+  assert.deepEqual(nested.entries, [
+    { phase: null, command: 'make test', result: 'ok 5' },
+    { phase: null, command: 'make lint', result: '0 issues' },
+  ])
+})
+
+test('parseAcceptanceCriteria keeps same-indent checkbox siblings as separate criteria', () => {
+  // The shared grouping rule: an equally indented checkbox is a sibling, so an OPEN criterion can
+  // no longer hide inside a ticked one's text.
+  for (const pad of [' ', '  ', '   ']) {
+    const criteria = parseAcceptanceCriteria(
+      DEFAULT_CONFIG,
+      planBody(`${pad}- [x] first\n${pad}- [ ] second`),
+    )
+    assert.deepEqual(
+      criteria.map((c) => [c.text, c.checked]),
+      [
+        ['first', true],
+        ['second', false],
+      ],
+      `indent ${JSON.stringify(pad)}`,
+    )
+  }
+  const nested = parseAcceptanceCriteria(
+    DEFAULT_CONFIG,
+    planBody(`  - [x] first\n    - [x] detail\n  - [ ] second`),
+  )
+  assert.deepEqual(
+    nested.map((c) => c.text),
+    ['first [x] detail', 'second'],
   )
 })

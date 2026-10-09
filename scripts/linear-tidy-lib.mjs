@@ -37,7 +37,7 @@ const STATE_NAMES = Object.freeze(
 )
 const LABEL_NAMES = Object.freeze({
   agentPlan: labelName(CONFIG, 'agentPlan'),
-  agentFriendly: labelName(CONFIG, 'agentFriendly'),
+  agentBuild: labelName(CONFIG, 'agentBuild'),
   needsHuman: labelName(CONFIG, 'needsHuman'),
 })
 
@@ -293,13 +293,13 @@ export function hasImplementationPlan(identifier, attachments) {
 const hasLabel = (ticket, name) =>
   (Array.isArray(ticket?.labels) ? ticket.labels : []).some((l) => l?.name === name)
 
-// Decide the planning-queue reconcile for each Unplanned + `agent-friendly` ticket:
+// Decide the planning-queue reconcile for each Unplanned + `agent-build` ticket:
 //   has an implementation plan  → move Unplanned → Todo (anomaly recovery: boss-plan
 //                                 normally moves atomically, so this only fires on a
 //                                 partial-failure or a manual reopen).
-//   no plan                     → drop `agent-friendly`, add `agent-plan` so the
+//   no plan                     → drop `agent-build`, add `agent-plan` so the
 //                                 bs-sweep-plan queue picks it up. `newLabelIds` is
-//                                 the full replacement set (current − agent-friendly
+//                                 the full replacement set (current − agent-build
 //                                 + agent-plan).
 // Excludes `needs-human` (must never auto-plan), an already-`agent-plan` ticket
 // (no-op), and any identifier in `blockedIdentifiers` (an epic parent with children —
@@ -307,7 +307,7 @@ const hasLabel = (ticket, name) =>
 // with no resolvable `agentPlanId`, or a has-plan case with no `todoStateId`.
 export function computePlanningReconcile(
   tickets,
-  { agentPlanId, agentFriendlyId, todoStateId, blockedIdentifiers } = {},
+  { agentPlanId, agentBuildId, todoStateId, blockedIdentifiers } = {},
 ) {
   const toTodo = []
   const toAgentPlan = []
@@ -317,7 +317,7 @@ export function computePlanningReconcile(
 
   for (const ticket of Array.isArray(tickets) ? tickets : []) {
     if (ticket?.state?.name !== STATE_NAMES.unplanned) continue
-    if (!hasLabel(ticket, LABEL_NAMES.agentFriendly)) continue
+    if (!hasLabel(ticket, LABEL_NAMES.agentBuild)) continue
     if (hasLabel(ticket, LABEL_NAMES.needsHuman)) continue // never auto-plan a needs-human ticket
     if (hasLabel(ticket, LABEL_NAMES.agentPlan)) continue // already queued → no-op
     if (blocked.has(ticket.identifier)) continue // epic parent → don't auto-plan an epic
@@ -339,16 +339,16 @@ export function computePlanningReconcile(
       escalate.push({
         kind: 'no-agent-plan-label',
         identifier: ticket.identifier,
-        reason: `${LABEL_NAMES.agentFriendly} ${STATE_NAMES.unplanned} ticket to queue but the ${LABEL_NAMES.agentPlan} label does not exist`,
+        reason: `${LABEL_NAMES.agentBuild} ${STATE_NAMES.unplanned} ticket to queue but the ${LABEL_NAMES.agentPlan} label does not exist`,
       })
       continue
     }
-    // Full replacement set: keep every current label except agent-friendly, add
+    // Full replacement set: keep every current label except agent-build, add
     // agent-plan (dedup in case it somehow co-exists). Drop null/undefined ids.
     const currentIds = (Array.isArray(ticket.labels) ? ticket.labels : [])
       .map((l) => l?.id)
       .filter((id) => id != null)
-    const kept = currentIds.filter((id) => id !== agentFriendlyId && id !== agentPlanId)
+    const kept = currentIds.filter((id) => id !== agentBuildId && id !== agentPlanId)
     toAgentPlan.push({
       id: ticket.id,
       identifier: ticket.identifier,
@@ -370,16 +370,16 @@ export function computePlanningReconcile(
 //     (the linear-deps-lib.mjs lesson: an unstated size can paginate real nodes
 //     out and silently under-report).
 //   - each issue's labels + attachments → the planning-queue reconcile (behaviour 3)
-//     needs the label set (agent-friendly / needs-human / agent-plan) and whether an
+//     needs the label set (agent-build / needs-human / agent-plan) and whether an
 //     implementation-plan attachment is present. Bounded pages for the same reason.
-//   - issueLabels(agent-plan, agent-friendly) → the label ids the relabel mutation
+//   - issueLabels(agent-plan, agent-build) → the label ids the relabel mutation
 //     needs, resolved once per read rather than per issue.
 export const TIDY_READ_QUERY = `
   query TidyReads($first: Int!) {
     workflowStates(first: 100) {
       nodes { id name type }
     }
-    issueLabels(first: 50, filter: { name: { in: ${JSON.stringify([LABEL_NAMES.agentPlan, LABEL_NAMES.agentFriendly])} } }) {
+    issueLabels(first: 50, filter: { name: { in: ${JSON.stringify([LABEL_NAMES.agentPlan, LABEL_NAMES.agentBuild])} } }) {
       nodes { id name }
     }
     issues(first: $first, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) {
@@ -407,7 +407,7 @@ const MOVE_MUTATION = `
 
 // Full-set label replace for the planning-queue reconcile. Linear's issueUpdate
 // `labelIds` replaces the issue's entire label set, so the caller computes the new
-// set (drop agent-friendly, add agent-plan) and sends it whole — the same semantics
+// set (drop agent-build, add agent-plan) and sends it whole — the same semantics
 // as the Linear MCP `save_issue labels`.
 const LABELS_MUTATION = `
   mutation TidyRelabel($id: String!, $labelIds: [String!]!) {
@@ -550,7 +550,7 @@ export async function runTidy({
   })
   const { move, escalate: rollupEscalate } = computeRollups(parents)
 
-  // Behaviour 3: reclassify Unplanned + agent-friendly tickets into the planning
+  // Behaviour 3: reclassify Unplanned + agent-build tickets into the planning
   // queue. An epic parent (already blocked from auto-close) must not be auto-planned
   // either, so reuse blockedFromClose as the block set.
   const {
@@ -559,7 +559,7 @@ export async function runTidy({
     escalate: reconcileEscalate,
   } = computePlanningReconcile(tickets, {
     agentPlanId: labelIdsByName.get(LABEL_NAMES.agentPlan),
-    agentFriendlyId: labelIdsByName.get(LABEL_NAMES.agentFriendly),
+    agentBuildId: labelIdsByName.get(LABEL_NAMES.agentBuild),
     todoStateId,
     blockedIdentifiers: blockedFromClose,
   })

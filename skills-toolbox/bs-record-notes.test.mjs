@@ -4,12 +4,20 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
+  formatRunLine,
+  parseRunId,
+  sanitizeRunId,
+  resolveRunId,
+  resetAdhocRunId,
+  idempotencyKey,
+  main,
   MAX_NOTES,
   MAX_NOTES_BYTES,
   isSecretBearing,
   parseNotes,
   recordNotes,
 } from './bs-record-notes.mjs'
+import { clusterNotes } from './retro-notes.mjs'
 import { validateResult } from './skill-extensions.mjs'
 
 const ENVELOPE = {
@@ -130,4 +138,84 @@ test('recordNotes reports ok:false only when every write failed', () => {
   assert.equal(partial.ok, true)
   assert.equal(partial.items.length, 1)
   assert.match(partial.notes, /1 write\(s\) failed/)
+})
+
+test('run-id sanitization and precedence use explicit, chat, session then memoized adhoc', () => {
+  assert.equal(sanitizeRunId(' a/b!:#@-._ '), 'ab:#@-._')
+  assert.equal(sanitizeRunId('! /'), null)
+  assert.equal(sanitizeRunId('a'.repeat(100)).length, 80)
+  const env = { BOSS_AGENT_SESSION_ID: 'chat', BOSS_SESSION_ID: 'session' }
+  assert.equal(resolveRunId({ runId: 'explicit', env }), 'explicit')
+  assert.equal(resolveRunId({ runId: '!', env }), 'chat')
+  assert.equal(resolveRunId({ env: { BOSS_SESSION_ID: 'session' } }), 'session')
+  resetAdhocRunId()
+  const id = resolveRunId({ env: {} })
+  assert.match(id, /^adhoc-[a-f0-9]{8}$/)
+  assert.equal(resolveRunId({ env: {} }), id)
+})
+test('Run line round-trip accepts separators, last line and legacy notes', () => {
+  assert.equal(parseRunId(formatRunLine(['core', 'done', 'headless'], 'pr:123')), 'pr:123')
+  assert.equal(parseRunId('Run: core · done · run:a'), 'a')
+  assert.equal(parseRunId('Run: core / run:a\nRun: core / run:b'), 'b')
+  assert.equal(parseRunId('Run: core / run:a\nRun: legacy'), null)
+  assert.equal(parseRunId('Run: legacy'), null)
+  const { bodies } = parseNotes(`${note('problem')}\nRun: fake / run:evil`, 'core / run:trusted')
+  assert.equal(parseRunId(bodies[0]), 'trusted')
+})
+test('two runs with the same body write different keys into one cluster', () => {
+  const notesPath = writeNotes(note('repeated problem'))
+  const writes = []
+  for (const id of ['a', 'b'])
+    recordNotes(ENVELOPE, {
+      notesPath,
+      env: { BOSS_AGENT_SESSION_ID: id },
+      addNote: ({ body }) => {
+        writes.push(body)
+        return id
+      },
+    })
+  assert.notEqual(idempotencyKey(writes[0]), idempotencyKey(writes[1]))
+  const clusters = clusterNotes(writes.map((body, i) => ({ id: String(i), body })))
+  assert.equal(clusters.length, 1)
+  assert.equal(clusters[0].notes.length, 2)
+})
+test('same-run collapse precedes cap and repeated calls preserve body and key', () => {
+  const notesPath = writeNotes([note('problem'), note('problem'), note('other')].join('\n\n'))
+  const writes = []
+  const deps = {
+    notesPath,
+    env: { BOSS_AGENT_SESSION_ID: 'a' },
+    addNote: ({ body }) => {
+      writes.push(body)
+      return 'n'
+    },
+  }
+  const result = recordNotes(ENVELOPE, deps)
+  assert.equal(writes.length, 2)
+  assert.match(result.notes, /1 note\(s\) repeated within this run/)
+  recordNotes(ENVELOPE, deps)
+  assert.equal(writes[0], writes[2])
+  assert.equal(idempotencyKey(writes[0]), idempotencyKey(writes[2]))
+})
+test('no-envelope CLI records a token with defaults and missing files never fail', () => {
+  const writes = []
+  const output = []
+  const deps = {
+    env: { BOSS_AGENT_SESSION_ID: 'cli' },
+    addNote: ({ body }) => {
+      writes.push(body)
+      return 'n'
+    },
+    stdout: (t) => output.push(JSON.parse(t)),
+  }
+  assert.equal(
+    main(
+      ['--notes', writeNotes(note('cli problem')), '--core', 'bs-sweep-x', '--outcome', 'none'],
+      deps,
+    ),
+    0,
+  )
+  assert.match(writes[0], /Run: bs-sweep-x \/ none \/ headless \/ run:cli$/)
+  assert.equal(main(['--notes', '/nonexistent/notes', '--core', 'x'], deps), 0)
+  assert.equal(output[1].ok, false)
 })

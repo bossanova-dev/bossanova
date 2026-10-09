@@ -117,12 +117,18 @@ test('main-module sweep rejects every fragile guard form and resolves every help
     'the predicate must have one shared definition',
   )
 
+  const remedy =
+    'guard the entry point with `isMainModule(import.meta.url)` imported from skills-toolbox/main-module.mjs; hand-rolled argv[1] comparisons fail through a symlinked entry path'
   for (const { file, source } of sources) {
     for (const form of FRAGILE_FORMS) {
-      assert.ok(!source.includes(form), `${file} still contains ${form}`)
+      assert.ok(!source.includes(form), `${file} contains \`${form}\` — ${remedy}`)
     }
     if (source.includes('process.argv[1]') && source.includes('import.meta.url')) {
-      assert.match(source, /from ['"].*main-module\.mjs['"]/)
+      assert.match(
+        source,
+        /from ['"].*main-module\.mjs['"]/,
+        `${file} compares process.argv[1] with import.meta.url — ${remedy}`,
+      )
     }
     for (const match of source.matchAll(/from ['"]([^'"]*main-module\.mjs)['"]/g)) {
       assert.ok(existsSync(path.resolve(path.dirname(file), match[1])), `${file} import resolves`)

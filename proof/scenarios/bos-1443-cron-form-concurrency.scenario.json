@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "title": "BOS-1443 the cron form's Concurrency select, in create and edit mode",
+  "fixture": {
+    "preset": "demo"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "home settles, then open Settings",
+      "steps": [
+        {
+          "waitFor": "Add dark mode",
+          "timeoutMs": 10000,
+          "caption": "Home session list loaded"
+        },
+        {
+          "key": "s",
+          "caption": "Press [s] to open Settings"
+        },
+        {
+          "waitFor": "Cron jobs",
+          "timeoutMs": 10000,
+          "caption": "Settings menu loaded"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "the create form shows Concurrency directly below Gate command, defaulted to Skip",
+      "steps": [
+        {
+          "key": "c",
+          "caption": "Press [c] to open the Scheduled Jobs (cron) list"
+        },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list loaded"
+        },
+        {
+          "key": "n",
+          "caption": "Press [n] to open the create form"
+        },
+        {
+          "waitFor": "Name",
+          "timeoutMs": 10000,
+          "caption": "Cron create form visible (focus starts on Name)"
+        },
+        {
+          "type": "Concurrency demo",
+          "caption": "Type a name"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Repo"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Agent (the demo daemon reports agent runners, so the Agent select renders)"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Model"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Prompt"
+        },
+        {
+          "type": "Build the next planned ticket.",
+          "caption": "Type a prompt"
+        },
+        {
+          "key": "tab",
+          "caption": "[tab] leaves the Prompt text area (a text area consumes [enter])"
+        },
+        {
+          "type": "0 * * * *",
+          "caption": "Type a schedule"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Timezone"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Gate command"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Concurrency — the form scrolls to the select"
+        },
+        {
+          "waitFor": "Allow concurrent",
+          "timeoutMs": 10000,
+          "caption": "The Concurrency select and its three options are in view"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃\\s*Concurrency",
+              "match": "regex",
+              "label": "focus is on Concurrency (the ┃ focus bar), so the field walk actually reached the select rather than stalling above it"
+            },
+            {
+              "text": "Gate command",
+              "match": "normalized",
+              "label": "the gate-command field the new select sits under"
+            },
+            {
+              "text": "Concurrency",
+              "match": "normalized",
+              "label": "the new Concurrency select is present"
+            },
+            {
+              "text": "Gate command[\\s\\S]*Concurrency[\\s\\S]*Skip while previous run is active",
+              "match": "regex",
+              "label": "field ORDER: Concurrency renders below Gate command (Run setup command, the next field, is scrolled below the fold while the select has focus; the unit test pins the direct adjacency)"
+            },
+            {
+              "text": "❯ Skip while previous run is active",
+              "match": "normalized",
+              "label": "the cursor sits on Skip while previous run is active — the create-mode default"
+            },
+            {
+              "text": "Cancel in progress",
+              "match": "normalized",
+              "label": "the second option"
+            },
+            {
+              "text": "What a fire does while this job's previous run is still working",
+              "match": "normalized",
+              "label": "the Concurrency help text, identical to the web form's"
+            }
+          ],
+          "caption": "Concurrency sits directly below Gate command, the two settings that decide whether a fire starts. A new job defaults to Skip while previous run is active."
+        }
+      ]
+    },
+    {
+      "id": "scene-03",
+      "title": "the edit form pre-populates Concurrency from a job set to Allow concurrent",
+      "steps": [
+        {
+          "key": "esc",
+          "caption": "Leave the create form, back to the cron list"
+        },
+        {
+          "waitFor": "Morning PR triage",
+          "timeoutMs": 10000,
+          "caption": "Cron list again"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 2 (Nightly mutation tests)"
+        },
+        {
+          "key": "down",
+          "caption": "Move to row 3 — 'Weekly tech-debt sweep', the one demo job set to Allow concurrent"
+        },
+        {
+          "key": "enter",
+          "caption": "Press [enter] to edit the highlighted job"
+        },
+        {
+          "waitFor": "Edit Scheduled Job: Weekly tech-debt sweep",
+          "timeoutMs": 10000,
+          "caption": "Cron edit form visible, pre-populated (focus starts on Name)"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Repo"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Agent (the demo daemon reports agent runners, so the Agent select renders)"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Model"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Prompt"
+        },
+        {
+          "key": "tab",
+          "caption": "[tab] leaves the Prompt text area"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Timezone"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Gate command"
+        },
+        {
+          "key": "enter",
+          "caption": "[enter] advances to Concurrency — the form scrolls to the select"
+        },
+        {
+          "waitFor": "Allow concurrent",
+          "timeoutMs": 10000,
+          "caption": "The Concurrency select is in view, pre-populated from the job"
+        },
+        {
+          "expect": [
+            {
+              "text": "┃\\s*Concurrency",
+              "match": "regex",
+              "label": "focus is on Concurrency (the ┃ focus bar), so the field walk actually reached the select rather than stalling above it"
+            },
+            {
+              "text": "Weekly tech-debt sweep",
+              "match": "normalized",
+              "label": "the edit form is for 'Weekly tech-debt sweep' — the one demo job with concurrency_policy allow_concurrent, so opening any other row fails below"
+            },
+            {
+              "text": "Concurrency",
+              "match": "normalized",
+              "label": "the Concurrency select is present in edit mode too"
+            },
+            {
+              "text": "❯ Allow concurrent",
+              "match": "normalized",
+              "label": "the cursor sits on Allow concurrent, pre-populated from job.ConcurrencyPolicy"
+            }
+          ],
+          "caption": "Editing 'Weekly tech-debt sweep' (concurrency_policy = allow_concurrent) pre-populates the Concurrency select on Allow concurrent, where every other demo job opens on Skip."
+        }
+      ]
+    }
+  ]
+}

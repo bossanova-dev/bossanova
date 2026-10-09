@@ -1191,6 +1191,95 @@ func TestCronJobToProtoZeroOutputRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCronJobToProtoConcurrencyPolicy proves the read path returns the stored
+// concurrency policy on the proto, and that the wire value is never UNSPECIFIED
+// — an empty or out-of-set domain value reads as SKIP.
+func TestCronJobToProtoConcurrencyPolicy(t *testing.T) {
+	now := time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
+
+	for _, tt := range []struct {
+		name   string
+		stored models.CronJobConcurrencyPolicy
+		want   pb.CronJobConcurrencyPolicy
+	}{
+		{"skip", models.CronJobConcurrencyPolicySkip, pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP},
+		{"cancel in progress", models.CronJobConcurrencyPolicyCancelInProgress, pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS},
+		{"allow concurrent", models.CronJobConcurrencyPolicyAllowConcurrent, pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
+		{"empty reads as skip", "", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP},
+		{"unknown reads as skip", "bogus", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			job := &models.CronJob{
+				ID:                "job-concurrency",
+				RepoID:            "repo-1",
+				Name:              "Concurrency",
+				Prompt:            "check",
+				Schedule:          "@daily",
+				ConcurrencyPolicy: tt.stored,
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			}
+
+			got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil, nil)
+			if got.ConcurrencyPolicy != tt.want {
+				t.Fatalf("ConcurrencyPolicy = %v, want %v", got.ConcurrencyPolicy, tt.want)
+			}
+		})
+	}
+}
+
+// TestCronConcurrencyPolicyFromProto pins the request-side mapping: absent and
+// UNSPECIFIED are "not set" (so the zero value never reaches storage), each known
+// enum maps to its stored value, and an unknown number is an error.
+func TestCronConcurrencyPolicyFromProto(t *testing.T) {
+	enum := func(v pb.CronJobConcurrencyPolicy) *pb.CronJobConcurrencyPolicy { return &v }
+
+	for _, tt := range []struct {
+		name    string
+		in      *pb.CronJobConcurrencyPolicy
+		want    models.CronJobConcurrencyPolicy
+		wantSet bool
+		wantErr bool
+	}{
+		{name: "absent", in: nil},
+		{name: "unspecified", in: enum(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED)},
+		{name: "skip", in: enum(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP), want: models.CronJobConcurrencyPolicySkip, wantSet: true},
+		{name: "cancel in progress", in: enum(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS), want: models.CronJobConcurrencyPolicyCancelInProgress, wantSet: true},
+		{name: "allow concurrent", in: enum(pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT), want: models.CronJobConcurrencyPolicyAllowConcurrent, wantSet: true},
+		{name: "unknown number", in: enum(pb.CronJobConcurrencyPolicy(99)), wantErr: true},
+		{name: "negative number", in: enum(pb.CronJobConcurrencyPolicy(-1)), wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, set, err := cronConcurrencyPolicyFromProto(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if set != tt.wantSet {
+				t.Errorf("set = %v, want %v", set, tt.wantSet)
+			}
+			if got != tt.want {
+				t.Errorf("policy = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCronConcurrencyPolicyToProtoCoversEveryStoredValue keeps the two mapping
+// helpers in lockstep: every stored value round-trips through the wire enum.
+func TestCronConcurrencyPolicyToProtoCoversEveryStoredValue(t *testing.T) {
+	for _, stored := range []models.CronJobConcurrencyPolicy{
+		models.CronJobConcurrencyPolicySkip,
+		models.CronJobConcurrencyPolicyCancelInProgress,
+		models.CronJobConcurrencyPolicyAllowConcurrent,
+	} {
+		wire := cronConcurrencyPolicyToProto(stored)
+		back, set, err := cronConcurrencyPolicyFromProto(&wire)
+		if err != nil || !set || back != stored {
+			t.Errorf("round trip %q -> %v -> (%q, set=%v, err=%v)", stored, wire, back, set, err)
+		}
+	}
+}
+
 func TestIsSubdirOf(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1264,6 +1353,8 @@ func TestDisplayStatusProtoEnumLockstep(t *testing.T) {
 		{vcs.DisplayStatusDraft, pb.DisplayStatus_DISPLAY_STATUS_DRAFT},
 		{vcs.DisplayStatusApproved, pb.DisplayStatus_DISPLAY_STATUS_APPROVED},
 		{vcs.DisplayStatusReview, pb.DisplayStatus_DISPLAY_STATUS_REVIEW},
+		{vcs.DisplayStatusVerifying, pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
+		{vcs.DisplayStatusNeedsHuman, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
 	}
 	for _, c := range cases {
 		if int32(c.vcsStatus) != int32(c.pbStatus) {
@@ -1512,4 +1603,110 @@ func TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial(t *testing.T) {
 	if n := got.AuthCheck.ProtoReflect().Descriptor().Fields().Len(); n != 4 {
 		t.Fatalf("AuthCheck has %d fields, want the 4 redacted metadata fields", n)
 	}
+}
+
+// TestHydrateVerifyAttention pins the BOS-1382 overlay: a NEEDS_HUMAN session
+// with no attention gets AWAITING_HUMAN_INPUT carrying the park reason, and the
+// overlay never overwrites an existing attention or touches another status.
+func TestHydrateVerifyAttention(t *testing.T) {
+	updated := timestamppb.New(time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
+	existing := func(reason pb.AttentionReason) *pb.AttentionStatus {
+		return &pb.AttentionStatus{NeedsAttention: true, Reason: reason, Summary: "prior"}
+	}
+	tests := []struct {
+		name        string
+		session     *pb.Session
+		entry       *status.DisplayEntry
+		wantReason  pb.AttentionReason
+		wantSummary string
+		wantNil     bool
+	}{
+		{
+			name:        "needs human with reason",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, UpdatedAt: updated},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "always-human-path"},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			wantSummary: "needs human: always-human-path",
+		},
+		{
+			name:        "needs human without reason",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, UpdatedAt: updated},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			wantSummary: "needs human — parked by the verify stage",
+		},
+		{
+			name:        "needs human with nil entry",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, UpdatedAt: updated},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			wantSummary: "needs human — parked by the verify stage",
+		},
+		{
+			name:        "blocked attention kept",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS)},
+			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+			wantSummary: "prior",
+		},
+		{
+			name:        "orphaned attention kept",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT)},
+			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			wantSummary: "prior",
+		},
+		{
+			name:        "agent auth failed kept",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED)},
+			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
+			wantSummary: "prior",
+		},
+		{
+			name:        "agent stalled kept",
+			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED)},
+			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			wantReason:  pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED,
+			wantSummary: "prior",
+		},
+		{
+			name:    "verifying untouched",
+			session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
+			entry:   &status.DisplayEntry{Status: vcs.DisplayStatusVerifying},
+			wantNil: true,
+		},
+		{
+			name:    "checking untouched",
+			session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING},
+			wantNil: true,
+		},
+		{
+			name:    "passing untouched",
+			session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+			wantNil: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			HydrateVerifyAttention(tt.session, tt.entry)
+			got := tt.session.GetAttentionStatus()
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("AttentionStatus = %+v, want nil", got)
+				}
+				return
+			}
+			if got.GetReason() != tt.wantReason || got.GetSummary() != tt.wantSummary || !got.GetNeedsAttention() {
+				t.Fatalf("AttentionStatus = %+v, want reason %v summary %q", got, tt.wantReason, tt.wantSummary)
+			}
+		})
+	}
+
+	// Since tracks the session's updated_at, like the agent overlays.
+	p := &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, UpdatedAt: updated}
+	HydrateVerifyAttention(p, nil)
+	if !p.GetAttentionStatus().GetSince().AsTime().Equal(updated.AsTime()) {
+		t.Errorf("Since = %v, want %v", p.GetAttentionStatus().GetSince(), updated)
+	}
+	HydrateVerifyAttention(nil, nil) // nil-safe
 }

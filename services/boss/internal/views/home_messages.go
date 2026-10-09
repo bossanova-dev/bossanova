@@ -22,6 +22,8 @@ type sessionListMsg struct {
 	// acme/widget#123". Only populated for sessions whose aggregate status is
 	// waiting; nil on an older daemon that does not stamp the field.
 	daemonWaitingReasons map[string]string
+	// daemonPhases carries the skill-reported working phase from status polling.
+	daemonPhases map[string]string
 	// sessionReadFailures carries the organizations whose sessions could not be
 	// read on this poll (BOS-1151). A cloud read fans out across every
 	// organization the caller belongs to, so one organization failing yields a

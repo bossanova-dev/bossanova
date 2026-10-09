@@ -6,8 +6,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  APPLY_ISSUE_WRITES_LABELS_QUERY,
+  APPLY_ISSUE_WRITES_READ_QUERY,
   buildLinearOperationMap,
   createLinearAdapter,
+  linearApplyIssueWrites,
+  linearCreatorMention,
   LIST_PLANNED_QUERY,
   READ_DESCRIPTION_QUERY,
   linearReadDescription,
@@ -15,11 +19,11 @@ import {
   linearSelectCandidates,
   LIST_CANDIDATES_QUERY,
 } from './linear.mjs'
-import { buildIssueCountFilter } from '../linear-gate-lib.mjs'
+import { assertEffectiveSelection, renderLinearIssueFilter } from '../selection.mjs'
 import { assertConforms, REQUIRED_TRACKER_OPERATIONS, TRACKER_STATE_ROLES } from './adapter.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { formatClaimComment } from '../linear-claim.mjs'
-import { loadSkillConfig, plannedSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
+import { loadSkillConfig, stageSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
 
 // This repo's own root, so the states() tests read a real config regardless of the
 // cwd the test runner happens to be launched from.
@@ -267,7 +271,7 @@ test('hasUnblockedWork delegates to runUnblockedGate', async () => {
     { id: 'iss_1', identifier: 'BOS-1', inverseRelations: { nodes: [] } },
   ])
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
-  assert.equal(await adapter.hasUnblockedWork({ state: 'Todo', label: 'agent-friendly' }), true)
+  assert.equal(await adapter.hasUnblockedWork({ state: 'Todo', label: 'agent-build' }), true)
 })
 
 // BOS-1292: the adapter is how the shipped cron gate reaches the gate libraries at all, so a
@@ -316,14 +320,14 @@ test('hasUnblockedWork forwards all three selectors into the emitted filter', as
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
   await adapter.hasUnblockedWork({
     state: 'Todo',
-    label: 'agent-friendly',
+    label: 'agent-build',
     assignee: 'usr_a',
     creator: 'usr_c',
     assigneeOrCreator: 'me',
   })
   assert.deepEqual(impl.bodies[impl.bodies.length - 1].variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
     assignee: { id: { eq: 'usr_a' } },
     creator: { id: { eq: 'usr_c' } },
     or: [{ assignee: { id: { eq: 'usr_owner' } } }, { creator: { id: { eq: 'usr_owner' } } }],
@@ -336,10 +340,10 @@ test('hasUnblockedWork forwards all three selectors into the emitted filter', as
 test('hasWork forwards assigneeOrCreator into the emitted filter', async () => {
   const impl = selectorFetch('usr_owner')
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
-  await adapter.hasWork({ state: 'Unplanned', label: 'agent-friendly', assigneeOrCreator: 'me' })
+  await adapter.hasWork({ state: 'Unplanned', label: 'agent-build', assigneeOrCreator: 'me' })
   assert.deepEqual(impl.bodies[impl.bodies.length - 1].variables.filter, {
     state: { name: { eq: 'Unplanned' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
     or: [{ assignee: { id: { eq: 'usr_owner' } } }, { creator: { id: { eq: 'usr_owner' } } }],
   })
 })
@@ -349,11 +353,11 @@ test('hasWork forwards assigneeOrCreator into the emitted filter', async () => {
 test('the adapter gates emit the pre-BOS-1292 filter when given no selector', async () => {
   const impl = selectorFetch()
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
-  await adapter.hasUnblockedWork({ state: 'Todo', label: 'agent-friendly' })
+  await adapter.hasUnblockedWork({ state: 'Todo', label: 'agent-build' })
   assert.equal(impl.bodies.length, 1, 'no stray viewer lookup through the adapter either')
   assert.deepEqual(impl.bodies[0].variables.filter, {
     state: { name: { eq: 'Todo' } },
-    labels: { name: { eq: 'agent-friendly' } },
+    labels: { name: { eq: 'agent-build' } },
   })
 })
 
@@ -415,12 +419,12 @@ test('normalizeTicket flattens a raw GraphQL issue', () => {
     priority: 2,
     createdAt: '2026-01-01T00:00:00Z',
     state: { name: 'Todo', type: 'unstarted' },
-    labels: { nodes: [{ name: 'agent-friendly' }] },
+    labels: { nodes: [{ name: 'agent-build' }] },
     inverseRelations: { nodes: [] },
   })
   assert.equal(ticket.id, 'BOS-1')
   assert.equal(ticket.stateName, 'Todo')
-  assert.deepEqual(ticket.labels, ['agent-friendly'])
+  assert.deepEqual(ticket.labels, ['agent-build'])
 })
 
 test('buildLinearOperationMap derives agent-driven MCP tools from the configured server', () => {
@@ -457,6 +461,8 @@ test('buildLinearOperationMap derives agent-driven MCP tools from the configured
   assert.equal(operationMap.readPlanAttachment.tool, 'mcp__acme-tracker__get_attachment')
   assert.equal(operationMap.deletePlanAttachment.tool, 'mcp__acme-tracker__delete_attachment')
   assert.equal(operationMap.writeDescription.tool, 'mcp__acme-tracker__save_issue')
+  assert.equal(operationMap.listTeams.tool, 'mcp__acme-tracker__list_teams')
+  assert.match(operationMap.listTeams.summary, /resolveTrackerTeam/)
   for (const key of REQUIRED_TRACKER_OPERATIONS) {
     assert.match(operationMap[key].tool, /^mcp__acme-tracker__/)
   }
@@ -535,22 +541,31 @@ test('createLinearAdapter reads the linear config block when another tracker is 
   }
 })
 
-test('createLinearAdapter fails fast with no tracker config, and defaults mcpServer to the adapter name', () => {
+test('createLinearAdapter defaults mcpServer to the adapter name, zero-config included, and fails fast with no linear block', () => {
   const dirs = [
     fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-no-config-')),
     fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-no-mcp-server-')),
+    fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-other-tracker-')),
   ]
   try {
     fs.writeFileSync(
       path.join(dirs[1], '.boss-skills.json'),
       JSON.stringify({ trackerConfig: { linear: { team: 'Acme' } } }),
     )
-    assert.throws(
-      () => createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[0] }),
-      /mcpServer/,
+    fs.writeFileSync(
+      path.join(dirs[2], '.boss-skills.json'),
+      JSON.stringify({ adapters: { tracker: 'jira' } }),
     )
+    // Zero-config (BOS-1393): no .boss-skills.json synthesizes the default linear block.
+    const zero = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[0] })
+    assert.equal(zero.operationMap.listTeams.tool, 'mcp__linear__list_teams')
     const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[1] })
     assert.ok(adapter, 'a team-only config is enough: mcpServer defaults to "linear"')
+    // Another tracker selected: nothing is synthesized for linear, so the adapter still refuses.
+    assert.throws(
+      () => createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {}, cwd: dirs[2] }),
+      /mcpServer/,
+    )
   } finally {
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -600,12 +615,26 @@ test('states() resolution is UNCHANGED from the config it derives: it equals tra
   }
 })
 
+test('states() answers the stock names in a repo with no .boss-skills.json (zero-config)', () => {
+  const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-states-zero-'))
+  try {
+    const states = adapter.states({ cwd: dir })
+    assert.equal(states.planned, 'Todo')
+    assert.equal(states.inProgress, 'In Progress')
+    assert.equal(states.inReview, 'In Review')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('states() returns all-null instead of throwing when no config can be loaded', () => {
-  // A repo with no .boss-skills.json is the exact case the adapter-first resolution
-  // exists to survive: the caller needs a fallback signal, not an exception.
+  // An unloadable config is the exact case the adapter-first resolution exists to survive:
+  // the caller needs a fallback signal, not an exception.
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-states-'))
   try {
+    fs.writeFileSync(path.join(dir, '.boss-skills.json'), '{')
     let states
     assert.doesNotThrow(() => {
       states = adapter.states({ cwd: dir })
@@ -683,13 +712,24 @@ test('buildLinearOperationMap raises for a non-string, so no mcp__[object Object
   }
 })
 
-// --- selectPlanned: the executable, filtered candidate read (BOS-1294) -------------------------
-// The worker's `list-planned` route. Every assertion reads the captured REQUEST BODY, because the
-// defect this closes is a filter that silently never reached the wire — a forward that stops at the
-// adapter boundary must still fail here.
+// --- selectPlanned: the executable, filtered candidate read (BOS-1294, BOS-1378) --------------
+// The worker's `list-planned` / `list-unplanned` route. Every assertion reads the captured REQUEST
+// BODY, because the defect this closes is a filter that silently never reached the wire.
+
+const UUID_ME = '11111111-1111-4111-8111-111111111111'
+const UUID_DEV = '22222222-2222-4222-8222-222222222222'
+const UUID_PRJ = '33333333-3333-4333-8333-333333333333'
+
+// The tracker's side of the one batched selection lookup.
+const REFS_DATA = {
+  viewer: { id: UUID_ME },
+  users: { nodes: [{ id: UUID_DEV, email: 'dev@example.com' }] },
+  issueLabels: { nodes: [{ name: 'infra' }, { name: 'Infra' }, { name: 'backend' }] },
+  projects: { nodes: [{ id: UUID_PRJ, name: 'Platform' }] },
+}
 
 /** Run `fn(adapter, impl, dir)` against a Linear adapter built from a throwaway config directory. */
-async function withPlannedAdapter(linearBlock, fn, { viewerId = 'usr_me', nodes } = {}) {
+async function withPlannedAdapter(linearBlock, fn, { refsData = REFS_DATA, nodes } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-select-planned-'))
   try {
     fs.writeFileSync(
@@ -703,9 +743,9 @@ async function withPlannedAdapter(linearBlock, fn, { viewerId = 'usr_me', nodes 
       return {
         ok: true,
         json: async () =>
-          body.query.includes('viewer')
-            ? { data: { viewer: { id: viewerId } } }
-            : { data: { issues: { nodes: nodes ?? [] } } },
+          body.query.includes('SelectionRefs')
+            ? { data: refsData }
+            : { data: { issues: { nodes: nodes ?? [], pageInfo: { hasNextPage: false } } } },
       }
     }
     impl.bodies = bodies
@@ -717,61 +757,90 @@ async function withPlannedAdapter(linearBlock, fn, { viewerId = 'usr_me', nodes 
 }
 
 const ACME = { mcpServer: 'acme-tracker', team: 'Acme' }
+const EMPTY = assertEffectiveSelection(undefined)
+const BUILD_RULES = { requireLabels: ['agent-build'], excludeLabels: ['needs-human'] }
 
-test('the Linear adapter declares a callable selectPlanned and still conforms', () => {
+test('the Linear adapter declares callable selectPlanned and resolveSelection and still conforms', () => {
   const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
   assert.equal(typeof adapter.selectPlanned, 'function')
+  assert.equal(typeof adapter.resolveSelection, 'function')
   assert.doesNotThrow(() => assertConforms(adapter))
   assert.ok(adapter.operationMap.selectPlanned, 'the descriptor fallback is still declared')
 })
 
-test('selectPlanned composes its filter through buildIssueCountFilter and ANDs the team', async () => {
+test('selectPlanned with no selection makes ONE request: state AND team AND stage labels', async () => {
   await withPlannedAdapter(ACME, async (adapter, impl) => {
-    await adapter.selectPlanned({
-      state: 'Planned',
-      label: ['label-a', 'label-b'],
-      assigneeOrCreator: 'usr_owner',
-    })
-    assert.equal(impl.bodies.length, 1, 'a concrete id costs no viewer lookup')
-    const { query, variables } = impl.bodies[0]
-    assert.equal(query, LIST_PLANNED_QUERY)
-    assert.deepEqual(variables.filter, {
-      ...buildIssueCountFilter({
-        state: 'Planned',
-        label: ['label-a', 'label-b'],
-        assigneeOrCreatorId: 'usr_owner',
-      }),
-      team: { name: { eq: 'Acme' } },
-    })
-    // Spelled out as well, so the shared builder cannot drift into a shape this test would follow.
-    assert.deepEqual(variables.filter.labels, { name: { in: ['label-a', 'label-b'] } })
-    assert.deepEqual(variables.filter.or, [
-      { assignee: { id: { eq: 'usr_owner' } } },
-      { creator: { id: { eq: 'usr_owner' } } },
-    ])
-    assert.equal(variables.first, 250, 'the default window matches the descriptor path')
-  })
-})
-
-test('selectPlanned with no identity emits no or-clause and a single-label eq', async () => {
-  await withPlannedAdapter(ACME, async (adapter, impl) => {
-    await adapter.selectPlanned({ state: 'Planned', label: 'agent-friendly', limit: 10 })
+    await adapter.selectPlanned({ state: 'Planned', selection: EMPTY, ...BUILD_RULES, limit: 10 })
+    assert.equal(impl.bodies.length, 1, 'nothing to resolve means no lookup request')
+    assert.equal(impl.bodies[0].query, LIST_PLANNED_QUERY)
     assert.deepEqual(impl.bodies[0].variables, {
       first: 10,
       filter: {
         state: { name: { eq: 'Planned' } },
-        labels: { name: { eq: 'agent-friendly' } },
         team: { name: { eq: 'Acme' } },
+        and: [
+          { labels: { some: { name: { eq: 'agent-build' } } } },
+          { labels: { every: { name: { nin: ['needs-human'] } } } },
+        ],
       },
     })
   })
 })
 
-test('selectPlanned rejects an unknown query key before any request rather than dropping it', async () => {
+test('selectPlanned resolves every ref in ONE batched lookup, then renders through the shared renderer', async () => {
+  const selection = assertEffectiveSelection({
+    labels: { include: ['backend'], exclude: ['INFRA'] },
+    assignees: { exclude: ['me'] },
+    creators: { include: ['dev@example.com'] },
+    projects: { exclude: ['platform'] },
+  })
+  await withPlannedAdapter(ACME, async (adapter, impl) => {
+    await adapter.selectPlanned({ state: 'Planned', selection, ...BUILD_RULES })
+    assert.equal(impl.bodies.length, 2, 'one lookup, one list query')
+    assert.match(impl.bodies[0].query, /SelectionRefs/)
+    assert.equal(impl.bodies[1].query, LIST_PLANNED_QUERY)
+    const resolved = {
+      labels: { include: ['backend'], exclude: ['infra', 'Infra'] },
+      assignees: { include: [], exclude: [UUID_ME] },
+      creators: { include: [UUID_DEV], exclude: [] },
+      projects: { include: [], exclude: [UUID_PRJ] },
+    }
+    assert.deepEqual(
+      impl.bodies[1].variables.filter,
+      renderLinearIssueFilter(resolved, { state: 'Planned', team: 'Acme', ...BUILD_RULES }),
+    )
+    // Spelled out too, so the shared renderer cannot drift into a shape this test would follow.
+    assert.deepEqual(impl.bodies[1].variables.filter.and.at(2), {
+      labels: { every: { name: { nin: ['needs-human', 'infra', 'Infra'] } } },
+    })
+    assert.equal(
+      impl.bodies[1].variables.first,
+      250,
+      'the default window matches the descriptor path',
+    )
+  })
+})
+
+test('selectPlanned fails closed on an unresolvable ref: no list query is sent', async () => {
+  const selection = assertEffectiveSelection({
+    labels: { exclude: ['nope'] },
+    creators: { exclude: ['ghost@example.com'] },
+  })
+  await withPlannedAdapter(ACME, async (adapter, impl) => {
+    await assert.rejects(
+      adapter.selectPlanned({ state: 'Planned', selection, ...BUILD_RULES }),
+      /could not resolve user "ghost@example.com", label "nope"/,
+    )
+    assert.equal(impl.bodies.length, 1, 'only the lookup ran')
+  })
+})
+
+test('selectPlanned rejects legacy and unknown query keys before any request', async () => {
   await withPlannedAdapter(ACME, async (adapter, impl) => {
     for (const [query, named] of [
-      [{ state: 'Planned', label: 'agent-friendly', team: 'Other' }, /"team"/],
-      [{ state: 'Planned', label: 'agent-friendly', creator: 'usr_x' }, /"creator"/],
+      [{ state: 'Planned', label: 'agent-build' }, /"label"/],
+      [{ state: 'Planned', assigneeOrCreator: 'me' }, /"assigneeOrCreator"/],
+      [{ state: 'Planned', project: 'Other' }, /"project"/],
     ]) {
       await assert.rejects(
         () => adapter.selectPlanned(query),
@@ -787,58 +856,81 @@ test('selectPlanned rejects an unknown query key before any request rather than 
   })
 })
 
-// Forward-compat pin: every clause `plannedSelectionQuery` derives from a fully-populated selection
-// must be accepted by the wrapper AND reach the wire. A key added to the derivation without teaching
-// the wrapper fails here instead of silently widening the worker's read.
-test('selectPlanned accepts and applies every clause plannedSelectionQuery derives', async () => {
+// Forward-compat pin: every clause `stageSelectionQuery` derives must be accepted by the wrapper
+// AND reach the wire. A key added to the derivation without teaching the wrapper fails here.
+test('selectPlanned accepts and applies every clause stageSelectionQuery derives', async () => {
   const block = {
     ...ACME,
     states: { planned: 'Planned' },
-    labels: { agentFriendly: 'agent-friendly' },
-    selection: { assigneeOrCreator: 'usr_owner', labels: ['label-a', 'label-b'] },
+    labels: { agentBuild: 'agent-build', needsHuman: 'needs-human' },
+    selection: {
+      labels: { include: ['backend'] },
+      stages: { build: { labels: { exclude: ['infra'] }, projects: { include: ['Platform'] } } },
+    },
   }
   await withPlannedAdapter(block, async (adapter, impl, dir) => {
-    const query = plannedSelectionQuery(loadSkillConfig({ cwd: dir }))
-    await adapter.selectPlanned({ ...query, limit: 250 })
-    assert.equal(impl.bodies.length, 1)
-    const { first, filter } = impl.bodies[0].variables
-    assert.equal(first, 250)
-    assert.deepEqual(filter, {
-      ...buildIssueCountFilter({
-        state: query.state,
-        label: query.label,
-        assigneeOrCreatorId: query.assigneeOrCreator,
-      }),
-      team: { name: { eq: 'Acme' } },
+    const query = stageSelectionQuery(loadSkillConfig({ cwd: dir }), 'build', {
+      creators: { exclude: ['me'] },
     })
+    await adapter.selectPlanned({ ...query, limit: 250 })
+    const { filter } = impl.bodies.at(-1).variables
     assert.deepEqual(filter.state, { name: { eq: 'Planned' } })
-    assert.deepEqual(filter.labels, { name: { in: ['label-a', 'label-b'] } })
-    assert.deepEqual(filter.or, [
-      { assignee: { id: { eq: 'usr_owner' } } },
-      { creator: { id: { eq: 'usr_owner' } } },
+    assert.deepEqual(filter.team, { name: { eq: 'Acme' } })
+    assert.deepEqual(filter.and, [
+      { labels: { some: { name: { eq: 'agent-build' } } } },
+      { labels: { some: { name: { in: ['backend'] } } } },
+      { labels: { every: { name: { nin: ['needs-human', 'infra', 'Infra'] } } } },
+      { or: [{ creator: { null: true } }, { creator: { id: { nin: [UUID_ME] } } }] },
+      { project: { id: { in: [UUID_PRJ] } } },
     ])
   })
 })
 
-test("selectPlanned resolves 'me' with exactly one viewer lookup before the list query", async () => {
-  await withPlannedAdapter(
-    ACME,
-    async (adapter, impl) => {
-      await adapter.selectPlanned({
-        state: 'Planned',
-        label: 'agent-friendly',
-        assigneeOrCreator: 'me',
-      })
-      assert.equal(impl.bodies.length, 2)
-      assert.match(impl.bodies[0].query, /viewer/)
-      assert.equal(impl.bodies[1].query, LIST_PLANNED_QUERY)
-      assert.deepEqual(impl.bodies[1].variables.filter.or, [
-        { assignee: { id: { eq: 'usr_viewer' } } },
-        { creator: { id: { eq: 'usr_viewer' } } },
-      ])
-    },
-    { viewerId: 'usr_viewer' },
-  )
+test('hasWork and hasUnblockedWork render the selection query through the same renderer', async () => {
+  const selection = assertEffectiveSelection({ labels: { exclude: ['infra'] } })
+  for (const method of ['hasWork', 'hasUnblockedWork']) {
+    await withPlannedAdapter(ACME, async (adapter, impl) => {
+      await adapter[method]({ state: 'Planned', selection, ...BUILD_RULES })
+      assert.equal(impl.bodies.length, 2, method)
+      assert.deepEqual(
+        impl.bodies[1].variables.filter,
+        renderLinearIssueFilter(
+          { ...EMPTY, labels: { include: [], exclude: ['infra', 'Infra'] } },
+          { state: 'Planned', ...BUILD_RULES },
+        ),
+        `${method}: the gate is not team-scoped`,
+      )
+    })
+  }
+})
+
+test('the gates refuse a selection query mixed with legacy keys, or with no state', async () => {
+  await withPlannedAdapter(ACME, async (adapter, impl) => {
+    for (const method of ['hasWork', 'hasUnblockedWork']) {
+      await assert.rejects(
+        adapter[method]({ state: 'Planned', selection: EMPTY, label: 'agent-build' }),
+        /legacy key\(s\) label cannot be combined/,
+      )
+      await assert.rejects(adapter[method]({ selection: EMPTY }), /a non-empty state is required/)
+      await assert.rejects(
+        adapter[method]({ state: 'Planned', selection: { lables: {} } }),
+        /unknown selection dimension "lables"/,
+      )
+    }
+    assert.equal(impl.bodies.length, 0)
+  })
+})
+
+test('resolveSelection returns the resolved selection with one lookup, or none when empty', async () => {
+  await withPlannedAdapter(ACME, async (adapter, impl) => {
+    assert.deepEqual(await adapter.resolveSelection({ selection: EMPTY }), EMPTY)
+    assert.equal(impl.bodies.length, 0, 'an empty selection costs no request')
+    const resolved = await adapter.resolveSelection({
+      selection: assertEffectiveSelection({ assignees: { include: ['me'] } }),
+    })
+    assert.deepEqual(resolved.assignees, { include: [UUID_ME], exclude: [] })
+    assert.equal(impl.bodies.length, 1)
+  })
 })
 
 test('the list query selects every field the Step 2 eligibility walk reads', () => {
@@ -866,7 +958,7 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
       estimate: 3,
       createdAt: '2026-01-01T00:00:00.000Z',
       state: { name: 'Planned', type: 'unstarted' },
-      labels: { nodes: [{ name: 'agent-friendly' }, { name: 'bug' }] },
+      labels: { nodes: [{ name: 'agent-build' }, { name: 'bug' }] },
       attachments: {
         nodes: [
           {
@@ -882,14 +974,14 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
   await withPlannedAdapter(
     ACME,
     async (adapter) => {
-      const result = await adapter.selectPlanned({ state: 'Planned', label: 'agent-friendly' })
-      assert.deepEqual(result[0].labels, ['agent-friendly', 'bug'])
+      const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
+      assert.deepEqual(result[0].labels, ['agent-build', 'bug'])
       assert.ok(Array.isArray(result[0].attachments))
       assert.deepEqual(result[0].attachments, nodes[0].attachments.nodes)
       // The shape the shared normalizer consumes: the canonical plan attachment resolves from it.
       const ticket = adapter.normalizeTicket(result[0])
       assert.equal(ticket.planAttachment?.id, 'att_1')
-      assert.deepEqual(ticket.labels, ['agent-friendly', 'bug'])
+      assert.deepEqual(ticket.labels, ['agent-build', 'bug'])
     },
     { nodes },
   )
@@ -899,7 +991,7 @@ test('selectPlanned fails closed — zero requests — on a missing state or tea
   await withPlannedAdapter(ACME, async (adapter, impl) => {
     for (const state of [undefined, null, '', '   ']) {
       await assert.rejects(
-        adapter.selectPlanned({ state, label: 'agent-friendly' }),
+        adapter.selectPlanned({ state, ...BUILD_RULES }),
         /selectPlanned: a non-empty state is required/,
       )
     }
@@ -914,7 +1006,7 @@ test('selectPlanned fails closed — zero requests — on a missing state or tea
         fetchImpl: async (...args) => calls.push(args),
         team,
         state: 'Planned',
-        label: 'agent-friendly',
+        ...BUILD_RULES,
       }),
       /trackerConfig\.linear\.team is required/,
     )
@@ -922,13 +1014,67 @@ test('selectPlanned fails closed — zero requests — on a missing state or tea
   assert.equal(calls.length, 0, 'a missing team must never reach the network')
 })
 
+test('selectPlanned uses query.team only when the config names no team (BOS-1393)', async () => {
+  // Zero-config shape: a linear block with no team. The run's resolved team scopes the read.
+  await withPlannedAdapter({ mcpServer: 'acme-tracker' }, async (adapter, impl) => {
+    await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES, team: 'Resolved' })
+    assert.deepEqual(impl.bodies.at(-1).variables.filter.team, { name: { eq: 'Resolved' } })
+    // With neither a configured nor a passed team the guard refuses before any request.
+    const before = impl.bodies.length
+    await assert.rejects(
+      adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES }),
+      /trackerConfig\.linear\.team is required/,
+    )
+    assert.equal(impl.bodies.length, before)
+  })
+  // A configured team always beats query.team.
+  await withPlannedAdapter(ACME, async (adapter, impl) => {
+    await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES, team: 'Other' })
+    assert.deepEqual(impl.bodies.at(-1).variables.filter.team, { name: { eq: 'Acme' } })
+  })
+})
+
+test('selectCandidates uses query.team only when the config names no team (BOS-1393)', async () => {
+  for (const [block, passed, expected] of [
+    [{ mcpServer: 'stub' }, 'Resolved', 'Resolved'],
+    [{ mcpServer: 'stub', team: 'Acme' }, 'Other', 'Acme'],
+    [{ mcpServer: 'stub', team: 'Acme' }, undefined, 'Acme'],
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-candidates-team-'))
+    try {
+      fs.writeFileSync(
+        path.join(dir, '.boss-skills.json'),
+        JSON.stringify({ adapters: { tracker: 'linear' }, trackerConfig: { linear: block } }),
+      )
+      const { impl, calls } = fakeFetch([candidateNode])
+      const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl, cwd: dir })
+      await adapter.selectCandidates({
+        states: ['Todo'],
+        ...(passed === undefined ? {} : { team: passed }),
+      })
+      assert.deepEqual(calls[0].body.variables.filter.team, { name: { eq: expected } })
+      if (!block.team) {
+        await assert.rejects(
+          Promise.resolve().then(() => adapter.selectCandidates({ states: ['Todo'] })),
+          /a team is required/,
+        )
+        assert.equal(calls.length, 1, 'no team must never reach the network')
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
 test('selectPlanned rejects inputs that would silently widen the scan', async () => {
   await withPlannedAdapter(ACME, async (adapter, impl) => {
     const cases = [
-      [{ label: [] }, /label/],
-      [{ label: ['label-a', ''] }, /label/],
-      [{ label: 7 }, /label/],
-      [{ assigneeOrCreator: '' }, /assigneeOrCreator/],
+      [{ requireLabels: [''] }, /requireLabels/],
+      [{ requireLabels: 'agent-build' }, /requireLabels/],
+      [{ excludeLabels: [7] }, /excludeLabels/],
+      [{ selection: { labels: { include: [''] } } }, /selection\.labels\.include/],
+      [{ selection: { label: {} } }, /unknown selection dimension/],
+      [{ selection: [] }, /selection must be an object/],
       [{ limit: 0 }, /limit/],
       [{ limit: 251 }, /limit/],
       [{ limit: 2.5 }, /limit/],
@@ -936,7 +1082,7 @@ test('selectPlanned rejects inputs that would silently widen the scan', async ()
     ]
     for (const [extra, pattern] of cases) {
       await assert.rejects(
-        adapter.selectPlanned({ state: 'Planned', label: 'agent-friendly', ...extra }),
+        adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES, ...extra }),
         pattern,
         JSON.stringify(extra),
       )
@@ -959,7 +1105,7 @@ test('selectPlanned throws on an unreadable payload rather than answering empty'
         fetchImpl: async () => ({ ok: true, json: async () => ({ data }) }),
       })
       await assert.rejects(
-        adapter.selectPlanned({ state: 'Planned', label: 'agent-friendly' }),
+        adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES }),
         /cannot be evaluated/,
         JSON.stringify(data),
       )
@@ -1082,4 +1228,463 @@ test('readDescription surfaces a GraphQL error instead of answering (BOS-1303)',
     linearReadDescription({ apiKey: 'k', fetchImpl, issueId: 'BOS-1' }),
     /Linear GraphQL error: Entity not found/,
   )
+})
+
+// BOS-1392: the executable tracker write behind verify-gate's `post` and `merge`. Every test drives
+// it through an injected fetchImpl, so the mutations are asserted as built, never sent.
+const writeIssue = {
+  id: 'issue-uuid',
+  identifier: 'BOS-1',
+  team: {
+    id: 'team-1',
+    states: {
+      nodes: [
+        { id: 'state-todo', name: 'Todo' },
+        { id: 'state-done', name: 'Done' },
+      ],
+    },
+  },
+  labels: {
+    nodes: [
+      { id: 'label-agent', name: 'agent-build' },
+      { id: 'label-nh-current', name: 'needs-human' },
+    ],
+  },
+  creator: {
+    id: 'u1',
+    name: 'dave',
+    displayName: 'Dave',
+    url: 'https://linear.app/acme/profiles/dave',
+  },
+  comments: { nodes: [{ body: 'an older comment' }] },
+}
+
+// A scripted transport: each POST is recorded and answered by the first handler whose `match`
+// returns true for its query text. A handler may throw to simulate a transport failure.
+function writeFetch(handlers) {
+  const calls = []
+  const impl = async (url, init) => {
+    const body = JSON.parse(init.body)
+    calls.push(body)
+    const handler = handlers.find((h) => h.match(body.query, body))
+    if (!handler) throw new Error(`unexpected query: ${body.query.slice(0, 60)}`)
+    const answer = await handler.answer(body)
+    return { ok: true, json: async () => answer }
+  }
+  return { impl, calls }
+}
+
+const readHandler = (issue = writeIssue) => ({
+  match: (q) => q === APPLY_ISSUE_WRITES_READ_QUERY,
+  answer: () => ({ data: { issue } }),
+})
+const labelsHandler = (nodes) => ({
+  match: (q) => q === APPLY_ISSUE_WRITES_LABELS_QUERY,
+  answer: () => ({ data: { issueLabels: { nodes } } }),
+})
+const mutationHandler = (field, payload = { success: true }) => ({
+  match: (q) => q.includes(`${field}(`) && q.startsWith('mutation'),
+  answer: () => ({ data: { [field]: payload } }),
+})
+const mutations = (calls) => calls.filter((c) => c.query.startsWith('mutation'))
+
+test('applyIssueWrites builds each mutation with resolved ids, in label/comment/state order', async () => {
+  const { impl, calls } = writeFetch([
+    readHandler({ ...writeIssue, labels: { nodes: [{ id: 'label-agent', name: 'agent-build' }] } }),
+    labelsHandler([
+      { id: 'nh-other-team', name: 'needs-human', team: { id: 'team-2' } },
+      { id: 'nh-team', name: 'needs-human', team: { id: 'team-1' } },
+      { id: 'nh-workspace', name: 'needs-human', team: null },
+    ]),
+    mutationHandler('issueAddLabel'),
+    mutationHandler('issueRemoveLabel'),
+    mutationHandler('commentCreate', {
+      success: true,
+      comment: { id: 'c1', url: 'https://linear.app/c1' },
+    }),
+    mutationHandler('issueUpdate'),
+  ])
+  const result = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: impl,
+    issueId: 'BOS-1',
+    addLabels: ['needs-human'],
+    removeLabels: ['agent-build'],
+    comment: 'needs a human',
+    mentionCreator: true,
+    marker: 'boss-verify head abc',
+    stateName: 'Done',
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.outcome, 'ok')
+  assert.deepEqual(result.comment, { id: 'c1', url: 'https://linear.app/c1' })
+  const sent = mutations(calls)
+  assert.deepEqual(
+    sent.map((c) => c.variables),
+    [
+      { id: 'issue-uuid', labelId: 'nh-team' },
+      { id: 'issue-uuid', labelId: 'label-agent' },
+      {
+        input: {
+          issueId: 'issue-uuid',
+          body: 'https://linear.app/acme/profiles/dave\n\nneeds a human\n\nboss-verify head abc',
+        },
+      },
+      { id: 'issue-uuid', input: { stateId: 'state-done' } },
+    ],
+  )
+  assert.match(sent[0].query, /issueAddLabel/)
+  assert.match(sent[1].query, /issueRemoveLabel/)
+  assert.match(sent[2].query, /commentCreate/)
+  assert.match(sent[3].query, /issueUpdate/)
+  assert.deepEqual(
+    result.applied.map((a) => a.kind),
+    ['addLabel', 'removeLabel', 'comment', 'state'],
+  )
+})
+
+test('applyIssueWrites skips labels already in the wanted state and a comment whose marker exists', async () => {
+  const { impl, calls } = writeFetch([
+    readHandler({
+      ...writeIssue,
+      comments: { nodes: [{ body: 'x\n\nboss-verify head abc' }] },
+    }),
+  ])
+  const result = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: impl,
+    issueId: 'BOS-1',
+    addLabels: ['needs-human'],
+    removeLabels: ['not-present'],
+    comment: 'again',
+    marker: 'boss-verify head abc',
+  })
+  assert.equal(result.outcome, 'ok')
+  assert.equal(mutations(calls).length, 0, 'nothing to change means nothing is written')
+  assert.deepEqual(result.applied, [{ kind: 'comment', existing: true }])
+})
+
+test('applyIssueWrites resolves every name before writing anything', async () => {
+  for (const [writes, reason] of [
+    [{ addLabels: ['missing'] }, /label-not-found: missing/],
+    [{ addLabels: ['team2-only'] }, /label-not-found: team2-only/],
+    [{ stateName: 'Nope' }, /state-not-found: Nope/],
+  ]) {
+    const { impl, calls } = writeFetch([
+      readHandler(),
+      labelsHandler([{ id: 't2', name: 'team2-only', team: { id: 'team-2' } }]),
+    ])
+    const result = await linearApplyIssueWrites({
+      apiKey: 'k',
+      fetchImpl: impl,
+      issueId: 'BOS-1',
+      comment: 'c',
+      ...writes,
+    })
+    assert.equal(result.outcome, 'failed')
+    assert.match(result.reason, reason)
+    assert.equal(mutations(calls).length, 0, JSON.stringify(writes))
+  }
+})
+
+test('applyIssueWrites classifies a dropped socket on a mutation indeterminate and never re-sends it', async () => {
+  let commentSends = 0
+  const { impl, calls } = writeFetch([
+    readHandler(),
+    {
+      match: (q) => q.includes('commentCreate('),
+      answer: () => {
+        commentSends += 1
+        throw new Error('socket hang up')
+      },
+    },
+    {
+      match: (q) => q.includes('ApplyIssueWritesComments'),
+      answer: () => ({ data: { issue: { comments: { nodes: [{ body: 'unrelated' }] } } } }),
+    },
+  ])
+  const result = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: impl,
+    issueId: 'BOS-1',
+    comment: 'needs a human',
+    marker: 'boss-verify head abc',
+    stateName: 'Done',
+  })
+  assert.equal(result.outcome, 'indeterminate')
+  assert.equal(result.ok, false)
+  assert.equal(commentSends, 1, 'an indeterminate mutation is sent exactly once')
+  assert.equal(
+    calls.filter((c) => c.query.includes('issueUpdate(')).length,
+    0,
+    'later writes stop after an indeterminate one',
+  )
+})
+
+test('applyIssueWrites settles an indeterminate comment by the marker read-back', async () => {
+  let sends = 0
+  const { impl } = writeFetch([
+    readHandler(),
+    {
+      match: (q) => q.includes('commentCreate('),
+      answer: () => {
+        sends += 1
+        throw new Error('fetch failed')
+      },
+    },
+    {
+      match: (q) => q.includes('ApplyIssueWritesComments'),
+      answer: () => ({
+        data: { issue: { comments: { nodes: [{ body: 'hi\n\nboss-verify head abc' }] } } },
+      }),
+    },
+    mutationHandler('issueUpdate'),
+  ])
+  const result = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: impl,
+    issueId: 'BOS-1',
+    comment: 'hi',
+    marker: 'boss-verify head abc',
+    stateName: 'Done',
+  })
+  assert.equal(sends, 1)
+  assert.equal(result.outcome, 'ok')
+  assert.deepEqual(
+    result.applied.map((a) => a.kind),
+    ['comment', 'state'],
+  )
+  assert.equal(result.applied[0].verifiedByMarker, true)
+})
+
+test('applyIssueWrites reports a rejected or GraphQL-failed mutation as failed, not indeterminate', async () => {
+  const rejected = writeFetch([readHandler(), mutationHandler('issueUpdate', { success: false })])
+  const r1 = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: rejected.impl,
+    issueId: 'BOS-1',
+    stateName: 'Done',
+  })
+  assert.equal(r1.outcome, 'failed')
+  assert.match(r1.reason, /state-rejected/)
+  const graphql = writeFetch([
+    readHandler(),
+    {
+      match: (q) => q.includes('issueUpdate('),
+      answer: () => ({ errors: [{ message: 'Entity not found' }] }),
+    },
+  ])
+  const r2 = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: graphql.impl,
+    issueId: 'BOS-1',
+    stateName: 'Done',
+  })
+  assert.equal(r2.outcome, 'failed')
+})
+
+test('applyIssueWrites throws before any request on a missing key or malformed input', async () => {
+  const calls = []
+  const fetchImpl = async (...args) => {
+    calls.push(args)
+    return { ok: true, json: async () => ({ data: {} }) }
+  }
+  const adapter = createLinearAdapter({ apiKey: undefined, fetchImpl })
+  await assert.rejects(adapter.applyIssueWrites({ issueId: 'BOS-1', stateName: 'Done' }), (err) => {
+    assert.match(err.message, /LINEAR_API_KEY is not set/)
+    assert.equal(err.code, TRACKER_CREDENTIALS_MISSING)
+    return true
+  })
+  for (const writes of [
+    { issueId: '' },
+    { issueId: 'BOS-1', addLabels: 'needs-human' },
+    { issueId: 'BOS-1', removeLabels: [''] },
+    { issueId: 'BOS-1', comment: '  ' },
+    { issueId: 'BOS-1', stateName: '' },
+    { issueId: 'BOS-1', addLabels: ['x'], removeLabels: ['x'] },
+  ]) {
+    await assert.rejects(
+      linearApplyIssueWrites({ apiKey: 'k', fetchImpl, ...writes }),
+      /applyIssueWrites/,
+      JSON.stringify(writes),
+    )
+  }
+  assert.throws(
+    () => createLinearAdapter({ apiKey: 'k', fetchImpl }).applyIssueWrites({ issueId: 'B', x: 1 }),
+    /unknown key/,
+  )
+  assert.equal(calls.length, 0, 'neither a missing key nor bad input may reach the network')
+})
+
+test('the Linear adapter declares a callable applyIssueWrites and still conforms (BOS-1392)', () => {
+  const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: async () => {} })
+  assert.equal(typeof adapter.applyIssueWrites, 'function')
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.equal(adapter.operationMap.applyIssueWrites, undefined)
+})
+
+test('linearCreatorMention prefers the profile URL Linear turns into a mention', () => {
+  assert.equal(
+    linearCreatorMention({ url: 'https://linear.app/a/profiles/d', displayName: 'D' }),
+    'https://linear.app/a/profiles/d',
+  )
+  assert.equal(linearCreatorMention({ displayName: 'Dave', name: 'dave' }), 'Dave')
+  assert.equal(linearCreatorMention({ name: 'dave' }), 'dave')
+  assert.equal(linearCreatorMention(null), '')
+})
+
+test('applyIssueWrites with no writes is a read of the issue labels and sends no mutation', async () => {
+  const { impl, calls } = writeFetch([readHandler()])
+  const result = await linearApplyIssueWrites({ apiKey: 'k', fetchImpl: impl, issueId: 'BOS-1' })
+  assert.equal(result.outcome, 'ok')
+  assert.deepEqual(result.applied, [])
+  assert.deepEqual(result.issue, {
+    id: 'issue-uuid',
+    identifier: 'BOS-1',
+    labels: ['agent-build', 'needs-human'],
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(mutations(calls).length, 0)
+})
+
+test('selectMarked paginates full marker bodies and preserves delta filtering', async () => {
+  const { linearSelectMarked, MARKED_ISSUES_QUERY } = await import('./linear.mjs')
+  const calls = []
+  const fetchImpl = async (_, init) => {
+    const body = JSON.parse(init.body)
+    calls.push(body)
+    return {
+      ok: true,
+      json: async () => ({
+        data: {
+          issues: {
+            nodes: [
+              {
+                identifier: `APP-${calls.length}`,
+                title: 'Theme',
+                description: 'Notes: key',
+                createdAt: '2026-01-01',
+                completedAt: null,
+                canceledAt: null,
+                state: { type: 'started' },
+              },
+            ],
+            pageInfo: { hasNextPage: calls.length === 1, endCursor: 'cursor' },
+          },
+        },
+      }),
+    }
+  }
+  const result = await linearSelectMarked({
+    apiKey: 'key',
+    fetchImpl,
+    markerPrefix: 'Notes: ',
+    updatedAfter: '2026-01-01',
+  })
+  assert.deepEqual(
+    result.map((i) => i.identifier),
+    ['APP-1', 'APP-2'],
+  )
+  assert.equal(calls[0].query, MARKED_ISSUES_QUERY)
+  assert.deepEqual(calls[0].variables.filter, {
+    description: { contains: 'Notes: ' },
+    updatedAt: { gt: '2026-01-01' },
+  })
+  assert.equal(calls[1].variables.after, 'cursor')
+  assert.match(MARKED_ISSUES_QUERY, /includeArchived: true/)
+})
+
+test('selectMarked refuses incomplete pages, invalid filters and absent credentials', async () => {
+  const { linearSelectMarked } = await import('./linear.mjs')
+  const good = {
+    nodes: [
+      {
+        identifier: 'APP-1',
+        title: 'Theme',
+        description: 'Notes: key',
+        createdAt: '2026-01-01',
+        completedAt: null,
+        canceledAt: null,
+        state: { type: 'started' },
+      },
+    ],
+    pageInfo: { hasNextPage: false },
+  }
+  for (const [issues, pattern] of [
+    [undefined, /no issues connection/],
+    [{ ...good, nodes: {} }, /malformed issue nodes/],
+    [{ ...good, nodes: null }, /malformed issue nodes/],
+    [{ ...good, nodes: [null] }, /malformed issue entry/],
+    [{ ...good, nodes: [{ identifier: '', description: 'Notes: key' }] }, /malformed issue entry/],
+    [{ ...good, nodes: [{ identifier: 'APP-1', description: null }] }, /malformed issue entry/],
+    [{ ...good, pageInfo: {} }, /malformed page info/],
+    [{ ...good, pageInfo: null }, /malformed page info/],
+    [{ ...good, pageInfo: { hasNextPage: 'false' } }, /malformed page info/],
+    [{ ...good, pageInfo: { hasNextPage: true } }, /no continuation cursor/],
+    [{ ...good, pageInfo: { hasNextPage: true, endCursor: 'cursor' } }, /exceeded 1 pages/],
+  ]) {
+    await assert.rejects(
+      linearSelectMarked({
+        apiKey: 'key',
+        markerPrefix: 'Notes: ',
+        maxPages: 1,
+        fetchImpl: async () => ({ ok: true, json: async () => ({ data: { issues } }) }),
+      }),
+      pattern,
+    )
+  }
+  await assert.rejects(linearSelectMarked({ markerPrefix: 'Notes: ' }), {
+    code: TRACKER_CREDENTIALS_MISSING,
+  })
+  await assert.rejects(linearSelectMarked({ apiKey: 'key', markerPrefix: ' ' }), /markerPrefix/)
+  await assert.rejects(
+    linearSelectMarked({ apiKey: 'key', markerPrefix: 'Notes: ', updatedAfter: 'yesterday' }),
+    /timestamp/,
+  )
+  const adapter = createLinearAdapter({ apiKey: 'key', cwd: repoRoot })
+  assert.throws(() => adapter.selectMarked({ unexpected: true }), /unknown/)
+  assert.equal(buildLinearOperationMap('test').createIssue.tool, 'mcp__test__save_issue')
+})
+
+test('selectMarked exposes tracker-neutral resolution and validates state and dates', async () => {
+  const { linearSelectMarked } = await import('./linear.mjs')
+  const rows = ['completed', 'canceled', 'started'].map((type, i) => ({
+    identifier: `APP-${i}`,
+    title: 'Theme',
+    description: 'Notes: key',
+    createdAt: '2026-01-01',
+    completedAt: type === 'completed' ? '2026-02-01' : null,
+    canceledAt: type === 'canceled' ? '2026-03-01' : null,
+    state: { type },
+  }))
+  const read = (nodes) =>
+    linearSelectMarked({
+      apiKey: 'key',
+      markerPrefix: 'Notes: ',
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ data: { issues: { nodes, pageInfo: { hasNextPage: false } } } }),
+      }),
+    })
+  assert.deepEqual(
+    await read(rows),
+    rows.map((r) => ({
+      identifier: r.identifier,
+      title: r.title,
+      description: r.description,
+      createdAt: r.createdAt,
+      resolution:
+        r.state.type === 'completed' ? 'done' : r.state.type === 'canceled' ? 'canceled' : null,
+      resolvedAt: r.completedAt ?? r.canceledAt ?? null,
+    })),
+  )
+  for (const patch of [
+    { state: null },
+    { state: {} },
+    { state: { type: '' } },
+    { title: null },
+    { completedAt: 1 },
+  ]) {
+    await assert.rejects(read([{ ...rows[0], ...patch }]), /malformed issue entry/)
+  }
 })

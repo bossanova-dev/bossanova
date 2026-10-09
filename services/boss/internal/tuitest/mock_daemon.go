@@ -152,6 +152,7 @@ type MockDaemon struct {
 	// registerRepoCalls records every RegisterRepo request so tests can assert
 	// the TUI sent the expected display name / path / setup script.
 	registerRepoCalls []*pb.RegisterRepoRequest
+	updateRepoCalls   []*pb.UpdateRepoRequest
 
 	// notifyAuthChangeCalls records the action ("login" / "logout") of every
 	// NotifyAuthChange request so tests can assert the TUI notified the
@@ -272,10 +273,17 @@ type MockDaemon struct {
 	httpServer *http.Server
 	listener   net.Listener
 
-	archiveDelay  time.Duration
-	archiveError  string
-	chatListDelay time.Duration
-	chatListError string
+	archiveDelay time.Duration
+	archiveError string
+	// archiveDeferBlockingID, when non-empty, makes ArchiveSession answer the
+	// way the daemon does for a session with a working chat (BOS-1380): the
+	// archive is reported deferred on that chat, the session gains
+	// archive_pending, and nothing is archived — unless should_force is set.
+	archiveDeferBlockingID string
+	// archiveRequests records every ArchiveSession request, in order.
+	archiveRequests []*pb.ArchiveSessionRequest
+	chatListDelay   time.Duration
+	chatListError   string
 
 	// chatStatusesErrorCode/chatStatusesErrorMsg, when the message is non-empty,
 	// make GetChatStatuses fail with that connect error instead of answering.
@@ -293,6 +301,9 @@ type MockDaemon struct {
 	// what lets a test prove a declined confirmation issued NO merge RPC —
 	// asserting only on stdout would pass even if the merge had gone through.
 	mergeSessionCalls []string
+	// mergeExpectedHeads records each MergeSession request's
+	// expected_head_sha, parallel to mergeSessionCalls ("" when unpinned).
+	mergeExpectedHeads []string
 	// mergeDetail is echoed as MergeSessionResponse.detail. Empty by default so
 	// the no-detail output path is the default shape.
 	mergeDetail string
@@ -1155,13 +1166,38 @@ func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.A
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.archiveRequests = append(m.archiveRequests, cloneMsg(req.Msg))
 	for _, s := range m.sessions {
 		if s.Id == req.Msg.Id {
+			if m.archiveDeferBlockingID != "" && !req.Msg.GetShouldForce() {
+				s.ArchivePending = true
+				return connect.NewResponse(&pb.ArchiveSessionResponse{
+					Session:                cloneMsg(s),
+					IsDeferred:             true,
+					BlockingAgentSessionId: m.archiveDeferBlockingID,
+				}), nil
+			}
 			s.ArchivedAt = timestamppb.Now()
 			return connect.NewResponse(&pb.ArchiveSessionResponse{Session: s}), nil
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+}
+
+// SetArchiveDeferred makes ArchiveSession defer on blockingAgentSessionID the
+// way the daemon does while a chat is working (BOS-1380). Empty restores the
+// immediate archive.
+func (m *MockDaemon) SetArchiveDeferred(blockingAgentSessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.archiveDeferBlockingID = blockingAgentSessionID
+}
+
+// ArchiveSessionRequests returns a copy of every ArchiveSession request seen.
+func (m *MockDaemon) ArchiveSessionRequests() []*pb.ArchiveSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.archiveRequests)
 }
 
 // ResurrectSession is server-streaming (BOS-984). It replays any scripted
@@ -1419,6 +1455,7 @@ func (m *MockDaemon) GetRepoSettings(_ context.Context, req *connect.Request[pb.
 func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateRepoCalls = append(m.updateRepoCalls, cloneMsg(req.Msg))
 	for _, r := range m.repos {
 		if r.Id == req.Msg.Id {
 			if req.Msg.DisplayName != nil {
@@ -1441,6 +1478,26 @@ func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.Updat
 			}
 			if req.Msg.SetupScript != nil {
 				r.SetupScript = req.Msg.SetupScript
+			}
+			applySecret := func(update *pb.SecretUpdate, dest *string) {
+				if update == nil {
+					return
+				}
+				switch update.Action {
+				case pb.SecretAction_SECRET_ACTION_SET:
+					value := update.GetValue()
+					*dest = value
+				case pb.SecretAction_SECRET_ACTION_CLEAR:
+					*dest = ""
+				case pb.SecretAction_SECRET_ACTION_UNSPECIFIED, pb.SecretAction_SECRET_ACTION_UNCHANGED:
+					// Leave the existing secret unchanged.
+				}
+			}
+			applySecret(req.Msg.LinearKey, &r.LinearApiKey)
+			applySecret(req.Msg.SentryKey, &r.SentryApiKey)
+			if req.Msg.SentryOrg != nil {
+				value := *req.Msg.SentryOrg
+				r.SentryOrg = value
 			}
 			r.UpdatedAt = timestamppb.Now()
 			return connect.NewResponse(&pb.UpdateRepoResponse{Repo: r}), nil
@@ -1634,6 +1691,12 @@ func (m *MockDaemon) StartRepairWorkflow(context.Context, *connect.Request[pb.St
 }
 
 func (m *MockDaemon) ListPlugins(context.Context, *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+// SyncNotesNow (BOS-1435) is reached only by `boss notes sync`, which no TUI
+// view calls; its CLI tests drive a stub client instead of this mock.
+func (m *MockDaemon) SyncNotesNow(context.Context, *connect.Request[pb.SyncNotesNowRequest]) (*connect.Response[pb.SyncNotesNowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
@@ -1992,6 +2055,15 @@ func (m *MockDaemon) MergeSessionCalls() []string {
 	return append([]string(nil), m.mergeSessionCalls...)
 }
 
+// MergeSessionExpectedHeads returns the expected_head_sha of every
+// MergeSession request, in order and parallel to MergeSessionCalls ("" for an
+// unpinned merge).
+func (m *MockDaemon) MergeSessionExpectedHeads() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]string(nil), m.mergeExpectedHeads...)
+}
+
 // SetMergeResponseState makes a successful MergeSession answer with state
 // instead of MERGED, reproducing the real daemon's read-before-refresh lag (see
 // mergeResponseState). Pass SESSION_STATE_UNSPECIFIED to restore the default.
@@ -2009,6 +2081,7 @@ func (m *MockDaemon) MergeSession(_ context.Context, req *connect.Request[pb.Mer
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mergeSessionCalls = append(m.mergeSessionCalls, req.Msg.GetId())
+	m.mergeExpectedHeads = append(m.mergeExpectedHeads, req.Msg.GetExpectedHeadSha())
 	if m.mergeErrorMsg != "" {
 		return nil, connect.NewError(m.mergeErrorCode, fmt.Errorf("%s", m.mergeErrorMsg))
 	}
@@ -2186,8 +2259,10 @@ func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.Cr
 		Timezone:  req.Msg.Timezone,
 		IsEnabled: req.Msg.IsEnabled,
 		AgentName: req.Msg.AgentName,
-		CreatedAt: timestamppb.Now(),
-		UpdatedAt: timestamppb.Now(),
+		// Stored so a later ListCronJobs reflects the gate a caller created.
+		GateCommand: req.Msg.GateCommand,
+		CreatedAt:   timestamppb.Now(),
+		UpdatedAt:   timestamppb.Now(),
 	}
 	m.cronJobs[job.Id] = job
 	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cloneMsg(job)}), nil
@@ -2249,6 +2324,9 @@ func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.Up
 	}
 	if req.Msg.AgentName != nil {
 		job.AgentName = *req.Msg.AgentName
+	}
+	if req.Msg.GateCommand != nil {
+		job.GateCommand = *req.Msg.GateCommand
 	}
 	job.UpdatedAt = timestamppb.Now()
 	// Clone before returning: connect-go marshals the response after we
@@ -2897,4 +2975,40 @@ func removeSocket(path string) error {
 		return err
 	}
 	return nil
+}
+
+// SetChatPhase updates fixture statuses for CLI-driven phase tests.
+func (m *MockDaemon) SetChatPhase(_ context.Context, req *connect.Request[pb.SetChatPhaseRequest]) (*connect.Response[pb.SetChatPhaseResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, chat := range m.chats {
+		if chat.AgentSessionId != req.Msg.AgentSessionId || (req.Msg.SessionId != "" && chat.SessionId != req.Msg.SessionId) {
+			continue
+		}
+		entry := m.chatStatuses[chat.AgentSessionId]
+		if entry == nil {
+			entry = &pb.ChatStatusEntry{AgentSessionId: chat.AgentSessionId}
+			if m.chatStatuses == nil {
+				m.chatStatuses = make(map[string]*pb.ChatStatusEntry)
+			}
+			m.chatStatuses[chat.AgentSessionId] = entry
+		}
+		entry.Phase = req.Msg.Phase
+		if session := m.sessionStatuses[chat.SessionId]; session != nil {
+			session.Phase = req.Msg.Phase
+		}
+		return connect.NewResponse(&pb.SetChatPhaseResponse{}), nil
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat not found"))
+}
+
+// UpdateRepoCalls returns independent copies of recorded update requests.
+func (m *MockDaemon) UpdateRepoCalls() []*pb.UpdateRepoRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.UpdateRepoRequest, len(m.updateRepoCalls))
+	for i, req := range m.updateRepoCalls {
+		out[i] = cloneMsg(req)
+	}
+	return out
 }

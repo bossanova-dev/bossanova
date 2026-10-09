@@ -57,6 +57,12 @@ func chatStatusString(s pb.ChatStatus) string {
 	}
 }
 
+// waitingBadgeSuperseded restores the reason's antecedent when the session
+// composite shows a green PR label or Ready instead of waiting.
+func waitingBadgeSuperseded(sess *pb.Session) bool {
+	return sess.GetIsWaitingDemoted() || displaystatus.IsReadyLabel(sess.GetDisplayLabel())
+}
+
 // waitingHintLine composes the one line the TUI renders for a chat parked on an
 // external event: the daemon-supplied reason alone, e.g.
 //
@@ -80,10 +86,9 @@ func chatStatusString(s pb.ChatStatus) string {
 // verified-positive PR label, so the badge reads "✓ passing" — the nearby
 // antecedent BOS-863 relied on is gone, and a bare "awaiting …" line dangles
 // under a green badge with nothing to attach it to. The demoted case therefore
-// gets its prefix back. Callers pass demoted=true only where the adjacent badge
-// is the SESSION composite (the Home list); the chat picker passes false,
-// because the per-chat badge there still reads "waiting" and is untouched by the
-// demotion.
+// gets its prefix back. Home and the chat picker both use the session
+// composite to decide the prefix: Ready or a demoted green PR label restores
+// "waiting:" even though individual chat rows retain their waiting badges.
 //
 // Returns "" for an empty reason, in both cases. What actually keeps an empty
 // reason off the screen is that every caller gates on the empty result: no empty
@@ -136,6 +141,16 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 			s = styleStatusDanger
 		}
 		return s.Render(sp.View() + "checking")
+	case pb.DisplayStatus_DISPLAY_STATUS_VERIFYING:
+		// Mirrors displaystatus prOutput: INFO with a spinner, DANGER like
+		// checking when changes are requested or checks failed (BOS-1382).
+		s := styleStatusInfo
+		if sess.DisplayHasChangesRequested || sess.DisplayHasFailures {
+			s = styleStatusDanger
+		}
+		return s.Render(sp.View() + displaystatus.VerifyingLabel)
+	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		return styleStatusWarning.Render(displaystatus.NeedsHumanLabel)
 	default:
 		return ""
 	}
@@ -748,7 +763,11 @@ func repairFailureResolved(sess *pb.Session) bool {
 		return true
 	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
 		return true
-	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:
+	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+		// The verify statuses replace the Checking a pending boss/verify used to
+		// produce, and ordinary CI has settled under them (BOS-1382).
+		pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
 		return !sess.GetDisplayHasFailures() && !sess.GetDisplayHasChangesRequested()
 	default:
 		return false
@@ -1215,7 +1234,7 @@ func sessionSubRowCount(sess *pb.Session, waitingReason string) int {
 	if sessionHasEndpointRow(sess) {
 		n++
 	}
-	if waitingHintLine(waitingReason, sess.GetIsWaitingDemoted()) != "" {
+	if waitingHintLine(waitingReason, waitingBadgeSuperseded(sess)) != "" {
 		n++
 	}
 	return n

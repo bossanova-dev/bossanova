@@ -31,7 +31,7 @@ type fakeBackend struct {
 	resumeSession        func(ctx context.Context, id string) (*pb.Session, error)
 	retrySession         func(ctx context.Context, id string) (*pb.Session, error)
 	closeSession         func(ctx context.Context, id string) (*pb.Session, error)
-	mergeSession         func(ctx context.Context, id string) (*pb.Session, string, error)
+	mergeSession         func(ctx context.Context, id, matchHead string) (*pb.Session, string, error)
 	removeSession        func(ctx context.Context, id string) error
 	updateSession        func(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	linkSessionPR        func(ctx context.Context, id, pr string) (*pb.Session, error)
@@ -66,6 +66,14 @@ type fakeBackend struct {
 	listNotes  func(ctx context.Context, req *pb.ListNotesRequest) ([]*pb.Note, error)
 	updateNote func(ctx context.Context, repoID string, req *pb.UpdateNoteRequest) (*pb.Note, error)
 	deleteNote func(ctx context.Context, repoID, id string) error
+
+	// Organization notes: one hook per method, for the same reason as notes.
+	createOrganizationNote   func(ctx context.Context, req *pb.CreateOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	getOrganizationNote      func(ctx context.Context, req *pb.GetOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	listOrganizationNotes    func(ctx context.Context, req *pb.ListOrganizationNotesRequest) (*pb.ListOrganizationNotesResponse, error)
+	updateOrganizationNote   func(ctx context.Context, req *pb.UpdateOrganizationNoteRequest) (*pb.OrganizationNote, error)
+	deleteOrganizationNote   func(ctx context.Context, req *pb.DeleteOrganizationNoteRequest) error
+	getOrganizationNoteQuota func(ctx context.Context, req *pb.GetOrganizationNoteQuotaRequest) (*pb.OrganizationNoteQuota, error)
 
 	sendBroadcast               func(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error)
 	listBroadcasts              func(ctx context.Context, req *pb.ListBroadcastsRequest) ([]*pb.Broadcast, error)
@@ -216,9 +224,9 @@ func (f *fakeBackend) CloseSession(ctx context.Context, id string) (*pb.Session,
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
+func (f *fakeBackend) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
 	if f.mergeSession != nil {
-		return f.mergeSession(ctx, id)
+		return f.mergeSession(ctx, id, matchHead)
 	}
 	return nil, "", errNotImpl
 }
@@ -441,6 +449,48 @@ func (f *fakeBackend) DeleteNote(ctx context.Context, repoID, id string) error {
 		return f.deleteNote(ctx, repoID, id)
 	}
 	return errNotImpl
+}
+
+func (f *fakeBackend) CreateOrganizationNote(ctx context.Context, req *pb.CreateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	if f.createOrganizationNote != nil {
+		return f.createOrganizationNote(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) GetOrganizationNote(ctx context.Context, req *pb.GetOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	if f.getOrganizationNote != nil {
+		return f.getOrganizationNote(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) ListOrganizationNotes(ctx context.Context, req *pb.ListOrganizationNotesRequest) (*pb.ListOrganizationNotesResponse, error) {
+	if f.listOrganizationNotes != nil {
+		return f.listOrganizationNotes(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) UpdateOrganizationNote(ctx context.Context, req *pb.UpdateOrganizationNoteRequest) (*pb.OrganizationNote, error) {
+	if f.updateOrganizationNote != nil {
+		return f.updateOrganizationNote(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) DeleteOrganizationNote(ctx context.Context, req *pb.DeleteOrganizationNoteRequest) error {
+	if f.deleteOrganizationNote != nil {
+		return f.deleteOrganizationNote(ctx, req)
+	}
+	return errNotImpl
+}
+
+func (f *fakeBackend) GetOrganizationNoteQuota(ctx context.Context, req *pb.GetOrganizationNoteQuotaRequest) (*pb.OrganizationNoteQuota, error) {
+	if f.getOrganizationNoteQuota != nil {
+		return f.getOrganizationNoteQuota(ctx, req)
+	}
+	return nil, errNotImpl
 }
 
 func (f *fakeBackend) SendBroadcast(ctx context.Context, req *pb.SendBroadcastRequest) (*pb.SendBroadcastResponse, error) {

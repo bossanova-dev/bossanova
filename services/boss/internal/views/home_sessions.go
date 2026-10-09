@@ -35,9 +35,15 @@ func (h *HomeModel) markArchiving(sessionID string) {
 
 // resolveArchive records an archive RPC result. Success keeps the render
 // override until polling confirms the row is gone; failure drops it at once.
-func (h *HomeModel) resolveArchive(sessionID string, err error) {
+//
+// A deferred success (BOS-1380) drops it at once too: the archive is pending
+// until every chat is idle, so the row's "archiving" must come only from the
+// daemon's archive_pending. Keeping the local override would render
+// "archiving" forever if the pending archive is cancelled (resurrect, new
+// chat), because the row would then never leave the list.
+func (h *HomeModel) resolveArchive(sessionID string, err error, deferred bool) {
 	delete(h.archiveInFlightIDs, sessionID)
-	if err != nil {
+	if err != nil || deferred {
 		delete(h.archivingOverrideIDs, sessionID)
 	}
 }
@@ -694,6 +700,7 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.latchValueDeliveredIfNeeded()
 	h.daemonStatuses = msg.daemonStatuses
 	h.daemonWaitingReasons = msg.daemonWaitingReasons
+	h.daemonPhases = msg.daemonPhases
 	// A poll that succeeded is the whole truth about which organizations are
 	// readable right now, so replace rather than merge: an organization that
 	// recovered must stop being reported.
@@ -762,6 +769,7 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 		// one — so the map is only populated for the entries that have one, and
 		// stays nil against a daemon too old to stamp the field (BOS-668).
 		var daemonWaitingReasons map[string]string
+		var daemonPhases map[string]string
 		if len(sessions) > 0 {
 			ids := make([]string, len(sessions))
 			for i, s := range sessions {
@@ -772,6 +780,12 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 				daemonStatuses = make(map[string]string, len(entries))
 				for _, e := range entries {
 					daemonStatuses[e.SessionId] = chatStatusString(e.Status)
+					if phase := e.GetPhase(); phase != "" {
+						if daemonPhases == nil {
+							daemonPhases = make(map[string]string)
+						}
+						daemonPhases[e.SessionId] = phase
+					}
 					if reason := e.GetWaitingReason(); reason != "" {
 						if daemonWaitingReasons == nil {
 							daemonWaitingReasons = make(map[string]string, 1)
@@ -788,6 +802,7 @@ func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pol
 			sessions:             sessions,
 			daemonStatuses:       daemonStatuses,
 			daemonWaitingReasons: daemonWaitingReasons,
+			daemonPhases:         daemonPhases,
 			sessionReadFailures:  readFailures,
 		}
 	}

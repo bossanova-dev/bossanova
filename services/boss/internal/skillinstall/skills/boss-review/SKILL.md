@@ -202,7 +202,7 @@ findings) to its own file under `$RUN_TMP`:
     "old_string": "<verbatim>",
     "new_string": "<verbatim>"
   },
-  "category": "<optional defect class>",
+  "category": "<defect class, short kebab-case; set it on every Critical or Warning>",
   "lens": "<reviewer id>"
 }
 ```
@@ -348,6 +348,7 @@ call — never per reviewer:
 TRIAGE_JSON=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" categorize "$CURRENT_FINDINGS_DIR" \
   --lens-entries-file "$CURRENT_FINDINGS_DIR/lens-entries.json" \
   --expected-outputs-file "$CURRENT_FINDINGS_DIR/expected-reviewer-outputs.json")
+printf '%s\n' "$TRIAGE_JSON" >"$CURRENT_FINDINGS_DIR/triage.json"
 printf '%s\n' "$TRIAGE_JSON" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).invalid||[])))' > "$RUN_TMP/invalid.json"
 node "$BOSS_REVIEW_TOOLBOX/bs-review-ledger.mjs" reconcile \
   --in "$BOSS_REVIEW_LEDGER_PATH" --out "$BOSS_REVIEW_LEDGER_PATH" \
@@ -383,12 +384,29 @@ Before fixing, write `$RUN_TMP/round<N>/round.json` for the pass that just finis
 HEAD), `mode`, `base`, `mergeBase`, `reviewedFiles`, `carriedClaims`, `carriedObservations`,
 `briefBytes` — so the next round's delta base excludes the fixes it is meant to review.
 
+Maintain `$RUN_TMP/fix-loop.json` with `open` (`{file,line,title,severity}`), `attempts`
+(`{file,line,title,round,outcome,declineReason?}`), `introducedBy` (`{file,line,title,commit}`), and
+`fixCommits` (`{sha,addresses:[{file,line,title,severity}]}` in landing order). Outcomes are
+`fixed|verified|declined|failed`; record every mechanical and delegated fix commit and attempt.
+`open` and `addresses` contain triaged must-fix items, including convergence-promoted Suggestions;
+retain their severity for the unwind guard (`Critical > Warning > Suggestion`).
+Before each admission, refresh `open` and attribute findings with `git blame -L <line>,<line>
+--porcelain -- <file>`: retain attribution only when the full blamed SHA matches a fix commit from
+this run. Keep prior attribution for addressed findings so terminal chains can be unwound.
+An unreadable blame is unattributed, never guessed. A malformed state is report evidence to repair,
+never permission to revert.
+
 Each round:
 
 1. **Decide whether to run it.** `bs-review-caps.mjs rounds` gives the cap (default 3, may only be
-   lowered). Ask `admit-fix-round` every time, with the clock re-read now:
+   lowered). Derive the flags and retry scope with `fix-loop-state` before asking `admit-fix-round`;
+   the helper defines whether a finding was attempted and permits exactly one widened-scope retry.
+   Ask admission every time, with the clock re-read now:
 
    ```bash
+   FIX_LOOP_STATE=$(node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" fix-loop-state --in "$RUN_TMP/fix-loop.json")
+   unattempted_mustfix=$(FIX_LOOP_STATE="$FIX_LOOP_STATE" node -e 'process.stdout.write(String(JSON.parse(process.env.FIX_LOOP_STATE).unattemptedMustFix))')
+   self_inflicted_mustfix=$(FIX_LOOP_STATE="$FIX_LOOP_STATE" node -e 'process.stdout.write(String(JSON.parse(process.env.FIX_LOOP_STATE).selfInflictedMustFix))')
    deadline="${STEP_6C_DEADLINE:-}"; remaining=null
    if [ -n "$deadline" ]; then remaining=$(( deadline - $(date +%s) )); fi
    node "$BOSS_REVIEW_TOOLBOX/bs-review-caps.mjs" admit-fix-round \
@@ -403,9 +421,8 @@ Each round:
    `within-budget` runs it. `mustfix-override` runs it and increments `overrun_rounds_used` (one per
    run: an open must-fix nobody has attempted is worth a few minutes past the deadline).
    `regression-reserved` runs it and increments `regression_rounds_used` (one per run, for a must-fix
-   that cites a site this run's own fix commits touched — set `self_inflicted_mustfix` only from
-   those commits). `round-cap`, `overrun-exhausted`, `all-attempted` and `no-open-mustfix` stop the
-   fix loop. "Attempted" means a fix round was dispatched against that `[file, line, title]`.
+   attributed to this run's own fix commits by `fixLoopState`). `round-cap`, `overrun-exhausted`, `all-attempted` and `no-open-mustfix` stop the
+   fix loop. Use `widenScope` from the state in the next fix brief.
 
 2. **Fix.** Apply the `patchPlan` mechanically first: re-read the file, require `old_string` to match
    exactly once, compose overlapping patches into one edit, and reject (rather than guess) a stale or
@@ -416,14 +433,29 @@ Each round:
    the evidence that settled it: file and lines read, or a command and its output). Partly-right
    multi-part remedies are graded part by part. One item at a time, no unrelated refactors, behaviour
    tests for coverage gaps; a guard or assertion the fix adds needs the falsification probe (Tier B)
-   before the round closes. Give it the run's carried observations as provisional hints about defect
+   before the round closes. When a premise holds and the durable fix is outside the branch diff,
+   explicitly grant the worker the minimal root-cause edit in that file, staged by touched path.
+   Dispatch `widenScope` findings with that grant even after the first out-of-diff decline. Every
+   declined item carries `declineReason` (use `out-of-diff` for that refusal), and every result
+   updates `attempts`; commits update `fixCommits` with the findings they addressed.
+   Give it the run's carried observations as provisional hints about defect
    classes the previous round exposed. If one fix changes the bytes another item cites, split the
    batch into two dependency-ordered sub-batches (once per pass).
-3. **Gate once per batch.** Run lint and the tests relevant to the batch after it is committed
-   (`commands.testAffected` when the repo has one, otherwise the tests covering what changed; never
-   the full suite — CI runs that). A red gate is fixed forward with another commit in the same batch. Check
-   markdown hunks by eye after any delegated edit: the formatter does not reflow prose, so a split
-   sentence passes `--check`. Record **Fixed** and **Leave as-is** entries.
+3. **Gate once per committed batch.** Resolve the repo's gate commands:
+
+   ```bash
+   FIX_ROUND_GATES=$(BOSS_REVIEW_TOOLBOX="$BOSS_REVIEW_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { loadSkillConfig, fixRoundGates } = await import(pathToFileURL(process.env.BOSS_REVIEW_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(fixRoundGates(loadSkillConfig())))')
+   ```
+
+   Run every returned command, in order (`lint`, then `testAffected`). For a `missing` key, discover
+   the repo's lint or affected-test command; never substitute the full suite. Add every resolved
+   command to report `requiredGates`, and append its exit-status result to `gates` in execution order
+   as `<command>: <result>`; the latest row for each command is authoritative.
+   A required command left unrun is recorded as `not run`, lowering confidence (`fix-gate-unrun`).
+   A red gate is fixed forward in the same batch, then the gates run again. Check markdown hunks
+   by eye after delegated edits: the formatter does not reflow prose. Record **Fixed** and **Leave
+   as-is** entries.
+
 4. **Confirm.** Ask `admit-confirming-round` (`tipUnchanged`, `fixedCount`, `verifiedCount`,
    `carriedClaimCount`, `invalidCount`); it refuses only a true no-op, logged
    `confirming round: skipped (unchanged tip <sha>)`. Otherwise re-review the confirming surface —
@@ -439,9 +471,19 @@ Each round:
    `vanishedFindings` over the history before grading: a must-fix that disappeared without a **Fixed**
    or **Leave as-is** entry is reviewer disagreement, shown in the report.
 
-An open must-fix at the end must name its cause: `unresolved (fixes not clearing)` (attempted and
-survived) or `unresolved (round cap)`. "The clock ran out" is not a cause on its own — an unattempted
-must-fix funds its own round through the override.
+On a terminal refusal (`round-cap`, `all-attempted`, or `overrun-exhausted`), evaluate
+`fix-loop-state` once with `terminal: true` in the same input. Its `reverts` are severity-guarded,
+newest-first fix commits; do not add a review round. For each SHA, run
+`git -c core.hooksPath=/dev/null revert --no-edit <sha>` (revert has no `--no-verify` option; this
+keeps rule 5's hook bypass). If a revert conflicts, `git revert --abort`, stop the unwind, and
+record the surviving finding's cause as `self-inflicted (revert conflicted)`. Record successful
+reverts and their reopened findings in report evidence; an addressed finding is no longer **Fixed**
+when its fix was reverted. Apply `fixRoundGates` once to the resulting tree after the unwind.
+
+An open must-fix names the cause `fixLoopState` returned (`fixes not clearing`, `round cap`,
+`out-of-diff root cause`, or `fix reverted (introduced <title>)`). Publish surviving reopened findings from
+successful reverts and any original findings whose introducing commit remains; do not claim a
+planned but aborted revert landed. "The clock ran out" is not a cause on its own.
 
 ## Deadline (caller deadline)
 
@@ -508,6 +550,7 @@ coverage and cross-model tokens: return it verbatim, never a narrated summary. T
     "recommendation": "Approve" | "Fix"
   },
   "evidenceRows": [{ "round": "…", "result": "…", "mode": "full|delta", "base": "<sha>", "carriedClaims": 0 }],
+  "requiredGates": ["<command>"],     // resolved fixRoundGates commands, including discovered missing keys
   "gates": ["<command>: <result>"],
   "reviewerInputBytes": { "baseline": 0, "resolved": 0 },
   "carriedObservations": [{ "round": 2, "category": "…", "paragraph": "…" }],
@@ -553,7 +596,16 @@ write that payload by hand.
 
 ## Notes and cleanup (Phase 8)
 
-Skip the notes phase when `BOSS_NOTES_SUPPRESSED=1`. Otherwise, after the verdict is final:
+After the verdict is final, record must-fix categories before the nested skip or sampling roll:
+
+```bash
+node "$BOSS_REVIEW_TOOLBOX/bs-review-triage.mjs" categories "$RUN_TMP" --report "$REPORT_JSON" >"$RUN_TMP/categories.json" || true
+node "$BOSS_REVIEW_TOOLBOX/notes-record.mjs" add --core boss-review --trigger review-must-fix --from "$RUN_TMP/categories.json" || true
+```
+
+Unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_REVIEW_TOOLBOX/notes-record.mjs" flush --core boss-review --outcome <terminal outcome> --mode <mode> || true`; nested reviews leave the buffer for the parent.
+
+Skip the remaining notes phase when `BOSS_NOTES_SUPPRESSED=1`. Otherwise:
 
 ```bash
 node "$BOSS_REVIEW_TOOLBOX/skill-extensions.mjs" discover --core boss-review --role notes --json

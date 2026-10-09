@@ -397,8 +397,8 @@ func (c *LocalClient) CloseSession(ctx context.Context, id string) (*pb.Session,
 	return resp.Msg.Session, nil
 }
 
-func (c *LocalClient) MergeSession(ctx context.Context, id string) (*pb.Session, string, error) {
-	resp, err := c.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
+func (c *LocalClient) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
+	resp, err := c.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: matchHead}))
 	if err != nil {
 		return nil, "", err
 	}
@@ -447,12 +447,12 @@ func (c *LocalClient) RefreshSessionPR(ctx context.Context, req *pb.RefreshSessi
 
 // --- Archive / Resurrect ---
 
-func (c *LocalClient) ArchiveSession(ctx context.Context, id string) (*pb.Session, error) {
-	resp, err := c.rpc.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: id}))
+func (c *LocalClient) ArchiveSession(ctx context.Context, req *pb.ArchiveSessionRequest) (*pb.ArchiveSessionResponse, error) {
+	resp, err := c.rpc.ArchiveSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.Session, nil
+	return resp.Msg, nil
 }
 
 func (c *LocalClient) ResurrectSession(ctx context.Context, id string) (ResurrectSessionStream, error) {
@@ -591,6 +591,15 @@ func (c *LocalClient) SendChatMessage(ctx context.Context, req *pb.SendChatMessa
 func (c *LocalClient) ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error {
 	_, err := c.rpc.ReportChatStatus(ctx, connect.NewRequest(&pb.ReportChatStatusRequest{
 		Reports: statuses,
+	}))
+	return err
+}
+
+func (c *LocalClient) SetChatPhase(ctx context.Context, sessionID, agentSessionID, phase string) error {
+	_, err := c.rpc.SetChatPhase(ctx, connect.NewRequest(&pb.SetChatPhaseRequest{
+		SessionId:      sessionID,
+		AgentSessionId: agentSessionID,
+		Phase:          phase,
 	}))
 	return err
 }
@@ -800,6 +809,16 @@ func (c *LocalClient) UpdateNote(ctx context.Context, _ string, req *pb.UpdateNo
 func (c *LocalClient) DeleteNote(ctx context.Context, _ string, id string) error {
 	_, err := c.rpc.DeleteNote(ctx, connect.NewRequest(&pb.DeleteNoteRequest{Id: id}))
 	return err
+}
+
+// SyncNotesNow nudges the daemon's note sync worker and returns the outbox's
+// per-state counts.
+func (c *LocalClient) SyncNotesNow(ctx context.Context) (*pb.SyncNotesNowResponse, error) {
+	resp, err := c.rpc.SyncNotesNow(ctx, connect.NewRequest(&pb.SyncNotesNowRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 // --- Broadcasts ---

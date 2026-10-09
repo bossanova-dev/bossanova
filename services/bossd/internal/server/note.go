@@ -9,8 +9,37 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 )
+
+// NoteSyncCounter reports how many note sync outbox rows sit in each state.
+// db.NoteSyncStore satisfies it.
+type NoteSyncCounter interface {
+	CountByState(ctx context.Context) (map[models.NoteSyncStatus]int64, error)
+}
+
+// NoteSyncNudger asks the note sync worker to drain now. Nudge must never
+// block: it runs on the note write path. *notesync.Worker satisfies it.
+type NoteSyncNudger interface {
+	Nudge()
+}
+
+// noteSyncStateOrder is the fixed order SyncNotesNow reports states in.
+var noteSyncStateOrder = []models.NoteSyncStatus{
+	models.NoteSyncPending, models.NoteSyncSynced, models.NoteSyncRejected, models.NoteSyncRateLimited,
+	models.NoteSyncExpired, models.NoteSyncNotEntitled, models.NoteSyncRefused, models.NoteSyncSuppressed,
+	models.NoteSyncFailed,
+}
+
+// nudgeNoteSync tells the sync worker a note changed. It is fire-and-forget:
+// the worker coalesces nudges and never blocks the caller, and a daemon with no
+// worker skips it.
+func (s *Server) nudgeNoteSync() {
+	if s.noteSyncWorker != nil {
+		s.noteSyncWorker.Nudge()
+	}
+}
 
 // noteError maps a NoteStore error to a connect error code. Validation failures
 // become InvalidArgument and absent rows NotFound — the same mapping the
@@ -57,6 +86,7 @@ func (s *Server) CreateNote(ctx context.Context, req *connect.Request[pb.CreateN
 	if err != nil {
 		return nil, noteError("create note", err)
 	}
+	s.nudgeNoteSync()
 	return connect.NewResponse(&pb.CreateNoteResponse{Note: noteToProto(note)}), nil
 }
 
@@ -137,6 +167,7 @@ func (s *Server) UpdateNote(ctx context.Context, req *connect.Request[pb.UpdateN
 	if err != nil {
 		return nil, noteError("update note", err)
 	}
+	s.nudgeNoteSync()
 	return connect.NewResponse(&pb.UpdateNoteResponse{Note: noteToProto(note)}), nil
 }
 
@@ -154,5 +185,26 @@ func (s *Server) DeleteNote(ctx context.Context, req *connect.Request[pb.DeleteN
 	if err := store.Delete(ctx, id); err != nil {
 		return nil, noteError("delete note", err)
 	}
+	s.nudgeNoteSync()
 	return connect.NewResponse(&pb.DeleteNoteResponse{}), nil
+}
+
+// SyncNotesNow nudges the note sync worker and reports the outbox's per-state
+// counts (BOS-1435). It does not wait for the drain. A daemon not wired to
+// Bosso has no worker: it still answers, with is_worker_configured false, so
+// `boss notes sync` explains why notes stay pending instead of failing.
+func (s *Server) SyncNotesNow(ctx context.Context, _ *connect.Request[pb.SyncNotesNowRequest]) (*connect.Response[pb.SyncNotesNowResponse], error) {
+	if s.noteSyncStates == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("note sync outbox not configured"))
+	}
+	s.nudgeNoteSync()
+	counts, err := s.noteSyncStates.CountByState(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("count note sync states: %w", err))
+	}
+	resp := &pb.SyncNotesNowResponse{IsWorkerConfigured: s.noteSyncWorker != nil}
+	for _, state := range noteSyncStateOrder {
+		resp.StateCounts = append(resp.StateCounts, &pb.NoteSyncStateCount{State: string(state), NoteCount: counts[state]})
+	}
+	return connect.NewResponse(resp), nil
 }

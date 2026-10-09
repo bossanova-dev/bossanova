@@ -40,7 +40,7 @@ const FIXTURE_CONFIG = {
     'fixture-tracker': {
       mcpServer: 'fixture',
       team: 'Fixture',
-      labels: { agentFriendly: 'agent-friendly', epic: 'epic', bug: 'bug' },
+      labels: { agentBuild: 'agent-build', epic: 'epic', bug: 'bug' },
       states: { planned: 'Todo', inProgress: 'In Progress' },
       githubLabels: { proofInvalid: 'proof-invalid' },
     },
@@ -97,14 +97,14 @@ test('optionalLabelName allows taxonomy and absent labels but rejects pipeline r
     "taxonomy: `optionalLabelName(config, 'docs')`",
     "mapped taxonomy: `optionalLabelName(config, 'bug')`",
     "absent: `optionalLabelName(config, 'improvement')`",
-    "pipeline: `optionalLabelName(config, 'agentFriendly')`",
+    "pipeline: `optionalLabelName(config, 'agentBuild')`",
   ].join('\n')
   const citations = extractRoleCitations(contents)
   assert.deepEqual(citations, [
     { line: 1, fn: 'optionalLabelName', role: 'docs', form: 'A' },
     { line: 2, fn: 'optionalLabelName', role: 'bug', form: 'A' },
     { line: 3, fn: 'optionalLabelName', role: 'improvement', form: 'A' },
-    { line: 4, fn: 'optionalLabelName', role: 'agentFriendly', form: 'A' },
+    { line: 4, fn: 'optionalLabelName', role: 'agentBuild', form: 'A' },
   ])
 
   const findings = checkRoleCitations(citations, roleKeys())
@@ -120,12 +120,12 @@ test('form B: every role in the enumerated run is cited, and the prose tail is n
   // inline-code tokens. Swallowing the tail would report the display names as roles.
   const contents =
     "roles resolve through `labelName(config, '<role>')`, whose keys are camelCase: " +
-    '`agentFriendly`, `epic`, `shipped` — the display names they resolve to are ' +
-    '`agent-friendly`, `epic` and so on.'
+    '`agentBuild`, `epic`, `shipped` — the display names they resolve to are ' +
+    '`agent-build`, `epic` and so on.'
   const citations = extractRoleCitations(contents)
   assert.deepEqual(
     citations.map((c) => c.role),
-    ['agentFriendly', 'epic', 'shipped'],
+    ['agentBuild', 'epic', 'shipped'],
   )
   assert.ok(citations.every((c) => c.form === 'B' && c.line === 1))
 
@@ -142,7 +142,7 @@ test('form B: a placeholder with no enumerated run yields no citations', () => {
   assert.deepEqual(extractRoleCitations("call `labelName(config, '<role>')` to resolve it."), [])
   assert.deepEqual(extractEnumeratedRun(' with no colon at all'), [])
   // The run must start on the SAME line as the placeholder.
-  assert.deepEqual(extractEnumeratedRun(':\n`agentFriendly`'), [])
+  assert.deepEqual(extractEnumeratedRun(':\n`agentBuild`'), [])
 })
 
 test('direction 2: a content-taxonomy label is rejected even when the config defines the key', () => {
@@ -475,7 +475,7 @@ test('checkSkillSymbols is clean on prose that names only real symbols', () => {
     '.claude/skills/boss-build/toolbox/cli.mjs': 'export {}\n',
     '.claude/skills/boss-build/SKILL.md': [
       "state: `stateName(config, 'planned')`",
-      "label: `labelName(config, 'agentFriendly')`",
+      "label: `labelName(config, 'agentBuild')`",
       // Form B, so the vacuity floor below sees both forms populated.
       "roles resolve through `labelName(config, '<role>')`, whose keys are: `epic`, `bug`",
       'call `known(x)` and `readComments(id)`',

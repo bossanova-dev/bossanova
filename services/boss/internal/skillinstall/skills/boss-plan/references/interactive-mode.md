@@ -101,7 +101,7 @@ owns the guards, the spec and the build order; this section only adds the human 
 4. On **create this epic**, publish + create children in `topoOrderChildren` order, wire the DAG via
    `epicWiringPlan`, add external conflict links, and repurpose the original ticket as the epic
    parent ([`epic.md`](epic.md) build steps 4–7). The repurpose is **last** — that step 7's
-   unplanned → planned flip under the parent-label exception (**neither** `agent-friendly` **nor**
+   unplanned → planned flip under the parent-label exception (**neither** `agent-build` **nor**
    `needs-human`, **stripping** any pre-existing build label + stale single-ticket `Implementation
 plan (…)` link a previously-planned ticket carried, so the epic parent isn't `boss-build`-
    selectable); do not stop after wiring/exposure and leave the parent unplanned, or the next
@@ -239,7 +239,7 @@ structural line, not a per-extension skip.
 Brief the worker with the **same** shared drafting spec the headless epic path uses: point it at
 `references/headless-drafting-brief.md` **Steps 5–7** for the plan body, and at
 [`epic.md`](epic.md) build step 2 for the per-child drafting rules (`allowEpic: false`, and the
-`agentFriendly` + `openQuestions` copy-back onto each spec entry). Do not restate the plan-body spec
+`agentBuild` + `openQuestions` copy-back onto each spec entry). Do not restate the plan-body spec
 here. That brief is the single normative source for it, and this path already links rather than
 duplicates it; a second copy is a second thing to keep in sync, and the copy that drifts is the one
 nobody is reading when the contract changes.
@@ -254,7 +254,7 @@ the approved spec:
 - `<runTmp>/batch-draft/<PARENT-ISSUE-ID>.batch-metadata.json` — ONE bounded file for the whole
   batch: `{ "parentId": "<ISSUE-ID>", "children": { "<key>": { … } } }`, keyed by spec key. Each
   child entry is the ordinary bounded draft-metadata object minus the two fields that are files
-  above — so `agentFriendly`, `estimate`, `priority`, `openQuestions`, `labels`. The descriptions
+  above — so `agentBuild`, `estimate`, `priority`, `openQuestions`, `labels`. The descriptions
   stay out of the JSON on purpose: this file is read whole, and inlining N descriptions is what makes
   a bounded artifact unbounded in exactly the runs that have the most children.
 
@@ -275,7 +275,7 @@ its draft-metadata object from its `children[<key>]` entry plus `planPath` (its 
 `.linear-plans/run-<RUN-SCRATCH-ID>/` and these drafts live under `runTmp` — write it to
 `<runTmp>/batch-draft/<key>.draft-metadata.json`, and run
 `node "$BOSS_PLAN_TOOLBOX/plan-run-guards.mjs" metadata <runTmp>/batch-draft/<key>.draft-metadata.json` — the same bounded-metadata guard the
-single-ticket path runs, so an unknown key, a non-boolean `agentFriendly` or a non-single-ticket
+single-ticket path runs, so an unknown key, a non-boolean `agentBuild` or a non-single-ticket
 estimate fails identically here. Then run the plan-contract guard
 (`node "$BOSS_PLAN_TOOLBOX/plan-contract-guard.mjs" --description <desc> --plan <plan> --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`), the image
 guard (`node "$BOSS_PLAN_TOOLBOX/plan-image-guard.mjs" --require-verbatim …`), and the secret gate,

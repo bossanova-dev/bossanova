@@ -229,3 +229,34 @@ func TestSessionDetailJSONArchiveAfterMerge(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionDetailJSONRepoCanAutoRepair(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		displayName string
+		autoRepair  bool
+		want        string
+	}{
+		{name: "hydrated true", displayName: "app", autoRepair: true, want: "true"},
+		{name: "hydrated false", displayName: "app", want: "false"},
+		{name: "hydration missing", want: "null"},
+		{name: "flag without hydration", autoRepair: true, want: "null"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(newSessionDetailJSON(&pb.Session{
+				RepoDisplayName:   tt.displayName,
+				RepoCanAutoRepair: tt.autoRepair,
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["repo_can_auto_repair"]); got != tt.want {
+				t.Fatalf("repo_can_auto_repair = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

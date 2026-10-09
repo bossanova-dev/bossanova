@@ -70,6 +70,50 @@ func TestPollerEmitsChecksPassed(t *testing.T) {
 	}
 }
 
+// TestPollerEmitsChecksPassedBesidePendingVerify pins BOS-1382: a pending
+// boss/verify commit status is the verify stage holding a settled head, not
+// ordinary CI, so it must not stop the poller from emitting ChecksPassed.
+func TestPollerEmitsChecksPassedBesidePendingVerify(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		State:    machine.AwaitingChecks,
+		PRNumber: &prNum,
+	}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Name: "build", Status: vcs.CheckStatusCompleted, Conclusion: &success},
+		{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: "needs human: always-human-path"},
+	}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "sha-verify"}
+
+	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, zerolog.Nop())
+	ch := poller.Run(ctx)
+
+	select {
+	case ev := <-ch:
+		passed, ok := ev.Event.(vcs.ChecksPassed)
+		if !ok {
+			t.Fatalf("event type = %T, want ChecksPassed", ev.Event)
+		}
+		if passed.HeadSHA != "sha-verify" || !passed.Demonstrated {
+			t.Errorf("ChecksPassed = %+v, want HeadSHA sha-verify and Demonstrated", passed)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for ChecksPassed beside a pending boss/verify")
+	}
+}
+
 func TestPollerEmitsChecksFailed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

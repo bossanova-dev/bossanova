@@ -109,6 +109,26 @@ Show which MCP servers this chat's agent actually resolved, with tools and sourc
 - `--json` — Emit a stable JSON schema instead of text
 - `--tools` — Include each server's resolved tool names
 
+### `boss session phase [<name>] [flags]`
+
+Report the current working phase of a chat
+
+Report what a working chat is doing. Supply exactly one phase name or `--clear`. The chat defaults to `BOSS_AGENT_SESSION_ID` and the session to `BOSS_SESSION_ID`; `--chat` and `--session` override them. Conventional phases are `planning`, `building`, `reviewing`, `verifying`, `repairing`, and `releasing`. Free text is allowed: at most 20 printable characters on one line, with surrounding whitespace trimmed.
+
+Phases are stored in memory and shown only while the chat is working. The first idle or stopped heartbeat clears the phase, including when a turn ends while background agents continue. A daemon restart also loses it; report again at the next stage boundary. This command requires a local daemon and returns a non-zero exit status on errors.
+
+**Flags:**
+
+- `--chat` — Chat id (default BOSS_AGENT_SESSION_ID)
+- `--clear` — Clear the current working phase
+- `--session` — Session id (default BOSS_SESSION_ID)
+
+```bash
+boss session phase reviewing
+boss session phase 'fixing ci' --session abc123 --chat chat123
+boss session phase --clear
+```
+
 ### `boss session refresh-pr [session-id] [flags]`
 
 Refresh one session's cached pull request status

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   GOOGLE_TAG_SCRIPT,
+  GOOGLE_UI_EVENTS,
   type GoogleTagWindow,
   loadGoogleTag,
   sanitizePagePath,
+  trackGoogleEvent,
   trackPageView,
 } from './googleTag'
 
@@ -71,5 +73,34 @@ describe('docs googleTag', () => {
     expect(sanitizePagePath('/api/sessions/0b7c6a52-3f1e-4c0e-9f43-0d9f6d8c1a2b')).toBe(
       '/api/sessions/:redacted',
     )
+  })
+})
+
+describe('docs googleTag funnel allowlist', () => {
+  // Mirrors the web copy's GOOGLE_UI_EVENTS (BOS-1373); the three must agree.
+  it('pins the same GA funnel allowlist as the web copy', () => {
+    expect([...GOOGLE_UI_EVENTS].sort()).toEqual([
+      'app_cta_clicked',
+      'auth_redirect_started',
+      'begin_checkout',
+      'cloud_checkout_returned',
+      'signup_route_hit',
+      'view_item',
+    ])
+  })
+
+  it('renames the plan offer and checkout to GA4 ecommerce names, with the item', () => {
+    const { win } = fakeWindow()
+    loadGoogleTag(MEASUREMENT_ID, win)
+    const before = commands(win).length
+
+    trackGoogleEvent('cloud_subscription_gate_viewed', { entry_point: 'gate' }, win)
+    trackGoogleEvent('cloud_checkout_started', { entry_point: 'gate' }, win)
+
+    const items = [{ item_id: 'bossanova_cloud', item_name: 'Bossanova Cloud' }]
+    expect(commands(win).slice(before)).toEqual([
+      ['event', 'view_item', { entry_point: 'gate', items, send_to: MEASUREMENT_ID }],
+      ['event', 'begin_checkout', { entry_point: 'gate', items, send_to: MEASUREMENT_ID }],
+    ])
   })
 })

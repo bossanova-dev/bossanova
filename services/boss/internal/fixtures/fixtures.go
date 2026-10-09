@@ -195,7 +195,9 @@ func Chats() []*pb.ClaudeChat {
 // proof shows the new STATUS values, and "Morning PR triage" sets a gate
 // command so the cron form proof has a populated Gate command field — and is
 // also the one job with IsZeroOutput set, so the cron form's edit-mode proof
-// can show that confirm pre-populated affirmative (BOS-565). cron-8
+// can show that confirm pre-populated affirmative (BOS-565). cron-3 is the one
+// job with a non-default ConcurrencyPolicy, so the edit-mode proof can show the
+// Concurrency select on Allow concurrent (BOS-1443). cron-8
 // carries the benign worktree_gone outcome with an IDLE status (BOS-384): a
 // finalize against an already-removed worktree renders as a plain "idle" row,
 // never a red FAILED framing.
@@ -203,7 +205,11 @@ func CronJobs() []*pb.CronJob {
 	return []*pb.CronJob{
 		{Id: "cron-1", RepoId: "repo-1", Name: "Daily dependency update", Prompt: "Update dependencies and open a PR", Schedule: "@daily", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true},
 		{Id: "cron-2", RepoId: "repo-2", Name: "Nightly mutation tests", Prompt: "Run mutation tests and add coverage for survivors", Schedule: "0 3 * * *", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true, LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING},
-		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true},
+		// cron-3 is a plain job (no gate, no zero output, no status) and the only
+		// fixture with ConcurrencyPolicy ALLOW_CONCURRENT (BOS-1443): each run
+		// claims its own unit of debt, so a fire need not wait. Every other job
+		// leaves the policy unset, which reads as skip.
+		{Id: "cron-3", RepoId: "repo-1", Name: "Weekly tech-debt sweep", Prompt: "Find and fix one unit of technical debt", Schedule: "@weekly", Timezone: "UTC", IsEnabled: true, AgentName: "claude", ShouldRunSetupCommand: true, ConcurrencyPolicy: pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT},
 		{Id: "cron-4", RepoId: "repo-3", Name: "Hourly broken-link check", Prompt: "Scan the marketing site for broken links", Schedule: "@hourly", Timezone: "UTC", IsEnabled: false, AgentName: "claude", ShouldRunSetupCommand: true},
 		// cron-5 is the "light job" archetype and the only fixture with
 		// IsZeroOutput set (BOS-565), so the cron form's edit-mode proof scene has
@@ -1646,4 +1652,59 @@ func WaitingDemotedSessionStatuses() []*pb.SessionStatusEntry {
 			WaitingReason: WaitingDemotedWorkingReason,
 		},
 	}
+}
+
+// SessionPhaseWorld contrasts a skill-reported phase with a plain working chat.
+func SessionPhaseWorld() World {
+	sessions := WaitingCallbackSessions()
+	chats := WaitingCallbackChats()
+	chatStatuses := WaitingCallbackChatStatuses()
+	sessionStatuses := WaitingCallbackSessionStatuses()
+	titles := []string{"Inspect the release changes", "Rebuild the search index"}
+	for i := range sessions {
+		sessions[i].Title = titles[i]
+		sessions[i].PrNumber = nil
+		sessions[i].DisplayLabel = "working"
+		sessions[i].DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_SUCCESS
+		sessions[i].DisplaySpinner = true
+		chats[i].Title = titles[i]
+		chatStatuses[i].Status = pb.ChatStatus_CHAT_STATUS_WORKING
+		chatStatuses[i].WaitingReason = ""
+		sessionStatuses[i].Status = pb.ChatStatus_CHAT_STATUS_WORKING
+		sessionStatuses[i].WaitingReason = ""
+	}
+	chatStatuses[0].Phase = "reviewing"
+	sessionStatuses[0].Phase = "reviewing"
+	return World{Repos: Repos(), Sessions: sessions, Chats: chats, ChatStatuses: chatStatuses, SessionStatuses: sessionStatuses}
+}
+
+// ReadyHandoffWorld derives the hand-off summary from head receipts, with
+// controls for a human push and a verifier claiming the same head.
+func ReadyHandoffWorld() World {
+	w := World{Repos: Repos()}
+	titles := []string{"Tidy the changelog entries", "Split the importer module", "Update the schema notes", "Inspect the release changes"}
+	for i, title := range titles {
+		id := fmt.Sprintf("sess-1398-%d", i)
+		agentID := fmt.Sprintf("claude-1398-%d", i)
+		pr := 1398 + i
+		reason := displaystatus.CallbackWaitingReason("checks_failed", "acme", "my-app", pr)
+		status := pb.DisplayStatus_DISPLAY_STATUS_PASSING
+		chatStatus := pb.ChatStatus_CHAT_STATUS_WAITING
+		if i == 3 {
+			status = pb.DisplayStatus_DISPLAY_STATUS_VERIFYING
+			chatStatus = pb.ChatStatus_CHAT_STATUS_IDLE
+			reason = ""
+		}
+		sess := &pb.Session{Id: id, RepoId: "repo-1", RepoDisplayName: "my-app", Title: title, BranchName: fmt.Sprintf("boss/handoff-%d", i), State: pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN, PrNumber: i32(int32(pr)), DisplayStatus: status, HasBuildReceipt: i != 2, CreatedAt: ts(time.Duration(-4+i) * time.Hour), WorktreePath: "/Users/demo/worktrees/my-app/" + id}
+		in := displaystatus.Input{Session: sess, ChatStatus: chatStatus, AllWaitingChatsIdle: i != 1}
+		out := displaystatus.Compute(in)
+		sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = out.Label, out.Intent, out.Spinner
+		sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
+		sess.IsReadyOverWaiting = displaystatus.WasReadyOverWaiting(in, out)
+		w.Sessions = append(w.Sessions, sess)
+		w.Chats = append(w.Chats, &pb.ClaudeChat{Id: "chat-" + id, AgentSessionId: agentID, SessionId: id, Title: title, CreatedAt: sess.CreatedAt})
+		w.ChatStatuses = append(w.ChatStatuses, &pb.ChatStatusEntry{AgentSessionId: agentID, Status: chatStatus, WaitingReason: reason, LastOutputAt: ts(-36 * time.Minute)})
+		w.SessionStatuses = append(w.SessionStatuses, &pb.SessionStatusEntry{SessionId: id, Status: chatStatus, WaitingReason: reason})
+	}
+	return w
 }

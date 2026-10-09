@@ -155,6 +155,12 @@ The `boss-*` skills read a `.boss-skills.json` file from the repo root. Run
 cli="boss init"
 />
 
+On a terminal, `boss init` also offers to set up the unattended plan → build →
+verify factory: it registers the repository, stores and validates its Linear key,
+maps your Linear team's states and labels, and creates the factory cron jobs.
+Press Enter at a question to accept its default, or at the Linear key question to
+skip every Linear step and write only the starting config.
+
 Most repositories need no config file at all. See
 [Skill Configuration](./skills/config.md) for which skills run without one, and
 for the smallest config that switches the tracker-driven skills on.
@@ -209,7 +215,7 @@ cleanup, release prep, or any coding task that starts from the same prompt.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-cron.cast" />
 
-See [Scheduled Sessions](./guides/scheduled-sessions.md) for schedule format and
+See [Cron Jobs](./guides/cron-jobs.md) for schedule format and
 failure behavior.
 
 ## 10. Archive finished work
@@ -252,7 +258,7 @@ See [Web App](./guides/web.md) for the full cloud setup.
 
 - Learn the full pull request flow in [PR Lifecycle](./guides/pr-lifecycle.md).
 - Schedule recurring work with
-  [Scheduled Sessions](./guides/scheduled-sessions.md).
+  [Cron Jobs](./guides/cron-jobs.md).
 - Set up browser access in [Web App](./guides/web.md).
 - Use the [CLI Reference](./reference/cli-reference.md) when you need exact
   command flags.

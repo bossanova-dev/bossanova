@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,6 +59,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/inflight"
+	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/proofenvkeyring"
@@ -604,6 +606,12 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	if h == nil || pbSess == nil {
 		return
 	}
+	// The verify-park attention (BOS-1382) is the lowest-ranked attention, so it
+	// is applied last — after the base attention and the agent-observability
+	// overlay — on EVERY return path, including the no-chats early returns
+	// below. displayEntry is filled by the display-tracker hydration.
+	var displayEntry *status.DisplayEntry
+	defer func() { server.HydrateVerifyAttention(pbSess, displayEntry) }()
 	// Compute base attention before the auth overlay, and hydrate the
 	// stream-only fields that local GetSession/ListSessions also provide.
 	if h.rawSessions != nil {
@@ -631,7 +639,8 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	// the web Merge button) never lights up. Applied on every delta because bosso
 	// treats deltas as full replacements.
 	if h.displayTracker != nil {
-		server.HydrateDisplayEntry(pbSess, h.displayTracker.Get(pbSess.Id))
+		displayEntry = h.displayTracker.Get(pbSess.Id)
+		server.HydrateDisplayEntry(pbSess, displayEntry)
 	}
 	server.HydrateRotationEvents(ctx, h.rotationEvents, h.logger, pbSess, pbSess.Id)
 	if h.agentChats == nil {
@@ -1454,8 +1463,15 @@ func run(opts runOpts) error {
 	cronJobs := db.NewCronJobStore(database)
 	githubCallbacks := db.NewGithubCallbackStore(database)
 	// Notes (BOS-550): durable free-text a run records against a repo so a
-	// later sweep can harvest what was learned.
-	notes := db.NewNoteStore(database)
+	// later sweep can harvest what was learned. Retention (BOS-1384) prunes a
+	// repo's expired and over-cap notes on each insert, per the startup
+	// settings snapshot; a changed override applies on the next restart.
+	notes := db.NewNoteStore(database, db.WithNoteRetention(db.NoteRetentionFromSettings(settings.Notes)))
+	// The note cloud-sync outbox (BOS-1429) the note store writes in every
+	// note transaction. The worker that drains it to Bosso (BOS-1435) is built
+	// only when an upstream is configured, below; SyncNotesNow counts it either
+	// way.
+	noteSyncStates := db.NewNoteSyncStore(database)
 	// Broadcasts (BOS-556): the store persists a broadcast plus the audience
 	// frozen into its delivery rows; the resolver turns a validated selector
 	// into that audience from the daemon's routable chats and their sessions.
@@ -1530,8 +1546,9 @@ func run(opts runOpts) error {
 	// instrumenting any subsystem. See RecomputingSessionStore's doc comment for
 	// why it is layered ON the decorator rather than around it, and for the one
 	// known gap (AdvanceOrphanedSessions) the periodic reconcile sweep covers.
+	callbackRetirer := callback.NewRetirer(githubCallbacks, agentChats, rawSessions, repos, displayComputer, time.Now, log.Logger)
 	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer).
-		WithTransitionObserver(broadcastSubscriptionEvaluator)
+		WithTransitionObserver(db.TransitionObservers{callbackRetirer, broadcastSubscriptionEvaluator})
 	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
 
 	// Wire the display tracker so its mutations recompute synchronously.
@@ -1601,6 +1618,12 @@ func run(opts runOpts) error {
 	// the lane live rather than merely constructed.
 	transientResumeHookInstalled := false
 
+	// archiveSeam is the server, published once it is constructed (much later
+	// than this hook), so a chat-status transition can nudge the archive
+	// deferrer (BOS-1380). Atomic because tracker hooks fire on poller and RPC
+	// goroutines; a nil load covers the startup window before srv exists.
+	var archiveSeam atomic.Pointer[server.Server]
+
 	chatStatusTracker.SetOnUpdate(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1631,6 +1654,12 @@ func run(opts runOpts) error {
 			})
 		}
 		_ = displayComputer.Recompute(ctx, chat.SessionID)
+
+		// A chat leaving WORKING may free a session whose archive is waiting
+		// on it (BOS-1380). The nudge is non-blocking.
+		if srv := archiveSeam.Load(); srv != nil {
+			srv.NudgePendingArchive(chat.SessionID)
+		}
 
 		// Auto-rotate interactive chats on LIMITED transitions (BOS-175). The
 		// tracker only fires this hook on real transitions, and the rotator itself
@@ -1857,6 +1886,7 @@ func run(opts runOpts) error {
 	// at startup for reconciliation, and used as the delivery worker's periodic
 	// reconcile safety net.
 	callbackEvaluator := callback.NewEvaluator(githubCallbacks, ghProvider, time.Now, log.Logger)
+	callbackEvaluator.SetRetirer(callbackRetirer)
 
 	// --- Settings + Display Poller ---
 
@@ -1906,6 +1936,9 @@ func run(opts runOpts) error {
 	// one instance.
 	checkSnapshots := db.NewCheckSnapshotStore(database)
 	displayPoller.SetSnapshotStore(checkSnapshots)
+	// Carry the boss/build receipt forward when a session's own worktree
+	// pushes on top of a receipted head (BOS-1452).
+	displayPoller.SetReceiptCarrier(ghProvider, worktrees)
 	agentRuns := db.NewAgentRunStore(database)
 	if reconciled, err := agentRuns.ReconcileOpen(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), agentChats, tmuxClient)); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile open agent runs")
@@ -2811,12 +2844,22 @@ func run(opts runOpts) error {
 	// server's cron STATUS derivation (BOS-332), so the TUI STATUS column and the
 	// scheduler agree on "is this run still active" from one source of truth.
 	cronActivity := session.NewCronActivityChecker(agentLogsDir, livenessChecker)
+	// The adapter uses the same lifecycle stop and queue notification as the RPC.
+	cronCanceller := cronpkg.RunCancellerFunc(func(ctx context.Context, id string) error {
+		if err := lifecycle.StopSession(ctx, id); err != nil {
+			return err
+		}
+		orchestrator.HandleSessionCompleted(ctx, id, models.TaskMappingStatusFailed)
+		return nil
+	})
+	var _ cronpkg.RunCanceller = cronCanceller
 	cronScheduler := cronpkg.New(cronpkg.Config{
-		Store:    cronJobs,
-		Sessions: sessions,
-		Repos:    repos,
-		Creator:  sessionCreator,
-		Activity: cronActivity,
+		Store:     cronJobs,
+		Sessions:  sessions,
+		Repos:     repos,
+		Creator:   sessionCreator,
+		Activity:  cronActivity,
+		Canceller: cronCanceller,
 		// Cron gates receive only the scoped proof model key, never the upload token.
 		GateProofEnv: proofenvkeyring.New(log.Logger),
 		Logger:       log.Logger,
@@ -3009,6 +3052,10 @@ func run(opts runOpts) error {
 	var streamClient *upstream.StreamClient
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var snapshotPublisher func(context.Context)
+	// noteSyncWorker drains the note sync outbox to Bosso (BOS-1435). Built
+	// only inside the upstream block: a local-only daemon runs no worker and
+	// its outbox rows stay pending.
+	var noteSyncWorker *notesync.Worker
 	var authNotifier server.AuthNotifier
 	// authStateReporter stays nil in local-only mode; the GetAuthState handler
 	// reads that as upstream_configured=false rather than an error.
@@ -3298,6 +3345,16 @@ func run(opts runOpts) error {
 				nil, // time.Now
 				log.Logger,
 			),
+			// BOS-1418: inbound trigger launches. Creator is wired post-hoc
+			// with the server (below), like Waker and Commands. The budget is
+			// the worst legitimate create: a full wait for the per-target start
+			// lock followed by a full bootstrap.
+			Triggers: &upstream.TriggerSessionLauncher{
+				Launches: db.NewTriggerLaunchStore(database),
+				Repos:    repos,
+				Logger:   log.Logger,
+				Budget:   session.TargetStartLockTimeout + session.BootstrapTimeout,
+			},
 			OnCompletion: func(ctx context.Context, sessionID string) {
 				if orchestrator != nil {
 					orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
@@ -3474,6 +3531,19 @@ func run(opts runOpts) error {
 			}
 		}
 
+		// Note cloud sync (BOS-1435): the same orchestrator client, daemon
+		// session token holder and re-register self-heal the snapshot
+		// publisher uses. Started on streamCtx below and nudged by the note
+		// server after every successful write.
+		noteSyncWorker = notesync.New(notesync.Config{
+			Store:      noteSyncStates,
+			Repos:      notesync.RepoStoreOrigins{Repos: repos},
+			Client:     client,
+			Tokens:     sessionTokenHolder,
+			ReRegister: reRegister,
+			Logger:     log.Logger.With().Str("component", "note-sync").Logger(),
+		})
+
 		authAdapter := &streamAuthAdapter{
 			streamClient:  streamClient,
 			tokenProvider: tokenProvider,
@@ -3576,6 +3646,8 @@ func run(opts runOpts) error {
 		GithubCallbacks:   githubCallbacks,
 		Telemetry:         telemetryClient,
 		Notes:             notes,
+		NoteSyncStates:    noteSyncStates,
+		NoteSyncWorker:    noteSyncNudger(noteSyncWorker),
 		Broadcasts:        broadcasts,
 		BroadcastResolver: broadcastResolver,
 		// Cross-daemon egress (BOS-558): both are zero unless an upstream is
@@ -3653,29 +3725,38 @@ func run(opts runOpts) error {
 		ProtectedRoots: startupProtectedRoots,
 	})
 
+	archiveSeam.Store(srv)
+
+	// Every automatic archiver below goes through the server's deferral seam
+	// (BOS-1380), not straight to ArchiveSessionAndNotify: a session whose chat
+	// is still working is archived once every chat is idle, so an in-session
+	// merge no longer tears the worktree out from under its own agent. With no
+	// busy chat the seam archives synchronously, exactly as before.
+	//
 	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
 	// The server's archive-and-notify path also emits the stream update so the
 	// session leaves the TUI immediately.
-	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
+	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// Auto-archive a session when its PR merges, if the repo has the
 	// ShouldArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
-	// archive-and-notify path as the dependabot auto-archive above.
-	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
+	// archive path as the dependabot auto-archive above.
+	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// The webhook is not the only path to Merged (BOS-697). The display
 	// poller's terminal reconcile lands it whenever the merge webhook never
 	// arrives — and also backs MergeSession's synchronous post-merge refresh —
 	// so it needs the same archiver, or those merges never auto-archive.
-	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
+	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// Heal rows that reached Merged while the archive hook was unreachable
 	// (BOS-697). Wired here rather than into the builder chain above because
-	// srv — and therefore ArchiveSessionAndNotify — does not exist until now;
-	// the option mutates the resolver in place, so the periodic reconcile picks
-	// it up. The startup reconcile above runs without it, which only defers the
-	// heal to the first tick.
-	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.ArchiveSessionAndNotify), trackArchiveDone)
+	// srv — and therefore its archive seam — does not exist until now; the
+	// option mutates the resolver in place, so the periodic reconcile picks it
+	// up. The startup reconcile above runs without it, which only defers the
+	// heal to the first tick. After a daemon restart this sweep is also what
+	// re-derives merge-driven archives that were pending in memory.
+	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// Every archiver above must have been handed trackArchiveDone, or its
 	// archives run outside shutdown coordination again — the exact defect BOS-923 fixed, and
@@ -3705,6 +3786,9 @@ func run(opts runOpts) error {
 	if cmdHandlerStream != nil {
 		cmdHandlerStream.Waker = srv
 		cmdHandlerStream.Commands = srv
+		if cmdHandlerStream.Triggers != nil {
+			cmdHandlerStream.Triggers.Creator = srv
+		}
 	}
 	// The web terminal attach needs the same waker (BOS-885): a chat whose
 	// tmux_session_name was cleared is revived on attach instead of rejected,
@@ -3806,6 +3890,13 @@ func run(opts runOpts) error {
 	displayPoller.Run(pollerCtx)
 	trackDone("display-poller", displayPoller.Done())
 
+	// The archive deferrer (BOS-1380) fires archives deferred until every chat
+	// is idle. It is an archive PRODUCER, so it is joined on shutdownWG like the
+	// poller and dispatcher above: it must stop before drainArchiveWorkers
+	// closes archive tracking, and the archives it fires are handed to
+	// trackArchiveDone so that drain joins them.
+	trackDone("archive-deferrer", srv.RunArchiveDeferrer(pollerCtx, trackArchiveDone))
+
 	// --- GitHub callback delivery worker (BOS-468) ---
 	//
 	// Leases triggered callbacks and delivers their registered message through
@@ -3896,6 +3987,7 @@ func run(opts runOpts) error {
 		Store:      githubCallbacks,
 		Deliverer:  callbackDeliverer,
 		Reconciler: callbackEvaluator,
+		Gate:       callbackRetirer,
 		Logger:     log.Logger,
 		Telemetry:  telemetryClient,
 	})
@@ -4499,6 +4591,13 @@ func run(opts runOpts) error {
 			snapshotPublisher(streamCtx)
 		})
 	}
+	// The note sync worker rides streamCtx like the snapshot publisher, so it
+	// stops with the upstream feeds and shutdownWG joins it.
+	if noteSyncWorker != nil {
+		trackedGo("note-sync-worker", func() {
+			noteSyncWorker.Run(streamCtx)
+		})
+	}
 	// Run the TerminalStream client alongside the DaemonStream client.
 	// Each owns its own connect/reconnect loop so a transient bosso
 	// outage on one bidi can't bring the other down — both sit in their
@@ -4836,13 +4935,11 @@ func runSnapshotPublisher(
 			default:
 				retryToken := newTok
 				if sessionToken != nil {
-					if sessionToken.CompareAndSwap(token, newTok) {
-						logger.Info().Msg("snapshot publisher: rotated session_token after auth rejection")
-					} else if current := sessionToken.Get(); current != "" {
-						retryToken = current
+					var already bool
+					retryToken, already = upstream.AdoptReRegisteredToken(sessionToken, token, newTok)
+					if already {
 						logger.Info().Msg("snapshot publisher: session_token already rotated after auth rejection")
 					} else {
-						sessionToken.Set(newTok)
 						logger.Info().Msg("snapshot publisher: rotated session_token after auth rejection")
 					}
 				} else {
@@ -4876,6 +4973,16 @@ func runSnapshotPublisher(
 			publish()
 		}
 	}
+}
+
+// noteSyncNudger converts the optional worker to the server's nudge
+// interface, keeping a nil worker a nil INTERFACE: a typed nil pointer would
+// read as configured at the server's nil check.
+func noteSyncNudger(w *notesync.Worker) server.NoteSyncNudger {
+	if w == nil {
+		return nil
+	}
+	return w
 }
 
 func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string) (*bossanovav1.DaemonSnapshot, error) {

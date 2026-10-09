@@ -204,8 +204,20 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 // GetCheckResults returns CI check results for a pull request. Background
 // callers (vcs.WithCachedReads) may be served from the read cache.
 func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
-	return cachedRead(ctx, p.cache, prReadKey(readKindChecks, repoPath, prID), slices.Clone[[]vcs.CheckResult],
-		func(ctx context.Context) ([]vcs.CheckResult, error) { return p.fetchCheckResults(ctx, repoPath, prID) })
+	set, err := p.GetCheckSet(ctx, repoPath, prID)
+	return set.Checks, err
+}
+
+func cloneCheckSet(set vcs.CheckSet) vcs.CheckSet {
+	set.Checks = slices.Clone(set.Checks)
+	return set
+}
+
+// GetCheckSet reads CI checks and build provenance together. Background callers
+// share the same cache entry as GetCheckResults.
+func (p *Provider) GetCheckSet(ctx context.Context, repoPath string, prID int) (vcs.CheckSet, error) {
+	return cachedRead(ctx, p.cache, prReadKey(readKindChecks, repoPath, prID), cloneCheckSet,
+		func(ctx context.Context) (vcs.CheckSet, error) { return p.fetchCheckSet(ctx, repoPath, prID) })
 }
 
 // GetReviewComments returns review comments on a pull request. Background

@@ -21,6 +21,11 @@ Linear issue: <url>
 - [x] (verify-only) <criterion no diff can show> — checked: `<command>` → <result>
 - [ ] <criterion still open> — <what is missing, at file:line>
 
+## Local verification
+- `<local command>` → <the command’s final summary line>
+- after rebase: `<covering command>` → <final summary line>
+- gap: <what could not be selected reliably and why>
+
 ## Autonomous decisions
 - <decision + rationale> (every task contract's decisions, the orchestrator's own, the base-drift
   note)
@@ -56,6 +61,12 @@ Linear issue: <url>
   `reason` and a `remedy`. A failing item is an unmet in-scope criterion, not a blocker. You may
   reclassify a criterion as verify-only yourself when "no change was needed" is genuinely the right
   outcome — run the check, record it, and note the reclassification under `## Autonomous decisions`.
+- `## Local verification` records every local command and its final summary, including repair,
+  rebase and no-CI runs. Each bullet is an optional phase label followed by a backticked command,
+  `→` or `->`, and a non-empty result, or `gap: <explanation>`.
+  `validateLocalVerification(config, body)` (`toolbox/skill-config.mjs`) owns this grammar; fix
+  findings in the body and validate again. A `gap:` entry is honest output, not a failure, and
+  validator findings never change the route or yield BLOCKED.
 - Always include `## Human follow-up` and `## Open questions`. Each contains only checklist
   items (`- [ ]` open, `- [x]` done), or a single `- none` when empty; in the template choose
   items or `- none`, never both. Heading matching is case-insensitive and fenced blocks are ignored.
@@ -100,7 +111,7 @@ A capped, provisional or unreadable review on a pushed, green branch ships `REVI
 - the `<!-- bs-review -->` comment carries every open must-fix at `file:line` with its lens,
   severity and disposition (open, attempted-and-unverified, ineligible);
 - a tracker comment carries the same summary plus the PR URL;
-- `please-review` applied, PR readied, ticket moved to `.inReview`. The title gets no suffix.
+- PR readied, ticket moved to `.inReview`. The title gets no suffix.
 
 ## PARTIAL
 
@@ -122,19 +133,19 @@ the items published; a failed T2 is BLOCKED.
   ```
 
 - Ticket comment: the count, the checklist, the reasons, the marker and the PR URL.
-- PR readied (non-draft) but **no** `please-review`, and the ticket **stays in `.inProgress`**.
+- PR readied (non-draft), and the ticket **stays in `.inProgress`**.
   boss-epic holds a PARTIAL PR twice: by the ticket state and by the marker in the title/body.
 
 ## BLOCKED
 
-- PR stays (or is put back to) draft; ticket stays in `.inProgress`; `please-review` removed.
+- PR stays (or is put back to) draft; ticket stays in `.inProgress`.
 - Blocker comment on the ticket: which cause (red gates / unpushable), the failing
   check or finding at `file:line`, what was tried, and where the work is (`push-branch.mjs`'s
   `pushed`: the session branch, the `rescue` ref it names, or — only when both failed — the unpushed
   SHAs). Include both coverage tokens under their own headings, and the base-drift note when there is
   one; there may be no PR body to carry them.
 - If this route readied the PR earlier in the run (a red reading after readying), unwind first:
-  restore the plain title and body, `gh pr ready --undo`, remove `please-review`.
+  restore the plain title and body, `gh pr ready --undo`.
 
 ## Tags
 

@@ -42,6 +42,22 @@ test('terminal routes cover exactly the four published outcomes', () => {
   }
 })
 
+test('REVIEW_READY owes exactly its nine tokens and no GitHub review-label stamp', () => {
+  // BOS-1379 dropped the review-request GitHub label from boss-build; pinning the whole list keeps
+  // a label obligation from creeping back into the receipt.
+  assert.deepEqual(TERMINAL_ROUTES.REVIEW_READY, [
+    'verify-only-evidence-validated',
+    'premise-discharged',
+    'required-deferred-asserted',
+    'pr-ready',
+    'claim-deleted',
+    'notes-before-lock-release',
+    'stop-hooks-removed',
+    'completion-phase-done',
+    'lock-released',
+  ])
+})
+
 test('REVIEW_READY reports absent stamps, never downgrades to BLOCKED, and passes when fully stamped', () => {
   const { receipt, runId } = fixture()
   let result = cli(['assert', '--outcome', 'REVIEW_READY', '--receipt', receipt, '--run-id', runId])

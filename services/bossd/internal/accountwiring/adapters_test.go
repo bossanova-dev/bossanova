@@ -414,7 +414,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 		}
 	}
 
-	const credential = `{"tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh"}}`
+	const credential = `{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh"}}`
 	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
 	client := &fakeRotationClient{supports: true}
 	creds := &fakeCreds{blob: []byte(credential)}

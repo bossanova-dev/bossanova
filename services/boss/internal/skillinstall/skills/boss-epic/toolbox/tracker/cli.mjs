@@ -3,9 +3,16 @@
 // helpers through the resolved tracker adapter, so the skill names a tracker-agnostic
 // capability instead of a Linear-specific script. node builtins only (the cron
 // worktree is dependency-free).
-//   node tracker/cli.mjs fetch-candidates --out-file <path> [--state <name>]... [--id <id>]...
+//   node tracker/cli.mjs fetch-candidates --out-file <path> [--state <name>]... [--id <id>]... [--team <name>]
 //     -> full dependency candidates written atomically; stdout contains counts/bytes only
+//     --team scopes the scan to the run's resolved team when the config names none; a configured
+//     trackerConfig.<tracker>.team always wins, and a differing --team is ignored with a stderr
+//     warning. A blank --team is a usage error (exit 64).
 //
+//   node tracker/cli.mjs fetch-marked --prefix <p> [--updated-after <iso>] [--max-pages <n>] --out-file <path>
+//     -> complete marker snapshot written atomically; stdout contains count only
+//   node tracker/cli.mjs create-issue --title <t> --body-file <path> --state-role <role> [--label-role <role>]... [--label <name>]... [--parent <id>] [--project <id>]
+//     -> MCP creation descriptor resolved from configured team, state and label roles
 //   node tracker/cli.mjs claim-token
 //     -> prints a fresh run token (stdout), tracker-agnostic 32-char hex
 //   node tracker/cli.mjs claim-comment --token <token> [--session-id <id>]
@@ -61,18 +68,29 @@
 //     capability, a missing tracker credential, a tracker error — exits 2 with one stderr line and
 //     NOTHING on stdout; a missing, valueless or unknown flag is a usage error and exits 64, which
 //     is a caller bug to fix, never a condition to fall back from.
-//   node tracker/cli.mjs list-planned [--state <name>] [--label <name>[,<name>...]]... [--assignee-or-creator <me|id>] [--limit <1-250>]
-//     -> stdout: a JSON array of planned candidates (identifier, title, priority, estimate,
-//        createdAt, state, label names, attachments as a plain array), then a newline.
-//     The worker's NARROWED candidate read, executed through the adapter's OPTIONAL executable
-//     `selectPlanned` capability. Omitted flags default from the repo config through
-//     `plannedSelectionQuery` — the same derivation the cron gate filters on — so the worker and
-//     the gate cannot narrow differently; explicit flags override only when no
-//     `trackerConfig.<tracker>.selection` block is present — under one, --state/--label/
-//     --assignee-or-creator exit 2 (only --limit is allowed). An adapter without the
-//     capability exits 2 with a diagnostic naming it and NOTHING on stdout, and so does every
-//     other failure (config, flags, tracker, a non-array result): a caller that configured a
-//     selection filter must stop, never fall back to the unfiltered descriptor.
+//   node tracker/cli.mjs list-planned [selection flags] [--state <name>] [--limit <1-250>] [--team <name>]
+//   node tracker/cli.mjs list-unplanned [selection flags] [--state <name>] [--limit <1-250>] [--team <name>]
+//     -> stdout: a JSON array of candidates (identifier, title, priority, estimate, createdAt,
+//        state, label names, attachments as a plain array), then a newline.
+//     The worker's NARROWED candidate read for the build (list-planned) or plan (list-unplanned)
+//     stage, executed through the adapter's OPTIONAL executable `selectPlanned` capability. The
+//     query is `stageSelectionQuery(config, <stage>, flags)` — the same derivation the stage's cron
+//     gate filters on — so a gate and a worker handed the same flags scan identically: the stage
+//     state AND the stage label AND NOT needs-human, narrowed by the config selection block and the
+//     eight shared selection flags (--label, --exclude-label, --assignee, --exclude-assignee,
+//     --creator, --exclude-creator, --project, --exclude-project; each repeatable and
+//     comma-separated, overriding its one config slot). --state overrides the stage state. --team
+//     is the run's resolved team for a repo whose config names none; a configured team always
+//     wins, a differing --team is ignored with a stderr warning, and a blank one exits 2. An
+//     adapter without the capability exits 2 with a diagnostic naming it and NOTHING on stdout,
+//     and so does every other failure (config, flags, an unresolvable selection value, tracker, a
+//     non-array result): a caller with a selection in effect must stop, never fall back to the
+//     unfiltered descriptor.
+//   node tracker/cli.mjs resolve-selection --stage <stage> [selection flags]
+//     -> stdout: {"stage","state","selection","requireLabels","excludeLabels","narrowed"} with every
+//        user/label/project in `selection` resolved to tracker ids / canonical label names, for
+//        an in-memory `matchIssue` (selection.mjs) over issues the caller already fetched. Exit 2
+//        on any failure (an unresolvable value included), with nothing on stdout.
 //   node tracker/cli.mjs classify-outcome (--observed <text> | --result <json>) [--operation read|write] [--status <code>]
 //     -> stdout: one machine-readable `tracker-outcome verdict=... reason=... retry=... operation=...`
 //        line, then one human line naming the action that verdict requires.
@@ -100,12 +118,21 @@ import {
 } from './adapter-core.mjs'
 import {
   loadSkillConfig,
-  plannedSelectionQuery,
+  stageSelectionQuery,
   trackerConfigFor,
+  stateName,
+  labelName,
   keyChangesSection,
   descriptionAppearsTruncated,
+  selectionBlockFor,
 } from '../skill-config.mjs'
 import { TRACKER_VERDICTS, classifyTrackerOutcome, formatOutcomeLine } from './outcome.mjs'
+import {
+  SELECTION_STAGES,
+  isNarrowed,
+  parseSelectionFlags,
+  retroFilingSelection,
+} from '../selection.mjs'
 
 // The action each verdict requires, as one line. This is the whole point of exposing the
 // classifier to sites no wrapper can reach: a verdict a reader cannot act on is a label, not a
@@ -185,6 +212,12 @@ capabilities:
       Print the MCP tool descriptor for a file-sourced description write.
       OPTIONAL: an adapter without it exits 2 and the caller sends inline instead.
 
+  fetch-marked --prefix <p> [--updated-after <iso>] [--max-pages <n>] --out-file <path>
+      Write complete marked descriptions atomically. Optional selectMarked capability.
+
+  create-issue --title <t> --body-file <path> --state-role <role> [--label-role <role>]... [--label <name>]... [--parent <id>] [--project <id>]
+      Emit the optional createIssue MCP descriptor using configured team and roles.
+
   read-description --id <issueId> --out-file <path>
       Write the issue's stored description bytes to <path> (atomically) and print
       {"bytes":...,"outcome":...,"id":...,"identifier":...}. A read failure exits 2
@@ -192,15 +225,25 @@ capabilities:
       OPTIONAL: an adapter without readDescription exits 2 with a diagnostic naming
       the getIssue fallback.
 
-  fetch-candidates --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>]
+  fetch-candidates --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>] [--team <name>]
       Atomically write full dependency candidates and verbatim keyChanges to disk.
       Prints one counts/bytes receipt. Failure exits 2; usage exits 64; no bodies printed.
+      --team scopes a repo with no configured team; a configured team wins (warning).
 
-  list-planned [--state <name>] [--label <name>[,<name>...]]... [--assignee-or-creator <me|id>] [--limit <1-250>]
-      Print the planned candidates as a JSON array, filtered by the same selection
-      the cron gate applies (omitted flags default from the repo config). Under a
-      configured selection block only --limit is accepted; other flags exit 2.
+  list-planned [selection flags] [--state <name>] [--limit <1-250>] [--team <name>]
+  list-unplanned [selection flags] [--state <name>] [--limit <1-250>] [--team <name>]
+      Print the build (list-planned) or plan (list-unplanned) stage's candidates as a JSON
+      array, filtered exactly as that stage's cron gate filters: stage state AND stage label
+      AND NOT needs-human, narrowed by the config selection and these selection flags
+      (each repeatable and comma-separated; a flag replaces its one config slot):
+      --label --exclude-label --assignee --exclude-assignee --creator --exclude-creator
+      --project --exclude-project
+      --team scopes a repo with no configured team; a configured team wins (warning).
       OPTIONAL: an adapter without selectPlanned exits 2 with a diagnostic and no stdout.
+
+  resolve-selection --stage <plan|build|epic|verify|retro|release> [selection flags]
+      Print the stage's selection with users/labels/projects resolved to tracker ids,
+      for matchIssue over already-fetched issues. Any failure exits 2 with no stdout.
 
   classify-outcome (--observed <text> | --result <json>) [--operation read|write] [--status <code>]
       Classify how a tracker attempt turned out. Prints one machine-readable
@@ -213,40 +256,52 @@ capabilities:
 `
 
 const LIST_PLANNED_MAX_LIMIT = 250
-const LIST_PLANNED_FLAGS = new Set(['state', 'label', 'assignee-or-creator', 'limit'])
+const LIST_STAGE_FLAGS = new Set(['state', 'limit', 'team'])
 
-// list-planned's own flag parser. The shared `parseFlags` pairs tokens blindly and keeps the LAST
-// value of a repeated flag, which would silently drop every `--label` but one — a narrower scan
-// than the caller asked for. This one accepts `--label` repeated and/or comma-separated, refuses an
-// unknown or valueless flag and an empty value, and parses `--limit` as a bounded integer, so a
-// malformed invocation is an error rather than a different filter.
-function parseListPlannedFlags(rest) {
-  const flags = {}
-  const labels = []
-  for (let i = 0; i < rest.length; i += 2) {
-    const token = rest[i]
-    const name = typeof token === 'string' && token.startsWith('--') ? token.slice(2) : null
-    if (!name || !LIST_PLANNED_FLAGS.has(name)) {
+// The --team both team-scoped verbs accept: the run's resolved team, used only when the config
+// names none. A configured team always wins; a differing flag is reported on stderr and dropped,
+// so the read can never scope to a team the repo did not pin. Returns the team to forward, or
+// undefined when there is nothing to forward.
+function effectiveTeamFlag(config, flag, warn) {
+  if (flag === undefined) return undefined
+  flag = flag.trim()
+  const tc = trackerConfigFor(config)
+  const configured = typeof tc?.team === 'string' && tc.team !== '' ? tc.team : null
+  if (configured === null) return flag
+  const key = typeof tc?.teamKey === 'string' ? tc.teamKey.toLowerCase() : null
+  if (flag.toLowerCase() !== configured.toLowerCase() && flag.toLowerCase() !== key) {
+    warn(`--team ${flag} ignored: trackerConfig.${config.adapters.tracker}.team is ${configured}`)
+  }
+  return undefined
+}
+
+// The list verbs' flag parser: the eight shared selection flags (parsed by selection.mjs, so the
+// gate and the worker read them identically) plus --state, --limit and --team. Refuses an unknown
+// or valueless flag, an empty value and a repeated non-selection flag, and parses `--limit` as a
+// bounded integer, so a malformed invocation is an error rather than a different filter.
+function parseStageFlags(rest, allowed) {
+  const parsed = parseSelectionFlags(rest)
+  if (parsed.error) return { error: parsed.error }
+  const flags = { selection: parsed.flags }
+  const tokens = parsed.positionals
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    const eq = typeof token === 'string' && token.startsWith('--') ? token.indexOf('=') : -1
+    const name =
+      typeof token === 'string' && token.startsWith('--')
+        ? token.slice(2, eq === -1 ? undefined : eq)
+        : null
+    if (!name || !allowed.has(name)) {
       return { error: `unknown flag ${JSON.stringify(token)}` }
     }
-    const value = rest[i + 1]
-    if (typeof value !== 'string' || value.trim() === '') {
+    const value = eq === -1 ? tokens[(i += 1)] : token.slice(eq + 1)
+    if (typeof value !== 'string' || value.trim() === '' || (eq === -1 && value.startsWith('--'))) {
       return { error: `--${name} requires a non-empty value` }
     }
-    if (name === 'label') {
-      const names = value.split(',').map((entry) => entry.trim())
-      if (names.some((entry) => entry === '')) {
-        return { error: `--label ${JSON.stringify(value)} carries an empty label name` }
-      }
-      labels.push(...names)
-    } else if (name === 'limit') {
-      if (!/^\d+$/.test(value.trim())) {
-        return {
-          error: `--limit must be an integer from 1 to ${LIST_PLANNED_MAX_LIMIT}; got ${value}`,
-        }
-      }
-      const limit = Number(value.trim())
-      if (limit < 1 || limit > LIST_PLANNED_MAX_LIMIT) {
+    if (flags[name] !== undefined) return { error: `--${name} given more than once` }
+    if (name === 'limit') {
+      const limit = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN
+      if (!(limit >= 1 && limit <= LIST_PLANNED_MAX_LIMIT)) {
         return {
           error: `--limit must be an integer from 1 to ${LIST_PLANNED_MAX_LIMIT}; got ${value}`,
         }
@@ -256,10 +311,6 @@ function parseListPlannedFlags(rest) {
       flags[name] = value
     }
   }
-  // A single name stays a single name, so a one-label invocation emits the `eq` clause the gate
-  // emits for the same input; two or more are a disjunctive set.
-  if (labels.length === 1) flags.label = labels[0]
-  else if (labels.length > 1) flags.label = labels
   return { flags }
 }
 
@@ -270,12 +321,18 @@ function oneLine(message) {
     .trim()
 }
 
-async function runListPlanned(rest, { write, errWrite, env, resolveAdapter, loadConfig }) {
+// The one implementation behind list-planned (stage build) and list-unplanned (stage plan).
+async function runListStage(
+  verb,
+  stage,
+  rest,
+  { write, errWrite, env, resolveAdapter, loadConfig },
+) {
   const fail = (message) => {
-    errWrite(`list-planned: ${oneLine(message)}\n`)
+    errWrite(`${verb}: ${oneLine(message)}\n`)
     return 2
   }
-  const parsed = parseListPlannedFlags(rest)
+  const parsed = parseStageFlags(rest, LIST_STAGE_FLAGS)
   if (parsed.error) return fail(parsed.error)
   let adapter
   try {
@@ -292,34 +349,18 @@ async function runListPlanned(rest, { write, errWrite, env, resolveAdapter, load
     )
   }
   let query
-  let selectionConfigured
+  let team
+  const { flags } = parsed
   try {
     const config = loadConfig()
-    query = plannedSelectionQuery(config)
-    // Presence decides, as it decides the worker's route: a present block is the narrowing the
-    // gate scanned, and an override flag would replace it with a different (often wider) set.
-    const tc = trackerConfigFor(config)
-    selectionConfigured = tc !== null && 'selection' in tc
+    query = stageSelectionQuery(config, stage, flags.selection)
+    team = effectiveTeamFlag(config, flags.team, (line) => errWrite(`${verb}: ${line}\n`))
   } catch (err) {
     return fail(`could not derive the selection from the repo config: ${err?.message ?? err}`)
   }
-  const { flags } = parsed
-  if (selectionConfigured) {
-    const overrides = ['state', 'label', 'assignee-or-creator'].filter(
-      (name) => flags[name] !== undefined,
-    )
-    if (overrides.length > 0) {
-      return fail(
-        `${overrides.map((name) => `--${name}`).join(', ')} cannot override a configured trackerConfig selection: the worker must scan exactly what the narrowed cron gate scanned (only --limit is allowed)`,
-      )
-    }
-  }
   if (flags.state !== undefined) query.state = flags.state
-  if (flags.label !== undefined) query.label = flags.label
-  if (flags['assignee-or-creator'] !== undefined) {
-    query.assigneeOrCreator = flags['assignee-or-creator']
-  }
   query.limit = flags.limit ?? LIST_PLANNED_MAX_LIMIT
+  if (team !== undefined) query.team = team
   let nodes
   try {
     nodes = await adapter.selectPlanned(query)
@@ -330,6 +371,55 @@ async function runListPlanned(rest, { write, errWrite, env, resolveAdapter, load
     return fail('selectPlanned returned a non-array result, so the candidate list cannot be read')
   }
   write(JSON.stringify(nodes) + '\n')
+  return 0
+}
+
+// resolve-selection: the stage's selection with every ref resolved, for an in-memory matchIssue.
+async function runResolveSelection(rest, { write, errWrite, env, resolveAdapter, loadConfig }) {
+  const fail = (message) => {
+    errWrite(`resolve-selection: ${oneLine(message)}\n`)
+    return 2
+  }
+  const parsed = parseStageFlags(rest, new Set(['stage']))
+  if (parsed.error) return fail(parsed.error)
+  const { stage, selection: flags } = parsed.flags
+  if (!SELECTION_STAGES.includes(stage)) {
+    return fail(`--stage must be one of ${SELECTION_STAGES.join(', ')}; got ${stage}`)
+  }
+  let query
+  try {
+    const config = loadConfig()
+    query = stageSelectionQuery(config, stage, flags)
+    if (stage === 'retro')
+      query.selection = retroFilingSelection(selectionBlockFor(config), flags).selection
+  } catch (err) {
+    return fail(`could not derive the selection from the repo config: ${err?.message ?? err}`)
+  }
+  let adapter
+  try {
+    adapter = resolveAdapter({ env })
+  } catch (err) {
+    return fail(`could not resolve the tracker adapter: ${err?.message ?? err}`)
+  }
+  if (typeof adapter?.resolveSelection !== 'function') {
+    return fail('resolved tracker adapter has no resolveSelection capability')
+  }
+  let resolved
+  try {
+    resolved = await adapter.resolveSelection(query)
+  } catch (err) {
+    return fail(`resolveSelection failed: ${err?.message ?? err}`)
+  }
+  write(
+    JSON.stringify({
+      stage,
+      state: query.state,
+      selection: resolved,
+      requireLabels: query.requireLabels,
+      excludeLabels: query.excludeLabels,
+      narrowed: isNarrowed(resolved),
+    }) + '\n',
+  )
   return 0
 }
 
@@ -346,25 +436,29 @@ async function runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, 
   const states = [],
     ids = []
   let outFile,
+    teamFlag,
     limit = 250,
     hasLimit = false
   for (let i = 0; i < rest.length; i += 2) {
     const flag = rest[i],
       value = rest[i + 1]
     if (
-      !['--out-file', '--state', '--id', '--limit'].includes(flag) ||
+      !['--out-file', '--state', '--id', '--limit', '--team'].includes(flag) ||
       typeof value !== 'string' ||
       value.trim() === '' ||
       value.startsWith('--')
     ) {
       return fail(
-        'usage: expected --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>]',
+        'usage: expected --out-file <path> [--state <name>]... [--id <id>[,<id>...]]... [--limit <1-250>] [--team <name>]',
         EX_USAGE,
       )
     }
     if (flag === '--out-file') {
       if (outFile !== undefined) return fail('usage: repeated --out-file', EX_USAGE)
       outFile = value
+    } else if (flag === '--team') {
+      if (teamFlag !== undefined) return fail('usage: repeated --team', EX_USAGE)
+      teamFlag = value.trim()
     } else if (flag === '--state') states.push(value.trim())
     else if (flag === '--id') {
       const entries = value.split(',').map((s) => s.trim())
@@ -400,10 +494,14 @@ async function runFetchCandidates(rest, { write, errWrite, env, resolveAdapter, 
         })
     if (selected.some((state) => typeof state !== 'string' || state.trim() === ''))
       return fail('configured candidate states missing; could not evaluate')
+    const team = effectiveTeamFlag(config, teamFlag, (line) =>
+      errWrite(`fetch-candidates: ${line}\n`),
+    )
     candidates = await adapter.selectCandidates({
       states: [...new Set(selected)],
       ids: [...new Set(ids)],
       limit,
+      ...(team === undefined ? {} : { team }),
     })
   } catch (err) {
     // Tracker errors can contain response bodies, credentials, and request text. Never echo them.
@@ -586,6 +684,136 @@ async function runReadDescription(rest, { write, errWrite, env, resolveAdapter }
   return 0
 }
 
+// Both verbs use closed parsers: misspelled flags must not silently broaden a read
+// or drop a requested issue field. Only label flags are repeatable.
+function parseRetroFlags(rest, allowed, required, repeated = new Set()) {
+  const flags = {}
+  for (let i = 0; i < rest.length; i += 2) {
+    const name = rest[i]?.startsWith('--') ? rest[i].slice(2) : null
+    if (!allowed.has(name)) return { error: `unknown flag ${JSON.stringify(rest[i])}` }
+    const value = rest[i + 1]
+    if (typeof value !== 'string' || !value.trim() || value.startsWith('--'))
+      return { error: `--${name} requires a non-empty value` }
+    if (repeated.has(name)) (flags[name] ??= []).push(value)
+    else {
+      if (name in flags) return { error: `--${name} given more than once` }
+      flags[name] = value
+    }
+  }
+  for (const name of required) if (!(name in flags)) return { error: `--${name} is required` }
+  return { flags }
+}
+
+async function runFetchMarked(rest, { write, errWrite, env, resolveAdapter }) {
+  const fail = (message, code = 2) => {
+    errWrite(`fetch-marked: ${oneLine(message)}\n`)
+    return code
+  }
+  const parsed = parseRetroFlags(
+    rest,
+    new Set(['prefix', 'updated-after', 'max-pages', 'out-file']),
+    ['prefix', 'out-file'],
+  )
+  if (parsed.error) return fail(parsed.error, EX_USAGE)
+  const flags = parsed.flags
+  const maxPages = flags['max-pages'] === undefined ? undefined : Number(flags['max-pages'])
+  if (maxPages !== undefined && (!Number.isInteger(maxPages) || maxPages < 1))
+    return fail('--max-pages must be a positive integer', EX_USAGE)
+  let temp
+  try {
+    const adapter = resolveAdapter({ env })
+    if (typeof adapter?.selectMarked !== 'function')
+      return fail('resolved tracker adapter has no selectMarked capability')
+    const result = await adapter.selectMarked({
+      markerPrefix: flags.prefix,
+      ...(flags['updated-after'] === undefined ? {} : { updatedAfter: flags['updated-after'] }),
+      ...(maxPages === undefined ? {} : { maxPages }),
+    })
+    if (
+      !Array.isArray(result) ||
+      !result.every(
+        (row) =>
+          row &&
+          typeof row.identifier === 'string' &&
+          row.identifier.length > 0 &&
+          typeof row.description === 'string',
+      )
+    )
+      return fail('selectMarked returned malformed issue entries')
+    const target = path.resolve(flags['out-file'])
+    temp = path.join(
+      path.dirname(target),
+      `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`,
+    )
+    writeFileSync(temp, JSON.stringify(result) + '\n', { encoding: 'utf8', flag: 'wx' })
+    renameSync(temp, target)
+    write(JSON.stringify({ count: result.length, outcome: 'marked-fetched' }) + '\n')
+    return 0
+  } catch (error) {
+    if (temp) rmSync(temp, { force: true })
+    return fail(error?.message ?? error)
+  }
+}
+
+function runCreateIssue(rest, { write, errWrite, env, resolveAdapter, loadConfig }) {
+  const fail = (message, code = 2) => {
+    errWrite(`create-issue: ${oneLine(message)}\n`)
+    return code
+  }
+  const parsed = parseRetroFlags(
+    rest,
+    new Set(['title', 'body-file', 'state-role', 'label-role', 'label', 'parent', 'project']),
+    ['title', 'body-file', 'state-role'],
+    new Set(['label-role', 'label']),
+  )
+  if (parsed.error) return fail(parsed.error, EX_USAGE)
+  const flags = parsed.flags
+  try {
+    const config = loadConfig()
+    const team = trackerConfigFor(config).team
+    if (typeof team !== 'string' || !team.trim()) return fail('configured tracker team is missing')
+    const state = stateName(config, flags['state-role'])
+    if (typeof state !== 'string' || !state.trim())
+      return fail(`unresolvable state role ${flags['state-role']}`)
+    const labels = (flags['label-role'] ?? [])
+      .map((role) => {
+        const name = labelName(config, role)
+        if (typeof name !== 'string' || !name.trim())
+          throw new Error(`unresolvable label role ${role}`)
+        return name
+      })
+      .concat(flags.label ?? [])
+    const bodyFile = flags['body-file']
+    const body = readFileSync(bodyFile, 'utf8')
+    const bytes = statSync(bodyFile).size
+    if (!body.trim()) return fail(`--body-file ${bodyFile} is empty`)
+    if (Buffer.byteLength(body, 'utf8') !== bytes)
+      return fail(`--body-file ${bodyFile} is not valid UTF-8`)
+    const op = resolveAdapter({ env }).operationMap?.createIssue
+    if (!op || typeof op.tool !== 'string' || !op.tool.trim())
+      return fail('resolved tracker adapter has no createIssue operation')
+    write(
+      JSON.stringify({
+        tool: op.tool,
+        args: {
+          team,
+          title: flags.title,
+          description: body,
+          state,
+          labels,
+          ...(flags.parent === undefined ? {} : { parentId: flags.parent }),
+          ...(flags.project === undefined ? {} : { project: flags.project }),
+        },
+        bytes,
+        outcome: 'descriptor-emitted',
+      }) + '\n',
+    )
+    return 0
+  } catch (error) {
+    return fail(error?.message ?? error)
+  }
+}
+
 // Every op name the adapter contract knows. `operations --require` validates against THIS set, not
 // against the resolved map: a name the map lacks may be a genuinely absent optional op (exit 2), but
 // a name no manifest declares is a typo, and reporting it as absent would abort a healthy run.
@@ -681,7 +909,8 @@ function runOperations(rest, { write, errWrite, env, resolveAdapter }) {
 /**
  * Dispatch one tracker capability. Returns the process exit code; never calls
  * process.exit directly so it is unit-testable. Every verb is synchronous except
- * `list-planned`, `read-description`, and `fetch-candidates`, which return a Promise of the
+ * `list-planned`, `list-unplanned`, `resolve-selection`, `read-description`, `fetch-marked`, and
+ * `fetch-candidates`, which return a Promise of the
  * exit code; the entrypoint awaits the result, which is harmless for a plain number.
  * @param {string[]} argv
  * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
@@ -941,8 +1170,29 @@ export function runCli(
     return 0
   }
   if (cmd === 'list-planned') {
-    return runListPlanned(rest, { write, errWrite, env, resolveAdapter, loadConfig })
+    return runListStage('list-planned', 'build', rest, {
+      write,
+      errWrite,
+      env,
+      resolveAdapter,
+      loadConfig,
+    })
   }
+  if (cmd === 'list-unplanned') {
+    return runListStage('list-unplanned', 'plan', rest, {
+      write,
+      errWrite,
+      env,
+      resolveAdapter,
+      loadConfig,
+    })
+  }
+  if (cmd === 'resolve-selection') {
+    return runResolveSelection(rest, { write, errWrite, env, resolveAdapter, loadConfig })
+  }
+  if (cmd === 'fetch-marked') return runFetchMarked(rest, { write, errWrite, env, resolveAdapter })
+  if (cmd === 'create-issue')
+    return runCreateIssue(rest, { write, errWrite, env, resolveAdapter, loadConfig })
   if (cmd === 'read-description') {
     return runReadDescription(rest, { write, errWrite, env, resolveAdapter })
   }

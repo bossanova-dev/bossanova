@@ -149,8 +149,20 @@ keeps the branch and removes the worktree, which is usually what you want.
 A skill is a markdown prompt-bundle (a directory containing `SKILL.md` plus
 any helper files) that the [Plugins](../plugins.md)
 auto-installs into a session so the agent has consistent instructions for
-recurring jobs. The bundled set is **`boss`**, **`boss-repair`**,
-**`boss-verify`**, and **`boss-finalize`**, embedded in the plugin binary.
+recurring jobs. The bundled set is **`boss`** (the CLI reference),
+**`boss-plan`**, **`boss-build`**, **`boss-review`**, **`boss-epic`**,
+**`boss-repair`**, **`boss-verify`**, **`boss-release`** and **`boss-finalize`**, embedded in the
+`boss` binary and the plugin binary.
+
+**`boss-verify`** is the verify stage: it judges an open PR's current head,
+records a `boss/verify` commit status, and merges the PR when it passes or parks
+it for a human when it cannot decide. Run on a schedule, its cron gate does that
+work itself and routes any agent work into each PR's own session, so a verify
+run never creates a throwaway session.
+
+**`boss-release`** releases merged changes through a repository-provided release extension.
+It enforces CI gates and ordered environment promotion. With no extension it only reports
+unreleased changes; its cron gate starts no agent.
 
 ### What if I don't want skills installed?
 

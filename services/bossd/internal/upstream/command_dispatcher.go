@@ -166,6 +166,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchMoveSession(ctx, cmdID, cmd.GetMoveSession())
 	case *pb.OrchestratorCommand_EmptyTrash:
 		return c.dispatchEmptyTrash(ctx, cmdID, cmd.GetEmptyTrash(), outbound)
+	case *pb.OrchestratorCommand_LaunchTriggerSession:
+		return c.dispatchLaunchTriggerSession(ctx, cmdID, cmd.GetLaunchTriggerSession(), outbound)
 	case *pb.OrchestratorCommand_CommandCancel:
 		c.cancelAsyncCommand(cmd.GetCommandCancel().GetCommandId())
 		return nil
@@ -460,6 +462,33 @@ func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, 
 				},
 			},
 		}}
+	})
+}
+
+// dispatchLaunchTriggerSession routes a LaunchTriggerSessionCommand (BOS-1418)
+// to the handler and replies with CommandResult{launch_trigger_session}.
+// Failures attach the handler-classified ErrorCode (NOT_FOUND for an
+// unregistered repo, FAILED_PRECONDITION for a failed create).
+//
+// Dispatched asynchronously for the same reason as dispatchSwitchAccount: a
+// launch waits for worktree setup and agent start, and running it inline would
+// wedge the single-threaded command reader that also services the heartbeat.
+// It is cancelable like the switch, but cancellation only cuts short the
+// pre-create phase — the handler detaches the create itself so a started launch
+// still records its session id for bosso's retry to replay.
+func (c *StreamClient) dispatchLaunchTriggerSession(ctx context.Context, cmdID string, req *pb.LaunchTriggerSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
+		res, errorCode, err := c.commandHandler.LaunchTriggerSession(commandCtx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), errorCode)
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_LaunchTriggerSession{LaunchTriggerSession: res},
+		}}}
 	})
 }
 

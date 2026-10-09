@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "pins": [
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "045a516190af57406f6e7c2cd31ee97558570e6e40fb12080278cf6f0e4133df"
+    },
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "1015632317de26490a6218b7ba58d347427c681a89cd268c1f68a3f1b6e5c373"
+    },
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "1048767d068b3ca605d8cd6f89a884c00127037bcbc120c51ace0ba6055ef66d"
+    },
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "41d1718b1c25ffe47661fca911dd54f90a89396570fd754a9c648348b331c2be"
+    },
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "80303aaad18437f33695be674724ca8b20ba151efa07eeff0ce094827bdaf250"
+    },
+    {
+      "file": "scripts/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "fc1490408bf07396332be79112af62b18487a4d7bb009b43b73b4bb008c8a610"
+    }
+  ]
+}

@@ -204,7 +204,7 @@ func TestDisplayPollerDoesNotShowConflictForUnstablePR(t *testing.T) {
 	}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
-	poller.pollSession(ctx, repo, "sess-1", prNumber)
+	poller.pollSession(ctx, repo, sessions.sessions["sess-1"], prNumber)
 
 	entry := tracker.Get("sess-1")
 	if entry == nil {
@@ -1750,4 +1750,221 @@ func (m *mockCheckSnapshotStore) all() []db.CheckSnapshot {
 	out := make([]db.CheckSnapshot, len(m.snaps))
 	copy(out, m.snaps)
 	return out
+}
+
+// --- BOS-1452: carrying the boss/build receipt to the session's own push ---
+
+const (
+	carryHeadA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	carryHeadB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+type carriedPost struct {
+	repoPath, sha string
+	status        vcs.CommitStatus
+}
+
+// carryProvider is the session mock provider plus the receipt-aware read,
+// the commit-status write and read invalidation.
+type carryProvider struct {
+	*mockVCSProvider
+	checkSet    vcs.CheckSet
+	postErr     error
+	posts       []carriedPost
+	invalidated []int
+}
+
+func (c *carryProvider) GetCheckSet(context.Context, string, int) (vcs.CheckSet, error) {
+	return c.checkSet, nil
+}
+
+func (c *carryProvider) PostCommitStatus(_ context.Context, repoPath, sha string, s vcs.CommitStatus) error {
+	c.posts = append(c.posts, carriedPost{repoPath: repoPath, sha: sha, status: s})
+	return c.postErr
+}
+
+func (c *carryProvider) InvalidatePR(_ string, prID int) { c.invalidated = append(c.invalidated, prID) }
+
+type probeCall struct{ worktreePath, branch, from, to string }
+
+type fakePushProbe struct {
+	pushed bool
+	err    error
+	calls  []probeCall
+}
+
+func (f *fakePushProbe) SessionPushedHead(_ context.Context, worktreePath, branch, fromSHA, newSHA string) (bool, error) {
+	f.calls = append(f.calls, probeCall{worktreePath, branch, fromSHA, newSHA})
+	return f.pushed, f.err
+}
+
+type carryFixture struct {
+	poller   *DisplayPoller
+	provider *carryProvider
+	probe    *fakePushProbe
+	tracker  *status.DisplayTracker
+	repo     *models.Repo
+	sess     *models.Session
+	logs     *bytes.Buffer
+}
+
+const carryPR = 42
+
+func newCarryFixture(t *testing.T, wired bool) *carryFixture {
+	t.Helper()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	repos.repos[repo.ID] = repo
+	prNum := carryPR
+	sess := &models.Session{ID: "sess-1", RepoID: repo.ID, PRNumber: &prNum, WorktreePath: "/wt/sess-1", BranchName: "feature"}
+	sessions.sessions[sess.ID] = sess
+	provider := &carryProvider{mockVCSProvider: newMockVCSProvider()}
+	tracker := status.NewDisplayTracker()
+	logs := &bytes.Buffer{}
+	poller := NewDisplayPoller(sessions, repos, provider, tracker, time.Minute, zerolog.New(logs).Level(zerolog.DebugLevel))
+	probe := &fakePushProbe{pushed: true}
+	if wired {
+		poller.SetReceiptCarrier(provider, probe)
+	}
+	return &carryFixture{poller: poller, provider: provider, probe: probe, tracker: tracker, repo: repo, sess: sess, logs: logs}
+}
+
+// tick runs one pollSession for an open PR at head with the given receipt read.
+func (f *carryFixture) tick(t *testing.T, head string, set vcs.CheckSet, draft bool) {
+	t.Helper()
+	success := vcs.CheckConclusionSuccess
+	set.Checks = []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+	f.provider.checkSet = set
+	f.provider.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: draft, Mergeable: boolPtr(true), HeadSHA: head}
+	if !f.poller.pollSession(context.Background(), f.repo, f.sess, carryPR) {
+		t.Fatal("pollSession did not update the tracker")
+	}
+}
+
+var receiptOnHead = vcs.CheckSet{HasBuildReceipt: true, BuildReceiptSeen: true}
+
+func TestDisplayPollerCarriesReceiptToSessionsOwnPush(t *testing.T) {
+	f := newCarryFixture(t, true)
+	f.tick(t, carryHeadA, receiptOnHead, false)
+	if len(f.probe.calls) != 0 || len(f.provider.posts) != 0 {
+		t.Fatalf("a receipted head must not probe or post: probes=%v posts=%v", f.probe.calls, f.provider.posts)
+	}
+
+	f.tick(t, carryHeadB, vcs.CheckSet{}, false)
+
+	if len(f.provider.posts) != 1 {
+		t.Fatalf("posts = %+v, want exactly one carried receipt", f.provider.posts)
+	}
+	post := f.provider.posts[0]
+	if post.sha != carryHeadB || post.repoPath != "owner/repo" || post.status.Context != vcs.BuildReceiptContext || post.status.State != "success" {
+		t.Fatalf("post = %+v, want a success boss/build status on B", post)
+	}
+	if want := "carried by bossd from " + carryHeadA[:12]; post.status.Description != want {
+		t.Fatalf("description = %q, want %q", post.status.Description, want)
+	}
+	if want := (probeCall{"/wt/sess-1", "feature", carryHeadA, carryHeadB}); len(f.probe.calls) != 1 || f.probe.calls[0] != want {
+		t.Fatalf("probe calls = %+v, want [%+v]", f.probe.calls, want)
+	}
+	if len(f.provider.invalidated) != 1 || f.provider.invalidated[0] != carryPR {
+		t.Fatalf("invalidated = %v, want the PR's cached reads dropped", f.provider.invalidated)
+	}
+	// Ready on this same tick: the Set this poll made carries the receipt and
+	// moves the latch to the carried head.
+	e := f.tracker.Get(f.sess.ID)
+	if !e.HasBuildReceipt || e.HeadSHA != carryHeadB || e.ReceiptHeadSHA != carryHeadB {
+		t.Fatalf("tracker entry = %+v, want HasBuildReceipt on B and the latch moved to B", e)
+	}
+	if !strings.Contains(f.logs.String(), "carried boss/build receipt") {
+		t.Fatalf("missing Info log; logs:\n%s", f.logs.String())
+	}
+}
+
+func TestDisplayPollerCarryLatchSurvivesServerRefresh(t *testing.T) {
+	f := newCarryFixture(t, true)
+	f.tick(t, carryHeadA, receiptOnHead, false)
+	// refreshSessionPRDisplay sees the new head first and records it without
+	// a receipt.
+	f.tracker.Set(f.sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: carryHeadB})
+
+	f.tick(t, carryHeadB, vcs.CheckSet{}, false)
+
+	if len(f.provider.posts) != 1 || f.provider.posts[0].sha != carryHeadB {
+		t.Fatalf("posts = %+v, want one carried receipt on B", f.provider.posts)
+	}
+	if !strings.HasSuffix(f.provider.posts[0].status.Description, carryHeadA[:12]) {
+		t.Fatalf("description = %q, want it carried from A", f.provider.posts[0].status.Description)
+	}
+}
+
+func TestDisplayPollerDoesNotCarryReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// setup mutates the fixture before the second tick.
+		setup     func(f *carryFixture)
+		skipFirst bool
+		wired     bool
+		head      string
+		set       vcs.CheckSet
+		draft     bool
+	}{
+		{name: "foreign push", wired: true, setup: func(f *carryFixture) { f.probe.pushed = false }},
+		{name: "force-push", wired: true, setup: func(f *carryFixture) { f.probe.pushed = false }},
+		{name: "probe error", wired: true, setup: func(f *carryFixture) { f.probe.pushed, f.probe.err = true, fmt.Errorf("reflog unreadable") }},
+		{name: "new head already has a boss/build status", wired: true, set: vcs.CheckSet{BuildReceiptSeen: true}},
+		{name: "no latch after restart", wired: true, skipFirst: true},
+		{name: "same head", wired: true, head: carryHeadA},
+		{name: "draft PR", wired: true, draft: true},
+		{name: "empty worktree path", wired: true, setup: func(f *carryFixture) { f.sess.WorktreePath = "" }},
+		{name: "empty branch", wired: true, setup: func(f *carryFixture) { f.sess.BranchName = "" }},
+		{name: "carrier not wired", wired: false},
+		{name: "probe not wired", wired: false, setup: func(f *carryFixture) { f.poller.SetReceiptCarrier(f.provider, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCarryFixture(t, tc.wired)
+			if !tc.skipFirst {
+				f.tick(t, carryHeadA, receiptOnHead, false)
+			}
+			if tc.setup != nil {
+				tc.setup(f)
+			}
+			head := tc.head
+			if head == "" {
+				head = carryHeadB
+			}
+			f.tick(t, head, tc.set, tc.draft)
+
+			if len(f.provider.posts) != 0 {
+				t.Fatalf("posts = %+v, want none", f.provider.posts)
+			}
+			e := f.tracker.Get(f.sess.ID)
+			if e.HasBuildReceipt {
+				t.Fatalf("tracker entry = %+v claims a receipt that was never posted", e)
+			}
+		})
+	}
+}
+
+func TestDisplayPollerCarryPostFailureIsRetried(t *testing.T) {
+	f := newCarryFixture(t, true)
+	f.tick(t, carryHeadA, receiptOnHead, false)
+
+	f.provider.postErr = fmt.Errorf("HTTP 502")
+	f.tick(t, carryHeadB, vcs.CheckSet{}, false)
+	e := f.tracker.Get(f.sess.ID)
+	if e.HasBuildReceipt || e.ReceiptHeadSHA != carryHeadA {
+		t.Fatalf("after a failed post, entry = %+v; want no receipt and the latch still on A", e)
+	}
+	if !strings.Contains(f.logs.String(), `"level":"warn"`) || !strings.Contains(f.logs.String(), "post carried boss/build receipt failed") {
+		t.Fatalf("missing Warn for the failed post; logs:\n%s", f.logs.String())
+	}
+
+	f.provider.postErr = nil
+	f.tick(t, carryHeadB, vcs.CheckSet{}, false)
+	if len(f.provider.posts) != 2 {
+		t.Fatalf("posts = %d, want the failed attempt plus one retry", len(f.provider.posts))
+	}
+	if e := f.tracker.Get(f.sess.ID); !e.HasBuildReceipt || e.ReceiptHeadSHA != carryHeadB {
+		t.Fatalf("after the retry, entry = %+v; want the receipt carried to B", e)
+	}
 }

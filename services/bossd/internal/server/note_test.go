@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -170,6 +171,38 @@ func TestGetNote(t *testing.T) {
 		_, err := srv.GetNote(ctx, connect.NewRequest(&pb.GetNoteRequest{Id: "  "}))
 		assertConnectCode(t, err, connect.CodeInvalidArgument)
 	})
+}
+
+// TestNoteRPCs_ExposeSyncState pins the BOS-1429 wire fields end to end: a
+// freshly created note reports its pending outbox state through the RPC.
+func TestNoteRPCs_ExposeSyncState(t *testing.T) {
+	srv := newNoteServer(t)
+	created := mustCreateNoteRPC(t, srv, &pb.CreateNoteRequest{RepoId: "repo-1", Body: "body"})
+	if created.SyncState != string(models.NoteSyncPending) {
+		t.Errorf("sync_state = %q, want pending", created.SyncState)
+	}
+	if created.SyncedAt != nil || created.SyncLastError != "" {
+		t.Errorf("synced_at/sync_last_error = %v/%q, want unset for a never-synced note",
+			created.SyncedAt, created.SyncLastError)
+	}
+}
+
+// TestNoteToProtoMapsSync covers the sync mapping, including a note with no
+// outbox row (Sync nil) mapping to the empty, unset fields.
+func TestNoteToProtoMapsSync(t *testing.T) {
+	syncedAt := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	lastErr := "rate limited"
+	p := noteToProto(&models.Note{ID: "n", Sync: &models.NoteSyncState{
+		State: models.NoteSyncRateLimited, SyncedAt: &syncedAt, LastError: &lastErr,
+	}})
+	if p.SyncState != "rate_limited" || !p.SyncedAt.AsTime().Equal(syncedAt) || p.SyncLastError != lastErr {
+		t.Errorf("noteToProto sync = %q/%v/%q, want rate_limited/%v/%q",
+			p.SyncState, p.SyncedAt, p.SyncLastError, syncedAt, lastErr)
+	}
+	bare := noteToProto(&models.Note{ID: "n"})
+	if bare.SyncState != "" || bare.SyncedAt != nil || bare.SyncLastError != "" {
+		t.Errorf("noteToProto without Sync = %q/%v/%q, want all empty", bare.SyncState, bare.SyncedAt, bare.SyncLastError)
+	}
 }
 
 func TestListNotes(t *testing.T) {

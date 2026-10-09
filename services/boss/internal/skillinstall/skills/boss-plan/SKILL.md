@@ -29,10 +29,10 @@ a human` and `## Open Questions` only when they apply, `## Planning` (with a `- 
   drafting brief has the template.
 - **Labels**: the existing set, plus content labels that genuinely apply (`bug`, `feature`,
   `improvement`, `docs` — names via `optionalLabelName(config, '<role>')`, else the literal), plus
-  exactly one of `agent-friendly` (the default) or `needs-human` (only when an agent genuinely could
+  exactly one of `agent-build` (the default) or `needs-human` (only when an agent genuinely could
   not do it — size alone is never the reason; then the plan explains why), plus `agent-question`
   when there are open questions (headless only). The planning-queue label (`agent-plan`) is removed.
-  Pipeline label roles resolve through `labelName(config, '<role>')`, whose keys are: `agentFriendly`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
+  Pipeline label roles resolve through `labelName(config, '<role>')`, whose keys are: `agentBuild`, `needsHuman`, `agentPlan`, `agentQuestion`, `epic`
   (it throws on an unknown role). Never create labels.
 - **Estimate** (Fibonacci): 0 trivial; 1/2/3 one PR; 5/8 means it is an **epic**
   ([`references/epic.md`](references/epic.md)) unless a 5 is genuinely atomic.
@@ -44,8 +44,8 @@ a human` and `## Open Questions` only when they apply, `## Planning` (with a `- 
 ## Workspace facts
 
 Load the config once — `loadSkillConfig({cwd})` (synchronous, options object) → `config`;
-`trackerConfigFor(config)` gives the tracker server, team and workspace (never a project filter) and
-the state roles `unplanned`, `planned`, `inProgress`, `inReview`. Reach the tracker only through the
+`trackerConfigFor(config)` gives the tracker server, team (else the run's resolved team, Phase 0),
+workspace (never a project filter) and the state roles `unplanned`, `planned`, `inProgress`, `inReview`. Reach the tracker only through the
 resolved adapter. A blocker counts as cleared only when its state type is completed or canceled
 (`plan-deps-lib.mjs`); boss-build will not start a ticket with an uncleared blocker.
 
@@ -57,21 +57,22 @@ Every block that uses the toolbox starts with this preamble (each Bash call is a
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 ```
 
-| Question                                     | Ask                                                                                |
-| -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Is this repo configured for planning?        | `isConfiguredForPlanning(config)` in `skill-config.mjs`                            |
-| Is the ticket already planned?               | `node plan-run-guards.mjs idempotence <payload> --selected-id <id>`                |
-| Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`                     |
-| Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                         |
-| Normalise the drafter's metadata             | `node plan-run-guards.mjs adopt-metadata <file> <json>`                            |
-| Did a secret slip in?                        | `node plan-secret-scan.mjs <files>`                                                |
-| Did the reporter's images and notes survive? | `node plan-image-guard.mjs …`                                                      |
-| Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                            |
-| Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                              |
-| Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                      |
-| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored …`                           |
-| What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                             |
-| Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write` |
+| Question                                     | Ask                                                                                   |
+| -------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Is this repo configured for planning?        | `resolveTrackerTeam` → `isConfiguredForPlanning(config, {team})` (`skill-config.mjs`) |
+| Is the ticket already planned?               | `node plan-run-guards.mjs idempotence <payload> --selected-id <id>`                   |
+| Read / write the description exactly         | `node tracker/cli.mjs read-description \| write-description …`                        |
+| Upload / read / delete the plan attachment   | [`references/plan-storage.md`](references/plan-storage.md)                            |
+| Normalise the drafter's metadata             | `node plan-run-guards.mjs adopt-metadata <file> <json>`                               |
+| Did a secret slip in?                        | `node plan-secret-scan.mjs <files>`                                                   |
+| Did the reporter's images and notes survive? | `node plan-image-guard.mjs …`                                                         |
+| Is the description a plan description?       | `node plan-contract-guard.mjs --description … --plan …`                               |
+| Have referenced tickets moved since recon?   | `node plan-run-guards.mjs premises …`                                                 |
+| Which tickets does this conflict with?       | `planDependencyEdges` in `plan-deps-lib.mjs` (Phase 4 step 5)                         |
+| Did the description land as written?         | `node plan-writeback-verify.mjs --intended … --stored …`                              |
+| What scratch names may I use?                | `node plan-scratch-paths.mjs families`                                                |
+| Is a tracker failure safe to retry?          | `node tracker/cli.mjs classify-outcome --observed "<err>" --operation read\|write`    |
+| Plan an epic's `agent-plan` children?        | `node plan-child-fanout.mjs route …` (`references/child-fanout.md`)                   |
 
 ## Rules
 
@@ -96,18 +97,19 @@ BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
+CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":m.isConfiguredForPlanning(c,{team:"?"})?"team":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
 # `isConfiguredForPlanning` requires the tracker identity AND the full state role map
 # (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
-# core self-disables cleanly ('no') instead of running with undefined state names.
+# core self-disables cleanly ('no') instead of running with undefined state names. 'team' means
+# all of it but the team, which is resolved after the tracker preflight below.
 # Distinguish a loader failure (malformed/invalid .boss-skills.json → 'error' or empty) from a
 # valid "not planning-ready" ('no'): loadSkillConfig throws a `skill-config:` error on a present
 # but broken config, so a broken config must abort loudly, never skip silently as a clean no-op.
-if [ "$CONFIGURED" != "yes" ] && [ "$CONFIGURED" != "no" ]; then
+if [ "$CONFIGURED" != "yes" ] && [ "$CONFIGURED" != "no" ] && [ "$CONFIGURED" != "team" ]; then
   echo "boss-plan: .boss-skills.json is present but could not be loaded (see error above) — aborting instead of skipping." >&2
   exit 1
 fi
-if [ "$CONFIGURED" != "yes" ]; then
+if [ "$CONFIGURED" = "no" ]; then
   echo "boss-plan: no configured tracker in .boss-skills.json for this repo — nothing to plan here; skipping."
   exit 0
 fi
@@ -155,15 +157,45 @@ what is missing: stop before any write) — and confirm the tracker answers a ch
 read: classify it with `--operation read` and follow its action line (a retryable edge error is not
 "tracker unreachable").
 
+**Team.** `--team <name>` is a skill argument, never a ticket id. When config names no team, the
+cheap read is `listTeams` (`limit=50`, through `resolvedServer`; an adapter without it gives
+`visibleTeams: null`), classified with `trackerMcpPreflight` (`tracker/preflight.mjs`, `probeOk` =
+it succeeded). Then `resolveTrackerTeam(config, {preflight, visibleTeams: <raw result>, teamFlag})`
+and gate on `isConfiguredForPlanning(config, {team})`. Unconfigured ⇒ print `message`, delete
+`.linear-plans/run-<RUN-SCRATCH-ID>/`, exit 0 with no tracker writes. Configured ⇒ print a non-empty
+`message` (an overridden `--team`), use `team` for every team-scoped read, and pass
+`--team <team>` to `fetch-candidates`.
+
 ## Phase 1 — Select the issue
 
+First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase planning` (one JSON line, never fatal).
+
+- **Arguments**: `node "$BOSS_PLAN_TOOLBOX/plan-child-fanout.mjs" args -- <args>` parses the ticket
+  ref, `--team`, the selection flags and `--parallel N` (child planners at once on the fan-out route;
+  1..8, default 4) — non-zero ⇒ `BLOCKED: <its stderr>`.
 - **A named ticket**: `get_issue` it, whatever its state. Interactive re-planning follows
   `references/interactive-mode.md`. Headless stops on Done/Canceled.
-- **Otherwise**: list the team's unplanned issues (`limit=250`), rank by priority (Urgent first,
-  None last), then oldest. Interactive confirms with the user (plan / skip / pick another / cancel);
-  headless takes the head. An empty queue reports and stops.
+- **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
+  `--exclude-` forms) are filters, never ticket ids: classify arguments with
+  `node "$BOSS_PLAN_TOOLBOX/selection.mjs" split-args -- <args>`; with a named ticket they are
+  ignored with a one-line warning.
+- **Otherwise**: with no `trackerConfigFor(config).selection` and no `selectionArgs`, list the
+  resolved team's unplanned issues (`limit=250`) and keep only `agent-plan` ones without
+  `needs-human`; with either, candidates come only from `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs"
+list-unplanned --team <team> <selectionArgs>` (non-zero exit ⇒ stop quoting its stderr; never fall
+  back to the unfiltered list). Rank by priority (Urgent first, None last), then oldest. Interactive
+  confirms with the user (plan / skip / pick another / cancel); headless takes the head. An empty
+  queue reports and stops.
 
-Then, in every case, the idempotence precheck — write the issue payload to
+**Route the selected issue** — named or sweep head — before anything else: `list_issues
+parentId=<id> limit=250`, `get_issue includeRelations=true` each child (list payloads truncate), write
+`{parent, children}` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
+`node "$BOSS_PLAN_TOOLBOX/plan-child-fanout.mjs" route <that file>`. `single` ⇒ continue below;
+`fan-out` ⇒ [`references/child-fanout.md`](references/child-fanout.md) instead of the precheck and Phases
+2–5; `epic-resume` ⇒ [`references/epic.md`](references/epic.md#resume); `epic-noop` ⇒ report its
+`reasons`, no writes, outcome `noop`; `abort` ⇒ report, no writes, outcome `blocked`.
+
+Then, for a `single` route, the idempotence precheck — write the issue payload to
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json` and:
 
 ```bash
@@ -182,6 +214,7 @@ Drafting resolves through the first tier that succeeds: a repo-local `boss-plan-
 `role: draft`, a host built-in, or the inline prompt. A dispatch succeeds only when its result is
 valid **and** it wrote a non-empty plan at the path it alone was given; record
 `extension <name>: skipped (<reason>)` for every one that did not.
+For a non-deliberate skip or invalid draft-extension result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
 
 **Interactive:** follow `references/interactive-mode.md`, then Phase 3.5 and Phase 4.
 
@@ -211,7 +244,7 @@ plan in its own context and returns only a path and bounded metadata.
 3. Dispatch a `general-purpose` subagent on the orchestrator's model (planning is judgement). Pass
    the **path** `references/headless-drafting-brief.md`, the ticket id and title, the snapshot path,
    `PLAN_PATH`, `RUN_SCRATCH`, and `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. It returns only `planPath`,
-   `labels`, `agentFriendly`, `estimate`, `priority`, `openQuestions` and
+   `labels`, `agentBuild`, `estimate`, `priority`, `openQuestions` and
    `descriptionSummary: {path}` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
    before each attempt and re-arm `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it
    exits 98 ([`references/headless-dispatch.md`](references/headless-dispatch.md) owns the hold and
@@ -287,6 +320,8 @@ plan in its own context and returns only a path and bounded metadata.
      node "$RUN_SENTINEL" cleanup "$RUN_DIR"
    fi
    ```
+
+   On any headless drafting `dispatch-failure`, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger dispatch-failed --where "boss-plan headless drafting dispatch"` (never fatal).
 
    An epic outcome (`payload.epic`) already did every tracker write and is accepted only on
    `epic-reverify` exit 0 (`references/headless-dispatch.md` hydrates its inputs); skip Phase 3.5–4.
@@ -446,7 +481,7 @@ Then:
 4. **Link dependencies** — I/O only; `plan-deps-lib.mjs` decides every edge:
 
    a. Fetch candidates (planned, in-progress, in-review, plus every related id):
-   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --id <ISSUE-ID> --id <related id>…`.
+   `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" fetch-candidates --out-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.candidates.json --team <team> --id <ISSUE-ID> --id <related id>…`.
    Read only the receipt and `jq -r '.[] | [.identifier, .title, .stateName] | @tsv'`; a
    non-zero exit means _could not evaluate_.
    b. Judge real logical dependencies yourself, with direction: `logicalDependencies[<id>] =
@@ -520,6 +555,7 @@ Then:
    `byte-exact` / `normalized-equivalent` pass. `unattributed` passes but keeps the scratch and names
    the line in the report. `drift` fails: keep the scratch and **do not** rewrite the description.
    No verdict (a read failure) fails too.
+   When write-back verification prints no verdict, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger evidence-unknown --where "boss-plan write-back verification"` (never fatal).
 
 ## Phase 5 — Clean up
 
@@ -545,7 +581,10 @@ run directory by grepping a ticket id; use the `RUN_ID` you were handed.
 
 Issue id and title; the attachment id and title; final labels, estimate, priority; the state change;
 the write-back verdict and read route; the dependency verdict (`<verdict> compared=N edges=M`) and any
-transitive-block warning; premise drift; for an epic, the parent and child ids.
+transitive-block warning; premise drift; for an epic, the parent and child ids; for a child fan-out,
+the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
+
+On every terminal path, unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" flush --core boss-plan --outcome "<outcome>" --mode "<mode>"` once (unsampled, never fatal), then continue.
 
 **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
 `notesSampleRate` once per run (reuse `NOTES_SAMPLED` if set); on a miss, stop. Otherwise write at
@@ -553,6 +592,9 @@ most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and d
 (instructions from its `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-plan","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;
 validate with `--role notes`. Never fatal.
+For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
+
+**Hand-off** (before Phase 7): when the outcome is `planned` or `epic` and at least one ticket left with `agent-build`, run `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" run-next --stage plan` and print its line; never fatal (the build job's own gate decides eligibility).
 
 ## Phase 7 — Self-archive
 
@@ -565,6 +607,9 @@ ask whether to archive now; on yes re-run with `--confirmed`, on no stop. `skip`
 
 ## Cron gate
 
-For an unattended planning cron, register `node scripts/cron-gates/boss-plan.mjs` as the job's gate
-command: it exits 0 only when an unplanned issue exists, fails closed (missing `LINEAR_API_KEY`,
-network or API error) and costs zero agent tokens otherwise. Interactive runs are not gated.
+For an unattended planning cron, register
+`node ~/.claude/skills/boss-plan/toolbox/cron-gates/boss-plan.mjs [selection flags]` (Codex:
+`~/.codex/skills/...`) as the job's gate command, with the same flags in the job's prompt: it exits 0 only when an unplanned `agent-plan` issue
+without `needs-human` matches the selection, fails closed (missing `LINEAR_API_KEY`, an unresolvable
+selection value, network or API error) and costs zero agent tokens otherwise. Interactive runs are
+not gated.

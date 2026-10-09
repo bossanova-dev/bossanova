@@ -95,6 +95,15 @@ const SKIPPED_CONCLUSIONS = new Set(['NEUTRAL', 'SKIPPED', 'STALE'])
 
 const SUCCESS_CONCLUSIONS = new Set(['SUCCESS'])
 
+// Commit-status contexts that record provenance (which actor produced a head), not a CI verdict.
+// `classifyChecks` drops them from both SHAs before counting: a receipt on the prior head that the
+// new head does not carry yet would otherwise hold every later wait at `absent-gate`, and a lone
+// receipt `success` would turn a `no-gate-ran` set green. The literal is kept local rather than
+// imported from `commit-status.mjs` so this module's vendoring closure stays one file; a test in
+// `commit-status.test.mjs` pins the two together.
+export const PROVENANCE_CONTEXTS = Object.freeze(['boss/build'])
+const PROVENANCE_SET = new Set(PROVENANCE_CONTEXTS)
+
 function upper(value) {
   return typeof value === 'string' ? value.trim().toUpperCase() : ''
 }
@@ -511,10 +520,28 @@ export function classifyChecks(options) {
     ...normalizeBuckets(buckets),
   ])
 
+  // Provenance receipts are not gates: drop them from both SHAs before anything is counted or
+  // compared, and report which ones were seen.
+  const provenanceSeen = new Set()
+  for (const name of [...merged.keys()]) {
+    if (PROVENANCE_SET.has(name)) {
+      provenanceSeen.add(name)
+      merged.delete(name)
+    }
+  }
+  const priorSide =
+    priorContexts == null
+      ? null
+      : normalizeDiffSide(priorContexts).filter((entry) => {
+          if (!PROVENANCE_SET.has(entry.name)) return true
+          provenanceSeen.add(entry.name)
+          return false
+        })
+
   const counts = { passed: 0, failed: 0, pending: 0, skipped: 0, unclassified: 0 }
   for (const { kind } of merged.values()) counts[kind] += 1
 
-  const diff = diffCheckSets({ head: [...merged.values()], prior: priorContexts })
+  const diff = diffCheckSets({ head: [...merged.values()], prior: priorSide })
   const declaredStructural = new Set(
     (Array.isArray(structurallyAbsentContexts) ? structurallyAbsentContexts : [])
       .filter((name) => typeof name === 'string')
@@ -530,9 +557,7 @@ export function classifyChecks(options) {
 
   // The prior side's own entries, for the two facts `absent` cannot carry by name alone: which
   // workflow each context belongs to, and whether it reported a result on the prior head.
-  const priorEntries = new Map(
-    priorContexts == null ? [] : normalizeDiffSide(priorContexts).map((e) => [e.name, e]),
-  )
+  const priorEntries = new Map(priorSide == null ? [] : priorSide.map((e) => [e.name, e]))
   const headRunWorkflows = new Set(runs.runs.flatMap((r) => [r.workflow, r.name]))
   // An empty run list cannot tell a path-filtered workflow from runs Actions has not created yet (or
   // a dropped push event), so discounting needs at least one head run as evidence the list is live.
@@ -567,6 +592,8 @@ export function classifyChecks(options) {
     priorKnown: diff.priorKnown,
     workflowRunsKnown: runsKnown,
     pendingRuns,
+    // Provenance contexts (`PROVENANCE_CONTEXTS`) seen on either SHA and excluded from the verdict.
+    provenance: [...provenanceSeen].sort(),
   }
 
   if (readError != null) {

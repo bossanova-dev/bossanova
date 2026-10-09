@@ -362,6 +362,27 @@ func (c *authCloudAccessClient) remote(ctx context.Context) (*client.RemoteClien
 	return client.NewRemote(c.url, token), nil
 }
 
+// dialCloudRemote dials bosso with mgr's access token. Any failure (no stored
+// login, an expired one, a re-login demand) is wrapped in notLoggedIn with the
+// underlying reason kept in the message, before any request is sent.
+func dialCloudRemote(ctx context.Context, mgr *auth.Manager, url string, notLoggedIn error) (*client.RemoteClient, error) {
+	remote, err := (&authCloudAccessClient{mgr: mgr, url: url}).remote(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w (%v)", notLoggedIn, err)
+	}
+	return remote, nil
+}
+
+// newCloudRemote builds the cloud client from the keychain login, wrapping any
+// failure in notLoggedIn. Shared by the cloud-only command groups.
+func newCloudRemote(cmd *cobra.Command, notLoggedIn error) (*client.RemoteClient, error) {
+	mgr, err := newAuthManager(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("%w (%v)", notLoggedIn, err)
+	}
+	return dialCloudRemote(cmd.Context(), mgr, cloudURL(cmd), notLoggedIn)
+}
+
 func (c *authCloudAccessClient) GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error) {
 	remote, err := c.remote(ctx)
 	if err != nil {

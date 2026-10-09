@@ -261,6 +261,64 @@ func TestRepairFailureHint(t *testing.T) {
 			},
 			want: "repair failed (2×)",
 		},
+		{
+			name: "verifying PR without known errors suppresses stale failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "",
+		},
+		{
+			name: "verifying PR with known failures keeps failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+				DisplayHasFailures:     true,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "repair failed (2×)",
+		},
+		{
+			name: "verifying PR with changes requested keeps failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+				DisplayHasChangesRequested: true,
+				LastRepairAttemptCount:     2,
+				LastRepairExitError:        "exit status 1",
+			},
+			want: "repair failed (2×)",
+		},
+		{
+			name: "needs-human PR without known errors suppresses stale failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "",
+		},
+		{
+			name: "needs-human PR with known failures keeps failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+				DisplayHasFailures:     true,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "repair failed (2×)",
+		},
+		{
+			name: "needs-human PR with changes requested keeps failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+				DisplayHasChangesRequested: true,
+				LastRepairAttemptCount:     2,
+				LastRepairExitError:        "exit status 1",
+			},
+			want: "repair failed (2×)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2007,5 +2065,55 @@ func TestDraftPRFailureHint_AuthAndTransientDoNotCollide(t *testing.T) {
 	}
 	if len([]rune(got)) > hintReasonMaxRunes+1 {
 		t.Fatalf("terminal hint = %q, %d runes — truncation regressed", got, len([]rune(got)))
+	}
+}
+
+// TestRenderDisplayStatus_VerifyRows renders the two BOS-1382 rows from
+// fixtures whose composite comes from displaystatus.Compute: "verifying" spins
+// in the info style, and "needs human" renders static in the warning style with
+// the attention "!" its AWAITING_HUMAN_INPUT overlay raises.
+func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
+	sp := newStatusSpinner()
+	fixture := func(s *pb.Session) *pb.Session {
+		out := displaystatus.Compute(displaystatus.Input{Session: s})
+		s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = out.Label, out.Intent, out.Spinner
+		return s
+	}
+
+	verifying := fixture(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING})
+	gotVerifying := renderDisplayStatus(verifying, sp)
+	if want := styleStatusInfo.Render(sp.View() + "verifying"); gotVerifying != want {
+		t.Errorf("verifying row = %q, want %q (info style with spinner)", gotVerifying, want)
+	}
+	if styled := styledPRStatus(verifying, sp); styled != gotVerifying {
+		t.Errorf("legacy styledPRStatus = %q, want parity with the composite %q", styled, gotVerifying)
+	}
+
+	parked := fixture(&pb.Session{
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			Summary:        "needs human: always-human-path",
+		},
+	})
+	gotParked := renderDisplayStatus(parked, sp)
+	if want := styleStatusWarning.Render("needs human"); gotParked != want {
+		t.Errorf("needs-human row = %q, want %q (warning style, no spinner)", gotParked, want)
+	}
+	if styled := styledPRStatus(parked, sp); styled != gotParked {
+		t.Errorf("legacy styledPRStatus = %q, want parity with the composite %q", styled, gotParked)
+	}
+	if got := renderAttentionIndicator(parked); got != styleStatusWarning.Render("!") {
+		t.Errorf("attention indicator = %q, want the warning %q", got, styleStatusWarning.Render("!"))
+	}
+
+	// Changes requested recolors verifying DANGER in both renderers, like checking.
+	rejected := fixture(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, DisplayHasChangesRequested: true})
+	if got, want := renderDisplayStatus(rejected, sp), styleStatusDanger.Render(sp.View()+"verifying"); got != want {
+		t.Errorf("verifying with changes requested = %q, want %q", got, want)
+	}
+	if styled := styledPRStatus(rejected, sp); styled != styleStatusDanger.Render(sp.View()+"verifying") {
+		t.Errorf("legacy styledPRStatus with changes requested = %q", styled)
 	}
 }

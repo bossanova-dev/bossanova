@@ -308,6 +308,47 @@ func (c TmuxIdleReapConfig) IdleThreshold() time.Duration {
 	return 8 * time.Hour
 }
 
+// NotesConfig holds bossd's note-retention policy (BOS-1384). Notes are pruned
+// per repo, on each fresh note insert in that repo: rows older than the
+// retention window go, then the repo is trimmed to its newest MaxPerRepo
+// notes. Both knobs are defaulted, so a fresh settings.json carries no block.
+//
+// The fields are *int rather than int because 0 is a meaningful setting
+// ("unlimited"): a plain int with omitempty cannot tell "unset" apart from an
+// explicit 0, and would silently drop the opt-out on the next settings save.
+// A negative value falls back to the default rather than failing, so a
+// hand-edit typo can neither disable retention nor block daemon start.
+type NotesConfig struct {
+	RetentionDays *int `json:"retention_days,omitempty"`
+	MaxPerRepo    *int `json:"max_per_repo,omitempty"`
+}
+
+// DefaultNotesRetentionDays and DefaultNotesMaxPerRepo are the shipped
+// retention defaults: about six months, and 10,000 notes per repo.
+const (
+	DefaultNotesRetentionDays = 180
+	DefaultNotesMaxPerRepo    = 10000
+)
+
+// RetentionDaysOrDefault returns the effective retention window in days.
+// Unset or negative means the default (180); 0 means keep forever.
+func (c NotesConfig) RetentionDaysOrDefault() int {
+	return nonNegativeOrDefault(c.RetentionDays, DefaultNotesRetentionDays)
+}
+
+// MaxPerRepoOrDefault returns the effective per-repo note cap. Unset or
+// negative means the default (10,000); 0 means no cap.
+func (c NotesConfig) MaxPerRepoOrDefault() int {
+	return nonNegativeOrDefault(c.MaxPerRepo, DefaultNotesMaxPerRepo)
+}
+
+func nonNegativeOrDefault(v *int, def int) int {
+	if v == nil || *v < 0 {
+		return def
+	}
+	return *v
+}
+
 // TmuxDeliveryConfig holds the composer-readiness budgets bossd waits out
 // before it delivers input into a tmux pane (BOS-893). The wait polls
 // capture-pane for the agent's composer prompt glyph; the budget is what bounds
@@ -1497,6 +1538,7 @@ type Settings struct {
 	TmuxReaper            TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
 	TmuxIdleReap          TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
 	TmuxDelivery          TmuxDeliveryConfig    `json:"tmux_delivery,omitzero"`
+	Notes                 NotesConfig           `json:"notes,omitzero"`
 	ProvidersAcknowledged bool                  `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders   []string              `json:"known_agent_providers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this

@@ -26,6 +26,7 @@ go_test(
     srcs = [
         "broadcast_test.go",
         "convert_test.go",
+        "cron_job_test.go",
         "merge_strategy_test.go",
     ],
     embed = [":models"],

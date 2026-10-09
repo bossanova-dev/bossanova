@@ -509,6 +509,14 @@ type RefMsg struct {
 // it. It is registered LAST on purpose: Changes.Apply iterates in reverse, so it
 // runs FIRST, and only then does WaitingChatStatusChange's exact waiting-label
 // guard still match the rows this change is about.
+//
+// VerifyDisplayStatusChange (introduced at V20260916), which maps BOS-1382's
+// DISPLAY_STATUS_VERIFYING / DISPLAY_STATUS_NEEDS_HUMAN back to
+// DISPLAY_STATUS_CHECKING on Session.display_status and
+// Session.merge_block.display_status, restores the "checking" composite, and
+// clears the verify-park AWAITING_HUMAN_INPUT attention. It is the newest
+// change, so it runs first, and every older display transform then sees the
+// CHECKING shape it was written against.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -561,6 +569,8 @@ func ProductionChanges() *Changes {
 		RefreshChainUnprovenOutcomeChange{},
 		SessionListRankOrderChange{},
 		WaitingDemotionLabelChange{},
+		VerifyDisplayStatusChange{},
+		ReadyDisplayLabelChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -1471,10 +1481,16 @@ func downconvertLimitedSession(s *pb.Session) *pb.Session {
 	// failure that used to read "? PR failed". DraftPRFailureLabelChange cannot
 	// cover it: this session is usage-limited, which that transform exempts, so
 	// it returns untouched long before this change runs last in the chain.
+	// This legacy cascade predates Ready. Its synthetic IDLE input must not
+	// reintroduce Ready after the newer inverse has already run. Preserve the
+	// additive receipt fact on the response; suppress it only during computation.
+	receipt := clone.HasBuildReceipt
+	clone.HasBuildReceipt = false
 	out := displaystatus.ComputeBasePreDraftPRFailure(displaystatus.Input{
 		Session:    clone,
 		ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE,
 	})
+	clone.HasBuildReceipt = receipt
 	clone.DisplayLabel = out.Label
 	clone.DisplayIntent = out.Intent
 	clone.DisplaySpinner = out.Spinner
@@ -2226,6 +2242,120 @@ func (WaitingDemotionLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertWaitingDemotedSession)
 }
 
+// VerifyDisplayStatusChange is the production VersionChange introduced at
+// V20260916.
+//
+// At V20260916 the daemon stopped counting a pending boss/verify commit status
+// as ordinary pending CI (BOS-1382). Where that check used to force
+// DISPLAY_STATUS_CHECKING, the OrchestratorService now serves
+// DISPLAY_STATUS_VERIFYING (a live claim or an unclaimed head) or
+// DISPLAY_STATUS_NEEDS_HUMAN (the verify stage parked the head), on
+// Session.display_status and Session.merge_block.display_status, with the
+// matching "verifying" / "needs human" composite, and — for NEEDS_HUMAN on a
+// session with no other attention — an ATTENTION_REASON_AWAITING_HUMAN_INPUT
+// attention whose summary carries the park reason. A client pinned to an older
+// version was built before the enum values, labels and that attention existed,
+// so for any request resolved older than V20260916 this change restores what
+// it used to receive:
+//
+//   - display_status and merge_block.display_status VERIFYING/NEEDS_HUMAN →
+//     CHECKING. merge_block.gate is already GATE_PENDING for both, the gate
+//     Checking reported, so it is untouched; the detail text is restored to
+//     Checking's wording.
+//   - the composite is restored via displaystatus.PreVerifyStatusOutput.
+//   - the verify-park attention is cleared. It is identified exactly by reason
+//     AWAITING_HUMAN_INPUT on a non-ORPHANED session whose display_status is
+//     NEEDS_HUMAN: ComputeAttentionStatus emits that reason only for an
+//     orphaned session, and the bossd overlay (HydrateVerifyAttention) only
+//     fills an empty attention.
+//
+// The precedence was chosen so this is an exact inverse: every input that now
+// produces VERIFYING or NEEDS_HUMAN produced CHECKING before, with the same
+// changes-requested metadata.
+//
+// Changes.Apply iterates newest-first, so this change runs FIRST. The older
+// display transforms (ErroredStatusChange, DraftPRFailureLabelChange,
+// WaitingChatStatusChange, WaitingDemotionLabelChange) therefore see the
+// CHECKING shape they were written against and compose exactly as before.
+//
+// It targets the same carriers DraftPRFailureLabelChange does: the full unary
+// session-bearing OrchestratorService set PLUS the created message of the
+// streaming ProxyCreateSession.
+type VerifyDisplayStatusChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260916, so
+// it is applied to any request resolved to a strictly older version.
+func (VerifyDisplayStatusChange) Version() Version { return V20260916 }
+
+// preVerifyMergeBlockDetail is the merge_block detail vcs.DeriveMergeBlock
+// produced for DISPLAY_STATUS_CHECKING before BOS-1382. It is a literal rather
+// than a lookup so a later edit to the live wording cannot silently change what
+// a pinned client receives.
+const preVerifyMergeBlockDetail = "CI checks are still running or mergeability is unknown"
+
+// isVerifyDisplayStatus reports whether s is one of the BOS-1382 statuses.
+func isVerifyDisplayStatus(s pb.DisplayStatus) bool {
+	return s == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING ||
+		s == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
+}
+
+// isVerifyParkAttention reports whether s carries the attention the bossd
+// verify-park overlay sets, and nothing else could have produced.
+func isVerifyParkAttention(s *pb.Session) bool {
+	return s.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
+		s.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
+		s.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
+}
+
+// downconvertVerifySession returns the Session to place in the response for a
+// pre-V20260916 client. Cloning is essential, as for every session transform
+// here: bosso's single-instance registry path holds the same pointers it
+// caches. Only sessions carrying a verify status allocate.
+func downconvertVerifySession(s *pb.Session) *pb.Session {
+	if s == nil || (!isVerifyDisplayStatus(s.GetDisplayStatus()) &&
+		!isVerifyDisplayStatus(s.GetMergeBlock().GetDisplayStatus())) {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	// Order matters: the attention discriminator and the composite inverse both
+	// read the CURRENT display_status, so they run before it is rewritten.
+	if isVerifyParkAttention(clone) {
+		clone.AttentionStatus = nil
+	}
+	out := displaystatus.PreVerifyStatusOutput(clone)
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	if isVerifyDisplayStatus(clone.GetDisplayStatus()) {
+		clone.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CHECKING
+	}
+	if mb := clone.GetMergeBlock(); mb != nil && isVerifyDisplayStatus(mb.GetDisplayStatus()) {
+		mb.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CHECKING
+		mb.Detail = preVerifyMergeBlockDetail
+	}
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the pre-BOS-1382
+// CHECKING shape on every session-bearing response — the unary set and the
+// streamed ProxyCreateSession created message alike.
+func (VerifyDisplayStatusChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertVerifySession) {
+		return
+	}
+	switch method {
+	case bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure:
+		if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
+			if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
+				created.Created = downconvertVerifySession(created.Created)
+			}
+		}
+	}
+}
+
 // NoEligibleAccountChange is the production VersionChange introduced at V20260711.
 //
 // At V20260711 the OrchestratorService began serving the RotationOutcome value
@@ -2702,4 +2832,32 @@ func (SwitchActiveOrganizationRetiredMessageChange) TransformError(method string
 		return err
 	}
 	return connect.NewError(connect.CodeUnimplemented, errors.New(legacySwitchActiveOrganizationMessage))
+}
+
+// ReadyDisplayLabelChange restores the composite preceding Ready for pinned
+// clients. The inverse mark is stamped by ListSessions only: single-session
+// reads restore the green PR tuple for Ready-over-waiting rows (the existing
+// transport-only discriminator gap); no marker is persisted.
+type ReadyDisplayLabelChange struct{}
+
+func (ReadyDisplayLabelChange) Version() Version { return V20260916 }
+
+func downconvertReadySession(s *pb.Session) *pb.Session {
+	if s == nil || !displaystatus.IsReadyLabel(s.GetDisplayLabel()) {
+		return s
+	}
+	out := displaystatus.PreReadyOutput(s)
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse restores every session-bearing unary response.
+func (ReadyDisplayLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertReadySession)
 }

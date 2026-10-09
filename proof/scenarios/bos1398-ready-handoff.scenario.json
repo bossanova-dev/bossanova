@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "title": "BOS-1398 Ready handoff from the head receipt",
+  "fixture": {
+    "preset": "ready-handoff"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Ready outranks both parked chats; push and verify controls retain their labels",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Tidy the changelog entries",
+            "match": "normalized",
+            "label": "Home loaded with four handoff contrast sessions"
+          },
+          "timeoutMs": 10000,
+          "caption": "The first two session rows show Ready; the waiting reasons appear on separate sub-rows beneath their names"
+        },
+        {
+          "expect": {
+            "text": "Tidy the changelog entries[^\\r\\n]*✓ ready",
+            "match": "regex",
+            "label": "Tidy the changelog entries: primary STATUS cell reads ✓ ready on the same line as the session title"
+          },
+          "caption": "Tidy the changelog entries: primary STATUS cell reads ✓ ready on the same line as the session title. A separate waiting: reason sub-row does not replace this session status."
+        },
+        {
+          "expect": {
+            "text": "Split the importer module[^\\r\\n]*✓ ready",
+            "match": "regex",
+            "label": "Split the importer module: primary STATUS cell reads ✓ ready on the same line as the session title"
+          },
+          "caption": "Split the importer module: primary STATUS cell reads ✓ ready on the same line as the session title. A separate waiting: reason sub-row does not replace this session status."
+        },
+        {
+          "expect": {
+            "text": "Update the schema notes[^\\r\\n]*✓ passing",
+            "match": "regex",
+            "label": "Update the schema notes: primary STATUS cell reads ✓ passing on the same line as the session title"
+          },
+          "caption": "Update the schema notes: primary STATUS cell reads ✓ passing on the same line as the session title. A separate waiting: reason sub-row does not replace this session status."
+        },
+        {
+          "expect": {
+            "text": "Inspect the release changes[^\\r\\n]*verifying",
+            "match": "regex",
+            "label": "Inspect the release changes: primary STATUS cell reads verifying on the same line as the session title"
+          },
+          "caption": "Inspect the release changes: primary STATUS cell reads verifying on the same line as the session title. A separate waiting: reason sub-row does not replace this session status."
+        },
+        {
+          "expect": {
+            "text": "waiting: awaiting checks_failed on acme/my-app#1398",
+            "match": "normalized",
+            "label": "First Ready session retains its callback reason on a separate sub-row"
+          },
+          "caption": "The primary STATUS above is ✓ ready. The secondary waiting: awaiting checks_failed line explains the armed callback."
+        },
+        {
+          "key": "enter",
+          "caption": "Open the first Ready session"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Ready session banner and callback reason",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "(✓ ready)",
+            "match": "normalized",
+            "label": "(✓ ready)"
+          },
+          "timeoutMs": 10000,
+          "caption": "The session banner shows (✓ ready), while its separate callback notice reads waiting: awaiting checks_failed. Chat rows may still show waiting."
+        },
+        {
+          "expect": {
+            "text": "waiting: awaiting checks_failed on acme/my-app#1398",
+            "match": "normalized",
+            "label": "waiting: awaiting checks_failed on acme/my-app#1398"
+          },
+          "caption": "The session banner shows (✓ ready), while its separate callback notice reads waiting: awaiting checks_failed. Chat rows may still show waiting."
+        },
+        {
+          "expect": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "[esc] back"
+          },
+          "caption": "The session banner shows (✓ ready), while its separate callback notice reads waiting: awaiting checks_failed. Chat rows may still show waiting."
+        }
+      ]
+    }
+  ]
+}

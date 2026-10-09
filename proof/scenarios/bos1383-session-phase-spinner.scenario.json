@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "title": "BOS-1383 skill-reported phase beside the working spinner",
+  "fixture": {
+    "preset": "session-phase"
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "title": "Home shows a reviewing phase and a plain working control",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "Inspect the release changes",
+            "match": "normalized",
+            "label": "home phase preset loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "Two working sessions show the phased and unphased states"
+        },
+        {
+          "expect": {
+            "text": "Inspect the release changes[^\\r\\n]*[⣾⣽⣻⢿⡿⣟⣯⣷]\\s+reviewing",
+            "match": "regex",
+            "label": "phase spinner in home STATUS cell"
+          },
+          "caption": "The skill reports reviewing next to the working spinner"
+        },
+        {
+          "expect": {
+            "text": "Rebuild the search index[^\\r\\n]*[⣾⣽⣻⢿⡿⣟⣯⣷]\\s+working",
+            "match": "regex",
+            "label": "plain working control retains spinner"
+          },
+          "caption": "A working chat without a phase keeps its working label"
+        },
+        {
+          "key": "enter",
+          "caption": "Open the phased session chat picker"
+        }
+      ]
+    },
+    {
+      "id": "scene-02",
+      "title": "Chat picker shows the same reviewing phase beside its spinner",
+      "steps": [
+        {
+          "waitFor": {
+            "text": "[esc] back",
+            "match": "normalized",
+            "label": "chat picker loaded"
+          },
+          "timeoutMs": 10000,
+          "caption": "The phased session has one chat"
+        },
+        {
+          "expect": {
+            "text": "Inspect the release changes[^\\r\\n]*[⣾⣽⣻⢿⡿⣟⣯⣷]\\s+reviewing",
+            "match": "regex",
+            "label": "chat row phase spinner"
+          },
+          "caption": "The chat status carries the skill-reported phase"
+        }
+      ]
+    }
+  ]
+}

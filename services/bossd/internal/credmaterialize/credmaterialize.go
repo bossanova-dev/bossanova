@@ -283,6 +283,14 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		} else if reconciled != nil {
 			authBlob = reconciled
 		}
+		if codexAuthAccountID(authBlob) == "" {
+			// Not fatal: the provider is still the authority on whether the
+			// credential works. But codex cannot recover from a 401 without an
+			// account id, and the error it reports then reads like a revoked
+			// login, so name the real cause where an operator will look.
+			m.logger.Warn().Str("account_id", accountID).
+				Msg("credmaterialize: codex auth.json has no tokens.account_id and the id_token carries no chatgpt_account_id to derive one from; codex cannot recover from a 401 without it")
+		}
 
 		if err := atomicWriteFile(authPath, authBlob, 0o600); err != nil {
 			return fmt.Errorf("write codex auth.json at %q: %w", authPath, err)
@@ -365,6 +373,17 @@ func (m *Materializer) projectCodexBaseHome(accountHome string) error {
 		// leak across accounts and, because projection insists on owning the name,
 		// fail every materialization after the first.
 		if entry.Name() == authFileName || entry.Name() == authHashFileName {
+			continue
+		}
+		if isAccountLocalCodexEntry(entry.Name()) {
+			// Withdraw a projection made before the entry was known to be
+			// account-local, so codex can create its own directory there. A real
+			// directory at this name is codex's own and the expected steady state,
+			// so it is left alone without the foreign-entry warning.
+			if err := removeStaleProjection(filepath.Join(accountHome, entry.Name()), canonicalBase); err != nil &&
+				!errors.Is(err, errForeignAccountEntry) {
+				return err
+			}
 			continue
 		}
 		source, projectable, err := validatedBaseHomeEntry(canonicalBase, entry.Name())
@@ -581,6 +600,22 @@ func isOptionalCodexBaseEntry(name string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// isAccountLocalCodexEntry identifies base-home entries holding the state of
+// the background app-server daemon codex runs per CODEX_HOME: its pid, lock and
+// socket, and its startup lock. They are never projected. Codex refuses to start
+// when its daemon state directory is a symlink ("socket directory path exists and
+// is not a directory"), which kills every managed pane at launch; and sharing it
+// would hand an account-home codex the daemon running under the base home's own
+// login.
+func isAccountLocalCodexEntry(name string) bool {
+	switch name {
+	case "app-server-daemon", "app-server-control":
+		return true
+	default:
+		return false
 	}
 }
 

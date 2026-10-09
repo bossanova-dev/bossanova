@@ -38,4 +38,68 @@ type Note struct {
 	Tags      []string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Sync is the note's cloud-sync outbox state (BOS-1429). Nil when the note
+	// has no outbox row, which a store that predates the outbox never writes.
+	Sync *NoteSyncState
+}
+
+// NoteSyncStatus is where a note's latest local version stands in the
+// daemon-to-Bosso sync pipeline. The values mirror the CHECK constraint on
+// note_sync_states.sync_state.
+type NoteSyncStatus string
+
+const (
+	// NoteSyncPending means a local version has not yet been accepted by the
+	// cloud; the sync worker will send it when next_attempt_at is due.
+	NoteSyncPending NoteSyncStatus = "pending"
+	// NoteSyncSynced means the cloud accepted the version in SyncedVersion.
+	NoteSyncSynced NoteSyncStatus = "synced"
+	// NoteSyncRejected means the cloud permanently refused the payload as
+	// invalid; retrying the same version cannot succeed.
+	NoteSyncRejected NoteSyncStatus = "rejected"
+	// NoteSyncRateLimited means the cloud asked the daemon to back off; the
+	// worker retries after next_attempt_at.
+	NoteSyncRateLimited NoteSyncStatus = "rate_limited"
+	// NoteSyncExpired means the note is older than the cloud retention window,
+	// so the cloud will never hold it.
+	NoteSyncExpired NoteSyncStatus = "expired"
+	// NoteSyncNotEntitled means the connected organization's plan does not
+	// include note sync.
+	NoteSyncNotEntitled NoteSyncStatus = "not_entitled"
+	// NoteSyncRefused means the cloud declined the note for a policy reason
+	// other than entitlement.
+	NoteSyncRefused NoteSyncStatus = "refused"
+	// NoteSyncSuppressed means sync was deliberately skipped for this note
+	// (for example the repo is not mapped to an organization).
+	NoteSyncSuppressed NoteSyncStatus = "suppressed"
+	// NoteSyncFailed means the last attempt hit a transient error; the worker
+	// retries after next_attempt_at.
+	NoteSyncFailed NoteSyncStatus = "failed"
+)
+
+// Valid reports whether s is one of the defined sync states.
+func (s NoteSyncStatus) Valid() bool {
+	switch s {
+	case NoteSyncPending, NoteSyncSynced, NoteSyncRejected, NoteSyncRateLimited,
+		NoteSyncExpired, NoteSyncNotEntitled, NoteSyncRefused, NoteSyncSuppressed,
+		NoteSyncFailed:
+		return true
+	}
+	return false
+}
+
+// NoteSyncState is one note's row in the sync outbox. SourceVersion counts
+// local writes (create = 1, every update or delete bumps it); SyncedVersion is
+// the last version the cloud accepted, 0 when none has been.
+type NoteSyncState struct {
+	State           NoteSyncStatus
+	SourceVersion   int64
+	SyncedVersion   int64
+	IsDeleted       bool
+	AttemptCount    int
+	NextAttemptAt   *time.Time
+	LastAttemptedAt *time.Time
+	SyncedAt        *time.Time
+	OrganizationID  *string
+	LastError       *string
 }

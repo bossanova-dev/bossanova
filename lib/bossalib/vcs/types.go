@@ -3,6 +3,7 @@ package vcs
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrRepoNotReady is returned when a repository does not have enough commit
@@ -199,6 +200,17 @@ func (pr *PRStatus) ConflictBlockKind(rebaseStrategy bool) ConflictBlockKind {
 	return ConflictBlockNone
 }
 
+// CheckSet is the current PR head's checks and its build provenance receipt.
+// The receipt is separate from Checks because it is not a CI gate.
+type CheckSet struct {
+	Checks []CheckResult
+	// HasBuildReceipt is true only for a success boss/build status on the head.
+	HasBuildReceipt bool
+	// BuildReceiptSeen is true when any boss/build status, in any state, is on
+	// the head. A receipt carrier must not post over an existing one.
+	BuildReceiptSeen bool
+}
+
 // CheckResult represents the result of a single CI check.
 type CheckResult struct {
 	ID     string
@@ -208,6 +220,10 @@ type CheckResult struct {
 	// string; verdict evaluation treats it as unknown, never as a pass.
 	Unclassified bool
 	Conclusion   *CheckConclusion
+	// Description is the provider's free-text description of the check. For a
+	// commit status it is the status description; ClassifyVerify reads it to
+	// tell a live boss/verify claim from a park awaiting a human.
+	Description string
 }
 
 // WorkflowRun is one GitHub Actions workflow run for a commit. Status is the
@@ -247,6 +263,30 @@ type CreatePROpts struct {
 	Title      string
 	Body       string
 	Draft      bool
+}
+
+// MergePROpts configures a merge. The zero value is today's behaviour.
+type MergePROpts struct {
+	Strategy        string // "merge" | "squash" | "rebase"; empty = "merge"
+	ExpectedHeadSHA string // optional; when set the remote refuses unless the PR head equals it
+}
+
+// NormalizeHeadSHA validates a full commit SHA used to pin a merge. It trims
+// surrounding whitespace, accepts exactly 40 hex characters of either case,
+// and returns the lowercase form. Abbreviated SHAs are rejected: a pin must
+// name exactly one commit.
+func NormalizeHeadSHA(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) != 40 {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return "", false
+		}
+	}
+	return strings.ToLower(s), true
 }
 
 // PRInfo is the result of creating a pull/merge request.

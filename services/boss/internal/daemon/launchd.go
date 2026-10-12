@@ -1167,13 +1167,22 @@ func parseLaunchctlListPID(out []byte, label string) (pid int, known bool) {
 	return pid, known
 }
 
-// platformEnsureRunning attempts to start the daemon via LaunchAgent or fallback.
+// platformEnsureRunning is platformEnsureRunningWithPolicy under the
+// historic allow-detached policy.
+func platformEnsureRunning(socketPath string) (StartMode, error) {
+	return platformEnsureRunningWithPolicy(socketPath, AllowDetachedFallback)
+}
+
+// platformEnsureRunningWithPolicy attempts to start the daemon via LaunchAgent
+// or fallback.
 //
 // The returned StartMode says which of those two happened. BOS-1183: the
 // fallback is unsupervised, and the caller has no other way to tell — both
-// paths return a nil error and a serving socket. The control flow here is
-// unchanged; only the verdict is threaded out.
-func platformEnsureRunning(socketPath string) (StartMode, error) {
+// paths return a nil error and a serving socket.
+//
+// BOS-1519: under RefuseDetachedFallbackWhenServiceInstalled the fallback is
+// refused whenever a LaunchAgent or watchdog is installed and did not serve.
+func platformEnsureRunningWithPolicy(socketPath string, policy DetachedFallbackPolicy) (StartMode, error) {
 	// Re-probe: a daemon may have come up (or another caller started one) since
 	// EnsureRunning's initial check. Spawning a duplicate bossd here is the root
 	// cause of the socket-stealing storm, so never start one if the socket is
@@ -1218,8 +1227,16 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 		WatchdogPlistPresent: watchdogPlistPresent,
 	})
 
+	// installedService names the service that should have served the socket
+	// when one is installed and did not; installedReason says why, when that
+	// is known. Both stay empty on a host with no service installed, which is
+	// the one host the refusing policy still spawns on.
+	var installedService, installedReason string
+	loadLaunchAgent := false
+	serviceRunning := false
+
 	if route != ensureRunningRouteLaunchAgent {
-		mode, done, watchdogErr := ensureRunningOnWatchdog(socketPath, supervision, route)
+		mode, done, watchdogErr := ensureRunningOnWatchdog(socketPath, supervision, route, policy)
 		if done {
 			return mode, watchdogErr
 		}
@@ -1227,8 +1244,20 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 		// detached-spawn block the LaunchAgent arm uses (R3). stagedPath is
 		// still empty, so that block resolves and stages for itself exactly as
 		// it does on a host with no LaunchAgent installed.
-	} else if st, err := platformGetStatus(); err == nil && st.Installed && !st.Running {
-		plistPath, _ := platformServicePath()
+		installedService = watchdogPaths().PlistPath
+		if supervision.Unattended.Err != nil {
+			installedReason = supervision.Unattended.Err.Error()
+		}
+	} else if st, err := platformGetStatus(); err == nil && st.Installed {
+		// Recorded for EITHER running state: the st.Running shape (launchd
+		// reports a live PID, the socket is not served) skips the load below
+		// but is still a service the refusing policy must not spawn beside.
+		installedService = st.ServicePath
+		loadLaunchAgent = !st.Running
+		serviceRunning = st.Running
+	}
+	if loadLaunchAgent {
+		plistPath := installedService
 
 		// BOS-977: the plist names the STAGED copy, so loading it without
 		// refreshing that copy first starts the PREVIOUS build after a package
@@ -1252,10 +1281,25 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 		}
 
 		if _, err := runLaunchctl("load", plistPath); err == nil {
-			if waitForSocket(socketPath, LifecycleStartupTimeout) {
+			if waitForSocket(socketPath, serviceManagerStartWait) {
 				return StartModeServiceManager, nil
 			}
 		}
+	}
+
+	// BOS-1519: an explicit `boss daemon start` must not create the
+	// unsupervised shape beside an installed service — that daemon holds the
+	// singleton lock and the service can only fail against it. This sits
+	// before the resolve/stage work below because none of it is needed for a
+	// refusal.
+	if installedService != "" && policy == RefuseDetachedFallbackWhenServiceInstalled {
+		// A job launchd already reports running may still be binding its
+		// socket (a concurrent start, a supervised respawn); give it the same
+		// startup budget a fresh load gets before refusing.
+		if serviceRunning && waitForSocket(socketPath, serviceManagerStartWait) {
+			return StartModeAlreadyRunning, nil
+		}
+		return refuseDetachedFallback(socketPath, installedService, installedReason)
 	}
 
 	// Fall back to starting bossd directly as a background process. Stage it
@@ -1358,7 +1402,7 @@ var warnUnattendedWatchdogCannotServe = func(install UnattendedInstall) {
 // a claim this arm cannot support and one `boss daemon doctor` would contradict.
 // StartModeAlreadyRunning says exactly what happened: supervision is whatever
 // the running daemon already had, and this call did not change it.
-func ensureRunningOnWatchdog(socketPath string, supervision SupervisionModeStatus, route ensureRunningRoute) (StartMode, bool, error) {
+func ensureRunningOnWatchdog(socketPath string, supervision SupervisionModeStatus, route ensureRunningRoute, policy DetachedFallbackPolicy) (StartMode, bool, error) {
 	// A key reverted to the default, a typo of "unattended", or an unreadable
 	// settings.json all land here with a root job still loaded. This is the
 	// existing residue warning, with its remedy, firing on exactly those arms —
@@ -1397,7 +1441,10 @@ func ensureRunningOnWatchdog(socketPath string, supervision SupervisionModeStatu
 	// ErrWatchdogRecoveryFailed — announcing a spawn that was refused two lines
 	// later, with a remedy for a state the operator was not in. The root arm
 	// carries its own explanation in that error instead.
-	if !wait {
+	//
+	// BOS-1519: under the refusing policy no such spawn happens, so the claim
+	// would be false; the caller's refusal carries the same reason instead.
+	if !wait && policy != RefuseDetachedFallbackWhenServiceInstalled {
 		warnUnattendedWatchdogCannotServe(supervision.Unattended)
 	}
 	if wait && waitForSocket(socketPath, watchdogRespawnWait) {

@@ -384,3 +384,13 @@ func TestResolveBossdPath_PrefersExecutableDir(t *testing.T) {
 		t.Errorf("ResolveBossdPath = %q, want %q (executable-dir bossd should win over PATH)", got, candidate)
 	}
 }
+
+// shrinkServiceManagerStartWait shrinks the service-manager wait budget so a
+// test whose service manager never serves the socket cannot sleep for
+// LifecycleStartupTimeout.
+func shrinkServiceManagerStartWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	original := serviceManagerStartWait
+	serviceManagerStartWait = d
+	t.Cleanup(func() { serviceManagerStartWait = original })
+}

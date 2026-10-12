@@ -78,6 +78,53 @@ func TestPlanCompleteWithoutHasPR(t *testing.T) {
 	assertState(t, m, PushingBranch)
 }
 
+// TestPlanCompleteRejectedForQuickChat pins BOS-1514: a quick chat has no
+// branch to push and no PR to await, so PlanComplete out of ImplementingPlan
+// must be refused rather than routed into the PR pipeline.
+func TestPlanCompleteRejectedForQuickChat(t *testing.T) {
+	m := NewWithContext(ImplementingPlan, &SessionContext{IsQuickChat: true})
+	if m.CanFire(PlanComplete) {
+		t.Fatal("CanFire(PlanComplete) = true for a quick chat, want false")
+	}
+	if err := m.Fire(PlanComplete); err == nil {
+		t.Fatal("Fire(PlanComplete) succeeded for a quick chat, want error")
+	}
+	assertState(t, m, ImplementingPlan)
+
+	// The guard only blocks PlanComplete: the other ImplementingPlan exits
+	// stay legal for a quick chat.
+	for _, e := range []Event{FinalizeRequested, Block, Orphan, PRClosed} {
+		qc := NewWithContext(ImplementingPlan, &SessionContext{IsQuickChat: true})
+		if !qc.CanFire(e) {
+			t.Errorf("CanFire(%s) = false for a quick chat, want true", e)
+		}
+		if err := qc.Fire(e); err != nil {
+			t.Errorf("Fire(%s) for a quick chat: %v", e, err)
+		}
+	}
+}
+
+// TestPlanCompleteNonQuickChatUnchanged is the control for the quick-chat
+// guard: a non-quick session still routes by HasPR.
+func TestPlanCompleteNonQuickChatUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		hasPR bool
+		want  State
+	}{
+		{hasPR: false, want: PushingBranch},
+		{hasPR: true, want: AwaitingChecks},
+	} {
+		m := NewWithContext(ImplementingPlan, &SessionContext{HasPR: tc.hasPR, IsQuickChat: false})
+		if !m.CanFire(PlanComplete) {
+			t.Fatalf("HasPR=%v: CanFire(PlanComplete) = false, want true", tc.hasPR)
+		}
+		if err := m.Fire(PlanComplete); err != nil {
+			t.Fatalf("HasPR=%v: Fire(PlanComplete): %v", tc.hasPR, err)
+		}
+		assertState(t, m, tc.want)
+	}
+}
+
 func TestFixLoopChecksFailed(t *testing.T) {
 	m := New(CreatingWorktree)
 

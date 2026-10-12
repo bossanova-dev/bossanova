@@ -118,6 +118,9 @@ export const VENDOR_MAP = {
     // Its import closure (commit-status, merge-eligibility, pr-check-state, skill-config,
     // skill-extensions, tracker/adapter) already ships here.
     'verify-gate.mjs',
+    // BOS-1515: followup-route.mjs decides which follow-ups reach the ledger sections that park a
+    // PR at verify; its only import is main-module.mjs.
+    'followup-route.mjs',
     // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
     // the skill prose cites; it imports bs-run-sentinel.mjs and dag-scheduler.mjs,
     // both already ship here for the review sentinel and tracker scheduler.

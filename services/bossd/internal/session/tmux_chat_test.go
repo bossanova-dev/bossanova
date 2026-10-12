@@ -4631,3 +4631,29 @@ func TestStartTmuxChat_FreshLaunchUsesCallerMintedID(t *testing.T) {
 		t.Fatalf("BuildInteractiveCommand session id = %q, want caller-minted", got)
 	}
 }
+
+// TestManagedSessionEnv_ZeroOutputMarker: only an unattended run in the
+// repository checkout is told it is zero-output — the marker a finished run
+// reads to end its own session with `boss archive`.
+func TestManagedSessionEnv_ZeroOutputMarker(t *testing.T) {
+	job := "cron-7"
+	for name, tc := range map[string]struct {
+		sess *models.Session
+		want bool
+	}{
+		"cron zero-output":     {&models.Session{ID: "s1", Title: "Plan", CronJobID: &job, IsQuickChat: true}, true},
+		"trigger zero-output":  {&models.Session{ID: "s2", Title: "Hook", IsTmuxUnattended: true, IsQuickChat: true}, true},
+		"cron with a worktree": {&models.Session{ID: "s3", Title: "Build", CronJobID: &job}, false},
+		"attended quick chat":  {&models.Session{ID: "s4", Title: "Chat", IsQuickChat: true}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := ManagedSessionEnv(tc.sess, "agent-1", "claude")[zeroOutputEnvKey]
+			if tc.want && got != "true" {
+				t.Fatalf("%s = %q, want true", zeroOutputEnvKey, got)
+			}
+			if !tc.want && ok {
+				t.Fatalf("%s set to %q, want absent", zeroOutputEnvKey, got)
+			}
+		})
+	}
+}

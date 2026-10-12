@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import {
   CLAIM_STALE_AFTER_MS,
+  FOREIGN_BASE_EVENTS,
   HUMAN_REASONS,
   HUMAN_REVIEW_CATEGORIES,
   HUMAN_REVIEW_REASON_PREFIX,
@@ -32,6 +33,7 @@ import {
   resolveApprovalAnchor,
   rearm,
   rearmArgv,
+  selectBaseOwnCheckRuns,
   verifyMarker,
 } from './verify-gate.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from './skill-config.mjs'
@@ -236,6 +238,10 @@ function world(opts = {}) {
         if (w.base === null) return fail()
         return ok({ sha: BASE })
       }
+      if (path.includes(`actions/runs?head_sha=${BASE}`)) {
+        if (w.base.workflowRunsFail) return fail()
+        return ok(w.base.workflowRuns ?? [{ total_count: 0, workflow_runs: [] }])
+      }
       if (path.includes(`commits/${BASE}/check-runs`)) return ok(w.base.runs)
       if (path.includes(`commits/${BASE}/status`)) return ok({ statuses: w.base.statuses })
       return fail()
@@ -433,11 +439,20 @@ test('judge waits, never defects, on unsettled or red head CI, a draft and a clo
 })
 
 test('judge base-red guard: red waits, unreadable waits with a note, pending and green proceed', async () => {
+  const redBase = {
+    runs: [{ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] }],
+    statuses: [{ context: 'boss/build', state: 'success' }],
+  }
+  // A PR merges on its own merits by default: a red base holds it only when the base's policy
+  // opts in with requireGreenBase.
+  assert.equal(
+    (await judge({ pr: 7, repo: REPO }, deps(world({ base: redBase })))).verdict,
+    'pass',
+    'a red base does not hold a green, judged PR by default',
+  )
   const red = world({
-    base: {
-      runs: [{ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'failure' }] }],
-      statuses: [{ context: 'boss/build', state: 'success' }],
-    },
+    base: redBase,
+    baseConfig: JSON.stringify({ verifyDefaults: { requireGreenBase: true } }),
   })
   const r1 = await judge({ pr: 7, repo: REPO }, deps(red))
   assert.equal(r1.verdict, 'wait')
@@ -467,6 +482,271 @@ test('judge base-red guard: red waits, unreadable waits with a note, pending and
     'pass',
     'a red boss/* status on the base is not base CI',
   )
+})
+
+// Base-own CI fixtures: a workflow run per suite and an Actions check run attached to it.
+const wfRun = (suite, event, name = `wf-${suite}`, headSha = BASE) => ({
+  id: suite * 10,
+  check_suite_id: suite,
+  event,
+  name,
+  head_sha: headSha,
+})
+const actionsCheck = (suite, name, conclusion, extra = {}) => ({
+  id: suite * 100,
+  name,
+  app: { slug: 'github-actions' },
+  check_suite: { id: suite },
+  status: conclusion === null ? 'in_progress' : 'completed',
+  conclusion,
+  ...extra,
+})
+// The base guard only runs for a repo that opts in, so these worlds carry a base policy that does.
+const REQUIRE_GREEN_BASE = JSON.stringify({ verifyDefaults: { requireGreenBase: true } })
+
+const baseWorld = (workflowRuns, checkRuns, extra = {}) =>
+  world({
+    base: {
+      runs: [{ total_count: checkRuns.length, check_runs: checkRuns }],
+      statuses: [],
+      workflowRuns: [{ total_count: workflowRuns.length, workflow_runs: workflowRuns }],
+      ...extra,
+    },
+    baseConfig: REQUIRE_GREEN_BASE,
+  })
+
+test('selectBaseOwnCheckRuns drops PR-event suites, keeps base-own and non-Actions runs', () => {
+  const r = selectBaseOwnCheckRuns({
+    sha: BASE,
+    workflowRuns: [
+      { total_count: 3, workflow_runs: [wfRun(1, 'push'), wfRun(2, 'pull_request')] },
+      { total_count: 3, workflow_runs: [wfRun(3, 'merge_group')] },
+    ],
+    checkRuns: [
+      {
+        total_count: 4,
+        check_runs: [
+          actionsCheck(1, 'scripts', 'success'),
+          actionsCheck(2, 'web-e2e', 'failure'),
+          actionsCheck(3, 'queue', 'failure'),
+          { id: 9, name: 'gitguardian', app: { slug: 'gitguardian' }, status: 'completed' },
+        ],
+      },
+    ],
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.foreign, 2)
+  assert.deepEqual(r.checkRuns.map((c) => c.name).sort(), ['gitguardian', 'scripts'])
+  assert.ok(Object.isFrozen(FOREIGN_BASE_EVENTS))
+})
+
+test('selectBaseOwnCheckRuns names unreadable, truncated and unattributed inputs', () => {
+  const page = (runs) => [{ total_count: runs.length, workflow_runs: runs }]
+  const checks = (list) => [{ total_count: list.length, check_runs: list }]
+  for (const [input, reason] of [
+    [{ workflowRuns: null, checkRuns: checks([]) }, 'base-runs-unreadable'],
+    [{ workflowRuns: [{ workflow_runs: 'x' }], checkRuns: checks([]) }, 'base-runs-unreadable'],
+    [
+      {
+        workflowRuns: [{ total_count: 2, workflow_runs: [wfRun(1, 'push')] }],
+        checkRuns: checks([]),
+      },
+      'base-runs-truncated',
+    ],
+    [{ workflowRuns: page([]), checkRuns: null }, 'base-check-runs-unreadable'],
+    [
+      { workflowRuns: page([]), checkRuns: [{ total_count: 5, check_runs: [] }] },
+      'base-check-runs-truncated',
+    ],
+    [
+      {
+        workflowRuns: page([wfRun(1, 'push')]),
+        checkRuns: checks([actionsCheck(7, 'ci', 'success')]),
+      },
+      'base-suite-unattributed',
+    ],
+    [
+      {
+        workflowRuns: page([wfRun(1, 'push', 'wf', 'c'.repeat(40))]),
+        checkRuns: checks([actionsCheck(1, 'ci', 'success')]),
+      },
+      'base-suite-unattributed',
+    ],
+    [
+      {
+        workflowRuns: page([]),
+        checkRuns: checks([{ ...actionsCheck(1, 'ci', 'success'), check_suite: undefined }]),
+      },
+      'base-suite-unattributed',
+    ],
+  ]) {
+    const r = selectBaseOwnCheckRuns({ sha: BASE, ...input })
+    assert.deepEqual(r, { ok: false, reason }, reason)
+  }
+})
+
+test('selectBaseOwnCheckRuns keeps same-named workflows with distinct ids apart', () => {
+  const run = (suite, workflowId) => ({ ...wfRun(suite, 'push', 'CI'), workflow_id: workflowId })
+  const r = selectBaseOwnCheckRuns({
+    sha: BASE,
+    workflowRuns: [{ total_count: 2, workflow_runs: [run(1, 11), run(2, 22)] }],
+    checkRuns: [
+      {
+        total_count: 2,
+        check_runs: [
+          actionsCheck(1, 'test', 'failure', { completed_at: '2026-01-01T00:00:00Z' }),
+          actionsCheck(2, 'test', 'success', { completed_at: '2026-01-02T00:00:00Z' }),
+        ],
+      },
+    ],
+  })
+  assert.equal(r.ok, true)
+  assert.deepEqual(
+    r.checkRuns.map((c) => c.conclusion).sort(),
+    ['failure', 'success'],
+    'a newer pass in one workflow must not hide a failure in another workflow of the same name',
+  )
+})
+
+test('selectBaseOwnCheckRuns lets the newest completed run decide duplicates in one workflow', () => {
+  const pick = (checkRuns) =>
+    selectBaseOwnCheckRuns({
+      sha: BASE,
+      workflowRuns: [
+        { workflow_runs: [wfRun(1, 'schedule', 'nightly'), wfRun(2, 'schedule', 'nightly')] },
+      ],
+      checkRuns: [{ check_runs: checkRuns }],
+    }).checkRuns
+  const older = { completed_at: '2026-10-12T00:00:00Z', started_at: '2026-10-11T23:50:00Z' }
+  const newer = { completed_at: '2026-10-12T01:00:00Z', started_at: '2026-10-12T00:50:00Z' }
+  const decided = pick([
+    actionsCheck(1, 'job', 'failure', older),
+    actionsCheck(2, 'job', 'success', newer),
+  ])
+  assert.deepEqual(
+    decided.map((c) => c.conclusion),
+    ['success'],
+  )
+  const pending = pick([
+    actionsCheck(1, 'job', null, { started_at: older.started_at }),
+    actionsCheck(2, 'job', null, { started_at: newer.started_at }),
+  ])
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].check_suite.id, 2, 'no completed run keeps the newest')
+  const separate = selectBaseOwnCheckRuns({
+    sha: BASE,
+    workflowRuns: [{ workflow_runs: [wfRun(1, 'push', 'a'), wfRun(2, 'push', 'b')] }],
+    checkRuns: [
+      { check_runs: [actionsCheck(1, 'test', 'success'), actionsCheck(2, 'test', 'failure')] },
+    ],
+  }).checkRuns
+  assert.equal(separate.length, 2, 'same-named checks in different workflows stay separate')
+})
+
+test('judge base-own CI: a failing release-PR run on the base tip does not block the merge', async () => {
+  const w = baseWorld(
+    [wfRun(1, 'push', 'scripts'), wfRun(2, 'pull_request', 'web (test)')],
+    [actionsCheck(1, 'scripts', 'success'), actionsCheck(2, 'web-e2e', 'failure')],
+  )
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.notEqual(r.reason, 'base-ci-red')
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.facts.base.state, 'ok')
+  assert.ok(r.facts.base.foreign >= 1)
+
+  const prOnly = baseWorld(
+    [wfRun(2, 'pull_request', 'web (test)'), wfRun(3, 'pull_request', 'web (test)')],
+    [actionsCheck(2, 'web-e2e', 'failure'), actionsCheck(3, 'web-e2e', 'success')],
+  )
+  const r2 = await judge({ pr: 7, repo: REPO }, deps(prOnly))
+  assert.equal(r2.verdict, 'pass', 'no base-own gate ran')
+  assert.equal(r2.facts.base.foreign, 2)
+})
+
+test('judge base-own CI: a failing push, schedule or non-Actions run still waits base-ci-red', async () => {
+  for (const event of ['push', 'schedule']) {
+    const w = baseWorld(
+      [wfRun(1, event), wfRun(2, 'pull_request')],
+      [actionsCheck(1, 'ci', 'failure'), actionsCheck(2, 'other', 'success')],
+    )
+    const r = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.equal(r.reason, 'base-ci-red', event)
+    assert.equal(r.facts.base.state, 'red')
+  }
+  const thirdParty = baseWorld(
+    [],
+    [
+      {
+        id: 5,
+        name: 'gitguardian',
+        app: { slug: 'gitguardian' },
+        status: 'completed',
+        conclusion: 'failure',
+      },
+    ],
+  )
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(thirdParty))).reason, 'base-ci-red')
+})
+
+test('judge base-own CI: the newest completed run of one workflow decides', async () => {
+  const at = (h) => ({
+    completed_at: `2026-10-12T0${h}:00:00Z`,
+    started_at: `2026-10-12T0${h}:00:00Z`,
+  })
+  const runs = [wfRun(1, 'schedule', 'nightly'), wfRun(2, 'schedule', 'nightly')]
+  const reasonFor = async (checks) =>
+    (await judge({ pr: 7, repo: REPO }, deps(baseWorld(runs, checks)))).reason
+  assert.equal(
+    await reasonFor([
+      actionsCheck(1, 'job', 'failure', at(1)),
+      actionsCheck(2, 'job', 'success', at(2)),
+    ]),
+    'verified',
+  )
+  assert.equal(
+    await reasonFor([
+      actionsCheck(1, 'job', 'success', at(1)),
+      actionsCheck(2, 'job', 'failure', at(2)),
+    ]),
+    'base-ci-red',
+  )
+  assert.equal(
+    await reasonFor([
+      actionsCheck(1, 'job', 'failure', at(1)),
+      actionsCheck(2, 'job', null, { started_at: at(2).started_at }),
+    ]),
+    'base-ci-red',
+    'an in-progress run does not outvote the newest completed failure',
+  )
+})
+
+test('judge base-own CI: an unattributable, unreadable or truncated read waits base-ci-unknown', async () => {
+  const cases = [
+    [baseWorld([wfRun(1, 'push')], [actionsCheck(9, 'ci', 'success')]), 'base-suite-unattributed'],
+    [baseWorld([], [], { workflowRunsFail: true }), 'base-runs-unreadable'],
+    [
+      world({
+        base: {
+          runs: [{ total_count: 0, check_runs: [] }],
+          statuses: [],
+          workflowRuns: [{ total_count: 150, workflow_runs: [wfRun(1, 'push')] }],
+        },
+        baseConfig: REQUIRE_GREEN_BASE,
+      }),
+      'base-runs-truncated',
+    ],
+  ]
+  for (const [w, check] of cases) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(w))
+    assert.equal(r.verdict, 'wait', check)
+    assert.equal(r.reason, 'base-ci-unknown', check)
+    assert.equal(r.facts.base.check, check)
+    assert.deepEqual(
+      r.notes.map((n) => n.trigger),
+      ['evidence-unknown'],
+      check,
+    )
+  }
 })
 
 test('judge routes a missing receipt to a human and an unreadable one to a wait', async () => {

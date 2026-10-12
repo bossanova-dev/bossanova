@@ -39,7 +39,14 @@ type CronReadyTmuxFake struct {
 	// calls records every (subcommand, args[1:]) invocation other than the
 	// `-V` availability probe. Tests use HasCall / Calls to assert on
 	// daemon behaviour (e.g. that kill-session fired during finalize).
+	// NewSession's stdin-script invocation (BOS-1511) is recorded as the
+	// logical new-session call it delivered on stdin.
 	calls [][]string
+
+	// rawCalls records every process argv exactly as exec'd (minus the
+	// leading "tmux"), including the `-V` probe — what ps would show. Tests
+	// assert on it that no secret ever reaches tmux's argv.
+	rawCalls [][]string
 
 	// liveSessions tracks which named tmux sessions are currently "alive"
 	// from this fake's perspective. new-session adds; kill-session removes.
@@ -169,6 +176,20 @@ func (f *CronReadyTmuxFake) Calls() [][]string {
 	return out
 }
 
+// RawCalls returns a deep copy of every process argv the daemon exec'd as
+// tmux, without the leading "tmux". Unlike Calls it is not decoded: a
+// new-session appears as the `start-server ; source-file -` invocation that
+// actually ran, which is what ps shows to other local users.
+func (f *CronReadyTmuxFake) RawCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.rawCalls))
+	for i, c := range f.rawCalls {
+		out[i] = append([]string(nil), c...)
+	}
+	return out
+}
+
 // cmd is the tmux.CommandFactory implementation. It intentionally does not
 // consume ctx for cancellation control of the returned command — the
 // returned exec.Cmd is bound to ctx via exec.CommandContext so callers'
@@ -179,11 +200,19 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 	}
 	subcommand := args[0]
 
+	f.mu.Lock()
+	f.rawCalls = append(f.rawCalls, append([]string(nil), args...))
+	f.mu.Unlock()
+
 	// Treat `-V` as the availability probe, NOT a recorded subcommand call.
 	// This matches the lifecycle_test.go fakeTmux convention so assertions
 	// on Calls() don't drown in availability noise.
 	if subcommand == "-V" {
 		return exec.CommandContext(ctx, "true")
+	}
+
+	if tmux.IsNewSessionScript(args) {
+		return f.newSessionScript(ctx)
 	}
 
 	f.mu.Lock()
@@ -194,27 +223,6 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 	f.calls = append(f.calls, rec)
 
 	switch subcommand {
-	case "new-session":
-		// Simulate a tmux launch failure: exit non-zero with FailNewSession on
-		// stderr and leave the session absent from liveSessions. Passing the
-		// message as $1 to `sh -c` avoids any shell quoting of its contents.
-		if f.FailNewSession != "" {
-			f.mu.Unlock()
-			// #nosec G204 -- test-only tmux fake; message passed as $1 to `sh -c`, no shell interpolation of its contents
-			// owner=@recurser review-by=2027-01-18 issue=BOS-28
-			return exec.CommandContext(ctx, "sh", "-c",
-				`printf '%s' "$1" >&2; exit 1`, "sh", f.FailNewSession)
-		}
-		// Extract -s <name> so we can mark the session live. tmux's
-		// new-session takes -s NAME; scan args for it.
-		if sessName := scanFlagValue(args[1:], "-s"); sessName != "" {
-			f.liveSessions[sessName] = true
-			f.sessionCreated[sessName] = time.Now()
-			f.sessionEnv[sessName] = scanSessionEnv(args[1:])
-		}
-		f.mu.Unlock()
-		return exec.CommandContext(ctx, "true")
-
 	case "kill-session":
 		if sessName := scanFlagValue(args[1:], "-t"); sessName != "" {
 			delete(f.liveSessions, sessName)
@@ -314,6 +322,55 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 
 	f.mu.Unlock()
 	return exec.CommandContext(ctx, "true")
+}
+
+// newSessionScript answers tmux.Client.NewSession's stdin-script invocation
+// (BOS-1511): the logical `new-session …` argv arrives on stdin, so the fake
+// records a placeholder and lets `cat` echo the script into a
+// tmux.ScriptSink. Once it decodes, the placeholder becomes the logical call
+// and — unless FailNewSession is set — the session is marked live with the
+// `-e` env it was created with. Run waits for that copy, so all of it is in
+// place by the time NewSession returns.
+func (f *CronReadyTmuxFake) newSessionScript(ctx context.Context) *exec.Cmd {
+	f.mu.Lock()
+	idx := len(f.calls)
+	f.calls = append(f.calls, []string{"new-session"})
+	failMsg := f.FailNewSession
+	f.mu.Unlock()
+
+	sink := tmux.NewScriptSink(func(logical []string) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.calls[idx] = append([]string(nil), logical...)
+		if failMsg != "" {
+			return
+		}
+		// Extract -s <name> so we can mark the session live. tmux's
+		// new-session takes -s NAME; scan args for it.
+		if sessName := scanFlagValue(logical[1:], "-s"); sessName != "" {
+			f.liveSessions[sessName] = true
+			f.sessionCreated[sessName] = time.Now()
+			f.sessionEnv[sessName] = scanSessionEnv(logical[1:])
+		}
+	})
+
+	var cmd *exec.Cmd
+	if failMsg != "" {
+		// Simulate a tmux launch failure: exit non-zero with FailNewSession on
+		// stderr and leave the session absent from liveSessions. Passing the
+		// message as $1 to `sh -c` avoids any shell quoting of its contents.
+		// #nosec G204 -- test-only tmux fake; message passed as $1 to `sh -c`, no shell interpolation of its contents
+		// owner=@recurser review-by=2027-01-18 issue=BOS-28
+		cmd = exec.CommandContext(ctx, "sh", "-c",
+			`cat; printf '%s' "$1" >&2; exit 1`, "sh", failMsg)
+	} else {
+		cmd = exec.CommandContext(ctx, "cat")
+	}
+	cmd.Stdout = sink
+	// Bound Wait's output copy on cancellation; production's own
+	// tmuxCommandWaitDelay overwrites this when it runs the command.
+	cmd.WaitDelay = time.Second
+	return cmd
 }
 
 // loadedBufferWriter appends what a faked load-buffer echoes to its slot in

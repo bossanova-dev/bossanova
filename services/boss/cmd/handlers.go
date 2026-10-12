@@ -897,11 +897,12 @@ var daemonGetStatus = daemon.GetStatus
 
 var daemonEnsureRunning = daemon.EnsureRunning
 
-// daemonEnsureRunningWithMode is the same start path as daemonEnsureRunning,
+// daemonEnsureRunningWithPolicy is the same start path as daemonEnsureRunning,
 // kept as a separate seam because only `boss daemon start` reports the mode
-// (BOS-1183). Widening daemonEnsureRunning's signature would ripple through
-// four unrelated callers that have nothing to say about supervision.
-var daemonEnsureRunningWithMode = daemon.EnsureRunningWithMode
+// (BOS-1183) and chooses the detached-fallback policy (BOS-1519). Widening
+// daemonEnsureRunning's signature would ripple through four unrelated callers
+// that have nothing to say about supervision.
+var daemonEnsureRunningWithPolicy = daemon.EnsureRunningWithPolicy
 
 var daemonStop = daemon.Stop
 
@@ -3175,7 +3176,14 @@ func daemonSupervisionLine(
 	}
 }
 
-func runDaemonStart(_ *cobra.Command) error {
+// addDaemonStartFlags defines `boss daemon start`'s flags. It is split out so
+// tests build a command carrying exactly the flags the real one has.
+func addDaemonStartFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("detached", false,
+		"Start an unsupervised bossd directly if the installed service manager does not bring the daemon up")
+}
+
+func runDaemonStart(cmd *cobra.Command) error {
 	socketPath, err := defaultSocketPath()
 	if err != nil {
 		return fmt.Errorf("daemon start: %w", err)
@@ -3184,7 +3192,26 @@ func runDaemonStart(_ *cobra.Command) error {
 		fmt.Println("Daemon is already running.")
 		return nil
 	}
-	mode, err := daemonEnsureRunningWithMode(socketPath)
+	// BOS-1519: the operator asked for THIS start, so with a service installed
+	// the answer is that service or an explanation — never a quietly created
+	// unsupervised daemon that the service can then only fail against.
+	// --detached is the deliberate opt-in to that shape. A command without the
+	// flag defined reads as false, as runDaemonStop does for its own.
+	detached := false
+	if cmd != nil {
+		detached, _ = cmd.Flags().GetBool("detached")
+	}
+	policy := daemon.RefuseDetachedFallbackWhenServiceInstalled
+	if detached {
+		policy = daemon.AllowDetachedFallback
+	}
+	mode, err := daemonEnsureRunningWithPolicy(socketPath, policy)
+	if errors.Is(err, daemon.ErrServiceInstalledNotServing) {
+		return fmt.Errorf("start daemon refused: %w. "+
+			"Run 'boss daemon doctor' to see why the service manager did not serve it, "+
+			"'boss daemon restart' to re-bootstrap the service, "+
+			"or 'boss daemon start --detached' to start an unsupervised daemon deliberately", err)
+	}
 	if err != nil {
 		return fmt.Errorf("start daemon failed: %w", err)
 	}

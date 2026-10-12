@@ -7467,6 +7467,9 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 	}
 
 	deadline, _ := ctx.Deadline()
+	if tmux.IsNewSessionScript(args) {
+		return f.newSessionScript(ctx, deadline)
+	}
 	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...), ctxErr: ctx.Err(), deadline: deadline})
 
 	if f.failSubcommand[subcommand] {
@@ -7486,6 +7489,34 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		return exec.CommandContext(ctx, "printf", "%s", out)
 	}
 	return exec.CommandContext(ctx, "true")
+}
+
+// newSessionScript answers tmux.Client.NewSession's stdin-script invocation
+// (BOS-1511). It records the call as "new-session" straight away — so the
+// failSubcommand / failStderr keys and every new-session assertion keep their
+// meaning — then fills in the args once `cat` has echoed the script into a
+// tmux.ScriptSink and it decodes. Run waits for that copy, so the args are in
+// place by the time NewSession returns. Called with f.mu held.
+func (f *fakeTmux) newSessionScript(ctx context.Context, deadline time.Time) *exec.Cmd {
+	idx := len(f.calls)
+	f.calls = append(f.calls, recordedTmuxCall{subcommand: "new-session", ctxErr: ctx.Err(), deadline: deadline})
+	sink := tmux.NewScriptSink(func(logical []string) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.calls[idx].args = append([]string(nil), logical[1:]...)
+	})
+	script := "cat"
+	var extra []string
+	if f.failSubcommand["new-session"] {
+		script = "cat; exit 1"
+		if stderr := f.failStderr["new-session"]; stderr != "" {
+			script = "cat; printf '%s' \"$1\" >&2; exit 1"
+			extra = []string{"sh", stderr}
+		}
+	}
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", script}, extra...)...)
+	cmd.Stdout = sink
+	return cmd
 }
 
 // lastCall returns the most recent recorded invocation of a subcommand, or
@@ -10399,5 +10430,73 @@ func TestStopSessionChatListFailurePreservesActiveState(t *testing.T) {
 	}
 	if sessions.sessions["previous"].State != machine.ImplementingPlan {
 		t.Fatal("chat list failure closed the run")
+	}
+}
+
+// TestBootstrapWarnsOnceWhenTmuxServerCarriesArgvEnv covers the BOS-1511
+// startup warning: a tmux server forked by a pre-fix argv new-session keeps
+// session env, credentials included, in its ps-visible command line until it
+// exits. Bootstrap must say so exactly once, naming the remedy, without ever
+// putting that command line into the log.
+func TestBootstrapWarnsOnceWhenTmuxServerCarriesArgvEnv(t *testing.T) {
+	const staleLine = "tmux new-session -d -s boss-x -e ANTHROPIC_BASE_URL=http://127.0.0.1:1/s3nt-proxy-token -e CLAUDE_CODE_OAUTH_TOKEN=s3nt-oauth claude"
+	cases := []struct {
+		name      string
+		pidStderr string
+		psLine    string
+		wantWarn  int
+	}{
+		{name: "pre-fix server warns once", psLine: staleLine, wantWarn: 1},
+		{name: "stdin-launched server stays silent", psLine: "tmux start-server ; source-file -"},
+		{name: "no server stays silent", pidStderr: "no server running on /tmp/tmux-501/default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				switch {
+				case name == "tmux" && len(args) == 3 && args[0] == "display-message" && args[2] == "#{pid}":
+					if tc.pidStderr != "" {
+						return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$1" >&2; exit 1`, "sh", tc.pidStderr)
+					}
+					cmd := exec.CommandContext(ctx, "cat")
+					cmd.Stdin = strings.NewReader("4242\n")
+					return cmd
+				case name == "ps":
+					cmd := exec.CommandContext(ctx, "cat")
+					cmd.Stdin = strings.NewReader(tc.psLine + "\n")
+					return cmd
+				}
+				return exec.CommandContext(ctx, "true")
+			}
+			var logs bytes.Buffer
+			tx := tmux.NewClient(tmux.WithCommandFactory(factory))
+			lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, &stubCronJobStore{},
+				&mockWorktreeManager{}, newMockAgentRunner(), tx, newMockVCSProvider(), zerolog.New(&logs))
+			lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
+			lc.SetDaemonCtx(ctx)
+
+			lc.Bootstrap(ctx)
+
+			warns := 0
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				if line == "" {
+					continue
+				}
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("unparseable log line %q: %v", line, err)
+				}
+				if entry["level"] == "warn" && strings.Contains(fmt.Sprint(entry["message"]), "tmux kill-server") {
+					warns++
+				}
+			}
+			if warns != tc.wantWarn {
+				t.Fatalf("kill-server warnings = %d, want %d; logs:\n%s", warns, tc.wantWarn, logs.String())
+			}
+			if strings.Contains(logs.String(), "s3nt-") || strings.Contains(logs.String(), "new-session -d") {
+				t.Fatalf("Bootstrap logged the tmux server command line, which carries secrets")
+			}
+		})
 	}
 }

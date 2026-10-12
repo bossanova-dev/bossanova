@@ -46,6 +46,7 @@ type switchViewMsg struct {
 	sessionID  string      // used for ViewAttach and ViewChatPicker
 	resumeID   string      // Claude Code session UUID to resume (ViewAttach only)
 	agentName  string      // optional per-chat agent override (ViewAttach only); empty = inherit session
+	armedNote  string      // what a waiting chat is parked on, shown while launching (ViewAttach only)
 	returnView View        // optional view to return to when the target view is cancelled
 	firstRepo  bool        // true when add-repo was opened from the zero-repo home empty state (return home on cancel)
 	account    *pb.Account // selected account carrier for ViewAccountEdit (BOS-266)

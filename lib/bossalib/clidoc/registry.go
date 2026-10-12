@@ -797,8 +797,15 @@ func newRegistry() map[string]Prose {
 		},
 		"boss daemon start": {
 			Long: "No-op if it's already running. Falls back to spawning bossd " +
-				"directly if it isn't installed as a LaunchAgent.",
-			Examples: []Example{{Command: "boss daemon start"}},
+				"directly if no service (LaunchAgent, watchdog or systemd unit) is " +
+				"installed. If a service is installed but does not bring the daemon " +
+				"up, it exits non-zero without starting an unsupervised daemon — run " +
+				"`boss daemon doctor` or `boss daemon restart`, or pass `--detached` " +
+				"to accept an unsupervised daemon deliberately.",
+			Examples: []Example{
+				{Command: "boss daemon start"},
+				{Command: "boss daemon start --detached"},
+			},
 		},
 		"boss daemon stop": {
 			Long: "Stops the bossd daemon for the current profile via the platform " +

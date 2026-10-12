@@ -596,6 +596,21 @@ func TestInitCronGateEqualAfterHomeExpansionHasNoDiff(t *testing.T) {
 	}
 }
 
+// A stage job whose gate is the stage default spelled absolute and unquoted
+// runs the same command, so it converges unchanged even with update consent.
+func TestInitCronGateEqualWhenSpelledAbsoluteUnquoted(t *testing.T) {
+	f := newCronFixture(t, "claude")
+	abs := "node " + filepath.Join(f.home, ".claude", "skills", "boss-plan", "toolbox", "cron-gates", "boss-plan.mjs")
+	f.daemon.AddCronJob(&pb.CronJob{Id: "p", RepoId: "repo-1", Name: "factory-plan", Prompt: "/boss-plan", IsEnabled: true, AgentName: "claude", GateCommand: abs})
+	res, report := f.run(initCronRequest{stages: []string{"plan"}, updateConsent: true})
+	if s := res.Stages[0]; s.Outcome != cronUnchanged || len(s.Diff) != 0 {
+		t.Fatalf("stage %s reported a diff: %+v\n%s", s.Stage, s, report)
+	}
+	if len(f.daemon.UpdateCronJobCalls()) != 0 || len(f.daemon.CreateCronJobCalls()) != 0 {
+		t.Fatal("an equivalent gate was rewritten")
+	}
+}
+
 func TestInitCronMissingMCPDeclarationIsLeftToDo(t *testing.T) {
 	for _, tc := range []struct {
 		agent, file string

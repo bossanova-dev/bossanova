@@ -2031,3 +2031,58 @@ func TestMaybeRepair_RespectsCustomIdleThreshold(t *testing.T) {
 		return c > 0
 	}, "StartChatRun should fire when chat idle past custom 1-minute threshold")
 }
+
+// --- advanceStuckSession unit tests ---
+
+// stuckImplementingPlanSession is an idle ImplementingPlan session whose
+// updated_at is well past testStuckTimeout.
+func stuckImplementingPlanSession(branch string, prNumber *int32) *bossanovav1.Session {
+	return &bossanovav1.Session{
+		Id:         "sess-stuck",
+		Title:      "stuck session",
+		State:      bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		BranchName: branch,
+		PrNumber:   prNumber,
+		UpdatedAt:  timestamppb.New(time.Now().Add(-time.Hour)),
+	}
+}
+
+// TestAdvanceStuckSession_ZeroOutputNotAdvanced pins BOS-1514: a zero-output
+// session (no branch, no PR) must never be pushed into the PR pipeline.
+func TestAdvanceStuckSession_ZeroOutputNotAdvanced(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = time.Millisecond
+
+	advanced := rm.advanceStuckSession(t.Context(), stuckImplementingPlanSession("", nil))
+
+	assert.False(t, advanced)
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	assert.Empty(t, mock.fireEventReqs)
+}
+
+// TestAdvanceStuckSession_AdvancesWithBranchOrPR is the control: a stuck
+// session with a branch, or with a PR, still gets exactly one PLAN_COMPLETE.
+func TestAdvanceStuckSession_AdvancesWithBranchOrPR(t *testing.T) {
+	pr := int32(42)
+	for name, sess := range map[string]*bossanovav1.Session{
+		"branch":    stuckImplementingPlanSession("feature-branch", nil),
+		"pr_number": stuckImplementingPlanSession("", &pr),
+	} {
+		t.Run(name, func(t *testing.T) {
+			mock := newTestMock()
+			rm := newTestMonitor(mock)
+			rm.testStuckTimeout = time.Millisecond
+
+			advanced := rm.advanceStuckSession(t.Context(), sess)
+
+			assert.True(t, advanced)
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+			require.Len(t, mock.fireEventReqs, 1)
+			assert.Equal(t, bossanovav1.SessionEvent_SESSION_EVENT_PLAN_COMPLETE, mock.fireEventReqs[0].GetEvent())
+			assert.Equal(t, sess.GetId(), mock.fireEventReqs[0].GetSessionId())
+		})
+	}
+}

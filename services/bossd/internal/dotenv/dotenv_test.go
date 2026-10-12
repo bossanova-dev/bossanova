@@ -240,3 +240,73 @@ func TestOverlayWithRepoDoesNotMutateBase(t *testing.T) {
 		t.Fatalf("BOSS_AGENT = %q, want claude", got["BOSS_AGENT"])
 	}
 }
+
+// redirectKeys are the CLI-redirecting keys a worktree .env must never forward
+// into a session (BOS-1512). Spelled out here rather than read from the
+// package so the test pins the contract independently of the implementation.
+var redirectKeys = []string{
+	"BOSS_SETTINGS_PATH",
+	"BOSS_KEYRING_BACKEND",
+	"BOSS_WEB_PORT",
+	"BOSS_CLOUD_URL",
+	"BOSSD_ORCHESTRATOR_URL",
+}
+
+func TestOverlayDropsRedirectKeysFromDotenv(t *testing.T) {
+	for _, key := range redirectKeys {
+		t.Run(key, func(t *testing.T) {
+			dir := writeEnvFile(t, key+"=/from/dotenv\nORDINARY_KEY=kept\n")
+			for name, got := range map[string]map[string]string{
+				"Overlay":         Overlay(map[string]string{"BOSS_AGENT": "claude"}, dir),
+				"OverlayWithRepo": OverlayWithRepo(map[string]string{"BOSS_AGENT": "claude"}, dir, repoWith("lin_repo", "", "")),
+			} {
+				if v, ok := got[key]; ok {
+					t.Errorf("%s forwarded %s from .env (=%q), want absent", name, key, v)
+				}
+				if got["ORDINARY_KEY"] != "kept" {
+					t.Errorf("%s ORDINARY_KEY = %q, want kept", name, got["ORDINARY_KEY"])
+				}
+				if got["BOSS_AGENT"] != "claude" {
+					t.Errorf("%s BOSS_AGENT = %q, want claude", name, got["BOSS_AGENT"])
+				}
+			}
+		})
+	}
+}
+
+func TestOverlayDropsRedirectKeysWhenTheyAreTheOnlyKeys(t *testing.T) {
+	dir := writeEnvFile(t, "BOSS_SETTINGS_PATH=/from/dotenv\nBOSS_WEB_PORT=1234\n")
+	base := map[string]string{"BOSS_AGENT": "claude"}
+	if got := Overlay(base, dir); !maps.Equal(got, base) {
+		t.Fatalf("Overlay = %v, want %v", got, base)
+	}
+	if got := Overlay(nil, dir); len(got) != 0 {
+		t.Fatalf("Overlay(nil) = %v, want empty", got)
+	}
+}
+
+func TestOverlayKeepsRedirectKeysSuppliedByBase(t *testing.T) {
+	for _, key := range redirectKeys {
+		t.Run(key, func(t *testing.T) {
+			dir := writeEnvFile(t, key+"=/from/dotenv\n")
+			base := map[string]string{key: "managed"}
+			for name, got := range map[string]map[string]string{
+				"Overlay":         Overlay(base, dir),
+				"OverlayWithRepo": OverlayWithRepo(base, dir, nil),
+			} {
+				if got[key] != "managed" {
+					t.Errorf("%s %s = %q, want managed", name, key, got[key])
+				}
+			}
+		})
+	}
+}
+
+// TestLoadStillParsesRedirectKeys pins that the filter lives in Overlay: Load
+// stays a pure parser of the file.
+func TestLoadStillParsesRedirectKeys(t *testing.T) {
+	dir := writeEnvFile(t, "BOSS_SETTINGS_PATH=/from/dotenv\n")
+	if got := Load(dir)["BOSS_SETTINGS_PATH"]; got != "/from/dotenv" {
+		t.Fatalf("Load BOSS_SETTINGS_PATH = %q, want /from/dotenv", got)
+	}
+}

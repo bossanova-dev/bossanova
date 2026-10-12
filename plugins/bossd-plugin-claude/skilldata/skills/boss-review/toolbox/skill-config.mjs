@@ -3805,6 +3805,8 @@ function validateVerifyDefaults(block, fail) {
     fail('verifyDefaults must be an object when present')
   if (block.alwaysHumanPaths !== undefined && !isGlobList(block.alwaysHumanPaths))
     fail('verifyDefaults.alwaysHumanPaths must be an array of non-empty glob strings')
+  if (block.requireGreenBase !== undefined && typeof block.requireGreenBase !== 'boolean')
+    fail('verifyDefaults.requireGreenBase must be a boolean when present')
   const review = block.humanReview
   if (review === undefined) return
   if (!review || typeof review !== 'object' || Array.isArray(review))
@@ -3854,6 +3856,7 @@ export function verifyPolicyFromConfigText(text, source) {
       throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
     })
   return {
+    requireGreenBase: parsed.verifyDefaults?.requireGreenBase === true,
     alwaysHumanPaths: verifyAlwaysHumanPaths(parsed),
     humanReview: verifyHumanReviewPaths(parsed),
   }

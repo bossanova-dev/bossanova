@@ -212,7 +212,10 @@ func EffectiveAgent(name string) string {
 
 // ExportCron converts one live job. A job the classifier recognises exports
 // symbolically (no prompt, no gate); any other job exports as a plain cron,
-// and a gate command that is not portable is dropped with a warning.
+// and a gate command that is not portable is dropped with a warning. The
+// dropped gate is not lost where it lives: a plain row without gateCommand
+// leaves the live gate alone on adopt and update, so only a daemon that
+// creates the row from the file runs it ungated.
 func ExportCron(job *pb.CronJob, classifier FactoryClassifier) (Cron, []string) {
 	var warnings []string
 	out := Cron{
@@ -232,7 +235,7 @@ func ExportCron(job *pb.CronJob, classifier FactoryClassifier) (Cron, []string) 
 			if portableGateCommand(gate) {
 				out.GateCommand = ptr(gate)
 			} else {
-				warnings = append(warnings, fmt.Sprintf("crons[%s].gateCommand: not exported; it may embed host paths (only ./<path> or node <path> with a repo-relative path is portable), so an apply would run this cron ungated", job.GetName()))
+				warnings = append(warnings, fmt.Sprintf("crons[%s].gateCommand: not exported; it may embed host paths (only ./<path> or node <path> with a repo-relative path is portable); applying this file on this daemon adopts the cron and keeps its live gate, but a daemon that creates it from this file runs it ungated", job.GetName()))
 			}
 		}
 	}

@@ -52,6 +52,9 @@ type fakeTmux struct {
 func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if name == "tmux" && tmux.IsNewSessionScript(args) {
+		return f.newSessionScript(ctx)
+	}
 	f.calls = append(f.calls, append([]string{name}, args...))
 	if name != "tmux" || len(args) == 0 {
 		return exec.CommandContext(ctx, "true")
@@ -70,6 +73,28 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		return exec.CommandContext(ctx, "false")
 	}
 	return exec.CommandContext(ctx, "true")
+}
+
+// newSessionScript answers tmux.Client.NewSession's stdin-script invocation
+// (BOS-1511). It records "tmux new-session" at once, so failOn and the
+// negative "no new-session ran" assertions keep their meaning, then swaps in
+// the logical argv once `cat` has echoed the script into a tmux.ScriptSink.
+// Run waits for that copy. Called with f.mu held.
+func (f *fakeTmux) newSessionScript(ctx context.Context) *exec.Cmd {
+	idx := len(f.calls)
+	f.calls = append(f.calls, []string{"tmux", "new-session"})
+	sink := tmux.NewScriptSink(func(logical []string) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.calls[idx] = append([]string{"tmux"}, logical...)
+	})
+	script := "cat"
+	if f.failOn == "new-session" {
+		script = "cat; exit 1"
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	cmd.Stdout = sink
+	return cmd
 }
 
 func (f *fakeTmux) findCall(sub string) []string {

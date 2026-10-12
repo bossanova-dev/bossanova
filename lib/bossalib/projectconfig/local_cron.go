@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -19,7 +20,6 @@ type cronSpec struct {
 	// createSchedule is the schedule a create uses (the factory default
 	// when the file omits one).
 	createSchedule string
-	factoryGate    bool // compare the gate after $HOME expansion
 	stage          string
 	preflight      []string
 	// blockAction is set when the cron cannot be planned.
@@ -131,7 +131,7 @@ func (p *planner) cronSpec(c Cron) *cronSpec {
 			// which only it can resolve: leave the gate as that host set it.
 			return s
 		}
-		s.gate, s.gateSet, s.factoryGate = fc.GateCommand, true, true
+		s.gate, s.gateSet = fc.GateCommand, true
 		s.preflight = fc.PreflightFailures
 		return s
 	}
@@ -233,17 +233,12 @@ func (p *planner) cronDiff(s *cronSpec, job *pb.CronJob) ([]FieldDiff, *pb.Updat
 	return fields, req
 }
 
-// gateEqual compares gates byte-for-byte; a factory gate (which renders the
-// skill root as $HOME/...) also compares equal after $HOME expansion.
+// gateEqual reports whether the live gate runs the same command as the
+// desired one (gatecmd.Equivalent): a quoting, $HOME, ${HOME} or ~ respelling
+// of the same command is equal, so a factory gate rendered as "$HOME/..."
+// matches a live absolute, unquoted spelling of the same script.
 func (p *planner) gateEqual(s *cronSpec, live string) bool {
-	if live == s.gate {
-		return true
-	}
-	if !s.factoryGate || p.opts.HomeDir == "" {
-		return false
-	}
-	expand := strings.NewReplacer("${HOME}", p.opts.HomeDir, "$HOME", p.opts.HomeDir)
-	return strings.TrimSpace(expand.Replace(live)) == strings.TrimSpace(expand.Replace(s.gate))
+	return gatecmd.Equivalent(live, s.gate, p.opts.HomeDir)
 }
 
 func concurrencySpelling(p pb.CronJobConcurrencyPolicy) string {

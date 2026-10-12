@@ -29,7 +29,7 @@
   ],
   "crons": [
     {
-      "name": "bs-sweep-build",
+      "name": "bs-build",
       "agent": "claude",
       "prompt": "/boss-build headless",
       "schedule": "*/30 * * * *",
@@ -37,14 +37,14 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-debt",
+      "name": "bs-debt",
       "agent": "codex",
       "prompt": "/bs-sweep-debt",
       "schedule": "10 2 * * *",
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-plan",
+      "name": "bs-plan",
       "agent": "claude",
       "prompt": "/boss-plan",
       "schedule": "*/15 * * * *",
@@ -53,7 +53,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-prettify",
+      "name": "bs-prettify",
       "agent": "codex",
       "prompt": "/bs-sweep-prettify",
       "schedule": "10 4 * * *",
@@ -61,7 +61,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-releases",
+      "name": "bs-releases",
       "agent": "claude",
       "prompt": "/bs-sweep-releases",
       "schedule": "0 9 * * 6",
@@ -71,7 +71,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-retro",
+      "name": "bs-retro",
       "agent": "claude",
       "prompt": "/boss-retro",
       "schedule": "0 9 * * 0",
@@ -81,7 +81,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-sentry",
+      "name": "bs-sentry",
       "agent": "claude",
       "prompt": "/bs-sweep-sentry --no-dry-run",
       "schedule": "10 6 * * *",
@@ -90,7 +90,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-tidy-linear",
+      "name": "bs-tidy-linear",
       "agent": "claude",
       "prompt": "/bs-sweep-tidy-linear",
       "schedule": "@hourly",
@@ -99,7 +99,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "bs-sweep-update",
+      "name": "bs-update",
       "agent": "codex",
       "prompt": "/bs-sweep-update",
       "schedule": "55 * * * *",
@@ -110,7 +110,7 @@
       "daemons": ["delta"]
     },
     {
-      "name": "factory-verify",
+      "name": "bs-verify",
       "factoryStage": "verify",
       "agent": "claude",
       "enabled": true,

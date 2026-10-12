@@ -63,9 +63,11 @@ func waitingBadgeSuperseded(sess *pb.Session) bool {
 	return sess.GetIsWaitingDemoted() || displaystatus.IsReadyLabel(sess.GetDisplayLabel())
 }
 
-// waitingHintLine hides routine PR waits already represented by the status
-// badge. Other daemon-supplied reasons remain visible, with a waiting prefix
-// when Ready or a green PR badge supersedes the waiting badge.
+// waitingHintLine is Home's waiting-hint composer. It hides routine PR waits
+// already represented by the status badge (#2901): on the dashboard they are
+// noise. Other daemon-supplied reasons remain visible, with a waiting prefix
+// when Ready or a green PR badge supersedes the waiting badge. The chat picker
+// does not use it — it shows every wait, with context (chatpicker_armed.go).
 func waitingHintLine(reason string, demoted bool) string {
 	if reason == "" {
 		return ""

@@ -294,6 +294,15 @@ func Presets() map[string]Preset {
 		// with a spinner. The waiting-callback preset cannot show this — it
 		// seeds only a working-derived parked session. Carries the same
 		// cloud-access e2e pin as demo so boss lands on the home session list.
+		// armed-verify: a NEEDS_HUMAN session whose verify chat is parked on an
+		// armed checks_passed_ready callback, for the BOS-1517 proof. The chat
+		// picker names the trigger, park and expiry; Home still hides the routine
+		// wait. Same cloud-access e2e pin as demo.
+		"armed-verify": {
+			World:      ArmedVerifyWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"ready-handoff": {
 			World:      ReadyHandoffWorld,
 			SeedKind:   SeedAcknowledged,

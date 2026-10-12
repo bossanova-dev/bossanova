@@ -799,9 +799,38 @@ func (l *Lifecycle) Bootstrap(ctx context.Context) {
 	// has stamped the live port (Bootstrap is called from main.go after the proxy
 	// block binds), so the comparison is against the real port.
 	l.detectStalePaneProxyPorts(ctx)
+	// A tmux server forked by a pre-BOS-1511 launch still shows session env
+	// (credentials included) in its own argv; only the operator can retire it.
+	l.warnIfTmuxServerCarriesEnv(ctx)
 	// Best-effort: retry any local base fast-forwards that a prior merge had to
 	// defer because the operator's base checkout was dirty at merge time.
 	l.worktrees.RetryDeferredBaseSyncs(ctx)
+}
+
+// warnIfTmuxServerCarriesEnv logs one Warn when the running tmux server was
+// forked by an older bossd that passed session env as `new-session -e` argv
+// (BOS-1511). That server's command line keeps those values — credentials,
+// the worktree .env, the proxy token — readable by every local user through ps
+// until it exits, and bossd must not kill it: that would destroy live agent
+// panes. The operator retires it with `tmux kill-server` once idle. Silent when
+// tmux is absent, no server is running, or the probe fails; the command line
+// itself is never logged.
+func (l *Lifecycle) warnIfTmuxServerCarriesEnv(ctx context.Context) {
+	if l.tmux == nil {
+		return
+	}
+	carries, err := l.tmux.ServerCommandLineCarriesEnv(ctx)
+	if err != nil {
+		l.logger.Debug().Err(err).Msg("bootstrap: could not inspect the tmux server command line")
+		return
+	}
+	if !carries {
+		return
+	}
+	l.logger.Warn().Msg("the running tmux server's command line carries `-e NAME=...` session environment " +
+		"values (an older bossd started servers this way) that may include credentials and are readable " +
+		"by local users via ps; " +
+		"run `tmux kill-server` once no agent pane is live to retire it")
 }
 
 // reArmSurvivingTmuxChats restores supported session-keyed finalize hooks for
@@ -2788,9 +2817,11 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		AttemptCount: session.AttemptCount,
 		MaxAttempts:  machine.MaxAttempts,
 		HasPR:        hasPR,
+		IsQuickChat:  session.IsQuickChat,
 	})
 
 	// Fire PlanComplete.
+	// A quick chat is refused by the machine guard (BOS-1514).
 	// If HasPR: → AwaitingChecks (PR already exists).
 	// Otherwise: → PushingBranch (need to push and create PR).
 	if err := sm.FireCtx(ctx, machine.PlanComplete); err != nil {
@@ -3830,6 +3861,15 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		return fmt.Errorf("get session: %w", err)
 	}
 
+	// A zero-output unattended session has no worktree, branch or PR to keep,
+	// and finalize is its designed end: record the cron outcome and hard-delete
+	// the row. Routing archive there is how a finished run ends its own session
+	// (`boss archive` from inside it, which the RPC defers until its chat is
+	// idle) instead of sitting idle until the stranded sweep notices.
+	if isZeroOutputSession(session) && l.finalizeZeroOutputOnArchive(ctx, sessionID) {
+		return nil
+	}
+
 	// Stop Claude process if running. Route by the primary chat's provider
 	// (BOS-381) so a chat switched to another agent is still stopped.
 	stopSess := l.effectiveSpawnSession(ctx, session)
@@ -3894,6 +3934,22 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 
 	l.logger.Info().Str("session", sessionID).Msg("session archived")
 	return nil
+}
+
+// finalizeZeroOutputOnArchive finalizes a zero-output session from any
+// post-agent state it can be stranded in, and reports whether that deleted the
+// row. Pre-agent states are excluded so an archive never races a launch still
+// in flight (BOS-426). Anything short of a deletion (a session already
+// finalizing, a failed hard-delete) leaves the caller to archive normally.
+func (l *Lifecycle) finalizeZeroOutputOnArchive(ctx context.Context, sessionID string) bool {
+	result, err := l.finalizeSessionFrom(ctx, sessionID, withZeroOutputReapStates(periodicReapStateInts()))
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Msg("archive: zero-output finalize failed; archiving instead")
+		return false
+	}
+	return result != nil && result.Deleted
 }
 
 // reapSafeLocalBranch best-effort deletes the session's LOCAL branch after its

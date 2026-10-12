@@ -16,6 +16,7 @@ import (
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/projectconfig"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
@@ -484,15 +485,6 @@ func renderSkillRoot(root, home string) string {
 	return filepath.ToSlash(root)
 }
 
-// expandHome expands $HOME and ${HOME} so gates written either way compare
-// equal to an absolute one.
-func expandHome(s, home string) string {
-	if home == "" {
-		return strings.TrimSpace(s)
-	}
-	return strings.TrimSpace(strings.NewReplacer("${HOME}", home, "$HOME", home).Replace(s))
-}
-
 // effectiveAgent treats a job's empty agent as claude, as the daemon does.
 // It delegates to projectconfig so export and the factory classifier share one
 // copy of the rule.
@@ -769,7 +761,7 @@ func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, w
 		out.Diff = append(out.Diff, "prompt: "+job.GetPrompt()+" -> "+want.Prompt)
 		update.Prompt = &want.Prompt
 	}
-	if expandHome(job.GetGateCommand(), home) != expandHome(want.GateCommand, home) {
+	if !gatecmd.Equivalent(job.GetGateCommand(), want.GateCommand, home) {
 		out.Diff = append(out.Diff, "gate: "+job.GetGateCommand()+" -> "+want.GateCommand)
 		update.GateCommand = &want.GateCommand
 	}

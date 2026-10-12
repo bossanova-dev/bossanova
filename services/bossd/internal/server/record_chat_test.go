@@ -514,7 +514,9 @@ func TestEnsureChatTmuxSession_DoesNotBackfillDefaultAccountWhenAlreadyLive(t *t
 		t.Fatalf("session AccountID = %q, want nil legacy binding unchanged", *sess.AccountID)
 	}
 	for _, call := range tmuxCalls {
-		if strings.HasPrefix(call, "new-session ") {
+		// NewSession runs as `start-server ; source-file -` with the logical
+		// new-session on stdin (BOS-1511); either shape is a launch.
+		if strings.HasPrefix(call, "new-session ") || tmux.IsNewSessionScript(strings.Fields(call)) {
 			t.Fatalf("tmux calls = %v, want no new-session for already-live chat", tmuxCalls)
 		}
 	}

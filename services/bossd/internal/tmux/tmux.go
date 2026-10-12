@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/recurser/bossalib/termnorm"
@@ -287,6 +289,8 @@ type NewSessionOpts struct {
 	// Env sets session-environment variables (tmux `new-session -e KEY=VALUE`)
 	// so the launched command — and any later window opened in the session —
 	// inherits them. Used to mark cron-spawned sessions with BOSS_CRON=true.
+	// The values reach tmux on stdin, never on the process argv, because they
+	// include credentials and argv is world-readable through ps (BOS-1511).
 	Env map[string]string
 	// RemainOnExit arms `remain-on-exit on` on the session after creation so a
 	// pane whose process exits stays present (marked pane_dead) with its final
@@ -297,14 +301,19 @@ type NewSessionOpts struct {
 }
 
 // ErrCommandTooLong reports a new-session command too large for tmux to
-// accept. tmux packs the whole command into one client-to-server message and
-// rejects it with "command too long" past roughly 16 KB (measured on tmux 3.7c
-// and 3.8), so NewSession refuses before invoking tmux and names the size.
+// accept. When the command travelled as argv, tmux packed it into one
+// client-to-server message and rejected it with "command too long" past
+// roughly 16 KB (measured on tmux 3.7c and 3.8), so NewSession refuses before
+// invoking tmux and names the size.
 var ErrCommandTooLong = errors.New("tmux command too long")
 
 // maxNewSessionCommandBytes is NewSession's refusal threshold, measured as the
-// sum of len(arg)+1 over every tmux argument (env entries included). It sits
-// about 1 KB below the measured limit to absorb message framing.
+// sum of len(arg)+1 over every logical new-session argument (env entries
+// included). It sat about 1 KB below the measured argv-delivery limit to absorb
+// message framing. Since BOS-1511 the command reaches tmux on stdin through
+// `source-file -`, where that limit does not apply (a 40,000-byte env value
+// launched fine), so this is now a conservative bound; relaxing it is a
+// separate change.
 const maxNewSessionCommandBytes = 15 * 1024
 
 func commandBytes(args []string) int {
@@ -313,6 +322,136 @@ func commandBytes(args []string) int {
 		n += len(a) + 1
 	}
 	return n
+}
+
+// newSessionScriptArgs is the whole process argv, after "tmux", that
+// NewSession executes (BOS-1511). The logical `new-session …` command, env
+// values included, travels on stdin as one tmux command-language line instead:
+// process argv is readable by every local user through ps, and the first
+// new-session on a host forks the tmux server, which keeps that argv for its
+// whole life. `start-server` comes first because `source-file -` fails with
+// "error connecting to …" when no server is running yet. Verified on tmux 3.7c
+// and 3.8.
+var newSessionScriptArgs = []string{"start-server", ";", "source-file", "-"}
+
+// IsNewSessionScript reports whether args — a tmux argv without the leading
+// "tmux" — is the invocation NewSession runs. Test fakes that recognise
+// new-session by its argv use it, then recover the logical new-session argv
+// from stdin with ScriptSink / DecodeScriptLine.
+func IsNewSessionScript(args []string) bool {
+	return slices.Equal(args, newSessionScriptArgs)
+}
+
+// encodeScriptLine renders args as one tmux command-language line: every
+// argument single-quoted, an embedded single quote written as close-quote,
+// backslash-quote, reopen-quote, arguments separated by one space, and a
+// trailing newline. Inside single quotes tmux expands nothing — not $VAR, ~, #{format},
+// ;, %if, or a backslash — and a quoted newline stays part of the argument, so
+// every value reaches tmux byte-exact (verified on tmux 3.7c and 3.8).
+func encodeScriptLine(args []string) string {
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('\'')
+		b.WriteString(strings.ReplaceAll(a, "'", `'\''`))
+		b.WriteByte('\'')
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// DecodeScriptLine is the exact inverse of encodeScriptLine, for test fakes
+// that need the logical new-session argv NewSession delivered on stdin. It
+// accepts only the subset encodeScriptLine emits — single-quoted segments, \'
+// outside quotes, one space between arguments, and exactly one trailing
+// newline — and returns an error for anything else. It is NOT a general tmux
+// command parser. Errors name byte offsets only, never the line's content,
+// because the line carries session-environment values.
+func DecodeScriptLine(line string) ([]string, error) {
+	body, ok := strings.CutSuffix(line, "\n")
+	if !ok {
+		return nil, errors.New("tmux script line: missing trailing newline")
+	}
+	var (
+		args  []string
+		cur   strings.Builder
+		inArg bool
+	)
+	for i := 0; i < len(body); {
+		switch body[i] {
+		case '\'':
+			end := strings.IndexByte(body[i+1:], '\'')
+			if end < 0 {
+				return nil, fmt.Errorf("tmux script line: unterminated quote at byte %d", i)
+			}
+			cur.WriteString(body[i+1 : i+1+end])
+			i += end + 2
+			inArg = true
+		case '\\':
+			if i+1 >= len(body) || body[i+1] != '\'' {
+				return nil, fmt.Errorf("tmux script line: unsupported escape at byte %d", i)
+			}
+			cur.WriteByte('\'')
+			i += 2
+			inArg = true
+		case ' ':
+			if !inArg {
+				return nil, fmt.Errorf("tmux script line: unexpected separator at byte %d", i)
+			}
+			args = append(args, cur.String())
+			cur.Reset()
+			inArg = false
+			i++
+		default:
+			return nil, fmt.Errorf("tmux script line: unquoted byte at %d", i)
+		}
+	}
+	if !inArg {
+		return nil, errors.New("tmux script line: empty line or trailing separator")
+	}
+	return append(args, cur.String()), nil
+}
+
+// ScriptSink is an io.Writer for test fakes standing in for tmux. A fake
+// answers the IsNewSessionScript invocation with a `cat` whose Stdout is a
+// ScriptSink; once the whole stdin line has arrived the sink decodes it and
+// hands the logical new-session argv (starting "new-session") to its callback,
+// exactly once. exec.Cmd.Run waits for that output copy, so the callback has
+// fired by the time NewSession returns. Production code never uses it.
+type ScriptSink struct {
+	mu       sync.Mutex
+	buf      strings.Builder
+	done     bool
+	onScript func(args []string)
+}
+
+// NewScriptSink returns a ScriptSink that reports the decoded argv to onScript.
+func NewScriptSink(onScript func(args []string)) *ScriptSink {
+	return &ScriptSink{onScript: onScript}
+}
+
+// Write buffers p and, once the buffer holds one complete script line, decodes
+// it and fires the callback. The only newline outside quotes is the terminator,
+// so a buffer ending in a newline that still fails to decode is a write split
+// at a quoted newline, and the sink keeps waiting.
+func (s *ScriptSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.buf.Write(p)
+	if s.done || !strings.HasSuffix(s.buf.String(), "\n") {
+		s.mu.Unlock()
+		return len(p), nil
+	}
+	args, err := DecodeScriptLine(s.buf.String())
+	if err != nil {
+		s.mu.Unlock()
+		return len(p), nil
+	}
+	s.done = true
+	s.mu.Unlock()
+	s.onScript(args)
+	return len(p), nil
 }
 
 // NewSession creates a new detached tmux session.
@@ -380,7 +519,11 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 			opts.Name, ErrCommandTooLong, size, maxNewSessionCommandBytes, len(env))
 	}
 
-	cmd := c.cmdFunc(ctx, "tmux", args...)
+	// Deliver the unchanged logical command on stdin rather than as argv
+	// (BOS-1511): see newSessionScriptArgs. A tmux-side error in the script
+	// exits non-zero with the reason on stderr, prefixed "-:1:".
+	cmd := c.cmdFunc(ctx, "tmux", slices.Clone(newSessionScriptArgs)...)
+	cmd.Stdin = strings.NewReader(encodeScriptLine(args))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = tmuxCommandWaitDelay
@@ -644,6 +787,71 @@ func (c *Client) ShowEnv(ctx context.Context, name, key string) (string, ShowEnv
 		return "", ShowEnvUnset
 	}
 	return strings.TrimPrefix(line, prefix), ShowEnvSet
+}
+
+// ServerCommandLineCarriesEnv reports whether the running tmux server's own
+// command line still carries `-e NAME=value` session-environment flags — the
+// mark of a server forked by a pre-BOS-1511 bossd's argv-delivered
+// new-session. That server keeps its argv, credentials included, readable by
+// every local user through ps until it exits, and no bossd change can scrub
+// it: the caller warns the operator to run `tmux kill-server` once idle.
+//
+// No server running is (false, nil). The command line itself is never
+// returned, logged, or put in an error: it is the secret.
+func (c *Client) ServerCommandLineCarriesEnv(ctx context.Context) (bool, error) {
+	cmd := c.cmdFunc(ctx, "tmux", "display-message", "-p", "#{pid}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
+	out, err := cmd.Output()
+	if err != nil {
+		msg := stderr.String()
+		if strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") {
+			return false, nil
+		}
+		return false, fmt.Errorf("tmux display-message server pid: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid <= 0 {
+		return false, fmt.Errorf("tmux display-message server pid: unparseable output (%d bytes)", len(out))
+	}
+	ps := c.cmdFunc(ctx, "ps", "-o", "command=", "-p", strconv.Itoa(pid))
+	ps.WaitDelay = tmuxCommandWaitDelay
+	line, err := ps.Output()
+	if err != nil {
+		return false, fmt.Errorf("ps tmux server pid %d: %w", pid, err)
+	}
+	return commandLineCarriesEnvFlag(string(line)), nil
+}
+
+// commandLineCarriesEnvFlag reports whether a ps command line holds a `-e`
+// token followed by a `NAME=` token, the shape argv-delivered session env took.
+func commandLineCarriesEnvFlag(line string) bool {
+	fields := strings.Fields(line)
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "-e" && isEnvAssignment(fields[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isEnvAssignment reports whether s starts with a shell-style variable name
+// followed by '='.
+func isEnvAssignment(s string) bool {
+	name, _, ok := strings.Cut(s, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // PanePID returns the PID of the first pane in the named tmux session (the

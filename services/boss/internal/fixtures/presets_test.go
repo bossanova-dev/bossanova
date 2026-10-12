@@ -21,7 +21,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "ready-handoff", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "session-phase", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "armed-verify", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "ready-handoff", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "session-phase", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -75,6 +75,54 @@ func TestPresetWorldsDeterministic(t *testing.T) {
 				t.Errorf("preset %q: cron[%d] differs across calls", name, i)
 			}
 		}
+		if len(w1.GithubCallbacks) != len(w2.GithubCallbacks) {
+			t.Fatalf("preset %q: callback counts differ across calls", name)
+		}
+		for i := range w1.GithubCallbacks {
+			if !proto.Equal(w1.GithubCallbacks[i], w2.GithubCallbacks[i]) {
+				t.Errorf("preset %q: callback[%d] differs across calls", name, i)
+			}
+		}
+	}
+}
+
+// TestArmedVerifyWorldIsCoherent pins what the BOS-1517 proof depends on: the
+// armed callback targets the waiting verify chat and recomposes to exactly the
+// reason the daemon reports for it, so the picker can match the two; and the
+// session carries the NEEDS_HUMAN park the line links to.
+func TestArmedVerifyWorldIsCoherent(t *testing.T) {
+	w := Presets()["armed-verify"].World()
+	if len(w.Sessions) != 1 || len(w.GithubCallbacks) != 1 {
+		t.Fatalf("sessions=%d callbacks=%d, want 1 and 1", len(w.Sessions), len(w.GithubCallbacks))
+	}
+	sess, cb := w.Sessions[0], w.GithubCallbacks[0]
+	if sess.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN || sess.GetAttentionStatus().GetSummary() != ArmedVerifyPark {
+		t.Fatalf("session park = %v / %q", sess.GetDisplayStatus(), sess.GetAttentionStatus().GetSummary())
+	}
+	var waiting *pb.ChatStatusEntry
+	for _, e := range w.ChatStatuses {
+		if e.GetStatus() == pb.ChatStatus_CHAT_STATUS_WAITING {
+			waiting = e
+		}
+	}
+	if waiting == nil || waiting.GetAgentSessionId() != cb.GetTargetChatId() {
+		t.Fatalf("callback target %q is not the waiting chat %v", cb.GetTargetChatId(), waiting)
+	}
+	got := displaystatus.CallbackWaitingReason(cb.GetTrigger(), cb.GetRepoOwner(), cb.GetRepoName(), int(cb.GetPrNumber()))
+	if got != waiting.GetWaitingReason() || got != ArmedVerifyReason {
+		t.Fatalf("callback reason %q, chat reason %q, want %q", got, waiting.GetWaitingReason(), ArmedVerifyReason)
+	}
+	if cb.GetState() != "active" || !cb.GetExpiresAt().AsTime().After(time.Now()) {
+		t.Fatalf("callback must be live against the real clock: state=%q expires=%v", cb.GetState(), cb.GetExpiresAt().AsTime())
+	}
+	var verifyTitled bool
+	for _, c := range w.Chats {
+		if c.GetAgentSessionId() == cb.GetTargetChatId() {
+			verifyTitled = c.GetTitle() == "verify"
+		}
+	}
+	if !verifyTitled {
+		t.Fatal("the armed chat must be titled verify, as stage-chain names it")
 	}
 }
 

@@ -332,7 +332,7 @@ func commandEnv(o Options) []string {
 // Commands starting with '/', './', or '../' are split on whitespace and run
 // directly without a shell. Everything else is run via `sh -c`.
 func buildCommand(ctx context.Context, cmd string) *exec.Cmd {
-	if strings.HasPrefix(cmd, "/") || strings.HasPrefix(cmd, "./") || strings.HasPrefix(cmd, "../") {
+	if directExec(cmd) {
 		argv := strings.Fields(cmd)
 		// #nosec G204 -- executes an operator config-supplied gate command (sibling branch intentionally uses sh -c); operator-trust boundary, not attacker-controlled
 		// owner=@recurser review-by=2027-01-18 issue=BOS-28

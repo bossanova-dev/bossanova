@@ -93,7 +93,10 @@ func (m ChatPickerModel) handleChatsListed(msg chatsListedMsg) (tea.Model, tea.C
 			updateCursorColumn(&m.table)
 		}
 	}
-	return m, m.backfillTitles()
+	// Hoisted: the return would otherwise read m in the same expression list as
+	// this pointer-receiver mutation, an order the Go spec leaves unspecified.
+	armedFetch := m.syncArmedCallbacks()
+	return m, tea.Batch(m.backfillTitles(), armedFetch)
 }
 
 func (m ChatPickerModel) handleTitlesBackfilled(msg chatTitlesBackfilledMsg) (tea.Model, tea.Cmd) {
@@ -325,10 +328,13 @@ func (m ChatPickerModel) handleRefresh(msg chatPickerRefreshMsg) (tea.Model, tea
 	if msg.daemonLastOutput != nil {
 		m.daemonLastOutput = msg.daemonLastOutput
 	}
+	// Before the rebuild, so a chat that stopped waiting loses its trigger
+	// token in the same frame its reason disappears.
+	armedFetch := m.syncArmedCallbacks()
 	if len(m.chats) > 0 {
 		m.buildTableRows()
 	}
-	return m, refreshWebLink
+	return m, tea.Batch(refreshWebLink, armedFetch)
 }
 
 func (m ChatPickerModel) handleErr(msg chatPickerErrMsg) (tea.Model, tea.Cmd) {

@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -4224,5 +4225,96 @@ func TestStartChatRun_ResumeRekeyMovesRegistration(t *testing.T) {
 	}
 	if _, ok := srv.runCompletion["agent-durable"]; !ok {
 		t.Error("the run must be registered under the resolved id")
+	}
+}
+
+// newFireSessionEventServer builds a HostServiceServer over a real SQLite
+// session store holding one ImplementingPlan session, so FireSessionEvent is
+// exercised through the actual Get/Update chain.
+func newFireSessionEventServer(t *testing.T, isQuickChat bool) (*HostServiceServer, db.SessionStore, string) {
+	t.Helper()
+	ctx := t.Context()
+	sqlDB := openTestDB(t)
+	sessions := db.NewSessionStore(sqlDB)
+	repos := db.NewRepoStore(sqlDB)
+	repo, err := repos.Create(ctx, db.CreateRepoParams{
+		DisplayName:       "test-repo",
+		LocalPath:         "/tmp/repo",
+		OriginURL:         "https://github.com/test/fire-session-event.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	params := db.CreateSessionParams{
+		RepoID:     repo.ID,
+		Title:      "fire session event",
+		BaseBranch: "main",
+	}
+	if !isQuickChat {
+		params.WorktreePath = "/tmp/worktrees/fire-session-event"
+		params.BranchName = "fire-session-event"
+	}
+	sess, err := sessions.Create(ctx, params)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	state := int(machine.ImplementingPlan)
+	if _, err := sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+		State:       &state,
+		IsQuickChat: &isQuickChat,
+	}); err != nil {
+		t.Fatalf("seed session state: %v", err)
+	}
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.sessionStore = sessions
+	return srv, sessions, sess.ID
+}
+
+// TestFireSessionEvent_QuickChatPlanCompleteRejected pins BOS-1514: a quick
+// chat in ImplementingPlan must not be advanced into the PR pipeline. The host
+// answers FailedPrecondition and persists no state change.
+func TestFireSessionEvent_QuickChatPlanCompleteRejected(t *testing.T) {
+	srv, sessions, id := newFireSessionEventServer(t, true)
+
+	_, err := srv.FireSessionEvent(t.Context(), &bossanovav1.FireSessionEventRequest{
+		SessionId: id,
+		Event:     bossanovav1.SessionEvent_SESSION_EVENT_PLAN_COMPLETE,
+	})
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("FireSessionEvent code = %v (err %v), want FailedPrecondition", got, err)
+	}
+
+	stored, err := sessions.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if stored.State != machine.ImplementingPlan {
+		t.Fatalf("stored state = %v, want ImplementingPlan", stored.State)
+	}
+}
+
+// TestFireSessionEvent_NonQuickChatPlanCompleteAdvances is the control: a
+// non-quick session with no PR still advances to PushingBranch.
+func TestFireSessionEvent_NonQuickChatPlanCompleteAdvances(t *testing.T) {
+	srv, sessions, id := newFireSessionEventServer(t, false)
+
+	resp, err := srv.FireSessionEvent(t.Context(), &bossanovav1.FireSessionEventRequest{
+		SessionId: id,
+		Event:     bossanovav1.SessionEvent_SESSION_EVENT_PLAN_COMPLETE,
+	})
+	if err != nil {
+		t.Fatalf("FireSessionEvent: %v", err)
+	}
+	if resp.GetNewState() != machine.PushingBranch.String() {
+		t.Fatalf("new state = %q, want %q", resp.GetNewState(), machine.PushingBranch.String())
+	}
+	stored, err := sessions.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if stored.State != machine.PushingBranch {
+		t.Fatalf("stored state = %v, want PushingBranch", stored.State)
 	}
 }

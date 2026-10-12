@@ -797,3 +797,58 @@ func TestRecoverStrandedCronSessions_Archived_Skipped(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoverStrandedCronSessions_ZeroOutputReapedFromAnyPostAgentState: a
+// zero-output run has no PR, so a PR-lifecycle state is never legitimate for
+// it; once its log is idle it is reaped from there too, while a PR session in
+// the same state, and a Blocked zero-output session, are left alone.
+func TestRecoverStrandedCronSessions_ZeroOutputReapedFromAnyPostAgentState(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+
+	zero := strandedCronSession("zero", "a-zero")
+	zero.State = machine.AwaitingChecks
+	zero.IsQuickChat = true
+	sessions.sessions["zero"] = zero
+
+	pr := strandedCronSession("pr", "a-pr")
+	pr.State = machine.AwaitingChecks
+	sessions.sessions["pr"] = pr
+
+	blocked := strandedCronSession("blocked", "a-blocked")
+	blocked.State = machine.Blocked
+	blocked.IsQuickChat = true
+	sessions.sessions["blocked"] = blocked
+
+	for _, id := range []string{"a-zero", "a-pr", "a-blocked"} {
+		seedLog(t, dir, id, cronAgentIdleThreshold+time.Minute)
+	}
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.ids(); n != 1 || len(got) != 1 || got[0] != "zero" {
+		t.Fatalf("routed=%d reaped=%v, want only [zero]", n, got)
+	}
+	want := withZeroOutputReapStates(periodicReapStateInts())
+	if got := rec.calls[0].expectedStates; !equalIntSet(got, want) {
+		t.Fatalf("expectedStates=%v, want %v", got, want)
+	}
+}
+
+// TestRecoverStrandedCronSessions_ZeroOutputStillWaitsForAnIdleLog: widening
+// the states does not widen the evidence — a working zero-output run is kept.
+func TestRecoverStrandedCronSessions_ZeroOutputStillWaitsForAnIdleLog(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	zero := strandedCronSession("zero", "a-zero")
+	zero.State = machine.AwaitingChecks
+	zero.IsQuickChat = true
+	sessions.sessions["zero"] = zero
+	seedLog(t, dir, "a-zero", time.Minute)
+
+	if n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background()); n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d, want 0 while the run is still working", n)
+	}
+}

@@ -29,11 +29,7 @@ func (m *ChatPickerModel) buildTableRows() {
 	agents := make([]string, len(m.chats))
 	showAgentColumn := len(m.agents) > 1
 	for i, chat := range m.chats {
-		t := chat.Title
-		if t == "" {
-			t = "New chat"
-		}
-		titles[i] = t
+		titles[i] = chatDisplayTitle(chat)
 		createds[i] = RelativeTime(chat.CreatedAt.AsTime())
 		actives[i] = RelativeTime(m.chatLastActive(chat))
 		agents[i] = m.chatAgentName(chat)
@@ -45,10 +41,8 @@ func (m *ChatPickerModel) buildTableRows() {
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // preserve the default width for unphased chats
 	for _, chat := range m.chats {
-		if m.daemonStatuses[chat.AgentSessionId] == statusWorking {
-			if phase := m.daemonPhases[chat.AgentSessionId]; phase != "" {
-				statusWidth = max(statusWidth, lipgloss.Width(m.spinner.View()+phase))
-			}
+		if label := m.statusDetail(chat); label != "" {
+			statusWidth = max(statusWidth, lipgloss.Width(m.spinner.View()+label))
 		}
 	}
 	statusWidth = min(statusWidth, 2+displaystatus.MaxPhaseRunes)
@@ -73,10 +67,12 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
-		if daemon == statusWorking {
-			if phase := m.daemonPhases[chat.AgentSessionId]; phase != "" {
-				statusStr = styleStatusSuccess.Render(ansi.Truncate(m.spinner.View()+phase, statusWidth, "…"))
+		if label := m.statusDetail(chat); label != "" {
+			style := styleStatusSuccess
+			if daemon == statusWaiting {
+				style = styleStatusInfo
 			}
+			statusStr = style.Render(ansi.Truncate(m.spinner.View()+label, statusWidth, "…"))
 		}
 		// A chat with start_error set never came up — the agent_chats
 		// row was created but StartTmuxChat hit a failure (e.g.
@@ -109,6 +105,19 @@ func (m *ChatPickerModel) buildTableRows() {
 	m.table.SetWidth(columnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
 	m.table.SetCursor(cursor)
+}
+
+// statusDetail is the label that replaces a chat's bare STATUS word: the
+// skill-reported phase of a working chat, or the armed trigger of a waiting
+// chat (BOS-1517). "" keeps the plain renderClaudeStatus badge.
+func (m ChatPickerModel) statusDetail(chat *pb.ClaudeChat) string {
+	switch m.daemonStatuses[chat.GetAgentSessionId()] {
+	case statusWorking:
+		return m.daemonPhases[chat.GetAgentSessionId()]
+	case statusWaiting:
+		return m.armedCallback(chat).GetTrigger()
+	}
+	return ""
 }
 
 // chatPickerTableAvailWidth returns the rendered columns the chat picker can
@@ -425,24 +434,22 @@ func (m ChatPickerModel) limitedLineHeight() int {
 	return 2
 }
 
-// waitingReasonLine returns the first visible waiting hint in this session.
-// Routine checks-passed and merged waits are hidden by waitingHintLine, shared
-// with Home. An empty result reserves no space beneath the chat table.
+// waitingReasonLine returns the armed line (chatpicker_armed.go) for the cursor
+// chat when it is waiting, otherwise for the first waiting chat. Unlike Home it
+// does not hide routine checks-passed and merged waits (BOS-1517): in the chat
+// view that wait is the only thing the parked chat is doing. An empty result
+// reserves no space beneath the chat table.
 func (m ChatPickerModel) waitingReasonLine() string {
-	for _, chat := range m.chats {
-		if m.daemonStatuses[chat.AgentSessionId] != statusWaiting {
-			continue
-		}
-		if line := waitingHintLine(m.daemonWaitingReasons[chat.AgentSessionId], waitingBadgeSuperseded(m.session)); line != "" {
-			return m.fitProseLine(line)
-		}
+	if chat := m.waitingLineChat(); chat != nil {
+		return m.fitProseLine(m.armedLine(chat))
 	}
 	return ""
 }
 
 // waitingLineHeight reserves the rows waitingReasonLine occupies (the line plus
 // its trailing blank), mirroring limitedLineHeight. Reserved in tableHeight so
-// the hint shrinks the chat table rather than pushing it off-screen.
+// the hint shrinks the chat table rather than pushing it off-screen. The line is
+// one row whichever chat it describes, so moving the cursor never changes this.
 func (m ChatPickerModel) waitingLineHeight() int {
 	if m.waitingReasonLine() == "" {
 		return 0

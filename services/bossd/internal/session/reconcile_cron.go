@@ -154,6 +154,36 @@ func periodicReapStates() []machine.State {
 	return out
 }
 
+// zeroOutputReapStates are the states a zero-output unattended session
+// (isZeroOutputSession) is reaped from beyond the shared set. Such a session runs
+// in the repository checkout and never has a PR, so a PR-lifecycle state is never
+// legitimate for it — yet one can land there (a stray PlanComplete), and outside
+// the shared set it would sit idle forever. Blocked is deliberately absent: a
+// failed hard-delete blocks the session, and reaping it would retry that failure
+// every sweep while hiding it.
+var zeroOutputReapStates = []machine.State{
+	machine.AwaitingChecks,
+	machine.FixingChecks,
+	machine.GreenDraft,
+	machine.ReadyForReview,
+}
+
+// isZeroOutputSession reports an unattended session that runs in the
+// repository checkout with no worktree, branch or PR: finalize hard-deletes it.
+func isZeroOutputSession(sess *models.Session) bool {
+	return sess != nil && sess.IsQuickChat && isUnattendedSession(sess)
+}
+
+// withZeroOutputReapStates returns reapInts plus zeroOutputReapStates, the
+// state set a zero-output session is finalized from.
+func withZeroOutputReapStates(reapInts []int) []int {
+	out := append([]int(nil), reapInts...)
+	for _, s := range zeroOutputReapStates {
+		out = append(out, int(s))
+	}
+	return out
+}
+
 // periodicReapStateInts returns periodicReapStates as ints for the store's
 // state-set queries. This is the PERIODIC (post-agent) set.
 func periodicReapStateInts() []int {
@@ -319,7 +349,13 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		reapInts = periodicReapStateInts()
 	}
 
-	stranded, err := l.sessions.ListByStates(ctx, reapInts)
+	zeroOutputInts := withZeroOutputReapStates(reapInts)
+	sharedStates := make(map[machine.State]bool, len(reapInts))
+	for _, s := range reapInts {
+		sharedStates[machine.State(s)] = true
+	}
+
+	stranded, err := l.sessions.ListByStates(ctx, zeroOutputInts)
 	if err != nil {
 		return 0, fmt.Errorf("list stranded unattended sessions: %w", err)
 	}
@@ -346,6 +382,14 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		// tmux_unattended session has no CronJobID, so filtering on it here would
 		// leave those sessions stranded forever.
 		if !isUnattendedSession(sess) {
+			continue
+		}
+		// The widened states are a zero-output session's only: any other
+		// session in AwaitingChecks and friends is on its PR's lifecycle.
+		expected := reapInts
+		if isZeroOutputSession(sess) {
+			expected = zeroOutputInts
+		} else if !sharedStates[sess.State] {
 			continue
 		}
 		// Periodic-only defensive age grace (belt-and-suspenders): periodicReapStateInts
@@ -380,7 +424,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		// synchronously and bounded by a per-call timeout. cancel is called
 		// explicitly each iteration rather than deferred inside the loop.
 		fctx, cancel := context.WithTimeout(ctx, defaultCronFinalizeTimeout)
-		if _, ferr := finalize(fctx, sess.ID, reapInts); ferr != nil {
+		if _, ferr := finalize(fctx, sess.ID, expected); ferr != nil {
 			l.logger.Warn().Err(ferr).
 				Str("session", sess.ID).
 				Msg("stranded-cron reap: finalize failed")

@@ -41,6 +41,8 @@ go_test(
     name = "daemon_test",
     srcs = [
         "daemon_test.go",
+        "ensurerunningpolicy_darwin_test.go",
+        "ensurerunningpolicy_linux_test.go",
         "launchd_test.go",
         "mcpprocess_test.go",
         "servicepath_test.go",

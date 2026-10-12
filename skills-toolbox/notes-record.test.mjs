@@ -55,6 +55,7 @@ const triggers = [
   'verify-failed-after-clean-review',
   'dispatch-failed',
   'gate-unknown',
+  'host-environment',
   'review-must-fix',
 ]
 test('vocabulary has all frozen entries', () => {

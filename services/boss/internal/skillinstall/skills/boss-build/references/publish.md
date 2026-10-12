@@ -38,6 +38,9 @@ Linear issue: <url>
 - [ ] <unresolved plan question>
 - none
 
+## Host notes
+- <build-host or environment problem — optional, non-gating, omitted when empty>
+
 ## Cross-model review
 <clean | findings-fixed (<per-finding dispositions>) | skipped: <reason> | error: <reason>>
 
@@ -74,9 +77,8 @@ Linear issue: <url>
   `node "$BOSS_BUILD_TOOLBOX/completion-gate.mjs" followups --body-file <path>` beside the
   evidence validator and fix its reported problems before publishing; a malformed section is
   recoverable, not a blocker.
-- Copy the plan's open questions (for `agent-question` tickets) into `## Open questions` as
-  `- [ ]` items. Only a human resolves them. Put outside-worktree verification under
-  `## Human follow-up`, also open until verified.
+- Take `## Human follow-up`, `## Open questions` and `## Host notes` from the `sections` that
+  `followup-route.mjs route` prints (SKILL.md Step 7.3); never hand-write their items.
 - The phrase `do not merge` never appears in a title or body except as the PARTIAL marker below —
   boss-epic's merge gate matches it. Rephrase any finding that contains it.
 

@@ -4135,3 +4135,64 @@ func TestStripBossdManagedFiles_UsesPluginContributions(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TestArchiveSession_ZeroOutputFinalizesInsteadOfArchiving: archiving an
+// unattended zero-output session — how a finished run ends itself — runs
+// finalize: the cron outcome is recorded, the row is hard-deleted, and the
+// repository checkout it ran in is never touched. That holds from a state the
+// stranded sweep would not reap, such as AwaitingChecks.
+func TestArchiveSession_ZeroOutputFinalizesInsteadOfArchiving(t *testing.T) {
+	ctx := context.Background()
+	for _, state := range []machine.State{machine.ImplementingPlan, machine.AwaitingChecks} {
+		t.Run(state.String(), func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			wt := &mockWorktreeManager{statusOut: " M user-file"}
+			cron := &recordingCronJobStore{}
+			cronJobID := "cron-plan"
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", WorktreePath: "/tmp/repo", State: state,
+				CronJobID: &cronJobID, IsQuickChat: true,
+			}
+			lc := newTestLifecycle(sessions, repos, nil, cron, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+			if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
+				t.Fatalf("ArchiveSession: %v", err)
+			}
+			if _, ok := sessions.sessions["sess-1"]; ok {
+				t.Fatal("zero-output session row still exists after archive")
+			}
+			if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
+				t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
+			}
+			if wt.statusCalls != 0 || len(wt.archived) != 0 {
+				t.Fatalf("status calls=%d archived=%v, want the repo checkout untouched", wt.statusCalls, wt.archived)
+			}
+		})
+	}
+
+	// An attended quick chat is not finalized by archive: it takes the normal
+	// archive path, so its row is kept and no cron outcome is recorded.
+	t.Run("attended quick chat is archived", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		cron := &recordingCronJobStore{}
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+		sessions.sessions["sess-2"] = &models.Session{
+			ID: "sess-2", RepoID: "repo-1", WorktreePath: "/tmp/repo", State: machine.ImplementingPlan, IsQuickChat: true,
+		}
+		lc := newTestLifecycle(sessions, repos, nil, cron, &mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+		if err := lc.ArchiveSession(ctx, "sess-2"); err != nil {
+			t.Fatalf("ArchiveSession: %v", err)
+		}
+		got, ok := sessions.sessions["sess-2"]
+		if !ok || got.State != machine.ImplementingPlan {
+			t.Fatalf("attended quick chat = %+v, want its row kept and never finalized", got)
+		}
+		if len(cron.lastRunCalls) != 0 {
+			t.Fatalf("last-run calls = %+v, want none", cron.lastRunCalls)
+		}
+	})
+}

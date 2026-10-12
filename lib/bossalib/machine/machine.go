@@ -95,6 +95,13 @@ type SessionContext struct {
 	BlockedReason string
 	HasPR         bool // PR already created (e.g. no-plan PR sessions)
 
+	// IsQuickChat marks a zero-output session (models.Session.IsQuickChat):
+	// it runs in the repo checkout with no branch to push and no PR to
+	// await, so PlanComplete out of ImplementingPlan is not a legal
+	// transition for it (BOS-1514). Zero value (false) preserves the
+	// historical behaviour.
+	IsQuickChat bool
+
 	// SkipAttemptCount, when true, makes the next fix-loop lap free: the
 	// FixingChecks OnEntry action does not bump AttemptCount and the
 	// fixOrBlock/retryOrBlock guards never tip into Blocked. The dispatcher
@@ -205,6 +212,13 @@ func (m *Machine) planCompleteDestination(_ context.Context, _ ...any) (stateles
 	return PushingBranch, nil
 }
 
+// notQuickChat guards PlanComplete out of ImplementingPlan: a quick chat has
+// no branch to push and no PR to await, so it must never enter the PR
+// pipeline (BOS-1514). The guard's name is its description in stateless.
+func (m *Machine) notQuickChat(_ context.Context, _ ...any) bool {
+	return !m.ctx.IsQuickChat
+}
+
 // fixOrBlockAfterFix is the same as fixOrBlock but used for FixFailed events
 // where we go back to AwaitingChecks if under max, Blocked if at max.
 func (m *Machine) retryOrBlock(_ context.Context, _ ...any) (stateless.State, error) {
@@ -237,7 +251,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PRClosed, Closed)
 
 	sm.Configure(ImplementingPlan).
-		PermitDynamic(PlanComplete, m.planCompleteDestination).
+		PermitDynamic(PlanComplete, m.planCompleteDestination, m.notQuickChat).
 		Permit(FinalizeRequested, Finalizing).
 		Permit(Block, Blocked).
 		Permit(Orphan, Orphaned).

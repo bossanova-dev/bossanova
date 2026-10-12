@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -252,13 +253,88 @@ func EnsureRunning(socketPath string) error {
 
 // EnsureRunningWithMode is EnsureRunning plus the StartMode describing which
 // path satisfied the request. The mode is StartModeUnknown on error.
+//
+// It always allows the detached fallback: it backs newClient's auto-start on
+// every boss command, and BOS-1203 deliberately keeps the unsupervised spawn
+// reachable there so a broken service never leaves the host with no daemon.
 func EnsureRunningWithMode(socketPath string) (StartMode, error) {
+	return EnsureRunningWithPolicy(socketPath, AllowDetachedFallback)
+}
+
+// DetachedFallbackPolicy decides what the start path does when the platform
+// service manager did not serve the socket.
+//
+// BOS-1519: an explicit `boss daemon start` used to fall through to an
+// unsupervised direct spawn even with a LaunchAgent, watchdog or systemd unit
+// installed. That daemon then held the singleton lock, and the installed
+// service could only fail against it — launchd logged 9,761 spawn attempts in
+// a day while a detached bossd served. The command the operator ran by hand
+// now refuses that shape instead of creating it.
+type DetachedFallbackPolicy int
+
+const (
+	// AllowDetachedFallback is the zero value and the historic behaviour:
+	// spawn bossd directly whenever the service manager did not serve.
+	AllowDetachedFallback DetachedFallbackPolicy = iota
+
+	// RefuseDetachedFallbackWhenServiceInstalled returns
+	// ErrServiceInstalledNotServing instead of spawning when a service is
+	// installed for this profile. With no service installed it still spawns:
+	// there is no service manager to prefer, and refusing would leave the host
+	// with no way to start a daemon.
+	RefuseDetachedFallbackWhenServiceInstalled
+)
+
+func (p DetachedFallbackPolicy) String() string {
+	switch p {
+	case AllowDetachedFallback:
+		return "allow-detached"
+	case RefuseDetachedFallbackWhenServiceInstalled:
+		return "refuse-detached-when-service-installed"
+	default:
+		return "unknown"
+	}
+}
+
+// ErrServiceInstalledNotServing is returned under
+// RefuseDetachedFallbackWhenServiceInstalled when a service is installed for
+// this profile but the service manager did not bring the socket up. No
+// detached daemon was started. The wrapping error names the service path.
+var ErrServiceInstalledNotServing = errors.New("a service is installed for this profile but the service manager did not serve the daemon socket")
+
+// serviceManagerStartWait bounds the wait for the service manager (launchctl
+// load, systemctl start) to serve the socket on the start path.
+//
+// It is a package var and NOT LifecycleStartupTimeout used directly because
+// that is a const daemon_test.go asserts against, so a test whose service
+// manager never serves would sleep a real minute — the same reason
+// watchdogRespawnWait is a var. Production keeps the full budget.
+var serviceManagerStartWait = LifecycleStartupTimeout
+
+// EnsureRunningWithPolicy is EnsureRunningWithMode with the caller choosing
+// what happens when an installed service manager does not serve the socket.
+// The mode is StartModeUnknown on error.
+func EnsureRunningWithPolicy(socketPath string, policy DetachedFallbackPolicy) (StartMode, error) {
 	// Try to connect to the existing socket.
 	if isSocketReachable(socketPath) {
 		return StartModeAlreadyRunning, nil
 	}
 
-	return platformEnsureRunning(socketPath)
+	return platformEnsureRunningWithPolicy(socketPath, policy)
+}
+
+// refuseDetachedFallback is the shared refusal both platforms return in place
+// of the detached spawn. It re-probes first: a daemon that came up while the
+// service manager was being waited on is a success, not a refusal.
+func refuseDetachedFallback(socketPath, servicePath, reason string) (StartMode, error) {
+	if isSocketReachable(socketPath) {
+		return StartModeAlreadyRunning, nil
+	}
+	if reason != "" {
+		reason = " (" + reason + ")"
+	}
+	return StartModeUnknown, fmt.Errorf("%w: %s is installed but %s is not being served%s; no detached, unsupervised bossd was started",
+		ErrServiceInstalledNotServing, servicePath, socketPath, reason)
 }
 
 // ResolveBossdPath finds the bossd binary. It checks:

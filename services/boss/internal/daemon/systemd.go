@@ -614,14 +614,23 @@ func platformMcpGetStatus() (*Status, error) {
 	return st, nil
 }
 
-// platformEnsureRunning attempts to start the daemon if it's not reachable.
+// platformEnsureRunning is platformEnsureRunningWithPolicy under the
+// historic allow-detached policy.
+func platformEnsureRunning(socketPath string) (StartMode, error) {
+	return platformEnsureRunningWithPolicy(socketPath, AllowDetachedFallback)
+}
+
+// platformEnsureRunningWithPolicy attempts to start the daemon if it's not
+// reachable.
 //
 // The returned StartMode says whether systemd started the daemon or whether
 // this fell through to the unsupervised direct spawn. BOS-1183: the caller has
 // no other way to tell the two apart, because both return a nil error and a
-// serving socket. The control flow here is unchanged; only the verdict is
-// threaded out.
-func platformEnsureRunning(socketPath string) (StartMode, error) {
+// serving socket.
+//
+// BOS-1519: under RefuseDetachedFallbackWhenServiceInstalled the direct spawn
+// is refused whenever the unit is installed and did not serve.
+func platformEnsureRunningWithPolicy(socketPath string, policy DetachedFallbackPolicy) (StartMode, error) {
 	// Re-probe: a daemon may have come up (or another caller started one) since
 	// EnsureRunning's initial check. Spawning a duplicate bossd here is the root
 	// cause of the socket-stealing storm, so never start one if the socket is
@@ -632,12 +641,26 @@ func platformEnsureRunning(socketPath string) (StartMode, error) {
 
 	// Try the systemd service first (if installed).
 	st, err := platformGetStatus()
-	if err == nil && st.Installed && !st.Running {
+	serviceInstalled := err == nil && st.Installed
+	if serviceInstalled && !st.Running {
 		if _, err := runSystemctl("--user", "start", ServiceName); err == nil {
-			if waitForSocket(socketPath, LifecycleStartupTimeout) {
+			if waitForSocket(socketPath, serviceManagerStartWait) {
 				return StartModeServiceManager, nil
 			}
 		}
+	}
+
+	// BOS-1519: an explicit `boss daemon start` must not create the
+	// unsupervised shape beside an installed unit. Refused before resolving
+	// bossd, because none of that work is needed for a refusal.
+	if serviceInstalled && policy == RefuseDetachedFallbackWhenServiceInstalled {
+		// A unit systemd already reports running may still be binding its
+		// socket (a concurrent start, a supervised respawn); give it the same
+		// startup budget a fresh start gets before refusing.
+		if st.Running && waitForSocket(socketPath, serviceManagerStartWait) {
+			return StartModeAlreadyRunning, nil
+		}
+		return refuseDetachedFallback(socketPath, st.ServicePath, "")
 	}
 
 	// Fall back to starting bossd directly as a background process.

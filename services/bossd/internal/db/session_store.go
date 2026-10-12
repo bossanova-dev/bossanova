@@ -598,11 +598,17 @@ func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
 // AwaitingChecks when there are no running workflows for them. This cleans
 // up sessions whose driving autopilot goroutines were lost during a daemon
 // restart.
+//
+// Quick chats (is_quick_chat = 1) are excluded: they have no branch and no
+// PR lifecycle to enter (BOS-1514). A surviving quick chat stays in
+// ImplementingPlan, and the stranded-cron sweep (reconcile_cron.go, whose
+// strandedReapStates include ImplementingPlan) reaps a dead cron one.
 func (s *SQLiteSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ?
 		 WHERE state = ?
+		   AND is_quick_chat = 0
 		   AND NOT EXISTS (
 		       SELECT 1 FROM workflows
 		       WHERE workflows.session_id = sessions.id

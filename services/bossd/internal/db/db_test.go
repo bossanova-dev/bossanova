@@ -1631,6 +1631,18 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 		t.Fatalf("update to orphaned: %v", err)
 	}
 
+	// Create a quick chat in ImplementingPlan (BOS-1514). It has no branch
+	// and no PR lifecycle to enter, so it must stay in ImplementingPlan.
+	sessQuick, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Quick chat", BaseBranch: "main",
+	})
+	isQuickChat := true
+	if _, err := sessionStore.Update(ctx, sessQuick.ID, UpdateSessionParams{
+		State: &implState, IsQuickChat: &isQuickChat,
+	}); err != nil {
+		t.Fatalf("update quick chat to implementing: %v", err)
+	}
+
 	// Advance orphaned sessions.
 	n, err := sessionStore.AdvanceOrphanedSessions(ctx)
 	if err != nil {
@@ -1662,5 +1674,11 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	got, _ = sessionStore.Get(ctx, sessOrphaned.ID)
 	if got.State != machine.Orphaned {
 		t.Errorf("orphaned headless session state = %v, want Orphaned", got.State)
+	}
+
+	// Quick chat must stay ImplementingPlan — never advanced into the PR pipeline.
+	got, _ = sessionStore.Get(ctx, sessQuick.ID)
+	if got.State != machine.ImplementingPlan {
+		t.Errorf("quick chat state = %v, want ImplementingPlan", got.State)
 	}
 }

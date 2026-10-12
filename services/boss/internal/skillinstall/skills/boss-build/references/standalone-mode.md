@@ -57,13 +57,6 @@ only when `BOSS_SESSION_ID` is set (`BOSSD_MANAGED=1`). Under `BOSSD_MANAGED=0` 
 session to link, so the call is skipped — expected standalone degradation, not an error. It is
 best-effort and non-fatal.
 
-## Step 11 — proof env fallback
-
-The proof upload env (`PROOF_ANTHROPIC_API_KEY`, etc.) is daemon-injected. Under `BOSSD_MANAGED=0` it
-is not injected, so `node scripts/proof.mjs run` legitimately posts its honest `env-unavailable` note
-(doctor output embedded). That is the intended non-fatal standalone degradation — capture-only and
-never a terminal-state change — not a failure to fix.
-
 ## Step 12 — Stop-hook removal is an inherent no-op
 
 bossd installs the Stop-hooks the skill removes so bossd does not double-finalize. Under

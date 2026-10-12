@@ -83,6 +83,10 @@ mcp="save_session_webhook"
 The MCP tool creates a webhook when you pass no `id`. It needs `url` and a
 non-empty `event_types`.
 
+A new webhook sends the raw event envelope. To post straight into a Slack or
+Discord channel instead, choose a [payload format](#payload-formats) with
+`--format`, or the tool's `format` field.
+
 The endpoint URL must:
 
 - use `https`;
@@ -147,9 +151,10 @@ mcp="save_session_webhook"
 />
 
 `--event` replaces the whole set of events, so repeat it for each one to
-keep. `--url` and `--description` change the other fields. With the MCP
-tool, pass the `id` and only the fields to change: `url`, `description`,
-`event_types` or `is_enabled`. A non-empty `event_types` replaces the set.
+keep. `--url`, `--description` and `--format` change the other fields. With
+the MCP tool, pass the `id` and only the fields to change: `url`,
+`description`, `event_types`, `is_enabled` or `format`. A non-empty
+`event_types` replaces the set.
 
 The bin button on a webhook's row deletes the webhook and its delivery history
 after you confirm. It cannot be undone.
@@ -176,9 +181,10 @@ organization.
 | RPC                            | What it does                                                                  |
 | ------------------------------ | ----------------------------------------------------------------------------- |
 | `ListSessionWebhookEventTypes` | Lists the event catalog, with a sample payload for each event.                |
+| `ListSessionWebhookFormats`    | Lists the payload formats available to an endpoint.                           |
 | `ListSessionWebhooks`          | Lists the organization's endpoints, oldest first, without secrets.            |
 | `CreateSessionWebhook`         | Registers an endpoint and returns its signing secret.                         |
-| `UpdateSessionWebhook`         | Changes the URL, description, event types or enabled flag.                    |
+| `UpdateSessionWebhook`         | Changes the URL, description, event types, enabled flag or format.            |
 | `RotateSessionWebhookSecret`   | Replaces the signing secret and returns the new one.                          |
 | `DeleteSessionWebhook`         | Deletes the endpoint together with its delivery history.                      |
 | `SendSessionWebhookTestEvent`  | Sends one test event and returns the result. See [Test events](#test-events). |
@@ -298,6 +304,91 @@ Every request carries these headers:
 | `X-Bossanova-Delivery`      | The delivery id. It is unique per event and endpoint, and stays the same across retries. |
 | `X-Bossanova-Test`          | `true` for a test event, otherwise `false`.                                              |
 | `X-Bossanova-Signature-256` | The signature, `sha256=` followed by 64 lower-case hex characters.                       |
+
+## Payload formats
+
+Each webhook has a **payload format** that decides what its request body
+looks like. The format is picked from a fixed set built into Bossanova. You
+never supply code of your own.
+
+| Format    | Label    | Sends                                                              |
+| --------- | -------- | ------------------------------------------------------------------ |
+| `raw`     | Raw JSON | The event envelope described under [Payload](#payload), unchanged. |
+| `slack`   | Slack    | A one-line message for a Slack incoming webhook.                   |
+| `discord` | Discord  | A one-line message for a Discord channel webhook.                  |
+
+`raw` is the default, and a webhook created before formats existed uses it.
+`boss webhook formats` lists them, and so does the
+`ListSessionWebhookFormats` API call. Set a format with
+`boss webhook add --format` or `boss webhook edit --format`, the `format`
+field of the `save_session_webhook` tool, or the `format` field of
+`CreateSessionWebhook` and `UpdateSessionWebhook`. An unknown format is
+refused with `INVALID_ARGUMENT`, and the error lists the valid ones. The
+web app does not show the format yet. Saving a webhook there leaves its
+format as it was.
+
+### What a format changes
+
+A format changes only the body. Every request still carries the
+[headers](#headers) above, including `Content-Type: application/json` and
+the signature, and the signature is computed over the body that is
+actually sent.
+
+Bossanova renders the body when it sends each attempt, not when it queues
+the event. Changing a webhook's format therefore applies to every delivery
+still waiting, retries included. A [test event](#test-events) is rendered
+through the format as well, so it previews what a live event sends. In the
+delivery history, a delivery's request body is shown rendered through the
+webhook's current format, so after a format change it shows what would be
+sent now, not what an earlier attempt sent.
+
+The `slack` and `discord` messages read like this:
+
+- the pull request as a link labelled `owner/repo#number`, or the
+  repository name alone before a pull request exists;
+- the session title; and
+- the event's label from the [event table](#event-types), such as
+  `⨯ failing`.
+
+A test event's message starts with `[test] `. The `slack` format escapes
+`&`, `<` and `>` in the text, as Slack requires. The `discord` format
+escapes Discord's markdown characters, wraps the link in `<…>` so Discord
+does not preview it, cuts the message at Discord's 2,000-character limit,
+and sends `"allowed_mentions": {"parse": []}` so a session title never
+pings anyone.
+
+Slack and Discord do not check the signature: the webhook URL they give
+you is the credential, so keep it private.
+
+### Posting to Slack
+
+In Slack, create an app for your workspace, turn on **Incoming Webhooks**,
+add a new webhook to the workspace and pick a channel. Copy the webhook
+URL, which starts with `https://hooks.slack.com/`. Then register it with
+the `slack` format and the events you want in the channel:
+
+<CommandTabs
+chat='"register a session webhook for https://hooks.slack.com/services/T000/B000/XXXX in Slack format on session.failing and session.merged"'
+cli="boss webhook add https://hooks.slack.com/services/T000/B000/XXXX --format slack --event session.failing --event session.merged"
+mcp="save_session_webhook"
+/>
+
+Send a test event with `boss webhook test <webhook-id> session.failing`.
+Without a payload, the test uses the catalog sample, and Bossanova posts
+this body:
+
+```json
+{
+  "text": "[test] <https://github.com/acme/api/pull/42|acme/api#42>: Add rate limiting to the public API ⨯ failing"
+}
+```
+
+Slack shows it as a message whose `acme/api#42` links to the pull request.
+A live event sends the same message without `[test] `.
+
+On the wire, the body is compact JSON with `<`, `>` and `&` written as
+`\u003c`, `\u003e` and `\u0026`. Any JSON parser reads them back as the same
+text.
 
 ## Verifying signatures
 
@@ -469,6 +560,7 @@ this:
 | `3xx`                                              | Failed. Redirects are not followed. |
 | Any other status, such as `400`, `401` or `404`    | Failed.                             |
 | An address that is not allowed (see the URL rules) | Failed.                             |
+| A body the webhook's format cannot render          | Failed after one attempt, unsent.   |
 
 Each attempt has 10 seconds to finish, covering the connection, the TLS
 handshake, the request and the response. Return a `2xx` quickly and do slow

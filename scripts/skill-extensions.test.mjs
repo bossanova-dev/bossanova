@@ -381,11 +381,13 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // BOS-1376 (2026-10-06): nine → ten; completion has its own validated result contract.
   // BOS-1386: ten → eleven; verify is the boss-verify stage's judgment role.
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
+  // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
     'knowledge',
     'lens',
+    'maintenance',
     'methodology',
     'notes',
     'plan-reviewer',
@@ -579,7 +581,7 @@ test('the repo-authored knowledge extension is discoverable for boss-build', () 
 // ties every extension NAME the two docs still mention to a directory, so a rename that forgets a
 // doc reds here instead of leaving a dangling name.
 
-const EXTENSION_CORES = ['plan', 'build', 'review', 'epic', 'repair', 'finalize', 'verify', 'proof']
+const EXTENSION_CORES = ['plan', 'build', 'review', 'epic', 'repair', 'finalize', 'verify']
 const EXTENSION_NAME = new RegExp(
   String.raw`(?<![\w-])boss-(${EXTENSION_CORES.join('|')})-([a-z0-9-]*)(?:\{([a-z0-9,-]*)\})?([a-z0-9-]*)`,
   'g',
@@ -627,10 +629,10 @@ function missingExtensionNames(markdown, root) {
 test('extensionNameTokens expands brace forms and skips placeholder names', () => {
   assert.deepEqual(
     extensionNameTokens(
-      'see `boss-proof-{docs,tui}`, `.claude/skills/boss-build-ce/`, `boss-plan-<reviewer>` ' +
+      'see `boss-review-{golang,tui}`, `.claude/skills/boss-build-ce/`, `boss-plan-<reviewer>` ' +
         'and `x-boss-extension`; `boss-build-ce` again',
     ),
-    ['boss-proof-docs', 'boss-proof-tui', 'boss-build-ce'],
+    ['boss-review-golang', 'boss-review-tui', 'boss-build-ce'],
   )
 })
 
@@ -753,4 +755,54 @@ test('verify extensions are discoverable through the CLI and validate through va
   const refused = cli(['validate', '--role', 'verify', '--file', evidenceless])
   assert.equal(refused.status, 1, refused.stdout)
   assert.deepEqual(JSON.parse(refused.stdout).errors, ['pass requires at least one evidence item'])
+})
+
+// BOS-1507: the `maintenance` role — boss-retro's upkeep extensions. `filed`/`tracked` must name the
+// tracker issue they claim; the remaining outcomes may report none.
+test('maintenance role validates outcome, summary and issues through the file form', () => {
+  const base = {
+    ok: true,
+    extension: 'x',
+    role: 'maintenance',
+    outcome: 'clean',
+    summary: 's',
+    issues: [],
+  }
+  const accepted = validateEnvelopeFile('maintenance', base)
+  assert.equal(accepted.status, 0, accepted.stdout)
+  assert.deepEqual(JSON.parse(accepted.stdout), { ok: true, errors: [] })
+
+  for (const outcome of ['previewed', 'skipped']) {
+    assert.equal(validateResult({ ...base, outcome }, 'maintenance').ok, true, outcome)
+  }
+  for (const outcome of ['filed', 'tracked']) {
+    assert.equal(validateResult({ ...base, outcome, issues: ['T-1'] }, 'maintenance').ok, true)
+  }
+
+  const filedEmpty = validateEnvelopeFile('maintenance', { ...base, outcome: 'filed' })
+  assert.equal(filedEmpty.status, 1, filedEmpty.stdout)
+  assert.deepEqual(JSON.parse(filedEmpty.stdout).errors, [
+    'filed requires at least one issue identifier',
+  ])
+  assert.deepEqual(validateResult({ ...base, outcome: 'tracked' }, 'maintenance').errors, [
+    'tracked requires at least one issue identifier',
+  ])
+  assert.deepEqual(validateResult({ ...base, outcome: 'done' }, 'maintenance').errors, [
+    'outcome must be one of clean, tracked, filed, previewed, skipped',
+  ])
+  assert.deepEqual(validateResult({ ...base, summary: '  ' }, 'maintenance').errors, [
+    'summary must be a non-empty string',
+  ])
+  assert.deepEqual(validateResult({ ...base, issues: 'T-1' }, 'maintenance').errors, [
+    'issues must be an array',
+  ])
+  assert.deepEqual(
+    validateResult({ ...base, outcome: 'filed', issues: [''] }, 'maintenance').errors,
+    ['issue 0 must be a non-empty string', 'filed requires at least one issue identifier'],
+  )
+  const { issues: _omitted, ...missing } = base
+  assert.deepEqual(validateResult(missing, 'maintenance').errors.slice(0, 1), ['missing "issues"'])
+  assert.deepEqual(validateResult({ ...base, role: 'notes' }, 'maintenance').errors, [
+    'envelope role "notes" does not match expected "maintenance"',
+  ])
 })

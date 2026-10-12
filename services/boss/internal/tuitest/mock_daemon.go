@@ -2261,8 +2261,10 @@ func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.Cr
 		AgentName: req.Msg.AgentName,
 		// Stored so a later ListCronJobs reflects the gate a caller created.
 		GateCommand: req.Msg.GateCommand,
-		CreatedAt:   timestamppb.Now(),
-		UpdatedAt:   timestamppb.Now(),
+		// Stored so CLI tests see the config-ownership marker round-trip.
+		ManagedBy: req.Msg.ManagedBy,
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
 	}
 	m.cronJobs[job.Id] = job
 	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cloneMsg(job)}), nil
@@ -2327,6 +2329,10 @@ func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.Up
 	}
 	if req.Msg.GateCommand != nil {
 		job.GateCommand = *req.Msg.GateCommand
+	}
+	// Absent leaves the marker alone; "" clears it, as bossd does.
+	if req.Msg.ManagedBy != nil {
+		job.ManagedBy = *req.Msg.ManagedBy
 	}
 	job.UpdatedAt = timestamppb.Now()
 	// Clone before returning: connect-go marshals the response after we

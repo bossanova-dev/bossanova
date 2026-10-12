@@ -8,8 +8,8 @@
 // gosec on the changed go.work modules) against the current `main` checkout, and
 // hands the per-check results to selectStub, which picks ONE deduped Unplanned
 // Linear stub to file. Detect + surface only — the sweep's Dependabot write path
-// cannot auto-fix a gosec/nosec finding, so this feeds the bs-sweep-plan →
-// bs-implement pipeline instead.
+// cannot auto-fix a gosec/nosec finding, so this feeds the global boss-plan →
+// boss-build pipeline instead.
 //
 // Marker scheme (line-anchored `^MainGate: <id>$`, the exact last line of a stub
 // body so the next run dedupes off it):

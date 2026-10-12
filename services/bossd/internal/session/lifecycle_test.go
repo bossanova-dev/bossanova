@@ -2641,7 +2641,7 @@ func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testin
 			chats := &mockAgentChatStore{}
 			worktrees := &mockWorktreeManager{worktreePath: worktreeDir}
 			runner := newMockAgentRunner()
-			tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+			tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 
 			repos.repos["repo-1"] = &models.Repo{
 				ID:                "repo-1",
@@ -2905,7 +2905,7 @@ func TestStartSession_TmuxChatProfilePreflightRollsBackWorktree(t *testing.T) {
 		Model:      "gpt-5-codex",
 		State:      machine.CreatingWorktree,
 	}
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 	lifecycle := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, worktrees, runner, tmuxClient, provider, zerolog.Nop())
 	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
 	lifecycle.SetAgentLogsDir(t.TempDir())
@@ -3260,7 +3260,7 @@ func TestStartSession_CronPRTitleNormalizesSessionTitleWhenLatestCommitSubjectFa
 	wt.latestCommitSubjectErr = errors.New("git log failed")
 	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -6185,7 +6185,7 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -6232,7 +6232,7 @@ func TestStartSession_ZeroOutputUsesRepoCheckoutWithoutHookOrSetup(t *testing.T)
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
 	agentRunner := newMockAgentRunner()
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 	setup := "pnpm install"
 	repos.repos["repo-1"] = &models.Repo{
 		ID: "repo-1", LocalPath: "/tmp/repo", SetupScript: &setup,
@@ -6285,7 +6285,7 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
 	tmuxFake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7582,7 +7582,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	fake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7662,13 +7662,14 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 		t.Error("expected non-nil/non-empty tmux name persisted on chat row")
 	}
 
-	// SendPlan must have run. A single-line plan ("Run the audit") delivers via
-	// literal keystrokes (send-keys -l), not bracketed paste.
-	if fake.hasSubcommand("paste-buffer") {
-		t.Error("single-line plan must not use bracketed paste")
+	// SendPlan must have run. A Claude free-text plan is pasted even when it is
+	// a single line ("Run the audit"): Claude reads a typed burst as a paste and
+	// collapses or truncates it (BOS-1506).
+	if !fake.hasSubcommand("paste-buffer") {
+		t.Error("expected bracketed-paste delivery from SendPlan, none recorded")
 	}
-	if !fake.hasLiteralSendKeys() {
-		t.Error("expected literal send-keys -l delivery from SendPlan, none recorded")
+	if fake.hasLiteralSendKeys() {
+		t.Error("a Claude free-text plan must not be typed with send-keys -l")
 	}
 
 	// The new claude session UUID was persisted on the session row.
@@ -7694,7 +7695,7 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	fake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7767,7 +7768,7 @@ func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	fake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7832,7 +7833,7 @@ func TestStartSession_DetachTmuxAvailable_RoutesToTmux(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	fake := newFakeTmux() // available by default
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7918,7 +7919,7 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 	cr := newMockAgentRunner()
 	fake := newFakeTmux()
 	fake.available = false
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -7978,7 +7979,7 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	fake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -8062,7 +8063,7 @@ func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
 	killOpIdx.Store(-1)
 	deleteOpIdx.Store(-1)
 
-	tx := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmd := fakeTmuxClient.factory(ctx, name, args...)
 		if len(args) > 0 && args[0] == "kill-session" {
 			killOpIdx.CompareAndSwap(-1, op.Add(1))
@@ -8141,7 +8142,7 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
 	tmuxFake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -8201,7 +8202,7 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -8258,7 +8259,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	cr := newMockAgentRunner()
 	noTmux := newFakeTmux()
 	noTmux.available = false // tmux unavailable → detach falls back to headless
-	tx := tmux.NewClient(tmux.WithCommandFactory(noTmux.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(noTmux.factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -8327,7 +8328,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	cr := newMockAgentRunner()
 	noTmux := newFakeTmux()
 	noTmux.available = false // tmux unavailable → detach falls back to headless
-	tx := tmux.NewClient(tmux.WithCommandFactory(noTmux.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(noTmux.factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -8775,7 +8776,7 @@ func TestBootstrapDoesNotPollHooklessTmuxRuns(t *testing.T) {
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	tmuxFake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 
 	tok := "tok-3"
 	cronID := "cron-1"
@@ -9052,7 +9053,7 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -9101,7 +9102,7 @@ func TestStartSession_DeferPRTrue_HookSupportedDoesNotArmPollFallback(t *testing
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -9148,7 +9149,7 @@ func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
 	tmuxFake := newFakeTmux()
-	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
@@ -10357,7 +10358,7 @@ func TestStopSessionTmuxCleanup(t *testing.T) {
 				if tc.unavailable {
 					fake.failStderr["has-session"] = "tmux command unavailable"
 				}
-				lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithCommandFactory(fake.factory)), newMockVCSProvider(), zerolog.Nop())
+				lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory)), newMockVCSProvider(), zerolog.Nop())
 				err := lc.StopSession(ctx, sess.ID)
 				if (err != nil) != tc.wantError {
 					t.Fatalf("StopSession error = %v, want error %v", err, tc.wantError)
@@ -10392,7 +10393,7 @@ func TestStopSessionChatListFailurePreservesActiveState(t *testing.T) {
 	sessions := newMockSessionStore()
 	sessions.sessions["previous"] = &models.Session{ID: "previous", State: machine.ImplementingPlan}
 	chats := &mockAgentChatStore{listBySessionErr: errors.New("database unavailable")}
-	lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory)), newMockVCSProvider(), zerolog.Nop())
+	lc := newTestLifecycle(sessions, newMockRepoStore(), chats, nil, &mockWorktreeManager{}, newMockAgentRunner(), tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory)), newMockVCSProvider(), zerolog.Nop())
 	if err := lc.StopSession(context.Background(), "previous"); !errors.Is(err, chats.listBySessionErr) {
 		t.Fatalf("StopSession = %v, want chat list failure", err)
 	}

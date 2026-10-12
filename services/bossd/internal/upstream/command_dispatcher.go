@@ -168,6 +168,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchEmptyTrash(ctx, cmdID, cmd.GetEmptyTrash(), outbound)
 	case *pb.OrchestratorCommand_LaunchTriggerSession:
 		return c.dispatchLaunchTriggerSession(ctx, cmdID, cmd.GetLaunchTriggerSession(), outbound)
+	case *pb.OrchestratorCommand_RunTriggerGate:
+		return c.dispatchRunTriggerGate(ctx, cmdID, cmd.GetRunTriggerGate(), outbound)
 	case *pb.OrchestratorCommand_CommandCancel:
 		c.cancelAsyncCommand(cmd.GetCommandCancel().GetCommandId())
 		return nil
@@ -488,6 +490,32 @@ func (c *StreamClient) dispatchLaunchTriggerSession(ctx context.Context, cmdID s
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_LaunchTriggerSession{LaunchTriggerSession: res},
+		}}}
+	})
+}
+
+// dispatchRunTriggerGate routes a RunTriggerGateCommand (BOS-1467) to the
+// handler and replies with CommandResult{run_trigger_gate}. Failures attach the
+// handler-classified ErrorCode (INVALID_ARGUMENT for a rejected script path,
+// NOT_FOUND for an unregistered repo); a script that ran, or could not, is
+// always a successful reply carrying its verdict.
+//
+// Dispatched asynchronously like dispatchLaunchTriggerSession: a gate may run
+// for its full timeout, and running it inline would wedge the single-threaded
+// command reader that also services the heartbeat. Cancelable: a CommandCancel
+// kills the script, which then reports COULD_NOT_RUN.
+func (c *StreamClient) dispatchRunTriggerGate(ctx context.Context, cmdID string, req *pb.RunTriggerGateCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
+		res, errorCode, err := c.commandHandler.RunTriggerGate(commandCtx, req)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), errorCode)
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_RunTriggerGate{RunTriggerGate: res},
 		}}}
 	})
 }

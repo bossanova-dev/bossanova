@@ -741,6 +741,23 @@ test('fast path: extensions-required claims, returns the envelope, then judges w
   ])
   assert.equal(second.reason, 'merged-by-verify')
 })
+test('fast path: extensions-required carries the applicable extension names when judged', (t) => {
+  const extensionEnvelope = { pr: { number: 42 }, headSha: HEAD, changedPaths: ['a.go'] }
+  const h = fastHarness(t, {
+    judge: {
+      verdict: 'extensions-required',
+      reason: 'extensions-installed',
+      headSha: HEAD,
+      extensionEnvelope,
+      facts: {
+        extensionsApplicable: ['boss-verify-a'],
+        extensionsNotApplicable: ['boss-verify-b'],
+      },
+    },
+    post: { won: true, token: 'tok' },
+  })
+  assert.deepEqual(h.run().extensionsApplicable, ['boss-verify-a'])
+})
 test('fast path: a lost claim records claim-lost and makes no further calls', (t) => {
   const h = fastHarness(t, {
     judge: {

@@ -15,6 +15,7 @@ Register a webhook endpoint and print its signing secret once
 - `--description` — Description shown beside the webhook (at most 200 characters)
 - `--disabled` — Create the webhook disabled
 - `--event` — Event type to subscribe to (see 'boss webhook events'); repeat for several
+- `--format` — Payload format (see 'boss webhook formats'; default: raw)
 - `--json` — Emit {webhook, secret} as a stable JSON schema
 - `--org` — Organization id; must be your active organization (empty uses it)
 - `--secret-file` — Read the signing secret from a file (or '-' for stdin; default: generated)
@@ -45,7 +46,7 @@ Show one delivery with every attempt, the request body and headers
 
 ### `boss webhook edit <webhook-id> [flags]`
 
-Change a webhook's URL, description, events or enabled state
+Change a webhook's URL, description, events, format or enabled state
 
 **Flags:**
 
@@ -53,6 +54,7 @@ Change a webhook's URL, description, events or enabled state
 - `--disable` — Disable the webhook (cancels its undelivered deliveries)
 - `--enable` — Enable the webhook
 - `--event` — Replace the subscribed event types; repeat for several
+- `--format` — New payload format (see 'boss webhook formats'); undelivered events use it
 - `--json` — Emit the webhook as a stable JSON schema
 - `--org` — Organization id; must be your active organization (empty uses it)
 - `--url` — New endpoint URL (https)
@@ -64,6 +66,15 @@ List the event types a webhook can subscribe to
 **Flags:**
 
 - `--json` — Emit {event_types} as a stable JSON schema
+- `--org` — Organization id; must be your active organization (empty uses it)
+
+### `boss webhook formats [flags]`
+
+List the payload formats a webhook can send (raw, slack, discord)
+
+**Flags:**
+
+- `--json` — Emit {formats} as a stable JSON schema
 - `--org` — Organization id; must be your active organization (empty uses it)
 
 ### `boss webhook ls [flags]`

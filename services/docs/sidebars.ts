@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'guides/logging',
         'guides/mcp',
         'guides/notes',
+        'guides/organizations',
         'guides/pr-lifecycle',
         'guides/remote-daemons',
         'guides/setup-scripts',

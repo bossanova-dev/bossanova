@@ -312,7 +312,7 @@
 //     THREE HEADS ARE ALSO KEYED ON THE TAIL, and the corpus is what decided that rather than taste.
 //     `boss` and `node` were added because both head real status-bearing gates: a piped
 //     `boss skills check --gate | tail -20` measurably inverted a FAIL into a PASS, and
-//     `node scripts/proof.mjs run … | tail -25` is the same shape. Unlike `make`, `go` and the
+//     a since-retired capture CLI's `node … run … | tail -25` was the same shape. Unlike `make`, `go` and the
 //     package managers, though, they also head VALUE plumbing and — being the two command words
 //     this corpus documents most — they stand on documentation lines carrying `<a|b>` alternation
 //     placeholders, whose `|` is not a pipeline at all. Measured on the head-only widening: 23

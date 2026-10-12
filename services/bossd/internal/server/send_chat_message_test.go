@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -670,5 +672,168 @@ func TestSendChatMessage_WhitespaceSubmit_LeavesDeliveryStateUnspecified(t *test
 	}
 	if got := resp.Msg.GetDeliveryState(); got != pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED {
 		t.Errorf("delivery_state = %v, want DELIVERY_STATE_UNSPECIFIED (nothing was submitted or verified)", got)
+	}
+}
+
+// receiptOnEnterFactory drives the real verifier like verifierPaneFactory, and
+// additionally models the claude plugin's UserPromptSubmit hook: the moment the
+// Enter key reaches the pane, a receipt is posted for receiptKey, exactly as
+// HookServer.handlePromptSubmitted records it (BOS-1506).
+func receiptOnEnterFactory(lc *session.Lifecycle, receiptKey string, verify func() *exec.Cmd) tmux.CommandFactory {
+	panes := verifierPaneFactory(verify)
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "send-keys" && args[len(args)-1] == "Enter" {
+			lc.RecordPromptSubmitted(receiptKey, time.Now())
+		}
+		return panes(ctx, name, args...)
+	}
+}
+
+// TestSendChatMessage_ClaudeReceiptConfirmsAmbiguousPane: the pane cannot be
+// read at all after delivery — on its own an UNCONFIRMED send — but the
+// agent's prompt-submitted receipt arrives, and it is authoritative.
+func TestSendChatMessage_ClaudeReceiptConfirmsAmbiguousPane(t *testing.T) {
+	lc := &session.Lifecycle{}
+	s := newVerifierTestServer(t, receiptOnEnterFactory(lc, "agent-1", func() *exec.Cmd {
+		return exec.CommandContext(context.Background(), "false")
+	}))
+	s.promptReceipts = lc
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("a receipt-confirmed send must not error: %v", err)
+	}
+	if !resp.Msg.GetDelivered() || resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED {
+		t.Fatalf("delivered = %v, state = %v; want delivered SUBMITTED on a receipt",
+			resp.Msg.GetDelivered(), resp.Msg.GetDeliveryState())
+	}
+}
+
+// TestSendChatMessage_ClaudeNoReceiptHeldComposerIsNotSubmitted: no receipt
+// arrives and the composer keeps holding the collapsed paste, so the send is
+// a loud, retryable not-submitted — never a silent delivered.
+func TestSendChatMessage_ClaudeNoReceiptHeldComposerIsNotSubmitted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the production verifier budgets; skipped in -short")
+	}
+	lc := &session.Lifecycle{}
+	s := newVerifierTestServer(t, verifierPaneFactory(func() *exec.Cmd {
+		return exec.CommandContext(context.Background(), "printf", "%s", "❯ [Pasted text #1]\n")
+	}))
+	s.promptReceipts = lc
+
+	_, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if connect.CodeOf(err) != connect.CodeInternal || !strings.Contains(fmt.Sprint(err), tmux.OutcomeNotSubmitted.String()) {
+		t.Fatalf("err = %v (code %v); want CodeInternal naming %q", err, connect.CodeOf(err), tmux.OutcomeNotSubmitted)
+	}
+}
+
+// unconfirmedSendError produces a real verifier-classified UNCONFIRMED error:
+// a codex send (no paste routing, no settle wait) whose pane cannot be read
+// after the Enter.
+func unconfirmedSendError(t *testing.T) error {
+	t.Helper()
+	captures := 0
+	var mu sync.Mutex
+	c := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(args) > 0 && args[0] == "capture-pane" {
+			captures++
+			if captures == 1 {
+				return exec.CommandContext(ctx, "printf", "%s", "› \n")
+			}
+			return exec.CommandContext(ctx, "false")
+		}
+		return exec.CommandContext(ctx, "true")
+	}))
+	err := c.SendMessage(context.Background(), "boss-test", "do the thing", true, "›")
+	if tmux.OutcomeOf(err) != tmux.OutcomeUnconfirmed {
+		t.Fatalf("setup: want an unconfirmed send error, got %v (%v)", tmux.OutcomeOf(err), err)
+	}
+	return err
+}
+
+// TestSendChatMessage_LateReceiptSettlesAGivenUpSend: the verifier has already
+// returned UNCONFIRMED when the receipt lands, keyed by the chat's bound
+// provider session id. The receipt still settles the send as delivered.
+func TestSendChatMessage_LateReceiptSettlesAGivenUpSend(t *testing.T) {
+	provider := "provider-1"
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude", ProviderSessionID: &provider}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	lc := &session.Lifecycle{}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true, sendMessageErr: unconfirmedSendError(t)}
+	tmuxer.duringSend = func() { lc.RecordPromptSubmitted(provider, time.Now()) }
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+	s.promptReceipts = lc
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Msg.GetDelivered() || resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED {
+		t.Fatalf("delivered = %v, state = %v; want delivered SUBMITTED", resp.Msg.GetDelivered(), resp.Msg.GetDeliveryState())
+	}
+
+	// Without the receipt the same verifier result stays UNCONFIRMED.
+	tmuxer.duringSend = nil
+	resp, err = s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED {
+		t.Fatalf("state = %v; want UNCONFIRMED without a receipt", resp.Msg.GetDeliveryState())
+	}
+}
+
+// TestSendChatMessage_ReceiptOnlyForSubmittedClaudeSends: codex has no prompt
+// hook and a prefill submits nothing, so neither carries a receipt check.
+func TestSendChatMessage_ReceiptOnlyForSubmittedClaudeSends(t *testing.T) {
+	cases := []struct {
+		name      string
+		agentName string
+		submit    bool
+		want      bool
+	}{
+		{"claude submit", "claude", true, true},
+		{"legacy empty agent submit", "", true, true},
+		{"claude prefill", "claude", false, false},
+		{"codex submit", "codex", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: tc.agentName}
+			sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+			tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+			s := newSendMessageTestServer(t, chat, sess, tmuxer)
+			s.promptReceipts = &session.Lifecycle{}
+
+			if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+				AgentSessionId: "agent-1",
+				Message:        "do the thing",
+				Submit:         tc.submit,
+			})); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := tmuxer.lastSubmitted != nil; got != tc.want {
+				t.Fatalf("send carried a receipt check = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

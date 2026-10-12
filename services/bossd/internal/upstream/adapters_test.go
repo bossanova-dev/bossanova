@@ -14,6 +14,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -2722,4 +2723,93 @@ func TestBroadcastEgressPublisher(t *testing.T) {
 			t.Fatalf("the broadcast body leaked into the error: %v", err)
 		}
 	})
+}
+
+// TestCommandHandlerAdapter_CronJobManagedByPassThrough pins that the cron
+// command adapters copy every stream-command field, managed_by included, onto
+// the daemon request. The field set is read from the descriptors, so a field
+// added to the stream commands without a copy fails here.
+func TestCommandHandlerAdapter_CronJobManagedByPassThrough(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		cmd := &pb.CreateCronJobCommand{}
+		setEveryCronCommandField(t, cmd.ProtoReflect())
+		if _, err := adapter.CreateCronJob(context.Background(), cmd); err != nil {
+			t.Fatalf("CreateCronJob: %v", err)
+		}
+		if fake.lastCreateCron.GetManagedBy() != cmd.GetManagedBy() || cmd.GetManagedBy() == "" {
+			t.Fatalf("managed_by = %q, want %q", fake.lastCreateCron.GetManagedBy(), cmd.GetManagedBy())
+		}
+		assertCronCommandFieldsCopied(t, cmd.ProtoReflect(), fake.lastCreateCron.ProtoReflect())
+	})
+
+	t.Run("update", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		cmd := &pb.UpdateCronJobCommand{}
+		setEveryCronCommandField(t, cmd.ProtoReflect())
+		if _, err := adapter.UpdateCronJob(context.Background(), cmd); err != nil {
+			t.Fatalf("UpdateCronJob: %v", err)
+		}
+		if fake.lastUpdateCron.ManagedBy == nil {
+			t.Fatal("managed_by pointer not forwarded")
+		}
+		assertCronCommandFieldsCopied(t, cmd.ProtoReflect(), fake.lastUpdateCron.ProtoReflect())
+	})
+
+	t.Run("update without the marker leaves the pointer nil", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		name := "renamed"
+		if _, err := adapter.UpdateCronJob(context.Background(), &pb.UpdateCronJobCommand{Id: "cj-1", Name: &name}); err != nil {
+			t.Fatalf("UpdateCronJob: %v", err)
+		}
+		if fake.lastUpdateCron.ManagedBy != nil {
+			t.Fatalf("an absent marker became %q; it must stay absent, never a clear", fake.lastUpdateCron.GetManagedBy())
+		}
+	})
+}
+
+// setEveryCronCommandField sets every field of a cron stream command to a
+// non-zero value, by descriptor.
+func setEveryCronCommandField(t *testing.T, msg protoreflect.Message) {
+	t.Helper()
+	fields := msg.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		switch f.Kind() {
+		case protoreflect.StringKind:
+			msg.Set(f, protoreflect.ValueOfString("value-"+string(f.Name())))
+		case protoreflect.BoolKind:
+			msg.Set(f, protoreflect.ValueOfBool(true))
+		case protoreflect.EnumKind:
+			values := f.Enum().Values()
+			msg.Set(f, protoreflect.ValueOfEnum(values.Get(values.Len()-1).Number()))
+		default:
+			t.Fatalf("cron command field %s has unsupported test kind %s", f.FullName(), f.Kind())
+		}
+	}
+}
+
+// assertCronCommandFieldsCopied checks that every command field exists on the
+// daemon request with the same value and presence.
+func assertCronCommandFieldsCopied(t *testing.T, source, got protoreflect.Message) {
+	t.Helper()
+	fields := source.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		sf := fields.Get(i)
+		gf := got.Descriptor().Fields().ByName(sf.Name())
+		if gf == nil {
+			t.Fatalf("%s has no field %q to carry %s", got.Descriptor().FullName(), sf.Name(), sf.FullName())
+		}
+		if source.Has(sf) != got.Has(gf) || source.Get(sf).Interface() != got.Get(gf).Interface() {
+			t.Fatalf("field %s = %v (set %v), want %v (set %v)", sf.Name(), got.Get(gf), got.Has(gf), source.Get(sf), source.Has(sf))
+		}
+	}
 }

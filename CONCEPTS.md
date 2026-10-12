@@ -664,6 +664,46 @@ menu whose selected row may be irreversible. Where the two conflict, over-refuse
 accepted wrong refusals with tests that say so, so that a later reader who finds a way to narrow the
 grammar tightens it deliberately instead of reverting it as a bug.
 
+### Argv delivery
+
+A session's first input handed to the agent as a launch argument — read from a private file by the
+login shell at exec time — instead of typed into the **Composer**. It bypasses the **Delivery gate**
+entirely, which is its point (nothing is typed, so nothing can land in a menu or collapse into an
+unsubmitted paste block) and also its cost: with nothing typed, the pane can no longer say whether
+the input ran. Only a fresh launch whose input must be submitted takes this path; a prefill, which
+someone else is meant to submit, never does.
+
+### Delivery receipt
+
+Evidence, produced by the agent itself, that it submitted the input it was launched with — the
+replacement for reading the pane once input travels by **Argv delivery**. Each agent supplies its own
+kind or none: one that adopts the session id it is given posts a receipt from a prompt-submitted
+hook; one that mints its own id leaves a user turn in its own transcript. A receipt counts only if it
+is newer than the launch, because a resumed conversation already holds earlier user turns and a
+"user message present" check would pass at once.
+
+A missing receipt is ambiguous rather than negative: the input is already in the agent's argv and may
+still run late. That ambiguity is why a start whose receipt never arrives is failed with its pane
+killed instead of being retried — a retry next to a live pane that later runs the input would run it
+twice. The wait has distinct endings (confirmed, the agent exited, no receipt by the deadline, the
+agent's own session never resolved) and they are kept distinct, never collapsed into a yes/no. An
+agent that cannot produce a receipt keeps the unverified start.
+
+Established sends into a running chat use the same kind of receipt where the agent has one: it is
+consulted before every read of the pane and before any re-delivery, so it outranks the pane and a
+receipt arriving late still settles the send as delivered. It proves that _a_ prompt was submitted
+in that chat since the send began, not that it was this one. An agent without a prompt hook keeps
+reading the pane as its only signal.
+
+### Collapsed paste
+
+The placeholder an agent draws in its **Composer** in place of a long pasted (or fast-typed) input —
+a bracketed "pasted text" or "pasted content" token. It still holds the whole input, unsubmitted, but
+shares no text with it, so any check that asks "does the composer still show the input" reads a held
+message as sent. It must be recognised as held in its own right. Whether typed input collapses
+depends on how fast the keystrokes arrive, not on a length, so it is avoided by pasting deliberately
+and waiting for the composer to settle before submitting.
+
 ## Session environment
 
 ### Inherited path
@@ -1035,18 +1075,6 @@ while a wholesale relocation is reported. Citing the file without a line number 
 escape — a citation that cannot be anchored drops the precision it cannot support rather than
 asserting it. The check is deliberately textual. It establishes that the cited token is still there,
 never that the token is the right one for the claim, and never that the claim itself is true.
-
-### Referent
-
-A path or symbol that a planned ticket cites as the thing its work acts on, which the plan sweep
-checks against the code to decide whether the ticket's premise has gone stale.
-
-A ticket is judged stale only when every referent is absent from the code **and** has history showing
-it once existed there, because absence alone is also what a typo or a paraphrase looks like, and a
-referent moved by a rename still exists. The judgement is destructive — a stale ticket loses its
-planning signal — so any doubt resolves to unknown rather than stale. Documentation is excluded when
-asking whether a referent's text is still used, since plans quote what their changes removed, but a
-referent that is itself a tracked documentation path is present and therefore live.
 
 ### Description write-back
 
@@ -1783,6 +1811,20 @@ The same reasoning governs the whole installed **skill tree**: a `boss skills ch
 discrepancy warns rather than blocks, because the report only says which payload this run read. Its
 limit is the one drawn under **Run bookkeeping** — drift is a recording discrepancy, but an installed
 tree that is _absent_ rather than stale is an absent capability, and still blocks.
+
+### Feature-map drift
+
+What has changed in user-facing code since the verify feature map was last maintained, as judged by
+the `boss-retro` maintenance extension that keeps the map current. Not to be confused with
+**Toolbox drift**: this is coverage of a curated artifact falling behind the code, not an installed
+copy falling behind its source.
+
+"Last maintained" means the last change to a feature entry; an edit to the map's index prose does
+not count, since otherwise any such edit would silently absorb the drift. Because the map is partial
+by design, drift is the set of deltas since that point — newly added user-facing paths no feature
+owns, ownership patterns that no longer match anything, and feature commits — never the whole
+uncovered remainder. Each drift result carries a fingerprint, and a tracker issue carrying it (or
+any still-open drift issue) means the drift is already tracked, so at most one is open at a time.
 
 ### Byte ratchet
 
@@ -3036,6 +3078,20 @@ names who holds a lease, not which grant it is.
 
 The kind of external source a **Trigger** listens to — for example a signed HTTP call or a repository-hosting webhook. Each type supplies its own configuration rules, the fields its filters may reference, and the events a trigger can subscribe to; adding a type changes neither how triggers are stored nor how events are matched.
 
+### Trigger gate
+
+An optional script, committed in the trigger's repository, that the launching daemon runs in its
+local clone before each launch of a **Trigger**. The invocation's payload excerpt is passed on its
+input. The trigger's counterpart to a **Cron gate**: exit zero launches, any other exit records the
+**Trigger invocation** as skipped, and a gate that cannot run or overruns its time limit fails the
+invocation instead. The same split is drawn by **Gate outcome**.
+
+A trigger gate is named by a repo-relative path, never by a command line: it is executed directly,
+without a shell, so it takes no arguments and the path can carry no shell syntax. The server is the
+only place that path is checked; the daemon trusts what it is given. In an update, a gate with no
+path means "remove the gate", so a time limit sent without a path is refused rather than read as a
+removal.
+
 ### Aggregate check event
 
 A repository-hosting trigger event that no single webhook delivery carries — "every check on an open pull request's head is green and every workflow run for it has finished", optionally also "and the pull request is out of draft" — which the server derives by reading the head's current check state when a delivery could have turned it green. It is judged by the same verdict the daemon's checks-passed callback triggers use, so the two cannot disagree about what a check state means.
@@ -3064,12 +3120,59 @@ left for the lease to expire and be retried, but an attempt that already succeed
 during shutdown so it is not sent again. A delivery whose endpoint was disabled after it was queued
 is cancelled without being sent.
 
+### Webhook payload format
+
+The built-in shape a session webhook endpoint posts its events in: the raw event envelope, or a
+chat-destination message such as Slack or Discord. Users pick a format from a fixed set and never
+supply transform code. An endpoint stored before formats existed reads as raw. Each **Session webhook
+delivery** is rendered through its endpoint's current format when it is sent, not when it is queued,
+so changing the format applies to deliveries still waiting. The signature covers the rendered bytes.
+Raw sends the stored envelope bytes unchanged. A delivery whose format cannot be rendered fails
+outright after one recorded attempt, without being sent, because retrying cannot change the outcome.
+
+A test event is rendered through the same format, so it previews what a live event sends, and a
+delivery's request as shown to its owner is rendered through the endpoint's current format with the
+signature computed over the rendered bytes. After a format change, an already-sent delivery
+therefore shows what would be sent now, not what an earlier attempt sent. New formats are added in
+code; the set an endpoint can pick is listed by the API.
+
 ### Webhook signing secret
 
 The shared secret a receiver uses to verify that a **Session webhook delivery** came from
 Bossanova. It is revealed exactly once, when the webhook is created or when the secret is rotated,
 and is never readable afterwards; losing it means rotating again. Rotation takes effect for
 deliveries still waiting to be sent, not only for events that occur later.
+
+## Project config
+
+### Ownership marker
+
+A tag recorded on a live repo, cron, trigger or webhook row naming the project config that manages
+it, so a later plan can tell its own rows from unmanaged rows and from rows another project owns.
+
+A row carrying this project's marker that the file no longer lists is disabled (deleted only under
+an explicit prune); an unmarked or foreign row the file does not list is never touched.
+
+### Adoption
+
+The plan action that claims an existing unmarked live row for a project config by stamping it with
+the project's **Ownership marker**, instead of creating a duplicate beside it.
+
+Adoption is an exclusive claim. A live row may be adopted only when exactly one desired row reaches
+it; when two desired rows reach the same live row — typically through a shared secondary match key
+such as a factory stage's prompt token — the plan reports an ambiguous conflict for each of them
+rather than letting either win. A row another project's marker already owns is a conflict, never
+an adoption.
+
+### Project config leg
+
+One of the two halves a project config is planned and applied in. The local leg covers what one
+daemon holds: the repo registration, its settings and the crons on that daemon. The cloud leg covers
+what the hosted service holds: the caller's triggers, the organization's session webhooks and the
+crons the file places on the caller's other daemons. The CLI can run both legs. Over MCP the server
+decides the leg, and the caller cannot: the local MCP server always plans the local leg and the
+hosted gateway always plans the cloud leg. Neither leg resolves or mints a secret over MCP, so a
+change that would mint one is left for the CLI.
 
 ## Flagged ambiguities
 
@@ -3090,7 +3193,12 @@ deliveries still waiting to be sent, not only for events that occur later.
   command a scheduled job runs to decide whether it has work; a **Repo automation flag** gates what
   the daemon may do to a repo; a declaration gate (see **Tracker adapter**) admits an adapter; a
   **Stamp** gates a build step on an input hash; a **Delivery gate** decides whether a pane is safe
-  to type into. Only the cron sense has a recorded **Gate outcome**.
+  to type into; a **Trigger gate** is a repo script that decides whether a trigger launch still has
+  work. Only the cron sense has a recorded **Gate outcome**. The trigger sense draws the same split
+  but records it as the **Trigger invocation**'s decision reason instead: `gated` for a gate that ran
+  and said no (the invocation is skipped), `gate_failed` for one that could not produce a verdict,
+  `gate_invalid` for one the daemon rejected, and `gate_timeout` for a daemon that never answered
+  (each of the last three fails the invocation, `gate_timeout` only after its retries run out).
 - "Stamp" carries three unrelated senses. A **Stamp** in the build-caching sense is a content hash
   over a step's inputs that decides whether the step is skipped; a route-receipt stamp (see **Run
   bookkeeping**) is a token a run emits to attest that it performed an act; a telemetry stamp is a

@@ -106,10 +106,24 @@ func runInitInteractive(c *cobra.Command, dir string, force bool, opts initOptio
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The project file is loaded and the branch checked before the interview
+	// writes anything.
+	if err := prepareInitProject(ctx, repoDir, &opts); err != nil {
+		return err
+	}
 	iv := &initInterview{
 		cmd: c, ctx: ctx, out: c.OutOrStdout(), errOut: c.ErrOrStderr(),
 		p: initNewPrompter(c), getenv: os.Getenv,
 		dir: dir, repoDir: repoDir, force: force, opts: opts, steps: opts.applied,
+	}
+	if iv.opts.project != nil {
+		// Asked from inside the runInit step, which holds mu: release it
+		// while the question waits, as every other question does.
+		iv.opts.projectTrust.confirm = func(q string) (bool, error) {
+			iv.mu.Unlock()
+			defer iv.mu.Lock()
+			return iv.confirm(q, false)
+		}
 	}
 	stop := initWatchInterrupt(iv)
 	defer stop()
@@ -663,6 +677,10 @@ func (iv *initInterview) askMerge() error {
 func (iv *initInterview) askCrons() error {
 	cron := &iv.opts.cron
 	if iv.repo == nil || iv.client == nil || cron.requested() {
+		return nil
+	}
+	if projectSelectsCronsHere(iv.opts.project) {
+		iv.p.Say("Cron jobs for this daemon come from .boss-project.json; the factory cron questions are skipped.")
 		return nil
 	}
 	eligibility, err := initCronAgentEligibility(iv.ctx, iv.client, newInitCronEnv().servicePath())

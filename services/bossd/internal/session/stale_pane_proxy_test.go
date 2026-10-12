@@ -47,7 +47,7 @@ func TestStalePaneProxyPort(t *testing.T) {
 // calls are faked from the given knobs (no real tmux). true/false/sh are always
 // present on the unix test hosts.
 func stubTmuxForSweep(hasSession bool, bakedURL string) *tmux.Client {
-	return tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+	return tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		sub := ""
 		if len(args) > 0 {
 			sub = args[0]

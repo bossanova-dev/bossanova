@@ -2235,7 +2235,6 @@ test('the committed tracker config supplies every operational state and label ro
   for (const role of ['agentPlan', 'agentBuild', 'needsHuman', 'agentQuestion', 'epic', 'bug']) {
     assert.ok(labelName(cfg, role).length > 0, `missing label role ${role}`)
   }
-  assert.ok(githubLabelName(cfg, 'proofInvalid').length > 0)
 })
 
 test('BOS-458: adapters.tracker selects the config with TRACKER env unset (no baked-in linear)', () => {
@@ -2508,7 +2507,6 @@ test('the committed .boss-skills.json reproduces the current hard-coded values',
     'epic',
     'needsHuman',
   ])
-  assert.deepEqual(Object.keys(tc.githubLabels), ['proofInvalid'])
   assert.deepEqual(tc.followUpLabels, ['follow-up', 'agent-plan'])
   const pc = publishConfigFor(cfg)
   assert.ok(pc.bucket.length > 0)
@@ -4570,6 +4568,105 @@ test('validateConfig rejects a malformed verifyDefaults block', () => {
       JSON.stringify(verifyDefaults),
     )
   }
+})
+
+test('verifyHumanReviewPaths returns all three categories, configured or empty', async () => {
+  const { verifyHumanReviewPaths, VERIFY_HUMAN_REVIEW_CATEGORIES } =
+    await import('./skill-config.mjs')
+  assert.deepEqual(VERIFY_HUMAN_REVIEW_CATEGORIES, ['database', 'security', 'ui'])
+  const empty = { database: [], security: [], ui: [] }
+  assert.deepEqual(verifyHumanReviewPaths(DEFAULT_CONFIG), empty)
+  assert.deepEqual(verifyHumanReviewPaths(undefined), empty)
+  assert.deepEqual(verifyHumanReviewPaths({ verifyDefaults: {} }), empty)
+  const humanReview = {
+    ui: ['web/**/*.tsx'],
+    database: ['migrations/**'],
+    security: ['auth/**', 'keys/*.go'],
+  }
+  const config = { ...DEFAULT_CONFIG, verifyDefaults: { humanReview } }
+  assert.doesNotThrow(() => validateConfig(config, 'test'))
+  const paths = verifyHumanReviewPaths(config)
+  assert.deepEqual(paths, {
+    database: ['migrations/**'],
+    security: ['auth/**', 'keys/*.go'],
+    ui: ['web/**/*.tsx'],
+  })
+  paths.ui.push('mutated')
+  assert.equal(humanReview.ui.length, 1, 'the accessor returns copies')
+  assert.deepEqual(verifyHumanReviewPaths({ verifyDefaults: { humanReview: { ui: ['a/**'] } } }), {
+    database: [],
+    security: [],
+    ui: ['a/**'],
+  })
+})
+
+test('validateConfig rejects a malformed verifyDefaults.humanReview block naming the key', () => {
+  for (const [humanReview, key] of [
+    [['a/**'], /verifyDefaults\.humanReview must be an object/],
+    [null, /verifyDefaults\.humanReview must be an object/],
+    [{ uii: ['a/**'] }, /verifyDefaults\.humanReview\.uii is unknown/],
+    [{ ui: 'web/**' }, /verifyDefaults\.humanReview\.ui must be an array/],
+    [{ database: ['migrations/**', ''] }, /verifyDefaults\.humanReview\.database must be an array/],
+    [{ security: [3] }, /verifyDefaults\.humanReview\.security must be an array/],
+  ]) {
+    assert.throws(
+      () => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults: { humanReview } }, 'test'),
+      key,
+      JSON.stringify(humanReview),
+    )
+  }
+  // An unknown key directly under verifyDefaults stays allowed: older trees ignore new knobs.
+  assert.doesNotThrow(() =>
+    validateConfig({ ...DEFAULT_CONFIG, verifyDefaults: { futureKnob: true } }, 'test'),
+  )
+})
+
+test('verifyPolicyFromConfigText validates only verifyDefaults and returns the policy', async () => {
+  const { verifyPolicyFromConfigText } = await import('./skill-config.mjs')
+  assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
+  assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
+  assert.deepEqual(verifyPolicyFromConfigText('{}', 'base'), {
+    alwaysHumanPaths: [],
+    humanReview: { database: [], security: [], ui: [] },
+  })
+  const text = JSON.stringify({
+    lensMap: 'not an array',
+    verifyDefaults: { alwaysHumanPaths: ['billing/**'], humanReview: { ui: ['web/**'] } },
+  })
+  assert.deepEqual(verifyPolicyFromConfigText(text, 'base'), {
+    alwaysHumanPaths: ['billing/**'],
+    humanReview: { database: [], security: [], ui: ['web/**'] },
+  })
+  assert.throws(
+    () =>
+      verifyPolicyFromConfigText(
+        JSON.stringify({ verifyDefaults: { humanReview: { uii: [] } } }),
+        'base',
+      ),
+    /verifyDefaults\.humanReview\.uii is unknown/,
+  )
+})
+
+test('unmatchedPolicyGlobs names each glob that matches no file', async () => {
+  const { unmatchedPolicyGlobs } = await import('./skill-config.mjs')
+  const policy = {
+    alwaysHumanPaths: ['billing/**', 'gone/**'],
+    humanReview: {
+      database: ['migrations/*.sql'],
+      security: [],
+      ui: ['web/**/*.tsx', 'old/*.vue'],
+    },
+  }
+  const files = ['billing/pay.go', 'migrations/001.sql', 'web/src/App.tsx', 'README.md']
+  assert.deepEqual(unmatchedPolicyGlobs(policy, files), [
+    { list: 'alwaysHumanPaths', glob: 'gone/**' },
+    { list: 'humanReview.ui', glob: 'old/*.vue' },
+  ])
+  assert.deepEqual(
+    unmatchedPolicyGlobs({ alwaysHumanPaths: [], humanReview: {} }, files),
+    [],
+    'an empty policy warns about nothing',
+  )
 })
 
 test('retro config validates numbers, aliases and audit options', async () => {

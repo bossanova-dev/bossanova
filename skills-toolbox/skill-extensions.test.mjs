@@ -12,6 +12,7 @@ import {
   VERIFY_OUTCOME_REASONS,
   VERIFY_PASS_WITHOUT_EVIDENCE,
   VERIFY_UNTRUSTED_TEXT_FIELDS,
+  VERIFY_VERDICTS,
   classifyVerifyOutcome,
   discoverExtensions,
   extensionMarker,
@@ -630,21 +631,21 @@ test('discoverExtensions rejects an unknown wrong-role extension into skipped', 
 
 test('discoverExtensions reports an unknown requested role as a skip', () => {
   const root = scratchRoot()
-  writeSkill(root, 'boss-proof-marketing', [
-    'name: boss-proof-marketing',
+  writeSkill(root, 'boss-review-house', [
+    'name: boss-review-house',
     'x-boss-extension:',
-    '  extends: boss-proof',
-    '  role: surface',
+    '  extends: boss-review',
+    '  role: lens',
   ])
   const { extensions, skipped } = discoverExtensions({
-    core: 'boss-proof',
+    core: 'boss-review',
     root,
-    role: 'surfcae',
+    role: 'lnes',
   })
   assert.deepEqual(extensions, [])
   assert.ok(
     skipped.some(
-      (s) => s.name === 'boss-proof-marketing' && /unknown requested role "surfcae"/.test(s.reason),
+      (s) => s.name === 'boss-review-house' && /unknown requested role "lnes"/.test(s.reason),
     ),
     `expected unknown requested role skip, got ${JSON.stringify(skipped)}`,
   )
@@ -761,14 +762,6 @@ test('discoverExtensions finds the committed boss-build methodology extension re
   const found = extensions.find((e) => e.name === 'boss-build-ce')
   assert.ok(found, `expected boss-build-ce in ${JSON.stringify(extensions.map((e) => e.name))}`)
   assert.equal(found.role, 'methodology')
-})
-
-test('discoverExtensions finds the committed boss-proof surface extensions repo-local', () => {
-  const { extensions } = discoverExtensions({ core: 'boss-proof', root: repoRoot, role: 'surface' })
-  const names = extensions.map((e) => e.name)
-  for (const expected of ['boss-proof-web', 'boss-proof-marketing', 'boss-proof-docs']) {
-    assert.ok(names.includes(expected), `expected ${expected} in ${JSON.stringify(names)}`)
-  }
 })
 
 test('discoverExtensions is a no-op when the skills dir is absent', () => {
@@ -932,6 +925,15 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  modes: interactive',
   ])
 
+  // invalid-applies (reached only by the verify pass below)
+  writeSkill(root, 'bs-review-badapplies', [
+    'name: bs-review-badapplies',
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: verify',
+    '  applies: ../outside.mjs',
+  ])
+
   writeSkill(root, 'bs-review-badrelease', [
     'x-boss-extension:',
     '  extends: bs-review',
@@ -942,6 +944,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
   for (const { core, role, mode } of [
     { core: 'bs-review', role: 'lens' },
     { core: 'bs-review', role: 'release' },
+    { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
     { core: 'bs-review', role: 'lens', mode: 'headless' },
     // 'lenz' is an unknown REQUESTED role; it is a property of the caller's argument rather than
@@ -996,6 +999,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'extends-other-core',
     'extends-unrelated-core',
     'incomplete-marker',
+    'invalid-applies',
     'invalid-lens-binding',
     'invalid-modes',
     'invalid-release-marker',
@@ -1174,11 +1178,13 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
   // BOS-1376 (2026-10-06): completion expands the validated role registry to ten.
   // BOS-1386: verify (the boss-verify stage's judgment role) makes it eleven.
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
+  // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
     'knowledge',
     'lens',
+    'maintenance',
     'methodology',
     'notes',
     'plan-reviewer',
@@ -1720,7 +1726,7 @@ test('validateResult rejects malformed verify results', () => {
   const cases = [
     [verifyResult({ evidence: [] }), VERIFY_PASS_WITHOUT_EVIDENCE],
     [failResult({ findings: [] }), 'fail requires at least one finding'],
-    [verifyResult({ verdict: 'maybe' }), 'verdict must be one of pass, fail, abstain'],
+    [verifyResult({ verdict: 'maybe' }), 'verdict must be one of pass, fail, abstain, human, wait'],
     [
       verifyResult({ evidence: [{ kind: 'test' }] }),
       'evidence 0 needs non-empty string "kind" and "ref"',
@@ -1857,6 +1863,271 @@ test('the optional marker key is carried only for a literal true', () => {
   )
 })
 
+// BOS-1484: an extension's `human` verdict and its `applies` applicability-script marker key.
+const humanResult = (changes = {}) =>
+  verifyResult({ verdict: 'human', reason: 'human-review:ui', ...changes })
+
+test('a human result with a human-review reason and evidence classifies ok/human', () => {
+  assert.deepEqual(validateResult(humanResult(), 'verify'), { ok: true, errors: [] })
+  assert.deepEqual(classifyVerifyOutcome({ result: humanResult() }), {
+    outcome: 'ok',
+    reason: 'human',
+    verdict: 'human',
+    humanReason: 'human-review:ui',
+  })
+  assert.deepEqual(
+    classifyVerifyOutcome({ result: humanResult({ reason: 'human-review:data-loss' }) })
+      .humanReason,
+    'human-review:data-loss',
+  )
+  assert.ok(VERIFY_OUTCOME_REASONS.includes('human'))
+  // `reason` is meaningful only on a human verdict; on any other verdict it is carried data.
+  assert.deepEqual(validateResult(verifyResult({ reason: 'whatever' }), 'verify'), {
+    ok: true,
+    errors: [],
+  })
+  assert.equal('humanReason' in classifyVerifyOutcome({ result: verifyResult() }), false)
+})
+
+test('a human reason outside an injected list is a malformed result', () => {
+  const humanReasons = ['human-review:ui']
+  assert.equal(classifyVerifyOutcome({ result: humanResult(), humanReasons }).outcome, 'ok')
+  const result = humanResult({ reason: 'human-review:legal' })
+  assert.deepEqual(classifyVerifyOutcome({ result, humanReasons }), {
+    outcome: 'failed',
+    reason: 'malformed-result',
+    verdict: null,
+    humanReason: 'human-review:legal',
+  })
+  assert.equal(classifyVerifyOutcome({ result, humanReasons, optional: true }).outcome, 'abstain')
+})
+
+test('a human result without a human-review reason or evidence is malformed', () => {
+  const noReason = humanResult()
+  delete noReason.reason
+  for (const result of [
+    noReason,
+    humanResult({ reason: 'security' }),
+    humanResult({ reason: 'human-review:' }),
+    humanResult({ reason: 'human-review:UI' }),
+    humanResult({ reason: 'human-review:-ui' }),
+    humanResult({ reason: ' human-review:ui' }),
+    humanResult({ reason: 42 }),
+    humanResult({ evidence: [] }),
+  ]) {
+    const label = JSON.stringify(result)
+    assert.equal(validateResult(result, 'verify').ok, false, label)
+    assert.deepEqual(
+      classifyVerifyOutcome({ result }),
+      { outcome: 'failed', reason: 'malformed-result', verdict: null },
+      label,
+    )
+    assert.deepEqual(
+      classifyVerifyOutcome({ result, optional: true }),
+      { outcome: 'abstain', reason: 'malformed-result', verdict: null },
+      label,
+    )
+  }
+})
+
+// An extension's `wait` verdict: retry later (a busy shared resource), neither a park nor a pass.
+const waitResult = (changes = {}) =>
+  verifyResult({ verdict: 'wait', reason: 'stack-busy', evidence: [], findings: [], ...changes })
+
+test('a wait result with a reason and no findings classifies ok/wait', () => {
+  assert.deepEqual(validateResult(waitResult(), 'verify'), { ok: true, errors: [] })
+  assert.deepEqual(classifyVerifyOutcome({ result: waitResult() }), {
+    outcome: 'ok',
+    reason: 'wait',
+    verdict: 'wait',
+    waitReason: 'stack-busy',
+  })
+  // Evidence is optional on a wait; a wait citing evidence is still a wait.
+  assert.equal(
+    classifyVerifyOutcome({
+      result: waitResult({ reason: 'head-moved', evidence: [{ kind: 'log', ref: 'x' }] }),
+    }).waitReason,
+    'head-moved',
+  )
+  // An optional extension's wait is a valid verdict, not a malfunction to abstain on.
+  assert.equal(classifyVerifyOutcome({ result: waitResult(), optional: true }).verdict, 'wait')
+  assert.ok(VERIFY_VERDICTS.includes('wait'))
+  assert.ok(VERIFY_OUTCOME_REASONS.includes('wait'))
+  assert.equal('waitReason' in classifyVerifyOutcome({ result: verifyResult() }), false)
+})
+
+test('a wait result without a well-formed reason, or with findings, is malformed', () => {
+  const noReason = waitResult()
+  delete noReason.reason
+  for (const result of [
+    noReason,
+    waitResult({ reason: 'Stack Busy' }),
+    waitResult({ reason: '' }),
+    waitResult({ reason: '-busy' }),
+    waitResult({ reason: 'stack_busy' }),
+    waitResult({ reason: 7 }),
+    waitResult({ findings: [{ title: 'busy' }] }),
+  ]) {
+    const label = JSON.stringify(result)
+    assert.equal(validateResult(result, 'verify').ok, false, label)
+    assert.deepEqual(
+      classifyVerifyOutcome({ result }),
+      { outcome: 'failed', reason: 'malformed-result', verdict: null },
+      label,
+    )
+  }
+})
+
+test('the applies marker key is carried on a verify descriptor and omitted when absent', () => {
+  const root = scratchRoot()
+  const declare = (name, role, line) =>
+    writeSkill(root, name, [
+      `name: ${name}`,
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      `  role: ${role}`,
+      ...(line ? [`  ${line}`] : []),
+    ])
+  declare('boss-verify-gated', 'verify', 'applies: scripts/verify-applies.mjs')
+  declare('boss-verify-dotted', 'verify', 'applies: ./scripts/check.mjs')
+  declare('boss-verify-bare', 'verify', null)
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-verify',
+    root,
+    role: 'verify',
+    builtinDir: null,
+  })
+  assert.deepEqual(skipped, [])
+  const byName = Object.fromEntries(extensions.map((e) => [e.name, e]))
+  assert.equal(byName['boss-verify-gated'].applies, 'scripts/verify-applies.mjs')
+  assert.equal(byName['boss-verify-dotted'].applies, 'scripts/check.mjs')
+  // An undeclared descriptor's JSON is byte-identical to its pre-`applies` shape.
+  const dir = path.join(root, '.claude', 'skills', 'boss-verify-bare')
+  assert.equal(
+    JSON.stringify(byName['boss-verify-bare']),
+    JSON.stringify({
+      name: 'boss-verify-bare',
+      dir,
+      skillPath: path.join(dir, 'SKILL.md'),
+      role: 'verify',
+      order: 100,
+    }),
+  )
+  // The key belongs to the verify role: on any other role it is inert, never carried or skipped.
+  const lens = extensionMarker({
+    'x-boss-extension': { extends: 'boss-verify', role: 'lens', applies: 'x.mjs' },
+  })
+  assert.equal('applies' in lens, false)
+})
+
+test('a traversing, absolute or unusable applies path is skipped as invalid-applies', () => {
+  for (const declared of [
+    'applies: ../x.mjs',
+    'applies: scripts/../../x.mjs',
+    'applies: /abs/x.mjs',
+    'applies: "C:/x.mjs"',
+    'applies: scripts\\..\\x.mjs',
+    'applies: ""',
+    'applies: 42',
+    'applies:',
+  ]) {
+    const root = scratchRoot()
+    writeSkill(root, 'boss-verify-bad', [
+      'name: boss-verify-bad',
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: verify',
+      `  ${declared}`,
+    ])
+    const { extensions, skipped } = discoverExtensions({
+      core: 'boss-verify',
+      root,
+      role: 'verify',
+      builtinDir: null,
+    })
+    assert.deepEqual(extensions, [], declared)
+    assert.equal(skipped.length, 1, `${declared}: ${JSON.stringify(skipped)}`)
+    assert.equal(skipped[0].code, 'invalid-applies', declared)
+    assert.equal(skipped[0].deliberate, false)
+  }
+})
+
+// The `malfunctionReason` marker key: the human-review reason a verify extension parks with when it
+// malfunctions. An invalid value is dropped and the extension is still discovered, never skipped.
+test('the malfunctionReason marker key is carried when it has the human-review shape', () => {
+  const root = scratchRoot()
+  writeSkill(root, 'boss-verify-judge', [
+    'name: boss-verify-judge',
+    'x-boss-extension:',
+    '  extends: boss-verify',
+    '  role: verify',
+    '  malfunctionReason: human-review:security',
+  ])
+  const { extensions, skipped } = discoverExtensions({
+    core: 'boss-verify',
+    root,
+    role: 'verify',
+    builtinDir: null,
+  })
+  assert.deepEqual(skipped, [])
+  assert.equal(extensions.length, 1)
+  assert.equal(extensions[0].malfunctionReason, 'human-review:security')
+  assert.equal(
+    extensionMarker({
+      'x-boss-extension': {
+        extends: 'boss-verify',
+        role: 'verify',
+        malfunctionReason: 'human-review:data-loss',
+      },
+    }).malfunctionReason,
+    'human-review:data-loss',
+  )
+  // The key belongs to the verify role: on any other role it is inert.
+  const lens = extensionMarker({
+    'x-boss-extension': {
+      extends: 'boss-verify',
+      role: 'lens',
+      malfunctionReason: 'human-review:security',
+    },
+  })
+  assert.equal('malfunctionReason' in lens, false)
+})
+
+test('an invalid malfunctionReason is dropped and the extension is still discovered', () => {
+  for (const declared of [
+    'malfunctionReason: security',
+    'malfunctionReason: human-review:',
+    'malfunctionReason: HUMAN-REVIEW:X',
+    'malfunctionReason: human-review:Security',
+    'malfunctionReason: 42',
+    'malfunctionReason:',
+  ]) {
+    const root = scratchRoot()
+    writeSkill(root, 'boss-verify-judge', [
+      'name: boss-verify-judge',
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: verify',
+      `  ${declared}`,
+    ])
+    const { extensions, skipped } = discoverExtensions({
+      core: 'boss-verify',
+      root,
+      role: 'verify',
+      builtinDir: null,
+    })
+    assert.deepEqual(skipped, [], declared)
+    assert.equal(extensions.length, 1, declared)
+    assert.equal('malfunctionReason' in extensions[0], false, declared)
+  }
+  for (const value of [42, true, null, ['human-review:security'], { a: 1 }]) {
+    const marker = extensionMarker({
+      'x-boss-extension': { extends: 'boss-verify', role: 'verify', malfunctionReason: value },
+    })
+    assert.equal('malfunctionReason' in marker, false, JSON.stringify(value))
+  }
+})
+
 const verifyContext = (changes = {}) => ({
   pr: { number: 7, url: 'https://example.invalid/pr/7', title: 'Feature', body: 'text' },
   headSha: HEAD_SHA,
@@ -1876,6 +2147,29 @@ test('validateVerifyContext accepts the five-key envelope', () => {
     ok: true,
     errors: [],
   })
+})
+
+test('validateVerifyContext accepts an optional well-formed range and rejects a malformed one', () => {
+  for (const range of [
+    { kind: 'delta', anchorSha: BASE_SHA },
+    { kind: 'full', anchorSha: BASE_SHA },
+    { kind: 'full', anchorSha: null },
+  ])
+    assert.deepEqual(validateVerifyContext(verifyContext({ range })), { ok: true, errors: [] })
+  const cases = [
+    [{ kind: 'partial', anchorSha: BASE_SHA }, 'range.kind must be "full" or "delta"'],
+    [{ kind: 'delta', anchorSha: 'abc123' }, 'range.anchorSha must be a 40-hex SHA'],
+    [{ kind: 'delta', anchorSha: null }, 'range.anchorSha must be a 40-hex SHA'],
+    [{ kind: 'full' }, 'missing range key "anchorSha"'],
+    [{ kind: 'full', anchorSha: null, why: 'no-anchor' }, 'unexpected range key "why"'],
+    [null, 'range must be an object'],
+    ['delta', 'range must be an object'],
+  ]
+  for (const [range, error] of cases) {
+    const result = validateVerifyContext(verifyContext({ range }))
+    assert.equal(result.ok, false, JSON.stringify(range))
+    assert.ok(result.errors.includes(error), `${JSON.stringify(result.errors)} lacks ${error}`)
+  }
 })
 
 test('validateVerifyContext rejects malformed fields and any extra top-level key', () => {

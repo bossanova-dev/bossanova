@@ -159,6 +159,11 @@ type Options struct {
 	UnsetEnv []string
 	Timeout  time.Duration // <=0 → use DefaultTimeout
 	Output   io.Writer     // combined stdout+stderr sink; nil → io.Discard
+	// Stdin is fed to the gate process's standard input; nil connects it to
+	// the null device, so a gate that reads stdin sees EOF immediately. A gate
+	// that exits without draining Stdin still passes: os/exec ignores the
+	// broken pipe on the copy.
+	Stdin io.Reader
 }
 
 // Run executes the gate command and reports whether the job may proceed.
@@ -189,6 +194,7 @@ func Run(ctx context.Context, o Options) Result {
 	c.Env = commandEnv(o)
 	c.Stdout = output
 	c.Stderr = output
+	c.Stdin = o.Stdin
 	c.WaitDelay = waitDelay
 
 	if runErr := c.Run(); runErr != nil {

@@ -2265,6 +2265,10 @@ func run(opts runOpts) error {
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	lifecycle.SetAgentLogsDir(agentLogsDir)
+	// A bossd that crashed mid-start can leave a first-input file behind.
+	if n := lifecycle.SweepStaleInitialInputFiles(time.Now()); n > 0 {
+		log.Info().Int("removed", n).Msg("removed stale initial input files")
+	}
 	lifecycle.SetAgentRunStore(agentRuns)
 	lifecycle.SetChatStatus(chatStatusTracker)
 	// Manual account switch (BOS-171): the registry validates the target
@@ -3355,6 +3359,13 @@ func run(opts runOpts) error {
 				Logger:   log.Logger,
 				Budget:   session.TargetStartLockTimeout + session.BootstrapTimeout,
 			},
+			// BOS-1467: trigger gate scripts. Like the cron gate, a trigger
+			// gate receives only the scoped proof model key.
+			TriggerGates: &upstream.TriggerGateRunner{
+				Repos:    repos,
+				ProofEnv: proofEnv,
+				Logger:   log.Logger,
+			},
 			OnCompletion: func(ctx context.Context, sessionID string) {
 				if orchestrator != nil {
 					orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
@@ -4074,6 +4085,7 @@ func run(opts runOpts) error {
 		Sessions:        sessions,
 		Finalizer:       lifecycle,
 		QuestionSignals: questionSignals,
+		PromptReceipts:  lifecycle,
 		Logger:          log.Logger,
 	}
 	// HostService is non-nil whenever any plugin is configured (it's

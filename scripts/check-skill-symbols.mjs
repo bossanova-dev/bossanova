@@ -152,9 +152,9 @@ const CALL_CITATION = /^([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)\(/
 const VERB_CITATION = /\bnode\s+(["']?)([^\s"'`]+\.mjs)\1\s+([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\b/g
 
 // A helper's own dispatch. The identifier list is measured, not guessed: bare
-// `command` (plan-attachment.mjs) and `args.sub` (proof.mjs) both occur, and
-// proof.mjs dispatches its most-cited verb (`run`) with `!==`, so an `===`-only
-// extractor would false-flag all 18 `node scripts/proof.mjs run` citations.
+// `command` (plan-attachment.mjs) and `args.sub` both occur. A since-retired
+// capture CLI dispatched its most-cited verb (`run`) with `!==`, so an
+// `===`-only extractor false-flagged all 18 of its `run` citations.
 const VERB_DISPATCH =
   /(?:^|[^\w.])(?:cmd|command|subcommand|sub|args\.command|args\.sub)\s*(?:===|!==)\s*'([a-z][a-z0-9]*(?:-[a-z0-9]+)*)'/g
 

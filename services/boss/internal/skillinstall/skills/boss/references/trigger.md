@@ -16,7 +16,7 @@ Triggers live in the cloud, not the local daemon: every subcommand needs `boss l
 
 Create a trigger
 
-Create a trigger. `--type`, `--name`, `--repo-url`, one of `--prompt` / `--prompt-file`, and one of `--daemon <id>` / `--first-available` are required; `--org` defaults to your only organization. The prompt is read by a fresh agent, so write it as a complete standing instruction; `--payload-field` paths (e.g. `body.ref`) are copied into its context. Every `--filter 'field op value[,value…]'` must match for an event to launch (op: `=`, `!=`, `in`, `not-in`, `contains`, `prefix`; only `in` and `not-in` split on commas). `--concurrency` decides what an event does while the previous session is still working: `skip` (default), `cancel` (stop it, then launch), or `allow` (launch alongside). A github trigger needs at least one `--event`; `--methods`, `--idempotency-header` and `--dedup-window` are http only.
+Create a trigger. `--type`, `--name`, `--repo-url`, one of `--prompt` / `--prompt-file`, and one of `--daemon <id>` / `--first-available` are required; `--org` defaults to your only organization. The prompt is read by a fresh agent, so write it as a complete standing instruction; `--payload-field` paths (e.g. `body.ref`) are copied into its context. Pass `--zero-output` for a trigger whose session changes nothing in the repository (a report or a notification), so no worktree, branch or PR is created for it, and `--run-setup=false` to skip the repo setup script. Every `--filter 'field op value[,value…]'` must match for an event to launch (op: `=`, `!=`, `in`, `not-in`, `contains`, `prefix`; only `in` and `not-in` split on commas). `--concurrency` decides what an event does while the previous session is still working: `skip` (default), `cancel` (stop it, then launch), or `allow` (launch alongside). A github trigger needs at least one `--event`; `--methods`, `--idempotency-header` and `--dedup-window` are http only. `--gate-script <path>` names a script, relative to the repo root, that the launching daemon runs in its clone before every launch with the payload excerpt as JSON on stdin: exit 0 launches, any other exit skips the event as `gated`. `--gate-timeout <seconds>` bounds it (0-300; 0 = 60).
 
 An http create prints the endpoint and the signing secret ONCE — store it now; it can never be read back, only replaced with `rotate-secret`. `--json` carries it as `secret` beside `trigger`.
 
@@ -33,6 +33,8 @@ An http create prints the endpoint and the signing secret ONCE — store it now;
 - `--event` — GitHub event id from `boss trigger catalog`; repeat for several (github only)
 - `--filter` — Payload filter 'field op value[,value…]' (op: =, !=, in, not-in, contains, prefix); repeat to AND several
 - `--first-available` — Launch on the first ready daemon that manages the repo
+- `--gate-script` — Repo-relative script the daemon runs before each launch, e.g. ci/has-work.sh; exit 0 launches
+- `--gate-timeout` — Gate timeout in seconds, 0-300 (0 = the daemon default, 60) (default: 0)
 - `--idempotency-header` — Request header carrying the idempotency key (http only; empty = Idempotency-Key)
 - `--json` — Emit the trigger as a stable JSON schema
 - `--methods` — Accepted HTTP methods, e.g. POST,PUT (http only; empty = POST)
@@ -43,8 +45,10 @@ An http create prints the endpoint and the signing secret ONCE — store it now;
 - `--prompt` — Prompt sent to the agent
 - `--prompt-file` — Read the prompt from a file (or '-' for stdin)
 - `--repo-url` — Origin URL of the repo the launched session works in (required)
+- `--run-setup` — Run the repo setup script before the agent (default: true)
 - `--skill` — Skill to invoke as a slash command, without the leading '/'
 - `--type` — Trigger type: http or github (required)
+- `--zero-output` — Run with no worktree, branch, or PR (for triggers that change nothing in this repo)
 
 ```bash
 # start a session whenever the deploy hook reports a failure
@@ -81,7 +85,7 @@ Enable a trigger
 
 Show a trigger's invocation history, newest first
 
-Show invocations newest first. `status` is the outcome — `launched` (with its session), `filtered`, `skipped`, `deduplicated`, `launching`, `failed` or `accepted` — and `decision_reason` says why: `filter_mismatch` (a filter did not match), `cooldown`, `prior_session_running` (concurrency `skip`), `prior_session_stop_failed` (concurrency `cancel` could not stop the previous session; it retries), `duplicate_delivery`, `placement_unavailable` (the daemon is offline or does not manage the repo) or `daemon_unsupported`. Treat an unknown reason as opaque. Failed and skipped rows also print an actionable detail line.
+Show invocations newest first. `status` is the outcome — `launched` (with its session), `filtered`, `skipped`, `deduplicated`, `launching`, `failed` or `accepted` — and `decision_reason` says why: `filter_mismatch` (a filter did not match), `cooldown`, `prior_session_running` (concurrency `skip`), `prior_session_stop_failed` (concurrency `cancel` could not stop the previous session; it retries), `duplicate_delivery`, `placement_unavailable` (the daemon is offline or does not manage the repo), `daemon_unsupported`, `gated` (the gate script exited non-zero), `gate_failed` (the gate could not run), `gate_invalid` (the daemon rejected the gate) or `gate_timeout` (the daemon did not answer the gate). Treat an unknown reason as opaque. Failed and skipped rows also print an actionable detail line.
 
 **Flags:**
 
@@ -143,9 +147,11 @@ echo '{"status":"failed"}' | boss trigger test tr_123 --payload-file -
 
 ### `boss trigger update <trigger-id> [flags]`
 
+Alias: `boss trigger edit`
+
 Change a trigger's settings
 
-Change only the settings whose flags are given; everything else is kept, including the rest of the launch settings when only `--prompt` changes. `--filter` and `--payload-field` REPLACE the whole list; `--clear-filters` / `--clear-payload-fields` empty it. The type cannot change. Use `enable` / `disable` to switch a trigger on or off.
+Change only the settings whose flags are given; everything else is kept, including the rest of the launch settings when only `--prompt` changes. `--filter` and `--payload-field` REPLACE the whole list; `--clear-filters` / `--clear-payload-fields` empty it. A lone `--gate-script` or `--gate-timeout` keeps the other half of the gate; `--no-gate` removes it. The type cannot change. Use `enable` / `disable` to switch a trigger on or off.
 
 **Flags:**
 
@@ -161,13 +167,25 @@ Change only the settings whose flags are given; everything else is kept, includi
 - `--event` — GitHub event id from `boss trigger catalog`; repeat for several (github only)
 - `--filter` — Payload filter 'field op value[,value…]' (op: =, !=, in, not-in, contains, prefix); repeat to AND several
 - `--first-available` — Launch on the first ready daemon that manages the repo
+- `--gate-script` — Repo-relative script the daemon runs before each launch, e.g. ci/has-work.sh; exit 0 launches
+- `--gate-timeout` — Gate timeout in seconds, 0-300 (0 = the daemon default, 60) (default: 0)
 - `--idempotency-header` — Request header carrying the idempotency key (http only; empty = Idempotency-Key)
 - `--json` — Emit the trigger as a stable JSON schema
 - `--methods` — Accepted HTTP methods, e.g. POST,PUT (http only; empty = POST)
 - `--model` — Agent model id (empty = plugin default)
 - `--name` — Trigger name
+- `--no-gate` — Remove the gate
 - `--payload-field` — Payload field copied into the prompt context, e.g. body.ref; repeat for several
 - `--prompt` — Prompt sent to the agent
 - `--prompt-file` — Read the prompt from a file (or '-' for stdin)
 - `--repo-url` — Origin URL of the repo the launched session works in
+- `--run-setup` — Run the repo setup script before the agent (unset preserves current)
 - `--skill` — Skill to invoke as a slash command, without the leading '/'
+- `--zero-output` — Run with no worktree, branch, or PR (unset preserves current)
+
+```bash
+# launch only when the repo's gate script exits 0
+boss trigger update tr_123 --gate-script ci/has-work.sh --gate-timeout 30
+# remove the gate (edit is an alias of update)
+boss trigger edit tr_123 --no-gate
+```

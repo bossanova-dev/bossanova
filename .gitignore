@@ -1,5 +1,8 @@
 # Go
 bin/
+# The verify skill's control CLI is source, not a build artifact.
+!.claude/skills/verify/bin/
+!.codex/skills/verify/bin/
 .generate.stamp
 *.exe
 *.test
@@ -50,10 +53,7 @@ docs/handoffs/
 # Mutation testing reports
 .mutate/
 
-# Proof-of-implementation screenshot bundles (uploaded to a public bucket, never committed)
-.proof/
-
-# Wrangler v4 local state dir, created by `wrangler r2 object put` during proof uploads
+# Wrangler v4 local state dir, created by `wrangler r2 object put` during evidence uploads
 .wrangler/
 
 # Linear plan scratch dir (boss-plan uploads plans as native tracker attachments, never commits them)
@@ -77,3 +77,6 @@ infra/kustomize/overlays/*/.env-mcp
 # Bazel
 /bazel-*
 .bazelrc.user
+
+# control-boss evidence (verify skill): per-run recordings and stack logs
+.verify-evidence/

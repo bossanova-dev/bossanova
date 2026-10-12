@@ -375,6 +375,9 @@ func TestSessionWebhookToolsForwarding(t *testing.T) {
 		if got.Secret != nil {
 			t.Errorf("create request carries a caller-supplied secret %q; the tool must let the server generate it", got.GetSecret())
 		}
+		if got.GetFormat() != "" {
+			t.Errorf("omitted format sent %q, want empty (the server's raw default)", got.GetFormat())
+		}
 		if out["secret"] != sessionWebhookSecret || out["secret_note"] != "store it now; it is not shown again" {
 			t.Errorf("create result = %v, want the secret and its note", out)
 		}
@@ -382,9 +385,12 @@ func TestSessionWebhookToolsForwarding(t *testing.T) {
 			t.Errorf("webhook = %v", out["webhook"])
 		}
 
-		callSessionWebhookOK(t, b, "save_session_webhook", map[string]any{"url": "https://h.example.com", "event_types": []any{"session.passing"}, "is_enabled": false})
+		callSessionWebhookOK(t, b, "save_session_webhook", map[string]any{"url": "https://h.example.com", "event_types": []any{"session.passing"}, "is_enabled": false, "format": "slack"})
 		if got.GetIsEnabled() || got.GetOrganizationId() != "" {
 			t.Errorf("explicit is_enabled:false lost or org invented: %v", got)
+		}
+		if got.GetFormat() != "slack" {
+			t.Errorf("create format = %q, want slack", got.GetFormat())
 		}
 	})
 
@@ -399,7 +405,7 @@ func TestSessionWebhookToolsForwarding(t *testing.T) {
 		if got.GetId() != "swh-1" || got.GetOrganizationId() != "org-1" || got.IsEnabled == nil || got.GetIsEnabled() {
 			t.Errorf("update request = %v, want id, org and is_enabled false", got)
 		}
-		if got.Url != nil || got.Description != nil || len(got.EventTypes) != 0 || got.GetShouldReplaceEventTypes() {
+		if got.Url != nil || got.Description != nil || len(got.EventTypes) != 0 || got.GetShouldReplaceEventTypes() || got.Format != nil {
 			t.Errorf("omitted fields were sent: %v", got)
 		}
 		if _, ok := out["secret"]; ok {
@@ -415,6 +421,11 @@ func TestSessionWebhookToolsForwarding(t *testing.T) {
 		if got.GetUrl() != "https://new.example.com" || got.Description == nil || got.GetDescription() != "" ||
 			!slices.Equal(got.GetEventTypes(), []string{"session.merged"}) || !got.GetShouldReplaceEventTypes() || got.IsEnabled != nil {
 			t.Errorf("second update = %v, want url, cleared description, replaced event types", got)
+		}
+
+		callSessionWebhookOK(t, b, "save_session_webhook", map[string]any{"id": "swh-1", "format": "discord"})
+		if got.Format == nil || got.GetFormat() != "discord" || got.Url != nil || got.IsEnabled != nil {
+			t.Errorf("format-only update = %v, want only format discord", got)
 		}
 	})
 
@@ -444,6 +455,7 @@ func TestSessionWebhookToolsForwarding(t *testing.T) {
 			{"rotate without id", map[string]any{"rotate_secret": true}, "needs the id"},
 			{"rotate with url", map[string]any{"id": "swh-1", "rotate_secret": true, "url": "https://x.example.com"}, "two calls"},
 			{"rotate with is_enabled", map[string]any{"id": "swh-1", "rotate_secret": true, "is_enabled": true}, "two calls"},
+			{"rotate with format", map[string]any{"id": "swh-1", "rotate_secret": true, "format": "slack"}, "two calls"},
 			{"id with nothing to change", map[string]any{"id": "swh-1"}, "nothing to change"},
 			{"id with empty event_types only", map[string]any{"id": "swh-1", "organization_id": "org-1", "event_types": []any{}}, "nothing to change"},
 			{"create without url", map[string]any{"event_types": []any{"session.passing"}}, "url is required"},

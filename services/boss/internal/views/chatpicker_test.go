@@ -2944,7 +2944,7 @@ const (
 // block's content.
 const (
 	alignWarningText    = "finalize failed (pr_failed): worktree has uncommitted changes"
-	alignWaitingReason  = "awaiting checks_passed_ready on acme/my-app#668"
+	alignWaitingReason  = "awaiting checks_failed on acme/my-app#668"
 	alignRotationDetail = "refreshed auth in place"
 
 	// The warning block wraps at blockWrapWidth (the table's content width), so

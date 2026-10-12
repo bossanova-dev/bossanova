@@ -7,8 +7,8 @@ slug: /skills/extensions
 # Extension System
 
 A core `boss-*` skill ships a project-agnostic workflow. The **extension system**
-lets one repository plug in its own behaviour (an extra review lens, an extra proof
-surface, an opinionated implementation methodology) without editing the skill body
+lets one repository plug in its own behaviour (an extra review lens, an extra plan
+reviewer, an opinionated implementation methodology) without editing the skill body
 and without forcing that behaviour on any other repo. Extensions live in the
 repository, are discovered at run time, and an absent extension is a silent no-op.
 
@@ -127,9 +127,9 @@ specific step of that core's pipeline.
 | --------------- | ------------- | ------------------------------------------------------------------------------------------------- | -------------------------------- |
 | `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files.            | `boss-review-golang`             |
 | `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                             | `boss-review-thermonuclear`      |
-| `surface`       | `boss-proof`  | An extra declarative proof surface (a route, caption, and evidence).                              | `boss-proof-docs`                |
+| `surface`       | —             | An extra declarative evidence surface. The role stays in the schema; no in-repo core reads it.    | —                                |
 | `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                               | `boss-plan-<reviewer>`           |
-| `agent-driver`  | `boss-proof`  | A bespoke, code-driven proof surface (ships a `driver.mjs`, not JSON).                            | `boss-proof-tui`                 |
+| `agent-driver`  | —             | A bespoke, code-driven evidence surface. The role stays in the schema; no in-repo core reads it.  | —                                |
 | `draft`         | `boss-plan`   | The plan-drafting methodology `boss-plan` runs to write the plan.                                 | `boss-plan-compound-engineering` |
 | `methodology`   | `boss-build`  | The opinionated implementation loop `boss-build` runs.                                            | `boss-build-ce`                  |
 | `notes`         | `boss-build`  | Post-terminal persistence of end-of-run notes to an external store.                               | `boss-build-notes`               |

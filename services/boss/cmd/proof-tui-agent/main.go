@@ -2,7 +2,9 @@
 // a PTY and speaks NDJSON over stdin/stdout: one JSON request per input line,
 // one JSON response per output line. It is the long-lived Go driver process a
 // Node brain (BOS-70) drives to operate the TUI in "agent mode", and can
-// optionally capture an asciinema .cast of the session.
+// optionally capture an asciinema .cast of the session. With -socket and -home
+// it runs in attach mode instead: no fixture stack, the TUI is driven against
+// an existing daemon socket with the caller's HOME (see runAttach).
 //
 // The "key" op's key names resolve through tuidriver.KeyBytes: single
 // characters, "ctrl+<a-z>", and the named keys and aliases enumerated in that
@@ -19,6 +21,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +33,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -140,7 +144,27 @@ func main() {
 	bossBin := flag.String("boss-bin", "", "path to a prebuilt -tags e2e boss binary; if empty, build it")
 	castPath := flag.String("cast", "", "if set, write an asciinema .cast of the session to this path")
 	seedPath := flag.String("seed", "", "if set, a JSON overlay file of extra display entities to seed on top of the preset world")
+	socket := flag.String("socket", "", "attach mode: drive boss against this EXISTING daemon unix socket instead of a bridge-owned mock daemon (requires -home)")
+	home := flag.String("home", "", "attach mode: HOME for the boss child; used as-is, never seeded or removed (required with -socket)")
+	settings := flag.String("settings", "", "attach mode: optional settings file handed to boss as BOSS_SETTINGS_PATH")
 	flag.Parse()
+
+	af := attachFlags{
+		socket:     *socket,
+		home:       *home,
+		settings:   *settings,
+		fixtureSet: flagWasSet("fixture"),
+		seedSet:    *seedPath != "",
+	}
+	if err := validateAttachFlags(af); err != nil {
+		log.Fatalf("proof-tui-agent: usage: %v", err)
+	}
+	if af.socket != "" {
+		if err := runAttach(af, *width, *height, *bossBin, *castPath, os.Getenv(seedEnvVar)); err != nil {
+			log.Fatalf("proof-tui-agent: %v", err)
+		}
+		return
+	}
 
 	// Scenario env is forwarded RAW via seedEnvVar (see its doc). Read it here so
 	// run() stays testable with an explicit string.
@@ -331,18 +355,9 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 
 	// 7. Optional .cast capture.
 	var castWriter *castWriter
-	if castPath != "" {
-		// #nosec G304 -- operator-supplied -cast output path for a local proof/test harness; not attacker-controlled.
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		castFile, err = os.Create(castPath)
-		if err != nil {
-			return fmt.Errorf("create cast file: %w", err)
-		}
-		castWriter, err = newCastWriter(castFile, width, height, time.Now)
-		if err != nil {
-			_ = castFile.Close()
-			return fmt.Errorf("new cast writer: %w", err)
-		}
+	castFile, castWriter, err = openCast(castPath, width, height)
+	if err != nil {
+		return err
 	}
 
 	// 8. Driver.
@@ -381,6 +396,235 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		return err
 	}
 	return nil
+}
+
+// openCast creates the optional .cast capture. An empty castPath is no capture:
+// nil file, nil writer, nil error.
+func openCast(castPath string, width, height int) (*os.File, *castWriter, error) {
+	if castPath == "" {
+		return nil, nil, nil
+	}
+	// #nosec G304 -- operator-supplied -cast output path for a local proof/test harness; not attacker-controlled.
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	f, err := os.Create(castPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create cast file: %w", err)
+	}
+	cw, err := newCastWriter(f, width, height, time.Now)
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("new cast writer: %w", err)
+	}
+	return f, cw, nil
+}
+
+// attachFlags are the attach-mode inputs plus whether the fixture-mode seeding
+// flags were used, which attach mode refuses rather than silently ignores.
+type attachFlags struct {
+	socket     string
+	home       string
+	settings   string
+	fixtureSet bool
+	seedSet    bool
+}
+
+// flagWasSet reports whether name was passed explicitly on the command line —
+// -fixture has a non-empty default, so its value alone cannot tell.
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// validateAttachFlags enforces the attach-mode usage contract. -socket needs
+// -home: the bridge cannot invent a HOME for a daemon it does not own. -home
+// and -settings without -socket would be silently ignored by fixture mode, so
+// they are refused. -fixture and -seed shape the bridge-owned mock daemon,
+// which attach mode never starts, so combining them with -socket is refused
+// instead of quietly producing a run that is not the fixture it named.
+func validateAttachFlags(f attachFlags) error {
+	if f.socket == "" {
+		if f.home != "" || f.settings != "" {
+			return errors.New("-home and -settings are attach-mode flags and require -socket")
+		}
+		return nil
+	}
+	if f.home == "" {
+		return errors.New("-socket requires -home (the HOME directory the boss child runs with)")
+	}
+	if f.fixtureSet {
+		return errors.New("-socket and -fixture are mutually exclusive: attach mode drives an existing daemon and seeds no fixture")
+	}
+	if f.seedSet {
+		return errors.New("-socket and -seed are mutually exclusive: attach mode has no bridge-owned mock daemon to seed")
+	}
+	return nil
+}
+
+// attachEnv builds the boss child env for attach mode: the same harness base
+// and signed-in e2e env as an acknowledged fixture preset, pointed at the
+// caller's socket and HOME, plus BOSS_SETTINGS_PATH when -settings was given
+// and the validated scenario env on top.
+func attachEnv(environ []string, f attachFlags, allowedEnv map[string]string) []string {
+	env := tuitest.BaseHarnessEnv(environ)
+	env = append(env,
+		"BOSS_SKIP_SKILLS=1",
+		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
+		"TERM=xterm-256color",
+		"HOME="+f.home,
+		"BOSS_SOCKET="+f.socket,
+	)
+	if runtime.GOOS != "darwin" {
+		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(f.home, ".config"))
+	}
+	env = append(env, "BOSS_AUTH_E2E_EMAIL=proof@example.com")
+	if f.settings != "" {
+		env = append(env, "BOSS_SETTINGS_PATH="+f.settings)
+	}
+	for _, k := range sortedKeys(allowedEnv) {
+		env = append(env, k+"="+allowedEnv[k])
+	}
+	return env
+}
+
+// runAttach drives the e2e-tagged boss TUI against an EXISTING daemon socket.
+// It starts no mock daemon, seeds no settings or world, and never removes the
+// caller's HOME or socket; cast capture, settle and the NDJSON ops are the
+// fixture-mode ones, except that the "daemon" op is refused (see serveAttached).
+func runAttach(f attachFlags, width, height int, bossBin, castPath, seedEnvJSON string) error {
+	allowedEnv, err := validatedSeedEnv(seedEnvJSON)
+	if err != nil {
+		return err
+	}
+	if fi, serr := os.Stat(f.home); serr != nil || !fi.IsDir() {
+		return fmt.Errorf("-home %q must be an existing directory", f.home)
+	}
+	if _, serr := os.Stat(f.socket); serr != nil {
+		return fmt.Errorf("-socket %q: %w", f.socket, serr)
+	}
+	env := attachEnv(os.Environ(), f, allowedEnv)
+
+	if bossBin == "" {
+		built, cleanupBoss, berr := buildBoss()
+		if berr != nil {
+			return berr
+		}
+		defer cleanupBoss()
+		bossBin = built
+	}
+
+	var (
+		drv      *tuidriver.Driver
+		castFile *os.File
+	)
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			if drv != nil {
+				_ = drv.Close()
+			}
+			if castFile != nil {
+				_ = castFile.Close()
+			}
+		})
+	}
+	defer cleanup()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cleanup()
+		os.Exit(0)
+	}()
+
+	castFile, cw, err := openCast(castPath, width, height)
+	if err != nil {
+		return err
+	}
+	driverOpts := tuidriver.Options{Command: bossBin, Env: env, Width: width, Height: height}
+	if cw != nil {
+		driverOpts.RawOutput = cw
+	}
+	drv, err = tuidriver.New(driverOpts)
+	if err != nil {
+		return fmt.Errorf("create TUI driver: %w", err)
+	}
+	if err := drv.WaitForText(fixtures.DefaultBootWait, "Bossanova"); err != nil {
+		return fmt.Errorf("wait for app shell: %w", err)
+	}
+
+	if err := serveAttached(drv, os.Stdin, os.Stdout, defaultSettle(width, height)); err != nil && !errors.Is(err, errQuit) {
+		return err
+	}
+	return nil
+}
+
+// attachDaemonOpError answers a "daemon" op in attach mode: the mutators and
+// pushers drive a bridge-owned mock, and an attached daemon is not one.
+const attachDaemonOpError = "daemon op unavailable in attach mode (-socket): the bridge does not own the daemon it is attached to"
+
+// serveAttached is serve for attach mode: identical NDJSON handling, except a
+// "daemon" op is answered with attachDaemonOpError (never a nil-daemon panic or
+// a silent no-op) and capabilities stops advertising the daemon surface.
+func serveAttached(t tui, in io.Reader, out io.Writer, st settleConfig) error {
+	bw := bufio.NewWriter(out)
+	scanner := bufio.NewScanner(in)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		if resp, handled := attachModeResponse(line); handled {
+			if err := writeJSON(bw, resp); err != nil {
+				return err
+			}
+			continue
+		}
+		// No daemon reaches handleLine: attachModeResponse claims every op
+		// that would touch it.
+		quit, err := handleLine(t, nil, bw, line, st)
+		if err != nil {
+			return err
+		}
+		if quit {
+			return errQuit
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = writeJSON(bw, errorResponse(0, err.Error()))
+	}
+	return nil
+}
+
+// attachModeResponse answers the ops whose fixture-mode handling assumes a
+// bridge-owned daemon. Malformed lines are left to handleLine's error path.
+func attachModeResponse(line []byte) (map[string]any, bool) {
+	var req struct {
+		ID int64  `json:"id"`
+		Op string `json:"op"`
+	}
+	if json.Unmarshal(line, &req) != nil {
+		return nil, false
+	}
+	switch req.Op {
+	case "daemon":
+		return errorResponse(req.ID, attachDaemonOpError), true
+	case "capabilities":
+		resp := capabilitiesResponse(req.ID)
+		ops, _ := resp["ops"].([]string)
+		resp["ops"] = slices.DeleteFunc(ops, func(op string) bool { return op == "daemon" })
+		resp["daemonActions"] = []string{}
+		resp["mode"] = "attach"
+		return resp, true
+	}
+	return nil, false
 }
 
 // readSeedOverlay reads and parses the -seed overlay file, capping the read at

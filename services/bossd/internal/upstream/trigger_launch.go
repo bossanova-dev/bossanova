@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -113,15 +112,9 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 		return &pb.LaunchTriggerSessionResult{SessionId: row.SessionID, IsReplay: true}, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 	}
 
-	repo, err := l.Repos.GetByOrigin(ctx, originURL)
-	switch {
-	case errors.Is(err, sql.ErrNoRows) || (err == nil && repo == nil):
-		return nil, pb.CommandResult_ERROR_CODE_NOT_FOUND,
-			fmt.Errorf("repository %s is not registered on this daemon", originURL)
-	case errors.Is(err, db.ErrAmbiguousOrigin):
-		return nil, pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION, fmt.Errorf("launch_trigger_session: %w", err)
-	case err != nil:
-		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: resolve repo: %w", err)
+	repo, code, err := resolveTriggerRepo(ctx, l.Repos, originURL)
+	if err != nil {
+		return nil, code, fmt.Errorf("launch_trigger_session: %w", err)
 	}
 
 	replay, code, err := l.claim(ctx, invocationID, cmd.GetTriggerId())
@@ -210,6 +203,12 @@ func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, trigge
 // bootstrapping path emits `created` twice, and the first (accepted) frame is
 // not the session the trigger launched until its bootstrap succeeds.
 //
+// The same rule covers a zero-output launch (BOS-1477). It is not a quick chat
+// on the request — it runs through StartSession and its bootstrap runner — and
+// StartSession persists the repo checkout as its worktree path, so it emits an
+// accepted frame with an empty worktree_path and then settles with the
+// checkout's path.
+//
 // On error, runningID is the accepted session's id when the create ran out of
 // budget after the accepted frame — the daemon keeps bootstrapping that session
 // in the background — and empty otherwise.
@@ -220,11 +219,19 @@ func (l *TriggerSessionLauncher) create(ctx context.Context, repoID string, cmd 
 		// the id, and StreamCreateSession rejects an empty title.
 		title = "Trigger: " + cmd.GetTriggerId()
 	}
+	zeroOutput := cmd.GetIsZeroOutput()
+	baseBranch := cmd.GetBaseBranch()
+	if zeroOutput {
+		// A zero-output run cuts no branch; sending a base branch would only
+		// invite the daemon and bosso to disagree about what it means.
+		baseBranch = ""
+	}
 	req := &pb.CreateSessionRequest{
 		RepoId:           repoID,
 		Title:            title,
 		Plan:             cmd.GetPrompt(),
-		BaseBranch:       cmd.GetBaseBranch(),
+		BaseBranch:       baseBranch,
+		IsZeroOutput:     zeroOutput,
 		Model:            cmd.Model,
 		Effort:           cmd.Effort,
 		Detach:           true,
@@ -236,6 +243,12 @@ func (l *TriggerSessionLauncher) create(ctx context.Context, repoID string, cmd 
 	}
 	if name := strings.TrimSpace(cmd.GetAgentName()); name != "" {
 		req.AgentName = &name
+	}
+	// Presence is the signal: absent (a bosso that predates the field) must
+	// stay absent so the daemon keeps running setup.
+	if cmd.ShouldRunSetupCommand != nil {
+		runSetup := cmd.GetShouldRunSetupCommand()
+		req.ShouldRunSetupCommand = &runSetup
 	}
 
 	createCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.budget())

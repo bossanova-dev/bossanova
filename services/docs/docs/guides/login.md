@@ -56,7 +56,7 @@ Waiting for authentication...
 ```
 
 Both values above are placeholders. The real code is short-lived and
-single-use, and the real URL carries that same code inside it — so treat both as
+single-use, and the real URL carries that same code inside it. Treat both as
 credentials, and keep them out of issues, chat messages, and screenshots.
 
 `boss login` also tries to open the verification URL in your browser. When it
@@ -171,8 +171,8 @@ In the TUI, the home action bar is the quick version of the same check:
 
 Being signed in and having Bossanova Cloud access are two different things.
 Bossanova Cloud is a paid add-on to the free client, so a successful sign-in on
-an account with no active subscription gets a follow-up, and the two surfaces
-handle that follow-up very differently. Local sessions keep working either way.
+an account with no active subscription gets a follow-up. Local sessions keep
+working either way.
 
 ### From the CLI
 

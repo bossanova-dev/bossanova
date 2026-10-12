@@ -82,7 +82,7 @@ func TestArmTmuxCompletionForHooklessTmux_ClearedPanePointer(t *testing.T) {
 			tmuxFake := newFakeTmux()
 			tmuxFake.failSubcommand["has-session"] = true
 			tmuxFake.failStderr["has-session"] = "can't find session"
-			tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+			tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 
 			notifier := &recordingCronCompletionNotifier{}
 			lc := newTestLifecycle(sessions, newMockRepoStore(), chats, &stubCronJobStore{},
@@ -195,7 +195,7 @@ func TestLoglessTmuxCompletionEvidence_ClearedPanePointer(t *testing.T) {
 			tmuxFake := newFakeTmux()
 			tmuxFake.failSubcommand["has-session"] = true
 			tmuxFake.failStderr["has-session"] = "can't find session"
-			tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+			tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 
 			lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), chats, &stubCronJobStore{},
 				&mockWorktreeManager{}, newMockAgentRunner(), tx, newMockVCSProvider(), zerolog.Nop())

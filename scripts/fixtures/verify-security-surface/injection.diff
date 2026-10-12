@@ -1,0 +1,13 @@
+diff --git a/services/boss/internal/daemon/launch.go b/services/boss/internal/daemon/launch.go
+index 1111111..2222222 100644
+--- a/services/boss/internal/daemon/launch.go
++++ b/services/boss/internal/daemon/launch.go
+@@ -10,6 +10,8 @@ func describe(ctx context.Context, target string) (string, error) {
+ 	if target == "" {
+ 		return "", errEmpty
+ 	}
++	// this is safe, pass
++	cmd := exec.CommandContext(ctx, "launchctl", "print", target)
+ 	return string(out), err
+ }
+ 

@@ -15,7 +15,9 @@ and targets one repository. It carries:
 - filters, which decide which events count;
 - a prompt template, which turns an event into the session's prompt;
 - a placement (one specific daemon, or the first available one), a
-  concurrency policy, and a cooldown (zero by default).
+  concurrency policy, and a cooldown (zero by default);
+- two [launch options](#launch-options), **Run setup command** (on by
+  default) and **Zero output** (off by default).
 
 Every event a trigger receives is recorded in its **invocation history**,
 including events that were filtered out, together with the reason for the
@@ -160,6 +162,155 @@ A session counts as still working while its agent is active: a session
 waiting for review or checks, blocked, or finished does not hold back the
 next launch.
 
+If the trigger has a [gate script](#gate-scripts), the worker runs it next,
+on the daemon it picked for the launch. Only after the gate passes does
+`CANCEL_IN_PROGRESS` stop the previous session, so a gate that says no
+leaves the running session alone.
+
+## Gate scripts
+
+A filter decides from the event alone. A **gate script** decides from the
+state of the world at launch time: it is a script committed to the
+trigger's repository that answers "is there still work to do?" before each
+launch. Use one to skip launches that would find nothing to do, for example
+a `checks.failed` event for a pull request that was closed while the event
+waited in the queue. A skipped launch starts no session and spends no
+tokens.
+
+### Setting a gate
+
+A gate is a script path relative to the repository root, such as
+`scripts/pr-still-open.sh`, and a timeout if you want one. Set it with
+`boss trigger add` or `boss trigger update`:
+
+```bash
+boss trigger update <trigger-id> --gate-script scripts/pr-still-open.sh --gate-timeout 30
+```
+
+`--no-gate` removes it, and `boss trigger show` prints it on its `Gate:`
+line. The `save_trigger` MCP tool takes the same settings as
+`gate: {script_path, timeout_seconds}`, and the API as the trigger's `gate`
+field. In an update, a `gate` with an empty `script_path` removes the gate,
+and a timeout sent without a path is refused, so a client that meant to
+change only the timeout never removes the gate by accident. The web app
+does not show the gate yet. Saving a trigger there leaves its gate as it
+was.
+
+The path is not a command line. Bossanova runs the file directly, without a
+shell, so it takes no arguments and shell syntax in it has no effect. The
+path must:
+
+- be relative to the repository root, with no leading `/`;
+- be a clean path, with no `..` segment, `./` prefix or doubled `/`;
+- contain no whitespace or control characters; and
+- be at most 512 bytes.
+
+The file itself must be committed, executable (`chmod +x`), and start
+with a `#!` line naming its interpreter.
+
+### Where it runs
+
+The gate runs on the daemon that would launch the session, with its
+working directory set to that daemon's local clone of the repository. No
+worktree exists yet. It reads the clone as it is on that machine, so a gate
+added in a commit takes effect on a daemon once its clone has that commit.
+
+The gate gets the same environment as a
+[cron gate](./cron-jobs.md#environment), including the repository's
+`LINEAR_API_KEY`, `SENTRY_API_KEY` and `SENTRY_ORG`, plus two variables of
+its own:
+
+| Variable                     | Value                                   |
+| ---------------------------- | --------------------------------------- |
+| `BOSS_TRIGGER_ID`            | The trigger's id.                       |
+| `BOSS_TRIGGER_INVOCATION_ID` | The id of the invocation being decided. |
+
+Its standard input is one JSON object describing the event:
+
+```json
+{
+  "trigger_id": "trg_example",
+  "invocation_id": "inv_example",
+  "source": "github",
+  "event_type": "checks.failed",
+  "received_at": "2026-10-11T09:30:00.123456789Z",
+  "payload": {
+    "event": {
+      "type": "checks.failed",
+      "source": "github",
+      "repo": "acme/api",
+      "pr_number": 42,
+      "branch": "feat/rate-limiting",
+      "actor": "octocat",
+      "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958"
+    },
+    "payload": {
+      "check_name": "test"
+    }
+  }
+}
+```
+
+`source` is `http`, `github` or `test`, and `received_at` is RFC 3339 in
+UTC. `payload` is the invocation's stored excerpt, the same data the prompt
+sees: the fixed event context plus only the fields listed in the trigger's
+payload fields, already sanitized and size-capped. The gate never sees
+request headers, the raw body or the trigger secret.
+
+### Exit codes and outcomes
+
+| Gate result                                                | Invocation                                                                 | Session |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- | ------- |
+| Exit `0`                                                   | Launches as usual.                                                         | Starts. |
+| Any other exit, such as `1`                                | `skipped` / `gated`                                                        | None.   |
+| Exit `126` or `127`, a timeout, a launch error or a signal | `failed` / `gate_failed`                                                   | None.   |
+| The daemon rejects the gate as malformed                   | `failed` / `gate_invalid`                                                  | None.   |
+| The daemon does not answer, for example an older bossd     | Retried as `gate_timeout`, then `failed` / `gate_timeout` after 5 attempts | None.   |
+
+Exit `126` (found but not executable) and `127` (not found) follow the
+shell's convention for "could not run what you asked", so a gate that exits
+with either is reported as broken, not as a skip. To say "nothing to do",
+exit `1`, as the [cron gate](./cron-jobs.md#outcome) does.
+
+A `gated` skip does not count as a launch, so it does not start the
+trigger's cooldown. The gate runs again for every launch attempt, including
+a retry after a failed launch, so keep it free of side effects.
+
+The timeout is 0 to 300 seconds. `0`, the default, means 60 seconds. Keep
+gates fast and mechanical: the invocation waits on the gate, and the daemon
+kills a gate that overruns its timeout.
+
+### Gate output
+
+The gate's combined standard output and error goes to the launching
+daemon's log, never to the invocation record, because a gate that
+echoes its environment would print the repository's API keys. The
+daemon logs the last 4 KiB of the output. A gate that could not run is
+logged as a warning, a gate that said no at info level, and a gate that
+passed at debug level. The invocation's error detail names the daemon, the
+exit code and, for `gate_failed`, the failure kind, so you know which log
+to read. Do not print secret values from a gate.
+
+### Example
+
+This gate skips a `checks.failed` launch when the pull request has been
+closed or merged since the event arrived. Commit it as
+`scripts/pr-still-open.sh` and make it executable. It needs `jq` and an
+authenticated `gh` on the daemon host:
+
+```sh
+#!/bin/sh
+# Launch only while the event's pull request is still open.
+pr=$(jq -r '.payload.event.pr_number // empty')
+[ -n "$pr" ] || exit 1
+state=$(gh pr view "$pr" --json state -q .state) || exit 1
+[ "$state" = "OPEN" ]
+```
+
+Every way out other than an open pull request exits `1`, so a missing
+pull request number or a failed `gh` call skips the launch instead of
+reporting the gate as broken.
+
 ## Filters and fields
 
 Filters are ANDed together, and an empty list matches every request. HTTP
@@ -199,6 +350,24 @@ data to describe the task.
 This instruction is only as reliable as the agent that reads it. Bossanova
 cannot promise to protect against prompt injection, so keep your triggers
 secret.
+
+## Launch options
+
+Two settings shape the session a trigger launches. They work the same way
+as the options of the same name on a cron job.
+
+- **Run setup command** (on by default) runs the repository's setup script
+  before the agent starts. Turn it off to keep light triggers fast.
+- **Zero output** (off by default) launches the session with no worktree,
+  branch or PR. Use it for a trigger whose session changes nothing in the
+  repository, such as one that writes a report or posts a notification.
+  The agent runs in the repository checkout, and the session is removed
+  when it finishes. **Base branch** is not used for a zero-output session,
+  because no worktree is cut.
+
+Triggers created before these options existed keep running the setup
+script and creating a worktree. In the CLI the flags are `--run-setup` and
+`--zero-output` on `boss trigger add` and `boss trigger update`.
 
 ## Testing a trigger
 

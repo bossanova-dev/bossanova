@@ -64,6 +64,7 @@ func initCmd() *cobra.Command {
 	var team string
 	var repoOpts initRepoOptions
 	var cronOpts initCronRequest
+	var trust projectTrust
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -93,13 +94,19 @@ func initCmd() *cobra.Command {
 			"no match, a truncated listing, or any lookup failure fails the command with\n" +
 			"nothing written. Missing labels are reported; --create-labels creates them in\n" +
 			"the team (labels are the only thing this command ever creates in Linear).\n\n" +
-			"With --cron plan,build,verify (any subset) the factory cron jobs from\n" +
+			"With --cron plan,build,verify,retro (any subset) the factory cron jobs from\n" +
 			"docs/skills/factory.md are created enabled for a daemon-loaded agent (--agent claude|codex;\n" +
 			"Claude when both qualify), after a gate preflight in the daemon's own environment: node on\n" +
 			"the daemon's service PATH, the installed gate script, and the installed skill-config module\n" +
 			"accepting this config. A failed preflight creates that job disabled. An existing stage job\n" +
 			"(by name, or by its prompt's leading skill) is never duplicated; it is updated only with\n" +
 			"--update-crons, and its schedule, timezone and enabled state are never changed.\n\n" +
+			"When the checkout carries a .boss-project.json, boss init applies it last through the\n" +
+			"same engine as `boss project apply` (never pruning): it is loaded and validated, and the\n" +
+			"checkout must be on the repo's default branch (or pass --allow-branch), before anything\n" +
+			"is written; cron prompt and gate changes are confirmed on a terminal or need --yes. An\n" +
+			"explicit --cron/--agent/--update-crons, --no-register or credential flag takes that part\n" +
+			"of the file over for the run, with a warning.\n\n" +
 			"On a terminal, boss init asks for whatever the flags left open, in order: repository\n" +
 			"registration, the Linear key, Sentry, the Linear team and state/label mapping, the\n" +
 			"\"only my tickets\" filter, merging an existing config, and the cron jobs. Each\n" +
@@ -135,6 +142,7 @@ func initCmd() *cobra.Command {
 				cron:         cronOpts,
 				applied:      &initAppliedSteps{},
 				createLabels: createLabels,
+				projectTrust: trust,
 			}
 			// On a terminal, boss init interviews: every question has a flag, a
 			// flag already passed answers its question, and the answers drive
@@ -160,9 +168,11 @@ func initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&repoOpts.sentryStdin, "sentry-token-stdin", false, "Read the Sentry token from stdin")
 	cmd.Flags().StringVar(&repoOpts.sentryOrg, "sentry-org", "", "Sentry organization slug (requires a token)")
 	cmd.Flags().BoolVar(&repoOpts.storeEnv, "store-env-keys", false, "Store LINEAR_API_KEY and SENTRY_AUTH_TOKEN from the environment")
-	cmd.Flags().StringSliceVar(&cronOpts.stages, "cron", nil, "Create or converge the factory cron jobs for these stages (plan,build,verify)")
+	cmd.Flags().StringSliceVar(&cronOpts.stages, "cron", nil, "Create or converge the factory cron jobs for these stages (plan,build,verify,retro)")
 	cmd.Flags().StringVar(&cronOpts.agent, "agent", "", "Agent for the factory cron jobs: claude or codex (default: claude when both qualify)")
 	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing factory job's prompt, gate and agent when they differ")
+	cmd.Flags().BoolVar(&trust.yes, "yes", false, "Apply .boss-project.json cron prompt and gate changes without asking")
+	cmd.Flags().BoolVar(&trust.allowBranch, "allow-branch", false, "Apply .boss-project.json from a checkout that is not on the repo's default branch")
 	return cmd
 }
 
@@ -185,6 +195,12 @@ type initOptions struct {
 	resolvedRepo *pb.Repo
 	cron         initCronRequest
 	applied      *initAppliedSteps
+	// project is the checkout's .boss-project.json (nil when absent), loaded
+	// once, before any write; projectLoaded marks the load as done.
+	project          *loadedProject
+	projectLoaded    bool
+	projectOverrides initProjectOverrides
+	projectTrust     projectTrust
 }
 
 // detectedConfig is the emitted config: exactly what detection produced and
@@ -245,6 +261,9 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 	if !info.IsDir() {
 		return fmt.Errorf("--dir must be a directory: %s", repoDir)
 	}
+	if err := prepareInitProject(context.Background(), repoDir, &opts); err != nil {
+		return err
+	}
 
 	bridge, cleanup, err := newNodeBridge()
 	if err != nil {
@@ -277,7 +296,7 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 	// link and land outside repoDir entirely.
 	var existing []byte
 	if info, statErr := os.Lstat(target); statErr == nil && !force && !opts.mergeExisting {
-		return fmt.Errorf("%s already exists; re-run with --force to replace it", target)
+		return fmt.Errorf("%s already exists; re-run with --force to replace it%s", target, projectAlreadyExistsHint(opts))
 	} else if statErr == nil && opts.mergeExisting {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to merge symlink %s", target)
@@ -343,7 +362,7 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 		} else {
 			writeInitReport(out, target, result.Detected, tracker, findAncestorConfig(repoDir, filename))
 		}
-		return runInitCronStep(out, opts, repoDir, target, repo)
+		return finishInit(out, opts, repoDir, target, repo)
 	}
 
 	encoded, err := encodeDetectedConfig(result.Detected)
@@ -364,7 +383,7 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 	opts.applied.ConfigPath = target
 
 	writeInitReport(out, target, result.Detected, tracker, findAncestorConfig(repoDir, filename))
-	return runInitCronStep(out, opts, repoDir, target, repo)
+	return finishInit(out, opts, repoDir, target, repo)
 }
 
 // --- Linear team resolution ----------------------------------------------

@@ -276,6 +276,7 @@ func TestClassifyVerify(t *testing.T) {
 		{name: "verifying claim", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying},
 		{name: "waiting unclaimed head", checks: []CheckResult{pending("waiting: checks-pending")}, wantKind: VerifyPhaseVerifying},
 		{name: "needs human with reason", checks: []CheckResult{pending("needs human: always-human-path")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path"},
+		{name: "needs human set reason is opaque", checks: []CheckResult{pending("needs human: always-human-path,human-review:ui")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path,human-review:ui"},
 		{name: "needs human colon no reason", checks: []CheckResult{pending("needs human:")}, wantKind: VerifyPhaseNeedsHuman},
 		{name: "needs human no colon", checks: []CheckResult{pending("needs human")}, wantKind: VerifyPhaseNeedsHuman},
 		{name: "needs human space then reason", checks: []CheckResult{pending("needs human ledger-open")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "ledger-open"},

@@ -83,8 +83,11 @@ test('signals only collected below threshold and failures contribute zero', asyn
   assert.equal(result.hasWork, false)
   assert.match(result.reason, /contribute 0 \(timeout\)/)
 })
-test('unreachable binary runs the session; malformed notes and flags fail closed', async () => {
+test('unreachable binary or failed read runs the session; malformed notes and flags fail closed', async () => {
   assert.equal((await evaluate({ listNotes: () => ({ unreachable: true }) })).hasWork, true)
+  const failed = await evaluate({ listNotes: () => ({ readFailed: 'ENOBUFS' }) })
+  assert.equal(failed.hasWork, true)
+  assert.match(failed.reason, /notes store read failed \(ENOBUFS\)/)
   for (const notes of [
     null,
     {},
@@ -127,6 +130,29 @@ test('process fake BOSS_BIN validates JSON, notes and threshold', (t) => {
       .status,
     1,
   )
+})
+test('process reads a notes payload larger than the 1 MiB spawnSync default', (t) => {
+  const dir = fixture(t)
+  const notes = Array.from({ length: 1500 }, (_, i) => ({
+    ...note(String(i)),
+    body: 'x'.repeat(1024),
+  }))
+  fs.writeFileSync(path.join(dir, 'notes.json'), JSON.stringify(notes))
+  const file = path.join(dir, 'boss')
+  fs.writeFileSync(file, `#!/bin/sh\ncat '${path.join(dir, 'notes.json')}'\n`)
+  fs.chmodSync(file, 0o755)
+  const result = run(dir, { BOSS_BIN: file, PATH: '/bin:/usr/bin' }, ['--threshold', '1500'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /1500 new notes/)
+})
+test('process failed notes read runs the session and names the failure', (t) => {
+  const dir = fixture(t)
+  const file = path.join(dir, 'boss')
+  fs.writeFileSync(file, '#!/bin/sh\nexit 3\n')
+  fs.chmodSync(file, 0o755)
+  const result = run(dir, { BOSS_BIN: file, PATH: '' })
+  assert.equal(result.status, 0)
+  assert.match(result.stderr, /notes store read failed \(exit 3\)/)
 })
 test('process resolver falls through stale BOSS_BIN to PATH and missing CLI runs', (t) => {
   const dir = fixture(t)

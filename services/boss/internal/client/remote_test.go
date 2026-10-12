@@ -713,3 +713,111 @@ func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
 		t.Fatalf("control ProxyUpdateRepo calls = %d, want 1", fake.updateCalls)
 	}
 }
+
+// cronDeleteRecorder serves ProxyDeleteCronJob on top of the shared fake.
+type cronDeleteRecorder struct {
+	*fakeChatOrchestrator
+	deleteCronReq *pb.ProxyDeleteCronJobRequest
+}
+
+func (f *cronDeleteRecorder) ProxyDeleteCronJob(_ context.Context, req *connect.Request[pb.ProxyDeleteCronJobRequest]) (*connect.Response[pb.ProxyDeleteCronJobResponse], error) {
+	f.deleteCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyDeleteCronJobResponse{}), nil
+}
+
+// TestRemoteCronDaemonTargeting pins the cloud cron writes a project config
+// fans out with: the *On variants name the daemon, and every converter copies
+// every daemon-request field (managed_by included) onto the proxy request,
+// checked by descriptor. The daemon-less variants keep sending no daemon_id,
+// so `boss cron --remote` still lets bosso pick the caller's daemon.
+func TestRemoteCronDaemonTargeting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fake := &cronDeleteRecorder{fakeChatOrchestrator: &fakeChatOrchestrator{}}
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewRemote(srv.URL, "tok")
+
+	create := &pb.CreateCronJobRequest{}
+	setEveryRemoteCronField(t, create.ProtoReflect())
+	if _, err := c.CreateCronJobOn(ctx, "d-2", create); err != nil {
+		t.Fatalf("CreateCronJobOn: %v", err)
+	}
+	if got := fake.createCronReq; got.GetDaemonId() != "d-2" || got.GetManagedBy() != create.GetManagedBy() {
+		t.Fatalf("CreateCronJobOn sent daemon %q marker %q", got.GetDaemonId(), got.GetManagedBy())
+	}
+	assertRemoteCronFieldsCopied(t, create.ProtoReflect(), fake.createCronReq.ProtoReflect())
+	if _, err := c.CreateCronJob(ctx, create); err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if got := fake.createCronReq; got.GetDaemonId() != "" || got.GetManagedBy() != create.GetManagedBy() {
+		t.Fatalf("CreateCronJob sent daemon %q marker %q, want no daemon and the marker", got.GetDaemonId(), got.GetManagedBy())
+	}
+
+	update := &pb.UpdateCronJobRequest{}
+	setEveryRemoteCronField(t, update.ProtoReflect())
+	if _, err := c.UpdateCronJobOn(ctx, "d-2", update); err != nil {
+		t.Fatalf("UpdateCronJobOn: %v", err)
+	}
+	if got := fake.updateCronReq; got.GetDaemonId() != "d-2" || got.ManagedBy == nil {
+		t.Fatalf("UpdateCronJobOn sent daemon %q marker %v", got.GetDaemonId(), got.ManagedBy)
+	}
+	assertRemoteCronFieldsCopied(t, update.ProtoReflect(), fake.updateCronReq.ProtoReflect())
+	name := "renamed"
+	if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{Id: "cj-1", Name: &name}); err != nil {
+		t.Fatalf("UpdateCronJob: %v", err)
+	}
+	if got := fake.updateCronReq; got.GetDaemonId() != "" || got.ManagedBy != nil {
+		t.Fatalf("UpdateCronJob sent daemon %q marker %v, want neither", got.GetDaemonId(), got.ManagedBy)
+	}
+
+	if err := c.DeleteCronJobOn(ctx, "d-2", "cj-9"); err != nil {
+		t.Fatalf("DeleteCronJobOn: %v", err)
+	}
+	if got := fake.deleteCronReq; got.GetDaemonId() != "d-2" || got.GetId() != "cj-9" {
+		t.Fatalf("DeleteCronJobOn sent %+v", got)
+	}
+	if err := c.DeleteCronJob(ctx, "cj-9"); err != nil {
+		t.Fatalf("DeleteCronJob: %v", err)
+	}
+	if got := fake.deleteCronReq; got.GetDaemonId() != "" {
+		t.Fatalf("DeleteCronJob sent daemon %q, want none", got.GetDaemonId())
+	}
+}
+
+func setEveryRemoteCronField(t *testing.T, msg protoreflect.Message) {
+	t.Helper()
+	fields := msg.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		switch f.Kind() {
+		case protoreflect.StringKind:
+			msg.Set(f, protoreflect.ValueOfString("value-"+string(f.Name())))
+		case protoreflect.BoolKind:
+			msg.Set(f, protoreflect.ValueOfBool(true))
+		case protoreflect.EnumKind:
+			values := f.Enum().Values()
+			msg.Set(f, protoreflect.ValueOfEnum(values.Get(values.Len()-1).Number()))
+		default:
+			t.Fatalf("cron request field %s has unsupported test kind %s", f.FullName(), f.Kind())
+		}
+	}
+}
+
+func assertRemoteCronFieldsCopied(t *testing.T, source, got protoreflect.Message) {
+	t.Helper()
+	fields := source.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		sf := fields.Get(i)
+		gf := got.Descriptor().Fields().ByName(sf.Name())
+		if gf == nil {
+			t.Fatalf("%s has no field %q to carry %s", got.Descriptor().FullName(), sf.Name(), sf.FullName())
+		}
+		if source.Has(sf) != got.Has(gf) || source.Get(sf).Interface() != got.Get(gf).Interface() {
+			t.Fatalf("field %s = %v (set %v), want %v (set %v)", sf.Name(), got.Get(gf), got.Has(gf), source.Get(sf), source.Has(sf))
+		}
+	}
+}

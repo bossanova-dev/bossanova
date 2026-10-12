@@ -78,7 +78,7 @@ func parseTriggerEnum(arg, value, prefix string, values map[string]int32) (int32
 
 // ListTriggersArgs is the typed argument struct for list_triggers.
 type ListTriggersArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"only this organization; omit for every organization you belong to"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for every organization you belong to"`
 }
 
 // TriggerIDArgs is the typed argument struct for get_trigger.
@@ -89,37 +89,41 @@ type TriggerIDArgs struct {
 // DeleteTriggerArgs is the typed argument struct for delete_trigger.
 type DeleteTriggerArgs struct {
 	ID      string `json:"id" jsonschema:"the trigger id"`
-	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the trigger"`
+	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true"`
 }
 
 // TestTriggerArgs is the typed argument struct for test_trigger.
 type TestTriggerArgs struct {
 	TriggerID         string `json:"trigger_id" jsonschema:"the trigger id"`
-	SamplePayloadJSON string `json:"sample_payload_json" jsonschema:"sample payload as a JSON object (HTTP body or GitHub event payload)"`
-	SampleEventType   string `json:"sample_event_type,omitempty" jsonschema:"catalog event id; required for github triggers"`
-	ShouldLaunch      bool   `json:"should_launch,omitempty" jsonschema:"launch a real session if the sample passes (default false: record the decision only)"`
+	SamplePayloadJSON string `json:"sample_payload_json" jsonschema:"JSON object: the HTTP body or GitHub event payload"`
+	SampleEventType   string `json:"sample_event_type,omitempty" jsonschema:"required for github triggers"`
+	ShouldLaunch      bool   `json:"should_launch,omitempty" jsonschema:"launch a real session if the sample passes"`
 }
 
 // TriggerHTTPConfigArgs mirrors pb.HttpTriggerConfig.
 type TriggerHTTPConfigArgs struct {
-	AllowedMethods     []string `json:"allowed_methods,omitempty" jsonschema:"accepted methods; empty means POST only"`
+	AllowedMethods     []string `json:"allowed_methods,omitempty" jsonschema:"empty means POST only"`
 	IdempotencyHeader  string   `json:"idempotency_header,omitempty" jsonschema:"empty means Idempotency-Key"`
 	DedupWindowSeconds int32    `json:"dedup_window_seconds,omitempty" jsonschema:"0 means 300"`
 }
 
 // TriggerGithubConfigArgs mirrors pb.GithubTriggerConfig.
 type TriggerGithubConfigArgs struct {
-	EventTypes []string `json:"event_types" jsonschema:"catalog event ids, e.g. pull_request.opened"`
+	EventTypes []string `json:"event_types" jsonschema:"e.g. pull_request.opened"`
 }
 
 // TriggerLaunchArgs mirrors pb.TriggerLaunchSettings.
 type TriggerLaunchArgs struct {
-	PromptTemplate string `json:"prompt_template" jsonschema:"prompt sent to the agent; may reference payload_fields"`
-	SkillName      string `json:"skill_name,omitempty" jsonschema:"skill to invoke, without the leading /"`
-	AgentName      string `json:"agent_name,omitempty" jsonschema:"agent runner; empty means claude"`
+	PromptTemplate string `json:"prompt_template" jsonschema:"may reference payload_fields"`
+	SkillName      string `json:"skill_name,omitempty" jsonschema:"without the leading /"`
+	AgentName      string `json:"agent_name,omitempty" jsonschema:"empty means claude"`
 	Model          string `json:"model,omitempty"`
 	Effort         string `json:"effort,omitempty"`
 	BaseBranch     string `json:"base_branch,omitempty" jsonschema:"empty means the repo default"`
+	// Pointers, as on the cron tools: an omitted argument is an absent field,
+	// which the server reads as its default on create and as "keep" on update.
+	ShouldRunSetupCommand *bool `json:"run_setup_command,omitempty" jsonschema:"run the repo setup script; default true"`
+	IsZeroOutput          *bool `json:"zero_output,omitempty" jsonschema:"no worktree, branch or PR; default false"`
 }
 
 // TriggerPlacementArgs mirrors pb.TriggerPlacement.
@@ -130,9 +134,15 @@ type TriggerPlacementArgs struct {
 
 // TriggerFilterArgs mirrors pb.TriggerFilter.
 type TriggerFilterArgs struct {
-	Field    string   `json:"field" jsonschema:"catalog filter field, e.g. body.ref"`
+	Field    string   `json:"field" jsonschema:"e.g. body.ref"`
 	Operator string   `json:"operator" jsonschema:"EQUALS, NOT_EQUALS, IN, NOT_IN, CONTAINS or PREFIX"`
 	Values   []string `json:"values"`
+}
+
+// TriggerGateArgs mirrors pb.TriggerGate.
+type TriggerGateArgs struct {
+	ScriptPath     string `json:"script_path" jsonschema:"repo-relative script run before each launch; exit 0 launches; empty removes it"`
+	TimeoutSeconds int32  `json:"timeout_seconds,omitempty" jsonschema:"0-300; 0 means 60"`
 }
 
 // SaveTriggerArgs is the typed argument struct for save_trigger. Without id it
@@ -143,20 +153,21 @@ type SaveTriggerArgs struct {
 	ID                       string                   `json:"id,omitempty" jsonschema:"trigger id; omit to create"`
 	RotateSecret             bool                     `json:"rotate_secret,omitempty" jsonschema:"rotate the HTTP signing secret"`
 	OrganizationID           string                   `json:"organization_id,omitempty" jsonschema:"create only (required there)"`
-	TriggerType              string                   `json:"trigger_type,omitempty" jsonschema:"create only: catalog type, e.g. http or github"`
+	TriggerType              string                   `json:"trigger_type,omitempty" jsonschema:"create only: http or github"`
 	Name                     *string                  `json:"name,omitempty"`
 	IsEnabled                *bool                    `json:"is_enabled,omitempty" jsonschema:"create defaults to true"`
-	HTTP                     *TriggerHTTPConfigArgs   `json:"http,omitempty" jsonschema:"config for an http trigger"`
-	Github                   *TriggerGithubConfigArgs `json:"github,omitempty" jsonschema:"config for a github trigger"`
-	RepoOriginURL            *string                  `json:"repo_origin_url,omitempty" jsonschema:"origin URL of the session's repo"`
-	Launch                   *TriggerLaunchArgs       `json:"launch,omitempty" jsonschema:"what to launch; replaces the whole block on update"`
-	Placement                *TriggerPlacementArgs    `json:"placement,omitempty" jsonschema:"which daemon launches; replaces the whole block on update"`
+	HTTP                     *TriggerHTTPConfigArgs   `json:"http,omitempty" jsonschema:"http triggers only"`
+	Github                   *TriggerGithubConfigArgs `json:"github,omitempty" jsonschema:"github triggers only"`
+	RepoOriginURL            *string                  `json:"repo_origin_url,omitempty" jsonschema:"the session's repo"`
+	Launch                   *TriggerLaunchArgs       `json:"launch,omitempty" jsonschema:"update replaces it; omitted booleans are kept"`
+	Placement                *TriggerPlacementArgs    `json:"placement,omitempty" jsonschema:"update replaces it"`
 	ConcurrencyPolicy        *string                  `json:"concurrency_policy,omitempty" jsonschema:"SKIP_IF_RUNNING, CANCEL_IN_PROGRESS or ALLOW_PARALLEL"`
-	CooldownSeconds          *int32                   `json:"cooldown_seconds,omitempty" jsonschema:"minimum gap between launches; 0 disables"`
+	CooldownSeconds          *int32                   `json:"cooldown_seconds,omitempty" jsonschema:"seconds between launches; 0 disables"`
 	Filters                  []TriggerFilterArgs      `json:"filters,omitempty" jsonschema:"all must match; non-empty replaces"`
 	ShouldClearFilters       bool                     `json:"should_clear_filters,omitempty" jsonschema:"update only: remove every filter"`
-	PayloadFields            []string                 `json:"payload_fields,omitempty" jsonschema:"payload paths copied into the prompt context; non-empty replaces"`
+	PayloadFields            []string                 `json:"payload_fields,omitempty" jsonschema:"copied into the prompt context; non-empty replaces"`
 	ShouldClearPayloadFields bool                     `json:"should_clear_payload_fields,omitempty" jsonschema:"update only: remove every payload field"`
+	Gate                     *TriggerGateArgs         `json:"gate,omitempty"`
 }
 
 // hasUpdateFields reports whether any field other than id and rotate_secret is
@@ -165,7 +176,8 @@ func (a SaveTriggerArgs) hasUpdateFields() bool {
 	return a.OrganizationID != "" || a.TriggerType != "" || a.Name != nil || a.IsEnabled != nil ||
 		a.HTTP != nil || a.Github != nil || a.RepoOriginURL != nil || a.Launch != nil ||
 		a.Placement != nil || a.ConcurrencyPolicy != nil || a.CooldownSeconds != nil ||
-		len(a.Filters) > 0 || a.ShouldClearFilters || len(a.PayloadFields) > 0 || a.ShouldClearPayloadFields
+		len(a.Filters) > 0 || a.ShouldClearFilters || len(a.PayloadFields) > 0 || a.ShouldClearPayloadFields ||
+		a.Gate != nil
 }
 
 func (a SaveTriggerArgs) httpConfig() *pb.HttpTriggerConfig {
@@ -185,13 +197,22 @@ func (a SaveTriggerArgs) launch() *pb.TriggerLaunchSettings {
 		return nil
 	}
 	return &pb.TriggerLaunchSettings{
-		PromptTemplate: a.Launch.PromptTemplate,
-		SkillName:      a.Launch.SkillName,
-		AgentName:      a.Launch.AgentName,
-		Model:          optionalString(a.Launch.Model),
-		Effort:         optionalString(a.Launch.Effort),
-		BaseBranch:     a.Launch.BaseBranch,
+		PromptTemplate:        a.Launch.PromptTemplate,
+		SkillName:             a.Launch.SkillName,
+		AgentName:             a.Launch.AgentName,
+		Model:                 optionalString(a.Launch.Model),
+		Effort:                optionalString(a.Launch.Effort),
+		BaseBranch:            a.Launch.BaseBranch,
+		ShouldRunSetupCommand: a.Launch.ShouldRunSetupCommand,
+		IsZeroOutput:          a.Launch.IsZeroOutput,
 	}
+}
+
+func (a SaveTriggerArgs) gate() *pb.TriggerGate {
+	if a.Gate == nil {
+		return nil
+	}
+	return &pb.TriggerGate{ScriptPath: a.Gate.ScriptPath, TimeoutSeconds: a.Gate.TimeoutSeconds}
 }
 
 func (a SaveTriggerArgs) placement() (*pb.TriggerPlacement, error) {
@@ -267,6 +288,7 @@ func (a SaveTriggerArgs) createRequest() (*pb.CreateTriggerRequest, error) {
 		Placement:      placement,
 		Filters:        filters,
 		PayloadFields:  a.PayloadFields,
+		Gate:           a.gate(),
 	}
 	if a.Name != nil {
 		req.Name = *a.Name
@@ -321,6 +343,7 @@ func (a SaveTriggerArgs) updateRequest() (*pb.UpdateTriggerRequest, error) {
 		ShouldClearFilters:       a.ShouldClearFilters,
 		PayloadFields:            a.PayloadFields,
 		ShouldClearPayloadFields: a.ShouldClearPayloadFields,
+		Gate:                     a.gate(),
 	}
 	switch {
 	case a.HTTP != nil && a.Github != nil:
@@ -408,7 +431,7 @@ func registerTriggerReadTools(server *mcp.Server, backend TriggerBackend, opts O
 func registerTriggerWriteTools(server *mcp.Server, backend TriggerBackend, opts Options) {
 	addTool(server, opts, &mcp.Tool{
 		Name: "save_trigger",
-		Description: "Create an inbound trigger (no id), update one (id; only given fields change), or rotate its HTTP " +
+		Description: "Create a trigger (no id), update one (id; only given fields change), or rotate its HTTP " +
 			"secret (id + rotate_secret alone). Create and rotate return the one-time secret. Enums take proto value names.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SaveTriggerArgs) (*mcp.CallToolResult, any, error) {

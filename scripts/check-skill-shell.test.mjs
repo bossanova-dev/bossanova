@@ -5719,7 +5719,7 @@ test('findMaskedPipelineStatus reports the two widened heads piped into a displa
   assert.deepEqual(findMaskedPipelineStatus('boss skills check --gate | tail -20'), [
     { lineOffset: 0, head: 'boss', option: 'pipefail' },
   ])
-  assert.deepEqual(findMaskedPipelineStatus('node scripts/proof.mjs run fixture | tail -25'), [
+  assert.deepEqual(findMaskedPipelineStatus('node scripts/capture.mjs run fixture | tail -25'), [
     { lineOffset: 0, head: 'node', option: 'pipefail' },
   ])
   for (const tail of ['head -5', 'tee log.txt', 'cat', 'less', 'more', 'wc -l', 'nl -ba']) {
@@ -5739,7 +5739,7 @@ test('findMaskedPipelineStatus reports the two widened heads piped into a displa
 // (k)'s three existing exemptions, re-asserted against BOTH new heads. A widening that broke one of
 // these would report correct lines, which is the direction this file forbids.
 test('findMaskedPipelineStatus keeps all three (k) exemptions for boss and node', () => {
-  for (const head of ['boss skills check --gate', 'node scripts/proof.mjs run fixture']) {
+  for (const head of ['boss skills check --gate', 'node scripts/capture.mjs run fixture']) {
     // BOS-1284: predicate position no longer exempts a DISPLAY-FILTER tail — the measured
     // incident behind this head (`boss skills check --gate | tail -20` inverting a FAIL into a
     // PASS) is exactly as wrong inside an `if`. The exemption survives for a value-bearing tail,

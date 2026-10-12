@@ -162,6 +162,10 @@ type Server struct {
 	repairLease *status.RepairLeaseManager
 	tmuxPoller  *status.TmuxStatusPoller
 	lifecycle   *session.Lifecycle
+	// promptReceipts confirms a Claude send by its UserPromptSubmit receipt
+	// (BOS-1506). New derives it from Lifecycle; nil disables the receipt, which
+	// leaves the pane verifier as the only signal.
+	promptReceipts promptReceiptBook
 	// bootstrapRunner owns session bootstraps: it runs them on the daemon's
 	// context rather than the RPC's, so a client disconnect cannot abort one.
 	bootstrapRunner *session.BootstrapRunner
@@ -726,6 +730,9 @@ func New(cfg Config) *Server {
 	}
 	if srv.endpointNamespaceGate == nil {
 		srv.endpointNamespaceGate = platformEndpointNamespaceGate
+	}
+	if cfg.Lifecycle != nil {
+		srv.promptReceipts = cfg.Lifecycle
 	}
 	if srv.bootstrapRunner == nil && cfg.Lifecycle != nil {
 		// Fallback for wiring that predates the runner (and for tests that build a
@@ -1689,10 +1696,18 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 // are identical to the original handler — this is a pure extract-method.
 func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionRequest, emit func(*pb.CreateSessionResponse) error) error {
 	requestStarted := time.Now()
+	// zeroOutput runs the agent from the repo checkout with no worktree, branch
+	// or PR (StartSessionOpts.ZeroOutput). Like quick chat it needs no worktree
+	// base dir and cuts no branch, but unlike quick chat it still goes through
+	// StartSession and its bootstrap runner.
+	zeroOutput := msg.GetIsZeroOutput()
 	branchMode := "fresh-branch"
-	if msg.IsQuickChat {
+	switch {
+	case msg.IsQuickChat:
 		branchMode = "quick-chat"
-	} else if msg.PrNumber != nil {
+	case zeroOutput:
+		branchMode = "zero-output"
+	case msg.PrNumber != nil:
 		branchMode = "existing-pr"
 	}
 
@@ -1702,6 +1717,27 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	if msg.Title == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
+	if zeroOutput {
+		// Zero output never checks out a branch, and quick chat is a different
+		// shape (no StartSession at all); refuse the combinations rather than
+		// silently dropping one side of them.
+		switch {
+		case msg.PrNumber != nil:
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output cannot be combined with pr_number"))
+		case msg.GetBranchName() != "":
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output cannot be combined with branch_name"))
+		case msg.IsQuickChat:
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output cannot be combined with is_quick_chat"))
+		case !msg.GetIsTmuxUnattended() && !msg.GetDetach():
+			// Finalize hard-deletes a zero-output run (and the system prompt
+			// forbids commits) only for an unattended session; an attended one
+			// would be classified against the user's checkout and could open a
+			// PR from it, so refuse an attended zero-output create.
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output requires is_tmux_unattended or detach"))
+		}
+	}
+	// needsWorktree is false for the two shapes that run from the repo checkout.
+	needsWorktree := !msg.IsQuickChat && !zeroOutput
 
 	// Verify repo exists.
 	repo, err := s.repos.Get(ctx, msg.RepoId)
@@ -1709,7 +1745,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
-	if !msg.IsQuickChat && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
+	if needsWorktree && strings.TrimSpace(repo.WorktreeBaseDir) == "" {
 		return connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("repo %s (%s) has no worktree base directory configured; set one with 'boss repo update %s --worktree-base-dir <dir>' (or the MCP update_repo tool's worktree_base_dir argument) before creating a session",
 				repo.ID, repo.DisplayName, repo.ID))
@@ -1744,7 +1780,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// Use the branch name from the request (e.g., from Linear's suggested branch name).
 		headBranch = *msg.BranchName
 	}
-	if !msg.IsQuickChat && strings.TrimSpace(baseBranch) == "" {
+	if needsWorktree && strings.TrimSpace(baseBranch) == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
 	}
 
@@ -2018,6 +2054,14 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			// createDraftPR on !opts.DeferPR, and the finalize EnsurePR hook
 			// opens a PR later only if the run produces commits.
 			DeferPR: msg.GetDeferPr(),
+			// An absent should_run_setup_command (a caller that predates the
+			// field) keeps running the repo's setup script; only an explicit
+			// false skips it.
+			SkipSetupScript: msg.ShouldRunSetupCommand != nil && !msg.GetShouldRunSetupCommand(),
+			// ZeroOutput runs from the repo checkout; StartSession persists that
+			// checkout as the worktree path, so the settled frame below still
+			// carries a non-empty worktree_path.
+			ZeroOutput: zeroOutput,
 			// SetupOutput is deliberately unset: BootstrapRunner.Start
 			// overwrites it with the bootstrap's own non-blocking bus. Setting
 			// it here would reintroduce a writer this caller could stall.

@@ -202,19 +202,19 @@ export function findRepoRoot(startDir) {
 /**
  * Parse the published skill set out of skills_manifest_test.go.
  *
- * Scoped to TestEmbeddedSkillManifestExcludesBossProof's `want` slice: the file
+ * Scoped to TestEmbeddedSkillManifestIsExactCoreSet's `want` slice: the file
  * holds other `want := []string{...}` literals, and one of them deliberately names
  * an unpublished core. Fails closed rather than returning a partial allowlist.
  */
 export function parsePublishedSkills(source) {
-  const anchor = source.indexOf('func TestEmbeddedSkillManifestExcludesBossProof(')
+  const anchor = source.indexOf('func TestEmbeddedSkillManifestIsExactCoreSet(')
   if (anchor === -1) {
-    throw new Error('skills_manifest_test.go: TestEmbeddedSkillManifestExcludesBossProof not found')
+    throw new Error('skills_manifest_test.go: TestEmbeddedSkillManifestIsExactCoreSet not found')
   }
   const open = source.indexOf('want := []string{', anchor)
   if (open === -1) {
     throw new Error(
-      'skills_manifest_test.go: no `want := []string{` inside TestEmbeddedSkillManifestExcludesBossProof',
+      'skills_manifest_test.go: no `want := []string{` inside TestEmbeddedSkillManifestIsExactCoreSet',
     )
   }
   const close = source.indexOf('}', open)

@@ -163,8 +163,14 @@ func classifySubmit(outcome SubmitOutcome, err error) error {
 // this branch. waitForSubmission classifies that case as OutcomeUnconfirmed
 // instead, which never reaches the clear.
 func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload string, opts sendPlanOpts, redeliver func(context.Context) error) error {
-	outcome, err := c.waitForSubmission(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick)
+	outcome, err := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted)
 	if err == nil {
+		return nil
+	}
+	// A receipt that lands as the budget expires is still proof the payload
+	// was taken: never clear and re-deliver a second copy past it (BOS-1506).
+	// A queued verdict is already delivered and keeps its more precise label.
+	if outcome != OutcomeQueued && receiptConfirms(opts.submitted) {
 		return nil
 	}
 	// Only retry on a CONFIRMED still-pending result. A capture-pane failure or
@@ -358,7 +364,7 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 	if enterErr := c.sendEnter(ctx, sessionName); enterErr != nil {
 		return classifySubmit(OutcomeNotSubmitted, enterErr)
 	}
-	retryOutcome, retryErr := c.waitForSubmission(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick)
+	retryOutcome, retryErr := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted)
 	if retryOutcome == OutcomeQueued {
 		// The re-delivered payload landed in the agent's queue rather than being
 		// consumed — the agent was mid-turn when the retry's Enter took. Keep the
@@ -485,6 +491,20 @@ func composerVanishedErr(sessionName string) error {
 // cannot see — precisely the double-submit BOS-598 exists to prevent — so it is
 // classified as unconfirmed and errSubmissionPending is NOT attached.
 func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (SubmitOutcome, error) {
+	return c.waitForSubmissionOrReceipt(ctx, sessionName, payload, waitFor, tickEvery, nil)
+}
+
+// receiptConfirms reports whether the caller's submission receipt has arrived.
+func receiptConfirms(submitted func() bool) bool {
+	return submitted != nil && submitted()
+}
+
+// waitForSubmissionOrReceipt is waitForSubmission with the caller's receipt
+// consulted first on every poll: a receipt is authoritative proof of
+// submission (Claude's UserPromptSubmit hook), so it decides before the pane is
+// read, and the pane classification below is the fallback for an agent or a
+// pane without one. A nil receipt is exactly waitForSubmission.
+func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration, submitted func() bool) (SubmitOutcome, error) {
 	if tickEvery <= 0 {
 		tickEvery = 100 * time.Millisecond
 	}
@@ -504,6 +524,9 @@ func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload str
 	composerDrawn := false
 
 	for {
+		if receiptConfirms(submitted) {
+			return OutcomeSubmitted, nil
+		}
 		pane, err := c.CapturePane(ctx, sessionName)
 		if err != nil {
 			// The pane could not be read, so nothing is known about whether the
@@ -580,6 +603,104 @@ func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload str
 			// delivery-correctness decision must not rest on a signal that is
 			// absent from the very panes it is meant to classify.
 			return OutcomeNotSubmitted, fmt.Errorf("command was not submitted; a payload is still present at the tmux prompt: %w", errSubmissionPending)
+		case <-ticker.C:
+		}
+	}
+}
+
+// composerRowsUnread is the snapshot taken when the pre-paste capture failed.
+// It cannot equal any capture's composer rows, so the first readable capture
+// after the paste counts as the change the settle wait looks for.
+const composerRowsUnread = "\x00unread"
+
+// composerRows returns the live composer's own rows: the bottom-most
+// prompt-marker row and the rows below it up to the next horizontal rule.
+// Claude draws its input box between two "────" rules, with the working
+// spinner above the top rule and the footer below the bottom one, so this
+// excludes both — a ticking spinner or footer must not keep the composer from
+// reading as settled. Returns "" when no composer is drawn.
+func composerRows(pane string) string {
+	lines := strings.Split(pane, "\n")
+	markerIdx := bottomMostPromptMarkerIdx(lines)
+	if markerIdx == -1 {
+		return ""
+	}
+	rows := []string{strings.TrimRight(lines[markerIdx], " ")}
+	for _, l := range lines[markerIdx+1:] {
+		if isHorizontalRule(strings.TrimSpace(l)) {
+			break
+		}
+		rows = append(rows, strings.TrimRight(l, " "))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// isHorizontalRule reports whether a trimmed row is a box-drawing rule.
+func isHorizontalRule(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	for _, r := range trimmed {
+		if r != '─' && r != '━' {
+			return false
+		}
+	}
+	return true
+}
+
+// composerRowsSnapshot captures the composer rows before a paste, for
+// awaitComposerSettled to compare against. A failed capture yields
+// composerRowsUnread rather than an error: the settle wait is advisory.
+func (c *Client) composerRowsSnapshot(ctx context.Context, sessionName string) string {
+	pane, err := c.CapturePane(ctx, sessionName)
+	if err != nil {
+		return composerRowsUnread
+	}
+	return composerRows(pane)
+}
+
+// awaitComposerSettled is the read-only wait between pasting a Claude payload
+// and pressing Enter (BOS-1506). An Enter that lands while Claude is still
+// ingesting the paste becomes a newline in the composer instead of a submit,
+// so it waits for the composer rows to DIFFER from the pre-paste snapshot and
+// then for two consecutive captures of those rows to agree.
+//
+// It only ever runs capture-pane — never a key, never a re-paste — and it has
+// no failure mode: a capture error is skipped, and when waitFor expires it
+// simply returns, so the caller proceeds to Enter and the submit verifier
+// decides what happened. Only the composer rows are compared (composerRows),
+// so a working spinner above the input box cannot hold the wait open.
+func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before string, waitFor, tickEvery time.Duration) {
+	if waitFor <= 0 {
+		return
+	}
+	if tickEvery <= 0 {
+		tickEvery = sendPlanDefaultPollInterval
+	}
+	deadline := time.NewTimer(waitFor)
+	defer deadline.Stop()
+	ticker := time.NewTicker(tickEvery)
+	defer ticker.Stop()
+
+	changed := false
+	var last string
+	for {
+		if pane, err := c.CapturePane(ctx, sessionName); err == nil {
+			rows := composerRows(pane)
+			switch {
+			case !changed && rows != before:
+				changed, last = true, rows
+			case changed && rows == last:
+				return
+			case changed:
+				last = rows
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
 		case <-ticker.C:
 		}
 	}
@@ -1084,6 +1205,22 @@ func composerContent(trimmed string) (string, bool) {
 	return "", false
 }
 
+// collapsedPastePlaceholderRe matches a composer whose content LEADS with the
+// placeholder an agent renders in place of a long paste, taken from real
+// captures (testdata/panes/capture_paste.sh):
+//
+//	❯ [Pasted text #1]                            claude 2.1.296, a 2 KB line
+//	❯ [Pasted text #2 +10 lines]                  claude, an 11-line payload
+//	❯ [Pasted text #5][Pasted text #6]lorem …     claude, the same line TYPED
+//	› [Pasted Content 2181 chars]                 codex-cli 0.161.0
+//
+// It is anchored at the start of the composer content and matched only on the
+// live composer row, so transcript text that merely mentions a paste cannot
+// trip it. It is deliberately the placeholder and not "any non-empty composer":
+// a cleared codex composer renders a rotating hint, and reading that as held
+// would misreport every codex send.
+var collapsedPastePlaceholderRe = regexp.MustCompile(`^\[(?:Pasted text #\d+|Pasted Content\b)`)
+
 // composerHoldsPayload reports whether the live input box still holds the
 // payload the verifier is waiting on. It replaces the former glyph-only check
 // (promptRowIsEmpty, removed with this change) as the "composer cleared" signal,
@@ -1108,10 +1245,19 @@ func composerContent(trimmed string) (string, bool) {
 // to share a prefix with the payload) resolves to "still holding", which keeps
 // the verifier reporting still-pending and surfacing a swallowed Enter loudly
 // rather than silently passing an unsubmitted payload (BOS-89 / BOS-489).
+//
+// A collapsed paste is the one shape that cannot be matched against the payload
+// at all, so it is recognised positively instead (BOS-1506): both TUIs replace
+// a long payload in the composer with a placeholder — see
+// collapsedPastePlaceholderRe — and that placeholder holds the payload exactly
+// as much as its text would.
 func composerHoldsPayload(trimmedMarkerRow, payload string) bool {
 	content, isPromptRow := composerContent(trimmedMarkerRow)
 	if !isPromptRow || content == "" {
 		return false
+	}
+	if collapsedPastePlaceholderRe.MatchString(content) {
+		return true
 	}
 	first := ""
 	for _, l := range strings.Split(payload, "\n") {

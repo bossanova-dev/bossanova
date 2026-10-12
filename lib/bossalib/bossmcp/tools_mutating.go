@@ -826,6 +826,14 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	registerOrganizationNoteMutatingTools(server, backend, opts)
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "apply_project_config",
+		Description: "Converge onto the .boss-project.json in config, with diff_project_config's scope. Only plans " +
+			"unless dry_run is false. Never prunes, resolves or mints a secret (those are skips for the CLI). " +
+			"Locally the checkout must be on the default branch unless allow_branch.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false), IdempotentHint: true},
+	}, applyProjectConfigHandler(backend))
 }
 
 // registerOrganizationNoteMutatingTools installs create_organization_note and

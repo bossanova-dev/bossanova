@@ -2980,6 +2980,51 @@ func TestStartChatRun_LifecycleAlreadyExistsPropagated(t *testing.T) {
 	}
 }
 
+// A repair that resumes the very chat blocking it must still end up with a
+// registered run: replacing the blocking chat cleans up that id, which is the
+// same id the retried start pre-registered.
+func TestHostServiceStartChatRun_ReplaceBlockingSameIDKeepsRegistration(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-resume", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		}
+		return "agent-resume", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-resume", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ResumeAgentSessionId:  "agent-resume",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if resp.GetAgentSessionId() != "agent-resume" {
+		t.Fatalf("AgentSessionId = %q, want agent-resume", resp.GetAgentSessionId())
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if _, ok := srv.runCompletion["agent-resume"]; !ok {
+		t.Error("runCompletion entry missing after replacing the blocking chat with the same id")
+	}
+	if _, ok := srv.runHookTokens["agent-resume"]; !ok {
+		t.Error("runHookTokens entry missing: the completion hook would be rejected")
+	}
+	if got := srv.activeRuns["sess-1"].agentSessionID; got != "agent-resume" {
+		t.Errorf("activeRuns[sess-1] = %q, want agent-resume", got)
+	}
+}
+
 func TestHostServiceStartChatRun_ReplacesBlockingChatForRepair(t *testing.T) {
 	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
 
@@ -4078,5 +4123,106 @@ func TestEffectiveChatSessionResetsModelAcrossAgents(t *testing.T) {
 	// The original session must not be mutated by any of the three views.
 	if sess.Model != "claude-opus-4" || sess.EffectiveModel != "claude-opus-4" {
 		t.Errorf("original session mutated: model=%q effective=%q", sess.Model, sess.EffectiveModel)
+	}
+}
+
+// StartChatRun mints the chat id and registers the run BEFORE StartTmuxChat,
+// so a Stop-hook POST from an agent that finishes while the start is still
+// returning is accepted rather than 404'd.
+func TestStartChatRun_CompletionDuringStartIsAccepted(t *testing.T) {
+	var completeErr error
+	var mintedID string
+	lc := &fakeChatLifecycle{startFunc: func(ctx context.Context, _ string, _ session.ChatInput, _ string, hookOpts session.HookOpts) (string, error) {
+		mintedID = hookOpts.AgentSessionID
+		return mintedID, nil
+	}}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	lc.startFunc = func(ctx context.Context, _ string, _ session.ChatInput, _ string, hookOpts session.HookOpts) (string, error) {
+		mintedID = hookOpts.AgentSessionID
+		_, completeErr = srv.CompleteAgentRun(ctx, mintedID, hookOpts.Token, "")
+		return mintedID, nil
+	}
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Prompt: "/boss-repair", Title: "Repair: sess-1",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if mintedID == "" {
+		t.Fatal("StartChatRun must mint the agent_session_id and pass it through HookOpts")
+	}
+	if resp.GetAgentSessionId() != mintedID {
+		t.Fatalf("AgentSessionId = %q, want minted %q", resp.GetAgentSessionId(), mintedID)
+	}
+	if completeErr != nil {
+		t.Fatalf("CompleteAgentRun during StartTmuxChat = %v, want accepted", completeErr)
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if _, ok := srv.activeRuns["sess-1"]; ok {
+		t.Error("a run that already completed must not be recorded as active")
+	}
+	if got := srv.runSessionByID[mintedID]; got != "sess-1" {
+		t.Errorf("runSessionByID[%s] = %q, want sess-1 (the tombstone survives)", mintedID, got)
+	}
+}
+
+// A failed start leaves no registered run behind.
+func TestStartChatRun_FailedStartLeavesNoRegisteredRun(t *testing.T) {
+	var mintedID string
+	lc := &fakeChatLifecycle{startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, hookOpts session.HookOpts) (string, error) {
+		mintedID = hookOpts.AgentSessionID
+		return "", errors.New("first input not confirmed (receipt-missing)")
+	}}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Prompt: "/boss-repair", Title: "Repair: sess-1",
+	}); err == nil {
+		t.Fatal("StartChatRun: want error")
+	}
+	if mintedID == "" {
+		t.Fatal("expected a minted id")
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if _, ok := srv.runCompletion[mintedID]; ok {
+		t.Error("runCompletion entry survived a failed start")
+	}
+	if _, ok := srv.runHookTokens[mintedID]; ok {
+		t.Error("runHookTokens entry survived a failed start")
+	}
+	if _, ok := srv.runSessionByID[mintedID]; ok {
+		t.Error("runSessionByID entry survived a failed start")
+	}
+	if len(srv.activeRuns) != 0 {
+		t.Errorf("activeRuns = %v, want empty", srv.activeRuns)
+	}
+}
+
+// A resume keys the pre-registration on the requested id; when the lifecycle
+// resolves a different durable id the registration moves to it.
+func TestStartChatRun_ResumeRekeyMovesRegistration(t *testing.T) {
+	lc := &fakeChatLifecycle{startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, hookOpts session.HookOpts) (string, error) {
+		if hookOpts.AgentSessionID != "" {
+			return "", errors.New("a resume must not be handed a minted id")
+		}
+		return "agent-durable", nil
+	}}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Prompt: "/boss-repair", Title: "Repair: sess-1", ResumeAgentSessionId: "provider-id",
+	}); err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if _, ok := srv.runHookTokens["provider-id"]; ok {
+		t.Error("the pre-registration under the requested id must be dropped")
+	}
+	if _, ok := srv.runCompletion["agent-durable"]; !ok {
+		t.Error("the run must be registered under the resolved id")
 	}
 }

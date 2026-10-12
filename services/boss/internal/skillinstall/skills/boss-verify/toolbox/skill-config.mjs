@@ -613,27 +613,7 @@ export function validateConfig(config, source) {
       config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
-  // verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
-  // DEFAULT_CONFIG (an absent block reads as an empty `alwaysHumanPaths`), but a PRESENT block must
-  // be an object and a present `alwaysHumanPaths` must be an array of non-empty globs. Unlike the
-  // numeric knobs above this one fails instead of coercing: a malformed list would silently drop the
-  // paths an operator declared must always reach a human, which is the unsafe direction.
-  if (config.verifyDefaults !== undefined) {
-    if (
-      !config.verifyDefaults ||
-      typeof config.verifyDefaults !== 'object' ||
-      Array.isArray(config.verifyDefaults)
-    ) {
-      fail('verifyDefaults must be an object when present')
-    }
-    const paths = config.verifyDefaults.alwaysHumanPaths
-    if (
-      paths !== undefined &&
-      (!Array.isArray(paths) || !paths.every((g) => typeof g === 'string' && g.length > 0))
-    ) {
-      fail('verifyDefaults.alwaysHumanPaths must be an array of non-empty glob strings')
-    }
-  }
+  if (config.verifyDefaults !== undefined) validateVerifyDefaults(config.verifyDefaults, fail)
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
   // declare no recognised target legitimately resolves with no `commands` key at all (absent,
   // not {}), and a test-command manifest is a project artifact rather than a portable concept.
@@ -3803,8 +3783,103 @@ export function commandFindingRemedy(code) {
  * @returns {string[]}
  */
 export function verifyAlwaysHumanPaths(config) {
-  const paths = config?.verifyDefaults?.alwaysHumanPaths
-  return Array.isArray(paths) ? paths.filter((g) => typeof g === 'string' && g.length > 0) : []
+  return globList(config?.verifyDefaults?.alwaysHumanPaths)
+}
+
+/** The closed set of named human-review categories under `verifyDefaults.humanReview`. */
+export const VERIFY_HUMAN_REVIEW_CATEGORIES = Object.freeze(['database', 'security', 'ui'])
+
+const globList = (paths) =>
+  Array.isArray(paths) ? paths.filter((g) => typeof g === 'string' && g.length > 0) : []
+const isGlobList = (paths) =>
+  Array.isArray(paths) && paths.every((g) => typeof g === 'string' && g.length > 0)
+
+// verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
+// DEFAULT_CONFIG (an absent block reads as an empty policy), but a PRESENT block must be an object
+// and every present list must be an array of non-empty globs. Unlike the numeric knobs this one
+// fails instead of coercing: a malformed list, or a misspelt category, would silently drop paths an
+// operator declared must reach a human, which is the unsafe direction. Unknown keys directly under
+// verifyDefaults stay allowed, so an older tree ignores a knob a newer one added.
+function validateVerifyDefaults(block, fail) {
+  if (!block || typeof block !== 'object' || Array.isArray(block))
+    fail('verifyDefaults must be an object when present')
+  if (block.alwaysHumanPaths !== undefined && !isGlobList(block.alwaysHumanPaths))
+    fail('verifyDefaults.alwaysHumanPaths must be an array of non-empty glob strings')
+  const review = block.humanReview
+  if (review === undefined) return
+  if (!review || typeof review !== 'object' || Array.isArray(review))
+    fail('verifyDefaults.humanReview must be an object when present')
+  for (const [key, value] of Object.entries(review)) {
+    if (!VERIFY_HUMAN_REVIEW_CATEGORIES.includes(key))
+      fail(
+        `verifyDefaults.humanReview.${key} is unknown (expected ${VERIFY_HUMAN_REVIEW_CATEGORIES.join(', ')})`,
+      )
+    if (!isGlobList(value))
+      fail(`verifyDefaults.humanReview.${key} must be an array of non-empty glob strings`)
+  }
+}
+
+/**
+ * The named human-review globs, always with all three categories (absent ones as `[]`), as fresh
+ * copies. A malformed block that skipped validateConfig resolves to empty lists.
+ * @returns {{database: string[], security: string[], ui: string[]}}
+ */
+export function verifyHumanReviewPaths(config) {
+  const review = config?.verifyDefaults?.humanReview
+  return Object.fromEntries(
+    VERIFY_HUMAN_REVIEW_CATEGORIES.map((category) => [
+      category,
+      review && typeof review === 'object' ? globList(review[category]) : [],
+    ]),
+  )
+}
+
+/**
+ * The verify policy from a config file's raw text, validating only its `verifyDefaults` block: the
+ * verify stage reads policy from the base branch, where the rest of the config is irrelevant.
+ * Throws on invalid JSON, a non-object document, or an invalid `verifyDefaults`.
+ * @returns {{alwaysHumanPaths: string[], humanReview: {database: string[], security: string[], ui: string[]}}}
+ */
+export function verifyPolicyFromConfigText(text, source) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (e) {
+    throw new Error(`skill-config: ${source} is not valid JSON: ${e.message}`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error(`skill-config: ${source} must contain a JSON object`)
+  if (parsed.verifyDefaults !== undefined)
+    validateVerifyDefaults(parsed.verifyDefaults, (msg) => {
+      throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
+    })
+  return {
+    alwaysHumanPaths: verifyAlwaysHumanPaths(parsed),
+    humanReview: verifyHumanReviewPaths(parsed),
+  }
+}
+
+/**
+ * The policy globs that match none of `files`, as `{list, glob}` pairs (`list` is
+ * `alwaysHumanPaths` or `humanReview.<category>`). A warning, never an error: a glob may name paths
+ * a repo has not created yet.
+ */
+export function unmatchedPolicyGlobs(policy, files) {
+  const lists = [
+    ['alwaysHumanPaths', globList(policy?.alwaysHumanPaths)],
+    ...VERIFY_HUMAN_REVIEW_CATEGORIES.map((c) => [
+      `humanReview.${c}`,
+      globList(policy?.humanReview?.[c]),
+    ]),
+  ]
+  const paths = Array.isArray(files) ? files : []
+  const out = []
+  for (const [list, globs] of lists)
+    for (const glob of globs) {
+      const re = globToRegExp(glob)
+      if (!paths.some((path) => re.test(path))) out.push({ list, glob })
+    }
+  return out
 }
 
 function validateRetro(block, fail) {

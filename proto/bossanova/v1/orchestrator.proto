@@ -315,15 +315,19 @@ service OrchestratorService {
   // ListSessionWebhookEventTypes returns the event catalog an endpoint can
   // subscribe to, in canonical order.
   rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse);
+  // ListSessionWebhookFormats returns the built-in payload formats an endpoint
+  // can pick (SessionWebhook.format), in canonical order.
+  rpc ListSessionWebhookFormats(ListSessionWebhookFormatsRequest) returns (ListSessionWebhookFormatsResponse);
   // ListSessionWebhooks returns the organization's endpoints, oldest first.
   // Never returns a secret.
   rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse);
   // CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
   // endpoint policy rejects (not https, credentials in the URL, a fragment, or
   // a host that is or resolves to a private, loopback, link-local or metadata
-  // address), an empty or unknown event type set, a description over 200
-  // characters, or a caller-supplied secret that is not 16-256 visible ASCII
-  // characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+  // address), an empty or unknown event type set, an unknown format, a
+  // description over 200 characters, or a caller-supplied secret that is not
+  // 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
+  // has 20 endpoints.
   rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse);
   // UpdateSessionWebhook changes only the fields that are present and returns
   // the endpoint without its secret. Disabling an endpoint or changing its URL
@@ -343,7 +347,9 @@ service OrchestratorService {
   // still be tested. An absent payload_json sends the catalog sample; a
   // supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
   // otherwise), and the server overwrites its id, type, organization_id and
-  // created_at and forces is_test to true. Test deliveries are never retried.
+  // created_at and forces is_test to true. The body is then rendered through
+  // the endpoint's format, exactly as a live delivery is; a payload the format
+  // cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
   // RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
   rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse);
   // ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
@@ -351,7 +357,8 @@ service OrchestratorService {
   // unknown status, or a negative page_size.
   rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse);
   // GetSessionWebhookDelivery returns one delivery with its attempts in order,
-  // the exact request body and the request headers. Never returns a secret.
+  // the request body rendered through the endpoint's current format and the
+  // request headers. Never returns a secret.
   rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse);
 
   // Inbound triggers (BOS-1348). A trigger launches a configured Boss session
@@ -1130,6 +1137,9 @@ message ProxyCreateCronJobRequest {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = SKIP.
   optional CronJobConcurrencyPolicy concurrency_policy = 13;
+  // Config-ownership marker: empty (unmarked) or "boss-project:<slug>"
+  // (mirrors CreateCronJobRequest.managed_by in daemon.proto).
+  string managed_by = 14;
 }
 message ProxyCreateCronJobResponse { CronJob job = 1; }
 
@@ -1151,6 +1161,9 @@ message ProxyUpdateCronJobRequest {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = leave unchanged.
   optional CronJobConcurrencyPolicy concurrency_policy = 13;
+  // Config-ownership marker. Omitted = leave unchanged; "" = clear; otherwise
+  // "boss-project:<slug>" (mirrors UpdateCronJobRequest.managed_by).
+  optional string managed_by = 14;
 }
 message ProxyUpdateCronJobResponse { CronJob job = 1; }
 
@@ -2094,6 +2107,12 @@ message SessionWebhook {
   google.protobuf.Timestamp updated_at = 9;
   // When the secret was last rotated; absent until the first rotation.
   google.protobuf.Timestamp secret_rotated_at = 10;
+  // The built-in payload format deliveries are rendered through
+  // (SessionWebhookFormat.id), e.g. "raw", "slack" or "discord".
+  string format = 11;
+  // Config-ownership marker: "boss-project:<project>" for an endpoint a
+  // project config created or adopted; empty for a hand-made endpoint.
+  string managed_by = 12;
 }
 
 // SessionWebhookEventType is one entry of the event catalog.
@@ -2116,6 +2135,25 @@ message ListSessionWebhookEventTypesResponse {
   repeated SessionWebhookEventType event_types = 1;
 }
 
+// SessionWebhookFormat is one built-in payload format. Formats are defined in
+// code; callers cannot supply their own.
+message SessionWebhookFormat {
+  // Stable format id stored on an endpoint, e.g. "slack".
+  string id = 1;
+  // The name the web, TUI and CLI show, e.g. "Slack".
+  string display_label = 2;
+  // One user-facing sentence saying where the format posts.
+  string description = 3;
+}
+
+message ListSessionWebhookFormatsRequest {
+  string organization_id = 1;
+}
+
+message ListSessionWebhookFormatsResponse {
+  repeated SessionWebhookFormat formats = 1;
+}
+
 message ListSessionWebhooksRequest {
   string organization_id = 1;
 }
@@ -2134,6 +2172,14 @@ message CreateSessionWebhookRequest {
   optional string secret = 5;
   // False creates the endpoint disabled.
   bool is_enabled = 6;
+  // Payload format (SessionWebhookFormat.id). Empty means "raw"; an unknown
+  // format is INVALID_ARGUMENT.
+  string format = 7;
+  // Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+  // slug matches ^[a-z0-9][a-z0-9-]{0,62}$; anything else is INVALID_ARGUMENT.
+  // A second endpoint with the same marker and URL in the organization is
+  // ALREADY_EXISTS.
+  string managed_by = 8;
 }
 
 message CreateSessionWebhookResponse {
@@ -2155,6 +2201,12 @@ message UpdateSessionWebhookRequest {
   repeated string event_types = 5;
   bool should_replace_event_types = 6;
   optional bool is_enabled = 7;
+  // New payload format (SessionWebhookFormat.id); absent leaves it unchanged.
+  // Undelivered deliveries are sent in the new format.
+  optional string format = 8;
+  // Config-ownership marker. Omitted leaves it unchanged; "" clears it;
+  // otherwise "boss-project:<slug>" as on CreateSessionWebhookRequest.
+  optional string managed_by = 9;
 }
 
 message UpdateSessionWebhookResponse {
@@ -2275,7 +2327,11 @@ message GetSessionWebhookDeliveryResponse {
   SessionWebhookDelivery delivery = 1;
   // Every attempt, in attempt order.
   repeated SessionWebhookDeliveryAttempt attempts = 2;
-  // The exact signed request body.
+  // The signed request body, rendered through the endpoint's current format:
+  // what the next attempt sends (an attempt made before a format change sent
+  // the previous format's rendering). Empty, with no request_headers, when
+  // the format cannot render the stored event: nothing is sent and the
+  // attempt's error_message says why.
   string request_body = 3;
   // The request headers each attempt sends, sorted by name. The signature is
   // computed with the endpoint's current secret, so it differs from the one
@@ -2335,6 +2391,14 @@ message CreateTriggerRequest {
   int32 cooldown_seconds = 11;
   repeated TriggerFilter filters = 12;
   repeated string payload_fields = 13;
+  // Optional gate; absent or an empty script_path creates the trigger
+  // without one.
+  TriggerGate gate = 14;
+  // Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+  // slug matches ^[a-z0-9][a-z0-9-]{0,62}$; anything else is INVALID_ARGUMENT.
+  // A second managed trigger with the same marker and name in the
+  // organization is ALREADY_EXISTS, whoever created the first.
+  string managed_by = 15;
 }
 
 message CreateTriggerResponse {
@@ -2362,6 +2426,9 @@ message UpdateTriggerRequest {
     GithubTriggerConfig github = 5;
   }
   optional string repo_origin_url = 6;
+  // Replaces the launch settings when set, except that its optional
+  // should_run_setup_command and is_zero_output keep their stored values
+  // when absent.
   TriggerLaunchSettings launch = 7;
   TriggerPlacement placement = 8;
   optional TriggerConcurrencyPolicy concurrency_policy = 9;
@@ -2370,6 +2437,13 @@ message UpdateTriggerRequest {
   bool should_clear_filters = 12;
   repeated string payload_fields = 13;
   bool should_clear_payload_fields = 14;
+  // Replaces the whole gate when set; set with an empty script_path it
+  // removes the gate. Absent leaves the gate unchanged.
+  TriggerGate gate = 15;
+  // Config-ownership marker. Omitted leaves it unchanged; "" clears it;
+  // otherwise "boss-project:<slug>" as on CreateTriggerRequest, including
+  // ALREADY_EXISTS when the organization already has that marker and name.
+  optional string managed_by = 16;
 }
 
 message UpdateTriggerResponse {

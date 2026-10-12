@@ -43,6 +43,7 @@ type fakeWebhookServer struct {
 	webhook    *pb.SessionWebhook
 	webhooks   []*pb.SessionWebhook
 	events     []*pb.SessionWebhookEventType
+	formats    []*pb.SessionWebhookFormat
 	delivery   *pb.SessionWebhookDelivery
 	attempt    *pb.SessionWebhookDeliveryAttempt
 	deliveries []*pb.SessionWebhookDelivery
@@ -50,6 +51,7 @@ type fakeWebhookServer struct {
 	createErr  error
 
 	eventsReq     *pb.ListSessionWebhookEventTypesRequest
+	formatsReq    *pb.ListSessionWebhookFormatsRequest
 	listReq       *pb.ListSessionWebhooksRequest
 	createReq     *pb.CreateSessionWebhookRequest
 	updateReq     *pb.UpdateSessionWebhookRequest
@@ -64,6 +66,12 @@ func (f *fakeWebhookServer) ListSessionWebhookEventTypes(_ context.Context, req 
 	f.calls.Add(1)
 	f.eventsReq = req.Msg
 	return connect.NewResponse(&pb.ListSessionWebhookEventTypesResponse{EventTypes: f.events}), nil
+}
+
+func (f *fakeWebhookServer) ListSessionWebhookFormats(_ context.Context, req *connect.Request[pb.ListSessionWebhookFormatsRequest]) (*connect.Response[pb.ListSessionWebhookFormatsResponse], error) {
+	f.calls.Add(1)
+	f.formatsReq = req.Msg
+	return connect.NewResponse(&pb.ListSessionWebhookFormatsResponse{Formats: f.formats}), nil
 }
 
 func (f *fakeWebhookServer) ListSessionWebhooks(_ context.Context, req *connect.Request[pb.ListSessionWebhooksRequest]) (*connect.Response[pb.ListSessionWebhooksResponse], error) {
@@ -149,7 +157,7 @@ func sampleWebhook() *pb.SessionWebhook {
 	return &pb.SessionWebhook{
 		Id: "wh-1", OrganizationId: "org-1", Url: "https://hooks.example.test/boss", Description: "ops channel",
 		EventTypes: []string{"session.failing", "session.passing"}, IsEnabled: true, CreatedByUserId: "user-1",
-		CreatedAt: ts, UpdatedAt: ts,
+		CreatedAt: ts, UpdatedAt: ts, Format: "slack",
 	}
 }
 
@@ -177,6 +185,10 @@ func newSampleWebhookFake() *fakeWebhookServer {
 		events: []*pb.SessionWebhookEventType{{
 			Type: "session.passing", DisplayLabel: "Passing", Description: "Checks went green", SamplePayloadJson: `{"is_test":true}`,
 		}},
+		formats: []*pb.SessionWebhookFormat{
+			{Id: "raw", DisplayLabel: "Raw JSON", Description: "Sends the envelope unchanged."},
+			{Id: "slack", DisplayLabel: "Slack", Description: "Posts to a Slack incoming webhook."},
+		},
 		delivery:   sampleWebhookDelivery(),
 		attempt:    sampleWebhookAttempt(),
 		deliveries: []*pb.SessionWebhookDelivery{sampleWebhookDelivery()},
@@ -205,7 +217,7 @@ func runWebhookCLI(t *testing.T, fake *fakeWebhookServer, stdin string, args ...
 }
 
 var webhookJSONKeys = []string{
-	"created_at", "created_by_user_id", "description", "enabled", "event_types", "id", "organization_id",
+	"created_at", "created_by_user_id", "description", "enabled", "event_types", "format", "id", "organization_id",
 	"secret_rotated_at", "updated_at", "url",
 }
 
@@ -243,7 +255,7 @@ func TestWebhookCommands(t *testing.T) {
 			}
 		}
 		sort.Strings(names)
-		want := []string{"add", "deliveries", "delivery", "edit", "events", "ls", "rm", "rotate-secret", "test"}
+		want := []string{"add", "deliveries", "delivery", "edit", "events", "formats", "ls", "rm", "rotate-secret", "test"}
 		if !slices.Equal(names, want) {
 			t.Fatalf("webhook subcommands = %v, want %v", names, want)
 		}
@@ -287,13 +299,40 @@ func TestWebhookCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("formats", func(t *testing.T) {
+		fake := newSampleWebhookFake()
+		out, err := runWebhookCLI(t, fake, "", "formats", "--org", "org-2")
+		if err != nil {
+			t.Fatalf("formats: %v", err)
+		}
+		if fake.formatsReq.GetOrganizationId() != "org-2" {
+			t.Errorf("formats request = %v", fake.formatsReq)
+		}
+		for _, want := range []string{"raw", "Raw JSON", "slack", "Posts to a Slack incoming webhook."} {
+			if !strings.Contains(out, want) {
+				t.Errorf("formats output missing %q:\n%s", want, out)
+			}
+		}
+		out, err = runWebhookCLI(t, fake, "", "formats", "--json")
+		if err != nil {
+			t.Fatalf("formats --json: %v", err)
+		}
+		formats := decodeJSONArray(t, decodeJSONObject(t, out)["formats"])
+		if len(formats) != 2 || string(formats[1]["id"]) != `"slack"` {
+			t.Fatalf("formats --json = %v, want raw and slack", formats)
+		}
+		if got, want := sortedJSONKeys(formats[0]), []string{"description", "display_label", "id"}; !slices.Equal(got, want) {
+			t.Errorf("format keys = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("ls", func(t *testing.T) {
 		fake := newSampleWebhookFake()
 		out, err := runWebhookCLI(t, fake, "", "ls")
 		if err != nil {
 			t.Fatalf("ls: %v", err)
 		}
-		for _, want := range []string{"wh-1", "https://hooks.example.test/boss", "session.failing,session.passing", "ops channel"} {
+		for _, want := range []string{"wh-1", "https://hooks.example.test/boss", "FORMAT", "slack", "session.failing,session.passing", "ops channel"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("ls output missing %q:\n%s", want, out)
 			}
@@ -305,6 +344,9 @@ func TestWebhookCommands(t *testing.T) {
 		hooks := decodeJSONArray(t, decodeJSONObject(t, out)["webhooks"])
 		if len(hooks) != 1 || !slices.Equal(sortedJSONKeys(hooks[0]), webhookJSONKeys) {
 			t.Errorf("ls --json webhooks = %v, want keys %v", hooks, webhookJSONKeys)
+		}
+		if string(hooks[0]["format"]) != `"slack"` {
+			t.Errorf("ls --json format = %s, want slack", hooks[0]["format"])
 		}
 		if string(hooks[0]["secret_rotated_at"]) != `""` {
 			t.Errorf("unset secret_rotated_at = %s, want empty string", hooks[0]["secret_rotated_at"])
@@ -341,6 +383,22 @@ func TestWebhookCommands(t *testing.T) {
 		if !fake.createReq.GetIsEnabled() {
 			t.Errorf("add without --disabled created the webhook disabled")
 		}
+		if fake.createReq.GetFormat() != "" {
+			t.Errorf("add without --format sent format %q, want empty (raw)", fake.createReq.GetFormat())
+		}
+		out, err := runWebhookCLI(t, fake, "", "add", "https://x.test", "--event", "session.passing", "--format", "slack", "--json")
+		if err != nil {
+			t.Fatalf("add --format: %v", err)
+		}
+		if fake.createReq.GetFormat() != "slack" {
+			t.Errorf("add --format slack sent format %q", fake.createReq.GetFormat())
+		}
+		var created struct {
+			Webhook map[string]json.RawMessage `json:"webhook"`
+		}
+		if err := json.Unmarshal([]byte(out), &created); err != nil || string(created.Webhook["format"]) != `"slack"` {
+			t.Errorf("add --format --json webhook = %v (%v), want format slack", created.Webhook, err)
+		}
 	})
 
 	t.Run("edit sends only given flags", func(t *testing.T) {
@@ -350,7 +408,7 @@ func TestWebhookCommands(t *testing.T) {
 		}
 		req := fake.updateReq
 		if req.GetId() != "wh-1" || req.Description == nil || req.GetDescription() != "" || req.Url != nil ||
-			req.IsEnabled != nil || req.GetShouldReplaceEventTypes() || len(req.GetEventTypes()) != 0 {
+			req.IsEnabled != nil || req.GetShouldReplaceEventTypes() || len(req.GetEventTypes()) != 0 || req.Format != nil {
 			t.Errorf("description-only edit request = %v", req)
 		}
 
@@ -362,6 +420,13 @@ func TestWebhookCommands(t *testing.T) {
 			req.GetUrl() != "https://y.test" || req.IsEnabled == nil || req.GetIsEnabled() || req.Description != nil ||
 			req.GetOrganizationId() != "org-3" {
 			t.Errorf("multi-field edit request = %v", req)
+		}
+
+		if _, err := runWebhookCLI(t, fake, "", "edit", "wh-1", "--format", "slack"); err != nil {
+			t.Fatalf("edit --format: %v", err)
+		}
+		if req := fake.updateReq; req.Format == nil || req.GetFormat() != "slack" || req.Description != nil || req.Url != nil || req.IsEnabled != nil {
+			t.Errorf("format-only edit request = %v", req)
 		}
 
 		if _, err := runWebhookCLI(t, fake, "", "edit", "wh-1", "--enable"); err != nil {
@@ -664,6 +729,7 @@ func TestWebhookGuards(t *testing.T) {
 		{"rm without --yes human", []string{"rm", "wh-1"}, "", "--yes"},
 		{"edit without a field", []string{"edit", "wh-1", "--json"}, codeInvalidArgument, "nothing to change"},
 		{"edit with only --org", []string{"edit", "wh-1", "--org", "org-1"}, "", "nothing to change"},
+		{"edit with an empty --format", []string{"edit", "wh-1", "--format", "", "--json"}, codeInvalidArgument, "--format"},
 		{"edit --enable --disable", []string{"edit", "wh-1", "--enable", "--disable", "--json"}, codeInvalidArgument, "mutually exclusive"},
 		{"deliveries --test --live", []string{"deliveries", "wh-1", "--test", "--live", "--json"}, codeInvalidArgument, "mutually exclusive"},
 		{"add without --event", []string{"add", "https://x.test", "--json"}, codeInvalidArgument, "--event"},

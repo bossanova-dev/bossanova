@@ -174,7 +174,6 @@ const bazelIrrelevantPrefixes = [
   'docs/',
   '.github/',
   'scripts/',
-  'proof/',
   'skills-toolbox/',
   'infra/',
   // BOS-1317: the uv-managed dbt project. No Go code, no go_test `data` dep and no
@@ -361,12 +360,6 @@ export function selectTargets(files) {
       continue
     }
 
-    if (file.startsWith('proof/')) {
-      selectWholeTarget(selections, 'test-scripts')
-      selectedPrimaryTarget = true
-      continue
-    }
-
     if (
       file.startsWith(WORKFLOW_INPUT_ROOT) ||
       file === 'README.md' ||
@@ -479,8 +472,6 @@ export function selectTargets(files) {
       file.startsWith('services/boss/internal/accountflow/') ||
       file.startsWith('services/boss/internal/auth/') ||
       file.startsWith('services/boss/cmd/') ||
-      file === 'services/boss/internal/tuidriver/keybytes.go' ||
-      file === 'services/boss/internal/tuidriver/testdata/key-vocab.json' ||
       file === 'docs/testing/test-command-manifest.md' ||
       // AGENTS.md must stay a symlink to CLAUDE.md; scripts/check-agent-test-guidance.test.mjs (in
       // test-scripts) checks it. No `continue`: isManifestPath() claims both names and must still
@@ -543,7 +534,7 @@ export function selectTargets(files) {
     // file's `want` slice rather than copying it, so the manifest test is an input to a
     // script gate as well as a Go test. Dropping a core from the publish set is exactly
     // the edit that can turn the email course red — the course would go on naming a
-    // skill trial users no longer receive, which is the boss-proof failure the gate was
+    // skill trial users no longer receive, which is the failure the gate was
     // written for — and it touches neither docs/email-course/ nor scripts/, so nothing
     // else here selects test-scripts for it. Note the path: the rule above matches
     // `skillinstall/skills/`, one directory DOWN from where this file lives, so it does

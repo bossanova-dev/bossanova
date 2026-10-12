@@ -44,6 +44,13 @@ export async function evaluateBossRetroGate({
       notes = await listNotes()
     if (notes?.unreachable === true)
       return { hasWork: true, reason: 'boss CLI unreachable from the gate; the session decides' }
+    // A non-zero gate exit is recorded as an ordinary "gated" skip, so a read
+    // that failed must not exit non-zero or the retro silently never runs.
+    if (typeof notes?.readFailed === 'string')
+      return {
+        hasWork: true,
+        reason: `boss-retro gate: notes store read failed (${notes.readFailed}); the session decides`,
+      }
     if (
       !Array.isArray(notes) ||
       notes.some(
@@ -102,9 +109,12 @@ if (isMainModule(import.meta.url)) {
         const result = spawnSync(
           binary.path,
           ['notes', 'ls', '--tag', 'improvement', '--json', '--limit', '0'],
-          { encoding: 'utf8', timeout: 10000 },
+          // --limit 0 returns every improvement note ever recorded, which outgrew
+          // spawnSync's 1 MiB default buffer (ENOBUFS) at ~1,200 notes.
+          { encoding: 'utf8', timeout: 10000, maxBuffer: 64 * 1024 * 1024 },
         )
-        if (result.error || result.status !== 0) throw new Error('notes store read failed')
+        if (result.error || result.status !== 0)
+          return { readFailed: result.error?.code ?? result.signal ?? `exit ${result.status}` }
         return JSON.parse(result.stdout)
       },
       readState: () => {

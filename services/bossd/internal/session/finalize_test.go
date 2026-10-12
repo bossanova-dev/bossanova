@@ -286,6 +286,67 @@ func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
 		t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
 	}
+
+	// BOS-1477: a trigger's zero-output session is unattended but carries no
+	// CronJobID. It must take the same short-circuit — hard delete, zero
+	// Status calls on the user's checkout — and record no cron outcome.
+	t.Run("non-cron unattended zero-output session", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{statusOut: " M user-file"}
+		cron := &recordingCronJobStore{}
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+		sessions.sessions["sess-trigger"] = &models.Session{
+			ID: "sess-trigger", RepoID: "repo-1", WorktreePath: "/tmp/repo", State: machine.ImplementingPlan,
+			IsTmuxUnattended: true, IsQuickChat: true,
+		}
+		lc := newTestLifecycle(sessions, repos, nil, cron, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+		result, err := lc.FinalizeSession(ctx, "sess-trigger")
+		if err != nil {
+			t.Fatalf("FinalizeSession: %v", err)
+		}
+		if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+			t.Fatalf("result = %+v, want deleted zero_output", result)
+		}
+		if wt.statusCalls != 0 {
+			t.Fatalf("worktrees.Status calls = %d, want 0 for repo checkout", wt.statusCalls)
+		}
+		if len(wt.archived) != 0 {
+			t.Fatalf("archived = %v, want the repo checkout left alone", wt.archived)
+		}
+		if _, ok := sessions.sessions["sess-trigger"]; ok {
+			t.Fatal("zero-output trigger session row still exists after teardown")
+		}
+		if len(cron.lastRunCalls) != 0 {
+			t.Fatalf("last-run calls = %+v, want none for a non-cron session", cron.lastRunCalls)
+		}
+	})
+
+	// An attended quick chat is not unattended, so it keeps its existing path
+	// through classification rather than being hard-deleted.
+	t.Run("attended quick chat keeps its existing path", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{statusOut: ""}
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+		sessions.sessions["sess-chat"] = &models.Session{
+			ID: "sess-chat", RepoID: "repo-1", WorktreePath: "/tmp/repo", State: machine.ImplementingPlan,
+			IsQuickChat: true,
+		}
+		lc := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+		result, err := lc.FinalizeSession(ctx, "sess-chat")
+		if err != nil {
+			t.Fatalf("FinalizeSession: %v", err)
+		}
+		if result.Outcome == models.CronJobOutcomeZeroOutput {
+			t.Fatalf("result = %+v, attended quick chat must not take the zero-output short-circuit", result)
+		}
+		if wt.statusCalls == 0 {
+			t.Fatal("worktrees.Status calls = 0, want the attended quick chat classified as before")
+		}
+	})
 }
 
 // TestFinalizeSession_DeletedNoChanges_ReapsBranchWithFlagOff covers BOS-424
@@ -3693,7 +3754,7 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -3788,7 +3849,7 @@ func TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace(t *te
 
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -3876,7 +3937,7 @@ func TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError(t
 
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
@@ -3988,7 +4049,7 @@ func newFinalizeChatLifecycle(
 
 	runner := newRecordingFinalizeAgentRunner()
 	tmuxFake := newFakeTmux()
-	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())

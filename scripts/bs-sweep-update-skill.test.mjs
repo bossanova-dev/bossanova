@@ -1,7 +1,9 @@
 // Behaviour tests for the bs-sweep-update cron gate.
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -48,7 +50,7 @@ const CLEAN_ON_BASE = {
   'fetch --prune origin': ok(),
   'symbolic-ref --short refs/remotes/origin/HEAD': ok('origin/main\n'),
   'rev-parse --abbrev-ref HEAD': ok('main\n'),
-  'status --porcelain': ok(''),
+  'status --porcelain --untracked-files=no': ok(''),
   'merge --ff-only refs/remotes/origin/main': ok(),
 }
 
@@ -144,14 +146,20 @@ test('the ladder picks exactly one advance rung per checkout shape', () => {
       script: CLEAN_ON_BASE,
     },
     {
-      expectAbsent: ['merge --ff-only refs/remotes/origin/main', 'status --porcelain'],
+      expectAbsent: [
+        'merge --ff-only refs/remotes/origin/main',
+        'status --porcelain --untracked-files=no',
+      ],
       expectRan: 'fetch origin main:main',
       name: 'not on the base',
       outcome: { base: 'main', outcome: 'advanced', via: 'fetch-ref' },
       script: { ...CLEAN_ON_BASE, 'rev-parse --abbrev-ref HEAD': ok('feature-x\n') },
     },
     {
-      expectAbsent: ['merge --ff-only refs/remotes/origin/main', 'status --porcelain'],
+      expectAbsent: [
+        'merge --ff-only refs/remotes/origin/main',
+        'status --porcelain --untracked-files=no',
+      ],
       expectRan: 'fetch origin main:main',
       name: 'detached HEAD is never the base',
       outcome: { base: 'main', outcome: 'advanced', via: 'fetch-ref' },
@@ -161,7 +169,10 @@ test('the ladder picks exactly one advance rung per checkout shape', () => {
       declined: /local\s+modifications/,
       expectAbsent: ['merge --ff-only refs/remotes/origin/main', 'fetch origin main:main'],
       name: 'dirty and on the base moves nothing',
-      script: { ...CLEAN_ON_BASE, 'status --porcelain': ok(' M services/boss/main.go\n') },
+      script: {
+        ...CLEAN_ON_BASE,
+        'status --porcelain --untracked-files=no': ok(' M services/boss/main.go\n'),
+      },
     },
   ]
 
@@ -189,6 +200,68 @@ test('the ladder picks exactly one advance rung per checkout shape', () => {
     for (const absent of testCase.expectAbsent) {
       assert.ok(!verbs().includes(absent), `${testCase.name}: must not run ${absent}`)
     }
+  }
+})
+
+test('against real git, an untracked file never blocks a fast-forward, and a colliding one is refused', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'bs-sweep-update-'))
+  const run = (cwd, ...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const commit = (cwd, file, body) => {
+    writeFileSync(path.join(cwd, file), body)
+    run(cwd, 'add', file)
+    run(
+      cwd,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      file,
+    )
+  }
+  try {
+    const origin = path.join(tmp, 'origin.git')
+    const upstream = path.join(tmp, 'upstream')
+    const checkout = path.join(tmp, 'checkout')
+    run(tmp, 'init', '-q', '--bare', '-b', 'main', origin)
+    run(tmp, 'clone', '-q', origin, upstream)
+    commit(upstream, 'a.txt', 'a\n')
+    run(upstream, 'push', '-q', 'origin', 'HEAD:main')
+    run(tmp, 'clone', '-q', origin, checkout)
+    run(checkout, 'remote', 'set-head', 'origin', 'main')
+
+    commit(upstream, 'b.txt', 'b\n')
+    run(upstream, 'push', '-q', 'origin', 'HEAD:main')
+    writeFileSync(path.join(checkout, 'notes.html'), 'stray\n')
+    assert.deepEqual(refresh({ root: checkout }), {
+      base: 'main',
+      outcome: 'advanced',
+      via: 'merge-ff-only',
+    })
+    assert.ok(existsSync(path.join(checkout, 'b.txt')), 'the fast-forward landed')
+    assert.equal(
+      readFileSync(path.join(checkout, 'notes.html'), 'utf8'),
+      'stray\n',
+      'the untracked file survives',
+    )
+
+    commit(upstream, 'c.txt', 'from origin\n')
+    run(upstream, 'push', '-q', 'origin', 'HEAD:main')
+    writeFileSync(path.join(checkout, 'c.txt'), 'local untracked\n')
+    const collided = refresh({ root: checkout })
+    assert.equal(collided.outcome, 'declined')
+    assert.match(collided.reason, /fast-forward of main declined/)
+    assert.equal(
+      readFileSync(path.join(checkout, 'c.txt'), 'utf8'),
+      'local untracked\n',
+      'never overwritten',
+    )
+  } finally {
+    rmSync(tmp, { force: true, recursive: true })
   }
 })
 

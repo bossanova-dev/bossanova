@@ -690,6 +690,19 @@ message BuildInteractiveCommandRequest {
   map<string, string> config_home_env = 13;
   // Opaque agent reasoning-effort level; "" = plugin default.
   string effort = 14;
+  // initial_input_path, when non-empty, is a bossd-chosen private path (beside
+  // the agent log, never inside the worktree) for the rendered first input.
+  // bossd sets it only for a fresh launch whose input must be submitted. A
+  // plugin that consumes the input writes its rendered form there (mode 0600)
+  // and returns argv that reads the file at exec time through the login shell,
+  // so a long first input never travels through tmux's command buffer. Empty
+  // keeps the legacy behaviour.
+  string initial_input_path = 15;
+  // hook_port is the loopback port of bossd's hook server, set on a tmux launch.
+  // A runner that can confirm its first input reached the agent installs a
+  // receipt hook that POSTs /hooks/prompt-submitted/{session_id} to it and
+  // answers can_confirm_delivery. 0 means no hook server is available.
+  int32 hook_port = 16;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;
@@ -713,6 +726,13 @@ message BuildInteractiveCommandResponse {
   // the host logs describes what bossd BUILT (and therefore what was dropped),
   // not a per-class handshake.
   AppendSystemPromptSupport append_system_prompt_support = 5;
+  // True when this launch consumes its first input from argv AND the runner
+  // can confirm the agent submitted it: Claude through its prompt-submitted
+  // receipt hook (keyed by session_id), Codex through a user message in its
+  // rollout timestamped at or after launch. bossd then waits for that receipt
+  // and fails the start when it never arrives. False keeps the unverified
+  // argv start (e.g. opencode).
+  bool can_confirm_delivery = 6;
 }
 
 // AppendSystemPromptSupport is a runner's per-launch declaration about

@@ -591,3 +591,75 @@ func TestFailureKind_StringAndCouldNotRun(t *testing.T) {
 		}
 	}
 }
+
+// TestRun_StdinReachesTheScript proves Options.Stdin is the gate's standard
+// input: a direct-exec script that copies stdin to stdout echoes the bytes.
+func TestRun_StdinReachesTheScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "echo-stdin.sh"), []byte("#!/bin/sh\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	payload := `{"event":"issue.created","id":42}`
+	res := Run(context.Background(), Options{
+		Command:  "./echo-stdin.sh",
+		RepoPath: dir,
+		Stdin:    strings.NewReader(payload),
+		Timeout:  5 * time.Second,
+		Output:   &out,
+	})
+	if !res.Passed {
+		t.Fatalf("expected Passed=true, got %+v", res)
+	}
+	if got := out.String(); got != payload {
+		t.Fatalf("script read stdin %q, want %q", got, payload)
+	}
+}
+
+// TestRun_NilStdinIsEmpty pins the behaviour cron's callers rely on: with no
+// Stdin the gate's standard input is empty, so a gate that reads it gets EOF at
+// once instead of hanging until its timeout.
+func TestRun_NilStdinIsEmpty(t *testing.T) {
+	var out bytes.Buffer
+	res := Run(context.Background(), Options{
+		Command: `n=$(wc -c); printf '%s' "$n" | tr -d ' '`,
+		Timeout: 5 * time.Second,
+		Output:  &out,
+	})
+	if !res.Passed {
+		t.Fatalf("expected Passed=true, got %+v", res)
+	}
+	if got := out.String(); got != "0" {
+		t.Fatalf("stdin byte count = %q, want 0", got)
+	}
+}
+
+// TestRun_UnreadStdinDoesNotFailTheGate proves a gate that exits without
+// draining a large Stdin keeps its own verdict: the broken pipe on the copy is
+// not reported as a gate failure.
+func TestRun_UnreadStdinDoesNotFailTheGate(t *testing.T) {
+	big := strings.Repeat("x", 4<<20)
+	for _, tc := range []struct {
+		name    string
+		command string
+		passed  bool
+		code    int
+	}{
+		{name: "exit 0", command: "exit 0", passed: true, code: 0},
+		{name: "exit 1", command: "exit 1", passed: false, code: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Run(context.Background(), Options{
+				Command: tc.command,
+				Stdin:   strings.NewReader(big),
+				Timeout: 5 * time.Second,
+			})
+			if res.Passed != tc.passed || res.ExitCode != tc.code {
+				t.Fatalf("got Passed=%v ExitCode=%d (%v), want Passed=%v ExitCode=%d", res.Passed, res.ExitCode, res.Err, tc.passed, tc.code)
+			}
+			if !tc.passed && res.Failure != FailureNonZeroExit {
+				t.Fatalf("Failure = %v, want FailureNonZeroExit", res.Failure)
+			}
+		})
+	}
+}

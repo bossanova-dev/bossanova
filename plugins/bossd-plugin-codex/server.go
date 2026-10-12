@@ -330,7 +330,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}
 	initialInput := codexInitialInput(req)
 	if initialInput != "" {
-		args = append(args, initialInput)
+		// `--` keeps an input naming a subcommand (exec, review) or starting
+		// with '-' a prompt; verified against codex-cli 0.161.0.
+		args = append(args, "--")
 	}
 	loginShell := ""
 	if s.runner != nil {
@@ -339,12 +341,22 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if err := trustCodexWorktree(req.GetWorktreePath()); err != nil {
 		return nil, status.Errorf(codes.Internal, "trust codex worktree: %v", err)
 	}
-	wrapped := loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args)
+	// With an input file the rendered input is read at exec time instead of
+	// riding in argv; without one (or with no supported login shell) it is
+	// appended inline as before.
+	wrapped, err := loginshell.WrapInitialInput(loginShell, loginshell.Flags(loginShell), args, initialInput, req.GetInitialInputPath())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "write initial input: %v", err)
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv:                 wrapped,
 		ReadyMarker:          "›",
 		CommandPrefix:        "$",
 		ConsumesInitialInput: initialInput != "",
+		// bossd confirms the consumed input through the rollout: a user message
+		// timestamped at or after launch (ReadTranscript reports only real
+		// user turns, never the synthetic environment_context item).
+		CanConfirmDelivery: initialInput != "",
 		// codex has no append-system-prompt flag, so the suffix never reaches
 		// argv above. Declaring NONE lets bossd say so out loud.
 		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,

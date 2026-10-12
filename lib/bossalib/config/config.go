@@ -1988,7 +1988,7 @@ func LoadFrom(path string) (Settings, error) {
 
 	s := DefaultSettings()
 	if err := json.Unmarshal(data, &s); err != nil {
-		return DefaultSettings(), err
+		return DefaultSettings(), fmt.Errorf("parse settings %q: %w", cleaned, err)
 	}
 	// Backfill DefaultAgent if the file explicitly sets it to "" — that's the
 	// only case this branch covers, since files that omit the key entirely

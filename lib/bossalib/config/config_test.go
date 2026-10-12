@@ -488,6 +488,13 @@ func TestLoadMalformedFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("parse error must identify settings file %q: %v", path, err)
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Errorf("parse error must preserve json.SyntaxError: %v", err)
+	}
 	// Should return defaults on error.
 	if s.WorktreeBaseDir == "" {
 		t.Error("expected defaults on parse error")

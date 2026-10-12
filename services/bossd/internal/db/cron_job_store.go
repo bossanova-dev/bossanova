@@ -46,12 +46,12 @@ func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobPar
 		concurrencyPolicy = models.CronJobConcurrencyPolicySkip
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, concurrency_policy, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, concurrency_policy, managed_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
 		agentName, params.Model, sqlutil.BoolToInt(params.IsEnabled),
 		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand),
-		sqlutil.BoolToInt(params.IsZeroOutput), string(concurrencyPolicy), now, now,
+		sqlutil.BoolToInt(params.IsZeroOutput), string(concurrencyPolicy), params.ManagedBy, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -150,6 +150,10 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 	if params.ConcurrencyPolicy != nil {
 		sets = append(sets, "concurrency_policy = ?")
 		args = append(args, string(*params.ConcurrencyPolicy))
+	}
+	if params.ManagedBy != nil {
+		sets = append(sets, "managed_by = ?")
+		args = append(args, *params.ManagedBy)
 	}
 
 	args = append(args, id)
@@ -263,7 +267,7 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 }
 
 const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
-	gate_command, should_run_setup_command, is_zero_output, concurrency_policy,
+	gate_command, should_run_setup_command, is_zero_output, concurrency_policy, managed_by,
 	last_run_session_id, last_run_agent_name, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -290,7 +294,7 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
 		&timezone, &agentName, &model, &enabledInt,
-		&gateCommand, &runSetupInt, &zeroOutputInt, &concurrencyPolicy,
+		&gateCommand, &runSetupInt, &zeroOutputInt, &concurrencyPolicy, &j.ManagedBy,
 		&lastRunSessionID, &lastRunAgentName, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)

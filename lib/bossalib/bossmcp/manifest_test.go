@@ -298,9 +298,20 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// existing note tool's schema describe two incompatible stores. The new
 	// tools were written to the minimum: one short shared organization_id
 	// doc, and descriptions that state only what no argument doc can.
+	// RAISED 2026-10-12 (BOS-1502): 79 tools / 66,388 bytes (+3 tools,
+	// +2,636 bytes), same method. The second deliberate exception: the
+	// planned decision to put export_project_config, diff_project_config and
+	// apply_project_config on the default surface, so an agent in a local
+	// session converges .boss-project.json through the same engine as
+	// `boss project` (managed marker, adoption, the disable-on-drop rule,
+	// trust checks) instead of shelling out or hand-rolling create_cron_job
+	// sequences that skip them. Three tools rather than one with a mode keep
+	// read-only mode useful (export and diff register there, apply does not).
+	// The argument docs were cut to scope tags ("local:", "gateway:") and the
+	// descriptions to what no argument doc can say.
 	const (
-		maxToolCount   = 76
-		maxSchemaBytes = 63752
+		maxToolCount   = 79
+		maxSchemaBytes = 66388
 	)
 
 	const perTurnCost = "Every tool's name, description and input schema is resident in the cached prompt prefix and is re-paid on EVERY turn of EVERY session, on both providers — Codex cannot even shed it to a subagent."
@@ -437,12 +448,21 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 //
 // LOWERED 2026-10-09: save_trigger's repo_origin_url description was trimmed
 // to fit the cancel_in_progress concurrency wording, banking 5 bytes (10,314).
+//
+// LOWERED 2026-10-10 (BOS-1472): save_session_webhook gained format, paid for
+// by shortening the session webhook tools' organization_id doc (10,292).
+//
+// RAISED 2026-10-11 (BOS-1478), deliberately: save_trigger's launch gained
+// run_setup_command and zero_output, the cron tools' launch options. Two
+// nullable booleans cost ~90 bytes before any doc; their docs are cut to the
+// default, the launch/placement/gate docs were shortened to pay part of it,
+// and the remaining 192 bytes are the new surface (10,484).
 func TestHostedToolSurfaceSizeRatchet(t *testing.T) {
 	t.Parallel()
 
 	const (
 		maxHostedToolCount   = 13
-		maxHostedSchemaBytes = 10314
+		maxHostedSchemaBytes = 10484
 	)
 
 	hosted := map[string]bool{}

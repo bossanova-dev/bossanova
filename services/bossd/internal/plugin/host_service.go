@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/recurser/bossalib/agenterr"
 	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -439,11 +440,17 @@ func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessio
 	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode, agentRunID: agentRunID, startedAt: startedAt}
 	s.runHookTokens[agentSessionID] = token
 	s.runSessionByID[agentSessionID] = sessionID
-	// Drain any completion that the hookless poll signalled before this
-	// registration landed (see earlyChatCompletions). Deliver it onto the
-	// buffered channel so the matching WaitChatRun returns immediately
-	// instead of blocking until its deadline. The session is no longer
-	// pending once registered.
+	s.drainEarlyCompletionLocked(sessionID, ch)
+	s.runMu.Unlock()
+	return ch
+}
+
+// drainEarlyCompletionLocked delivers any completion that the hookless poll
+// signalled before sessionID's run was registered (see earlyChatCompletions)
+// onto ch, so the matching WaitChatRun returns immediately instead of blocking
+// until its deadline, and clears the session's pending marker: it is no longer
+// pending once registered. The caller must hold runMu.
+func (s *HostServiceServer) drainEarlyCompletionLocked(sessionID string, ch chan completionResult) {
 	if res, ok := s.earlyChatCompletions[sessionID]; ok {
 		delete(s.earlyChatCompletions, sessionID)
 		select {
@@ -452,8 +459,77 @@ func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessio
 		}
 	}
 	delete(s.pendingChatRuns, sessionID)
+}
+
+// preRegisterChatRun records a StartChatRun's hook token under key before the
+// agent is launched, so CompleteAgentRun accepts a completion POST that
+// arrives while StartTmuxChat is still running. Unlike
+// registerRunWithCompletionMode it leaves the session's pending marker and any
+// parked early completion alone: those still belong to promoteChatRun, which
+// learns the run's final id. Guarded by runMu.
+func (s *HostServiceServer) preRegisterChatRun(sessionID, key, token string, startedAt time.Time) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.runCompletion[key] = activeChatRun{done: make(chan completionResult, 1), completionMode: chatRunCompletionExplicit, startedAt: startedAt}
+	s.runHookTokens[key] = token
+	s.runSessionByID[key] = sessionID
+}
+
+// unregisterChatRun drops a pre-registration after a failed start, so the
+// failed run leaves nothing registered. It only removes entries that still
+// carry this call's token: a different token means another registration owns
+// the id now.
+func (s *HostServiceServer) unregisterChatRun(key, token string) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runHookTokens[key] != token {
+		return
+	}
+	delete(s.runCompletion, key)
+	delete(s.runHookTokens, key)
+	delete(s.runSessionByID, key)
+}
+
+// promoteChatRun turns a pre-registration into the started run's full
+// registration. When the lifecycle kept the pre-registered id, the existing
+// entry is kept — a completion may already have been signalled on its channel —
+// and only stamped with the run id; a run that already completed is not
+// recorded as active. When the lifecycle resolved a different id (a resume
+// named by a provider id), the pre-registration is dropped and the run is
+// registered under the resolved id exactly as before.
+func (s *HostServiceServer) promoteChatRun(sessionID, key, agentSessionID, token, agentName, agentRunID string, startedAt time.Time) {
+	if agentSessionID != key {
+		s.unregisterChatRun(key, token)
+	}
+	s.runMu.Lock()
+	run, pending := s.runCompletion[agentSessionID]
+	if agentSessionID == key && !pending {
+		// Completed during the start: the tombstone stays for duplicate POSTs,
+		// but there is no live run to record.
+		delete(s.pendingChatRuns, sessionID)
+		delete(s.earlyChatCompletions, sessionID)
+		s.runMu.Unlock()
+		return
+	}
+	if prev, ok := s.activeRuns[sessionID]; ok {
+		// Drop the stale reverse-index entry left behind when the
+		// previous run finished without re-running through this path.
+		delete(s.agentSessionByID, prev.agentSessionID)
+	}
+	s.activeRuns[sessionID] = activeRun{agentName: agentName, agentSessionID: agentSessionID}
+	s.agentSessionByID[agentSessionID] = agentName
+	if agentSessionID == key {
+		run.agentRunID = agentRunID
+		run.startedAt = startedAt
+		s.runCompletion[agentSessionID] = run
+		s.drainEarlyCompletionLocked(sessionID, run.done)
+		s.runMu.Unlock()
+		return
+	}
 	s.runMu.Unlock()
-	return ch
+	// Returned channel is unused here — WaitChatRun looks it up by
+	// agent_session_id when the operator (or repair plugin) calls in.
+	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit, agentRunID, startedAt)
 }
 
 // markPendingChatRun records that StartChatRun is about to spawn a run for
@@ -1987,15 +2063,17 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	}
 
 	// StartTmuxChat handles its own teardown if the spawn / hook config /
-	// SendPlan steps fail mid-flight, so we don't need cleanup logic here.
+	// delivery steps fail mid-flight; the only cleanup here is the run
+	// registration below.
 	//
-	// Note: the run is registered in our maps after StartTmuxChat returns,
-	// so a hook POST can't arrive before we've recorded its token. In
-	// practice this is enforced by the protocol: the claude Stop hook only
-	// fires after the agent processes a prompt, and SendPlan injects the
-	// prompt as the final step of StartTmuxChat. A POST that arrived in
-	// the registration gap would 404 — operators would see a hook failure
-	// rather than a stuck session, but no current path reaches that gap.
+	// The run is registered BEFORE StartTmuxChat. With the first input
+	// delivered as a launch argument the agent can run it — and its Stop hook
+	// can POST /hooks/agent-run-complete — while StartTmuxChat is still
+	// confirming delivery, so registering after it returned would 404 a fast
+	// run. A fresh launch uses an id minted here (passed through HookOpts); a
+	// resume pre-registers under the requested id, and promoteChatRun moves the
+	// registration if the lifecycle resolved a different durable id. A failed
+	// start unregisters it.
 	//
 	// The hookless completion poll, by contrast, IS armed inside
 	// StartTmuxChat (before this call returns) for agents without a finalize
@@ -2022,7 +2100,13 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// wrong name whenever the chat carries its own — exactly the resume path the
 	// repair plugin always takes.
 	hookOpts := session.HookOpts{Token: token, AutonomousRun: true}
+	registeredID := req.GetResumeAgentSessionId()
+	if registeredID == "" {
+		registeredID = uuid.NewString()
+		hookOpts.AgentSessionID = registeredID
+	}
 	startedAt := time.Now()
+	s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID
@@ -2035,10 +2119,15 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 			}
 			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
 			startedAt = time.Now()
+			// The cleanup above wipes the pre-registration when the blocking
+			// chat is the one being resumed (same id), so register again
+			// before the retry or its completion POST would be rejected.
+			s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
 			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 		}
 	}
 	if err != nil {
+		s.unregisterChatRun(registeredID, token)
 		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
 		// Internal) through unchanged. Wrap untyped errors as Internal
 		// so callers always get a status code they can switch on.
@@ -2062,24 +2151,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	runSess := s.effectiveChatSessionForAgentSession(ctx, sess, agentSessionID)
 	agentRunID := s.recordAgentRunStart(ctx, runSess, agentSessionID, startedAt)
 
-	// Register the run state under runMu. Order matters: register first
-	// so a Stop-hook POST that arrives the instant the prompt is pasted
-	// finds runHookTokens populated. registerRun handles the
-	// runCompletion / runHookTokens / runSessionByID triplet under its
-	// own lock; we acquire runMu around the activeRuns + agentSessionByID
-	// pieces it doesn't touch.
-	s.runMu.Lock()
-	if prev, ok := s.activeRuns[sessionID]; ok {
-		// Drop the stale reverse-index entry left behind when the
-		// previous run finished without re-running through this path.
-		delete(s.agentSessionByID, prev.agentSessionID)
-	}
-	s.activeRuns[sessionID] = activeRun{agentName: runSess.AgentName, agentSessionID: agentSessionID}
-	s.agentSessionByID[agentSessionID] = runSess.AgentName
-	s.runMu.Unlock()
-	// Returned channel is unused here — WaitChatRun looks it up by
-	// agent_session_id when the operator (or repair plugin) calls in.
-	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit, agentRunID, startedAt)
+	s.promoteChatRun(sessionID, registeredID, agentSessionID, token, runSess.AgentName, agentRunID, startedAt)
 
 	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID, AgentRunId: agentRunID}, nil
 }

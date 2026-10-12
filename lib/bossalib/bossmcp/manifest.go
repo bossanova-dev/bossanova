@@ -39,6 +39,8 @@ var readOnlyToolNames = []string{
 	"list_organization_notes",
 	"get_organization_note",
 	"get_organization_note_quota",
+	"export_project_config",
+	"diff_project_config",
 }
 
 // writeToolNames is the canonical union of mutating + destructive tool names,
@@ -55,6 +57,7 @@ var writeToolNames = []string{
 	"send_broadcast", "register_broadcast_subscription",
 	"create_note", "update_note",
 	"create_organization_note", "update_organization_note",
+	"apply_project_config",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",

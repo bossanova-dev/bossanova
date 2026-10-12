@@ -58,14 +58,16 @@ test('isCached true only when enabled, unforced, and the stamp exists', () => {
   }
 })
 
-test('resolveScriptFiles covers this test file and excludes non-.mjs', () => {
+test('resolveScriptFiles covers this test file, the verify CLI, and excludes non-.mjs', () => {
   const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
     encoding: 'utf8',
   }).trim()
   const found = resolveScriptFiles(repoRoot)
   assert.ok(found.includes('scripts/lint-scripts.mjs'))
   assert.ok(found.includes('scripts/lint-scripts.test.mjs'))
-  // Sorted, unique, and only ever .cjs/.mjs.
+  assert.ok(found.includes('.claude/skills/verify/bin/control-boss'))
+  assert.ok(found.includes('.claude/skills/verify/lib/cli.mjs'))
+  // Sorted, unique, and only ever .cjs/.mjs — except a skill's extensionless bin/ entry point.
   assert.deepEqual(found, [...found].sort())
-  for (const rel of found) assert.match(rel, /\.(c|m)js$/)
+  for (const rel of found) assert.match(rel, /\.(c|m)js$|^\.claude\/skills\/[^/]+\/bin\/[^/.]+$/)
 })

@@ -15,13 +15,11 @@ import (
 	"testing/fstest"
 )
 
-// TestEmbeddedSkillManifestExcludesBossProof pins the exact set of skills the boss
-// binary ships via the embedded skillinstall payload. BOS-271 consolidated the four
-// published cores (boss-epic/implement/plan/review) onto this single-source home and
-// dropped boss-proof from the publish set — boss-proof stays a repo-local dev skill
-// under .claude/skills, never embedded. This test fails loudly if boss-proof (or any
-// other unexpected skill) is re-added to, or an expected core drops out of, the embed.
-func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
+// TestEmbeddedSkillManifestIsExactCoreSet pins the exact set of skills the boss
+// binary ships via the embedded skillinstall payload. BOS-271 consolidated the
+// published cores onto this single-source home. This test fails loudly if any
+// unexpected skill is added to, or an expected core drops out of, the embed.
+func TestEmbeddedSkillManifestIsExactCoreSet(t *testing.T) {
 	entries, err := fs.ReadDir(SkillsFS, "skills")
 	if err != nil {
 		t.Fatalf("read embedded skills dir: %v", err)
@@ -56,19 +54,11 @@ func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {
 			t.Fatalf("embedded skill set = %v; want %v", got, want)
 		}
 	}
-
-	for _, name := range got {
-		if name == "boss-proof" {
-			t.Fatalf("boss-proof must not be embedded (dropped from the publish set in BOS-271)")
-		}
-	}
 }
 
 // knownCores enumerates the published/dev core skill names. It is the core-name set,
 // NOT an extension-name enumeration, so it stays stable as extensions are added or
-// renamed. boss-proof is included even though it is not embedded (BOS-271 dropped it
-// from the publish set) because it is the parent core of the boss-proof-* extensions,
-// so its prefix is needed to recognize them.
+// renamed.
 var knownCores = map[string]bool{
 	"boss-retro":    true,
 	"boss":          true,
@@ -76,7 +66,6 @@ var knownCores = map[string]bool{
 	"boss-finalize": true,
 	"boss-build":    true,
 	"boss-plan":     true,
-	"boss-proof":    true,
 	"boss-release":  true,
 	"boss-repair":   true,
 	"boss-review":   true,
@@ -111,18 +100,16 @@ func TestIsExtensionDirName(t *testing.T) {
 		want bool
 	}{
 		// Cores are never extensions (knownCores guard), including two-segment cores that
-		// prefix-collide with the bare "boss" core, and boss-proof (a core not embedded).
+		// prefix-collide with the bare "boss" core.
 		{"boss", false},
 		{"boss-plan", false},
 		{"boss-review", false},
 		{"boss-build", false},
-		{"boss-proof", false},
 		// boss-<core>-<suffix> names are extensions.
 		{"boss-plan-draft", true},
 		{"boss-plan-compound-engineering", true},
 		{"boss-review-golang", true},
 		{"boss-review-thermonuclear", true},
-		{"boss-proof-web", true},
 		{"boss-build-ce", true},
 		{"boss-build-knowledge", true},
 		// Non-boss / unrelated names are not extensions.
@@ -662,7 +649,7 @@ func TestNamespaceHelperPathScanCoversCoreReferencesAndAllPublishedCores(t *test
 var scriptRefPattern = regexp.MustCompile(`scripts/[A-Za-z0-9._/-]+`)
 
 // scriptRefTrimCutset is the trailing punctuation stripped off a raw match so markdown decoration
-// (`node scripts/proof.mjs`, [x](scripts/foo.mjs), "scripts/foo.mjs".) normalizes to the bare path.
+// (`node scripts/foo.mjs`, [x](scripts/foo.mjs), "scripts/foo.mjs".) normalizes to the bare path.
 const scriptRefTrimCutset = ".,)]`'\"*:;"
 
 // scriptRefExtensions are the script/data suffixes that make a token an actual invocable path
@@ -711,7 +698,7 @@ func unshippedScriptRefs(content string) []string {
 
 // knownUnshippedScriptRefs is the SHRINK-ONLY baseline of repo-root `scripts/` paths a published
 // core is still allowed to name because the file belongs to a seam this repo deliberately keeps
-// repo-local: genuinely custom proof harnesses and the remaining boss-plan adapter seams.
+// repo-local: the remaining boss-plan adapter seams.
 // Everything else
 // must SHIP — vendor the helper into the core's toolbox/ (scripts/vendor-toolbox.mjs VENDOR_MAP)
 // and reference it through $BOSS_<CORE>_TOOLBOX.
@@ -721,13 +708,7 @@ func unshippedScriptRefs(content string) []string {
 // the ratchet cannot silently slacken. boss-repair needs no entry — its
 // scripts/review-feedback-probe.js ships INSIDE the skill payload, which the gate detects by stat.
 var knownUnshippedScriptRefs = map[string]map[string]bool{
-	"boss-build": {
-		// boss-proof is excluded from publication; its roughly 5x closure and repo-specific recipes,
-		// scenarios, and publish store belong to the consuming repository's proof pipeline.
-		"scripts/proof.mjs": true,
-		// This is an in-repo authoring example, not a file boss-build executes.
-		"scripts/testdata/scenario-fixtures/valid-full.json": true,
-	},
+	"boss-build":  {},
 	"boss-epic":   {},
 	"boss-plan":   {},
 	"boss-review": {},
@@ -807,7 +788,7 @@ func TestPublishedCoresOnlyReferenceShippedScripts(t *testing.T) {
 // word can stay).
 func TestUnshippedScriptRefsDetection(t *testing.T) {
 	matched := map[string]string{
-		"node scripts/proof.mjs run":                     "scripts/proof.mjs",
+		"node scripts/release-notes.mjs run":             "scripts/release-notes.mjs",
 		"see `scripts/tracker/linear.mjs` for the shape": "scripts/tracker/linear.mjs",
 		"adapters live in scripts/tracker/":              "scripts/tracker/",
 		"read [the fixture](scripts/testdata/a.json).":   "scripts/testdata/a.json",

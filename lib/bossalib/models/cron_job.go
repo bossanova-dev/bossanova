@@ -132,11 +132,14 @@ type CronJob struct {
 	// ConcurrencyPolicy decides what a fire does while this job's previous run
 	// is still in progress. Defaults to skip.
 	ConcurrencyPolicy CronJobConcurrencyPolicy
-	LastRunSessionID  *string
-	LastRunAgentName  string
-	LastRunAt         *time.Time
-	LastRunOutcome    *CronJobOutcome
-	NextRunAt         *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ManagedBy is the config-ownership marker: "boss-project:<project>" for a
+	// row a project config created or adopted, "" for a hand-made row (BOS-1489).
+	ManagedBy        string
+	LastRunSessionID *string
+	LastRunAgentName string
+	LastRunAt        *time.Time
+	LastRunOutcome   *CronJobOutcome
+	NextRunAt        *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

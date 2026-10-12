@@ -656,6 +656,7 @@ func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
 		"-c",
 		"exec $argv",
 		"codex",
+		"--",
 		"$boss-repair",
 	}
 	if !equalStrings(resp.Argv, wantArgv) {
@@ -669,6 +670,66 @@ func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
 	}
 	if !resp.ConsumesInitialInput {
 		t.Fatal("ConsumesInitialInput = false, want true")
+	}
+}
+
+// The rendered first input travels through bossd's private file, not argv:
+// the plugin writes it 0600 and argv reads it after `--` at exec time.
+func TestBuildInteractiveCommandWritesStartupInputToFile(t *testing.T) {
+	for name, req := range map[string]*bossanovav1.BuildInteractiveCommandRequest{
+		"command": {SessionId: "abc", InitialCommand: "/boss-repair 42"},
+		"prompt":  {SessionId: "abc", InitialPrompt: "exec"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &Server{runner: &Runner{loginShell: "/opt/homebrew/bin/fish"}}
+			path := filepath.Join(t.TempDir(), "abc.initial-input")
+			req.InitialInputPath = path
+			resp, err := s.BuildInteractiveCommand(context.Background(), req)
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if !resp.GetConsumesInitialInput() {
+				t.Fatal("ConsumesInitialInput = false, want true")
+			}
+			want := codexInitialInput(req)
+			for _, a := range resp.GetArgv() {
+				if a == want {
+					t.Fatalf("rendered input %q must not be inlined: %#v", want, resp.GetArgv())
+				}
+			}
+			if !contains(resp.GetArgv(), path) {
+				t.Fatalf("argv must reference the input file: %#v", resp.GetArgv())
+			}
+			if got := resp.GetArgv()[len(resp.GetArgv())-1]; got != "--" {
+				t.Fatalf("argv must end with -- so the file read lands after it: %#v", resp.GetArgv())
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("input file not written: %v", err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Fatalf("input file mode = %o, want 600", perm)
+			}
+			if b, _ := os.ReadFile(path); string(b) != want {
+				t.Fatalf("input file = %q, want rendered %q", b, want)
+			}
+		})
+	}
+}
+
+// Inline delivery (no login shell, or no file) still separates the input with
+// `--`, so a prompt naming a subcommand ("exec", "review") stays a prompt.
+func TestBuildInteractiveCommandSeparatesInlineInputWithDoubleDash(t *testing.T) {
+	s := newTestServer(t)
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "abc", InitialPrompt: "review",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	argv := resp.GetArgv()
+	if got := argv[len(argv)-2:]; !equalStrings(got, []string{"--", "review"}) {
+		t.Fatalf("argv tail = %v, want [-- review]; argv=%v", got, argv)
 	}
 }
 
@@ -1821,5 +1882,35 @@ func TestResolveInteractiveSessionIDRPCRecoveryMissNamesItself(t *testing.T) {
 	}
 	if resp.Reason == "" {
 		t.Fatal("Reason is empty for a recovery fall-through miss")
+	}
+}
+
+// Codex confirms a consumed first input through its rollout (bossd reads a user
+// message timestamped at or after launch), so it declares can_confirm_delivery
+// exactly when argv carries that input.
+func TestBuildInteractiveCommandDeclaresDeliveryConfirmation(t *testing.T) {
+	s := newTestServer(t)
+	cases := map[string]struct {
+		req  *bossanovav1.BuildInteractiveCommandRequest
+		want bool
+	}{
+		"prompt":       {req: &bossanovav1.BuildInteractiveCommandRequest{SessionId: "a", InitialPrompt: "do the work"}, want: true},
+		"command":      {req: &bossanovav1.BuildInteractiveCommandRequest{SessionId: "a", InitialCommand: "boss-repair"}, want: true},
+		"resume input": {req: &bossanovav1.BuildInteractiveCommandRequest{SessionId: "a", Resume: true, InitialPrompt: "continue"}, want: true},
+		"no input":     {req: &bossanovav1.BuildInteractiveCommandRequest{SessionId: "a"}, want: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp, err := s.BuildInteractiveCommand(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if got := resp.GetCanConfirmDelivery(); got != tc.want {
+				t.Fatalf("CanConfirmDelivery = %v, want %v", got, tc.want)
+			}
+			if resp.GetCanConfirmDelivery() && !resp.GetConsumesInitialInput() {
+				t.Fatal("cannot confirm an input argv does not consume")
+			}
+		})
 	}
 }

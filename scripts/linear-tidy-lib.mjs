@@ -298,7 +298,7 @@ const hasLabel = (ticket, name) =>
 //                                 normally moves atomically, so this only fires on a
 //                                 partial-failure or a manual reopen).
 //   no plan                     → drop `agent-build`, add `agent-plan` so the
-//                                 bs-sweep-plan queue picks it up. `newLabelIds` is
+//                                 global boss-plan queue claims it. `newLabelIds` is
 //                                 the full replacement set (current − agent-build
 //                                 + agent-plan).
 // Excludes `needs-human` (must never auto-plan), an already-`agent-plan` ticket

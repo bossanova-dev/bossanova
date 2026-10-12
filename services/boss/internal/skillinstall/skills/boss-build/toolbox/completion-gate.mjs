@@ -478,11 +478,14 @@ export function fastPath(
       return stop(
         !text(claim.reason) || claim.reason === 'claim-held' ? 'claim-lost' : claim.reason,
       )
+    // The extensions whose applicability check said they apply; the worker runs only these.
+    const applicable = judged.facts?.extensionsApplicable
     return {
       runId,
       action: 'extensions-required',
       token: claim.token,
       extensionEnvelope: judged.extensionEnvelope,
+      ...(Array.isArray(applicable) ? { extensionsApplicable: applicable } : {}),
     }
   }
   if (verdict === 'human' || verdict === 'defect') {

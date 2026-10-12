@@ -1,6 +1,8 @@
 package loginshell
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -119,6 +121,126 @@ func TestWrap_UnsupportedShellReturnsArgvUnchanged(t *testing.T) {
 func TestWrap_EmptyArgvReturnsNil(t *testing.T) {
 	if got := Wrap("/bin/bash", []string{"-l", "-c"}, nil); got != nil {
 		t.Fatalf("empty argv must return nil, got=%#v", got)
+	}
+}
+
+func TestWrapReadingFile_PosixPassesPathAsFirstPositional(t *testing.T) {
+	got, ok := WrapReadingFile("/bin/zsh", []string{"-l", "-i", "-c"}, []string{"claude", "--"}, "/logs/x.input")
+	if !ok {
+		t.Fatal("zsh must support WrapReadingFile")
+	}
+	if len(got) != 9 {
+		t.Fatalf("zsh wrap length: got=%#v", got)
+	}
+	if got[5] != "zsh" || got[6] != "/logs/x.input" || got[7] != "claude" {
+		t.Fatalf("zsh positional layout: got=%#v", got)
+	}
+	body := got[4]
+	for _, want := range []string{`shift`, `command cat -- "$__boss_input_file"`, `exec "$@" "$__boss_input"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("zsh body missing %q: %q", want, body)
+		}
+	}
+	assertExactCapacity(t, got)
+}
+
+func TestWrapReadingFile_BashSourcesBashrcFirst(t *testing.T) {
+	got, ok := WrapReadingFile("/bin/bash", []string{"-l", "-c"}, []string{"claude"}, "/p")
+	if !ok {
+		t.Fatal("bash must support WrapReadingFile")
+	}
+	if !strings.HasPrefix(got[3], `if [ -r "$HOME/.bashrc" ]`) {
+		t.Fatalf("bash body must source .bashrc first: %q", got[3])
+	}
+	assertExactCapacity(t, got)
+}
+
+func TestWrapReadingFile_FishErasesPathFromArgv(t *testing.T) {
+	got, ok := WrapReadingFile("/opt/homebrew/bin/fish", []string{"-l", "-i", "-c"}, []string{"codex", "--"}, "/p")
+	if !ok {
+		t.Fatal("fish must support WrapReadingFile")
+	}
+	if got[5] != "/p" || got[6] != "codex" || got[7] != "--" {
+		t.Fatalf("fish positional layout: got=%#v", got)
+	}
+	for _, want := range []string{`set -e argv[1]`, `command cat -- $__boss_input_file | string collect`, `exec $argv $__boss_input`} {
+		if !strings.Contains(got[4], want) {
+			t.Fatalf("fish body missing %q: %q", want, got[4])
+		}
+	}
+	assertExactCapacity(t, got)
+}
+
+func TestWrapReadingFile_UnsupportedReportsNotOK(t *testing.T) {
+	for name, tc := range map[string]struct {
+		shell, path string
+		argv        []string
+	}{
+		"empty shell": {"", "/p", []string{"claude"}},
+		"csh":         {"/bin/csh", "/p", []string{"claude"}},
+		"empty path":  {"/bin/bash", "", []string{"claude"}},
+		"empty argv":  {"/bin/bash", "/p", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, ok := WrapReadingFile(tc.shell, []string{"-l", "-c"}, tc.argv, tc.path); ok || got != nil {
+				t.Fatalf("want (nil,false), got (%#v,%v)", got, ok)
+			}
+		})
+	}
+}
+
+func TestWrapInitialInput_WritesPrivateFileAndKeepsPayloadOutOfArgv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input")
+	// A pre-existing world-readable file must still end up 0600.
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := WrapInitialInput("/bin/sh", []string{"-l", "-c"}, []string{"claude", "--"}, "secret prompt", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range got {
+		if strings.Contains(a, "secret prompt") {
+			t.Fatalf("payload inlined into argv: %#v", got)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("input file mode = %o, want 600", perm)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "secret prompt" {
+		t.Fatalf("input file content = %q", b)
+	}
+}
+
+func TestWrapInitialInput_UnsupportedShellInlinesWithoutFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input")
+	got, err := WrapInitialInput("", nil, []string{"claude", "--"}, "hi", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"claude", "--", "hi"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("inline fallback: got=%#v want=%#v", got, want)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("inline fallback must not write the file; stat err=%v", err)
+	}
+}
+
+func TestWrapInitialInput_EmptyInputIsPlainWrap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input")
+	got, err := WrapInitialInput("/bin/sh", []string{"-l", "-c"}, []string{"claude"}, "", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := Wrap("/bin/sh", []string{"-l", "-c"}, []string{"claude"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty input: got=%#v want=%#v", got, want)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("empty input must not write the file; stat err=%v", err)
 	}
 }
 

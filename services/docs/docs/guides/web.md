@@ -33,6 +33,9 @@ can also see and drive from the web.
 Organization owners on a Bossanova Cloud plan also get
 [session webhooks](./webhooks.md), which send a signed HTTPS request to
 their own server whenever a session changes state.
+Owners invite teammates, set their roles and remove members under
+**Settings → Organization**. See
+[Organizations and Members](./organizations.md).
 
 ## Routes
 

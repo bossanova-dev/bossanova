@@ -507,7 +507,7 @@ func newStartTmuxChatHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxCh
 		wt:        &mockWorktreeManager{},
 		logsDir:   t.TempDir(),
 	}
-	h.tmuxClient = tmux.NewClient(append([]tmux.Option{tmux.WithCommandFactory(h.tmuxFake.factory)}, tmuxOpts...)...)
+	h.tmuxClient = tmux.NewClient(append([]tmux.Option{tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(h.tmuxFake.factory)}, tmuxOpts...)...)
 	h.repos.repos["repo-abcdef12"] = &models.Repo{
 		ID:                "repo-abcdef12",
 		LocalPath:         "/tmp/repo",
@@ -2224,13 +2224,14 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 		t.Errorf("Title = %q, want %q", got, want)
 	}
 
-	// A single-line plan ("Run the audit") is delivered via literal keystrokes
-	// (send-keys -l), not bracketed paste; confirm the literal delivery ran.
-	if h.tmuxFake.hasSubcommand("paste-buffer") {
-		t.Error("single-line plan must not use bracketed paste")
+	// A Claude free-text plan is pasted even when it is a single line ("Run the
+	// audit"): Claude reads a typed burst as a paste and collapses or truncates
+	// it (BOS-1506). Confirm the paste delivery ran.
+	if !h.tmuxFake.hasSubcommand("paste-buffer") {
+		t.Error("expected bracketed-paste delivery (SendPlan), none recorded")
 	}
-	if !h.tmuxFake.hasLiteralSendKeys() {
-		t.Error("expected literal send-keys -l delivery (SendPlan), none recorded")
+	if h.tmuxFake.hasLiteralSendKeys() {
+		t.Error("a Claude free-text plan must not be typed with send-keys -l")
 	}
 }
 
@@ -3298,13 +3299,30 @@ func TestBuildAppendSystemPromptFacts(t *testing.T) {
 	}
 
 	zeroOutputPrompt := appendSystemPromptText(&models.Session{ID: "s3", CronJobID: &job, IsQuickChat: true}, agentSessionID, "claude")
-	if !strings.Contains(zeroOutputPrompt, zeroOutputCronAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
+	if !strings.Contains(zeroOutputPrompt, zeroOutputAutonomyDirective) || strings.Contains(zeroOutputPrompt, cronAutonomyDirective) {
 		t.Fatalf("zero-output prompt = %q, want dedicated no-commit directive", zeroOutputPrompt)
 	}
 	// The subagent grant rides alongside the zero-output directive too: a
 	// zero-output cron still runs skills that mandate awaited dispatch.
 	if !strings.Contains(zeroOutputPrompt, unattendedSubagentDirective) {
 		t.Fatalf("zero-output prompt missing the subagent directive: %q", zeroOutputPrompt)
+	}
+
+	// BOS-1477: a trigger's zero-output session is unattended (tmux_unattended
+	// + detach) but carries no CronJobID. It must get the zero-output
+	// directive, never the cron one that tells the agent to commit — it runs in
+	// the user's checkout.
+	triggerZeroOutputPrompt := appendSystemPromptText(&models.Session{ID: "s4", IsTmuxUnattended: true, Detach: true, IsQuickChat: true}, agentSessionID, "claude")
+	if !strings.Contains(triggerZeroOutputPrompt, zeroOutputAutonomyDirective) || strings.Contains(triggerZeroOutputPrompt, cronAutonomyDirective) {
+		t.Fatalf("trigger zero-output prompt = %q, want the no-commit directive and not the cron one", triggerZeroOutputPrompt)
+	}
+	if !strings.Contains(triggerZeroOutputPrompt, unattendedSubagentDirective) {
+		t.Fatalf("trigger zero-output prompt missing the subagent directive: %q", triggerZeroOutputPrompt)
+	}
+	// An attended quick chat gets neither autonomy directive.
+	attendedQuickChatPrompt := appendSystemPromptText(&models.Session{ID: "s5", IsQuickChat: true}, agentSessionID, "claude")
+	if strings.Contains(attendedQuickChatPrompt, zeroOutputAutonomyDirective) || strings.Contains(attendedQuickChatPrompt, cronAutonomyDirective) {
+		t.Fatalf("attended quick chat prompt = %q, want no autonomy directive", attendedQuickChatPrompt)
 	}
 
 	plainPrompt := appendSystemPromptText(plainSess, agentSessionID, "claude")
@@ -3945,7 +3963,7 @@ func TestBuildAppendSystemPromptClasses(t *testing.T) {
 			// text-iff-class: the directive class is claimed exactly when some
 			// directive prose is actually in the suffix.
 			hasDirective := strings.Contains(text, cronAutonomyDirective) ||
-				strings.Contains(text, zeroOutputCronAutonomyDirective)
+				strings.Contains(text, zeroOutputAutonomyDirective)
 			claimsDirective := slices.Contains(classes, InstructionClassAutonomyDirective)
 			if hasDirective != claimsDirective {
 				t.Fatalf("directive text present = %v but class claimed = %v: %q", hasDirective, claimsDirective, text)
@@ -4590,5 +4608,26 @@ func TestSendInputToLiveTmuxChat_ResetsModelAcrossAgents(t *testing.T) {
 	}
 	if got := last.GetModel(); got != "" {
 		t.Errorf("BuildInteractiveCommand Model = %q, want \"\": a codex chat must not carry the session's claude model id", got)
+	}
+}
+
+// A caller-minted id (StartChatRun registers its run under it before launch)
+// names a fresh chat instead of a lifecycle-minted one.
+func TestStartTmuxChat_FreshLaunchUsesCallerMintedID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	h.lc.newTmuxChatAgentSessionID = func() string { return "lifecycle-minted" }
+
+	id, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "go"}, "T", HookOpts{AgentSessionID: "caller-minted"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if id != "caller-minted" {
+		t.Fatalf("id = %q, want caller-minted", id)
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != "caller-minted" {
+		t.Fatalf("BuildInteractiveCommand session id = %q, want caller-minted", got)
 	}
 }

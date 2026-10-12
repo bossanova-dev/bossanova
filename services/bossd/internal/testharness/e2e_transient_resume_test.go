@@ -56,10 +56,10 @@ func TestTransientAPIErrorAutoResumeDeliversExactlyOnce(t *testing.T) {
 	// The shared CronReadyTmuxFake is extended with CapturePaneOutput rather
 	// than defining a per-test fake: this test needs the fake's has-session
 	// bookkeeping (the poller's Bootstrap skips a chat whose tmux session is not
-	// alive) and its Calls() recorder (to assert the send-keys actually fired),
-	// both of which a fresh minimal fake would have to re-implement. The
-	// override is opt-in and the zero value keeps every existing caller on the
-	// original canned pane.
+	// alive) and its Calls() and LoadedBuffers() recorders (to assert the paste
+	// actually fired), both of which a fresh minimal fake would have to
+	// re-implement. The override is opt-in and the zero value keeps every
+	// existing caller on the original canned pane.
 	fake := testharness.NewCronReadyTmuxFake()
 	fake.CapturePaneOutput = transientBannerPane
 
@@ -194,20 +194,27 @@ func TestTransientAPIErrorAutoResumeDeliversExactlyOnce(t *testing.T) {
 	}
 
 	// (d) The delivery reached tmux for real rather than stopping at the seam.
-	// A single-line payload is typed with send-keys -l (not paste-buffer), and
-	// the submit-verifier is satisfied by the fixture's empty "❯" row, so this
-	// is deterministic — no fighting the verifier.
+	// Claude free text is pasted (load-buffer + paste-buffer), never typed, so
+	// the payload travels on load-buffer's stdin and a paste-buffer must target
+	// this chat's pane.
 	var sawPayload bool
-	for _, call := range fake.Calls() {
-		if len(call) == 0 || call[0] != "send-keys" {
-			continue
-		}
-		if strings.Contains(strings.Join(call, " "), resume.ResumeMessage) {
+	for _, buf := range fake.LoadedBuffers() {
+		if strings.Contains(buf, resume.ResumeMessage) {
 			sawPayload = true
 			break
 		}
 	}
 	if !sawPayload {
-		t.Fatalf("expected a tmux send-keys carrying the resume prompt; calls: %v", fake.Calls())
+		t.Fatalf("expected a tmux load-buffer carrying the resume prompt; buffers: %q", fake.LoadedBuffers())
+	}
+	var sawPaste bool
+	for _, call := range fake.Calls() {
+		if len(call) > 0 && call[0] == "paste-buffer" && strings.Contains(strings.Join(call, " "), tmuxName) {
+			sawPaste = true
+			break
+		}
+	}
+	if !sawPaste {
+		t.Fatalf("expected a tmux paste-buffer into %s; calls: %v", tmuxName, fake.Calls())
 	}
 }

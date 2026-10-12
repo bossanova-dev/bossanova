@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +154,35 @@ func TestComposerHoldsPayload(t *testing.T) {
 					tc.markerRow, tc.payload, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRealCodexPastedContentPaneReadsAsNotSubmitted is the codex half of
+// BOS-1506, against a real capture (codex-cli 0.161.0, capture_paste.sh): a
+// 2 KB line pasted into the composer with no Enter collapses to "[Pasted
+// Content 2181 chars]", which does not prefix-match the payload. It must read
+// as held, while the rotating placeholder of a cleared composer
+// (codex_submitted.txt) still reads as submitted — the reason the fix
+// recognises the paste placeholder rather than treating any non-empty composer
+// as pending.
+func TestRealCodexPastedContentPaneReadsAsNotSubmitted(t *testing.T) {
+	pane := readPaneFixture(t, "codex_paste_stuck_real.txt")
+	if hint := composerHintOf(t, pane); !strings.HasPrefix(hint, "[Pasted Content") {
+		t.Fatalf("invalid fixture: the live composer shows %q, not a collapsed paste", hint)
+	}
+
+	outcome, err := waitOnPane(t, pane, pasteFixtureLongLine())
+	if outcome != OutcomeNotSubmitted || !errors.Is(err, errSubmissionPending) {
+		t.Fatalf("outcome = %v, err = %v; want %v carrying errSubmissionPending", outcome, err, OutcomeNotSubmitted)
+	}
+
+	for _, submitted := range []struct{ fixture, payload string }{
+		{"codex_paste_submitted_real.txt", pasteFixtureLongLine()},
+		{"codex_submitted.txt", codexFixturePayload},
+	} {
+		outcome, err := waitOnPane(t, readPaneFixture(t, submitted.fixture), submitted.payload)
+		if outcome != OutcomeSubmitted || err != nil {
+			t.Fatalf("%s: outcome = %v, err = %v; want submitted", submitted.fixture, outcome, err)
+		}
 	}
 }

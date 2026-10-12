@@ -497,6 +497,121 @@ func TestServer_BuildInteractiveCommand_WrapsInLoginShellWhenConfigured(t *testi
 	}
 }
 
+// A fresh start with a submitted prompt carries the prompt as a launch
+// argument read from bossd's private file: argv ends with `--` plus the file
+// read, the prompt itself never reaches argv, and the pane path is skipped.
+func TestServer_BuildInteractiveCommand_FreshStartConsumesPromptFromFile(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/bash")
+	srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
+	path := filepath.Join(t.TempDir(), "abc-123.initial-input")
+	prompt := "implement the plan\nwith a second line"
+
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "abc-123", InitialPrompt: prompt, InitialInputPath: path,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if !resp.GetConsumesInitialInput() {
+		t.Fatal("ConsumesInitialInput = false, want true for a fresh start with a prompt file")
+	}
+	argv := resp.GetArgv()
+	if got := argv[len(argv)-1]; got != "--" {
+		t.Fatalf("argv must end with -- (the file read appends the prompt after it): %#v", argv)
+	}
+	if !slices.Contains(argv, path) {
+		t.Fatalf("argv must reference the prompt file: %#v", argv)
+	}
+	if !strings.Contains(argv[3], `command cat -- "$__boss_input_file"`) {
+		t.Fatalf("argv must read the prompt file at exec time: %q", argv[3])
+	}
+	for _, a := range argv {
+		if strings.Contains(a, "implement the plan") {
+			t.Fatalf("prompt must not be inlined into argv: %#v", argv)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("prompt file not written: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("prompt file mode = %o, want 600", perm)
+	}
+	if b, _ := os.ReadFile(path); string(b) != prompt {
+		t.Fatalf("prompt file content = %q, want %q", b, prompt)
+	}
+}
+
+// Without a login shell that can run the file-reading form, the prompt stays on
+// the pane path: inlining it into argv would bound it by tmux's command-size
+// limit, which typed delivery never had.
+func TestServer_BuildInteractiveCommand_KeepsPanePathWithoutFileReadingShell(t *testing.T) {
+	for name, shell := range map[string]string{"no login shell": "", "unsupported shell": "/usr/bin/nu"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("BOSS_PLUGIN_login_shell", shell)
+			srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
+			path := filepath.Join(t.TempDir(), "x.initial-input")
+			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId: "abc", InitialPrompt: "-leading dash prompt", InitialInputPath: path,
+			})
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if resp.GetConsumesInitialInput() {
+				t.Fatal("ConsumesInitialInput = true; want pane delivery")
+			}
+			if slices.Contains(resp.GetArgv(), "-leading dash prompt") {
+				t.Fatalf("argv must not inline the prompt: %#v", resp.GetArgv())
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("prompt file must not be written; stat err=%v", err)
+			}
+		})
+	}
+}
+
+// Inputs that keep today's pane delivery: a --resume launch (no double
+// delivery on account switch or repair relaunch), a request with no prompt file
+// (an older bossd that also passes prefill prompts), a boss command and a
+// slash-shaped prompt (argv slash-command dispatch is unverified), and a bare
+// single word (claude's commander parser dispatches a subcommand named by the
+// first operand even after `--`, e.g. `claude -- doctor`).
+func TestServer_BuildInteractiveCommand_KeepsPanePathForUnsafeShapes(t *testing.T) {
+	cases := map[string]*bossanovav1.BuildInteractiveCommandRequest{
+		"resume":            {SessionId: "rid", Resume: true, InitialPrompt: "continue the work"},
+		"no prompt file":    {SessionId: "s", InitialPrompt: "implement the plan"},
+		"boss command":      {SessionId: "s", InitialCommand: "boss-repair 42"},
+		"slash prompt":      {SessionId: "s", InitialPrompt: "/boss-repair 42"},
+		"subcommand name":   {SessionId: "s", InitialPrompt: "doctor"},
+		"subcommand + nl":   {SessionId: "s", InitialPrompt: "update\n"},
+		"single bare token": {SessionId: "s", InitialPrompt: "help"},
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("BOSS_PLUGIN_login_shell", "/bin/zsh")
+			srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
+			if req.GetInitialInputPath() == "" && name != "no prompt file" {
+				req.InitialInputPath = filepath.Join(t.TempDir(), "x.initial-input")
+			}
+			resp, err := srv.BuildInteractiveCommand(context.Background(), req)
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if resp.GetConsumesInitialInput() {
+				t.Fatalf("ConsumesInitialInput = true; %s must keep pane delivery", name)
+			}
+			if slices.Contains(resp.GetArgv(), "--") {
+				t.Fatalf("argv must carry no first input: %#v", resp.GetArgv())
+			}
+			if p := req.GetInitialInputPath(); p != "" {
+				if _, err := os.Stat(p); !os.IsNotExist(err) {
+					t.Fatalf("prompt file must not be written; stat err=%v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 	srv.runner.dangerouslySkipPermissions = true
@@ -1113,3 +1228,49 @@ const boxedApprovalPane = "" +
 	"│   2. No, and tell Claude what to do differently (esc)     │\n" +
 	"╰─────────────────────────────────────────────────────────╯\n" +
 	"  Esc to cancel · Tab to amend\n"
+
+// A fresh argv start with a hook port installs the UserPromptSubmit receipt
+// hook keyed on the session id and declares it can confirm delivery. Without a
+// port there is nowhere to post, so it declares nothing; a pane-delivered start
+// still gets the hook (later sends can use it) but cannot confirm the launch.
+func TestServer_BuildInteractiveCommand_ReceiptHookAndCapability(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/bash")
+	cases := map[string]struct {
+		prompt      string
+		port        int32
+		wantConfirm bool
+		wantHook    bool
+	}{
+		"argv start with port":    {prompt: "implement the plan", port: 4242, wantConfirm: true, wantHook: true},
+		"argv start without port": {prompt: "implement the plan", port: 0},
+		"pane start with port":    {prompt: "doctor", port: 4242, wantHook: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
+			wt := t.TempDir()
+			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+				SessionId: "abc-123", InitialPrompt: tc.prompt, WorktreePath: wt, HookPort: tc.port,
+				InitialInputPath: filepath.Join(t.TempDir(), "abc-123.initial-input"),
+			})
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			if got := resp.GetCanConfirmDelivery(); got != tc.wantConfirm {
+				t.Fatalf("CanConfirmDelivery = %v, want %v", got, tc.wantConfirm)
+			}
+			_, statErr := os.Stat(filepath.Join(wt, ".claude", "settings.local.json"))
+			if !tc.wantHook {
+				if !os.IsNotExist(statErr) {
+					t.Fatalf("no hook may be installed without a port; stat err=%v", statErr)
+				}
+				return
+			}
+			bossd, _ := promptSubmitEntries(t, readSettings(t, wt))
+			if len(bossd) != 1 {
+				t.Fatalf("prompt-submitted entries = %d, want 1", len(bossd))
+			}
+			assertCommandContains(t, bossd[0], "/hooks/prompt-submitted/abc-123", ":4242")
+		})
+	}
+}

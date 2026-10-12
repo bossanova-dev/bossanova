@@ -3863,7 +3863,20 @@ type BuildInteractiveCommandRequest struct {
 	// it intentionally does not carry the session's secret-bearing environment.
 	ConfigHomeEnv map[string]string `protobuf:"bytes,13,rep,name=config_home_env,json=configHomeEnv,proto3" json:"config_home_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Opaque agent reasoning-effort level; "" = plugin default.
-	Effort        string `protobuf:"bytes,14,opt,name=effort,proto3" json:"effort,omitempty"`
+	Effort string `protobuf:"bytes,14,opt,name=effort,proto3" json:"effort,omitempty"`
+	// initial_input_path, when non-empty, is a bossd-chosen private path (beside
+	// the agent log, never inside the worktree) for the rendered first input.
+	// bossd sets it only for a fresh launch whose input must be submitted. A
+	// plugin that consumes the input writes its rendered form there (mode 0600)
+	// and returns argv that reads the file at exec time through the login shell,
+	// so a long first input never travels through tmux's command buffer. Empty
+	// keeps the legacy behaviour.
+	InitialInputPath string `protobuf:"bytes,15,opt,name=initial_input_path,json=initialInputPath,proto3" json:"initial_input_path,omitempty"`
+	// hook_port is the loopback port of bossd's hook server, set on a tmux launch.
+	// A runner that can confirm its first input reached the agent installs a
+	// receipt hook that POSTs /hooks/prompt-submitted/{session_id} to it and
+	// answers can_confirm_delivery. 0 means no hook server is available.
+	HookPort      int32 `protobuf:"varint,16,opt,name=hook_port,json=hookPort,proto3" json:"hook_port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3968,6 +3981,20 @@ func (x *BuildInteractiveCommandRequest) GetEffort() string {
 	return ""
 }
 
+func (x *BuildInteractiveCommandRequest) GetInitialInputPath() string {
+	if x != nil {
+		return x.InitialInputPath
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetHookPort() int32 {
+	if x != nil {
+		return x.HookPort
+	}
+	return 0
+}
+
 type BuildInteractiveCommandResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Argv  []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
@@ -3991,8 +4018,15 @@ type BuildInteractiveCommandResponse struct {
 	// the host logs describes what bossd BUILT (and therefore what was dropped),
 	// not a per-class handshake.
 	AppendSystemPromptSupport AppendSystemPromptSupport `protobuf:"varint,5,opt,name=append_system_prompt_support,json=appendSystemPromptSupport,proto3,enum=bossanova.v1.AppendSystemPromptSupport" json:"append_system_prompt_support,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// True when this launch consumes its first input from argv AND the runner
+	// can confirm the agent submitted it: Claude through its prompt-submitted
+	// receipt hook (keyed by session_id), Codex through a user message in its
+	// rollout timestamped at or after launch. bossd then waits for that receipt
+	// and fails the start when it never arrives. False keeps the unverified
+	// argv start (e.g. opencode).
+	CanConfirmDelivery bool `protobuf:"varint,6,opt,name=can_confirm_delivery,json=canConfirmDelivery,proto3" json:"can_confirm_delivery,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandResponse) Reset() {
@@ -4058,6 +4092,13 @@ func (x *BuildInteractiveCommandResponse) GetAppendSystemPromptSupport() AppendS
 		return x.AppendSystemPromptSupport
 	}
 	return AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_UNSPECIFIED
+}
+
+func (x *BuildInteractiveCommandResponse) GetCanConfirmDelivery() bool {
+	if x != nil {
+		return x.CanConfirmDelivery
+	}
+	return false
 }
 
 type ResolveInteractiveSessionIDRequest struct {
@@ -6337,7 +6378,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xe2\x04\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xad\x05\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -6349,18 +6390,21 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x14append_system_prompt\x18\a \x01(\tR\x12appendSystemPrompt\x12\x14\n" +
 	"\x05model\x18\b \x01(\tR\x05model\x12g\n" +
 	"\x0fconfig_home_env\x18\r \x03(\v2?.bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntryR\rconfigHomeEnv\x12\x16\n" +
-	"\x06effort\x18\x0e \x01(\tR\x06effort\x1a@\n" +
+	"\x06effort\x18\x0e \x01(\tR\x06effort\x12,\n" +
+	"\x12initial_input_path\x18\x0f \x01(\tR\x10initialInputPath\x12\x1b\n" +
+	"\thook_port\x18\x10 \x01(\x05R\bhookPort\x1a@\n" +
 	"\x12ConfigHomeEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rR\x0fmcp_config_pathR\x11strict_mcp_configR\x17managed_mcp_config_pathR\x19strict_managed_mcp_config\"\x9f\x02\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rR\x0fmcp_config_pathR\x11strict_mcp_configR\x17managed_mcp_config_pathR\x19strict_managed_mcp_config\"\xd1\x02\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +
 	"\x0ecommand_prefix\x18\x03 \x01(\tR\rcommandPrefix\x124\n" +
 	"\x16consumes_initial_input\x18\x04 \x01(\bR\x14consumesInitialInput\x12h\n" +
-	"\x1cappend_system_prompt_support\x18\x05 \x01(\x0e2'.bossanova.v1.AppendSystemPromptSupportR\x19appendSystemPromptSupport\"\xc7\x02\n" +
+	"\x1cappend_system_prompt_support\x18\x05 \x01(\x0e2'.bossanova.v1.AppendSystemPromptSupportR\x19appendSystemPromptSupport\x120\n" +
+	"\x14can_confirm_delivery\x18\x06 \x01(\bR\x12canConfirmDelivery\"\xc7\x02\n" +
 	"\"ResolveInteractiveSessionIDRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x120\n" +
 	"\x14requested_session_id\x18\x02 \x01(\tR\x12requestedSessionId\x12A\n" +

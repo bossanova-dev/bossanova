@@ -2,6 +2,7 @@ package mcpcontract
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/projectconfig"
 	"github.com/recurser/bossd/internal/testharness"
 )
 
@@ -288,4 +290,199 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 		_, err := h.Client.UpdateNote(ctx, connect.NewRequest(backend.updateNote))
 		assertNotMissingRequired(t, "update_note", err)
 	})
+}
+
+// projectForwardBackend forwards the handful of local methods the project
+// config tools call to a real bossd over the harness client, counts every
+// write, and implements bossmcp.ProjectLocalBackend with a fixed identity and
+// branch. Like captureBackend it embeds a nil bossmcp.Backend, so any other
+// method panics if called.
+type projectForwardBackend struct {
+	bossmcp.Backend
+	client interface {
+		ResolveContext(context.Context, *connect.Request[pb.ResolveContextRequest]) (*connect.Response[pb.ResolveContextResponse], error)
+		ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
+		ValidateRepoPath(context.Context, *connect.Request[pb.ValidateRepoPathRequest]) (*connect.Response[pb.ValidateRepoPathResponse], error)
+		RegisterRepo(context.Context, *connect.Request[pb.RegisterRepoRequest]) (*connect.Response[pb.RegisterRepoResponse], error)
+		UpdateRepo(context.Context, *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error)
+		ListCronJobs(context.Context, *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error)
+		CreateCronJob(context.Context, *connect.Request[pb.CreateCronJobRequest]) (*connect.Response[pb.CreateCronJobResponse], error)
+		UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error)
+		DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error)
+	}
+	writes int
+}
+
+var _ bossmcp.ProjectLocalBackend = (*projectForwardBackend)(nil)
+
+func (b *projectForwardBackend) ProjectDaemonIdentity(context.Context) (projectconfig.DaemonIdentity, string, error) {
+	return projectconfig.DaemonIdentity{ID: "d-contract", DisplayName: "contract-daemon"}, "", nil
+}
+
+func (b *projectForwardBackend) CheckoutBranch(context.Context, string) (string, bool) {
+	return "main", true
+}
+
+func (b *projectForwardBackend) ResolveContext(ctx context.Context, dir string) (*pb.ResolveContextResponse, error) {
+	resp, err := b.client.ResolveContext(ctx, connect.NewRequest(&pb.ResolveContextRequest{WorkingDirectory: dir}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (b *projectForwardBackend) ListRepos(ctx context.Context) ([]*pb.Repo, error) {
+	resp, err := b.client.ListRepos(ctx, connect.NewRequest(&pb.ListReposRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRepos(), nil
+}
+
+func (b *projectForwardBackend) ValidateRepoPath(ctx context.Context, p string) (*pb.ValidateRepoPathResponse, error) {
+	resp, err := b.client.ValidateRepoPath(ctx, connect.NewRequest(&pb.ValidateRepoPathRequest{LocalPath: p}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (b *projectForwardBackend) RegisterRepo(ctx context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {
+	b.writes++
+	resp, err := b.client.RegisterRepo(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRepo(), nil
+}
+
+func (b *projectForwardBackend) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	b.writes++
+	resp, err := b.client.UpdateRepo(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRepo(), nil
+}
+
+func (b *projectForwardBackend) ListCronJobs(ctx context.Context) ([]*pb.CronJob, error) {
+	resp, err := b.client.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetCronJobs(), nil
+}
+
+func (b *projectForwardBackend) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	b.writes++
+	resp, err := b.client.CreateCronJob(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetCronJob(), nil
+}
+
+func (b *projectForwardBackend) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	b.writes++
+	resp, err := b.client.UpdateCronJob(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetCronJob(), nil
+}
+
+func (b *projectForwardBackend) DeleteCronJob(ctx context.Context, id string) error {
+	b.writes++
+	_, err := b.client.DeleteCronJob(ctx, connect.NewRequest(&pb.DeleteCronJobRequest{Id: id}))
+	return err
+}
+
+// callProjectTool drives one project config tool and decodes its result.
+func callProjectTool(t *testing.T, backend bossmcp.Backend, tool string, args map[string]any) (plan projectconfig.Plan, converged, applied bool, errText string) {
+	t.Helper()
+	server := mcp.NewServer(&mcp.Implementation{Name: "bossanova", Version: "test"}, nil)
+	bossmcp.RegisterTools(server, backend, bossmcp.Options{})
+	client := mcp.NewClient(&mcp.Implementation{Name: "contract", Version: "0.0.0"}, nil)
+	st, ct := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer cs.Close() //nolint:errcheck // test cleanup
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool %s: transport error: %v", tool, err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool %s: tool error: %s", tool, toolText(res))
+	}
+	var out struct {
+		Plan      projectconfig.Plan `json:"plan"`
+		Converged bool               `json:"converged"`
+		Applied   *bool              `json:"applied"`
+		Error     string             `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(toolText(res)), &out); err != nil {
+		t.Fatalf("%s result: %v\n%s", tool, err, toolText(res))
+	}
+	return out.Plan, out.Converged, out.Applied != nil && *out.Applied, out.Error
+}
+
+// TestMCPApplyProjectConfigAgainstDaemon applies a project config through
+// apply_project_config against a real bossd: every request the engine builds
+// must pass the daemon's validation, the echoed cron must carry the project
+// marker, and the next diff must be converged and the next apply write nothing.
+func TestMCPApplyProjectConfigAgainstDaemon(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	seed := config.DefaultSettings()
+	seed.WorktreeBaseDir = filepath.Join(t.TempDir(), "global-worktrees")
+	if err := config.SaveTo(settingsPath, seed); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	h := testharness.New(t)
+	ctx := context.Background()
+
+	repoDir, err := filepath.EvalSymlinks(testharness.TempRepoDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]any{
+		"version": 1, "project": "contract",
+		// The harness's git reports this origin for every checkout.
+		"repo":    map[string]any{"originUrl": "https://github.com/test/repo"},
+		"daemons": []any{map[string]any{"name": "contract-daemon", "daemonId": "d-contract", "path": repoDir}},
+		// Disabled: the harness daemon runs no cron scheduler to load an
+		// enabled job into (create_cron_job's contract case does the same).
+		"crons": []any{map[string]any{"name": "nightly", "prompt": "/nightly", "schedule": "0 3 * * *", "enabled": false}},
+	}
+	backend := &projectForwardBackend{client: h.Client}
+	args := map[string]any{"config": cfg, "working_dir": repoDir, "dry_run": false}
+
+	plan, _, applied, errText := callProjectTool(t, backend, "apply_project_config", args)
+	if !applied || errText != "" {
+		t.Fatalf("apply: applied=%v error=%q\n%s", applied, errText, plan.Text())
+	}
+	if backend.writes != 2 {
+		t.Fatalf("apply issued %d writes, want the registration and the cron create", backend.writes)
+	}
+	jobs, err := h.Client.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := jobs.Msg.GetCronJobs(); len(got) != 1 || got[0].GetName() != "nightly" || got[0].GetManagedBy() != "boss-project:contract" {
+		t.Fatalf("daemon cron jobs %v, want nightly marked boss-project:contract", got)
+	}
+
+	if plan, converged, _, _ := callProjectTool(t, backend, "diff_project_config", map[string]any{"config": cfg, "working_dir": repoDir}); !converged {
+		t.Fatalf("diff after apply is not converged:\n%s", plan.Text())
+	}
+	before := backend.writes
+	if _, _, applied, errText := callProjectTool(t, backend, "apply_project_config", args); !applied || errText != "" || backend.writes != before {
+		t.Fatalf("second apply: applied=%v error=%q writes=%d", applied, errText, backend.writes-before)
+	}
 }

@@ -89,6 +89,10 @@ type fakeCommandHandler struct {
 	// channel is closed (BOS-1418 reader-wedge test).
 	launchBlock  chan struct{}
 	launchResult *pb.LaunchTriggerSessionResult
+	// gateBlock, when non-nil, makes RunTriggerGate block until the channel is
+	// closed (BOS-1467 reader-wedge test).
+	gateBlock  chan struct{}
+	gateResult *pb.RunTriggerGateResult
 	// switchBlock, when non-nil, makes SwitchAccount block until the channel
 	// is closed. Used to prove a slow switch no longer wedges the command
 	// reader (BOS-897).
@@ -420,6 +424,12 @@ func (f *fakeCommandHandler) LaunchTriggerSession(_ context.Context, _ *pb.Launc
 		<-f.launchBlock
 	}
 	return f.launchResult, pb.CommandResult_ERROR_CODE_UNSPECIFIED, f.returnErr
+}
+func (f *fakeCommandHandler) RunTriggerGate(_ context.Context, _ *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error) {
+	if f.gateBlock != nil {
+		<-f.gateBlock
+	}
+	return f.gateResult, pb.CommandResult_ERROR_CODE_UNSPECIFIED, f.returnErr
 }
 func (f *fakeCommandHandler) EmptyTrash(_ context.Context, olderThan *timestamppb.Timestamp) (int32, error) {
 	f.emptyTrashOlderThan = olderThan

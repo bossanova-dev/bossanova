@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1212,4 +1214,84 @@ func postFinalize(t *testing.T, base, sessionID, auth string) int {
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode
+}
+
+// fakePromptReceipts records RecordPromptSubmitted calls.
+type fakePromptReceipts struct {
+	mu    sync.Mutex
+	calls []string
+	at    []time.Time
+}
+
+func (f *fakePromptReceipts) RecordPromptSubmitted(agentSessionID string, at time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, agentSessionID)
+	f.at = append(f.at, at)
+	return true
+}
+
+func (f *fakePromptReceipts) recorded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func startPromptReceiptHookServer(t *testing.T, receipts PromptReceiptRecorder) string {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{PromptReceipts: receipts, Logger: zerolog.Nop()})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go func() { _ = hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+	})
+	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+}
+
+func postPromptSubmitted(t *testing.T, base, id, body string) int {
+	t.Helper()
+	resp, err := http.Post(base+"/hooks/prompt-submitted/"+id, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post prompt-submitted: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// The Claude UserPromptSubmit hook forwards its payload. A receipt is recorded
+// with its arrival time when the payload's session_id names the URL's chat (or
+// is absent/unparsable); every Claude in the worktree fires every entry, so a
+// payload naming another chat is acknowledged and dropped.
+func TestHookServer_PromptSubmittedRecordsMatchingReceipts(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+	before := time.Now()
+
+	if got := postPromptSubmitted(t, base, "agent-1", `{"session_id":"agent-1","hook_event_name":"UserPromptSubmit","prompt":"secret prompt"}`); got != http.StatusOK {
+		t.Fatalf("matching payload status = %d, want 200", got)
+	}
+	if got := postPromptSubmitted(t, base, "agent-1", `{"session_id":"sibling","prompt":"x"}`); got != http.StatusOK {
+		t.Fatalf("sibling payload status = %d, want 200", got)
+	}
+	if got := postPromptSubmitted(t, base, "agent-2", ``); got != http.StatusOK {
+		t.Fatalf("empty payload status = %d, want 200", got)
+	}
+	got := receipts.recorded()
+	if want := []string{"agent-1", "agent-2"}; !slices.Equal(got, want) {
+		t.Fatalf("recorded = %v, want %v (sibling payload dropped)", got, want)
+	}
+	if receipts.at[0].Before(before) {
+		t.Fatal("receipt must carry its arrival time")
+	}
+}
+
+func TestHookServer_PromptSubmittedWithoutRecorderIs500(t *testing.T) {
+	base := startPromptReceiptHookServer(t, nil)
+	if got := postPromptSubmitted(t, base, "agent-1", `{}`); got != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", got)
+	}
 }

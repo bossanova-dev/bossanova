@@ -3,7 +3,7 @@
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
 	debt-knip \
-	plugins plugins-all proof proof-plan proof-test proof-tui-prebuild readme-gifs release release-codex-check \
+	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
 	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse test-hermes-plugin grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
@@ -198,6 +198,10 @@ BOSS_HERMES_PLUGIN_FILES := $(shell find $(HERMES_PLUGIN_DIR) -maxdepth 1 -type 
 	$(shell find $(HERMES_PLUGIN_DIR)/skills -type f -name SKILL.md 2>/dev/null)
 BOSS_HERMES_PLUGIN_DIRS := $(HERMES_PLUGIN_DIR) $(HERMES_PLUGIN_DIR)/skills \
 	$(shell find $(HERMES_PLUGIN_DIR)/skills -mindepth 1 -type d 2>/dev/null)
+# PROJECTCONFIG_SCHEMA: lib/bossalib/projectconfig embeds exactly this one file,
+# so it is named rather than discovered; every binary that links the package
+# lists it, or editing the schema would leave that binary's embed stale.
+PROJECTCONFIG_SCHEMA := lib/bossalib/projectconfig/schema/boss-project.schema.json
 BOSSD_MIGRATION_FILES := $(shell find services/bossd/migrations -type f -name '*.sql' 2>/dev/null)
 BOSSD_MIGRATION_DIRS := services/bossd/migrations
 BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
@@ -419,29 +423,18 @@ setup-worktree:
 	else \
 		echo "pnpm or services/docs missing — skipping docs dep install (non-fatal)"; \
 	fi
-	@# Install the Playwright headless Chromium shell the boss-proof pipeline drives. Best
-	@# effort: guarded on pnpm + web node_modules and NEVER fatal — a worktree that
-	@# can't fetch Chromium still provisions; `node scripts/proof.mjs doctor` reports
-	@# the gap at run time (env-unavailable, not a crash). Host-level tools the proof
-	@# video path needs are NOT installable here: run `brew install agg ffmpeg`
-	@# (macOS) / your distro equivalent on the host once; doctor reports their absence.
+	@# Install the Playwright headless Chromium shell the verify skill's control CLI
+	@# (.claude/skills/verify) drives. Best effort: guarded on pnpm + web node_modules and
+	@# NEVER fatal — a worktree that can't fetch Chromium still provisions; the control
+	@# CLI's doctor reports the gap at run time. Host-level tools the evidence video path
+	@# needs are NOT installable here: run `brew install agg ffmpeg` (macOS) / your distro
+	@# equivalent on the host once; doctor reports their absence.
 	@if command -v pnpm >/dev/null 2>&1 && [ -d "$$WORKTREE_DIR/services/web/node_modules" ]; then \
-		echo "==> Installing Playwright chrome-headless-shell (boss-proof, best-effort)"; \
+		echo "==> Installing Playwright chrome-headless-shell (verify, best-effort)"; \
 		( cd "$$WORKTREE_DIR/services/web" && pnpm exec playwright install chromium-headless-shell ) \
-			|| echo "playwright install chromium-headless-shell failed — proof web/recipe capture unavailable (non-fatal)"; \
+			|| echo "playwright install chromium-headless-shell failed — verify browser capture unavailable (non-fatal)"; \
 	else \
 		echo "pnpm or services/web/node_modules missing — skipping Playwright chrome-headless-shell install (non-fatal)"; \
-	fi
-	@# Prebuild the TUI-proof bridge + boss-e2e binaries so a proof run in this
-	@# worktree reuses them instead of building inside the capture budget (BOS-215).
-	@# Best-effort: guarded on `go` and NEVER fatal — a worktree that can't build
-	@# still provisions; the proof dispatch falls back to an in-budget build.
-	@if command -v go >/dev/null 2>&1; then \
-		echo "==> Prebuilding TUI-proof binaries (bs-proof, best-effort)"; \
-		( cd "$$WORKTREE_DIR" && $(MAKE) proof-tui-prebuild ) \
-			|| echo "proof-tui-prebuild failed — TUI proof will build in-budget (non-fatal)"; \
-	else \
-		echo "go not found on PATH — skipping TUI-proof prebuild (non-fatal)"; \
 	fi
 	@# Approve direnv for the worktree so a developer's interactive shell doesn't hit
 	@# a "blocked" prompt. Covers a bare .env too: direnv's global load_dotenv treats
@@ -506,7 +499,7 @@ endif
 ## build: Build service binaries (generates protos first if needed)
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
-$(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES) $(BOSS_HERMES_PLUGIN_DIRS) $(BOSS_HERMES_PLUGIN_FILES)
+$(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES) $(BOSS_HERMES_PLUGIN_DIRS) $(BOSS_HERMES_PLUGIN_FILES) $(PROJECTCONFIG_SCHEMA)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
@@ -1088,7 +1081,7 @@ apiversion-check:
 	cd lib/bossalib && go test -count=1 -run 'Released|DefaultRegistry|OpenAPI|WebAPIVersion|Changelog|ProductionChanges' ./apiversion/
 
 ## post-rebase-check: Re-run deterministic checks and re-measure pinned values after a rebase.
-post-rebase-check: test-manifest lint-proto lint-proto-breaking proof-test apiversion-check
+post-rebase-check: test-manifest lint-proto lint-proto-breaking apiversion-check
 
 lint-bossalib: lint-check-version
 	node scripts/lint-affected.mjs --module lib/bossalib
@@ -1175,23 +1168,6 @@ test-manifest:
 
 test-docs:
 	$(MAKE) -C services/docs test
-
-proof:
-	node scripts/proof.mjs run
-
-proof-plan:
-	node scripts/proof.mjs plan
-
-proof-test:
-	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-video.test.mjs scripts/proof-video-intro.test.mjs scripts/proof-poster.test.mjs
-
-## proof-tui-prebuild: Build the TUI-proof bridge + boss-e2e binaries into ./bin so a
-## proof run reuses them instead of building inside the capture budget (BOS-215).
-## Always rebuilds — the binary paths are authoritative once written; the proof
-## dispatch only checks existence, so re-running this target owns freshness.
-proof-tui-prebuild:
-	go build -tags e2e -o $(BIN_DIR)/proof-tui-bridge ./services/boss/cmd/proof-tui-agent
-	go build -tags e2e -o $(BIN_DIR)/boss-e2e ./services/boss/cmd
 
 test-scripts:
 	$(MAKE) -C scripts test

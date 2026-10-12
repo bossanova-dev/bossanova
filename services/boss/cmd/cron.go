@@ -36,6 +36,7 @@ type cronJobJSON struct {
 	ShouldRunSetupCommand bool   `json:"run_setup_command"`
 	IsZeroOutput          bool   `json:"zero_output"`
 	ConcurrencyPolicy     string `json:"concurrency_policy"`
+	ManagedBy             string `json:"managed_by,omitempty"` // config-ownership marker; omitted when unmarked
 	LastRunSessionID      string `json:"last_run_session_id"`
 	LastRunAgentName      string `json:"last_run_agent_name"`
 	LastRunAt             string `json:"last_run_at"`
@@ -59,6 +60,7 @@ func cronJobToJSON(j *pb.CronJob) cronJobJSON {
 		ShouldRunSetupCommand: j.GetShouldRunSetupCommand(),
 		IsZeroOutput:          j.GetIsZeroOutput(),
 		ConcurrencyPolicy:     string(models.CronJobConcurrencyPolicyFromProto(j.GetConcurrencyPolicy())),
+		ManagedBy:             j.GetManagedBy(),
 		LastRunSessionID:      j.GetLastRunSessionId(),
 		LastRunAgentName:      j.GetLastRunAgentName(),
 		LastRunAt:             rfc3339OrEmpty(j.GetLastRunAt()),
@@ -191,6 +193,9 @@ func runCronShow(cmd *cobra.Command, id string) error {
 	fmt.Fprintf(&b, "Run setup command:   %s\n", boolLabel(job.GetShouldRunSetupCommand()))
 	fmt.Fprintf(&b, "Zero output:         %s\n", boolLabel(job.GetIsZeroOutput()))
 	fmt.Fprintf(&b, "Concurrency:         %s\n", models.CronJobConcurrencyPolicyFromProto(job.GetConcurrencyPolicy()))
+	if managedBy := job.GetManagedBy(); managedBy != "" {
+		fmt.Fprintf(&b, "Managed by:          %s\n", managedBy)
+	}
 	fmt.Fprintf(&b, "Last run session ID: %s\n", orDash(job.GetLastRunSessionId()))
 	fmt.Fprintf(&b, "Last run agent:      %s\n", lastRunAgentLabel(job))
 	fmt.Fprintf(&b, "Last run at:         %s\n", orDash(rfc3339OrEmpty(job.GetLastRunAt())))

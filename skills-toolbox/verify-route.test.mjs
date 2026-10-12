@@ -318,6 +318,21 @@ test('a human verdict posts needs-human and parks; tracker writes unavailable is
   assert.deepEqual(lines(sweep({}, u.deps())), ['#1 skipped: tracker writes unavailable'])
 })
 
+test('a set-valued park is posted unchanged and a set waiver is forwarded unchanged', () => {
+  const set = 'always-human-path,human-review:ui'
+  const w = world({ verdicts: { 1: { verdict: 'human', reason: set } } })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(w.posts()[0].slice(5, 9), ['--verdict', 'human', '--reason', set])
+  assert.deepEqual(lines(r), [`#1 parked: needs human (${set})`])
+
+  const approved = world({
+    candidates: [candidate(1, { approval: 'policy-park-approved', waive: set })],
+  })
+  sweep({}, approved.deps())
+  const judgeCall = approved.verbs().find((v) => v[0] === 'judge')
+  assert.equal(judgeCall[judgeCall.indexOf('--waive') + 1], set)
+})
+
 test('a wait verdict writes nothing and does not count against the batch', () => {
   const w = world({
     candidates: [candidate(1), candidate(2)],

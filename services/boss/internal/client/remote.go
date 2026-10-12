@@ -798,6 +798,29 @@ func (c *RemoteClient) ListOrganizations(ctx context.Context) ([]*pb.Organizatio
 	return resp.Msg.GetOrganizations(), nil
 }
 
+// ListDaemons returns the caller's own daemons in organizationID. Other
+// members' daemons are never in this list (the server returns them only as
+// session refs), so a project config's trigger placement resolves against the
+// caller's own fleet.
+func (c *RemoteClient) ListDaemons(ctx context.Context, organizationID string) ([]*pb.DaemonInfo, error) {
+	resp, err := c.rpc.ListDaemons(ctx, connect.NewRequest(&pb.ListDaemonsRequest{OrganizationId: &organizationID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetDaemons(), nil
+}
+
+// ListFleet returns the caller's own daemons in organizationID plus the minimal
+// refs of other members' daemons serving sessions the caller can see. A project
+// config tells "another member's daemon" from "your offline daemon" with it.
+func (c *RemoteClient) ListFleet(ctx context.Context, organizationID string) (own []*pb.DaemonInfo, peers []*pb.DaemonRef, err error) {
+	resp, err := c.rpc.ListDaemons(ctx, connect.NewRequest(&pb.ListDaemonsRequest{OrganizationId: &organizationID}))
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp.Msg.GetDaemons(), resp.Msg.GetSessionDaemons(), nil
+}
+
 // GetRepoOrganization returns the organization mapping for a repo origin, or a
 // nil mapping when the origin is unmapped. An unmapped origin is a miss, not an
 // error: the server answers an unset mapping and so does this.
@@ -1017,6 +1040,18 @@ func (c *RemoteClient) ListSessionWebhookEventTypes(ctx context.Context, organiz
 	return resp.Msg.GetEventTypes(), nil
 }
 
+// ListSessionWebhookFormats returns the built-in payload formats an endpoint
+// can pick, in canonical order.
+func (c *RemoteClient) ListSessionWebhookFormats(ctx context.Context, organizationID string) ([]*pb.SessionWebhookFormat, error) {
+	resp, err := c.rpc.ListSessionWebhookFormats(ctx, connect.NewRequest(&pb.ListSessionWebhookFormatsRequest{
+		OrganizationId: organizationID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetFormats(), nil
+}
+
 // ListSessionWebhooks returns the organization's endpoints, oldest first.
 func (c *RemoteClient) ListSessionWebhooks(ctx context.Context, organizationID string) ([]*pb.SessionWebhook, error) {
 	resp, err := c.rpc.ListSessionWebhooks(ctx, connect.NewRequest(&pb.ListSessionWebhooksRequest{
@@ -1149,7 +1184,15 @@ func canonicalRepoOriginURL(originURL string) string {
 // left empty so bosso resolves the caller's sole Ready daemon (FailedPrecondition
 // when the caller has more than one — never a silent guess).
 func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	return c.CreateCronJobOn(ctx, "", req)
+}
+
+// CreateCronJobOn proxies a cron-job create to the named daemon, carrying every
+// request field including the managed_by marker. An empty daemonID lets bosso
+// resolve the caller's sole Ready daemon.
+func (c *RemoteClient) CreateCronJobOn(ctx context.Context, daemonID string, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	resp, err := c.rpc.ProxyCreateCronJob(ctx, connect.NewRequest(&pb.ProxyCreateCronJobRequest{
+		DaemonId:              daemonID,
 		RepoId:                req.GetRepoId(),
 		Name:                  req.GetName(),
 		Prompt:                req.GetPrompt(),
@@ -1162,6 +1205,7 @@ func (c *RemoteClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobR
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 		IsZeroOutput:          req.IsZeroOutput,
 		ConcurrencyPolicy:     req.ConcurrencyPolicy,
+		ManagedBy:             req.GetManagedBy(),
 	}))
 	if err != nil {
 		return nil, err
@@ -1203,7 +1247,16 @@ func (c *RemoteClient) ListCronJobs(ctx context.Context, repoID string) ([]*pb.C
 // resolves the owning daemon by id (daemon_id left empty). Optional field
 // pointers pass straight through so an unset field leaves the value untouched.
 func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	return c.UpdateCronJobOn(ctx, "", req)
+}
+
+// UpdateCronJobOn proxies a cron-job update to the named daemon. Optional field
+// pointers, managed_by included, pass straight through, so an absent marker
+// stays absent rather than becoming a clear. An empty daemonID lets bosso
+// resolve the owning daemon by id.
+func (c *RemoteClient) UpdateCronJobOn(ctx context.Context, daemonID string, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
 	resp, err := c.rpc.ProxyUpdateCronJob(ctx, connect.NewRequest(&pb.ProxyUpdateCronJobRequest{
+		DaemonId:              daemonID,
 		Id:                    req.GetId(),
 		Name:                  req.Name,
 		Prompt:                req.Prompt,
@@ -1216,6 +1269,7 @@ func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobR
 		ShouldRunSetupCommand: req.ShouldRunSetupCommand,
 		IsZeroOutput:          req.IsZeroOutput,
 		ConcurrencyPolicy:     req.ConcurrencyPolicy,
+		ManagedBy:             req.ManagedBy,
 	}))
 	if err != nil {
 		return nil, err
@@ -1226,8 +1280,35 @@ func (c *RemoteClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobR
 // DeleteCronJob proxies a cron-job delete through the orchestrator, resolving the
 // owning daemon by id (daemon_id left empty).
 func (c *RemoteClient) DeleteCronJob(ctx context.Context, id string) error {
-	_, err := c.rpc.ProxyDeleteCronJob(ctx, connect.NewRequest(&pb.ProxyDeleteCronJobRequest{Id: id}))
+	return c.DeleteCronJobOn(ctx, "", id)
+}
+
+// DeleteCronJobOn proxies a cron-job delete to the named daemon. An empty
+// daemonID lets bosso resolve the owning daemon by id.
+func (c *RemoteClient) DeleteCronJobOn(ctx context.Context, daemonID, id string) error {
+	_, err := c.rpc.ProxyDeleteCronJob(ctx, connect.NewRequest(&pb.ProxyDeleteCronJobRequest{DaemonId: daemonID, Id: id}))
 	return err
+}
+
+// ListCronJobsWithDaemon lists the cron jobs of the caller's daemons in
+// organizationID, each tagged with the daemon that owns it. The read is narrowed
+// to that organization, so it fails whole rather than serving a partial union.
+func (c *RemoteClient) ListCronJobsWithDaemon(ctx context.Context, organizationID string) ([]*pb.CronJobWithDaemon, error) {
+	resp, err := c.rpc.ProxyListCronJobs(ctx, connect.NewRequest(&pb.ProxyListCronJobsRequest{OrganizationId: &organizationID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetJobs(), nil
+}
+
+// ListReposAggregated lists the repos the caller's daemons in organizationID
+// serve, one entry per origin with a ref for every serving daemon.
+func (c *RemoteClient) ListReposAggregated(ctx context.Context, organizationID string) ([]*pb.AggregatedRepo, error) {
+	resp, err := c.rpc.ProxyListReposAggregated(ctx, connect.NewRequest(&pb.ProxyListReposAggregatedRequest{OrganizationId: &organizationID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRepos(), nil
 }
 
 // RunCronJobNow proxies a manual cron-job fire through the orchestrator,

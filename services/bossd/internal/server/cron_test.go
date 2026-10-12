@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -830,5 +831,156 @@ func TestUpdateCronJobConcurrencyPolicy(t *testing.T) {
 	}
 	if stored.ConcurrencyPolicy != models.CronJobConcurrencyPolicyCancelInProgress {
 		t.Fatalf("stored ConcurrencyPolicy = %q, want cancel_in_progress", stored.ConcurrencyPolicy)
+	}
+}
+
+// TestCronJobManagedBy pins the config-ownership marker contract: create
+// persists and echoes it, list echoes it, update sets it when present, leaves
+// it when absent and clears it on "", and a malformed marker is
+// InvalidArgument on both create and update without writing anything.
+func TestCronJobManagedBy(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	listManagedBy := func(t *testing.T, id string) string {
+		t.Helper()
+		resp, err := srv.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+		if err != nil {
+			t.Fatalf("ListCronJobs: %v", err)
+		}
+		for _, j := range resp.Msg.CronJobs {
+			if j.Id == id {
+				return j.ManagedBy
+			}
+		}
+		t.Fatalf("ListCronJobs: job %s missing", id)
+		return ""
+	}
+
+	const marker = "boss-project:bossanova"
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "Managed",
+		Prompt:    "do it",
+		Schedule:  "@daily",
+		AgentName: "codex",
+		ManagedBy: marker,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob(marker): %v", err)
+	}
+	id := created.Msg.CronJob.Id
+	if got := created.Msg.CronJob.ManagedBy; got != marker {
+		t.Fatalf("create response ManagedBy = %q, want %q", got, marker)
+	}
+	if got := listManagedBy(t, id); got != marker {
+		t.Fatalf("list ManagedBy after create = %q, want %q", got, marker)
+	}
+
+	other := "boss-project:other"
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{Id: id, ManagedBy: &other}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(other): %v", err)
+	}
+	if got := updated.Msg.CronJob.ManagedBy; got != other {
+		t.Fatalf("update response ManagedBy = %q, want %q", got, other)
+	}
+	if got := listManagedBy(t, id); got != other {
+		t.Fatalf("list ManagedBy after update = %q, want %q", got, other)
+	}
+
+	newPrompt := "do it again"
+	omitted, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{Id: id, Prompt: &newPrompt}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(omitted): %v", err)
+	}
+	if got := omitted.Msg.CronJob.ManagedBy; got != other {
+		t.Fatalf("omitted update ManagedBy = %q, want %q (unchanged)", got, other)
+	}
+
+	for _, bad := range []string{
+		"boss-project:Bad_Slug",
+		"other:x",
+		"boss-project:",
+		"boss-project:" + strings.Repeat("a", 70),
+	} {
+		_, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+			RepoId:    repoID,
+			Name:      "Bad " + bad,
+			Prompt:    "do it",
+			Schedule:  "@daily",
+			AgentName: "codex",
+			ManagedBy: bad,
+		}))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("CreateCronJob(%q) err = %v (code %v), want InvalidArgument", bad, err, connect.CodeOf(err))
+		}
+		_, err = srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{Id: id, ManagedBy: &bad}))
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Errorf("UpdateCronJob(%q) err = %v (code %v), want InvalidArgument", bad, err, connect.CodeOf(err))
+		}
+	}
+	jobs, err := srv.cronJobs.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("rejected creates left %d rows, want 1", len(jobs))
+	}
+	if jobs[0].ManagedBy != other {
+		t.Fatalf("after rejected updates: stored ManagedBy = %q, want %q (unchanged)", jobs[0].ManagedBy, other)
+	}
+
+	empty := ""
+	cleared, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{Id: id, ManagedBy: &empty}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob(clear): %v", err)
+	}
+	if got := cleared.Msg.CronJob.ManagedBy; got != "" {
+		t.Fatalf("clear update ManagedBy = %q, want empty", got)
+	}
+	if got := listManagedBy(t, id); got != "" {
+		t.Fatalf("list ManagedBy after clear = %q, want empty", got)
+	}
+
+	unmarked, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "Unmarked",
+		Prompt:    "do it",
+		Schedule:  "@daily",
+		AgentName: "codex",
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob(unmarked): %v", err)
+	}
+	if got := unmarked.Msg.CronJob.ManagedBy; got != "" {
+		t.Fatalf("unmarked create ManagedBy = %q, want empty", got)
+	}
+}
+
+// TestValidCronManagedBy pins the managed_by marker boundaries: empty or
+// "boss-project:" plus a lowercase slug of 1-63 chars that starts alphanumeric.
+func TestValidCronManagedBy(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{"empty", "", true},
+		{"short slug", "boss-project:a", true},
+		{"63-char slug", "boss-project:" + strings.Repeat("a", 63), true},
+		{"64-char slug", "boss-project:" + strings.Repeat("a", 64), false},
+		{"leading hyphen", "boss-project:-a", false},
+		{"uppercase", "boss-project:Abc", false},
+		{"missing prefix", "abc", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validCronManagedBy(tc.in)
+			if (err == nil) != tc.ok {
+				t.Errorf("validCronManagedBy(%q) err = %v, want ok=%v", tc.in, err, tc.ok)
+			}
+		})
 	}
 }

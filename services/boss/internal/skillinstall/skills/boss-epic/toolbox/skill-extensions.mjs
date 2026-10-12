@@ -33,7 +33,14 @@ const BUILTIN_EXTENSION_FILE = 'EXTENSION.md'
 //                    returns a `SurfaceRun` (see the agent-driver contract doc).
 // The verify role's one rule the outcome classifier must recognise without matching prose.
 export const VERIFY_PASS_WITHOUT_EVIDENCE = 'pass requires at least one evidence item'
-export const VERIFY_VERDICTS = Object.freeze(['pass', 'fail', 'abstain'])
+export const VERIFY_VERDICTS = Object.freeze(['pass', 'fail', 'abstain', 'human', 'wait'])
+// The shape of a `human` verdict's `reason`. Membership in the verify gate's closed park-code list is
+// checked by classifyVerifyOutcome against the list its caller injects (importing that list here
+// would be a cycle); an unknown reason is a malfunction.
+export const VERIFY_HUMAN_REASON = /^human-review:[a-z][a-z-]*$/
+// The shape of a `wait` verdict's `reason`: a short kebab-case code the verify stage posts as
+// `waiting: <reason>` (for example `stack-busy`).
+export const VERIFY_WAIT_REASON = /^[a-z][a-z-]*$/
 const nonEmptyString = (value) => typeof value === 'string' && value.trim() !== ''
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -65,6 +72,18 @@ function refineVerify(envelope) {
     envelope.findings.length === 0
   )
     errors.push('fail requires at least one finding')
+  if (envelope.verdict === 'human') {
+    if (typeof envelope.reason !== 'string' || !VERIFY_HUMAN_REASON.test(envelope.reason))
+      errors.push('human requires a reason of the form human-review:<category>')
+    if (Array.isArray(envelope.evidence) && envelope.evidence.length === 0)
+      errors.push('human requires at least one evidence item')
+  }
+  if (envelope.verdict === 'wait') {
+    if (typeof envelope.reason !== 'string' || !VERIFY_WAIT_REASON.test(envelope.reason))
+      errors.push('wait requires a reason of the form <kebab-case-code>')
+    if (Array.isArray(envelope.findings) && envelope.findings.length > 0)
+      errors.push('wait must not carry findings')
+  }
   return errors
 }
 
@@ -81,6 +100,34 @@ function refineRelease(result) {
   return errors
 }
 
+// A maintenance extension's outcomes. `filed` and `tracked` claim a tracker issue exists, so they
+// must name at least one; the rest legitimately report none.
+export const MAINTENANCE_OUTCOMES = Object.freeze([
+  'clean',
+  'tracked',
+  'filed',
+  'previewed',
+  'skipped',
+])
+const MAINTENANCE_NEEDS_ISSUE = new Set(['filed', 'tracked'])
+
+function refineMaintenance(result) {
+  const errors = []
+  if (!MAINTENANCE_OUTCOMES.includes(result.outcome))
+    errors.push(`outcome must be one of ${MAINTENANCE_OUTCOMES.join(', ')}`)
+  if (!nonEmptyString(result.summary)) errors.push('summary must be a non-empty string')
+  if (!Array.isArray(result.issues)) {
+    if ('issues' in result) errors.push('issues must be an array')
+    return errors
+  }
+  result.issues.forEach((issue, idx) => {
+    if (!nonEmptyString(issue)) errors.push(`issue ${idx} must be a non-empty string`)
+  })
+  if (MAINTENANCE_NEEDS_ISSUE.has(result.outcome) && !result.issues.some(nonEmptyString))
+    errors.push(`${result.outcome} requires at least one issue identifier`)
+  return errors
+}
+
 export const EXTENSION_ROLES = {
   release: {
     kind: 'fields',
@@ -89,9 +136,18 @@ export const EXTENSION_ROLES = {
     refine: refineRelease,
   },
   // A verify extension judges one PR head for the verify stage. `pass` must cite evidence and
-  // `fail` must name a finding; `abstain` is advisory. Outcome classification (crash, timeout,
+  // `fail` must name a finding; `human` parks for a person with a named `human-review:<category>`
+  // reason and must cite evidence; `wait` asks the verify stage to retry later with a kebab-case
+  // reason and no findings; `abstain` is advisory. Outcome classification (crash, timeout,
   // malformed result, optional extensions) lives in `classifyVerifyOutcome` below.
   verify: { kind: 'fields', keys: ['verdict', 'evidence', 'findings'], refine: refineVerify },
+  // A maintenance extension keeps a repo artifact current after a retro and reports what it did —
+  // found nothing, saw it already tracked, filed an issue, previewed one (dry-run), or skipped.
+  maintenance: {
+    kind: 'fields',
+    keys: ['outcome', 'summary', 'issues'],
+    refine: refineMaintenance,
+  },
   lens: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   round: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   surface: { kind: 'items', keys: ['path', 'caption', 'evidenceTokens'] },
@@ -177,6 +233,9 @@ export const SKIP_REASONS = {
   // The extension declares `modes` and the requested mode is not among them — the declaration
   // working as intended, so a core's ledger must not report it as a recoverable miss.
   'mode-not-declared': { deliberate: true },
+  // A verify extension's `applies` is present but is not a repo-relative script path (absolute, a
+  // `..` segment, empty or not a string): a failed declaration, never read as "always applies".
+  'invalid-applies': { deliberate: false },
 }
 
 // Builds one `skipped` entry. `reason` strings are deliberately unchanged from before the codes
@@ -355,6 +414,23 @@ export function extensionMarker(frontmatter) {
   // the string "true" (any case) declares it; any other value means required, the stricter reading,
   // and omits the field so an undeclared descriptor's JSON is byte-identical to before the key.
   if (parseOptional(block.optional)) marker.optional = true
+  // Optional `applies: <repo-relative script>`, meaningful only for `role: verify`: the zero-token
+  // applicability check the verify gate runs before dispatching the extension. Absent omits the
+  // field (byte-identical descriptor); an unusable value is omitted here and reported by discovery
+  // as `invalid-applies`. On any other role the key is inert.
+  if (block.role === 'verify') {
+    const applies = parseApplies(block.applies)
+    if (applies) marker.applies = applies
+    // Optional `malfunctionReason: human-review:<category>`: the human-review reason the verify gate
+    // parks with, beside `extension-failed`, when this extension malfunctions. Kept only when it has
+    // the human-review reason shape; an invalid value is dropped WITHOUT skipping the extension, so a
+    // typo still leaves the `extension-failed` park instead of skipping a judge (failing open).
+    if (
+      typeof block.malfunctionReason === 'string' &&
+      VERIFY_HUMAN_REASON.test(block.malfunctionReason)
+    )
+      marker.malfunctionReason = block.malfunctionReason
+  }
   if (block.role === 'release') {
     const environments = parseReleaseEnvironments(block.environments)
     if (environments) marker.environments = environments
@@ -370,6 +446,18 @@ function parseReleaseEnvironments(value) {
   const names = scalar.split(',').map((name) => name.trim().replace(/^(["'])(.*)\1$/, '$2'))
   if (names.some((name) => !/^[a-z0-9][a-z0-9._-]*$/.test(name))) return null
   return [...new Set(names)]
+}
+
+// A repo-relative script path with no `..` segment, normalised to forward slashes without a leading
+// `./`. Returns null for anything else: not a string, empty, absolute (POSIX, UNC or a drive), or
+// any segment that climbs out of the repository.
+function parseApplies(value) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim().replace(/\\/g, '/')
+  if (raw === '' || raw.startsWith('/') || /^[A-Za-z]:/.test(raw)) return null
+  const segments = raw.split('/').filter((segment) => segment !== '' && segment !== '.')
+  if (segments.length === 0 || segments.includes('..')) return null
+  return segments.join('/')
 }
 
 function parseOptional(value) {
@@ -582,6 +670,19 @@ function discoverExtensionsInRoot({
       )
       continue
     }
+    if (marker.role === 'verify') {
+      const declaredApplies = parsed.data['x-boss-extension'].applies
+      if (declaredApplies !== undefined && marker.applies === undefined) {
+        skipped.push(
+          skipEntry(
+            entry.name,
+            'invalid-applies',
+            'invalid "applies" (expected a repo-relative script path with no ".." segment)',
+          ),
+        )
+        continue
+      }
+    }
     if (mode !== undefined && marker.modes !== undefined && !marker.modes.includes(mode)) {
       skipped.push(
         skipEntry(
@@ -603,6 +704,9 @@ function discoverExtensionsInRoot({
     if (marker.capability !== undefined) descriptor.capability = marker.capability
     if (marker.modes !== undefined) descriptor.modes = marker.modes
     if (marker.optional === true) descriptor.optional = true
+    if (marker.applies !== undefined) descriptor.applies = marker.applies
+    if (marker.malfunctionReason !== undefined)
+      descriptor.malfunctionReason = marker.malfunctionReason
     for (const key of ['environments', 'state', 'tagPrefix'])
       if (marker[key] !== undefined) descriptor[key] = marker[key]
     if (builtin) descriptor.builtin = true
@@ -748,16 +852,22 @@ export const VERIFY_OUTCOME_REASONS = Object.freeze([
   'abstain',
   'pass',
   'fail',
+  'human',
+  'wait',
 ])
 
 // Classifies one dispatched verify extension: `{result, timedOut, crashed, optional}` →
-// `{outcome: ok|failed|abstain, reason, verdict}`. First match wins; `optional: true` turns every
-// malfunction into `abstain` while keeping its `reason`. Never throws.
+// `{outcome: ok|failed|abstain, reason, verdict}` (plus `humanReason` for a `human`, `waitReason`
+// for a `wait`; a `wait` is a valid verdict even from an optional extension). First match
+// wins; `optional: true` turns every malfunction into `abstain` while keeping its `reason`. When
+// `humanReasons` is an array, a `human` reason outside it is a `malformed-result` malfunction that
+// still carries the `humanReason` it named. Never throws.
 export function classifyVerifyOutcome({
   result,
   timedOut = false,
   crashed = false,
   optional = false,
+  humanReasons,
 } = {}) {
   const malfunction = (reason) => ({
     outcome: optional === true ? 'abstain' : 'failed',
@@ -774,6 +884,14 @@ export function classifyVerifyOutcome({
     return malfunction(onlyMissingEvidence ? 'pass-without-evidence' : 'malformed-result')
   }
   if (result.verdict === 'abstain') return { outcome: 'abstain', reason: 'abstain', verdict: null }
+  if (result.verdict === 'human') {
+    // A reason a person has no approval path for is a malformed result, not a park.
+    if (Array.isArray(humanReasons) && !humanReasons.includes(result.reason))
+      return { ...malfunction('malformed-result'), humanReason: result.reason }
+    return { outcome: 'ok', reason: 'human', verdict: 'human', humanReason: result.reason }
+  }
+  if (result.verdict === 'wait')
+    return { outcome: 'ok', reason: 'wait', verdict: 'wait', waitReason: result.reason }
   return { outcome: 'ok', reason: result.verdict, verdict: result.verdict }
 }
 
@@ -786,16 +904,22 @@ export const VERIFY_UNTRUSTED_TEXT_FIELDS = Object.freeze([
   'ticket.description',
 ])
 const VERIFY_CONTEXT_KEYS = Object.freeze(['pr', 'headSha', 'baseSha', 'changedPaths', 'ticket'])
+const VERIFY_CONTEXT_OPTIONAL_KEYS = Object.freeze(['range'])
+const VERIFY_RANGE_KEYS = Object.freeze(['kind', 'anchorSha'])
+const VERIFY_RANGE_KINDS = Object.freeze(['full', 'delta'])
 const FULL_SHA = /^[0-9a-f]{40}$/i
 
-// Validates the verify role's envelope context `{pr, headSha, baseSha, changedPaths, ticket}`.
-// Any other top-level key is an error, so a caller cannot smuggle instructions in beside the data.
+// Validates the verify role's envelope context `{pr, headSha, baseSha, changedPaths, ticket}` plus
+// the optional `range: {kind: 'full'|'delta', anchorSha}`, which says whether `changedPaths` is the
+// whole PR or its delta since an approval anchor (`anchorSha` may be null only on `full`). Any other
+// top-level key is an error, so a caller cannot smuggle instructions in beside the data.
 // Returns `{ok, errors}` and never throws.
 export function validateVerifyContext(context) {
   const errors = []
   if (!plainObject(context)) return { ok: false, errors: ['context is not an object'] }
   for (const key of Object.keys(context))
-    if (!VERIFY_CONTEXT_KEYS.includes(key)) errors.push(`unexpected context key "${key}"`)
+    if (!VERIFY_CONTEXT_KEYS.includes(key) && !VERIFY_CONTEXT_OPTIONAL_KEYS.includes(key))
+      errors.push(`unexpected context key "${key}"`)
   for (const key of VERIFY_CONTEXT_KEYS)
     if (!(key in context)) errors.push(`missing context key "${key}"`)
   const optionalStrings = (value, label, keys) => {
@@ -824,6 +948,25 @@ export function validateVerifyContext(context) {
   if ('ticket' in context && context.ticket !== null) {
     if (!plainObject(context.ticket)) errors.push('ticket must be null or an object')
     else optionalStrings(context.ticket, 'ticket', ['id', 'url', 'title', 'description'])
+  }
+  if ('range' in context) {
+    const range = context.range
+    if (!plainObject(range)) errors.push('range must be an object')
+    else {
+      for (const key of Object.keys(range))
+        if (!VERIFY_RANGE_KEYS.includes(key)) errors.push(`unexpected range key "${key}"`)
+      for (const key of VERIFY_RANGE_KEYS)
+        if (!(key in range)) errors.push(`missing range key "${key}"`)
+      if ('kind' in range && !VERIFY_RANGE_KINDS.includes(range.kind))
+        errors.push('range.kind must be "full" or "delta"')
+      const nullOnFull = range.anchorSha === null && range.kind === 'full'
+      if (
+        'anchorSha' in range &&
+        !nullOnFull &&
+        !(typeof range.anchorSha === 'string' && FULL_SHA.test(range.anchorSha))
+      )
+        errors.push('range.anchorSha must be a 40-hex SHA')
+    }
   }
   return { ok: errors.length === 0, errors }
 }

@@ -62,7 +62,7 @@ func reorderHome(t *testing.T) (HomeModel, *moveStubClient) {
 		{Id: "sess-3", Title: "Add rate limiting", RepoDisplayName: "bossanova"},
 	}
 	h.daemonWaitingReasons = map[string]string{
-		"sess-1": "awaiting checks_passed_ready on acme/widget#123",
+		"sess-1": "awaiting checks_failed on acme/widget#123",
 	}
 	h.buildTableRows()
 	if got, want := len(h.table.Rows()), len(h.sessions)+1; got != want {

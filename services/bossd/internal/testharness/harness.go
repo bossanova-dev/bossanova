@@ -309,6 +309,9 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		Accounts:        accounts,
 		GithubCallbacks: githubCallbacks,
 		Notes:           notes,
+		// The cron RPCs read and write this store. No scheduler is wired, so
+		// only a disabled job can be created through them.
+		CronJobs: cronJobs,
 		// In-memory credential store so account RPCs are exercisable without
 		// touching the real OS keyring. AccountSmokeRunner stays nil.
 		AccountCredentials: newMemAccountCreds(),
@@ -415,6 +418,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		Completer:       hostService,
 		QuestionSignals: questionsignal.NewStore(questionsignal.DefaultTTL),
 		QuestionAuth:    hostService,
+		PromptReceipts:  lifecycle,
 		Logger:          logger,
 	})
 	if err := hookSrv.Listen(); err != nil {

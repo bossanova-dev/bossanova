@@ -174,7 +174,7 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
   assert.ok(block, 'expectedTools declaration not found in contract_test.go')
   const expected = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1])
 
-  assert.equal(expected.length, 76, 'contract_test.go should list 76 tools')
+  assert.equal(expected.length, 79, 'contract_test.go should list 79 tools')
   assert.deepEqual([...parsed].sort(), [...expected].sort())
 })
 
@@ -206,7 +206,7 @@ test('the hosted parse over the real bossmcp sources equals manifest.go hostedTo
   // default read stays the local catalog alone.
   const withHosted = readRegisteredToolNames(REPO_ROOT, [], { includeHosted: true })
   const local = readRegisteredToolNames(REPO_ROOT, [])
-  assert.equal(local.size, 76, 'the default read should stay the 76-tool local catalog')
+  assert.equal(local.size, 79, 'the default read should stay the 79-tool local catalog')
   assert.equal(withHosted.size, local.size + expected.length)
   for (const name of expected) assert.ok(!local.has(name), `${name} leaked into the default set`)
 })
@@ -229,11 +229,11 @@ test('checkDocsMcpProps accepts a hosted tool while checkDocsToolCounts counts o
   assert.match(counts.out.join('\n'), /against 2 registered tools/)
 })
 
-test('the real repository tool-count claims still count only the 76-tool local catalog', () => {
+test('the real repository tool-count claims still count only the 79-tool local catalog', () => {
   const { result, out, err } = captureConsole(() => checkDocsToolCounts(REPO_ROOT))
 
   assert.equal(result, true, err.join('\n'))
-  assert.match(out.join('\n'), /against 76 registered tools/)
+  assert.match(out.join('\n'), /against 79 registered tools/)
 })
 
 test('checkDocsMcpProps fails loudly when a hosted tool source file is missing', () => {

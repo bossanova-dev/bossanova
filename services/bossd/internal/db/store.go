@@ -508,6 +508,9 @@ type CreateCronJobParams struct {
 	// still in progress. Empty stores the default, skip. Persisted only — the
 	// scheduler does not honour it yet (BOS-1437).
 	ConcurrencyPolicy models.CronJobConcurrencyPolicy
+	// ManagedBy is the config-ownership marker ("boss-project:<project>");
+	// "" leaves the row unmarked. The server validates the shape.
+	ManagedBy string
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
@@ -525,6 +528,7 @@ type UpdateCronJobParams struct {
 	ShouldRunSetupCommand *bool                            // nil = don't update
 	IsZeroOutput          *bool                            // nil = don't update
 	ConcurrencyPolicy     *models.CronJobConcurrencyPolicy // nil = don't update
+	ManagedBy             *string                          // nil = don't update; "" = clear the marker
 }
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.

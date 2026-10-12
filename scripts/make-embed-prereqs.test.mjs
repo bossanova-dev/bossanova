@@ -54,6 +54,8 @@ const embedTargets = [
         recursive: true,
         filter: (name) => name === 'SKILL.md',
       },
+      // lib/bossalib/projectconfig: go:embed schema/boss-project.schema.json.
+      { file: 'lib/bossalib/projectconfig/schema/boss-project.schema.json' },
     ],
   },
   {
@@ -271,6 +273,7 @@ test('.generate.stamp lists every non-proto generator input as a prerequisite', 
  * `copy-skills`), extend `embedTargets`, and only then add the line here.
  */
 const embedSites = [
+  'lib/bossalib/projectconfig :: schema/boss-project.schema.json',
   'plugins/bossd-plugin-claude/skilldata :: all:skills',
   'plugins/bossd-plugin-opencode :: bossd-question.js',
   'services/boss/internal/hermes :: plugin/*.py plugin/skills/*/SKILL.md',

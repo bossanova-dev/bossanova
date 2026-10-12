@@ -41,6 +41,12 @@ type fakeTmuxClient struct {
 	sentMessages           []sentMessage
 	sendMessageErr         error
 	beforeSubmitSideEffect func()
+	// duringSend runs inside SendMessage before its result is decided — the
+	// window in which a real send's UserPromptSubmit receipt would arrive.
+	duringSend func()
+	// lastSubmitted is the receipt check the most recent SendMessage carried
+	// (SendHooks.Submitted); nil means the send had no receipt to consult.
+	lastSubmitted func() bool
 	// panePID / panePIDByName / panePIDErr model tmux list-panes for the
 	// codex provider-session fd resolver (BOS-290).
 	panePID       int
@@ -100,17 +106,21 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	f.hasSession = true
 	return nil
 }
-func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error {
+func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, hooks tmux.SendHooks) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastSubmitted = hooks.Submitted
+	if f.duringSend != nil {
+		f.duringSend()
+	}
 	if f.sendMessageErr != nil {
 		return f.sendMessageErr
 	}
 	if f.beforeSubmitSideEffect != nil {
 		f.beforeSubmitSideEffect()
 	}
-	if beforeSubmit != nil {
-		beforeSubmit()
+	if hooks.BeforeSubmit != nil {
+		hooks.BeforeSubmit()
 	}
 	f.sentMessages = append(f.sentMessages, sentMessage{
 		sessionName:         sessionName,
@@ -118,7 +128,7 @@ func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string
 		submit:              submit,
 		readyMarker:         readyMarker,
 		modal:               modal,
-		beforeSubmitPresent: beforeSubmit != nil,
+		beforeSubmitPresent: hooks.BeforeSubmit != nil,
 	})
 	return nil
 }

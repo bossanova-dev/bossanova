@@ -222,7 +222,7 @@ or uses other state or label names, set them in `.boss-skills.json` as
 ### Add the stage jobs
 
 Newer boss releases ship a `boss init` that asks a few questions and creates the
-plan, build and verify jobs for you; the
+plan, build, verify and retro jobs for you; the
 [in-repo factory guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md#set-it-up-with-boss-init)
 walks through it. If `boss init --help` does not mention cron jobs, your release
 predates it, so add the jobs by hand.
@@ -238,7 +238,7 @@ boss cron add --repo "$REPO_ID" --name factory-plan --schedule '*/15 * * * *' --
 boss cron add --repo "$REPO_ID" --name factory-build --schedule '*/15 * * * *' --prompt '/boss-build' --gate 'node "$HOME/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs"' --enabled=false
 boss cron add --repo "$REPO_ID" --name factory-verify --schedule '*/10 * * * *' --prompt '/boss-verify' --gate 'node "$HOME/.claude/skills/boss-verify/toolbox/cron-gates/boss-verify.mjs"' --enabled=false
 boss cron add --repo "$REPO_ID" --name factory-release --schedule '0 * * * *' --prompt '/boss-release' --gate 'node "$HOME/.claude/skills/boss-release/toolbox/cron-gates/boss-release.mjs"' --enabled=false
-boss cron add --repo "$REPO_ID" --name factory-retro --schedule '0 9 * * 1' --prompt '/boss-retro' --gate 'node "$HOME/.claude/skills/boss-retro/toolbox/cron-gates/boss-retro.mjs"' --enabled=false
+boss cron add --repo "$REPO_ID" --name factory-retro --schedule '23 9 * * 1' --prompt '/boss-retro' --gate 'node "$HOME/.claude/skills/boss-retro/toolbox/cron-gates/boss-retro.mjs"' --enabled=false
 boss cron ls --repo "$REPO_ID" --json
 ```
 

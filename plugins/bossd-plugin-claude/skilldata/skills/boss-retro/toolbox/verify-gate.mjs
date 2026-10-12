@@ -5,13 +5,15 @@
 // the one head-pinned merge path, detect a human hand-back, and re-arm the next-head callback.
 //
 // Verbs (each prints one JSON line on stdout):
-//   judge    --pr <n> [--repo o/r] [--extension-results <file>] [--waive <code>]   never writes
-//   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>]
+//   judge    --pr <n> [--repo o/r] [--extension-results <file>] [--waive <code>[,<code>…]]
+//                                                                                   never writes
+//   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>[,…]]
 //            [--findings <file>] [--token <t>] [--repo o/r] [--dry-run]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
 //   approval --pr <n> [--repo o/r]                                                   never writes
 //   rearm    --pr <n> --chat <id> [--repo o/r] [--dry-run]
 //   candidates [--ticket <id>] [--limit N] [--repo o/r] [selection flags]           never writes
+//   policy                                                                           never writes
 //
 // `--dry-run` on a writing verb still runs every read (the planned writes depend on them) and
 // prints `{dryRun: true, writes: [...]}` instead of calling anything mutating. Every subprocess goes
@@ -25,6 +27,7 @@ import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 import { isMainModule } from './main-module.mjs'
 import {
@@ -37,16 +40,28 @@ import {
   sharedEligibility,
 } from './merge-eligibility.mjs'
 import { CHECK_REASONS, CHECK_STATES } from './pr-check-state.mjs'
-import { RECEIPT_CONTEXT, classifyRead, postArgs, readArgs } from './commit-status.mjs'
 import {
+  DESCRIPTION_LIMIT,
+  RECEIPT_CONTEXT,
+  classifyRead,
+  postArgs,
+  readArgs,
+} from './commit-status.mjs'
+import {
+  CONFIG_FILENAME,
   DEFAULT_PIPELINE_LABELS,
   DEFAULT_TRACKER_STATES,
+  VERIFY_HUMAN_REVIEW_CATEGORIES,
+  extensionRootsFor,
   globToRegExp,
   labelName,
   loadSkillConfig,
   stageSelectionQuery,
   stateName,
+  unmatchedPolicyGlobs,
   verifyAlwaysHumanPaths,
+  verifyHumanReviewPaths,
+  verifyPolicyFromConfigText,
 } from './skill-config.mjs'
 import { effectiveSelection, parseSelectionFlags } from './selection.mjs'
 import {
@@ -74,6 +89,12 @@ export const VERIFY_DESCRIPTIONS = Object.freeze({
   defectParkedSuffix: ', needs human',
 })
 
+// The named human-review categories (`verifyDefaults.humanReview.<category>`) and the prefix their
+// park codes share. `unproven` is a code with no config category: the evidence step produces it.
+export const HUMAN_REVIEW_REASON_PREFIX = 'human-review:'
+export const HUMAN_REVIEW_CATEGORIES = VERIFY_HUMAN_REVIEW_CATEGORIES
+
+// The closed vocabulary of park codes. Its order is the report order of a set-valued park.
 export const HUMAN_REASONS = Object.freeze([
   'no-receipt',
   'repair-exhausted',
@@ -81,7 +102,28 @@ export const HUMAN_REASONS = Object.freeze([
   'ledger-open',
   'extension-failed',
   'no-session',
+  ...HUMAN_REVIEW_CATEGORIES.map((category) => `${HUMAN_REVIEW_REASON_PREFIX}${category}`),
+  `${HUMAN_REVIEW_REASON_PREFIX}unproven`,
 ])
+
+/**
+ * Parses a park-code set — a comma list (`a,b`) or an array — into HUMAN_REASONS order, deduped.
+ * Returns null when the set is empty or names any code outside the closed vocabulary, so a caller
+ * never acts on a partially understood set.
+ * @returns {string[] | null}
+ */
+export function parseHumanReasonList(value) {
+  const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : null
+  if (!parts) return null
+  const codes = new Set()
+  for (const part of parts) {
+    const code = typeof part === 'string' ? part.trim() : ''
+    if (!HUMAN_REASONS.includes(code)) return null
+    codes.add(code)
+  }
+  if (codes.size === 0) return null
+  return HUMAN_REASONS.filter((code) => codes.has(code))
+}
 
 export const VERIFY_VERDICTS = Object.freeze([
   'wait',
@@ -241,12 +283,24 @@ export function cleanReviewBody(body) {
 
 /**
  * Combines `verify` extension results. `results` is the parsed `--extension-results` file (an array
- * of `{extension, optional, timedOut, crashed?, result}`); `installed` is the discovered extension
- * list. An installed extension with no result entry counts as crashed. Any malfunction is a human
- * `extension-failed` verdict (repair cannot fix an extension); otherwise any valid `fail` is a
- * defect; otherwise pass. Result content is data and is never executed or followed.
+ * of `{extension, optional, timedOut, crashed?, result}`); `installed` is the applicable extension
+ * list. An installed extension with no result entry counts as crashed. Precedence is malfunction →
+ * defect → wait → human → pass: any malfunction is a human `extension-failed` verdict (repair cannot
+ * fix an extension), including a `human` result whose reason is outside HUMAN_REASONS; otherwise any
+ * valid `fail` is a defect; otherwise any valid `wait` waits with the first wait's reason (in result
+ * order), so evidence that could still find a defect runs before a person is paged; otherwise any
+ * valid `human` parks with its reasons; otherwise pass.
+ * `humanReasons` (HUMAN_REASONS order) and `waitReason` (or null) are returned whatever the
+ * verdict, so a caller can still wait on or park
+ * them when it ignores a malfunction. A required installed extension that malfunctions also adds
+ * the `malfunctionReason` its descriptor declares (when that reason is in HUMAN_REASONS), read from
+ * `installed` only, never from the results file. Result content is data, never executed or followed.
  */
 export function aggregateExtensions(results, installed = []) {
+  const declaredReasons = new Map()
+  for (const ext of Array.isArray(installed) ? installed : [])
+    if (text(ext?.name) && ext.optional !== true && HUMAN_REASONS.includes(ext.malfunctionReason))
+      declaredReasons.set(ext.name, ext.malfunctionReason)
   if (!Array.isArray(results))
     return {
       verdict: 'human',
@@ -254,6 +308,8 @@ export function aggregateExtensions(results, installed = []) {
       outcomes: [],
       failed: ['(results unreadable)'],
       findings: [],
+      humanReasons: HUMAN_REASONS.filter((code) => [...declaredReasons.values()].includes(code)),
+      waitReason: null,
     }
   const entries = results.filter((entry) => entry && typeof entry === 'object')
   const seen = new Set(entries.map((entry) => entry.extension).filter(text))
@@ -267,20 +323,33 @@ export function aggregateExtensions(results, installed = []) {
       timedOut: entry.timedOut === true,
       crashed: entry.crashed === true,
       optional: entry.optional === true,
+      humanReasons: HUMAN_REASONS,
     }),
   }))
   const failed = outcomes.filter((o) => o.outcome === 'failed').map((o) => o.extension)
+  const malfunctionReasons = outcomes
+    .filter((o) => o.outcome === 'failed')
+    .map((o) => declaredReasons.get(o.extension))
+  const humanReasons = HUMAN_REASONS.filter(
+    (code) =>
+      malfunctionReasons.includes(code) ||
+      outcomes.some((o) => o.outcome === 'ok' && o.verdict === 'human' && o.humanReason === code),
+  )
   const findings = []
   entries.forEach((entry, index) => {
     if (outcomes[index].outcome === 'ok' && outcomes[index].verdict === 'fail')
       for (const finding of entry.result.findings)
         findings.push({ extension: outcomes[index].extension, ...finding })
   })
-  if (failed.length > 0)
-    return { verdict: 'human', reason: 'extension-failed', outcomes, failed, findings }
-  if (findings.length > 0)
-    return { verdict: 'defect', reason: 'findings', outcomes, failed, findings }
-  return { verdict: 'pass', reason: 'verified', outcomes, failed, findings }
+  // `waitReason` is returned whatever the verdict, like `humanReasons`, so a caller that ignores a
+  // malfunction under a waiver still waits on the extensions that did run.
+  const waitReason = outcomes.find((o) => o.outcome === 'ok' && o.verdict === 'wait')?.waitReason
+  const out = { outcomes, failed, findings, humanReasons, waitReason: waitReason ?? null }
+  if (failed.length > 0) return { verdict: 'human', reason: 'extension-failed', ...out }
+  if (findings.length > 0) return { verdict: 'defect', reason: 'findings', ...out }
+  if (waitReason) return { verdict: 'wait', reason: waitReason, ...out }
+  if (humanReasons.length > 0) return { verdict: 'human', reason: humanReasons.join(','), ...out }
+  return { verdict: 'pass', reason: 'verified', ...out }
 }
 
 /**
@@ -301,9 +370,11 @@ export function classifyApproval({
   const via = labelRemoved ? 'label-removed' : approved ? 'review-approved' : null
   const description = typeof status?.description === 'string' ? status.description : ''
   if (status?.state === 'pending' && description.startsWith(VERIFY_DESCRIPTIONS.needsHuman)) {
-    const code = description.slice(VERIFY_DESCRIPTIONS.needsHuman.length).trim()
-    if (via && HUMAN_REASONS.includes(code))
-      return { approval: 'policy-park-approved', waive: code, via }
+    // A park names a set; the approval waives exactly that set, and only when every code is known.
+    const codes = parseHumanReasonList(
+      description.slice(VERIFY_DESCRIPTIONS.needsHuman.length).trim(),
+    )
+    if (via && codes) return { approval: 'policy-park-approved', waive: codes.join(','), via }
     return { approval: 'none' }
   }
   if (status?.state === 'failure' && description.startsWith(VERIFY_DESCRIPTIONS.defect)) {
@@ -339,7 +410,10 @@ export function splitEligibility(reasons) {
 
 /**
  * The verdict decision over gathered facts. Wait reasons win over human reasons: a wait writes
- * nothing and the next tick re-judges, while a human verdict pages a person.
+ * nothing and the next tick re-judges, while a human verdict pages a person. PR-state codes
+ * (`no-receipt`, `ledger-open`) park before extensions run; path codes do not, so an applicable
+ * extension's defect reaches repair before a person is paged. `f.extensions` is the applicable
+ * extension list and `f.extensionsNotApplicable` the names whose check said they do not apply.
  */
 export function decideVerdict(facts) {
   const f = facts
@@ -365,33 +439,53 @@ export function decideVerdict(facts) {
   // An unloadable config means the always-human policy is unknown, never empty.
   if (f.configUnreadable) return wait('config-unreadable')
 
-  // A waiver lifts exactly one human code; every wait reason above has already been checked.
-  const waive = f.waive ?? null
-  const human = []
-  if (f.receipt !== 'success') human.push('no-receipt')
-  if (split.ledgerOpen) human.push('ledger-open')
+  // A waiver lifts exactly the set of codes the approved park named; every wait reason above has
+  // already been checked. A code outside that set still parks.
+  const waived = new Set(f.waive ? (parseHumanReasonList(f.waive) ?? []) : [])
+  const unwaived = (codes) =>
+    HUMAN_REASONS.filter((code) => codes.includes(code) && !waived.has(code))
+  // The whole remaining set parks at once, in HUMAN_REASONS order, so one approval covers it.
+  const park = (codes, extra = {}) => {
+    const reasons = unwaived(codes)
+    return { verdict: 'human', reason: reasons.join(','), reasons, ...base, ...extra, notes }
+  }
+  const stateCodes = []
+  if (f.receipt !== 'success') stateCodes.push('no-receipt')
+  if (split.ledgerOpen) stateCodes.push('ledger-open')
+  const pathCodes = []
   if (Array.isArray(f.alwaysHumanHits) && f.alwaysHumanHits.length > 0)
-    human.push('always-human-path')
-  const remaining = human.filter((code) => code !== waive)
-  if (remaining.length > 0) return { verdict: 'human', reason: remaining[0], ...base, notes }
+    pathCodes.push('always-human-path')
+  // A policy-surface edit could rewrite any category, so it hits them all.
+  for (const category of HUMAN_REVIEW_CATEGORIES)
+    if (f.policySurfaceHit === true || f.humanReviewHits?.[category]?.length > 0)
+      pathCodes.push(`${HUMAN_REVIEW_REASON_PREFIX}${category}`)
+  if (unwaived(stateCodes).length > 0) return park([...stateCodes, ...pathCodes])
 
   // A run carrying a waiver is the approval path, so its pass is recorded as approved.
-  const passReason = waive ? 'approved' : 'verified'
-  if (!Array.isArray(f.extensions) || f.extensions.length === 0)
-    return { verdict: 'pass', reason: passReason, ...base, notes }
+  const passReason = waived.size > 0 ? 'approved' : 'verified'
+  const settle = (codes, extra = {}) =>
+    unwaived(codes).length > 0
+      ? park(codes, extra)
+      : { verdict: 'pass', reason: passReason, ...base, ...extra, notes }
+  if (!Array.isArray(f.extensions) || f.extensions.length === 0) return settle(pathCodes)
   if (f.extensionResults === undefined)
     return { verdict: 'extensions-required', reason: 'extensions-installed', ...base, notes }
-  const agg = aggregateExtensions(f.extensionResults, f.extensions)
+  // A result from an extension whose applicability check said it does not apply is not judged.
+  const notApplicable = new Set(f.extensionsNotApplicable ?? [])
+  const results = Array.isArray(f.extensionResults)
+    ? f.extensionResults.filter((entry) => !notApplicable.has(entry?.extension))
+    : f.extensionResults
+  const agg = aggregateExtensions(results, f.extensions)
   const extensions = { outcomes: agg.outcomes }
-  if (agg.verdict === 'human' && waive !== 'extension-failed') {
+  if (agg.failed.length > 0 && !waived.has('extension-failed')) {
     notes.push({
       trigger: 'extension-failed',
       body: `verify extension(s) malfunctioned: ${agg.failed.join(', ')}`,
     })
-    return { verdict: 'human', reason: 'extension-failed', ...base, extensions, notes }
+    return park(['extension-failed', ...pathCodes, ...agg.humanReasons], { extensions })
   }
-  // Under an `extension-failed` waiver the malfunctioning results are ignored; findings from the
-  // extensions that did run still count.
+  // Under an `extension-failed` waiver the malfunctioning results are ignored; findings and human
+  // reasons from the extensions that did run still count. Findings beat every park.
   const findings = agg.findings
   if (findings.length > 0) {
     if (f.cleanReview)
@@ -401,7 +495,19 @@ export function decideVerdict(facts) {
       })
     return { verdict: 'defect', reason: 'findings', ...base, findings, extensions, notes }
   }
-  return { verdict: 'pass', reason: passReason, ...base, extensions, notes }
+  // An extension that asked to retry later (a busy shared resource) waits above every park: no
+  // approval waives it, and the next tick re-judges.
+  if (agg.waitReason) return { ...wait(agg.waitReason), extensions }
+  return settle([...pathCodes, ...agg.humanReasons], { extensions })
+}
+
+/**
+ * Whether `facts` reach the extension stage: no wait, no PR-state park, and at least one extension.
+ * Results are excluded from the question, so the answer is the same on a first judge and a
+ * re-judge whatever `facts.extensionResults` holds.
+ */
+export function extensionsConsulted(facts) {
+  return decideVerdict({ ...facts, extensionResults: undefined }).verdict === 'extensions-required'
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +597,267 @@ function readChangedPaths(read, pr, repo) {
     .filter(Boolean)
 }
 
+// ---------------------------------------------------------------------------
+// The approval anchor: the head a person last approved. Read only when something consumes a range.
+
+const VERIFY_CONTEXT_FIELDS = `context(name: ${JSON.stringify(VERIFY_CONTEXT)}) { state description createdAt }`
+
+// One read: the PR's reviews (every state, so a dismissed review is seen and ignored) and its last
+// commits and force-pushes, each with its latest `boss/verify` status, so a head that was
+// force-pushed away still anchors.
+export const APPROVAL_ANCHOR_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(last: 100) { nodes { state submittedAt authorAssociation commit { oid } } }
+      timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+        nodes {
+          ... on PullRequestCommit { commit { oid status { ${VERIFY_CONTEXT_FIELDS} } } }
+          ... on HeadRefForcePushedEvent { beforeCommit { oid status { ${VERIFY_CONTEXT_FIELDS} } } }
+        }
+      }
+    }
+  }
+}`
+
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+// Only a review from someone with write access can anchor: an outsider's approval must not narrow
+// the judged range, and an outsider's approval on the head must not empty it.
+const ANCHOR_REVIEW_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+
+/**
+ * Classifies the anchor read. Candidates are a commit whose latest `boss/verify` status is a success
+ * described exactly `verified (approved)`, and the commit of an `APPROVED` review by an owner,
+ * member or collaborator; the latest by
+ * timestamp wins. Returns `{sha, via: 'verified-approved'|'review-approved', at}`, or
+ * `{sha: null, why: 'anchor-unreadable'|'no-anchor'}`: a malformed payload is unknown, never empty.
+ */
+export function resolveApprovalAnchor(payload) {
+  const unreadable = { sha: null, why: 'anchor-unreadable' }
+  if (!plainObject(payload) || payload.errors !== undefined) return unreadable
+  const pull = payload.data?.repository?.pullRequest
+  if (!plainObject(pull)) return unreadable
+  const reviews = pull.reviews?.nodes
+  const timeline = pull.timelineItems?.nodes
+  if (!Array.isArray(reviews) || !Array.isArray(timeline)) return unreadable
+  const candidates = []
+  for (const node of timeline) {
+    const commit = plainObject(node) ? (node.commit ?? node.beforeCommit) : null
+    const ctx = commit?.status?.context
+    if (
+      isSha(commit?.oid) &&
+      plainObject(ctx) &&
+      String(ctx.state).toUpperCase() === 'SUCCESS' &&
+      ctx.description === VERIFY_DESCRIPTIONS.verifiedApproved
+    )
+      candidates.push({ sha: commit.oid, via: 'verified-approved', at: ctx.createdAt })
+  }
+  for (const review of reviews)
+    if (
+      plainObject(review) &&
+      review.state === 'APPROVED' &&
+      ANCHOR_REVIEW_ASSOCIATIONS.has(review.authorAssociation) &&
+      isSha(review.commit?.oid)
+    )
+      candidates.push({ sha: review.commit.oid, via: 'review-approved', at: review.submittedAt })
+  // A candidate with no readable timestamp cannot be ordered, so it is dropped: fewer anchors only
+  // ever widen the judged range.
+  let best = null
+  for (const c of candidates) {
+    const ms = Date.parse(c.at ?? '')
+    if (Number.isFinite(ms) && (best === null || ms > best.ms)) best = { ...c, ms }
+  }
+  if (!best) return { sha: null, why: 'no-anchor' }
+  return { sha: best.sha.toLowerCase(), via: best.via, at: best.at }
+}
+
+export function readApprovalAnchor(read, repo, pr) {
+  const [owner, name] = text(repo) ? repo.split('/') : []
+  const r = read(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '-f',
+      `query=${APPROVAL_ANCHOR_QUERY}`,
+      ...(owner && name
+        ? ['-f', `owner=${owner}`, '-f', `name=${name}`]
+        : ['-F', 'owner={owner}', '-F', 'name={repo}']),
+      '-F',
+      `number=${pr}`,
+    ],
+    { json: true },
+  )
+  if (!r.ok) return { sha: null, why: 'anchor-unreadable' }
+  return resolveApprovalAnchor(r.payload)
+}
+
+// ---------------------------------------------------------------------------
+// The PR-level delta: what the PR's own changes gained since the anchor, each side diffed against
+// its own merge-base with the base tip, so a rebase never imports base commits.
+
+// The compare API lists at most this many files; a side at the cap may be truncated.
+export const COMPARE_FILE_CAP = 300
+
+// A patch with its hunk-header line numbers removed: a rebase that only shifts a hunk is no change.
+const normalizePatch = (patch) => patch.replace(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/gm, '@@ @@')
+
+const fileChanged = (a, b) => {
+  if (a.status !== b.status || a.previous_filename !== b.previous_filename) return true
+  if (typeof a.patch === 'string' && typeof b.patch === 'string')
+    return normalizePatch(a.patch) !== normalizePatch(b.patch)
+  return !text(a.sha) || !text(b.sha) || a.sha !== b.sha
+}
+
+/**
+ * The paths whose PR-level change differs between two compare `files` lists (`base...anchor` and
+ * `base...head`): on one side only, a different status or rename source, a different patch once
+ * hunk headers are normalized, or, without a patch on both sides, a different blob. A renamed entry
+ * in the delta also names its old path. Returns a sorted, deduped path list.
+ */
+export function prLevelDelta(filesAtAnchor, filesAtHead) {
+  const byName = (files) =>
+    new Map(
+      (Array.isArray(files) ? files : [])
+        .filter((f) => plainObject(f) && text(f.filename))
+        .map((f) => [f.filename, f]),
+    )
+  const atAnchor = byName(filesAtAnchor)
+  const atHead = byName(filesAtHead)
+  const delta = new Set()
+  const add = (f) => {
+    delta.add(f.filename)
+    if (text(f.previous_filename)) delta.add(f.previous_filename)
+  }
+  for (const [name, head] of atHead) {
+    const anchor = atAnchor.get(name)
+    if (!anchor || fileChanged(anchor, head)) {
+      add(head)
+      if (anchor) add(anchor)
+    }
+  }
+  for (const [name, anchor] of atAnchor) if (!atHead.has(name)) add(anchor)
+  return [...delta].sort()
+}
+
+// `{files}` for `base...sha`, or `{files: null, why}` when the read fails, is malformed, or hits the
+// file cap (a truncated list cannot prove a path unchanged).
+export function readCompareFiles(read, repo, baseSha, sha) {
+  const r = read('gh', ['api', `${apiRepo(repo)}/compare/${baseSha}...${sha}`], { json: true })
+  if (!r.ok || !Array.isArray(r.payload?.files)) return { files: null, why: 'compare-unreadable' }
+  if (r.payload.files.length >= COMPARE_FILE_CAP) return { files: null, why: 'compare-file-cap' }
+  return { files: r.payload.files }
+}
+
+/**
+ * Chooses the range the path codes and the extension envelope are judged on. With an anchor A and
+ * both compares readable it is the delta since A (empty when A is the head); otherwise the full
+ * `base..head` diff with `why` naming the fallback. `{paths, range: {kind, anchorSha, why?}}`, where
+ * `paths` is null when even the full diff is unreadable.
+ */
+export function selectChangedRange(read, { repo, pr, baseSha, headSha }) {
+  const full = (anchorSha, why) => ({
+    paths: readChangedPaths(read, pr, repo),
+    range: { kind: 'full', anchorSha, why },
+  })
+  if (!isSha(baseSha)) return full(null, 'no-base-sha')
+  const anchor = readApprovalAnchor(read, repo, pr)
+  if (!anchor.sha) return full(null, anchor.why)
+  const delta = { kind: 'delta', anchorSha: anchor.sha }
+  if (anchor.sha === String(headSha).toLowerCase()) return { paths: [], range: delta }
+  const atAnchor = readCompareFiles(read, repo, baseSha, anchor.sha)
+  if (!atAnchor.files) return full(anchor.sha, atAnchor.why)
+  const atHead = readCompareFiles(read, repo, baseSha, headSha)
+  if (!atHead.files) return full(anchor.sha, atHead.why)
+  return { paths: prLevelDelta(atAnchor.files, atHead.files), range: delta }
+}
+
+const EMPTY_POLICY = Object.freeze({
+  alwaysHumanPaths: [],
+  humanReview: Object.fromEntries(HUMAN_REVIEW_CATEGORIES.map((c) => [c, []])),
+})
+
+/**
+ * The verify policy as the base tip holds it: the config file's contents at `baseSha`, read through
+ * the forge so a PR head can never narrow its own policy. `{state: 'ok'|'absent', policy}` or
+ * `{state: 'unreadable'|'invalid', policy: null, why}`; an absent file is an empty policy, and
+ * anything else that is not a readable, valid `verifyDefaults` is unknown, never empty.
+ */
+export function readBasePolicy(read, repo, baseSha) {
+  if (!isSha(baseSha)) return { state: 'unreadable', policy: null, why: 'no-base-sha' }
+  const r = read('gh', ['api', `${apiRepo(repo)}/contents/${CONFIG_FILENAME}?ref=${baseSha}`], {
+    json: true,
+  })
+  if (!r.ok) {
+    const notFound = r.payload?.status === '404' || r.payload?.message === 'Not Found'
+    return notFound
+      ? { state: 'absent', policy: EMPTY_POLICY }
+      : { state: 'unreadable', policy: null, why: r.error ?? 'read-failed' }
+  }
+  const p = r.payload
+  if (p?.type !== 'file' || p?.encoding !== 'base64' || typeof p?.content !== 'string')
+    return { state: 'unreadable', policy: null, why: 'not-a-file' }
+  try {
+    const raw = Buffer.from(p.content, 'base64').toString('utf8')
+    return { state: 'ok', policy: verifyPolicyFromConfigText(raw, `${CONFIG_FILENAME}@${baseSha}`) }
+  } catch (error) {
+    return { state: 'invalid', policy: null, why: error?.message ?? 'invalid' }
+  }
+}
+
+const policyNonEmpty = (p) =>
+  p.alwaysHumanPaths.length > 0 || HUMAN_REVIEW_CATEGORIES.some((c) => p.humanReview[c].length > 0)
+
+const normalizeRoot = (root) => String(root).replace(/^\.\//, '').replace(/\/+$/, '')
+
+/**
+ * The changed paths that touch the verify policy surface: the config file at the repo root, any
+ * path under an extension root whose directory name starts `boss-verify-` (matched by name, so a
+ * deleted extension that discovery can no longer see still counts), and any declared applicability
+ * script (`appliesScripts`, repo-relative), so a PR cannot skip a judge by editing its check.
+ */
+export function policySurfaceHits(
+  paths,
+  { extensionRoots = extensionRootsFor(null), appliesScripts = [] } = {},
+) {
+  const prefixes = extensionRoots.map((root) => `${normalizeRoot(root)}/boss-verify-`)
+  const scripts = new Set(appliesScripts.filter(text).map(normalizeRoot))
+  return (Array.isArray(paths) ? paths : []).filter(
+    (path) =>
+      path === CONFIG_FILENAME ||
+      scripts.has(normalizeRoot(path)) ||
+      prefixes.some((prefix) => path.startsWith(prefix) && path.indexOf('/', prefix.length) > 0),
+  )
+}
+
+// The applicability-check exit code that means "this extension does not apply". Every other
+// outcome — exit 0, exit 1 (also Node's uncaught-exception code), a crash, a timeout, a missing
+// script — applies: a check can only add work, never remove a park.
+export const APPLIES_NOT_APPLICABLE_EXIT = 10
+
+/**
+ * Splits discovered verify extensions into `{applicable, notApplicable}` by running each declared
+ * `applies` script with node from the repo root, the would-be extension envelope on stdin. An
+ * extension with no `applies` always applies.
+ */
+export function partitionApplicable(extensions, context, { read, nodeBin = process.execPath }) {
+  const applicable = []
+  const notApplicable = []
+  for (const ext of extensions) {
+    const skip =
+      text(ext?.applies) &&
+      read(nodeBin, [ext.applies], { input: JSON.stringify(context) }).exit ===
+        APPLIES_NOT_APPLICABLE_EXIT
+    ;(skip ? notApplicable : applicable).push(ext)
+  }
+  return { applicable, notApplicable }
+}
+
+const globHits = (paths, globs) => {
+  const res = globs.map((glob) => globToRegExp(glob))
+  return paths.filter((path) => res.some((re) => re.test(path)))
+}
+
 function loadConfig(deps) {
   return loadConfigResult(deps).config
 }
@@ -576,8 +943,9 @@ export async function judge(options, deps = {}) {
   const read = deps.read ?? commandReader(deps)
   const repo = repoFor(read, options.repo)
   const pr = options.pr
-  if (options.waive !== undefined && !HUMAN_REASONS.includes(options.waive))
-    throw new UsageError(`verify-gate: --waive must be one of ${HUMAN_REASONS.join(', ')}`)
+  const waive = options.waive === undefined ? null : parseHumanReasonList(options.waive)
+  if (options.waive !== undefined && !waive)
+    throw new UsageError(`verify-gate: --waive must be a comma list of ${HUMAN_REASONS.join(', ')}`)
   const view = readPr(read, pr, repo)
   if (!view.ok) return decideVerdict({ prUnreadable: true })
   const p = view.payload ?? {}
@@ -606,7 +974,7 @@ export async function judge(options, deps = {}) {
     ticket,
     ci: { settled: ci.settled, green: ci.green },
     eligibilityReasons: eligibility.reasons,
-    waive: options.waive ?? null,
+    waive,
     cleanReview: cleanReviewBody(p.body),
   }
   // Cheap gates first: nothing below runs for a head that is going to wait anyway.
@@ -633,24 +1001,73 @@ export async function judge(options, deps = {}) {
         : receipt.verdict === 'present' && receipt.state === 'pending'
           ? 'pending'
           : 'absent'
+  // The rest of the config (extension roots) comes from the working tree; the policy itself comes
+  // from the base tip.
   const loaded = loadConfigResult(deps)
-  facts.configUnreadable = loaded.error !== undefined
-  const humanPaths = verifyAlwaysHumanPaths(loaded.config)
+  const basePolicy = baseState.sha ? readBasePolicy(read, repo, baseState.sha) : null
+  const verifyPolicy = basePolicy?.policy ?? EMPTY_POLICY
+  facts.configUnreadable =
+    loaded.error !== undefined || (basePolicy !== null && basePolicy.policy === null)
+  const humanPaths = verifyPolicy.alwaysHumanPaths
   const discovered = (deps.discover ?? discoverExtensions)({
     core: VERIFY_CORE,
     role: 'verify',
     root: deps.cwd ?? process.cwd(),
   })
-  facts.extensions = discovered?.extensions ?? []
-  // The diff is read only when something consumes it: a non-empty always-human list, or the
-  // extension envelope.
+  const installed = discovered?.extensions ?? []
+  facts.extensions = installed
+  const appliesScripts = installed.map((ext) => ext?.applies).filter(text)
+  // The diff is read only when something consumes it: a non-empty policy list, an applicability
+  // check (recomputed on every judge, re-judges included), or the extension envelope.
+  const policyConfigured = policyNonEmpty(verifyPolicy)
   facts.needChangedPaths =
-    humanPaths.length > 0 || (facts.extensions.length > 0 && options.extensionResults === undefined)
-  const changedPaths = facts.needChangedPaths ? readChangedPaths(read, pr, repo) : []
+    policyConfigured ||
+    appliesScripts.length > 0 ||
+    (installed.length > 0 && options.extensionResults === undefined)
+  // After an approval the range is the PR's own delta since the anchor; see selectChangedRange.
+  const selected = facts.needChangedPaths
+    ? selectChangedRange(read, { repo, pr, baseSha: baseState.sha, headSha })
+    : { paths: [], range: null }
+  const changedPaths = selected.paths
   facts.changedPaths = changedPaths
-  facts.alwaysHumanHits = Array.isArray(changedPaths)
-    ? changedPaths.filter((path) => humanPaths.some((glob) => globToRegExp(glob).test(path)))
-    : []
+  const paths = Array.isArray(changedPaths) ? changedPaths : []
+  facts.alwaysHumanHits = globHits(paths, humanPaths)
+  facts.humanReviewHits = {}
+  for (const category of HUMAN_REVIEW_CATEGORIES) {
+    const hits = globHits(paths, verifyPolicy.humanReview[category])
+    if (hits.length > 0) facts.humanReviewHits[category] = hits
+  }
+  // Touching the policy surface costs nothing while the base policy is empty.
+  facts.policySurfaceHit =
+    policyConfigured &&
+    policySurfaceHits(paths, {
+      extensionRoots: extensionRootsFor(loaded.config),
+      appliesScripts,
+    }).length > 0
+  const context = {
+    pr: {
+      number: Number(p.number ?? pr),
+      url: p.url ?? '',
+      title: p.title ?? '',
+      body: p.body ?? '',
+    },
+    headSha,
+    baseSha: baseState.sha,
+    changedPaths: changedPaths ?? [],
+    ticket: ticket ? { id: ticket.id, url: ticket.url } : null,
+    ...(selected.range
+      ? { range: { kind: selected.range.kind, anchorSha: selected.range.anchorSha } }
+      : {}),
+  }
+  // Applicability is checked only where extensions would be consulted: a head that waits or parks
+  // on a PR-state code never runs a check.
+  let notApplicable = []
+  if (extensionsConsulted(facts)) {
+    const split = partitionApplicable(installed, context, { read, nodeBin: deps.nodeBin })
+    facts.extensions = split.applicable
+    notApplicable = split.notApplicable
+  }
+  facts.extensionsNotApplicable = notApplicable.map((ext) => ext.name)
   if (options.extensionResults !== undefined) {
     const parsed = readJsonFile(options.extensionResults)
     facts.extensionResults = Array.isArray(parsed) ? parsed : null
@@ -662,22 +1079,15 @@ export async function judge(options, deps = {}) {
       base: { sha: baseState.sha, state: baseState.state, check: baseState.check ?? '' },
       receipt: { verdict: receipt.verdict, state: receipt.state ?? '' },
       alwaysHumanHits: facts.alwaysHumanHits,
-      extensionsInstalled: facts.extensions.map((ext) => ext.name),
+      humanReviewHits: facts.humanReviewHits,
+      policySurfaceHit: facts.policySurfaceHit,
+      range: selected.range,
+      extensionsInstalled: installed.map((ext) => ext.name),
+      extensionsApplicable: facts.extensions.map((ext) => ext.name),
+      extensionsNotApplicable: facts.extensionsNotApplicable,
     }),
   }
   if (verdict.verdict === 'extensions-required') {
-    const context = {
-      pr: {
-        number: Number(p.number ?? pr),
-        url: p.url ?? '',
-        title: p.title ?? '',
-        body: p.body ?? '',
-      },
-      headSha,
-      baseSha: baseState.sha,
-      changedPaths: changedPaths ?? [],
-      ticket: ticket ? { id: ticket.id, url: ticket.url } : null,
-    }
     const valid = validateVerifyContext(context)
     out.extensionEnvelope = valid.ok ? context : { invalid: valid.errors }
   }
@@ -771,9 +1181,18 @@ export async function post(options, deps = {}) {
   if (!isSha(headSha)) throw new UsageError('verify-gate: post needs --head <40-hex sha>')
   if (!['claim', 'wait', 'pass', 'defect', 'human'].includes(verdict))
     throw new UsageError('verify-gate: post --verdict must be claim|wait|pass|defect|human')
-  if (verdict === 'human' && !HUMAN_REASONS.includes(options.reason))
+  const humanCodes = verdict === 'human' ? parseHumanReasonList(options.reason) : null
+  if (verdict === 'human' && !humanCodes)
     throw new UsageError(
-      `verify-gate: post --verdict human needs --reason ${HUMAN_REASONS.join('|')}`,
+      `verify-gate: post --verdict human needs --reason <code>[,<code>…] from ${HUMAN_REASONS.join('|')}`,
+    )
+  // A truncated park description no longer names its set, so approval could never match it.
+  if (
+    humanCodes &&
+    Array.from(needsHumanDescription(humanCodes.join(','))).length > DESCRIPTION_LIMIT
+  )
+    throw new UsageError(
+      `verify-gate: post --reason set is too long for a ${DESCRIPTION_LIMIT}-char commit status`,
     )
   if (verdict === 'wait' && !text(options.reason))
     throw new UsageError('verify-gate: post --verdict wait needs --reason <code>')
@@ -874,7 +1293,8 @@ export async function post(options, deps = {}) {
   }
 
   let effective = verdict
-  let reason = options.reason
+  // A human set is posted in its normalised order, so a re-post of the same set is a no-op.
+  let reason = humanCodes ? humanCodes.join(',') : options.reason
   let repair = null
   if (verdict === 'defect') {
     repair = readRepairFacts(read, p.url)
@@ -888,7 +1308,7 @@ export async function post(options, deps = {}) {
       )
     }
   }
-  if (effective === 'human' && reason === 'extension-failed')
+  if (effective === 'human' && reason.split(',').includes('extension-failed'))
     note('extension-failed', `a verify extension malfunctioned on PR #${pr}`)
 
   const parked = effective === 'human' || repair?.autoRepair !== true
@@ -1136,6 +1556,25 @@ export async function rearm(options, deps = {}) {
 
 function defaultToken() {
   return randomBytes(4).toString('hex')
+}
+
+/**
+ * The local verify policy plus a warning for every glob that matches no tracked file. Never writes.
+ * An invalid config, or an unreadable file list, throws (non-zero exit); an unmatched glob is only
+ * ever a warning.
+ */
+export async function policy(options = {}, deps = {}) {
+  const read = deps.read ?? commandReader(deps)
+  const loaded = loadConfigResult(deps)
+  if (loaded.error) throw new Error(`verify-gate policy: config: ${loaded.error.message}`)
+  const current = {
+    alwaysHumanPaths: verifyAlwaysHumanPaths(loaded.config),
+    humanReview: verifyHumanReviewPaths(loaded.config),
+  }
+  const files = read('git', ['ls-files', '-z'])
+  if (!files.ok) throw new Error(`verify-gate policy: git ls-files failed (${files.error})`)
+  const tracked = files.output.split('\0').filter(Boolean)
+  return { policy: current, warnings: unmatchedPolicyGlobs(current, tracked) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,6 +1866,14 @@ function parseFlags(verb, argv) {
 export async function main(argv, deps = {}) {
   const [cmd, ...rest] = argv
   if (cmd === 'candidates') return candidates(parseCandidateFlags(rest), deps)
+  if (cmd === 'policy') {
+    try {
+      parseArgs({ args: rest, options: {}, strict: true, allowPositionals: false })
+    } catch (error) {
+      throw new UsageError(`verify-gate: policy: ${error.message}`)
+    }
+    return policy({}, deps)
+  }
   if (cmd === 'judge') {
     const f = parseFlags('judge', rest)
     return judge(
@@ -1466,7 +1913,7 @@ export async function main(argv, deps = {}) {
     return rearm({ pr: f.pr, chat: f.chat, repo: f.repo, dryRun: f['dry-run'] === true }, deps)
   }
   throw new UsageError(
-    `verify-gate: unknown command ${cmd ?? '(none)'} (expected candidates|judge|post|merge|approval|rearm)`,
+    `verify-gate: unknown command ${cmd ?? '(none)'} (expected candidates|judge|post|merge|approval|rearm|policy)`,
   )
 }
 

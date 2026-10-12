@@ -907,3 +907,105 @@ func TestWriteHookConfig_RunKeyed_ReplacesSameRun(t *testing.T) {
 		"http://127.0.0.1:8888/hooks/agent-run-complete/"+agentSession,
 	)
 }
+
+// promptSubmitEntries returns the UserPromptSubmit entries whose command POSTs
+// to a bossd prompt-submitted URL, plus the full array.
+func promptSubmitEntries(t *testing.T, settings map[string]any) (bossd []map[string]any, all []any) {
+	t.Helper()
+	hooks, _ := settings["hooks"].(map[string]any)
+	all, _ = hooks["UserPromptSubmit"].([]any)
+	for _, raw := range all {
+		if entryCommandContains(raw, promptSubmittedHookURLPrefix) {
+			bossd = append(bossd, raw.(map[string]any))
+		}
+	}
+	return bossd, all
+}
+
+func TestWritePromptSubmitHookConfig_ExactlyOneEntryAndUserHooksKept(t *testing.T) {
+	wt := t.TempDir()
+	userHook := map[string]any{
+		"matcher": "",
+		"hooks":   []any{map[string]any{"type": "command", "command": "echo user-hook"}},
+	}
+	seed := map[string]any{"hooks": map[string]any{"UserPromptSubmit": []any{userHook}}}
+	data, _ := json.Marshal(seed)
+	if err := os.MkdirAll(filepath.Join(wt, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".claude", "settings.local.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242); err != nil {
+			t.Fatalf("WritePromptSubmitHookConfig: %v", err)
+		}
+	}
+	bossd, all := promptSubmitEntries(t, readSettings(t, wt))
+	if len(bossd) != 1 {
+		t.Fatalf("bossd prompt-submitted entries = %d, want exactly 1", len(bossd))
+	}
+	if len(all) != 2 || !entryCommandContains(all[0], "echo user-hook") {
+		t.Fatalf("user UserPromptSubmit hook must be kept first and untouched: %#v", all)
+	}
+	assertCommandContains(t, bossd[0], "http://127.0.0.1:4242/hooks/prompt-submitted/agent-1", "--data-binary @-", ">/dev/null 2>&1 || true")
+	if m, _ := bossd[0]["matcher"].(string); m != "" {
+		t.Fatalf("matcher = %q, want empty (fire on every prompt)", m)
+	}
+
+	// A later chat's start replaces the earlier chat's entry rather than
+	// stacking one curl per chat onto every prompt.
+	if err := WritePromptSubmitHookConfig(wt, "agent-2", 4242); err != nil {
+		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
+	}
+	bossd, all = promptSubmitEntries(t, readSettings(t, wt))
+	if len(bossd) != 1 || len(all) != 2 {
+		t.Fatalf("after second chat: bossd=%d all=%d, want 1 and 2", len(bossd), len(all))
+	}
+	assertCommandContains(t, bossd[0], "/hooks/prompt-submitted/agent-2")
+}
+
+func TestRemoveRunHookConfig_RemovesPromptSubmitEntryOnly(t *testing.T) {
+	wt := t.TempDir()
+	if err := WriteHookConfig(wt, "sess-1", "agent-1", "tok", 4242); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
+	if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242); err != nil {
+		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
+	}
+	settings := readSettings(t, wt)
+	hooks := settings["hooks"].(map[string]any)
+	hooks["UserPromptSubmit"] = append(hooks["UserPromptSubmit"].([]any), map[string]any{
+		"matcher": "",
+		"hooks":   []any{map[string]any{"type": "command", "command": "echo user-hook"}},
+	})
+	data, _ := json.Marshal(settings)
+	if err := os.WriteFile(filepath.Join(wt, ".claude", "settings.local.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveRunHookConfig(wt, "agent-1"); err != nil {
+		t.Fatalf("RemoveRunHookConfig: %v", err)
+	}
+	bossd, all := promptSubmitEntries(t, readSettings(t, wt))
+	if len(bossd) != 0 {
+		t.Fatalf("prompt-submitted entry survived cleanup: %#v", bossd)
+	}
+	if len(all) != 1 || !entryCommandContains(all[0], "echo user-hook") {
+		t.Fatalf("cleanup must leave the user hook alone: %#v", all)
+	}
+}
+
+func TestWritePromptSubmitHookConfig_ValidationErrors(t *testing.T) {
+	wt := t.TempDir()
+	for name, call := range map[string]func() error{
+		"no worktree": func() error { return WritePromptSubmitHookConfig("", "a", 1) },
+		"no id":       func() error { return WritePromptSubmitHookConfig(wt, "", 1) },
+		"no port":     func() error { return WritePromptSubmitHookConfig(wt, "a", 0) },
+	} {
+		if err := call(); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}

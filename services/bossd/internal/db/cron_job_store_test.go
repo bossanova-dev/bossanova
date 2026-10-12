@@ -1385,3 +1385,89 @@ func TestCronJobStore_ConcurrencyPolicy_RejectsUnknownValue(t *testing.T) {
 		t.Errorf("after rejected update: ConcurrencyPolicy = %q, want skip", got.ConcurrencyPolicy)
 	}
 }
+
+// TestCronJobStoreManagedBy pins the managed_by round trip: create persists the
+// marker, get and list echo it, an Update with the pointer set changes it, a
+// nil pointer leaves it alone, and "" clears it.
+func TestCronJobStoreManagedBy(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(db))
+
+	const marker = "boss-project:bossanova"
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "managed", Prompt: "noop", Schedule: "@daily",
+		IsEnabled: true, ManagedBy: marker,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if job.ManagedBy != marker {
+		t.Errorf("create: ManagedBy = %q, want %q", job.ManagedBy, marker)
+	}
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ManagedBy != marker {
+		t.Errorf("get: ManagedBy = %q, want %q", got.ManagedBy, marker)
+	}
+
+	unmarked, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "hand-made", Prompt: "noop", Schedule: "@daily", IsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create unmarked: %v", err)
+	}
+	if unmarked.ManagedBy != "" {
+		t.Errorf("create unmarked: ManagedBy = %q, want empty", unmarked.ManagedBy)
+	}
+
+	all, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := map[string]string{job.ID: marker, unmarked.ID: ""}
+	seen := 0
+	for _, j := range all {
+		w, ok := want[j.ID]
+		if !ok {
+			continue
+		}
+		seen++
+		if j.ManagedBy != w {
+			t.Errorf("list: ManagedBy for %q = %q, want %q", j.Name, j.ManagedBy, w)
+		}
+	}
+	if seen != len(want) {
+		t.Errorf("list returned %d of %d created jobs", seen, len(want))
+	}
+
+	other := "boss-project:other"
+	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{ManagedBy: &other})
+	if err != nil {
+		t.Fatalf("update set: %v", err)
+	}
+	if updated.ManagedBy != other {
+		t.Errorf("update set: ManagedBy = %q, want %q", updated.ManagedBy, other)
+	}
+
+	newPrompt := "still noop"
+	updated, err = store.Update(ctx, job.ID, UpdateCronJobParams{Prompt: &newPrompt})
+	if err != nil {
+		t.Fatalf("update nil: %v", err)
+	}
+	if updated.ManagedBy != other {
+		t.Errorf("update nil: ManagedBy = %q, want unchanged %q", updated.ManagedBy, other)
+	}
+
+	empty := ""
+	updated, err = store.Update(ctx, job.ID, UpdateCronJobParams{ManagedBy: &empty})
+	if err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	if updated.ManagedBy != "" {
+		t.Errorf("update clear: ManagedBy = %q, want empty", updated.ManagedBy)
+	}
+}

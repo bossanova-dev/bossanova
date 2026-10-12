@@ -33,3 +33,10 @@ scripts/skill-parity/baseline/
 # which MarshalIndent never does, making the committed file diverge from a fresh
 # `-update` and permanently failing TestKeyVocabGolden. Go owns these bytes.
 services/boss/internal/tuidriver/testdata/key-vocab.json
+
+# The project config file and its fixtures are canonical bytes owned by
+# lib/bossalib/projectconfig.Encode (json.MarshalIndent style). Prettier's JSON
+# printer collapses short arrays onto one line, which would break the decode ->
+# encode byte-identity the format promises.
+.boss-project.json
+lib/bossalib/projectconfig/testdata/

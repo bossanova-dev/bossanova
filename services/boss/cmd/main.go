@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,9 +26,22 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "boss: %v\n", err)
-		os.Exit(1)
+		// An error with no message has already said everything it needs to
+		// (`boss project diff --exit-code` reporting "not converged").
+		if err.Error() != "" {
+			fmt.Fprintf(os.Stderr, "boss: %v\n", err)
+		}
+		os.Exit(exitStatus(err))
 	}
+}
+
+// exitStatus is 1 unless the error carries a specific status.
+func exitStatus(err error) int {
+	var coded interface{ projectExitCode() int }
+	if errors.As(err, &coded) {
+		return coded.projectExitCode()
+	}
+	return 1
 }
 
 func run() error {
@@ -199,7 +213,7 @@ func rootCmd() *cobra.Command {
 
 	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), archiveCmd(), renameCmd())
 	addGrouped("chat", chatCmd())
-	addGrouped("repo", repoCmd())
+	addGrouped("repo", repoCmd(), projectCmd())
 	addGrouped("cron", cronCmd())
 	addGrouped("callback", callbackCmd())
 	addGrouped("trigger", triggerCmd())

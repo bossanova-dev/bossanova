@@ -90,10 +90,8 @@ test('selectTargets maps script workflow and codegen inputs to script tests', ()
   }
 })
 
-test('selects scripts tests for proof recipe changes', () => {
-  assert.deepEqual(selectTargets(['proof/recipes/default.json']), [
-    { kind: 'make', target: 'test-scripts', env: {} },
-  ])
+test('the retired proof/ tree no longer selects the scripts tests', () => {
+  assert.ok(!selectTargets(['proof/recipes/default.json']).some((s) => s.target === 'test-scripts'))
 })
 
 test('selectTargets maps skills-toolbox changes to script tests', () => {
@@ -251,7 +249,7 @@ test('selectTargets adds the script tests to published skill sources WITHOUT dro
 test('selectTargets routes the skill manifest test to test-scripts as well as test-boss', () => {
   // scripts/check-email-course.mjs parses its published-skill allowlist out of this file's
   // `want` slice, so dropping a core from the publish set can leave the trial email course
-  // naming a skill nobody receives — the boss-proof failure that gate exists to catch. The
+  // naming a skill nobody receives — the failure that gate exists to catch. The
   // file sits one directory ABOVE skillinstall/skills/, so the payload rule does not cover
   // it, and it touches neither docs/email-course/ nor scripts/. test-boss must survive: it
   // is the manifest test's own package.
@@ -350,13 +348,12 @@ test('selectTargets adds script tests to readiness figure inputs WITHOUT droppin
   ])
 })
 
-test('selectTargets adds script tests to TUI key vocabulary inputs WITHOUT dropping test-boss', () => {
+test('TUI key vocabulary inputs select only their Go module, not the scripts tests', () => {
+  // No script reads the key vocabulary any more; the Go golden owns it.
   assert.deepEqual(selectTargets(['services/boss/internal/tuidriver/keybytes.go']), [
-    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-boss', env: { GO_TEST_PACKAGES: './internal/tuidriver' } },
   ])
   assert.deepEqual(selectTargets(['services/boss/internal/tuidriver/testdata/key-vocab.json']), [
-    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-boss', env: {} },
   ])
 })

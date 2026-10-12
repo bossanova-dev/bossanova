@@ -9,7 +9,6 @@ import {
   checkDeterministicParity,
   checkDirectoryCoverage,
   checkExtensionParity,
-  isValidDriverShape,
   main,
   runParityGate,
 } from './parity-gate.mjs'
@@ -106,25 +105,10 @@ test('a lens extension whose binding names the wrong lens id reports DRIFT', asy
   }
 })
 
-test('ROLE_SCHEMAS covers lens, round, and surface; driver-shape predicate accepts/rejects', () => {
+test('ROLE_SCHEMAS covers lens, round, and surface', () => {
   assert.ok(ROLE_SCHEMAS.lens, 'ROLE_SCHEMAS.lens should be defined')
   assert.ok(ROLE_SCHEMAS.round, 'ROLE_SCHEMAS.round should be defined')
   assert.ok(ROLE_SCHEMAS.surface, 'ROLE_SCHEMAS.surface should be defined')
-  const wellFormed = {
-    surface: 'x',
-    budgetClass: 'x',
-    usable: () => true,
-    preflightMissing: () => [],
-    run: () => {},
-  }
-  assert.equal(isValidDriverShape(wellFormed), true)
-  const { run, ...missingRun } = wellFormed
-  assert.equal(isValidDriverShape(missingRun), false)
-  // prebuild is optional but, when present, must be a function — mirror the real
-  // isValidDriverRecord contract in proof-agent-drivers.mjs so a typo'd hook
-  // (e.g. prebuild: true) that the loader would reject cannot pass the gate.
-  assert.equal(isValidDriverShape({ ...wellFormed, prebuild: () => {} }), true)
-  assert.equal(isValidDriverShape({ ...wellFormed, prebuild: true }), false)
 })
 
 test('an unexpected role-mismatch skip reports DRIFT (typo not a known sibling)', async () => {
@@ -134,33 +118,34 @@ test('an unexpected role-mismatch skip reports DRIFT (typo not a known sibling)'
     cpSync(join(REPO_ROOT, '.claude', 'skills'), join(tmp, '.claude', 'skills'), {
       recursive: true,
     })
-    // ...then add a same-prefix boss-proof extension with a typo'd role. It is
-    // NOT one of the known cross-role siblings, so its `role "surfcae"` skip
+    // ...then add a same-prefix boss-review extension with a typo'd role. It is
+    // NOT one of the known cross-role siblings, so its `role "lnes"` skip
     // must surface as drift rather than be silently swallowed.
-    const typoDir = join(tmp, '.claude', 'skills', 'boss-proof-typo')
+    const typoDir = join(tmp, '.claude', 'skills', 'boss-review-typo')
     mkdirSync(typoDir, { recursive: true })
     writeFileSync(
       join(typoDir, 'SKILL.md'),
       [
         '---',
-        'name: boss-proof-typo',
+        'name: boss-review-typo',
         'description: typo fixture',
         'x-boss-extension:',
-        '  extends: boss-proof',
-        '  role: surfcae',
+        '  extends: boss-review',
+        '  role: lnes',
         '---',
         '',
-        '# boss-proof-typo',
+        '# boss-review-typo',
         '',
       ].join('\n'),
     )
     const { ok, findings } = await checkExtensionParity({ root: tmp })
     assert.equal(ok, false)
-    const drift = findings.find((f) => f.includes('DRIFT') && f.includes('boss-proof-typo'))
+    const drift = findings.find((f) => f.includes('DRIFT') && f.includes('boss-review-typo'))
     assert.ok(
       drift,
-      `expected a DRIFT finding naming boss-proof-typo, got: ${findings.join(' | ')}`,
+      `expected a DRIFT finding naming boss-review-typo, got: ${findings.join(' | ')}`,
     )
+    assert.match(drift, /unexpected skipped extension\(s\)/)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

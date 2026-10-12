@@ -408,7 +408,7 @@ func newRecordingTmux(baked string, alive ...string) (*tmux.Client, *recordingTm
 	for _, name := range alive {
 		rec.alive[name] = true
 	}
-	client := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+	client := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		sub, target := "", ""
 		if len(args) > 0 {
 			sub = args[0]

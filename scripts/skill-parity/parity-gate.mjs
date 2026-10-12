@@ -2,7 +2,7 @@
 
 // BOS-248 skill-generalization self-parity gate. Bossanova dogfoods its own
 // generalized skill machinery as the reference consumer: this gate re-runs the
-// three post-generalization deterministic skill signatures over the SAME
+// two post-generalization deterministic skill signatures over the SAME
 // committed fixtures and asserts they still match the committed
 // pre-generalization baseline snapshots (BOS-249's capture-baseline.mjs), AND
 // asserts bossanova's authored dogfood extension skills are discovered with the
@@ -14,11 +14,10 @@
 // Part A (deterministic exact-match) is the load-bearing check: it re-derives
 // each signature via capture-baseline.mjs and byte-compares stableStringify()
 // against the committed baseline file. Part B (extension-discovery) asserts the
-// structural contract the generalized cores rely on: the authored lens/surface/
-// agent-driver/draft extensions are discovered by name with zero skips, their roles
+// structural contract the generalized cores rely on: the authored lens/round/
+// draft/methodology extensions are discovered by name with zero skips, and their roles
 // all resolve in ROLE_SCHEMAS — behaviour-shipping roles included, since BOS-744 derived
-// discovery and validation from one EXTENSION_ROLES table — and the two
-// agent-driver extensions export valid driver records. Part C (directory
+// discovery and validation from one EXTENSION_ROLES table. Part C (directory
 // coverage) supplies the independent, non-circular teeth for the specs whose
 // membership is discovery-derived — see checkDirectoryCoverage.
 //
@@ -26,7 +25,6 @@
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 import { BASELINE_DIR, REPO_ROOT, computeAll, stableStringify } from './capture-baseline.mjs'
 import { ROLE_SCHEMAS, discoverExtensions } from '../../skills-toolbox/skill-extensions.mjs'
@@ -34,7 +32,6 @@ import { ROLE_SCHEMAS, discoverExtensions } from '../../skills-toolbox/skill-ext
 /** Snapshot filename → human skill label used in DRIFT messages. */
 const SNAPSHOT_SKILL_LABELS = {
   'review-lens.snapshot.json': 'boss-review',
-  'proof-surface.snapshot.json': 'boss-proof',
   'dag-schedule.snapshot.json': 'boss-epic',
 }
 
@@ -63,8 +60,7 @@ const EXPECTED_EXTENSIONS = [
     // BOS-852: round membership is open-ended. The core dispatches EVERY discovered round
     // wholesale (boss-review/SKILL.md `discover --core boss-review --role round`) with no
     // config registry pinning the set — unlike `lens`, whose literal list encodes a binding to
-    // a `.boss-skills.json` lensMap id, or `agent-driver`, whose list is pinned to a driver.mjs
-    // export. So a literal list here is pure friction: it makes adding a round a gate edit.
+    // a `.boss-skills.json` lensMap id. So a literal list here is pure friction: it makes adding a round a gate edit.
     //
     // The expected set is therefore the discovered set. That is NOT vacuous, and the reason is
     // checkDirectoryCoverage below: it reads the `.claude/skills/boss-review-*` directories
@@ -72,18 +68,6 @@ const EXPECTED_EXTENSIONS = [
     // discoverExtensions — and drifts on any directory no spec claims. Coverage is what keeps
     // membership honest; delete that check and this spec asserts nothing.
     discovered: true,
-  },
-  {
-    core: 'boss-proof',
-    role: 'surface',
-    skill: 'boss-proof',
-    names: ['boss-proof-docs', 'boss-proof-marketing', 'boss-proof-web'],
-  },
-  {
-    core: 'boss-proof',
-    role: 'agent-driver',
-    skill: 'boss-proof',
-    names: ['boss-proof-tui', 'boss-proof-webagent'],
   },
   {
     core: 'boss-plan',
@@ -138,6 +122,14 @@ const EXPECTED_EXTENSIONS = [
     names: ['boss-repair-notes'],
     builtin: true,
   },
+  // BOS-1507: naming boss-retro here also brings `.claude/skills/boss-retro-*` under the
+  // directory-coverage check, which only covers cores that appear in a spec.
+  {
+    core: 'boss-retro',
+    role: 'maintenance',
+    skill: 'boss-retro',
+    names: ['boss-retro-feature-map'],
+  },
 ]
 
 // --- Part A: deterministic exact-match --------------------------------------
@@ -171,27 +163,6 @@ export function checkDeterministicParity({
 }
 
 // --- Part B: extension-discovery structural assertions ----------------------
-
-/**
- * Replicates the private isValidDriverRecord contract from proof-agent-drivers.mjs
- * (not exported there) so the gate can independently assert authored driver shapes.
- * @param {unknown} d
- * @returns {boolean}
- */
-export function isValidDriverShape(d) {
-  return (
-    !!d &&
-    typeof d === 'object' &&
-    typeof d.surface === 'string' &&
-    d.surface !== '' &&
-    typeof d.budgetClass === 'string' &&
-    d.budgetClass !== '' &&
-    typeof d.usable === 'function' &&
-    typeof d.preflightMissing === 'function' &&
-    (d.prebuild === undefined || typeof d.prebuild === 'function') &&
-    typeof d.run === 'function'
-  )
-}
 
 /**
  * The extension names a spec expects: its literal `names` when it pins them, otherwise —
@@ -282,28 +253,6 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
     }
   }
 
-  // Agent-driver extensions must export a valid driver record from driver.mjs.
-  const driverSpec = EXPECTED_EXTENSIONS.find((s) => s.role === 'agent-driver')
-  const { extensions } = discoverExtensions({ core: driverSpec.core, role: 'agent-driver', root })
-  const drivers = await Promise.all(
-    extensions.map(async (ext) => {
-      try {
-        const mod = await import(pathToFileURL(join(ext.dir, 'driver.mjs')).href)
-        return { name: ext.name, record: mod.default ?? mod.driver ?? null }
-      } catch (err) {
-        return { name: ext.name, record: null, error: err.message }
-      }
-    }),
-  )
-  for (const { name, record, error } of drivers) {
-    if (!isValidDriverShape(record)) {
-      const why = error
-        ? `driver.mjs import failed (${error})`
-        : 'default export is not a valid driver record'
-      findings.push(`DRIFT ${driverSpec.skill} ${name}: ${why}`)
-    }
-  }
-
   return { ok: findings.length === 0, findings }
 }
 
@@ -345,8 +294,8 @@ export function checkDirectoryCoverage({ root = REPO_ROOT } = {}) {
         claims.set(name, (claims.get(name) ?? 0) + 1)
       }
     }
-    // The trailing hyphen in the prefix is load-bearing: the standalone `.claude/skills/boss-proof`
-    // skill is not a `boss-proof-` extension, so it must not be demanded of any spec.
+    // The trailing hyphen in the prefix is load-bearing: a standalone `.claude/skills/<core>`
+    // skill is not a `<core>-` extension, so it must not be demanded of any spec.
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(`${core}-`)) continue
       const claimed = claims.get(entry.name) ?? 0

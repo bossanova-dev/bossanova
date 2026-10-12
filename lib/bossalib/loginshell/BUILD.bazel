@@ -9,6 +9,9 @@ go_library(
 
 go_test(
     name = "loginshell_test",
-    srcs = ["loginshell_test.go"],
+    srcs = [
+        "loginshell_realshell_test.go",
+        "loginshell_test.go",
+    ],
     embed = [":loginshell"],
 )

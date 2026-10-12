@@ -210,7 +210,7 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 // chats. OpenCode creates fresh ses_* identifiers itself, so --session is only
 // valid for a resumed chat. Its --prompt option auto-submits, as verified with
 // OpenCode 1.18.4 in a live tmux pane, so startup input must be marked consumed.
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"opencode"}
 	if req.GetResume() && req.GetSessionId() != "" {
 		args = append(args, "--session", req.GetSessionId())
@@ -236,15 +236,22 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		appendSystemPromptSupport = bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
 	}
 	if initialInput != "" {
-		args = append(args, "--prompt", initialInput)
+		// The rendered input becomes --prompt's value: read from the input file
+		// at exec time when bossd supplied one, inline otherwise. With the file,
+		// the boss context still reaches the launch command, so IN_ARGV stands.
+		args = append(args, "--prompt")
 	}
 
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
 	}
+	argv, err := loginshell.WrapInitialInput(loginShell, loginshell.Flags(loginShell), args, initialInput, req.GetInitialInputPath())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "write initial input: %v", err)
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
+		Argv: argv,
 		// A live OpenCode 1.18.4 tmux spike showed the full TUI's stable
 		// composer rail glyph (┃); --mini exposes no reliable ready marker.
 		ReadyMarker:               "┃",

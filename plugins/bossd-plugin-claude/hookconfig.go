@@ -34,6 +34,12 @@ const runHookMatcherPrefix = "bossd-agent-run-"
 // question hook" for the stale-sibling sweep.
 const questionHookURLPrefix = "/hooks/question/"
 
+// promptSubmittedHookURLPrefix is the unique substring of the delivery-receipt
+// UserPromptSubmit hook's POST URL. Like the question hook, bossd owns this
+// entry by its URL (/hooks/prompt-submitted/{id}), never by matcher, so a
+// user-authored UserPromptSubmit hook is never touched.
+const promptSubmittedHookURLPrefix = "/hooks/prompt-submitted/"
+
 // WriteHookConfig writes (or merges) a Stop-hook entry into
 // worktreePath/.claude/settings.local.json. The entry POSTs to the
 // bossd loopback hook server with a Bearer token so FinalizeSession (or,
@@ -334,6 +340,7 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	changed := false
 	changed = removeMatcherFromHookArray(hooks, "Stop", matcher) || changed
 	changed = removeCommandURLFromHookArray(hooks, "Notification", questionHookURLPrefix+agentSessionID) || changed
+	changed = removeCommandURLFromHookArray(hooks, "UserPromptSubmit", promptSubmittedHookURLPrefix+agentSessionID) || changed
 	if !changed {
 		return nil // nothing removed — don't rewrite the file
 	}
@@ -344,6 +351,90 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	}
 	out = append(out, '\n')
 	return atomicWrite(claudeDir, target, out)
+}
+
+// WritePromptSubmitHookConfig installs the delivery-receipt UserPromptSubmit
+// hook for one chat into worktreePath/.claude/settings.local.json. It POSTs the
+// hook payload (which carries Claude's session_id) to
+// /hooks/prompt-submitted/{agentSessionID}, where bossd records that the
+// chat's prompt was submitted.
+//
+// The hook carries no bearer token: it is installed for every tmux-hosted
+// start, not only token-bearing runs, and a receipt is accepted only while bossd
+// is waiting on that id. Every Claude process in the worktree fires every
+// entry, so bossd also discards a payload whose session_id names another chat.
+//
+// The command can never block or alter a prompt: UserPromptSubmit treats exit
+// code 2 as "block and erase the prompt" and adds stdout to the model context,
+// so curl's output is discarded and its exit status is forced to 0.
+//
+// Exactly one bossd entry is kept per file: other prompt-submitted entries
+// belong to earlier chats whose start window has passed (one chat starts at a
+// time per worktree), so they are pruned, as the question hook does. User
+// hooks are never touched. The write is atomic, mirroring WriteHookConfig.
+func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int) error {
+	if worktreePath == "" {
+		return errors.New("worktreePath is required")
+	}
+	if agentSessionID == "" {
+		return errors.New("agentSessionID is required")
+	}
+	if port <= 0 {
+		return fmt.Errorf("port must be positive, got %d", port)
+	}
+	claudeDir := filepath.Join(worktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
+		return fmt.Errorf("create .claude dir: %w", err)
+	}
+	target := filepath.Join(claudeDir, "settings.local.json")
+	root, err := loadHookConfig(target)
+	if err != nil {
+		return err
+	}
+	hooks := asMap(root, "hooks")
+	urlPath := promptSubmittedHookURLPrefix + agentSessionID
+	submits := pruneCommandURLHooks(asSlice(hooks, "UserPromptSubmit"), promptSubmittedHookURLPrefix)
+	hooks["UserPromptSubmit"] = append(submits, bossdPromptSubmittedEntry(urlPath, port))
+	root["hooks"] = hooks
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal hook config: %w", err)
+	}
+	out = append(out, '\n')
+	return atomicWrite(claudeDir, target, out)
+}
+
+// pruneCommandURLHooks drops every entry whose command contains urlPrefix.
+// Returns a fresh slice — never aliases or mutates the input backing array.
+func pruneCommandURLHooks(entries []any, urlPrefix string) []any {
+	kept := make([]any, 0, len(entries)+1)
+	for _, raw := range entries {
+		if entryCommandContains(raw, urlPrefix) {
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	return kept
+}
+
+// bossdPromptSubmittedEntry returns the UserPromptSubmit group for the
+// delivery receipt. The empty matcher fires on every prompt; the payload is
+// forwarded from stdin so bossd can check its session_id.
+func bossdPromptSubmittedEntry(urlPath string, port int) map[string]any {
+	cmd := fmt.Sprintf(
+		`curl -s --max-time 2 -X POST -H "Content-Type: application/json" --data-binary @- http://127.0.0.1:%d%s >/dev/null 2>&1 || true`,
+		port, urlPath,
+	)
+	return map[string]any{
+		"matcher": "",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": cmd,
+			},
+		},
+	}
 }
 
 // removeMatcherFromHookArray drops the entry with the given matcher from

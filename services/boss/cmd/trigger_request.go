@@ -219,8 +219,9 @@ func readTriggerPlacement(cmd *cobra.Command) (*pb.TriggerPlacement, bool, error
 }
 
 var (
-	triggerLaunchFlags = []string{"prompt", "prompt-file", "skill", "agent", "model", "effort", "base-branch"}
+	triggerLaunchFlags = []string{"prompt", "prompt-file", "skill", "agent", "model", "effort", "base-branch", "run-setup", "zero-output"}
 	triggerHTTPFlags   = []string{"methods", "idempotency-header", "dedup-window"}
+	triggerGateFlags   = []string{"gate-script", "gate-timeout"}
 )
 
 func anyFlagChanged(cmd *cobra.Command, names []string) bool {
@@ -259,6 +260,14 @@ func applyTriggerLaunch(cmd *cobra.Command, launch *pb.TriggerLaunchSettings, pr
 	if cmd.Flags().Changed("base-branch") {
 		launch.BaseBranch, _ = cmd.Flags().GetString("base-branch")
 	}
+	if cmd.Flags().Changed("run-setup") {
+		v, _ := cmd.Flags().GetBool("run-setup")
+		launch.ShouldRunSetupCommand = proto.Bool(v)
+	}
+	if cmd.Flags().Changed("zero-output") {
+		v, _ := cmd.Flags().GetBool("zero-output")
+		launch.IsZeroOutput = proto.Bool(v)
+	}
 	return nil
 }
 
@@ -284,6 +293,23 @@ func applyTriggerHTTP(cmd *cobra.Command, cfg *pb.HttpTriggerConfig) error {
 		cfg.DedupWindowSeconds = secs
 	}
 	return nil
+}
+
+// readTriggerGate reads --gate-script / --gate-timeout. ok is false when
+// neither was given; gate.ScriptPath is "" when only --gate-timeout was.
+func readTriggerGate(cmd *cobra.Command) (gate *pb.TriggerGate, ok bool, err error) {
+	if !anyFlagChanged(cmd, triggerGateFlags) {
+		return nil, false, nil
+	}
+	script, _ := cmd.Flags().GetString("gate-script")
+	timeout, _ := cmd.Flags().GetInt32("gate-timeout")
+	if cmd.Flags().Changed("gate-script") && strings.TrimSpace(script) == "" {
+		return nil, false, errors.New("--gate-script needs a script path relative to the repo root (use --no-gate to remove a gate)")
+	}
+	if timeout < 0 {
+		return nil, false, fmt.Errorf("invalid --gate-timeout %d: must not be negative", timeout)
+	}
+	return &pb.TriggerGate{ScriptPath: strings.TrimSpace(script), TimeoutSeconds: timeout}, true, nil
 }
 
 // checkTriggerTypeFlags refuses type-specific flags that do not belong to
@@ -344,6 +370,15 @@ func buildCreateTriggerRequest(cmd *cobra.Command) (*pb.CreateTriggerRequest, er
 		return nil, err
 	}
 	req.PayloadFields, _ = cmd.Flags().GetStringArray("payload-field")
+
+	gate, ok, err := readTriggerGate(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if ok && gate.GetScriptPath() == "" {
+		return nil, errors.New("--gate-timeout needs --gate-script")
+	}
+	req.Gate = gate
 
 	switch typ {
 	case "http":
@@ -429,7 +464,24 @@ func buildUpdateTriggerRequest(cmd *cobra.Command, id string) (req *pb.UpdateTri
 		req.ShouldClearPayloadFields, changed = true, true
 	}
 
-	needsCurrent = anyFlagChanged(cmd, triggerLaunchFlags) || anyFlagChanged(cmd, triggerHTTPFlags) || cmd.Flags().Changed("event")
+	noGate, _ := cmd.Flags().GetBool("no-gate")
+	gate, gateGiven, err := readTriggerGate(cmd)
+	if err != nil {
+		return nil, false, err
+	}
+	switch {
+	case noGate && gateGiven:
+		return nil, false, errors.New("pass --gate-script / --gate-timeout or --no-gate, not both")
+	case noGate:
+		req.Gate, changed = &pb.TriggerGate{}, true
+	case gateGiven && cmd.Flags().Changed("gate-script") && cmd.Flags().Changed("gate-timeout"):
+		req.Gate, changed = gate, true
+	}
+
+	// A lone --gate-script or --gate-timeout keeps the other half of the
+	// stored gate, which mergeTriggerUpdate reads.
+	needsCurrent = anyFlagChanged(cmd, triggerLaunchFlags) || anyFlagChanged(cmd, triggerHTTPFlags) || cmd.Flags().Changed("event") ||
+		(gateGiven && req.Gate == nil)
 	if !changed && !needsCurrent {
 		return nil, false, errors.New("nothing to change: pass at least one flag (see `boss trigger update --help`)")
 	}
@@ -466,6 +518,21 @@ func mergeTriggerUpdate(cmd *cobra.Command, req *pb.UpdateTriggerRequest, curren
 	if cmd.Flags().Changed("event") {
 		events, _ := cmd.Flags().GetStringArray("event")
 		req.TypeConfig = &pb.UpdateTriggerRequest_Github{Github: &pb.GithubTriggerConfig{EventTypes: events}}
+	}
+	if req.Gate == nil && anyFlagChanged(cmd, triggerGateFlags) {
+		gate, _, err := readTriggerGate(cmd)
+		if err != nil {
+			return err
+		}
+		if !cmd.Flags().Changed("gate-script") {
+			if current.GetGate().GetScriptPath() == "" {
+				return errors.New("--gate-timeout needs --gate-script: the trigger has no gate")
+			}
+			gate.ScriptPath = current.GetGate().GetScriptPath()
+		} else {
+			gate.TimeoutSeconds = current.GetGate().GetTimeoutSeconds()
+		}
+		req.Gate = gate
 	}
 	return nil
 }

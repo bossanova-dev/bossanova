@@ -34,6 +34,7 @@ go_library(
         "//services/bossd/internal/proofenv",
         "//services/bossd/internal/session",
         "//services/bossd/internal/status",
+        "@com_github_google_uuid//:uuid",
         "@com_github_hashicorp_go_hclog//:go-hclog",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",

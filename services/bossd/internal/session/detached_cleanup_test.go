@@ -58,7 +58,7 @@ func TestKillTmuxChatBestEffortRunsOnADetachedBudgetedContext(t *testing.T) {
 	t.Parallel()
 	tmuxFake := newFakeTmux()
 	l := &Lifecycle{
-		tmux:   tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory)),
+		tmux:   tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory)),
 		logger: zerolog.Nop(),
 	}
 
@@ -79,7 +79,7 @@ func TestFailStartBestEffortStampsOnADetachedBudgetedContext(t *testing.T) {
 	tmuxFake := newFakeTmux()
 	chats := &mockAgentChatStore{}
 	l := &Lifecycle{
-		tmux:       tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory)),
+		tmux:       tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory)),
 		agentChats: chats,
 		logger:     zerolog.Nop(),
 	}

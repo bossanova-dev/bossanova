@@ -275,12 +275,12 @@ description: example description
 ---
 
 Run \`/boss-plan\` then **/boss-finalize**.
-Also run /boss-proof now and use /compound-engineering:ce-plan for plans.
+Also run /boss-review now and use /compound-engineering:ce-plan for plans.
 `)
 
     assert.match(rewritten, /`\$boss-plan`/)
     assert.match(rewritten, /\*\*\$boss-finalize\*\*/)
-    assert.match(rewritten, /run \$boss-proof\s+now/)
+    assert.match(rewritten, /run \$boss-review\s+now/)
     assert.match(rewritten, /use \$compound-engineering:ce-plan\s+for\s+plans/)
     assert.doesNotMatch(rewritten, /\/boss-plan/)
     assert.doesNotMatch(rewritten, /\/boss-finalize/)

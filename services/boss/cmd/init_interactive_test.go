@@ -228,7 +228,17 @@ func happyScript() []scriptStep {
 		scriptStep{match: "--cron plan"},
 		scriptStep{match: "--cron build"},
 		scriptStep{match: "--cron verify"},
+		scriptStep{match: "--cron retro"},
 	)
+}
+
+// declineCronSteps answers no to every factory cron question.
+func declineCronSteps() []scriptStep {
+	steps := make([]scriptStep, 0, len(factoryCronStages))
+	for _, st := range factoryCronStages {
+		steps = append(steps, scriptStep{match: "--cron " + st.stage, answer: "n"})
+	}
+	return steps
 }
 
 func requireProtoCallsEqual[T proto.Message](t *testing.T, what string, flag, interview []T) {
@@ -251,7 +261,7 @@ func TestInitInteractiveMatchesFlagRun(t *testing.T) {
 	f := newInterviewFixture(t)
 
 	flagDaemon := f.daemon()
-	if out, err := f.runFlags("--register", "--store-env-keys", "--cron", "plan,build,verify"); err != nil {
+	if out, err := f.runFlags("--register", "--store-env-keys", "--cron", "plan,build,verify,retro"); err != nil {
 		t.Fatalf("flag run: %v\n%s", err, out)
 	}
 	flagConfig := f.config()
@@ -268,7 +278,7 @@ func TestInitInteractiveMatchesFlagRun(t *testing.T) {
 	requireProtoCallsEqual(t, "RegisterRepo", flagDaemon.RegisterRepoCalls(), interviewDaemon.RegisterRepoCalls())
 	requireProtoCallsEqual(t, "UpdateRepo", flagDaemon.UpdateRepoCalls(), interviewDaemon.UpdateRepoCalls())
 	requireProtoCallsEqual(t, "CreateCronJob", flagDaemon.CreateCronJobCalls(), interviewDaemon.CreateCronJobCalls())
-	if len(interviewDaemon.RegisterRepoCalls()) != 1 || len(interviewDaemon.UpdateRepoCalls()) != 1 || len(interviewDaemon.CreateCronJobCalls()) != 3 {
+	if len(interviewDaemon.RegisterRepoCalls()) != 1 || len(interviewDaemon.UpdateRepoCalls()) != 1 || len(interviewDaemon.CreateCronJobCalls()) != 4 {
 		t.Fatalf("the equivalence is vacuous: register %d, update %d, cron %d", len(interviewDaemon.RegisterRepoCalls()), len(interviewDaemon.UpdateRepoCalls()), len(interviewDaemon.CreateCronJobCalls()))
 	}
 	assertNoLeak(t, "interview output", out+errOut)
@@ -281,6 +291,30 @@ func TestInitInteractiveMatchesFlagRun(t *testing.T) {
 	for _, want := range []string{"Summary", "registered now", "Linear key:", "stored, read back and validated", "Cron jobs:", "factory-plan: created, enabled", "Left to do:", "commit .boss-skills.json"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestInitInteractiveDefaultFactoryHasFourCrons: accepting every default sets
+// up the whole factory, the weekly retro included, in pipeline order.
+func TestInitInteractiveDefaultFactoryHasFourCrons(t *testing.T) {
+	f := newInterviewFixture(t)
+	d := f.daemon()
+	_, out, errOut, err := f.runInterview(happyScript())
+	if err != nil {
+		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
+	}
+	var names []string
+	for _, c := range d.CreateCronJobCalls() {
+		names = append(names, c.Name)
+	}
+	if got := strings.Join(names, ","); got != "factory-plan,factory-build,factory-verify,factory-retro" {
+		t.Fatalf("creates %s", got)
+	}
+	summary := out[strings.LastIndex(out, "\nSummary\n")+1:]
+	for _, name := range names {
+		if !strings.Contains(summary, "    "+name+": created") {
+			t.Errorf("summary lacks %s:\n%s", name, summary)
 		}
 	}
 }
@@ -302,9 +336,9 @@ func TestInitInteractiveMergeQuestionComesBeforeCrons(t *testing.T) {
 
 	f.daemon()
 	script := happyScript()
-	crons := len(script) - 3
+	crons := len(script) - len(factoryCronStages)
 	script = append(append(script[:crons:crons], scriptStep{match: "--merge", answer: "y"}),
-		scriptStep{match: "--cron plan"}, scriptStep{match: "--cron build", answer: "n"}, scriptStep{match: "--cron verify", answer: "n"})
+		scriptStep{match: "--cron plan"}, scriptStep{match: "--cron build", answer: "n"}, scriptStep{match: "--cron verify", answer: "n"}, scriptStep{match: "--cron retro", answer: "n"})
 	if _, out, errOut, err := f.runInterview(script); err != nil {
 		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
 	}
@@ -364,6 +398,7 @@ func TestInitInteractiveEmptyLinearKeySkipsLinearQuestions(t *testing.T) {
 		{match: "--cron plan", answer: "n"},
 		{match: "--cron build", answer: "n"},
 		{match: "--cron verify", answer: "n"},
+		{match: "--cron retro", answer: "n"},
 	})
 	if err != nil {
 		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
@@ -512,8 +547,7 @@ func TestInitInteractiveChangedAnswersBecomeOverrides(t *testing.T) {
 	}
 	// The flag run created needs-human and Epic-X already, so nothing is
 	// missing any more and no create question is asked.
-	script = script[:len(script)-3]
-	script = append(script, scriptStep{match: "--cron plan", answer: "n"}, scriptStep{match: "--cron build", answer: "n"}, scriptStep{match: "--cron verify", answer: "n"})
+	script = append(script[:len(script)-len(factoryCronStages)], declineCronSteps()...)
 	if _, out, errOut, err := f.runInterview(script); err != nil {
 		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
 	}

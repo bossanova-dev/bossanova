@@ -42,6 +42,13 @@ type fakeTriggerCreator struct {
 	outlastBudget bool
 	// ctxErr records the create context's error when the create finished.
 	ctxErr error
+	// acceptedID, when non-empty, is the id the accepted frame carries instead
+	// of sessionID, so a test can tell which frame's id the launcher recorded.
+	acceptedID string
+	// settledWorktree, when non-empty, is the settled frame's worktree_path —
+	// the repo checkout a zero-output session settles on — instead of a
+	// per-session worktree.
+	settledWorktree string
 }
 
 func (f *fakeTriggerCreator) StreamCreateSession(ctx context.Context, req *pb.CreateSessionRequest, emit func(*pb.CreateSessionResponse) error) error {
@@ -53,7 +60,11 @@ func (f *fakeTriggerCreator) StreamCreateSession(ctx context.Context, req *pb.Cr
 		f.startOnce.Do(func() { close(f.started) })
 	}
 
-	accepted := &pb.Session{Id: f.sessionID, Title: req.GetTitle()}
+	acceptedID := f.sessionID
+	if f.acceptedID != "" {
+		acceptedID = f.acceptedID
+	}
+	accepted := &pb.Session{Id: acceptedID, Title: req.GetTitle()}
 	if err := emit(&pb.CreateSessionResponse{Event: &pb.CreateSessionResponse_SessionCreated{
 		SessionCreated: &pb.SessionCreated{Session: accepted},
 	}}); err != nil {
@@ -75,7 +86,11 @@ func (f *fakeTriggerCreator) StreamCreateSession(ctx context.Context, req *pb.Cr
 	if f.skipSettled {
 		return nil
 	}
-	settled := &pb.Session{Id: f.sessionID, Title: req.GetTitle(), WorktreePath: "/tmp/wt/" + f.sessionID}
+	worktree := "/tmp/wt/" + f.sessionID
+	if f.settledWorktree != "" {
+		worktree = f.settledWorktree
+	}
+	settled := &pb.Session{Id: f.sessionID, Title: req.GetTitle(), WorktreePath: worktree}
 	return emit(&pb.CreateSessionResponse{Event: &pb.CreateSessionResponse_SessionCreated{
 		SessionCreated: &pb.SessionCreated{Session: settled},
 	}})
@@ -240,6 +255,115 @@ func TestLaunchTriggerSession(t *testing.T) {
 		row, _ := fx.launches.Get(context.Background(), "inv-late")
 		if row == nil || row.SessionID != "sess-late" {
 			t.Fatalf("session id not recorded after the command context ended: %+v", row)
+		}
+	})
+}
+
+// TestLaunchTriggerSessionForwardsRunSetupAndZeroOutput pins BOS-1477's
+// launcher half: the trigger's Run setup command and Zero output settings reach
+// the daemon CreateSessionRequest, a zero-output launch sends no base branch, and
+// a trigger with neither set sends exactly what it did before.
+func TestLaunchTriggerSessionForwardsRunSetupAndZeroOutput(t *testing.T) {
+	off, on := false, true
+	for _, tc := range []struct {
+		name           string
+		runSetup       *bool
+		zeroOutput     *bool
+		wantRunSetup   *bool
+		wantZeroOutput bool
+		wantBaseBranch string
+	}{
+		{name: "neither set keeps today's request", wantBaseBranch: "develop"},
+		{name: "run setup off", runSetup: &off, wantRunSetup: &off, wantBaseBranch: "develop"},
+		{name: "run setup on", runSetup: &on, wantRunSetup: &on, wantBaseBranch: "develop"},
+		{name: "zero output drops the base branch", zeroOutput: &on, wantZeroOutput: true, wantBaseBranch: ""},
+		{name: "zero output off keeps the base branch", zeroOutput: &off, wantBaseBranch: "develop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-fwd"})
+			cmd := triggerCmd("inv-fwd")
+			cmd.ShouldRunSetupCommand = tc.runSetup
+			cmd.IsZeroOutput = tc.zeroOutput
+			if _, _, err := fx.launcher.Launch(context.Background(), cmd); err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			req := fx.creator.lastRequest()
+			switch {
+			case tc.wantRunSetup == nil && req.ShouldRunSetupCommand != nil:
+				t.Fatalf("should_run_setup_command = %v, want absent", req.GetShouldRunSetupCommand())
+			case tc.wantRunSetup != nil && (req.ShouldRunSetupCommand == nil || req.GetShouldRunSetupCommand() != *tc.wantRunSetup):
+				t.Fatalf("should_run_setup_command = %v (present=%v), want %v", req.GetShouldRunSetupCommand(), req.ShouldRunSetupCommand != nil, *tc.wantRunSetup)
+			}
+			if got := req.GetIsZeroOutput(); got != tc.wantZeroOutput {
+				t.Fatalf("is_zero_output = %v, want %v", got, tc.wantZeroOutput)
+			}
+			if got := req.GetBaseBranch(); got != tc.wantBaseBranch {
+				t.Fatalf("base_branch = %q, want %q", got, tc.wantBaseBranch)
+			}
+			if !req.GetDetach() || !req.GetIsTmuxUnattended() || !req.GetDeferPr() || !req.GetForce() {
+				t.Fatalf("create must stay detached+unattended+defer_pr+force, got %+v", req)
+			}
+			if req.GetIsQuickChat() || req.PrNumber != nil || req.GetBranchName() != "" {
+				t.Fatalf("trigger create must carry no quick-chat/PR/branch fields, got %+v", req)
+			}
+		})
+	}
+}
+
+// TestLaunchTriggerSessionZeroOutput proves a zero-output trigger launch is
+// recorded as launched rather than left stuck accepted: the daemon settles a
+// zero-output session on the repo checkout, so the launcher's existing
+// accepted-then-settled rule applies, and the budget-expiry path still records
+// the accepted id so a retry replays instead of launching a second agent in the
+// same checkout.
+func TestLaunchTriggerSessionZeroOutput(t *testing.T) {
+	zeroOutputCmd := func(invocationID string) *pb.LaunchTriggerSessionCommand {
+		on := true
+		cmd := triggerCmd(invocationID)
+		cmd.IsZeroOutput = &on
+		return cmd
+	}
+
+	t.Run("records and returns the settled session id", func(t *testing.T) {
+		fx := newTriggerFixture(t, &fakeTriggerCreator{
+			sessionID:       "sess-zero",
+			acceptedID:      "sess-zero-accepted",
+			settledWorktree: "/tmp/widgets",
+		})
+		res, code, err := fx.launcher.Launch(context.Background(), zeroOutputCmd("inv-zero"))
+		if err != nil || code != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
+			t.Fatalf("Launch: code=%v err=%v", code, err)
+		}
+		if res.GetSessionId() != "sess-zero" || res.GetIsReplay() {
+			t.Fatalf("result = %+v, want the settled session sess-zero, not a replay", res)
+		}
+		row, err := fx.launches.Get(context.Background(), "inv-zero")
+		if err != nil || row == nil || row.SessionID != "sess-zero" {
+			t.Fatalf("claim row = %+v, %v; want the settled session recorded", row, err)
+		}
+		if !fx.creator.lastRequest().GetIsZeroOutput() {
+			t.Fatal("create request did not carry is_zero_output")
+		}
+	})
+
+	t.Run("budget expiry after acceptance records the accepted id for replay", func(t *testing.T) {
+		creator := &fakeTriggerCreator{sessionID: "sess-zb", outlastBudget: true}
+		fx := newTriggerFixture(t, creator)
+		fx.launcher.Budget = 20 * time.Millisecond
+		_, code, err := fx.launcher.Launch(context.Background(), zeroOutputCmd("inv-zb"))
+		if err == nil || code != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+			t.Fatalf("code=%v err=%v, want FAILED_PRECONDITION", code, err)
+		}
+		row, _ := fx.launches.Get(context.Background(), "inv-zb")
+		if row == nil || row.SessionID != "sess-zb" {
+			t.Fatalf("row = %+v, want the still-bootstrapping session recorded on the claim", row)
+		}
+		retry, _, err := fx.launcher.Launch(context.Background(), zeroOutputCmd("inv-zb"))
+		if err != nil || retry.GetSessionId() != "sess-zb" || !retry.GetIsReplay() {
+			t.Fatalf("retry = %+v, %v; want a replay of sess-zb", retry, err)
+		}
+		if n := creator.calls.Load(); n != 1 {
+			t.Fatalf("creates = %d, want 1 (the retry must not launch a second zero-output agent)", n)
 		}
 	})
 }

@@ -75,10 +75,6 @@ function fixtureRoot(overrides = {}) {
     // price to the evaluating reader and again in the summary, and a fixture
     // carrying one would make every test below red for the wrong reason.
     'PRODUCT.md': 'Cloud mode ($7/mo) is the hosted tier.\nEvaluate $7/mo per machine.\n',
-    // Every SCAN_FILES entry must exist, and every SCAN_DIRS entry must hold at
-    // least one matching file: the gate reports either shortfall rather than
-    // skipping it, so an incomplete fixture would red everywhere.
-    'proof/recipes/default.json': '{"recipes":[{"description":"the $7/month terms"}]}\n',
     ...overrides,
   }
   for (const [rel, body] of Object.entries(files)) {
@@ -91,6 +87,24 @@ function fixtureRoot(overrides = {}) {
 }
 
 const check = (overrides) => checkPriceParity({ root: fixtureRoot(overrides), exemptions: [] })
+
+// SCAN_DIRS registers no directory on the real tree, so its walk is pinned
+// through the `scanDirs` seam with a fixture directory instead. The baseline
+// file is there because every SCAN_DIRS entry must hold at least one matching
+// file: the gate reports that shortfall rather than skipping it, so a fixture
+// without it would red every test below for the wrong reason.
+const CURATED = 'curated/notes'
+const CURATED_DIRS = [{ path: CURATED, extensions: ['.json', '.md'] }]
+const checkDirs = (overrides) =>
+  checkPriceParity({
+    root: fixtureRoot({
+      [`${CURATED}/default.json`]: '{"notes":[{"description":"the $7/month terms"}]}\n',
+      ...overrides,
+    }),
+    exemptions: [],
+    scanDirs: CURATED_DIRS,
+  })
+const coverageFailure = (rel) => proseSurfaceCoverageFailure(rel, { scanDirs: CURATED_DIRS })
 
 /**
  * PROSE_SURFACES requires PRODUCT.md to state the declared price at least
@@ -337,16 +351,22 @@ test('the real repository tree agrees with itself', () => {
   assert.equal(result.ok, true, result.failures.join('\n'))
 })
 
-test('a proof recipe description that names a stale amount is caught', () => {
-  // Recipe descriptions are prose a human reads, far from the declaration, and
-  // nothing else in the repo would catch one going stale. SCAN_FILES covers the
-  // file; this proves the coverage is real rather than a constant nobody reads.
-  const result = check({
-    'proof/recipes/default.json':
+test('an empty SCAN_DIRS passes on the real tree', () => {
+  assert.deepEqual(SCAN_DIRS, [])
+  const result = checkPriceParity({ scanDirs: [] })
+  assert.equal(result.ok, true, result.failures.join('\n'))
+})
+
+test('a curated description that names a stale amount is caught', () => {
+  // Curated descriptions are prose a human reads, far from the declaration, and
+  // nothing else in the repo would catch one going stale. This proves a
+  // SCAN_DIRS entry's coverage is real rather than a list nobody reads.
+  const result = checkDirs({
+    'curated/notes/default.json':
       '{"recipes":[{"description":"the $9/month cancellation terms"}]}\n',
   })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /proof\/recipes\/default\.json.*\$9/)
+  assert.match(result.failures.join('\n'), /curated\/notes\/default\.json.*\$9/)
 })
 
 test('a SCAN_FILES entry that has gone missing is reported, not skipped', () => {
@@ -361,57 +381,57 @@ test('a SCAN_FILES entry that has gone missing is reported, not skipped', () => 
   )
 })
 
-test('a NEW sibling recipe naming a stale amount is caught, not just default.json', () => {
-  // The coverage is the DIRECTORY, not the one recipe that exists today. A
+test('a NEW sibling file naming a stale amount is caught, not just default.json', () => {
+  // The coverage is the DIRECTORY, not the one file that exists today. A
   // hand-maintained single path would scan this file's neighbour and never look
-  // at the file itself — the drift shape reopening with the next recipe added.
-  const result = check({
-    'proof/recipes/nightly.json':
+  // at the file itself — the drift shape reopening with the next file added.
+  const result = checkDirs({
+    'curated/notes/nightly.json':
       '{"recipes":[{"description":"the $9/month cancellation terms"}]}\n',
   })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /proof\/recipes\/nightly\.json.*\$9/)
+  assert.match(result.failures.join('\n'), /curated\/notes\/nightly\.json.*\$9/)
 })
 
 test('a SCAN_DIRS directory that has gone missing is reported, not skipped', () => {
-  // Deleting the only recipe removes the directory too. Absent this check the
-  // tree is CLEAN, so the recipes would drop out of coverage permanently while
+  // Deleting the only file removes the directory too. Absent this check the
+  // tree is CLEAN, so the directory would drop out of coverage permanently while
   // the gate kept exiting 0 — the SCAN_FILES ratchet, applied to a directory.
-  const result = check({ 'proof/recipes/default.json': null })
+  const result = checkDirs({ 'curated/notes/default.json': null })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /proof\/recipes: scanned directory is missing; restore it or remove it from SCAN_DIRS/,
+    /curated\/notes: scanned directory is missing; restore it or remove it from SCAN_DIRS/,
   )
 })
 
 test('a SCAN_DIRS directory holding no matching file is reported, not an empty scan', () => {
-  const result = check({
-    'proof/recipes/default.json': null,
-    'proof/recipes/notes.txt': 'Recipes live here.\n',
+  const result = checkDirs({
+    'curated/notes/default.json': null,
+    'curated/notes/notes.txt': 'Notes live here.\n',
   })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /proof\/recipes: scanned directory holds no \.json\/\.md file/,
+    /curated\/notes: scanned directory holds no \.json\/\.md file/,
   )
 })
 
 test('a SCAN_DIRS directory is read recursively, not just its top level', () => {
-  // A flat read left `proof/recipes/sub/nested.json` unscanned while the doc
+  // A flat read left `curated/notes/sub/nested.json` unscanned while the doc
   // comment promised every matching file below the directory was covered.
-  const result = check({ 'proof/recipes/sub/nested.json': '{"description":"$68/month"}\n' })
+  const result = checkDirs({ 'curated/notes/sub/nested.json': '{"description":"$68/month"}\n' })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /proof\/recipes\/sub\/nested\.json:1: \$68/)
+  assert.match(result.failures.join('\n'), /curated\/notes\/sub\/nested\.json:1: \$68/)
 })
 
-test('markdown beside the recipes is scanned too, not only the recipes', () => {
-  // proof/recipes/README.md is 14 KB of prose a human reads. Scanning the
+test('markdown beside the JSON is scanned too, not only the JSON', () => {
+  // A README in a curated directory is prose a human reads. Scanning the
   // directory while skipping the one file in it written purely for humans
   // would have been a strange place to stop.
-  const result = check({ 'proof/recipes/README.md': 'The trial costs $68/month.\n' })
+  const result = checkDirs({ 'curated/notes/README.md': 'The trial costs $68/month.\n' })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /proof\/recipes\/README\.md:1: \$68/)
+  assert.match(result.failures.join('\n'), /curated\/notes\/README\.md:1: \$68/)
 })
 
 test('a file type neither scanned nor ignored fails, rather than being skipped', () => {
@@ -501,16 +521,8 @@ test('a `//` comment marker is not a billing-period separator', () => {
   assert.deepEqual(found('<span>{price}/month</span>'), ['/month'])
 })
 
-test('coverage names PRODUCT.md by path and the proof recipes by directory', () => {
+test('coverage names PRODUCT.md by path', () => {
   assert.ok(SCAN_FILES.includes('PRODUCT.md'))
-  assert.ok(
-    SCAN_DIRS.some(
-      (d) =>
-        d.path === 'proof/recipes' &&
-        d.extensions.includes('.json') &&
-        d.extensions.includes('.md'),
-    ),
-  )
 })
 
 // SCAN_ROOTS is a coverage list like SCAN_FILES and SCAN_DIRS, and like them a
@@ -598,14 +610,14 @@ test('a SCAN_DIRS entry that is not a directory fails loudly instead of scanning
   // same rethrow, and only the first was pinned. `existsSync` is true for a
   // regular file, so this reaches the walk and must surface as ENOTDIR rather
   // than as an empty curated directory.
-  const result = check({
-    'proof/recipes/default.json': null,
-    'proof/recipes': 'a file where the curated directory should be\n',
+  const result = checkDirs({
+    'curated/notes/default.json': null,
+    'curated/notes': 'a file where the curated directory should be\n',
   })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /proof\/recipes: scanned directory could not be read at proof\/recipes \(ENOTDIR\)/,
+    /curated\/notes: scanned directory could not be read at curated\/notes \(ENOTDIR\)/,
   )
 })
 
@@ -850,9 +862,9 @@ test('a build-named subdirectory inside a SCAN_DIRS entry is still read', () => 
   // A SCAN_DIRS entry is a hand-registered directory, so a subdirectory that
   // happens to be called `build` is in scope — otherwise registering a
   // directory silently covers only part of it.
-  const result = check({ 'proof/recipes/build/case.json': '{"note":"the $9/month terms"}\n' })
+  const result = checkDirs({ 'curated/notes/build/case.json': '{"note":"the $9/month terms"}\n' })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /recipes\/build\/case\.json:1: \$9/)
+  assert.match(result.failures.join('\n'), /notes\/build\/case\.json:1: \$9/)
 })
 
 test('a build-named subdirectory inside a SCAN_ROOTS tree is pruned', () => {
@@ -868,29 +880,31 @@ test('a build-named subdirectory inside a SCAN_ROOTS tree is pruned', () => {
 })
 
 test('a dot-prefixed subdirectory inside a SCAN_DIRS entry is still read', () => {
-  // The walk used to skip every dot-prefixed entry as a class, so a recipe
+  // The walk used to skip every dot-prefixed entry as a class, so a file
   // filed under `.hidden/` was read by nothing and a disagreeing price there
   // exited 0 — in the one directory registered on the promise that every file
   // in it is scanned.
-  const result = check({ 'proof/recipes/.hidden/case.json': '{"note":"the $99/month terms"}\n' })
+  const result = checkDirs({
+    'curated/notes/.hidden/case.json': '{"note":"the $99/month terms"}\n',
+  })
   assert.equal(result.ok, false)
-  assert.match(result.failures.join('\n'), /recipes\/\.hidden\/case\.json:1: \$99/)
+  assert.match(result.failures.join('\n'), /notes\/\.hidden\/case\.json:1: \$99/)
 })
 
 test('an OS dropping is excused by name, not by being dot-prefixed', () => {
   // `.DS_Store` has no extension, so without IGNORED_FILENAMES the ratchet
   // above would red the gate for any macOS developer who opened the directory
   // in Finder. Excusing it by NAME keeps the class skip from coming back.
-  const result = check({ 'proof/recipes/.DS_Store': 'binary junk\n' })
+  const result = checkDirs({ 'curated/notes/.DS_Store': 'binary junk\n' })
   assert.equal(result.ok, true, result.failures.join('\n'))
 })
 
 test('a file type a SCAN_DIRS entry does not list fails rather than being skipped', () => {
-  const result = check({ 'proof/recipes/case.yaml': 'note: the $7 terms\n' })
+  const result = checkDirs({ 'curated/notes/case.yaml': 'note: the $7 terms\n' })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /'\.yaml' is neither listed in the SCAN_DIRS entry for proof\/recipes nor globally ignored/,
+    /'\.yaml' is neither listed in the SCAN_DIRS entry for curated\/notes nor globally ignored/,
   )
 })
 
@@ -933,7 +947,7 @@ test('every prose surface is reached by a coverage list, so presence implies agr
   }
 
   assert.equal(proseSurfaceCoverageFailure('PRODUCT.md'), null)
-  assert.equal(proseSurfaceCoverageFailure('proof/recipes/README.md'), null)
+  assert.equal(coverageFailure('curated/notes/README.md'), null)
   assert.match(
     proseSurfaceCoverageFailure('docs/pricing.md') ?? '',
     /read by no coverage list, so it is required to state a price and free to state the wrong one/,
@@ -947,7 +961,7 @@ test('a prose surface a coverage list names but never reads is not covered', () 
   // would be required and the amount unchecked, which is the thing the
   // function exists to prevent.
   assert.match(
-    proseSurfaceCoverageFailure('proof/recipes/pricing.txt') ?? '',
+    coverageFailure('curated/notes/pricing.txt') ?? '',
     /read by no coverage list/,
     'an extension SCAN_DIRS does not list must not count as covered',
   )
@@ -958,7 +972,7 @@ test('a prose surface a coverage list names but never reads is not covered', () 
   )
   // And the positive control, so the assertions above are about the extension
   // rather than about the prefix silently failing to match.
-  assert.equal(proseSurfaceCoverageFailure('proof/recipes/pricing.json'), null)
+  assert.equal(coverageFailure('curated/notes/pricing.json'), null)
   assert.equal(proseSurfaceCoverageFailure('services/marketing/src/pricing.astro'), null)
 })
 
@@ -991,5 +1005,5 @@ test('a prose surface under a pruned directory is not covered', () => {
   // And SCAN_DIRS entries are walked with `skipBuildDirs: false`, so the same
   // segment below one of those is still read — pruning is a SCAN_ROOTS
   // predicate, and re-deriving it for the wrong list would be its own bug.
-  assert.equal(proseSurfaceCoverageFailure('proof/recipes/dist/pricing.md'), null)
+  assert.equal(coverageFailure('curated/notes/dist/pricing.md'), null)
 })

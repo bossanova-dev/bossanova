@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -150,6 +152,50 @@ func TestBuildInteractiveCommand(t *testing.T) {
 			}
 			assertAppendSystemPromptDeclarationMatchesArgv(t, tt.req, resp)
 		})
+	}
+}
+
+// With an input file and a login shell, the rendered --prompt value (context
+// plus prompt) is written 0600 and read at exec time, not inlined into argv.
+func TestBuildInteractiveCommandWritesRenderedPromptToFile(t *testing.T) {
+	srv := newServer(nil, zerolog.Nop(), WithCLIVersion("1.18.4"), WithLoginShell("/bin/zsh"))
+	path := filepath.Join(t.TempDir(), "ses.initial-input")
+	req := &bossanovav1.BuildInteractiveCommandRequest{
+		AppendSystemPrompt: "boss context",
+		InitialPrompt:      "implement the plan",
+		InitialInputPath:   path,
+	}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), req)
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if !resp.GetConsumesInitialInput() {
+		t.Fatal("ConsumesInitialInput = false, want true")
+	}
+	argv := resp.GetArgv()
+	if got := argv[len(argv)-1]; got != "--prompt" {
+		t.Fatalf("argv must end with --prompt so the file read is its value: %q", argv)
+	}
+	if !slices.Contains(argv, path) {
+		t.Fatalf("argv must reference the input file: %q", argv)
+	}
+	for _, a := range argv {
+		if strings.Contains(a, "implement the plan") {
+			t.Fatalf("prompt must not be inlined: %q", argv)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("input file not written: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("input file mode = %o, want 600", perm)
+	}
+	if b, _ := os.ReadFile(path); string(b) != opencodeInitialInput(req) {
+		t.Fatalf("input file = %q, want rendered %q", b, opencodeInitialInput(req))
+	}
+	if resp.GetAppendSystemPromptSupport() != bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV {
+		t.Fatalf("context still reaches the launch through the file; support = %v", resp.GetAppendSystemPromptSupport())
 	}
 }
 

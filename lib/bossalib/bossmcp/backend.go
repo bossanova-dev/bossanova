@@ -4,6 +4,7 @@ import (
 	"context"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/projectconfig"
 )
 
 // Backend is the narrow operation surface the MCP tools call. Both the local
@@ -248,4 +249,34 @@ type SessionWebhookBackend interface {
 	RotateSessionWebhookSecret(ctx context.Context, req *pb.RotateSessionWebhookSecretRequest) (*pb.RotateSessionWebhookSecretResponse, error)
 	SendSessionWebhookTestEvent(ctx context.Context, req *pb.SendSessionWebhookTestEventRequest) (*pb.SendSessionWebhookTestEventResponse, error)
 	DeleteSessionWebhook(ctx context.Context, req *pb.DeleteSessionWebhookRequest) error
+}
+
+// ProjectLocalBackend is the optional backend the project config tools use on
+// the local server: this daemon's identity and a checkout's branch, which the
+// daemon RPCs cannot answer. Like the hosted families it is NOT part of
+// Backend and is discovered by type assertion. A backend without it plans with
+// no identity (no daemons[] entry matches, so every cron is skipped
+// daemon-unmatched) and an unknown branch (so a write is refused as off the
+// default branch).
+type ProjectLocalBackend interface {
+	// ProjectDaemonIdentity is the daemon this backend talks to, by
+	// projectconfig.LocalIdentityFromState's rule; warning explains a
+	// name-only identity.
+	ProjectDaemonIdentity(ctx context.Context) (id projectconfig.DaemonIdentity, warning string, err error)
+	// CheckoutBranch is the branch checked out at dir; ok is false when HEAD
+	// is detached or dir cannot be read.
+	CheckoutBranch(ctx context.Context, dir string) (branch string, ok bool)
+}
+
+// ProjectCloudBackend is the optional backend that gives the project config
+// tools the cloud scope (the hosted gateway): the trigger and session-webhook
+// families plus the caller's fleet (daemons, the repos they serve, their
+// crons) and cron writes bound to one daemon. A backend implementing it plans
+// the cloud leg and never the local one.
+type ProjectCloudBackend interface {
+	TriggerBackend
+	SessionWebhookBackend
+	projectconfig.FleetReader
+	projectconfig.RemoteCronWriter
+	ListDaemons(ctx context.Context, organizationID string) ([]*pb.DaemonInfo, error)
 }

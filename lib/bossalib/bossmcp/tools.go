@@ -693,6 +693,24 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	registerOrganizationNoteReadTools(server, backend, opts)
+
+	// Project config tools: handlers and adapters live in project_config.go;
+	// the registrations stay here, where the docs gates read tool names.
+	addTool(server, opts, &mcp.Tool{
+		Name: "export_project_config",
+		Description: "Export boss setup as .boss-project.json content (as `boss project export`). Local: the repo " +
+			"working_dir is in, its settings and crons. Gateway: your triggers for repo_origin_url and the " +
+			"organization's session webhooks. Secrets appear only as BOSS_* env references.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, exportProjectConfigHandler(backend))
+
+	addTool(server, opts, &mcp.Tool{
+		Name: "diff_project_config",
+		Description: "Plan converging onto the .boss-project.json in config; writes nothing (as `boss project diff --json`). " +
+			"Local: this daemon's repo, settings and crons. Gateway: your triggers, the organization's session " +
+			"webhooks, crons on your daemons. Secrets are never resolved or minted: those changes are skips for the CLI.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, diffProjectConfigHandler(backend))
 }
 
 // registerOrganizationNoteReadTools installs the three read-only

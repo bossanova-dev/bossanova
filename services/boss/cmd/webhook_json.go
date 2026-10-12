@@ -19,6 +19,7 @@ type webhookJSON struct {
 	Description     string   `json:"description"`
 	EventTypes      []string `json:"event_types"`
 	Enabled         bool     `json:"enabled"`
+	Format          string   `json:"format"`
 	CreatedByUserID string   `json:"created_by_user_id"`
 	CreatedAt       string   `json:"created_at"`
 	UpdatedAt       string   `json:"updated_at"`
@@ -30,6 +31,12 @@ type webhookJSON struct {
 type webhookSecretJSON struct {
 	Webhook webhookJSON `json:"webhook"`
 	Secret  string      `json:"secret"`
+}
+
+type webhookFormatJSON struct {
+	ID           string `json:"id"`
+	DisplayLabel string `json:"display_label"`
+	Description  string `json:"description"`
 }
 
 type webhookEventTypeJSON struct {
@@ -107,11 +114,16 @@ func webhookToJSON(w *pb.SessionWebhook) webhookJSON {
 		Description:     w.GetDescription(),
 		EventTypes:      nonNilStrings(w.GetEventTypes()),
 		Enabled:         w.GetIsEnabled(),
+		Format:          w.GetFormat(),
 		CreatedByUserID: w.GetCreatedByUserId(),
 		CreatedAt:       rfc3339OrEmpty(w.GetCreatedAt()),
 		UpdatedAt:       rfc3339OrEmpty(w.GetUpdatedAt()),
 		SecretRotatedAt: rfc3339OrEmpty(w.GetSecretRotatedAt()),
 	}
+}
+
+func webhookFormatToJSON(f *pb.SessionWebhookFormat) webhookFormatJSON {
+	return webhookFormatJSON{ID: f.GetId(), DisplayLabel: f.GetDisplayLabel(), Description: f.GetDescription()}
 }
 
 func webhookEventTypeToJSON(e *pb.SessionWebhookEventType) webhookEventTypeJSON {

@@ -45,6 +45,14 @@ type RunTokenValidator interface {
 	ValidateRunToken(ctx context.Context, agentSessionID, bearerToken string) error
 }
 
+// PromptReceiptRecorder records that an agent submitted a prompt, keyed by
+// agent_session_id, with the receipt's arrival time. Satisfied by
+// *session.Lifecycle.RecordPromptSubmitted, which keeps a receipt only while a
+// launch is confirming that chat's first input and reports whether one was.
+type PromptReceiptRecorder interface {
+	RecordPromptSubmitted(agentSessionID string, at time.Time) bool
+}
+
 // finalizeDispatchTimeout bounds the background FinalizeSession call spawned
 // by the Stop hook. Five minutes comfortably covers the worst-case
 // EnsurePR + push + chat-spawn path on a slow repo while still preventing
@@ -108,6 +116,7 @@ type HookServer struct {
 	completer              AgentRunCompleter
 	questionSignals        QuestionSignalRecorder
 	questionAuth           RunTokenValidator
+	promptReceipts         PromptReceiptRecorder
 	logger                 zerolog.Logger
 	listener               net.Listener
 	srv                    *http.Server
@@ -130,7 +139,11 @@ type HookServerConfig struct {
 	// *plugin.HostServiceServer respectively.
 	QuestionSignals QuestionSignalRecorder
 	QuestionAuth    RunTokenValidator
-	Logger          zerolog.Logger
+	// PromptReceipts backs POST /hooks/prompt-submitted/{agent_session_id}, the
+	// first-input delivery receipt. Optional for legacy/test wiring; when nil
+	// the endpoint returns 500. Production wires the session.Lifecycle.
+	PromptReceipts PromptReceiptRecorder
+	Logger         zerolog.Logger
 }
 
 // NewHookServer constructs a HookServer. Call Listen to bind, then Serve
@@ -142,6 +155,7 @@ func NewHookServer(cfg HookServerConfig) *HookServer {
 		completer:       cfg.Completer,
 		questionSignals: cfg.QuestionSignals,
 		questionAuth:    cfg.QuestionAuth,
+		promptReceipts:  cfg.PromptReceipts,
 		logger:          cfg.Logger,
 	}
 }
@@ -169,6 +183,7 @@ func (h *HookServer) Listen() error {
 	mux.HandleFunc("POST /hooks/finalize/{session_id}", h.handleFinalize)
 	mux.HandleFunc("POST /hooks/agent-run-complete/{agent_session_id}", h.handleAgentRunComplete)
 	mux.HandleFunc("POST /hooks/question/{agent_session_id}", h.handleQuestion)
+	mux.HandleFunc("POST /hooks/prompt-submitted/{agent_session_id}", h.handlePromptSubmitted)
 
 	h.srv = &http.Server{
 		Handler:           mux,
@@ -451,6 +466,66 @@ func (h *HookServer) handleQuestion(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error().Err(err).Str("agent_session", agentSessionID).Msg("hook: question auth error")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// maxPromptSubmittedBody caps how much of the forwarded UserPromptSubmit
+// payload is read. The payload carries the whole prompt, so the cap is
+// generous; a larger body is read only up to it, fails to parse, and is then
+// attributed by URL alone, exactly like a payload without a session_id.
+const maxPromptSubmittedBody = 8 << 20
+
+// promptSubmittedPayload is the part of Claude's UserPromptSubmit hook payload
+// the receipt reads. The prompt it also carries is never logged.
+type promptSubmittedPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// handlePromptSubmitted implements POST /hooks/prompt-submitted/{agent_session_id},
+// the first-input delivery receipt posted by Claude's UserPromptSubmit hook.
+//
+// It is unauthenticated by design: the hook is installed for every tmux-hosted
+// start, not only token-bearing runs, so there is no per-run token to carry.
+// The listener is loopback-only, and a receipt is kept only while a launch is
+// confirming that very chat, so a stray or forged POST can at most confirm a
+// start whose agent is already up. Every Claude process in a worktree fires
+// every hook entry in its settings, so a payload whose session_id names a
+// different chat is acknowledged and dropped.
+//
+// Response codes:
+//   - 400 — agent_session_id path parameter missing
+//   - 500 — receipt recorder not wired (misconfiguration)
+//   - 200 — everything else, recorded or not: the hook discards the response,
+//     and a receipt nobody awaits is not an error
+func (h *HookServer) handlePromptSubmitted(w http.ResponseWriter, r *http.Request) {
+	at := time.Now()
+	agentSessionID := r.PathValue("agent_session_id")
+	if agentSessionID == "" {
+		http.Error(w, "agent_session_id required", http.StatusBadRequest)
+		return
+	}
+	if h.promptReceipts == nil {
+		h.logger.Error().Str("agent_session", agentSessionID).Msg("hook: prompt receipt recorder not configured")
+		http.Error(w, "prompt receipts not configured", http.StatusInternalServerError)
+		return
+	}
+	var payload promptSubmittedPayload
+	if body, err := io.ReadAll(io.LimitReader(r.Body, maxPromptSubmittedBody)); err == nil && len(body) > 0 {
+		_ = json.Unmarshal(body, &payload)
+	}
+	if payload.SessionID != "" && payload.SessionID != agentSessionID {
+		h.logger.Debug().
+			Str("agent_session", agentSessionID).
+			Str("payload_session", payload.SessionID).
+			Msg("hook: prompt-submitted payload names another chat; ignored")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	recorded := h.promptReceipts.RecordPromptSubmitted(agentSessionID, at)
+	h.logger.Debug().
+		Str("agent_session", agentSessionID).
+		Bool("awaited", recorded).
+		Msg("hook: prompt-submitted receipt")
+	w.WriteHeader(http.StatusOK)
 }
 
 // maxNotificationBody caps how much of the forwarded Notification payload we

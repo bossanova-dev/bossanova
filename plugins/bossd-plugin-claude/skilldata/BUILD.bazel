@@ -40,7 +40,6 @@ go_library(
         "skills/boss-build/SKILL.md",
         "skills/boss-build/agents/openai.yaml",
         "skills/boss-build/references/cron-gate.md",
-        "skills/boss-build/references/proof-capture.md",
         "skills/boss-build/references/publish.md",
         "skills/boss-build/references/receiving-code-review.md",
         "skills/boss-build/references/resume-assessment.md",

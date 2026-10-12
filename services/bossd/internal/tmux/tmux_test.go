@@ -3202,21 +3202,27 @@ func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
 	cases := []struct {
 		name     string
 		text     string
-		wantType bool // literal send-keys -l delivery (single-line); else paste
+		marker   string
+		wantType bool // literal send-keys -l delivery; else paste
 	}{
-		{"single-line types", "run the thing", true},
-		{"multi-line pastes", "line one\nline two", false},
+		// Claude pastes every free-text payload, single-line included: its TUI
+		// reads a typed burst as a paste and collapses or truncates it (BOS-1506).
+		{"claude single-line pastes", "run the thing", "❯", false},
+		{"claude slash command types", "/compact", "❯", true},
+		{"codex single-line types", "run the thing", "›", true},
+		{"multi-line pastes", "line one\nline two", "❯", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Ready marker on the first poll; a cleared (submitted) prompt on the
 			// verify poll so verification passes without waiting the full budget —
-			// "❯\n" clears the single-line literal row AND reads as a submitted
-			// multi-line composer (empty marker row, no payload lines below).
-			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n", "❯\n"}}
+			// a bare marker clears the single-line literal row AND reads as a
+			// submitted multi-line composer (empty marker row, no payload lines
+			// below).
+			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{tc.marker + "\n", tc.marker + "\n"}}
 			c := NewClient(WithCommandFactory(fake.factory))
 
-			if err := c.SendMessage(context.Background(), "boss-test-sess", tc.text, true, "❯"); err != nil {
+			if err := c.SendMessage(context.Background(), "boss-test-sess", tc.text, true, tc.marker); err != nil {
 				t.Fatalf("SendMessage: unexpected error: %v", err)
 			}
 
@@ -3227,8 +3233,7 @@ func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
 				t.Errorf("submit pressed Enter %d times, want 1", n)
 			}
 
-			// Delivery shape: single-line types (send-keys -l), multi-line pastes
-			// (load-buffer + paste-buffer).
+			// Delivery shape: literal send-keys -l, or load-buffer + paste-buffer.
 			var sawLiteral, sawLoad, sawPaste bool
 			enterIdx := -1
 			for i, call := range calls {
@@ -3248,10 +3253,18 @@ func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
 			}
 			if tc.wantType {
 				if !sawLiteral {
-					t.Errorf("expected literal send-keys -l delivery for single-line, calls = %+v", calls)
+					t.Errorf("expected literal send-keys -l delivery, calls = %+v", calls)
 				}
-			} else if !sawLoad || !sawPaste {
-				t.Errorf("expected load-buffer+paste-buffer for multi-line, got load=%v paste=%v", sawLoad, sawPaste)
+				if sawLoad || sawPaste {
+					t.Errorf("a literal delivery must not also paste, calls = %+v", calls)
+				}
+			} else {
+				if !sawLoad || !sawPaste {
+					t.Errorf("expected load-buffer+paste-buffer, got load=%v paste=%v", sawLoad, sawPaste)
+				}
+				if sawLiteral {
+					t.Errorf("a pasted delivery must not also type literally, calls = %+v", calls)
+				}
 			}
 
 			// A verifier capture-pane poll ran AFTER the Enter, proving submission

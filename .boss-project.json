@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "project": "bossanova",
+  "repo": {
+    "originUrl": "https://github.com/recurser/bossanova",
+    "displayName": "bossanova",
+    "setupScript": "make setup-worktree",
+    "settings": {
+      "canAutoMerge": false,
+      "canAutoMergeDependabot": true,
+      "mergeStrategy": "rebase",
+      "canAutoRepair": true,
+      "shouldArchiveSessionsAfterMerge": true,
+      "canAutoDeleteBranches": true,
+      "shouldKeepBranchesCurrent": false
+    },
+    "secrets": {
+      "linearApiKey": {
+        "env": "BOSS_LINEAR_API_KEY"
+      }
+    }
+  },
+  "daemons": [
+    {
+      "name": "delta",
+      "daemonId": "46f355de95e5cde2",
+      "path": "~/Documents/Code/bossanova"
+    }
+  ],
+  "crons": [
+    {
+      "name": "bs-sweep-build",
+      "agent": "claude",
+      "prompt": "/boss-build headless",
+      "schedule": "*/30 * * * *",
+      "concurrencyPolicy": "allow-concurrent",
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-debt",
+      "agent": "codex",
+      "prompt": "/bs-sweep-debt",
+      "schedule": "10 2 * * *",
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-plan",
+      "agent": "claude",
+      "prompt": "/boss-plan",
+      "schedule": "*/15 * * * *",
+      "timezone": "America/Toronto",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-prettify",
+      "agent": "codex",
+      "prompt": "/bs-sweep-prettify",
+      "schedule": "10 4 * * *",
+      "gateCommand": "node .claude/skills/bs-sweep-prettify/gate/gate.mjs",
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-releases",
+      "agent": "claude",
+      "prompt": "/bs-sweep-releases",
+      "schedule": "0 9 * * 6",
+      "timezone": "America/Toronto",
+      "gateCommand": "node .claude/skills/bs-sweep-releases/gate/gate.mjs",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-retro",
+      "agent": "claude",
+      "prompt": "/boss-retro",
+      "schedule": "0 9 * * 0",
+      "timezone": "America/Toronto",
+      "gateCommand": "node skills-toolbox/cron-gates/boss-retro.mjs",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-sentry",
+      "agent": "claude",
+      "prompt": "/bs-sweep-sentry --no-dry-run",
+      "schedule": "10 6 * * *",
+      "gateCommand": "node .claude/skills/bs-sweep-sentry/gate/gate.mjs",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-tidy-linear",
+      "agent": "claude",
+      "prompt": "/bs-sweep-tidy-linear",
+      "schedule": "@hourly",
+      "gateCommand": "node .claude/skills/bs-sweep-tidy-linear/gate/gate.mjs",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-sweep-update",
+      "agent": "codex",
+      "prompt": "/bs-sweep-update",
+      "schedule": "55 * * * *",
+      "timezone": "Asia/Tokyo",
+      "gateCommand": "node .claude/skills/bs-sweep-update/gate/gate.mjs",
+      "runSetupCommand": false,
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "factory-verify",
+      "factoryStage": "verify",
+      "agent": "claude",
+      "enabled": true,
+      "daemons": ["delta"]
+    }
+  ]
+}

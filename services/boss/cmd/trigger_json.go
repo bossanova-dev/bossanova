@@ -30,11 +30,19 @@ type triggerLaunchJSON struct {
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
 	BaseBranch     string `json:"base_branch"`
+	// The cron job JSON keys. The server always sets both on read.
+	ShouldRunSetupCommand bool `json:"run_setup_command"`
+	IsZeroOutput          bool `json:"zero_output"`
 }
 
 type triggerPlacementJSON struct {
 	Mode     string `json:"mode"`
 	DaemonID string `json:"daemon_id"`
+}
+
+type triggerGateJSON struct {
+	ScriptPath     string `json:"script_path"`
+	TimeoutSeconds int32  `json:"timeout_seconds"`
 }
 
 type triggerFilterJSON struct {
@@ -67,6 +75,7 @@ type triggerJSON struct {
 	CooldownSeconds   int32                      `json:"cooldown_seconds"`
 	Filters           []triggerFilterJSON        `json:"filters"`
 	PayloadFields     []string                   `json:"payload_fields"`
+	Gate              *triggerGateJSON           `json:"gate"`
 	EndpointPath      string                     `json:"endpoint_path"`
 	EndpointURL       string                     `json:"endpoint_url"`
 	LastInvocation    *triggerLastInvocationJSON `json:"last_invocation"`
@@ -157,12 +166,14 @@ func triggerToJSON(t *pb.Trigger, baseURL string) triggerJSON {
 		ConfigVersion:  t.GetConfigVersion(),
 		RepoOriginURL:  t.GetRepoOriginUrl(),
 		Launch: triggerLaunchJSON{
-			PromptTemplate: t.GetLaunch().GetPromptTemplate(),
-			SkillName:      t.GetLaunch().GetSkillName(),
-			AgentName:      t.GetLaunch().GetAgentName(),
-			Model:          t.GetLaunch().GetModel(),
-			Effort:         t.GetLaunch().GetEffort(),
-			BaseBranch:     t.GetLaunch().GetBaseBranch(),
+			PromptTemplate:        t.GetLaunch().GetPromptTemplate(),
+			SkillName:             t.GetLaunch().GetSkillName(),
+			AgentName:             t.GetLaunch().GetAgentName(),
+			Model:                 t.GetLaunch().GetModel(),
+			Effort:                t.GetLaunch().GetEffort(),
+			BaseBranch:            t.GetLaunch().GetBaseBranch(),
+			ShouldRunSetupCommand: t.GetLaunch().GetShouldRunSetupCommand(),
+			IsZeroOutput:          t.GetLaunch().GetIsZeroOutput(),
 		},
 		Placement: triggerPlacementJSON{
 			Mode:     triggerPlacementMode(t.GetPlacement().GetMode()),
@@ -186,6 +197,9 @@ func triggerToJSON(t *pb.Trigger, baseURL string) triggerJSON {
 	}
 	if g := t.GetGithub(); g != nil {
 		out.Github = &triggerGithubJSON{EventTypes: nonNilStrings(g.GetEventTypes())}
+	}
+	if g := t.GetGate(); g.GetScriptPath() != "" {
+		out.Gate = &triggerGateJSON{ScriptPath: g.GetScriptPath(), TimeoutSeconds: g.GetTimeoutSeconds()}
 	}
 	for _, f := range t.GetFilters() {
 		out.Filters = append(out.Filters, triggerFilterJSON{

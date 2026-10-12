@@ -2,6 +2,7 @@
 package loginshell
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -80,6 +81,92 @@ func Wrap(shell string, flags []string, argv []string) []string {
 	wrapped = append(wrapped, CommandLine(shell, "exec \"$@\""), filepath.Base(shell))
 	wrapped = append(wrapped, argv...)
 	return wrapped
+}
+
+// WrapReadingFile is Wrap plus one trailing argument read from path at exec
+// time: the shell reads the file, removes it, and execs argv with its contents
+// appended as a single final argument. The contents never appear in the
+// returned argv, so a long input does not travel through tmux's command buffer.
+//
+// The read goes through `command cat`, which bypasses a user alias or function
+// named cat loaded from interactive rc files. Command substitution strips
+// trailing newlines from the contents; internal bytes are preserved. A missing
+// or unreadable file makes the shell exit non-zero instead of launching argv
+// with an empty argument.
+//
+// ok is false when shell cannot run the form (empty shell, empty argv, empty
+// path, or an unsupported shell); callers then deliver the input inline.
+func WrapReadingFile(shell string, flags []string, argv []string, path string) (wrapped []string, ok bool) {
+	if len(argv) == 0 || path == "" || !IsSupported(shell) {
+		return nil, false
+	}
+
+	if isFishShell(shell) {
+		// fish has no $0 slot: the path is $argv[1], erased before exec.
+		const body = `set -l __boss_input_file $argv[1]; set -e argv[1]; ` +
+			`set -l __boss_input (command cat -- $__boss_input_file | string collect); or exit 1; ` +
+			`command rm -f -- $__boss_input_file; exec $argv $__boss_input`
+		wrapped = make([]string, 0, 1+len(flags)+2+len(argv))
+		wrapped = append(wrapped, shell)
+		wrapped = append(wrapped, flags...)
+		wrapped = append(wrapped, body, path)
+		wrapped = append(wrapped, argv...)
+		return wrapped, true
+	}
+
+	// POSIX: label is $0, the path is $1 (shifted off), argv is "$@".
+	const body = `__boss_input_file=$1; shift; ` +
+		`__boss_input=$(command cat -- "$__boss_input_file") || exit; ` +
+		`command rm -f -- "$__boss_input_file"; exec "$@" "$__boss_input"`
+	wrapped = make([]string, 0, 1+len(flags)+3+len(argv))
+	wrapped = append(wrapped, shell)
+	wrapped = append(wrapped, flags...)
+	wrapped = append(wrapped, CommandLine(shell, body), filepath.Base(shell), path)
+	wrapped = append(wrapped, argv...)
+	return wrapped, true
+}
+
+// WrapInitialInput returns argv wrapped for shell with input as its final
+// argument. When path is non-empty and shell supports WrapReadingFile, input is
+// written to path with mode 0600 and read at exec time; otherwise input is
+// appended inline and the result is a plain Wrap. An empty input is a plain
+// Wrap with no file written.
+func WrapInitialInput(shell string, flags []string, argv []string, input, path string) ([]string, error) {
+	if input == "" {
+		return Wrap(shell, flags, argv), nil
+	}
+	if wrapped, ok := WrapReadingFile(shell, flags, argv, path); ok {
+		if err := writePrivateFile(path, input); err != nil {
+			return nil, err
+		}
+		return wrapped, nil
+	}
+	inline := make([]string, 0, len(argv)+1)
+	inline = append(inline, argv...)
+	inline = append(inline, input)
+	return Wrap(shell, flags, inline), nil
+}
+
+// writePrivateFile writes content to path readable only by its owner. The mode
+// is forced after the write because O_CREATE's mode does not apply to a file
+// that already exists.
+func writePrivateFile(path, content string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("write initial input file: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write initial input file: %w", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write initial input file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write initial input file: %w", err)
+	}
+	return nil
 }
 
 // IsSupported reports whether Wrap knows how to run argv through shell.

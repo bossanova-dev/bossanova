@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"time"
@@ -18,8 +19,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/projectconfig"
 	"github.com/recurser/bossalib/socketauth"
 )
 
@@ -36,10 +39,21 @@ const (
 type Backend struct {
 	rpc        bossanovav1connect.DaemonServiceClient
 	socketPath string
+
+	// The host facts ProjectDaemonIdentity reads: the settings file, the
+	// app data dir it resolves to (where bossd records its identity), and
+	// the hostname the display name falls back to. Fields so tests point
+	// them at temp dirs.
+	settingsPath func() (string, error)
+	appDataDir   func(config.Settings) (string, error)
+	hostname     func() (string, error)
 }
 
-// Verify Backend satisfies the bossmcp interface at compile time.
-var _ bossmcp.Backend = (*Backend)(nil)
+// Verify Backend satisfies the bossmcp interfaces at compile time.
+var (
+	_ bossmcp.Backend             = (*Backend)(nil)
+	_ bossmcp.ProjectLocalBackend = (*Backend)(nil)
+)
 
 // dialWithRetry dials the bossd Unix socket, retrying a bounded number of times
 // when the socket is transiently absent or refusing during a daemon restart. It
@@ -107,7 +121,53 @@ func New(socketPath string) (*Backend, error) {
 	}
 
 	rpc := bossanovav1connect.NewDaemonServiceClient(httpClient, "http://localhost", opts...)
-	return &Backend{rpc: rpc, socketPath: socketPath}, nil
+	return &Backend{rpc: rpc, socketPath: socketPath, settingsPath: config.Path, appDataDir: appDataDirFor, hostname: os.Hostname}, nil
+}
+
+// appDataDirFor is the app data dir settings resolve to, as bossd and the CLI
+// resolve it: the configured one, else the default.
+func appDataDirFor(settings config.Settings) (string, error) {
+	if dir, ok, err := config.ConfiguredAppDataDir(settings); err != nil {
+		return "", err
+	} else if ok {
+		return dir, nil
+	}
+	return config.DefaultAppDataDir()
+}
+
+// ProjectDaemonIdentity is the daemon this backend dials, by the rule the CLI
+// shares (projectconfig.LocalIdentityFromState): the daemon-state record
+// bossd wrote under the settings' app data dir, trusted only when it names
+// this backend's socket, else the display name the settings resolve to, with
+// a warning. A missing or unreadable record degrades, never errors.
+func (b *Backend) ProjectDaemonIdentity(context.Context) (projectconfig.DaemonIdentity, string, error) {
+	var settings config.Settings
+	if p, err := b.settingsPath(); err == nil && p != "" {
+		if s, err := config.LoadFrom(p); err == nil {
+			settings = s
+		}
+	}
+	hostname, _ := b.hostname()
+	fallback := config.DaemonDisplayName(settings, hostname)
+	dir, err := b.appDataDir(settings)
+	if err != nil {
+		id, warning := projectconfig.LocalIdentityFromState(daemonstate.Metadata{}, err, b.socketPath, fallback)
+		return id, warning, nil
+	}
+	md, readErr := daemonstate.Read(dir)
+	id, warning := projectconfig.LocalIdentityFromState(md, readErr, b.socketPath, fallback)
+	return id, warning, nil
+}
+
+// CheckoutBranch is the branch checked out at dir; ok is false for a
+// detached HEAD or a directory git cannot read.
+func (b *Backend) CheckoutBranch(ctx context.Context, dir string) (string, bool) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "--short", "-q", "HEAD").Output()
+	branch := strings.TrimSpace(string(out))
+	if err != nil || branch == "" {
+		return "", false
+	}
+	return branch, true
 }
 
 // DefaultSocketPath resolves the configured daemon socket path from settings,

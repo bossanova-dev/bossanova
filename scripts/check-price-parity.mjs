@@ -176,25 +176,23 @@ export const PROSE_SURFACES = [{ path: 'PRODUCT.md', minimum: 2 }]
  * Directories every matching file of which is scanned for stray price
  * literals.
  *
- * `proof/recipes` is covered as a DIRECTORY, not as the one recipe that
- * happens to exist. A recipe DESCRIPTION is prose a human reads, nowhere near
- * the declaration and unable to import it — the same drift defect as a stale
- * comment — and that is true of a recipe added tomorrow exactly as much as of
- * `default.json`. Naming a single path could not say so: the hole reopens with
- * the next sibling file. No recipe states a price today, and the rule here is
- * that none ever starts to disagree.
+ * Each entry is a small hand-curated directory of prose a human reads, covered
+ * as a DIRECTORY rather than as the files that happen to exist today, so a
+ * sibling added tomorrow is read without an edit here. Entries carry their own
+ * extension list, and `.md` belongs in it whenever the directory holds prose
+ * written purely for humans.
+ *
+ * Empty today: the one curated directory this covered was retired with the
+ * pipeline that owned it. The walk and its ratchets stay, pinned through the
+ * `scanDirs` seam of checkPriceParity with a fixture directory, so a directory
+ * registered here later inherits them unchanged.
  *
  * A missing directory, or one holding no matching file, is a FAILURE rather
  * than an empty scan. That is the same ratchet SCAN_FILES applies to a renamed
  * file: a coverage set allowed to shrink silently to nothing is precisely the
  * vacuity this gate exists to prevent.
- *
- * `.md` is covered alongside `.json` because the argument above is STRONGER for
- * `proof/recipes/README.md` than for a recipe's description field: it is 14 KB
- * of prose a human reads, and scanning the directory while skipping the one
- * file in it written purely for humans would have been a strange place to stop.
  */
-export const SCAN_DIRS = [{ path: 'proof/recipes', extensions: ['.json', '.md'] }]
+export const SCAN_DIRS = []
 
 /**
  * File types read when scanning SCAN_ROOTS for stray price literals.
@@ -536,7 +534,7 @@ function amountOf(literal) {
  * that dropped them could not report.
  *
  * Dot-prefixed names are NOT skipped. Skipping them was one line of convenience
- * that bought a silent hole: `proof/recipes/.hidden/case.json` holding a
+ * that bought a silent hole: `<curated dir>/.hidden/case.json` holding a
  * disagreeing price scanned clean, in a directory registered precisely so that
  * every file in it would be read. The OS droppings that skip existed for are
  * named in IGNORED_FILENAMES instead, where they are reviewable.
@@ -546,7 +544,7 @@ function amountOf(literal) {
  * `node_modules`/`dist`/`gen` must be pruned or the walk reads generated code.
  * A SCAN_DIRS entry names a small hand-curated directory OUTRIGHT, and pruning
  * there means a directory a human deliberately registered is silently only
- * partly read — `proof/recipes/build/case.json` would be skipped by a name
+ * partly read — `<curated dir>/build/case.json` would be skipped by a name
  * chosen for a build tree it is not.
  */
 function walk(dir, acc, { skipBuildDirs = true } = {}) {
@@ -690,6 +688,7 @@ export function checkPriceParity({
   root = REPO_ROOT,
   exemptions = EXEMPTIONS,
   scanRoots = SCAN_ROOTS,
+  scanDirs = SCAN_DIRS,
 } = {}) {
   const failures = []
   const read = (rel) => {
@@ -867,7 +866,15 @@ export function checkPriceParity({
     }
     files.push(full)
   }
-  for (const dir of SCAN_DIRS) {
+  // The same additive-only ratchet as the scanRoots seam above: a test may
+  // register a fixture directory, never drop a declared one.
+  for (const declared of SCAN_DIRS) {
+    if (scanDirs.some((d) => d.path === declared.path)) continue
+    failures.push(
+      `${declared.path}: declared in SCAN_DIRS but missing from the scanned list, so that directory went unscanned; the scanDirs seam may add or mutate entries, never drop them`,
+    )
+  }
+  for (const dir of scanDirs) {
     const full = path.join(root, dir.path)
     if (!fs.existsSync(full)) {
       failures.push(
@@ -876,7 +883,7 @@ export function checkPriceParity({
       continue
     }
     // Recursive, matching the promise the doc comment makes. A flat read left
-    // `proof/recipes/sub/nested.json` unscanned while the comment said every
+    // `<curated dir>/sub/nested.json` unscanned while the comment said every
     // matching file below the directory was covered — the hole this entry
     // exists to close, one directory level down. Build-directory names are NOT
     // pruned here, and neither are dot-prefixed names: this directory was

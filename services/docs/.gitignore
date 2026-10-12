@@ -9,10 +9,9 @@ build/
 .cache-loader/
 static/robots.txt
 
-# Playwright / bs-proof browser capture
+# Playwright
 playwright-report/
 test-results/
-tests/e2e/proof-*/
 
 # Misc
 .DS_Store

@@ -462,10 +462,6 @@ if it is, re-dispatch once with what you verified folded in. Exclude the daemon 
 `.claude/scheduled_tasks.lock` and `.claude/settings.local.json` from every such check. Mechanics:
 [`references/resume-assessment.md`](references/resume-assessment.md#dispatch-snapshot-mechanics).
 
-If the plan names web proof affordances, build them in this PR. For a TUI diff, author and commit a
-`proof/scenarios/*.scenario.json` before Step 6 and get `node scripts/proof.mjs scenario validate`
-and `scenario run --dry-run` green ([`references/proof-capture.md`](references/proof-capture.md)).
-
 ## Step 6: Review
 
 Report the phase: `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase reviewing` (never fatal).
@@ -806,13 +802,11 @@ bounded poll, capped by `policy.settleCap` (3) cycles. Then by source:
 - Feedback you cannot fix: respond per finding and stay `REVIEW_READY`. Re-quarantine (draft, blocker
   comment, `BLOCKED`) only when a `BLOCKED` cause actually holds.
 
-## Step 11: Proof (REVIEW_READY only, never fatal)
+## Step 11: Evidence (verify stage)
 
-Classify with `node scripts/proof.mjs plan`, then run a bare `node scripts/proof.mjs run`: it
-captures `recipeLeg` and the `order` surfaces, or posts its own note when both are empty;
-`--recipe` only narrows. Its comment is the only proof channel — never hand-write "proof skipped".
-TUI proof is the Step 5 scenario; `doctor` names missing prerequisites. Every failure is recorded
-and ignored. [`references/proof-capture.md`](references/proof-capture.md).
+boss-build captures no proof media. When the repo configures verify-role extensions, the verify
+stage records evidence for the head it judges; boss-build neither waits for that evidence nor
+reproduces it. Continue to Step 12.
 
 ## Step 12: Stop cleanly
 

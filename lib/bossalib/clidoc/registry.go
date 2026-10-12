@@ -321,6 +321,21 @@ func newRegistry() map[string]Prose {
 				{Command: "boss repo update my-repo --auto-merge-dependabot"},
 			},
 		},
+		"boss project export": {
+			Long: "Reads the local daemon's registration of this checkout (repository settings, " +
+				"cron jobs and the daemon's own identity) and prints it as a canonical " +
+				"`.boss-project.json`. Factory cron jobs export symbolically (their stage, no " +
+				"prompt or gate), so the same job on two machines exports identically. With " +
+				"`--cloud` it also reads your inbound triggers on this repository and the " +
+				"organization's session webhooks. Secrets are never written: a repository " +
+				"credential that is set appears only as a reference to a `BOSS_*` environment " +
+				"variable. Warnings go to stderr, so stdout can be piped. `--write` writes the " +
+				"file to the main checkout and refuses to replace an existing one without `--force`.",
+			Examples: []Example{
+				{Command: "boss project export"},
+				{Command: "boss project export --cloud --write"},
+			},
+		},
 
 		// --- Cron Jobs ---
 		"boss cron": {
@@ -406,13 +421,21 @@ func newRegistry() map[string]Prose {
 				"required; `--org` defaults to your only organization. The prompt is read " +
 				"by a fresh agent, so write it as a complete standing instruction; " +
 				"`--payload-field` paths (e.g. `body.ref`) are copied into its context. " +
+				"Pass `--zero-output` for a trigger whose session changes nothing in the " +
+				"repository (a report or a notification), so no worktree, branch or PR is " +
+				"created for it, and `--run-setup=false` to skip the repo setup script. " +
 				"Every `--filter 'field op value[,value…]'` must match for an event to " +
 				"launch (op: `=`, `!=`, `in`, `not-in`, `contains`, `prefix`; only `in` " +
 				"and `not-in` split on commas). `--concurrency` decides what an event does " +
 				"while the previous session is still working: `skip` (default), `cancel` " +
 				"(stop it, then launch), or `allow` (launch alongside). A github trigger " +
 				"needs at least one `--event`; " +
-				"`--methods`, `--idempotency-header` and `--dedup-window` are http only.\n\n" +
+				"`--methods`, `--idempotency-header` and `--dedup-window` are http only. " +
+				"`--gate-script <path>` names a script, relative to the repo root, that " +
+				"the launching daemon runs in its clone before every launch with the " +
+				"payload excerpt as JSON on stdin: exit 0 launches, any other exit skips " +
+				"the event as `gated`. `--gate-timeout <seconds>` bounds it (0-300; 0 = " +
+				"60).\n\n" +
 				"An http create prints the endpoint and the signing secret ONCE — store it " +
 				"now; it can never be read back, only replaced with `rotate-secret`. " +
 				"`--json` carries it as `secret` beside `trigger`.",
@@ -434,8 +457,14 @@ func newRegistry() map[string]Prose {
 			Long: "Change only the settings whose flags are given; everything else is " +
 				"kept, including the rest of the launch settings when only `--prompt` " +
 				"changes. `--filter` and `--payload-field` REPLACE the whole list; " +
-				"`--clear-filters` / `--clear-payload-fields` empty it. The type cannot " +
+				"`--clear-filters` / `--clear-payload-fields` empty it. A lone " +
+				"`--gate-script` or `--gate-timeout` keeps the other half of the gate; " +
+				"`--no-gate` removes it. The type cannot " +
 				"change. Use `enable` / `disable` to switch a trigger on or off.",
+			Examples: []Example{
+				{Command: `boss trigger update tr_123 --gate-script ci/has-work.sh --gate-timeout 30`, Explanation: `launch only when the repo's gate script exits 0`},
+				{Command: `boss trigger edit tr_123 --no-gate`, Explanation: `remove the gate (edit is an alias of update)`},
+			},
 		},
 		"boss trigger test": {
 			Long: "Run a sample payload (`--payload-file`, `-` for stdin, default `{}`) " +
@@ -456,7 +485,10 @@ func newRegistry() map[string]Prose {
 				"(concurrency `cancel` could not stop the previous session; it retries), " +
 				"`duplicate_delivery`, " +
 				"`placement_unavailable` (the daemon is offline or does not manage the " +
-				"repo) or `daemon_unsupported`. Treat an unknown reason as opaque. Failed " +
+				"repo), `daemon_unsupported`, `gated` (the gate script exited non-zero), " +
+				"`gate_failed` (the gate could not run), `gate_invalid` (the daemon " +
+				"rejected the gate) or `gate_timeout` (the daemon did not answer the " +
+				"gate). Treat an unknown reason as opaque. Failed " +
 				"and skipped rows also print an actionable detail line.",
 		},
 		"boss trigger rm": {

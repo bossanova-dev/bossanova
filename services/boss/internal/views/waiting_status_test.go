@@ -12,11 +12,41 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// The canonical reason string the daemon stamps for an armed PR callback
-// (displaystatus.CallbackWaitingReason). Spelled out literally here so a
-// silent change to the composer's shape shows up as a TUI test failure and
-// not just a bossalib one — the operator-visible wording is the contract.
-const testWaitingReason = "awaiting checks_passed_ready on acme/widget#123"
+// An actionable waiting reason that remains visible beneath the status badge.
+const testWaitingReason = "awaiting checks_failed on acme/widget#123"
+
+func TestRoutinePRWaitingHintsHidden(t *testing.T) {
+	for _, trigger := range []string{"checks_passed", "checks_passed_ready", "merged"} {
+		t.Run(trigger, func(t *testing.T) {
+			reason := displaystatus.CallbackWaitingReason(trigger, "acme", "widget", 123)
+			if reason == "" {
+				t.Fatal("callback must provide a waiting reason")
+			}
+			for _, demoted := range []bool{false, true} {
+				if got := waitingHintLine(reason, demoted); got != "" {
+					t.Fatalf("routine hint = %q, want empty", got)
+				}
+			}
+			h := NewHomeModel(nil, context.Background(), nil)
+			updated, _ := h.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+			h = updated.(HomeModel)
+			sess := &pb.Session{Id: "s1", Title: "parked session", DisplayLabel: displaystatus.WaitingLabel, DisplaySpinner: true, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
+			updated, _ = h.Update(sessionListMsg{sessions: []*pb.Session{sess}, daemonStatuses: map[string]string{"s1": statusWaiting}, daemonWaitingReasons: map[string]string{"s1": reason}})
+			h = updated.(HomeModel)
+			if got := sessionSubRowCount(sess, reason); got != 0 {
+				t.Fatalf("routine wait reserves %d sub-rows", got)
+			}
+			rendered := stripANSI(h.View().Content)
+			if strings.Contains(rendered, reason) || !strings.Contains(rendered, stripANSI(h.spinner.View())+displaystatus.WaitingLabel) {
+				t.Fatalf("expected waiting spinner without hint: %s", rendered)
+			}
+			m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": reason}}
+			if m.waitingReasonLine() != "" || m.waitingLineHeight() != 0 {
+				t.Fatal("chat picker must hide routine wait without reserving space")
+			}
+		})
+	}
+}
 
 // TestChatStatusString_Waiting pins the WAITING enum to the canonical label
 // rather than falling through to "stopped" — a parked chat that renders as
@@ -53,17 +83,14 @@ func TestRenderClaudeStatus_Waiting(t *testing.T) {
 	}
 }
 
-// TestWaitingHintLine pins the shared wording both surfaces render: the
-// daemon-supplied reason alone, with no label prefix (BOS-863). The web UI
-// composes the identical string in services/web/src/sessionStatus.ts; if this
-// changes, that must change with it.
+// Other waiting reasons retain their daemon-supplied wording.
 func TestWaitingHintLine(t *testing.T) {
 	got := waitingHintLine(testWaitingReason, false)
 	want := testWaitingReason
 	if got != want {
 		t.Fatalf("waitingHintLine = %q, want %q", got, want)
 	}
-	if !strings.Contains(got, "checks_passed_ready") || !strings.Contains(got, "#123") {
+	if !strings.Contains(got, "checks_failed") || !strings.Contains(got, "#123") {
 		t.Fatalf("waiting hint must carry the trigger and PR number: %q", got)
 	}
 	if got := waitingHintLine("", false); got != "" {
@@ -74,20 +101,14 @@ func TestWaitingHintLine(t *testing.T) {
 	}
 }
 
-// TestWaitingHintLine_DemotedRowRegainsItsAntecedent pins KTD-6. BOS-863 dropped
-// the "waiting" prefix because every surface rendering this line already showed
-// the waiting STATUS badge nearby. BOS-1269 falsifies that for a demoted session
-// row — the badge now reads "✓ passing" — so the line beneath it would otherwise
-// be a bare "awaiting …" with no antecedent. The web UI composes the identical
-// string in services/web/src/sessionStatus.ts; if this changes, that must change
-// with it.
+// Visible hints regain their waiting prefix when the badge is superseded.
 func TestWaitingHintLine_DemotedRowRegainsItsAntecedent(t *testing.T) {
 	got := waitingHintLine(testWaitingReason, true)
 	want := "waiting: " + testWaitingReason
 	if got != want {
 		t.Fatalf("waitingHintLine(demoted) = %q, want %q", got, want)
 	}
-	if !strings.Contains(got, "checks_passed_ready") || !strings.Contains(got, "#123") {
+	if !strings.Contains(got, "checks_failed") || !strings.Contains(got, "#123") {
 		t.Fatalf("the demoted hint must still carry the trigger and PR number: %q", got)
 	}
 }
@@ -190,7 +211,7 @@ func TestHome_WaitingReasonSubRow(t *testing.T) {
 	if !strings.Contains(rendered, displaystatus.WaitingLabel) {
 		t.Fatalf("home list missing the waiting status in:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "checks_passed_ready") {
+	if !strings.Contains(rendered, "checks_failed") {
 		t.Fatalf("home list missing the waiting trigger in:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "#123") {
@@ -255,7 +276,7 @@ func TestChatPicker_WaitingRendersReasonAndBadge(t *testing.T) {
 	m.session = &pb.Session{Id: "session-1"}
 
 	rendered := stripANSI(m.View().Content)
-	for _, token := range []string{displaystatus.WaitingLabel, "working", "checks_passed_ready", "#123"} {
+	for _, token := range []string{displaystatus.WaitingLabel, "working", "checks_failed", "#123"} {
 		if !strings.Contains(rendered, token) {
 			t.Fatalf("session detail missing %q in:\n%s", token, rendered)
 		}

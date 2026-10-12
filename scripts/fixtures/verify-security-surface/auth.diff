@@ -1,0 +1,13 @@
+diff --git a/services/bosso/internal/server/notes.go b/services/bosso/internal/server/notes.go
+index 1111111..2222222 100644
+--- a/services/bosso/internal/server/notes.go
++++ b/services/bosso/internal/server/notes.go
+@@ -20,5 +20,8 @@ func (s *Server) ListNotes(ctx context.Context, req *Request) (*Response, error) {
+ 	if req == nil {
+ 		return nil, errNilRequest
+ 	}
++	if err := s.requireCloudAccess(ctx, req.OrgID); err != nil {
++		return nil, err
++	}
+ 	return s.list(ctx, req)
+ }

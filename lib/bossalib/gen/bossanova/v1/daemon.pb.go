@@ -1649,7 +1649,17 @@ type CreateSessionRequest struct {
 	// draft PR is opened at session start. Meaningful only alongside
 	// detach/is_tmux_unattended, which install the finalize hook; useful for
 	// read-only/planning sessions. Mirrors StartSessionOpts.DeferPR (used by cron).
-	DeferPr       bool `protobuf:"varint,19,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	DeferPr bool `protobuf:"varint,19,opt,name=defer_pr,json=deferPr,proto3" json:"defer_pr,omitempty"`
+	// Whether to run the repo's setup command before the agent starts. Absent
+	// means run it; an explicit false skips it. Set by trigger launches and
+	// honoured for every caller. Mirrors StartSessionOpts.SkipSetupScript.
+	ShouldRunSetupCommand *bool `protobuf:"varint,21,opt,name=should_run_setup_command,json=shouldRunSetupCommand,proto3,oneof" json:"should_run_setup_command,omitempty"`
+	// If true, launch a zero-output session from the repo checkout: no worktree,
+	// branch, setup script, or PR, and no worktree base dir or base branch is
+	// required. Set by trigger launches and honoured for every caller. Cannot be
+	// combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
+	// Mirrors StartSessionOpts.ZeroOutput.
+	IsZeroOutput  bool `protobuf:"varint,22,opt,name=is_zero_output,json=isZeroOutput,proto3" json:"is_zero_output,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1820,6 +1830,20 @@ func (x *CreateSessionRequest) GetAccountId() string {
 func (x *CreateSessionRequest) GetDeferPr() bool {
 	if x != nil {
 		return x.DeferPr
+	}
+	return false
+}
+
+func (x *CreateSessionRequest) GetShouldRunSetupCommand() bool {
+	if x != nil && x.ShouldRunSetupCommand != nil {
+		return *x.ShouldRunSetupCommand
+	}
+	return false
+}
+
+func (x *CreateSessionRequest) GetIsZeroOutput() bool {
+	if x != nil {
+		return x.IsZeroOutput
 	}
 	return false
 }
@@ -6255,8 +6279,11 @@ type CreateCronJobRequest struct {
 	// What a fire does while the job's previous run is still in progress.
 	// Omitted or UNSPECIFIED = SKIP.
 	ConcurrencyPolicy *CronJobConcurrencyPolicy `protobuf:"varint,12,opt,name=concurrency_policy,json=concurrencyPolicy,proto3,enum=bossanova.v1.CronJobConcurrencyPolicy,oneof" json:"concurrency_policy,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+	// slug matches ^[a-z0-9][a-z0-9-]{0,62}$. Anything else is InvalidArgument.
+	ManagedBy     string `protobuf:"bytes,13,opt,name=managed_by,json=managedBy,proto3" json:"managed_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateCronJobRequest) Reset() {
@@ -6371,6 +6398,13 @@ func (x *CreateCronJobRequest) GetConcurrencyPolicy() CronJobConcurrencyPolicy {
 		return *x.ConcurrencyPolicy
 	}
 	return CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED
+}
+
+func (x *CreateCronJobRequest) GetManagedBy() string {
+	if x != nil {
+		return x.ManagedBy
+	}
+	return ""
 }
 
 type CreateCronJobResponse struct {
@@ -6613,8 +6647,11 @@ type UpdateCronJobRequest struct {
 	// What a fire does while the job's previous run is still in progress.
 	// Omitted or UNSPECIFIED = leave unchanged.
 	ConcurrencyPolicy *CronJobConcurrencyPolicy `protobuf:"varint,12,opt,name=concurrency_policy,json=concurrencyPolicy,proto3,enum=bossanova.v1.CronJobConcurrencyPolicy,oneof" json:"concurrency_policy,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Config-ownership marker. Omitted = leave unchanged; "" = clear;
+	// otherwise "boss-project:<slug>" as on CreateCronJobRequest.
+	ManagedBy     *string `protobuf:"bytes,13,opt,name=managed_by,json=managedBy,proto3,oneof" json:"managed_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateCronJobRequest) Reset() {
@@ -6729,6 +6766,13 @@ func (x *UpdateCronJobRequest) GetConcurrencyPolicy() CronJobConcurrencyPolicy {
 		return *x.ConcurrencyPolicy
 	}
 	return CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED
+}
+
+func (x *UpdateCronJobRequest) GetManagedBy() string {
+	if x != nil && x.ManagedBy != nil {
+		return *x.ManagedBy
+	}
+	return ""
 }
 
 type UpdateCronJobResponse struct {
@@ -12121,7 +12165,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
 	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xd1\x06\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xd2\a\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -12149,7 +12193,10 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05force\x18\x11 \x01(\bR\x05force\x12\"\n" +
 	"\n" +
 	"account_id\x18\x12 \x01(\tH\tR\taccountId\x88\x01\x01\x12\x19\n" +
-	"\bdefer_pr\x18\x13 \x01(\bR\adeferPrB\f\n" +
+	"\bdefer_pr\x18\x13 \x01(\bR\adeferPr\x12<\n" +
+	"\x18should_run_setup_command\x18\x15 \x01(\bH\n" +
+	"R\x15shouldRunSetupCommand\x88\x01\x01\x12$\n" +
+	"\x0eis_zero_output\x18\x16 \x01(\bR\fisZeroOutputB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
@@ -12160,7 +12207,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x0f_tracker_sourceB\b\n" +
 	"\x06_modelB\t\n" +
 	"\a_effortB\r\n" +
-	"\v_account_id\"\xaf\x01\n" +
+	"\v_account_idB\x1b\n" +
+	"\x19_should_run_setup_command\"\xaf\x01\n" +
 	"\x15CreateSessionResponse\x12D\n" +
 	"\fsetup_output\x18\x02 \x01(\v2\x1f.bossanova.v1.SetupScriptOutputH\x00R\vsetupOutput\x12G\n" +
 	"\x0fsession_created\x18\x03 \x01(\v2\x1c.bossanova.v1.SessionCreatedH\x00R\x0esessionCreatedB\a\n" +
@@ -12470,7 +12518,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x0erelogin_reason\x18\x03 \x01(\tR\rreloginReason\x12H\n" +
 	"\x12last_registered_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastRegisteredAt\x12-\n" +
 	"\x12upstream_connected\x18\x05 \x01(\bR\x11upstreamConnected\x12H\n" +
-	"\x12auth_failing_since\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x10authFailingSince\"\x96\x04\n" +
+	"\x12auth_failing_since\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x10authFailingSince\"\xb5\x04\n" +
 	"\x14CreateCronJobRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
@@ -12486,7 +12534,9 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x18should_run_setup_command\x18\n" +
 	" \x01(\bH\x00R\x15shouldRunSetupCommand\x88\x01\x01\x12)\n" +
 	"\x0eis_zero_output\x18\v \x01(\bH\x01R\fisZeroOutput\x88\x01\x01\x12Z\n" +
-	"\x12concurrency_policy\x18\f \x01(\x0e2&.bossanova.v1.CronJobConcurrencyPolicyH\x02R\x11concurrencyPolicy\x88\x01\x01B\x1b\n" +
+	"\x12concurrency_policy\x18\f \x01(\x0e2&.bossanova.v1.CronJobConcurrencyPolicyH\x02R\x11concurrencyPolicy\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"managed_by\x18\r \x01(\tR\tmanagedByB\x1b\n" +
 	"\x19_should_run_setup_commandB\x11\n" +
 	"\x0f_is_zero_outputB\x15\n" +
 	"\x13_concurrency_policy\"I\n" +
@@ -12501,7 +12551,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x11GetCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"F\n" +
 	"\x12GetCronJobResponse\x120\n" +
-	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\x9c\x05\n" +
+	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\xcf\x05\n" +
 	"\x14UpdateCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1b\n" +
@@ -12518,7 +12568,9 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	" \x01(\bH\bR\x15shouldRunSetupCommand\x88\x01\x01\x12)\n" +
 	"\x0eis_zero_output\x18\v \x01(\bH\tR\fisZeroOutput\x88\x01\x01\x12Z\n" +
 	"\x12concurrency_policy\x18\f \x01(\x0e2&.bossanova.v1.CronJobConcurrencyPolicyH\n" +
-	"R\x11concurrencyPolicy\x88\x01\x01B\a\n" +
+	"R\x11concurrencyPolicy\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"managed_by\x18\r \x01(\tH\vR\tmanagedBy\x88\x01\x01B\a\n" +
 	"\x05_nameB\t\n" +
 	"\a_promptB\v\n" +
 	"\t_scheduleB\v\n" +
@@ -12529,7 +12581,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\r_gate_commandB\x1b\n" +
 	"\x19_should_run_setup_commandB\x11\n" +
 	"\x0f_is_zero_outputB\x15\n" +
-	"\x13_concurrency_policy\"I\n" +
+	"\x13_concurrency_policyB\r\n" +
+	"\v_managed_by\"I\n" +
 	"\x15UpdateCronJobResponse\x120\n" +
 	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"&\n" +
 	"\x14DeleteCronJobRequest\x12\x0e\n" +

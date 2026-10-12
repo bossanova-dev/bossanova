@@ -10,12 +10,12 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
 
-The server exposes **76 tools** in three tiers:
+The server exposes **79 tools** in three tiers:
 
 | Tier        | Count | Behaviour                          |
 | ----------- | ----- | ---------------------------------- |
-| Read-only   | 27    | Always available                   |
-| Mutating    | 34    | Non-destructive writes             |
+| Read-only   | 29    | Always available                   |
+| Mutating    | 35    | Non-destructive writes             |
 | Destructive | 15    | Require `confirm: true` to execute |
 
 ## Install
@@ -146,7 +146,7 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 - **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port) serves `/mcp` and `/healthz`, useful for `curl` or a browser-based MCP inspector. Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
-Pass `--read-only` to register only the 27 read-only tools; mutating and destructive tools then never appear in `tools/list`.
+Pass `--read-only` to register only the 29 read-only tools; mutating and destructive tools then never appear in `tools/list`.
 
 ## Destructive tools need confirmation
 
@@ -160,7 +160,7 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 ## Tool reference
 
-### Read-only (27)
+### Read-only (29)
 
 | Tool                           | Description                                                                                |
 | ------------------------------ | ------------------------------------------------------------------------------------------ |
@@ -191,10 +191,12 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 | `list_organization_notes`      | List a page of an organization's cloud notes, filtered (hosted endpoint only)              |
 | `get_organization_note`        | Get one organization note by id, with its body, origin and 90-day `expires_at`             |
 | `get_organization_note_quota`  | Report an organization's hourly note-write quota without spending any                      |
+| `export_project_config`        | Export this repo's boss setup as `.boss-project.json` content                              |
+| `diff_project_config`          | Plan converging onto a `.boss-project.json` passed as an argument; writes nothing          |
 
-### Mutating (34)
+### Mutating (35)
 
-`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `refresh_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`, `create_organization_note`, `update_organization_note`
+`register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `refresh_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`, `create_organization_note`, `update_organization_note`, `apply_project_config`
 
 `send_chat_message` delivers a follow-up message into a live agent chat via its
 `agent_session_id`; set `wake_if_asleep: true` to wake the agent before delivery.
@@ -236,6 +238,18 @@ resource_exhausted: organization note quota of 1000 writes per hour is spent; re
 
 [Organization notes](./notes.md#organization-notes-paid-plans) covers sync,
 permissions, the hourly window and retention.
+
+### Project config
+
+`export_project_config`, `diff_project_config` and `apply_project_config` do what
+`boss project export`, `diff` and `apply` do for a `.boss-project.json` project config,
+with the file's contents passed as the `config` argument. Through the local server they
+cover this daemon's repo registration, settings and crons; through the hosted endpoint they
+cover your cloud triggers, the organization's session webhooks and the crons the file places
+on your daemons. `apply_project_config` writes nothing unless you pass `"dry_run": false`.
+It never deletes a row, resolves a `BOSS_*` secret or mints a signing secret: those changes
+show up as skips to apply with the CLI. Locally, a write also needs the checkout on the
+repo's default branch unless you pass `"allow_branch": true`.
 
 ### Destructive — require `confirm: true` (15)
 

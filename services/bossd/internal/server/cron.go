@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -21,6 +22,27 @@ func (s *Server) gatingJobIDs() map[string]struct{} {
 		return nil
 	}
 	return s.cronScheduler.GatingJobIDs()
+}
+
+// cronManagedByPrefix opens every config-ownership marker on a cron job.
+const cronManagedByPrefix = "boss-project:"
+
+// cronManagedBySlug is the project slug a marker carries after its prefix.
+var cronManagedBySlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// validCronManagedBy accepts the empty string (an unmarked, hand-made job) or
+// "boss-project:<slug>". bossd stores the marker and never acts on it; the
+// shape is checked here rather than by a column CHECK so the slug rule is not
+// frozen into SQLite.
+func validCronManagedBy(v string) error {
+	if v == "" {
+		return nil
+	}
+	slug, ok := strings.CutPrefix(v, cronManagedByPrefix)
+	if !ok || !cronManagedBySlug.MatchString(slug) {
+		return fmt.Errorf("invalid managed_by %q: want empty or %s<slug> where slug matches %s", v, cronManagedByPrefix, cronManagedBySlug)
+	}
+	return nil
 }
 
 // CreateCronJob registers a new scheduled prompt and adds it to the live
@@ -57,6 +79,9 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 	if !policySet {
 		concurrencyPolicy = models.CronJobConcurrencyPolicySkip
 	}
+	if err := validCronManagedBy(msg.ManagedBy); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	params := db.CreateCronJobParams{
 		RepoID:   msg.RepoId,
@@ -71,6 +96,7 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		IsEnabled:         msg.IsEnabled,
 		GateCommand:       strings.TrimSpace(msg.GateCommand),
 		ConcurrencyPolicy: concurrencyPolicy,
+		ManagedBy:         msg.ManagedBy,
 	}
 	runSetup := true
 	if msg.ShouldRunSetupCommand != nil {
@@ -226,6 +252,13 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 	}
 	if policySet {
 		params.ConcurrencyPolicy = &policy
+	}
+	// Absent leaves the marker alone; "" clears it.
+	if msg.ManagedBy != nil {
+		if err := validCronManagedBy(*msg.ManagedBy); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		params.ManagedBy = msg.ManagedBy
 	}
 	if nextIsEnabled {
 		if err := s.validateExplicitAgentName(nextAgentName); err != nil {

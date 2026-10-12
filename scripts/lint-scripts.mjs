@@ -38,6 +38,10 @@ const LINT_DIRS = [
   ['skills-toolbox/session', ['.mjs']],
   ['skills-toolbox/finalize', ['.mjs']],
   ['skills-toolbox/tracker', ['.mjs']],
+  // The verify skill's control CLI. Its entry point is extensionless (`['']` matches every
+  // file), so bin/ is listed whole; lib/ holds the modules and their tests.
+  ['.claude/skills/verify/bin', ['']],
+  ['.claude/skills/verify/lib', ['.mjs']],
 ]
 
 // Direct (non-recursive) files under `repoRoot/relDir` whose name ends with one

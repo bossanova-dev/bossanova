@@ -5,7 +5,7 @@
 // parses. This gate sees it.
 //
 // Why this exists (BOS-787). A comment added INSIDE the `webStageScript` template literal in
-// scripts/proof-playwright-runner.mjs read "renders the `-` fallback". Inside template TEXT there
+// a since-deleted browser capture runner read "renders the `-` fallback". Inside template TEXT there
 // are no comments — that `//` is just characters — so the first backtick terminated the literal,
 // `-` became a subtraction operator, and the next backtick opened a fresh literal that ran to the
 // intended closing one. The file still parsed, so `scripts/lint-scripts.mjs` (a `node --check`
@@ -296,7 +296,7 @@ export function scanTemplateLiteralComments(source) {
 
       if (char === '\\') {
         // An escaped backtick is not a terminator and not a defect — this is the branch that keeps
-        // the gate off the legitimate `\`cutoff\`` comments in proof-playwright-runner.mjs.
+        // the gate off legitimate `\`cutoff\``-style comments like those the original runner carried.
         // When the escaped character is a NEWLINE this is a line continuation: it resets
         // `lineHasContent` (a new physical line) but deliberately leaves `embedded` alone (the
         // embedded script sees no newline, so its line comment continues). See the long note on

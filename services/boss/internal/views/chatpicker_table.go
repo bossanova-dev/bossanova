@@ -425,20 +425,9 @@ func (m ChatPickerModel) limitedLineHeight() int {
 	return 2
 }
 
-// waitingReasonLine returns the session-detail hint naming why a chat in this
-// session is parked on an external event, e.g.
-// "awaiting checks_passed_ready on acme/widget#123" (BOS-668, BOS-863 — the
-// reason alone for a waiting session, or prefixed when Ready or a green PR
-// badge supersedes waiting). It returns "" when nothing is waiting, so callers
-// can skip the line entirely and the layout does not shift.
-//
-// Only the FIRST waiting chat's reason is shown. Sessions park on at most one
-// callback in practice, and a multi-line block here would eat chat rows on a
-// short terminal for a case that does not occur; the per-chat STATUS column
-// still marks every waiting chat.
-//
-// The wording is composed by waitingHintLine, shared with the home list and
-// mirrored byte-for-byte by the web UI (services/web/src/sessionStatus.ts).
+// waitingReasonLine returns the first visible waiting hint in this session.
+// Routine checks-passed and merged waits are hidden by waitingHintLine, shared
+// with Home. An empty result reserves no space beneath the chat table.
 func (m ChatPickerModel) waitingReasonLine() string {
 	for _, chat := range m.chats {
 		if m.daemonStatuses[chat.AgentSessionId] != statusWaiting {

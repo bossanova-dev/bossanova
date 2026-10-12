@@ -1,0 +1,23 @@
+diff --git a/services/bosso/internal/sessionwebhook/format.go b/services/bosso/internal/sessionwebhook/format.go
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/services/bosso/internal/sessionwebhook/format.go
+@@ -0,0 +1,17 @@
++package sessionwebhook
++
++import (
++	"github.com/dop251/goja"
++)
++
++// formatMessage runs the user-uploaded script stored on the webhook row to shape the outgoing
++// message body.
++func formatMessage(row WebhookRow, event Event) (string, error) {
++	vm := goja.New()
++	_ = vm.Set("event", event)
++	value, err := vm.RunString(row.FormatScript)
++	if err != nil {
++		return "", err
++	}
++	return value.String(), nil
++}

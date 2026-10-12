@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Pre-generalization skill-behavior baseline capture (BOS-249). Records the
-// CURRENT (pre-generalization) deterministic behavior of three Bossanova skill
+// CURRENT (pre-generalization) deterministic behavior of two Bossanova skill
 // functions into committed JSON snapshots under scripts/skill-parity/baseline/.
 // A later ticket (BOS-248) re-runs the post-refactor skill functions over the
 // SAME inputs and asserts the outputs still match these snapshots — so this
@@ -10,29 +10,24 @@
 // refactor, not this capture script. Node builtins only (no new deps).
 //
 // INPUT MODEL — committed fixtures vs. live-read reference sources. Each
-// signature has two inputs: the *scenario* input (frozen) and, for three of the
-// two of the three, a *reference source* read live from the working tree (NOT frozen):
+// signature has a *scenario* input (frozen) and, for one of the two, a *reference
+// source* read live from the working tree (NOT frozen):
 //
 //   signature       scenario input (committed)          reference source (read live)
 //   ------------     ------------------------------      ---------------------------------
 //   review-lens      review-lens.input.json (files)      .boss-skills.json lensMap
-//   proof-surface    proof-surface.input.json (files)    proof/recipes/default.json
 //   dag-schedule     dag-schedule.input.json (nodes)     — (fully self-contained)
 //
-// This is deliberate: the signature is "what TODAY'S real skill (real registry/
-// catalog/template included) produces," so the reference sources are read live
-// on purpose. The consequence a consumer must know: because proof/** and
-// .claude/skills/** are in test-scripts.yml's path filter, an UNRELATED future
-// edit to proof/recipes/default.json (a new recipe matching a fixture file) or
-// to the Step-7 headings drifts the recomputed snapshot and FAILS the
-// determinism test in scripts CI — that edit is then expected to re-run the
-// capture and re-commit the baseline as a DELIBERATE rebaseline. (The lensMap
-// input is the exception: .boss-skills.json is NOT in that path filter, so a
-// lensMap-only edit drifts review-lens.snapshot.json silently until some other
-// scripts/skills change re-triggers the gate.) A fully-hermetic alternative —
-// freezing copies of the lensMap/catalog/template alongside the scenario inputs
-// so the parity comparison isolates code drift from config drift — is a BOS-248
-// contract decision left to a human, out of scope for this capture ticket.
+// This is deliberate: the signature is "what TODAY'S real skill (real registry
+// included) produces," so the reference source is read live on purpose. The
+// consequence a consumer must know: .boss-skills.json is NOT in test-scripts.yml's
+// path filter, so a lensMap-only edit drifts review-lens.snapshot.json silently
+// until some other scripts/skills change re-triggers the gate; that edit is then
+// expected to re-run the capture and re-commit the baseline as a DELIBERATE
+// rebaseline. A fully-hermetic alternative — freezing a copy of the lensMap
+// alongside the scenario inputs so the parity comparison isolates code drift from
+// config drift — is a BOS-248 contract decision left to a human, out of scope for
+// this capture ticket.
 //
 // Snapshot schema (consumed by BOS-248's parity-gate.mjs without
 // reverse-engineering):
@@ -47,16 +42,6 @@
 //           fallbackRubric: string,   // inline rubric substituted when the skill can't load
 //           files: string[],          // matched changed-file paths, sorted
 //         }>,                          // sorted by `lens`
-//       }
-//
-//   proof-surface.snapshot.json — boss-proof surface classification
-//     (proof-surfaces.mjs classifySurfaces() against proof/recipes/default.json):
-//       {
-//         tui: boolean,
-//         web: boolean,
-//         recipes: Array<{ id: string, surface: string }>, // browser (marketing/docs)
-//           // recipes only, sorted by `id` — NOT the full recipe object (keeps the
-//           // snapshot stable against unrelated recipe-field churn).
 //       }
 //
 //   dag-schedule.snapshot.json — bs-epic DAG schedule (dag-scheduler.mjs
@@ -88,7 +73,6 @@ import { fileURLToPath } from 'node:url'
 
 import { matchLenses } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/bs-review-detect.mjs'
 import { loadSkillConfig } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/skill-config.mjs'
-import { classifySurfaces } from '../proof-surfaces.mjs'
 import {
   buildGraph,
   nextToMerge,
@@ -98,8 +82,6 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = join(SCRIPT_DIR, '..', '..')
 export const BASELINE_DIR = join(SCRIPT_DIR, 'baseline')
-
-const PROOF_CATALOG_PATH = join(REPO_ROOT, 'proof', 'recipes', 'default.json')
 
 function byString(a, b) {
   if (a < b) return -1
@@ -143,27 +125,7 @@ export function computeReviewLensSignature(changedFiles) {
   return { matchedLensIds: lenses.map((l) => l.lens), lenses }
 }
 
-// --- 2. proof surface classification ----------------------------------------
-
-/**
- * @param {string[]} changedFiles
- * @param {object} catalog parsed proof/recipes/default.json
- * @returns {{ tui: boolean, web: boolean, recipes: Array<{id:string,surface:string}> }}
- */
-export function computeProofSurfaceSignature(changedFiles, catalog) {
-  // Only BROWSER-surface recipe ids reach the returned `recipes` list; the tui
-  // and web surfaces are recorded as plain booleans. So adding a web or tui
-  // recipe leaves proof-surface.snapshot.json byte-identical by design — a green
-  // parity gate is the correct outcome, and the baseline must not be regenerated
-  // for one. Same statement lives in proof/recipes/README.md; keep them in sync.
-  const { tui, web, recipes } = classifySurfaces({ changedFiles, catalog })
-  const sortedRecipes = recipes
-    .map((r) => ({ id: r.id, surface: r.surface }))
-    .sort((a, b) => byString(a.id, b.id))
-  return { tui, web, recipes: sortedRecipes }
-}
-
-// --- 3. bs-epic DAG schedule -------------------------------------------------
+// --- 2. bs-epic DAG schedule -------------------------------------------------
 
 /**
  * @param {{nodes:Array<{id:string,blockedBy:string[],priority:number,createdAt:string}>,
@@ -192,29 +154,24 @@ export function computeDagScheduleSignature(fixture) {
   return { readyIds, mergeOrder }
 }
 
-// --- 4. boss-plan section contract ------------------------------------------
-
 // --- Fixture I/O + orchestration --------------------------------------------
 
 function readJsonFixture(name) {
   return JSON.parse(readFileSync(join(BASELINE_DIR, name), 'utf8'))
 }
 
-/** Computes all three signatures from their committed real inputs. Pure aside from the reads. */
+/** Computes every signature from its committed real inputs. Pure aside from the reads. */
 export function computeAll() {
   const reviewLensFixture = readJsonFixture('review-lens.input.json')
-  const proofSurfaceFixture = readJsonFixture('proof-surface.input.json')
   const dagScheduleFixture = readJsonFixture('dag-schedule.input.json')
-  const proofCatalog = JSON.parse(readFileSync(PROOF_CATALOG_PATH, 'utf8'))
 
   return {
     'review-lens.snapshot.json': computeReviewLensSignature(reviewLensFixture),
-    'proof-surface.snapshot.json': computeProofSurfaceSignature(proofSurfaceFixture, proofCatalog),
     'dag-schedule.snapshot.json': computeDagScheduleSignature(dagScheduleFixture),
   }
 }
 
-/** Computes and writes all three snapshots (2-space pretty, sorted keys) into `outDir`. */
+/** Computes and writes every snapshot (2-space pretty, sorted keys) into `outDir`. */
 export function writeAll(outDir = BASELINE_DIR) {
   const snapshots = computeAll()
   for (const [filename, value] of Object.entries(snapshots)) {

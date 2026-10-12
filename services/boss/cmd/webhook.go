@@ -28,6 +28,7 @@ import (
 // newSessionWebhookClient.
 type sessionWebhookClient interface {
 	ListSessionWebhookEventTypes(ctx context.Context, organizationID string) ([]*pb.SessionWebhookEventType, error)
+	ListSessionWebhookFormats(ctx context.Context, organizationID string) ([]*pb.SessionWebhookFormat, error)
 	ListSessionWebhooks(ctx context.Context, organizationID string) ([]*pb.SessionWebhook, error)
 	CreateSessionWebhook(ctx context.Context, req *pb.CreateSessionWebhookRequest) (*pb.CreateSessionWebhookResponse, error)
 	UpdateSessionWebhook(ctx context.Context, req *pb.UpdateSessionWebhookRequest) (*pb.SessionWebhook, error)
@@ -155,6 +156,32 @@ func runWebhookEvents(cmd *cobra.Command, c sessionWebhookClient) error {
 	return nil
 }
 
+func runWebhookFormats(cmd *cobra.Command, c sessionWebhookClient) error {
+	formats, err := c.ListSessionWebhookFormats(cmd.Context(), webhookOrg(cmd))
+	if err != nil {
+		return fmt.Errorf("list webhook formats: %w", err)
+	}
+	if webhookWantsJSON(cmd) {
+		out := struct {
+			Formats []webhookFormatJSON `json:"formats"`
+		}{Formats: make([]webhookFormatJSON, len(formats))}
+		for i, f := range formats {
+			out.Formats[i] = webhookFormatToJSON(f)
+		}
+		return emitJSON(cmd, out)
+	}
+	if len(formats) == 0 {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No formats.")
+		return nil
+	}
+	rows := make([][]string, len(formats))
+	for i, f := range formats {
+		rows[i] = []string{f.GetId(), orDash(f.GetDisplayLabel()), orDash(f.GetDescription())}
+	}
+	renderCLITable(cmd, []string{"ID", "LABEL", "DESCRIPTION"}, rows)
+	return nil
+}
+
 func runWebhookList(cmd *cobra.Command, c sessionWebhookClient) error {
 	hooks, err := c.ListSessionWebhooks(cmd.Context(), webhookOrg(cmd))
 	if err != nil {
@@ -176,12 +203,12 @@ func runWebhookList(cmd *cobra.Command, c sessionWebhookClient) error {
 	rows := make([][]string, len(hooks))
 	for i, w := range hooks {
 		rows[i] = []string{
-			w.GetId(), w.GetUrl(), fmt.Sprintf("%t", w.GetIsEnabled()),
+			w.GetId(), w.GetUrl(), fmt.Sprintf("%t", w.GetIsEnabled()), orDash(w.GetFormat()),
 			orDash(strings.Join(w.GetEventTypes(), ",")), orDash(w.GetDescription()),
 			orDash(rfc3339OrEmpty(w.GetCreatedAt())),
 		}
 	}
-	renderCLITable(cmd, []string{"ID", "URL", "ENABLED", "EVENTS", "DESCRIPTION", "CREATED"}, rows)
+	renderCLITable(cmd, []string{"ID", "URL", "ENABLED", "FORMAT", "EVENTS", "DESCRIPTION", "CREATED"}, rows)
 	return nil
 }
 
@@ -191,6 +218,7 @@ func buildCreateSessionWebhookRequest(cmd *cobra.Command, url string) (*pb.Creat
 		return nil, errors.New("pass at least one --event (see `boss webhook events`)")
 	}
 	description, _ := cmd.Flags().GetString("description")
+	format, _ := cmd.Flags().GetString("format")
 	disabled, _ := cmd.Flags().GetBool("disabled")
 	secret, err := readWebhookSecret(cmd)
 	if err != nil {
@@ -203,6 +231,7 @@ func buildCreateSessionWebhookRequest(cmd *cobra.Command, url string) (*pb.Creat
 		EventTypes:     events,
 		Secret:         secret,
 		IsEnabled:      !disabled,
+		Format:         strings.TrimSpace(format),
 	}, nil
 }
 
@@ -257,6 +286,15 @@ func buildUpdateSessionWebhookRequest(cmd *cobra.Command, id string) (*pb.Update
 		req.ShouldReplaceEventTypes = true
 		changed = true
 	}
+	if f.Changed("format") {
+		v, _ := f.GetString("format")
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, errors.New("--format needs a format id (see `boss webhook formats`)")
+		}
+		req.Format = &v
+		changed = true
+	}
 	if f.Changed("enable") || f.Changed("disable") {
 		enabled, _ := f.GetBool("enable")
 		if f.Changed("disable") {
@@ -267,7 +305,7 @@ func buildUpdateSessionWebhookRequest(cmd *cobra.Command, id string) (*pb.Update
 		changed = true
 	}
 	if !changed {
-		return nil, errors.New("nothing to change: pass at least one of --url, --description, --event, --enable or --disable")
+		return nil, errors.New("nothing to change: pass at least one of --url, --description, --event, --format, --enable or --disable")
 	}
 	return req, nil
 }
@@ -511,6 +549,16 @@ func webhookCmd() *cobra.Command {
 	}
 	events.Flags().Bool(jsonFlagName, false, "Emit {event_types} as a stable JSON schema")
 
+	formats := &cobra.Command{
+		Use:   "formats",
+		Short: "List the payload formats a webhook can send (raw, slack, discord)",
+		Args:  cobra.NoArgs,
+		RunE: webhookRunE(func(cmd *cobra.Command, c sessionWebhookClient, _ []string) error {
+			return runWebhookFormats(cmd, c)
+		}),
+	}
+	formats.Flags().Bool(jsonFlagName, false, "Emit {formats} as a stable JSON schema")
+
 	list := &cobra.Command{
 		Use:   "ls",
 		Short: "List the organization's webhooks",
@@ -531,13 +579,14 @@ func webhookCmd() *cobra.Command {
 	}
 	add.Flags().StringArray("event", nil, "Event type to subscribe to (see 'boss webhook events'); repeat for several")
 	add.Flags().String("description", "", "Description shown beside the webhook (at most 200 characters)")
+	add.Flags().String("format", "", "Payload format (see 'boss webhook formats'; default: raw)")
 	add.Flags().Bool("disabled", false, "Create the webhook disabled")
 	add.Flags().String("secret-file", "", "Read the signing secret from a file (or '-' for stdin; default: generated)")
 	add.Flags().Bool(jsonFlagName, false, "Emit {webhook, secret} as a stable JSON schema")
 
 	edit := &cobra.Command{
 		Use:   "edit <webhook-id>",
-		Short: "Change a webhook's URL, description, events or enabled state",
+		Short: "Change a webhook's URL, description, events, format or enabled state",
 		Args:  cobra.ExactArgs(1),
 		RunE: webhookRunE(func(cmd *cobra.Command, c sessionWebhookClient, args []string) error {
 			return runWebhookEdit(cmd, c, args[0])
@@ -546,6 +595,7 @@ func webhookCmd() *cobra.Command {
 	edit.Flags().String("url", "", "New endpoint URL (https)")
 	edit.Flags().String("description", "", "New description")
 	edit.Flags().StringArray("event", nil, "Replace the subscribed event types; repeat for several")
+	edit.Flags().String("format", "", "New payload format (see 'boss webhook formats'); undelivered events use it")
 	edit.Flags().Bool("enable", false, "Enable the webhook")
 	edit.Flags().Bool("disable", false, "Disable the webhook (cancels its undelivered deliveries)")
 	edit.Flags().Bool(jsonFlagName, false, "Emit the webhook as a stable JSON schema")
@@ -609,7 +659,7 @@ func webhookCmd() *cobra.Command {
 	}
 	delivery.Flags().Bool(jsonFlagName, false, "Emit {delivery, attempts, request_body, request_headers} as a stable JSON schema")
 
-	subs := []*cobra.Command{events, list, add, edit, rotate, remove, test, deliveries, delivery}
+	subs := []*cobra.Command{events, formats, list, add, edit, rotate, remove, test, deliveries, delivery}
 	for _, sub := range subs {
 		sub.Flags().String("org", "", webhookOrgFlagUsage)
 	}

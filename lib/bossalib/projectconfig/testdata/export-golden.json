@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "project": "example",
+  "repo": {
+    "originUrl": "https://github.com/acme/example",
+    "displayName": "Example",
+    "defaultBaseBranch": "main",
+    "setupScript": "make setup",
+    "settings": {
+      "canAutoMerge": true,
+      "canAutoMergeDependabot": false,
+      "mergeStrategy": "squash",
+      "canAutoRepair": true,
+      "shouldArchiveSessionsAfterMerge": true,
+      "canAutoDeleteBranches": true,
+      "shouldKeepBranchesCurrent": false
+    }
+  },
+  "daemons": [
+    {
+      "name": "laptop",
+      "daemonId": "d-laptop",
+      "path": "~/code/example"
+    }
+  ],
+  "crons": [
+    {
+      "name": "factory-build",
+      "factoryStage": "build",
+      "agent": "claude",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "name": "factory-plan",
+      "factoryStage": "plan",
+      "agent": "claude",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "name": "nightly-report",
+      "agent": "codex",
+      "model": "gpt-5",
+      "prompt": "Summarise yesterday's merges.",
+      "schedule": "0 6 * * *",
+      "timezone": "Europe/London",
+      "gateCommand": "node scripts/has-work.mjs",
+      "runSetupCommand": false,
+      "zeroOutput": true,
+      "concurrencyPolicy": "allow-concurrent",
+      "enabled": false
+    }
+  ],
+  "cloud": {
+    "organization": "org-1",
+    "triggers": [
+      {
+        "name": "anywhere",
+        "type": "github",
+        "github": {
+          "eventTypes": [
+            "push"
+          ]
+        },
+        "launch": {
+          "isZeroOutput": false,
+          "promptTemplate": "Review it.",
+          "shouldRunSetupCommand": true
+        },
+        "placement": {
+          "mode": "first-available"
+        }
+      },
+      {
+        "name": "local-pin",
+        "type": "github",
+        "github": {
+          "eventTypes": [
+            "pull_request.opened"
+          ]
+        },
+        "launch": {
+          "isZeroOutput": false,
+          "promptTemplate": "Review it.",
+          "shouldRunSetupCommand": true
+        },
+        "placement": {
+          "mode": "specific-daemon",
+          "daemon": "laptop"
+        }
+      },
+      {
+        "name": "remote-pin",
+        "type": "http",
+        "http": {},
+        "launch": {
+          "isZeroOutput": false,
+          "promptTemplate": "Review it.",
+          "shouldRunSetupCommand": true
+        },
+        "filters": [
+          {
+            "field": "body.env",
+            "operator": "TRIGGER_FILTER_OPERATOR_EQUALS",
+            "values": [
+              "prod"
+            ]
+          }
+        ],
+        "payloadFields": [
+          "body.ref"
+        ],
+        "gate": {
+          "scriptPath": "scripts/gate.sh"
+        },
+        "placement": {
+          "mode": "specific-daemon",
+          "daemonId": "d-other"
+        },
+        "concurrencyPolicy": "cancel-in-progress",
+        "cooldownSeconds": 30,
+        "enabled": false
+      }
+    ],
+    "webhooks": [
+      {
+        "url": "https://hooks.example.com/a",
+        "description": "Team",
+        "eventTypes": [
+          "session.merged"
+        ],
+        "enabled": false
+      },
+      {
+        "url": "https://hooks.example.com/b",
+        "eventTypes": [
+          "session.failed",
+          "session.passing"
+        ]
+      }
+    ]
+  }
+}

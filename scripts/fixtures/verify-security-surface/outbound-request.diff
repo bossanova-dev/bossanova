@@ -1,0 +1,10 @@
+diff --git a/services/bosso/internal/notify/send.go b/services/bosso/internal/notify/send.go
+index 1111111..2222222 100644
+--- a/services/bosso/internal/notify/send.go
++++ b/services/bosso/internal/notify/send.go
+@@ -12,4 +12,5 @@ func send(ctx context.Context, hook Hook, body io.Reader) error {
+ 	if body == nil {
+ 		return nil
+ 	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, body)
+ 	return do(req, err)

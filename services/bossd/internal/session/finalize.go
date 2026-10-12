@@ -120,12 +120,16 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		Str("worktree", session.WorktreePath).
 		Msg("finalizing session")
 
-	// A zero-output cron session deliberately runs in the user's repository
-	// checkout. Do this before classification: classifyFinalizeOutcome starts by
-	// calling worktrees.Status and could otherwise inspect, push, or create a PR
-	// from that checkout.
+	// A zero-output session — a cron job or a trigger launch — deliberately runs
+	// in the user's repository checkout. Do this before classification:
+	// classifyFinalizeOutcome starts by calling worktrees.Status and could
+	// otherwise inspect, push, or create a PR from that checkout. The predicate
+	// is "unattended", not "cron": a trigger's zero-output session carries no
+	// CronJobID (BOS-1477). An attended quick chat is not unattended and keeps
+	// its existing path; the other unattended shapes (/boss-epic tmux_unattended,
+	// --detach) never set IsQuickChat.
 	var result *FinalizeResult
-	if isCronSession(session) && session.IsQuickChat {
+	if isUnattendedSession(session) && session.IsQuickChat {
 		repo, repoErr := l.repos.Get(ctx, session.RepoID)
 		if repoErr != nil {
 			return nil, fmt.Errorf("get repo for zero-output finalize: %w", repoErr)

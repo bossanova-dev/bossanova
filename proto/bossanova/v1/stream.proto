@@ -223,6 +223,10 @@ message OrchestratorCommand {
     // Replies CommandResult{launch_trigger_session}; see
     // LaunchTriggerSessionCommand.
     LaunchTriggerSessionCommand launch_trigger_session = 64;
+    // bosso → daemon: run a trigger's gate command before any
+    // session is launched (BOS-1467). Handled asynchronously. Replies
+    // CommandResult{run_trigger_gate}; see RunTriggerGateCommand.
+    RunTriggerGateCommand run_trigger_gate = 65;
   }
 }
 
@@ -501,6 +505,8 @@ message CommandResult {
     // LaunchTriggerSession returns the session created (or previously created)
     // for an inbound trigger invocation.
     LaunchTriggerSessionResult launch_trigger_session = 42;
+    // RunTriggerGate returns the verdict of a trigger gate command.
+    RunTriggerGateResult run_trigger_gate = 43;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -754,6 +760,13 @@ message LaunchTriggerSessionCommand {
   optional string effort = 8;
   // Branch to cut the worktree from; empty means the repo default.
   string base_branch = 9;
+  // Whether to run the repo's setup command before the agent starts. Absent
+  // means run it (a bosso that predates the field). Mirrors
+  // CreateCronJobCommand.should_run_setup_command.
+  optional bool should_run_setup_command = 10;
+  // Whether to launch a zero-output session (no worktree, branch, or PR).
+  // Absent means false. Mirrors CreateCronJobCommand.is_zero_output.
+  optional bool is_zero_output = 11;
 }
 
 // LaunchTriggerSessionResult is the reply to LaunchTriggerSessionCommand
@@ -763,6 +776,74 @@ message LaunchTriggerSessionResult {
   // True when the session already existed for this invocation_id and nothing
   // new was launched.
   bool is_replay = 2;
+}
+
+// RunTriggerGateCommand asks the daemon to run a trigger's gate command — a
+// shell command, exactly like a cron job's gate_command — with the invocation's
+// payload on stdin, before bosso launches any session for the invocation
+// (BOS-1467).
+//
+// Contract:
+//   - The command runs the same way a cron gate runs: from the repo's local
+//     clone, through `sh -c` (or directly when it starts with "/", "./" or
+//     "../"), with the repo's tracker credentials, BOSS_TRIGGER_ID and
+//     BOSS_TRIGGER_INVOCATION_ID in its environment.
+//   - Exit 0 replies PASSED, any other exit BLOCKED; a command that could not
+//     produce a verdict (timeout, not found, not executable, killed) replies
+//     COULD_NOT_RUN. All three reply ok = true.
+//   - Replies ok = false with ERROR_CODE_INVALID_ARGUMENT when gate_command,
+//     invocation_id, trigger_id or repo_origin_url is blank;
+//     ERROR_CODE_NOT_FOUND when the daemon manages no repo whose origin matches
+//     repo_origin_url; ERROR_CODE_FAILED_PRECONDITION when the origin matches
+//     more than one repo or the repo has no local clone. Nothing runs in those
+//     cases.
+//   - The reply carries a bounded tail of the command's combined output for the
+//     invocation record.
+//   - A daemon that predates this command drops the unknown oneof arm and sends
+//     no reply, so bosso's bounded wait fails the gate closed.
+message RunTriggerGateCommand {
+  // TriggerInvocation.id; exposed to the command as BOSS_TRIGGER_INVOCATION_ID.
+  string invocation_id = 1;
+  // Trigger.id; exposed to the command as BOSS_TRIGGER_ID.
+  string trigger_id = 2;
+  // Canonical origin URL of the repo whose local clone the command runs in.
+  string repo_origin_url = 3;
+  // Shell command to run, e.g. "./scripts/trigger-gate.sh" or
+  // "jq -e '.action == \"opened\"'".
+  string gate_command = 4;
+  // Gate timeout in seconds, clamped to 1-300 by the daemon; 0 means the
+  // daemon's default gate timeout.
+  int32 timeout_seconds = 5;
+  // JSON document written to the command's stdin. Untrusted event data; the
+  // daemon never logs it.
+  string input_json = 6;
+}
+
+// TriggerGateVerdict is the outcome of a trigger gate command.
+enum TriggerGateVerdict {
+  TRIGGER_GATE_VERDICT_UNSPECIFIED = 0;
+  // The command exited 0: the launch may proceed.
+  TRIGGER_GATE_VERDICT_PASSED = 1;
+  // The command ran and exited non-zero: it decided against the launch.
+  TRIGGER_GATE_VERDICT_BLOCKED = 2;
+  // The command never produced a verdict (timeout, not found, not executable,
+  // killed); the gate condition is unknown.
+  TRIGGER_GATE_VERDICT_COULD_NOT_RUN = 3;
+}
+
+// RunTriggerGateResult is the reply to RunTriggerGateCommand
+// (run_trigger_gate = 43).
+message RunTriggerGateResult {
+  TriggerGateVerdict verdict = 1;
+  // Stable failure classification, e.g. "timeout", "command_not_found",
+  // "not_executable", "non_zero_exit"; "none" when the gate passed.
+  string failure_kind = 2;
+  // The command's exit status, or -1 when none was observed.
+  int32 exit_code = 3;
+  // The last 4 KiB of the command's combined stdout and stderr, prefixed with
+  // "[truncated N bytes]" when longer, for the invocation record. Whatever the
+  // command printed, so it may echo its input or environment.
+  string output = 4;
 }
 
 // RecordChatCommand asks the daemon to record or resume a chat.
@@ -817,6 +898,8 @@ message CreateCronJobCommand {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = SKIP.
   optional CronJobConcurrencyPolicy concurrency_policy = 12;
+  // Config-ownership marker: empty (unmarked) or "boss-project:<slug>".
+  string managed_by = 13;
 }
 
 // UpdateCronJobCommand asks the daemon to mutate an existing cron job. Mutable
@@ -837,6 +920,9 @@ message UpdateCronJobCommand {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = leave unchanged.
   optional CronJobConcurrencyPolicy concurrency_policy = 12;
+  // Config-ownership marker. Omitted = leave unchanged; "" = clear; otherwise
+  // "boss-project:<slug>".
+  optional string managed_by = 13;
 }
 
 // DeleteCronJobCommand asks the daemon to remove a cron job.

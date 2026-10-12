@@ -245,9 +245,10 @@ paths:
         CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
          endpoint policy rejects (not https, credentials in the URL, a fragment, or
          a host that is or resolves to a private, loopback, link-local or metadata
-         address), an empty or unknown event type set, a description over 200
-         characters, or a caller-supplied secret that is not 16-256 visible ASCII
-         characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+         address), an empty or unknown event type set, an unknown format, a
+         description over 200 characters, or a caller-supplied secret that is not
+         16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
+         has 20 endpoints.
       operationId: bossanova.v1.OrchestratorService.CreateSessionWebhook
       parameters:
         - name: Connect-Protocol-Version
@@ -838,7 +839,8 @@ paths:
       summary: GetSessionWebhookDelivery
       description: |-
         GetSessionWebhookDelivery returns one delivery with its attempts in order,
-         the exact request body and the request headers. Never returns a secret.
+         the request body rendered through the endpoint's current format and the
+         request headers. Never returns a secret.
       operationId: bossanova.v1.OrchestratorService.GetSessionWebhookDelivery
       parameters:
         - name: Connect-Protocol-Version
@@ -1366,6 +1368,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookEventTypesResponse'
+  /bossanova.v1.OrchestratorService/ListSessionWebhookFormats:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListSessionWebhookFormats
+      description: |-
+        ListSessionWebhookFormats returns the built-in payload formats an endpoint
+         can pick (SessionWebhook.format), in canonical order.
+      operationId: bossanova.v1.OrchestratorService.ListSessionWebhookFormats
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookFormatsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSessionWebhookFormatsResponse'
   /bossanova.v1.OrchestratorService/ListSessionWebhooks:
     post:
       tags:
@@ -4005,7 +4045,9 @@ paths:
          still be tested. An absent payload_json sends the catalog sample; a
          supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
          otherwise), and the server overwrites its id, type, organization_id and
-         created_at and forces is_test to true. Test deliveries are never retried.
+         created_at and forces is_test to true. The body is then rendered through
+         the endpoint's format, exactly as a live delivery is; a payload the format
+         cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
          RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
       operationId: bossanova.v1.OrchestratorService.SendSessionWebhookTestEvent
       parameters:
@@ -5543,6 +5585,26 @@ components:
           type: string
           title: effort
           description: Opaque agent reasoning-effort level; "" = plugin default.
+        initialInputPath:
+          type: string
+          title: initial_input_path
+          description: |-
+            initial_input_path, when non-empty, is a bossd-chosen private path (beside
+             the agent log, never inside the worktree) for the rendered first input.
+             bossd sets it only for a fresh launch whose input must be submitted. A
+             plugin that consumes the input writes its rendered form there (mode 0600)
+             and returns argv that reads the file at exec time through the login shell,
+             so a long first input never travels through tmux's command buffer. Empty
+             keeps the legacy behaviour.
+        hookPort:
+          type: integer
+          title: hook_port
+          format: int32
+          description: |-
+            hook_port is the loopback port of bossd's hook server, set on a tmux launch.
+             A runner that can confirm its first input reached the agent installs a
+             receipt hook that POSTs /hooks/prompt-submitted/{session_id} to it and
+             answers can_confirm_delivery. 0 means no hook server is available.
       title: BuildInteractiveCommandRequest
       additionalProperties: false
     bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry:
@@ -5596,6 +5658,16 @@ components:
              the host logs describes what bossd BUILT (and therefore what was dropped),
              not a per-class handshake.
           $ref: '#/components/schemas/bossanova.v1.AppendSystemPromptSupport'
+        canConfirmDelivery:
+          type: boolean
+          title: can_confirm_delivery
+          description: |-
+            True when this launch consumes its first input from argv AND the runner
+             can confirm the agent submitted it: Claude through its prompt-submitted
+             receipt hook (keyed by session_id), Codex through a user message in its
+             rollout timestamped at or after launch. bossd then waits for that receipt
+             and fails the start when it never arrives. False keeps the unverified
+             argv start (e.g. opencode).
       title: BuildInteractiveCommandResponse
       additionalProperties: false
     bossanova.v1.CallbackInterest:
@@ -6470,6 +6542,15 @@ components:
                 - runCronJobNow
             - type: object
               properties:
+                runTriggerGate:
+                  title: run_trigger_gate
+                  description: RunTriggerGate returns the verdict of a trigger gate command.
+                  $ref: '#/components/schemas/bossanova.v1.RunTriggerGateResult'
+              title: run_trigger_gate
+              required:
+                - runTriggerGate
+            - type: object
+              properties:
                 sendChatMessage:
                   title: send_chat_message
                   description: SendChatMessage returns the delivery outcome (reuses daemon.proto type).
@@ -6820,6 +6901,10 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = SKIP.
+        managedBy:
+          type: string
+          title: managed_by
+          description: 'Config-ownership marker: empty (unmarked) or "boss-project:<slug>".'
       title: CreateCronJobCommand
       additionalProperties: false
       description: |-
@@ -6888,6 +6973,12 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = SKIP.
+        managedBy:
+          type: string
+          title: managed_by
+          description: |-
+            Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+             slug matches ^[a-z0-9][a-z0-9-]{0,62}$. Anything else is InvalidArgument.
       title: CreateCronJobRequest
       additionalProperties: false
     bossanova.v1.CreateCronJobResponse:
@@ -7477,6 +7568,24 @@ components:
              draft PR is opened at session start. Meaningful only alongside
              detach/is_tmux_unattended, which install the finalize hook; useful for
              read-only/planning sessions. Mirrors StartSessionOpts.DeferPR (used by cron).
+        shouldRunSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: should_run_setup_command
+          description: |-
+            Whether to run the repo's setup command before the agent starts. Absent
+             means run it; an explicit false skips it. Set by trigger launches and
+             honoured for every caller. Mirrors StartSessionOpts.SkipSetupScript.
+        isZeroOutput:
+          type: boolean
+          title: is_zero_output
+          description: |-
+            If true, launch a zero-output session from the repo checkout: no worktree,
+             branch, setup script, or PR, and no worktree base dir or base branch is
+             required. Set by trigger launches and honoured for every caller. Cannot be
+             combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
+             Mirrors StartSessionOpts.ZeroOutput.
       title: CreateSessionRequest
       additionalProperties: false
     bossanova.v1.CreateSessionResponse:
@@ -7528,6 +7637,20 @@ components:
           type: boolean
           title: is_enabled
           description: False creates the endpoint disabled.
+        format:
+          type: string
+          title: format
+          description: |-
+            Payload format (SessionWebhookFormat.id). Empty means "raw"; an unknown
+             format is INVALID_ARGUMENT.
+        managedBy:
+          type: string
+          title: managed_by
+          description: |-
+            Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+             slug matches ^[a-z0-9][a-z0-9-]{0,62}$; anything else is INVALID_ARGUMENT.
+             A second endpoint with the same marker and URL in the organization is
+             ALREADY_EXISTS.
       title: CreateSessionWebhookRequest
       additionalProperties: false
     bossanova.v1.CreateSessionWebhookResponse:
@@ -7588,6 +7711,20 @@ components:
               items:
                 type: string
               title: payload_fields
+            gate:
+              title: gate
+              description: |-
+                Optional gate; absent or an empty script_path creates the trigger
+                 without one.
+              $ref: '#/components/schemas/bossanova.v1.TriggerGate'
+            managedBy:
+              type: string
+              title: managed_by
+              description: |-
+                Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+                 slug matches ^[a-z0-9][a-z0-9-]{0,62}$; anything else is INVALID_ARGUMENT.
+                 A second managed trigger with the same marker and name in the
+                 organization is ALREADY_EXISTS, whoever created the first.
         - oneOf:
             - type: object
               properties:
@@ -7737,6 +7874,12 @@ components:
             What a fire does while this job's previous run is still in progress.
              Always a concrete value on read (never UNSPECIFIED); defaults to SKIP.
           $ref: '#/components/schemas/bossanova.v1.CronJobConcurrencyPolicy'
+        managedBy:
+          type: string
+          title: managed_by
+          description: |-
+            Config-ownership marker: "boss-project:<project>" for a job a project
+             config created or adopted; empty for a hand-made job.
       title: CronJob
       additionalProperties: false
       description: |-
@@ -9362,7 +9505,12 @@ components:
         requestBody:
           type: string
           title: request_body
-          description: The exact signed request body.
+          description: |-
+            The signed request body, rendered through the endpoint's current format:
+             what the next attempt sends (an attempt made before a format change sent
+             the previous format's rendering). Empty, with no request_headers, when
+             the format cannot render the stored event: nothing is sent and the
+             attempt's error_message says why.
         requestHeaders:
           type: array
           items:
@@ -9935,6 +10083,23 @@ components:
           type: string
           title: base_branch
           description: Branch to cut the worktree from; empty means the repo default.
+        shouldRunSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: should_run_setup_command
+          description: |-
+            Whether to run the repo's setup command before the agent starts. Absent
+             means run it (a bosso that predates the field). Mirrors
+             CreateCronJobCommand.should_run_setup_command.
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
+          description: |-
+            Whether to launch a zero-output session (no worktree, branch, or PR).
+             Absent means false. Mirrors CreateCronJobCommand.is_zero_output.
       title: LaunchTriggerSessionCommand
       additionalProperties: false
       description: |-
@@ -10906,6 +11071,24 @@ components:
             $ref: '#/components/schemas/bossanova.v1.SessionWebhookEventType'
           title: event_types
       title: ListSessionWebhookEventTypesResponse
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhookFormatsRequest:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          title: organization_id
+      title: ListSessionWebhookFormatsRequest
+      additionalProperties: false
+    bossanova.v1.ListSessionWebhookFormatsResponse:
+      type: object
+      properties:
+        formats:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SessionWebhookFormat'
+          title: formats
+      title: ListSessionWebhookFormatsResponse
       additionalProperties: false
     bossanova.v1.ListSessionWebhooksRequest:
       type: object
@@ -12207,6 +12390,18 @@ components:
                 - runCronJobNow
             - type: object
               properties:
+                runTriggerGate:
+                  title: run_trigger_gate
+                  description: |-
+                    bosso → daemon: run a trigger's gate command before any
+                     session is launched (BOS-1467). Handled asynchronously. Replies
+                     CommandResult{run_trigger_gate}; see RunTriggerGateCommand.
+                  $ref: '#/components/schemas/bossanova.v1.RunTriggerGateCommand'
+              title: run_trigger_gate
+              required:
+                - runTriggerGate
+            - type: object
+              properties:
                 sendChatMessage:
                   title: send_chat_message
                   description: 'bosso → daemon: send a user message into a chat. Replies CommandResult{send_chat_message}.'
@@ -13253,6 +13448,12 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = SKIP.
+        managedBy:
+          type: string
+          title: managed_by
+          description: |-
+            Config-ownership marker: empty (unmarked) or "boss-project:<slug>"
+             (mirrors CreateCronJobRequest.managed_by in daemon.proto).
       title: ProxyCreateCronJobRequest
       additionalProperties: false
       description: |-
@@ -15062,6 +15263,14 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = leave unchanged.
+        managedBy:
+          type:
+            - string
+            - "null"
+          title: managed_by
+          description: |-
+            Config-ownership marker. Omitted = leave unchanged; "" = clear; otherwise
+             "boss-project:<slug>" (mirrors UpdateCronJobRequest.managed_by).
       title: ProxyUpdateCronJobRequest
       additionalProperties: false
       description: |-
@@ -16761,6 +16970,95 @@ components:
           description: Reason the fire was skipped, when session is unset.
       title: RunCronJobNowResponse
       additionalProperties: false
+    bossanova.v1.RunTriggerGateCommand:
+      type: object
+      properties:
+        invocationId:
+          type: string
+          title: invocation_id
+          description: TriggerInvocation.id; exposed to the command as BOSS_TRIGGER_INVOCATION_ID.
+        triggerId:
+          type: string
+          title: trigger_id
+          description: Trigger.id; exposed to the command as BOSS_TRIGGER_ID.
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: Canonical origin URL of the repo whose local clone the command runs in.
+        gateCommand:
+          type: string
+          title: gate_command
+          description: |-
+            Shell command to run, e.g. "./scripts/trigger-gate.sh" or
+             "jq -e '.action == \"opened\"'".
+        timeoutSeconds:
+          type: integer
+          title: timeout_seconds
+          format: int32
+          description: |-
+            Gate timeout in seconds, clamped to 1-300 by the daemon; 0 means the
+             daemon's default gate timeout.
+        inputJson:
+          type: string
+          title: input_json
+          description: |-
+            JSON document written to the command's stdin. Untrusted event data; the
+             daemon never logs it.
+      title: RunTriggerGateCommand
+      additionalProperties: false
+      description: |-
+        RunTriggerGateCommand asks the daemon to run a trigger's gate command — a
+         shell command, exactly like a cron job's gate_command — with the invocation's
+         payload on stdin, before bosso launches any session for the invocation
+         (BOS-1467).
+
+         Contract:
+           - The command runs the same way a cron gate runs: from the repo's local
+             clone, through `sh -c` (or directly when it starts with "/", "./" or
+             "../"), with the repo's tracker credentials, BOSS_TRIGGER_ID and
+             BOSS_TRIGGER_INVOCATION_ID in its environment.
+           - Exit 0 replies PASSED, any other exit BLOCKED; a command that could not
+             produce a verdict (timeout, not found, not executable, killed) replies
+             COULD_NOT_RUN. All three reply ok = true.
+           - Replies ok = false with ERROR_CODE_INVALID_ARGUMENT when gate_command,
+             invocation_id, trigger_id or repo_origin_url is blank;
+             ERROR_CODE_NOT_FOUND when the daemon manages no repo whose origin matches
+             repo_origin_url; ERROR_CODE_FAILED_PRECONDITION when the origin matches
+             more than one repo or the repo has no local clone. Nothing runs in those
+             cases.
+           - The reply carries a bounded tail of the command's combined output for the
+             invocation record.
+           - A daemon that predates this command drops the unknown oneof arm and sends
+             no reply, so bosso's bounded wait fails the gate closed.
+    bossanova.v1.RunTriggerGateResult:
+      type: object
+      properties:
+        verdict:
+          title: verdict
+          $ref: '#/components/schemas/bossanova.v1.TriggerGateVerdict'
+        failureKind:
+          type: string
+          title: failure_kind
+          description: |-
+            Stable failure classification, e.g. "timeout", "command_not_found",
+             "not_executable", "non_zero_exit"; "none" when the gate passed.
+        exitCode:
+          type: integer
+          title: exit_code
+          format: int32
+          description: The command's exit status, or -1 when none was observed.
+        output:
+          type: string
+          title: output
+          description: |-
+            The last 4 KiB of the command's combined stdout and stderr, prefixed with
+             "[truncated N bytes]" when longer, for the invocation record. Whatever the
+             command printed, so it may echo its input or environment.
+      title: RunTriggerGateResult
+      additionalProperties: false
+      description: |-
+        RunTriggerGateResult is the reply to RunTriggerGateCommand
+         (run_trigger_gate = 43).
     bossanova.v1.ScheduledJob:
       type: object
       properties:
@@ -17865,6 +18163,18 @@ components:
           title: secret_rotated_at
           description: When the secret was last rotated; absent until the first rotation.
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        format:
+          type: string
+          title: format
+          description: |-
+            The built-in payload format deliveries are rendered through
+             (SessionWebhookFormat.id), e.g. "raw", "slack" or "discord".
+        managedBy:
+          type: string
+          title: managed_by
+          description: |-
+            Config-ownership marker: "boss-project:<project>" for an endpoint a
+             project config created or adopted; empty for a hand-made endpoint.
       title: SessionWebhook
       additionalProperties: false
       description: |-
@@ -17984,6 +18294,26 @@ components:
       title: SessionWebhookEventType
       additionalProperties: false
       description: SessionWebhookEventType is one entry of the event catalog.
+    bossanova.v1.SessionWebhookFormat:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          description: Stable format id stored on an endpoint, e.g. "slack".
+        displayLabel:
+          type: string
+          title: display_label
+          description: The name the web, TUI and CLI show, e.g. "Slack".
+        description:
+          type: string
+          title: description
+          description: One user-facing sentence saying where the format posts.
+      title: SessionWebhookFormat
+      additionalProperties: false
+      description: |-
+        SessionWebhookFormat is one built-in payload format. Formats are defined in
+         code; callers cannot supply their own.
     bossanova.v1.SessionWebhookRequestHeader:
       type: object
       properties:
@@ -19505,6 +19835,18 @@ components:
             updatedAt:
               title: updated_at
               $ref: '#/components/schemas/google.protobuf.Timestamp'
+            gate:
+              title: gate
+              description: |-
+                Optional gate the launching daemon runs before every launch; absent means
+                 the trigger has no gate. An invocation launches only when the gate exits 0.
+              $ref: '#/components/schemas/bossanova.v1.TriggerGate'
+            managedBy:
+              type: string
+              title: managed_by
+              description: |-
+                Config-ownership marker: "boss-project:<project>" for a trigger a project
+                 config created or adopted; empty for a hand-made trigger.
         - oneOf:
             - type: object
               properties:
@@ -19632,6 +19974,42 @@ components:
         - TRIGGER_FILTER_OPERATOR_CONTAINS
         - TRIGGER_FILTER_OPERATOR_PREFIX
       description: TriggerFilterOperator compares a payload field against TriggerFilter.values.
+    bossanova.v1.TriggerGate:
+      type: object
+      properties:
+        scriptPath:
+          type: string
+          title: script_path
+          description: |-
+            Path of the gate script relative to the repo root, e.g.
+             "scripts/has-work.sh". It must be a clean relative path with no ".."
+             segment and no whitespace, at most 512 bytes. It is executed directly,
+             not through a shell, so it takes no arguments.
+        timeoutSeconds:
+          type: integer
+          title: timeout_seconds
+          format: int32
+          description: |-
+            How long the gate may run, 0-300 seconds; 0 means the daemon's default
+             (60 seconds).
+      title: TriggerGate
+      additionalProperties: false
+      description: |-
+        TriggerGate is a repo-committed script the launching daemon runs in the
+         repo's local clone before each launch, with the invocation's payload excerpt
+         as JSON on stdin. Exit 0 launches; any other exit records the invocation as
+         SKIPPED ("gated"). The invocation FAILS when the gate cannot run or exceeds
+         its timeout ("gate_failed"), when the daemon rejects it ("gate_invalid"), or
+         when the daemon never answers ("gate_timeout").
+    bossanova.v1.TriggerGateVerdict:
+      type: string
+      title: TriggerGateVerdict
+      enum:
+        - TRIGGER_GATE_VERDICT_UNSPECIFIED
+        - TRIGGER_GATE_VERDICT_PASSED
+        - TRIGGER_GATE_VERDICT_BLOCKED
+        - TRIGGER_GATE_VERDICT_COULD_NOT_RUN
+      description: TriggerGateVerdict is the outcome of a trigger gate command.
     bossanova.v1.TriggerInvocation:
       type: object
       properties:
@@ -19770,7 +20148,28 @@ components:
         baseBranch:
           type: string
           title: base_branch
-          description: Branch the session's worktree is cut from; empty means the repo default.
+          description: |-
+            Branch the session's worktree is cut from; empty means the repo default.
+             Not used when is_zero_output is true (no worktree is cut).
+        shouldRunSetupCommand:
+          type:
+            - boolean
+            - "null"
+          title: should_run_setup_command
+          description: |-
+            Whether the session runs the repo's setup command before the agent
+             starts. Absent on CreateTrigger means true; absent inside an
+             UpdateTrigger launch keeps the stored value. Always present on read.
+        isZeroOutput:
+          type:
+            - boolean
+            - "null"
+          title: is_zero_output
+          description: |-
+            Whether the session is a zero-output run: no worktree, branch, or PR.
+             base_branch is not used when this is true. Absent on CreateTrigger means
+             false; absent inside an UpdateTrigger launch keeps the stored value.
+             Always present on read.
       title: TriggerLaunchSettings
       additionalProperties: false
       description: TriggerLaunchSettings is what a trigger launches.
@@ -19995,6 +20394,14 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = leave unchanged.
+        managedBy:
+          type:
+            - string
+            - "null"
+          title: managed_by
+          description: |-
+            Config-ownership marker. Omitted = leave unchanged; "" = clear; otherwise
+             "boss-project:<slug>".
       title: UpdateCronJobCommand
       additionalProperties: false
       description: |-
@@ -20072,6 +20479,14 @@ components:
           description: |-
             What a fire does while the job's previous run is still in progress.
              Omitted or UNSPECIFIED = leave unchanged.
+        managedBy:
+          type:
+            - string
+            - "null"
+          title: managed_by
+          description: |-
+            Config-ownership marker. Omitted = leave unchanged; "" = clear;
+             otherwise "boss-project:<slug>" as on CreateCronJobRequest.
       title: UpdateCronJobRequest
       additionalProperties: false
     bossanova.v1.UpdateCronJobResponse:
@@ -20427,6 +20842,22 @@ components:
             - boolean
             - "null"
           title: is_enabled
+        format:
+          type:
+            - string
+            - "null"
+          title: format
+          description: |-
+            New payload format (SessionWebhookFormat.id); absent leaves it unchanged.
+             Undelivered deliveries are sent in the new format.
+        managedBy:
+          type:
+            - string
+            - "null"
+          title: managed_by
+          description: |-
+            Config-ownership marker. Omitted leaves it unchanged; "" clears it;
+             otherwise "boss-project:<slug>" as on CreateSessionWebhookRequest.
       title: UpdateSessionWebhookRequest
       additionalProperties: false
       description: |-
@@ -20544,6 +20975,10 @@ components:
               title: repo_origin_url
             launch:
               title: launch
+              description: |-
+                Replaces the launch settings when set, except that its optional
+                 should_run_setup_command and is_zero_output keep their stored values
+                 when absent.
               $ref: '#/components/schemas/bossanova.v1.TriggerLaunchSettings'
             placement:
               title: placement
@@ -20575,6 +21010,21 @@ components:
             shouldClearPayloadFields:
               type: boolean
               title: should_clear_payload_fields
+            gate:
+              title: gate
+              description: |-
+                Replaces the whole gate when set; set with an empty script_path it
+                 removes the gate. Absent leaves the gate unchanged.
+              $ref: '#/components/schemas/bossanova.v1.TriggerGate'
+            managedBy:
+              type:
+                - string
+                - "null"
+              title: managed_by
+              description: |-
+                Config-ownership marker. Omitted leaves it unchanged; "" clears it;
+                 otherwise "boss-project:<slug>" as on CreateTriggerRequest, including
+                 ALREADY_EXISTS when the organization already has that marker and name.
         - oneOf:
             - type: object
               properties:

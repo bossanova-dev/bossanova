@@ -531,6 +531,12 @@ type SessionCommandHandler interface {
 	// errorCode classifies any failure (NOT_FOUND for an unregistered repo,
 	// FAILED_PRECONDITION for a failed create) for CommandResult.error_code.
 	LaunchTriggerSession(ctx context.Context, cmd *pb.LaunchTriggerSessionCommand) (*pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error)
+	// RunTriggerGate runs a trigger's repo-committed gate script with the
+	// invocation's payload on stdin and returns its verdict (BOS-1467). Every
+	// script outcome is a result; errorCode classifies only argument and repo
+	// failures (INVALID_ARGUMENT, NOT_FOUND, FAILED_PRECONDITION), in which case
+	// nothing ran.
+	RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error)
 	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
 	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
 	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)

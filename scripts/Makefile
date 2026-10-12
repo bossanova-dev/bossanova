@@ -6,9 +6,10 @@ all: format lint test
 ## format: Format script files with Prettier
 # Covers scripts/ plus the thin gate entry scripts that live inside each skill
 # (.claude/skills/*/gate/*.mjs) — their shared logic is tested via scripts/, but
-# the entries themselves still need formatting + a syntax check.
+# the entries themselves still need formatting + a syntax check — and the verify
+# skill's control CLI (.claude/skills/verify/{bin,lib}), whose tests run under `test`.
 format:
-	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs'
+	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs' '.claude/skills/verify/bin/*' '.claude/skills/verify/lib/*.mjs'
 
 ## lint: Check script syntax (content-hash stamped; skips unchanged trees) +
 ## skill-tree shell fences + docs mcp props/counts + docs absolute self-links +
@@ -132,6 +133,7 @@ lint:
 test:
 	cd .. && node --test scripts/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs
 	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
+	cd .. && node --test .claude/skills/verify/lib/*.test.mjs
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above
 # exercise the detector against stub fixtures; this runs it against the real tree. `test-all`
 # is not reached by any feature-push job (see .github/workflows/bazel.yml), so wiring the

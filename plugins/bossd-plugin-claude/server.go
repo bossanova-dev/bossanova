@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rs/zerolog"
@@ -202,11 +203,11 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 // req.LogPath is accepted for API compatibility but intentionally
 // unused — bossd reads it from its own state, not from this response.
 //
-// The error result is always nil now that argv assembly is pure: the only
-// failure this ever had was the strict-MCP guard, and boss no longer owns MCP
-// configuration. The signature stays as-is because it implements the plugin
-// interface.
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+// A fresh start whose prompt bossd asked to have submitted is delivered as a
+// launch argument read from req.InitialInputPath (see claudeLaunchPrompt), so a
+// long prompt is never typed into the composer. The only error is a failure to
+// write that file.
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"claude"}
 	if req.Resume {
 		args = append(args, "--resume", req.SessionId)
@@ -247,12 +248,78 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
 	}
+	flags := loginshell.Flags(loginShell)
+	receiptHook := s.installPromptSubmitHook(req)
+	if prompt := claudeLaunchPrompt(req, loginShell); prompt != "" {
+		// `--` ends option parsing so a prompt starting with '-' stays a prompt.
+		argv, err := loginshell.WrapInitialInput(loginShell, flags, append(args, "--"), prompt, req.GetInitialInputPath())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "write initial input: %v", err)
+		}
+		return &bossanovav1.BuildInteractiveCommandResponse{
+			Argv:                      argv,
+			ReadyMarker:               "❯",
+			CommandPrefix:             "/",
+			ConsumesInitialInput:      true,
+			AppendSystemPromptSupport: appendSystemPromptSupport,
+			// The receipt is the UserPromptSubmit hook, which fires for a
+			// prompt passed as a launch argument (verified on Claude Code
+			// 2.1.296) with Claude's session_id equal to req.SessionId.
+			CanConfirmDelivery: receiptHook,
+		}, nil
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv:                      loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
+		Argv:                      loginshell.Wrap(loginShell, flags, args),
 		ReadyMarker:               "❯",
 		CommandPrefix:             "/",
 		AppendSystemPromptSupport: appendSystemPromptSupport,
 	}, nil
+}
+
+// installPromptSubmitHook installs the delivery-receipt UserPromptSubmit hook
+// for a tmux launch (bossd sets hook_port only there) and reports whether it is
+// in place. It is installed for every such launch, not only those that consume
+// their first input, so later sends into the chat can be confirmed too. A
+// failed install is not fatal: the launch proceeds unconfirmed, as before.
+func (s *Server) installPromptSubmitHook(req *bossanovav1.BuildInteractiveCommandRequest) bool {
+	if req.GetHookPort() <= 0 || req.GetWorktreePath() == "" || req.GetSessionId() == "" {
+		return false
+	}
+	if err := WritePromptSubmitHookConfig(req.GetWorktreePath(), req.GetSessionId(), int(req.GetHookPort())); err != nil {
+		s.logger.Warn().Err(err).
+			Str("session_id", req.GetSessionId()).
+			Msg("could not install prompt-submitted receipt hook; first-prompt delivery stays unconfirmed")
+		return false
+	}
+	return true
+}
+
+// claudeLaunchPrompt returns the first input Claude takes as a launch argument,
+// or "" to keep pane delivery. Only a fresh start with a bossd-chosen input
+// file qualifies: --resume launches never carry a first input, and a request
+// without the file comes from a bossd that may be asking for a prefill. The
+// login shell must support the file-reading form too: inlining the prompt
+// into argv instead would bound it by tmux's command-size limit, which pane
+// delivery never had.
+//
+// Shapes that stay on the pane path:
+//   - boss commands and '/'-prefixed prompts: whether argv runs a slash command
+//     interactively is unverified, so they keep the typed path.
+//   - a single bare token: claude's argument parser dispatches a subcommand
+//     named by the first operand even after `--` (`claude -- doctor` runs
+//     doctor), so a one-word prompt such as "doctor", "update" or "help" would
+//     never reach the model. Trailing newlines are trimmed first because the
+//     exec-time file read strips them.
+func claudeLaunchPrompt(req *bossanovav1.BuildInteractiveCommandRequest, loginShell string) string {
+	if req.GetResume() || req.GetInitialInputPath() == "" || req.GetInitialCommand() != "" || !loginshell.IsSupported(loginShell) {
+		return ""
+	}
+	prompt := req.GetInitialPrompt()
+	trimmed := strings.TrimRight(prompt, "\n")
+	if trimmed == "" || strings.HasPrefix(trimmed, "/") || !strings.ContainsFunc(trimmed, unicode.IsSpace) {
+		return ""
+	}
+	return prompt
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

@@ -36,6 +36,61 @@ const queuedGuidance = chatdelivery.QueuedGuidance
 
 const turnStartNoResendGuidance = "turn start observation does not change delivery; do not resend based on this verdict"
 
+// promptReceiptBook is the part of session.Lifecycle that confirms a send by
+// the agent's own prompt-submitted receipt: Claude's UserPromptSubmit hook,
+// which the claude plugin installs for every tmux-hosted chat and which posts
+// to /hooks/prompt-submitted/{id} (BOS-1505). A receipt is recorded only while
+// a slot for that id is open.
+type promptReceiptBook interface {
+	ExpectPromptSubmitted(key string) (release func())
+	PromptSubmittedSince(key string, since time.Time) bool
+}
+
+// expectPromptReceipt opens a receipt slot for one submitted Claude send and
+// returns the check the verifier consults (nil when the send has no receipt to
+// wait for) and the slot's release.
+//
+// Only Claude chats get one: Codex has no prompt hook, so its sends keep the
+// pane verifier as their only signal. The slot is keyed by the id the chat's
+// runner was launched with — its provider session id when one is bound, else
+// bossd's agent_session_id — because that is the id the hook URL carries.
+//
+// A receipt says that A prompt was submitted in that chat at or after the send
+// began, not that it was THIS payload. Within a send's few seconds the only
+// other source is a human typing into the same pane, which is accepted.
+func (s *Server) expectPromptReceipt(chat *models.AgentChat, willSubmit bool) (submitted func() bool, release func()) {
+	if s.promptReceipts == nil || !willSubmit || !isClaudeChat(chat.AgentName) {
+		return nil, func() {}
+	}
+	key := chat.AgentSessionID
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		key = *chat.ProviderSessionID
+	}
+	book := s.promptReceipts
+	release = book.ExpectPromptSubmitted(key)
+	since := time.Now()
+	return func() bool { return book.PromptSubmittedSince(key, since) }, release
+}
+
+// isClaudeChat reports whether a chat runs Claude; an empty agent name is the
+// legacy Claude default, as chatReadyMarker resolves it.
+func isClaudeChat(agentName string) bool {
+	return agentName == "" || agentName == "claude"
+}
+
+// receiptOverridesOutcome reports whether a receipt turns a failed send into a
+// delivered one. Only the two verifier outcomes that leave the payload in the
+// pane qualify: a modal refusal or a readiness timeout typed nothing, so a
+// receipt then cannot be this send's, and a queued send is already delivered.
+func receiptOverridesOutcome(err error, submitted func() bool) bool {
+	switch tmux.OutcomeOf(err) {
+	case tmux.OutcomeNotSubmitted, tmux.OutcomeUnconfirmed:
+		return submitted != nil && submitted()
+	default:
+		return false
+	}
+}
+
 // modalDetectorFor returns the "is this pane showing a menu rather than a
 // composer?" check for one agent, or nil when it cannot be answered.
 //
@@ -229,7 +284,20 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			baseline = status.CaptureTurnStartBaseline(s.chatStatus, chat.AgentSessionID)
 		}
 	}
-	if err := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName), beforeSubmit); err != nil {
+	// A Claude send is confirmed by the agent's UserPromptSubmit receipt
+	// first; the pane verifier is the fallback for Codex and for a Claude pane
+	// whose hook never fires (BOS-1506). The verifier consults the receipt
+	// before each pane read and before its clear-and-redeliver retry, and a
+	// receipt that lands after the verifier gave up still settles the outcome
+	// here.
+	submitted, releaseReceipt := s.expectPromptReceipt(chat, willSubmit)
+	defer releaseReceipt()
+	sendErr := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
+		tmux.SendHooks{BeforeSubmit: beforeSubmit, Submitted: submitted})
+	if receiptOverridesOutcome(sendErr, submitted) {
+		sendErr = nil
+	}
+	if err := sendErr; err != nil {
 		// Three outcomes, three answers (BOS-598). Only the verifier classifies an
 		// error; everything else (ready-marker timeout, a tmux command that failed
 		// to run) stays OutcomeUnclassified and keeps the pre-existing CodeInternal.

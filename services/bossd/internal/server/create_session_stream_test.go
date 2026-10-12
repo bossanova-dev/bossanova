@@ -1144,6 +1144,208 @@ func TestStreamCreateSession_LogsStartupTimingAndLifecycleBranchResult(t *testin
 	}
 }
 
+// TestStreamCreateSession_HonoursShouldRunSetupCommand pins BOS-1477's setup
+// plumbing: should_run_setup_command=false reaches the worktree manager as a nil
+// setup script, while an absent field (a caller that predates it) or an explicit
+// true keeps running the repo's configured script.
+func TestStreamCreateSession_HonoursShouldRunSetupCommand(t *testing.T) {
+	t.Parallel()
+
+	off, on := false, true
+	for _, tc := range []struct {
+		name      string
+		flag      *bool
+		wantSetup bool
+	}{
+		{name: "absent runs setup", flag: nil, wantSetup: true},
+		{name: "true runs setup", flag: &on, wantSetup: true},
+		{name: "false skips setup", flag: &off, wantSetup: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			worktrees := &setupStreamWorktree{}
+			h := newCreateSessionStreamHarness(t, worktrees, &setupStreamAgent{})
+			agentName := "claude"
+			err := h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+				RepoId:                h.repo.ID,
+				Title:                 "setup flag " + tc.name,
+				Plan:                  "do work",
+				AgentName:             &agentName,
+				DeferPr:               true,
+				ShouldRunSetupCommand: tc.flag,
+			}, func(*pb.CreateSessionResponse) error { return nil })
+			if err != nil {
+				t.Fatalf("StreamCreateSession: %v", err)
+			}
+
+			createCalls, _ := worktrees.callRecords()
+			if len(createCalls) != 1 {
+				t.Fatalf("Create calls = %d, want 1", len(createCalls))
+			}
+			gotSetup := createCalls[0].SetupScript != nil
+			if gotSetup != tc.wantSetup {
+				t.Fatalf("Create SetupScript set = %v, want %v", gotSetup, tc.wantSetup)
+			}
+		})
+	}
+}
+
+// draftPRCountingProvider counts CreateDraftPR calls so a test can prove a
+// create opened no pull request.
+type draftPRCountingProvider struct {
+	setupStreamProvider
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *draftPRCountingProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	return &vcs.PRInfo{}, nil
+}
+
+func (p *draftPRCountingProvider) draftPRCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestStreamCreateSession_ZeroOutputRunsFromRepoCheckout pins BOS-1477's
+// zero-output plumbing through the daemon RPC: no worktree is created (so no
+// worktree base dir or base branch is needed), no draft PR is opened even
+// without defer_pr, and the stream keeps the accepted-then-settled shape the
+// trigger launcher relies on — the accepted frame carries no worktree_path and
+// the settled frame carries the repo checkout, on a row marked quick chat.
+func TestStreamCreateSession_ZeroOutputRunsFromRepoCheckout(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logger := zerolog.New(zerolog.SyncWriter(&logs))
+	worktrees := &setupStreamWorktree{}
+	provider := &draftPRCountingProvider{}
+	h := newCreateSessionStreamHarnessWithProvider(t, worktrees, &setupStreamAgent{}, provider, logger)
+	empty := ""
+	repo, err := h.repos.Update(context.Background(), h.repo.ID, db.UpdateRepoParams{
+		WorktreeBaseDir:   &empty,
+		DefaultBaseBranch: &empty,
+	})
+	if err != nil {
+		t.Fatalf("update repo: %v", err)
+	}
+	h.repo = repo
+
+	agentName := "claude"
+	var created []*pb.Session
+	err = h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+		RepoId:       h.repo.ID,
+		Title:        "zero output",
+		Plan:         "summarise the repo",
+		AgentName:    &agentName,
+		Detach:       true,
+		IsZeroOutput: true,
+		Force:        true,
+	}, func(resp *pb.CreateSessionResponse) error {
+		if c := resp.GetSessionCreated(); c != nil {
+			created = append(created, c.GetSession())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamCreateSession: %v", err)
+	}
+	h.awaitDraftPRs(t)
+
+	if len(created) != 2 {
+		t.Fatalf("SessionCreated frames = %d, want 2 (accepted, settled)", len(created))
+	}
+	if got := created[0].GetWorktreePath(); got != "" {
+		t.Fatalf("accepted frame worktree_path = %q, want empty", got)
+	}
+	if got := created[1].GetWorktreePath(); got != h.repo.LocalPath {
+		t.Fatalf("settled frame worktree_path = %q, want repo checkout %q", got, h.repo.LocalPath)
+	}
+	if created[0].GetId() != created[1].GetId() {
+		t.Fatalf("accepted id %q != settled id %q", created[0].GetId(), created[1].GetId())
+	}
+	if got := created[1].GetBranchName(); got != "" {
+		t.Fatalf("settled frame branch_name = %q, want empty", got)
+	}
+
+	createCalls, existingCalls := worktrees.callRecords()
+	if len(createCalls) != 0 || len(existingCalls) != 0 {
+		t.Fatalf("worktree calls = Create %d, CreateFromExistingBranch %d, want none", len(createCalls), len(existingCalls))
+	}
+	if n := provider.draftPRCalls(); n != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", n)
+	}
+
+	row, err := h.sessions.Get(context.Background(), created[1].GetId())
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !row.IsQuickChat {
+		t.Fatal("zero-output session row is not marked quick chat")
+	}
+	if got := logs.String(); !strings.Contains(got, `"branch_mode":"zero-output"`) {
+		t.Fatalf("logs missing zero-output branch mode:\n%s", got)
+	}
+}
+
+// TestStreamCreateSession_ZeroOutputRejectsCheckoutShapes pins that zero output
+// cannot be combined with a request that names a checkout (a PR or a branch) or
+// with quick chat, which is a different shape; each is InvalidArgument and
+// leaves no session row behind.
+func TestStreamCreateSession_ZeroOutputRejectsCheckoutShapes(t *testing.T) {
+	t.Parallel()
+
+	prNumber := int32(7)
+	branch := "feature/x"
+	for _, tc := range []struct {
+		name   string
+		mutate func(*pb.CreateSessionRequest)
+	}{
+		{name: "pr_number", mutate: func(r *pb.CreateSessionRequest) { r.PrNumber = &prNumber }},
+		{name: "branch_name", mutate: func(r *pb.CreateSessionRequest) { r.BranchName = &branch }},
+		{name: "is_quick_chat", mutate: func(r *pb.CreateSessionRequest) { r.IsQuickChat = true }},
+		// An attended zero-output run would finalize against the user's
+		// checkout, so the request must be unattended.
+		{name: "is_tmux_unattended or detach", mutate: func(*pb.CreateSessionRequest) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			worktrees := &setupStreamWorktree{}
+			h := newCreateSessionStreamHarness(t, worktrees, &setupStreamAgent{})
+			req := &pb.CreateSessionRequest{
+				RepoId:       h.repo.ID,
+				Title:        "zero output " + tc.name,
+				Plan:         "do work",
+				IsZeroOutput: true,
+			}
+			tc.mutate(req)
+			err := h.server.StreamCreateSession(context.Background(), req, func(*pb.CreateSessionResponse) error { return nil })
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("code = %v (err %v), want InvalidArgument", got, err)
+			}
+			if !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("error = %q, want it to name %q", err.Error(), tc.name)
+			}
+			sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+			if listErr != nil {
+				t.Fatalf("list sessions: %v", listErr)
+			}
+			if len(sessions) != 0 {
+				t.Fatalf("rejected create left %d session rows", len(sessions))
+			}
+			if createCalls, existingCalls := worktrees.callRecords(); len(createCalls)+len(existingCalls) != 0 {
+				t.Fatal("rejected create touched the worktree manager")
+			}
+		})
+	}
+}
+
 // TestNewHookToken verifies the server's finalize-hook token minter (used for
 // tmux_unattended sessions): a 64-char hex string, unique per call.
 func TestNewHookToken(t *testing.T) {

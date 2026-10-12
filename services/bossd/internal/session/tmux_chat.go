@@ -340,7 +340,10 @@ func RenderBossCommandPrefix(message, commandPrefix, worktreePath string) string
 //     this run to /hooks/agent-run-complete/<agent_session_id>, which
 //     unblocks the matching WaitChatRun call. Skipped when Token is "".
 //  9. Inject the supplied input into the tmux session unless the plugin
-//     embedded it in argv.
+//     embedded it in argv. When it did and the runner declares
+//     can_confirm_delivery, wait for the delivery receipt instead
+//     (confirmLaunchDelivery): a start whose input is not confirmed has its
+//     pane killed and is stamped failed.
 //
 // Failures after step 5 (tmux is live) tear tmux down and delete the
 // agent_chats row before returning, so a retried sweep doesn't leak.
@@ -371,6 +374,12 @@ type HookOpts struct {
 	// leave it unspecified and retain their existing launch path.
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
 
+	// AgentSessionID, when set, is the id a FRESH launch uses instead of
+	// minting one. StartChatRun mints it so it can register the run's hook
+	// token before the agent can possibly post a completion. Ignored on a
+	// resume, which reuses the resumed chat's own id.
+	AgentSessionID string
+
 	// AutonomousRun marks a launch that runs with no human watching, so the
 	// capability profile must be selected here — from the agent that will
 	// actually spawn — rather than by a caller that can only see the session's
@@ -383,7 +392,7 @@ type HookOpts struct {
 // is non-empty. The cron path configures the hook earlier in StartSession
 // (keyed by session_id); the repair path passes a run-keyed token here so
 // the claude plugin can write a sibling Stop-hook entry.
-func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input ChatInput, title string, hookOpts HookOpts) (string, error) {
+func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input ChatInput, title string, hookOpts HookOpts) (_ string, retErr error) {
 	// Step 1a: tmux must be available; otherwise there's nowhere to host the run.
 	if l.tmux == nil || !l.tmux.Available(ctx) {
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
@@ -506,7 +515,10 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// id so logs/hooks/tmux/completion all stay keyed on one id; otherwise mint
 	// a fresh one.
 	if !resuming {
-		agentSessionID = l.newTmuxChatAgentSessionID()
+		agentSessionID = hookOpts.AgentSessionID
+		if agentSessionID == "" {
+			agentSessionID = l.newTmuxChatAgentSessionID()
+		}
 		providerSessionID = agentSessionID
 	}
 	tmuxName := tmux.ChatSessionName(sess.RepoID, agentSessionID)
@@ -657,18 +669,30 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
+	// Only a submitted input is offered as a startup input (prepareLaunchInput);
+	// a prefill keeps the pane path below.
+	launch := l.prepareLaunchInput(input, agentSessionID, sessionID)
+	if launch.path != "" {
+		defer func() {
+			if retErr != nil {
+				l.removeInitialInputFile(launch.path, sessionID)
+			}
+		}()
+	}
 	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, ResolveSubagentGrantForSpawn(l.logger))
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          providerSessionID,
 		Resume:             resuming,
 		LogPath:            logPath,
-		InitialPrompt:      input.Prompt,
-		InitialCommand:     input.Command,
+		InitialPrompt:      launch.prompt,
+		InitialCommand:     launch.command,
+		InitialInputPath:   launch.path,
 		WorktreePath:       sess.WorktreePath,
 		AppendSystemPrompt: appendPrompt,
 		Model:              spawnModel,
 		Effort:             spawnEffort,
 		ConfigHomeEnv:      configHomeEnv(tmuxEnv),
+		HookPort:           clampInt32(l.hookPort),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -676,6 +700,17 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	if cmdResp == nil || len(cmdResp.Argv) == 0 {
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
 			"agent runner for session %s returned empty argv", sessionID)
+	}
+	// A runner can only consume an input it was offered. Honouring the flag
+	// without one would silently drop a prefill this launch never handed over.
+	consumesInitialInput := cmdResp.GetConsumesInitialInput() && launch.offered()
+	// Argv delivery types nothing into the pane, so the pane cannot confirm the
+	// input ran; a runner that can confirm it some other way says so, and the
+	// launch then waits for that receipt (Step 9b).
+	confirmDelivery := consumesInitialInput && cmdResp.GetCanConfirmDelivery()
+	if err := l.settleLaunchInputFile(launch, cmdResp.Argv, sessionID); err != nil {
+		return "", grpcstatus.Errorf(codes.FailedPrecondition,
+			"agent runner for session %s: %v", sessionID, err)
 	}
 	// Report — never enforce. argv is spawned exactly as the runner returned it;
 	// the declaration only decides whether bossd says out loud that instructions
@@ -707,7 +742,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	}
 
 	finalizeHookSupported := true
-	if cmdResp.GetConsumesInitialInput() {
+	if consumesInitialInput {
 		hookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts)
 		if err != nil {
 			return "", err
@@ -741,6 +776,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// floor of the provider-session-id time-window scan: a rollout written
 	// before this instant cannot belong to this chat. Stamping it after the
 	// spawn returns would exclude a fast provider's own rollout.
+	//
+	// A delivery receipt is expected BEFORE the spawn: the receipt hook can
+	// fire the moment the agent boots, and one that arrives while nobody is
+	// waiting is dropped.
+	if confirmDelivery {
+		release := l.deliveryReceipts.expect(providerSessionID)
+		defer release()
+	}
 	launchedAt := time.Now().UTC()
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
@@ -839,7 +882,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// Step 9: install a run-scoped Stop-hook entry when the caller asked
 	// for one. If argv already embeds startup input, this was done before
 	// tmux launch so a fast-finishing agent cannot beat hook configuration.
-	if !cmdResp.GetConsumesInitialInput() {
+	if !consumesInitialInput {
 		hookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts)
 		if err != nil {
 			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
@@ -853,7 +896,26 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		l.armTmuxCompletionForHooklessRun(sessionID, agentSessionID, sess.RepoID)
 	}
 
-	if cmdResp.GetConsumesInitialInput() {
+	if consumesInitialInput {
+		// Step 9b: confirm the argv-delivered input actually ran.
+		if confirmDelivery {
+			res, err := l.confirmLaunchDelivery(ctx, input, launch, deliveryWait{
+				client:                 client,
+				sessionID:              sessionID,
+				agentSessionID:         agentSessionID,
+				tmuxName:               tmuxName,
+				worktreePath:           sess.WorktreePath,
+				launchedAt:             launchedAt,
+				receiptKey:             providerSessionID,
+				knownProviderSessionID: knownProviderSessionID(resumedChat),
+			}, logPath)
+			if err != nil {
+				return "", err
+			}
+			if res.resolved {
+				return agentSessionID, nil
+			}
+		}
 		l.persistFreshProviderSessionID(ctx, client, sess.WorktreePath, agentSessionID, tmuxName, launchedAt, resuming)
 		return agentSessionID, nil
 	}
@@ -1948,7 +2010,12 @@ const cronAutonomyDirective = "You are running as an autonomous, scheduled (cron
 	"Complete your task and commit your work — the system opens and tags the pull request " +
 	"for you after you stop."
 
-const zeroOutputCronAutonomyDirective = "You are running as an autonomous, scheduled zero-output cron job. " +
+// zeroOutputAutonomyDirective replaces cronAutonomyDirective for every
+// unattended zero-output session — a zero-output cron job or a zero-output
+// trigger launch (BOS-1477). Such a session runs in the user's repository
+// checkout, so the cron directive's "commit your work" would be destructive
+// there.
+const zeroOutputAutonomyDirective = "You are running as an autonomous zero-output run. " +
 	"There is no worktree and no pull request for this run. Do not commit or modify repository files. " +
 	"No human is watching, so make decisions yourself and never wait for input."
 
@@ -2420,8 +2487,12 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName str
 	prompt := bossSessionContext(f)
 	classes := []string{InstructionClassSessionContext}
 	if f.IsUnattended {
-		if f.IsCron && f.IsQuickChat {
-			prompt += "\n\n" + zeroOutputCronAutonomyDirective
+		// IsQuickChat inside the unattended branch is the zero-output session
+		// marker (StartSessionOpts.ZeroOutput sets it) for cron and trigger
+		// launches alike; keying on IsCron here would hand a trigger's
+		// zero-output run the cron directive and its "commit your work".
+		if f.IsQuickChat {
+			prompt += "\n\n" + zeroOutputAutonomyDirective
 		} else {
 			prompt += "\n\n" + cronAutonomyDirective
 		}

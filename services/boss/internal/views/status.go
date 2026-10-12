@@ -63,41 +63,17 @@ func waitingBadgeSuperseded(sess *pb.Session) bool {
 	return sess.GetIsWaitingDemoted() || displaystatus.IsReadyLabel(sess.GetDisplayLabel())
 }
 
-// waitingHintLine composes the one line the TUI renders for a chat parked on an
-// external event: the daemon-supplied reason alone, e.g.
-//
-//	awaiting checks_passed_ready on acme/widget#123
-//
-// It carries no "waiting" label of its own (BOS-863) — every surface that
-// renders this line already shows the waiting STATUS badge and its spinner
-// nearby, so a label here only repeats what is on screen and pushes the
-// informative half of the line to the right.
-//
-// The reason itself is stamped daemon-side by
-// displaystatus.CallbackWaitingReason and arrives on the wire
-// (ChatStatusEntry.waiting_reason / SessionStatusEntry.waiting_reason) — the TUI
-// never re-derives it, so an armed callback with a shape this client has never
-// seen still renders. The web UI composes the IDENTICAL string in
-// services/web/src/sessionStatus.ts (waitingHintLine); BOS-668 requires the two
-// surfaces to read the same, so change them together.
-//
-// BOS-1269 makes that justification conditional. When the session row's own
-// badge has been DEMOTED — the waiting branch fell through to a
-// verified-positive PR label, so the badge reads "✓ passing" — the nearby
-// antecedent BOS-863 relied on is gone, and a bare "awaiting …" line dangles
-// under a green badge with nothing to attach it to. The demoted case therefore
-// gets its prefix back. Home and the chat picker both use the session
-// composite to decide the prefix: Ready or a demoted green PR label restores
-// "waiting:" even though individual chat rows retain their waiting badges.
-//
-// Returns "" for an empty reason, in both cases. What actually keeps an empty
-// reason off the screen is that every caller gates on the empty result: no empty
-// row, no layout shift, and (on Home) no unselectable sub-row for the cursor to
-// strand on. The prefix changes only the TEXT, never whether the line is empty,
-// so the sub-row accounting that keys on `!= ""` is unaffected.
+// waitingHintLine hides routine PR waits already represented by the status
+// badge. Other daemon-supplied reasons remain visible, with a waiting prefix
+// when Ready or a green PR badge supersedes the waiting badge.
 func waitingHintLine(reason string, demoted bool) string {
 	if reason == "" {
 		return ""
+	}
+	for _, trigger := range []string{"checks_passed", "checks_passed_ready", "merged"} {
+		if strings.HasPrefix(reason, "awaiting "+trigger+" on ") {
+			return ""
+		}
 	}
 	if demoted {
 		return statusWaiting + ": " + reason

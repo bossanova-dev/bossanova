@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 const triggerSecret = "whsec-ONE-TIME-secret-7731"
@@ -555,4 +557,125 @@ func TestSaveTriggerArgsHasUpdateFieldsCoversEveryField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTriggerToolsGate proves save_trigger accepts a gate on create and update
+// (an empty script_path removing it) and that the read tools return it.
+func TestTriggerToolsGate(t *testing.T) {
+	gate := &pb.TriggerGate{ScriptPath: "scripts/has-work.sh", TimeoutSeconds: 30}
+	var created *pb.CreateTriggerRequest
+	var updated *pb.UpdateTriggerRequest
+	b := &fakeTriggerBackend{
+		createTrigger: func(_ context.Context, req *pb.CreateTriggerRequest) (*pb.CreateTriggerResponse, error) {
+			created = req
+			return &pb.CreateTriggerResponse{Trigger: &pb.Trigger{Id: "trg-1", Gate: req.GetGate()}}, nil
+		},
+		updateTrigger: func(_ context.Context, req *pb.UpdateTriggerRequest) (*pb.Trigger, error) {
+			updated = req
+			if req.GetGate().GetScriptPath() == "" {
+				return &pb.Trigger{Id: req.GetId()}, nil // the server removes an empty gate
+			}
+			return &pb.Trigger{Id: req.GetId(), Gate: req.GetGate()}, nil
+		},
+		getTrigger: func(_ context.Context, id string) (*pb.Trigger, error) {
+			return &pb.Trigger{Id: id, Gate: gate}, nil
+		},
+		listTriggerInvocations: func(context.Context, *pb.ListTriggerInvocationsRequest) (*pb.ListTriggerInvocationsResponse, error) {
+			return &pb.ListTriggerInvocationsResponse{Invocations: []*pb.TriggerInvocation{{Id: "inv-1", DecisionReason: "gated"}}}, nil
+		},
+		listTriggers: func(context.Context, *pb.ListTriggersRequest) (*pb.ListTriggersResponse, error) {
+			return &pb.ListTriggersResponse{Triggers: []*pb.Trigger{{Id: "trg-1", Gate: gate}}}, nil
+		},
+	}
+	wantGate := map[string]any{"script_path": "scripts/has-work.sh", "timeout_seconds": float64(30)}
+	gateOf := func(trigger any) any { return trigger.(map[string]any)["gate"] }
+
+	out := callTriggerOK(t, b, "save_trigger", map[string]any{
+		"organization_id": "org-1", "trigger_type": "http", "name": "gated",
+		"gate": map[string]any{"script_path": "scripts/has-work.sh", "timeout_seconds": 30},
+	})
+	if !proto.Equal(created.GetGate(), gate) {
+		t.Errorf("create gate = %v, want %v", created.GetGate(), gate)
+	}
+	if got := gateOf(out["trigger"]); !reflect.DeepEqual(got, wantGate) {
+		t.Errorf("create result gate = %v, want %v", got, wantGate)
+	}
+
+	callTriggerOK(t, b, "save_trigger", map[string]any{"id": "trg-1", "name": "renamed"})
+	if updated.Gate != nil {
+		t.Errorf("an update without gate sent %v", updated.Gate)
+	}
+	out = callTriggerOK(t, b, "save_trigger", map[string]any{"id": "trg-1", "gate": map[string]any{"script_path": ""}})
+	if updated.Gate == nil || updated.GetGate().GetScriptPath() != "" {
+		t.Errorf("clearing update gate = %v, want a present empty gate", updated.Gate)
+	}
+	if got, ok := out["trigger"].(map[string]any)["gate"]; ok {
+		t.Errorf("cleared result still carries gate %v", got)
+	}
+	if text := callTriggerErr(t, b, "save_trigger", map[string]any{"id": "trg-1", "rotate_secret": true, "gate": map[string]any{"script_path": "g"}}); !strings.Contains(text, "rotate_secret") {
+		t.Errorf("rotate with gate = %s, want the rotate refusal", text)
+	}
+
+	got := callTriggerOK(t, b, "get_trigger", map[string]any{"id": "trg-1"})
+	if g := gateOf(got["trigger"]); !reflect.DeepEqual(g, wantGate) {
+		t.Errorf("get_trigger gate = %v, want %v", g, wantGate)
+	}
+	if recent, _ := got["recent_invocations"].([]any); len(recent) != 1 || recent[0].(map[string]any)["decision_reason"] != "gated" {
+		t.Errorf("recent_invocations = %v, want the gated reason verbatim", got["recent_invocations"])
+	}
+	list := callTriggerOK(t, b, "list_triggers", map[string]any{})
+	if triggers, _ := list["triggers"].([]any); len(triggers) != 1 || !reflect.DeepEqual(gateOf(triggers[0]), wantGate) {
+		t.Errorf("list_triggers = %v, want the gate", list)
+	}
+}
+
+// TestTriggerToolsLaunchOptions proves save_trigger forwards run_setup_command
+// and zero_output inside launch when given and leaves them absent when omitted,
+// so the server default applies on create and the stored value on update.
+func TestTriggerToolsLaunchOptions(t *testing.T) {
+	var created *pb.CreateTriggerRequest
+	var updated *pb.UpdateTriggerRequest
+	b := &fakeTriggerBackend{
+		createTrigger: func(_ context.Context, req *pb.CreateTriggerRequest) (*pb.CreateTriggerResponse, error) {
+			created = req
+			return &pb.CreateTriggerResponse{Trigger: &pb.Trigger{Id: "trg-1"}}, nil
+		},
+		updateTrigger: func(_ context.Context, req *pb.UpdateTriggerRequest) (*pb.Trigger, error) {
+			updated = req
+			return &pb.Trigger{Id: req.GetId()}, nil
+		},
+	}
+	create := map[string]any{"organization_id": "org-1", "trigger_type": "http", "name": "report"}
+
+	t.Run("given on create", func(t *testing.T) {
+		args := maps.Clone(create)
+		args["launch"] = map[string]any{"prompt_template": "p", "run_setup_command": false, "zero_output": true}
+		callTriggerOK(t, b, "save_trigger", args)
+		l := created.GetLaunch()
+		if l.ShouldRunSetupCommand == nil || l.GetShouldRunSetupCommand() || l.IsZeroOutput == nil || !l.GetIsZeroOutput() {
+			t.Errorf("launch = %v, want should_run_setup_command=false is_zero_output=true", l)
+		}
+	})
+
+	t.Run("omitted on create", func(t *testing.T) {
+		args := maps.Clone(create)
+		args["launch"] = map[string]any{"prompt_template": "p"}
+		callTriggerOK(t, b, "save_trigger", args)
+		if l := created.GetLaunch(); l.ShouldRunSetupCommand != nil || l.IsZeroOutput != nil {
+			t.Errorf("launch = %v, want both options absent", l)
+		}
+	})
+
+	t.Run("one given on update", func(t *testing.T) {
+		callTriggerOK(t, b, "save_trigger", map[string]any{
+			"id": "trg-1", "launch": map[string]any{"prompt_template": "p", "run_setup_command": true},
+		})
+		l := updated.GetLaunch()
+		if l.ShouldRunSetupCommand == nil || !l.GetShouldRunSetupCommand() {
+			t.Errorf("should_run_setup_command = %v, want true", l.ShouldRunSetupCommand)
+		}
+		if l.IsZeroOutput != nil {
+			t.Errorf("is_zero_output = %v, want absent so the stored value is kept", *l.IsZeroOutput)
+		}
+	})
 }

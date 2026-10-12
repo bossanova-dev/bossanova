@@ -508,21 +508,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		gate := func() gatecmd.Result {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
-			proofKey := ""
-			if s.gateProofEnv != nil {
-				if overlay := s.gateProofEnv.Resolve(); overlay != nil {
-					proofKey = strings.TrimSpace(overlay[proofenv.EnvAnthropicAPIKey])
-				}
-			}
-			unsetEnv := []string{
-				proofenv.EnvCloudflareAPIToken,
-				proofenv.EnvR2Bucket,
-				proofenv.EnvPublicBaseURL,
-				proofenv.EnvCloudflareAccountID,
-			}
-			if proofKey != "" {
-				unsetEnv = append(unsetEnv, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
-			}
+			proofKey, unsetEnv := proofenv.GateEnv(s.gateProofEnv)
 			return gatecmd.Run(ctx, gatecmd.Options{
 				Command:              job.GateCommand,
 				RepoPath:             repo.LocalPath,

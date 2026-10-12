@@ -117,9 +117,6 @@
       "labels": {
         "bug": "bug"
       },
-      "githubLabels": {
-        "proofInvalid": "proof-invalid"
-      },
       "followUpLabels": ["follow-up", "agent-plan"]
     }
   },
@@ -140,18 +137,109 @@
       "mk",
       "plans",
       "plugins",
-      "proof",
       "proto",
       "scripts",
       "services",
       "skills-toolbox"
     ],
-    "repoWideTokens": ["docs/skills/README.md", "proof/recipes/default.json"],
+    "repoWideTokens": ["docs/skills/README.md"],
     "areaAliases": {}
   },
   "retro": {
     "pathAliases": {
       ".claude/skills/": "services/boss/internal/skillinstall/skills/"
     }
+  },
+  "verifyDefaults": {
+    "humanReview": {
+      "ui": [
+        "services/boss/internal/views/**",
+        "services/web/index.html",
+        "services/web/src/*",
+        "services/web/src/analytics/**",
+        "services/web/src/billing/**",
+        "services/web/src/components/**",
+        "services/web/src/hooks/**",
+        "services/web/src/lib/**",
+        "services/web/src/machines/**",
+        "services/web/src/pages/**"
+      ],
+      "database": ["services/bossd/migrations/**", "services/bosso/migrations_postgres/**"],
+      "security": [
+        ".boss-project.json",
+        ".boss-skills.json",
+        ".claude/settings.json",
+        ".claude/skills/boss-verify-*/**",
+        ".codex/skills/boss-verify-*/**",
+        ".github/workflows/**",
+        "lib/bossalib/authlock/**",
+        "lib/bossalib/authtoken/**",
+        "lib/bossalib/gatecmd/**",
+        "lib/bossalib/keyringutil/**",
+        "lib/bossalib/socketauth/**",
+        "scripts/verify-security-surface.mjs",
+        "services/boss/internal/auth/**",
+        "services/bossd/internal/proofenv/**",
+        "services/bossd/internal/proofenvkeyring/**",
+        "services/bossd/internal/upstream/trigger_gate.go",
+        "services/bosso/internal/auth/**",
+        "services/bosso/internal/githubapp/**",
+        "services/bosso/internal/server/attach_token.go",
+        "services/bosso/internal/server/session_webhook_deliveries.go",
+        "services/bosso/internal/server/session_webhooks.go",
+        "services/bosso/internal/server/trigger_http.go",
+        "services/bosso/internal/server/triggers.go",
+        "services/bosso/internal/sessionwebhook/**",
+        "services/bosso/internal/trigger/**",
+        "services/bosso/internal/triggeringest/**",
+        "services/bosso/internal/triggerlaunch/**",
+        "services/bosso/internal/webhook/**",
+        "services/mcp-gateway/internal/auth/**"
+      ]
+    },
+    "alwaysHumanPaths": [
+      ".boss-project.json",
+      ".boss-skills.json",
+      ".claude/settings.json",
+      ".claude/skills/boss-verify-*/**",
+      ".codex/skills/boss-verify-*/**",
+      ".github/workflows/**",
+      "lib/bossalib/authlock/**",
+      "lib/bossalib/authtoken/**",
+      "lib/bossalib/gatecmd/**",
+      "lib/bossalib/keyringutil/**",
+      "lib/bossalib/socketauth/**",
+      "scripts/verify-security-surface.mjs",
+      "services/boss/internal/auth/**",
+      "services/boss/internal/views/**",
+      "services/bossd/internal/proofenv/**",
+      "services/bossd/internal/proofenvkeyring/**",
+      "services/bossd/internal/upstream/trigger_gate.go",
+      "services/bossd/migrations/**",
+      "services/bosso/internal/auth/**",
+      "services/bosso/internal/githubapp/**",
+      "services/bosso/internal/server/attach_token.go",
+      "services/bosso/internal/server/session_webhook_deliveries.go",
+      "services/bosso/internal/server/session_webhooks.go",
+      "services/bosso/internal/server/trigger_http.go",
+      "services/bosso/internal/server/triggers.go",
+      "services/bosso/internal/sessionwebhook/**",
+      "services/bosso/internal/trigger/**",
+      "services/bosso/internal/triggeringest/**",
+      "services/bosso/internal/triggerlaunch/**",
+      "services/bosso/internal/webhook/**",
+      "services/bosso/migrations_postgres/**",
+      "services/mcp-gateway/internal/auth/**",
+      "services/web/index.html",
+      "services/web/src/*",
+      "services/web/src/analytics/**",
+      "services/web/src/billing/**",
+      "services/web/src/components/**",
+      "services/web/src/hooks/**",
+      "services/web/src/lib/**",
+      "services/web/src/machines/**",
+      "services/web/src/pages/**"
+    ],
+    "evidence": true
   }
 }

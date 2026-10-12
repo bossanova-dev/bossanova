@@ -33,8 +33,8 @@ var proofSecretKeys = []string{proofItemAnthropicAPIKey, proofItemCloudflareAPIT
 func proofCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "proof",
-		Short: "Provision credentials for the proof pipeline",
-		Long: "Provision the secrets the agentic proof pipeline (scripts/proof.mjs) needs.\n" +
+		Short: "Provision credentials for the verification evidence publisher",
+		Long: "Provision the secrets the verification evidence publisher (.claude/skills/verify) needs.\n" +
 			"bossd injects these into managed agent sessions; provisioning is an ops action.",
 	}
 	cmd.AddCommand(proofSetSecretCmd())

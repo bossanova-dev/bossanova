@@ -34,6 +34,10 @@ type initAppliedSteps struct {
 	// the warnings and follow-ups cron setup reported.
 	Crons                      []initCronStageResult
 	CronWarnings, CronLeftToDo []string
+	// Project is every .boss-project.json change applied; ProjectRerun names
+	// the command that finishes a refused or failed project step.
+	Project      []string
+	ProjectRerun string
 }
 
 // applied lists every write the run made, in the order the steps run. Read-back
@@ -82,6 +86,9 @@ func (s *initAppliedSteps) applied() []string {
 			// Nothing was written for this stage.
 		}
 	}
+	for _, p := range s.Project {
+		items = append(items, "project config: "+p)
+	}
 	return items
 }
 
@@ -99,6 +106,9 @@ func (s *initAppliedSteps) stoppedReport() string {
 		b.WriteString("Nothing was applied.\n")
 	}
 	b.WriteString("Re-run `boss init` to finish: every step converges, so a re-run completes the job.\n")
+	if s.ProjectRerun != "" {
+		b.WriteString("Or run `" + s.ProjectRerun + "` to apply .boss-project.json on its own.\n")
+	}
 	return b.String()
 }
 

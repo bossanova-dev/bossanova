@@ -6,7 +6,6 @@ import test from 'node:test'
 
 import { matchLenses } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/bs-review-detect.mjs'
 import { loadSkillConfig } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/skill-config.mjs'
-import { classifySurfaces } from '../proof-surfaces.mjs'
 import {
   buildGraph,
   nextToMerge,
@@ -16,17 +15,12 @@ import {
   BASELINE_DIR,
   REPO_ROOT,
   computeDagScheduleSignature,
-  computeProofSurfaceSignature,
   computeReviewLensSignature,
   stableStringify,
   writeAll,
 } from './capture-baseline.mjs'
 
-const SNAPSHOT_NAMES = [
-  'review-lens.snapshot.json',
-  'proof-surface.snapshot.json',
-  'dag-schedule.snapshot.json',
-]
+const SNAPSHOT_NAMES = ['review-lens.snapshot.json', 'dag-schedule.snapshot.json']
 
 function readFixture(name) {
   return JSON.parse(readFileSync(join(BASELINE_DIR, name), 'utf8'))
@@ -42,6 +36,7 @@ test('determinism: writeAll produces byte-identical output on repeated runs, mat
   try {
     writeAll(dirA)
     writeAll(dirB)
+    assert.deepEqual(readdirSync(dirA).sort(), [...SNAPSHOT_NAMES].sort())
     for (const name of SNAPSHOT_NAMES) {
       const bytesA = readFileSync(join(dirA, name), 'utf8')
       const bytesB = readFileSync(join(dirB, name), 'utf8')
@@ -74,15 +69,6 @@ test('well-formedness: every committed snapshot is present, valid JSON, and non-
     assert.ok(Array.isArray(entry.files) && entry.files.length > 0)
   }
 
-  const proofSurface = JSON.parse(readSnapshot('proof-surface.snapshot.json'))
-  assert.equal(typeof proofSurface.tui, 'boolean')
-  assert.equal(typeof proofSurface.web, 'boolean')
-  assert.ok(Array.isArray(proofSurface.recipes) && proofSurface.recipes.length > 0)
-  for (const recipe of proofSurface.recipes) {
-    assert.equal(typeof recipe.id, 'string')
-    assert.equal(typeof recipe.surface, 'string')
-  }
-
   const dagSchedule = JSON.parse(readSnapshot('dag-schedule.snapshot.json'))
   assert.ok(Array.isArray(dagSchedule.readyIds) && dagSchedule.readyIds.length > 0)
   assert.ok(Array.isArray(dagSchedule.mergeOrder) && dagSchedule.mergeOrder.length > 0)
@@ -99,24 +85,6 @@ test('signature: boss-review matchLenses over the committed fixture matches the 
   assert.deepEqual(result, JSON.parse(readSnapshot('review-lens.snapshot.json')))
   // Today's real fixture is designed to exercise all three lenses.
   assert.deepEqual(result.matchedLensIds, ['go', 'tui', 'web'])
-})
-
-test('signature: proof-surfaces classifySurfaces over the committed fixture matches the committed snapshot', () => {
-  const changedFiles = readFixture('proof-surface.input.json')
-  const catalog = JSON.parse(
-    readFileSync(join(REPO_ROOT, 'proof', 'recipes', 'default.json'), 'utf8'),
-  )
-  const raw = classifySurfaces({ changedFiles, catalog })
-
-  const result = computeProofSurfaceSignature(changedFiles, catalog)
-  assert.equal(result.tui, raw.tui)
-  assert.equal(result.web, raw.web)
-  assert.equal(result.recipes.length, raw.recipes.length)
-  assert.deepEqual(result, JSON.parse(readSnapshot('proof-surface.snapshot.json')))
-  // Today's real fixture is designed to trip the TUI prefix, the web prefix,
-  // and both the marketing + docs pathRules.
-  assert.equal(result.tui, true)
-  assert.equal(result.web, true)
 })
 
 test('signature: dag-scheduler ready/merge order over the committed fixture matches the committed snapshot', () => {

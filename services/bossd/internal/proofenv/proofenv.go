@@ -1,5 +1,5 @@
 // Package proofenv defines the allowlisted environment overlay that lets the
-// agentic proof pipeline (scripts/proof.mjs) run inside managed sessions —
+// verification evidence publisher (.claude/skills/verify) run inside managed sessions —
 // including unattended cron worktrees, where nothing else injects these values.
 //
 // This package is deliberately keyring-free: it holds only the allowlisted env
@@ -17,8 +17,8 @@
 package proofenv
 
 // Allowlisted environment variable names injected into proof-capable agent
-// spawns. These names are what scripts/proof.mjs (and wrangler, for the
-// Cloudflare pair) read from the process environment.
+// spawns. These names are what the verify skill's evidence publisher (and
+// wrangler, for the Cloudflare pair) read from the process environment.
 const (
 	// EnvAnthropicAPIKey is the Anthropic key the proof agent loop uses.
 	EnvAnthropicAPIKey = "PROOF_ANTHROPIC_API_KEY"

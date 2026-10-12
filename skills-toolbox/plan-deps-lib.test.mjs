@@ -589,8 +589,8 @@ test('BOS-1176: an unresolved subject token raises its own warning beside the ar
 test('BOS-1164: repoWideTokens EXTENDS the shipped defaults instead of replacing them', () => {
   // The recorded run had to restate eleven defaults just to add one token; the
   // next caller that forgets one silently re-enables the edges it suppressed.
-  const result = areasOverlap(['node_modules', 'proof/recipes/default.json'], ['node_modules'], {
-    repoWideTokens: ['proof/recipes/default.json'],
+  const result = areasOverlap(['node_modules', 'config/catalog/default.json'], ['node_modules'], {
+    repoWideTokens: ['config/catalog/default.json'],
   })
   assert.equal(
     result.overlap,
@@ -602,7 +602,7 @@ test('BOS-1164: repoWideTokens EXTENDS the shipped defaults instead of replacing
 
 test('BOS-1164: the named replace-mode opt-out still replaces the shipped defaults', () => {
   const result = areasOverlap(['node_modules'], ['node_modules'], {
-    repoWideTokens: ['proof/recipes/default.json'],
+    repoWideTokens: ['config/catalog/default.json'],
     replaceRepoWideTokens: true,
   })
   assert.equal(

@@ -429,7 +429,7 @@ test('skill-names: published skills pass', () => {
 
 test("parsePublishedSkills reads the manifest test's own want slice", () => {
   const source = [
-    'func TestEmbeddedSkillManifestExcludesBossProof(t *testing.T) {',
+    'func TestEmbeddedSkillManifestIsExactCoreSet(t *testing.T) {',
     '\twant := []string{',
     '\t\t"boss",',
     '\t\t"boss-build",',
@@ -447,7 +447,7 @@ test("parsePublishedSkills reads the manifest test's own want slice", () => {
 test('parsePublishedSkills fails closed when the anchor moves', () => {
   assert.throws(
     () => parsePublishedSkills('func Other() {\n\twant := []string{"boss"}\n}'),
-    /TestEmbeddedSkillManifestExcludesBossProof not found/,
+    /TestEmbeddedSkillManifestIsExactCoreSet not found/,
   )
 })
 

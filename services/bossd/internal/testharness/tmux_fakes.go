@@ -24,8 +24,10 @@ import (
 //     exit 1 otherwise. liveSessions is updated by new-session/kill-session
 //     observations, so HasSession reflects the lifecycle of cron-spawned
 //     sessions.
-//   - All other subcommands (`new-session`, `kill-session`, `load-buffer`,
-//     `paste-buffer`, `send-keys`, `set-option`, `bind-key`, ...) → exit 0
+//   - `tmux load-buffer -`    → exit 0, recording its stdin so LoadedBuffers
+//     shows what a following paste-buffer delivered
+//   - All other subcommands (`new-session`, `kill-session`, `paste-buffer`,
+//     `send-keys`, `set-option`, `bind-key`, ...) → exit 0
 //
 // This is the cron-happy-path equivalent of the per-test fakeTmux defined in
 // e2e_record_chat_tmux_test.go. It lives in the package proper so cron e2e
@@ -54,6 +56,11 @@ type CronReadyTmuxFake struct {
 	// with, so show-environment can read them back the way real tmux does.
 	// This is what lets a test exercise the reaper's ownership stamp.
 	sessionEnv map[string]map[string]string
+
+	// loadedBuffers records the stdin of each `tmux load-buffer -` call, in
+	// call order. A pasted payload travels on stdin rather than argv, so
+	// Calls() alone cannot show what a paste-buffer delivered.
+	loadedBuffers []string
 
 	// ListSessionsStderr, when non-empty, makes every `tmux list-sessions`
 	// exit non-zero with this string on stderr. Set it to a "no server
@@ -139,6 +146,14 @@ func (f *CronReadyTmuxFake) HasCall(subcommand string) bool {
 		}
 	}
 	return false
+}
+
+// LoadedBuffers returns the payload of every `tmux load-buffer -` call, in
+// call order — the text a following paste-buffer delivered to the pane.
+func (f *CronReadyTmuxFake) LoadedBuffers() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.loadedBuffers...)
 }
 
 // Calls returns a deep copy of every recorded invocation. The first element
@@ -255,6 +270,20 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 		cmd.Stdin = strings.NewReader(line)
 		return cmd
 
+	case "load-buffer":
+		// Echo stdin back through `cat` into a recorder so the payload is
+		// observable. Production sets Stdin and Stderr on this command but
+		// never Stdout, so claiming Stdout here does not collide with it.
+		idx := len(f.loadedBuffers)
+		f.loadedBuffers = append(f.loadedBuffers, "")
+		f.mu.Unlock()
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdout = loadedBufferWriter{f: f, idx: idx}
+		// Bound Wait's output copy on cancellation; production's own
+		// tmuxCommandWaitDelay overwrites this when it runs the command.
+		cmd.WaitDelay = time.Second
+		return cmd
+
 	case "has-session":
 		sessName := scanFlagValue(args[1:], "-t")
 		alive := f.liveSessions[sessName]
@@ -285,6 +314,21 @@ func (f *CronReadyTmuxFake) cmd(ctx context.Context, name string, args ...string
 
 	f.mu.Unlock()
 	return exec.CommandContext(ctx, "true")
+}
+
+// loadedBufferWriter appends what a faked load-buffer echoes to its slot in
+// loadedBuffers. exec.Cmd.Run waits for the copy to finish, so the payload is
+// recorded before the caller issues the following paste-buffer.
+type loadedBufferWriter struct {
+	f   *CronReadyTmuxFake
+	idx int
+}
+
+func (w loadedBufferWriter) Write(p []byte) (int, error) {
+	w.f.mu.Lock()
+	defer w.f.mu.Unlock()
+	w.f.loadedBuffers[w.idx] += string(p)
+	return len(p), nil
 }
 
 // scanFlagValue returns the value following flag in args, or "" if flag is

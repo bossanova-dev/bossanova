@@ -224,6 +224,8 @@ func writeTriggerDetail(b *strings.Builder, t *pb.Trigger, baseURL string) {
 	fmt.Fprintf(b, "Model:       %s\n", orDash(l.GetModel()))
 	fmt.Fprintf(b, "Effort:      %s\n", orDash(l.GetEffort()))
 	fmt.Fprintf(b, "Base branch: %s\n", orDash(l.GetBaseBranch()))
+	fmt.Fprintf(b, "Run setup:   %s\n", boolLabel(l.GetShouldRunSetupCommand()))
+	fmt.Fprintf(b, "Zero output: %s\n", boolLabel(l.GetIsZeroOutput()))
 	if len(t.GetFilters()) == 0 {
 		b.WriteString("Filters:     - (matches everything)\n")
 	} else {
@@ -233,9 +235,21 @@ func writeTriggerDetail(b *strings.Builder, t *pb.Trigger, baseURL string) {
 		}
 	}
 	fmt.Fprintf(b, "Payload:     %s\n", orDash(strings.Join(t.GetPayloadFields(), ", ")))
+	fmt.Fprintf(b, "Gate:        %s\n", triggerGateSummary(t.GetGate()))
 	fmt.Fprintf(b, "Created:     %s\n", orDash(rfc3339OrEmpty(t.GetCreatedAt())))
 	fmt.Fprintf(b, "Updated:     %s\n", orDash(rfc3339OrEmpty(t.GetUpdatedAt())))
 	fmt.Fprintf(b, "\nPrompt:\n%s\n", l.GetPromptTemplate())
+}
+
+// triggerGateSummary is the `show` line for a gate: "-" when there is none.
+func triggerGateSummary(g *pb.TriggerGate) string {
+	if g.GetScriptPath() == "" {
+		return "-"
+	}
+	if g.GetTimeoutSeconds() == 0 {
+		return g.GetScriptPath() + " (default timeout)"
+	}
+	return fmt.Sprintf("%s (timeout %ds)", g.GetScriptPath(), g.GetTimeoutSeconds())
 }
 
 func writeTriggerInvocations(b *strings.Builder, invs []*pb.TriggerInvocation) {
@@ -472,11 +486,22 @@ func addTriggerConfigFlags(cmd *cobra.Command, update bool) {
 	f.StringSlice("methods", nil, "Accepted HTTP methods, e.g. POST,PUT (http only; empty = POST)")
 	f.String("idempotency-header", "", "Request header carrying the idempotency key (http only; empty = Idempotency-Key)")
 	f.Duration("dedup-window", 0, "How long a seen idempotency key suppresses a repeat, e.g. 5m (http only; 0 = 5m)")
+	f.String("gate-script", "", "Repo-relative script the daemon runs before each launch, e.g. ci/has-work.sh; exit 0 launches")
+	f.Int32("gate-timeout", 0, "Gate timeout in seconds, 0-300 (0 = the daemon default, 60)")
 	f.Bool(jsonFlagName, false, "Emit the trigger as a stable JSON schema")
-	if update {
-		f.Bool("clear-filters", false, "Remove every filter")
-		f.Bool("clear-payload-fields", false, "Remove every payload field")
+	// The cron job flags, read only when given. On update both default to false
+	// and say so, because an omitted flag keeps the stored value rather than
+	// applying a default (the same reasoning as `boss cron update`).
+	if !update {
+		f.Bool("run-setup", true, "Run the repo setup script before the agent")
+		f.Bool("zero-output", false, "Run with no worktree, branch, or PR (for triggers that change nothing in this repo)")
+		return
 	}
+	f.Bool("run-setup", false, "Run the repo setup script before the agent (unset preserves current)")
+	f.Bool("zero-output", false, "Run with no worktree, branch, or PR (unset preserves current)")
+	f.Bool("clear-filters", false, "Remove every filter")
+	f.Bool("clear-payload-fields", false, "Remove every payload field")
+	f.Bool("no-gate", false, "Remove the gate")
 }
 
 func triggerCmd() *cobra.Command {
@@ -533,9 +558,10 @@ func triggerCmd() *cobra.Command {
 	}
 
 	update := &cobra.Command{
-		Use:   "update <trigger-id>",
-		Short: "Change a trigger's settings",
-		Args:  cobra.ExactArgs(1),
+		Use:     "update <trigger-id>",
+		Aliases: []string{"edit"},
+		Short:   "Change a trigger's settings",
+		Args:    cobra.ExactArgs(1),
 		RunE: triggerRunE(func(cmd *cobra.Command, c triggerClient, args []string) error {
 			return runTriggerUpdate(cmd, c, args[0])
 		}),

@@ -1281,3 +1281,40 @@ func TestInteractiveDiscoveryRejectsUnreadableMetadata(t *testing.T) {
 		})
 	}
 }
+
+// bossd confirms a Codex first input by reading this transcript for a user
+// message timestamped at or after launch. That only holds if a user turn carries
+// its rollout timestamp and codex's synthetic <environment_context> user item —
+// written at startup, after launch — is never reported as a user turn.
+func TestReadTranscriptAt_UserTurnsCarryRolloutTimestampAndSkipSyntheticContext(t *testing.T) {
+	root := t.TempDir()
+	id := "delivery-receipt-uuid"
+	dst := shardedRolloutPath(root, id)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Join([]string{
+		`{"timestamp":"2026-10-11T10:00:00.100Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"/wt","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-10-11T10:00:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/wt</cwd>\n</environment_context>"}]}}`,
+		`{"timestamp":"2026-10-11T10:00:01.500Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do the work"}]}}`,
+		`{"timestamp":"2026-10-11T10:00:01.500Z","type":"event_msg","payload":{"type":"user_message","message":"do the work"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(dst, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := readTranscriptAt(root, "", id, 0, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("readTranscriptAt: %v", err)
+	}
+	if len(resp.GetMessages()) != 1 {
+		t.Fatalf("messages = %d, want exactly the one real user turn: %+v", len(resp.GetMessages()), resp.GetMessages())
+	}
+	msg := resp.GetMessages()[0]
+	if msg.GetRole() != "user" || msg.GetText() != "do the work" {
+		t.Fatalf("message = %+v, want the user turn", msg)
+	}
+	if msg.GetTimestamp() != "2026-10-11T10:00:01.500Z" {
+		t.Fatalf("timestamp = %q, want the rollout's own", msg.GetTimestamp())
+	}
+}

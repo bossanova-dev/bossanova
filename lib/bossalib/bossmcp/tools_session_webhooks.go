@@ -43,13 +43,13 @@ func hostedSessionWebhookBackend(backend Backend, opts Options) SessionWebhookBa
 // session webhook reads (list_session_webhook_event_types,
 // list_session_webhooks).
 type SessionWebhookOrgArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 }
 
 // ListSessionWebhookDeliveriesArgs is the typed argument struct for
 // list_session_webhook_deliveries.
 type ListSessionWebhookDeliveriesArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 	WebhookID      string `json:"webhook_id" jsonschema:"the session webhook id"`
 	Status         string `json:"status,omitempty" jsonschema:"only this status: pending, in_flight, succeeded, failed or cancelled"`
 	EventType      string `json:"event_type,omitempty" jsonschema:"only this event type"`
@@ -61,13 +61,13 @@ type ListSessionWebhookDeliveriesArgs struct {
 // GetSessionWebhookDeliveryArgs is the typed argument struct for
 // get_session_webhook_delivery.
 type GetSessionWebhookDeliveryArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 	DeliveryID     string `json:"delivery_id" jsonschema:"the delivery id"`
 }
 
 // TestSessionWebhookArgs is the typed argument struct for test_session_webhook.
 type TestSessionWebhookArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 	WebhookID      string `json:"webhook_id" jsonschema:"the session webhook id"`
 	EventType      string `json:"event_type" jsonschema:"catalog event type; the webhook need not subscribe to it"`
 	PayloadJSON    string `json:"payload_json,omitempty" jsonschema:"body as a JSON object; omit to send the catalog sample"`
@@ -76,7 +76,7 @@ type TestSessionWebhookArgs struct {
 // DeleteSessionWebhookArgs is the typed argument struct for
 // delete_session_webhook.
 type DeleteSessionWebhookArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 	ID             string `json:"id" jsonschema:"the session webhook id"`
 	Confirm        bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the webhook"`
 }
@@ -89,18 +89,19 @@ type DeleteSessionWebhookArgs struct {
 type SaveSessionWebhookArgs struct {
 	ID             string   `json:"id,omitempty" jsonschema:"session webhook id; omit to create"`
 	RotateSecret   bool     `json:"rotate_secret,omitempty" jsonschema:"rotate the signing secret"`
-	OrganizationID string   `json:"organization_id,omitempty" jsonschema:"omit for your active organization, the only one the API accepts"`
+	OrganizationID string   `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
 	URL            *string  `json:"url,omitempty" jsonschema:"https URL deliveries are POSTed to; required to create"`
 	Description    *string  `json:"description,omitempty"`
 	EventTypes     []string `json:"event_types,omitempty" jsonschema:"catalog event types; required to create, non-empty replaces the set"`
 	IsEnabled      *bool    `json:"is_enabled,omitempty" jsonschema:"create defaults to true"`
+	Format         *string  `json:"format,omitempty" jsonschema:"payload format: raw (default), slack or discord"`
 }
 
 // hasUpdateFields reports whether any field an update can send is set. It
 // makes rotate_secret ambiguous, and an id without any of them is an empty
 // update. id, rotate_secret and organization_id are routing, not changes.
 func (a SaveSessionWebhookArgs) hasUpdateFields() bool {
-	return a.URL != nil || a.Description != nil || len(a.EventTypes) > 0 || a.IsEnabled != nil
+	return a.URL != nil || a.Description != nil || len(a.EventTypes) > 0 || a.IsEnabled != nil || a.Format != nil
 }
 
 // createRequest builds CreateSessionWebhookRequest. is_enabled defaults to
@@ -122,6 +123,9 @@ func (a SaveSessionWebhookArgs) createRequest() (*pb.CreateSessionWebhookRequest
 	if a.Description != nil {
 		req.Description = *a.Description
 	}
+	if a.Format != nil {
+		req.Format = *a.Format
+	}
 	return req, nil
 }
 
@@ -136,6 +140,7 @@ func (a SaveSessionWebhookArgs) updateRequest() *pb.UpdateSessionWebhookRequest 
 		EventTypes:              a.EventTypes,
 		ShouldReplaceEventTypes: len(a.EventTypes) > 0,
 		IsEnabled:               a.IsEnabled,
+		Format:                  a.Format,
 	}
 }
 
@@ -256,7 +261,7 @@ func registerSessionWebhookWriteTools(server *mcp.Server, backend SessionWebhook
 			}
 			return savedSessionWebhookResult(resp.GetWebhook(), resp.GetSecret())
 		case !args.hasUpdateFields():
-			return errorResult(errors.New("nothing to change: pass url, description, event_types or is_enabled with id, or rotate_secret alone")), nil, nil
+			return errorResult(errors.New("nothing to change: pass url, description, event_types, is_enabled or format with id, or rotate_secret alone")), nil, nil
 		default:
 			webhook, err := backend.UpdateSessionWebhook(ctx, args.updateRequest())
 			if err != nil {

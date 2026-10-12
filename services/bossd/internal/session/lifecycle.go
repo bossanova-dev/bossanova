@@ -281,7 +281,7 @@ type Lifecycle struct {
 
 	// proofEnv resolves the allowlisted proof env overlay (proof credentials
 	// + non-secret proof constants) injected into every managed agent spawn
-	// so the agentic proof pipeline can run — including in unattended cron
+	// so the verification evidence publisher can run — including in unattended cron
 	// worktrees where nothing else provides these values. Defaulted in
 	// NewLifecycle to a real keyring-backed resolver; SetProofEnvResolver
 	// overrides it for tests. Resolved fresh per spawn; never logged.
@@ -392,6 +392,11 @@ type Lifecycle struct {
 	// until the foreground deadline first hands off.
 	providerSessionIDDiscoveryMu   sync.Mutex
 	providerSessionIDDiscoveryDone <-chan struct{}
+
+	// deliveryReceipts holds the prompt-submitted receipts the hook server
+	// records for chats whose first-input delivery is being confirmed. Its zero
+	// value is ready to use.
+	deliveryReceipts deliveryReceiptBook
 
 	// draftPRRetries rate-limits RetryFailedDraftPRsPeriodic (BOS-875), keyed
 	// by session id. Deliberately in memory and NOT a column: this is a rate
@@ -1787,23 +1792,27 @@ type StartSessionOpts struct {
 	// persisted so the completion gate and restart re-adoption recognise it.
 	IsTmuxUnattended bool
 
-	// ZeroOutput runs a cron job from the repository checkout without a
-	// worktree, branch, draft PR, setup script, or Stop-hook file.
+	// ZeroOutput runs an unattended session — a cron job or a trigger launch —
+	// from the repository checkout without a worktree, branch, draft PR, setup
+	// script, or Stop-hook file.
 	//
-	// ZeroOutput is the JOB-LEVEL declaration and models.Session.IsQuickChat is
-	// its SESSION-LEVEL realization — they are two layers of one concept, not two
-	// spellings of it, so do not converge them and do not add a third. ZeroOutput
-	// says "run StartSession, but skip its repo-mutating steps": it is a persisted
-	// cron_jobs column (CronJob.IsZeroOutput) surfaced through the TUI cron form,
-	// MCP create_cron_job, the web UI and the cron proto messages, and it is read
-	// INSIDE StartSession (below) to short-circuit worktree, setup script, branch
-	// and PR. IsQuickChat says "skip StartSession entirely; there is no worktree"
-	// — the daemon routes such a create to StartQuickChatSession instead.
+	// ZeroOutput is the LAUNCH-LEVEL declaration and models.Session.IsQuickChat
+	// is its SESSION-LEVEL realization — they are two layers of one concept, not
+	// two spellings of it, so do not converge them and do not add a third.
+	// ZeroOutput says "run StartSession, but skip its repo-mutating steps": it is
+	// a persisted cron_jobs column (CronJob.IsZeroOutput) surfaced through the
+	// TUI cron form, MCP create_cron_job, the web UI and the cron proto messages,
+	// and the trigger launch's is_zero_output, which reaches here through the
+	// daemon CreateSessionRequest (BOS-1477). It is read INSIDE StartSession
+	// (below) to short-circuit worktree, setup script, branch and PR.
+	// IsQuickChat says "skip StartSession entirely; there is no worktree" — the
+	// daemon routes such a create to StartQuickChatSession instead.
 	//
 	// The two already converge in the one direction that matters: setting
-	// ZeroOutput sets the session's IsQuickChat (see below), so finalize reads
-	// exactly one session-level truth (isPlanningOnlyNoChangeSession) and a
-	// zero-output cron run finalizes benignly rather than as a failed run.
+	// ZeroOutput sets the session's IsQuickChat (see below), so finalize and the
+	// autonomy directive read exactly one session-level truth — an unattended
+	// quick-chat session — and a zero-output run, cron or trigger, finalizes
+	// benignly without ever classifying the user's checkout.
 	ZeroOutput bool
 }
 
@@ -2203,7 +2212,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 
 	if opts.ZeroOutput {
 		l.logger.Info().Str("session", sessionID).Str("repo", repo.LocalPath).
-			Msg("starting zero-output cron session without worktree")
+			Msg("starting zero-output session without worktree")
 	} else {
 		l.logger.Info().Str("session", sessionID).Str("repo", repo.LocalPath).Msg("creating worktree")
 		writeSetupProgress(setupOutput, "creating worktree")
@@ -2676,7 +2685,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// finalize path calls EnsurePR once the run actually produces commits. That
 	// is unchanged: a DeferPR session starts no background step and creates no
 	// PR here.
-	if session.PRNumber == nil && !opts.DeferPR {
+	//
+	// A ZeroOutput session has no branch to push and must never open a PR from
+	// the repo checkout, whatever DeferPR says: cron always set DeferPR alongside
+	// it, but the daemon CreateSession RPC honours is_zero_output for any caller
+	// (BOS-1477), and defer_pr is a separate field there.
+	if session.PRNumber == nil && !opts.DeferPR && !opts.ZeroOutput {
 		l.startBackgroundDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName)
 	}
 

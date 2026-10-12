@@ -17,34 +17,56 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/projectconfig"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 )
 
-// cronStage is one row of the factory stage table. It mirrors the three
-// `boss cron add` lines in docs/skills/factory.md exactly; a test pins the two
-// together so neither can drift.
+// cronStage is one row of the factory stage table (projectconfig's, which
+// docs/skills/factory.md documents as `boss cron add` lines), plus the CLI's
+// own ticket-selection flag.
 type cronStage struct {
-	stage    string // plan, build, verify
+	stage    string // plan, build, verify, retro
 	name     string // job name
 	schedule string // 5-field cron expression, daemon-local timezone
 	skill    string // the stage skill, and its prompt's leading token
+	// selectsTickets is true for a stage whose workers pick tickets by the
+	// config's selection, so a base-branch selection skew changes what they do.
+	selectsTickets bool
 }
 
-// factoryCronStages is the stage table, in pipeline order.
-var factoryCronStages = []cronStage{
-	{stage: "plan", name: "factory-plan", schedule: "*/15 * * * *", skill: "boss-plan"},
-	{stage: "build", name: "factory-build", schedule: "*/15 * * * *", skill: "boss-build"},
-	{stage: "verify", name: "factory-verify", schedule: "*/10 * * * *", skill: "boss-verify"},
+// ticketSelectingStages are the stages whose workers pick tickets.
+var ticketSelectingStages = map[string]bool{"plan": true, "build": true, "verify": true}
+
+// factoryCronStages is the stage table, in pipeline order, built from the
+// library table so the CLI and every other surface share one copy.
+var factoryCronStages = cliCronStages(projectconfig.DefaultFactoryStages())
+
+func cliCronStages(table projectconfig.FactoryStageTable) []cronStage {
+	out := make([]cronStage, len(table))
+	for i, st := range table {
+		out[i] = cronStage{stage: st.Stage, name: st.JobName, schedule: st.DefaultSchedule, skill: st.Skill, selectsTickets: ticketSelectingStages[st.Stage]}
+	}
+	return out
+}
+
+// factoryStageNames lists the table's stages for a usage message:
+// "plan, build, verify or retro".
+func factoryStageNames() string {
+	names := make([]string, len(factoryCronStages))
+	for i, st := range factoryCronStages {
+		names[i] = st.stage
+	}
+	return joinOr(names)
+}
+
+// lib is the row as the library table spells it.
+func (s cronStage) lib() projectconfig.FactoryStage {
+	return projectconfig.FactoryStage{Stage: s.stage, JobName: s.name, Skill: s.skill, DefaultSchedule: s.schedule}
 }
 
 // prompt is the job prompt for agent: Claude invokes a skill as `/name`, Codex
 // as `$name`.
-func (s cronStage) prompt(agent string) string {
-	if agent == cronAgentCodex {
-		return "$" + s.skill
-	}
-	return "/" + s.skill
-}
+func (s cronStage) prompt(agent string) string { return s.lib().Prompt(agent) }
 
 // gatePath is the gate script relative to an agent's skill root.
 func (s cronStage) gatePath() string {
@@ -58,10 +80,7 @@ func (s cronStage) modulePath() string {
 
 // matchesPrompt reports whether prompt's leading token invokes this stage's
 // skill, in either agent's spelling.
-func (s cronStage) matchesPrompt(prompt string) bool {
-	fields := strings.Fields(prompt)
-	return len(fields) > 0 && (fields[0] == "/"+s.skill || fields[0] == "$"+s.skill)
-}
+func (s cronStage) matchesPrompt(prompt string) bool { return s.lib().MatchesPrompt(prompt) }
 
 const (
 	cronAgentClaude = "claude"
@@ -108,7 +127,7 @@ func (r *initCronRequest) normalize() error {
 	for _, raw := range r.stages {
 		stage := strings.ToLower(strings.TrimSpace(raw))
 		if _, ok := cronStageByName(stage); !ok {
-			return fmt.Errorf("--cron: unknown stage %q (want plan, build or verify)", raw)
+			return fmt.Errorf("--cron: unknown stage %q (want %s)", raw, factoryStageNames())
 		}
 		want[stage] = true
 	}
@@ -123,6 +142,15 @@ func (r *initCronRequest) normalize() error {
 		return fmt.Errorf("--agent: unsupported agent %q (want claude or codex)", r.agent)
 	}
 	return nil
+}
+
+// mustCronStage is a stage the code names; the table always has it.
+func mustCronStage(stage string) cronStage {
+	st, ok := cronStageByName(stage)
+	if !ok {
+		panic("factory stage table has no " + stage + " row")
+	}
+	return st
 }
 
 func cronStageByName(stage string) (cronStage, bool) {
@@ -466,11 +494,94 @@ func expandHome(s, home string) string {
 }
 
 // effectiveAgent treats a job's empty agent as claude, as the daemon does.
+// It delegates to projectconfig so export and the factory classifier share one
+// copy of the rule.
 func effectiveAgent(name string) string {
-	if name == "" {
-		return cronAgentClaude
+	return projectconfig.EffectiveAgent(name)
+}
+
+// factoryCronResolver resolves factory stages for one run: the agents the
+// daemon can run, node as the daemon resolves it, and the config the gate
+// preflight validates are read once, and each stage then resolves to its
+// prompt, gate command and preflight failures. setupInitCron and the project
+// config engine (as a projectconfig.FactoryResolver) share it, so both write
+// the same job for a stage.
+type factoryCronResolver struct {
+	eligibility []cronAgentEligibility
+	home        string
+	node        cronNode
+	config      []byte
+	configErr   error
+	configPath  string
+	env         initCronEnv
+	roots       map[string]factorySkillRoot
+}
+
+type factorySkillRoot struct {
+	path string
+	err  error
+}
+
+// newFactoryCronResolver reads what every stage shares. It fails only when the
+// daemon's agents cannot be listed.
+func newFactoryCronResolver(ctx context.Context, c client.BossClient, configPath string, env initCronEnv) (*factoryCronResolver, error) {
+	servicePath := env.servicePath()
+	eligibility, err := initCronAgentEligibility(ctx, c, servicePath)
+	if err != nil {
+		return nil, err
 	}
-	return name
+	r := &factoryCronResolver{eligibility: eligibility, configPath: configPath, env: env, roots: map[string]factorySkillRoot{}}
+	r.home, _ = env.homeDir()
+	r.node = resolveCronNode(servicePath, env.callerLookPath)
+	r.config, r.configErr = os.ReadFile(configPath)
+	return r, nil
+}
+
+// agent picks the requested agent when it qualifies, else the first eligible.
+func (r *factoryCronResolver) agent(requested string) (string, error) {
+	return chooseInitCronAgent(r.eligibility, requested)
+}
+
+// root is the agent's installed skill directory.
+func (r *factoryCronResolver) root(agent string) (string, error) {
+	if got, ok := r.roots[agent]; ok {
+		return got.path, got.err
+	}
+	path, err := r.env.skillRoot(agent)
+	r.roots[agent] = factorySkillRoot{path: path, err: err}
+	return path, err
+}
+
+// stage resolves one stage for an already-chosen agent.
+func (r *factoryCronResolver) stage(st cronStage, agent string) (prompt, gate string, failures []string) {
+	root, rootErr := r.root(agent)
+	failures = cronPreflight(st, root, rootErr, r.home, r.node, r.config, r.configErr, r.configPath, r.env)
+	gate = r.node.command + ` "` + renderSkillRoot(root, r.home) + "/" + st.gatePath() + `"`
+	return st.prompt(agent), gate, failures
+}
+
+// Resolve implements projectconfig.FactoryResolver: the stage's job for agent
+// ("" picks the default eligible agent). An unknown stage is
+// projectconfig.ErrUnknownFactoryStage; an agent that cannot run factory jobs
+// is an error.
+func (r *factoryCronResolver) Resolve(stage, agent string) (projectconfig.FactoryCron, error) {
+	st, ok := cronStageByName(stage)
+	if !ok {
+		return projectconfig.FactoryCron{}, projectconfig.ErrUnknownFactoryStage
+	}
+	chosen, err := r.agent(strings.ToLower(strings.TrimSpace(agent)))
+	if err != nil {
+		return projectconfig.FactoryCron{}, err
+	}
+	prompt, gate, failures := r.stage(st, chosen)
+	return projectconfig.FactoryCron{
+		Skill:             st.skill,
+		Agent:             chosen,
+		Prompt:            prompt,
+		GateCommand:       gate,
+		DefaultSchedule:   st.schedule,
+		PreflightFailures: failures,
+	}, nil
 }
 
 // setupInitCron creates or converges the factory jobs for req.stages and
@@ -478,24 +589,21 @@ func effectiveAgent(name string) string {
 // whose preflight failed, and never changes an existing job's schedule,
 // timezone or enabled state.
 func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repoDir, configPath string, req initCronRequest, env initCronEnv) (initCronResult, error) {
-	servicePath := env.servicePath()
-	eligibility, err := initCronAgentEligibility(ctx, c, servicePath)
+	resolver, err := newFactoryCronResolver(ctx, c, configPath, env)
 	if err != nil {
 		return initCronResult{}, err
 	}
-	agent, err := chooseInitCronAgent(eligibility, req.agent)
+	agent, err := resolver.agent(req.agent)
 	if err != nil {
 		return initCronResult{}, err
 	}
 	res := initCronResult{Agent: agent}
 
-	home, _ := env.homeDir()
-	root, rootErr := env.skillRoot(agent)
-	node := resolveCronNode(servicePath, env.callerLookPath)
+	home, node := resolver.home, resolver.node
+	root, rootErr := resolver.root(agent)
 	if node.note != "" {
 		res.Warnings = append(res.Warnings, node.note)
 	}
-	config, configErr := os.ReadFile(configPath)
 
 	existing, err := c.ListCronJobs(ctx, repo.GetId())
 	if err != nil {
@@ -504,12 +612,11 @@ func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repo
 
 	for _, stageName := range req.stages {
 		st, _ := cronStageByName(stageName)
-		failures := cronPreflight(st, root, rootErr, home, node, config, configErr, configPath, env)
-		gate := node.command + ` "` + renderSkillRoot(root, home) + "/" + st.gatePath() + `"`
+		prompt, gate, failures := resolver.stage(st, agent)
 		want := &pb.CreateCronJobRequest{
 			RepoId:      repo.GetId(),
 			Name:        st.name,
-			Prompt:      st.prompt(agent),
+			Prompt:      prompt,
 			Schedule:    st.schedule,
 			IsEnabled:   len(failures) == 0,
 			AgentName:   agent,
@@ -522,10 +629,10 @@ func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repo
 		res.Stages = append(res.Stages, result)
 	}
 
-	if configErr == nil && rootErr == nil && node.path != "" {
-		appendBaseBranchWarnings(ctx, &res, repo, repoDir, configPath, config, root, node, req.stages, env)
+	if resolver.configErr == nil && rootErr == nil && node.path != "" {
+		appendBaseBranchWarnings(ctx, &res, repo, repoDir, configPath, resolver.config, root, node, req.stages, env)
 	}
-	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(existing, factoryCronStages[0]) {
+	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(existing, mustCronStage("plan")) {
 		res.LeftToDo = append(res.LeftToDo, "factory-build is enabled without factory-plan: nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
 	}
 	return res, nil
@@ -720,6 +827,9 @@ func appendBaseBranchWarnings(ctx context.Context, res *initCronResult, repo *pb
 			if v := working.MCPServer.Value; v != nil {
 				mcpServer = *v
 			}
+		}
+		if !st.selectsTickets {
+			continue // it still files tickets through the tracker MCP server above
 		}
 		baseEff, berr := env.effective(node.path, module, base)
 		if berr != nil {

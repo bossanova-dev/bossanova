@@ -145,6 +145,11 @@ type Client struct {
 	sessionStartReadyDeadline time.Duration
 	sendReadyDeadline         time.Duration
 
+	// pasteSettleWait overrides the package pasteSettleWait bound on the
+	// read-only wait between a Claude paste and its Enter. Zero means
+	// "unconfigured", so the package const applies.
+	pasteSettleWait time.Duration
+
 	// sessionStartReadyAttempts is the injectable half of the session-start
 	// readiness COST, the other half being the budget above. Zero means
 	// "unconfigured", so the package const applies.
@@ -240,6 +245,21 @@ func WithSendReadyDeadline(d time.Duration) Option {
 	}
 }
 
+// WithPasteSettleWait bounds the read-only wait between a Claude paste and its
+// Enter (see pasteSettleWait). The wait never decides an outcome — Enter and
+// the verifier run whatever it sees — so a caller whose fake pane never
+// repaints can shorten it without changing what is delivered.
+//
+// A non-positive duration is ignored, for the same reason as above.
+func WithPasteSettleWait(d time.Duration) Option {
+	return func(c *Client) {
+		if d <= 0 {
+			return
+		}
+		c.pasteSettleWait = d
+	}
+}
+
 // NewClient creates a new tmux Client.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
@@ -274,6 +294,25 @@ type NewSessionOpts struct {
 	// panes so a fast-exiting agent's output can be captured at death before the
 	// pane is reaped (BOS-477).
 	RemainOnExit bool
+}
+
+// ErrCommandTooLong reports a new-session command too large for tmux to
+// accept. tmux packs the whole command into one client-to-server message and
+// rejects it with "command too long" past roughly 16 KB (measured on tmux 3.7c
+// and 3.8), so NewSession refuses before invoking tmux and names the size.
+var ErrCommandTooLong = errors.New("tmux command too long")
+
+// maxNewSessionCommandBytes is NewSession's refusal threshold, measured as the
+// sum of len(arg)+1 over every tmux argument (env entries included). It sits
+// about 1 KB below the measured limit to absorb message framing.
+const maxNewSessionCommandBytes = 15 * 1024
+
+func commandBytes(args []string) int {
+	n := 0
+	for _, a := range args {
+		n += len(a) + 1
+	}
+	return n
 }
 
 // NewSession creates a new detached tmux session.
@@ -336,6 +375,10 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 		args = append(args, "-e", kv)
 	}
 	args = append(args, opts.Command...)
+	if size := commandBytes(args); size > maxNewSessionCommandBytes {
+		return fmt.Errorf("create tmux session %q: %w: %d bytes exceeds the %d-byte limit (argv plus %d env entries)",
+			opts.Name, ErrCommandTooLong, size, maxNewSessionCommandBytes, len(env))
+	}
 
 	cmd := c.cmdFunc(ctx, "tmux", args...)
 	var stderr bytes.Buffer
@@ -941,7 +984,35 @@ type sendPlanOpts struct {
 	// the only layer that can supply the right grammar (BOS-600). Nil disables
 	// the check; see ModalDetector in tmux_modal.go.
 	modalDetector ModalDetector
+
+	// pasteFreeText routes every free-text payload — single-line too — through
+	// load-buffer/paste-buffer instead of literal keystrokes. Set for Claude by
+	// deliveryOpts (BOS-1506): Claude reads any fast keystroke burst as a paste,
+	// so typing a long line collapses it into "[Pasted text #N]<tail>" or drops
+	// its head outright (testdata/panes/capture_paste.sh), and how fast is "fast"
+	// depends on host load, so no length threshold is reliable. A single-line
+	// slash command still types literally, which is what executes it.
+	pasteFreeText bool
+
+	// pasteSettleWait bounds the read-only wait between a pasteFreeText paste
+	// and its Enter (awaitComposerSettled). Zero skips the wait.
+	pasteSettleWait time.Duration
+
+	// submitted is the caller's independent proof that the agent took the
+	// payload — for Claude, the UserPromptSubmit receipt. The verifier consults
+	// it before every pane read and before the clear-and-redeliver retry, so a
+	// receipt is authoritative and a pane the verifier cannot read is never
+	// retried into a second copy. Nil leaves the pane verifier as the only
+	// signal.
+	submitted func() bool
 }
+
+// pasteSettleWait is the production bound on awaitComposerSettled. A paste
+// lands within a repaint or two; the wait only has to outlast a loaded host's
+// lag, and it runs at most twice per send (first delivery and the one
+// re-delivery), so it stays well inside the established-send relay
+// reservation — see TestEstablishedSendTailFitsRelayReservation.
+const pasteSettleWait = time.Second
 
 // startDeliveryOpts builds the production timing for a SESSION-START (or
 // resume) delivery: this client's configured session-start readiness budget, or
@@ -1017,14 +1088,28 @@ func (c *Client) deliveryOpts(configured, fallback time.Duration, attempts int, 
 		readyMarker:   readyMarker,
 		readyAttempts: attempts,
 		modalDetector: detector,
+		pasteFreeText: isClaudeComposer(readyMarker),
 	}
 	if submit {
 		opts.submitVerifyWait = 2 * time.Second
 		opts.submitVerifyTick = 100 * time.Millisecond
+		if opts.pasteFreeText {
+			opts.pasteSettleWait = pasteSettleWait
+			if c.pasteSettleWait > 0 {
+				opts.pasteSettleWait = c.pasteSettleWait
+			}
+		}
 	} else {
 		opts.prefillOnly = true
 	}
 	return opts
+}
+
+// isClaudeComposer reports whether readyMarker names Claude's composer. The
+// marker is the only per-agent fact this package receives; an empty marker is
+// the legacy Claude default, exactly as sendPlan resolves it.
+func isClaudeComposer(readyMarker string) bool {
+	return readyMarker == "" || readyMarker == sendPlanReadyMarker
 }
 
 // resolveDeadlineFloor is the last line of defence for a hand-built
@@ -1188,7 +1273,10 @@ func WillSubmit(submit bool, text string) bool {
 //     loud error, not a silent no-op. This holds for BOTH single- and
 //     multi-line payloads: sendPlan picks the reliable literal-keystroke
 //     delivery for a single line and bracketed paste for a multi-line plan, and
-//     verifies each shape against the matching signal one layer down.
+//     verifies each shape against the matching signal one layer down. Claude
+//     is the exception: every free-text payload is pasted and Enter waits for
+//     the composer to settle, and only a single-line slash command is typed
+//     (BOS-1506).
 //   - !submit (prefill, the default): paste/type into the composer, NO Enter,
 //     for the composer owner (a human, or a later explicit-submit step) to
 //     submit.
@@ -1231,12 +1319,26 @@ func (c *Client) SendMessageWithModal(ctx context.Context, sessionName, text str
 	return c.sendMessage(ctx, sessionName, text, submit, readyMarker, detector)
 }
 
-// SendMessageWithModalBeforeSubmit is SendMessageWithModal with a hook that runs
-// after the payload is staged but immediately before the first Enter. The hook
-// must not mutate tmux state; it is for external observation baselines.
-func (c *Client) SendMessageWithModalBeforeSubmit(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector, beforeSubmit func()) error {
+// SendHooks are the caller-side observers of one established send. Neither may
+// mutate tmux state.
+type SendHooks struct {
+	// BeforeSubmit runs after the payload is staged and immediately before the
+	// first Enter, for external observation baselines.
+	BeforeSubmit func()
+	// Submitted reports whether the caller holds independent proof that the
+	// agent took the payload (Claude's UserPromptSubmit receipt). When it
+	// answers true the verifier reports the send submitted without reading the
+	// pane further and never runs its clear-and-redeliver retry. Nil leaves the
+	// pane verifier as the only signal.
+	Submitted func() bool
+}
+
+// SendMessageWithHooks is SendMessageWithModal with the caller's SendHooks
+// bound to this one delivery.
+func (c *Client) SendMessageWithHooks(ctx context.Context, sessionName, text string, submit bool, readyMarker string, detector ModalDetector, hooks SendHooks) error {
 	opts := c.sendDeliveryOpts(readyMarker, WillSubmit(submit, text), detector)
-	opts.beforeSubmit = beforeSubmit
+	opts.beforeSubmit = hooks.BeforeSubmit
+	opts.submitted = hooks.Submitted
 	return c.sendPlan(ctx, sessionName, text, opts)
 }
 
@@ -1276,12 +1378,39 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// The dispatch is a closure so the verifier's retry can re-run the exact same
 	// delivery after clearing the composer (see verifyWithEnterRetry): a retry
 	// must reproduce this shape choice, not approximate it.
+	//
+	// Claude (opts.pasteFreeText) is the exception to the literal single-line
+	// path: its TUI reads a fast keystroke burst as a paste, so a typed long line
+	// is collapsed or loses its head (BOS-1506). Every Claude free-text payload
+	// is pasted instead — the trimmed text for a single line, so the paste adds
+	// no stray newline — and Enter waits for the composer to settle. A
+	// single-line slash command keeps the literal path, which is what makes
+	// Claude execute it.
 	trimmedPlan := strings.TrimSpace(plan)
+	singleLine := trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n")
+	pasted := plan
+	if singleLine {
+		pasted = trimmedPlan
+	}
+	settle := opts.pasteFreeText && !opts.prefillOnly && opts.pasteSettleWait > 0
 	deliver := func(ctx context.Context) error {
-		if trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
+		if singleLine && (!opts.pasteFreeText || strings.HasPrefix(trimmedPlan, "/")) {
 			return c.typeLiteralLineNoEnter(ctx, sessionName, trimmedPlan)
 		}
-		return c.pasteBufferNoEnter(ctx, sessionName, plan)
+		if !opts.pasteFreeText {
+			return c.pasteBufferNoEnter(ctx, sessionName, plan)
+		}
+		var before string
+		if settle {
+			before = c.composerRowsSnapshot(ctx, sessionName)
+		}
+		if err := c.pasteBufferNoEnter(ctx, sessionName, pasted); err != nil {
+			return err
+		}
+		if settle {
+			c.awaitComposerSettled(ctx, sessionName, before, opts.pasteSettleWait, opts.submitVerifyTick)
+		}
+		return nil
 	}
 	if err := deliver(ctx); err != nil {
 		return err

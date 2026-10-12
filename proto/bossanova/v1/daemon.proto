@@ -528,6 +528,16 @@ message CreateSessionRequest {
   // detach/is_tmux_unattended, which install the finalize hook; useful for
   // read-only/planning sessions. Mirrors StartSessionOpts.DeferPR (used by cron).
   bool defer_pr = 19;
+  // Whether to run the repo's setup command before the agent starts. Absent
+  // means run it; an explicit false skips it. Set by trigger launches and
+  // honoured for every caller. Mirrors StartSessionOpts.SkipSetupScript.
+  optional bool should_run_setup_command = 21;
+  // If true, launch a zero-output session from the repo checkout: no worktree,
+  // branch, setup script, or PR, and no worktree base dir or base branch is
+  // required. Set by trigger launches and honoured for every caller. Cannot be
+  // combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
+  // Mirrors StartSessionOpts.ZeroOutput.
+  bool is_zero_output = 22;
 }
 
 message CreateSessionResponse {
@@ -1295,6 +1305,9 @@ message CreateCronJobRequest {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = SKIP.
   optional CronJobConcurrencyPolicy concurrency_policy = 12;
+  // Config-ownership marker: empty (unmarked) or "boss-project:<slug>", where
+  // slug matches ^[a-z0-9][a-z0-9-]{0,62}$. Anything else is InvalidArgument.
+  string managed_by = 13;
 }
 
 message CreateCronJobResponse {
@@ -1336,6 +1349,9 @@ message UpdateCronJobRequest {
   // What a fire does while the job's previous run is still in progress.
   // Omitted or UNSPECIFIED = leave unchanged.
   optional CronJobConcurrencyPolicy concurrency_policy = 12;
+  // Config-ownership marker. Omitted = leave unchanged; "" = clear;
+  // otherwise "boss-project:<slug>" as on CreateCronJobRequest.
+  optional string managed_by = 13;
 }
 
 message UpdateCronJobResponse {

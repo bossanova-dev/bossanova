@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,12 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 )
+
+// testPasteSettleWait bounds the read-only wait between a Claude paste and its
+// Enter in every tmux client these tests build. The fake panes never repaint
+// with the paste, so the production one-second bound runs to its end on every
+// Claude send; the wait decides nothing, so shortening it changes no outcome.
+const testPasteSettleWait = 20 * time.Millisecond
 
 // The test-only backgroundDraftPRIsTracked helper that used to live here was
 // removed in BOS-875: hasBackgroundDraftPR (background_draft_pr.go) performs the
@@ -59,6 +66,20 @@ type fakeAgentForLifecycle struct {
 	// refusal — or a degraded gate — supplies one.
 	HasQuestionPromptFunc func(*bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	IgnoredDirtyFiles     []string
+	// InitialInputFileMode, when non-zero and the request carries an
+	// initial_input_path, makes the fake behave like a plugin that delivers the
+	// first input from a file: it writes the input with this mode and returns
+	// argv that references the path instead of inlining the input.
+	// ReferenceInitialInputFileOnly references the path without writing it.
+	InitialInputFileMode          os.FileMode
+	ReferenceInitialInputFileOnly bool
+	// CanConfirmDelivery is echoed as the response's can_confirm_delivery.
+	CanConfirmDelivery bool
+	// ReadTranscriptFunc, when set, answers ReadTranscript; readTranscriptCalls
+	// counts every call either way.
+	ReadTranscriptFunc  func(*bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
+	readTranscriptMu    sync.Mutex
+	readTranscriptCalls int
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -110,7 +131,21 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 	// directly on a PTY; capture-to-disk is handled by `tmux pipe-pane`
 	// after the spawn, not by piping stdout through tee.
 	argv := []string{"claude", "--session-id", req.SessionId}
-	if f.ConsumesInitialInput {
+	if path := req.GetInitialInputPath(); f.ConsumesInitialInput && path != "" && (f.InitialInputFileMode != 0 || f.ReferenceInitialInputFileOnly) {
+		if f.InitialInputFileMode != 0 {
+			input := req.GetInitialPrompt()
+			if req.GetInitialCommand() != "" {
+				input = "/" + req.GetInitialCommand()
+			}
+			if err := os.WriteFile(path, []byte(input), f.InitialInputFileMode); err != nil {
+				return nil, err
+			}
+			if err := os.Chmod(path, f.InitialInputFileMode); err != nil {
+				return nil, err
+			}
+		}
+		argv = append(argv, "--read-input-file", path)
+	} else if f.ConsumesInitialInput {
 		if req.GetInitialCommand() != "" {
 			prefix := f.CommandPrefix
 			if prefix == "" {
@@ -126,6 +161,7 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 		ReadyMarker:          f.ReadyMarker,
 		CommandPrefix:        f.CommandPrefix,
 		ConsumesInitialInput: f.ConsumesInitialInput,
+		CanConfirmDelivery:   f.CanConfirmDelivery,
 	}, nil
 }
 
@@ -194,8 +230,20 @@ func (f *fakeAgentForLifecycle) TranscriptExists(_ context.Context, _ *bossanova
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
 
-func (f *fakeAgentForLifecycle) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+func (f *fakeAgentForLifecycle) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	f.readTranscriptMu.Lock()
+	f.readTranscriptCalls++
+	f.readTranscriptMu.Unlock()
+	if f.ReadTranscriptFunc != nil {
+		return f.ReadTranscriptFunc(req)
+	}
 	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) readTranscriptCount() int {
+	f.readTranscriptMu.Lock()
+	defer f.readTranscriptMu.Unlock()
+	return f.readTranscriptCalls
 }
 
 func (f *fakeAgentForLifecycle) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {

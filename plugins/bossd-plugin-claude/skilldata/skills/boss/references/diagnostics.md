@@ -31,7 +31,7 @@ Clear stranded terminal mouse- and focus-reporting modes
 
 ### `boss proof`
 
-Provision credentials for the proof pipeline
+Provision credentials for the verification evidence publisher
 
 ### `boss proof set-secret [proof-anthropic-api-key|proof-cloudflare-api-token] [flags]`
 

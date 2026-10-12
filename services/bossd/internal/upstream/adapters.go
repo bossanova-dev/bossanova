@@ -229,7 +229,10 @@ type CommandHandlerAdapter struct {
 	Broadcasts BroadcastReceiver
 	// Triggers answers LaunchTriggerSessionCommand (BOS-1418). Nil when the
 	// daemon has no upstream, in which case no such command can arrive.
-	Triggers     *TriggerSessionLauncher
+	Triggers *TriggerSessionLauncher
+	// TriggerGates answers RunTriggerGateCommand (BOS-1467). Nil when the
+	// daemon has no upstream, in which case no such command can arrive.
+	TriggerGates *TriggerGateRunner
 	OnCompletion func(ctx context.Context, sessionID string) // optional, mirrors task orchestrator hook
 }
 
@@ -241,6 +244,15 @@ func (a *CommandHandlerAdapter) LaunchTriggerSession(ctx context.Context, cmd *p
 		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("launch_trigger_session: launcher not wired")
 	}
 	return a.Triggers.Launch(ctx, cmd)
+}
+
+// RunTriggerGate implements SessionCommandHandler.RunTriggerGate by delegating
+// to the configured TriggerGateRunner (see trigger_gate.go).
+func (a *CommandHandlerAdapter) RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error) {
+	if a.TriggerGates == nil {
+		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("run_trigger_gate: runner not wired")
+	}
+	return a.TriggerGates.Run(ctx, cmd)
 }
 
 // BroadcastReceiver is the one method the inbound cross-daemon broadcast path
@@ -844,6 +856,7 @@ func (a *CommandHandlerAdapter) CreateCronJob(ctx context.Context, cmd *pb.Creat
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 		IsZeroOutput:          cmd.IsZeroOutput,
 		ConcurrencyPolicy:     cmd.ConcurrencyPolicy,
+		ManagedBy:             cmd.GetManagedBy(),
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("create cron job: %w", err)
@@ -872,6 +885,7 @@ func (a *CommandHandlerAdapter) UpdateCronJob(ctx context.Context, cmd *pb.Updat
 		ShouldRunSetupCommand: cmd.ShouldRunSetupCommand,
 		IsZeroOutput:          cmd.IsZeroOutput,
 		ConcurrencyPolicy:     cmd.ConcurrencyPolicy,
+		ManagedBy:             cmd.ManagedBy,
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("update cron job: %w", err)

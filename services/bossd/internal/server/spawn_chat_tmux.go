@@ -93,7 +93,10 @@ type tmuxSpawner interface {
 	// rather than delivered into (BOS-600). It is passed per call because it
 	// varies per agent while the underlying client is shared by every chat. A nil
 	// detector disables the check.
-	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error
+	//
+	// hooks carries the caller's observers: the turn-start baseline taken just
+	// before Enter, and the receipt that confirms a Claude send (BOS-1506).
+	SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, hooks tmux.SendHooks) error
 	// PanePID returns the login-shell PID of the named session's first pane, so
 	// the codex provider-session resolver can bind a chat to the rollout its own
 	// process holds open (BOS-290). Errors are non-fatal to the caller, which
@@ -567,8 +570,8 @@ func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir st
 // SendMessage delivers text into a live chat composer, routing on submit intent
 // (verified single-line submit vs. paste-only prefill) and payload shape, and
 // refusing to deliver at all when modal reports the pane is showing a menu.
-func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, beforeSubmit func()) error {
-	return l.c.SendMessageWithModalBeforeSubmit(ctx, sessionName, text, submit, readyMarker, modal, beforeSubmit)
+func (l liveTmuxSpawner) SendMessage(ctx context.Context, sessionName, text string, submit bool, readyMarker string, modal tmux.ModalDetector, hooks tmux.SendHooks) error {
+	return l.c.SendMessageWithHooks(ctx, sessionName, text, submit, readyMarker, modal, hooks)
 }
 
 // PanePID returns the first pane's login-shell pid for the named session.

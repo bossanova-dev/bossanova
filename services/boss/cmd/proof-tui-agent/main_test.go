@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -753,5 +754,239 @@ func TestRegisteredFirstRunPresetsDeclareNothingUnhonoured(t *testing.T) {
 		if err := rejectUnhonouredFirstRunFields(preset); err != nil {
 			t.Errorf("preset %q: %v", name, err)
 		}
+	}
+}
+
+// TestValidateAttachFlags pins the attach-mode usage contract: -socket needs
+// -home (the error names -home), the attach-only flags are refused without
+// -socket rather than silently ignored, and the mock-daemon seeding flags are
+// refused alongside -socket because attach mode never starts the daemon they
+// would seed.
+func TestValidateAttachFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   attachFlags
+		wantErr string
+	}{
+		{name: "fixture mode, nothing set", flags: attachFlags{}},
+		{name: "fixture mode with explicit fixture and seed", flags: attachFlags{fixtureSet: true, seedSet: true}},
+		{name: "attach with home", flags: attachFlags{socket: "/tmp/d.sock", home: "/tmp/h"}},
+		{name: "attach with home and settings", flags: attachFlags{socket: "/tmp/d.sock", home: "/tmp/h", settings: "/tmp/s.json"}},
+		{name: "socket without home", flags: attachFlags{socket: "/tmp/d.sock"}, wantErr: "-home"},
+		{name: "home without socket", flags: attachFlags{home: "/tmp/h"}, wantErr: "-socket"},
+		{name: "settings without socket", flags: attachFlags{settings: "/tmp/s.json"}, wantErr: "-socket"},
+		{name: "socket with explicit fixture", flags: attachFlags{socket: "/tmp/d.sock", home: "/tmp/h", fixtureSet: true}, wantErr: "-fixture"},
+		{name: "socket with seed overlay", flags: attachFlags{socket: "/tmp/d.sock", home: "/tmp/h", seedSet: true}, wantErr: "-seed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAttachFlags(tc.flags)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want nil, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want an error naming %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should name %q; got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestAttachEnvPointsChildAtGivenSocketAndHome pins the child env attach mode
+// builds: the caller's socket and HOME, BOSS_SETTINGS_PATH only when -settings
+// was passed, and never an ambient BOSS_SOCKET/BOSS_SETTINGS_PATH leaking from
+// the bridge's own environment.
+func TestAttachEnvPointsChildAtGivenSocketAndHome(t *testing.T) {
+	ambient := []string{"BOSS_SOCKET=/ambient.sock", "BOSS_SETTINGS_PATH=/ambient.json", "PATH=/bin"}
+
+	env := attachEnv(ambient, attachFlags{socket: "/x/d.sock", home: "/x/home"}, map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"})
+	for _, want := range []string{"BOSS_SOCKET=/x/d.sock", "HOME=/x/home", "PATH=/bin", "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=active"} {
+		if !slices.Contains(env, want) {
+			t.Errorf("env missing %q: %v", want, env)
+		}
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") {
+			t.Errorf("BOSS_SETTINGS_PATH must be absent without -settings; got %q", e)
+		}
+		if e == "BOSS_SOCKET=/ambient.sock" {
+			t.Errorf("ambient BOSS_SOCKET leaked into the child env")
+		}
+	}
+
+	env = attachEnv(ambient, attachFlags{socket: "/x/d.sock", home: "/x/home", settings: "/x/s.json"}, nil)
+	if !slices.Contains(env, "BOSS_SETTINGS_PATH=/x/s.json") {
+		t.Errorf("env missing BOSS_SETTINGS_PATH=/x/s.json: %v", env)
+	}
+}
+
+// TestServeAttachedRefusesDaemonOp proves the attach-mode serve loop answers a
+// "daemon" op with a loud error (the bridge owns no mock daemon to mutate) and
+// keeps serving, and that capabilities stops advertising the daemon surface.
+func TestServeAttachedRefusesDaemonOp(t *testing.T) {
+	f := &fakeTUI{screen: "ready"}
+	in := strings.NewReader(
+		`{"id":1,"op":"daemon","action":"add_session","session":{"id":"s","title":"t"}}` + "\n" +
+			`{"id":2,"op":"capabilities"}` + "\n" +
+			`{"id":3,"op":"observe"}` + "\n")
+	var out strings.Builder
+	if err := serveAttached(f, in, &out, fastSettle()); err != nil {
+		t.Fatalf("serveAttached: %v", err)
+	}
+	resps := decodeResponses(t, out.String())
+	if len(resps) != 3 {
+		t.Fatalf("want 3 responses, got %d: %s", len(resps), out.String())
+	}
+	if okResp(resps[0]) || !strings.Contains(fmt.Sprint(resps[0]["error"]), "attach mode") {
+		t.Fatalf("daemon op should error naming attach mode; got %v", resps[0])
+	}
+	if ops, _ := resps[1]["ops"].([]any); slices.Contains(ops, any("daemon")) {
+		t.Errorf("attach-mode capabilities must not advertise the daemon op; got %v", ops)
+	}
+	if actions, _ := resps[1]["daemonActions"].([]any); len(actions) != 0 {
+		t.Errorf("attach-mode capabilities must list no daemon actions; got %v", actions)
+	}
+	if resps[2]["screen"] != "ready" {
+		t.Fatalf("observe after a refused daemon op should still serve; got %v", resps[2])
+	}
+}
+
+// TestE2E_SocketWithoutHomeIsUsageError proves main wires the attach-flag
+// validation: -socket alone aborts non-zero naming -home.
+func TestE2E_SocketWithoutHomeIsUsageError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	agent, _ := buildBinaries(t)
+	out, err := exec.Command(agent, "--socket", "/tmp/nonexistent-ptua.sock").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "-home") {
+		t.Fatalf("usage error should name -home; output:\n%s", out)
+	}
+}
+
+// TestE2E_SocketAttachDrivesExistingDaemon is the attach-mode proof: the test
+// owns a mock daemon seeded with a distinctive repo/session, and the bridge —
+// given -socket/-home — must render THAT daemon's data, start no daemon of its
+// own (the demo preset's world never appears), and leave the caller's HOME
+// settings byte-identical (no settings seed in attach mode).
+func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+	agent, boss := buildBinaries(t)
+
+	// Short socket dir: macOS caps a unix socket path at 104 bytes.
+	sockDir, err := os.MkdirTemp("", "ptua-att-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "d.sock")
+	daemon, stop, err := tuitest.StartMockDaemon(socket)
+	if err != nil {
+		t.Fatalf("StartMockDaemon: %v", err)
+	}
+	t.Cleanup(func() { _ = stop() })
+
+	const repoName = "attach-probe-repo"
+	const sessionTitle = "Attach probe session"
+	repo, err := fixtures.OverlayRepo{ID: "repo-attach", DisplayName: repoName}.Build()
+	if err != nil {
+		t.Fatalf("build repo: %v", err)
+	}
+	daemon.AddRepo(repo)
+	sess, err := fixtures.OverlaySession{
+		ID: "sess-attach-1", RepoID: "repo-attach", RepoDisplayName: repoName,
+		Title: sessionTitle, State: "READY_FOR_REVIEW",
+	}.Build()
+	if err != nil {
+		t.Fatalf("build session: %v", err)
+	}
+	daemon.AddSession(sess)
+
+	// The caller owns HOME and its settings file. Settings live OUTSIDE HOME via
+	// -settings, so a settings.json appearing under HOME means either the bridge
+	// seeded one or BOSS_SETTINGS_PATH never reached the child. The caller's
+	// distinctive worktree_base_dir must survive: a bridge seed would replace it.
+	// (Bytes are not compared: boss itself normalizes the file on startup.)
+	home := t.TempDir()
+	const callerWorktreeBase = "/home/attach/worktrees"
+	settingsFile := filepath.Join(t.TempDir(), "caller-settings.json")
+	if err := os.WriteFile(settingsFile,
+		[]byte(`{"providers_acknowledged":true,"worktree_base_dir":"`+callerWorktreeBase+`"}`), 0o600); err != nil {
+		t.Fatalf("write caller settings: %v", err)
+	}
+	homeSettings := filepath.Join(tuitest.ConfigDirForHome(home), "settings.json")
+
+	castPath := filepath.Join(t.TempDir(), "attach.cast")
+	cmd := exec.Command(agent, "--socket", socket, "--home", home, "--settings", settingsFile,
+		"--boss-bin", boss, "--width", "140", "--height", "36", "--cast", castPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start agent: %v", err)
+	}
+	s := &agentSession{t: t, cmd: cmd, stdin: stdin, out: bufio.NewReader(stdout), stderr: &stderr}
+
+	wr := s.do(map[string]any{"id": 1, "op": "wait", "text": sessionTitle, "timeoutMs": 15000})
+	screen := screenOf(wr)
+	if !okResp(wr) || !strings.Contains(screen, sessionTitle) {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+		t.Fatalf("attach-mode home missing the existing daemon's session; stderr:\n%s\nscreen:\n%s", stderr.String(), screen)
+	}
+	// The demo preset's world is what the bridge's own mock daemon would carry;
+	// its absence proves the TUI talks to the test's daemon, not a bridge-owned one.
+	if strings.Contains(screen, "Add dark mode") {
+		t.Errorf("attach mode rendered the bridge's own demo world; screen:\n%s", screen)
+	}
+	if !strings.Contains(screen, repoName) {
+		t.Errorf("attach-mode home missing the existing daemon's repo %q; screen:\n%s", repoName, screen)
+	}
+	s.do(map[string]any{"id": 99, "op": "quit"})
+	_ = stdin.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("agent exit: %v; stderr:\n%s", err, stderr.String())
+	}
+
+	if _, err := os.Stat(homeSettings); err == nil {
+		t.Errorf("attach mode created %s; the bridge must not seed HOME and the child must use -settings", homeSettings)
+	}
+	raw, err := os.ReadFile(settingsFile)
+	if err != nil {
+		t.Fatalf("re-read caller settings: %v", err)
+	}
+	var after map[string]any
+	if err := json.Unmarshal(raw, &after); err != nil {
+		t.Fatalf("parse caller settings %q: %v", raw, err)
+	}
+	if after["worktree_base_dir"] != callerWorktreeBase || after["providers_acknowledged"] != true {
+		t.Errorf("attach mode replaced the caller's settings; got %s", raw)
+	}
+	if _, err := os.Stat(home); err != nil {
+		t.Errorf("attach mode must not remove the caller's HOME: %v", err)
+	}
+	if fi, err := os.Stat(castPath); err != nil || fi.Size() == 0 {
+		t.Errorf("attach mode should still record the cast; stat=%v err=%v", fi, err)
+	}
+	// The bridge stopped; the test's daemon is still the one serving the socket.
+	if _, err := os.Stat(socket); err != nil {
+		t.Errorf("attach mode must leave the caller's daemon socket in place: %v", err)
 	}
 }

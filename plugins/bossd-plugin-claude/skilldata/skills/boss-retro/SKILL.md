@@ -12,8 +12,10 @@ or retro state. `--no-dry-run` is a compatibility no-op. No implementation work 
 
 ## Contract
 
-One lock, one snapshot, exactly two awaited dispatches. The first themes; the second judges
-currency, ladder, detector hits, the rule of the run and completed-ticket follow-through together.
+One lock, one snapshot, two awaited judgment dispatches plus one awaited dispatch per discovered
+`maintenance` extension. The first themes; the second judges currency, ladder, detector hits, the
+rule of the run and completed-ticket follow-through together. Maintenance never touches notes,
+the snapshot, retro state or the run outcome.
 Unreadable notes or tracker state, malformed output, a failed dispatch or an uncertain recheck
 stops filing and retirement. No note outside the snapshot may be deleted or retagged. Selection
 adds filing labels and one project; it never narrows marker dedupe. Teardown on every locked exit.
@@ -63,7 +65,8 @@ Record the fetch time. Fetch the entire marked set with
 `tracker/cli.mjs fetch-marked --prefix "Notes: " --out-file <marked.json>` in either mode.
 Any non-zero result stops safely. Call `retro-notes.mjs follow-through-due <marked.json>`;
 its default cap bounds completed promises. Report `problems` and leave them untouched.
-If the augmented notes and the due promises are both empty, report nothing to retro and teardown.
+If the augmented notes and the due promises are both empty, report nothing to retro, run phase 7,
+and teardown.
 
 ## 2. Theme — one awaited dispatch
 
@@ -119,6 +122,7 @@ In dry-run mode, print `retro-run.mjs preview <final-selection.json> --path-alia
 For each admitted refile, print `retro-notes.mjs refile-describe <follow-through.json> <key>`.
 Report enforced/unconfirmed follow-through without updating markers. Teardown; no attachment,
 recording, note mutation or tracker write. Preview includes rendered `## Codify as` and `## Cleanup`.
+Run phase 7 in `dry-run` mode before teardown.
 
 ## 5. File and follow through — write mode
 
@@ -167,6 +171,22 @@ Then call `retire-plan <currency-buckets.json> <selection.json> <delete-ids.json
 After successful retirement, call `guidance-audit.mjs --record --run-id <runId>` with the same
 optional config, then `retro-run.mjs record-run --run-id <runId>`. Report recording failures.
 Report mode, parent/child ids, helper counts, deferred and unconfirmed work, collector statuses,
-ignored selection slots, and whether the rule of the run filed or `stays-rule`. Teardown.
+ignored selection slots, and whether the rule of the run filed or `stays-rule`. Run phase 7 in
+`write` mode, then teardown.
+
+## 7. Maintenance extensions
+
+Runs after the phase 1 empty exit, the phase 4 preview and the phase 6 report — never after a run
+that stopped safely on an error, where it is reported as skipped. Discover with
+`node "$BOSS_RETRO_TOOLBOX/skill-extensions.mjs" discover --core boss-retro --role maintenance --mode <headless|interactive> --json`
+(`headless` when `BOSS_UNATTENDED` or `BOSS_CRON` is set). For each descriptor in `(order, name)`
+order, dispatch one fresh awaited worker loaded from its `skillPath` (never by skill name), under
+the phase 2 sentinel and heartbeat discipline and bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`
+(default 300000 ms), with
+`{role: "maintenance", core: "boss-retro", context: {mode: "write"|"dry-run", runId}, runTmp, outPath}`.
+Keep the lock held and touched while awaiting. Validate with
+`skill-extensions.mjs validate --role maintenance --file <outPath>` and report each extension's
+`outcome`, `summary` and `issues`. Discovery failure, timeout, missing output or failed validation
+is a reported, non-fatal skip. In `dry-run` mode an extension writes nothing to the tracker.
 
 For weekly scheduling and gate behavior read [references/cron-gate.md](references/cron-gate.md).

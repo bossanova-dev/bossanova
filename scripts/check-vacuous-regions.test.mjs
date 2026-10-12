@@ -53,7 +53,7 @@ test('detects the single-line raw region slice', () => {
 })
 
 test('detects the multi-line form Prettier produces', () => {
-  // Verbatim shape from scripts/proof-agent-finalize.golden.test.mjs:498 as it stood before
+  // Verbatim shape from a since-deleted golden test (line 498) as it stood before
   // this ticket converted it (commit 1b3f00a72). A per-line regex misses this entirely, so a
   // line-anchored detector would have shipped blind to part of the very population it exists
   // to find — see the mutation case below, which proves this assertion is load-bearing.
@@ -362,18 +362,14 @@ test('documented scope limit: the ORDERING shape is fail-open too, and this gate
 
   // Recorded here rather than left silent, because the branch documents its other limits and an
   // undocumented one is the asymmetry a reader trusts. DATED AND LOCATED, never absolute.
-  // Converted to `precedes()` by BOS-737 — the twelve instances inside the files this ticket
-  // already touches:
+  // Converted to `precedes()` by BOS-737 — twelve instances, of which these remain (the other
+  // nine lived in test files since deleted):
   //   - boss-build-skill.test.mjs   x3   (caller-deadline ordering; the two `10#$name` guards)
-  //   - proof-brief.test.mjs        x6
-  //   - proof-playwright-runner.test.mjs x3
-  // NOT converted, live as of BOS-737 — eleven instances of `X.indexOf(a) < X.indexOf(b)` in five
-  // files this ticket does not otherwise touch, so converting them would be a scope expansion
-  // rather than a ratchet. Enumerated in full so a grep for any one of them lands here:
-  //   - scripts/proof-video.test.mjs:510            x1
+  // NOT converted, live as of BOS-737 — instances of `X.indexOf(a) < X.indexOf(b)` in files this
+  // ticket did not otherwise touch, so converting them would have been a scope expansion rather
+  // than a ratchet. Enumerated in full so a grep for any one of them lands here (five more lived
+  // in test files since deleted):
   //   - scripts/format-affected.test.mjs:433        x1  (array receiver)
-  //   - scripts/proof-lib.test.mjs:2011, 2114, 2783 x3
-  //   - scripts/proof-publish-report.test.mjs:330   x1  (array receiver)
   //   - skills-toolbox/plan-epic-lib.test.mjs:403, 454, 455, 456, 457  x5  (array receiver)
   // Each is fail-open in the same way: none guards its operands against -1. They are a follow-up,
   // and `precedes()` accepts an array receiver as well as a string, so each is a one-line change.

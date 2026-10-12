@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/projectconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -49,8 +51,8 @@ func factoryDocJobs(t *testing.T) []factoryDocJob {
 		}
 		jobs = append(jobs, factoryDocJob{name: m[1], schedule: m[2], prompt: m[3], gate: m[4]})
 	}
-	if len(jobs) != 3 {
-		t.Fatalf("factory.md: want 3 boss cron add lines, got %d", len(jobs))
+	if len(jobs) < 3 {
+		t.Fatalf("factory.md: want the plan, build and verify boss cron add lines, got %d", len(jobs))
 	}
 	return jobs
 }
@@ -214,34 +216,6 @@ func (f *cronFixture) installRealModules(node string) {
 	}
 	f.env.validate = validateWithInstalledModule
 	f.env.effective = effectiveWithInstalledModule
-}
-
-func TestInitCronStageTablePinnedToFactoryDoc(t *testing.T) {
-	doc := factoryDocJobs(t)
-	if len(doc) != len(factoryCronStages) {
-		t.Fatalf("stage table has %d rows, factory.md %d", len(factoryCronStages), len(doc))
-	}
-	for i, st := range factoryCronStages {
-		got := factoryDocJob{
-			name:     st.name,
-			schedule: st.schedule,
-			prompt:   st.prompt(cronAgentClaude),
-			gate:     `node "` + renderSkillRoot("/h/.claude/skills", "/h") + "/" + st.gatePath() + `"`,
-		}
-		if got != doc[i] {
-			t.Errorf("stage %s: table %+v, factory.md %+v", st.stage, got, doc[i])
-		}
-		codex := factoryDocJob{
-			name: st.name, schedule: st.schedule, prompt: st.prompt(cronAgentCodex),
-			gate: `node "` + renderSkillRoot("/h/.codex/skills", "/h") + "/" + st.gatePath() + `"`,
-		}
-		if codex != codexDocJob(doc[i]) {
-			t.Errorf("stage %s codex: table %+v, factory.md %+v", st.stage, codex, codexDocJob(doc[i]))
-		}
-		if !strings.HasSuffix(doc[i].name, "-"+st.stage) {
-			t.Errorf("stage %s: factory.md name %s", st.stage, doc[i].name)
-		}
-	}
 }
 
 func TestInitCronCreatesEnabledJobsByteEqualToFactoryDoc(t *testing.T) {
@@ -667,6 +641,7 @@ func TestInitCronFlagValidation(t *testing.T) {
 		{initCronRequest{agent: "claude"}, "--agent requires --cron"},
 		{initCronRequest{updateConsent: true}, "--update-crons requires --cron"},
 		{initCronRequest{stages: []string{"plan", "sweep"}}, `unknown stage "sweep"`},
+		{initCronRequest{stages: []string{"sweep"}}, "retro"},
 		{initCronRequest{stages: []string{"plan"}, agent: "hermes"}, "unsupported agent"},
 	} {
 		req := tc.req
@@ -745,5 +720,252 @@ func TestInitCronThroughInitCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Factory cron jobs (agent: claude)") {
 		t.Fatalf("report missing:\n%s", out.String())
+	}
+}
+
+// TestFactoryCronResolver pins the resolver the project config engine uses to
+// the job `boss init --cron` creates for the same stage.
+func TestFactoryCronResolver(t *testing.T) {
+	f := newCronFixture(t, "claude", "codex")
+	f.run(initCronRequest{stages: []string{"build"}})
+	calls := f.daemon.CreateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("setupInitCron creates %+v", calls)
+	}
+	r, err := newFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build, _ := cronStageByName("build")
+
+	got, err := r.Resolve("build", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "claude" || got.Skill != "boss-build" || got.Prompt != "/boss-build" || got.Prompt != calls[0].Prompt ||
+		got.GateCommand != calls[0].GateCommand || got.DefaultSchedule != build.schedule || len(got.PreflightFailures) != 0 {
+		t.Fatalf("resolved %+v; init created %+v", got, calls[0])
+	}
+
+	codex, err := r.Resolve("build", "codex")
+	if err != nil || codex.Prompt != "$boss-build" || codex.Agent != "codex" || !strings.Contains(codex.GateCommand, "/.codex/skills/boss-build/") {
+		t.Fatalf("codex %+v %v", codex, err)
+	}
+
+	if _, err := r.Resolve("sweep", ""); !errors.Is(err, projectconfig.ErrUnknownFactoryStage) {
+		t.Fatalf("unknown stage: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(build.gatePath()))); err != nil {
+		t.Fatal(err)
+	}
+	r, err = newFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing, err := r.Resolve("build", "claude")
+	if err != nil || len(missing.PreflightFailures) != 1 || !strings.Contains(missing.PreflightFailures[0], "is not installed") {
+		t.Fatalf("missing gate script %+v %v", missing, err)
+	}
+	if got, _ := (factoryStageClassifier{}).DefaultSchedule("build"); got != build.schedule {
+		t.Fatalf("adapter default schedule %q", got)
+	}
+}
+
+// retroGate is the gate `boss init --cron retro` writes for agentDir.
+func retroGate(agentDir string) string {
+	return `node "$HOME/` + agentDir + `/skills/boss-retro/toolbox/cron-gates/boss-retro.mjs"`
+}
+
+func TestInitCronRetroStage(t *testing.T) {
+	t.Run("claude creates factory-retro and re-runs unchanged", func(t *testing.T) {
+		f := newCronFixture(t, "claude", "codex")
+		res, report := f.run(initCronRequest{stages: []string{"retro"}})
+		calls := f.daemon.CreateCronJobCalls()
+		if len(calls) != 1 {
+			t.Fatalf("want 1 create, got %+v\n%s", calls, report)
+		}
+		c := calls[0]
+		if c.Name != "factory-retro" || c.Schedule != "23 9 * * 1" || c.Prompt != "/boss-retro" ||
+			c.GateCommand != retroGate(".claude") || !c.IsEnabled || c.AgentName != "claude" || c.Timezone != "" {
+			t.Fatalf("retro job %+v", c)
+		}
+		if len(res.Stages) != 1 || res.Stages[0].Stage != "retro" || res.Stages[0].Outcome != cronCreated {
+			t.Fatalf("stages %+v", res.Stages)
+		}
+		again, report := f.run(initCronRequest{stages: []string{"retro"}})
+		if len(f.daemon.CreateCronJobCalls()) != 1 || len(f.daemon.UpdateCronJobCalls()) != 0 {
+			t.Fatalf("re-run wrote: creates %d updates %d", len(f.daemon.CreateCronJobCalls()), len(f.daemon.UpdateCronJobCalls()))
+		}
+		if again.Stages[0].Outcome != cronUnchanged {
+			t.Fatalf("re-run outcome %s\n%s", again.Stages[0].Outcome, report)
+		}
+	})
+	t.Run("codex", func(t *testing.T) {
+		f := newCronFixture(t, "claude", "codex")
+		f.run(initCronRequest{stages: []string{"retro"}, agent: "codex"})
+		calls := f.daemon.CreateCronJobCalls()
+		if len(calls) != 1 || calls[0].Prompt != "$boss-retro" || calls[0].GateCommand != retroGate(".codex") || calls[0].AgentName != "codex" || !calls[0].IsEnabled {
+			t.Fatalf("codex retro %+v", calls)
+		}
+	})
+	t.Run("missing gate script creates it disabled", func(t *testing.T) {
+		f := newCronFixture(t, "claude")
+		gate := filepath.Join(f.home, ".claude", "skills", "boss-retro", "toolbox", "cron-gates", "boss-retro.mjs")
+		if err := os.Remove(gate); err != nil {
+			t.Fatal(err)
+		}
+		res, report := f.run(initCronRequest{stages: []string{"retro"}})
+		calls := f.daemon.CreateCronJobCalls()
+		if len(calls) != 1 || calls[0].IsEnabled {
+			t.Fatalf("want retro created disabled: %+v", calls)
+		}
+		if res.Stages[0].Outcome != cronDisabledByPreflight || !strings.Contains(res.Stages[0].PreflightFailure, gate) {
+			t.Fatalf("retro outcome %+v\n%s", res.Stages[0], report)
+		}
+	})
+}
+
+func TestInitCronRetroAdoptsHandNamedJob(t *testing.T) {
+	const handGate = `node skills-toolbox/cron-gates/boss-retro.mjs`
+	for _, tc := range []struct {
+		name, prompt, agent, agentDir string
+	}{
+		{"claude prompt", "/boss-retro", "claude", ".claude"},
+		{"codex prompt", "$boss-retro", "codex", ".codex"},
+	} {
+		for _, consent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s consent=%v", tc.name, consent), func(t *testing.T) {
+				f := newCronFixture(t, "claude", "codex")
+				f.daemon.AddCronJob(&pb.CronJob{Id: "hand", RepoId: "repo-1", Name: "boss-retro", Prompt: tc.prompt, Schedule: "0 9 * * 1", IsEnabled: true, AgentName: tc.agent, GateCommand: handGate})
+				res, report := f.run(initCronRequest{stages: []string{"retro"}, agent: tc.agent, updateConsent: consent})
+				if n := len(f.daemon.CreateCronJobCalls()); n != 0 {
+					t.Fatalf("duplicated the hand-named retro job (%d creates)\n%s", n, report)
+				}
+				s := res.Stages[0]
+				if s.Name != "boss-retro" || s.JobID != "hand" {
+					t.Fatalf("retro stage did not adopt the hand-named job: %+v", s)
+				}
+				if len(s.Diff) != 1 || !strings.Contains(s.Diff[0], "gate: "+handGate+" -> "+retroGate(tc.agentDir)) {
+					t.Fatalf("diff %v", s.Diff)
+				}
+				updates := f.daemon.UpdateCronJobCalls()
+				if !consent {
+					if len(updates) != 0 || s.Outcome != cronLeftAlone || !strings.Contains(report, "--update-crons") {
+						t.Fatalf("changed without consent: %+v %+v\n%s", updates, s, report)
+					}
+					return
+				}
+				if len(updates) != 1 || s.Outcome != cronUpdated {
+					t.Fatalf("want one update, got %+v (%s)", updates, s.Outcome)
+				}
+				u := updates[0]
+				if u.Id != "hand" || u.GetGateCommand() != retroGate(tc.agentDir) {
+					t.Fatalf("update %+v", u)
+				}
+				if u.Name != nil || u.Schedule != nil || u.Timezone != nil || u.IsEnabled != nil || u.Prompt != nil || u.AgentName != nil {
+					t.Fatalf("update touched more than the gate: %+v", u)
+				}
+				if job := f.daemon.CronJobs()["hand"]; job.Name != "boss-retro" || job.Schedule != "0 9 * * 1" || !job.IsEnabled {
+					t.Fatalf("name, schedule or enabled changed: %+v", job)
+				}
+			})
+		}
+	}
+}
+
+func TestInitCronExplicitStagesOmitRetro(t *testing.T) {
+	f := newCronFixture(t, "claude")
+	f.run(initCronRequest{stages: []string{"plan", "build", "verify"}})
+	var names []string
+	for _, c := range f.daemon.CreateCronJobCalls() {
+		names = append(names, c.Name)
+	}
+	if got := strings.Join(names, ","); got != "factory-plan,factory-build,factory-verify" {
+		t.Fatalf("creates %s", got)
+	}
+}
+
+func TestInitCronRetroHasNoSelectionSkew(t *testing.T) {
+	skewedFixture := func(t *testing.T) *cronFixture {
+		t.Helper()
+		f := newCronFixture(t, "claude")
+		base := []byte(`{"base":true}`)
+		f.baseFiles[".boss-skills.json"] = base
+		f.effectiveFn = func(_, _ string, config []byte) (cronEffective, error) {
+			eff := defaultCronEffective()
+			if bytes.Equal(config, base) {
+				for _, e := range []*cronEffectiveEntry{&eff.Plan, &eff.Build, &eff.Verify} {
+					e.Value.State = stringPtr("Elsewhere")
+				}
+			}
+			return eff, nil
+		}
+		return f
+	}
+
+	f := skewedFixture(t)
+	res, report := f.run(initCronRequest{stages: []string{"retro"}})
+	if len(res.Warnings) != 0 || len(res.LeftToDo) != 0 {
+		t.Fatalf("retro reported selection skew:\n%s", report)
+	}
+
+	f = skewedFixture(t)
+	delete(f.baseFiles, ".mcp.json")
+	res, report = f.run(initCronRequest{stages: []string{"retro"}})
+	todo := strings.Join(res.LeftToDo, "\n")
+	if !strings.Contains(todo, `declare the tracker MCP server "linear" in .mcp.json`) || strings.Contains(todo, "commit .boss-skills.json") || len(res.Warnings) != 0 {
+		t.Fatalf("retro-only run: want only the MCP declaration left to do:\n%s", report)
+	}
+
+	f = skewedFixture(t)
+	res, report = f.run(initCronRequest{stages: []string{"plan", "retro"}})
+	if len(res.Warnings) == 0 {
+		t.Fatalf("plan skew not reported:\n%s", report)
+	}
+	for _, w := range res.Warnings {
+		if !strings.HasPrefix(w, "plan workers") {
+			t.Fatalf("skew line not about plan: %q\n%s", w, report)
+		}
+	}
+}
+
+// TestFactoryCronResolverRetro pins the resolver's retro stage to the job
+// `boss init --cron retro` creates.
+func TestFactoryCronResolverRetro(t *testing.T) {
+	f := newCronFixture(t, "claude", "codex")
+	f.run(initCronRequest{stages: []string{"retro"}})
+	calls := f.daemon.CreateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("setupInitCron creates %+v", calls)
+	}
+	r, err := newFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Resolve("retro", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "claude" || got.Skill != "boss-retro" || got.Prompt != "/boss-retro" || got.Prompt != calls[0].Prompt ||
+		got.GateCommand != calls[0].GateCommand || got.GateCommand != retroGate(".claude") ||
+		got.DefaultSchedule != "23 9 * * 1" || got.DefaultSchedule != calls[0].Schedule || len(got.PreflightFailures) != 0 {
+		t.Fatalf("resolved %+v; init created %+v", got, calls[0])
+	}
+	if codex, err := r.Resolve("retro", "codex"); err != nil || codex.Prompt != "$boss-retro" || codex.GateCommand != retroGate(".codex") {
+		t.Fatalf("codex %+v %v", codex, err)
+	}
+
+	retro := mustCronStage("retro")
+	if err := os.Remove(filepath.Join(f.home, ".claude", "skills", filepath.FromSlash(retro.gatePath()))); err != nil {
+		t.Fatal(err)
+	}
+	r, err = newFactoryCronResolver(context.Background(), f.c, f.configPath, f.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing, err := r.Resolve("retro", "claude")
+	if err != nil || len(missing.PreflightFailures) != 1 || !strings.Contains(missing.PreflightFailures[0], "boss-retro.mjs is not installed") {
+		t.Fatalf("missing gate script %+v %v", missing, err)
 	}
 }

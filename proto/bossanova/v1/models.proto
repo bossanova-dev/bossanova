@@ -843,6 +843,9 @@ message CronJob {
   // What a fire does while this job's previous run is still in progress.
   // Always a concrete value on read (never UNSPECIFIED); defaults to SKIP.
   CronJobConcurrencyPolicy concurrency_policy = 21;
+  // Config-ownership marker: "boss-project:<project>" for a job a project
+  // config created or adopted; empty for a hand-made job.
+  string managed_by = 22;
 }
 
 // GithubCallback is a durable one-shot registration that delivers a chat
@@ -1027,6 +1030,29 @@ message Trigger {
   TriggerInvocationSummary last_invocation = 18;
   google.protobuf.Timestamp created_at = 19;
   google.protobuf.Timestamp updated_at = 20;
+  // Optional gate the launching daemon runs before every launch; absent means
+  // the trigger has no gate. An invocation launches only when the gate exits 0.
+  TriggerGate gate = 21;
+  // Config-ownership marker: "boss-project:<project>" for a trigger a project
+  // config created or adopted; empty for a hand-made trigger.
+  string managed_by = 22;
+}
+
+// TriggerGate is a repo-committed script the launching daemon runs in the
+// repo's local clone before each launch, with the invocation's payload excerpt
+// as JSON on stdin. Exit 0 launches; any other exit records the invocation as
+// SKIPPED ("gated"). The invocation FAILS when the gate cannot run or exceeds
+// its timeout ("gate_failed"), when the daemon rejects it ("gate_invalid"), or
+// when the daemon never answers ("gate_timeout").
+message TriggerGate {
+  // Path of the gate script relative to the repo root, e.g.
+  // "scripts/has-work.sh". It must be a clean relative path with no ".."
+  // segment and no whitespace, at most 512 bytes. It is executed directly,
+  // not through a shell, so it takes no arguments.
+  string script_path = 1;
+  // How long the gate may run, 0-300 seconds; 0 means the daemon's default
+  // (60 seconds).
+  int32 timeout_seconds = 2;
 }
 
 // HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
@@ -1064,7 +1090,17 @@ message TriggerLaunchSettings {
   // Opaque agent reasoning-effort level; absent means the plugin default.
   optional string effort = 5;
   // Branch the session's worktree is cut from; empty means the repo default.
+  // Not used when is_zero_output is true (no worktree is cut).
   string base_branch = 6;
+  // Whether the session runs the repo's setup command before the agent
+  // starts. Absent on CreateTrigger means true; absent inside an
+  // UpdateTrigger launch keeps the stored value. Always present on read.
+  optional bool should_run_setup_command = 7;
+  // Whether the session is a zero-output run: no worktree, branch, or PR.
+  // base_branch is not used when this is true. Absent on CreateTrigger means
+  // false; absent inside an UpdateTrigger launch keeps the stored value.
+  // Always present on read.
+  optional bool is_zero_output = 8;
 }
 
 // TriggerPlacementMode chooses how a trigger picks its daemon.

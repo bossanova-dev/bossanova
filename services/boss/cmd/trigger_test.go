@@ -161,6 +161,7 @@ func sampleTrigger() *pb.Trigger {
 			Field: "body.ref", Operator: pb.TriggerFilterOperator_TRIGGER_FILTER_OPERATOR_EQUALS, Values: []string{"refs/heads/main"},
 		}},
 		PayloadFields: []string{"body.ref"},
+		Gate:          &pb.TriggerGate{ScriptPath: "scripts/has-work.sh", TimeoutSeconds: 30},
 		EndpointPath:  "/triggers/http/pub-1",
 		LastInvocation: &pb.TriggerInvocationSummary{
 			Status: pb.TriggerInvocationStatus_TRIGGER_INVOCATION_STATUS_LAUNCHED, ReceivedAt: ts, SessionId: "sess-1",
@@ -233,7 +234,7 @@ func decodeJSONObject(t *testing.T, out string) map[string]json.RawMessage {
 // test failure.
 var triggerJSONKeys = []string{
 	"concurrency_policy", "config_version", "cooldown_seconds", "created_at", "creator_user_id",
-	"enabled", "endpoint_path", "endpoint_url", "filters", "github", "http", "id", "last_invocation",
+	"enabled", "endpoint_path", "endpoint_url", "filters", "gate", "github", "http", "id", "last_invocation",
 	"launch", "name", "organization_id", "payload_fields", "placement", "repo_origin_url", "type",
 	"updated_at",
 }
@@ -859,4 +860,278 @@ func TestTriggerConcurrencyNames(t *testing.T) {
 	if got := triggerConcurrencyName(pb.TriggerConcurrencyPolicy_TRIGGER_CONCURRENCY_POLICY_UNSPECIFIED); got != "skip" {
 		t.Errorf("name of UNSPECIFIED = %q, want skip", got)
 	}
+}
+
+// TestTriggerGateCommands proves the gate flags round-trip through add, update
+// (and its edit alias), show and --json.
+func TestTriggerGateCommands(t *testing.T) {
+	addArgs := []string{"add", "--type", "http", "--name", "gated", "--repo-url", "https://github.com/acme/widget",
+		"--prompt", "p", "--first-available"}
+
+	t.Run("add sends the gate", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", append(addArgs, "--gate-script", "scripts/has-work.sh", "--gate-timeout", "30")...); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		want := &pb.TriggerGate{ScriptPath: "scripts/has-work.sh", TimeoutSeconds: 30}
+		if !proto.Equal(fake.createReq.GetGate(), want) {
+			t.Errorf("create gate = %v, want %v", fake.createReq.GetGate(), want)
+		}
+	})
+
+	t.Run("add without gate sends none", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", addArgs...); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		if fake.createReq.Gate != nil {
+			t.Errorf("create gate = %v, want none", fake.createReq.Gate)
+		}
+	})
+
+	t.Run("edit --no-gate clears it", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", "edit", "tr-1", "--no-gate"); err != nil {
+			t.Fatalf("edit --no-gate: %v", err)
+		}
+		want := &pb.UpdateTriggerRequest{Id: "tr-1", Gate: &pb.TriggerGate{}}
+		if !proto.Equal(fake.updateReq, want) {
+			t.Errorf("update request = %v, want %v", fake.updateReq, want)
+		}
+		if fake.updateReq.Gate == nil {
+			t.Error("update request has no gate; an absent gate would leave it unchanged")
+		}
+		if fake.getReq != nil {
+			t.Error("--no-gate read the trigger although it replaces the whole gate")
+		}
+	})
+
+	t.Run("update with both flags replaces the gate", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", "update", "tr-1", "--gate-script", ".boss/gate", "--gate-timeout", "0"); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if want := (&pb.TriggerGate{ScriptPath: ".boss/gate"}); !proto.Equal(fake.updateReq.GetGate(), want) || fake.updateReq.Gate == nil {
+			t.Errorf("update gate = %v, want %v", fake.updateReq.GetGate(), want)
+		}
+		if fake.getReq != nil {
+			t.Error("a full gate read the trigger")
+		}
+	})
+
+	t.Run("a lone flag keeps the stored half", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", "update", "tr-1", "--gate-timeout", "90"); err != nil {
+			t.Fatalf("update --gate-timeout: %v", err)
+		}
+		if want := (&pb.TriggerGate{ScriptPath: "scripts/has-work.sh", TimeoutSeconds: 90}); !proto.Equal(fake.updateReq.GetGate(), want) {
+			t.Errorf("update gate = %v, want %v", fake.updateReq.GetGate(), want)
+		}
+		fake = newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", "update", "tr-1", "--gate-script", "scripts/other.sh"); err != nil {
+			t.Fatalf("update --gate-script: %v", err)
+		}
+		if want := (&pb.TriggerGate{ScriptPath: "scripts/other.sh", TimeoutSeconds: 30}); !proto.Equal(fake.updateReq.GetGate(), want) {
+			t.Errorf("update gate = %v, want %v", fake.updateReq.GetGate(), want)
+		}
+	})
+
+	t.Run("refusals send nothing", func(t *testing.T) {
+		for name, args := range map[string][]string{
+			"add timeout without script":    append(append([]string{}, addArgs...), "--gate-timeout", "30"),
+			"add negative timeout":          append(append([]string{}, addArgs...), "--gate-script", "g.sh", "--gate-timeout", "-1"),
+			"add blank script":              append(append([]string{}, addArgs...), "--gate-script", " "),
+			"no-gate with script":           {"update", "tr-1", "--no-gate", "--gate-script", "g.sh"},
+			"no-gate with timeout":          {"update", "tr-1", "--no-gate", "--gate-timeout", "5"},
+			"timeout on an ungated trigger": {"update", "tr-1", "--gate-timeout", "5"},
+		} {
+			fake := newSampleFake()
+			fake.trigger.Gate = nil
+			if _, err := runTriggerCLI(t, fake, "", args...); err == nil {
+				t.Errorf("%s: succeeded, want an error", name)
+			}
+			if fake.createReq != nil || fake.updateReq != nil {
+				t.Errorf("%s: a write was sent", name)
+			}
+		}
+	})
+
+	t.Run("show prints the gate and its outcomes", func(t *testing.T) {
+		fake := newSampleFake()
+		gated := sampleInvocation()
+		gated.Status = pb.TriggerInvocationStatus_TRIGGER_INVOCATION_STATUS_SKIPPED
+		gated.DecisionReason = "gated"
+		gated.ErrorDetail = "gate exited 1 on daemon d-1"
+		fake.history = []*pb.TriggerInvocation{gated}
+		out, err := runTriggerCLI(t, fake, "", "show", "tr-1")
+		if err != nil {
+			t.Fatalf("show: %v", err)
+		}
+		for _, want := range []string{"Gate:        scripts/has-work.sh (timeout 30s)", "skipped", "gated", "gate exited 1"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("show output missing %q:\n%s", want, out)
+			}
+		}
+
+		out, err = runTriggerCLI(t, fake, "", "show", "tr-1", "--json")
+		if err != nil {
+			t.Fatalf("show --json: %v", err)
+		}
+		var shown struct {
+			Trigger struct {
+				Gate *triggerGateJSON `json:"gate"`
+			} `json:"trigger"`
+		}
+		if err := json.Unmarshal([]byte(out), &shown); err != nil {
+			t.Fatal(err)
+		}
+		if shown.Trigger.Gate == nil || *shown.Trigger.Gate != (triggerGateJSON{ScriptPath: "scripts/has-work.sh", TimeoutSeconds: 30}) {
+			t.Errorf("show --json gate = %+v", shown.Trigger.Gate)
+		}
+
+		fake.trigger.Gate = nil
+		out, err = runTriggerCLI(t, fake, "", "show", "tr-1", "--json")
+		if err != nil {
+			t.Fatalf("show --json: %v", err)
+		}
+		var trig map[string]json.RawMessage
+		if err := json.Unmarshal(decodeJSONObject(t, out)["trigger"], &trig); err != nil {
+			t.Fatal(err)
+		}
+		if string(trig["gate"]) != "null" {
+			t.Errorf("ungated show --json gate = %s, want null", trig["gate"])
+		}
+		if out, _ = runTriggerCLI(t, fake, "", "show", "tr-1"); !strings.Contains(out, "Gate:        -\n") {
+			t.Errorf("ungated show output missing an empty gate line:\n%s", out)
+		}
+	})
+}
+
+// TestTriggerLaunchOptions proves --run-setup and --zero-output ride inside
+// launch only when given — on add an absent field takes the server default, on
+// update it keeps the stored value — and that show and --json print both.
+func TestTriggerLaunchOptions(t *testing.T) {
+	addArgs := []string{"add", "--type", "http", "--name", "report", "--repo-url", "https://github.com/acme/widget",
+		"--prompt", "p", "--first-available"}
+
+	// storedFake holds a trigger whose launch options differ from both defaults,
+	// so a carried-over value is distinguishable from a defaulted one.
+	storedFake := func() *fakeTriggerServer {
+		fake := newSampleFake()
+		fake.trigger.Launch.ShouldRunSetupCommand = proto.Bool(false)
+		fake.trigger.Launch.IsZeroOutput = proto.Bool(true)
+		return fake
+	}
+
+	t.Run("add sends both when given", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", append(addArgs, "--run-setup=false", "--zero-output")...); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		l := fake.createReq.GetLaunch()
+		if l.ShouldRunSetupCommand == nil || l.GetShouldRunSetupCommand() || l.IsZeroOutput == nil || !l.GetIsZeroOutput() {
+			t.Errorf("launch = %v, want should_run_setup_command=false is_zero_output=true", l)
+		}
+	})
+
+	t.Run("add without either sends neither", func(t *testing.T) {
+		fake := newSampleFake()
+		if _, err := runTriggerCLI(t, fake, "", addArgs...); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+		l := fake.createReq.GetLaunch()
+		if l.ShouldRunSetupCommand != nil || l.IsZeroOutput != nil {
+			t.Errorf("launch = %v, want both options absent so the server defaults apply", l)
+		}
+	})
+
+	t.Run("update changes only the given option", func(t *testing.T) {
+		fake := storedFake()
+		if _, err := runTriggerCLI(t, fake, "", "update", "tr-1", "--zero-output=false"); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if fake.getReq.GetId() != "tr-1" {
+			t.Errorf("update did not read the current trigger before merging the launch")
+		}
+		l := fake.updateReq.GetLaunch()
+		if l.IsZeroOutput == nil || l.GetIsZeroOutput() {
+			t.Errorf("is_zero_output = %v, want explicit false", l.IsZeroOutput)
+		}
+		if l.ShouldRunSetupCommand == nil || l.GetShouldRunSetupCommand() {
+			t.Errorf("should_run_setup_command = %v, want the stored false carried over", l.ShouldRunSetupCommand)
+		}
+		if l.GetPromptTemplate() != "Investigate the deploy" || l.GetSkillName() != "boss-build" {
+			t.Errorf("launch = %v, want the rest of the stored launch carried over", l)
+		}
+		if req := fake.updateReq; req.Name != nil || req.CooldownSeconds != nil || req.Placement != nil {
+			t.Errorf("update sent fields that were not given: %v", req)
+		}
+	})
+
+	t.Run("update without either leaves launch alone", func(t *testing.T) {
+		fake := storedFake()
+		if _, err := runTriggerCLI(t, fake, "", "update", "tr-1", "--name", "renamed"); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if fake.updateReq.Launch != nil {
+			t.Errorf("launch = %v, want none", fake.updateReq.Launch)
+		}
+	})
+
+	t.Run("flag defaults match boss cron", func(t *testing.T) {
+		cmds := map[string]*cobra.Command{}
+		for _, sub := range triggerCmd().Commands() {
+			cmds[sub.Name()] = sub
+		}
+		for _, tc := range []struct{ cmd, flag, def string }{
+			{"add", "run-setup", "true"},
+			{"add", "zero-output", "false"},
+			{"update", "run-setup", "false"},
+			{"update", "zero-output", "false"},
+		} {
+			f := cmds[tc.cmd].Flags().Lookup(tc.flag)
+			if f == nil {
+				t.Errorf("boss trigger %s has no --%s", tc.cmd, tc.flag)
+				continue
+			}
+			if f.DefValue != tc.def {
+				t.Errorf("boss trigger %s --%s default = %s, want %s", tc.cmd, tc.flag, f.DefValue, tc.def)
+			}
+			if tc.cmd == "update" && !strings.HasSuffix(f.Usage, "(unset preserves current)") {
+				t.Errorf("boss trigger update --%s usage %q lacks the preserve suffix", tc.flag, f.Usage)
+			}
+		}
+	})
+
+	t.Run("show prints both", func(t *testing.T) {
+		fake := storedFake()
+		out, err := runTriggerCLI(t, fake, "", "show", "tr-1")
+		if err != nil {
+			t.Fatalf("show: %v", err)
+		}
+		for _, want := range []string{"Run setup:   no\n", "Zero output: yes\n"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("show output missing %q:\n%s", want, out)
+			}
+		}
+
+		out, err = runTriggerCLI(t, fake, "", "show", "tr-1", "--json")
+		if err != nil {
+			t.Fatalf("show --json: %v", err)
+		}
+		var shown struct {
+			Trigger struct {
+				Launch map[string]json.RawMessage `json:"launch"`
+			} `json:"trigger"`
+		}
+		if err := json.Unmarshal([]byte(out), &shown); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(shown.Trigger.Launch["run_setup_command"]); got != "false" {
+			t.Errorf("launch.run_setup_command = %s, want false", got)
+		}
+		if got := string(shown.Trigger.Launch["zero_output"]); got != "true" {
+			t.Errorf("launch.zero_output = %s, want true", got)
+		}
+	})
 }

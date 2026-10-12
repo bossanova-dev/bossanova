@@ -349,6 +349,9 @@ const (
 	// OrchestratorServiceListSessionWebhookEventTypesProcedure is the fully-qualified name of the
 	// OrchestratorService's ListSessionWebhookEventTypes RPC.
 	OrchestratorServiceListSessionWebhookEventTypesProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhookEventTypes"
+	// OrchestratorServiceListSessionWebhookFormatsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSessionWebhookFormats RPC.
+	OrchestratorServiceListSessionWebhookFormatsProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhookFormats"
 	// OrchestratorServiceListSessionWebhooksProcedure is the fully-qualified name of the
 	// OrchestratorService's ListSessionWebhooks RPC.
 	OrchestratorServiceListSessionWebhooksProcedure = "/bossanova.v1.OrchestratorService/ListSessionWebhooks"
@@ -700,15 +703,19 @@ type OrchestratorServiceClient interface {
 	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
 	// subscribe to, in canonical order.
 	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
+	// ListSessionWebhookFormats returns the built-in payload formats an endpoint
+	// can pick (SessionWebhook.format), in canonical order.
+	ListSessionWebhookFormats(context.Context, *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error)
 	// ListSessionWebhooks returns the organization's endpoints, oldest first.
 	// Never returns a secret.
 	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
 	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
 	// endpoint policy rejects (not https, credentials in the URL, a fragment, or
 	// a host that is or resolves to a private, loopback, link-local or metadata
-	// address), an empty or unknown event type set, a description over 200
-	// characters, or a caller-supplied secret that is not 16-256 visible ASCII
-	// characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+	// address), an empty or unknown event type set, an unknown format, a
+	// description over 200 characters, or a caller-supplied secret that is not
+	// 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
+	// has 20 endpoints.
 	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
 	// UpdateSessionWebhook changes only the fields that are present and returns
 	// the endpoint without its secret. Disabling an endpoint or changing its URL
@@ -728,7 +735,9 @@ type OrchestratorServiceClient interface {
 	// still be tested. An absent payload_json sends the catalog sample; a
 	// supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
 	// otherwise), and the server overwrites its id, type, organization_id and
-	// created_at and forces is_test to true. Test deliveries are never retried.
+	// created_at and forces is_test to true. The body is then rendered through
+	// the endpoint's format, exactly as a live delivery is; a payload the format
+	// cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
 	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
 	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
 	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
@@ -736,7 +745,8 @@ type OrchestratorServiceClient interface {
 	// unknown status, or a negative page_size.
 	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
 	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
-	// the exact request body and the request headers. Never returns a secret.
+	// the request body rendered through the endpoint's current format and the
+	// request headers. Never returns a secret.
 	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
 	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
 	// when bosso receives an authenticated HTTP request or a GitHub App event.
@@ -1432,6 +1442,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookEventTypes")),
 			connect.WithClientOptions(opts...),
 		),
+		listSessionWebhookFormats: connect.NewClient[v1.ListSessionWebhookFormatsRequest, v1.ListSessionWebhookFormatsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSessionWebhookFormatsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookFormats")),
+			connect.WithClientOptions(opts...),
+		),
 		listSessionWebhooks: connect.NewClient[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse](
 			httpClient,
 			baseURL+OrchestratorServiceListSessionWebhooksProcedure,
@@ -1650,6 +1666,7 @@ type orchestratorServiceClient struct {
 	clearRepoOrganization                *connect.Client[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse]
 	listRepoOrganizations                *connect.Client[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse]
 	listSessionWebhookEventTypes         *connect.Client[v1.ListSessionWebhookEventTypesRequest, v1.ListSessionWebhookEventTypesResponse]
+	listSessionWebhookFormats            *connect.Client[v1.ListSessionWebhookFormatsRequest, v1.ListSessionWebhookFormatsResponse]
 	listSessionWebhooks                  *connect.Client[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse]
 	createSessionWebhook                 *connect.Client[v1.CreateSessionWebhookRequest, v1.CreateSessionWebhookResponse]
 	updateSessionWebhook                 *connect.Client[v1.UpdateSessionWebhookRequest, v1.UpdateSessionWebhookResponse]
@@ -2200,6 +2217,11 @@ func (c *orchestratorServiceClient) ListSessionWebhookEventTypes(ctx context.Con
 	return c.listSessionWebhookEventTypes.CallUnary(ctx, req)
 }
 
+// ListSessionWebhookFormats calls bossanova.v1.OrchestratorService.ListSessionWebhookFormats.
+func (c *orchestratorServiceClient) ListSessionWebhookFormats(ctx context.Context, req *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error) {
+	return c.listSessionWebhookFormats.CallUnary(ctx, req)
+}
+
 // ListSessionWebhooks calls bossanova.v1.OrchestratorService.ListSessionWebhooks.
 func (c *orchestratorServiceClient) ListSessionWebhooks(ctx context.Context, req *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error) {
 	return c.listSessionWebhooks.CallUnary(ctx, req)
@@ -2585,15 +2607,19 @@ type OrchestratorServiceHandler interface {
 	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
 	// subscribe to, in canonical order.
 	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
+	// ListSessionWebhookFormats returns the built-in payload formats an endpoint
+	// can pick (SessionWebhook.format), in canonical order.
+	ListSessionWebhookFormats(context.Context, *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error)
 	// ListSessionWebhooks returns the organization's endpoints, oldest first.
 	// Never returns a secret.
 	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
 	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
 	// endpoint policy rejects (not https, credentials in the URL, a fragment, or
 	// a host that is or resolves to a private, loopback, link-local or metadata
-	// address), an empty or unknown event type set, a description over 200
-	// characters, or a caller-supplied secret that is not 16-256 visible ASCII
-	// characters. FAILED_PRECONDITION once the organization has 20 endpoints.
+	// address), an empty or unknown event type set, an unknown format, a
+	// description over 200 characters, or a caller-supplied secret that is not
+	// 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
+	// has 20 endpoints.
 	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
 	// UpdateSessionWebhook changes only the fields that are present and returns
 	// the endpoint without its secret. Disabling an endpoint or changing its URL
@@ -2613,7 +2639,9 @@ type OrchestratorServiceHandler interface {
 	// still be tested. An absent payload_json sends the catalog sample; a
 	// supplied one must be a JSON object of at most 64 KiB (INVALID_ARGUMENT
 	// otherwise), and the server overwrites its id, type, organization_id and
-	// created_at and forces is_test to true. Test deliveries are never retried.
+	// created_at and forces is_test to true. The body is then rendered through
+	// the endpoint's format, exactly as a live delivery is; a payload the format
+	// cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
 	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
 	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
 	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
@@ -2621,7 +2649,8 @@ type OrchestratorServiceHandler interface {
 	// unknown status, or a negative page_size.
 	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
 	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
-	// the exact request body and the request headers. Never returns a secret.
+	// the request body rendered through the endpoint's current format and the
+	// request headers. Never returns a secret.
 	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
 	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
 	// when bosso receives an authenticated HTTP request or a GitHub App event.
@@ -3313,6 +3342,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookEventTypes")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceListSessionWebhookFormatsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSessionWebhookFormatsProcedure,
+		svc.ListSessionWebhookFormats,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSessionWebhookFormats")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceListSessionWebhooksHandler := connect.NewUnaryHandler(
 		OrchestratorServiceListSessionWebhooksProcedure,
 		svc.ListSessionWebhooks,
@@ -3633,6 +3668,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListRepoOrganizationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListSessionWebhookEventTypesProcedure:
 			orchestratorServiceListSessionWebhookEventTypesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSessionWebhookFormatsProcedure:
+			orchestratorServiceListSessionWebhookFormatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListSessionWebhooksProcedure:
 			orchestratorServiceListSessionWebhooksHandler.ServeHTTP(w, r)
 		case OrchestratorServiceCreateSessionWebhookProcedure:
@@ -4096,6 +4133,10 @@ func (UnimplementedOrchestratorServiceHandler) ListRepoOrganizations(context.Con
 
 func (UnimplementedOrchestratorServiceHandler) ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSessionWebhookEventTypes is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSessionWebhookFormats(context.Context, *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSessionWebhookFormats is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error) {

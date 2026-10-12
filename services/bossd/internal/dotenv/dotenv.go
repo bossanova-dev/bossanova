@@ -10,6 +10,14 @@
 // and the keyring-backed proof overlay can never be shadowed by a repo-local
 // file (real .env files do contain BOSS_* keys). Values are secrets and must
 // never be logged.
+//
+// Overlay additionally never forwards the keys that redirect the boss CLI and
+// daemon at a different instance (BOSS_SETTINGS_PATH, BOSS_KEYRING_BACKEND,
+// BOSS_WEB_PORT, BOSS_CLOUD_URL, BOSSD_ORCHESTRATOR_URL): a developer's .env
+// commonly sets them for a dev daemon, and an agent session inheriting them
+// would talk to that daemon instead of the one that spawned it (BOS-1512).
+// The same keys still pass through when the caller's base env sets them, and
+// Load itself stays a pure parser of the file.
 package dotenv
 
 import (
@@ -64,11 +72,28 @@ func Load(dir string) map[string]string {
 	return env
 }
 
+// cliRedirectKeys are the keys Overlay never takes from a .env: each one
+// points the boss CLI or daemon at a different instance (settings file,
+// keyring backend, web port, cloud or orchestrator URL). A value the caller's
+// base env supplies is unaffected.
+var cliRedirectKeys = [...]string{
+	"BOSS_SETTINGS_PATH",
+	"BOSS_KEYRING_BACKEND",
+	"BOSS_WEB_PORT",
+	"BOSS_CLOUD_URL",
+	"BOSSD_ORCHESTRATOR_URL",
+}
+
 // Overlay returns base with dir/.env merged in beneath it: base wins on every
-// key conflict, and keys only present in the .env are added. When the
-// worktree has no (parseable) .env, base is returned unchanged.
+// key conflict, and keys only present in the .env are added, except the
+// cliRedirectKeys, which are dropped from the .env side. When the worktree has
+// no (parseable) .env, or it holds only those keys, base is returned
+// unchanged.
 func Overlay(base map[string]string, dir string) map[string]string {
 	loaded := Load(dir)
+	for _, key := range cliRedirectKeys {
+		delete(loaded, key) // a no-op on a nil map
+	}
 	if len(loaded) == 0 {
 		return base
 	}

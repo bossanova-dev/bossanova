@@ -697,6 +697,39 @@ func TestSeedWorldSeedsAgentsIntoListAgents(t *testing.T) {
 	}
 }
 
+// TestSeedWorldSeedsGithubCallbacks pins the armed-verify proof's data path:
+// the chat picker reads a waiting chat's trigger and expiry from
+// ListGithubCallbacks, which answers empty unless seedWorld forwards the world's
+// callbacks (BOS-1517).
+func TestSeedWorldSeedsGithubCallbacks(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ptua-t-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	daemon, stop, err := tuitest.StartMockDaemon(filepath.Join(dir, "d.sock"))
+	if err != nil {
+		t.Fatalf("StartMockDaemon: %v", err)
+	}
+	defer func() { _ = stop() }()
+
+	preset, err := fixtures.LookupPreset("armed-verify")
+	if err != nil {
+		t.Fatalf("LookupPreset: %v", err)
+	}
+	w := preset.World()
+	seedWorld(daemon, w)
+
+	chat := w.GithubCallbacks[0].GetTargetChatId()
+	resp, err := daemon.ListGithubCallbacks(context.Background(), connect.NewRequest(&pb.ListGithubCallbacksRequest{TargetChatId: &chat}))
+	if err != nil {
+		t.Fatalf("ListGithubCallbacks: %v", err)
+	}
+	if got := resp.Msg.GetGithubCallbacks(); len(got) != 1 || got[0].GetTrigger() != "checks_passed_ready" {
+		t.Fatalf("ListGithubCallbacks(%s) = %v, want the armed checks_passed_ready callback", chat, got)
+	}
+}
+
 // TestRejectUnhonouredFirstRunFields pins the loud failure. The SeedFirstRun
 // path seeds a fixed settings.json and skips the first-frame wait, so both
 // fields below are inert there — and a preset that is silently NOT the preset it

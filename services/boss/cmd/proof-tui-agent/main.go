@@ -114,6 +114,9 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	for _, e := range w.SessionStatuses {
 		d.AddSessionStatus(e)
 	}
+	for _, cb := range w.GithubCallbacks {
+		d.AddGithubCallback(cb)
+	}
 	for _, j := range w.CronJobs {
 		d.AddCronJob(j)
 	}

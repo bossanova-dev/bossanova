@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -423,8 +424,8 @@ func TestRunDaemonStartRefusesReachableSocket(t *testing.T) {
 		t.Fatal("daemonEnsureRunning called for reachable socket")
 		return nil
 	}
-	daemonEnsureRunningWithMode = func(string) (daemon.StartMode, error) {
-		t.Fatal("daemonEnsureRunningWithMode called for reachable socket")
+	daemonEnsureRunningWithPolicy = func(string, daemon.DetachedFallbackPolicy) (daemon.StartMode, error) {
+		t.Fatal("daemonEnsureRunningWithPolicy called for reachable socket")
 		return daemon.StartModeUnknown, nil
 	}
 
@@ -449,7 +450,7 @@ func TestRunDaemonStartAnnouncesStandaloneFallback(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
 	defaultSocketPath = func() (string, error) { return socketPath, nil }
 	daemonSocketReachable = func(string) bool { return false }
-	daemonEnsureRunningWithMode = func(path string) (daemon.StartMode, error) {
+	daemonEnsureRunningWithPolicy = func(path string, _ daemon.DetachedFallbackPolicy) (daemon.StartMode, error) {
 		if path != socketPath {
 			t.Fatalf("start socket path = %q, want %q", path, socketPath)
 		}
@@ -523,7 +524,7 @@ func TestRunDaemonStartOmitsFallbackNoticeWhenSupervised(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
 	defaultSocketPath = func() (string, error) { return socketPath, nil }
 	daemonSocketReachable = func(string) bool { return false }
-	daemonEnsureRunningWithMode = func(string) (daemon.StartMode, error) {
+	daemonEnsureRunningWithPolicy = func(string, daemon.DetachedFallbackPolicy) (daemon.StartMode, error) {
 		return daemon.StartModeServiceManager, nil
 	}
 
@@ -539,6 +540,92 @@ func TestRunDaemonStartOmitsFallbackNoticeWhenSupervised(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Fatalf("output = %q, must not warn about supervision when the service manager started the daemon", out)
 		}
+	}
+}
+
+// daemonStartCommand builds a `start` command carrying the --detached flag the
+// way daemonCmd defines it, so a test can set it.
+func daemonStartCommand(t *testing.T, detached bool) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{}
+	addDaemonStartFlags(cmd)
+	if detached {
+		if err := cmd.Flags().Set("detached", "true"); err != nil {
+			t.Fatalf("set --detached: %v", err)
+		}
+	}
+	return cmd
+}
+
+// TestRunDaemonStartRefusesWhenTheServiceDoesNotServe pins BOS-1519: an
+// explicit start with an installed service that did not serve exits non-zero,
+// and never prints the line scripts read as success.
+func TestRunDaemonStartRefusesWhenTheServiceDoesNotServe(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	var policies []daemon.DetachedFallbackPolicy
+	daemonEnsureRunningWithPolicy = func(_ string, policy daemon.DetachedFallbackPolicy) (daemon.StartMode, error) {
+		policies = append(policies, policy)
+		return daemon.StartModeUnknown, fmt.Errorf("%w: /tmp/com.example.bossd.plist", daemon.ErrServiceInstalledNotServing)
+	}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = runDaemonStart(daemonStartCommand(t, false))
+	})
+	if !errors.Is(err, daemon.ErrServiceInstalledNotServing) {
+		t.Fatalf("runDaemonStart err = %v, want ErrServiceInstalledNotServing", err)
+	}
+	if strings.Contains(out, "Daemon started.") {
+		t.Fatalf("output = %q, must not report a start that was refused", out)
+	}
+	want := []daemon.DetachedFallbackPolicy{daemon.RefuseDetachedFallbackWhenServiceInstalled}
+	if !reflect.DeepEqual(policies, want) {
+		t.Fatalf("policies = %v, want %v", policies, want)
+	}
+}
+
+// TestRunDaemonStartDetachedAllowsTheFallback: --detached is the deliberate
+// escape hatch, and keeps today's behaviour including the fallback notice.
+func TestRunDaemonStartDetachedAllowsTheFallback(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(string) bool { return false }
+	var policies []daemon.DetachedFallbackPolicy
+	daemonEnsureRunningWithPolicy = func(_ string, policy daemon.DetachedFallbackPolicy) (daemon.StartMode, error) {
+		policies = append(policies, policy)
+		return daemon.StartModeDetached, nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStart(daemonStartCommand(t, true)); err != nil {
+			t.Fatalf("runDaemonStart: %v", err)
+		}
+	})
+	want := []daemon.DetachedFallbackPolicy{daemon.AllowDetachedFallback}
+	if !reflect.DeepEqual(policies, want) {
+		t.Fatalf("policies = %v, want %v", policies, want)
+	}
+	if !strings.Contains(out, "Daemon started.") {
+		t.Fatalf("output = %q, want the started line", out)
+	}
+	if !strings.Contains(out, "not under the service manager") {
+		t.Fatalf("output = %q, want the existing fallback notice", out)
+	}
+}
+
+// TestDaemonStartCommandDefinesDetached pins that the flag reaches the real
+// command, not only the test helper.
+func TestDaemonStartCommandDefinesDetached(t *testing.T) {
+	start, _, err := daemonCmd().Find([]string{"start"})
+	if err != nil {
+		t.Fatalf("find start: %v", err)
+	}
+	if start.Flags().Lookup("detached") == nil {
+		t.Fatal("`boss daemon start` has no --detached flag")
 	}
 }
 
@@ -1806,7 +1893,7 @@ func restoreDaemonCommandStubs(t *testing.T) {
 	oldDaemonSocketReachable := daemonSocketReachable
 	oldDaemonGetStatus := daemonGetStatus
 	oldDaemonEnsureRunning := daemonEnsureRunning
-	oldDaemonEnsureRunningWithMode := daemonEnsureRunningWithMode
+	oldDaemonEnsureRunningWithPolicy := daemonEnsureRunningWithPolicy
 	oldDaemonStop := daemonStop
 	oldRestartDaemon := restartDaemon
 	oldTerminateStandaloneCurrentProfile := terminateStandaloneCurrentProfile
@@ -1825,7 +1912,7 @@ func restoreDaemonCommandStubs(t *testing.T) {
 		daemonSocketReachable = oldDaemonSocketReachable
 		daemonGetStatus = oldDaemonGetStatus
 		daemonEnsureRunning = oldDaemonEnsureRunning
-		daemonEnsureRunningWithMode = oldDaemonEnsureRunningWithMode
+		daemonEnsureRunningWithPolicy = oldDaemonEnsureRunningWithPolicy
 		daemonStop = oldDaemonStop
 		restartDaemon = oldRestartDaemon
 		terminateStandaloneCurrentProfile = oldTerminateStandaloneCurrentProfile

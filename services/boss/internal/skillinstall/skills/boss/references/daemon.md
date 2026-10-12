@@ -41,14 +41,19 @@ boss daemon restart
 
 Rotate the daemon socket auth token (regenerated on next daemon start)
 
-### `boss daemon start`
+### `boss daemon start [flags]`
 
 Start the bossd daemon
 
-No-op if it's already running. Falls back to spawning bossd directly if it isn't installed as a LaunchAgent.
+No-op if it's already running. Falls back to spawning bossd directly if no service (LaunchAgent, watchdog or systemd unit) is installed. If a service is installed but does not bring the daemon up, it exits non-zero without starting an unsupervised daemon — run `boss daemon doctor` or `boss daemon restart`, or pass `--detached` to accept an unsupervised daemon deliberately.
+
+**Flags:**
+
+- `--detached` — Start an unsupervised bossd directly if the installed service manager does not bring the daemon up
 
 ```bash
 boss daemon start
+boss daemon start --detached
 ```
 
 ### `boss daemon status`

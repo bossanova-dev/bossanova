@@ -6,7 +6,10 @@
 // Archiving a session kills every chat's tmux pane, removes the worktree and marks the row. So the
 // decision refuses whenever that could hurt anything: no daemon, a caller that owns the session, a
 // cron job whose finalize owns cleanup, an unfinished outcome, retained scratch, a PR, another live
-// chat, or a dirty worktree. The tests are the specification of the rule order.
+// chat, or a dirty worktree. A zero-output run (BOSS_ZERO_OUTPUT=true) works in the repository
+// checkout itself: it has no worktree to protect, and bossd finalizes such a session when it is
+// archived, so its cron run ends itself here instead of idling until the stranded sweep notices.
+// The tests are the specification of the rule order.
 //
 //   node session-self-archive.mjs --outcome <o> --run-scratch <dir> [--confirmed] [--suppressed] [--delay-ms N]
 //
@@ -45,6 +48,11 @@ export function isUnattended(env = {}) {
   return env.BOSS_UNATTENDED === 'true' || env.BOSS_CRON === 'true'
 }
 
+/** True for an unattended run in the repository checkout, which bossd marks BOSS_ZERO_OUTPUT=true. */
+export function isZeroOutput(env) {
+  return env.BOSS_ZERO_OUTPUT === 'true'
+}
+
 function normalizeStatus(status) {
   return String(status ?? '')
     .trim()
@@ -65,7 +73,7 @@ export function preflightSelfArchive({
 } = {}) {
   if (!env.BOSS_SESSION_ID) return skip('not-managed')
   if (suppressed || env.BOSS_SELF_ARCHIVE_SUPPRESSED === '1') return skip('caller-owns-session')
-  if (env.BOSS_CRON_JOB_ID) return skip('cron-finalize-owns-cleanup')
+  if (env.BOSS_CRON_JOB_ID && !isZeroOutput(env)) return skip('cron-finalize-owns-cleanup')
   if (!FINISHED_OUTCOMES.includes(outcome)) return skip(`outcome-${outcome || 'missing'}`)
   if (runScratchExists) return skip('scratch-retained')
   return null
@@ -104,8 +112,12 @@ export function decideSelfArchive({
   )
   if (liveOthers.length > 0) return skip('other-live-chats')
 
-  if (worktreeClean === false) return skip('worktree-dirty')
-  if (worktreeClean !== true) return skip('worktree-unreadable')
+  // A zero-output run's "worktree" is the shared repository checkout: its state is not this run's
+  // to answer for, and archiving never touches it.
+  if (!isZeroOutput(env)) {
+    if (worktreeClean === false) return skip('worktree-dirty')
+    if (worktreeClean !== true) return skip('worktree-unreadable')
+  }
 
   if (!isUnattended(env) && !confirmed) return { verdict: 'ask', reason: 'attended-confirm' }
   return { verdict: 'archive', reason: '' }
@@ -258,7 +270,7 @@ export async function runSelfArchive(opts, deps = {}) {
   const [session, chats, worktreeClean] = await Promise.all([
     readJson(execFile, bossPath, ['show', sessionId, '--json'], 'session'),
     readJson(execFile, bossPath, ['chats', sessionId, '--json'], 'chats'),
-    readWorktreeClean(execFile, env.BOSS_WORKTREE),
+    isZeroOutput(env) ? null : readWorktreeClean(execFile, env.BOSS_WORKTREE),
   ])
   const decision = decideSelfArchive({ ...base, session, chats, worktreeClean })
   if (decision.verdict !== 'archive') return { ...decision, sessionId }

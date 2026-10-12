@@ -12,11 +12,14 @@ import (
 )
 
 const (
-	localMarker     = "boss-project:widget"
-	localTarget     = "/home/me/src/widget"
-	localBuildGate  = `node "$HOME/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs"`
-	localSecretVal  = "lin_value_never_rendered"
-	localSecretVal2 = "lin_other_value"
+	localMarker    = "boss-project:widget"
+	localTarget    = "/home/me/src/widget"
+	localBuildGate = `node "$HOME/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs"`
+	// localBuildGateAbsolute runs the same script as localBuildGate, spelled
+	// the way a hand-made job often is: absolute and unquoted.
+	localBuildGateAbsolute = "node /home/me/.claude/skills/boss-build/toolbox/cron-gates/boss-build.mjs"
+	localSecretVal         = "lin_value_never_rendered"
+	localSecretVal2        = "lin_other_value"
 )
 
 func localBuildFactory() FactoryCron {
@@ -100,6 +103,21 @@ func countActions(p LocalPlan, r Resource, a Action) int {
 		}
 	}
 	return n
+}
+
+// cronUpdateFor is the plan's one update request for the live row id.
+func cronUpdateFor(t *testing.T, p LocalPlan, id string) *pb.UpdateCronJobRequest {
+	t.Helper()
+	var found []*pb.UpdateCronJobRequest
+	for _, op := range p.ops {
+		if op.updateCron != nil && op.updateCron.GetId() == id {
+			found = append(found, op.updateCron)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want one update for %s, got %d in\n%s", id, len(found), p.Text())
+	}
+	return found[0]
 }
 
 func fieldNames(c Change) []string {
@@ -399,6 +417,78 @@ func TestPlanLocal(t *testing.T) {
 				}
 				if req := p.ops[0].updateCron; req.GetId() != "c-nightly" || req.GetManagedBy() != localMarker || req.Prompt != nil {
 					t.Fatalf("adopt request %+v", req)
+				}
+			},
+		},
+		{
+			name: "unmarked factory row whose gate is the stage default spelled absolute and unquoted adopts with no gate diff",
+			cfg:  localCfg(nil),
+			state: func() *LocalState {
+				j := buildJob("factory-build", "")
+				j.GateCommand = localBuildGateAbsolute
+				return localState(localRepo(), nightlyJob(localMarker), j)
+			}(),
+			check: func(t *testing.T, p LocalPlan) {
+				c := changeFor(t, p, ResourceCron, "factory-build")
+				if c.Action != ActionAdopt || slices.Contains(fieldNames(c), "gateCommand") || c.NeedsConfirmation {
+					t.Fatalf("%+v\n%s", c, p.Text())
+				}
+				req := cronUpdateFor(t, p, "c-factory-build")
+				if req.GateCommand != nil || req.GetManagedBy() != localMarker {
+					t.Fatalf("adopt request %+v", req)
+				}
+			},
+		},
+		{
+			name: "own-marker factory row whose gate is the stage default spelled absolute and unquoted is unchanged",
+			cfg:  localCfg(nil),
+			state: func() *LocalState {
+				j := buildJob("factory-build", localMarker)
+				j.GateCommand = localBuildGateAbsolute
+				return localState(localRepo(), nightlyJob(localMarker), j)
+			}(),
+			check: func(t *testing.T, p LocalPlan) {
+				if c := changeFor(t, p, ResourceCron, "factory-build"); c.Action != ActionUnchanged {
+					t.Fatalf("%+v\n%s", c, p.Text())
+				}
+				if p.HasWrites() {
+					t.Fatalf("an equivalent gate wrote: %+v", p.ops)
+				}
+			},
+		},
+		{
+			name: "unmarked factory row whose gate runs a different script still plans a confirmed gate rewrite",
+			cfg:  localCfg(nil),
+			state: func() *LocalState {
+				j := buildJob("factory-build", "")
+				j.GateCommand = "node /home/me/.claude/skills/boss-build/toolbox/cron-gates/other.mjs"
+				return localState(localRepo(), nightlyJob(localMarker), j)
+			}(),
+			check: func(t *testing.T, p LocalPlan) {
+				c := changeFor(t, p, ResourceCron, "factory-build")
+				if c.Action != ActionAdopt || !slices.Contains(fieldNames(c), "gateCommand") || !c.NeedsConfirmation {
+					t.Fatalf("%+v\n%s", c, p.Text())
+				}
+				if req := cronUpdateFor(t, p, "c-factory-build"); req.GetGateCommand() != localBuildGate {
+					t.Fatalf("adopt request %+v", req)
+				}
+			},
+		},
+		{
+			name: "plain row without gateCommand adopts a live host-path gate and leaves it alone",
+			cfg:  localCfg(nil),
+			state: func() *LocalState {
+				j := nightlyJob("")
+				j.GateCommand = "/home/me/bin/nightly-gate.sh"
+				return localState(localRepo(), j, buildJob("factory-build", localMarker))
+			}(),
+			check: func(t *testing.T, p LocalPlan) {
+				c := changeFor(t, p, ResourceCron, "nightly")
+				if c.Action != ActionAdopt || slices.Contains(fieldNames(c), "gateCommand") {
+					t.Fatalf("%+v\n%s", c, p.Text())
+				}
+				if req := cronUpdateFor(t, p, "c-nightly"); req.GateCommand != nil {
+					t.Fatalf("adopt request touched the gate: %+v", req)
 				}
 			},
 		},

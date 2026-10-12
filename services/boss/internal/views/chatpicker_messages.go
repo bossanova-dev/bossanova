@@ -49,6 +49,16 @@ type chatPickerRefreshMsg struct {
 	daemonPhases map[string]string
 }
 
+// armedCallbacksMsg carries the armed GitHub callback per waiting chat
+// (BOS-1517), keyed by agent_session_id, plus the waiting set it was fetched
+// for so a reply that no longer matches can be discarded.
+type armedCallbacksMsg struct {
+	byChat map[string]*pb.GithubCallback
+	keys   []waitKey
+	// failed reports that at least one chat's lookup errored.
+	failed bool
+}
+
 // chatDeletedMsg signals that a chat was deleted (or failed to delete).
 type chatDeletedMsg struct {
 	agentSessionID string

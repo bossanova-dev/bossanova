@@ -82,6 +82,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
 | May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
 | Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
+| Where does a follow-up go?                          | `node followup-route.mjs route --candidates <file> --notes-out <file>`      |
 | Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
 | Is the local-verification record well-formed?       | `validateLocalVerification(config, body)` in `skill-config.mjs`             |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
@@ -97,8 +98,8 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    the reviewer's job, not this run's. Where the ticket was edited after the plan, the ticket wins.
    Where a premise no longer holds, build what the plan is for against the code as it is and record
    the departure. Where a criterion cannot be checked from a worktree (production access, a deployed
-   environment), implement the change and record what a human must verify under
-   `## Human follow-up` as open checklist items. Never print
+   environment), implement the change and pass what a human must verify to Step 7.3 as an
+   `outside-worktree` follow-up candidate, never as a hand-written ledger line. Never print
    or commit secret values.
 3. **Commit per task, never leave work behind.** Tagless conventional commits with a scope
    (`feat(scope): …`), path-scoped (`git commit --only -m "…" -- <files>`), never `git add -A`. Leave
@@ -308,8 +309,10 @@ and 8).
   has a plan. None ⇒ `NO_CHANGE` (`all agent-build planned tickets are blocked, ineligible, epic
 parents, or missing plans`).
 
-`agent-question` never blocks; copy the plan's open questions into `## Open questions` as open
-checklist items. Selection has no side effects: nothing is claimed or moved until Step 3. Detail:
+`agent-question` never blocks selection. Build the option the plan chose for each open question
+(when it recorded none, decide per Rule 1) and pass each to Step 7.3 as a `plan-question` candidate
+with `chosen` and `alternative`; it becomes an `## Autonomous decisions` line. Selection has no
+side effects: nothing is claimed or moved until Step 3. Detail:
 [`references/claim-and-eligibility.md`](references/claim-and-eligibility.md).
 
 Record the ticket in the lock (`"$LOCK" acquire "$BLI_RUNID" <TICKET-ID>`). Capture the ticket's
@@ -659,9 +662,16 @@ Every route from Step 6 comes through here.
    when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Run
    `validateVerifyOnlyEvidence(config, body)` and `validateLocalVerification(config, body)` over the
    body before publishing it. Fix local-verification findings in the body and validate again; they
-   never change the route or yield BLOCKED. Always include the checklist sections
-   `## Human follow-up` and `## Open questions`; run `completion-gate.mjs followups --body-file <path>`
-   alongside the evidence validators and fix malformed sections before publishing. Never put the
+   never change the route or yield BLOCKED. Write every candidate follow-up as `{text, source}` (plus
+   the optional fields `FOLLOWUP_SOURCES` in the helper names per source: `outside-worktree`, `host`,
+   `stage-evidence`, `plan-question`) to a JSON file and run
+   `node "$BOSS_BUILD_TOOLBOX/followup-route.mjs" route --candidates <file> --notes-out <notes-file>`.
+   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## Host notes` when present)
+   into the body and append its `decisions` to `## Autonomous decisions`; each `warnings` entry names
+   an item it parked or dropped for being unclassified or incomplete. When the notes file holds any
+   entry, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger host-environment --from <notes-file>`
+   (never fatal). Run `completion-gate.mjs followups --body-file <path>` alongside the evidence
+   validators and fix malformed sections before publishing. Never put the
    phrase `do not merge` in a title or body except through the PARTIAL marker (boss-epic's merge
    gate matches it).
 
@@ -769,7 +779,7 @@ POST_READY_VERDICT="$(node "$BOSS_BUILD_TOOLBOX/pr-check-state.mjs" merge-state 
 test "$(printf '%s' "$POST_READY_VERDICT" | jq -r .blocking)" = "false" || exit 1
 ```
 
-Then: move the ticket `.inProgress → .inReview` (not on `PARTIAL`), comment the PR URL on the ticket, and publish what the route owes — findings ledger, or
+Then, on `REVIEW_READY`, post the `boss/build` receipt on this head (the Step 12 **Receipt** block) before the state move: verify judges every In Review head and parks one with no receipt. Then move the ticket `.inProgress → .inReview` (not on `PARTIAL`), comment the PR URL on the ticket, and publish what the route owes — findings ledger, or
 the PARTIAL title/body/marker — per [`references/publish.md`](references/publish.md). The CI reading
 that makes a route green is `CI_WAIT_STATE=settled`; `timeout`/`unknown` is not green. A red reading
 after readying unwinds first (body back to the plain form, `gh pr ready --undo`), then reports
@@ -830,7 +840,7 @@ may change it.
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
 - **Receipt** (`REVIEW_READY` only, before Completion): post the `boss/build` commit status on the
-  head this run pushed. `posted` ⇒ done; a non-zero exit or a moved branch only warns — never
+  head this run pushed (again, when Step 10 moved the head after Step 9's post). `posted` ⇒ done; a non-zero exit or a moved branch only warns — never
   certify a head this run did not push. `OUTCOME` never changes.
 
   ```bash

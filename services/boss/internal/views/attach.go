@@ -241,6 +241,9 @@ type AttachModel struct {
 	overrideAgent string
 	// recordedAgent is authoritative for existing chats in mixed-agent sessions.
 	recordedAgent string
+	// armedNote is the chat picker's armed line for a waiting chat (BOS-1517),
+	// rendered under the launching line. Empty for any other chat.
+	armedNote string
 
 	// launchStartedAt is captured in NewAttachModel so the minimum-display
 	// budget covers the entire launch path, not just the post-RPC tail.
@@ -286,6 +289,10 @@ func (m *AttachModel) SetTelemetry(client telemetry.Client) {
 // SetOverrideAgent supplies a per-chat agent override that's forwarded as
 // RecordChat's agent_name. Empty inherits the parent session's AgentName.
 func (m *AttachModel) SetOverrideAgent(name string) { m.overrideAgent = name }
+
+// SetArmedNote supplies what a waiting chat is parked on, shown as a second
+// line while launching. Empty leaves the launching view unchanged.
+func (m *AttachModel) SetArmedNote(note string) { m.armedNote = note }
 
 // NewAttachModel creates an AttachModel for the given session.
 // If resumeID is non-empty, Claude Code will be launched with --resume.
@@ -1040,6 +1047,14 @@ func (m AttachModel) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 			fmt.Sprintf("Launching %s for %s…  Press Ctrl+X to detach", agentDisplayName(m.displayAgentName()), title)))
+		if m.armedNote != "" {
+			note := m.armedNote
+			if avail := m.width - 2*statusLinePadding; m.width > 0 && avail > 0 && ansi.StringWidth(note) > avail {
+				note = ansi.Truncate(note, avail, "…")
+			}
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render(note)))
+		}
 		return tea.NewView(b.String())
 	}
 

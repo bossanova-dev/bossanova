@@ -60,6 +60,11 @@ export const TRIGGERS = Object.freeze(
         why: 'An unknown gate cannot establish that the branch passed verification.',
         fix: 'Restore gate visibility and obtain a terminal verdict.',
       },
+      'host-environment': {
+        statement: 'The build host environment prevented part of the run.',
+        why: 'A host problem silently reduces what every run on this host can do.',
+        fix: 'Repair the host (credentials, tools), not the PR.',
+      },
     }).map(([name, value]) => [name, Object.freeze(value)]),
   ),
 )

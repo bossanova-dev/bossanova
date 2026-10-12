@@ -78,6 +78,7 @@ go_library(
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/errortrack",
+        "//lib/bossalib/gatecmd",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/githubcallback",
         "//lib/bossalib/keyringutil",

@@ -12,6 +12,7 @@ package views
 //	chatpicker_switch.go    the switch-account concern (BOS-171)
 //	chatpicker_agent.go     the agent-select overlay
 //	chatpicker_table.go     chat-table construction and layout arithmetic
+//	chatpicker_armed.go     the armed-callback context for waiting chats
 //	chatpicker_view.go      the per-mode renderers
 
 import (
@@ -43,6 +44,16 @@ type ChatPickerModel struct {
 	daemonWaitingReasons map[string]string
 	// daemonPhases carries the skill-reported working phase from status polling.
 	daemonPhases map[string]string
+	// armedCallbacks maps agent_session_id → the GitHub callback that waiting
+	// chat is parked on (BOS-1517), matched to the daemon's waiting reason.
+	// armedKeys is the waiting (chat, reason) set last fetched for, so a steady
+	// poll issues no ListGithubCallbacks. See chatpicker_armed.go.
+	armedCallbacks map[string]*pb.GithubCallback
+	armedKeys      []waitKey
+	// armedRetriedKeys is the waiting set whose failed fetch was already
+	// retried once, so a transient error recovers on the next poll while a
+	// persistent one (an older daemon) costs at most one extra fetch per set.
+	armedRetriedKeys []waitKey
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
@@ -299,6 +310,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatTitlesBackfilledMsg:
 		return m.handleTitlesBackfilled(msg)
+
+	case armedCallbacksMsg:
+		return m.handleArmedCallbacks(msg)
 
 	case chatDeletedMsg:
 		return m.handleChatDeleted(msg)

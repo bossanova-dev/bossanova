@@ -328,15 +328,19 @@ func (m ChatPickerModel) cancelRename() ChatPickerModel {
 	return m
 }
 
-// keyOpenChat handles [enter]: attach to the selected chat.
+// keyOpenChat handles [enter]: attach to the selected chat. A waiting chat
+// carries its armed line, untruncated, so the launching view can say what the
+// chat is parked on (BOS-1517).
 func (m ChatPickerModel) keyOpenChat() (tea.Model, tea.Cmd) {
 	if chat := m.selectedChat(); chat != nil {
 		resumeID := chat.AgentSessionId
+		armedNote := m.armedLine(chat)
 		return m, func() tea.Msg {
 			return switchViewMsg{
 				view:      ViewAttach,
 				sessionID: m.sessionID,
 				resumeID:  resumeID,
+				armedNote: armedNote,
 			}
 		}
 	}

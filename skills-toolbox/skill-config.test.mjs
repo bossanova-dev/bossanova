@@ -17,6 +17,7 @@ import {
   globToRegExp,
   DEFAULT_CONFIG,
   verifyAlwaysHumanPaths,
+  verifyPolicyFromConfigText,
   DEFAULT_TRACKER_STATES,
   DEFAULT_PIPELINE_LABELS,
   CONFIG_FILENAME,
@@ -4545,6 +4546,25 @@ test('verifyAlwaysHumanPaths defaults to an empty list and returns configured gl
   assert.equal(config.verifyDefaults.alwaysHumanPaths.length, 2)
 })
 
+test('verifyDefaults.requireGreenBase is an opt-in boolean', () => {
+  assert.equal(verifyPolicyFromConfigText('{}', 'test').requireGreenBase, false)
+  assert.equal(
+    verifyPolicyFromConfigText(
+      JSON.stringify({ verifyDefaults: { requireGreenBase: true } }),
+      'test',
+    ).requireGreenBase,
+    true,
+  )
+  assert.throws(
+    () =>
+      verifyPolicyFromConfigText(
+        JSON.stringify({ verifyDefaults: { requireGreenBase: 'yes' } }),
+        'test',
+      ),
+    /requireGreenBase must be a boolean/,
+  )
+})
+
 test('validateConfig rejects a malformed verifyDefaults block', () => {
   assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG }, 'test'))
   assert.doesNotThrow(() =>
@@ -4626,6 +4646,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
   assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
   assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
   assert.deepEqual(verifyPolicyFromConfigText('{}', 'base'), {
+    requireGreenBase: false,
     alwaysHumanPaths: [],
     humanReview: { database: [], security: [], ui: [] },
   })
@@ -4634,6 +4655,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     verifyDefaults: { alwaysHumanPaths: ['billing/**'], humanReview: { ui: ['web/**'] } },
   })
   assert.deepEqual(verifyPolicyFromConfigText(text, 'base'), {
+    requireGreenBase: false,
     alwaysHumanPaths: ['billing/**'],
     humanReview: { database: [], security: [], ui: ['web/**'] },
   })

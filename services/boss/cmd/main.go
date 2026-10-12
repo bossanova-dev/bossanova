@@ -910,6 +910,15 @@ func daemonCmd() *cobra.Command {
 	}
 	install.Flags().Bool("force", false, "Overwrite existing service file")
 
+	start := &cobra.Command{
+		Use:   "start",
+		Short: "Start the bossd daemon",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonStart(cmd)
+		},
+	}
+	addDaemonStartFlags(start)
+
 	stop := &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the bossd daemon",
@@ -953,13 +962,7 @@ func daemonCmd() *cobra.Command {
 				return runDaemonStatus(cmd)
 			},
 		},
-		&cobra.Command{
-			Use:   "start",
-			Short: "Start the bossd daemon",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runDaemonStart(cmd)
-			},
-		},
+		start,
 		stop,
 		restart,
 		&cobra.Command{

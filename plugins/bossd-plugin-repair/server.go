@@ -1168,13 +1168,27 @@ func (m *repairMonitor) waitForPostRepairAssessment(
 
 // advanceStuckSession checks if a session is stuck in ImplementingPlan and
 // should be advanced to the next state. A session is considered stuck when:
-// 1. It is in ImplementingPlan state
-// 2. It has no active Claude Code chat (heartbeat tracker shows no live processes)
-// 3. Its updated_at is older than the configured stuck timeout
-// 4. It has no running workflows (is idle)
+//  1. It is in ImplementingPlan state
+//  2. It has a branch or a PR — a zero-output session (quick chat) has
+//     neither, has no PR lifecycle to enter, and is never advanced (BOS-1514)
+//  3. It has no active Claude Code chat (heartbeat tracker shows no live processes)
+//  4. Its updated_at is older than the configured stuck timeout
+//  5. It has no running workflows (is idle)
+//
 // Returns true if the session was advanced.
 func (m *repairMonitor) advanceStuckSession(ctx context.Context, sess *bossanovav1.Session) bool {
 	if sess.GetState() != bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		return false
+	}
+
+	// The Session proto does not carry is_quick_chat; a quick chat runs in
+	// the repo checkout, so it leaves the branch empty and never has a PR.
+	// PrNumber is checked for presence, not GetPrNumber() == 0. The host's
+	// FireSessionEvent guard is the authoritative backstop.
+	if sess.GetBranchName() == "" && sess.PrNumber == nil {
+		m.logger.Debug().
+			Str("session_id", sess.GetId()).
+			Msg("zero-output session (no branch, no PR), not advancing")
 		return false
 	}
 

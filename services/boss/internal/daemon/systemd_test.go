@@ -662,7 +662,7 @@ func stubSocketReachableAfter(t *testing.T, failures int) {
 // executable, so ResolveBossdPath finds it and the fallback spawn can really
 // start it. It exits immediately: the test's dial stub, not the child, decides
 // when the socket becomes reachable.
-func writeFakeBossd(t *testing.T) string {
+func writeFakeBossd(t *testing.T) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -673,7 +673,6 @@ func writeFakeBossd(t *testing.T) string {
 	original := executablePath
 	t.Cleanup(func() { executablePath = original })
 	executablePath = func() (string, error) { return filepath.Join(dir, "boss"), nil }
-	return bossdPath
 }
 
 func writeBossdUnitFile(t *testing.T, home string) {

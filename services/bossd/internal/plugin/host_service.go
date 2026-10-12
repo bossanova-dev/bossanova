@@ -1082,10 +1082,23 @@ func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanova
 		AttemptCount: session.AttemptCount,
 		MaxAttempts:  machine.MaxAttempts,
 		HasPR:        hasPR,
+		IsQuickChat:  session.IsQuickChat,
 	})
 
 	// Fire event
 	event := protoToSessionEvent(req.GetEvent())
+
+	// A quick chat has no branch to push and no PR to await, so the machine
+	// guard refuses PlanComplete out of ImplementingPlan (BOS-1514). Name that
+	// refusal as a precondition failure rather than a generic fire error so a
+	// plugin can tell "this session can never enter the PR pipeline" apart
+	// from a transient or illegal-state error. Nothing is persisted.
+	if session.IsQuickChat && session.State == machine.ImplementingPlan &&
+		event == machine.PlanComplete && !sm.CanFire(event) {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+			"session %s is a quick chat: it cannot be advanced into the PR pipeline", session.ID)
+	}
+
 	if err := sm.Fire(event); err != nil {
 		return nil, fmt.Errorf("fire event %v on state %v: %w", event, session.State, err)
 	}

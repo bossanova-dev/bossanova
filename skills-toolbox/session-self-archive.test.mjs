@@ -11,6 +11,7 @@ import {
   UsageError,
   decideSelfArchive,
   isUnattended,
+  isZeroOutput,
   parseArgs,
   runSelfArchive,
 } from './session-self-archive.mjs'
@@ -71,6 +72,15 @@ describe('decideSelfArchive — one test per table row', () => {
       reasonOf(eligible({ env: baseEnv({ BOSS_CRON_JOB_ID: 'job-1' }) })),
       'skip:cron-finalize-owns-cleanup',
     )
+  })
+
+  it('a zero-output cron run archives itself, whatever state the shared checkout is in', () => {
+    const env = baseEnv({ BOSS_CRON_JOB_ID: 'job-1', BOSS_ZERO_OUTPUT: 'true' })
+    assert.equal(reasonOf(eligible({ env })), 'archive:')
+    assert.equal(reasonOf(eligible({ env, worktreeClean: false })), 'archive:')
+    assert.equal(reasonOf(eligible({ env, worktreeClean: null })), 'archive:')
+    // The other rules still hold: an unfinished outcome keeps the session for inspection.
+    assert.equal(reasonOf(eligible({ env, outcome: 'blocked' })), 'skip:outcome-blocked')
   })
 
   it('every finished outcome is eligible; any other outcome skips as outcome-<value>', () => {
@@ -441,6 +451,20 @@ describe('runSelfArchive', () => {
       assert.equal(calls.spawn.length, 0, `no spawn for ${want}`)
       assert.equal(calls.opened.length, 0, `no log opened for ${want}`)
     }
+  })
+
+  it('a zero-output cron run launches its own archive without reading the shared checkout', async () => {
+    const { deps, calls } = harness({
+      env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j', BOSS_ZERO_OUTPUT: 'true' }),
+      porcelain: ' M someone-elses-work.go\n',
+    })
+    const result = await runSelfArchive(OPTS, deps)
+    assert.equal(`${result.verdict}:${result.reason}`, 'archive:')
+    assert.equal(calls.spawn.length, 1)
+    assert.ok(
+      calls.execFile.every(([file]) => file !== 'git'),
+      "the repository checkout is not this run's to inspect",
+    )
   })
 
   it('environment-only skips never read the daemon or git', async () => {

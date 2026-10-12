@@ -59,6 +59,14 @@ type chatPickerStub struct {
 	// picker dispatched; titleErr is the canned answer.
 	titleUpdates []titleUpdateCall
 	titleErr     error
+
+	// Armed-callback context (BOS-1517). callbacks is what ListGithubCallbacks
+	// answers, filtered by TargetChatId; callbacksErr is the canned failure; and
+	// callbackCalls records every request the picker dispatched, so a test can
+	// assert the key-diffed fetch issued exactly the calls it should.
+	callbacks     []*pb.GithubCallback
+	callbacksErr  error
+	callbackCalls []*pb.ListGithubCallbacksRequest
 }
 
 // titleUpdateCall is one recorded UpdateChatTitle RPC.
@@ -257,8 +265,28 @@ func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("u
 func (s *chatPickerStub) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
-	panic("unused")
+func (s *chatPickerStub) ListGithubCallbacks(_ context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callbackCalls = append(s.callbackCalls, req)
+	if s.callbacksErr != nil {
+		return nil, s.callbacksErr
+	}
+	var out []*pb.GithubCallback
+	for _, cb := range s.callbacks {
+		if req.TargetChatId != nil && cb.GetTargetChatId() != req.GetTargetChatId() {
+			continue
+		}
+		out = append(out, cb)
+	}
+	return out, nil
+}
+
+// listCallbackCalls returns a copy of the recorded ListGithubCallbacks requests.
+func (s *chatPickerStub) listCallbackCalls() []*pb.ListGithubCallbacksRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.ListGithubCallbacksRequest(nil), s.callbackCalls...)
 }
 func (s *chatPickerStub) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
 	panic("unused")

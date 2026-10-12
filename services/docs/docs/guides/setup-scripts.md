@@ -49,6 +49,14 @@ cli={`boss repo update my-repo \\
 mcp="update_repo"
 />
 
+:::tip Copy only what agents need
+Every key in the worktree `.env` reaches every agent session in that
+worktree. Rather than copying your whole `.env`, write only the keys
+agents need into the worktree (for example, filter it with
+`grep -E '^(export )?(LINEAR_API_KEY|SENTRY_ORG)=' "$REPO_DIR/.env" > "$WORKTREE_DIR/.env"`)
+and leave other secrets in the main checkout.
+:::
+
 ## Automatic `.env` loading
 
 Once a worktree contains a `.env` file, Bossanova loads it into the
@@ -76,6 +84,12 @@ worktree `.env` is enough. See the [MCP guide](./mcp.md).
 - **Managed values win.** The overlay is lowest-precedence: Bossanova's
   own `BOSS_*` variables and internal session values are never overridden
   by a repo `.env`, even if it defines the same key.
+- **CLI-redirecting keys are ignored.** `BOSS_SETTINGS_PATH`,
+  `BOSS_KEYRING_BACKEND`, `BOSS_WEB_PORT`, `BOSS_CLOUD_URL` and
+  `BOSSD_ORCHESTRATOR_URL` in a worktree `.env` are never passed to a
+  session, so a development daemon's settings in your `.env` cannot point
+  agents at a different Bossanova instance. Values Bossanova sets itself
+  are unaffected.
 - **Missing is fine.** A worktree with no `.env` (or an empty/unreadable
   one) is a no-op: nothing is loaded and the session starts normally.
 - **The parser is intentionally minimal.** Blank lines and `#` comment

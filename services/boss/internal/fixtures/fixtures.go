@@ -39,6 +39,10 @@ type World struct {
 	// list's waiting-reason sub-row is read from SessionStatusEntry.waiting_reason
 	// rather than from the Session itself (BOS-668).
 	SessionStatuses []*pb.SessionStatusEntry
+	// GithubCallbacks are the armed callbacks the mock daemon's
+	// ListGithubCallbacks answers. Only armed-verify seeds them: the chat picker
+	// reads a waiting chat's trigger and expiry from here (BOS-1517).
+	GithubCallbacks []*pb.GithubCallback
 	CronJobs        []*pb.CronJob
 	Accounts        []*pb.Account
 	// CreateSessionScript, when non-empty, scripts the mock daemon's
@@ -756,6 +760,87 @@ func WaitingCallbackSessionStatuses() []*pb.SessionStatusEntry {
 			WaitingReason: WaitingCallbackReason,
 		},
 		{SessionId: "sess-668-working", Status: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}
+}
+
+// ArmedVerifyPRNumber is the PR the BOS-1517 verify chat is armed on.
+const ArmedVerifyPRNumber = 2960
+
+// ArmedVerifyReason is the daemon's waiting reason for the armed verify chat,
+// composed by the shared helper so it cannot drift from the daemon's wording.
+var ArmedVerifyReason = displaystatus.CallbackWaitingReason(
+	"checks_passed_ready", "acme", "my-app", ArmedVerifyPRNumber,
+)
+
+// ArmedVerifyPark is the verify park the session carries as its attention
+// summary, in the daemon's "needs human: <reason>" shape (HydrateVerifyAttention).
+const ArmedVerifyPark = "needs human: ledger-open"
+
+// ArmedVerifyCallbackMessage is the armed callback's prompt body. It is secret
+// on the wire, so a proof can assert it never reaches the screen.
+const ArmedVerifyCallbackMessage = "/boss-verify 2960"
+
+// ArmedVerifyWorld builds the BOS-1517 dataset: one NEEDS_HUMAN session whose
+// verify chat is parked on an armed checks_passed_ready callback, next to the
+// build chat that armed it. The chat picker must show "⢿ checks_passed_ready"
+// in the verify row and the line
+// "verify · awaiting checks_passed_ready on acme/my-app#2960 · needs human: ledger-open · expires in …";
+// Home must still hide the routine wait (#2901).
+//
+// The callback's expires_at is far in the future rather than six days past the
+// fixture clock: the picker measures expiry against the real wall clock, and
+// fixedNow is pinned in the past, so a near offset would already have expired at
+// capture and the picker would rightly show nothing (same reason the accounts
+// fixtures use far-future cooldowns).
+func ArmedVerifyWorld() World {
+	const (
+		sessID   = "sess-1517-armed"
+		verifyID = "claude-1517-verify"
+		buildID  = "claude-1517-build"
+	)
+	sess := &pb.Session{
+		Id: sessID, RepoId: "repo-1", RepoDisplayName: "my-app",
+		Title: "Reconcile the payments ledger", BranchName: "boss/ledger-reconcile",
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		PrNumber:      i32(ArmedVerifyPRNumber),
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			Summary:        ArmedVerifyPark,
+			Since:          ts(-20 * time.Minute),
+		},
+		CreatedAt:    ts(-4 * time.Hour),
+		WorktreePath: "/Users/demo/worktrees/my-app/ledger-reconcile",
+	}
+	in := displaystatus.Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}
+	out := displaystatus.Compute(in)
+	sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = out.Label, out.Intent, out.Spinner
+	sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
+	return World{
+		Repos:    Repos(),
+		Sessions: []*pb.Session{sess},
+		// verify is the newer chat, so it sorts first and the picker's cursor
+		// lands on it.
+		Chats: []*pb.ClaudeChat{
+			{Id: "chat-1517-verify", AgentSessionId: verifyID, SessionId: sessID, Title: "verify", CreatedAt: ts(-30 * time.Minute)},
+			{Id: "chat-1517-build", AgentSessionId: buildID, SessionId: sessID, Title: "Implement the ledger reconcile", CreatedAt: ts(-4 * time.Hour)},
+		},
+		ChatStatuses: []*pb.ChatStatusEntry{
+			{AgentSessionId: verifyID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: ArmedVerifyReason, LastOutputAt: ts(-30 * time.Minute)},
+			{AgentSessionId: buildID, Status: pb.ChatStatus_CHAT_STATUS_IDLE, LastOutputAt: ts(-35 * time.Minute)},
+		},
+		SessionStatuses: []*pb.SessionStatusEntry{
+			{SessionId: sessID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: ArmedVerifyReason},
+		},
+		GithubCallbacks: []*pb.GithubCallback{{
+			Id: "cb-1517-verify", TargetChatId: verifyID,
+			RepoOwner: "acme", RepoName: "my-app", PrNumber: ArmedVerifyPRNumber,
+			Trigger: "checks_passed_ready", State: "active",
+			Message:   ArmedVerifyCallbackMessage,
+			CreatedAt: ts(-30 * time.Minute),
+			ExpiresAt: ts(500 * 24 * time.Hour),
+		}},
 	}
 }
 

@@ -353,17 +353,18 @@ deps:
 	done
 	@echo "==> Done. Run 'make build' to build binaries ('make' is now a fast affected lint+test check; 'make all-full' is the full rebuild)."
 
-## setup-worktree: Copy gitignored local files (.env, .node-version, .bazelrc.user, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
+# Keys from the checkout's .env that setup-worktree writes into an agent worktree's .env
+# (scripts/write-worktree-env.mjs). Everything else stays in the checkout: an agent session
+# inherits the worktree .env, so only keys agents actually need belong here. Dev-daemon keys
+# (BOSS_SETTINGS_PATH, BOSS_KEYRING_BACKEND, BOSS_WEB_PORT, BOSS_CLOUD_URL,
+# BOSSD_ORCHESTRATOR_URL) are deliberately absent (BOS-1512).
+WORKTREE_ENV_KEYS := LINEAR_API_KEY,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID,BOSSO_TEST_DATABASE_URL,BOSS_PROOF_R2_BUCKET,BOSS_PROOF_PUBLIC_BASE_URL,BOSS_PROOF_HW_ENCODE,CC
+
+## setup-worktree: Write the WORKTREE_ENV_KEYS subset of .env and copy gitignored local files (.node-version, .bazelrc.user, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
 	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
 		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
 		exit 1; \
-	fi
-	@if [ -f "$$REPO_DIR/.env" ]; then \
-		cp "$$REPO_DIR/.env" "$$WORKTREE_DIR/.env"; \
-		echo "Copied .env into $$WORKTREE_DIR"; \
-	else \
-		echo "No .env in $$REPO_DIR — skipping"; \
 	fi
 	@# Propagate the gitignored per-worktree BuildBuddy remote-cache config
 	@# (.bazelrc.user is %workspace%-relative, so each worktree needs its own).
@@ -379,6 +380,15 @@ setup-worktree:
 		echo "Copied .node-version into $$WORKTREE_DIR"; \
 	else \
 		echo "No .node-version in $$REPO_DIR — skipping"; \
+	fi
+	@# Only the WORKTREE_ENV_KEYS subset of the checkout .env reaches the worktree; the
+	@# script skips a missing .env itself. Runs after .node-version so a nodenv shim resolves
+	@# the pinned node. A missing node or a script failure is non-fatal and copies nothing.
+	@if command -v node >/dev/null 2>&1; then \
+		node "$$WORKTREE_DIR/scripts/write-worktree-env.mjs" --from "$$REPO_DIR/.env" --to "$$WORKTREE_DIR/.env" --keys "$(WORKTREE_ENV_KEYS)" \
+			|| echo "write-worktree-env failed — no .env keys copied (non-fatal)"; \
+	else \
+		echo "node not found on PATH — skipping .env (no keys copied)"; \
 	fi
 	@if [ -d "$$REPO_DIR/.config" ]; then \
 		mkdir -p "$$WORKTREE_DIR/.config"; \

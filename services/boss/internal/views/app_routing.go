@@ -70,6 +70,7 @@ func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 		a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, msg.sessionID, msg.resumeID)
 		a.attach.SetTelemetry(a.telemetry)
 		a.attach.SetOverrideAgent(msg.agentName)
+		a.attach.SetArmedNote(msg.armedNote)
 		return a, a.attach.Init()
 	case ViewLogin:
 		cmd := a.enterLogin()

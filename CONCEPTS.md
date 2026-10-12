@@ -315,6 +315,19 @@ A session whose plan is to draft or refresh a tracker issue rather than implemen
 
 A planning session should not reserve its tracker issue as a **Duplicate target**. If it has a concrete pull request or branch target, those targets still reserve normally because they represent specific work surfaces rather than the planning handoff itself.
 
+### Quick chat
+
+A zero-output session: a visible chat (planning, recon, plan review) that runs in the repo checkout
+with no worktree, no branch and no pull request, so it produces no implementation output by design.
+A scheduled job declared zero-output produces quick-chat sessions; the job-level declaration and the
+session-level fact are two layers of one concept.
+
+A quick chat never enters the PR pipeline: it may not complete its plan into pushing a branch or
+awaiting checks, and every writer of session state — state-machine transitions, plugin-fired events,
+and bulk recovery sweeps alike — must refuse to advance it there. Plugins cannot see the flag directly
+and recognise a quick chat by having neither a branch nor a PR; the daemon makes the final call. An
+unattended quick chat whose run has died is reaped, not advanced.
+
 ### Liveness signal
 
 An affirmative marker scraped from a **Chat pane**'s current screen that says the agent is
@@ -724,6 +737,21 @@ likely to be stale is the one it consults first. When no candidate resolves, the
 one tried and why it lost: a tool that cannot be located is otherwise indistinguishable from a
 capability the environment does not have, and that confusion turns a missing file into a silent,
 permanent degrade (see **Callback**).
+
+### Worktree environment file
+
+The per-worktree file of environment assignments that the daemon layers beneath the environment of
+every agent process it starts in that worktree, whatever the launch route — interactive chat,
+headless run, resume, rotation, or repair.
+
+Because the daemon reads only the worktree's own file, never the checkout's, that file is the single
+boundary between the operator's local secrets and the agents. It is therefore written at worktree
+provisioning from an explicit allowlist of keys, never copied wholesale, so a secret newly added to
+the checkout stays out of agents until someone deliberately allows it. Its entries rank below
+anything the daemon sets itself, and keys that would point an agent's CLI at a different Bossanova
+instance are ignored even when present — a second layer for files written by hand or before the
+allowlist existed. A worktree provisioned before the allowlist keeps its old file until it is
+recreated or rewritten.
 
 ### Local-only mode
 
@@ -2862,6 +2890,21 @@ cycle regardless of the verdict. The advisory path is bounded rather than open-e
 per run, at most one grouped response round per head — and a fix that is nonetheless taken from an
 advisory finding gets the same finalize re-verification a fix-cycle repair would, so the
 reviewed-tip claim is re-established rather than inherited.
+
+### Follow-up ledger
+
+The two checklist sections of a build's pull-request body (human follow-up and open questions)
+whose unchecked items, or whose absence, park the PR at verification as needing a person. It is
+distinct from the Bazel **Ledger** and the **Review ledger** above. This one is the PR's own
+statement that it is not finished.
+
+Only items about the change itself belong in the ledger. Each candidate follow-up is given a
+declared **source**, and the source decides where it goes. A criterion that can only be checked
+outside a worktree parks the PR. A build-host problem becomes a non-gating host note. Evidence a
+later stage produces, and a plan question the build already answered, become autonomous-decision
+lines. An item with no recognised source parks, so a forgotten declaration falls back to the
+conservative outcome and never to a silent merge. Both sections are always present, with an
+explicit "none" when empty, because a missing section parks just as an open item does.
 
 ## Proof capture
 

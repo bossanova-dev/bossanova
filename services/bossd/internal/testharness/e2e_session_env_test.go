@@ -175,6 +175,32 @@ func TestE2ESessionEnvIncludesWorktreeDotenv(t *testing.T) {
 	if got := env["BOSS_SESSION_ID"]; got != sess.ID {
 		t.Errorf("tmux env BOSS_SESSION_ID = %q, want managed %q (.env must not shadow managed keys)", got, sess.ID)
 	}
+
+	// BOS-1511: the .env secret must reach the session environment and never
+	// any argv tmux was exec'd with — argv is world-readable through ps, and
+	// the tmux server a launch forks keeps it for life.
+	sawScript := false
+	for i, raw := range fake.RawCalls() {
+		if strings.Contains(strings.Join(raw, " "), "lin_api_e2e_probe") {
+			t.Errorf("raw tmux invocation %d carries the worktree .env secret in its argv", i)
+		}
+		if strings.Join(raw, " ") == "start-server ; source-file -" {
+			sawScript = true
+		}
+	}
+	if !sawScript {
+		t.Fatalf("no stdin-script new-session invocation recorded; the argv sweep proved nothing")
+	}
+	chats, err := h.AgentChats.ListBySession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].TmuxSessionName == nil {
+		t.Fatalf("expected exactly 1 chat with a tmux session name, got %d", len(chats))
+	}
+	if got := fake.SessionEnv(*chats[0].TmuxSessionName)["LINEAR_API_KEY"]; got != "lin_api_e2e_probe" {
+		t.Errorf("session environment LINEAR_API_KEY = %q, want the worktree .env value", got)
+	}
 }
 
 // linearPtr is a small *string helper for setting repo-config secrets in tests.

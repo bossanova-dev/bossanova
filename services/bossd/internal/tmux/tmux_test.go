@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -16,11 +17,28 @@ import (
 
 // mockCommandFactory captures the command arguments for testing.
 type mockCommandFactory struct {
+	// calls is the LOGICAL call log. NewSession's script invocation (BOS-1511)
+	// is recorded as the `tmux new-session …` argv it delivered on stdin, so
+	// assertions keyed on new-session keep reading the command tmux ran.
 	calls [][]string
+	// rawCalls is every process argv exactly as it was exec'd — what ps shows.
+	rawCalls [][]string
 }
 
 func (m *mockCommandFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
-	m.calls = append(m.calls, append([]string{name}, args...))
+	raw := append([]string{name}, args...)
+	m.rawCalls = append(m.rawCalls, raw)
+	m.calls = append(m.calls, raw)
+	if name == "tmux" && IsNewSessionScript(args) {
+		idx := len(m.calls) - 1
+		// cat echoes the stdin script into the sink, which swaps the raw
+		// placeholder for the decoded logical call; Run waits for the copy.
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdout = NewScriptSink(func(logical []string) {
+			m.calls[idx] = append([]string{"tmux"}, logical...)
+		})
+		return cmd
+	}
 	// Return a command that immediately succeeds.
 	return exec.CommandContext(ctx, "true")
 }
@@ -148,9 +166,15 @@ func TestNewSession_Args(t *testing.T) {
 			if len(mock.calls) == 0 {
 				t.Fatal("expected at least one call")
 			}
+			// The process argv carries no command and no env (BOS-1511): the
+			// logical new-session argv travels on stdin instead.
+			wantRaw := []string{"tmux", "start-server", ";", "source-file", "-"}
+			if raw := mock.rawCalls[0]; !equalSlices(raw, wantRaw) {
+				t.Errorf("process argv = %v, want %v", raw, wantRaw)
+			}
 			call := mock.calls[0]
 			if !equalSlices(call, tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, call)
+				t.Errorf("decoded stdin argv: expected %v, got %v", tt.expected, call)
 			}
 		})
 	}
@@ -4675,5 +4699,336 @@ func TestSendLine_UnconfirmedCaptureFailureSkipsRetry(t *testing.T) {
 	want := []string{"literal", "enter"}
 	if len(kinds) != len(want) || kinds[0] != want[0] || kinds[1] != want[1] {
 		t.Fatalf("send-keys sequence = %v, want %v (no clear, no retry Enter)", kinds, want)
+	}
+}
+
+// TestNewSession_EnvNeverReachesProcessArgv is the BOS-1511 regression. Every
+// argv NewSession hands to exec — new-session, bindDetachKeys, the option and
+// set-environment calls — is world-readable through ps, and the first
+// new-session on a host forks the tmux server, which keeps its argv for life.
+// No session-environment value may appear in any of them; all of them must
+// still reach tmux byte-exact through the stdin script.
+func TestNewSession_EnvNeverReachesProcessArgv(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty") // so the set-environment call runs and is swept too
+	sentinels := map[string]string{
+		"SECRET_SPACE":   "s3nt-space value",
+		"SECRET_QUOTES":  `s3nt-'single' "double" '\''`,
+		"SECRET_EXPAND":  `s3nt-$HOME ~ #{session_name} ; %if \ end`,
+		"SECRET_NEWLINE": "s3nt-line1\nline2",
+		// Large, but still under the ErrCommandTooLong guard.
+		"SECRET_LARGE": "s3nt-large-" + strings.Repeat("x", 8*1024),
+	}
+	const daemonID = "s3nt-daemon"
+
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory), WithDaemonID(daemonID))
+	if err := c.NewSession(context.Background(), NewSessionOpts{
+		Name:         "sweep-sess",
+		WorkDir:      "/tmp/wt",
+		Command:      []string{"claude", "--session-id", "abc"},
+		Env:          sentinels,
+		RemainOnExit: true,
+	}); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// new-session, two bind-keys, four set-options, remain-on-exit and
+	// set-environment: the sweep must cover the whole fan-out, not just the
+	// first call.
+	if len(mock.rawCalls) < 9 {
+		t.Fatalf("recorded %d invocations, want the full NewSession fan-out", len(mock.rawCalls))
+	}
+	for i, raw := range mock.rawCalls {
+		if joined := strings.Join(raw, " "); strings.Contains(joined, "s3nt-") {
+			t.Errorf("invocation %d carries a session-environment value in its argv (%d bytes); env must travel on stdin only", i, len(joined))
+		}
+	}
+
+	logical := mock.calls[0]
+	if len(logical) < 2 || logical[1] != "new-session" {
+		t.Fatalf("first decoded call is not new-session: %d args", len(logical))
+	}
+	got := map[string]string{}
+	for i := 0; i+1 < len(logical); i++ {
+		if logical[i] == "-e" {
+			k, v, _ := strings.Cut(logical[i+1], "=")
+			got[k] = v
+			i++
+		}
+	}
+	for k, want := range sentinels {
+		if got[k] != want {
+			t.Errorf("decoded -e %s is not byte-exact (got %d bytes, want %d)", k, len(got[k]), len(want))
+		}
+	}
+	if got[DaemonIDEnvKey] != daemonID {
+		t.Errorf("daemon-id stamp missing from the decoded script")
+	}
+}
+
+// TestScriptLine_RoundTrip pins DecodeScriptLine as the exact inverse of
+// encodeScriptLine across the bytes tmux would otherwise interpret.
+func TestScriptLine_RoundTrip(t *testing.T) {
+	cases := [][]string{
+		{"new-session"},
+		{""},
+		{"a", "", "b"},
+		{"'"},
+		{"''"},
+		{`'\''`},
+		{"it's", "a 'quoted' value"},
+		{"line1\nline2", "\n", "trailing\n"},
+		{"$HOME", "~", "#{session_name}", ";", "%if", `\`, `\\'`, "\t tab", `"double"`},
+		{"unicode ❯ é"},
+	}
+	for _, args := range cases {
+		line := encodeScriptLine(args)
+		got, err := DecodeScriptLine(line)
+		if err != nil {
+			t.Errorf("DecodeScriptLine(encode(%q)) error: %v", args, err)
+			continue
+		}
+		if !slices.Equal(got, args) {
+			t.Errorf("round trip of %q = %q", args, got)
+		}
+	}
+}
+
+// TestDecodeScriptLine_RejectsOutsideSubset pins that the decoder is not a
+// general tmux parser: anything encodeScriptLine never emits is an error.
+func TestDecodeScriptLine_RejectsOutsideSubset(t *testing.T) {
+	bad := map[string]string{
+		"empty input":             "",
+		"empty line":              "\n",
+		"no trailing newline":     "'a'",
+		"unquoted word":           "new-session\n",
+		"unterminated quote":      "'abc\n",
+		"double space":            "'a'  'b'\n",
+		"leading space":           " 'a'\n",
+		"trailing space":          "'a' \n",
+		"tab separator":           "'a'\t'b'\n",
+		"double-quoted":           "\"a\"\n",
+		"non-quote escape":        "'a'\\n\n",
+		"dangling backslash":      "'a'\\\n",
+		"unquoted inner newline":  "'a'\n'b'\n",
+		"trailing bytes after nl": "'a'\nx",
+	}
+	for name, line := range bad {
+		if got, err := DecodeScriptLine(line); err == nil {
+			t.Errorf("%s: DecodeScriptLine(%q) = %q, want an error", name, line, got)
+		}
+	}
+}
+
+// TestNewSession_ScriptFailureCarriesTmuxStderr pins that a tmux-side failure
+// inside the stdin script (tmux reports it prefixed "-:1:") still surfaces in
+// the established error shape.
+func TestNewSession_ScriptFailureCarriesTmuxStderr(t *testing.T) {
+	var calls [][]string
+	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		calls = append(calls, append([]string{name}, args...))
+		if name == "tmux" && IsNewSessionScript(args) {
+			return exec.CommandContext(ctx, "sh", "-c",
+				`cat >/dev/null; printf '%s\n' '-:1: command new-session: unknown flag -Q' >&2; exit 1`)
+		}
+		return exec.CommandContext(ctx, "true")
+	}))
+	err := c.NewSession(context.Background(), NewSessionOpts{
+		Name:    "fail-sess",
+		WorkDir: "/tmp/wt",
+		Command: []string{"claude"},
+		Env:     map[string]string{"SECRET": "s3nt-value"},
+	})
+	if err == nil {
+		t.Fatal("NewSession succeeded although the script invocation failed")
+	}
+	const wantPrefix = `failed to create tmux session "fail-sess": `
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Errorf("error %q lacks prefix %q", err, wantPrefix)
+	}
+	if !strings.Contains(err.Error(), "(stderr: -:1: command new-session: unknown flag -Q)") {
+		t.Errorf("error %q does not carry tmux's stderr", err)
+	}
+	if strings.Contains(err.Error(), "s3nt-") {
+		t.Errorf("error leaks a session-environment value")
+	}
+	if len(calls) != 1 {
+		t.Errorf("a failed launch must not go on to configure the session; calls=%v", calls)
+	}
+}
+
+// TestNewSession_RealTmux_EnvReachesSessionNotArgv runs the stdin delivery
+// against a real tmux server on a private socket: the adversarial values must
+// reach both the launched pane process and the stored session environment
+// byte-exact, and must not appear in the command line of the server the launch
+// forked.
+//
+// Byte-exactness is read from bytes the session's own processes write to a
+// file, never from tmux's printed output: tmux 3.4 (Ubuntu 24.04's package)
+// escapes `$` as `\$` in what show-environment and display-message print to a
+// command client, for argv-delivered values exactly as for stdin-delivered
+// ones, while the stored value and the pane's environment stay byte-exact.
+// show-environment is still asserted to report the variable as set.
+func TestNewSession_RealTmux_EnvReachesSessionNotArgv(t *testing.T) {
+	skipIfNoTmux(t)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+
+	c, factory := newTestTmuxClient(t)
+	name := uniqueSessionName("boss-env-argv")
+	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
+
+	const probe = `s3nt-probe 'single' "double" $HOME ~ #{session_name} ; %if \ end`
+	const multi = "s3nt-multi line1\nline2"
+	want := probe + "\x00" + multi
+	outDir := t.TempDir()
+	// dumpEnv writes $PROBE NUL $MULTI to path atomically, so a reader never
+	// sees a partial file. Only the variable names travel in the command.
+	dumpEnv := func(path string) []string {
+		return []string{"sh", "-c", `printf '%s\0%s' "$PROBE" "$MULTI" > "$1.tmp" && mv "$1.tmp" "$1"; sleep 60`, "sh", path}
+	}
+	readDump := func(path string) string {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if b, err := os.ReadFile(path); err == nil {
+				return string(b)
+			}
+		}
+		t.Fatalf("session process never wrote %s", filepath.Base(path))
+		return ""
+	}
+
+	panePath := filepath.Join(outDir, "pane.out")
+	if err := c.NewSession(ctx, NewSessionOpts{
+		Name:    name,
+		WorkDir: t.TempDir(),
+		Command: dumpEnv(panePath),
+		Env:     map[string]string{"PROBE": probe, "MULTI": multi},
+	}); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if got := readDump(panePath); got != want {
+		t.Fatalf("pane process env = %q, want %q", got, want)
+	}
+
+	// A window opened later builds its environment from the stored session
+	// environment, so its view proves what tmux stored, not just what the
+	// first pane inherited.
+	windowPath := filepath.Join(outDir, "window.out")
+	if out, err := factory(ctx, "tmux", append([]string{"new-window", "-d", "-t", name + ":"}, dumpEnv(windowPath)...)...).CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v: %s", err, out)
+	}
+	if got := readDump(windowPath); got != want {
+		t.Fatalf("stored session env (seen by a new window) = %q, want %q", got, want)
+	}
+
+	if got, status := c.ShowEnv(ctx, name, "PROBE"); status != ShowEnvSet || !strings.HasPrefix(got, "s3nt-probe 'single' ") {
+		t.Fatalf("show-environment PROBE = %q (%v), want the variable reported as set", got, status)
+	}
+
+	pidOut, err := factory(ctx, "tmux", "display-message", "-p", "#{pid}").Output()
+	if err != nil {
+		t.Fatalf("display-message pid: %v", err)
+	}
+	pid := strings.TrimSpace(string(pidOut))
+	psOut, err := exec.CommandContext(ctx, "ps", "-o", "command=", "-p", pid).Output()
+	if err != nil {
+		t.Fatalf("ps server pid %s: %v", pid, err)
+	}
+	if strings.Contains(string(psOut), "s3nt-") {
+		t.Fatalf("tmux server command line carries a session-environment value")
+	}
+	if !strings.Contains(string(psOut), "start-server ; source-file -") {
+		t.Errorf("server command line %q was not forked by the stdin-script launch", strings.TrimSpace(string(psOut)))
+	}
+}
+
+// TestServerCommandLineCarriesEnv covers the stale-server probe (BOS-1511): a
+// tmux server forked by a pre-fix argv new-session keeps `-e NAME=value` in
+// its command line for life, and only that shape reports true.
+func TestServerCommandLineCarriesEnv(t *testing.T) {
+	const preFix = "tmux new-session -d -s x -c /w -x 200 -y 50 -e BOSS_CRON=true -e TERM=xterm-256color claude --session-id abc"
+	tests := []struct {
+		name      string
+		pidStderr string // non-empty: display-message fails with this stderr
+		pidOut    string
+		psLine    string
+		want      bool
+		wantErr   bool
+		wantPS    bool
+	}{
+		{name: "pre-fix server", pidOut: "4242\n", psLine: preFix, want: true, wantPS: true},
+		{name: "post-fix server", pidOut: "4242\n", psLine: "tmux start-server ; source-file -", wantPS: true},
+		{name: "flag without assignment", pidOut: "4242\n", psLine: "tmux new-session -e", wantPS: true},
+		{name: "dash-e followed by a non-assignment", pidOut: "4242\n", psLine: "foo -e =bar -e 9X=1", wantPS: true},
+		{name: "no server running", pidStderr: "no server running on /tmp/tmux-501/default"},
+		{name: "no socket", pidStderr: "error connecting to /tmp/tmux-501/default (No such file or directory)"},
+		{name: "other display-message failure", pidStderr: "something else broke", wantErr: true},
+		{name: "unparseable pid", pidOut: "not-a-pid\n", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var psArgs []string
+			c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				switch {
+				case name == "tmux" && slices.Equal(args, []string{"display-message", "-p", "#{pid}"}):
+					if tt.pidStderr != "" {
+						return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$1" >&2; exit 1`, "sh", tt.pidStderr)
+					}
+					cmd := exec.CommandContext(ctx, "cat")
+					cmd.Stdin = strings.NewReader(tt.pidOut)
+					return cmd
+				case name == "ps":
+					psArgs = args
+					cmd := exec.CommandContext(ctx, "cat")
+					cmd.Stdin = strings.NewReader(tt.psLine + "\n")
+					return cmd
+				}
+				t.Errorf("unexpected invocation %s %v", name, args)
+				return exec.CommandContext(ctx, "false")
+			}))
+			got, err := c.ServerCommandLineCarriesEnv(context.Background())
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("carries = %v, want %v", got, tt.want)
+			}
+			if err != nil && strings.Contains(err.Error(), "BOSS_CRON") {
+				t.Errorf("error leaks the server command line: %v", err)
+			}
+			if tt.wantPS != (psArgs != nil) {
+				t.Fatalf("ps invoked = %v, want %v", psArgs != nil, tt.wantPS)
+			}
+			if tt.wantPS && !slices.Equal(psArgs, []string{"-o", "command=", "-p", "4242"}) {
+				t.Errorf("ps args = %v", psArgs)
+			}
+		})
+	}
+}
+
+// TestServerCommandLineCarriesEnv_RealTmux pins the probe against a real
+// server: one forked by the stdin-script launch must read as clean.
+func TestServerCommandLineCarriesEnv_RealTmux(t *testing.T) {
+	skipIfNoTmux(t)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+
+	c, _ := newTestTmuxClient(t)
+	if carries, err := c.ServerCommandLineCarriesEnv(ctx); err != nil || carries {
+		t.Fatalf("before any server: carries=%v err=%v, want false/nil", carries, err)
+	}
+	name := uniqueSessionName("boss-env-probe")
+	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
+	if err := c.NewSession(ctx, NewSessionOpts{
+		Name:    name,
+		WorkDir: t.TempDir(),
+		Command: []string{"sleep", "60"},
+		Env:     map[string]string{"PROBE": "s3nt-value"},
+	}); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if carries, err := c.ServerCommandLineCarriesEnv(ctx); err != nil || carries {
+		t.Fatalf("stdin-launched server: carries=%v err=%v, want false/nil", carries, err)
 	}
 }

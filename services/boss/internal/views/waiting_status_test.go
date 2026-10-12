@@ -15,6 +15,8 @@ import (
 // An actionable waiting reason that remains visible beneath the status badge.
 const testWaitingReason = "awaiting checks_failed on acme/widget#123"
 
+// Home hides routine PR waits (#2901); the chat picker shows them, because in
+// the chat view that wait is all the parked chat is doing (BOS-1517).
 func TestRoutinePRWaitingHintsHidden(t *testing.T) {
 	for _, trigger := range []string{"checks_passed", "checks_passed_ready", "merged"} {
 		t.Run(trigger, func(t *testing.T) {
@@ -40,9 +42,12 @@ func TestRoutinePRWaitingHintsHidden(t *testing.T) {
 			if strings.Contains(rendered, reason) || !strings.Contains(rendered, stripANSI(h.spinner.View())+displaystatus.WaitingLabel) {
 				t.Fatalf("expected waiting spinner without hint: %s", rendered)
 			}
-			m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": reason}}
-			if m.waitingReasonLine() != "" || m.waitingLineHeight() != 0 {
-				t.Fatal("chat picker must hide routine wait without reserving space")
+			m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a", Title: "verify"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": reason}}
+			if got, want := m.waitingReasonLine(), "verify · "+reason; got != want {
+				t.Fatalf("chat picker routine wait = %q, want %q", got, want)
+			}
+			if got := m.waitingLineHeight(); got != 2 {
+				t.Fatalf("chat picker routine wait reserves %d rows, want 2", got)
 			}
 		})
 	}
@@ -220,8 +225,8 @@ func TestHome_WaitingReasonSubRow(t *testing.T) {
 }
 
 // TestChatPicker_WaitingReasonLine unit-tests the session-detail hint: only a
-// waiting chat contributes, and the line carries the daemon-supplied reason
-// alone — no label prefix (BOS-863).
+// waiting chat contributes, and the line carries the chat title (BOS-1517) and
+// the daemon-supplied reason verbatim — no "waiting" label prefix (BOS-863).
 func TestChatPicker_WaitingReasonLine(t *testing.T) {
 	m := ChatPickerModel{
 		chats: []*pb.ClaudeChat{
@@ -232,7 +237,7 @@ func TestChatPicker_WaitingReasonLine(t *testing.T) {
 		daemonWaitingReasons: map[string]string{"b": testWaitingReason},
 	}
 	got := m.waitingReasonLine()
-	want := testWaitingReason
+	want := "New chat · " + testWaitingReason
 	if got != want {
 		t.Fatalf("waitingReasonLine = %q, want %q", got, want)
 	}
@@ -292,7 +297,7 @@ func TestReadyWaitingHints(t *testing.T) {
 		t.Fatal("Ready must restore the waiting antecedent")
 	}
 	m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": testWaitingReason}}
-	if got := m.waitingReasonLine(); got != "waiting: "+testWaitingReason {
+	if got := m.waitingReasonLine(); got != "New chat · waiting: "+testWaitingReason {
 		t.Fatalf("Ready chat picker hint = %q", got)
 	}
 	h := NewHomeModel(nil, context.Background(), nil)

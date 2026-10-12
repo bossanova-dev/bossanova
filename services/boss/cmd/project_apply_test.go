@@ -343,6 +343,66 @@ func TestProjectApplyFactoryRetro(t *testing.T) {
 		}
 	})
 
+	t.Run("export then apply adopts a stage-default gate spelled absolute and unquoted", func(t *testing.T) {
+		f := newApplyFixture(t)
+		f.daemon.SetAgents([]*pb.AgentInfo{{Name: "claude"}})
+		cron := newCronFixture(t, "claude")
+		f.env.cronEnv = func() initCronEnv { return cron.env }
+		// One home for the planner and the factory resolver, as on a real machine.
+		f.env.export.homeDir = func() (string, error) { return cron.home, nil }
+		// Export and apply resolve this daemon the same way.
+		applyDaemonIdentity = localApplyIdentity
+		if err := os.WriteFile(filepath.Join(f.main, initConfigFilename), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		absGate := "node " + filepath.Join(cron.home, ".claude", "skills", "boss-retro", "toolbox", "cron-gates", "boss-retro.mjs")
+		f.daemon.AddRepo(&pb.Repo{Id: "repo-1", LocalPath: f.main, OriginUrl: "https://github.com/acme/widget", DefaultBaseBranch: "main"})
+		f.daemon.AddCronJob(&pb.CronJob{Id: "hand", RepoId: "repo-1", Name: "retro", Prompt: "/boss-retro", Schedule: "23 9 * * 1", IsEnabled: true, AgentName: "claude", GateCommand: absGate})
+
+		prev := newProjectExportEnv
+		newProjectExportEnv = func() projectExportEnv { return f.env.export }
+		t.Cleanup(func() { newProjectExportEnv = prev })
+		export := projectCmd()
+		var exported, exportErr bytes.Buffer
+		export.SetOut(&exported)
+		export.SetErr(&exportErr)
+		export.SilenceUsage, export.SilenceErrors = true, true
+		export.SetArgs([]string{"export", "--dir", f.dir})
+		if err := export.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("export: %v\n%s", err, exportErr.String())
+		}
+		cfg, _, err := projectconfig.Decode(exported.Bytes())
+		if err != nil {
+			t.Fatalf("decode export: %v\n%s", err, exported.String())
+		}
+		if len(cfg.Crons) != 1 || cfg.Crons[0].Name != "retro" || cfg.Crons[0].FactoryStage == nil || *cfg.Crons[0].FactoryStage != "retro" {
+			t.Fatalf("want one factoryStage retro row, got %+v\n%s", cfg.Crons, exported.String())
+		}
+		f.write(t, exported.String())
+
+		f.terminal = false
+		out, err := f.run(t, "apply")
+		if err != nil {
+			t.Fatalf("apply without --yes: %v\n%s", err, out)
+		}
+		if f.asked != 0 {
+			t.Fatalf("apply asked %d times\n%s", f.asked, out)
+		}
+		for _, u := range f.daemon.UpdateCronJobCalls() {
+			if u.GateCommand != nil {
+				t.Fatalf("apply rewrote an equivalent gate: %+v\n%s", u, out)
+			}
+		}
+		if job := f.daemon.CronJobs()["hand"]; job.GetGateCommand() != absGate || job.GetManagedBy() != projectApplyMarker {
+			t.Fatalf("adopted job %+v\n%s", job, out)
+		}
+		out, err = f.run(t, "diff", "--exit-code")
+		if code := exitCodeOf(err); code != 0 || !strings.Contains(out, "nothing to change") {
+			t.Fatalf("diff after export and apply exits %d: %v\n%s", code, err, out)
+		}
+		t.Logf("diff after export and apply:\n%s", out)
+	})
+
 	t.Run("adopts the hand-named boss-retro job", func(t *testing.T) {
 		f := withFactory(t)
 		f.daemon.AddRepo(&pb.Repo{Id: "repo-1", LocalPath: f.main, OriginUrl: "https://github.com/acme/widget", DefaultBaseBranch: "main"})

@@ -2231,8 +2231,17 @@ func managedSessionEnv(f SessionFacts) map[string]string {
 		env["BOSS_CRON_JOB_ID"] = f.CronJobID
 		env["BOSS_CRON_NAME"] = f.CronName
 	}
+	if f.IsUnattended && f.IsQuickChat {
+		env[zeroOutputEnvKey] = "true"
+	}
 	return env
 }
+
+// zeroOutputEnvKey marks an unattended zero-output run: it works in the
+// repository checkout itself, so it has no worktree, branch or PR to finalize,
+// and a run that has finished may end its own session with `boss archive`
+// (ArchiveSession finalizes such a session rather than archiving it).
+const zeroOutputEnvKey = "BOSS_ZERO_OUTPUT"
 
 // SessionFacts is the single resolved view of a managed chat's environment,
 // shared by ManagedSessionEnv (env vars) and bossSessionContext (system

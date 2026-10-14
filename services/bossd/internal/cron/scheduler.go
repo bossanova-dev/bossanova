@@ -508,7 +508,8 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		gate := func() gatecmd.Result {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
-			proofKey, unsetEnv := proofenv.GateEnv(s.gateProofEnv)
+			// Only a trusted repo's gate gets the proof key (BOS-1562).
+			proofKey, unsetEnv := proofenv.GateEnvFor(s.gateProofEnv, repo)
 			return gatecmd.Run(ctx, gatecmd.Options{
 				Command:              job.GateCommand,
 				RepoPath:             repo.LocalPath,

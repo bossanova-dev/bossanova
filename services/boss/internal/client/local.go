@@ -429,8 +429,29 @@ func (c *LocalClient) MoveSession(ctx context.Context, req *pb.MoveSessionReques
 	return resp.Msg.GetSession(), resp.Msg.GetIsMoved(), nil
 }
 
+// DismissSessionAlert forwards the dismissal to the daemon, which persists the
+// key and republishes the session.
+func (c *LocalClient) DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error) {
+	resp, err := c.rpc.DismissSessionAlert(ctx, connect.NewRequest(&pb.DismissSessionAlertRequest{
+		SessionId: sessionID,
+		AlertKey:  alertKey,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
+}
+
 func (c *LocalClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	resp, err := c.rpc.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: id, Pr: pr}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
+}
+
+func (c *LocalClient) SetSessionTracker(ctx context.Context, id, trackerID string) (*pb.Session, error) {
+	resp, err := c.rpc.SetSessionTracker(ctx, connect.NewRequest(&pb.SetSessionTrackerRequest{Id: id, TrackerId: trackerID}))
 	if err != nil {
 		return nil, err
 	}
@@ -602,6 +623,14 @@ func (c *LocalClient) SetChatPhase(ctx context.Context, sessionID, agentSessionI
 		Phase:          phase,
 	}))
 	return err
+}
+
+func (c *LocalClient) FinishUnattendedRun(ctx context.Context, req *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
+	resp, err := c.rpc.FinishUnattendedRun(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 func (c *LocalClient) GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error) {
@@ -960,6 +989,14 @@ func (c *LocalClient) ListCheckSnapshots(ctx context.Context, sessionID string, 
 		return nil, err
 	}
 	return resp.Msg, nil
+}
+
+func (c *LocalClient) GetSessionTimeline(ctx context.Context, sessionID string) ([]*pb.TimelineStep, error) {
+	resp, err := c.rpc.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSteps(), nil
 }
 
 func (c *LocalClient) GetRunCost(ctx context.Context, req *pb.GetRunCostRequest) (*pb.GetRunCostResponse, error) {

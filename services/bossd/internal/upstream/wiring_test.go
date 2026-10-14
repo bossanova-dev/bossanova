@@ -90,7 +90,7 @@ func TestBossd_StartsStreamAfterRegister(t *testing.T) {
 
 	// 1. RegisterDaemon (the startup bootstrap) — same call main.go makes.
 	regCtx, regCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	sessionToken, err := Register(regCtx, client, "daemon-wiring-test", "test-host", "jwt-abc", []string{"repo-1"})
+	sessionToken, err := Register(regCtx, client, "daemon-wiring-test", "test-host", "jwt-abc", []string{"repo-1"}, nil)
 	regCancel()
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)

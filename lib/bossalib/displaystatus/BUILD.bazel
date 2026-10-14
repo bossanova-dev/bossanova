@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
         "//lib/bossalib/sessionreason",
     ],
 )
@@ -24,6 +25,7 @@ go_test(
     embed = [":displaystatus"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/githubcallback",
         "//lib/bossalib/sessionreason",
     ],
 )

@@ -24,6 +24,7 @@ import {
   findUnquotedOptionGlobs,
   findSkillMarkdownFiles,
   findTrailingConditionalStatus,
+  findUnguardedRemovalTargets,
   findUnsafeNodeEval,
   findUnterminatedHeredoc,
   findWordSplitReliance,
@@ -5468,6 +5469,39 @@ test('checkSkillShellInRepo reports one zsh-special-scalar finding per real site
 // ---------------------------------------------------------------------------------------------
 // Header rule (n) — one unquoted glob beside a literal path on `rm`.
 // ---------------------------------------------------------------------------------------------
+
+test('findUnguardedRemovalTargets reports the targets Claude Code refuses to auto-run', () => {
+  const targets = (body) => findUnguardedRemovalTargets(body).map((f) => f.target)
+  // The measured prompt: `rm -f $S/$C.deps-in.json` in a boss-plan dependency scan.
+  assert.deepEqual(targets('rm -f $S/$C.deps-in.json'), ['$S/$C.deps-in.json'])
+  assert.deepEqual(targets('rm -rf "$ROOT/$OWNED"'), ['"$ROOT/$OWNED"'])
+  assert.deepEqual(targets('rm -rf "$ROOT"/*'), ['"$ROOT"/*'])
+  assert.deepEqual(targets('rm -rf ${DIR}/'), ['${DIR}/'])
+  assert.deepEqual(
+    targets('rm -rf "${DIR:-}/x/"'),
+    [],
+    'a literal segment after the slash is readable',
+  )
+  assert.deepEqual(targets('rmdir $BASE/tmp'), ['$BASE/tmp'], 'a top-level directory name')
+  assert.deepEqual(targets('x=$(rm -rf $1/*)'), ['$1/*'], 'inside a substitution')
+  assert.deepEqual(findUnguardedRemovalTargets('echo a\nrm -f $S/$C.json'), [
+    { lineOffset: 1, command: 'rm', target: '$S/$C.json' },
+  ])
+})
+
+test('findUnguardedRemovalTargets stays silent on guarded, literal and non-rm forms', () => {
+  for (const body of [
+    'rm -rf "${ROOT:?}/${OWNED:?}"',
+    'rm -f "${S:?}"/"${C:?}".deps-in.json',
+    'rm -f "$LOCK_DIR/epoch" "$DEPS_IN"',
+    'rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict"',
+    'rm -rf /tmp/x/$RUN',
+    'echo rm -rf $S/$C',
+    'cp $S/$C.json out.json',
+  ]) {
+    assert.deepEqual(findUnguardedRemovalTargets(body), [], body)
+  }
+})
 
 test('findMixedGlobRemovals reports one unquoted glob co-located with a literal path', () => {
   assert.deepEqual(findMixedGlobRemovals('rm -f /tmp/a.plan.bak /tmp/a.hdrs.* /tmp/a.put.out'), [

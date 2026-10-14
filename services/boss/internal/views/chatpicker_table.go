@@ -67,7 +67,9 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
-		if label := m.statusDetail(chat); label != "" {
+		if m.isStandbyWait(chat.GetAgentSessionId()) {
+			statusStr = renderStandbyStatus()
+		} else if label := m.statusDetail(chat); label != "" {
 			style := styleStatusSuccess
 			if daemon == statusWaiting {
 				style = styleStatusInfo
@@ -109,12 +111,16 @@ func (m *ChatPickerModel) buildTableRows() {
 
 // statusDetail is the label that replaces a chat's bare STATUS word: the
 // skill-reported phase of a working chat, or the armed trigger of a waiting
-// chat (BOS-1517). "" keeps the plain renderClaudeStatus badge.
+// chat (BOS-1517). "" keeps the plain renderClaudeStatus badge. A standby wait
+// has no detail: buildTableRows renders it as renderStandbyStatus (BOS-1531).
 func (m ChatPickerModel) statusDetail(chat *pb.ClaudeChat) string {
 	switch m.daemonStatuses[chat.GetAgentSessionId()] {
 	case statusWorking:
 		return m.daemonPhases[chat.GetAgentSessionId()]
 	case statusWaiting:
+		if m.isStandbyWait(chat.GetAgentSessionId()) {
+			return ""
+		}
 		return m.armedCallback(chat).GetTrigger()
 	}
 	return ""

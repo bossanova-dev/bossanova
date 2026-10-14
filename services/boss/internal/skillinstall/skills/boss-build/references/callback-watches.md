@@ -236,7 +236,8 @@ form this reference sanctions; every `fallbackPoll` mention below means that wai
    watch each, and every one left armed fires into a chat whose run is over. A re-push after Step 12
    (a post-terminal follow-up in the same chat) re-opens the wait, so it ends with the same Step 12
    cleanup. On `REVIEW_READY`/`PARTIAL`, Step 12's `ci-watch.mjs classify` runs after the cleanup,
-   sees zero live watches, and re-arms exactly the `missingTriggers` the handoff still owes, once.
+   sees zero live watches, and re-arms exactly the `missingTriggers` the handoff still owes, once —
+   unless a verify hand-off took (`handed-off`), which re-arms nothing.
 
 ## Invariants
 

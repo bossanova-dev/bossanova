@@ -199,6 +199,7 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if effort := resolveCodexEffort(in.Options["effort"], r.effort); effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+effort)
 	}
+	args = appendConfigOverride(args, in.Options[codexOptionProjectTrustOverride])
 	// Caller-provided session ID is ignored: codex generates its own.
 	_ = in.ProvidedSessionID
 	_ = in.SessionID
@@ -229,8 +230,19 @@ func resolveCodexEffort(reqEffort, envEffort string) string {
 // in C.6); falls back to the caller-supplied hint if no UUID was observed
 // in time.
 func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
+	return r.startRun(ctx, workDir, plan, resume, sessionID, logPath, model, effort, "", extraEnv)
+}
+
+// codexOptionProjectTrustOverride carries a run's per-process project-trust
+// `-c` override (applyCodexProjectTrust) from startRun to buildArgv.
+const codexOptionProjectTrustOverride = "project_trust_override"
+
+// startRun is Start with the run's project-trust override; an empty override
+// adds nothing to the argv.
+func (r *Runner) startRun(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort, trustOverride string, extraEnv map[string]string) (string, error) {
 	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
-		"model":  model,
-		"effort": effort,
+		"model":                         model,
+		"effort":                        effort,
+		codexOptionProjectTrustOverride: trustOverride,
 	})
 }

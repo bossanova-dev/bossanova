@@ -2,7 +2,7 @@
 
 // BOS-248 skill-generalization self-parity gate. Bossanova dogfoods its own
 // generalized skill machinery as the reference consumer: this gate re-runs the
-// two post-generalization deterministic skill signatures over the SAME
+// post-generalization deterministic skill signature over the SAME
 // committed fixtures and asserts they still match the committed
 // pre-generalization baseline snapshots (BOS-249's capture-baseline.mjs), AND
 // asserts bossanova's authored dogfood extension skills are discovered with the
@@ -14,12 +14,12 @@
 // Part A (deterministic exact-match) is the load-bearing check: it re-derives
 // each signature via capture-baseline.mjs and byte-compares stableStringify()
 // against the committed baseline file. Part B (extension-discovery) asserts the
-// structural contract the generalized cores rely on: the authored lens/round/
-// draft/methodology extensions are discovered by name with zero skips, and their roles
+// structural contract the generalized cores rely on: the authored draft/methodology/
+// knowledge/maintenance extensions and notes built-ins are discovered by name with zero
+// skips, and their roles
 // all resolve in ROLE_SCHEMAS — behaviour-shipping roles included, since BOS-744 derived
 // discovery and validation from one EXTENSION_ROLES table. Part C (directory
-// coverage) supplies the independent, non-circular teeth for the specs whose
-// membership is discovery-derived — see checkDirectoryCoverage.
+// coverage) catches an authored directory no spec claims — see checkDirectoryCoverage.
 //
 // Node builtins only (no new deps).
 
@@ -31,44 +31,11 @@ import { ROLE_SCHEMAS, discoverExtensions } from '../../skills-toolbox/skill-ext
 
 /** Snapshot filename → human skill label used in DRIFT messages. */
 const SNAPSHOT_SKILL_LABELS = {
-  'review-lens.snapshot.json': 'boss-review',
   'dag-schedule.snapshot.json': 'boss-epic',
 }
 
 /** Repo-authored extensions and published notes built-ins each core must discover. */
 const EXPECTED_EXTENSIONS = [
-  {
-    core: 'boss-review',
-    role: 'lens',
-    skill: 'boss-review',
-    names: ['boss-review-golang', 'boss-review-tui', 'boss-review-web'],
-    // BOS-678: a lens extension declares which `.boss-skills.json` lensMap id it serves through
-    // the optional `lens:` key on its own `x-boss-extension` marker. That declaration IS the
-    // binding boss-review Phase 1 dispatches on, so an absent or mistyped one silently unwires
-    // the extension — discovery keeps listing it, and the lens quietly falls back to its config
-    // skill. Only the `lens` role declares bindings; every other spec omits the key.
-    bindings: {
-      'boss-review-golang': 'go',
-      'boss-review-tui': 'tui',
-      'boss-review-web': 'web',
-    },
-  },
-  {
-    core: 'boss-review',
-    role: 'round',
-    skill: 'boss-review',
-    // BOS-852: round membership is open-ended. The core dispatches EVERY discovered round
-    // wholesale (boss-review/SKILL.md `discover --core boss-review --role round`) with no
-    // config registry pinning the set — unlike `lens`, whose literal list encodes a binding to
-    // a `.boss-skills.json` lensMap id. So a literal list here is pure friction: it makes adding a round a gate edit.
-    //
-    // The expected set is therefore the discovered set. That is NOT vacuous, and the reason is
-    // checkDirectoryCoverage below: it reads the `.claude/skills/boss-review-*` directories
-    // straight off disk — a fact produced by an author creating a folder, never by
-    // discoverExtensions — and drifts on any directory no spec claims. Coverage is what keeps
-    // membership honest; delete that check and this spec asserts nothing.
-    discovered: true,
-  },
   {
     core: 'boss-plan',
     role: 'draft',
@@ -99,13 +66,6 @@ const EXPECTED_EXTENSIONS = [
     role: 'notes',
     skill: 'boss-plan',
     names: ['boss-plan-notes'],
-    builtin: true,
-  },
-  {
-    core: 'boss-review',
-    role: 'notes',
-    skill: 'boss-review',
-    names: ['boss-review-notes'],
     builtin: true,
   },
   {
@@ -164,21 +124,6 @@ export function checkDeterministicParity({
 
 // --- Part B: extension-discovery structural assertions ----------------------
 
-/**
- * The extension names a spec expects: its literal `names` when it pins them, otherwise —
- * for a `discovered: true` spec — whatever discovery returns for that core/role. See the
- * round spec's comment above for why a discovery-derived expectation is not vacuous.
- * @param {{ core: string, role: string, names?: string[], discovered?: boolean }} spec
- * @param {string} root
- * @returns {string[]}
- */
-function resolveExpectedNames(spec, root) {
-  if (spec.names) return spec.names
-  return discoverExtensions({ core: spec.core, role: spec.role, root }).extensions.map(
-    (e) => e.name,
-  )
-}
-
 function sortedNames(extensions) {
   return extensions.map((e) => e.name).sort()
 }
@@ -193,7 +138,7 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
   const findings = []
   for (const spec of EXPECTED_EXTENSIONS) {
     const { core, role, skill } = spec
-    const expected = resolveExpectedNames(spec, root)
+    const expected = spec.names
     const { extensions, skipped } = discoverExtensions({
       core,
       role,
@@ -235,19 +180,6 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
         `DRIFT ${skill} ${core}/${role}: discovered [${got.join(', ')}], expected [${[...expected].sort().join(', ')}]`,
       )
     }
-    // A discovered-but-unbound extension is the failure this catches: the names check above is
-    // blind to it, because the descriptor is still returned. An expected name that went missing
-    // entirely is already reported by that check, so skip it here rather than double-reporting.
-    for (const [name, want] of Object.entries(spec.bindings ?? {})) {
-      const found = extensions.find((e) => e.name === name)
-      if (!found) continue
-      if (found.lens !== want) {
-        const declared = found.lens === undefined ? '(none)' : JSON.stringify(found.lens)
-        findings.push(
-          `DRIFT ${skill} ${core}/${role}: ${name} declares lens ${declared}, expected ${JSON.stringify(want)}`,
-        )
-      }
-    }
     if (!ROLE_SCHEMAS[role]) {
       findings.push(`DRIFT ${skill} ${core}/${role}: ROLE_SCHEMAS has no schema for role "${role}"`)
     }
@@ -262,12 +194,9 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
  * BOS-852: asserts every authored `.claude/skills/<core>-*` directory is claimed by exactly
  * one EXPECTED_EXTENSIONS spec.
  *
- * This is the independent, non-circular source of truth that keeps a `discovered` spec from
- * being a tautology. The directory listing is produced by an author adding a folder; the
- * membership check's expectation is produced by discoverExtensions. The two can genuinely
- * disagree, and this is the ONLY check that catches the disagreement: a `boss-review-foo`
- * whose marker declares a valid but UNSPECCED known role (say `role: methodology` under
- * `extends: boss-review`) is silently `continue`d by discovery
+ * This is the ONLY check that catches a `boss-build-foo` whose marker declares a valid but
+ * UNSPECCED known role (say `role: surface` under `extends: boss-build`): it is silently
+ * `continue`d by discovery
  * (skills-toolbox/skill-extensions.mjs), so it never lands in `skipped` for badSkips to flag
  * and never lands in `extensions` for the names check to miss. Without this it is invisible.
  *
@@ -290,7 +219,7 @@ export function checkDirectoryCoverage({ root = REPO_ROOT } = {}) {
     const claims = new Map()
     for (const spec of EXPECTED_EXTENSIONS) {
       if (spec.core !== core) continue
-      for (const name of resolveExpectedNames(spec, root)) {
+      for (const name of spec.names) {
         claims.set(name, (claims.get(name) ?? 0) + 1)
       }
     }

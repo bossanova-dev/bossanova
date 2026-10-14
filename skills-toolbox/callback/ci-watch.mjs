@@ -9,7 +9,7 @@
 // This module is the read. It answers one question — may this run stop looking at CI? — so the
 // answer is a checked verdict rather than a remembered step.
 //
-// Five states. Exactly ONE of them blocks:
+// Six states. Exactly ONE of them blocks:
 //
 //   settled    — every required trigger's condition already holds. There is nothing left to watch.
 //   watched    — a live watch covers every required trigger that is not already satisfied.
@@ -20,6 +20,11 @@
 //                is neither live nor satisfied. The run must arm before it may stop looking.
 //   unknown    — the check state could not be evaluated AND the bounded poll has not run. Reported,
 //                never blocking (see below).
+//   handed-off — the caller handed the PR to the next stage (a verify hand-off that reported
+//                `armed` / `already-armed`), which now holds its forward-progress watch. The run's
+//                own observation ends: a red CI after ready is the repair plugin's, a merge is the
+//                daemon's finalize, and a run that armed its own `checks_failed` here would be a
+//                second responder to the same failure.
 //
 // WHY `unknown` MUST NOT BLOCK. The protocol forbids arming on an unreadable state
 // (the callback-watch protocol: "On could-not-evaluate, arm nothing and keep polling"). A blocking
@@ -57,6 +62,7 @@ export const CI_WATCH_STATES = Object.freeze({
   POLLED: 'polled',
   UNWATCHED: 'unwatched',
   UNKNOWN: 'unknown',
+  HANDED_OFF: 'handed-off',
 })
 
 // The one blocking state. Kept as an exported set rather than an inline comparison so a caller can
@@ -78,6 +84,7 @@ export const CI_WATCH_REASONS = Object.freeze({
   // required, so "live watches cover the required triggers" held over nothing and the empty
   // `liveTriggers` beside it was the proof no watch had ever been read.
   NO_REQUIRED_TRIGGERS: 'no-required-triggers-supplied',
+  HANDED_OFF: 'handed-off-to-next-stage',
 })
 
 // The action the caller takes per verdict. Named so the skill prose can state one action per row and
@@ -195,6 +202,8 @@ function isLive(row, { targetChatId, prNumber, nowMs, minRemainingMs }) {
  * @param {boolean} [options.fallbackPollCompleted] Whether the bounded poll has already run.
  * @param {number} [options.armAttempts] How many times this run has already armed. >=1 forbids blocking.
  * @param {string|null} [options.lastArmError] Surfaced in `reason` when an arm did not take.
+ * @param {boolean} [options.handedOff] The next stage holds the PR's forward-progress watch, so this
+ *   run stops observing. Ignored when no trigger is required.
  * @returns {{state: string, reason: string, blocking: boolean, action: string,
  *            missingTriggers: string[], skippedTriggers: string[], liveTriggers: string[]}}
  */
@@ -214,6 +223,7 @@ export function classifyCiObservation(options = {}) {
     fallbackPollCompleted = false,
     armAttempts = 0,
     lastArmError = null,
+    handedOff = false,
   } = options
 
   const nowMs = epochMs(now) ?? Date.now()
@@ -262,6 +272,17 @@ export function classifyCiObservation(options = {}) {
       CI_WATCH_STATES.UNKNOWN,
       CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS,
       CI_WATCH_ACTIONS.POLL,
+    )
+  }
+
+  // Handed off: the next stage owns the PR's observation from here, whatever the triggers read.
+  // Below the no-required-triggers arm, which no permission may answer, and above `settled` so the
+  // verdict names why the run stopped rather than a coincidence of check state.
+  if (handedOff === true) {
+    return verdict(
+      CI_WATCH_STATES.HANDED_OFF,
+      CI_WATCH_REASONS.HANDED_OFF,
+      CI_WATCH_ACTIONS.PROCEED,
     )
   }
 
@@ -397,6 +418,7 @@ const CLASSIFY_FLAGS = Object.freeze([
   'poll-completed',
   'arm-attempts',
   'arm-error',
+  'handed-off',
 ])
 
 // Message form is `<module>: <verb>(<expected shape>) — <what was actually passed>`, matching the
@@ -410,6 +432,7 @@ const CLASSIFY_BOOLEAN_FLAGS = Object.freeze([
   'callbacks-available',
   'target-unverified',
   'poll-completed',
+  'handed-off',
 ])
 
 // A presence-only flag given an attached value. `parseFlags` consumes any non-`--` token after a
@@ -521,6 +544,7 @@ export function main(argv) {
       fallbackPollCompleted: flags['poll-completed'] === true,
       armAttempts: Number(flags['arm-attempts'] ?? 0),
       lastArmError: typeof flags['arm-error'] === 'string' ? flags['arm-error'] : null,
+      handedOff: flags['handed-off'] === true,
     })
   }
 

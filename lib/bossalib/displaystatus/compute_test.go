@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/githubcallback"
 	"github.com/recurser/bossalib/sessionreason"
 )
 
@@ -885,6 +886,62 @@ func TestCallbackWaitingReason_IncompleteInputYieldsNoReason(t *testing.T) {
 				t.Fatalf("CallbackWaitingReason = %q, want empty", got)
 			}
 		})
+	}
+}
+
+// --- BOS-1531: standby watches ---
+
+func TestCallbackWaitingTrigger_InvertsEveryTrigger(t *testing.T) {
+	for _, trigger := range githubcallback.ValidTriggers() {
+		reason := CallbackWaitingReason(string(trigger), "acme", "widget", 123)
+		if got := CallbackWaitingTrigger(reason); got != string(trigger) {
+			t.Errorf("CallbackWaitingTrigger(%q) = %q, want %q", reason, got, trigger)
+		}
+	}
+	// Owners and repo names may contain dots and dashes; the inverse must
+	// still recover the trigger.
+	reason := CallbackWaitingReason("merged", "my-org", "repo.name-x", 7)
+	if got := CallbackWaitingTrigger(reason); got != "merged" {
+		t.Errorf("CallbackWaitingTrigger(%q) = %q, want merged", reason, got)
+	}
+}
+
+func TestCallbackWaitingTrigger_NonCanonicalYieldsEmpty(t *testing.T) {
+	for _, reason := range []string{
+		"",
+		"waiting",
+		"awaiting checks_failed",
+		"awaiting checks_failed on acme/widget",
+		"awaiting checks_failed on acme/widget#0",
+		"awaiting checks_failed on acme/widget#-3",
+		"awaiting checks_failed on acme/widget#12x",
+		"awaiting checks_failed on acmewidget#12",
+		"awaiting  on acme/widget#12",
+		"waiting: awaiting checks_failed on acme/widget#12",
+		"awaiting checks_failed on acme/widget#12 ",
+		"Awaiting checks_failed on acme/widget#12",
+	} {
+		if got := CallbackWaitingTrigger(reason); got != "" {
+			t.Errorf("CallbackWaitingTrigger(%q) = %q, want empty", reason, got)
+		}
+	}
+}
+
+func TestIsStandbyWaitingReason_OnlyContingencyTriggers(t *testing.T) {
+	standby := map[string]bool{"checks_failed": true, "closed": true}
+	for _, trigger := range githubcallback.ValidTriggers() {
+		reason := CallbackWaitingReason(string(trigger), "acme", "widget", 9)
+		if got := IsStandbyWaitingReason(reason); got != standby[string(trigger)] {
+			t.Errorf("IsStandbyWaitingReason(%q) = %v, want %v", reason, got, standby[string(trigger)])
+		}
+	}
+	for _, reason := range []string{"", "checks_failed", "awaiting checks_failed", "standby: awaiting checks_failed on acme/widget#9"} {
+		if IsStandbyWaitingReason(reason) {
+			t.Errorf("IsStandbyWaitingReason(%q) = true, want false for a non-canonical reason", reason)
+		}
+	}
+	if StandbyLabel != "standby" {
+		t.Fatalf("StandbyLabel = %q, want standby", StandbyLabel)
 	}
 }
 

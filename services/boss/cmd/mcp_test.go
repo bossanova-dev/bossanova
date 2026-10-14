@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/bossalib/socketauth"
 )
 
 // saveMcpSeams snapshots every mcp.go package-var seam and restores it after
@@ -443,5 +447,65 @@ func TestMcpBuildDriftLine(t *testing.T) {
 				t.Errorf("mcpBuildDriftLine(%q, %q) = %q; must not report drift", tc.running, tc.onDisk, got)
 			}
 		})
+	}
+}
+
+func saveSocketPathSeam(t *testing.T, socketPath string) {
+	t.Helper()
+	old := defaultSocketPath
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	t.Cleanup(func() { defaultSocketPath = old })
+}
+
+func TestRunMcpToken_PrintsHTTPTokenNotSocketToken(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	saveSocketPathSeam(t, socketPath)
+	sockTok, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
+
+	cmd := mcpCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"token"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("boss mcp token: %v", err)
+	}
+
+	want, err := socketauth.ReadHTTPToken(socketPath)
+	if err != nil {
+		t.Fatalf("ReadHTTPToken after boss mcp token: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatal("boss mcp token output does not match the MCP HTTP token file")
+	}
+	if want == sockTok {
+		t.Fatal("boss mcp token returned the socket token")
+	}
+}
+
+func TestRunMcpToken_JSON(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	saveSocketPathSeam(t, socketPath)
+
+	cmd := mcpCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"token", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("boss mcp token --json: %v", err)
+	}
+
+	var got mcpTokenJSON
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode --json output: %v", err)
+	}
+	want, err := socketauth.ReadHTTPToken(socketPath)
+	if err != nil {
+		t.Fatalf("ReadHTTPToken: %v", err)
+	}
+	if got.Token != want || got.Header != "Authorization: Bearer "+want || got.TokenPath != socketauth.HTTPTokenPath(socketPath) {
+		t.Fatalf("unexpected --json fields: token match=%v header match=%v path=%q", got.Token == want, got.Header == "Authorization: Bearer "+want, got.TokenPath)
 	}
 }

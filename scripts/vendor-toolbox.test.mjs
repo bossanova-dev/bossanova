@@ -698,7 +698,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   }
   assert.ok(VENDOR_MAP['boss-plan'].includes('cron-gates/boss-plan.mjs'))
   // Every core that ships a built-in notes extension must ship the helper it runs.
-  for (const core of ['boss-build', 'boss-epic', 'boss-plan', 'boss-repair', 'boss-review']) {
+  for (const core of ['boss-build', 'boss-epic', 'boss-plan', 'boss-repair']) {
     assert.ok(
       VENDOR_MAP[core].includes('bs-record-notes.mjs'),
       `${core} must vendor bs-record-notes.mjs`,
@@ -741,6 +741,17 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     assert.ok(
       VENDOR_MAP[core].includes('commit-status.mjs'),
       `${core} must vendor commit-status.mjs`,
+    )
+  }
+  // commit-status.mjs imports ready-gate.mjs, so every core shipping the one ships the other.
+  const receiptCores = Object.keys(VENDOR_MAP).filter((core) =>
+    VENDOR_MAP[core].includes('commit-status.mjs'),
+  )
+  assert.ok(receiptCores.length >= 2, receiptCores.join(', '))
+  for (const core of receiptCores) {
+    assert.ok(
+      VENDOR_MAP[core].includes('ready-gate.mjs'),
+      `${core} must vendor ready-gate.mjs beside commit-status.mjs`,
     )
   }
   // Asserted BY NAME for each consuming core: ci-wait.mjs is the bounded fallback CI wait the
@@ -796,32 +807,6 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   for (const entry of ['verify-gate.mjs', 'verify-route.mjs', 'cron-gates/boss-verify.mjs']) {
     assert.ok(VENDOR_MAP['boss-verify'].includes(entry), `boss-verify must vendor ${entry}`)
   }
-  // Asserted BY NAME for each consuming core, and exclusively: bs-dispatch-claims.mjs is the
-  // single adjudicator of a dispatch report's checkable claims, invoked by path from boss-build's core spine and imported by boss-review's findings triage. An
-  // installed tree without it is a check that cannot RUN rather than one that disagrees, and
-  // shipping it to a core that never adjudicates a dispatch claim is payload no run reads.
-  // citation-coordinate.mjs comes with it because it resolves a cited path through the tree's one
-  // citation resolver instead of a second one; the import-closure test below is what keeps that
-  // pairing honest if the helper's imports change. The resolver is a module of its own so that
-  // reuse ships two kilobytes per core rather than plan-contract-guard.mjs's whole closure.
-  const claimAdjudicators = new Set(['boss-review', 'boss-build'])
-  for (const [skill, files] of Object.entries(VENDOR_MAP)) {
-    if (claimAdjudicators.has(skill)) {
-      assert.ok(
-        files.includes('bs-dispatch-claims.mjs'),
-        `${skill} must vendor bs-dispatch-claims.mjs`,
-      )
-      assert.ok(
-        files.includes('citation-coordinate.mjs'),
-        `${skill} must vendor the citation resolver bs-dispatch-claims.mjs imports`,
-      )
-    } else {
-      assert.ok(
-        !files.includes('bs-dispatch-claims.mjs'),
-        `bs-dispatch-claims.mjs must not leak into ${skill}`,
-      )
-    }
-  }
 })
 
 test('every vendored payload is import-closed — no helper resolves outside its own toolbox', () => {
@@ -864,21 +849,16 @@ test('every vendored payload is import-closed — no helper resolves outside its
 })
 
 test('each notes-consuming core vendors the extension helper', () => {
-  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+  for (const core of ['boss-build', 'boss-plan', 'boss-epic', 'boss-repair']) {
     assert.ok(VENDOR_MAP[core].includes('skill-extensions.mjs'), core)
   }
 })
 
 test('the review-specific helpers route only to boss-review (BOS-196)', () => {
-  // detect/cross-review-lib/codex-review/claude-review are review-only: bundling
-  // them into any other skill's toolbox would leak review machinery it never runs.
+  // cross-review-lib/codex-review/claude-review are review-only: bundling them into any
+  // other skill's toolbox would leak review machinery it never runs.
   // Assert exclusive boss-review routing.
-  const reviewOnly = [
-    'bs-review-detect.mjs',
-    'cross-review-lib.mjs',
-    'codex-review.mjs',
-    'claude-review.mjs',
-  ]
+  const reviewOnly = ['cross-review-lib.mjs', 'codex-review.mjs', 'claude-review.mjs']
   for (const helper of reviewOnly) {
     assert.ok(VENDOR_MAP['boss-review'].includes(helper), `boss-review must vendor ${helper}`)
     for (const [skill, files] of Object.entries(VENDOR_MAP)) {
@@ -887,7 +867,7 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
     }
   }
   // skill-config.mjs (BOS-192) is NOT review-exclusive: boss-review vendors it as a
-  // transitive dep of bs-review-detect.mjs, boss-build vendors it as a direct
+  // transitive dep of cross-review-lib.mjs, boss-build vendors it as a direct
   // dep of the Step 4 plan-contract check (validatePlanDescription, BOS-204), and every
   // core that runs a post-terminal notes phase vendors it for notesSampleRate (BOS-1099)
   // — boss-repair included, which reads the knob to take its per-run sampling roll — and
@@ -910,15 +890,10 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
       assert.ok(!files.includes('skill-config.mjs'), `skill-config.mjs must not leak into ${skill}`)
     }
   }
-  // All load-bearing review helpers are present in boss-review's toolbox.
-  for (const helper of [
-    'bs-review-caps.mjs',
-    'bs-review-report.mjs',
-    'notes-record.mjs',
-    'boss-binary.mjs',
-    'skill-config.mjs',
-    ...reviewOnly,
-  ]) {
+  // All load-bearing review helpers are present in boss-review's toolbox, and boss-build reads
+  // every review's verdict through the same contract helper.
+  assert.ok(VENDOR_MAP['boss-build'].includes('review-verdict.mjs'), 'boss-build reads verdicts')
+  for (const helper of ['review-verdict.mjs', 'skill-config.mjs', ...reviewOnly]) {
     assert.ok(VENDOR_MAP['boss-review'].includes(helper), `boss-review missing ${helper}`)
   }
 })

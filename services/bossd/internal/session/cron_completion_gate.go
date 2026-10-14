@@ -51,6 +51,11 @@ type CronCompletionGateDeps struct {
 	// value is emitted in gate logs so deferred and finalized decisions can be
 	// traced. RunIsOver remains as a compatibility seam for partial wiring/tests.
 	RunCompletionEvidence func(*models.Session) (bool, string)
+	// ChatAuthFailed reports whether the session's agent chat is auth-failed
+	// (login required) — Lifecycle.SessionChatAuthFailed in production. Such a
+	// run reads as over (idle, no pending turn) but is wedged, so the gate
+	// defers it and the stranded sweep blocks it (BOS-1530). nil never defers.
+	ChatAuthFailed func(*models.Session) bool
 }
 
 // CronCompletionGate debounces cron completion signals before finalization and
@@ -68,6 +73,7 @@ type CronCompletionGate struct {
 	finalizeTimeout       time.Duration
 	runIsOver             func(*models.Session) bool
 	runCompletionEvidence func(*models.Session) (bool, string)
+	chatAuthFailed        func(*models.Session) bool
 
 	mu      sync.Mutex
 	pending map[string]*cronCompletionGatePending
@@ -107,6 +113,7 @@ func NewCronCompletionGate(deps CronCompletionGateDeps) *CronCompletionGate {
 		finalizeTimeout:       finalizeTimeout,
 		runIsOver:             deps.RunIsOver,
 		runCompletionEvidence: deps.RunCompletionEvidence,
+		chatAuthFailed:        deps.ChatAuthFailed,
 		pending:               map[string]*cronCompletionGatePending{},
 	}
 }
@@ -220,6 +227,18 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 			Str("session", sessionID).
 			Str("completion_evidence", "legacy_run_is_over_false").
 			Msg("cron completion gate: stop hook fired but run not over; deferring to recovery sweep")
+		return cronCompletionGateCheckDone
+	}
+
+	// A login-required (auth-failed) chat reads as over — idle, no pending turn
+	// — but the run is wedged, not finished. Finalizing it would push and ready
+	// a PR for a build that never reached its own finish step (BOS-1530). Defer:
+	// the stranded sweep is the single place that blocks it.
+	if g.chatAuthFailed != nil && g.chatAuthFailed(session) {
+		g.logger.Warn().
+			Str("session", sessionID).
+			Bool("auth_failed", true).
+			Msg("cron completion gate: agent chat is auth-failed; not finalizing (the stranded sweep blocks it)")
 		return cronCompletionGateCheckDone
 	}
 

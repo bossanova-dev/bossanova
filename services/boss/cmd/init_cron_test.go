@@ -621,15 +621,67 @@ func TestInitCronMissingMCPDeclarationIsLeftToDo(t *testing.T) {
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			f := newCronFixture(t, tc.agent)
+			f.repo.IsTrusted = true
 			delete(f.baseFiles, tc.file)
 			res, report := f.run(initCronRequest{stages: []string{"plan"}})
 			if !strings.Contains(strings.Join(res.LeftToDo, "\n"), `declare the tracker MCP server "linear" in `+tc.file) || !strings.Contains(report, "Left to do:") {
 				t.Fatalf("missing declaration not reported:\n%s", report)
 			}
 			f2 := newCronFixture(t, tc.agent)
+			f2.repo.IsTrusted = true
 			f2.baseFiles[tc.file] = tc.declared
 			if res2, report2 := f2.run(initCronRequest{stages: []string{"plan"}}); len(res2.LeftToDo) != 0 {
 				t.Fatalf("declared server reported missing:\n%s", report2)
+			}
+		})
+	}
+}
+
+// TestInitCronUntrustedCodexRepoNeedsTrustForProjectMCP pins the codex note
+// for an untrusted repository (BOS-1562): Codex runs its cron sessions
+// untrusted and ignores the repository's .codex/config.toml, so declaring the
+// tracker MCP server there is not enough and the report names the trust
+// remedy. A trusted codex repo, and claude (whose .mcp.json is not gated on
+// repo trust), get no such note.
+func TestInitCronUntrustedCodexRepoNeedsTrustForProjectMCP(t *testing.T) {
+	const trustNote = "run `boss repo update repo-1 --trusted`"
+	for _, tc := range []struct {
+		name, agent, file string
+		trusted, declared bool
+		wantNote          bool
+	}{
+		{"codex untrusted, declared", "codex", ".codex/config.toml", false, true, true},
+		{"codex untrusted, undeclared", "codex", ".codex/config.toml", false, false, true},
+		{"codex trusted, declared", "codex", ".codex/config.toml", true, true, false},
+		{"codex trusted, undeclared", "codex", ".codex/config.toml", true, false, false},
+		{"claude untrusted, declared", "claude", ".mcp.json", false, true, false},
+		{"claude untrusted, undeclared", "claude", ".mcp.json", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCronFixture(t, tc.agent)
+			f.repo.IsTrusted = tc.trusted
+			if !tc.declared {
+				delete(f.baseFiles, tc.file)
+			}
+			res, report := f.run(initCronRequest{stages: []string{"plan"}})
+			todo := strings.Join(res.LeftToDo, "\n")
+			if got := strings.Contains(todo, trustNote); got != tc.wantNote {
+				t.Fatalf("trust note present = %v, want %v:\n%s", got, tc.wantNote, report)
+			}
+			if tc.wantNote && !strings.Contains(todo, "ignores the repository's .codex/config.toml") {
+				t.Fatalf("trust note does not say why:\n%s", report)
+			}
+			// The note must hold whether or not the server is declared yet:
+			// when it is not, the declare hint sits beside it, so the note
+			// cannot claim a declaration exists.
+			if tc.wantNote && (strings.Contains(todo, "declared there") || !strings.Contains(todo, `cannot use a tracker MCP server "linear" declared in it`)) {
+				t.Fatalf("trust note claims a declaration (declared = %v):\n%s", tc.declared, report)
+			}
+			if declareHint := `declare the tracker MCP server "linear" in ` + tc.file; strings.Contains(todo, declareHint) == tc.declared {
+				t.Fatalf("declare hint present = %v with declared = %v:\n%s", !tc.declared, tc.declared, report)
+			}
+			if tc.declared && !tc.wantNote && len(res.LeftToDo) != 0 {
+				t.Fatalf("unexpected left-to-do:\n%s", report)
 			}
 		})
 	}

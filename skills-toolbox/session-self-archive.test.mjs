@@ -10,6 +10,7 @@ import {
   FINISHED_OUTCOMES,
   UsageError,
   decideSelfArchive,
+  finishesThroughDaemon,
   isUnattended,
   isZeroOutput,
   parseArgs,
@@ -67,20 +68,54 @@ describe('decideSelfArchive — one test per table row', () => {
     assert.equal(reasonOf(eligible({ suppressed: true })), 'skip:caller-owns-session')
   })
 
-  it('BOSS_CRON_JOB_ID set ⇒ skip cron-finalize-owns-cleanup', () => {
+  it('a finished worktree cron run ⇒ finish, whatever the session and worktree reads say', () => {
+    const env = baseEnv({ BOSS_CRON_JOB_ID: 'job-1' })
+    assert.equal(reasonOf(eligible({ env })), 'finish:')
+    // bossd owns the guards for a finish, so nothing read from the session can turn it into a skip.
+    assert.equal(reasonOf(eligible({ env, session: null, chats: null })), 'finish:')
+    assert.equal(reasonOf(eligible({ env, worktreeClean: false })), 'finish:')
+  })
+
+  it('a finished zero-output run ⇒ finish, cron or not, whatever state the shared checkout is in', () => {
+    for (const env of [
+      baseEnv({ BOSS_CRON_JOB_ID: 'job-1', BOSS_ZERO_OUTPUT: 'true' }),
+      baseEnv({ BOSS_ZERO_OUTPUT: 'true' }),
+    ]) {
+      assert.equal(reasonOf(eligible({ env })), 'finish:')
+      assert.equal(reasonOf(eligible({ env, worktreeClean: false })), 'finish:')
+      assert.equal(reasonOf(eligible({ env, worktreeClean: null })), 'finish:')
+    }
+  })
+
+  it('an unfinished outcome or retained scratch still skips a finishing run, keeping it for inspection', () => {
+    for (const env of [
+      baseEnv({ BOSS_CRON_JOB_ID: 'job-1' }),
+      baseEnv({ BOSS_ZERO_OUTPUT: 'true' }),
+    ]) {
+      assert.equal(reasonOf(eligible({ env, outcome: 'blocked' })), 'skip:outcome-blocked')
+      assert.equal(reasonOf(eligible({ env, outcome: 'failed' })), 'skip:outcome-failed')
+      assert.equal(reasonOf(eligible({ env, runScratchExists: true })), 'skip:scratch-retained')
+    }
+  })
+
+  it('plain unattended and attended runs keep the archive path', () => {
+    assert.equal(reasonOf(eligible()), 'archive:')
+    const attended = baseEnv({ BOSS_UNATTENDED: undefined, BOSS_CRON: undefined })
+    assert.equal(reasonOf(eligible({ env: attended, confirmed: true })), 'archive:')
+    // BOSS_ZERO_OUTPUT is only meaningful on an unattended run.
     assert.equal(
-      reasonOf(eligible({ env: baseEnv({ BOSS_CRON_JOB_ID: 'job-1' }) })),
-      'skip:cron-finalize-owns-cleanup',
+      reasonOf(eligible({ env: { ...attended, BOSS_ZERO_OUTPUT: 'true' }, confirmed: true })),
+      'archive:',
     )
   })
 
-  it('a zero-output cron run archives itself, whatever state the shared checkout is in', () => {
-    const env = baseEnv({ BOSS_CRON_JOB_ID: 'job-1', BOSS_ZERO_OUTPUT: 'true' })
-    assert.equal(reasonOf(eligible({ env })), 'archive:')
-    assert.equal(reasonOf(eligible({ env, worktreeClean: false })), 'archive:')
-    assert.equal(reasonOf(eligible({ env, worktreeClean: null })), 'archive:')
-    // The other rules still hold: an unfinished outcome keeps the session for inspection.
-    assert.equal(reasonOf(eligible({ env, outcome: 'blocked' })), 'skip:outcome-blocked')
+  it('a job id without the unattended marker never archives itself', () => {
+    const env = baseEnv({
+      BOSS_CRON_JOB_ID: 'job-1',
+      BOSS_UNATTENDED: undefined,
+      BOSS_CRON: undefined,
+    })
+    assert.equal(reasonOf(eligible({ env, confirmed: true })), 'skip:cron-finalize-owns-cleanup')
   })
 
   it('every finished outcome is eligible; any other outcome skips as outcome-<value>', () => {
@@ -174,10 +209,15 @@ describe('decideSelfArchive — one test per table row', () => {
 })
 
 describe('decideSelfArchive — rule order', () => {
-  it('a cron job id beats an otherwise eligible session', () => {
+  it('a finishing run is decided before any session rule, but after outcome and scratch', () => {
+    const env = baseEnv({ BOSS_CRON_JOB_ID: 'job-1' })
     assert.equal(
-      reasonOf(eligible({ env: baseEnv({ BOSS_CRON_JOB_ID: 'job-1' }) })),
-      'skip:cron-finalize-owns-cleanup',
+      reasonOf(eligible({ env, session: { pr_number: 7, archived_at: 'x' } })),
+      'finish:',
+    )
+    assert.equal(
+      reasonOf(eligible({ env, runScratchExists: true, outcome: 'blocked' })),
+      'skip:outcome-blocked',
     )
   })
 
@@ -223,6 +263,16 @@ describe('decideSelfArchive — rule order', () => {
     ]
     for (const [over, want] of cases)
       assert.equal(reasonOf(eligible(over)), want, JSON.stringify(over))
+  })
+})
+
+describe('finishesThroughDaemon', () => {
+  it('is an unattended scheduled job or an unattended zero-output run', () => {
+    assert.equal(finishesThroughDaemon(baseEnv({ BOSS_CRON_JOB_ID: 'j' })), true)
+    assert.equal(finishesThroughDaemon(baseEnv({ BOSS_ZERO_OUTPUT: 'true' })), true)
+    assert.equal(finishesThroughDaemon(baseEnv()), false)
+    assert.equal(finishesThroughDaemon({ BOSS_CRON_JOB_ID: 'j', BOSS_ZERO_OUTPUT: 'true' }), false)
+    assert.equal(finishesThroughDaemon(), false)
   })
 })
 
@@ -292,8 +342,10 @@ function harness({
   gitFails = false,
   bossExecutable = true,
   spawnError = null,
+  finishReply = { outcome: 'pending', blocking_agent_session_id: SELF },
+  finishError = null,
 } = {}) {
-  const calls = { execFile: [], spawn: [], opened: [], closed: [] }
+  const calls = { execFile: [], execOptions: [], spawn: [], opened: [], closed: [] }
   const fs = {
     existsSync: (p) => scratchExists && p.endsWith('run-abc'),
     statSync: (p) => {
@@ -310,8 +362,17 @@ function harness({
     },
     closeSync: (fd) => calls.closed.push(fd),
   }
-  const execFile = (file, args, _options, cb) => {
+  const execFile = (file, args, options, cb) => {
     calls.execFile.push([file, ...args])
+    calls.execOptions.push(options)
+    if (args[0] === 'session' && args[1] === 'finish') {
+      if (finishError) return cb(new Error('exit 1'), '', finishError)
+      return cb(
+        null,
+        typeof finishReply === 'string' ? finishReply : JSON.stringify(finishReply),
+        '',
+      )
+    }
     if (file === 'git') {
       if (gitFails) return cb(new Error('not a git repo'), '')
       return cb(null, porcelain)
@@ -415,11 +476,6 @@ describe('runSelfArchive', () => {
     const cases = [
       [{ env: baseEnv({ BOSS_BIN: BOSS, BOSS_SESSION_ID: '' }) }, OPTS, 'skip:not-managed'],
       [{}, { ...OPTS, suppressed: true }, 'skip:caller-owns-session'],
-      [
-        { env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j' }) },
-        OPTS,
-        'skip:cron-finalize-owns-cleanup',
-      ],
       [{}, { ...OPTS, outcome: 'blocked' }, 'skip:outcome-blocked'],
       [{ scratchExists: true }, OPTS, 'skip:scratch-retained'],
       [{ showFails: true }, OPTS, 'skip:session-unreadable'],
@@ -453,24 +509,95 @@ describe('runSelfArchive', () => {
     }
   })
 
-  it('a zero-output cron run launches its own archive without reading the shared checkout', async () => {
-    const { deps, calls } = harness({
-      env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j', BOSS_ZERO_OUTPUT: 'true' }),
-      porcelain: ' M someone-elses-work.go\n',
-    })
-    const result = await runSelfArchive(OPTS, deps)
-    assert.equal(`${result.verdict}:${result.reason}`, 'archive:')
-    assert.equal(calls.spawn.length, 1)
-    assert.ok(
-      calls.execFile.every(([file]) => file !== 'git'),
-      "the repository checkout is not this run's to inspect",
-    )
+  it('a finished cron run, worktree or zero-output, runs `boss session finish` and nothing else', async () => {
+    for (const extra of [
+      { BOSS_CRON_JOB_ID: 'j' },
+      { BOSS_CRON_JOB_ID: 'j', BOSS_ZERO_OUTPUT: 'true' },
+    ]) {
+      const { deps, calls } = harness({
+        env: baseEnv({ BOSS_BIN: BOSS, ...extra }),
+        porcelain: ' M someone-elses-work.go\n',
+      })
+      const result = await runSelfArchive(OPTS, deps)
+      assert.deepEqual(
+        result,
+        {
+          verdict: 'finish',
+          reason: '',
+          finishOutcome: 'pending',
+          blockingAgentSessionId: SELF,
+          sessionId: 'sess-1',
+        },
+        JSON.stringify(extra),
+      )
+      assert.deepEqual(calls.execFile, [[BOSS, 'session', 'finish', '--json']])
+      const [options] = calls.execOptions
+      assert.equal(options.cwd, '/tmp/os-tmp', 'the finish runs from the temp dir')
+      assert.equal(options.env.BOSS_AGENT_SESSION_ID, SELF, 'the CLI reads its ids from env')
+      assert.ok(options.timeout > 0, 'the finish call is bounded')
+      assert.equal(calls.spawn.length, 0, 'a finish never spawns an archive')
+    }
   })
 
-  it('environment-only skips never read the daemon or git', async () => {
-    const { deps, calls } = harness({ env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j' }) })
-    await runSelfArchive(OPTS, deps)
-    assert.equal(calls.execFile.length, 0)
+  it('a synchronous finish is reported as finished', async () => {
+    const { deps } = harness({
+      env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j' }),
+      finishReply: { outcome: 'finished', blocking_agent_session_id: '' },
+    })
+    const result = await runSelfArchive(OPTS, deps)
+    assert.deepEqual(result, {
+      verdict: 'finish',
+      reason: '',
+      finishOutcome: 'finished',
+      sessionId: 'sess-1',
+    })
+  })
+
+  it('a relative BOSS_BIN is anchored before the finish runs from the temp dir', async () => {
+    const { deps, calls } = harness({
+      env: baseEnv({ BOSS_BIN: './bin/boss', BOSS_CRON_JOB_ID: 'j' }),
+    })
+    const result = await runSelfArchive(OPTS, deps)
+    assert.equal(result.verdict, 'finish')
+    assert.equal(calls.execFile[0][0], path.resolve(WORKTREE, './bin/boss'))
+  })
+
+  it('a finish CLI failure is a nonfatal skip:finish-failed carrying the CLI error', async () => {
+    const cases = [
+      [
+        { finishError: 'permission_denied: chat is not a chat of the session' },
+        /permission_denied/,
+      ],
+      [{ finishReply: 'boss skills: held refresh\nnot json' }, /unreadable finish reply/],
+      [{ finishReply: { outcome: 'archived' } }, /unexpected finish outcome/],
+      [{ bossExecutable: false }, /./],
+    ]
+    for (const [over, detail] of cases) {
+      const { deps, calls } = harness({
+        env: baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j' }),
+        ...over,
+      })
+      const result = await runSelfArchive(OPTS, deps)
+      assert.equal(`${result.verdict}:${result.reason}`, 'skip:finish-failed', JSON.stringify(over))
+      assert.match(result.detail, detail, JSON.stringify(over))
+      assert.equal(result.sessionId, 'sess-1')
+      assert.equal(calls.spawn.length, 0)
+    }
+  })
+
+  it('blocked, failed and scratch-retained finishing runs skip without reading the daemon or git', async () => {
+    const env = baseEnv({ BOSS_BIN: BOSS, BOSS_CRON_JOB_ID: 'j' })
+    for (const [over, opts, want] of [
+      [{ env }, { ...OPTS, outcome: 'blocked' }, 'skip:outcome-blocked'],
+      [{ env }, { ...OPTS, outcome: 'failed' }, 'skip:outcome-failed'],
+      [{ env, scratchExists: true }, OPTS, 'skip:scratch-retained'],
+    ]) {
+      const { deps, calls } = harness(over)
+      const result = await runSelfArchive(opts, deps)
+      assert.equal(`${result.verdict}:${result.reason}`, want)
+      assert.equal(calls.execFile.length, 0, `no daemon or git read for ${want}`)
+      assert.equal(calls.spawn.length, 0)
+    }
   })
 
   it('a non-JSON show reply is session-unreadable', async () => {

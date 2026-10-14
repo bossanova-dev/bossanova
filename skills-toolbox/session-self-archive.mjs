@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 // skills-toolbox/session-self-archive.mjs
-// Decide whether a finished planning run may archive its own boss session, and if so launch the
-// archive so it outlives the pane it kills.
+// Decide how a finished planning run ends its own boss session, and do it.
 //
-// Archiving a session kills every chat's tmux pane, removes the worktree and marks the row. So the
-// decision refuses whenever that could hurt anything: no daemon, a caller that owns the session, a
-// cron job whose finalize owns cleanup, an unfinished outcome, retained scratch, a PR, another live
-// chat, or a dirty worktree. A zero-output run (BOSS_ZERO_OUTPUT=true) works in the repository
-// checkout itself: it has no worktree to protect, and bossd finalizes such a session when it is
-// archived, so its cron run ends itself here instead of idling until the stranded sweep notices.
-// The tests are the specification of the rule order.
+// An unattended run that bossd finalizes — a scheduled job (BOSS_CRON_JOB_ID) or a zero-output run
+// (BOSS_ZERO_OUTPUT=true) — gets the `finish` verdict: the helper runs `boss session finish`, and
+// bossd runs the run's normal finalize once every chat is idle and the session's agent logs have
+// gone quiet. That quiet-log guard is what keeps background agents alive, so every such run goes
+// through it rather than archiving itself.
+//
+// Any other run may archive its own session, launched so it outlives the pane it kills. Archiving
+// kills every chat's tmux pane, removes the worktree and marks the row, so that decision refuses
+// whenever it could hurt anything: no daemon, a caller that owns the session, an unfinished
+// outcome, retained scratch, a PR, another live chat, or a dirty worktree. Unfinished outcomes and
+// retained scratch skip a finish too, keeping the session for inspection. The tests are the
+// specification of the rule order.
 //
 //   node session-self-archive.mjs --outcome <o> --run-scratch <dir> [--confirmed] [--suppressed] [--delay-ms N]
 //
-// Prints one JSON line `{"verdict","reason","sessionId"[,"log"][,"detail"]}` and exits 0 on every
-// decision — the step is never fatal. Exit 64 only on a usage error.
+// Prints one JSON line `{"verdict","reason","sessionId"[,"log"][,"finishOutcome"][,"detail"]}` and
+// exits 0 on every decision — the step is never fatal. Exit 64 only on a usage error.
 //
 // Node built-ins plus ./main-module.mjs and ./boss-binary.mjs only.
 
@@ -53,6 +57,14 @@ export function isZeroOutput(env) {
   return env.BOSS_ZERO_OUTPUT === 'true'
 }
 
+/**
+ * True for an unattended run whose cleanup is bossd's finalize: a scheduled job or a zero-output
+ * run. Such a run ends with `boss session finish`, never an archive.
+ */
+export function finishesThroughDaemon(env = {}) {
+  return isUnattended(env) && (Boolean(env.BOSS_CRON_JOB_ID) || isZeroOutput(env))
+}
+
 function normalizeStatus(status) {
   return String(status ?? '')
     .trim()
@@ -61,9 +73,9 @@ function normalizeStatus(status) {
 }
 
 /**
- * The rules that need no daemon or git read. Returns a skip verdict, or null when the run is
- * eligible so far. The CLI calls this first so it never touches the daemon for a run that the
- * environment or outcome alone rules out.
+ * The rules that need no daemon or git read. Returns a skip verdict, the finish verdict, or null
+ * when the run is eligible to archive so far. The CLI calls this first so it never reads the daemon
+ * for a run that the environment or outcome alone decides.
  */
 export function preflightSelfArchive({
   env = {},
@@ -73,9 +85,12 @@ export function preflightSelfArchive({
 } = {}) {
   if (!env.BOSS_SESSION_ID) return skip('not-managed')
   if (suppressed || env.BOSS_SELF_ARCHIVE_SUPPRESSED === '1') return skip('caller-owns-session')
-  if (env.BOSS_CRON_JOB_ID && !isZeroOutput(env)) return skip('cron-finalize-owns-cleanup')
   if (!FINISHED_OUTCOMES.includes(outcome)) return skip(`outcome-${outcome || 'missing'}`)
   if (runScratchExists) return skip('scratch-retained')
+  if (finishesThroughDaemon(env)) return { verdict: 'finish', reason: '' }
+  // A job id without the unattended marker is not a shape bossd launches; its finalize still owns
+  // cleanup, so it never archives itself.
+  if (env.BOSS_CRON_JOB_ID) return skip('cron-finalize-owns-cleanup')
   return null
 }
 
@@ -83,7 +98,7 @@ export function preflightSelfArchive({
  * The whole decision. `session` is the `session` object from `boss show <id> --json` and `chats`
  * the `chats` array from `boss chats <id> --json`; either being null means it could not be read.
  * `worktreeClean` is true (no porcelain output), false (dirty) or null (git failed).
- * @returns {{verdict: 'archive'|'ask'|'skip', reason: string, detail?: string}}
+ * @returns {{verdict: 'archive'|'finish'|'ask'|'skip', reason: string, detail?: string}}
  */
 export function decideSelfArchive({
   env = {},
@@ -193,6 +208,43 @@ async function readWorktreeClean(execFile, worktree) {
   return stdout.trim() === ''
 }
 
+// Bounds the synchronous finish call. The daemon records the request and answers at once (the
+// requester's own finish is always deferred), so this only matters for a wedged daemon socket.
+export const FINISH_TIMEOUT_MS = 60_000
+
+/**
+ * Run `boss session finish --json` synchronously from the temp dir and report what the daemon did.
+ * The CLI reads the session and chat ids from env. Never throws: any failure is skip:finish-failed.
+ */
+export async function requestFinish({ execFile, bossPath, env, tmpdir }) {
+  const { error, stdout } = await new Promise((resolve) => {
+    execFile(
+      bossPath,
+      ['session', 'finish', '--json'],
+      { cwd: tmpdir, env, timeout: FINISH_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      (err, out, errOut) =>
+        resolve({
+          error: err ? String(errOut ?? '').trim() || String(err?.message ?? err) : null,
+          stdout: String(out ?? ''),
+        }),
+    )
+  })
+  if (error) return skip('finish-failed', error)
+  let parsed
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return skip('finish-failed', `unreadable finish reply: ${stdout.trim().slice(0, 200)}`)
+  }
+  const finishOutcome = parsed?.outcome
+  if (finishOutcome !== 'pending' && finishOutcome !== 'finished')
+    return skip('finish-failed', `unexpected finish outcome: ${String(finishOutcome)}`)
+  const result = { verdict: 'finish', reason: '', finishOutcome }
+  if (parsed.blocking_agent_session_id)
+    result.blockingAgentSessionId = String(parsed.blocking_agent_session_id)
+  return result
+}
+
 /**
  * Launch `boss archive <id>` detached after `delayMs`, so it survives the pane it kills. The cwd is
  * the temp dir so nothing keeps the doomed worktree open; output goes to a log under the temp dir.
@@ -259,13 +311,18 @@ export async function runSelfArchive(opts, deps = {}) {
     suppressed: opts.suppressed,
   }
   const early = preflightSelfArchive(base)
-  if (early) return { ...early, sessionId }
+  if (early && early.verdict !== 'finish') return { ...early, sessionId }
 
   const resolved = resolveBossBinary(env, { fs, cwd })
-  if (!resolved.ok) return { ...skip('session-unreadable', resolved.reason), sessionId }
+  if (!resolved.ok) {
+    const reason = early ? 'finish-failed' : 'session-unreadable'
+    return { ...skip(reason, resolved.reason), sessionId }
+  }
   // The resolver may return a relative path (BOSS_BIN=./bin/boss, a relative PATH entry), checked
   // against this cwd; every exec below runs from the temp dir, so anchor it here.
   const bossPath = path.resolve(cwd, resolved.path)
+
+  if (early) return { ...(await requestFinish({ execFile, bossPath, env, tmpdir })), sessionId }
 
   const [session, chats, worktreeClean] = await Promise.all([
     readJson(execFile, bossPath, ['show', sessionId, '--json'], 'session'),

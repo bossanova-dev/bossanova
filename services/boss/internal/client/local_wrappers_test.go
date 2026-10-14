@@ -131,6 +131,12 @@ func (f *fakeDaemonRPC) ListCheckSnapshots(_ context.Context, _ *connect.Request
 	})
 }
 
+func (f *fakeDaemonRPC) GetSessionTimeline(_ context.Context, _ *connect.Request[pb.GetSessionTimelineRequest]) (*connect.Response[pb.GetSessionTimelineResponse], error) {
+	return sessionResp(f, func() *pb.GetSessionTimelineResponse {
+		return &pb.GetSessionTimelineResponse{Steps: []*pb.TimelineStep{{Title: "Build started"}}}
+	})
+}
+
 func (f *fakeDaemonRPC) ListAgents(_ context.Context, _ *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
 	return sessionResp(f, func() *pb.ListAgentsResponse {
 		return &pb.ListAgentsResponse{Agents: []*pb.AgentInfo{{Name: "claude", Version: "1.0"}}}
@@ -170,6 +176,17 @@ func (f *fakeDaemonRPC) CreateSession(_ context.Context, _ *connect.Request[pb.C
 
 func (f *fakeDaemonRPC) AttachSession(_ context.Context, _ *connect.Request[pb.AttachSessionRequest]) (*connect.ServerStreamForClient[pb.AttachSessionResponse], error) {
 	return nil, f.err
+}
+
+func (f *fakeDaemonRPC) DismissSessionAlert(_ context.Context, req *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error) {
+	return sessionResp(f, func() *pb.DismissSessionAlertResponse {
+		// Echo the request back through the session so the wrapper test can
+		// see both fields reached the daemon.
+		return &pb.DismissSessionAlertResponse{Session: &pb.Session{
+			Id:    req.Msg.GetSessionId(),
+			Title: req.Msg.GetAlertKey(),
+		}}
+	})
 }
 
 // TestLocalClientValueWrappers drives every remaining value-returning wrapper
@@ -262,6 +279,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 			got, err := c.ListCheckSnapshots(ctx, "sess", 5)
 			return err == nil && len(got.GetSnapshots()) == 1 && got.GetSnapshots()[0].GetHeadSha() == "sha-1", got == nil, err
 		}},
+		{"GetSessionTimeline", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.GetSessionTimeline(ctx, "sess")
+			return err == nil && len(got) == 1 && got[0].GetTitle() == "Build started", got == nil, err
+		}},
 		{"ListAgents", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.ListAgents(ctx)
 			return err == nil && len(got) == 1 && got[0].Name == "claude", got == nil, err
@@ -273,6 +294,10 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"GetChatTranscript", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.GetChatTranscript(ctx, &pb.GetChatTranscriptRequest{AgentSessionId: "agent-1"})
 			return err == nil && got.GetExists() && got.GetFinalAssistantText() == "hello", got == nil, err
+		}},
+		{"DismissSessionAlert", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.DismissSessionAlert(ctx, fakeSessionID, "resume:auth_expired")
+			return err == nil && got.GetId() == fakeSessionID && got.GetTitle() == "resume:auth_expired", got == nil, err
 		}},
 		{"SendChatMessage", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{AgentSessionId: "agent-1", Message: "hi"})

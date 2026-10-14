@@ -16,6 +16,8 @@ export const VENDOR_MAP = {
     'bs-record-notes.mjs',
     'bs-run-sentinel.mjs',
     'commit-status.mjs',
+    // commit-status.mjs imports ready-gate.mjs.
+    'ready-gate.mjs',
     'cron-gates/boss-retro.mjs',
     'dag-scheduler.mjs',
     'guidance-audit.mjs',
@@ -51,63 +53,18 @@ export const VENDOR_MAP = {
     'boss-binary.mjs',
     'bossd-present.mjs',
   ],
-  // boss-review is the only skill that runs the review-specific helpers (its detect,
-  // cross-agent, and report phases), so they vendor into its toolbox alone (BOS-196).
-  // skill-config.mjs (BOS-192) is a transitive dependency of bs-review-detect.mjs and
-  // must be co-located for the bundled helper to resolve its `./skill-config.mjs` import.
+  // boss-review is the find-then-verify review. It writes the verdict through review-verdict.mjs
+  // and runs the cross-agent second model through codex-review.mjs / claude-review.mjs, whose
+  // shared core (cross-review-lib.mjs) reads its hang guard from skill-config.mjs, which imports
+  // the selection vocabulary.
   'boss-review': [
     'main-module.mjs',
-    // bs-dispatch-await.mjs (BOS-1024) centralizes awaited-dispatch classification
-    // and batch planning. It imports bs-run-sentinel.mjs for terminal artefacts and
-    // dag-scheduler.mjs for fail-closed dependency waves, so all three ship together.
-    'bs-dispatch-await.mjs',
-    // bs-dispatch-batch-audit.mjs (BOS-1027) powers Phase 7's report-only transcript self-audit;
-    // it must resolve from installed boss-review toolboxes in user repos with no repo-root
-    // skills-toolbox/.
-    'bs-dispatch-batch-audit.mjs',
-    'bs-run-sentinel.mjs',
-    'dag-scheduler.mjs',
-    'bs-review-caps.mjs',
-    // gate-outcome.mjs (BOS-1209) is imported directly by bs-review-caps.mjs, whose three
-    // admission verbs record one outcome line per review round. An installed toolbox has no
-    // repo-root skills-toolbox/ to reach back into, so without this the vendored copy fails to
-    // resolve its `./gate-outcome.mjs` import and the caps helper stops loading entirely.
-    'gate-outcome.mjs',
-    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
-    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
-    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
-    // one citation resolver in the tree, rather than growing a second one, so that module ships
-    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
-    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
-    // than plan-contract-guard.mjs's whole import closure.
-    'bs-dispatch-claims.mjs',
-    'citation-coordinate.mjs',
-    // bs-mutation-obligations.mjs (BOS-1288) owns the fix-shape → obliged-mutant-set
-    // enumeration that references/falsification.md's shared checklist classifies against,
-    // and adjudicates the recorded proof. That checklist is the NORMATIVE non-vacuity
-    // contract for this tree, so the core carrying it must be able to RUN the adjudicator
-    // it names: an installed boss-review has no repo-root skills-toolbox/ to reach back
-    // into, and a named-but-unreachable helper degrades straight back to the unqualified
-    // one-mutant prose obligation it replaced. Its only import is main-module.mjs, already
-    // vendored here.
-    'bs-mutation-obligations.mjs',
-    'bs-review-ledger.mjs',
-    'bs-review-triage.mjs',
-    'bs-review-report.mjs',
-    'bs-review-detect.mjs',
+    'review-verdict.mjs',
     'cross-review-lib.mjs',
     'codex-review.mjs',
     'claude-review.mjs',
     'skill-config.mjs',
-    // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
-    // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
     'selection.mjs',
-    'skill-extensions.mjs',
-    // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
-    'bs-record-notes.mjs',
-    // notes-record.mjs records Phase 8 categories; its imports ship beside it.
-    'notes-record.mjs',
-    'boss-binary.mjs',
   ],
   'boss-build': [
     'main-module.mjs',
@@ -121,30 +78,12 @@ export const VENDOR_MAP = {
     // BOS-1515: followup-route.mjs decides which follow-ups reach the ledger sections that park a
     // PR at verify; its only import is main-module.mjs.
     'followup-route.mjs',
-    // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
-    // the skill prose cites; it imports bs-run-sentinel.mjs and dag-scheduler.mjs,
-    // both already ship here for the review sentinel and tracker scheduler.
-    'bs-dispatch-await.mjs',
-    'bs-run-sentinel.mjs',
     'worktree-lock.sh',
-    'bs-review-caps.mjs',
-    // See boss-review: bs-review-caps.mjs imports gate-outcome.mjs (BOS-1209) for its per-round
-    // admission outcomes, and an installed core cannot reach into another core's toolbox copy.
-    'gate-outcome.mjs',
-    // bs-dispatch-claims.mjs (BOS-1243) is the single adjudicator of a dispatch report's
-    // mechanically checkable claims — a cited path, a quoted object name, a tree hash offered as
-    // the tree the gates ran on. It resolves a cited path through citation-coordinate.mjs, the
-    // one citation resolver in the tree, rather than growing a second one, so that module ships
-    // with it; an installed core has no repo-root skills-toolbox/ to reach back into. The
-    // resolver sits in its own module precisely so this reuse costs a core two kilobytes rather
-    // than plan-contract-guard.mjs's whole import closure.
-    'bs-dispatch-claims.mjs',
-    'citation-coordinate.mjs',
-    'bs-review-ledger.mjs',
-    'bs-review-report.mjs',
-    // BOS-1020: the Step 6 review loop re-checks base drift at every round boundary, so the
-    // detector must resolve inside an installed boss-build toolbox — the review stack runs in
-    // user repos that have no repo-root skills-toolbox/ to reach back into.
+    // review-verdict.mjs (the review contract) is how Step 6 reads any review's verdict and
+    // renders its PR sections; its only import is main-module.mjs.
+    'review-verdict.mjs',
+    // BOS-1020: Step 6 checks base drift before the review, so the detector must resolve inside an
+    // installed boss-build toolbox — a user repo has no repo-root skills-toolbox/ to reach into.
     'base-drift.mjs',
     // BOS-1359: post-rebase-audit.mjs names what a clean rebase silently changed; Step 6's
     // base-drift rebase and Step 9's readying rebase call it by path. It imports base-drift.mjs
@@ -250,8 +189,10 @@ export const VENDOR_MAP = {
     'session/adapter.mjs',
     'session/boss.mjs',
     // BOS-1385: commit-status.mjs posts and reads the boss/build receipt from an installed
-    // toolbox; it imports only main-module.mjs, which already ships here.
+    // toolbox. It imports ready-gate.mjs (the ready gate Step 9 also runs by path; completion-gate.mjs
+    // shares its reasons) and main-module.mjs.
     'commit-status.mjs',
+    'ready-gate.mjs',
     // stage-chain.mjs (BOS-1388): Step 5/6 phase reports and Step 12's verify hand-off
     // (`run-next`, `arm-verify`); completion-gate.mjs imports its consent matcher. Its imports
     // (boss-binary, bossd-present, main-module) already ship here.
@@ -539,6 +480,8 @@ export const VENDOR_MAP = {
     // BOS-1385: commit-status.mjs reads the start head's boss/build receipt and carries it to the
     // pushed head; it imports only main-module.mjs, which already ships here.
     'commit-status.mjs',
+    // commit-status.mjs imports ready-gate.mjs, the gate a boss/build success post must pass.
+    'ready-gate.mjs',
     // stage-chain.mjs (BOS-1388): the `repairing` phase report; its imports already ship here.
     'stage-chain.mjs',
   ],
@@ -581,6 +524,8 @@ export const VENDOR_MAP = {
     'merge-eligibility.mjs',
     'pr-check-state.mjs',
     'commit-status.mjs',
+    // commit-status.mjs imports ready-gate.mjs.
+    'ready-gate.mjs',
     'linear-gate-lib.mjs',
     'linear-deps-lib.mjs',
     'linear-claim.mjs',
@@ -597,8 +542,8 @@ export const VENDOR_MAP = {
     'bossd-present.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
+  'bs-sweep-dependabot': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-mutation': ['main-module.mjs', 'bs-run-sentinel.mjs'],
-  'bs-sweep-security': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-tests': ['main-module.mjs', 'bs-run-sentinel.mjs'],
 }
 

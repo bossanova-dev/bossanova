@@ -137,6 +137,21 @@ export const externalInputRules = [
     patterns: ['//services/bossd/...'],
     ledgerModules: [],
   },
+  {
+    // //services/bosso/internal/auth:auth_test declares //services/bossd/cmd:main.go and
+    // //services/bossd/internal/notesync:worker.go as `data` deps;
+    // TestDaemonTokenProceduresCoverBossdDaemonTokenCalls scans them for orchestrator calls
+    // bossd makes with its daemon token, so bosso's daemonTokenProcedures allowlist cannot
+    // fall behind bossd (BOS-1553). An ordinary sandboxed graph target: patterns only. The
+    // match is each label's bazel package, excluding sub-packages such as cmd/apiversioncheck.
+    match: (f) =>
+      ['services/bossd/cmd/', 'services/bossd/internal/notesync/'].some(
+        (dir) => f.startsWith(dir) && !f.slice(dir.length).includes('/'),
+      ),
+    samplePath: 'services/bossd/internal/notesync/worker.go',
+    patterns: ['//services/bosso/...'],
+    ledgerModules: [],
+  },
 ]
 
 // Shared modules: a change here can break a dependent module's NATIVE ledger row, which no
@@ -360,8 +375,12 @@ export function selectTargets(files) {
       continue
     }
 
+    // scripts/check-action-pins.test.mjs checks the composite actions and dependabot.yml
+    // against the real tree, so an edit there must run the script tests.
     if (
       file.startsWith(WORKFLOW_INPUT_ROOT) ||
+      file.startsWith('.github/actions/') ||
+      file === '.github/dependabot.yml' ||
       file === 'README.md' ||
       file === 'buf.yaml' ||
       file === 'buf.gen.yaml' ||
@@ -504,6 +523,13 @@ export function selectTargets(files) {
     // Mirrors test-warehouse.yml's pricing.ts input, before isWebPath claims it.
     if (file === 'services/marketing/src/lib/pricing.ts') {
       selectWholeTarget(selections, 'test-warehouse')
+      selectedPrimaryTarget = true
+    }
+
+    // scripts/install-sh.test.mjs runs the installer. No `continue`: it is also a
+    // marketing build input, so isWebPath() below must still add test-web.
+    if (file === 'infra/install.sh') {
+      selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
     }
 

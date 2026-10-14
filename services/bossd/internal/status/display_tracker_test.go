@@ -105,6 +105,38 @@ func TestDisplayTracker_VerifyReason_ThreadsThroughSetGetBatch(t *testing.T) {
 	}
 }
 
+func TestDisplayTracker_VerifyLabel_ThreadsFromParkToReadPath(t *testing.T) {
+	tr := NewDisplayTracker()
+
+	// The real chain: a labelled park description, classified, then cached.
+	info := vcs.ComputeDisplayStatus(
+		&vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true)},
+		[]vcs.CheckResult{{
+			Name:        vcs.VerifyStatusContext,
+			Status:      vcs.CheckStatusQueued,
+			Description: "needs human: human-review:security · verify gate rules",
+		}},
+		nil,
+	)
+	tr.Set("sess-1", info)
+	e := tr.Get("sess-1")
+	if e == nil || e.VerifyReason != "human-review:security" || e.VerifyLabel != "verify gate rules" {
+		t.Fatalf("Get = %+v, want reason human-review:security and label verify gate rules", e)
+	}
+	b := tr.GetBatch([]string{"sess-1"})["sess-1"]
+	if b == nil || b.VerifyReason != "human-review:security" || b.VerifyLabel != "verify gate rules" {
+		t.Fatalf("GetBatch = %+v, want reason and label", b)
+	}
+
+	// Refreshed by every poll, not preserved: a later unlabelled park clears it.
+	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "ledger-open"})
+	if e := tr.Get("sess-1"); e == nil || e.VerifyLabel != "" || e.VerifyReason != "ledger-open" {
+		t.Fatalf("Get after unlabelled park = %+v, want empty label", e)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 func TestDisplayTracker_Get_NotFound(t *testing.T) {
 	tr := NewDisplayTracker()
 	if e := tr.Get("nonexistent"); e != nil {

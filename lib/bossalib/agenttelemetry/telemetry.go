@@ -78,7 +78,7 @@ type Counts struct {
 	// tool calls whose worker prompt leads with ReviewerDispatchMarker. It is a
 	// whole-tree total, not a per-transcript one: every marked dispatch a
 	// descendant made at any depth rolls into it (see
-	// ChildSpan.ReviewerDispatchCount), boss-review's own lens and round
+	// ChildSpan.ReviewerDispatchCount), boss-review's own finder and verifier
 	// dispatches included. So read it as reviewer fan-out made observable, never
 	// as an audit of boss-build's per-run dispatch bound — that bound is scoped to
 	// the legs the protocol starts itself and deliberately excludes everything
@@ -89,7 +89,13 @@ type Counts struct {
 	// TerminalState is the last boss-build terminal-state token the transcript's
 	// assistant output printed on a line of its own, or "" when it printed none.
 	TerminalState string
-	Children      []ChildSpan
+	// LastOutputAt is the timestamp of the newest message in the tallied
+	// window that carried output tokens (> 0) in the top-level transcript;
+	// zero when none did. A zero-token assistant message — how an auth
+	// failure is transcribed — is not output. Child transcripts do not feed
+	// it.
+	LastOutputAt time.Time
+	Children     []ChildSpan
 }
 
 type ChildSpan struct {
@@ -243,6 +249,9 @@ func TallyCodexPathsWindowContext(ctx context.Context, paths []string, since, un
 		// printed none must not erase an earlier file's state.
 		if counts.TerminalState != "" {
 			out.TerminalState = counts.TerminalState
+		}
+		if counts.LastOutputAt.After(out.LastOutputAt) {
+			out.LastOutputAt = counts.LastOutputAt
 		}
 		if counts.OutputTokenCount != nil {
 			addPtr(&out.OutputTokenCount, *counts.OutputTokenCount)
@@ -592,6 +601,16 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 		if afterUntil {
 			continue
 		}
+		// noteOutput records this message as output when it carried output
+		// tokens and its time is known.
+		noteOutput := func(tokens int64) {
+			if tokens <= 0 || msg.Timestamp == "" {
+				return
+			}
+			if ts, err := time.Parse(time.RFC3339Nano, msg.Timestamp); err == nil && ts.After(out.LastOutputAt) {
+				out.LastOutputAt = ts
+			}
+		}
 		switch msg.Type {
 		case "assistant":
 			var cm claudeMessage
@@ -611,6 +630,7 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			}
 			if msg.Usage != nil {
 				addPtr(&out.OutputTokenCount, msg.Usage.OutputTokens)
+				noteOutput(msg.Usage.OutputTokens)
 				if msg.Usage.OutputTokensDetails != nil {
 					addPtr(&out.ReasoningTokenCount, msg.Usage.OutputTokensDetails.ThinkingTokens)
 				}
@@ -628,6 +648,7 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			}
 			if msg.Usage != nil {
 				addPtr(&out.OutputTokenCount, msg.Usage.OutputTokens)
+				noteOutput(msg.Usage.OutputTokens)
 				if msg.Usage.OutputTokensDetails != nil {
 					addPtr(&out.ReasoningTokenCount, msg.Usage.OutputTokensDetails.ThinkingTokens)
 				}
@@ -691,6 +712,7 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 						codexTokenCountMessages++
 						finalOutputTokenCount = int64Ptr(usage.OutputTokens)
 						finalReasoningTokenCount = int64Ptr(usage.reasoningTokens())
+						noteOutput(usage.OutputTokens)
 					}
 				}
 			}
@@ -698,6 +720,7 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 			var tc codexTokenCount
 			if err := json.Unmarshal(msg.Message, &tc); err == nil {
 				usage, cumulative := tc.bestUsage()
+				noteOutput(tc.newOutputTokens(codexTokenBaseline))
 				if usage.hasUsage() {
 					codexTokenCountMessages++
 					finalOutputTokenCount = int64Ptr(usage.OutputTokens)
@@ -721,10 +744,10 @@ func tallyJSONL(ctx context.Context, r io.Reader, provider string, since, until 
 	}
 	if provider == "codex" && finalCodexUsageCumulative && subtractCodexTokenBaseline != nil {
 		if finalOutputTokenCount != nil {
-			finalOutputTokenCount = int64Ptr(nonNegative(*finalOutputTokenCount - subtractCodexTokenBaseline.OutputTokens))
+			finalOutputTokenCount = int64Ptr(codexGrowth(*finalOutputTokenCount, subtractCodexTokenBaseline.OutputTokens))
 		}
 		if finalReasoningTokenCount != nil {
-			finalReasoningTokenCount = int64Ptr(nonNegative(*finalReasoningTokenCount - subtractCodexTokenBaseline.reasoningTokens()))
+			finalReasoningTokenCount = int64Ptr(codexGrowth(*finalReasoningTokenCount, subtractCodexTokenBaseline.reasoningTokens()))
 		}
 	}
 	if finalOutputTokenCount != nil {
@@ -764,6 +787,33 @@ func (tc codexTokenCount) cumulativeUsage() (codexTokenCount, bool) {
 		return *tc.Info.TotalTokenUsage, true
 	}
 	return codexTokenCount{}, false
+}
+
+// newOutputTokens is the output this token_count event reports as new, over
+// the usage bestUsage picks. When that is a cumulative total, it is the
+// growth of the total over prev (the previous cumulative usage seen, nil for
+// none): Codex re-emits a token_count whose last_token_usage is the previous
+// turn's while the total stays put, and that repeat is not new output. A total
+// below prev means the total restarted, so all of it is new. Otherwise it is
+// the per-turn usage's output.
+func (tc codexTokenCount) newOutputTokens(prev *codexTokenCount) int64 {
+	usage, cumulative := tc.bestUsage()
+	if cumulative && prev != nil {
+		return codexGrowth(usage.OutputTokens, prev.OutputTokens)
+	}
+	return usage.OutputTokens
+}
+
+// codexGrowth is how much a cumulative Codex token total grew past base. A
+// total below base is a counter that restarted (a later rollout file carries
+// the earlier file's total as its base), so all of it is new. Every place that
+// subtracts a carried baseline uses it, so the output time and the final
+// counts agree on what a restart means.
+func codexGrowth(total, base int64) int64 {
+	if total < base {
+		return total
+	}
+	return total - base
 }
 
 func (tc codexTokenCount) hasUsage() bool {
@@ -825,13 +875,6 @@ func addPtr(dst **int64, value int64) {
 func int64Ptr(value int64) *int64 {
 	v := value
 	return &v
-}
-
-func nonNegative(value int64) int64 {
-	if value < 0 {
-		return 0
-	}
-	return value
 }
 
 func countClaudeToolUseBlocks(raw json.RawMessage) int64 {

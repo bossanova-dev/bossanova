@@ -128,3 +128,45 @@ func TestParseGitHubCheckState(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTrustedReviewAuthor(t *testing.T) {
+	tests := []struct {
+		name        string
+		login       string
+		association string
+		want        bool
+	}{
+		{"owner", "maintainer", "OWNER", true},
+		{"member", "teammate", "MEMBER", true},
+		{"collaborator", "helper", "COLLABORATOR", true},
+		{"lowercase association", "teammate", "member", true},
+		{"padded association", "teammate", " MEMBER ", true},
+		{"contributor", "drive-by", "CONTRIBUTOR", false},
+		{"first-time contributor", "drive-by", "FIRST_TIME_CONTRIBUTOR", false},
+		{"first-timer", "drive-by", "FIRST_TIMER", false},
+		{"mannequin", "ghost", "MANNEQUIN", false},
+		{"none", "drive-by", "NONE", false},
+		{"missing association", "drive-by", "", false},
+		{"bot with no association", "chatgpt-codex-connector[bot]", "NONE", true},
+		{"bot with empty association", "cursor[bot]", "", true},
+		{"bare bot login is not a bot", "chatgpt-codex-connector", "NONE", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTrustedReviewAuthor(tt.login, tt.association); got != tt.want {
+				t.Errorf("IsTrustedReviewAuthor(%q, %q) = %v, want %v", tt.login, tt.association, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTrustedAuthorAssociation_IgnoresBotLogins(t *testing.T) {
+	// The association predicate alone never trusts NONE, whoever posted it;
+	// only IsTrustedReviewAuthor adds the bot-login escape.
+	if IsTrustedAuthorAssociation("NONE") {
+		t.Fatal("IsTrustedAuthorAssociation(NONE) = true, want false")
+	}
+	if !IsTrustedAuthorAssociation("OWNER") {
+		t.Fatal("IsTrustedAuthorAssociation(OWNER) = false, want true")
+	}
+}

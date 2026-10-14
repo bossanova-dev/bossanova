@@ -17,14 +17,15 @@ type fakeHost struct {
 	prs     []*bossanovav1.PRSummary
 	err     error
 	gotRepo string
+	calls   int
 }
 
 func (f *fakeHost) ListOpenPRs(_ context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	f.calls++
 	f.gotRepo = repoOriginURL
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.prs, nil
+	// prs is returned alongside err on purpose: a caller must not trust a
+	// listing that came back with an error.
+	return f.prs, f.err
 }
 
 // fakeFetcher is a stub issueFetcher returning canned issues (or an error),
@@ -162,7 +163,10 @@ func TestListAvailableIssues_WrapsFetchError(t *testing.T) {
 	}
 }
 
-func TestListAvailableIssues_WrapsHostError(t *testing.T) {
+// By default a host/GitHub failure fails the call: the New Session picker
+// reads a zero PR number as "no PR, start a fresh branch", so an unknown PR
+// state must not look like "no PR".
+func TestListAvailableIssues_WrapsHostErrorByDefault(t *testing.T) {
 	host := &fakeHost{err: errors.New("offline")}
 	fetcher := &fakeFetcher{issues: []linearIssue{{Identifier: "ENG-1"}}}
 	s := newTestServer(host, fetcher)
@@ -173,6 +177,82 @@ func TestListAvailableIssues_WrapsHostError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "list open PRs") {
 		t.Fatalf("expected wrapped host error, got %v", err)
+	}
+}
+
+// A caller that skips PR matching (the tracker resolver, which only needs the
+// issue id and URL) gets the issues Linear returned without PR fields and
+// without any open-PR listing, so a slow or failing GitHub listing can neither
+// delay nor fail the call. The host would both fail and offer a matching PR,
+// so a listing that happened would show up as an error or a PR annotation as
+// well as in the call count.
+func TestListAvailableIssues_SkipPRMatchingMakesNoListing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "host would fail", err: errors.New("offline")},
+		{name: "host would succeed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &fakeHost{
+				err: tc.err,
+				prs: []*bossanovav1.PRSummary{{Number: 42, HeadBranch: "eng-1-fix-login"}},
+			}
+			fetcher := &fakeFetcher{issues: []linearIssue{{
+				Identifier: "ENG-1",
+				Title:      "Fix login bug",
+				BranchName: "eng-1-fix-login",
+				URL:        "https://linear.app/issue/ENG-1",
+			}}}
+			s := newTestServer(host, fetcher)
+
+			resp, err := s.ListAvailableIssues(context.Background(), &bossanovav1.ListAvailableIssuesRequest{
+				RepoOriginUrl: "https://github.com/acme/repo",
+				Config:        map[string]string{"linear_api_key": "k", "pr_matching": "skip"},
+			})
+			if err != nil {
+				t.Fatalf("ListAvailableIssues returned error: %v", err)
+			}
+			if host.calls != 0 {
+				t.Errorf("ListOpenPRs called %d times, want 0 when PR matching is skipped", host.calls)
+			}
+			issues := resp.GetIssues()
+			if len(issues) != 1 {
+				t.Fatalf("got %d issues, want 1", len(issues))
+			}
+			got := issues[0]
+			if got.GetExternalId() != "ENG-1" || got.GetUrl() != "https://linear.app/issue/ENG-1" {
+				t.Errorf("issue = (%q, %q), want (ENG-1, its URL)", got.GetExternalId(), got.GetUrl())
+			}
+			if got.GetPrNumber() != 0 || got.GetExistingBranch() != "" {
+				t.Errorf("PR annotation = (%d, %q), want none", got.GetPrNumber(), got.GetExistingBranch())
+			}
+		})
+	}
+}
+
+// Only the exact skip value opts out: any other pr_matching value (including
+// the retired "optional") keeps the strict default, so a host failure still
+// fails the call.
+func TestListAvailableIssues_OtherPRMatchingValuesStayStrict(t *testing.T) {
+	for _, value := range []string{"", "optional", "SKIP"} {
+		t.Run("value="+value, func(t *testing.T) {
+			host := &fakeHost{err: errors.New("offline")}
+			fetcher := &fakeFetcher{issues: []linearIssue{{Identifier: "ENG-1"}}}
+			s := newTestServer(host, fetcher)
+
+			_, err := s.ListAvailableIssues(context.Background(), &bossanovav1.ListAvailableIssuesRequest{
+				RepoOriginUrl: "https://github.com/acme/repo",
+				Config:        map[string]string{"linear_api_key": "k", "pr_matching": value},
+			})
+			if err == nil || !strings.Contains(err.Error(), "list open PRs") {
+				t.Fatalf("expected wrapped host error, got %v", err)
+			}
+			if host.calls != 1 {
+				t.Errorf("ListOpenPRs called %d times, want 1", host.calls)
+			}
+		})
 	}
 }
 

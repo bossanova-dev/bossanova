@@ -12,6 +12,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/repotrust"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // mcpSurfaceProber is the optional-capability seam for the DescribeMCPSurface
@@ -77,8 +79,10 @@ func (p liveMCPSurfaceProber) DescribeMCPSurface(ctx context.Context, agentName 
 // before: "which MCP servers does this session actually have, and where did
 // they come from?"
 //
-// Read-only. It starts no coding turn, writes no configuration, and rebinds no
-// account. It is also deliberately harness-agnostic: every per-agent detail
+// Read-only. It starts no coding turn and rebinds no account, and the only
+// configuration it can change is the one a launch of the same chat would: an
+// untrusted repo's probe carries REVOKE, so the runner drops a stale project
+// pre-trust before probing (BOS-1562). It is also deliberately harness-agnostic: every per-agent detail
 // lives behind the plugin RPC, so this file contains no branch on which agent
 // the chat runs.
 func (s *Server) DescribeChatMCP(ctx context.Context, req *connect.Request[pb.DescribeChatMCPRequest]) (*connect.Response[pb.DescribeChatMCPResponse], error) {
@@ -112,7 +116,11 @@ func (s *Server) DescribeChatMCP(ctx context.Context, req *connect.Request[pb.De
 	// ambient CLI login. Reporting on an environment the real chat would never
 	// receive is the same misdiagnosis this shared chain exists to prevent, and
 	// the refusal itself is the answer the operator needs.
-	probeEnv, err := s.chatSpawnEnv(ctx, sess, chat, s.defaultAccountIDForChat(ctx, sess, chat), "describe chat mcp", skipAccountUseRecord)
+	//
+	// One repo lookup: the env overlay and the probe's project-trust decision
+	// below both read it, as a spawn's do (BOS-1562).
+	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "describe chat mcp", s.logger)
+	probeEnv, err := s.chatSpawnEnv(ctx, sess, chat, repo, s.defaultAccountIDForChat(ctx, sess, chat), skipAccountUseRecord)
 	if err != nil {
 		// Redacted: this string becomes an RPC message an operator reads, and the
 		// wrapped materialize error can embed a provider response body.
@@ -149,6 +157,10 @@ func (s *Server) DescribeChatMCP(ctx context.Context, req *connect.Request[pb.De
 		AgentSessionId: agentSessionID,
 		Model:          chat.Model,
 		ProbeEnv:       probeEnv,
+		// The probe starts the agent in the worktree, so it carries the same
+		// project-trust decision a spawn of this chat does (BOS-1562): REVOKE
+		// makes the runner drop a stale pre-trust before probing.
+		ProjectTrust: repotrust.ProjectTrustFor(repo, sess.WorktreePath),
 	})
 	if err != nil {
 		// An agent that cannot answer is a first-class outcome, not a failure:

@@ -1,6 +1,36 @@
 package proofenv
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/recurser/bossalib/models"
+
+	"github.com/recurser/bossd/internal/repotrust"
+)
+
+// OverlayFor is the proof overlay a managed agent spawn (session or repair
+// run) of repo receives: r.Resolve() for a trusted repo, nil for any other
+// (BOS-1562) and when no resolver is wired. It is the grant half of the trust
+// gate — the only way a spawn obtains the overlay. The pin half, which keeps an
+// ambient proof key out of an untrusted spawn, lives in dotenv.OverlayWithRepo.
+// Values are secrets and must never be logged.
+func OverlayFor(r Resolver, repo *models.Repo) map[string]string {
+	if !repotrust.Allowed(repo) || r == nil {
+		return nil
+	}
+	return r.Resolve()
+}
+
+// GateEnvFor is GateEnv gated on repotrust.Allowed: a trusted repo's gate gets
+// exactly GateEnv(r); any other gate gets no proof key, and unset names every
+// allowlisted proof key (Keys) — including PROOF_ANTHROPIC_API_KEY — so the
+// daemon's own environment cannot supply one.
+func GateEnvFor(r Resolver, repo *models.Repo) (anthropicKey string, unset []string) {
+	if repotrust.Allowed(repo) {
+		return GateEnv(r)
+	}
+	return "", Keys()
+}
 
 // Resolver resolves the allowlisted proof overlay. proofenvkeyring.Resolver
 // backs it in production; StaticResolver backs it in tests.

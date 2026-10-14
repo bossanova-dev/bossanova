@@ -1504,7 +1504,7 @@ kill-all:
 release:
 	gh workflow run create-production-release.yml --ref main
 
-## stage-release: Trigger the staging release workflow (creates a PR from main → staging)
+## stage-release: Trigger the staging release workflow (creates a PR to staging from a release branch cut at main)
 stage-release:
 	gh workflow run create-staging-release.yml --ref main
 

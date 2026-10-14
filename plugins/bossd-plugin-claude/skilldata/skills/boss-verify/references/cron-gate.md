@@ -25,15 +25,18 @@ session and verify work belongs in each PR's **existing** session. It judges eac
 zero-token `judge`, posts and merges mechanically when no `verify` extension is installed, and
 otherwise routes `/boss-verify <pr> --claim <token>` into the PR's session (its `verify` chat, a new
 `verify` chat, or a detached `boss new --pr <n>` session for a PR with none). It never waits for a
-dispatched verify. Each PR gets one line in the gate output, then a summary:
+dispatched verify. Merges are handed off to a detached process and settled within the budget; a
+merge still in flight at the deadline prints `#N dispatched: merge in flight (log …)` and finishes
+on its own. Each PR gets one line in the gate output, then a summary:
 
 ```
 #41 merged <sha>
 #42 parked: needs human (ledger-open)
 #43 dispatched: existing-verify-chat
+#46 dispatched: merge in flight (log /tmp/boss-verify-merge-46-….log)
 #44 skipped: wait ci-not-settled
 #45 deferred: budget
-boss-verify gate: merged=1 parked=1 dispatched=1 skipped=1 deferred=1
+boss-verify gate: merged=1 parked=1 dispatched=2 skipped=1 deferred=1
 ```
 
 ## Exit codes

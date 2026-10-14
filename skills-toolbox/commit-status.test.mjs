@@ -16,9 +16,11 @@ import {
   main,
   postArgs,
   readArgs,
+  runReadyGate,
   validatePostInput,
 } from './commit-status.mjs'
 import { PROVENANCE_CONTEXTS } from './pr-check-state.mjs'
+import { main as gateMain, readyGateReport } from './ready-gate.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./commit-status.mjs', import.meta.url))
 const SHA = 'a'.repeat(40)
@@ -235,11 +237,13 @@ test('main post — a long description is capped before it reaches gh', () => {
 // ---------------------------------------------------------------------------
 // post exit codes
 
+const READY = () => ({ ready: true, reasons: [] })
+
 test('main post — success is exit 0 with verdict posted', () => {
   const { spawn, calls } = fakeSpawn({ status: 0, stdout: '{"id":1}', stderr: '' })
   const { exitCode, result } = main(
     ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA.toUpperCase()],
-    { spawn },
+    { spawn, readyGate: READY },
   )
   assert.equal(exitCode, 0)
   assert.deepEqual(result, { verdict: 'posted', sha: SHA, context: 'boss/build', state: 'success' })
@@ -276,6 +280,200 @@ test('main post — gh that cannot be spawned is exit 1 with verdict failed', ()
   assert.equal(exitCode, 1)
   assert.equal(result.verdict, 'failed')
   assert.match(result.reason, /ENOENT/)
+})
+
+// ---------------------------------------------------------------------------
+// The ready gate on a boss/build success
+
+test('main post — boss/build success asks the ready gate with the head and the override flags', () => {
+  const { spawn, calls } = fakeSpawn()
+  const asked = []
+  const { exitCode } = main(
+    [
+      'post',
+      '--context',
+      'boss/build',
+      '--state',
+      'success',
+      '--sha',
+      SHA.toUpperCase(),
+      '--review-verdict-file',
+      '/tmp/v',
+      '--reviewed-head-file',
+      '/tmp/h',
+      '--base',
+      'main',
+    ],
+    { spawn, readyGate: (flags) => (asked.push(flags), { ready: true, reasons: [] }) },
+  )
+  assert.equal(exitCode, 0)
+  assert.deepEqual(asked, [
+    { sha: SHA, 'review-verdict-file': '/tmp/v', 'reviewed-head-file': '/tmp/h', base: 'main' },
+  ])
+  assert.equal(calls.length, 1)
+  assert.ok(!calls[0].args.some((a) => /review|base=/.test(a)), 'gate flags never reach gh')
+})
+
+test('main post — a not-ready boss/build success is refused with exit 3 and nothing posted', () => {
+  const { spawn, calls } = fakeSpawn()
+  const { exitCode, result, stderr } = main(
+    ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
+    {
+      spawn,
+      readyGate: () => ({
+        ready: false,
+        reasons: ['review-not-clean', 'tree-changed-since-review'],
+      }),
+    },
+  )
+  assert.equal(exitCode, 3)
+  assert.equal(calls.length, 0, 'gh must not be spawned on a refusal')
+  assert.deepEqual(result, {
+    verdict: 'refused',
+    sha: SHA,
+    context: 'boss/build',
+    state: 'success',
+    reasons: ['review-not-clean', 'tree-changed-since-review'],
+  })
+  assert.equal(
+    stderr,
+    'commit-status: refused boss/build success: review-not-clean, tree-changed-since-review',
+  )
+})
+
+test('main post — a malformed gate answer refuses as ready-gate-error', () => {
+  for (const answer of [undefined, null, {}, { ready: 'yes' }, { ready: false, reasons: [] }]) {
+    const { spawn, calls } = fakeSpawn()
+    const { exitCode, result } = main(
+      ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
+      { spawn, readyGate: () => answer },
+    )
+    assert.equal(exitCode, 3, JSON.stringify(answer))
+    assert.deepEqual(result.reasons, ['ready-gate-error'])
+    assert.equal(calls.length, 0)
+  }
+})
+
+test('main post — a gate that throws refuses as ready-gate-error, naming the error', () => {
+  const { spawn, calls } = fakeSpawn()
+  const { exitCode, result, stderr } = main(
+    ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
+    {
+      spawn,
+      readyGate: () => {
+        throw new Error('git exploded')
+      },
+    },
+  )
+  assert.equal(exitCode, 3)
+  assert.deepEqual(result.reasons, ['ready-gate-error'])
+  assert.match(stderr, /ready-gate-error \(git exploded\)$/)
+  assert.equal(calls.length, 0)
+})
+
+test('main post — gate flags on any post but a boss/build success are a usage error', () => {
+  for (const [context, state] of [
+    ['boss/build', 'failure'],
+    ['boss/verify', 'success'],
+  ]) {
+    for (const flag of ['--review-verdict-file', '--reviewed-head-file', '--base']) {
+      const { spawn, calls } = fakeSpawn()
+      assert.throws(
+        () =>
+          main(['post', '--context', context, '--state', state, '--sha', SHA, flag, 'x'], {
+            spawn,
+            readyGate: () => assert.fail('gate asked'),
+          }),
+        UsageError,
+        `${context} ${state} ${flag}`,
+      )
+      assert.equal(calls.length, 0)
+    }
+  }
+})
+
+test('main post — other contexts and other boss/build states never ask the gate', () => {
+  for (const [context, state] of [
+    ['boss/build', 'failure'],
+    ['boss/build', 'pending'],
+    ['boss/build', 'error'],
+    ['boss/verify', 'success'],
+    ['boss/build-smoke', 'success'],
+  ]) {
+    const { spawn, calls } = fakeSpawn()
+    const { exitCode } = main(['post', '--context', context, '--state', state, '--sha', SHA], {
+      spawn,
+      readyGate: () => assert.fail(`gate asked for ${context} ${state}`),
+    })
+    assert.equal(exitCode, 0)
+    assert.equal(calls.length, 1)
+  }
+})
+
+test('runReadyGate — asks ready-gate.mjs in-process with the head and the three flags', () => {
+  const asked = []
+  const verdict = runReadyGate(
+    { sha: SHA, 'review-verdict-file': '/tmp/v', 'reviewed-head-file': undefined, base: 'main' },
+    { report: (options) => (asked.push(options), { ready: true, reasons: [] }) },
+  )
+  assert.equal(verdict.ready, true)
+  assert.deepEqual(asked, [
+    { head: SHA, base: 'main', reviewVerdictFile: '/tmp/v', reviewedHeadFile: undefined },
+  ])
+})
+
+test('runReadyGate — a boss/build receipt never takes the PARTIAL route file', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'commit-status-route-'))
+  try {
+    const git = (...args) => {
+      const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      return result.stdout.trim()
+    }
+    git('init', '--initial-branch=main')
+    const gitDir = git('rev-parse', '--absolute-git-dir')
+    writeFileSync(path.join(gitDir, 'boss-build-review-verdict'), 'REVIEW_VERDICT=capped\n')
+    writeFileSync(path.join(gitDir, 'boss-build-reviewed-head'), `${SHA}\n`)
+    writeFileSync(path.join(gitDir, 'boss-build-ready-route'), 'partial\n')
+    const report = (options) => readyGateReport(options, { cwd: dir })
+    // The CLI honours the route file in this same repo...
+    assert.equal(gateMain(['--head', SHA], { cwd: dir }).admittedFor, 'partial')
+    // ...but the receipt's in-process gate does not, so the post is refused.
+    const { spawn, calls } = fakeSpawn()
+    const refused = main(['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA], {
+      spawn,
+      readyGate: (flags) => runReadyGate(flags, { report }),
+    })
+    assert.equal(refused.exitCode, 3)
+    assert.deepEqual(refused.result.reasons, ['review-not-clean'])
+    assert.equal(calls.length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('main post — the default gate reads a real repo in-process: refused, then posted', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'commit-status-inproc-'))
+  try {
+    const verdictFile = path.join(dir, 'verdict')
+    const headFile = path.join(dir, 'reviewed')
+    const gateArgs = ['--review-verdict-file', verdictFile, '--reviewed-head-file', headFile]
+    const post = () =>
+      main(['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA, ...gateArgs], {
+        spawn: fakeSpawn().spawn,
+      })
+    writeFileSync(verdictFile, 'REVIEW_VERDICT=capped\n')
+    writeFileSync(headFile, `${SHA}\n`)
+    const refused = post()
+    assert.equal(refused.exitCode, 3)
+    assert.deepEqual(refused.result.reasons, ['review-not-clean'])
+    writeFileSync(verdictFile, 'REVIEW_VERDICT=clean\n')
+    const posted = post()
+    assert.equal(posted.exitCode, 0, posted.stderr)
+    assert.equal(posted.result.verdict, 'posted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -517,4 +715,57 @@ test('CLI read — prints the verdict and exits 0 even when gh fails', () => {
     assert.equal(res.status, 0)
     assert.equal(JSON.parse(res.stdout).verdict, 'unknown')
   })
+})
+
+test('CLI post — boss/build success runs the real ready gate: refused (3) or posted (0)', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'commit-status-gate-'))
+  try {
+    const verdictFile = path.join(dir, 'verdict')
+    const missing = path.join(dir, 'absent')
+    withFakeGh(`echo '{"id":1}'`, ({ run, recorded }) => {
+      const refused = run([
+        'post',
+        '--context',
+        'boss/build',
+        '--state',
+        'success',
+        '--sha',
+        SHA,
+        '--review-verdict-file',
+        missing,
+        '--reviewed-head-file',
+        missing,
+        '--base',
+        'main',
+      ])
+      assert.equal(refused.status, 3, refused.stderr)
+      assert.equal(JSON.parse(refused.stdout).verdict, 'refused')
+      assert.match(
+        refused.stderr,
+        /^commit-status: refused boss\/build success: review-verdict-unknown, reviewed-head-unknown$/m,
+      )
+      assert.equal(recorded().filter((a) => a === 'POST').length, 0, 'nothing posted')
+      writeFileSync(verdictFile, 'REVIEW_VERDICT=disabled\n')
+      const posted = run([
+        'post',
+        '--context',
+        'boss/build',
+        '--state',
+        'success',
+        '--sha',
+        SHA,
+        '--review-verdict-file',
+        verdictFile,
+        '--reviewed-head-file',
+        missing,
+        '--base',
+        'main',
+      ])
+      assert.equal(posted.status, 0, posted.stderr)
+      assert.equal(JSON.parse(posted.stdout).verdict, 'posted')
+      assert.ok(recorded().includes(`repos/{owner}/{repo}/statuses/${SHA}`))
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

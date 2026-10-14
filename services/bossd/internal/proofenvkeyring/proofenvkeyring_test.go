@@ -3,6 +3,8 @@ package proofenvkeyring
 import (
 	"bytes"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,6 +68,26 @@ func TestResolve_AllSecretsPresent(t *testing.T) {
 		if env[k] != v {
 			t.Errorf("env[%q] = %q, want %q", k, env[k], v)
 		}
+	}
+}
+
+// TestResolve_EmitsExactlyProofenvKeys ties the hand-kept proofenv.Keys() list
+// to what this resolver actually emits (BOS-1562). Keys() is the pin an
+// untrusted repo's spawns and gates get (dotenv.OverlayWithRepo,
+// proofenv.GateEnvFor): a key the resolver can emit but Keys() lacks would
+// reach an untrusted spawn from the daemon's ambient environment, and a key
+// Keys() names but nothing emits is a stale entry. With every secret
+// provisioned the resolver emits its widest set, so the two must be equal.
+func TestResolve_EmitsExactlyProofenvKeys(t *testing.T) {
+	var buf bytes.Buffer
+	store := fakeStore{data: map[string][]byte{
+		ItemAnthropicAPIKey:    []byte("anthropic-val"),
+		ItemCloudflareAPIToken: []byte("cf-val"),
+	}}
+	emitted := slices.Sorted(maps.Keys(newResolver(store, nil, &buf).Resolve()))
+	pinned := slices.Sorted(slices.Values(proofenv.Keys()))
+	if !slices.Equal(emitted, pinned) {
+		t.Fatalf("resolver emits %v, proofenv.Keys() pins %v; keep the two in step", emitted, pinned)
 	}
 }
 

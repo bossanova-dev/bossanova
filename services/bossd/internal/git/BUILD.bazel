@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "git",
-    srcs = ["worktree.go"],
+    srcs = [
+        "pathsafety.go",
+        "redact.go",
+        "worktree.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/git",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
@@ -19,8 +23,11 @@ go_test(
     name = "git_test",
     srcs = [
         "keepcurrent_test.go",
+        "pathsafety_test.go",
+        "redact_test.go",
         "worktree_bazel_test.go",
         "worktree_bootstrap_test.go",
+        "worktree_clone_credentials_test.go",
         "worktree_gitremote_test.go",
         "worktree_perms_test.go",
         "worktree_reflock_test.go",

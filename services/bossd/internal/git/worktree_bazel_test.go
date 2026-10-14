@@ -164,7 +164,9 @@ func TestClearStaleWorktreeReapsBase(t *testing.T) {
 		t.Fatalf("mkdir disk cache: %v", err)
 	}
 
-	m.clearStaleWorktree(ctx, repoDir, wtPath)
+	if err := m.clearStaleWorktree(ctx, repoDir, filepath.Dir(wtPath), wtPath); err != nil {
+		t.Fatalf("clearStaleWorktree: %v", err)
+	}
 
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Fatalf("worktree dir still present after clearStaleWorktree: err=%v", err)
@@ -193,8 +195,8 @@ func TestArchiveReapsBase(t *testing.T) {
 	m := NewManager(zerolog.Nop())
 
 	repoDir := initTestRepo(t)
-	wtParent := t.TempDir()
-	wtPath := filepath.Join(wtParent, "feature")
+	wtBase := t.TempDir()
+	wtPath := filepath.Join(wtBase, "my-repo", "feature")
 	if _, err := runGit(ctx, repoDir, "worktree", "add", "-b", "feature", wtPath, "main"); err != nil {
 		t.Fatalf("worktree add: %v", err)
 	}
@@ -204,7 +206,7 @@ func TestArchiveReapsBase(t *testing.T) {
 	linkBazelOut(t, wtPath, filepath.Join(base, "execroot", "_main", "bazel-out"))
 	bindBazelOutputBaseToWorktree(t, base, wtPath)
 
-	if err := m.Archive(ctx, wtPath); err != nil {
+	if err := m.Archive(ctx, "my-repo", wtBase, wtPath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
@@ -241,7 +243,7 @@ func TestArchiveDoesNotReapBaseWhenFallbackRemovalFails(t *testing.T) {
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatalf("make worktree parent read-only: %v", err)
 	}
-	err := m.Archive(context.Background(), worktree)
+	err := m.Archive(context.Background(), "unremovable", root, worktree)
 	if restoreErr := os.Chmod(parent, 0o755); restoreErr != nil {
 		t.Fatalf("restore worktree parent permissions: %v", restoreErr)
 	}
@@ -284,7 +286,9 @@ func TestClearStaleWorktreeDoesNotReapBaseWhenRemovalFails(t *testing.T) {
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatalf("make worktree parent read-only: %v", err)
 	}
-	m.clearStaleWorktree(ctx, repoDir, worktree)
+	if err := m.clearStaleWorktree(ctx, repoDir, parent, worktree); err != nil {
+		t.Fatalf("clearStaleWorktree: %v", err)
+	}
 	if err := os.Chmod(parent, 0o755); err != nil {
 		t.Fatalf("restore worktree parent permissions: %v", err)
 	}

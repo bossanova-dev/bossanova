@@ -113,19 +113,19 @@ Successful answers carry a JSON body:
 }
 ```
 
-| Code  | Meaning                                                                                                                                                        |
-| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `202` | A new event was recorded. `status` is `accepted` (it will launch) or `filtered`, and `decision_reason` says why (e.g. `filter_mismatch:body.ref`, `cooldown`). |
-| `200` | A repeat of an earlier event. The body describes the original invocation, and `status` is `deduplicated`.                                                      |
-| `400` | The idempotency key is longer than 200 characters, or the body could not be read.                                                                              |
-| `401` | The bearer secret is missing or wrong. Nothing is recorded.                                                                                                    |
-| `403` | The trigger creator's Bossanova Cloud plan is not active. The event is recorded as `filtered` / `entitlement_inactive`.                                        |
-| `404` | No HTTP trigger has this id.                                                                                                                                   |
-| `405` | The method is not in the trigger's `allowed_methods`.                                                                                                          |
-| `409` | The trigger is disabled. The event is recorded as `filtered` / `trigger_disabled`.                                                                             |
-| `413` | The body is larger than 64 KiB.                                                                                                                                |
-| `429` | Too many requests for this trigger or from this address. Retry after `Retry-After` seconds.                                                                    |
-| `503` | A temporary failure. Retry with the same idempotency key.                                                                                                      |
+| Code  | Meaning                                                                                                                                                                                                                                                                                                                                                          |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `202` | A new event was recorded. `status` is `accepted` (it will launch) or `filtered`, and `decision_reason` says why (e.g. `filter_mismatch:body.ref`, `cooldown`).                                                                                                                                                                                                   |
+| `200` | A repeat of an earlier event. The body describes the original invocation, and `status` is `deduplicated`.                                                                                                                                                                                                                                                        |
+| `400` | The idempotency key is longer than 200 characters, or the body could not be read.                                                                                                                                                                                                                                                                                |
+| `401` | The bearer secret is missing or wrong. Nothing is recorded.                                                                                                                                                                                                                                                                                                      |
+| `403` | The trigger was refused: the creator's Bossanova Cloud plan is not active (`entitlement_inactive`), the creator is no longer a member of the trigger's organization (`creator_not_authorized`), or the repository is no longer connected to it (`repo_not_mapped`). The event is recorded as `filtered` with that reason; the last two also disable the trigger. |
+| `404` | No HTTP trigger has this id.                                                                                                                                                                                                                                                                                                                                     |
+| `405` | The method is not in the trigger's `allowed_methods`.                                                                                                                                                                                                                                                                                                            |
+| `409` | The trigger is disabled. The event is recorded as `filtered` / `trigger_disabled`.                                                                                                                                                                                                                                                                               |
+| `413` | The body is larger than 64 KiB.                                                                                                                                                                                                                                                                                                                                  |
+| `429` | Too many requests for this trigger or from this address. Retry after `Retry-After` seconds.                                                                                                                                                                                                                                                                      |
+| `503` | A temporary failure. Retry with the same idempotency key.                                                                                                                                                                                                                                                                                                        |
 
 Responses never echo the request headers, the body or the secret.
 
@@ -134,13 +134,18 @@ Responses never echo the request headers, the body or the secret.
 The checks run in this order, and the first one that applies decides:
 
 1. **Disabled**: the trigger is turned off → `filtered` / `trigger_disabled`.
-2. **Plan**: the creator's paid plan is inactive → `filtered` /
+2. **Authority**: the creator has left the trigger's organization, or the
+   repository is no longer connected to it → `filtered` /
+   `creator_not_authorized` or `repo_not_mapped`, and the trigger is
+   disabled. Only its creator turns it back on, once they are a member of
+   the organization again and the repository is connected to it.
+3. **Plan**: the creator's paid plan is inactive → `filtered` /
    `entitlement_inactive`.
-3. **Filters**: a filter fails → `filtered` /
+4. **Filters**: a filter fails → `filtered` /
    `filter_mismatch:<field>`. The reason names the field, never its value.
-4. **Cooldown**: the trigger launched less than `cooldown_seconds` ago →
+5. **Cooldown**: the trigger launched less than `cooldown_seconds` ago →
    `filtered` / `cooldown`.
-5. Otherwise the event is `accepted` / `matched` and queued for launch.
+6. Otherwise the event is `accepted` / `matched` and queued for launch.
 
 The launch worker then applies the trigger's concurrency policy, which
 decides what an event does while the trigger's previous session is still

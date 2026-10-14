@@ -32,16 +32,18 @@ type preflightRecordingRunner struct {
 	effort  string
 	env     map[string]string
 	profile bossanovav1.HeadlessCapabilityProfile
+	trust   bossanovav1.ProjectTrustDecision
 	err     error
 }
 
-func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (r *preflightRecordingRunner) PreflightHeadlessCapabilityProfile(_ context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, projectTrust bossanovav1.ProjectTrustDecision) error {
 	r.calls++
 	r.workDir = workDir
 	r.model = model
 	r.effort = effort
 	r.env = extraEnv
 	r.profile = profile
+	r.trust = projectTrust
 	return r.err
 }
 
@@ -312,6 +314,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
 		context.Background(), "codex", "/worktrees/codex-session", "gpt-5-codex", "medium", env,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
 	)
 	if err != nil {
 		t.Fatalf("PreflightByAgentWithHeadlessCapabilityProfile: %v", err)
@@ -330,6 +333,11 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 	if codexRunner.profile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Fatalf("codex profile = %s, want tracker-plan-attachment-v1", codexRunner.profile)
 	}
+	// The trust decision must survive routing: the plugin applies a REVOKE
+	// before its probe starts the agent in the worktree (BOS-1562).
+	if codexRunner.trust != bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE {
+		t.Fatalf("codex preflight trust = %s, want REVOKE", codexRunner.trust)
+	}
 }
 
 func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsupportedRunner(t *testing.T) {
@@ -340,6 +348,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsuppor
 	err := d.PreflightByAgentWithHeadlessCapabilityProfile(
 		context.Background(), "claude", t.TempDir(), "model", "", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED,
 	)
 	if !errors.Is(err, ErrHeadlessCapabilityProfileUnsupported) {
 		t.Fatalf("preflight error = %v, want ErrHeadlessCapabilityProfileUnsupported", err)

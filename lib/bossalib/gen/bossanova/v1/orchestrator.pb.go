@@ -160,15 +160,18 @@ func (NoteSyncOutcome) EnumDescriptor() ([]byte, []int) {
 }
 
 // AttachScope distinguishes editor (input allowed) from viewer (read-only)
-// attach modes. v1 ships only EDITOR semantics; VIEWER is wire-reserved.
+// attach modes.
 type AttachScope int32
 
 const (
 	// Default zero value. Bosso MUST reject IssueAttachToken requests with
 	// this scope — do not silently default to EDITOR.
 	AttachScope_ATTACH_SCOPE_UNSPECIFIED AttachScope = 0
-	AttachScope_ATTACH_SCOPE_EDITOR      AttachScope = 1
-	// Accepted but behaves identically to EDITOR in v1.
+	// Read-write: keystrokes, resizes and file uploads reach the terminal.
+	AttachScope_ATTACH_SCOPE_EDITOR AttachScope = 1
+	// Read-only: the terminal's output is streamed, but bosso drops the
+	// viewer's keystrokes and resizes without closing the socket, and rejects
+	// its uploads.
 	AttachScope_ATTACH_SCOPE_VIEWER AttachScope = 2
 )
 
@@ -398,7 +401,21 @@ type RegisterDaemonRequest struct {
 	Endpoint *string `protobuf:"bytes,4,opt,name=endpoint,proto3,oneof" json:"endpoint,omitempty"`
 	// User email from the WorkOS device code response.
 	// Used for JIT user creation when the user doesn't exist in the DB yet.
-	Email         string `protobuf:"bytes,5,opt,name=email,proto3" json:"email,omitempty"`
+	Email string `protobuf:"bytes,5,opt,name=email,proto3" json:"email,omitempty"`
+	// Proof that the caller holds the machine key pinned to daemon_id
+	// (BOS-1580). All three are optional while older daemons still register
+	// without them; when daemon_public_key is set, possession_signature and
+	// signed_at_unix must be set too. The signature is Ed25519 over the bytes
+	// lib/bossalib/daemonproof.Message builds from daemon_id, the SHA-256 of the
+	// bearer token this request is sent with, and signed_at_unix.
+	//
+	// The 32-byte Ed25519 public key of the daemon's machine key.
+	DaemonPublicKey []byte `protobuf:"bytes,6,opt,name=daemon_public_key,json=daemonPublicKey,proto3" json:"daemon_public_key,omitempty"`
+	// Ed25519 signature over daemonproof.Message(daemon_id, bearer, signed_at_unix).
+	PossessionSignature []byte `protobuf:"bytes,7,opt,name=possession_signature,json=possessionSignature,proto3" json:"possession_signature,omitempty"`
+	// Unix seconds the signature was made at; must be within 5 minutes of the
+	// server's clock.
+	SignedAtUnix  int64 `protobuf:"varint,8,opt,name=signed_at_unix,json=signedAtUnix,proto3" json:"signed_at_unix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -466,6 +483,27 @@ func (x *RegisterDaemonRequest) GetEmail() string {
 		return x.Email
 	}
 	return ""
+}
+
+func (x *RegisterDaemonRequest) GetDaemonPublicKey() []byte {
+	if x != nil {
+		return x.DaemonPublicKey
+	}
+	return nil
+}
+
+func (x *RegisterDaemonRequest) GetPossessionSignature() []byte {
+	if x != nil {
+		return x.PossessionSignature
+	}
+	return nil
+}
+
+func (x *RegisterDaemonRequest) GetSignedAtUnix() int64 {
+	if x != nil {
+		return x.SignedAtUnix
+	}
+	return 0
 }
 
 type RegisterDaemonResponse struct {
@@ -9339,7 +9377,8 @@ type WebhookConfig struct {
 	RepoOriginUrl string `protobuf:"bytes,2,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
 	// VCS provider type: "github", "gitlab", etc.
 	Provider string `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`
-	// HMAC secret for signature verification.
+	// HMAC secret for signature verification. Server-generated, and returned
+	// only in CreateWebhookConfigResponse; ListWebhookConfigs leaves it empty.
 	Secret        string                 `protobuf:"bytes,4,opt,name=secret,proto3" json:"secret,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -9415,7 +9454,8 @@ type CreateWebhookConfigRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RepoOriginUrl string                 `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
 	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
-	// If empty, a random secret will be generated.
+	// Ignored: the server always generates the secret and returns it once, in
+	// CreateWebhookConfigResponse.
 	Secret        string `protobuf:"bytes,3,opt,name=secret,proto3" json:"secret,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -17179,13 +17219,16 @@ var File_bossanova_v1_orchestrator_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\x1fbossanova/v1/orchestrator.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/daemon.proto\x1a\x19bossanova/v1/models.proto\x1a\x19bossanova/v1/stream.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaf\x01\n" +
+	"\x1fbossanova/v1/orchestrator.proto\x12\fbossanova.v1\x1a\x18bossanova/v1/authz.proto\x1a\x19bossanova/v1/daemon.proto\x1a\x19bossanova/v1/models.proto\x1a\x19bossanova/v1/stream.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb4\x02\n" +
 	"\x15RegisterDaemonRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
 	"\brepo_ids\x18\x03 \x03(\tR\arepoIds\x12\x1f\n" +
 	"\bendpoint\x18\x04 \x01(\tH\x00R\bendpoint\x88\x01\x01\x12\x14\n" +
-	"\x05email\x18\x05 \x01(\tR\x05emailB\v\n" +
+	"\x05email\x18\x05 \x01(\tR\x05email\x12*\n" +
+	"\x11daemon_public_key\x18\x06 \x01(\fR\x0fdaemonPublicKey\x121\n" +
+	"\x14possession_signature\x18\a \x01(\fR\x13possessionSignature\x12$\n" +
+	"\x0esigned_at_unix\x18\b \x01(\x03R\fsignedAtUnixB\v\n" +
 	"\t_endpoint\"Z\n" +
 	"\x16RegisterDaemonResponse\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12#\n" +
@@ -18496,133 +18539,133 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"MemberRole\x12\x1b\n" +
 	"\x17MEMBER_ROLE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11MEMBER_ROLE_OWNER\x10\x01\x12\x14\n" +
-	"\x10MEMBER_ROLE_USER\x10\x022\xa3h\n" +
-	"\x13OrchestratorService\x12[\n" +
-	"\x0eRegisterDaemon\x12#.bossanova.v1.RegisterDaemonRequest\x1a$.bossanova.v1.RegisterDaemonResponse\x12p\n" +
-	"\x15PublishDaemonSnapshot\x12*.bossanova.v1.PublishDaemonSnapshotRequest\x1a+.bossanova.v1.PublishDaemonSnapshotResponse\x12P\n" +
-	"\fDaemonStream\x12\x19.bossanova.v1.DaemonEvent\x1a!.bossanova.v1.OrchestratorCommand(\x010\x01\x12R\n" +
-	"\vListDaemons\x12 .bossanova.v1.ListDaemonsRequest\x1a!.bossanova.v1.ListDaemonsResponse\x12^\n" +
-	"\x0fTransferSession\x12$.bossanova.v1.TransferSessionRequest\x1a%.bossanova.v1.TransferSessionResponse\x12d\n" +
-	"\x11ProxyListSessions\x12&.bossanova.v1.ProxyListSessionsRequest\x1a'.bossanova.v1.ProxyListSessionsResponse\x12\xa2\x01\n" +
-	"$ProxyListSessionsAcrossOrganizations\x129.bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest\x1a:.bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse\"\x03\x88\x02\x01\x12^\n" +
-	"\x0fProxyGetSession\x12$.bossanova.v1.ProxyGetSessionRequest\x1a%.bossanova.v1.ProxyGetSessionResponse\x12i\n" +
-	"\x12ProxyAttachSession\x12'.bossanova.v1.ProxyAttachSessionRequest\x1a(.bossanova.v1.ProxyAttachSessionResponse0\x01\x12i\n" +
-	"\x12ProxyCreateSession\x12'.bossanova.v1.ProxyCreateSessionRequest\x1a(.bossanova.v1.ProxyCreateSessionResponse0\x01\x12a\n" +
-	"\x10ProxyStopSession\x12%.bossanova.v1.ProxyStopSessionRequest\x1a&.bossanova.v1.ProxyStopSessionResponse\x12d\n" +
-	"\x11ProxyPauseSession\x12&.bossanova.v1.ProxyPauseSessionRequest\x1a'.bossanova.v1.ProxyPauseSessionResponse\x12g\n" +
-	"\x12ProxyResumeSession\x12'.bossanova.v1.ProxyResumeSessionRequest\x1a(.bossanova.v1.ProxyResumeSessionResponse\x12X\n" +
-	"\rProxyWakeChat\x12\".bossanova.v1.ProxyWakeChatRequest\x1a#.bossanova.v1.ProxyWakeChatResponse\x12d\n" +
-	"\x11ProxyMergeSession\x12&.bossanova.v1.ProxyMergeSessionRequest\x1a'.bossanova.v1.ProxyMergeSessionResponse\x12j\n" +
-	"\x13ProxyArchiveSession\x12(.bossanova.v1.ProxyArchiveSessionRequest\x1a).bossanova.v1.ProxyArchiveSessionResponse\x12^\n" +
-	"\x0fProxyRecordChat\x12$.bossanova.v1.ProxyRecordChatRequest\x1a%.bossanova.v1.ProxyRecordChatResponse\x12^\n" +
-	"\x0fProxyDeleteChat\x12$.bossanova.v1.ProxyDeleteChatRequest\x1a%.bossanova.v1.ProxyDeleteChatResponse\x12|\n" +
-	"\x19ProxySwitchSessionAccount\x12..bossanova.v1.ProxySwitchSessionAccountRequest\x1a/.bossanova.v1.ProxySwitchSessionAccountResponse\x12d\n" +
-	"\x11ProxyListAccounts\x12&.bossanova.v1.ProxyListAccountsRequest\x1a'.bossanova.v1.ProxyListAccountsResponse\x12s\n" +
-	"\x16ProxyGetChatTranscript\x12+.bossanova.v1.ProxyGetChatTranscriptRequest\x1a,.bossanova.v1.ProxyGetChatTranscriptResponse\x12m\n" +
-	"\x14ProxySendChatMessage\x12).bossanova.v1.ProxySendChatMessageRequest\x1a*.bossanova.v1.ProxySendChatMessageResponse\x12y\n" +
-	"\x18ProxyListReposAggregated\x12-.bossanova.v1.ProxyListReposAggregatedRequest\x1a..bossanova.v1.ProxyListReposAggregatedResponse\x12^\n" +
-	"\x0fProxyListAgents\x12$.bossanova.v1.ProxyListAgentsRequest\x1a%.bossanova.v1.ProxyListAgentsResponse\x12a\n" +
-	"\x10ProxyListRepoPRs\x12%.bossanova.v1.ProxyListRepoPRsRequest\x1a&.bossanova.v1.ProxyListRepoPRsResponse\x12s\n" +
-	"\x16ProxyListTrackerIssues\x12+.bossanova.v1.ProxyListTrackerIssuesRequest\x1a,.bossanova.v1.ProxyListTrackerIssuesResponse\x12U\n" +
-	"\fProxyGetRepo\x12!.bossanova.v1.ProxyGetRepoRequest\x1a\".bossanova.v1.ProxyGetRepoResponse\x12^\n" +
-	"\x0fProxyUpdateRepo\x12$.bossanova.v1.ProxyUpdateRepoRequest\x1a%.bossanova.v1.ProxyUpdateRepoResponse\x12^\n" +
-	"\x0fProxyRemoveRepo\x12$.bossanova.v1.ProxyRemoveRepoRequest\x1a%.bossanova.v1.ProxyRemoveRepoResponse\x12d\n" +
-	"\x11ProxyListCronJobs\x12&.bossanova.v1.ProxyListCronJobsRequest\x1a'.bossanova.v1.ProxyListCronJobsResponse\x12g\n" +
-	"\x12ProxyCreateCronJob\x12'.bossanova.v1.ProxyCreateCronJobRequest\x1a(.bossanova.v1.ProxyCreateCronJobResponse\x12g\n" +
-	"\x12ProxyUpdateCronJob\x12'.bossanova.v1.ProxyUpdateCronJobRequest\x1a(.bossanova.v1.ProxyUpdateCronJobResponse\x12g\n" +
-	"\x12ProxyDeleteCronJob\x12'.bossanova.v1.ProxyDeleteCronJobRequest\x1a(.bossanova.v1.ProxyDeleteCronJobResponse\x12g\n" +
-	"\x12ProxyRunCronJobNow\x12'.bossanova.v1.ProxyRunCronJobNowRequest\x1a(.bossanova.v1.ProxyRunCronJobNowResponse\x12v\n" +
-	"\x17ProxyManageListAccounts\x12,.bossanova.v1.ProxyManageListAccountsRequest\x1a-.bossanova.v1.ProxyManageListAccountsResponse\x12^\n" +
-	"\x0fProxyAddAccount\x12$.bossanova.v1.ProxyAddAccountRequest\x1a%.bossanova.v1.ProxyAddAccountResponse\x12j\n" +
-	"\x13ProxyRefreshAccount\x12(.bossanova.v1.ProxyRefreshAccountRequest\x1a).bossanova.v1.ProxyRefreshAccountResponse\x12g\n" +
-	"\x12ProxyUpdateAccount\x12'.bossanova.v1.ProxyUpdateAccountRequest\x1a(.bossanova.v1.ProxyUpdateAccountResponse\x12g\n" +
-	"\x12ProxyRemoveAccount\x12'.bossanova.v1.ProxyRemoveAccountRequest\x1a(.bossanova.v1.ProxyRemoveAccountResponse\x12a\n" +
-	"\x10ProxyTestAccount\x12%.bossanova.v1.ProxyTestAccountRequest\x1a&.bossanova.v1.ProxyTestAccountResponse\x12[\n" +
-	"\x0eProxyListChats\x12#.bossanova.v1.ProxyListChatsRequest\x1a$.bossanova.v1.ProxyListChatsResponse\x12m\n" +
-	"\x14ProxyGetChatStatuses\x12).bossanova.v1.ProxyGetChatStatusesRequest\x1a*.bossanova.v1.ProxyGetChatStatusesResponse\x12v\n" +
-	"\x17ProxyGetSessionStatuses\x12,.bossanova.v1.ProxyGetSessionStatusesRequest\x1a-.bossanova.v1.ProxyGetSessionStatusesResponse\x12v\n" +
-	"\x17ProxyListCheckSnapshots\x12,.bossanova.v1.ProxyListCheckSnapshotsRequest\x1a-.bossanova.v1.ProxyListCheckSnapshotsResponse\x12|\n" +
-	"\x19ProxyListAgentsAggregated\x12..bossanova.v1.ProxyListAgentsAggregatedRequest\x1a/.bossanova.v1.ProxyListAgentsAggregatedResponse\x12a\n" +
-	"\x10ProxyListPlugins\x12%.bossanova.v1.ProxyListPluginsRequest\x1a&.bossanova.v1.ProxyListPluginsResponse\x12^\n" +
-	"\x0fProxyGetCronJob\x12$.bossanova.v1.ProxyGetCronJobRequest\x1a%.bossanova.v1.ProxyGetCronJobResponse\x12d\n" +
-	"\x11ProxyRepairDoctor\x12&.bossanova.v1.ProxyRepairDoctorRequest\x1a'.bossanova.v1.ProxyRepairDoctorResponse\x12d\n" +
-	"\x11ProxyCloseSession\x12&.bossanova.v1.ProxyCloseSessionRequest\x1a'.bossanova.v1.ProxyCloseSessionResponse\x12p\n" +
-	"\x15ProxyResurrectSession\x12*.bossanova.v1.ProxyResurrectSessionRequest\x1a+.bossanova.v1.ProxyResurrectSessionResponse\x12g\n" +
-	"\x12ProxyRemoveSession\x12'.bossanova.v1.ProxyRemoveSessionRequest\x1a(.bossanova.v1.ProxyRemoveSessionResponse\x12^\n" +
-	"\x0fProxyEmptyTrash\x12$.bossanova.v1.ProxyEmptyTrashRequest\x1a%.bossanova.v1.ProxyEmptyTrashResponse\x12d\n" +
-	"\x11ProxyRetrySession\x12&.bossanova.v1.ProxyRetrySessionRequest\x1a'.bossanova.v1.ProxyRetrySessionResponse\x12g\n" +
-	"\x12ProxyUpdateSession\x12'.bossanova.v1.ProxyUpdateSessionRequest\x1a(.bossanova.v1.ProxyUpdateSessionResponse\x12a\n" +
-	"\x10ProxyMoveSession\x12%.bossanova.v1.ProxyMoveSessionRequest\x1a&.bossanova.v1.ProxyMoveSessionResponse\x12g\n" +
-	"\x12ProxyLinkSessionPR\x12'.bossanova.v1.ProxyLinkSessionPRRequest\x1a(.bossanova.v1.ProxyLinkSessionPRResponse\x12m\n" +
-	"\x14ProxyUpdateChatTitle\x12).bossanova.v1.ProxyUpdateChatTitleRequest\x1a*.bossanova.v1.ProxyUpdateChatTitleResponse\x12p\n" +
-	"\x15ProxyReportChatStatus\x12*.bossanova.v1.ProxyReportChatStatusRequest\x1a+.bossanova.v1.ProxyReportChatStatusResponse\x12|\n" +
-	"\x19ProxyCreateGithubCallback\x12..bossanova.v1.ProxyCreateGithubCallbackRequest\x1a/.bossanova.v1.ProxyCreateGithubCallbackResponse\x12y\n" +
-	"\x18ProxyListGithubCallbacks\x12-.bossanova.v1.ProxyListGithubCallbacksRequest\x1a..bossanova.v1.ProxyListGithubCallbacksResponse\x12|\n" +
-	"\x19ProxyDeleteGithubCallback\x12..bossanova.v1.ProxyDeleteGithubCallbackRequest\x1a/.bossanova.v1.ProxyDeleteGithubCallbackResponse\x12^\n" +
-	"\x0fProxyCreateNote\x12$.bossanova.v1.ProxyCreateNoteRequest\x1a%.bossanova.v1.ProxyCreateNoteResponse\x12U\n" +
-	"\fProxyGetNote\x12!.bossanova.v1.ProxyGetNoteRequest\x1a\".bossanova.v1.ProxyGetNoteResponse\x12[\n" +
-	"\x0eProxyListNotes\x12#.bossanova.v1.ProxyListNotesRequest\x1a$.bossanova.v1.ProxyListNotesResponse\x12^\n" +
-	"\x0fProxyUpdateNote\x12$.bossanova.v1.ProxyUpdateNoteRequest\x1a%.bossanova.v1.ProxyUpdateNoteResponse\x12^\n" +
-	"\x0fProxyDeleteNote\x12$.bossanova.v1.ProxyDeleteNoteRequest\x1a%.bossanova.v1.ProxyDeleteNoteResponse\x12s\n" +
-	"\x16CreateOrganizationNote\x12+.bossanova.v1.CreateOrganizationNoteRequest\x1a,.bossanova.v1.CreateOrganizationNoteResponse\x12j\n" +
-	"\x13GetOrganizationNote\x12(.bossanova.v1.GetOrganizationNoteRequest\x1a).bossanova.v1.GetOrganizationNoteResponse\x12p\n" +
-	"\x15ListOrganizationNotes\x12*.bossanova.v1.ListOrganizationNotesRequest\x1a+.bossanova.v1.ListOrganizationNotesResponse\x12s\n" +
-	"\x16UpdateOrganizationNote\x12+.bossanova.v1.UpdateOrganizationNoteRequest\x1a,.bossanova.v1.UpdateOrganizationNoteResponse\x12s\n" +
-	"\x16DeleteOrganizationNote\x12+.bossanova.v1.DeleteOrganizationNoteRequest\x1a,.bossanova.v1.DeleteOrganizationNoteResponse\x12y\n" +
-	"\x18GetOrganizationNoteQuota\x12-.bossanova.v1.GetOrganizationNoteQuotaRequest\x1a..bossanova.v1.GetOrganizationNoteQuotaResponse\x12^\n" +
-	"\x0fSyncDaemonNotes\x12$.bossanova.v1.SyncDaemonNotesRequest\x1a%.bossanova.v1.SyncDaemonNotesResponse\x12]\n" +
-	"\x10ProxyStreamChats\x12%.bossanova.v1.ProxyStreamChatsRequest\x1a .bossanova.v1.ProxyChatListEvent0\x01\x12a\n" +
-	"\x10IssueAttachToken\x12%.bossanova.v1.IssueAttachTokenRequest\x1a&.bossanova.v1.IssueAttachTokenResponse\x12^\n" +
-	"\x0eTerminalStream\x12#.bossanova.v1.TerminalServerMessage\x1a#.bossanova.v1.TerminalClientMessage(\x010\x01\x12j\n" +
-	"\x13CreateWebhookConfig\x12(.bossanova.v1.CreateWebhookConfigRequest\x1a).bossanova.v1.CreateWebhookConfigResponse\x12g\n" +
-	"\x12ListWebhookConfigs\x12'.bossanova.v1.ListWebhookConfigsRequest\x1a(.bossanova.v1.ListWebhookConfigsResponse\x12j\n" +
-	"\x13DeleteWebhookConfig\x12(.bossanova.v1.DeleteWebhookConfigRequest\x1a).bossanova.v1.DeleteWebhookConfigResponse\x12s\n" +
-	"\x16GetGitHubAppInstallURL\x12+.bossanova.v1.GetGitHubAppInstallURLRequest\x1a,.bossanova.v1.GetGitHubAppInstallURLResponse\x12s\n" +
-	"\x16CompleteGitHubAppSetup\x12+.bossanova.v1.CompleteGitHubAppSetupRequest\x1a,.bossanova.v1.CompleteGitHubAppSetupResponse\x12g\n" +
-	"\x12ListGitHubAppRepos\x12'.bossanova.v1.ListGitHubAppReposRequest\x1a(.bossanova.v1.ListGitHubAppReposResponse\x12v\n" +
-	"\x17DisconnectGitHubAppRepo\x12,.bossanova.v1.DisconnectGitHubAppRepoRequest\x1a-.bossanova.v1.DisconnectGitHubAppRepoResponse\x12m\n" +
-	"\x14GetCloudAccessStatus\x12).bossanova.v1.GetCloudAccessStatusRequest\x1a*.bossanova.v1.GetCloudAccessStatusResponse\x12p\n" +
-	"\x15CreateCheckoutSession\x12*.bossanova.v1.CreateCheckoutSessionRequest\x1a+.bossanova.v1.CreateCheckoutSessionResponse\x12\x7f\n" +
-	"\x1aCreateBillingPortalSession\x12/.bossanova.v1.CreateBillingPortalSessionRequest\x1a0.bossanova.v1.CreateBillingPortalSessionResponse\x12y\n" +
-	"\x18RefreshCloudEntitlements\x12-.bossanova.v1.RefreshCloudEntitlementsRequest\x1a..bossanova.v1.RefreshCloudEntitlementsResponse\x12j\n" +
-	"\x13GetNewsletterStatus\x12(.bossanova.v1.GetNewsletterStatusRequest\x1a).bossanova.v1.GetNewsletterStatusResponse\x12p\n" +
-	"\x15SubscribeToNewsletter\x12*.bossanova.v1.SubscribeToNewsletterRequest\x1a+.bossanova.v1.SubscribeToNewsletterResponse\x12d\n" +
-	"\x11ListOrganizations\x12&.bossanova.v1.ListOrganizationsRequest\x1a'.bossanova.v1.ListOrganizationsResponse\x12^\n" +
-	"\x0fGetOrganization\x12$.bossanova.v1.GetOrganizationRequest\x1a%.bossanova.v1.GetOrganizationResponse\x12g\n" +
-	"\x12CreateOrganization\x12'.bossanova.v1.CreateOrganizationRequest\x1a(.bossanova.v1.CreateOrganizationResponse\x12g\n" +
-	"\x12RenameOrganization\x12'.bossanova.v1.RenameOrganizationRequest\x1a(.bossanova.v1.RenameOrganizationResponse\x12v\n" +
-	"\x17ListOrganizationMembers\x12,.bossanova.v1.ListOrganizationMembersRequest\x1a-.bossanova.v1.ListOrganizationMembersResponse\x12y\n" +
-	"\x18InviteOrganizationMember\x12-.bossanova.v1.InviteOrganizationMemberRequest\x1a..bossanova.v1.InviteOrganizationMemberResponse\x12y\n" +
-	"\x18RemoveOrganizationMember\x12-.bossanova.v1.RemoveOrganizationMemberRequest\x1a..bossanova.v1.RemoveOrganizationMemberResponse\x12|\n" +
-	"\x19SetOrganizationMemberRole\x12..bossanova.v1.SetOrganizationMemberRoleRequest\x1a/.bossanova.v1.SetOrganizationMemberRoleResponse\x12g\n" +
-	"\x12DeleteOrganization\x12'.bossanova.v1.DeleteOrganizationRequest\x1a(.bossanova.v1.DeleteOrganizationResponse\x12d\n" +
-	"\x11LeaveOrganization\x12&.bossanova.v1.LeaveOrganizationRequest\x1a'.bossanova.v1.LeaveOrganizationResponse\x12~\n" +
-	"\x18SwitchActiveOrganization\x12-.bossanova.v1.SwitchActiveOrganizationRequest\x1a..bossanova.v1.SwitchActiveOrganizationResponse\"\x03\x88\x02\x01\x12j\n" +
-	"\x13SetRepoOrganization\x12(.bossanova.v1.SetRepoOrganizationRequest\x1a).bossanova.v1.SetRepoOrganizationResponse\x12j\n" +
-	"\x13GetRepoOrganization\x12(.bossanova.v1.GetRepoOrganizationRequest\x1a).bossanova.v1.GetRepoOrganizationResponse\x12p\n" +
-	"\x15ClearRepoOrganization\x12*.bossanova.v1.ClearRepoOrganizationRequest\x1a+.bossanova.v1.ClearRepoOrganizationResponse\x12p\n" +
-	"\x15ListRepoOrganizations\x12*.bossanova.v1.ListRepoOrganizationsRequest\x1a+.bossanova.v1.ListRepoOrganizationsResponse\x12\x85\x01\n" +
-	"\x1cListSessionWebhookEventTypes\x121.bossanova.v1.ListSessionWebhookEventTypesRequest\x1a2.bossanova.v1.ListSessionWebhookEventTypesResponse\x12|\n" +
-	"\x19ListSessionWebhookFormats\x12..bossanova.v1.ListSessionWebhookFormatsRequest\x1a/.bossanova.v1.ListSessionWebhookFormatsResponse\x12j\n" +
-	"\x13ListSessionWebhooks\x12(.bossanova.v1.ListSessionWebhooksRequest\x1a).bossanova.v1.ListSessionWebhooksResponse\x12m\n" +
-	"\x14CreateSessionWebhook\x12).bossanova.v1.CreateSessionWebhookRequest\x1a*.bossanova.v1.CreateSessionWebhookResponse\x12m\n" +
-	"\x14UpdateSessionWebhook\x12).bossanova.v1.UpdateSessionWebhookRequest\x1a*.bossanova.v1.UpdateSessionWebhookResponse\x12\x7f\n" +
-	"\x1aRotateSessionWebhookSecret\x12/.bossanova.v1.RotateSessionWebhookSecretRequest\x1a0.bossanova.v1.RotateSessionWebhookSecretResponse\x12m\n" +
-	"\x14DeleteSessionWebhook\x12).bossanova.v1.DeleteSessionWebhookRequest\x1a*.bossanova.v1.DeleteSessionWebhookResponse\x12\x82\x01\n" +
-	"\x1bSendSessionWebhookTestEvent\x120.bossanova.v1.SendSessionWebhookTestEventRequest\x1a1.bossanova.v1.SendSessionWebhookTestEventResponse\x12\x85\x01\n" +
-	"\x1cListSessionWebhookDeliveries\x121.bossanova.v1.ListSessionWebhookDeliveriesRequest\x1a2.bossanova.v1.ListSessionWebhookDeliveriesResponse\x12|\n" +
-	"\x19GetSessionWebhookDelivery\x12..bossanova.v1.GetSessionWebhookDeliveryRequest\x1a/.bossanova.v1.GetSessionWebhookDeliveryResponse\x12d\n" +
-	"\x11GetTriggerCatalog\x12&.bossanova.v1.GetTriggerCatalogRequest\x1a'.bossanova.v1.GetTriggerCatalogResponse\x12U\n" +
-	"\fListTriggers\x12!.bossanova.v1.ListTriggersRequest\x1a\".bossanova.v1.ListTriggersResponse\x12O\n" +
+	"\x10MEMBER_ROLE_USER\x10\x022\x91n\n" +
+	"\x13OrchestratorService\x12a\n" +
+	"\x0eRegisterDaemon\x12#.bossanova.v1.RegisterDaemonRequest\x1a$.bossanova.v1.RegisterDaemonResponse\"\x04\xc8\xf3\x18\x02\x12v\n" +
+	"\x15PublishDaemonSnapshot\x12*.bossanova.v1.PublishDaemonSnapshotRequest\x1a+.bossanova.v1.PublishDaemonSnapshotResponse\"\x04\xc8\xf3\x18\x03\x12V\n" +
+	"\fDaemonStream\x12\x19.bossanova.v1.DaemonEvent\x1a!.bossanova.v1.OrchestratorCommand\"\x04\xc8\xf3\x18\x02(\x010\x01\x12X\n" +
+	"\vListDaemons\x12 .bossanova.v1.ListDaemonsRequest\x1a!.bossanova.v1.ListDaemonsResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fTransferSession\x12$.bossanova.v1.TransferSessionRequest\x1a%.bossanova.v1.TransferSessionResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyListSessions\x12&.bossanova.v1.ProxyListSessionsRequest\x1a'.bossanova.v1.ProxyListSessionsResponse\"\x04\xc8\xf3\x18\x05\x12\xa6\x01\n" +
+	"$ProxyListSessionsAcrossOrganizations\x129.bossanova.v1.ProxyListSessionsAcrossOrganizationsRequest\x1a:.bossanova.v1.ProxyListSessionsAcrossOrganizationsResponse\"\a\xc8\xf3\x18\x05\x88\x02\x01\x12d\n" +
+	"\x0fProxyGetSession\x12$.bossanova.v1.ProxyGetSessionRequest\x1a%.bossanova.v1.ProxyGetSessionResponse\"\x04\xc8\xf3\x18\x05\x12o\n" +
+	"\x12ProxyAttachSession\x12'.bossanova.v1.ProxyAttachSessionRequest\x1a(.bossanova.v1.ProxyAttachSessionResponse\"\x04\xc8\xf3\x18\x050\x01\x12o\n" +
+	"\x12ProxyCreateSession\x12'.bossanova.v1.ProxyCreateSessionRequest\x1a(.bossanova.v1.ProxyCreateSessionResponse\"\x04\xc8\xf3\x18\x020\x01\x12g\n" +
+	"\x10ProxyStopSession\x12%.bossanova.v1.ProxyStopSessionRequest\x1a&.bossanova.v1.ProxyStopSessionResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyPauseSession\x12&.bossanova.v1.ProxyPauseSessionRequest\x1a'.bossanova.v1.ProxyPauseSessionResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12ProxyResumeSession\x12'.bossanova.v1.ProxyResumeSessionRequest\x1a(.bossanova.v1.ProxyResumeSessionResponse\"\x04\xc8\xf3\x18\x05\x12^\n" +
+	"\rProxyWakeChat\x12\".bossanova.v1.ProxyWakeChatRequest\x1a#.bossanova.v1.ProxyWakeChatResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyMergeSession\x12&.bossanova.v1.ProxyMergeSessionRequest\x1a'.bossanova.v1.ProxyMergeSessionResponse\"\x04\xc8\xf3\x18\x05\x12p\n" +
+	"\x13ProxyArchiveSession\x12(.bossanova.v1.ProxyArchiveSessionRequest\x1a).bossanova.v1.ProxyArchiveSessionResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyRecordChat\x12$.bossanova.v1.ProxyRecordChatRequest\x1a%.bossanova.v1.ProxyRecordChatResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyDeleteChat\x12$.bossanova.v1.ProxyDeleteChatRequest\x1a%.bossanova.v1.ProxyDeleteChatResponse\"\x04\xc8\xf3\x18\x05\x12\x82\x01\n" +
+	"\x19ProxySwitchSessionAccount\x12..bossanova.v1.ProxySwitchSessionAccountRequest\x1a/.bossanova.v1.ProxySwitchSessionAccountResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyListAccounts\x12&.bossanova.v1.ProxyListAccountsRequest\x1a'.bossanova.v1.ProxyListAccountsResponse\"\x04\xc8\xf3\x18\x05\x12y\n" +
+	"\x16ProxyGetChatTranscript\x12+.bossanova.v1.ProxyGetChatTranscriptRequest\x1a,.bossanova.v1.ProxyGetChatTranscriptResponse\"\x04\xc8\xf3\x18\x05\x12s\n" +
+	"\x14ProxySendChatMessage\x12).bossanova.v1.ProxySendChatMessageRequest\x1a*.bossanova.v1.ProxySendChatMessageResponse\"\x04\xc8\xf3\x18\x05\x12\x7f\n" +
+	"\x18ProxyListReposAggregated\x12-.bossanova.v1.ProxyListReposAggregatedRequest\x1a..bossanova.v1.ProxyListReposAggregatedResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyListAgents\x12$.bossanova.v1.ProxyListAgentsRequest\x1a%.bossanova.v1.ProxyListAgentsResponse\"\x04\xc8\xf3\x18\x02\x12g\n" +
+	"\x10ProxyListRepoPRs\x12%.bossanova.v1.ProxyListRepoPRsRequest\x1a&.bossanova.v1.ProxyListRepoPRsResponse\"\x04\xc8\xf3\x18\x02\x12y\n" +
+	"\x16ProxyListTrackerIssues\x12+.bossanova.v1.ProxyListTrackerIssuesRequest\x1a,.bossanova.v1.ProxyListTrackerIssuesResponse\"\x04\xc8\xf3\x18\x02\x12[\n" +
+	"\fProxyGetRepo\x12!.bossanova.v1.ProxyGetRepoRequest\x1a\".bossanova.v1.ProxyGetRepoResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fProxyUpdateRepo\x12$.bossanova.v1.ProxyUpdateRepoRequest\x1a%.bossanova.v1.ProxyUpdateRepoResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fProxyRemoveRepo\x12$.bossanova.v1.ProxyRemoveRepoRequest\x1a%.bossanova.v1.ProxyRemoveRepoResponse\"\x04\xc8\xf3\x18\x02\x12j\n" +
+	"\x11ProxyListCronJobs\x12&.bossanova.v1.ProxyListCronJobsRequest\x1a'.bossanova.v1.ProxyListCronJobsResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12ProxyCreateCronJob\x12'.bossanova.v1.ProxyCreateCronJobRequest\x1a(.bossanova.v1.ProxyCreateCronJobResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ProxyUpdateCronJob\x12'.bossanova.v1.ProxyUpdateCronJobRequest\x1a(.bossanova.v1.ProxyUpdateCronJobResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ProxyDeleteCronJob\x12'.bossanova.v1.ProxyDeleteCronJobRequest\x1a(.bossanova.v1.ProxyDeleteCronJobResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ProxyRunCronJobNow\x12'.bossanova.v1.ProxyRunCronJobNowRequest\x1a(.bossanova.v1.ProxyRunCronJobNowResponse\"\x04\xc8\xf3\x18\x02\x12|\n" +
+	"\x17ProxyManageListAccounts\x12,.bossanova.v1.ProxyManageListAccountsRequest\x1a-.bossanova.v1.ProxyManageListAccountsResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fProxyAddAccount\x12$.bossanova.v1.ProxyAddAccountRequest\x1a%.bossanova.v1.ProxyAddAccountResponse\"\x04\xc8\xf3\x18\x02\x12p\n" +
+	"\x13ProxyRefreshAccount\x12(.bossanova.v1.ProxyRefreshAccountRequest\x1a).bossanova.v1.ProxyRefreshAccountResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ProxyUpdateAccount\x12'.bossanova.v1.ProxyUpdateAccountRequest\x1a(.bossanova.v1.ProxyUpdateAccountResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ProxyRemoveAccount\x12'.bossanova.v1.ProxyRemoveAccountRequest\x1a(.bossanova.v1.ProxyRemoveAccountResponse\"\x04\xc8\xf3\x18\x02\x12g\n" +
+	"\x10ProxyTestAccount\x12%.bossanova.v1.ProxyTestAccountRequest\x1a&.bossanova.v1.ProxyTestAccountResponse\"\x04\xc8\xf3\x18\x02\x12a\n" +
+	"\x0eProxyListChats\x12#.bossanova.v1.ProxyListChatsRequest\x1a$.bossanova.v1.ProxyListChatsResponse\"\x04\xc8\xf3\x18\x05\x12s\n" +
+	"\x14ProxyGetChatStatuses\x12).bossanova.v1.ProxyGetChatStatusesRequest\x1a*.bossanova.v1.ProxyGetChatStatusesResponse\"\x04\xc8\xf3\x18\x05\x12|\n" +
+	"\x17ProxyGetSessionStatuses\x12,.bossanova.v1.ProxyGetSessionStatusesRequest\x1a-.bossanova.v1.ProxyGetSessionStatusesResponse\"\x04\xc8\xf3\x18\x05\x12|\n" +
+	"\x17ProxyListCheckSnapshots\x12,.bossanova.v1.ProxyListCheckSnapshotsRequest\x1a-.bossanova.v1.ProxyListCheckSnapshotsResponse\"\x04\xc8\xf3\x18\x05\x12\x82\x01\n" +
+	"\x19ProxyListAgentsAggregated\x12..bossanova.v1.ProxyListAgentsAggregatedRequest\x1a/.bossanova.v1.ProxyListAgentsAggregatedResponse\"\x04\xc8\xf3\x18\x02\x12g\n" +
+	"\x10ProxyListPlugins\x12%.bossanova.v1.ProxyListPluginsRequest\x1a&.bossanova.v1.ProxyListPluginsResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fProxyGetCronJob\x12$.bossanova.v1.ProxyGetCronJobRequest\x1a%.bossanova.v1.ProxyGetCronJobResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyRepairDoctor\x12&.bossanova.v1.ProxyRepairDoctorRequest\x1a'.bossanova.v1.ProxyRepairDoctorResponse\"\x04\xc8\xf3\x18\x02\x12j\n" +
+	"\x11ProxyCloseSession\x12&.bossanova.v1.ProxyCloseSessionRequest\x1a'.bossanova.v1.ProxyCloseSessionResponse\"\x04\xc8\xf3\x18\x05\x12v\n" +
+	"\x15ProxyResurrectSession\x12*.bossanova.v1.ProxyResurrectSessionRequest\x1a+.bossanova.v1.ProxyResurrectSessionResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12ProxyRemoveSession\x12'.bossanova.v1.ProxyRemoveSessionRequest\x1a(.bossanova.v1.ProxyRemoveSessionResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyEmptyTrash\x12$.bossanova.v1.ProxyEmptyTrashRequest\x1a%.bossanova.v1.ProxyEmptyTrashResponse\"\x04\xc8\xf3\x18\x05\x12j\n" +
+	"\x11ProxyRetrySession\x12&.bossanova.v1.ProxyRetrySessionRequest\x1a'.bossanova.v1.ProxyRetrySessionResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12ProxyUpdateSession\x12'.bossanova.v1.ProxyUpdateSessionRequest\x1a(.bossanova.v1.ProxyUpdateSessionResponse\"\x04\xc8\xf3\x18\x05\x12g\n" +
+	"\x10ProxyMoveSession\x12%.bossanova.v1.ProxyMoveSessionRequest\x1a&.bossanova.v1.ProxyMoveSessionResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12ProxyLinkSessionPR\x12'.bossanova.v1.ProxyLinkSessionPRRequest\x1a(.bossanova.v1.ProxyLinkSessionPRResponse\"\x04\xc8\xf3\x18\x05\x12s\n" +
+	"\x14ProxyUpdateChatTitle\x12).bossanova.v1.ProxyUpdateChatTitleRequest\x1a*.bossanova.v1.ProxyUpdateChatTitleResponse\"\x04\xc8\xf3\x18\x05\x12v\n" +
+	"\x15ProxyReportChatStatus\x12*.bossanova.v1.ProxyReportChatStatusRequest\x1a+.bossanova.v1.ProxyReportChatStatusResponse\"\x04\xc8\xf3\x18\x05\x12\x82\x01\n" +
+	"\x19ProxyCreateGithubCallback\x12..bossanova.v1.ProxyCreateGithubCallbackRequest\x1a/.bossanova.v1.ProxyCreateGithubCallbackResponse\"\x04\xc8\xf3\x18\x05\x12\x7f\n" +
+	"\x18ProxyListGithubCallbacks\x12-.bossanova.v1.ProxyListGithubCallbacksRequest\x1a..bossanova.v1.ProxyListGithubCallbacksResponse\"\x04\xc8\xf3\x18\x05\x12\x82\x01\n" +
+	"\x19ProxyDeleteGithubCallback\x12..bossanova.v1.ProxyDeleteGithubCallbackRequest\x1a/.bossanova.v1.ProxyDeleteGithubCallbackResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyCreateNote\x12$.bossanova.v1.ProxyCreateNoteRequest\x1a%.bossanova.v1.ProxyCreateNoteResponse\"\x04\xc8\xf3\x18\x05\x12[\n" +
+	"\fProxyGetNote\x12!.bossanova.v1.ProxyGetNoteRequest\x1a\".bossanova.v1.ProxyGetNoteResponse\"\x04\xc8\xf3\x18\x05\x12a\n" +
+	"\x0eProxyListNotes\x12#.bossanova.v1.ProxyListNotesRequest\x1a$.bossanova.v1.ProxyListNotesResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyUpdateNote\x12$.bossanova.v1.ProxyUpdateNoteRequest\x1a%.bossanova.v1.ProxyUpdateNoteResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fProxyDeleteNote\x12$.bossanova.v1.ProxyDeleteNoteRequest\x1a%.bossanova.v1.ProxyDeleteNoteResponse\"\x04\xc8\xf3\x18\x05\x12y\n" +
+	"\x16CreateOrganizationNote\x12+.bossanova.v1.CreateOrganizationNoteRequest\x1a,.bossanova.v1.CreateOrganizationNoteResponse\"\x04\xc8\xf3\x18\x05\x12p\n" +
+	"\x13GetOrganizationNote\x12(.bossanova.v1.GetOrganizationNoteRequest\x1a).bossanova.v1.GetOrganizationNoteResponse\"\x04\xc8\xf3\x18\x05\x12v\n" +
+	"\x15ListOrganizationNotes\x12*.bossanova.v1.ListOrganizationNotesRequest\x1a+.bossanova.v1.ListOrganizationNotesResponse\"\x04\xc8\xf3\x18\x05\x12y\n" +
+	"\x16UpdateOrganizationNote\x12+.bossanova.v1.UpdateOrganizationNoteRequest\x1a,.bossanova.v1.UpdateOrganizationNoteResponse\"\x04\xc8\xf3\x18\x05\x12y\n" +
+	"\x16DeleteOrganizationNote\x12+.bossanova.v1.DeleteOrganizationNoteRequest\x1a,.bossanova.v1.DeleteOrganizationNoteResponse\"\x04\xc8\xf3\x18\x05\x12\x7f\n" +
+	"\x18GetOrganizationNoteQuota\x12-.bossanova.v1.GetOrganizationNoteQuotaRequest\x1a..bossanova.v1.GetOrganizationNoteQuotaResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0fSyncDaemonNotes\x12$.bossanova.v1.SyncDaemonNotesRequest\x1a%.bossanova.v1.SyncDaemonNotesResponse\"\x04\xc8\xf3\x18\x03\x12c\n" +
+	"\x10ProxyStreamChats\x12%.bossanova.v1.ProxyStreamChatsRequest\x1a .bossanova.v1.ProxyChatListEvent\"\x04\xc8\xf3\x18\x050\x01\x12g\n" +
+	"\x10IssueAttachToken\x12%.bossanova.v1.IssueAttachTokenRequest\x1a&.bossanova.v1.IssueAttachTokenResponse\"\x04\xc8\xf3\x18\x05\x12d\n" +
+	"\x0eTerminalStream\x12#.bossanova.v1.TerminalServerMessage\x1a#.bossanova.v1.TerminalClientMessage\"\x04\xc8\xf3\x18\x02(\x010\x01\x12p\n" +
+	"\x13CreateWebhookConfig\x12(.bossanova.v1.CreateWebhookConfigRequest\x1a).bossanova.v1.CreateWebhookConfigResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ListWebhookConfigs\x12'.bossanova.v1.ListWebhookConfigsRequest\x1a(.bossanova.v1.ListWebhookConfigsResponse\"\x04\xc8\xf3\x18\x02\x12p\n" +
+	"\x13DeleteWebhookConfig\x12(.bossanova.v1.DeleteWebhookConfigRequest\x1a).bossanova.v1.DeleteWebhookConfigResponse\"\x04\xc8\xf3\x18\x02\x12y\n" +
+	"\x16GetGitHubAppInstallURL\x12+.bossanova.v1.GetGitHubAppInstallURLRequest\x1a,.bossanova.v1.GetGitHubAppInstallURLResponse\"\x04\xc8\xf3\x18\x02\x12y\n" +
+	"\x16CompleteGitHubAppSetup\x12+.bossanova.v1.CompleteGitHubAppSetupRequest\x1a,.bossanova.v1.CompleteGitHubAppSetupResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12ListGitHubAppRepos\x12'.bossanova.v1.ListGitHubAppReposRequest\x1a(.bossanova.v1.ListGitHubAppReposResponse\"\x04\xc8\xf3\x18\x02\x12|\n" +
+	"\x17DisconnectGitHubAppRepo\x12,.bossanova.v1.DisconnectGitHubAppRepoRequest\x1a-.bossanova.v1.DisconnectGitHubAppRepoResponse\"\x04\xc8\xf3\x18\x02\x12s\n" +
+	"\x14GetCloudAccessStatus\x12).bossanova.v1.GetCloudAccessStatusRequest\x1a*.bossanova.v1.GetCloudAccessStatusResponse\"\x04\xc8\xf3\x18\x02\x12v\n" +
+	"\x15CreateCheckoutSession\x12*.bossanova.v1.CreateCheckoutSessionRequest\x1a+.bossanova.v1.CreateCheckoutSessionResponse\"\x04\xc8\xf3\x18\x02\x12\x85\x01\n" +
+	"\x1aCreateBillingPortalSession\x12/.bossanova.v1.CreateBillingPortalSessionRequest\x1a0.bossanova.v1.CreateBillingPortalSessionResponse\"\x04\xc8\xf3\x18\x02\x12\x7f\n" +
+	"\x18RefreshCloudEntitlements\x12-.bossanova.v1.RefreshCloudEntitlementsRequest\x1a..bossanova.v1.RefreshCloudEntitlementsResponse\"\x04\xc8\xf3\x18\x02\x12p\n" +
+	"\x13GetNewsletterStatus\x12(.bossanova.v1.GetNewsletterStatusRequest\x1a).bossanova.v1.GetNewsletterStatusResponse\"\x04\xc8\xf3\x18\x02\x12v\n" +
+	"\x15SubscribeToNewsletter\x12*.bossanova.v1.SubscribeToNewsletterRequest\x1a+.bossanova.v1.SubscribeToNewsletterResponse\"\x04\xc8\xf3\x18\x02\x12j\n" +
+	"\x11ListOrganizations\x12&.bossanova.v1.ListOrganizationsRequest\x1a'.bossanova.v1.ListOrganizationsResponse\"\x04\xc8\xf3\x18\x02\x12d\n" +
+	"\x0fGetOrganization\x12$.bossanova.v1.GetOrganizationRequest\x1a%.bossanova.v1.GetOrganizationResponse\"\x04\xc8\xf3\x18\x05\x12m\n" +
+	"\x12CreateOrganization\x12'.bossanova.v1.CreateOrganizationRequest\x1a(.bossanova.v1.CreateOrganizationResponse\"\x04\xc8\xf3\x18\x02\x12m\n" +
+	"\x12RenameOrganization\x12'.bossanova.v1.RenameOrganizationRequest\x1a(.bossanova.v1.RenameOrganizationResponse\"\x04\xc8\xf3\x18\x06\x12|\n" +
+	"\x17ListOrganizationMembers\x12,.bossanova.v1.ListOrganizationMembersRequest\x1a-.bossanova.v1.ListOrganizationMembersResponse\"\x04\xc8\xf3\x18\x05\x12\x7f\n" +
+	"\x18InviteOrganizationMember\x12-.bossanova.v1.InviteOrganizationMemberRequest\x1a..bossanova.v1.InviteOrganizationMemberResponse\"\x04\xc8\xf3\x18\x06\x12\x7f\n" +
+	"\x18RemoveOrganizationMember\x12-.bossanova.v1.RemoveOrganizationMemberRequest\x1a..bossanova.v1.RemoveOrganizationMemberResponse\"\x04\xc8\xf3\x18\x06\x12\x82\x01\n" +
+	"\x19SetOrganizationMemberRole\x12..bossanova.v1.SetOrganizationMemberRoleRequest\x1a/.bossanova.v1.SetOrganizationMemberRoleResponse\"\x04\xc8\xf3\x18\x06\x12m\n" +
+	"\x12DeleteOrganization\x12'.bossanova.v1.DeleteOrganizationRequest\x1a(.bossanova.v1.DeleteOrganizationResponse\"\x04\xc8\xf3\x18\x06\x12j\n" +
+	"\x11LeaveOrganization\x12&.bossanova.v1.LeaveOrganizationRequest\x1a'.bossanova.v1.LeaveOrganizationResponse\"\x04\xc8\xf3\x18\x05\x12\x82\x01\n" +
+	"\x18SwitchActiveOrganization\x12-.bossanova.v1.SwitchActiveOrganizationRequest\x1a..bossanova.v1.SwitchActiveOrganizationResponse\"\a\xc8\xf3\x18\x02\x88\x02\x01\x12p\n" +
+	"\x13SetRepoOrganization\x12(.bossanova.v1.SetRepoOrganizationRequest\x1a).bossanova.v1.SetRepoOrganizationResponse\"\x04\xc8\xf3\x18\x05\x12p\n" +
+	"\x13GetRepoOrganization\x12(.bossanova.v1.GetRepoOrganizationRequest\x1a).bossanova.v1.GetRepoOrganizationResponse\"\x04\xc8\xf3\x18\x05\x12v\n" +
+	"\x15ClearRepoOrganization\x12*.bossanova.v1.ClearRepoOrganizationRequest\x1a+.bossanova.v1.ClearRepoOrganizationResponse\"\x04\xc8\xf3\x18\x05\x12v\n" +
+	"\x15ListRepoOrganizations\x12*.bossanova.v1.ListRepoOrganizationsRequest\x1a+.bossanova.v1.ListRepoOrganizationsResponse\"\x04\xc8\xf3\x18\x05\x12\x8b\x01\n" +
+	"\x1cListSessionWebhookEventTypes\x121.bossanova.v1.ListSessionWebhookEventTypesRequest\x1a2.bossanova.v1.ListSessionWebhookEventTypesResponse\"\x04\xc8\xf3\x18\x06\x12\x82\x01\n" +
+	"\x19ListSessionWebhookFormats\x12..bossanova.v1.ListSessionWebhookFormatsRequest\x1a/.bossanova.v1.ListSessionWebhookFormatsResponse\"\x04\xc8\xf3\x18\x06\x12p\n" +
+	"\x13ListSessionWebhooks\x12(.bossanova.v1.ListSessionWebhooksRequest\x1a).bossanova.v1.ListSessionWebhooksResponse\"\x04\xc8\xf3\x18\x06\x12s\n" +
+	"\x14CreateSessionWebhook\x12).bossanova.v1.CreateSessionWebhookRequest\x1a*.bossanova.v1.CreateSessionWebhookResponse\"\x04\xc8\xf3\x18\x06\x12s\n" +
+	"\x14UpdateSessionWebhook\x12).bossanova.v1.UpdateSessionWebhookRequest\x1a*.bossanova.v1.UpdateSessionWebhookResponse\"\x04\xc8\xf3\x18\x06\x12\x85\x01\n" +
+	"\x1aRotateSessionWebhookSecret\x12/.bossanova.v1.RotateSessionWebhookSecretRequest\x1a0.bossanova.v1.RotateSessionWebhookSecretResponse\"\x04\xc8\xf3\x18\x06\x12s\n" +
+	"\x14DeleteSessionWebhook\x12).bossanova.v1.DeleteSessionWebhookRequest\x1a*.bossanova.v1.DeleteSessionWebhookResponse\"\x04\xc8\xf3\x18\x06\x12\x88\x01\n" +
+	"\x1bSendSessionWebhookTestEvent\x120.bossanova.v1.SendSessionWebhookTestEventRequest\x1a1.bossanova.v1.SendSessionWebhookTestEventResponse\"\x04\xc8\xf3\x18\x06\x12\x8b\x01\n" +
+	"\x1cListSessionWebhookDeliveries\x121.bossanova.v1.ListSessionWebhookDeliveriesRequest\x1a2.bossanova.v1.ListSessionWebhookDeliveriesResponse\"\x04\xc8\xf3\x18\x06\x12\x82\x01\n" +
+	"\x19GetSessionWebhookDelivery\x12..bossanova.v1.GetSessionWebhookDeliveryRequest\x1a/.bossanova.v1.GetSessionWebhookDeliveryResponse\"\x04\xc8\xf3\x18\x06\x12j\n" +
+	"\x11GetTriggerCatalog\x12&.bossanova.v1.GetTriggerCatalogRequest\x1a'.bossanova.v1.GetTriggerCatalogResponse\"\x04\xc8\xf3\x18\x02\x12[\n" +
+	"\fListTriggers\x12!.bossanova.v1.ListTriggersRequest\x1a\".bossanova.v1.ListTriggersResponse\"\x04\xc8\xf3\x18\x05\x12U\n" +
 	"\n" +
-	"GetTrigger\x12\x1f.bossanova.v1.GetTriggerRequest\x1a .bossanova.v1.GetTriggerResponse\x12X\n" +
-	"\rCreateTrigger\x12\".bossanova.v1.CreateTriggerRequest\x1a#.bossanova.v1.CreateTriggerResponse\x12X\n" +
-	"\rUpdateTrigger\x12\".bossanova.v1.UpdateTriggerRequest\x1a#.bossanova.v1.UpdateTriggerResponse\x12X\n" +
-	"\rDeleteTrigger\x12\".bossanova.v1.DeleteTriggerRequest\x1a#.bossanova.v1.DeleteTriggerResponse\x12j\n" +
-	"\x13RotateTriggerSecret\x12(.bossanova.v1.RotateTriggerSecretRequest\x1a).bossanova.v1.RotateTriggerSecretResponse\x12R\n" +
-	"\vTestTrigger\x12 .bossanova.v1.TestTriggerRequest\x1a!.bossanova.v1.TestTriggerResponse\x12s\n" +
-	"\x16ListTriggerInvocations\x12+.bossanova.v1.ListTriggerInvocationsRequest\x1a,.bossanova.v1.ListTriggerInvocationsResponse\x12L\n" +
-	"\tReportBug\x12\x1e.bossanova.v1.ReportBugRequest\x1a\x1f.bossanova.v1.ReportBugResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"GetTrigger\x12\x1f.bossanova.v1.GetTriggerRequest\x1a .bossanova.v1.GetTriggerResponse\"\x04\xc8\xf3\x18\x05\x12^\n" +
+	"\rCreateTrigger\x12\".bossanova.v1.CreateTriggerRequest\x1a#.bossanova.v1.CreateTriggerResponse\"\x04\xc8\xf3\x18\x05\x12^\n" +
+	"\rUpdateTrigger\x12\".bossanova.v1.UpdateTriggerRequest\x1a#.bossanova.v1.UpdateTriggerResponse\"\x04\xc8\xf3\x18\x05\x12^\n" +
+	"\rDeleteTrigger\x12\".bossanova.v1.DeleteTriggerRequest\x1a#.bossanova.v1.DeleteTriggerResponse\"\x04\xc8\xf3\x18\x05\x12p\n" +
+	"\x13RotateTriggerSecret\x12(.bossanova.v1.RotateTriggerSecretRequest\x1a).bossanova.v1.RotateTriggerSecretResponse\"\x04\xc8\xf3\x18\x05\x12X\n" +
+	"\vTestTrigger\x12 .bossanova.v1.TestTriggerRequest\x1a!.bossanova.v1.TestTriggerResponse\"\x04\xc8\xf3\x18\x05\x12y\n" +
+	"\x16ListTriggerInvocations\x12+.bossanova.v1.ListTriggerInvocationsRequest\x1a,.bossanova.v1.ListTriggerInvocationsResponse\"\x04\xc8\xf3\x18\x05\x12R\n" +
+	"\tReportBug\x12\x1e.bossanova.v1.ReportBugRequest\x1a\x1f.bossanova.v1.ReportBugResponse\"\x04\xc8\xf3\x18\x01B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_orchestrator_proto_rawDescOnce sync.Once
@@ -19436,6 +19479,7 @@ func file_bossanova_v1_orchestrator_proto_init() {
 	if File_bossanova_v1_orchestrator_proto != nil {
 		return
 	}
+	file_bossanova_v1_authz_proto_init()
 	file_bossanova_v1_daemon_proto_init()
 	file_bossanova_v1_models_proto_init()
 	file_bossanova_v1_stream_proto_init()

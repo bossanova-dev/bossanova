@@ -204,6 +204,7 @@ func TestResolveEnvReport_UnknownRevisionCausesStayDistinct(t *testing.T) {
 		revisiondrift.ReasonRevisionAbsent,
 		revisiondrift.ReasonCheckoutUntrusted,
 		revisiondrift.ReasonGitUnavailable,
+		revisiondrift.ReasonReleaseBuild,
 	}
 	seen := map[string]bool{}
 	for _, reason := range reasons {

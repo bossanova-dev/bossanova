@@ -183,6 +183,16 @@ type HomeModel struct {
 	restarting        bool
 	daemonRemediation string
 
+	// Daemon supervision health line (BOS-1520). supervisionProbe is nil when
+	// the TUI is not driving this machine's daemon. supervision is the last
+	// result; supervisionProbing/supervisionProbedAt throttle the tick's
+	// re-probe, and supervisionProbeID discards a superseded result.
+	supervisionProbe    DaemonSupervisionProbe
+	supervision         DaemonSupervision
+	supervisionProbing  bool
+	supervisionProbedAt time.Time
+	supervisionProbeID  uint64
+
 	// logoutError holds the rendered text of a failed logout. Cleared by the
 	// next successful one. Never carries token material: Manager.Logout's
 	// errors wrap the credential-lock and keychain errors only.
@@ -277,6 +287,9 @@ func (h HomeModel) Init() tea.Cmd {
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.authStatusGeneration))
 	}
+	if probe := h.daemonSupervisionProbeCmd(); probe != nil {
+		cmds = append(cmds, probe)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -308,6 +321,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleUpgradeRun(msg)
 	case daemonRestartMsg:
 		return h.handleDaemonRestart(msg)
+	case daemonSupervisionMsg:
+		return h.handleDaemonSupervision(msg)
 	case logoutMsg:
 		return h.handleLogout(msg)
 	case sessionListMsg:
@@ -434,6 +449,9 @@ func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
 	if h.loggedIn && h.cloudAccess != nil && (cloudAccessPending(h.cloudStatus) || h.cloudCheckoutPolling) {
 		h.cloudChecking = true
 		cmds = append(cmds, refreshCloudAccessStatus(h.cloudAccess, h.ctx))
+	}
+	if probe := h.tickDaemonSupervisionProbe(); probe != nil {
+		cmds = append(cmds, probe)
 	}
 	return h, tea.Batch(cmds...)
 }

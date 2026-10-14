@@ -1524,3 +1524,7 @@ func TestMergeSessionHeadPinRefusedForLocalOnlyMerge(t *testing.T) {
 		t.Fatal("MergeLocalBranch was called for a pinned local-only merge")
 	}
 }
+
+func (p *mergeGateProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
+}

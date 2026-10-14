@@ -18,10 +18,19 @@ import (
 // piece we can actually push down to the API.
 var issueNumberRe = regexp.MustCompile(`\d+`)
 
-// extractIssueNumber pulls the first integer out of query, returning ok=false
+// identifierQueryRe matches an identifier-shaped query ("ENG2-42") and
+// captures the number after the dash, so digits in a team key are not
+// mistaken for the issue number.
+var identifierQueryRe = regexp.MustCompile(`^\s*[A-Za-z][A-Za-z0-9]*-(\d+)\s*$`)
+
+// extractIssueNumber pulls the issue number out of query (the number after the
+// dash for an identifier-shaped query, else the first integer), returning ok=false
 // when no digits are present or the run overflows int (e.g. a 20-digit blob).
 func extractIssueNumber(query string) (int, bool) {
 	match := issueNumberRe.FindString(query)
+	if m := identifierQueryRe.FindStringSubmatch(query); m != nil {
+		match = m[1]
+	}
 	if match == "" {
 		return 0, false
 	}

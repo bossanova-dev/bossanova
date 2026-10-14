@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -362,6 +364,17 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, sessionID stri
 	return nil
 }
 
+func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, sessionID string) error {
+	if s, ok := f.sessions[sessionID]; ok {
+		s.LastRepairBlockedReason = ""
+		s.LastRepairBlockedAt = nil
+		s.LastRepairAttemptCount = 0
+		s.LastRepairRunnerError = ""
+		s.LastRepairExitError = ""
+	}
+	return nil
+}
+
 // fakeAgentClient records StartRun calls and lets tests script IsRunning /
 // ExitStatus responses per session ID. Mirrors agent.AgentRunnerClient just
 // enough for the host RPC tests; the methods we don't exercise return zero
@@ -371,9 +384,11 @@ type fakeAgentClient struct {
 	startResp string
 	startErr  error
 	startCall struct {
-		workDir string
-		plan    string
-		logPath string
+		workDir      string
+		plan         string
+		logPath      string
+		extraEnv     map[string]string
+		projectTrust bossanovav1.ProjectTrustDecision
 	}
 	running        map[string]bool
 	exitErrors     map[string]string
@@ -412,6 +427,8 @@ func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgen
 	f.startCall.workDir = req.GetWorkDir()
 	f.startCall.plan = req.GetPlan()
 	f.startCall.logPath = req.GetLogPath()
+	f.startCall.extraEnv = req.GetExtraEnv()
+	f.startCall.projectTrust = req.GetProjectTrust()
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -525,7 +542,7 @@ func (f *fakeAgentClient) finish(sessionID, exitErr string) {
 
 func newRepairTestServer(client agent.AgentRunnerClient, sessions ...*models.Session) *HostServiceServer {
 	srv := NewHostServiceServer(&mockVCSProvider{})
-	// Keep the StartAgentRun spawn path (resolveProofEnv) hermetic: the default
+	// Keep the StartAgentRun spawn path (resolveProofEnvFor) hermetic: the default
 	// resolver opens the real OS keyring, which on Linux leaks a dbus
 	// connection goroutine that TestStopNoGoroutineLeak's goleak check flags.
 	srv.SetProofEnvResolver(proofenv.NewNoop())
@@ -781,7 +798,8 @@ func TestStartAgentRun_UnknownAgent(t *testing.T) {
 }
 
 // fakeRepoStore is a minimal db.RepoStore stub that serves a fixed list of
-// repos from List(). All other methods panic to surface unexpected usage.
+// repos from List() and Get(). All other methods panic to surface unexpected
+// usage.
 type fakeRepoStore struct {
 	db.RepoStore
 	repos []*models.Repo
@@ -789,6 +807,71 @@ type fakeRepoStore struct {
 
 func (f *fakeRepoStore) List(_ context.Context) ([]*models.Repo, error) {
 	return f.repos, nil
+}
+
+func (f *fakeRepoStore) Get(_ context.Context, id string) (*models.Repo, error) {
+	for _, r := range f.repos {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+// TestStartAgentRun_ProofEnvOnlyForTrustedRepo pins BOS-1562 for the repair
+// run: the global proof secrets reach the agent only when the session's repo
+// is trusted; an untrusted repo's run gets every proof key pinned to "" so the
+// daemon's ambient environment cannot supply one. The same trust is the run's
+// project-trust decision: the repair run is headless, so an untrusted repo's
+// run revokes any pre-trust of the worktree's own agent configuration.
+func TestStartAgentRun_ProofEnvOnlyForTrustedRepo(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			client := newFakeAgentClient()
+			client.startResp = "claude-1"
+			srv := NewHostServiceServer(&mockVCSProvider{})
+			srv.SetProofEnvResolver(proofenv.StaticResolver{Env: map[string]string{
+				proofenv.EnvAnthropicAPIKey:    "secret-anthropic",
+				proofenv.EnvCloudflareAPIToken: "secret-cf",
+			}})
+			srv.sessionStore = &fakeSessionStore{sessions: map[string]*models.Session{
+				"sess-1": {ID: "sess-1", RepoID: "repo-1", WorktreePath: t.TempDir(), AgentName: "claude"},
+			}}
+			srv.repoStore = &fakeRepoStore{repos: []*models.Repo{{ID: "repo-1", IsTrusted: trusted}}}
+			srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+			srv.agentLogsDir = t.TempDir()
+
+			if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
+				SessionId: "sess-1", Prompt: "/repair",
+			}); err != nil {
+				t.Fatalf("StartAgentRun: %v", err)
+			}
+			wantTrust := bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
+			if trusted {
+				wantTrust = bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT
+			}
+			if got := client.startCall.projectTrust; got != wantTrust {
+				t.Errorf("repair run project trust = %v, want %v", got, wantTrust)
+			}
+			env := client.startCall.extraEnv
+			if trusted {
+				for key, want := range map[string]string{
+					proofenv.EnvAnthropicAPIKey:    "secret-anthropic",
+					proofenv.EnvCloudflareAPIToken: "secret-cf",
+				} {
+					if got := env[key]; got != want {
+						t.Errorf("trusted: ExtraEnv %s = %q, want %q", key, got, want)
+					}
+				}
+				return
+			}
+			for _, key := range proofenv.Keys() {
+				if got, ok := env[key]; !ok || got != "" {
+					t.Errorf("untrusted: ExtraEnv %s = %q (present %v), want pinned to empty", key, got, ok)
+				}
+			}
+		})
+	}
 }
 
 // fakeSessionStoreWithListActive extends fakeSessionStore with ListActive so
@@ -4317,4 +4400,12 @@ func TestFireSessionEvent_NonQuickChatPlanCompleteAdvances(t *testing.T) {
 	if stored.State != machine.PushingBranch {
 		t.Fatalf("stored state = %v, want PushingBranch", stored.State)
 	}
+}
+
+func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (m *mockVCSProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
 }

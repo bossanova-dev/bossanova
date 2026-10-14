@@ -172,6 +172,9 @@ func (s *chatPickerStub) UpdateSession(context.Context, *pb.UpdateSessionRequest
 func (s *chatPickerStub) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *chatPickerStub) SetSessionTracker(context.Context, string, string) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
@@ -351,6 +354,10 @@ func (s *chatPickerStub) StartRepairWorkflow(context.Context) (*pb.StartRepairWo
 }
 func (s *chatPickerStub) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
+}
+
+func (s *chatPickerStub) GetSessionTimeline(context.Context, string) ([]*pb.TimelineStep, error) {
+	return nil, nil
 }
 func (s *chatPickerStub) ListAgents(context.Context) ([]client.AgentInfo, error) { return nil, nil }
 func (s *chatPickerStub) ListPlugins(context.Context) ([]*pb.InstalledPlugin, error) {
@@ -3680,6 +3687,12 @@ func (s *chatPickerStub) MoveSession(context.Context, *pb.MoveSessionRequest) (*
 	panic("unused")
 }
 
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*chatPickerStub) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}
+
 // TestChatPicker_ExplicitDeleteStatesUserRequested pins the explicit-delete
 // call site (BOS-1299). The picker's delete is a human acting on a row they
 // selected, so it must say USER_REQUESTED. The zero value would read at the
@@ -3706,6 +3719,10 @@ func TestChatPicker_ExplicitDeleteStatesUserRequested(t *testing.T) {
 	if want := pb.DeleteChatRequest_DELETION_REASON_USER_REQUESTED; stub.lastDeleteReason != want {
 		t.Fatalf("explicit delete stated reason %v, want %v", stub.lastDeleteReason, want)
 	}
+}
+
+func (s *chatPickerStub) FinishUnattendedRun(context.Context, *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
+	panic("unused")
 }
 
 func (s *chatPickerStub) SetChatPhase(context.Context, string, string, string) error { panic("unused") }

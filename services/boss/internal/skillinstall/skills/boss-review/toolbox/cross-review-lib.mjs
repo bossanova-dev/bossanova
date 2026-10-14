@@ -13,6 +13,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { loadSkillConfig, reviewTimeDefaults } from './skill-config.mjs'
 
 // ---------------------------------------------------------------------------
 // REVIEW_PREAMBLE — the shared, agent-agnostic safety preamble injected as the
@@ -398,38 +399,59 @@ export function boundedStderrTail(maxBytes) {
 // ---------------------------------------------------------------------------
 // fitTimeoutToLeg(timeoutMs, env) → positive integer ms, strictly below the leg.
 //
-// A cross-review helper runs inside an extension dispatch leg
-// (BOSS_SKILL_EXTENSION_TIMEOUT_MS, default 300 s). A helper allowed the whole
+// A cross-review helper runs inside a review dispatch leg. The leg is resolved
+// once, by skill-config.mjs reviewTimeDefaults (`dispatchLegMs`): the review hang
+// guard (BOSS_REVIEW_HANG_GUARD_MINUTES, else `.boss-skills.json`
+// reviewDefaults.hangGuardMinutes, else 30 minutes) unless an explicit
+// BOSS_SKILL_EXTENSION_TIMEOUT_MS names another. The same resolver derives the
+// caller's heartbeat window from it, so a helper fitted below the leg always
+// ends inside that window. The leg is a hang guard, not a budget: review time is
+// never predicted, so only a hung helper reaches it. This is deliberately NOT the
+// 300 s default `bs-dispatch-await.mjs` gives the same env var for other cores'
+// extension legs: that reader bounds a different dispatch.
+// A helper allowed the whole
 // leg leaves its wrapping subagent no time to normalise and write the envelope,
-// so the round dies instead of returning an honest `ok: false`. Clamp the
-// review timeout to `leg - CROSS_REVIEW_LEG_RESERVE_MS`; when the leg is too
-// short for the reserve, fall back to half the leg so the result always stays
-// strictly below it. The leg parses digits-only, like the dispatch helper's
-// own reader; any other shape (or zero) means the default leg.
+// so the round dies instead of returning an honest `ok: false`. The helper's
+// default timeout is therefore `leg - CROSS_REVIEW_LEG_RESERVE_MS`
+// (reviewHelperTimeoutMs), and an explicit BOSS_CROSS_REVIEW_TIMEOUT_MS above it
+// is clamped to it; when the leg is too short for the reserve, half the leg, so
+// the result always stays strictly below it.
 // ---------------------------------------------------------------------------
-export const DEFAULT_EXTENSION_LEG_TIMEOUT_MS = 300_000
 export const CROSS_REVIEW_LEG_RESERVE_MS = 60_000
 
-export function extensionLegTimeoutMs(env = process.env) {
-  const raw = env?.BOSS_SKILL_EXTENSION_TIMEOUT_MS
-  if (raw == null || !/^[0-9]+$/.test(String(raw))) return DEFAULT_EXTENSION_LEG_TIMEOUT_MS
-  const n = Number.parseInt(String(raw), 10)
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_EXTENSION_LEG_TIMEOUT_MS
+// The leg as reviewTimeDefaults resolves it. An absent, unreadable or malformed
+// config resolves the default: a broken config must never fail a review's
+// second voice.
+export function extensionLegTimeoutMs(env = process.env, { cwd } = {}) {
+  let config
+  try {
+    config = loadSkillConfig({ cwd })
+  } catch {
+    config = undefined
+  }
+  return reviewTimeDefaults(config, env ?? {}).dispatchLegMs
 }
 
-export function fitTimeoutToLeg(timeoutMs, env = process.env) {
-  const legMs = extensionLegTimeoutMs(env)
-  const budgetMs = Math.max(1, legMs - CROSS_REVIEW_LEG_RESERVE_MS, Math.floor(legMs / 2))
-  return Math.min(timeoutMs, budgetMs)
+const legBudgetMs = (legMs) =>
+  Math.max(1, legMs - CROSS_REVIEW_LEG_RESERVE_MS, Math.floor(legMs / 2))
+
+// reviewHelperTimeoutMs(env, { cwd }) → the helper timeout when none is set:
+// the leg less the wrapper's reserve — already fitted, so it is never clamped.
+export function reviewHelperTimeoutMs(env = process.env, opts = {}) {
+  return legBudgetMs(extensionLegTimeoutMs(env, opts))
+}
+
+export function fitTimeoutToLeg(timeoutMs, env = process.env, opts = {}) {
+  return Math.min(timeoutMs, reviewHelperTimeoutMs(env, opts))
 }
 
 // resolveLegFitTimeout(label, timeoutMs, env) → { timeoutMs, note }
 // Applies fitTimeoutToLeg and, when it clamped, returns the one-line stderr
 // note naming both numbers so a skip cause can quote it verbatim.
-export function resolveLegFitTimeout(label, timeoutMs, env = process.env) {
-  const fitted = fitTimeoutToLeg(timeoutMs, env)
+export function resolveLegFitTimeout(label, timeoutMs, env = process.env, opts = {}) {
+  const fitted = fitTimeoutToLeg(timeoutMs, env, opts)
   if (fitted >= timeoutMs) return { timeoutMs, note: null }
-  const legMs = extensionLegTimeoutMs(env)
+  const legMs = extensionLegTimeoutMs(env, opts)
   return {
     timeoutMs: fitted,
     note: `${label}: timeout clamped to ${fitted}ms (requested ${timeoutMs}ms) to fit the ${legMs}ms extension leg`,

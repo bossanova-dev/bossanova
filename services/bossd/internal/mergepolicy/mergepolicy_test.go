@@ -544,3 +544,7 @@ func TestSquashFallback(t *testing.T) {
 		}
 	})
 }
+
+func (s *stubProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
+}

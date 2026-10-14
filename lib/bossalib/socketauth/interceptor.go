@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -44,6 +45,21 @@ func validHeader(header string, wantRaw []byte) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare(gotRaw, wantRaw) == 1
+}
+
+// ValidHTTPBearer reports whether a plain net/http request carries
+// "Authorization: Bearer <token>" for the given canonical hex token. It applies
+// the same malformed-header rules and constant-time compare as the Connect
+// interceptor, and fails closed when token is empty or not valid hex.
+func ValidHTTPBearer(r *http.Request, token string) bool {
+	if r == nil {
+		return false
+	}
+	wantRaw, err := hex.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	return validHeader(r.Header.Get(AuthHeader), wantRaw)
 }
 
 // NewServerInterceptor validates the Bearer token on every unary and streaming

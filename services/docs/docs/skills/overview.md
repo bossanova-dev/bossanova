@@ -37,7 +37,7 @@ Each skill runs on its own, but they also compose: `boss-plan` emits a plan that
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `boss-plan`     | Plans a backlog ticket: recon, a plan-review pass, finalizes the rendered plan as a native tracker attachment, and writes a summary, labels, estimate, and priority back to the tracker. Moves the ticket Unplanned → Todo.                           |
 | `boss-build`    | Implements one planned ticket to a review-ready PR via subagent-driven TDD, a bounded review stack, and a clear terminal state (`REVIEW_READY` / `PARTIAL` / `BLOCKED` / `NO_CHANGE`), where `PARTIAL` opens a do-not-merge PR for a certified slice. |
-| `boss-review`   | Multi-lens, subagent-driven code review of a branch; fixes must-fix findings and emits an Assessment / Evidence / Confidence report. Invoked by `boss-build` or run by hand.                                                                          |
+| `boss-review`   | Find-then-verify code review of a branch: parallel finders and a second model propose issues, a verifier confirms each, and only verified serious issues the change introduced block. Invoked by `boss-build` or run by hand.                         |
 | `boss-epic`     | Orchestrates a whole epic of planned tickets to merged PRs: dependency-ordered schedule, parallel implement sessions, serialized merges, and progress reported on the parent ticket.                                                                  |
 | `boss-repair`   | Automated PR repair — fixes merge conflicts, failing checks, and review feedback.                                                                                                                                                                     |
 | `boss-finalize` | End-of-session workflow ensuring all work is committed and pushed ("land the plane").                                                                                                                                                                 |
@@ -81,7 +81,7 @@ root. Bossanova's own selection reads:
 }
 ```
 
-Changing an adapter value swaps a seam. The same file carries the review lenses,
+Changing an adapter value swaps a seam. The same file carries the review choice,
 the build commands, the tracker identity, and the plan contract, and the loader
 validates all of it before a skill acts on it.
 
@@ -93,5 +93,5 @@ validates all of it before a skill acts on it.
   `.boss-skills.json`, the smallest config that switches the tracker-driven skills
   on, and what happens when a section is absent or wrong.
 - [Extension System](/skills/extensions) covers extending a core skill's behaviour
-  with repo-local add-ons (extra review lenses, plan reviewers, and
+  with repo-local add-ons (plan reviewers, verify judges, and
   implementation methodologies) without editing the skill body.

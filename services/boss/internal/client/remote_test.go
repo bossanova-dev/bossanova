@@ -581,6 +581,22 @@ func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
 	}
 }
 
+// TestRemoteClient_DismissSessionAlertIsLocalOnly pins the refusal: the
+// dismissed key lives in the daemon's database and the orchestrator has no
+// proxy for it, so the remote client must say so rather than pretend.
+func TestRemoteClient_DismissSessionAlertIsLocalOnly(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	sess, err := c.DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired")
+	if sess != nil {
+		t.Errorf("DismissSessionAlert() session = %v, want nil", sess)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
+	}
+}
+
 // TestRemoteClient_ListSessionsReadsAcrossOrganizations is the BOS-1151 pin.
 // The remote read used to issue the single-organization ProxyListSessions, so a
 // user whose sessions lived in two organizations saw only the active one's —
@@ -711,6 +727,35 @@ func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
 	}
 	if fake.updateCalls != 1 {
 		t.Fatalf("control ProxyUpdateRepo calls = %d, want 1", fake.updateCalls)
+	}
+}
+
+// TestRemoteClient_UpdateRepoRefusesTrusted pins that a --remote `repo update
+// --trusted[=false]` fails before any RPC: the proxy surface deliberately has no
+// trust field (a cloud caller must not flip a daemon's local trust), so
+// forwarding the rest would report success while the trust change was dropped.
+func TestRemoteClient_UpdateRepoRefusesTrusted(t *testing.T) {
+	t.Parallel()
+	for _, trusted := range []bool{true, false} {
+		fake := &updateRepoRecorder{}
+		path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+		mux := http.NewServeMux()
+		mux.Handle(path, handler)
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		c := NewRemote(srv.URL, "tok")
+
+		name := "renamed"
+		_, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", DisplayName: &name, IsTrusted: &trusted})
+		if err == nil {
+			t.Fatalf("UpdateRepo with is_trusted=%v succeeded, want a local-only refusal", trusted)
+		}
+		if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
+			t.Fatalf("UpdateRepo(is_trusted=%v) error = %v, want Unimplemented local-only refusal", trusted, err)
+		}
+		if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
+			t.Fatalf("is_trusted=%v dispatched RPCs: aggregated=%d update=%d, want 0 and 0", trusted, fake.aggregatedCalls, fake.updateCalls)
+		}
 	}
 }
 

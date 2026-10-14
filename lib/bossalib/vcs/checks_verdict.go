@@ -152,6 +152,11 @@ const VerifyStatusContext = "boss/verify"
 // a human.
 const verifyNeedsHumanPrefix = "needs human"
 
+// verifyParkLabelSeparator separates a park's codes from its operator-written
+// label (verify-gate.mjs PARK_LABEL_SEPARATOR). Codes never contain it, so the
+// first occurrence ends the code set.
+const verifyParkLabelSeparator = " · "
+
 // VerifyPhaseKind is the verify stage's hold on a PR head, if any.
 type VerifyPhaseKind int
 
@@ -167,12 +172,14 @@ const (
 	VerifyPhaseNeedsHuman
 )
 
-// VerifyPhase is ClassifyVerify's result. Reason carries the park reason for
-// VerifyPhaseNeedsHuman (empty when the description names none) and is empty
-// otherwise.
+// VerifyPhase is ClassifyVerify's result. Reason carries the park's codes for
+// VerifyPhaseNeedsHuman (empty when the description names none) and Label the
+// operator-written text after the codes (empty when the park carries none);
+// both are empty otherwise.
 type VerifyPhase struct {
 	Kind   VerifyPhaseKind
 	Reason string
+	Label  string
 }
 
 // IsPendingVerify reports whether c is a not-yet-completed boss/verify commit
@@ -185,7 +192,8 @@ func IsPendingVerify(c CheckResult) bool {
 // ClassifyVerify derives the verify phase from a check set. A pending
 // boss/verify whose description starts "needs human" (case-insensitive,
 // leading whitespace ignored, colon optional) is NeedsHuman with the trimmed
-// remainder as its reason; any other pending boss/verify is Verifying. A
+// remainder as its reason, split at the first " · " into reason (the codes)
+// and label; any other pending boss/verify is Verifying. A
 // completed boss/verify is an ordinary check and yields VerifyPhaseNone. If
 // several pending entries are present, NeedsHuman wins.
 func ClassifyVerify(checks []CheckResult) VerifyPhase {
@@ -194,8 +202,8 @@ func ClassifyVerify(checks []CheckResult) VerifyPhase {
 		if !IsPendingVerify(c) {
 			continue
 		}
-		if reason, ok := parseNeedsHuman(c.Description); ok {
-			return VerifyPhase{Kind: VerifyPhaseNeedsHuman, Reason: reason}
+		if reason, label, ok := parseNeedsHuman(c.Description); ok {
+			return VerifyPhase{Kind: VerifyPhaseNeedsHuman, Reason: reason, Label: label}
 		}
 		phase.Kind = VerifyPhaseVerifying
 	}
@@ -203,19 +211,23 @@ func ClassifyVerify(checks []CheckResult) VerifyPhase {
 }
 
 // parseNeedsHuman reports whether description is a "needs human" park and
-// returns its reason. The prefix must end the description or be followed by a
-// colon or whitespace, so "needs humans" is not a park.
-func parseNeedsHuman(description string) (string, bool) {
+// returns its reason (the code set) and label. The prefix must end the
+// description or be followed by a colon or whitespace, so "needs humans" is not
+// a park. The label is whatever follows the first verifyParkLabelSeparator; a
+// park without one has an empty label and parses exactly as before.
+func parseNeedsHuman(description string) (reason, label string, ok bool) {
 	d := strings.TrimLeftFunc(description, unicode.IsSpace)
 	n := len(verifyNeedsHumanPrefix)
 	if len(d) < n || !strings.EqualFold(d[:n], verifyNeedsHumanPrefix) {
-		return "", false
+		return "", "", false
 	}
 	rest := d[n:]
 	if rest != "" && rest[0] != ':' && !unicode.IsSpace(rune(rest[0])) {
-		return "", false
+		return "", "", false
 	}
-	rest = strings.TrimSpace(rest)
-	rest = strings.TrimPrefix(rest, ":")
-	return strings.TrimSpace(rest), true
+	rest = strings.TrimPrefix(strings.TrimSpace(rest), ":")
+	if codes, text, found := strings.Cut(rest, verifyParkLabelSeparator); found {
+		return strings.TrimSpace(codes), strings.TrimSpace(text), true
+	}
+	return strings.TrimSpace(rest), "", true
 }

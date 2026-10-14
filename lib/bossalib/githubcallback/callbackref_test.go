@@ -264,3 +264,32 @@ func TestExpiryConstantsAreCanonical(t *testing.T) {
 		t.Fatalf("MaxExpiry = %v, want 720h", MaxExpiry)
 	}
 }
+
+// TestIsStandby_ClassifiesEveryValidTrigger pins the standby split over the
+// canonical trigger list (BOS-1531): only the contingency triggers that fire
+// when a PR goes wrong or leaves the workflow are standby. A trigger added to
+// ValidTriggers without an expectation here fails the test, so the split is
+// decided deliberately rather than defaulted.
+func TestIsStandby_ClassifiesEveryValidTrigger(t *testing.T) {
+	t.Parallel()
+	want := map[models.GithubCallbackTrigger]bool{
+		models.GithubCallbackTriggerMerged:            false,
+		models.GithubCallbackTriggerClosed:            true,
+		models.GithubCallbackTriggerChecksPassed:      false,
+		models.GithubCallbackTriggerChecksFailed:      true,
+		models.GithubCallbackTriggerReadyForReview:    false,
+		models.GithubCallbackTriggerChecksPassedReady: false,
+	}
+	for _, trigger := range ValidTriggers() {
+		expected, ok := want[trigger]
+		if !ok {
+			t.Fatalf("trigger %q has no standby expectation", trigger)
+		}
+		if got := trigger.IsStandby(); got != expected {
+			t.Errorf("%q.IsStandby() = %v, want %v", trigger, got, expected)
+		}
+	}
+	if models.GithubCallbackTrigger("").IsStandby() || models.GithubCallbackTrigger("bogus").IsStandby() {
+		t.Error("unknown triggers must not be standby")
+	}
+}

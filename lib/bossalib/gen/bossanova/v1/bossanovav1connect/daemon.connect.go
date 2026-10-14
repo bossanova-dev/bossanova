@@ -75,6 +75,9 @@ const (
 	// DaemonServiceMoveSessionProcedure is the fully-qualified name of the DaemonService's MoveSession
 	// RPC.
 	DaemonServiceMoveSessionProcedure = "/bossanova.v1.DaemonService/MoveSession"
+	// DaemonServiceDismissSessionAlertProcedure is the fully-qualified name of the DaemonService's
+	// DismissSessionAlert RPC.
+	DaemonServiceDismissSessionAlertProcedure = "/bossanova.v1.DaemonService/DismissSessionAlert"
 	// DaemonServiceAttachSessionProcedure is the fully-qualified name of the DaemonService's
 	// AttachSession RPC.
 	DaemonServiceAttachSessionProcedure = "/bossanova.v1.DaemonService/AttachSession"
@@ -105,6 +108,9 @@ const (
 	// DaemonServiceLinkSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// LinkSessionPR RPC.
 	DaemonServiceLinkSessionPRProcedure = "/bossanova.v1.DaemonService/LinkSessionPR"
+	// DaemonServiceSetSessionTrackerProcedure is the fully-qualified name of the DaemonService's
+	// SetSessionTracker RPC.
+	DaemonServiceSetSessionTrackerProcedure = "/bossanova.v1.DaemonService/SetSessionTracker"
 	// DaemonServiceRefreshSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// RefreshSessionPR RPC.
 	DaemonServiceRefreshSessionPRProcedure = "/bossanova.v1.DaemonService/RefreshSessionPR"
@@ -114,6 +120,9 @@ const (
 	// DaemonServiceArchiveSessionProcedure is the fully-qualified name of the DaemonService's
 	// ArchiveSession RPC.
 	DaemonServiceArchiveSessionProcedure = "/bossanova.v1.DaemonService/ArchiveSession"
+	// DaemonServiceFinishUnattendedRunProcedure is the fully-qualified name of the DaemonService's
+	// FinishUnattendedRun RPC.
+	DaemonServiceFinishUnattendedRunProcedure = "/bossanova.v1.DaemonService/FinishUnattendedRun"
 	// DaemonServiceResurrectSessionProcedure is the fully-qualified name of the DaemonService's
 	// ResurrectSession RPC.
 	DaemonServiceResurrectSessionProcedure = "/bossanova.v1.DaemonService/ResurrectSession"
@@ -254,6 +263,9 @@ const (
 	// DaemonServiceListCheckSnapshotsProcedure is the fully-qualified name of the DaemonService's
 	// ListCheckSnapshots RPC.
 	DaemonServiceListCheckSnapshotsProcedure = "/bossanova.v1.DaemonService/ListCheckSnapshots"
+	// DaemonServiceGetSessionTimelineProcedure is the fully-qualified name of the DaemonService's
+	// GetSessionTimeline RPC.
+	DaemonServiceGetSessionTimelineProcedure = "/bossanova.v1.DaemonService/GetSessionTimeline"
 	// DaemonServiceGetRunCostProcedure is the fully-qualified name of the DaemonService's GetRunCost
 	// RPC.
 	DaemonServiceGetRunCostProcedure = "/bossanova.v1.DaemonService/GetRunCost"
@@ -299,6 +311,11 @@ type DaemonServiceClient interface {
 	// list while the web list is unchanged — the guarantee is the destination,
 	// not yet the interim state.
 	MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error)
+	// DismissSessionAlert records the operator's dismissal of one session alert
+	// (the `x` key on a fix row) and returns the refreshed session. One key is
+	// kept per session, so the dismissed alert stays hidden while a different
+	// one shows again. The session's event history is untouched.
+	DismissSessionAlert(context.Context, *connect.Request[v1.DismissSessionAlertRequest]) (*connect.Response[v1.DismissSessionAlertResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest]) (*connect.ServerStreamForClient[v1.AttachSessionResponse], error)
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
@@ -309,6 +326,9 @@ type DaemonServiceClient interface {
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
+	// SetSessionTracker links a session to a tracker issue, resolved against the
+	// repo's own tracker. It overwrites an existing link (the correction path).
+	SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error)
 	// RefreshSessionPR fetches one linked PR from the VCS provider immediately,
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
@@ -320,6 +340,13 @@ type DaemonServiceClient interface {
 	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
+	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
+	// records the request and runs the run's normal finalize (the same pipeline
+	// the stranded-run sweep uses) once every chat is idle, the requesting chat
+	// has settled, and the session's agent logs have gone quiet. The requester's
+	// own call therefore always comes back deferred. bossd-local; not part of the
+	// versioned orchestrator surface.
+	FinishUnattendedRun(context.Context, *connect.Request[v1.FinishUnattendedRunRequest]) (*connect.Response[v1.FinishUnattendedRunResponse], error)
 	// ResurrectSession re-creates the archived session's worktree, runs the
 	// repo's setup script in it, and restarts the agent. Server-streaming for
 	// the same reason CreateSession is (BOS-984): the setup script alone may run
@@ -517,6 +544,12 @@ type DaemonServiceClient interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// GetSessionTimeline returns the dated steps of a session's run on its
+	// current PR head — build started, built and reviewed, CI passed, evidence
+	// recorded, failures and automatic resumes, the question asked, the park —
+	// assembled from what the daemon already persists. The last step is where
+	// the session waits. Steps with no evidence are omitted, never guessed.
+	GetSessionTimeline(context.Context, *connect.Request[v1.GetSessionTimelineRequest]) (*connect.Response[v1.GetSessionTimelineResponse], error)
 	// GetRunCost returns daemon-owned agent-run cost telemetry for one session
 	// or an aggregate filter set. Duration and parallelism are computed in the
 	// daemon so the CLI never creates a second timestamp semantic.
@@ -637,6 +670,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("MoveSession")),
 			connect.WithClientOptions(opts...),
 		),
+		dismissSessionAlert: connect.NewClient[v1.DismissSessionAlertRequest, v1.DismissSessionAlertResponse](
+			httpClient,
+			baseURL+DaemonServiceDismissSessionAlertProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DismissSessionAlert")),
+			connect.WithClientOptions(opts...),
+		),
 		attachSession: connect.NewClient[v1.AttachSessionRequest, v1.AttachSessionResponse](
 			httpClient,
 			baseURL+DaemonServiceAttachSessionProcedure,
@@ -697,6 +736,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("LinkSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
+		setSessionTracker: connect.NewClient[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse](
+			httpClient,
+			baseURL+DaemonServiceSetSessionTrackerProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SetSessionTracker")),
+			connect.WithClientOptions(opts...),
+		),
 		refreshSessionPR: connect.NewClient[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse](
 			httpClient,
 			baseURL+DaemonServiceRefreshSessionPRProcedure,
@@ -713,6 +758,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceArchiveSessionProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ArchiveSession")),
+			connect.WithClientOptions(opts...),
+		),
+		finishUnattendedRun: connect.NewClient[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse](
+			httpClient,
+			baseURL+DaemonServiceFinishUnattendedRunProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("FinishUnattendedRun")),
 			connect.WithClientOptions(opts...),
 		),
 		resurrectSession: connect.NewClient[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse](
@@ -1003,6 +1054,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 			connect.WithClientOptions(opts...),
 		),
+		getSessionTimeline: connect.NewClient[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse](
+			httpClient,
+			baseURL+DaemonServiceGetSessionTimelineProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetSessionTimeline")),
+			connect.WithClientOptions(opts...),
+		),
 		getRunCost: connect.NewClient[v1.GetRunCostRequest, v1.GetRunCostResponse](
 			httpClient,
 			baseURL+DaemonServiceGetRunCostProcedure,
@@ -1052,6 +1109,7 @@ type daemonServiceClient struct {
 	getSession                  *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
 	listSessions                *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
 	moveSession                 *connect.Client[v1.MoveSessionRequest, v1.MoveSessionResponse]
+	dismissSessionAlert         *connect.Client[v1.DismissSessionAlertRequest, v1.DismissSessionAlertResponse]
 	attachSession               *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
 	stopSession                 *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
 	pauseSession                *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
@@ -1062,9 +1120,11 @@ type daemonServiceClient struct {
 	removeSession               *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession               *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR               *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
+	setSessionTracker           *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
 	refreshSessionPR            *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
 	switchSessionAccount        *connect.Client[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse]
 	archiveSession              *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
+	finishUnattendedRun         *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
 	resurrectSession            *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
 	emptyTrash                  *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
 	recordChat                  *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
@@ -1113,6 +1173,7 @@ type daemonServiceClient struct {
 	repairDoctor                *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
 	startRepairWorkflow         *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
 	listCheckSnapshots          *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
+	getSessionTimeline          *connect.Client[v1.GetSessionTimelineRequest, v1.GetSessionTimelineResponse]
 	getRunCost                  *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
 	listAgents                  *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins                 *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
@@ -1190,6 +1251,11 @@ func (c *daemonServiceClient) MoveSession(ctx context.Context, req *connect.Requ
 	return c.moveSession.CallUnary(ctx, req)
 }
 
+// DismissSessionAlert calls bossanova.v1.DaemonService.DismissSessionAlert.
+func (c *daemonServiceClient) DismissSessionAlert(ctx context.Context, req *connect.Request[v1.DismissSessionAlertRequest]) (*connect.Response[v1.DismissSessionAlertResponse], error) {
+	return c.dismissSessionAlert.CallUnary(ctx, req)
+}
+
 // AttachSession calls bossanova.v1.DaemonService.AttachSession.
 func (c *daemonServiceClient) AttachSession(ctx context.Context, req *connect.Request[v1.AttachSessionRequest]) (*connect.ServerStreamForClient[v1.AttachSessionResponse], error) {
 	return c.attachSession.CallServerStream(ctx, req)
@@ -1240,6 +1306,11 @@ func (c *daemonServiceClient) LinkSessionPR(ctx context.Context, req *connect.Re
 	return c.linkSessionPR.CallUnary(ctx, req)
 }
 
+// SetSessionTracker calls bossanova.v1.DaemonService.SetSessionTracker.
+func (c *daemonServiceClient) SetSessionTracker(ctx context.Context, req *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error) {
+	return c.setSessionTracker.CallUnary(ctx, req)
+}
+
 // RefreshSessionPR calls bossanova.v1.DaemonService.RefreshSessionPR.
 func (c *daemonServiceClient) RefreshSessionPR(ctx context.Context, req *connect.Request[v1.RefreshSessionPRRequest]) (*connect.Response[v1.RefreshSessionPRResponse], error) {
 	return c.refreshSessionPR.CallUnary(ctx, req)
@@ -1253,6 +1324,11 @@ func (c *daemonServiceClient) SwitchSessionAccount(ctx context.Context, req *con
 // ArchiveSession calls bossanova.v1.DaemonService.ArchiveSession.
 func (c *daemonServiceClient) ArchiveSession(ctx context.Context, req *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {
 	return c.archiveSession.CallUnary(ctx, req)
+}
+
+// FinishUnattendedRun calls bossanova.v1.DaemonService.FinishUnattendedRun.
+func (c *daemonServiceClient) FinishUnattendedRun(ctx context.Context, req *connect.Request[v1.FinishUnattendedRunRequest]) (*connect.Response[v1.FinishUnattendedRunResponse], error) {
+	return c.finishUnattendedRun.CallUnary(ctx, req)
 }
 
 // ResurrectSession calls bossanova.v1.DaemonService.ResurrectSession.
@@ -1495,6 +1571,11 @@ func (c *daemonServiceClient) ListCheckSnapshots(ctx context.Context, req *conne
 	return c.listCheckSnapshots.CallUnary(ctx, req)
 }
 
+// GetSessionTimeline calls bossanova.v1.DaemonService.GetSessionTimeline.
+func (c *daemonServiceClient) GetSessionTimeline(ctx context.Context, req *connect.Request[v1.GetSessionTimelineRequest]) (*connect.Response[v1.GetSessionTimelineResponse], error) {
+	return c.getSessionTimeline.CallUnary(ctx, req)
+}
+
 // GetRunCost calls bossanova.v1.DaemonService.GetRunCost.
 func (c *daemonServiceClient) GetRunCost(ctx context.Context, req *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {
 	return c.getRunCost.CallUnary(ctx, req)
@@ -1548,6 +1629,11 @@ type DaemonServiceHandler interface {
 	// list while the web list is unchanged — the guarantee is the destination,
 	// not yet the interim state.
 	MoveSession(context.Context, *connect.Request[v1.MoveSessionRequest]) (*connect.Response[v1.MoveSessionResponse], error)
+	// DismissSessionAlert records the operator's dismissal of one session alert
+	// (the `x` key on a fix row) and returns the refreshed session. One key is
+	// kept per session, so the dismissed alert stays hidden while a different
+	// one shows again. The session's event history is untouched.
+	DismissSessionAlert(context.Context, *connect.Request[v1.DismissSessionAlertRequest]) (*connect.Response[v1.DismissSessionAlertResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest], *connect.ServerStream[v1.AttachSessionResponse]) error
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
@@ -1558,6 +1644,9 @@ type DaemonServiceHandler interface {
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
+	// SetSessionTracker links a session to a tracker issue, resolved against the
+	// repo's own tracker. It overwrites an existing link (the correction path).
+	SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error)
 	// RefreshSessionPR fetches one linked PR from the VCS provider immediately,
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
@@ -1569,6 +1658,13 @@ type DaemonServiceHandler interface {
 	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
+	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
+	// records the request and runs the run's normal finalize (the same pipeline
+	// the stranded-run sweep uses) once every chat is idle, the requesting chat
+	// has settled, and the session's agent logs have gone quiet. The requester's
+	// own call therefore always comes back deferred. bossd-local; not part of the
+	// versioned orchestrator surface.
+	FinishUnattendedRun(context.Context, *connect.Request[v1.FinishUnattendedRunRequest]) (*connect.Response[v1.FinishUnattendedRunResponse], error)
 	// ResurrectSession re-creates the archived session's worktree, runs the
 	// repo's setup script in it, and restarts the agent. Server-streaming for
 	// the same reason CreateSession is (BOS-984): the setup script alone may run
@@ -1766,6 +1862,12 @@ type DaemonServiceHandler interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// GetSessionTimeline returns the dated steps of a session's run on its
+	// current PR head — build started, built and reviewed, CI passed, evidence
+	// recorded, failures and automatic resumes, the question asked, the park —
+	// assembled from what the daemon already persists. The last step is where
+	// the session waits. Steps with no evidence are omitted, never guessed.
+	GetSessionTimeline(context.Context, *connect.Request[v1.GetSessionTimelineRequest]) (*connect.Response[v1.GetSessionTimelineResponse], error)
 	// GetRunCost returns daemon-owned agent-run cost telemetry for one session
 	// or an aggregate filter set. Duration and parallelism are computed in the
 	// daemon so the CLI never creates a second timestamp semantic.
@@ -1882,6 +1984,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("MoveSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceDismissSessionAlertHandler := connect.NewUnaryHandler(
+		DaemonServiceDismissSessionAlertProcedure,
+		svc.DismissSessionAlert,
+		connect.WithSchema(daemonServiceMethods.ByName("DismissSessionAlert")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceAttachSessionHandler := connect.NewServerStreamHandler(
 		DaemonServiceAttachSessionProcedure,
 		svc.AttachSession,
@@ -1942,6 +2050,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("LinkSessionPR")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceSetSessionTrackerHandler := connect.NewUnaryHandler(
+		DaemonServiceSetSessionTrackerProcedure,
+		svc.SetSessionTracker,
+		connect.WithSchema(daemonServiceMethods.ByName("SetSessionTracker")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceRefreshSessionPRHandler := connect.NewUnaryHandler(
 		DaemonServiceRefreshSessionPRProcedure,
 		svc.RefreshSessionPR,
@@ -1958,6 +2072,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceArchiveSessionProcedure,
 		svc.ArchiveSession,
 		connect.WithSchema(daemonServiceMethods.ByName("ArchiveSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceFinishUnattendedRunHandler := connect.NewUnaryHandler(
+		DaemonServiceFinishUnattendedRunProcedure,
+		svc.FinishUnattendedRun,
+		connect.WithSchema(daemonServiceMethods.ByName("FinishUnattendedRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceResurrectSessionHandler := connect.NewServerStreamHandler(
@@ -2248,6 +2368,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetSessionTimelineHandler := connect.NewUnaryHandler(
+		DaemonServiceGetSessionTimelineProcedure,
+		svc.GetSessionTimeline,
+		connect.WithSchema(daemonServiceMethods.ByName("GetSessionTimeline")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetRunCostHandler := connect.NewUnaryHandler(
 		DaemonServiceGetRunCostProcedure,
 		svc.GetRunCost,
@@ -2308,6 +2434,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListSessionsHandler.ServeHTTP(w, r)
 		case DaemonServiceMoveSessionProcedure:
 			daemonServiceMoveSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceDismissSessionAlertProcedure:
+			daemonServiceDismissSessionAlertHandler.ServeHTTP(w, r)
 		case DaemonServiceAttachSessionProcedure:
 			daemonServiceAttachSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceStopSessionProcedure:
@@ -2328,12 +2456,16 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceLinkSessionPRProcedure:
 			daemonServiceLinkSessionPRHandler.ServeHTTP(w, r)
+		case DaemonServiceSetSessionTrackerProcedure:
+			daemonServiceSetSessionTrackerHandler.ServeHTTP(w, r)
 		case DaemonServiceRefreshSessionPRProcedure:
 			daemonServiceRefreshSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceSwitchSessionAccountProcedure:
 			daemonServiceSwitchSessionAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceArchiveSessionProcedure:
 			daemonServiceArchiveSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceFinishUnattendedRunProcedure:
+			daemonServiceFinishUnattendedRunHandler.ServeHTTP(w, r)
 		case DaemonServiceResurrectSessionProcedure:
 			daemonServiceResurrectSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceEmptyTrashProcedure:
@@ -2430,6 +2562,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceStartRepairWorkflowHandler.ServeHTTP(w, r)
 		case DaemonServiceListCheckSnapshotsProcedure:
 			daemonServiceListCheckSnapshotsHandler.ServeHTTP(w, r)
+		case DaemonServiceGetSessionTimelineProcedure:
+			daemonServiceGetSessionTimelineHandler.ServeHTTP(w, r)
 		case DaemonServiceGetRunCostProcedure:
 			daemonServiceGetRunCostHandler.ServeHTTP(w, r)
 		case DaemonServiceListAgentsProcedure:
@@ -2505,6 +2639,10 @@ func (UnimplementedDaemonServiceHandler) MoveSession(context.Context, *connect.R
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.MoveSession is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) DismissSessionAlert(context.Context, *connect.Request[v1.DismissSessionAlertRequest]) (*connect.Response[v1.DismissSessionAlertResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DismissSessionAlert is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest], *connect.ServerStream[v1.AttachSessionResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AttachSession is not implemented"))
 }
@@ -2545,6 +2683,10 @@ func (UnimplementedDaemonServiceHandler) LinkSessionPR(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.LinkSessionPR is not implemented"))
 }
 
+func (UnimplementedDaemonServiceHandler) SetSessionTracker(context.Context, *connect.Request[v1.SetSessionTrackerRequest]) (*connect.Response[v1.SetSessionTrackerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SetSessionTracker is not implemented"))
+}
+
 func (UnimplementedDaemonServiceHandler) RefreshSessionPR(context.Context, *connect.Request[v1.RefreshSessionPRRequest]) (*connect.Response[v1.RefreshSessionPRResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshSessionPR is not implemented"))
 }
@@ -2555,6 +2697,10 @@ func (UnimplementedDaemonServiceHandler) SwitchSessionAccount(context.Context, *
 
 func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ArchiveSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) FinishUnattendedRun(context.Context, *connect.Request[v1.FinishUnattendedRunRequest]) (*connect.Response[v1.FinishUnattendedRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.FinishUnattendedRun is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest], *connect.ServerStream[v1.ResurrectSessionResponse]) error {
@@ -2747,6 +2893,10 @@ func (UnimplementedDaemonServiceHandler) StartRepairWorkflow(context.Context, *c
 
 func (UnimplementedDaemonServiceHandler) ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListCheckSnapshots is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetSessionTimeline(context.Context, *connect.Request[v1.GetSessionTimelineRequest]) (*connect.Response[v1.GetSessionTimelineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetSessionTimeline is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetRunCost(context.Context, *connect.Request[v1.GetRunCostRequest]) (*connect.Response[v1.GetRunCostResponse], error) {

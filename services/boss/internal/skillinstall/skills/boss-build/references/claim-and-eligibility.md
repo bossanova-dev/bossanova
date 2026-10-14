@@ -260,7 +260,3 @@ An explicitly named ticket may override a claim it can prove stale, matching the
 After an explicit-ID run wins because liveness forfeited an older claim, delete each overridden stale claim comment before proceeding. Use the re-read `COMMENTS_JSON`: parse claim comments with their comment ids, match only comments whose `owner:<sessionId>` has a known `sessions[sessionId].lastAgentActivityAt` where `Date.parse(now) - Date.parse(lastAgentActivityAt) > inactiveAfterMs`, and delete only stale claims that would otherwise sort ahead of this run's token. If a stale override candidate lacks a comment id, stop `BLOCKED` rather than leaving a superseded claim behind. After deletion, re-read comments, rebuild `BOSS_CLAIM_LIVENESS_JSON`, and rerun `claim-verdict`. Never delete live or unknown-owner claims.
 
 Keep the double-confirm pass and the existing `LOST` behavior intact on the contended path. This changes which claims survive arbitration, not what happens after the verdict.
-
-## After WON: Link The Session
-
-Once the claim is WON, link this session to the ticket so the TUI `[l]inear` shortcut opens it — **only when `BOSS_SESSION_ID` is set** (skip under `BOSSD_MANAGED=0`: there is no bossd session to link): call the boss MCP `update_session id=$BOSS_SESSION_ID tracker_url=<issue url> tracker_id=<ISSUE-ID>`, taking the issue url and id from Step 2's `getIssue` read. This is **best-effort and non-fatal** — log and continue on any error; never let it block the run.

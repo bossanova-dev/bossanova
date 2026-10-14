@@ -17,6 +17,7 @@ import {
   globToRegExp,
   DEFAULT_CONFIG,
   verifyAlwaysHumanPaths,
+  verifyPathLabels,
   verifyPolicyFromConfigText,
   DEFAULT_TRACKER_STATES,
   DEFAULT_PIPELINE_LABELS,
@@ -26,19 +27,14 @@ import {
   validateConfig,
   loadSkillConfig,
   detectRepoDefaults,
-  lensesForFile,
-  detectChangeTypes,
-  skillForLens,
-  reviewDefaultRounds,
-  reviewDeltaDefaults,
-  reviewMaxDispatchedRoundDefault,
-  REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS,
+  reviewTimeDefaults,
+  reviewSkillFor,
+  reviewSecondModel,
   epicChildWallClockMinutes,
   EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES,
   EPIC_MAX_CHILD_WALL_CLOCK_MINUTES,
   notesSampleRate,
   NOTES_DEFAULT_SAMPLE_RATE,
-  reviewLedgerConfig,
   planDependencyDefaults,
   command,
   fixRoundGates,
@@ -154,25 +150,6 @@ test('CONFIG_FILENAME is the repo-root dotfile', () => {
   assert.equal(CONFIG_FILENAME, '.boss-skills.json')
 })
 
-test('DEFAULT_CONFIG carries the four language lenses', () => {
-  // Order-independent: adding a lens should be a one-line edit here rather than a
-  // positional merge conflict. THIS repo's own (path-anchored) lens set is pinned
-  // separately, by the .boss-skills.json reproduction test below.
-  const ids = DEFAULT_CONFIG.lensMap.map((r) => r.id)
-  assert.deepEqual([...ids].sort(), ['api', 'db', 'go', 'web'])
-  const byId = Object.fromEntries(DEFAULT_CONFIG.lensMap.map((r) => [r.id, r]))
-  assert.equal(byId.go.skill, 'golang-pro')
-  assert.equal(byId.web.skill, 'impeccable')
-  assert.equal(byId.db.skill, 'database-review')
-  assert.equal(byId.api.skill, 'api-review')
-  // `tui` is deliberately NOT a default: its only honest matcher is a repo path, and
-  // a directory-naming guess would dispatch a Bubbletea rubric at a repo using something else.
-  assert.equal(
-    DEFAULT_CONFIG.lensMap.some((r) => r.id === 'tui'),
-    false,
-  )
-})
-
 test('BOS-850: DEFAULT_CONFIG carries no project-specific path literal', () => {
   // Zero-tolerance agnosticism gate, modelled on the skills_manifest identity gate but scoped
   // to this object rather than every payload file (14 payload files legitimately say `services/`).
@@ -188,37 +165,9 @@ test('BOS-850: DEFAULT_CONFIG carries no project-specific path literal', () => {
   }
 })
 
-test('BOS-850: every DEFAULT_CONFIG lens glob is language-shaped (starts with **/)', () => {
-  // The structural companion to the literal gate: requiring the `**/` prefix mechanically
-  // forbids anchoring a default lens to any top-level directory, including a directory name
-  // the four banned literals above would not catch.
-  for (const rule of DEFAULT_CONFIG.lensMap) {
-    const globs = Array.isArray(rule.globs) ? rule.globs : [rule.glob]
-    for (const glob of globs) {
-      assert.ok(
-        glob.startsWith('**/'),
-        `default lens "${rule.id}" glob "${glob}" must start with "**/" (no path anchoring)`,
-      )
-    }
-  }
-})
-
 test('BOS-850: DEFAULT_CONFIG ships no commands block and no test manifest', () => {
   assert.equal('commands' in DEFAULT_CONFIG, false)
   assert.equal('test' in DEFAULT_CONFIG, false)
-})
-
-test('DEFAULT_CONFIG lenses each carry a non-empty inline fallbackRubric', () => {
-  // The defaults are the fallback when no .boss-skills.json is present, so a
-  // checkout without one still gets a real inline rubric per lens — otherwise a
-  // non-vendored lens skill (e.g. impeccable) could dispatch with nothing to
-  // substitute into Phase 1.
-  for (const rule of DEFAULT_CONFIG.lensMap) {
-    assert.ok(
-      typeof rule.fallbackRubric === 'string' && rule.fallbackRubric.trim().length > 0,
-      `default lens "${rule.id}" needs a non-empty fallbackRubric`,
-    )
-  }
 })
 
 // --- Task 3: loader — discovery, merge, validation ------------------------
@@ -254,7 +203,7 @@ test('loadSkillConfig returns defaults when no file present', () => {
   try {
     const cfg = loadSkillConfig({ cwd: nested })
     assert.equal(cfg.adapters.tracker, 'linear')
-    assert.deepEqual(cfg.lensMap.map((r) => r.id).sort(), ['api', 'db', 'go', 'web'])
+    assert.deepEqual(cfg.review, { secondModel: true })
     // A bare scratch dir declares no build system, so detection adds nothing and the
     // accessors report absence rather than throwing. The key must be ABSENT, not an
     // empty object: `commands` in cfg is how a consumer distinguishes "nothing declared"
@@ -291,42 +240,6 @@ test('validateConfig rejects an unknown plan storage kind', () => {
   assert.throws(
     () => validateConfig(mergeConfig(DEFAULT_CONFIG, { planStorage: { kind: 'unknown' } }), 'test'),
     /skill-config:.*planStorage\.kind must be "tracker-attachment"/,
-  )
-})
-
-test('reviewLedgerConfig reads the durable review ledger directory', () => {
-  assert.deepEqual(reviewLedgerConfig(DEFAULT_CONFIG), { dir: '.git/boss-review-ledgers' })
-  assert.deepEqual(reviewLedgerConfig({ reviewLedger: { dir: 'custom/ledgers' } }), {
-    dir: 'custom/ledgers',
-  })
-  validateConfig(DEFAULT_CONFIG, 'test')
-})
-
-test('validateConfig rejects malformed reviewLedger configuration', () => {
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: [] }, 'test'),
-    /skill-config:.*reviewLedger must be an object/,
-  )
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '' } }, 'test'),
-    /skill-config:.*reviewLedger\.dir must be a non-empty string/,
-  )
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '/tmp/ledgers' } }, 'test'),
-    /skill-config:.*reviewLedger\.dir must be repo-relative/,
-  )
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '..\\shared' } }, 'test'),
-    /skill-config:.*reviewLedger\.dir must use POSIX separators/,
-  )
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: '../shared' } }, 'test'),
-    /skill-config:.*reviewLedger\.dir must stay within the repository/,
-  )
-  assert.throws(
-    () =>
-      validateConfig({ ...DEFAULT_CONFIG, reviewLedger: { dir: 'custom/../../shared' } }, 'test'),
-    /skill-config:.*reviewLedger\.dir must stay within the repository/,
   )
 })
 
@@ -497,33 +410,6 @@ test('validateConfig rejects an empty test.manifestPath', () => {
   )
 })
 
-// BOS-856: the opportunistic default-round registry. It is the seam that keeps a concrete
-// reviewer's name out of the published, project-agnostic cores — a core knows only a capability id.
-test('DEFAULT_CONFIG ships the default review rounds and reviewDefaultRounds reads them', () => {
-  const rounds = reviewDefaultRounds(DEFAULT_CONFIG)
-  assert.deepEqual(
-    rounds.map((r) => r.capability),
-    ['second-voice', 'code-review'],
-  )
-  const byId = Object.fromEntries(rounds.map((r) => [r.capability, r]))
-  assert.equal(byId['second-voice'].kind, 'cross-agent')
-  assert.equal(byId['code-review'].kind, 'skill')
-  // A kind:'skill' entry must name what to dispatch; that name lives in config, never in a core.
-  assert.equal(typeof byId['code-review'].skill, 'string')
-  assert.ok(byId['code-review'].skill.length > 0)
-  validateConfig(DEFAULT_CONFIG, 'test')
-})
-
-test('DEFAULT_CONFIG documents review delta defaults and reviewDeltaDefaults reads them', () => {
-  assert.deepEqual(reviewDeltaDefaults(DEFAULT_CONFIG), {
-    deltaFileThreshold: 20,
-    forceFull: false,
-  })
-  assert.equal(REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS, 6)
-  assert.equal(reviewMaxDispatchedRoundDefault(DEFAULT_CONFIG), 6)
-  validateConfig(DEFAULT_CONFIG, 'test')
-})
-
 test('notesSampleRate defaults to 1.0 so an unconfigured repo keeps taking notes', () => {
   // The knob exists to let an operator PAY LESS for post-terminal reporting; it must never
   // silently take reporting away from a repo that never opted down. A config predating the
@@ -579,117 +465,119 @@ test('validateConfig rejects a non-object notesDefaults', () => {
 
 test('notesSampleRate ignores a malformed rate that never went through validateConfig', () => {
   // Accessors are called on configs the core loaded, but also on hand-built ones in tests and
-  // in a caller that merged its own object. The accessor must be self-defending, exactly like
-  // reviewMaxDispatchedRoundDefault.
+  // in a caller that merged its own object. The accessor must be self-defending.
   for (const sampleRate of ['0.5', -1, 2, null, undefined, NaN]) {
     assert.equal(notesSampleRate({ notesDefaults: { sampleRate } }), 1)
   }
 })
 
-test('reviewDefaultRounds returns [] for a config carrying no registry', () => {
-  // [] is the honest "this repo default-runs no extra round" — a config predating the block, or one
-  // that merged it away, must degrade to an empty phase rather than failing a review run.
-  assert.deepEqual(reviewDefaultRounds({}), [])
-  assert.deepEqual(reviewDefaultRounds({ reviewDefaults: {} }), [])
-  assert.deepEqual(reviewDefaultRounds(undefined), [])
-  validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: undefined }, 'test')
-})
-
-test('reviewDeltaDefaults returns documented fallbacks for a config carrying no registry', () => {
-  assert.deepEqual(reviewDeltaDefaults({}), {
-    deltaFileThreshold: 20,
-    forceFull: false,
-  })
-  assert.deepEqual(reviewDeltaDefaults(undefined), {
-    deltaFileThreshold: 20,
-    forceFull: false,
-  })
-  assert.equal(reviewMaxDispatchedRoundDefault({}), 6)
-  assert.equal(reviewMaxDispatchedRoundDefault(undefined), 6)
-})
-
-test('mergeConfig replaces reviewDefaults.rounds wholesale', () => {
-  const merged = mergeConfig(DEFAULT_CONFIG, {
-    reviewDefaults: { rounds: [{ capability: 'second-voice', kind: 'cross-agent' }] },
-  })
-  assert.deepEqual(reviewDefaultRounds(merged), [
-    { capability: 'second-voice', kind: 'cross-agent' },
-  ])
-})
-
-test('mergeConfig preserves reviewDefaults delta keys beside a rounds override', () => {
-  const merged = mergeConfig(DEFAULT_CONFIG, {
-    reviewDefaults: {
-      rounds: [{ capability: 'second-voice', kind: 'cross-agent' }],
-      deltaFileThreshold: 7,
-      maxDispatchedRounds: 4,
-      forceFull: true,
-    },
-  })
-  assert.deepEqual(reviewDeltaDefaults(merged), {
-    deltaFileThreshold: 7,
-    forceFull: true,
-  })
-  assert.equal(reviewMaxDispatchedRoundDefault(merged), 4)
-})
-
-test('validateConfig rejects a non-array reviewDefaults.rounds', () => {
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: { rounds: {} } }, 'test'),
-    /skill-config:.*reviewDefaults\.rounds must be an array/,
-  )
-})
-
-test('validateConfig warns and coerces malformed reviewDefaults delta settings', () => {
-  for (const deltaFileThreshold of [undefined, null, '7', 1.5, -1]) {
-    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { deltaFileThreshold } })
-    const originalWarn = console.warn
-    const warnings = []
-    console.warn = (message) => warnings.push(String(message))
-    try {
-      validateConfig(cfg, 'test')
-    } finally {
-      console.warn = originalWarn
-    }
-    assert.equal(cfg.reviewDefaults.deltaFileThreshold, 20)
-    assert.equal(cfg.reviewDefaults.forceFull, false)
-    assert.match(warnings.join('\n'), /reviewDefaults\.deltaFileThreshold/)
+test('reviewTimeDefaults gives a one-hour soft budget and a thirty-minute hang guard by default', () => {
+  const expected = {
+    softBudgetSeconds: 3600,
+    hangGuardMs: 1_800_000,
+    dispatchLegMs: 1_800_000,
+    heartbeatStaleMs: 2_700_000,
   }
+  assert.deepEqual(reviewTimeDefaults(DEFAULT_CONFIG, {}), expected)
+  // A config predating the keys, or none at all, resolves the same defaults.
+  assert.deepEqual(reviewTimeDefaults({}, {}), expected)
+  assert.deepEqual(reviewTimeDefaults(undefined, {}), expected)
 })
 
-test('validateConfig warns and coerces malformed reviewDefaults maxDispatchedRounds settings', () => {
-  for (const maxDispatchedRounds of [undefined, null, '4', 1.5, -1, 0, 7]) {
-    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { maxDispatchedRounds } })
-    const originalWarn = console.warn
-    const warnings = []
-    console.warn = (message) => warnings.push(String(message))
-    try {
-      validateConfig(cfg, 'test')
-    } finally {
-      console.warn = originalWarn
-    }
-    assert.equal(cfg.reviewDefaults.maxDispatchedRounds, 6)
-    assert.equal(reviewMaxDispatchedRoundDefault(cfg), 6)
-    assert.match(warnings.join('\n'), /reviewDefaults\.maxDispatchedRounds/)
-    assert.match(warnings.join('\n'), /using 6/)
-  }
-})
-
-test('validateConfig accepts a lower reviewDefaults maxDispatchedRounds value', () => {
-  const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { maxDispatchedRounds: 3 } })
+test('reviewTimeDefaults lets config and then env RAISE either value', () => {
+  const cfg = mergeConfig(DEFAULT_CONFIG, {
+    reviewDefaults: { softBudgetMinutes: 120, hangGuardMinutes: 45 },
+  })
   validateConfig(cfg, 'test')
-  assert.equal(reviewMaxDispatchedRoundDefault(cfg), 3)
+  assert.deepEqual(reviewTimeDefaults(cfg, {}), {
+    softBudgetSeconds: 7200,
+    hangGuardMs: 2_700_000,
+    dispatchLegMs: 2_700_000,
+    heartbeatStaleMs: 3_600_000,
+  })
+  assert.deepEqual(
+    reviewTimeDefaults(cfg, {
+      BOSS_REVIEW_SOFT_BUDGET_MINUTES: '240',
+      BOSS_REVIEW_HANG_GUARD_MINUTES: '90',
+    }),
+    {
+      softBudgetSeconds: 14_400,
+      hangGuardMs: 5_400_000,
+      dispatchLegMs: 5_400_000,
+      heartbeatStaleMs: 6_300_000,
+    },
+  )
+  // An unreadable env value falls through to the config, never to zero.
+  for (const raw of ['', '0', '-5', '1.5', 'ten']) {
+    assert.deepEqual(
+      reviewTimeDefaults(cfg, {
+        BOSS_REVIEW_SOFT_BUDGET_MINUTES: raw,
+        BOSS_REVIEW_HANG_GUARD_MINUTES: raw,
+      }),
+      {
+        softBudgetSeconds: 7200,
+        hangGuardMs: 2_700_000,
+        dispatchLegMs: 2_700_000,
+        heartbeatStaleMs: 3_600_000,
+      },
+      `env ${JSON.stringify(raw)}`,
+    )
+  }
 })
 
-test('validateConfig accepts only boolean true for reviewDefaults.forceFull', () => {
-  const enabled = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { forceFull: true } })
-  validateConfig(enabled, 'test')
-  assert.deepEqual(reviewDeltaDefaults(enabled), { deltaFileThreshold: 20, forceFull: true })
+// The leg a review helper runs inside is the one bound: the helper is clamped strictly below it, and
+// a caller's heartbeat window covers it, so an explicit leg override that raises it raises both.
+test('reviewTimeDefaults derives the heartbeat window from the dispatch leg it bounds', () => {
+  const raised = reviewTimeDefaults(undefined, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '3600000' })
+  assert.equal(raised.dispatchLegMs, 3_600_000)
+  // The orchestrator waits each dispatch for the hang guard, so a longer explicit leg raises the
+  // guard with it: a helper running its whole leg is never recorded as timed out mid-run.
+  assert.equal(raised.hangGuardMs, 3_600_000)
+  assert.equal(raised.heartbeatStaleMs, 4_500_000)
+  // One wait bound: every resolved leg ends inside the guard, and the heartbeat window is the
+  // guard plus the fixed margin.
+  for (const env of [
+    {},
+    { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '3600000' },
+    { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' },
+    { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '5400000', BOSS_REVIEW_HANG_GUARD_MINUTES: '60' },
+    { BOSS_REVIEW_HANG_GUARD_MINUTES: '10' },
+  ]) {
+    const t = reviewTimeDefaults(undefined, env)
+    assert.ok(t.dispatchLegMs <= t.hangGuardMs, JSON.stringify(env))
+    assert.equal(t.heartbeatStaleMs, t.hangGuardMs + 900_000, JSON.stringify(env))
+  }
+  // A leg below the guard bounds the helper lower, but other dispatches still run the full guard.
+  const lowered = reviewTimeDefaults(undefined, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000' })
+  assert.equal(lowered.dispatchLegMs, 600_000)
+  assert.equal(lowered.heartbeatStaleMs, 2_700_000)
+  // Only plain positive digits override: anything else is the hang guard.
+  for (const raw of ['', '0', '1e6', ' 600000', '10s']) {
+    assert.equal(
+      reviewTimeDefaults(undefined, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: raw }).dispatchLegMs,
+      1_800_000,
+      JSON.stringify(raw),
+    )
+  }
+})
 
-  for (const forceFull of [false, 'true', 1, null, undefined]) {
-    const cfg = mergeConfig(DEFAULT_CONFIG, { reviewDefaults: { forceFull } })
-    validateConfig(cfg, 'test')
-    assert.deepEqual(reviewDeltaDefaults(cfg), { deltaFileThreshold: 20, forceFull: false })
+test('validateConfig warns and coerces malformed review time settings', () => {
+  for (const value of [null, '60', 1.5, -1, 0]) {
+    const cfg = mergeConfig(DEFAULT_CONFIG, {
+      reviewDefaults: { softBudgetMinutes: value, hangGuardMinutes: value },
+    })
+    const originalWarn = console.warn
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig(cfg, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.equal(cfg.reviewDefaults.softBudgetMinutes, 60)
+    assert.equal(cfg.reviewDefaults.hangGuardMinutes, 30)
+    assert.match(warnings.join('\n'), /reviewDefaults\.softBudgetMinutes/)
+    assert.match(warnings.join('\n'), /reviewDefaults\.hangGuardMinutes/)
   }
 })
 
@@ -762,190 +650,6 @@ test('epicChildWallClockMinutes rejects an above-ceiling value without validatio
   assert.equal(epicChildWallClockMinutes({ epicDefaults: { childWallClockMinutes: 36000 } }), 360)
 })
 
-test('validateConfig rejects a default round with an empty or non-string capability', () => {
-  // reviewDefaultRounds() hands entries straight to a core's default-round phase, which
-  // dereferences `capability` for its ledger line and its suppression check.
-  assert.throws(
-    () =>
-      validateConfig(
-        {
-          ...DEFAULT_CONFIG,
-          reviewDefaults: { rounds: [{ capability: '', kind: 'cross-agent' }] },
-        },
-        'test',
-      ),
-    /skill-config:.*non-empty string capability/,
-  )
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 7, kind: 'cross-agent' }] } },
-        'test',
-      ),
-    /skill-config:.*non-empty string capability/,
-  )
-})
-
-test('validateConfig rejects a default round with an unknown kind', () => {
-  // An unrecognised kind has no probe, so the round would silently do nothing on every run —
-  // indistinguishable from the capability being unavailable.
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 'x', kind: 'telepathy' }] } },
-        'test',
-      ),
-    /skill-config:.*kind must be one of/,
-  )
-})
-
-test("validateConfig rejects a kind:'skill' default round with no skill", () => {
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, reviewDefaults: { rounds: [{ capability: 'x', kind: 'skill' }] } },
-        'test',
-      ),
-    /skill-config:.*needs a non-empty string skill/,
-  )
-})
-
-// Phase D keys duplicate suppression and its ledger lines on `capability`, so two entries
-// sharing an id are one ambiguous id, not two rounds — and a "covered by extension" drop
-// silently applies to both. The collision must fail at config time, not read as a registry.
-test('validateConfig rejects two default rounds sharing a capability', () => {
-  assert.throws(
-    () =>
-      validateConfig(
-        {
-          ...DEFAULT_CONFIG,
-          reviewDefaults: {
-            rounds: [
-              { capability: 'code-review', kind: 'cross-agent' },
-              { capability: 'code-review', kind: 'skill', skill: 'some:reviewer' },
-            ],
-          },
-        },
-        'test',
-      ),
-    /skill-config:.*"code-review" duplicates an earlier capability/,
-  )
-  // Distinct ids are the ordinary case and must stay accepted.
-  validateConfig(
-    {
-      ...DEFAULT_CONFIG,
-      reviewDefaults: {
-        rounds: [
-          { capability: 'second-voice', kind: 'cross-agent' },
-          { capability: 'code-review', kind: 'skill', skill: 'some:reviewer' },
-        ],
-      },
-    },
-    'test',
-  )
-})
-
-test('validateConfig rejects a non-object reviewDefaults or rounds entry', () => {
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: [] }, 'test'),
-    /skill-config:.*reviewDefaults must be an object when present/,
-  )
-  assert.throws(
-    () =>
-      validateConfig({ ...DEFAULT_CONFIG, reviewDefaults: { rounds: ['second-voice'] } }, 'test'),
-    /skill-config:.*reviewDefaults\.rounds entries must be objects/,
-  )
-})
-
-test('validateConfig rejects a lensMap rule with no matcher', () => {
-  assert.throws(
-    () => validateConfig({ ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y' }] }, 'test'),
-    /skill-config:.*lensMap/,
-  )
-})
-
-test('validateConfig rejects a well-formed lens missing a fallbackRubric', () => {
-  // A lens with a valid matcher but no inline fallback would silently drop its
-  // specialist pass when the named skill can't be loaded — reject it here.
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y', glob: '**/*.go' }] },
-        'test',
-      ),
-    /skill-config:.*non-empty string fallbackRubric/,
-  )
-  assert.throws(
-    () =>
-      validateConfig(
-        {
-          ...DEFAULT_CONFIG,
-          lensMap: [{ id: 'x', skill: 'y', glob: '**/*.go', fallbackRubric: '' }],
-        },
-        'test',
-      ),
-    /skill-config:.*non-empty string fallbackRubric/,
-  )
-})
-
-test('validateConfig rejects a globs array with a non-string/empty entry', () => {
-  // A malformed globs entry must fail with a skill-config: error, not crash
-  // later in globToRegExp with a raw TypeError.
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y', globs: [null] }] },
-        'test',
-      ),
-    /skill-config:.*globs must be a non-empty array/,
-  )
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y', globs: [''] }] },
-        'test',
-      ),
-    /skill-config:.*globs must be a non-empty array/,
-  )
-})
-
-test('validateConfig rejects an empty-matcher rule (empty glob or empty globs array)', () => {
-  // An empty singular glob or an empty globs array is a silent no-op matcher —
-  // reject it with a clear skill-config: error rather than validating a rule
-  // that can never match anything.
-  assert.throws(
-    () =>
-      validateConfig({ ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y', glob: '' }] }, 'test'),
-    /skill-config:.*glob must be a non-empty string/,
-  )
-  assert.throws(
-    () =>
-      validateConfig({ ...DEFAULT_CONFIG, lensMap: [{ id: 'x', skill: 'y', globs: [] }] }, 'test'),
-    /skill-config:.*globs must be a non-empty array/,
-  )
-})
-
-test('validateConfig rejects an empty lens id or skill', () => {
-  // An empty id makes a "" change-type key that dispatch never fires; an empty
-  // skill makes skillForLens() return "". Both must fail here, not downstream.
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, lensMap: [{ id: '', skill: 'y', glob: '**/*.go' }] },
-        'test',
-      ),
-    /skill-config:.*non-empty string id/,
-  )
-  assert.throws(
-    () =>
-      validateConfig(
-        { ...DEFAULT_CONFIG, lensMap: [{ id: 'go', skill: '', glob: '**/*.go' }] },
-        'test',
-      ),
-    /skill-config:.*non-empty string skill/,
-  )
-})
-
 test('validateConfig rejects a malformed headlessSignals entry', () => {
   // A non-object entry or one without a string var throws a raw TypeError in
   // isHeadless(); reject it here with a skill-config: error instead.
@@ -1003,13 +707,6 @@ test('findConfigFile terminates on a relative startDir (fixed-point guard, no in
   // return value depends on cwd; all that matters is that the call terminates.
   const result = findConfigFile('a/b/c')
   assert.ok(result === null || typeof result === 'string')
-})
-
-test('lensesForFile honours a multi-glob (globs:[...]) rule', () => {
-  const cfg = { lensMap: [{ id: 'multi', skill: 's', globs: ['docs/**', '**/*.md'] }] }
-  assert.deepEqual(lensesForFile(cfg, 'docs/x.txt'), ['multi'])
-  assert.deepEqual(lensesForFile(cfg, 'README.md'), ['multi'])
-  assert.deepEqual(lensesForFile(cfg, 'main.go'), [])
 })
 
 // --- BOS-850: detected happy defaults -------------------------------------
@@ -1335,10 +1032,7 @@ test('loadSkillConfig layers detection between the defaults and the repo config'
     assert.equal(command(cfg, 'lint'), 'make lint')
     assert.equal(command(cfg, 'test'), null) // undeclared stays null, never guessed
     assert.equal(manifestPath(cfg), null) // never detected
-    assert.deepEqual(
-      cfg.lensMap.map((r) => r.id).sort(),
-      ['api', 'db', 'go', 'web'], // the default catalogue is untouched by detection
-    )
+    assert.deepEqual(cfg.review, { secondModel: true }) // detection leaves the defaults alone
   })
 })
 
@@ -1424,64 +1118,6 @@ test('loadSkillConfig anchors detection at the config file dir, not a nested cwd
 })
 
 // --- Task 4: accessors ----------------------------------------------------
-
-test('lensesForFile matches by glob', () => {
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'services/web/src/App.tsx'), ['web'])
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'docs/foo.md'), [])
-})
-
-test('BOS-850: default lenses match by language anywhere in the tree', () => {
-  // The point of the `**/`-only catalogue: the same file type resolves identically
-  // whatever directory a foreign repo puts it in, and no lens is path-anchored.
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'x/y.go'), ['go'])
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'main.go'), ['go'])
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'db/migrations/001_init.sql'), ['db'])
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'src/api/schema.graphql'), ['api'])
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'app/styles/main.css'), ['web'])
-  // A path under this checkout's own layout gets exactly the language lens and nothing
-  // repo-shaped: the `tui` lens no longer fires on services/boss/**.
-  assert.deepEqual(lensesForFile(DEFAULT_CONFIG, 'services/boss/internal/x.go'), ['go'])
-})
-
-test('BOS-850: the web lens covers plain JS as well as TypeScript', () => {
-  // A repo that never adopted TypeScript must still select a lens under DEFAULT_CONFIG: without
-  // these globs a JS-only change matched nothing at all.
-  for (const path of [
-    'src/index.js',
-    'scripts/tool.mjs',
-    'config/thing.cjs',
-    'src/App.jsx',
-    'src/App.tsx',
-    'src/lib.ts',
-  ]) {
-    assert.deepEqual(
-      lensesForFile(DEFAULT_CONFIG, path),
-      ['web'],
-      `${path} must select the web lens`,
-    )
-  }
-})
-
-test('detectChangeTypes reports every default lens (one-arg)', () => {
-  assert.deepEqual(detectChangeTypes(['services/boss/internal/views/attach.go']), {
-    go: true,
-    web: false,
-    db: false,
-    api: false,
-  })
-  assert.deepEqual(detectChangeTypes(['docs/foo.md', 'CONCEPTS.md']), {
-    go: false,
-    web: false,
-    db: false,
-    api: false,
-  })
-})
-
-test('skillForLens maps ids to review skills', () => {
-  assert.equal(skillForLens(DEFAULT_CONFIG, 'go'), 'golang-pro')
-  assert.equal(skillForLens(DEFAULT_CONFIG, 'web'), 'impeccable')
-  assert.equal(skillForLens(DEFAULT_CONFIG, 'nope'), null)
-})
 
 test('command and moduleTestCommand read a configured commands block', () => {
   const cfg = mergeConfig(DEFAULT_CONFIG, {
@@ -2428,49 +2064,27 @@ function resolvedTrackerRole(config, claim) {
   return null
 }
 
+test('review.skill names a replacement chain of single-token skill names', () => {
+  assert.deepEqual(reviewSkillFor({ review: { skill: ' my-review ' } }), {
+    skills: ['my-review'],
+    override: true,
+  })
+  assert.deepEqual(reviewSkillFor({ review: { skill: ['a-review', 'plugin:b'] } }).skills, [
+    'a-review',
+    'plugin:b',
+  ])
+  for (const bad of ['', 'two words', 'a\nb', ['ok', ''], [], 42])
+    assert.deepEqual(reviewSkillFor({ review: { skill: bad } }), {
+      skills: ['boss-review'],
+      override: false,
+    })
+})
+
 test('the committed .boss-skills.json reproduces the current hard-coded values', () => {
   const cfg = loadSkillConfig({ cwd: REPO_ROOT })
-  // lens map parity with skills-toolbox/bs-review-detect.mjs + boss-review SKILL
-  assert.deepEqual(
-    cfg.lensMap.map((r) => [r.id, r.skill]),
-    [
-      ['go', 'golang-pro'],
-      ['tui', 'tui-design'],
-      ['web', 'impeccable'],
-      ['db', 'database-review'],
-      ['api', 'api-review'],
-    ],
-  )
-  // BOS-850 inverts the old byte-identity pin. The committed lensMap USED to be required to
-  // deep-equal DEFAULT_CONFIG.lensMap, which is exactly the coupling that kept this checkout's
-  // path-anchored lenses inside the globally published defaults. The invariant is now the
-  // opposite: this repo's config is path-anchored and DEFAULT_CONFIG must carry none of it.
-  const defaultIds = new Set(DEFAULT_CONFIG.lensMap.map((r) => r.id))
-  assert.equal(defaultIds.has('tui'), false, 'the repo-shaped tui lens must stay out of defaults')
-  const defaultGlobs = new Set(
-    DEFAULT_CONFIG.lensMap.flatMap((r) => (Array.isArray(r.globs) ? r.globs : [r.glob])),
-  )
-  for (const rule of cfg.lensMap) {
-    const globs = Array.isArray(rule.globs) ? rule.globs : [rule.glob]
-    for (const glob of globs) {
-      assert.ok(typeof glob === 'string' && glob.length > 0, `lens "${rule.id}" needs a matcher`)
-      if (!glob.startsWith('**/')) {
-        assert.equal(
-          defaultGlobs.has(glob),
-          false,
-          `path-anchored glob "${glob}" from this checkout leaked into DEFAULT_CONFIG`,
-        )
-      }
-    }
-    assert.ok(rule.fallbackRubric && rule.fallbackRubric.trim().length > 0)
-  }
-  // This checkout still anchors lenses to its own layout — the config seam doing its job.
-  assert.ok(
-    cfg.lensMap.some((r) =>
-      (Array.isArray(r.globs) ? r.globs : [r.glob]).some((g) => g.startsWith('services/')),
-    ),
-    'the committed config is expected to keep its path-anchored lenses',
-  )
+  // Bossanova runs the plain default review, second model on, with no replacement skill.
+  assert.deepEqual(reviewSkillFor(cfg), { skills: ['boss-review'], override: false })
+  assert.equal(reviewSecondModel(cfg), true)
   // manifest + commands parity with docs/testing/test-command-manifest.md
   assert.equal(cfg.test.manifestPath, 'docs/testing/test-command-manifest.md')
   assert.equal(cfg.commands.test, 'make test-full')
@@ -4649,6 +4263,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     requireGreenBase: false,
     alwaysHumanPaths: [],
     humanReview: { database: [], security: [], ui: [] },
+    pathLabels: [],
   })
   const text = JSON.stringify({
     lensMap: 'not an array',
@@ -4658,6 +4273,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     requireGreenBase: false,
     alwaysHumanPaths: ['billing/**'],
     humanReview: { database: [], security: [], ui: ['web/**'] },
+    pathLabels: [],
   })
   assert.throws(
     () =>
@@ -4666,6 +4282,78 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
         'base',
       ),
     /verifyDefaults\.humanReview\.uii is unknown/,
+  )
+})
+
+test('a {glob, label} entry validates in alwaysHumanPaths and humanReview', () => {
+  const verifyDefaults = {
+    alwaysHumanPaths: ['billing/**', { glob: 'ci/**', label: 'CI workflows' }],
+    humanReview: {
+      security: [{ glob: 'auth/**', label: 'sign-in rules' }, 'keys/*.go', { glob: 'gate/**' }],
+    },
+  }
+  assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'))
+  const policy = verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base')
+  // Every existing glob-list reader still sees plain globs, labelled or not.
+  assert.deepEqual(policy.alwaysHumanPaths, ['billing/**', 'ci/**'])
+  assert.deepEqual(policy.humanReview, {
+    database: [],
+    security: ['auth/**', 'keys/*.go', 'gate/**'],
+    ui: [],
+  })
+  assert.deepEqual(verifyAlwaysHumanPaths({ verifyDefaults }), ['billing/**', 'ci/**'])
+  assert.deepEqual(policy.pathLabels, [
+    { list: 'alwaysHumanPaths', glob: 'ci/**', label: 'CI workflows' },
+    { list: 'humanReview.security', glob: 'auth/**', label: 'sign-in rules' },
+  ])
+  assert.deepEqual(verifyPathLabels({ verifyDefaults }), policy.pathLabels)
+  assert.deepEqual(verifyPathLabels(undefined), [])
+  assert.deepEqual(verifyPathLabels({ verifyDefaults: { alwaysHumanPaths: 'x' } }), [])
+})
+
+test('a malformed {glob, label} entry fails closed naming its list', () => {
+  for (const entry of [
+    {},
+    { label: 'no glob' },
+    { glob: '' },
+    { glob: 3 },
+    { glob: 'a/**', label: '' },
+    { glob: 'a/**', label: '   ' },
+    { glob: 'a/**', label: 'two\nlines' },
+    { glob: 'a/**', label: 7 },
+    { glob: 'a/**', label: 'x'.repeat(61) },
+    { glob: 'a/**', label: 'ok', extra: true },
+    null,
+    ['a/**'],
+  ]) {
+    assert.throws(
+      () =>
+        validateConfig(
+          { ...DEFAULT_CONFIG, verifyDefaults: { alwaysHumanPaths: [entry] } },
+          'test',
+        ),
+      /verifyDefaults\.alwaysHumanPaths/,
+      JSON.stringify(entry),
+    )
+    assert.throws(
+      () =>
+        verifyPolicyFromConfigText(
+          JSON.stringify({ verifyDefaults: { humanReview: { ui: [entry] } } }),
+          'base',
+        ),
+      /verifyDefaults\.humanReview\.ui/,
+      JSON.stringify(entry),
+    )
+  }
+  // The longest accepted label is 60 characters.
+  assert.doesNotThrow(() =>
+    validateConfig(
+      {
+        ...DEFAULT_CONFIG,
+        verifyDefaults: { alwaysHumanPaths: [{ glob: 'a/**', label: 'x'.repeat(60) }] },
+      },
+      'test',
+    ),
   )
 })
 

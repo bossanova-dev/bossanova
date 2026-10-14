@@ -32,6 +32,22 @@ const (
 	GithubCallbackTriggerChecksPassedReady GithubCallbackTrigger = "checks_passed_ready"
 )
 
+// IsStandby reports whether t is a contingency trigger: one that fires only when
+// the PR goes wrong (checks_failed) or leaves the workflow (closed). A chat
+// parked only on standby triggers is not what holds the PR — some other chat or
+// stage owns its forward progress — so displays and the daemon's reason
+// selection rank it behind progress triggers (checks_passed,
+// checks_passed_ready, ready_for_review, merged). Unknown triggers are not
+// standby, so the failure mode is "shown as waiting", never "hidden".
+func (t GithubCallbackTrigger) IsStandby() bool {
+	switch t {
+	case GithubCallbackTriggerChecksFailed, GithubCallbackTriggerClosed:
+		return true
+	default:
+		return false
+	}
+}
+
 // GithubCallbackState is the lifecycle position of a callback.
 //
 // Lifecycle: active -> leased -> triggered -> delivered, with canceled and

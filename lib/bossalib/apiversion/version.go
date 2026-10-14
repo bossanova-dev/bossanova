@@ -539,6 +539,20 @@ const V20260915 Version = "2026-09-15"
 // clients see the transition earlier; nothing they render changes shape.
 const V20260916 Version = "2026-09-16"
 
+// V20260917 ships SessionAttentionChange (BOS-1534): Session gained the
+// additive attention field (78), the SessionAttention answer computed by
+// lib/bossalib/attention ("what does this session need from you", one
+// sentence, the actions that resolve it). It is a new field rather than a
+// changed value, so an older client would ignore it on the wire; it is
+// versioned anyway so a client pinned before the attention contract existed
+// never receives a half-understood answer whose kinds and actions it has no
+// rendering for. For any request resolved older than V20260917 the transform
+// clears Session.attention. Session.attention_status (22) is unchanged.
+// This version defines the field only: no producer populates it yet (a
+// follow-up change wires attention.Compute into bossd), so until then
+// responses at V20260917 carry no attention either.
+const V20260917 Version = "2026-09-17"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -690,8 +704,9 @@ func DefaultRegistry() *Registry {
 			V20260914,
 			V20260915,
 			V20260916,
+			V20260917,
 		},
-		V20260916,
+		V20260917,
 		Baseline,
 	)
 	if err != nil {

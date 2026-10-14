@@ -89,6 +89,27 @@ boss session checks abc123 --limit 10
 boss session checks abc123 --json | jq '.snapshots[0].raw.check_runs'
 ```
 
+### `boss session finish [flags]`
+
+Tell the daemon this unattended run is done
+
+Tell the daemon an unattended run is done, so it is finalized now rather than after the idle sweep's long log-silence window. Run it from inside the session: the session defaults to `BOSS_SESSION_ID` and the requesting chat to `BOSS_AGENT_SESSION_ID`; `--session` and `--chat` override them, and both are required after defaulting. The requesting chat must be one of the session's chats.
+
+The daemon records the request and runs the run's normal finalize (outcome recorded, session cleaned up) once every chat is idle, the requesting chat has settled, and every agent log of the session has been quiet for a minute. The quiet-log window is what protects background agents, which keep writing after the chat reads idle. The caller's own request is therefore always pending: the text form prints `finish pending (waiting on <chat>)` (or `finished`), and `--json` emits `{"outcome": "pending"|"finished", "blocking_agent_session_id": ...}`.
+
+Only unattended runs can be finished. A pending finish lives in daemon memory: a new chat in the session cancels it, and a daemon restart drops it, in which case the idle sweep still reaps the run. This command requires a local daemon and returns a non-zero exit status on errors.
+
+**Flags:**
+
+- `--chat` — Requesting chat id (default BOSS_AGENT_SESSION_ID)
+- `--json` — Emit {"outcome","blocking_agent_session_id"} as JSON on stdout
+- `--session` — Session id (default BOSS_SESSION_ID)
+
+```bash
+boss session finish
+boss session finish --json
+```
+
 ### `boss session link-pr <session-id> <pr-number-or-url>`
 
 Attach an existing pull request to a session
@@ -137,14 +158,15 @@ Refresh one session's cached pull request status
 
 - `--pr` — Pull request number to refresh (default: 0)
 
-### `boss session review-ledger <session-id> [flags]`
+### `boss session set-tracker <session-id> <issue-id>`
 
-Show a finished boss-review run's durable dispatch ledger
+Link a session to a tracker issue (sets or corrects the link)
 
-**Flags:**
+Link a session to a tracker issue, or correct a wrong link. The id must name an open issue the repo's own tracker returns; the stored URL is the tracker's. bossd also links active sessions on its own from a leading `[ID]` in the PR or session title or an id segment in the branch name, so this is mainly the correction path. Local daemon only.
 
-- `--json` — Emit a stable JSON schema instead of text
-- `--run` — Run id to read (default newest ledger by mtime)
+```bash
+boss session set-tracker abc123 ENG-42
+```
 
 ### `boss tail [source...] [flags]`
 

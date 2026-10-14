@@ -837,11 +837,23 @@ func newRegistry() map[string]Prose {
 			Long: "Installs the MCP server as an auto-starting service and starts " +
 				"it. Use `--force` to overwrite an existing service file, and " +
 				"`--port` to change the loopback port (default 8765). The server " +
-				"listens on `http://127.0.0.1:<port>/mcp`.",
+				"listens on `http://127.0.0.1:<port>/mcp` and requires every request " +
+				"to carry `Authorization: Bearer <token>` (see `boss mcp token`).",
 			Examples: []Example{
 				{Command: "boss mcp install"},
 				{Command: "boss mcp install --force"},
 				{Command: "boss mcp install --port 8888"},
+			},
+		},
+		"boss mcp token": {
+			Long: "Prints the bearer token the MCP HTTP server requires on every " +
+				"`/mcp` request. Configure the MCP host to send it as " +
+				"`Authorization: Bearer <token>`. The token is stored 0600 beside " +
+				"the daemon socket (separate from the daemon's own socket token) " +
+				"and is created on first use. `/healthz` and `/buildinfo` need no token.",
+			Examples: []Example{
+				{Command: "boss mcp token"},
+				{Command: "boss mcp token --json"},
 			},
 		},
 		"boss mcp uninstall": {
@@ -936,6 +948,28 @@ func newRegistry() map[string]Prose {
 				{Command: "boss session phase --clear"},
 			},
 		},
+		"boss session finish": {
+			Long: "Tell the daemon an unattended run is done, so it is finalized now rather than " +
+				"after the idle sweep's long log-silence window. Run it from inside the session: " +
+				"the session defaults to `BOSS_SESSION_ID` and the requesting chat to " +
+				"`BOSS_AGENT_SESSION_ID`; `--session` and `--chat` override them, and both are required " +
+				"after defaulting. The requesting chat must be one of the session's chats.\n\n" +
+				"The daemon records the request and runs the run's normal finalize (outcome recorded, " +
+				"session cleaned up) once every chat is idle, the requesting chat has settled, and " +
+				"every agent log of the session has been quiet for a minute. The quiet-log window is " +
+				"what protects background agents, which keep writing after the chat reads idle. The " +
+				"caller's own request is therefore always pending: the text form prints " +
+				"`finish pending (waiting on <chat>)` (or `finished`), and `--json` emits " +
+				"`{\"outcome\": \"pending\"|\"finished\", \"blocking_agent_session_id\": ...}`.\n\n" +
+				"Only unattended runs can be finished. A pending finish lives in daemon memory: a new " +
+				"chat in the session cancels it, and a daemon restart drops it, in which case the idle " +
+				"sweep still reaps the run. This command requires a local daemon and returns a " +
+				"non-zero exit status on errors.",
+			Examples: []Example{
+				{Command: "boss session finish"},
+				{Command: "boss session finish --json"},
+			},
+		},
 		"boss session checks": {
 			Long: "Shows bossd's persisted view of a session's CI check snapshots, " +
 				"alongside the `DisplayStatus` the daemon computed for each one. " +
@@ -968,6 +1002,17 @@ func newRegistry() map[string]Prose {
 			Examples: []Example{
 				{Command: "boss session link-pr abc123 477"},
 				{Command: "boss session link-pr abc123 https://github.com/owner/repo/pull/477"},
+			},
+		},
+		"boss session set-tracker": {
+			Long: "Link a session to a tracker issue, or correct a wrong link. The id " +
+				"must name an open issue the repo's own tracker returns; the stored " +
+				"URL is the tracker's. bossd also links active sessions on its own " +
+				"from a leading `[ID]` in the PR or session title or an id segment " +
+				"in the branch name, so this is mainly the correction path. Local " +
+				"daemon only.",
+			Examples: []Example{
+				{Command: "boss session set-tracker abc123 ENG-42"},
 			},
 		},
 

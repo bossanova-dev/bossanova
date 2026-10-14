@@ -247,6 +247,20 @@ type reconcileMockSessionStore struct {
 	// tests can assert that fields land in the *same* store write rather than
 	// in a follow-up round-trip.
 	updateParams map[string][]db.UpdateSessionParams
+	// trackerLinks records every applied LinkTrackerIfUnlinked, keyed by
+	// session ID, as the tracker id written.
+	trackerLinks map[string][]string
+	// beforeWrite, when set, runs at the start of Update and
+	// LinkTrackerIfUnlinked (simulates a concurrent write that commits after
+	// every read the caller made, just before the caller's own write).
+	beforeWrite func(id string)
+	// afterLink, when set, runs right after an applied LinkTrackerIfUnlinked
+	// (simulates the caller's context ending just after the write commits).
+	afterLink func(id string)
+	// getHonorsCtx makes Get fail on a done context, as the SQLite store does.
+	getHonorsCtx bool
+	// listActiveErr, when set, is returned by ListActive.
+	listActiveErr error
 }
 
 func newReconcileMockSessionStore() *reconcileMockSessionStore {
@@ -254,6 +268,7 @@ func newReconcileMockSessionStore() *reconcileMockSessionStore {
 		sessions:     make(map[string]*models.Session),
 		updateErr:    make(map[string]error),
 		updateParams: make(map[string][]db.UpdateSessionParams),
+		trackerLinks: make(map[string][]string),
 	}
 }
 
@@ -265,7 +280,12 @@ func (m *reconcileMockSessionStore) Create(_ context.Context, _ db.CreateSession
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *reconcileMockSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+func (m *reconcileMockSessionStore) Get(ctx context.Context, id string) (*models.Session, error) {
+	if m.getHonorsCtx {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
@@ -282,6 +302,9 @@ func (m *reconcileMockSessionStore) List(_ context.Context, _ string) ([]*models
 }
 
 func (m *reconcileMockSessionStore) ListActive(_ context.Context, repoID string) ([]*models.Session, error) {
+	if m.listActiveErr != nil {
+		return nil, m.listActiveErr
+	}
 	var result []*models.Session
 	for _, s := range m.sessions {
 		if s.ArchivedAt == nil && (repoID == "" || s.RepoID == repoID) {
@@ -344,6 +367,9 @@ func (m *reconcileMockSessionStore) SetListRanks(_ context.Context, _ map[string
 }
 
 func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	if m.beforeWrite != nil {
+		m.beforeWrite(id)
+	}
 	if err := m.updateErr[id]; err != nil {
 		return nil, err
 	}
@@ -370,7 +396,34 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	if params.BlockedReason != nil {
 		s.BlockedReason = *params.BlockedReason
 	}
+	if params.TrackerID != nil {
+		s.TrackerID = *params.TrackerID
+	}
+	if params.TrackerURL != nil {
+		s.TrackerURL = *params.TrackerURL
+	}
 	return s, nil
+}
+
+// LinkTrackerIfUnlinked mirrors the store's compare-and-set link write.
+func (m *reconcileMockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
+	if m.beforeWrite != nil {
+		m.beforeWrite(id)
+	}
+	if err := m.updateErr[id]; err != nil {
+		return false, err
+	}
+	s, ok := m.sessions[id]
+	if !ok || !trackerLinkCASHolds(s, expectedTrackerID) {
+		return false, nil
+	}
+	m.trackerLinks[id] = append(m.trackerLinks[id], trackerID)
+	s.TrackerID = &trackerID
+	s.TrackerURL = &trackerURL
+	if m.afterLink != nil {
+		m.afterLink(id)
+	}
+	return true, nil
 }
 
 func (m *reconcileMockSessionStore) Archive(_ context.Context, _ string) error { return nil }
@@ -401,6 +454,10 @@ func (m *reconcileMockSessionStore) UpdateRepairDiagnostics(_ context.Context, _
 }
 
 func (m *reconcileMockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
+func (m *reconcileMockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -2082,4 +2139,12 @@ func TestPRsForRepo_LateFailureDoesNotEvictAFreshSuccess(t *testing.T) {
 	if got := len(provider.listOpenCalls); got != before {
 		t.Fatalf("ListOpenPRs calls = %d, want %d: the success should still be cached", got, before)
 	}
+}
+
+func (*reconcileMockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (m *reconcileMockProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
 }

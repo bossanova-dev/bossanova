@@ -3709,6 +3709,8 @@ func TestHomeFixedStatusCopyStaysReadableAtFloor(t *testing.T) {
 		statusUpgradeRestartPrompt,
 		statusUpgradeDone,
 		fmt.Sprintf(statusUpgradeAvailableFormat, "v1.2.3", "v1.2.4"),
+		fmt.Sprintf(statusDaemonUnsupervisedFormat, 9999999),
+		statusDaemonUnsupervisedNoPID,
 	}
 	for _, text := range fixed {
 		rows := strings.Split(h.statusLine(colorWarning, text), "\n")

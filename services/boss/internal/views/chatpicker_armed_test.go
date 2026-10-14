@@ -240,11 +240,12 @@ func TestChatPicker_ArmedLineCarriesNeedsHumanPark(t *testing.T) {
 }
 
 // The line follows the cursor when the cursor chat is waiting, otherwise it
-// names the first waiting chat — and its height never moves.
+// names the first waiting chat — and its height never moves. Both waits here
+// are blocking; standby ordering is pinned in chatpicker_standby_test.go.
 func TestChatPicker_ArmedLineFollowsCursor(t *testing.T) {
 	stub := &chatPickerStub{}
 	reasonA := armedTestReason("checks_passed_ready")
-	reasonB := "awaiting checks_failed on acme/my-app#2961"
+	reasonB := "awaiting merged on acme/my-app#2961"
 	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
 		[]*pb.ClaudeChat{verifyChat("agent-busy", "busy"), verifyChat("agent-a", "first"), verifyChat("agent-b", "second")},
 		map[string]string{"agent-busy": statusWorking, "agent-a": statusWaiting, "agent-b": statusWaiting},

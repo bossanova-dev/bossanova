@@ -10,6 +10,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/proofenv"
 )
 
 func titleCronSession(title string) *models.Session {
@@ -163,4 +164,56 @@ func TestFinalizeTitle(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
+}
+
+// TestAgentSuggestedTitleSendsRepoPinnedEnv pins BOS-1562 for the PR-title
+// one-shot: the plugin runs an agent in the session worktree, so the request
+// must carry the same OverlayWithRepo pins a session spawn gets — empty proof
+// keys for an untrusted repo, the repo's own Linear key for a configured one.
+func TestAgentSuggestedTitleSendsRepoPinnedEnv(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name        string
+		repo        *models.Repo
+		wantLinear  string
+		wantProofed bool
+	}{
+		{name: "untrusted repo pins proof keys empty", repo: &models.Repo{ID: "r1"}, wantProofed: true},
+		{name: "unknown repo counts as untrusted", repo: nil, wantProofed: true},
+		{name: "trusted repo leaves proof keys to the plugin", repo: &models.Repo{ID: "r1", IsTrusted: true, LinearAPIKey: "repo-linear"}, wantLinear: "repo-linear"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ag := newFakeAgent()
+			var gotReq *bossanovav1.SuggestPRTitleRequest
+			ag.SuggestPRTitleFunc = func(req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+				gotReq = req
+				return &bossanovav1.SuggestPRTitleResponse{Supported: true, Title: "T"}, nil
+			}
+			lc := newTitleLifecycle(&mockWorktreeManager{commitSubjects: []string{"a", "b"}}, ag)
+			repos := newMockRepoStore()
+			if tc.repo != nil {
+				repos.repos[tc.repo.ID] = tc.repo
+			}
+			lc.repos = repos
+			s := titleCronSession("Session")
+			s.RepoID = "r1"
+			s.WorktreePath = t.TempDir()
+			if got := lc.finalizeTitle(ctx, s, "Old"); got != "T" {
+				t.Fatalf("got %q", got)
+			}
+			env := gotReq.GetExtraEnv()
+			if v, ok := env["LINEAR_API_KEY"]; !ok || v != tc.wantLinear {
+				t.Errorf("LINEAR_API_KEY = %q (present=%v), want %q", v, ok, tc.wantLinear)
+			}
+			for _, key := range proofenv.Keys() {
+				v, ok := env[key]
+				if tc.wantProofed && (!ok || v != "") {
+					t.Errorf("%s = %q (present=%v), want pinned empty for an untrusted repo", key, v, ok)
+				}
+				if !tc.wantProofed && ok {
+					t.Errorf("%s present for a trusted repo; the pin must not fire", key)
+				}
+			}
+		})
+	}
 }

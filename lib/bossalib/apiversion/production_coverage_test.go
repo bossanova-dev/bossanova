@@ -277,6 +277,19 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				return downconverted(body.Created)
 			},
 		}}, sessionProbes(verifySession, downconverted)...)
+	case SessionAttentionChange:
+		cleared := func(s *pb.Session) bool { return s.GetAttention() == nil }
+		return append([]responseProbe{{
+			procedure: bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure,
+			build: func() any {
+				return &pb.ProxyCreateSessionResponse{
+					Body: &pb.ProxyCreateSessionResponse_Created{Created: attentionSession()},
+				}
+			},
+			mutated: func(msg any) bool {
+				return cleared(msg.(*pb.ProxyCreateSessionResponse).GetCreated())
+			},
+		}}, sessionProbes(attentionSession, cleared)...)
 	case AcceptedInvitationResponseChange:
 		return []responseProbe{{
 			procedure: bossanovav1connect.OrchestratorServiceListOrganizationMembersProcedure,

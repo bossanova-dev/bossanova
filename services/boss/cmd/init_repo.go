@@ -114,12 +114,14 @@ func (s *initAppliedSteps) stoppedReport() string {
 
 type initRepoOptions struct {
 	register, noRegister, linearStdin, sentryStdin, storeEnv bool
-	sentryOrg                                                string
-	linearKey, sentryToken                                   string
+	// trusted registers a new repository as trusted (Repo.is_trusted).
+	trusted                bool
+	sentryOrg              string
+	linearKey, sentryToken string
 }
 
 func (o initRepoOptions) requested() bool {
-	return o.register || o.noRegister || o.linearStdin || o.sentryStdin || o.storeEnv || o.sentryOrg != ""
+	return o.register || o.noRegister || o.linearStdin || o.sentryStdin || o.storeEnv || o.trusted || o.sentryOrg != ""
 }
 
 func (o *initRepoOptions) validateSources(getenv func(string) string) error {
@@ -179,8 +181,17 @@ func mainCheckout(ctx context.Context, dir string) (string, error) {
 	return filepath.Dir(common), nil
 }
 
+// initRegistration says whether resolveInitRepo may register an unregistered
+// repository and whether such a new registration is trusted. trusted applies
+// only when the call registers; an existing registration keeps its trust
+// (change it with `boss repo update --trusted`).
+type initRegistration struct {
+	allow   bool
+	trusted bool
+}
+
 // resolveInitRepo exposes the canonical repo and id to subsequent installer steps.
-func resolveInitRepo(ctx context.Context, c client.BossClient, dir string, allowRegister bool, steps *initAppliedSteps) (*pb.Repo, error) {
+func resolveInitRepo(ctx context.Context, c client.BossClient, dir string, reg initRegistration, steps *initAppliedSteps) (*pb.Repo, error) {
 	main, err := mainCheckout(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -192,7 +203,7 @@ func resolveInitRepo(ctx context.Context, c client.BossClient, dir string, allow
 		}
 		return repo, err
 	}
-	if !allowRegister {
+	if !reg.allow {
 		return nil, errors.New("repository is unregistered; re-run with --register")
 	}
 	validation, err := c.ValidateRepoPath(ctx, main)
@@ -200,7 +211,11 @@ func resolveInitRepo(ctx context.Context, c client.BossClient, dir string, allow
 		return nil, errors.New("repository path validation failed")
 	}
 	name, branch := views.RepoNameAndBranch(main, validation)
-	repo, err = c.RegisterRepo(ctx, &pb.RegisterRepoRequest{LocalPath: main, DisplayName: name, DefaultBaseBranch: branch})
+	req := &pb.RegisterRepoRequest{LocalPath: main, DisplayName: name, DefaultBaseBranch: branch}
+	if reg.trusted {
+		req.IsTrusted = &reg.trusted
+	}
+	repo, err = c.RegisterRepo(ctx, req)
 	if err != nil || repo == nil {
 		return nil, errors.New("repository registration failed")
 	}
@@ -317,13 +332,33 @@ func prepareInitRepo(cmd *cobra.Command, dir string, o initRepoOptions, validate
 	if err != nil {
 		return nil, errors.New("could not connect to local bossd")
 	}
-	repo, err := resolveInitRepo(cmd.Context(), c, dir, !o.noRegister, steps)
+	repo, err := resolveInitRepo(cmd.Context(), c, dir, initRegistration{allow: !o.noRegister, trusted: o.trusted}, steps)
 	if err != nil {
 		return nil, err
+	}
+	if !steps.Registered {
+		_, _ = io.WriteString(cmd.OutOrStdout(), trustedIgnoredNote(o.trusted, repo))
 	}
 	_, _ = io.WriteString(cmd.OutOrStdout(), configLocationNote(cmd.Context(), dir, repo))
 	if err := storeInitCredentials(cmd.Context(), c, repo, o, validate, steps, cmd.OutOrStdout()); err != nil {
 		return repo, err
 	}
 	return repo, nil
+}
+
+// trustedIgnoredNote is the note for --trusted on a repository this run did
+// not register: the flag sets trust only at registration, so an untrusted
+// registered repository stays untrusted and the operator is told how to trust
+// it. It is empty when the flag was not passed or the repo is already trusted.
+func trustedIgnoredNote(trusted bool, repo *pb.Repo) string {
+	if !trusted || repo.GetIsTrusted() {
+		return ""
+	}
+	return "Repository already registered; --trusted applies only to a new registration. Run " + trustRepoCommand(repo.GetId()) + " to trust it.\n"
+}
+
+// trustRepoCommand is the backticked command that trusts a registered
+// repository, shared by every note that names the trust remedy.
+func trustRepoCommand(id string) string {
+	return "`boss repo update " + id + " --trusted`"
 }

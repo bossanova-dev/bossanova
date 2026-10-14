@@ -2,9 +2,12 @@ package plugin
 
 import "testing"
 
-func TestProtocolVersionProtectsManagedMCPWireContract(t *testing.T) {
-	if ProtocolVersion != 2 {
-		t.Errorf("ProtocolVersion = %d, want 2", ProtocolVersion)
+func TestProtocolVersionProtectsRepoTrustWireContract(t *testing.T) {
+	if ProtocolVersion != 3 {
+		t.Errorf("ProtocolVersion = %d, want 3", ProtocolVersion)
+	}
+	if ProtocolVersion <= ProtocolVersionV2 || ProtocolVersionV2 <= ProtocolVersionV1 {
+		t.Errorf("protocol versions out of order: v1=%d v2=%d current=%d", ProtocolVersionV1, ProtocolVersionV2, ProtocolVersion)
 	}
 }
 

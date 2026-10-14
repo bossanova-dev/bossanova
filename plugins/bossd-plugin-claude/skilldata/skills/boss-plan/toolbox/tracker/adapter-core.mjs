@@ -111,11 +111,14 @@
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The query's selection with every user,
  *           label and project resolved to the tracker's ids / canonical names, for an in-memory
  *           `matchIssue` over issues the caller already fetched. Throws naming any unresolved ref.
- * @property {(issueId: string) => Promise<{id: string, identifier: string, description: string}>} [readDescription]
+ * @property {(issueId: string) => Promise<{id: string, identifier: string, description: string, descriptionUpdatedAt?: string|null}>} [readDescription]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). The executable read of an issue's STORED
  *           description, accepting a UUID or a human identifier. Resolves to the resolved issue's
  *           `id` and `identifier` plus the description exactly as stored — no trailing newline
- *           added or stripped, `''` for an empty one. Must fail closed — throw — on a blank id, a
+ *           added or stripped, `''` for an empty one. Optional `descriptionUpdatedAt` is the ISO
+ *           time of the latest description edit the tracker itself logged, never a
+ *           caller-settable time such as the issue's creation; `null` or absent when the
+ *           tracker logged none (never a throw). Must fail closed — throw — on a blank id, a
  *           missing issue, a description it cannot read as a string, or a missing credential,
  *           never answer with bytes it did not read. A missing credential's error carries
  *           `code: TRACKER_CREDENTIALS_MISSING`.

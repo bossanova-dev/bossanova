@@ -81,6 +81,7 @@ test('vocabulary is frozen and closed', () => {
     'host',
     'outside-worktree',
     'plan-question',
+    'review-finding',
     'stage-evidence',
   ])
   assert.ok(Object.isFrozen(FOLLOWUP_SOURCES))
@@ -133,6 +134,16 @@ test('outside-worktree criteria still park the PR', () => {
   assert.deepEqual(routed.warnings, [])
   assert.match(renderFollowUpSections(routed), /^- \[ \] Confirm the dashboard loads/m)
   assert.deepEqual(reasonsFor(candidates), ['human-follow-up-open'])
+})
+
+test('a pre-existing review finding is listed for a ticket and never parks the PR', () => {
+  const candidates = [{ text: 'P1 a.go:3 — nil map write: m is nil', source: 'review-finding' }]
+  const routed = routeFollowUps(candidates)
+  assert.deepEqual(routed.reviewFollowUps, ['P1 a.go:3 — nil map write: m is nil'])
+  assert.deepEqual(routed.humanFollowUp, [])
+  assert.deepEqual(routed.warnings, [])
+  assert.ok(sections(bodyWith(renderFollowUpSections(routed))).has('review follow-ups'))
+  assert.deepEqual(reasonsFor(candidates), [])
 })
 
 test('outside-worktree without a criterion still parks, with a warning', () => {

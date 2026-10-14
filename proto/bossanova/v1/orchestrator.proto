@@ -4,6 +4,7 @@ package bossanova.v1;
 
 option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
+import "bossanova/v1/authz.proto";
 import "bossanova/v1/daemon.proto";
 import "bossanova/v1/models.proto";
 import "bossanova/v1/stream.proto";
@@ -13,87 +14,155 @@ import "google/protobuf/timestamp.proto";
 // daemons, provides remote CLI access, and handles webhook routing.
 service OrchestratorService {
   // Daemon registry
-  rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse);
+  rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // PublishDaemonSnapshot is a unary fallback for networks that proxy normal
   // HTTPS but do not support Connect bidirectional streaming end-to-end.
   // Daemons authenticate with their RegisterDaemon session token and publish
   // the same snapshot shape used as the first DaemonStream event.
-  rpc PublishDaemonSnapshot(PublishDaemonSnapshotRequest) returns (PublishDaemonSnapshotResponse);
+  rpc PublishDaemonSnapshot(PublishDaemonSnapshotRequest) returns (PublishDaemonSnapshotResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+  }
   // DaemonStream is the long-lived bidirectional channel between a daemon
   // and the orchestrator. Daemons push session deltas and other events;
   // the orchestrator pushes commands (proxy RPC invocations, transfer
   // directives, etc.). Replaces Heartbeat and SyncSessions.
-  rpc DaemonStream(stream DaemonEvent) returns (stream OrchestratorCommand);
-  rpc ListDaemons(ListDaemonsRequest) returns (ListDaemonsResponse);
+  rpc DaemonStream(stream DaemonEvent) returns (stream OrchestratorCommand) {
+    // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ListDaemons(ListDaemonsRequest) returns (ListDaemonsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
 
   // Session transfer between daemons
-  rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse);
+  rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
 
   // Proxied daemon RPCs (remote CLI → orchestrator → daemon)
-  rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse);
+  rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Deprecated: use ProxyListSessions with organization_id unset for the union,
   // or set organization_id to narrow the read.
   rpc ProxyListSessionsAcrossOrganizations(ProxyListSessionsAcrossOrganizationsRequest) returns (ProxyListSessionsAcrossOrganizationsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option deprecated = true;
   }
-  rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse);
-  rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse);
+  rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Creates a new session on a chosen daemon, streaming setup output as it
   // runs and terminating with the created Session or an in-band error.
   // Routes to the daemon named by daemon_id (no session exists yet).
-  rpc ProxyCreateSession(ProxyCreateSessionRequest) returns (stream ProxyCreateSessionResponse);
-  rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse);
-  rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse);
-  rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse);
+  rpc ProxyCreateSession(ProxyCreateSessionRequest) returns (stream ProxyCreateSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
   // reverse stream and waits for CommandResult{WakeChatResult}.
-  rpc ProxyWakeChat(ProxyWakeChatRequest) returns (ProxyWakeChatResponse);
+  rpc ProxyWakeChat(ProxyWakeChatRequest) returns (ProxyWakeChatResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Merges a session's PR via the owning daemon's reverse stream.
-  rpc ProxyMergeSession(ProxyMergeSessionRequest) returns (ProxyMergeSessionResponse);
+  rpc ProxyMergeSession(ProxyMergeSessionRequest) returns (ProxyMergeSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Archives a session via the owning daemon's reverse stream.
-  rpc ProxyArchiveSession(ProxyArchiveSessionRequest) returns (ProxyArchiveSessionResponse);
+  rpc ProxyArchiveSession(ProxyArchiveSessionRequest) returns (ProxyArchiveSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Records or resumes a chat via the owning daemon's reverse stream.
-  rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse);
+  rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Deletes a chat via the owning daemon's reverse stream.
-  rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse);
+  rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Switches a session's live chat to a different account (stop+swap+resume)
   // via the owning daemon's reverse stream. Routes by session_id
   // (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
-  rpc ProxySwitchSessionAccount(ProxySwitchSessionAccountRequest) returns (ProxySwitchSessionAccountResponse);
+  rpc ProxySwitchSessionAccount(ProxySwitchSessionAccountRequest) returns (ProxySwitchSessionAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Lists the rotation accounts on the daemon owning session_id (web
   // account-switch picker). Routes by session_id (FindSessionDaemon) for authz
   // scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
   // credentials. Optional provider filter ("" = all).
-  rpc ProxyListAccounts(ProxyListAccountsRequest) returns (ProxyListAccountsResponse);
+  rpc ProxyListAccounts(ProxyListAccountsRequest) returns (ProxyListAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Reads a chat's transcript via the owning daemon's reverse stream. Routes by
   // session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
-  rpc ProxyGetChatTranscript(ProxyGetChatTranscriptRequest) returns (ProxyGetChatTranscriptResponse);
+  rpc ProxyGetChatTranscript(ProxyGetChatTranscriptRequest) returns (ProxyGetChatTranscriptResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Sends a user message into a chat via the owning daemon's reverse stream.
   // Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
   // carries no session_id.
-  rpc ProxySendChatMessage(ProxySendChatMessageRequest) returns (ProxySendChatMessageResponse);
+  rpc ProxySendChatMessage(ProxySendChatMessageRequest) returns (ProxySendChatMessageResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Aggregates repos across the caller's live daemons, deduped by origin URL,
   // with the serving daemon IDs unioned per repo. Spans every organization the
   // caller belongs to unless the request narrows it to one.
-  rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse);
+  rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Lists the installed agents on a single named daemon via its reverse stream.
-  rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse);
-  rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse);
-  rpc ProxyListTrackerIssues(ProxyListTrackerIssuesRequest) returns (ProxyListTrackerIssuesResponse);
+  rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyListTrackerIssues(ProxyListTrackerIssuesRequest) returns (ProxyListTrackerIssuesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // Per-repo proxies for web repo management. Route to the daemon named by
   // daemon_id and address the repo by repo_id. Reads/updates are secret-masked
   // (RepoSettings); writes carry tri-state SecretUpdate + expected_updated_at.
-  rpc ProxyGetRepo(ProxyGetRepoRequest) returns (ProxyGetRepoResponse);
-  rpc ProxyUpdateRepo(ProxyUpdateRepoRequest) returns (ProxyUpdateRepoResponse);
-  rpc ProxyRemoveRepo(ProxyRemoveRepoRequest) returns (ProxyRemoveRepoResponse);
+  rpc ProxyGetRepo(ProxyGetRepoRequest) returns (ProxyGetRepoResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyUpdateRepo(ProxyUpdateRepoRequest) returns (ProxyUpdateRepoResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyRemoveRepo(ProxyRemoveRepoRequest) returns (ProxyRemoveRepoResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
   // across all of the caller's live daemons; the mutating proxies route to the
   // daemon named by daemon_id and address the job by id.
-  rpc ProxyListCronJobs(ProxyListCronJobsRequest) returns (ProxyListCronJobsResponse);
-  rpc ProxyCreateCronJob(ProxyCreateCronJobRequest) returns (ProxyCreateCronJobResponse);
-  rpc ProxyUpdateCronJob(ProxyUpdateCronJobRequest) returns (ProxyUpdateCronJobResponse);
-  rpc ProxyDeleteCronJob(ProxyDeleteCronJobRequest) returns (ProxyDeleteCronJobResponse);
-  rpc ProxyRunCronJobNow(ProxyRunCronJobNowRequest) returns (ProxyRunCronJobNowResponse);
+  rpc ProxyListCronJobs(ProxyListCronJobsRequest) returns (ProxyListCronJobsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyCreateCronJob(ProxyCreateCronJobRequest) returns (ProxyCreateCronJobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyUpdateCronJob(ProxyUpdateCronJobRequest) returns (ProxyUpdateCronJobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyDeleteCronJob(ProxyDeleteCronJobRequest) returns (ProxyDeleteCronJobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyRunCronJobNow(ProxyRunCronJobNowRequest) returns (ProxyRunCronJobNowResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // Daemon-scoped account-management proxies for the web Settings > Accounts
   // section. Unlike ProxyListAccounts (session-scoped, switch picker) these
   // route to the daemon named by daemon_id, since a Settings-level manager is
@@ -101,88 +170,152 @@ service OrchestratorService {
   // refresh requests carry an inbound-only credential blob (consumed straight
   // into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
   // existing daemon account.go handler via a reverse-stream OrchestratorCommand.
-  rpc ProxyManageListAccounts(ProxyManageListAccountsRequest) returns (ProxyManageListAccountsResponse);
-  rpc ProxyAddAccount(ProxyAddAccountRequest) returns (ProxyAddAccountResponse);
-  rpc ProxyRefreshAccount(ProxyRefreshAccountRequest) returns (ProxyRefreshAccountResponse);
-  rpc ProxyUpdateAccount(ProxyUpdateAccountRequest) returns (ProxyUpdateAccountResponse);
-  rpc ProxyRemoveAccount(ProxyRemoveAccountRequest) returns (ProxyRemoveAccountResponse);
-  rpc ProxyTestAccount(ProxyTestAccountRequest) returns (ProxyTestAccountResponse);
+  rpc ProxyManageListAccounts(ProxyManageListAccountsRequest) returns (ProxyManageListAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyAddAccount(ProxyAddAccountRequest) returns (ProxyAddAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyRefreshAccount(ProxyRefreshAccountRequest) returns (ProxyRefreshAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyUpdateAccount(ProxyUpdateAccountRequest) returns (ProxyUpdateAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyRemoveAccount(ProxyRemoveAccountRequest) returns (ProxyRemoveAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ProxyTestAccount(ProxyTestAccountRequest) returns (ProxyTestAccountResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
   // owning daemon via FindSessionDaemon; session-less reads aggregate across the
   // caller's Ready daemons via the shared resolver.
   // ProxyListChats reads a session's chats (routes by session_id).
-  rpc ProxyListChats(ProxyListChatsRequest) returns (ProxyListChatsResponse);
+  rpc ProxyListChats(ProxyListChatsRequest) returns (ProxyListChatsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyGetChatStatuses reads one session's per-chat statuses (routes by
   // session_id, exactly as ProxyListChats does). Not interchangeable with
   // ProxyGetSessionStatuses: that aggregates across a session's chats, so it
   // cannot say whether one specific chat has settled.
-  rpc ProxyGetChatStatuses(ProxyGetChatStatusesRequest) returns (ProxyGetChatStatusesResponse);
+  rpc ProxyGetChatStatuses(ProxyGetChatStatusesRequest) returns (ProxyGetChatStatusesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
   // unknown ids, and unions the returned SessionStatusEntry values.
-  rpc ProxyGetSessionStatuses(ProxyGetSessionStatusesRequest) returns (ProxyGetSessionStatusesResponse);
+  rpc ProxyGetSessionStatuses(ProxyGetSessionStatusesRequest) returns (ProxyGetSessionStatusesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
-  rpc ProxyListCheckSnapshots(ProxyListCheckSnapshotsRequest) returns (ProxyListCheckSnapshotsResponse);
+  rpc ProxyListCheckSnapshots(ProxyListCheckSnapshotsRequest) returns (ProxyListCheckSnapshotsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyListAgentsAggregated aggregates installed agents across the caller's
   // Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
-  rpc ProxyListAgentsAggregated(ProxyListAgentsAggregatedRequest) returns (ProxyListAgentsAggregatedResponse);
+  rpc ProxyListAgentsAggregated(ProxyListAgentsAggregatedRequest) returns (ProxyListAgentsAggregatedResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
-  rpc ProxyListPlugins(ProxyListPluginsRequest) returns (ProxyListPluginsResponse);
+  rpc ProxyListPlugins(ProxyListPluginsRequest) returns (ProxyListPluginsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
-  rpc ProxyGetCronJob(ProxyGetCronJobRequest) returns (ProxyGetCronJobResponse);
+  rpc ProxyGetCronJob(ProxyGetCronJobRequest) returns (ProxyGetCronJobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
-  rpc ProxyRepairDoctor(ProxyRepairDoctorRequest) returns (ProxyRepairDoctorResponse);
+  rpc ProxyRepairDoctor(ProxyRepairDoctorRequest) returns (ProxyRepairDoctorResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
   // ops route to the owning daemon via FindSessionDaemon (NotFound for a
   // missing/foreign session); empty_trash is daemon-wide and aggregates across
   // the caller's Ready daemons via the shared resolver.
   // ProxyCloseSession closes (abandons) a session, returning the updated Session.
-  rpc ProxyCloseSession(ProxyCloseSessionRequest) returns (ProxyCloseSessionResponse);
+  rpc ProxyCloseSession(ProxyCloseSessionRequest) returns (ProxyCloseSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyResurrectSession restores an archived session, returning the updated Session.
-  rpc ProxyResurrectSession(ProxyResurrectSessionRequest) returns (ProxyResurrectSessionResponse);
+  rpc ProxyResurrectSession(ProxyResurrectSessionRequest) returns (ProxyResurrectSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
-  rpc ProxyRemoveSession(ProxyRemoveSessionRequest) returns (ProxyRemoveSessionResponse);
+  rpc ProxyRemoveSession(ProxyRemoveSessionRequest) returns (ProxyRemoveSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyEmptyTrash permanently deletes archived sessions across the caller's
   // Ready daemons, summing each daemon's deleted_count.
-  rpc ProxyEmptyTrash(ProxyEmptyTrashRequest) returns (ProxyEmptyTrashResponse);
+  rpc ProxyEmptyTrash(ProxyEmptyTrashRequest) returns (ProxyEmptyTrashResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
   // owning daemon via FindSessionDaemon; chat-scoped mutations via
   // FindDaemonForChat(agent_session_id). A foreign entity resolves to NotFound,
   // so no cross-user mutation can dispatch.
   // ProxyRetrySession retries a failed session (routes by session_id).
-  rpc ProxyRetrySession(ProxyRetrySessionRequest) returns (ProxyRetrySessionResponse);
+  rpc ProxyRetrySession(ProxyRetrySessionRequest) returns (ProxyRetrySessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyUpdateSession updates a session's title/tracker (routes by session_id).
-  rpc ProxyUpdateSession(ProxyUpdateSessionRequest) returns (ProxyUpdateSessionResponse);
+  rpc ProxyUpdateSession(ProxyUpdateSessionRequest) returns (ProxyUpdateSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyMoveSession moves a session up or down the rendered list (routes by
   // session_id). It is a pure passthrough: the rank arithmetic lives in the
   // daemon, so bosso resolves the owner, forwards the DIRECTION, and returns
   // the daemon's answer unchanged.
-  rpc ProxyMoveSession(ProxyMoveSessionRequest) returns (ProxyMoveSessionResponse);
+  rpc ProxyMoveSession(ProxyMoveSessionRequest) returns (ProxyMoveSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
-  rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse);
+  rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
-  rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse);
+  rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyReportChatStatus forwards chat status heartbeats. All reports must
   // resolve to the caller's own chats on a single daemon.
-  rpc ProxyReportChatStatus(ProxyReportChatStatusRequest) returns (ProxyReportChatStatusResponse);
+  rpc ProxyReportChatStatus(ProxyReportChatStatusRequest) returns (ProxyReportChatStatusResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // GitHub-callback proxies for remote-CLI callback management (BOS-469). All
   // route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
   // the caller's own auth — a foreign chat resolves to NotFound so no cross-user
   // registration can dispatch. Create/Delete require target_chat_id; List routes
   // by target_chat_id when set, else aggregates across the caller's Ready daemons.
-  rpc ProxyCreateGithubCallback(ProxyCreateGithubCallbackRequest) returns (ProxyCreateGithubCallbackResponse);
-  rpc ProxyListGithubCallbacks(ProxyListGithubCallbacksRequest) returns (ProxyListGithubCallbacksResponse);
-  rpc ProxyDeleteGithubCallback(ProxyDeleteGithubCallbackRequest) returns (ProxyDeleteGithubCallbackResponse);
+  rpc ProxyCreateGithubCallback(ProxyCreateGithubCallbackRequest) returns (ProxyCreateGithubCallbackResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyListGithubCallbacks(ProxyListGithubCallbacksRequest) returns (ProxyListGithubCallbacksResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyDeleteGithubCallback(ProxyDeleteGithubCallbackRequest) returns (ProxyDeleteGithubCallbackResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
   // A note is repo-scoped, so all five route to the owning daemon by repo_id,
   // reusing the caller's own auth — a foreign repo resolves to NotFound so no
   // cross-user note access can dispatch. Create/Get/Update/Delete require
   // repo_id; List routes by repo_id when set, else aggregates across the
   // caller's Ready daemons.
-  rpc ProxyCreateNote(ProxyCreateNoteRequest) returns (ProxyCreateNoteResponse);
-  rpc ProxyGetNote(ProxyGetNoteRequest) returns (ProxyGetNoteResponse);
-  rpc ProxyListNotes(ProxyListNotesRequest) returns (ProxyListNotesResponse);
-  rpc ProxyUpdateNote(ProxyUpdateNoteRequest) returns (ProxyUpdateNoteResponse);
-  rpc ProxyDeleteNote(ProxyDeleteNoteRequest) returns (ProxyDeleteNoteResponse);
+  rpc ProxyCreateNote(ProxyCreateNoteRequest) returns (ProxyCreateNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyGetNote(ProxyGetNoteRequest) returns (ProxyGetNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyListNotes(ProxyListNotesRequest) returns (ProxyListNotesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyUpdateNote(ProxyUpdateNoteRequest) returns (ProxyUpdateNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ProxyDeleteNote(ProxyDeleteNoteRequest) returns (ProxyDeleteNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
   // remain the unchanged daemon-local relay, these read and write a note store
   // that bosso itself owns, scoped to one organization, so an organization can
@@ -202,15 +335,27 @@ service OrchestratorService {
   // update that changes the body or tags, consumes one unit; deletes, reads and
   // idempotent replays consume none. An exhausted quota is ResourceExhausted
   // with an OrganizationNoteQuotaExceeded error detail.
-  rpc CreateOrganizationNote(CreateOrganizationNoteRequest) returns (CreateOrganizationNoteResponse);
-  rpc GetOrganizationNote(GetOrganizationNoteRequest) returns (GetOrganizationNoteResponse);
-  rpc ListOrganizationNotes(ListOrganizationNotesRequest) returns (ListOrganizationNotesResponse);
-  rpc UpdateOrganizationNote(UpdateOrganizationNoteRequest) returns (UpdateOrganizationNoteResponse);
-  rpc DeleteOrganizationNote(DeleteOrganizationNoteRequest) returns (DeleteOrganizationNoteResponse);
+  rpc CreateOrganizationNote(CreateOrganizationNoteRequest) returns (CreateOrganizationNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc GetOrganizationNote(GetOrganizationNoteRequest) returns (GetOrganizationNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ListOrganizationNotes(ListOrganizationNotesRequest) returns (ListOrganizationNotesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc UpdateOrganizationNote(UpdateOrganizationNoteRequest) returns (UpdateOrganizationNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc DeleteOrganizationNote(DeleteOrganizationNoteRequest) returns (DeleteOrganizationNoteResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // GetOrganizationNoteQuota reports the organization's current quota window
   // without consuming any of it. Same membership and entitlement rules as the
   // other organization-note RPCs.
-  rpc GetOrganizationNoteQuota(GetOrganizationNoteQuotaRequest) returns (GetOrganizationNoteQuotaResponse);
+  rpc GetOrganizationNoteQuota(GetOrganizationNoteQuotaRequest) returns (GetOrganizationNoteQuotaResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
   // authenticates the daemon session, the same principal as
   // PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -220,17 +365,23 @@ service OrchestratorService {
   // synced note cannot be edited through UpdateOrganizationNote. See
   // SyncDaemonNotesRequest for the batch bounds and NoteSyncOutcome for the
   // per-item results.
-  rpc SyncDaemonNotes(SyncDaemonNotesRequest) returns (SyncDaemonNotesResponse);
+  rpc SyncDaemonNotes(SyncDaemonNotesRequest) returns (SyncDaemonNotesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+  }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
   // owning daemon disconnects.
-  rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent);
+  rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
 
   // IssueAttachToken returns a short-lived JWT bound to (user, session,
   // chat, scope) that the browser uses to authenticate the /ws/attach
   // WebSocket handshake. TTL ~5 minutes.
-  rpc IssueAttachToken(IssueAttachTokenRequest) returns (IssueAttachTokenResponse);
+  rpc IssueAttachToken(IssueAttachTokenRequest) returns (IssueAttachTokenResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
 
   // TerminalStream is the bossd-initiated bidirectional channel that
   // carries terminal-attach traffic for the web /ws/attach feature.
@@ -245,60 +396,118 @@ service OrchestratorService {
   // messages (TerminalClientMessage). The "Client"/"Server" prefix refers
   // to the web feature's bosso-server / browser-client perspective, not
   // the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
-  rpc TerminalStream(stream TerminalServerMessage) returns (stream TerminalClientMessage);
+  rpc TerminalStream(stream TerminalServerMessage) returns (stream TerminalClientMessage) {
+    // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
 
   // Webhook configuration management
-  rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
-  rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse);
-  rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse);
+  rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // GitHub App repository registration. User-authenticated.
-  rpc GetGitHubAppInstallURL(GetGitHubAppInstallURLRequest) returns (GetGitHubAppInstallURLResponse);
-  rpc CompleteGitHubAppSetup(CompleteGitHubAppSetupRequest) returns (CompleteGitHubAppSetupResponse);
-  rpc ListGitHubAppRepos(ListGitHubAppReposRequest) returns (ListGitHubAppReposResponse);
-  rpc DisconnectGitHubAppRepo(DisconnectGitHubAppRepoRequest) returns (DisconnectGitHubAppRepoResponse);
+  rpc GetGitHubAppInstallURL(GetGitHubAppInstallURLRequest) returns (GetGitHubAppInstallURLResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc CompleteGitHubAppSetup(CompleteGitHubAppSetupRequest) returns (CompleteGitHubAppSetupResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc ListGitHubAppRepos(ListGitHubAppReposRequest) returns (ListGitHubAppReposResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc DisconnectGitHubAppRepo(DisconnectGitHubAppRepoRequest) returns (DisconnectGitHubAppRepoResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
 
   // Cloud billing and access. User-authenticated.
-  rpc GetCloudAccessStatus(GetCloudAccessStatusRequest) returns (GetCloudAccessStatusResponse);
-  rpc CreateCheckoutSession(CreateCheckoutSessionRequest) returns (CreateCheckoutSessionResponse);
-  rpc CreateBillingPortalSession(CreateBillingPortalSessionRequest) returns (CreateBillingPortalSessionResponse);
-  rpc RefreshCloudEntitlements(RefreshCloudEntitlementsRequest) returns (RefreshCloudEntitlementsResponse);
+  rpc GetCloudAccessStatus(GetCloudAccessStatusRequest) returns (GetCloudAccessStatusResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc CreateCheckoutSession(CreateCheckoutSessionRequest) returns (CreateCheckoutSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc CreateBillingPortalSession(CreateBillingPortalSessionRequest) returns (CreateBillingPortalSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc RefreshCloudEntitlements(RefreshCloudEntitlementsRequest) returns (RefreshCloudEntitlementsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
 
   // Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
   // goes through the Loops form endpoint, the only path Loops gates with double
   // opt-in; see docs/analytics/newsletter.md.
-  rpc GetNewsletterStatus(GetNewsletterStatusRequest) returns (GetNewsletterStatusResponse);
-  rpc SubscribeToNewsletter(SubscribeToNewsletterRequest) returns (SubscribeToNewsletterResponse);
+  rpc GetNewsletterStatus(GetNewsletterStatusRequest) returns (GetNewsletterStatusResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc SubscribeToNewsletter(SubscribeToNewsletterRequest) returns (SubscribeToNewsletterResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
 
   // Organizations. User-authenticated.
-  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
-  rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse);
-  rpc CreateOrganization(CreateOrganizationRequest) returns (CreateOrganizationResponse);
-  rpc RenameOrganization(RenameOrganizationRequest) returns (RenameOrganizationResponse);
-  rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse);
-  rpc InviteOrganizationMember(InviteOrganizationMemberRequest) returns (InviteOrganizationMemberResponse);
-  rpc RemoveOrganizationMember(RemoveOrganizationMemberRequest) returns (RemoveOrganizationMemberResponse);
-  rpc SetOrganizationMemberRole(SetOrganizationMemberRoleRequest) returns (SetOrganizationMemberRoleResponse);
+  rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc CreateOrganization(CreateOrganizationRequest) returns (CreateOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
+  rpc RenameOrganization(RenameOrganizationRequest) returns (RenameOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
+  rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc InviteOrganizationMember(InviteOrganizationMemberRequest) returns (InviteOrganizationMemberResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
+  rpc RemoveOrganizationMember(RemoveOrganizationMemberRequest) returns (RemoveOrganizationMemberResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
+  rpc SetOrganizationMemberRole(SetOrganizationMemberRoleRequest) returns (SetOrganizationMemberRoleResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // DeleteOrganization removes an organization the caller owns. Refused unless
   // the organization is empty: no sessions, no entitled cloud account, no other
   // members. The personal organization can never be deleted.
-  rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse);
+  rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // LeaveOrganization removes the CALLER's own membership. Any member may
   // leave; the last owner of an organization that still has members may not,
   // and nobody may leave their personal organization.
-  rpc LeaveOrganization(LeaveOrganizationRequest) returns (LeaveOrganizationResponse);
+  rpc LeaveOrganization(LeaveOrganizationRequest) returns (LeaveOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // Deprecated: use AuthKit switchToOrganization instead. This RPC is
   // deprecated rather than deleted because buf breaking: use: FILE blocks
   // deleting it from bossanova.v1; true removal requires bossanova.v2.
   rpc SwitchActiveOrganization(SwitchActiveOrganizationRequest) returns (SwitchActiveOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
     option deprecated = true;
   }
 
   // Repo-to-organization ownership mapping, keyed by canonical repo origin URL.
   // User-authenticated; the caller must be a member of the target organization.
-  rpc SetRepoOrganization(SetRepoOrganizationRequest) returns (SetRepoOrganizationResponse);
-  rpc GetRepoOrganization(GetRepoOrganizationRequest) returns (GetRepoOrganizationResponse);
-  rpc ClearRepoOrganization(ClearRepoOrganizationRequest) returns (ClearRepoOrganizationResponse);
-  rpc ListRepoOrganizations(ListRepoOrganizationsRequest) returns (ListRepoOrganizationsResponse);
+  rpc SetRepoOrganization(SetRepoOrganizationRequest) returns (SetRepoOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc GetRepoOrganization(GetRepoOrganizationRequest) returns (GetRepoOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ClearRepoOrganization(ClearRepoOrganizationRequest) returns (ClearRepoOrganizationResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  rpc ListRepoOrganizations(ListRepoOrganizationsRequest) returns (ListRepoOrganizationsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
 
   // Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
   // fired on session state changes. Distinct from the inbound GitHub
@@ -314,13 +523,19 @@ service OrchestratorService {
   //
   // ListSessionWebhookEventTypes returns the event catalog an endpoint can
   // subscribe to, in canonical order.
-  rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse);
+  rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // ListSessionWebhookFormats returns the built-in payload formats an endpoint
   // can pick (SessionWebhook.format), in canonical order.
-  rpc ListSessionWebhookFormats(ListSessionWebhookFormatsRequest) returns (ListSessionWebhookFormatsResponse);
+  rpc ListSessionWebhookFormats(ListSessionWebhookFormatsRequest) returns (ListSessionWebhookFormatsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // ListSessionWebhooks returns the organization's endpoints, oldest first.
   // Never returns a secret.
-  rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse);
+  rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
   // endpoint policy rejects (not https, credentials in the URL, a fragment, or
   // a host that is or resolves to a private, loopback, link-local or metadata
@@ -328,17 +543,25 @@ service OrchestratorService {
   // description over 200 characters, or a caller-supplied secret that is not
   // 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
   // has 20 endpoints.
-  rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse);
+  rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // UpdateSessionWebhook changes only the fields that are present and returns
   // the endpoint without its secret. Disabling an endpoint or changing its URL
   // cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
-  rpc UpdateSessionWebhook(UpdateSessionWebhookRequest) returns (UpdateSessionWebhookResponse);
+  rpc UpdateSessionWebhook(UpdateSessionWebhookRequest) returns (UpdateSessionWebhookResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // RotateSessionWebhookSecret replaces the signing secret; undelivered events
   // are signed with the new one. The new secret is returned ONLY here.
-  rpc RotateSessionWebhookSecret(RotateSessionWebhookSecretRequest) returns (RotateSessionWebhookSecretResponse);
+  rpc RotateSessionWebhookSecret(RotateSessionWebhookSecretRequest) returns (RotateSessionWebhookSecretResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // DeleteSessionWebhook permanently deletes an endpoint with its delivery
   // history.
-  rpc DeleteSessionWebhook(DeleteSessionWebhookRequest) returns (DeleteSessionWebhookResponse);
+  rpc DeleteSessionWebhook(DeleteSessionWebhookRequest) returns (DeleteSessionWebhookResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // SendSessionWebhookTestEvent sends one test delivery of event_type to the
   // endpoint synchronously and returns it with its single attempt, or
   // cancelled without one when the endpoint is disabled or changed while the
@@ -351,15 +574,21 @@ service OrchestratorService {
   // the endpoint's format, exactly as a live delivery is; a payload the format
   // cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
   // RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
-  rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse);
+  rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
   // first. INVALID_ARGUMENT for a page_token that does not decode, an
   // unknown status, or a negative page_size.
-  rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse);
+  rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
   // GetSessionWebhookDelivery returns one delivery with its attempts in order,
   // the request body rendered through the endpoint's current format and the
   // request headers. Never returns a secret.
-  rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse);
+  rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+  }
 
   // Inbound triggers (BOS-1348). A trigger launches a configured Boss session
   // when bosso receives an authenticated HTTP request or a GitHub App event.
@@ -375,44 +604,64 @@ service OrchestratorService {
   // GetTriggerCatalog returns the trigger types, event types, and filter
   // fields bosso accepts. Needs user authentication only; it is static
   // metadata, so no cloud access or organization is required.
-  rpc GetTriggerCatalog(GetTriggerCatalogRequest) returns (GetTriggerCatalogResponse);
+  rpc GetTriggerCatalog(GetTriggerCatalogRequest) returns (GetTriggerCatalogResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+  }
   // ListTriggers returns the caller's own triggers, in organization_id when
   // set (the caller must be a member) or across every organization the caller
   // belongs to. Never returns a secret.
-  rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse);
+  rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // GetTrigger returns one trigger the caller created. Never returns a secret.
-  rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse);
+  rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // CreateTrigger creates a trigger owned by the caller in organization_id,
   // which the caller must be a member of. For an HTTP trigger the response
   // carries the signing secret; it is returned ONLY in this response and can
   // never be read back, only replaced with RotateTriggerSecret.
-  rpc CreateTrigger(CreateTriggerRequest) returns (CreateTriggerResponse);
+  rpc CreateTrigger(CreateTriggerRequest) returns (CreateTriggerResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // UpdateTrigger changes fields of a trigger the caller created; absent
   // fields are left unchanged. trigger_type is immutable. Never returns or
   // changes the secret.
-  rpc UpdateTrigger(UpdateTriggerRequest) returns (UpdateTriggerResponse);
+  rpc UpdateTrigger(UpdateTriggerRequest) returns (UpdateTriggerResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // DeleteTrigger permanently deletes a trigger the caller created, together
   // with its secret and invocation history. Its endpoint stops accepting
   // requests immediately.
-  rpc DeleteTrigger(DeleteTriggerRequest) returns (DeleteTriggerResponse);
+  rpc DeleteTrigger(DeleteTriggerRequest) returns (DeleteTriggerResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // RotateTriggerSecret replaces the signing secret of an HTTP trigger the
   // caller created; the old secret stops validating immediately. The new
   // secret is returned ONLY in this response. FAILED_PRECONDITION for a
   // trigger type with no secret.
-  rpc RotateTriggerSecret(RotateTriggerSecretRequest) returns (RotateTriggerSecretResponse);
+  rpc RotateTriggerSecret(RotateTriggerSecretRequest) returns (RotateTriggerSecretResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // TestTrigger runs a sample payload through a trigger the caller created,
   // applying the same filters and policies as a real invocation, and records
   // the result as a TriggerInvocation with source "test". It launches a
   // session only when should_launch is set; otherwise the invocation stops at
   // its decision.
-  rpc TestTrigger(TestTriggerRequest) returns (TestTriggerResponse);
+  rpc TestTrigger(TestTriggerRequest) returns (TestTriggerResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ListTriggerInvocations returns the invocation history of a trigger the
   // caller created, newest first.
-  rpc ListTriggerInvocations(ListTriggerInvocationsRequest) returns (ListTriggerInvocationsResponse);
+  rpc ListTriggerInvocations(ListTriggerInvocationsRequest) returns (ListTriggerInvocationsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
 
   // Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
   // resolves the caller's identity when a bearer token is present.
-  rpc ReportBug(ReportBugRequest) returns (ReportBugResponse);
+  rpc ReportBug(ReportBugRequest) returns (ReportBugResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_PUBLIC;
+  }
 }
 
 // --- Daemon Registry ---
@@ -428,6 +677,20 @@ message RegisterDaemonRequest {
   // User email from the WorkOS device code response.
   // Used for JIT user creation when the user doesn't exist in the DB yet.
   string email = 5;
+  // Proof that the caller holds the machine key pinned to daemon_id
+  // (BOS-1580). All three are optional while older daemons still register
+  // without them; when daemon_public_key is set, possession_signature and
+  // signed_at_unix must be set too. The signature is Ed25519 over the bytes
+  // lib/bossalib/daemonproof.Message builds from daemon_id, the SHA-256 of the
+  // bearer token this request is sent with, and signed_at_unix.
+  //
+  // The 32-byte Ed25519 public key of the daemon's machine key.
+  bytes daemon_public_key = 6;
+  // Ed25519 signature over daemonproof.Message(daemon_id, bearer, signed_at_unix).
+  bytes possession_signature = 7;
+  // Unix seconds the signature was made at; must be within 5 minutes of the
+  // server's clock.
+  int64 signed_at_unix = 8;
 }
 
 message RegisterDaemonResponse {
@@ -1655,13 +1918,16 @@ message IssueAttachTokenResponse {
 }
 
 // AttachScope distinguishes editor (input allowed) from viewer (read-only)
-// attach modes. v1 ships only EDITOR semantics; VIEWER is wire-reserved.
+// attach modes.
 enum AttachScope {
   // Default zero value. Bosso MUST reject IssueAttachToken requests with
   // this scope — do not silently default to EDITOR.
   ATTACH_SCOPE_UNSPECIFIED = 0;
+  // Read-write: keystrokes, resizes and file uploads reach the terminal.
   ATTACH_SCOPE_EDITOR = 1;
-  // Accepted but behaves identically to EDITOR in v1.
+  // Read-only: the terminal's output is streamed, but bosso drops the
+  // viewer's keystrokes and resizes without closing the socket, and rejects
+  // its uploads.
   ATTACH_SCOPE_VIEWER = 2;
 }
 
@@ -1673,7 +1939,8 @@ message WebhookConfig {
   string repo_origin_url = 2;
   // VCS provider type: "github", "gitlab", etc.
   string provider = 3;
-  // HMAC secret for signature verification.
+  // HMAC secret for signature verification. Server-generated, and returned
+  // only in CreateWebhookConfigResponse; ListWebhookConfigs leaves it empty.
   string secret = 4;
   google.protobuf.Timestamp created_at = 5;
 }
@@ -1681,7 +1948,8 @@ message WebhookConfig {
 message CreateWebhookConfigRequest {
   string repo_origin_url = 1;
   string provider = 2;
-  // If empty, a random secret will be generated.
+  // Ignored: the server always generates the secret and returns it once, in
+  // CreateWebhookConfigResponse.
   string secret = 3;
 }
 

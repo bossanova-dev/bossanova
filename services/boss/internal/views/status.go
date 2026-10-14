@@ -9,9 +9,11 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/bossalib/alertstate"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Status constants (previously from bosspty package).
@@ -65,11 +67,13 @@ func waitingBadgeSuperseded(sess *pb.Session) bool {
 
 // waitingHintLine is Home's waiting-hint composer. It hides routine PR waits
 // already represented by the status badge (#2901): on the dashboard they are
-// noise. Other daemon-supplied reasons remain visible, with a waiting prefix
-// when Ready or a green PR badge supersedes the waiting badge. The chat picker
-// does not use it — it shows every wait, with context (chatpicker_armed.go).
+// noise. It also hides standby waits (checks_failed, closed — BOS-1531): a
+// contingency watch is never what the session is waiting on. Other
+// daemon-supplied reasons remain visible, with a waiting prefix when Ready or a
+// green PR badge supersedes the waiting badge. The chat picker does not use it
+// — it shows every wait, with context (chatpicker_armed.go).
 func waitingHintLine(reason string, demoted bool) string {
-	if reason == "" {
+	if reason == "" || displaystatus.IsStandbyWaitingReason(reason) {
 		return ""
 	}
 	for _, trigger := range []string{"checks_passed", "checks_passed_ready", "merged"} {
@@ -165,6 +169,12 @@ type sessionHint struct {
 	Text string
 	// Demotable is true when the recessive treatment may apply to this hint.
 	Demotable bool
+	// NeedsHuman marks the verify-park attention hint (BOS-1522; see
+	// isVerifyParkAttention). It selects the warning tone tier in
+	// warningHintStyle so the "needs human: …" line matches the row's warning
+	// STATUS label and "!" instead of reading as an error. The zero value is the
+	// danger tier, so every other producer keeps its red without opting out.
+	NeedsHuman bool
 }
 
 func sessionWarningHints(sess *pb.Session) []sessionHint {
@@ -186,7 +196,11 @@ func sessionWarningHints(sess *pb.Session) []sessionHint {
 	if hint := attentionWarningHint(sess); hint != "" {
 		duplicatesDraftPR := draftPRFailure != "" && sessionreason.IsDraftPRCreationFailure(&hint)
 		if !duplicatesDraftPR {
-			hints = append(hints, sessionHint{Text: hint, Demotable: attentionHintDemotable(sess.GetAttentionStatus().GetReason())})
+			hints = append(hints, sessionHint{
+				Text:       hint,
+				Demotable:  attentionHintDemotable(sess.GetAttentionStatus().GetReason()),
+				NeedsHuman: isVerifyParkAttention(sess),
+			})
 		}
 	}
 	// Both rotation hints describe a wedge the operator must act on now, and
@@ -397,11 +411,36 @@ func hintDemoted(sess *pb.Session, hint sessionHint) bool {
 // gate: the home session list, the selected-session block and the attention
 // indicator all route through it, so the list and the detail views cannot
 // disagree about the same session.
+//
+// Two independent axes decide the style. hintDemoted is the sole demotion
+// predicate (full vs faded). The tone tier comes from the hint itself: the
+// verify-park "needs human" hint (BOS-1522) renders on the warning tier, so it
+// agrees with the row's warning STATUS label and "!"; every other hint renders
+// on the danger tier.
 func warningHintStyle(sess *pb.Session, hint sessionHint) lipgloss.Style {
-	if hintDemoted(sess, hint) {
+	demoted := hintDemoted(sess, hint)
+	if hint.NeedsHuman {
+		if demoted {
+			return styleStatusWarningFaded
+		}
+		return styleStatusWarning
+	}
+	if demoted {
 		return styleStatusDangerFaded
 	}
 	return styleStatusDanger
+}
+
+// isVerifyParkAttention reports whether sess carries the attention the bossd
+// verify-park overlay sets (HydrateVerifyAttention), and nothing else could have
+// produced: NEEDS_HUMAN display status on a non-orphaned session with an
+// AWAITING_HUMAN_INPUT reason. It deliberately duplicates the predicate of the
+// same name in lib/bossalib/apiversion/transform.go rather than importing the
+// API down-convert package for a display decision — keep the two in step.
+func isVerifyParkAttention(sess *pb.Session) bool {
+	return sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
+		sess.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
+		sess.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
 }
 
 // attentionIndicatorDemoted reports whether the row's "!" should render
@@ -427,7 +466,7 @@ func attentionIndicatorDemoted(sess *pb.Session) bool {
 // the repo's configured setup script failed during worktree creation
 // (Session.SetupError, populated server-side — see the field's proto
 // comment). A setup-script failure is non-fatal, so the session still
-// starts; this surfaces the degraded state in the same danger-styled
+// starts; this surfaces the degraded state, danger-styled, in the same
 // warning block as repair/attention/rotation hints instead of leaving it
 // visible only via `boss show`. The reason is truncated to its first line
 // so a verbose setup-script failure (e.g. a full npm stack trace) can't
@@ -510,16 +549,23 @@ func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
 // per-hour in-place respawn cap without clearing the wedge (BOS-482). Unlike an
 // EXHAUSTED park (every account usage-limited) this is a plumbing wedge the
 // operator likely needs to intervene on — hence a danger-styled warning rather
-// than a muted history row. Empty unless the newest event is that outcome.
+// than a muted history row. Empty unless the newest event is that outcome and
+// nothing since shows recovery (alertstate.AuthWedgeCurrent, BOS-1535): real
+// agent output after the event, or the PR merged or closed. A healthy chat
+// writes no rotation event, so recovery is what ends the wedge. bossd makes
+// last_agent_activity_at restart-proof after a give-up (it reads the persisted
+// transcripts and runs), so this reads the same two facts the web hint and the
+// session timeline read. rotationHistoryBlock keeps listing the event either
+// way.
 func rotationRespawnCapHint(sess *pb.Session) string {
 	if sess == nil {
 		return ""
 	}
-	evs := sess.GetRotationEvents()
-	if len(evs) == 0 {
-		return ""
+	rec := alertstate.WedgeRecovery{PRDone: sessionHintsFinished(sess)}
+	if ts := sess.GetLastAgentActivityAt(); ts != nil {
+		rec.LastAgentActivityAt = ts.AsTime()
 	}
-	if evs[0].GetOutcome() != pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED {
+	if !alertstate.AuthWedgeCurrent(sess.GetRotationEvents(), rec) {
 		return ""
 	}
 	return "auth wedge unresolved — respawn cap reached, may need /login"
@@ -685,8 +731,13 @@ func attentionWarningHint(sess *pb.Session) string {
 // blocked hint takes precedence because the daemon clears the blocked
 // pair on every real repair outcome (BOS-153 Task 4) — so a non-empty
 // blocked reason IS the latest repair-related state and needs no
-// timestamp comparison against the failure fields.
+// timestamp comparison against the failure fields. Neither renders once the
+// alert has ended (repairFailureResolved: head moved, CI green, PR left the
+// repair-eligible states) — bossd clears the row, this keeps the gap silent.
 func repairHint(sess *pb.Session) string {
+	if repairFailureResolved(sess) {
+		return ""
+	}
 	if hint := repairBlockedHint(sess); hint != "" {
 		return hint
 	}
@@ -734,22 +785,28 @@ func repairFailureHint(sess *pb.Session) string {
 	return fmt.Sprintf("%s, retry in ~%s", base, shortDuration(remaining))
 }
 
+// repairFailureResolved reports whether the session's repair alert has ended,
+// delegating to the shared alertstate rule bossd's clearing sweep uses. The TUI
+// cannot tell "no PR" from "not yet hydrated", so it never asserts NoPR; bossd
+// clears that case from the row itself.
 func repairFailureResolved(sess *pb.Session) bool {
-	switch sess.GetDisplayStatus() {
-	case pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
-		return true
-	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
-		return true
-	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
-		// The verify statuses replace the Checking a pending boss/verify used to
-		// produce, and ordinary CI has settled under them (BOS-1382).
-		pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
-		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
-		return !sess.GetDisplayHasFailures() && !sess.GetDisplayHasChangesRequested()
-	default:
-		return false
+	return !alertstate.RepairAlertCurrent(alertstate.RepairFacts{
+		FailedHeadSHA: alertstate.FailedHeadFor(sess.GetLastRepairHeadSha(), sess.GetLastRepairAttemptCount(),
+			pbTimePtr(sess.GetLastRepairStartedAt()), pbTimePtr(sess.GetLastRepairBlockedAt()), false),
+		CurrentHeadSHA:      sess.GetPrDisplayHeadSha(),
+		DisplayStatus:       sess.GetDisplayStatus(),
+		HasFailures:         sess.GetDisplayHasFailures(),
+		HasChangesRequested: sess.GetDisplayHasChangesRequested(),
+	})
+}
+
+// pbTimePtr converts an optional proto timestamp to a *time.Time (nil when unset).
+func pbTimePtr(ts *timestamppb.Timestamp) *time.Time {
+	if !ts.IsValid() {
+		return nil
 	}
+	t := ts.AsTime()
+	return &t
 }
 
 // repairRetryRemaining mirrors the repair plugin's cooldownFor()
@@ -788,8 +845,9 @@ func shortDuration(d time.Duration) string {
 	return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
 }
 
-// selectedSessionWarningBlock returns a full-width, danger-styled block
-// containing all warning hints for the given session, joined by newlines.
+// selectedSessionWarningBlock returns a full-width block containing all warning
+// hints for the given session, joined by newlines, each line styled through
+// warningHintStyle (danger tier, except the verify-park hint's warning tier).
 // chats supplies the session's chats so a per-chat StartError (tmux launch
 // failure) can be surfaced alongside the session-level hints — the session
 // proto has no chats slice of its own, and sessionWarningHints is shared
@@ -853,6 +911,13 @@ func renderClaudeStatus(status string, sp spinner.Model) string {
 	default:
 		return styleStatusMuted.Render("stopped")
 	}
+}
+
+// renderStandbyStatus is the per-chat badge for a chat waiting only on a
+// standby (contingency) callback: muted, with no spinner, because the chat is
+// not what the PR is waiting on (BOS-1531).
+func renderStandbyStatus() string {
+	return styleStatusMuted.Render(displaystatus.StandbyLabel)
 }
 
 // renderChatStartFailed returns a styled status string for a chat that

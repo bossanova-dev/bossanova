@@ -1075,18 +1075,28 @@ type PluginRejection struct {
 type discoveryPolicy struct {
 	requireSafePerms bool // reject group/world-writable or wrong-owner dirs+files
 	verifyChecksums  bool // enforce plugins.sum (release builds)
-	allowCWDWalk     bool // dev-mode walk up from CWD looking for bin/
+	allowCWDWalk     bool // dev-mode, opt-in walk up from CWD looking for bin/
 }
 
+// devPluginsFromCWDEnv is the explicit opt-in for the dev-build plugin walk up
+// from the working directory (BOS-1563). Only the exact value "1" enables it.
+const devPluginsFromCWDEnv = "BOSS_DEV_PLUGINS_FROM_CWD"
+
 // activePolicy derives the discovery policy from the build type. Path
-// hardening always applies; checksum enforcement and the CWD walk are gated on
-// release vs dev. See docs/plans/BOS-27-*.md.
+// hardening always applies; checksum enforcement is gated on release vs dev.
+// See docs/plans/BOS-27-*.md.
+//
+// The CWD walk additionally needs BOSS_DEV_PLUGINS_FROM_CWD=1 (BOS-1563): a dev
+// boss/bossd started inside an untrusted checkout would otherwise exec that
+// checkout's bin/bossd-plugin-*, and the path-hardening check passes because
+// the cloning user owns the files. ./bin/bossd still finds its sibling plugins
+// through the binary-relative locations without the opt-in.
 func activePolicy() discoveryPolicy {
 	release := buildinfo.IsReleaseBuild()
 	return discoveryPolicy{
 		requireSafePerms: true,
 		verifyChecksums:  release,
-		allowCWDWalk:     !release,
+		allowCWDWalk:     !release && os.Getenv(devPluginsFromCWDEnv) == "1",
 	}
 }
 
@@ -1102,7 +1112,8 @@ func DiscoverPlugins() []PluginConfig {
 // DiscoverPluginsVerified scans for plugin binaries in precedence order:
 //  1. ../libexec/plugins/ relative to the running binary (Homebrew layout),
 //     then the binary's own directory (dev mode);
-//  2. (dev builds only) a bin/ directory found by walking up from CWD;
+//  2. (dev builds with BOSS_DEV_PLUGINS_FROM_CWD=1 only) a bin/ directory
+//     found by walking up from CWD;
 //  3. the per-user plugin dir used by upgrades.
 //
 // Every candidate is vetted by the active discoveryPolicy. Returns accepted

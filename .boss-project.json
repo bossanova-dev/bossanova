@@ -44,6 +44,14 @@
       "daemons": ["delta"]
     },
     {
+      "name": "bs-dependabot",
+      "agent": "claude",
+      "prompt": "/bs-sweep-dependabot",
+      "schedule": "@daily",
+      "gateCommand": "node .claude/skills/bs-sweep-dependabot/gate/gate.mjs",
+      "daemons": ["delta"]
+    },
+    {
       "name": "bs-plan",
       "agent": "claude",
       "prompt": "/boss-plan",

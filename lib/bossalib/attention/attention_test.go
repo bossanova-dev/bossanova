@@ -1,0 +1,657 @@
+package attention_test
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/recurser/bossalib/attention"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
+
+var (
+	stateSince = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	fixSince   = time.Date(2026, 10, 13, 8, 30, 0, 0, time.UTC)
+)
+
+func boolPtr(b bool) *bool { return &b }
+
+// readyPR is an open, non-draft PR whose checks are all done and green and
+// which GitHub reports mergeable.
+func readyPR() attention.Input {
+	return attention.Input{
+		HasPR:       true,
+		PRState:     attention.PRStateOpen,
+		ChecksTotal: 7,
+		ChecksDone:  7,
+		Mergeable:   boolPtr(true),
+		StateSince:  stateSince,
+	}
+}
+
+func withParks(in attention.Input, codes ...string) attention.Input {
+	in.ParkCodes = codes
+	return in
+}
+
+func reviewActions(video bool) []pb.AttentionAction {
+	acts := []pb.AttentionAction{
+		pb.AttentionAction_ATTENTION_ACTION_APPROVE,
+		pb.AttentionAction_ATTENTION_ACTION_SEND_BACK,
+		pb.AttentionAction_ATTENTION_ACTION_GITHUB,
+	}
+	if video {
+		acts = append(acts, pb.AttentionAction_ATTENTION_ACTION_VIDEO)
+	}
+	return acts
+}
+
+func TestCompute_Cases(t *testing.T) {
+	factory := readyPR()
+	factory.IsFactoryRepo = true
+
+	tests := []struct {
+		name      string
+		in        attention.Input
+		kind      pb.AttentionKind
+		sentence  string
+		actions   []pb.AttentionAction
+		progress  string
+		parkCodes []string
+	}{
+		{
+			name: "#2979 UI park with evidence video renders the UI sentence",
+			in: func() attention.Input {
+				in := withParks(factory, "always-human-path", "human-review:ui", "ledger-open")
+				in.Evidence = &attention.Evidence{URL: "https://evidence.example/2979.mp4", VideoDuration: 2*time.Minute + 40*time.Second, Proven: 3, Total: 3}
+				return in
+			}(),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Watch the evidence video (2:40), then approve · UI change",
+			actions:   reviewActions(true),
+			parkCodes: []string{"always-human-path", "ledger-open", "human-review:ui"},
+		},
+		{
+			name:     "UI park without a known duration omits (m:ss)",
+			in:       withParks(factory, "human-review:ui"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Watch the evidence video, then approve · UI change",
+			actions:  reviewActions(false),
+		},
+		{
+			name: "#2983 security park with a label",
+			in: func() attention.Input {
+				in := withParks(factory, "human-review:security")
+				in.ParkLabel = "verify gate rules (how PRs get merged)"
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Review the diff · security: verify gate rules (how PRs get merged)",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "security park without a label uses the unlabelled form",
+			in:       withParks(factory, "human-review:security"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Review the diff · security",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "always-human-path alone uses the security sentence",
+			in:       withParks(factory, "always-human-path"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Review the diff · security",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "#2967 unproven park",
+			in:       withParks(factory, "human-review:unproven"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Some checks have no evidence · watch the video, then approve",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "#2965 no-receipt park",
+			in:       withParks(factory, "no-receipt"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Built by hand, no factory review · review the diff, then approve",
+			actions:  reviewActions(false),
+		},
+		{
+			name:      "#2987 database park beats always-human-path",
+			in:        withParks(factory, "always-human-path", "human-review:database", "ledger-open"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Review the migration, then approve",
+			actions:   reviewActions(false),
+			parkCodes: []string{"always-human-path", "ledger-open", "human-review:database"},
+		},
+		{
+			name:     "ledger-open park",
+			in:       withParks(factory, "ledger-open"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Read the open must-fix from review, then approve or send back",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "repair-exhausted falls back to the generic sentence",
+			in:       withParks(factory, "repair-exhausted"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Review the PR, then approve or send back",
+			actions:  reviewActions(false),
+		},
+		{
+			name:     "a templated code beats an earlier generic one",
+			in:       withParks(factory, "repair-exhausted", "ledger-open"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Read the open must-fix from review, then approve or send back",
+			actions:  reviewActions(false),
+		},
+		{
+			name:      "unknown code still reviews with the generic sentence",
+			in:        withParks(factory, "some-future-code"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Review the PR, then approve or send back",
+			actions:   reviewActions(false),
+			parkCodes: []string{"some-future-code"},
+		},
+		{
+			name:      "comma-joined park codes are split, trimmed and deduped",
+			in:        withParks(factory, "human-review:ui, no-receipt", "no-receipt"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Watch the evidence video, then approve · UI change",
+			actions:   reviewActions(false),
+			parkCodes: []string{"no-receipt", "human-review:ui"},
+		},
+		{
+			name:     "fresh-claim ready PR in a non-factory repo is merge",
+			in:       readyPR(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_MERGE,
+			sentence: "Ready to merge",
+			actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
+		},
+		{
+			name:     "the same PR in a factory repo stays in progress",
+			in:       factory,
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "draft PR is not merge",
+			in: func() attention.Input {
+				in := readyPR()
+				in.PRDraft = true
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "failing check is not merge",
+			in: func() attention.Input {
+				in := readyPR()
+				in.ChecksFailing = 1
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "unknown mergeability is not merge",
+			in: func() attention.Input {
+				in := readyPR()
+				in.Mergeable = nil
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "conflicting PR is not merge",
+			in: func() attention.Input {
+				in := readyPR()
+				in.Mergeable = boolPtr(false)
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "running checks show CI n/m",
+			in: func() attention.Input {
+				in := readyPR()
+				in.ChecksDone = 3
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "CI 3/7",
+		},
+		{
+			name: "no checks reported yet is not merge",
+			in: func() attention.Input {
+				in := readyPR()
+				in.ChecksTotal, in.ChecksDone = 0, 0
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name:     "base-ci-red is not the operator's",
+			in:       withParks(factory, "base-ci-red"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for main CI",
+		},
+		{
+			name:     "green non-factory PR with a waiting park stays in progress",
+			in:       withParks(readyPR(), "base-ci-red"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for main CI",
+		},
+		{
+			name:     "green non-factory PR with a waiting: park stays in progress",
+			in:       withParks(readyPR(), "waiting:evidence-upload"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting: evidence-upload",
+		},
+		{
+			name:     "stack-busy is not the operator's",
+			in:       withParks(factory, "stack-busy"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for the test stack",
+		},
+		{
+			name:     "waiting:-prefixed known reason maps to its label",
+			in:       withParks(factory, "waiting: stack-busy"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for the test stack",
+		},
+		{
+			name:     "generic waiting: code keeps its reason",
+			in:       withParks(factory, "waiting:evidence-upload"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting: evidence-upload",
+		},
+		{
+			name:     "bare waiting: code is just waiting",
+			in:       withParks(factory, "waiting:"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting",
+		},
+		{
+			name: "waiting label beats the phase",
+			in: func() attention.Input {
+				in := withParks(factory, "base-ci-red")
+				in.ProgressPhase = "verifying"
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for main CI",
+		},
+		{
+			name:      "operator codes win over waiting codes",
+			in:        withParks(factory, "stack-busy", "human-review:database"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Review the migration, then approve",
+			actions:   reviewActions(false),
+			parkCodes: []string{"human-review:database", "stack-busy"},
+		},
+		{
+			name: "known phase is the progress label",
+			in: attention.Input{
+				ProgressPhase: "building",
+				ChatWorking:   true,
+				StateSince:    stateSince,
+			},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "building",
+		},
+		{
+			name: "unknown phase is ignored",
+			in: attention.Input{
+				ProgressPhase: "ready",
+				ChatWorking:   true,
+				StateSince:    stateSince,
+			},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "working",
+		},
+		{
+			name:     "no PR, no chat work is idle",
+			in:       attention.Input{StateSince: stateSince},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "idle",
+		},
+		{
+			name: "merged PR is done",
+			in: func() attention.Input {
+				in := readyPR()
+				in.PRState = attention.PRStateMerged
+				return in
+			}(),
+			kind: pb.AttentionKind_ATTENTION_KIND_DONE,
+		},
+		{
+			name: "closed PR is done",
+			in: func() attention.Input {
+				in := readyPR()
+				in.PRState = attention.PRStateClosed
+				return in
+			}(),
+			kind: pb.AttentionKind_ATTENTION_KIND_DONE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := attention.Compute(tt.in)
+			if got.GetKind() != tt.kind {
+				t.Fatalf("kind = %v, want %v", got.GetKind(), tt.kind)
+			}
+			if got.GetSentence() != tt.sentence {
+				t.Errorf("sentence = %q, want %q", got.GetSentence(), tt.sentence)
+			}
+			if !slices.Equal(got.GetActions(), tt.actions) {
+				t.Errorf("actions = %v, want %v", got.GetActions(), tt.actions)
+			}
+			if got.GetProgressLabel() != tt.progress {
+				t.Errorf("progress_label = %q, want %q", got.GetProgressLabel(), tt.progress)
+			}
+			if tt.parkCodes != nil && !slices.Equal(got.GetParkCodes(), tt.parkCodes) {
+				t.Errorf("park_codes = %v, want %v", got.GetParkCodes(), tt.parkCodes)
+			}
+			if !got.GetSince().AsTime().Equal(stateSince) {
+				t.Errorf("since = %v, want StateSince %v", got.GetSince().AsTime(), stateSince)
+			}
+		})
+	}
+}
+
+func TestCompute_EvidenceURLRidesOnReview(t *testing.T) {
+	in := withParks(readyPR(), "human-review:unproven")
+	in.Evidence = &attention.Evidence{URL: "https://evidence.example/v.mp4"}
+	got := attention.Compute(in)
+	if got.GetEvidenceUrl() != in.Evidence.URL {
+		t.Errorf("evidence_url = %q, want %q", got.GetEvidenceUrl(), in.Evidence.URL)
+	}
+	if !slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_VIDEO) {
+		t.Errorf("actions %v lack VIDEO with evidence present", got.GetActions())
+	}
+
+	in.Evidence = &attention.Evidence{VideoDuration: time.Minute}
+	got = attention.Compute(in)
+	if slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_VIDEO) {
+		t.Errorf("actions %v offer VIDEO with no evidence URL", got.GetActions())
+	}
+}
+
+func fixFact(key string) *attention.FixFact {
+	return &attention.FixFact{
+		AlertKey: key,
+		Sentence: "CI is red on main · resume to retry",
+		ChatID:   "chat-fix",
+		Since:    fixSince,
+	}
+}
+
+func TestCompute_FixAndDismissal(t *testing.T) {
+	in := withParks(readyPR(), "human-review:database")
+	in.Fix = fixFact("alert-1")
+
+	got := attention.Compute(in)
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("kind = %v, want FIX", got.GetKind())
+	}
+	if got.GetSentence() != in.Fix.Sentence || got.GetAlertKey() != "alert-1" || got.GetTargetChatId() != "chat-fix" {
+		t.Errorf("fix fields = (%q, %q, %q)", got.GetSentence(), got.GetAlertKey(), got.GetTargetChatId())
+	}
+	wantActs := []pb.AttentionAction{
+		pb.AttentionAction_ATTENTION_ACTION_RESUME,
+		pb.AttentionAction_ATTENTION_ACTION_DISMISS,
+		pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT,
+	}
+	if !slices.Equal(got.GetActions(), wantActs) {
+		t.Errorf("actions = %v, want %v", got.GetActions(), wantActs)
+	}
+	if !got.GetSince().AsTime().Equal(fixSince) {
+		t.Errorf("since = %v, want Fix.Since %v", got.GetSince().AsTime(), fixSince)
+	}
+
+	in.DismissedAlertKey = "alert-1"
+	if got := attention.Compute(in); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Errorf("dismissed fix: kind = %v, want REVIEW", got.GetKind())
+	}
+
+	in.DismissedAlertKey = "alert-0"
+	if got := attention.Compute(in); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Errorf("different dismissed key: kind = %v, want FIX", got.GetKind())
+	}
+}
+
+func TestCompute_FixWithoutKeyOrSentence(t *testing.T) {
+	// An empty AlertKey can never match an empty DismissedAlertKey: nothing
+	// was dismissed, so the fix must still surface.
+	got := attention.Compute(attention.Input{Fix: &attention.FixFact{}})
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("kind = %v, want FIX", got.GetKind())
+	}
+	if got.GetSentence() == "" {
+		t.Error("fix with no sentence must fall back to a generic sentence")
+	}
+	if got.GetSince() != nil {
+		t.Errorf("since = %v, want nil for a zero Fix.Since", got.GetSince())
+	}
+}
+
+func TestCompute_QuestionPrecedence(t *testing.T) {
+	in := withParks(readyPR(), "human-review:database")
+	in.QuestionChatID = "chat-q"
+	in.QuestionText = "  Should I keep\nthe old column?  "
+
+	got := attention.Compute(in)
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		t.Fatalf("question vs review: kind = %v, want QUESTION", got.GetKind())
+	}
+	if got.GetSentence() != "“Should I keep the old column?”" {
+		t.Errorf("sentence = %q", got.GetSentence())
+	}
+	if got.GetTargetChatId() != "chat-q" {
+		t.Errorf("target_chat_id = %q, want chat-q", got.GetTargetChatId())
+	}
+	if !slices.Equal(got.GetActions(), []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_ANSWER}) {
+		t.Errorf("actions = %v, want [ANSWER]", got.GetActions())
+	}
+
+	in.Fix = fixFact("alert-2")
+	if got := attention.Compute(in); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Errorf("fix vs question: kind = %v, want FIX", got.GetKind())
+	}
+}
+
+func TestCompute_QuestionWithoutText(t *testing.T) {
+	got := attention.Compute(attention.Input{QuestionChatID: "chat-q", QuestionText: " \n "})
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		t.Fatalf("kind = %v, want QUESTION", got.GetKind())
+	}
+	if got.GetSentence() != "Answer the agent's question in its chat" {
+		t.Errorf("sentence = %q", got.GetSentence())
+	}
+}
+
+func TestCompute_QuestionTextIsCapped(t *testing.T) {
+	got := attention.Compute(attention.Input{QuestionChatID: "c", QuestionText: strings.Repeat("é", 500)})
+	inner := strings.TrimSuffix(strings.TrimPrefix(got.GetSentence(), "“"), "”")
+	if n := utf8.RuneCountInString(inner); n != 200 {
+		t.Errorf("quoted text is %d runes, want capped at 200", n)
+	}
+	if !strings.HasSuffix(inner, "…") {
+		t.Errorf("capped text %q should end with an ellipsis", inner)
+	}
+}
+
+func TestCompute_FactoryRepoNeverLabelledReadyOrPassing(t *testing.T) {
+	phases := []string{"", "planning", "building", "reviewing", "verifying", "ready", "passing"}
+	for _, phase := range phases {
+		for _, working := range []bool{false, true} {
+			for _, done := range []int{0, 3, 7} {
+				in := readyPR()
+				in.IsFactoryRepo = true
+				in.ProgressPhase = phase
+				in.ChatWorking = working
+				in.ChecksDone = done
+				got := attention.Compute(in)
+				if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
+					t.Fatalf("factory repo computed MERGE for %+v", in)
+				}
+				label := strings.ToLower(got.GetProgressLabel())
+				if strings.Contains(label, "ready") || strings.Contains(label, "passing") {
+					t.Fatalf("factory repo progress label %q for %+v", got.GetProgressLabel(), in)
+				}
+			}
+		}
+	}
+}
+
+func TestCompute_NeverReviewForWaitingCodes(t *testing.T) {
+	for _, codes := range [][]string{{"base-ci-red"}, {"stack-busy"}, {"base-ci-red", "stack-busy"}, {"waiting:x"}} {
+		if got := attention.Compute(withParks(readyPR(), codes...)); got.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+			t.Errorf("codes %v computed REVIEW", codes)
+		}
+	}
+}
+
+func TestCompute_ZeroStateSinceLeavesSinceUnset(t *testing.T) {
+	if got := attention.Compute(attention.Input{}); got.GetSince() != nil {
+		t.Errorf("since = %v, want nil", got.GetSince())
+	}
+}
+
+func TestNeedsYou(t *testing.T) {
+	want := map[pb.AttentionKind]bool{
+		pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED: false,
+		pb.AttentionKind_ATTENTION_KIND_FIX:         true,
+		pb.AttentionKind_ATTENTION_KIND_QUESTION:    true,
+		pb.AttentionKind_ATTENTION_KIND_REVIEW:      true,
+		pb.AttentionKind_ATTENTION_KIND_MERGE:       true,
+		pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS: false,
+		pb.AttentionKind_ATTENTION_KIND_DONE:        false,
+	}
+	for kind, needs := range want {
+		if got := attention.NeedsYou(kind); got != needs {
+			t.Errorf("NeedsYou(%v) = %v, want %v", kind, got, needs)
+		}
+	}
+}
+
+func TestCompute_TrackerActionAppendedLastWhenLinked(t *testing.T) {
+	tests := []struct {
+		name string
+		in   attention.Input
+		kind pb.AttentionKind
+	}{
+		{name: "fix", in: attention.Input{Fix: &attention.FixFact{AlertKey: "k", Sentence: "s", ChatID: "c"}}, kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "question", in: attention.Input{QuestionChatID: "c", QuestionText: "q?"}, kind: pb.AttentionKind_ATTENTION_KIND_QUESTION},
+		{name: "review", in: withParks(readyPR(), "human-review:ui"), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "merge", in: readyPR(), kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{name: "done", in: attention.Input{HasPR: true, PRState: attention.PRStateMerged}, kind: pb.AttentionKind_ATTENTION_KIND_DONE},
+		{name: "in progress", in: attention.Input{ProgressPhase: "building"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unlinked := attention.Compute(tt.in)
+			if unlinked.GetKind() != tt.kind {
+				t.Fatalf("kind = %v, want %v", unlinked.GetKind(), tt.kind)
+			}
+			if slices.Contains(unlinked.GetActions(), pb.AttentionAction_ATTENTION_ACTION_TRACKER) {
+				t.Fatalf("unlinked actions %v must not offer TRACKER", unlinked.GetActions())
+			}
+
+			linkedIn := tt.in
+			linkedIn.HasTrackerLink = true
+			linked := attention.Compute(linkedIn)
+			if linked.GetKind() != tt.kind {
+				t.Fatalf("linked kind = %v, want %v", linked.GetKind(), tt.kind)
+			}
+			want := append(slices.Clone(unlinked.GetActions()), pb.AttentionAction_ATTENTION_ACTION_TRACKER)
+			if !slices.Equal(linked.GetActions(), want) {
+				t.Fatalf("linked actions = %v, want %v", linked.GetActions(), want)
+			}
+		})
+	}
+}
+
+func TestParkCategory(t *testing.T) {
+	tests := []struct {
+		name  string
+		codes []string
+		want  string
+		ok    bool
+	}{
+		{name: "#2979 UI park names the UI change", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "UI change", ok: true},
+		{name: "a human-review code beats an earlier report-order code", codes: []string{"ledger-open", "human-review:database"}, want: "database migration", ok: true},
+		{name: "security", codes: []string{"always-human-path"}, want: "security", ok: true},
+		{name: "open findings", codes: []string{"ledger-open"}, want: "open findings", ok: true},
+		{name: "unknown operator code is named as-is", codes: []string{"brand-new-code"}, want: "brand-new-code", ok: true},
+		{name: "only waiting codes are not the operator's", codes: []string{"base-ci-red", "waiting: stack"}, ok: false},
+		{name: "no codes", codes: nil, ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := attention.ParkCategory(tt.codes)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("ParkCategory(%q) = (%q, %v), want (%q, %v)", tt.codes, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+// TestParkCategoryNamesTheSentencesCode checks, over every subset of the park
+// vocabulary (plus an unknown and a waiting code), that the review sentence and
+// the park category name the same code: some single code in the set renders
+// both, on its own, exactly as the set renders them.
+func TestParkCategoryNamesTheSentencesCode(t *testing.T) {
+	vocab := []string{
+		"no-receipt", "repair-exhausted", "always-human-path", attention.ParkCodeLedgerOpen,
+		"extension-failed", "no-session", "human-review:database", "human-review:security",
+		"human-review:ui", "human-review:unproven", "brand-new-code", "base-ci-red",
+	}
+	alone := func(code string) (string, string) {
+		sentence := attention.Compute(attention.Input{ParkCodes: []string{code}}).GetSentence()
+		category, _ := attention.ParkCategory([]string{code})
+		return sentence, category
+	}
+	for mask := 1; mask < 1<<len(vocab); mask++ {
+		var codes []string
+		for i, code := range vocab {
+			if mask&(1<<i) != 0 {
+				codes = append(codes, code)
+			}
+		}
+		category, ok := attention.ParkCategory(codes)
+		got := attention.Compute(attention.Input{ParkCodes: codes})
+		if !ok {
+			if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+				t.Fatalf("codes %q: Compute reviews but ParkCategory names no code", codes)
+			}
+			continue
+		}
+		if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+			t.Fatalf("codes %q: ParkCategory names %q but Compute answers %v", codes, category, got.GetKind())
+		}
+		named := slices.ContainsFunc(codes, func(code string) bool {
+			s, c := alone(code)
+			return s == got.GetSentence() && c == category
+		})
+		if !named {
+			t.Fatalf("codes %q: sentence %q and category %q name different codes", codes, got.GetSentence(), category)
+		}
+	}
+}
+
+func TestParkCategoryRepairExhaustedWithLedgerOpen(t *testing.T) {
+	codes := []string{attention.ParkCodeLedgerOpen, "repair-exhausted"}
+	if got, _ := attention.ParkCategory(codes); got != "open findings" {
+		t.Fatalf("ParkCategory(%q) = %q, want the code the sentence names (open findings)", codes, got)
+	}
+}

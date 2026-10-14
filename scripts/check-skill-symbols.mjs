@@ -110,8 +110,8 @@ export const TOOLBOX_OWNING_SKILLS = new Set([
   'boss-review',
   'boss-verify',
   'bs-sweep-debt',
+  'bs-sweep-dependabot',
   'bs-sweep-mutation',
-  'bs-sweep-security',
   'bs-sweep-tests',
 ])
 

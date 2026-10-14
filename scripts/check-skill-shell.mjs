@@ -482,6 +482,17 @@
 //     reporting it would flag correct lines; and a final statement whose status an enclosing
 //     construct consumes is outside a rule that reads position only.
 //
+// (p) AN `rm` TARGET MUST NOT START WITH AN UNGUARDED EXPANSION FOLLOWED BY `/`. Claude Code refuses
+//     to run `rm -f $S/$C.json` without a human: when `$S` is empty the target is rooted at `/`. The
+//     prompt "requires explicit approval and cannot be auto-allowed by permission rules", so an
+//     unattended run stalls on it, and an attended one interrupts its operator. The predicate is the
+//     harness's own, measured from Claude Code 2.1.296: a `$NAME`, `${NAME}`, `${NAME:-…}` or
+//     positional expansion, then `/`, then a glob character, another expansion, a `/`, a quote or
+//     the end of the word — or a top-level directory name (`$X/tmp`). The sanctioned fix is the one
+//     the prompt itself names: `"${S:?}"/…`, which aborts on an empty value instead of removing from
+//     `/`. ACCEPTED FALSE NEGATIVE: a target assembled by a command substitution
+//     (`"$(git rev-parse --git-dir)/x"`) is not this predicate and is not reported.
+//
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
 // silently runs the OLD extractor after you edit it, and `lint-all` reusing a stamp makes the
@@ -4067,6 +4078,74 @@ function isLiteralRemovalTarget(token) {
   return !word.startsWith('-')
 }
 
+// See (p). Mirrors the harness's patterns on the raw word, so a quote around the expansion does not
+// hide it (`"$S"/x` and `"$S/x"` are both caught) and `${S:?}` — which aborts when empty — is not.
+const UNGUARDED_EXPANSION =
+  /^["']*\$(?:\{(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*!])(?::?-(?:["']{2}|"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?)?)?\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*!])["']*\\?\//
+const UNREADABLE_AFTER_SLASH = /^(?:[*?[{]|\$|\/|["']|$)/
+const TOP_LEVEL_DIR =
+  /^(?:bin|boot|dev|etc|home|lib|lib32|lib64|libx32|media|mnt|opt|proc|root|run|sbin|srv|sys|tmp|usr|var|snap|nix|lost\+found|private|cores|Applications|Library|System|Users|Volumes)\/?["']*$/
+
+/** The `rm`/`rmdir` target word when it trips the harness's empty-expansion check, else null. */
+export function unguardedRemovalTarget(raw) {
+  const head = UNGUARDED_EXPANSION.exec(raw)
+  if (!head) return null
+  const rest = raw.slice(head[0].length)
+  return UNREADABLE_AFTER_SLASH.test(rest) || TOP_LEVEL_DIR.test(rest) ? raw : null
+}
+
+/**
+ * Report `rm`/`rmdir` targets that start with an unguarded expansion followed by `/` — see header
+ * rule (p). Returns [{ lineOffset, command, target }].
+ */
+export function findUnguardedRemovalTargets(body) {
+  const findings = []
+  const state = { quote: null, substDepth: 0, substQuote: null, backtick: false, paramDepth: 0 }
+
+  const analyze = (tokens, lineOffset) => {
+    let segment = []
+    const segments = []
+    for (const token of tokens) {
+      if (token.operator) {
+        segments.push(segment)
+        segment = []
+        continue
+      }
+      segment.push(token)
+    }
+    segments.push(segment)
+
+    for (const seg of segments) {
+      const at = commandWordIndex(seg)
+      if (at === -1) continue
+      const command = removeQuotes(seg[at].raw).split('/').pop()
+      if (command !== 'rm' && command !== 'rmdir') continue
+      for (const token of seg.slice(at + 1)) {
+        const target = unguardedRemovalTarget(token.raw)
+        if (target) findings.push({ lineOffset, command, target })
+      }
+    }
+    for (const token of tokens) {
+      for (const inner of token.subs || []) {
+        for (const nested of findUnguardedRemovalTargets(inner))
+          findings.push({ ...nested, lineOffset })
+      }
+    }
+  }
+
+  let pending = null
+  for (const { text, lineOffset } of joinContinuations(maskHeredocBodies(body.split('\n')))) {
+    const tokens = tokenizeShellLine(text, state)
+    if (pending) pending.tokens.push(...tokens)
+    else pending = { tokens, lineOffset }
+    if (state.quote || state.substDepth > 0 || state.backtick || state.paramDepth > 0) continue
+    analyze(pending.tokens, pending.lineOffset)
+    pending = null
+  }
+  if (pending) analyze(pending.tokens, pending.lineOffset)
+  return findings
+}
+
 /**
  * Report `rm` invocations carrying exactly ONE unquoted glob alongside at least one literal path —
  * see header rule (n). Returns [{ lineOffset, command, glob, literals }], with `lineOffset` the
@@ -6060,7 +6139,7 @@ function makeBashRunner(tmpDir) {
  * `unterminated` / `heredoc` / `syntax` / `multi-glob` / `mixed-glob-removal` / `option-glob` /
  * `word-split` / `zsh-special-scalar` / `pipeline-status` / `trailing-conditional-status` /
  * `inert-guard` / `gh-body-interpolation` / `gh-body-file-interpolation` /
- * `node-eval-interpolation` / `bare-positional`, plus `missing-bash` when the gate fails closed.
+ * `node-eval-interpolation` / `bare-positional` / `unguarded-removal`, plus `missing-bash` when the gate fails closed.
  */
 export async function checkSkillShellInRepo(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
@@ -6109,6 +6188,15 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
             line: block.startLine + 1 + glob.lineOffset,
             kind: 'multi-glob',
             message: `${glob.command} carries ${glob.globs.length} unquoted globs on one line (${glob.globs.join(' ')}) — an unmatched glob aborts the whole line under zsh/fish, silently skipping the others`,
+          })
+        }
+
+        for (const unguarded of findUnguardedRemovalTargets(block.body)) {
+          findings.push({
+            file: rel,
+            line: block.startLine + 1 + unguarded.lineOffset,
+            kind: 'unguarded-removal',
+            message: `${unguarded.command} target ${unguarded.target} starts with an expansion that may be empty, so Claude Code stops for a human ("Dangerous rm operation on possibly-empty variable path", which no permission rule can allow) — guard it as "\${NAME:?}"/… or use a literal path`,
           })
         }
 

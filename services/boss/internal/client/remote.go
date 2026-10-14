@@ -171,6 +171,12 @@ func (c *RemoteClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest
 	if req.WorktreeBaseDir != nil {
 		return nil, errLocalOnly("setting a repo worktree base directory")
 	}
+	// Nor does it carry trust, deliberately: a cloud caller must not be able
+	// to flip a daemon's local trust. Refuse rather than report a success that
+	// dropped the --trusted change.
+	if req.IsTrusted != nil {
+		return nil, errLocalOnly("setting repo trust")
+	}
 	daemonID, err := c.resolveRemoteDaemonForRepo(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -425,6 +431,14 @@ func (c *RemoteClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb
 		"reordering sessions is only available against a local daemon: MoveSession is not yet routed through the orchestrator"))
 }
 
+// SetSessionTracker is local-daemon only: the orchestrator has no proxy for
+// it, and the daemon's periodic tracker-link pass links sessions on every host
+// anyway.
+func (c *RemoteClient) SetSessionTracker(context.Context, string, string) (*pb.Session, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New(
+		"setting a tracker link is only available against a local daemon"))
+}
+
 // CanMoveSession answers the refusal ABOVE the RPC, so a caller can decline a
 // reorder before painting an optimistic one rather than reordering the list,
 // erroring, and reverting on the next poll.
@@ -434,6 +448,12 @@ func (c *RemoteClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb
 // test double pays for it. Delete it when BOS-1232 routes MoveSession through
 // the orchestrator.
 func (c *RemoteClient) CanMoveSession() bool { return false }
+
+// DismissSessionAlert has no orchestrator proxy: the dismissed key lives in the
+// daemon's database and the hosted API does not expose it.
+func (c *RemoteClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, errLocalOnly("DismissSessionAlert")
+}
 
 func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
 	resp, err := c.rpc.ProxyLinkSessionPR(ctx, connect.NewRequest(&pb.ProxyLinkSessionPRRequest{Id: id, Pr: pr}))
@@ -681,6 +701,10 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 
 func (c *RemoteClient) SetChatPhase(_ context.Context, _, _, _ string) error {
 	return errLocalOnly("set chat phase")
+}
+
+func (c *RemoteClient) FinishUnattendedRun(_ context.Context, _ *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
+	return nil, errLocalOnly("finish unattended run")
 }
 
 func (c *RemoteClient) ReportChatStatus(ctx context.Context, reports []*pb.ChatStatusReport) error {
@@ -1585,6 +1609,12 @@ func (c *RemoteClient) ListCheckSnapshots(ctx context.Context, sessionID string,
 		return nil, err
 	}
 	return &pb.ListCheckSnapshotsResponse{Snapshots: resp.Msg.GetSnapshots()}, nil
+}
+
+// GetSessionTimeline has no orchestrator proxy yet: the timeline is read from
+// the owning daemon's local stores.
+func (c *RemoteClient) GetSessionTimeline(_ context.Context, _ string) ([]*pb.TimelineStep, error) {
+	return nil, errLocalOnly("session timeline")
 }
 
 func (c *RemoteClient) GetRunCost(_ context.Context, _ *pb.GetRunCostRequest) (*pb.GetRunCostResponse, error) {

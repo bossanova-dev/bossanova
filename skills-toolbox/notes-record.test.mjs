@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseNotes, parseRunId } from './bs-record-notes.mjs'
-import { mustFixCategories } from './bs-review-triage.mjs'
 import { TRIGGERS, addTrigger, flushTriggers, main } from './notes-record.mjs'
 
 function harness(now = '2026-10-07T12:00:00Z') {
@@ -463,17 +462,12 @@ test('invalid batch inputs are nonfatal and buffer nothing', () => {
 test('fixture report categories have a separate three-note cap from malfunction triggers', () => {
   const h = harness()
   for (const trigger of triggers.slice(0, 3)) h.add(trigger)
-  const items = Array.from({ length: 5 }, (_, i) => ({
-    file: `file${i}`,
-    line: 1,
-    title: `defect${i}`,
-    category: `category${i}`,
+  const categories = Array.from({ length: 5 }, (_, i) => ({
+    where: `reviewer/category${i}`,
+    detail: `defect${i}`,
     severity: 'Warning',
-    lenses: ['reviewer'],
+    count: 1,
   }))
-  const categories = mustFixCategories([{ mustFix: [], pool: items }], {
-    report: { mustfix: { items } },
-  })
   h.files.set('/input', JSON.stringify(categories))
   main(['add', '--core', 'boss-review', '--trigger', 'review-must-fix', '--from', '/input'], h.deps)
   const result = h.flush()

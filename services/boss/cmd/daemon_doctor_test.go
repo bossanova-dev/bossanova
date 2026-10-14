@@ -24,6 +24,7 @@ import (
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/revisiondrift"
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/spf13/cobra"
 )
 
@@ -4006,13 +4007,17 @@ func stubRevisionDriftProbes(t *testing.T, bossDrift, bossdDrift revisiondrift.D
 	})
 }
 
+// descendantRevisionDrift carries a describe-shaped version, never a stable
+// release one: a release build is classified as ReasonReleaseBuild before any
+// ancestry runs, so a known verdict with a release version is a state
+// production can no longer produce.
 func descendantRevisionDrift() revisiondrift.Drift {
 	return revisiondrift.Drift{
 		BehindKnown:      true,
 		Reason:           revisiondrift.ReasonDescendant,
 		RevisionStamped:  true,
 		BinaryRevision:   "aaaaaaaaa",
-		BinaryVersion:    "v1.99.0",
+		BinaryVersion:    "v1.99.0-12-gaaaaaaaaa",
 		CheckoutRoot:     "/fixture/checkout",
 		CheckoutRevision: "cccccccccc",
 	}
@@ -4034,7 +4039,10 @@ func unknownRevisionDrift(reason revisiondrift.Reason, detail string) revisiondr
 		Reason:          reason,
 		Detail:          detail,
 		RevisionStamped: reason != revisiondrift.ReasonUnstamped && reason != revisiondrift.ReasonRevisionUnreadable,
-		BinaryVersion:   "v1.99.0",
+		BinaryVersion:   "v1.99.0-12-gba75863ae",
+	}
+	if reason == revisiondrift.ReasonReleaseBuild {
+		drift.BinaryVersion = "v1.99.0"
 	}
 	if drift.RevisionStamped {
 		drift.BinaryRevision = "ba75863ae"
@@ -4149,6 +4157,7 @@ func TestRunDaemonDoctorRendersEachUnknownRevisionCauseDistinctly(t *testing.T) 
 		revisiondrift.ReasonCheckoutUntrusted,
 		revisiondrift.ReasonGitUnavailable,
 		revisiondrift.ReasonRevisionUnreadable,
+		revisiondrift.ReasonReleaseBuild,
 	} {
 		t.Run(string(reason), func(t *testing.T) {
 			output, cmd := newLinuxDaemonDoctorRun(t)
@@ -4334,6 +4343,130 @@ func TestBossdVersionRevisionREParsesTheDaemonsOwnStamp(t *testing.T) {
 	}
 	if match[2] != buildinfo.Commit {
 		t.Errorf("parsed revision = %q, want %q", match[2], buildinfo.Commit)
+	}
+}
+
+// TestRevisionDriftReleaseBuildAcceptsOnlyStableReleaseStamps pins the
+// predicate that decides release-ness from a version stamp. The release
+// workflow stamps exactly v<semver>; every shape a checkout build produces —
+// git describe output, a -dirty build, a bare --always SHA, the dev fallback —
+// must read as not-a-release, or a stale checkout build escapes the check.
+func TestRevisionDriftReleaseBuildAcceptsOnlyStableReleaseStamps(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{"v1.137.0", true},
+		{"v1.0.0-staging.19-13034-g175a9152d", false},
+		{"v1.137.0-5-gabcdef012", false},
+		{"v1.137.0-dirty", false},
+		{"v1.137.0-staging.1", false},
+		{"v1.137.0+meta", false},
+		{"abc1234", false},
+		// An all-digit abbreviated SHA is a valid semver major-only shorthand
+		// once a "v" is prepended; it is not a release stamp.
+		{"1234567", false},
+		{"v1", false},
+		{"dev", false},
+		{"unknown", false},
+		{"", false},
+	} {
+		if got := revisionDriftReleaseBuild(tc.version); got != tc.want {
+			t.Errorf("revisionDriftReleaseBuild(%q) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+}
+
+// layOutRevisionDriftCheckout makes the working directory look like a checkout
+// to the structural search, so a probe under test reaches the release
+// short-circuit rather than stopping at not-in-a-checkout.
+func layOutRevisionDriftCheckout(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, libskillinstall.SourceRelPath, "skills", "boss"), 0o755); err != nil {
+		t.Fatalf("mkdir checkout layout: %v", err)
+	}
+	t.Chdir(root)
+}
+
+// stubRevisionDriftSeamsUnreachable pins the git and trust seams to fail the
+// test if reached: a release build must be classified without either.
+func stubRevisionDriftSeamsUnreachable(t *testing.T) {
+	t.Helper()
+	previousGit, previousTrust := daemonDoctorRevisionGit, daemonDoctorTrustCheckout
+	daemonDoctorRevisionGit = func(_ context.Context, _ string, args ...string) (revisiondrift.GitResult, error) {
+		t.Errorf("git ran for a release build: %v", args)
+		return revisiondrift.GitResult{}, errors.New("unreachable")
+	}
+	daemonDoctorTrustCheckout = func(string) (bool, error) {
+		t.Errorf("the trust check ran for a release build")
+		return false, errors.New("unreachable")
+	}
+	t.Cleanup(func() { daemonDoctorRevisionGit, daemonDoctorTrustCheckout = previousGit, previousTrust })
+}
+
+// TestRevisionDriftProbesPassReleaseNessThrough covers both probes: the boss
+// probe reads its own build stamp and the bossd probe parses the file's
+// --version line, and each must hand the classifier its release-ness.
+func TestRevisionDriftProbesPassReleaseNessThrough(t *testing.T) {
+	layOutRevisionDriftCheckout(t)
+	stubRevisionDriftSeamsUnreachable(t)
+
+	previousBoss, previousBossd := daemonDoctorBossRevision, daemonDoctorBossdRevision
+	daemonDoctorBossRevision = func() (string, string) { return "b7db876", "v1.137.0" }
+	daemonDoctorBossdRevision = func(context.Context, string) (string, string, error) {
+		return "b7db876", "v1.137.0", nil
+	}
+	t.Cleanup(func() { daemonDoctorBossRevision, daemonDoctorBossdRevision = previousBoss, previousBossd })
+
+	// ResolveBossdPath must find a file for the bossd probe to reach its
+	// version read; the read itself is stubbed above.
+	bossdDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bossdDir, "bossd"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write bossd fixture: %v", err)
+	}
+	t.Setenv("PATH", bossdDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for name, probe := range map[string]func(context.Context) revisiondrift.Drift{
+		"boss":  inspectBossRevisionDrift,
+		"bossd": inspectBossdFileRevisionDrift,
+	} {
+		got := probe(context.Background())
+		if got.Reason != revisiondrift.ReasonReleaseBuild {
+			t.Errorf("%s probe: Reason = %q, want %q: %+v", name, got.Reason, revisiondrift.ReasonReleaseBuild, got)
+		}
+		if !got.Unknown() {
+			t.Errorf("%s probe: a release build reached a verdict: %+v", name, got)
+		}
+	}
+}
+
+// TestRunDaemonDoctorDoesNotFailOnAReleaseBuild is the ticket's headline: a
+// release install run inside a checkout is neither healthy nor stale, so doctor
+// exits 0, prints no FAIL and no rebuild remedy, and points at the remedy that
+// fits the install kind instead.
+func TestRunDaemonDoctorDoesNotFailOnAReleaseBuild(t *testing.T) {
+	output, cmd := newLinuxDaemonDoctorRun(t)
+	release := unknownRevisionDrift(revisiondrift.ReasonReleaseBuild, "")
+	stubRevisionDriftProbes(t, release, release)
+
+	if err := runDaemonDoctor(cmd); err != nil {
+		t.Fatalf("a release build failed the run: %v\n%s", err, output.String())
+	}
+	out := output.String()
+	for _, want := range []string{
+		"boss binary revision ba75863ae: " + string(revisiondrift.ReasonReleaseBuild),
+		"bossd binary revision ba75863ae: " + string(revisiondrift.ReasonReleaseBuild),
+		"boss upgrade --check",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	for _, absent := range []string{"FAIL", "make build", daemonRevisionDriftRemediation, "Remediation:"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("doctor output for a release build contains %q:\n%s", absent, out)
+		}
 	}
 }
 
@@ -4569,6 +4702,7 @@ func TestWarnIfBossBinaryBehindCheckoutIsSilentForEveryUnknown(t *testing.T) {
 		revisiondrift.ReasonCheckoutUntrusted,
 		revisiondrift.ReasonGitUnavailable,
 		revisiondrift.ReasonRevisionUnreadable,
+		revisiondrift.ReasonReleaseBuild,
 	} {
 		t.Run(string(reason), func(t *testing.T) {
 			stubRevisionDriftProbes(t, unknownRevisionDrift(reason, ""), descendantRevisionDrift())
@@ -4791,5 +4925,259 @@ func TestDaemonInstallSettingsLineSaysDefault(t *testing.T) {
 	t.Setenv("BOSS_SETTINGS_PATH", "")
 	if got := daemonInstallSettingsLine(); got != "  settings: default\n" {
 		t.Errorf("daemonInstallSettingsLine() = %q, want the default label", got)
+	}
+}
+
+// stubLocalSupervisionObservation pins the per-invocation observation and
+// counts reads, so a suppression row can prove it never paid for the probe.
+func stubLocalSupervisionObservation(t *testing.T, observation daemonSupervisionObservation) *int {
+	t.Helper()
+	calls := 0
+	previous := daemonLocalSupervisionObservation
+	daemonLocalSupervisionObservation = func() daemonSupervisionObservation {
+		calls++
+		return observation
+	}
+	t.Cleanup(func() { daemonLocalSupervisionObservation = previous })
+	return &calls
+}
+
+// useRealLocalSupervisionObservation undoes TestMain's default stub for a test
+// that exercises the real profile read.
+func useRealLocalSupervisionObservation(t *testing.T) {
+	t.Helper()
+	previous := daemonLocalSupervisionObservation
+	daemonLocalSupervisionObservation = observeLocalDaemonSupervision
+	t.Cleanup(func() { daemonLocalSupervisionObservation = previous })
+}
+
+// clearSupervisionWarningEnv makes every row start from an environment where
+// the warning is allowed, whatever the suite's caller exported.
+func clearSupervisionWarningEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(skipDaemonSupervisionWarningEnv, "")
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+	t.Setenv("BOSS_SOCKET", "")
+}
+
+func unsupervisedObservation(reason daemonSupervisionReason) daemonSupervisionObservation {
+	return daemonSupervisionObservation{
+		Verdict:     daemonSupervisionUnsupervised,
+		Reason:      reason,
+		RecordedPID: 4242,
+		Status:      &daemon.Status{Installed: true},
+	}
+}
+
+func TestWarnIfDaemonUnsupervisedFiresOnlyOnAnUnsupervisedVerdict(t *testing.T) {
+	cases := []struct {
+		name        string
+		observation daemonSupervisionObservation
+		wantWarning bool
+	}{
+		{name: "detached", observation: unsupervisedObservation(daemonSupervisionReasonDetached), wantWarning: true},
+		{name: "foreign PID", observation: unsupervisedObservation(daemonSupervisionReasonForeignPID), wantWarning: true},
+		{name: "watchdog not loaded", observation: unsupervisedObservation(daemonSupervisionReasonWatchdogNotLoaded), wantWarning: true},
+		{name: "manager owned", observation: daemonSupervisionObservation{Verdict: daemonSupervisionSupervised, Reason: daemonSupervisionReasonManagerOwned, RecordedPID: 4242}},
+		{name: "watchdog owned", observation: daemonSupervisionObservation{Verdict: daemonSupervisionSupervised, Reason: daemonSupervisionReasonWatchdogOwned, RecordedPID: 4242}},
+		{name: "watchdog unreadable", observation: daemonSupervisionObservation{Reason: daemonSupervisionReasonWatchdogUnreadable, RecordedPID: 4242}},
+		{name: "watchdog insecure", observation: daemonSupervisionObservation{Reason: daemonSupervisionReasonWatchdogInsecure, RecordedPID: 4242}},
+		{name: "service manager reports no PID", observation: daemonSupervisionObservation{Reason: daemonSupervisionReasonNoServicePID, RecordedPID: 4242}},
+		{name: "no state record", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNoStateRecord, Err: os.ErrNotExist}},
+		{name: "non-positive PID", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNoRecordedPID}},
+		{name: "dead PID", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNotRunning, RecordedPID: 4242}},
+		{name: "liveness unchecked", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopLivenessUnchecked, RecordedPID: 4242, Err: errors.New("boom")}},
+		{name: "status error", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopStatusUnavailable, Err: errors.New("boom")}},
+		{name: "no service installed", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNotInstalled, RecordedPID: 4242}},
+		{name: "probing disabled", observation: daemonSupervisionObservation{Stop: daemonSupervisionStopProbingDisabled}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSupervisionWarningEnv(t)
+			stubLocalSupervisionObservation(t, tc.observation)
+			stdout, stderr, cmd := newStalenessWarningCommand(t, "boss", "ls")
+
+			warnIfDaemonUnsupervised(cmd)
+
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want nothing", stdout.String())
+			}
+			if !tc.wantWarning {
+				if stderr.Len() != 0 {
+					t.Fatalf("stderr = %q, want nothing", stderr.String())
+				}
+				return
+			}
+			if !strings.HasPrefix(stderr.String(), daemonUnsupervisedWarningText) {
+				t.Fatalf("stderr = %q, want the unsupervised warning", stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "4242") {
+				t.Fatalf("stderr = %q, want the recorded PID named", stderr.String())
+			}
+			if got := strings.Count(stderr.String(), "\n"); got != 1 {
+				t.Fatalf("stderr = %q, want exactly one line", stderr.String())
+			}
+		})
+	}
+}
+
+func TestWarnIfDaemonUnsupervisedSuppressions(t *testing.T) {
+	cases := []struct {
+		name string
+		path []string
+		// setup applies the suppression under test.
+		setup       func(t *testing.T, root *cobra.Command)
+		wantWarning bool
+	}{
+		{name: "control: an ordinary command warns", path: []string{"boss", "ls"}, wantWarning: true},
+		{name: "control: daemon start warns", path: []string{"boss", "daemon", "start"}, wantWarning: true},
+		{name: "env opt-out", path: []string{"boss", "ls"}, setup: func(t *testing.T, _ *cobra.Command) {
+			t.Setenv(skipDaemonSupervisionWarningEnv, "1")
+		}},
+		{name: "service probing disabled", path: []string{"boss", "ls"}, setup: func(t *testing.T, _ *cobra.Command) {
+			t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		}},
+		{name: "explicit socket", path: []string{"boss", "ls"}, setup: func(t *testing.T, _ *cobra.Command) {
+			t.Setenv("BOSS_SOCKET", filepath.Join(t.TempDir(), "bossd.sock"))
+		}},
+		{name: "--remote", path: []string{"boss", "ls"}, setup: func(t *testing.T, root *cobra.Command) {
+			if err := root.Flags().Set("remote", "https://orchestrator.example"); err != nil {
+				t.Fatalf("set --remote: %v", err)
+			}
+		}},
+		{name: "--host", path: []string{"boss", "ls"}, setup: func(t *testing.T, root *cobra.Command) {
+			if err := root.Flags().Set("host", "devbox"); err != nil {
+				t.Fatalf("set --host: %v", err)
+			}
+		}},
+		{name: "daemon doctor", path: []string{"boss", "daemon", "doctor"}},
+		{name: "daemon status", path: []string{"boss", "daemon", "status"}},
+		{name: "daemon stop", path: []string{"boss", "daemon", "stop"}},
+		{name: "daemon restart", path: []string{"boss", "daemon", "restart"}},
+		{name: "daemon install", path: []string{"boss", "daemon", "install"}},
+		{name: "daemon uninstall", path: []string{"boss", "daemon", "uninstall"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSupervisionWarningEnv(t)
+			calls := stubLocalSupervisionObservation(t, unsupervisedObservation(daemonSupervisionReasonDetached))
+			stdout, stderr, cmd := newStalenessWarningCommand(t, tc.path...)
+			root := cmd.Root()
+			root.Flags().String("remote", "", "")
+			root.Flags().String("host", "", "")
+			if tc.setup != nil {
+				tc.setup(t, root)
+			}
+
+			warnIfDaemonUnsupervised(cmd)
+
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want nothing", stdout.String())
+			}
+			if tc.wantWarning {
+				if !strings.HasPrefix(stderr.String(), daemonUnsupervisedWarningText) {
+					t.Fatalf("stderr = %q, want the unsupervised warning", stderr.String())
+				}
+				return
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want nothing", stderr.String())
+			}
+			if *calls != 0 {
+				t.Fatalf("a suppressed invocation read the observation %d times; the guard must run before the cost", *calls)
+			}
+		})
+	}
+}
+
+// writeSupervisionProfile points the settings file at a fresh app data dir and,
+// when pid is non-nil, writes a state record naming it.
+func writeSupervisionProfile(t *testing.T, pid *int) {
+	t.Helper()
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if pid == nil {
+		return
+	}
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{PID: *pid}); err != nil {
+		t.Fatalf("daemonstate.Write: %v", err)
+	}
+}
+
+func TestObserveLocalDaemonSupervisionSkipsTheServiceProbeWithoutALiveRecord(t *testing.T) {
+	zero := 0
+	cases := []struct {
+		name     string
+		pid      *int
+		wantStop daemonSupervisionStop
+	}{
+		{name: "no state record", pid: nil, wantStop: daemonSupervisionStopNoStateRecord},
+		{name: "record names no PID", pid: &zero, wantStop: daemonSupervisionStopNoRecordedPID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSupervisionWarningEnv(t)
+			writeSupervisionProfile(t, tc.pid)
+			previousStatus := daemonGetStatus
+			daemonGetStatus = func() (*daemon.Status, error) {
+				t.Fatal("daemonGetStatus was called for a profile with no live-looking state record")
+				return nil, nil
+			}
+			t.Cleanup(func() { daemonGetStatus = previousStatus })
+			previousMode := daemonLoadSupervisionMode
+			daemonLoadSupervisionMode = func() daemon.SupervisionModeStatus {
+				t.Fatal("the supervision substrate was read for a profile with no live-looking state record")
+				return daemon.SupervisionModeStatus{}
+			}
+			t.Cleanup(func() { daemonLoadSupervisionMode = previousMode })
+
+			observation := observeLocalDaemonSupervision()
+			if observation.Stop != tc.wantStop {
+				t.Fatalf("stop = %v, want %v", observation.Stop, tc.wantStop)
+			}
+
+			useRealLocalSupervisionObservation(t)
+			stdout, stderr, cmd := newStalenessWarningCommand(t, "boss", "ls")
+			warnIfDaemonUnsupervised(cmd)
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("stdout = %q, stderr = %q, want nothing", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestRootCommandEmitsUnsupervisedDaemonWarningThroughPersistentPreRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv(skipDaemonStalenessWarningEnv, "1")
+	t.Setenv(skipBossRevisionDriftWarningEnv, "1")
+	clearSupervisionWarningEnv(t)
+	stubLocalSupervisionObservation(t, unsupervisedObservation(daemonSupervisionReasonDetached))
+
+	root := rootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetArgs([]string{"fix-terminal"})
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("the warning path failed the command: %v", err)
+	}
+	if !strings.HasPrefix(stderr.String(), daemonUnsupervisedWarningText) {
+		t.Fatalf("rootCmd PersistentPreRunE did not emit the unsupervised warning on stderr:\n%q", stderr.String())
+	}
+	if got := strings.Count(strings.TrimSpace(stderr.String()), "\n"); got != 0 {
+		t.Fatalf("stderr = %q, want exactly one line", stderr.String())
+	}
+	if got := stdout.String(); got != termreset.AbnormalExitReset {
+		t.Fatalf("stdout = %q, want only the fix-terminal reset sequence %q", got, termreset.AbnormalExitReset)
 	}
 }

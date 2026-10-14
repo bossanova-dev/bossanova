@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 )
@@ -202,6 +203,20 @@ func TestDaemonSupervisionVerdictsMatchDoctor(t *testing.T) {
 			}
 			if gotDoctor != tc.wantDoctor {
 				t.Fatalf("doctor verdict = %q, want %q", gotDoctor, tc.wantDoctor)
+			}
+			// BOS-1518: the per-invocation warning reads the observation
+			// doctor renders, through the real profile read, so it fires on
+			// exactly the rows where doctor's check is unhealthy — the
+			// declared-divergent rows included, where doctor answers unknown
+			// and the warning stays silent with it.
+			clearSupervisionWarningEnv(t)
+			pid := recordedPID
+			writeSupervisionProfile(t, &pid)
+			useRealLocalSupervisionObservation(t)
+			_, warnStderr, warnCmd := newStalenessWarningCommand(t, "boss", "ls")
+			warnIfDaemonUnsupervised(warnCmd)
+			if gotWarning, wantWarning := warnStderr.Len() != 0, gotDoctor == "unsupervised"; gotWarning != wantWarning {
+				t.Fatalf("warning emitted = %v, want %v (doctor said %q); stderr = %q", gotWarning, wantWarning, gotDoctor, warnStderr.String())
 			}
 			if tc.doctorDiverges {
 				if gotStatus == gotDoctor {
@@ -1372,4 +1387,79 @@ func TestUnattendedSubstrateIsUnreachableOffMacOS(t *testing.T) {
 func reportDaemonSupervisionGathered(out io.Writer, metadata daemonstate.Metadata, metadataErr error) (bool, daemonSupervisionRemediation) {
 	supervision, ownership := daemonSupervisionInputs()
 	return reportDaemonSupervision(out, metadata, metadataErr, supervision, ownership)
+}
+
+// TestTUIDaemonSupervisionProbeIsLocalOnly pins the BOS-1520 transport gate:
+// --remote, --host and BOSS_SOCKET all drive a daemon other than this
+// profile's, so the TUI gets no probe and Home stays silent; a plain local
+// launch gets one.
+func TestTUIDaemonSupervisionProbeIsLocalOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cmd    func(*testing.T) *cobra.Command
+		socket string
+		want   bool
+	}{
+		{name: "local", cmd: func(*testing.T) *cobra.Command { return &cobra.Command{Use: "boss"} }, want: true},
+		{name: "remote", cmd: remoteTestCommand},
+		{name: "host", cmd: hostTestCommand},
+		{name: "explicit socket", cmd: func(*testing.T) *cobra.Command { return &cobra.Command{Use: "boss"} }, socket: "/tmp/boss.sock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BOSS_SOCKET", tc.socket)
+			calls := stubLocalSupervisionObservation(t, daemonSupervisionObservation{})
+
+			probe := tuiDaemonSupervisionProbe(tc.cmd(t))
+			if got := probe != nil; got != tc.want {
+				t.Fatalf("probe registered = %v, want %v", got, tc.want)
+			}
+			if probe == nil {
+				return
+			}
+			probe()
+			if *calls != 1 {
+				t.Fatalf("probe read the local observation %d times, want 1", *calls)
+			}
+		})
+	}
+}
+
+// TestTUIDaemonSupervisionMapsOnlyTheUnsupervisedVerdict pins the mapping:
+// the TUI speaks up for exactly the observation the stderr warning speaks up
+// for, carrying its recorded PID, and every other rung — unknown included — is
+// the silent zero value.
+func TestTUIDaemonSupervisionMapsOnlyTheUnsupervisedVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		observation daemonSupervisionObservation
+		want        views.DaemonSupervision
+	}{
+		{
+			name:        "unsupervised",
+			observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNone, Verdict: daemonSupervisionUnsupervised, RecordedPID: 4242},
+			want:        views.DaemonSupervision{Unsupervised: true, PID: 4242},
+		},
+		{
+			name:        "supervised",
+			observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNone, Verdict: daemonSupervisionSupervised, RecordedPID: 4242},
+		},
+		{
+			name:        "unknown verdict",
+			observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNone, Verdict: daemonSupervisionUnknown, RecordedPID: 4242},
+		},
+		{
+			name:        "stopped before a verdict",
+			observation: daemonSupervisionObservation{Stop: daemonSupervisionStopNotRunning, Verdict: daemonSupervisionUnsupervised, RecordedPID: 4242},
+		},
+		{
+			name:        "probing disabled",
+			observation: daemonSupervisionObservation{Stop: daemonSupervisionStopProbingDisabled},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tuiDaemonSupervision(tc.observation); got != tc.want {
+				t.Fatalf("tuiDaemonSupervision = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
 }

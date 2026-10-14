@@ -101,6 +101,7 @@ Update repository settings
 - `--no-delete-branches` — Disable deleting local branches after archiving
 - `--no-keep-branches-current` — Disable proactively rebasing in-flight session branches when the base advances
 - `--setup-script` — Set setup script (empty string to clear)
+- `--trusted` — Trust this repository's own configuration: Codex project trust and proof secrets for its sessions (--trusted=false revokes)
 - `--worktree-base-dir` — Set the absolute directory new session worktrees are created under (applies to new sessions)
 
 ```bash

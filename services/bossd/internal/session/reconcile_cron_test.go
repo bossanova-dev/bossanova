@@ -1,15 +1,20 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -850,5 +855,216 @@ func TestRecoverStrandedCronSessions_ZeroOutputStillWaitsForAnIdleLog(t *testing
 
 	if n, _ := lc.RecoverStrandedCronSessionsPeriodic(context.Background()); n != 0 || rec.count() != 0 {
 		t.Fatalf("routed=%d, want 0 while the run is still working", n)
+	}
+}
+
+// --- BOS-1530: an auth-wedged stranded run is BLOCKED, never finalized --------
+//
+// A chat that dies on a login-required (auth-failed) error sits idle with no
+// pending turn, which the sweep's completion evidence cannot tell apart from a
+// finished run. Finalizing it pushes and readies a PR for a build that never
+// reached its own finish step, so an auth-failed chat must be blocked with the
+// shared agent-auth-failed reason instead.
+
+// authFailedProbe returns a SetChatAuthFailedProbe stub that reports the given
+// agent session ids as auth-failed.
+func authFailedProbe(ids ...string) func(string) bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return func(agentSessionID string) bool { return set[agentSessionID] }
+}
+
+func TestRecoverStrandedCronSessions_AuthFailedChat_BlockedNotFinalized(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	var logs bytes.Buffer
+	lc.logger = zerolog.New(&logs)
+	lc.SetChatAuthFailedProbe(authFailedProbe("a1"))
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("routed=%d, want 0: a blocked session is not counted as routed", n)
+	}
+	if rec.count() != 0 {
+		t.Fatalf("finalize called %d times for an auth-failed chat, want 0", rec.count())
+	}
+	got := sessions.sessions["s1"]
+	if got.State != machine.Blocked {
+		t.Fatalf("state=%s, want Blocked", got.State)
+	}
+	if !sessionreason.IsAgentAuthFailed(got.BlockedReason) {
+		t.Fatalf("blocked_reason=%v, want %q", got.BlockedReason, sessionreason.AgentAuthFailed())
+	}
+	line := logs.String()
+	for _, want := range []string{`"auth_failed":true`, `"completion_evidence":"tmux_log_idle"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("block Warn missing %s; log = %s", want, line)
+		}
+	}
+}
+
+func TestRecoverStrandedCronSessions_AuthProbeFalse_Finalized(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetChatAuthFailedProbe(authFailedProbe("someone-else"))
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d finalized=%d, want 1/1 for a healthy finished run", n, rec.count())
+	}
+	if got := sessions.sessions["s1"]; got.State == machine.Blocked || got.BlockedReason != nil {
+		t.Fatalf("healthy finished run was blocked: state=%s reason=%v", got.State, got.BlockedReason)
+	}
+}
+
+func TestRecoverStrandedCronSessions_NilAuthProbe_Finalized(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetChatAuthFailedProbe(nil)
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+	n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d finalized=%d, want 1/1 with no probe wired", n, rec.count())
+	}
+}
+
+// TestRecoverStrandedCronSessions_AuthFailedBlocksFromEveryReapState settles
+// the edge question in a test rather than prose. The state machine permits the
+// Block event from only some reap states (not from CreatingWorktree,
+// StartingAgent, PushingBranch or OpeningDraftPR), so the sweep does not fire
+// it: like the finalize-failure path and the stranded-bootstrap reaper it moves
+// the row with a persisted conditional transition from the reap set straight to
+// Blocked, never via Finalizing. Every reapable state must land in Blocked with
+// the reason, and Blocked must stay recoverable (Unblock, or a resolved PR).
+func TestRecoverStrandedCronSessions_AuthFailedBlocksFromEveryReapState(t *testing.T) {
+	type tc struct {
+		state      machine.State
+		quickChat  bool
+		reapAtBoot bool
+	}
+	var cases []tc
+	for _, s := range strandedReapStates {
+		cases = append(cases, tc{state: s, reapAtBoot: true})
+	}
+	for _, s := range zeroOutputReapStates {
+		cases = append(cases, tc{state: s, quickChat: true})
+	}
+	for _, c := range cases {
+		t.Run(c.state.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			lc, sessions, _, rec := newSweepLifecycle(t, dir)
+			lc.SetChatAuthFailedProbe(authFailedProbe("a1"))
+			s := strandedCronSession("s1", "a1")
+			s.State = c.state
+			s.IsQuickChat = c.quickChat
+			sessions.sessions["s1"] = s
+			seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+			sweep := lc.RecoverStrandedCronSessionsPeriodic
+			if c.reapAtBoot {
+				sweep = lc.RecoverStrandedCronSessionsAtStartup
+			}
+			if _, err := sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if rec.count() != 0 {
+				t.Fatalf("finalize called from %s; an auth-failed run must never be finalized", c.state)
+			}
+			got := sessions.sessions["s1"]
+			if got.State != machine.Blocked || !sessionreason.IsAgentAuthFailed(got.BlockedReason) {
+				t.Fatalf("from %s: state=%s reason=%v, want Blocked/agent-auth-failed", c.state, got.State, got.BlockedReason)
+			}
+		})
+	}
+	blocked := machine.New(machine.Blocked)
+	for _, ev := range []machine.Event{machine.Unblock, machine.PRMerged, machine.PRClosed} {
+		if !blocked.CanFire(ev) {
+			t.Fatalf("Blocked cannot fire %s; an auth-failed block would be unrecoverable", ev)
+		}
+	}
+}
+
+// stubTmuxPaneContent returns a tmux client whose capture-pane prints content
+// for every session name and whose other subcommands succeed silently.
+func stubTmuxPaneContent(content string) *tmux.Client {
+	return tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "capture-pane" {
+			return exec.CommandContext(ctx, "printf", "%s", content)
+		}
+		return exec.CommandContext(ctx, "true")
+	}))
+}
+
+// TestRecoverStrandedCronSessionsAtStartup_LoginPaneWithEmptyProbe_Blocked pins
+// the restart path of BOS-1530: the startup sweep runs before the status poller
+// has observed any pane, so the in-memory auth probe is still empty. A run a
+// previous daemon left on a login-required pane must still be blocked, not
+// finalized, from the pane itself — and a healthy finished pane must still be
+// finalized, and the periodic sweep keeps trusting the probe alone.
+func TestRecoverStrandedCronSessionsAtStartup_LoginPaneWithEmptyProbe_Blocked(t *testing.T) {
+	cases := []struct {
+		name        string
+		pane        string
+		startup     bool
+		wantBlocked bool
+	}{
+		{name: "startup login pane", pane: "work\nInvalid API key · Please run /login\n❯ \n", startup: true, wantBlocked: true},
+		{name: "startup finished pane", pane: "⏺ Done. PR is ready.\n❯ \n", startup: true, wantBlocked: false},
+		{name: "periodic login pane trusts probe", pane: "work\nInvalid API key · Please run /login\n❯ \n", startup: false, wantBlocked: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			lc, sessions, _, rec := newSweepLifecycle(t, dir)
+			lc.SetChatAuthFailedProbe(authFailedProbe()) // poller has observed nothing yet
+			lc.tmux = stubTmuxPaneContent(c.pane)
+			tmuxName := "boss-s1-a1"
+			lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+				"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
+			}}
+			sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+			seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+
+			sweep := lc.RecoverStrandedCronSessionsPeriodic
+			if c.startup {
+				sweep = lc.RecoverStrandedCronSessionsAtStartup
+			}
+			if _, err := sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := sessions.sessions["s1"]
+			if c.wantBlocked {
+				if rec.count() != 0 {
+					t.Fatalf("finalize called %d times for a login-required pane at startup, want 0", rec.count())
+				}
+				if got.State != machine.Blocked || !sessionreason.IsAgentAuthFailed(got.BlockedReason) {
+					t.Fatalf("state=%s reason=%v, want Blocked/agent-auth-failed", got.State, got.BlockedReason)
+				}
+				return
+			}
+			if rec.count() != 1 {
+				t.Fatalf("finalize called %d times, want 1", rec.count())
+			}
+			if got.State == machine.Blocked {
+				t.Fatalf("state=Blocked, want the run finalized")
+			}
+		})
 	}
 }

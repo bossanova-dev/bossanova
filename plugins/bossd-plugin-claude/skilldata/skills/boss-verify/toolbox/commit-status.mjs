@@ -10,19 +10,26 @@
 // Verbs:
 //   post --context <name> --state success|failure|pending|error --sha <40-hex>
 //        [--description <text>] [--target-url <http(s) url>] [--repo <owner/name>]
+//        [--review-verdict-file <path>] [--reviewed-head-file <path>] [--base <branch>]
 //     exit 0  {verdict:'posted', …}      the status was written
 //     exit 1  {verdict:'failed', reason} gh could not be run or exited non-zero
+//     exit 3  {verdict:'refused', reasons} `boss/build` success only: ready-gate.mjs's
+//             `readyGateReport` (given --sha as the head and the three optional flags) did not say
+//             ready, so nothing was posted. A gate that throws refuses too. The three gate flags are
+//             a usage error on any other post.
 //   read --sha <40-hex> [--context <name>] [--repo <owner/name>]
 //     exit 0  {verdict:'present'|'absent'|'unknown', sha, contexts, …}
 //             `unknown` (with a `reason`) means the read failed and is never `present`; `present`
 //             means a status exists, not that it is `success` — compare `state` for that.
 //   exit 2 on a usage or validation error, message on stderr, gh never spawned.
 //
-// Node builtins plus ./main-module.mjs only, so the vendoring closure is this one file.
+// Node builtins plus ./main-module.mjs and ./ready-gate.mjs (itself builtins plus main-module), so
+// the import closure is those three files.
 
 import { spawnSync } from 'node:child_process'
 
 import { isMainModule } from './main-module.mjs'
+import { readyGateReport } from './ready-gate.mjs'
 
 // The receipt context. `pr-check-state.mjs` keeps its own copy in PROVENANCE_CONTEXTS so its
 // vendoring closure stays one file; the sibling test pins the two together.
@@ -40,6 +47,24 @@ export const READ_VERDICTS = Object.freeze({
 })
 
 const GH_TIMEOUT_MS = 30_000
+
+// The gate a `boss/build` success must pass: the head is finished only when its review is clean and
+// no commit after the reviewed head changed the patch (ready-gate.mjs).
+const READY_GATE_FLAGS = Object.freeze(['review-verdict-file', 'reviewed-head-file', 'base'])
+
+export function isGatedPost({ context, state } = {}) {
+  return context === RECEIPT_CONTEXT && state === 'success'
+}
+
+// runReadyGate asks ready-gate.mjs in-process about flags.sha, with the three optional flags.
+export function runReadyGate(flags = {}, { report = readyGateReport } = {}) {
+  return report({
+    head: flags.sha,
+    base: flags.base,
+    reviewVerdictFile: flags['review-verdict-file'],
+    reviewedHeadFile: flags['reviewed-head-file'],
+  })
+}
 
 export class UsageError extends Error {}
 
@@ -160,7 +185,7 @@ function epoch(value) {
 // statusNodes flattens the accepted payload shapes into one list, or returns null for a wrong shape:
 // a slurped page array (array of arrays), a single page (array), or a combined-status object
 // (`{statuses: [...]}`).
-function statusNodes(payload) {
+export function statusNodes(payload) {
   let nodes
   if (Array.isArray(payload)) {
     nodes = payload.every((page) => Array.isArray(page)) ? payload.flat() : payload
@@ -239,7 +264,7 @@ function runGh(spawn, args) {
 // CLI.
 
 const CLI_FLAGS = Object.freeze({
-  post: ['context', 'state', 'sha', 'description', 'target-url', 'repo'],
+  post: ['context', 'state', 'sha', 'description', 'target-url', 'repo', ...READY_GATE_FLAGS],
   read: ['sha', 'context', 'repo'],
 })
 
@@ -268,10 +293,13 @@ function parseFlags(verb, argv) {
   return flags
 }
 
-// main runs one verb and returns `{exitCode, result}`; it throws UsageError on bad input before gh is
-// spawned. `deps.spawn` defaults to `spawnSync`.
+// main runs one verb and returns `{exitCode, result}` (plus `stderr` on a refusal); it throws
+// UsageError on bad input before gh is spawned. `deps.spawn` (gh) defaults to `spawnSync`;
+// `deps.readyGate` defaults to `runReadyGate`. Anything but `{ready: true}` from the gate — a
+// throw or a malformed answer included — refuses.
 export function main(argv, deps = {}) {
   const spawn = deps.spawn ?? spawnSync
+  const readyGate = deps.readyGate ?? runReadyGate
   const [cmd, ...rest] = argv
 
   if (cmd === 'post') {
@@ -286,10 +314,41 @@ export function main(argv, deps = {}) {
     }
     const args = postArgs(input)
     const v = validatePostInput(input)
-    const res = runGh(spawn, args)
     const posted = { sha: v.sha, context: v.context, state: v.state }
     if (v.description !== '') posted.description = v.description
     if (v.targetUrl !== '') posted.targetUrl = v.targetUrl
+    const gated = isGatedPost(v)
+    const gateFlags = { sha: v.sha }
+    for (const name of READY_GATE_FLAGS) {
+      if (flags[name] === undefined) continue
+      if (!gated) {
+        throw new UsageError(
+          `commit-status: --${name} applies only to a ${RECEIPT_CONTEXT} success post`,
+        )
+      }
+      gateFlags[name] = flags[name]
+    }
+    if (gated) {
+      let gate
+      let detail = ''
+      try {
+        gate = readyGate(gateFlags)
+      } catch (error) {
+        detail = ` (${error?.message ?? error})`
+      }
+      if (gate?.ready !== true) {
+        const reasons =
+          Array.isArray(gate?.reasons) && gate.reasons.length > 0
+            ? gate.reasons
+            : ['ready-gate-error']
+        return {
+          exitCode: 3,
+          result: { verdict: 'refused', ...posted, reasons },
+          stderr: `commit-status: refused ${v.context} ${v.state}: ${reasons.join(', ')}${detail}`,
+        }
+      }
+    }
+    const res = runGh(spawn, args)
     if (res?.error) {
       return {
         exitCode: 1,
@@ -340,8 +399,9 @@ export function main(argv, deps = {}) {
 
 if (isMainModule(import.meta.url)) {
   try {
-    const { exitCode, result } = main(process.argv.slice(2))
+    const { exitCode, result, stderr } = main(process.argv.slice(2))
     process.stdout.write(`${JSON.stringify(result)}\n`)
+    if (stderr) process.stderr.write(`${stderr}\n`)
     process.exitCode = exitCode
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)

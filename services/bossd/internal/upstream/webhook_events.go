@@ -71,6 +71,14 @@ func translateReview(e *github.PullRequestReviewEvent) ([]vcs.Event, int, error)
 	if state == vcs.ReviewStateUnspecified {
 		return nil, pr, nil
 	}
+	// Only a trusted author's review may reach the fix loop: anyone can review
+	// a public PR, and this event carries the review text to an agent that can
+	// push. Dropping the event (but keeping the PR number) still lets the
+	// dispatcher's provider-backed refresh run, and the provider applies the
+	// same rule. See vcs.IsTrustedReviewAuthor.
+	if !vcs.IsTrustedReviewAuthor(e.Review.GetUser().GetLogin(), e.Review.GetAuthorAssociation()) {
+		return nil, pr, nil
+	}
 
 	review := vcs.ReviewSubmitted{PRID: pr, ReviewID: e.Review.GetID(), Author: e.Review.GetUser().GetLogin(), State: state}
 	if e.Review.GetBody() != "" {

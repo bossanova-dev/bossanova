@@ -40,8 +40,9 @@ type World struct {
 	// rather than from the Session itself (BOS-668).
 	SessionStatuses []*pb.SessionStatusEntry
 	// GithubCallbacks are the armed callbacks the mock daemon's
-	// ListGithubCallbacks answers. Only armed-verify seeds them: the chat picker
-	// reads a waiting chat's trigger and expiry from here (BOS-1517).
+	// ListGithubCallbacks answers. Only armed-verify and build-handoff-standby
+	// seed them: the chat picker reads a waiting chat's trigger and expiry from
+	// here (BOS-1517).
 	GithubCallbacks []*pb.GithubCallback
 	CronJobs        []*pb.CronJob
 	Accounts        []*pb.Account
@@ -841,6 +842,89 @@ func ArmedVerifyWorld() World {
 			CreatedAt: ts(-30 * time.Minute),
 			ExpiresAt: ts(500 * 24 * time.Hour),
 		}},
+	}
+}
+
+// BuildHandoffPRNumber is the PR the BOS-1531 build handed off to verify.
+const BuildHandoffPRNumber = 2989
+
+// BuildHandoffBuildChatTitle is the finished build chat's title.
+const BuildHandoffBuildChatTitle = `Run "bs-build"`
+
+// BuildHandoffVerifyReason is the verify chat's blocking wait.
+var BuildHandoffVerifyReason = displaystatus.CallbackWaitingReason(
+	"checks_passed_ready", "acme", "my-app", BuildHandoffPRNumber,
+)
+
+// BuildHandoffStandbyReason is the finished build chat's standby wait.
+var BuildHandoffStandbyReason = displaystatus.CallbackWaitingReason(
+	"checks_failed", "acme", "my-app", BuildHandoffPRNumber,
+)
+
+// BuildHandoffStandbyWorld builds the BOS-1531 dataset: a build that reached
+// REVIEW_READY and handed off to verify. The finished build chat still holds a
+// standby checks_failed watch, and its agent-session id sorts BEFORE the verify
+// chat's — the shape that used to make the session name the standby wait. The
+// verify chat holds the blocking checks_passed_ready watch, and the daemon's
+// session aggregate names it.
+//
+// The chat picker must render the build row as a muted "standby" (no spinner)
+// and the verify row as "⡿ checks_passed_ready", with the waiting line
+// describing verify; Home must show no "awaiting checks_failed" hint.
+//
+// Callback expiries are far in the future for the same wall-clock reason as
+// ArmedVerifyWorld.
+func BuildHandoffStandbyWorld() World {
+	const (
+		sessID   = "sess-1531-handoff"
+		buildID  = "claude-1531-a-build"
+		verifyID = "claude-1531-z-verify"
+	)
+	sess := &pb.Session{
+		Id: sessID, RepoId: "repo-1", RepoDisplayName: "my-app",
+		Title: "Hand the importer off to verify", BranchName: "boss/importer-handoff",
+		State:         pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+		PrNumber:      i32(BuildHandoffPRNumber),
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		CreatedAt:     ts(-3 * time.Hour),
+		WorktreePath:  "/Users/demo/worktrees/my-app/importer-handoff",
+	}
+	in := displaystatus.Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}
+	out := displaystatus.Compute(in)
+	sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = out.Label, out.Intent, out.Spinner
+	sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
+	return World{
+		Repos:    Repos(),
+		Sessions: []*pb.Session{sess},
+		Chats: []*pb.ClaudeChat{
+			{Id: "chat-1531-verify", AgentSessionId: verifyID, SessionId: sessID, Title: "verify", CreatedAt: ts(-20 * time.Minute)},
+			{Id: "chat-1531-build", AgentSessionId: buildID, SessionId: sessID, Title: BuildHandoffBuildChatTitle, CreatedAt: ts(-3 * time.Hour)},
+		},
+		ChatStatuses: []*pb.ChatStatusEntry{
+			{AgentSessionId: verifyID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: BuildHandoffVerifyReason, LastOutputAt: ts(-20 * time.Minute)},
+			{AgentSessionId: buildID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: BuildHandoffStandbyReason, LastOutputAt: ts(-25 * time.Minute)},
+		},
+		SessionStatuses: []*pb.SessionStatusEntry{
+			{SessionId: sessID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: BuildHandoffVerifyReason},
+		},
+		GithubCallbacks: []*pb.GithubCallback{
+			{
+				Id: "cb-1531-verify", TargetChatId: verifyID,
+				RepoOwner: "acme", RepoName: "my-app", PrNumber: BuildHandoffPRNumber,
+				Trigger: "checks_passed_ready", State: "active",
+				Message:   "/boss-verify 2989",
+				CreatedAt: ts(-20 * time.Minute),
+				ExpiresAt: ts(500 * 24 * time.Hour),
+			},
+			{
+				Id: "cb-1531-build", TargetChatId: buildID,
+				RepoOwner: "acme", RepoName: "my-app", PrNumber: BuildHandoffPRNumber,
+				Trigger: "checks_failed", State: "active",
+				Message:   "CI failed on #2989",
+				CreatedAt: ts(-25 * time.Minute),
+				ExpiresAt: ts(500 * 24 * time.Hour),
+			},
+		},
 	}
 }
 

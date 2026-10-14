@@ -148,8 +148,6 @@ export const EXTENSION_ROLES = {
     keys: ['outcome', 'summary', 'issues'],
     refine: refineMaintenance,
   },
-  lens: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
-  round: { kind: 'items', keys: ['severity', 'file', 'line', 'title', 'detail'] },
   surface: { kind: 'items', keys: ['path', 'caption', 'evidenceTokens'] },
   'plan-reviewer': { kind: 'items', keys: ['severity', 'section', 'title', 'detail'] },
   notes: { kind: 'items', keys: ['tag', 'body', 'noteId'], nonEmpty: true },
@@ -225,9 +223,8 @@ export const SKIP_REASONS = {
   'extends-unrelated-core': { deliberate: false },
   'unknown-requested-role': { deliberate: false },
   'wrong-role': { deliberate: false },
-  'invalid-lens-binding': { deliberate: false },
   // `modes` is present but not a comma-separated subset of EXTENSION_MODES: a failed declaration,
-  // reported like an unusable `lens` binding rather than read as "every mode".
+  // reported rather than read as "every mode".
   'invalid-modes': { deliberate: false },
   'invalid-release-marker': { deliberate: false },
   // The extension declares `modes` and the requested mode is not among them — the declaration
@@ -370,11 +367,9 @@ function chompBlockScalar(value, chomping) {
 }
 
 // A quoted YAML scalar is a string by construction, so the quotes must be honoured
-// BEFORE the numeric test rather than stripped ahead of it: `lens: "42"` has to stay
-// the string "42" to bind to a config lens id of "42" (validateConfig only requires a
-// non-empty string id, so numeric-looking ids are legal), and stripping first turned it
-// into Number 42, which extensionMarker's `typeof === 'string'` guard then dropped —
-// silently reporting the extension as unbound. Only a bare, unquoted integer coerces.
+// BEFORE the numeric test rather than stripped ahead of it: `tagPrefix: "42"` has to stay
+// the string "42", and stripping first would turn it into Number 42, which extensionMarker's
+// string guards then drop silently. Only a bare, unquoted integer coerces.
 function coerce(value) {
   const v = value.trim()
   const quoted = /^(["'])([\s\S]*)\1$/.exec(v)
@@ -389,21 +384,6 @@ export function extensionMarker(frontmatter) {
   if (typeof block.extends !== 'string' || typeof block.role !== 'string') return null
   const order = typeof block.order === 'number' ? block.order : DEFAULT_ORDER
   const marker = { extends: block.extends, role: block.role, order }
-  // Optional binding to a config lens id. It is meaningful only for `role: lens` — a core's
-  // lens phase indexes discovered descriptors by it — but it is deliberately NOT validated
-  // against the role here: this helper is role-generic, and a stray key on another role is
-  // inert rather than a discovery failure. Absent/blank/non-string omits the field entirely,
-  // so an unbound descriptor's JSON is byte-identical to what it was before the key existed.
-  if (typeof block.lens === 'string' && block.lens !== '') marker.lens = block.lens
-  // Optional binding to a review CAPABILITY id — an exact structural mirror of `lens` above.
-  // It is meaningful only for `role: round`, where a core's opportunistic default-round phase
-  // uses it to tell that a discovered round already covers a capability the core would otherwise
-  // default-run, so the repo gets one pass instead of two. Deliberately NOT validated against the
-  // role (same reason as `lens`), and absent/blank/non-string omits the field entirely so an
-  // undeclared descriptor's JSON is byte-identical to what it was before the key existed.
-  if (typeof block.capability === 'string' && block.capability !== '') {
-    marker.capability = block.capability
-  }
   // Optional run-mode declaration (see EXTENSION_MODES). Absent means every mode and omits the
   // field, so an undeclared descriptor's JSON is byte-identical to what it was before the key
   // existed; an unusable value is also omitted here and reported by discovery as `invalid-modes`.
@@ -604,7 +584,7 @@ function discoverExtensionsInRoot({
       continue
     }
     // A same-prefix extension that extends this core but declares another known role is a
-    // legitimate cross-role sibling (e.g. boss-review lens vs round) and should not pollute
+    // legitimate cross-role sibling (e.g. boss-plan draft vs plan-reviewer) and should not pollute
     // `skipped`. A typo'd/unknown role remains a misconfiguration and is recorded as a skip.
     if (typeof role === 'string' && role !== '' && marker.role !== role) {
       if (!KNOWN_EXTENSION_ROLES.has(marker.role)) {
@@ -612,26 +592,6 @@ function discoverExtensionsInRoot({
       }
       continue
     }
-    // A `role: lens` descriptor whose `lens` key is PRESENT but unusable is a failed
-    // binding, not an absent one. `extensionMarker` drops it silently (its contract is role-generic
-    // and unchanged), which left a misconfigured lens extension indistinguishable from one that
-    // deliberately declared no binding — both reported `unbound`, so the operator got no signal that
-    // the descriptor tried and failed. Recording it here keeps `extensions` ∩ `skipped` = ∅: a
-    // rejected extension never reaches `.extensions`.
-    //
-    // Scoped to `role: lens` on purpose. The `lens` key is role-generic (see the extension
-    // contract), so a stray one on another role is carried through and ignored rather than
-    // rejected — only a lens descriptor is rendered undispatchable by it.
-    //
-    // `capability` (the `role: round` key) is the structural mirror of `lens` and deliberately gets
-    // NO equivalent skip, because the two are not mirrors in CONSEQUENCE. A lens descriptor binds
-    // to a lens id to be dispatched at all, so an unusable `lens` leaves it inert and skipping it
-    // costs nothing while buying the operator a signal. A `capability` is only a suppression hint:
-    // the round runs identically without it, and the contract already refuses to let a round that
-    // failed to load retire the capability it declares. Skipping a round for a malformed
-    // `capability` would therefore delete a working whole-branch reviewer to report a typo — strictly
-    // worse than running it and ignoring the key. The right treatment there is a warning, which this
-    // helper has no channel for; do not "restore the symmetry" by adding one here.
     if (marker.role === 'release') {
       const declared = parsed.data['x-boss-extension']
       if (
@@ -644,21 +604,8 @@ function discoverExtensionsInRoot({
         continue
       }
     }
-    if (marker.role === 'lens') {
-      const declaredLens = parsed.data['x-boss-extension'].lens
-      if (declaredLens !== undefined && marker.lens === undefined) {
-        skipped.push(
-          skipEntry(
-            entry.name,
-            'invalid-lens-binding',
-            'invalid "lens" binding (expected a non-empty string)',
-          ),
-        )
-        continue
-      }
-    }
-    // Mirrors the lens-binding skip above for every role: a PRESENT but unusable `modes` is a
-    // failed declaration, never silently widened to "every mode".
+    // A PRESENT but unusable `modes` is a failed declaration, never silently widened to
+    // "every mode".
     const declaredModes = parsed.data['x-boss-extension'].modes
     if (declaredModes !== undefined && marker.modes === undefined) {
       skipped.push(
@@ -700,8 +647,6 @@ function discoverExtensionsInRoot({
       role: marker.role,
       order: marker.order,
     }
-    if (marker.lens !== undefined) descriptor.lens = marker.lens
-    if (marker.capability !== undefined) descriptor.capability = marker.capability
     if (marker.modes !== undefined) descriptor.modes = marker.modes
     if (marker.optional === true) descriptor.optional = true
     if (marker.applies !== undefined) descriptor.applies = marker.applies
@@ -828,7 +773,7 @@ export function validateResult(envelope, role) {
     }
     // Roles whose items are a *claim of persistence* need every declared key to carry real text:
     // an empty `noteId` or `path` satisfies the `in` check above while proving nothing was
-    // written. Roles whose items are findings (lens/round/plan-reviewer) legitimately carry
+    // written. Roles whose items are findings (plan-reviewer) legitimately carry
     // blank fields, so the guard stays scoped rather than global.
     if (spec.nonEmpty) {
       for (const key of requiredKeys) {

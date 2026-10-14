@@ -28,6 +28,8 @@ type App struct {
 	startedAt         time.Time
 	ctx               context.Context
 	ptyManager        *bosspty.Manager
+	// supervisionProbe is copied into every rebuilt Home (newHomeModel).
+	supervisionProbe  DaemonSupervisionProbe
 	activeView        View
 	home              HomeModel
 	newSession        NewSessionModel
@@ -102,6 +104,15 @@ func (a *App) WithSubscriptionURL(rawURL string) *App {
 func (a *App) WithSettings(settings config.Settings) *App {
 	a.userSettings = settings
 	a.home.SetSettings(settings)
+	return a
+}
+
+// WithDaemonSupervisionProbe registers the local daemon's supervision probe,
+// which drives Home's unsupervised-daemon health line. Leave it unset (nil)
+// when the TUI is driving another machine's daemon.
+func (a *App) WithDaemonSupervisionProbe(probe DaemonSupervisionProbe) *App {
+	a.supervisionProbe = probe
+	a.home.SetDaemonSupervisionProbe(probe)
 	return a
 }
 
@@ -297,6 +308,11 @@ func (a App) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		a.handleWindowSize(msg)
+	case daemonSupervisionMsg:
+		// A probe Home issued can finish after the user has left Home. Route
+		// it to the retained Home model so the answer is recorded (and its
+		// in-flight mark cleared) and survives the next newHomeModel rebuild.
+		return a.updateHome(msg)
 	case logoutMsg:
 		// Logout actions originate in Home but can finish while a modal is
 		// active. Route the result to the retained Home model so a failed

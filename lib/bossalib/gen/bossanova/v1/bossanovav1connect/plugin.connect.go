@@ -916,8 +916,9 @@ type AgentRunnerServiceClient interface {
 	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
 	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
 	// chat's worktree under the supplied environment, plus each server's tool
-	// inventory and the tool-name prefix skills must call. Read-only: it never
-	// mutates configuration and never starts a coding turn.
+	// inventory and the tool-name prefix skills must call. Read-only apart from
+	// applying its project_trust decision (as a launch of the chat would): it
+	// never starts a coding turn.
 	//
 	// Fail-honest, never fail-guessing: a plugin that cannot answer returns
 	// codes.Unimplemented; a probe that ran but failed returns a populated
@@ -1359,8 +1360,9 @@ type AgentRunnerServiceHandler interface {
 	MaterializeAccount(context.Context, *connect.Request[v1.MaterializeAccountRequest]) (*connect.Response[v1.MaterializeAccountResponse], error)
 	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
 	// chat's worktree under the supplied environment, plus each server's tool
-	// inventory and the tool-name prefix skills must call. Read-only: it never
-	// mutates configuration and never starts a coding turn.
+	// inventory and the tool-name prefix skills must call. Read-only apart from
+	// applying its project_trust decision (as a launch of the chat would): it
+	// never starts a coding turn.
 	//
 	// Fail-honest, never fail-guessing: a plugin that cannot answer returns
 	// codes.Unimplemented; a probe that ran but failed returns a populated

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { RECEIPT_CONTEXT } from './commit-status.mjs'
-import { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS } from './verify-gate.mjs'
+import { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS, parseParkDescription } from './verify-gate.mjs'
 import { formatRunLine, isSecretBearing } from './bs-record-notes.mjs'
 import { resolveBossBinary } from './boss-binary.mjs'
 import { isMainModule } from './main-module.mjs'
@@ -149,8 +149,9 @@ export function collectReviews(prs, options = {}) {
 function parkCode(c) {
   if (c.context !== VERIFY_CONTEXT) return null
   const desc = c.description ?? ''
-  if (c.state === 'PENDING' && desc.startsWith(VERIFY_DESCRIPTIONS.needsHuman))
-    return desc.slice(VERIFY_DESCRIPTIONS.needsHuman.length).trim()
+  // A park's label is the operator's wording; occurrences group by the code text before it.
+  const park = c.state === 'PENDING' ? parseParkDescription(desc) : null
+  if (park) return park.codesText
   if (
     c.state === 'FAILURE' &&
     desc.startsWith(VERIFY_DESCRIPTIONS.defect) &&

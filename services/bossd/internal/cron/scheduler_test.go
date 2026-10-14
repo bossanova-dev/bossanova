@@ -311,6 +311,9 @@ func (f *fakeSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, 
 func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	panic("not used")
+}
 func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	panic("not used")
 }
@@ -326,6 +329,10 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 
 func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
 	panic("not used")
+}
+
+func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+	return nil
 }
 
 // fakeCreator is a SessionCreator mock. Each call optionally blocks on a
@@ -1567,7 +1574,7 @@ exit 0
 	job.GateCommand = "./check-proof-env.sh"
 
 	repos := newFakeRepoStore()
-	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath, IsTrusted: true})
 	creator := newFakeCreator()
 	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
 	s.gateProofEnv = fakeGateProofEnv{env: map[string]string{
@@ -1593,14 +1600,62 @@ exit 0
 	}
 }
 
+// TestFire_UntrustedRepoGateGetsNoProofKey pins BOS-1562 for cron gates: an
+// untrusted repo's gate receives no PROOF_ANTHROPIC_API_KEY — neither the
+// resolver's nor an ambient one — and none of the proof upload variables.
+func TestFire_UntrustedRepoGateGetsNoProofKey(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	store.put(job)
+	t.Setenv(proofenv.EnvAnthropicAPIKey, "ambient-proof-key")
+	t.Setenv(proofenv.EnvCloudflareAPIToken, "ambient-upload-key")
+
+	repoPath := t.TempDir()
+	const body = `#!/bin/sh
+[ "${PROOF_ANTHROPIC_API_KEY+x}" != "x" ] || exit 1
+[ "${CLOUDFLARE_API_TOKEN+x}" != "x" ] || exit 2
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(repoPath, "check-no-proof.sh"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job.GateCommand = "./check-no-proof.sh"
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	s.gateProofEnv = fakeGateProofEnv{env: map[string]string{
+		proofenv.EnvAnthropicAPIKey:    "proof-key",
+		proofenv.EnvCloudflareAPIToken: "proof-upload-key",
+	}}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "" || sess == nil {
+		t.Fatalf("fire = (%v, %q), want created session (gate saw proof env)", sess, skipped)
+	}
+}
+
+// TestFire_GateWithoutProofKeyPreservesAmbientAnthropicEnv: a gate that gets
+// no proof key keeps the ambient ANTHROPIC_* env. The resolver cases only
+// exercise the resolver on a trusted repo (an untrusted one never consults
+// it, BOS-1562), so each runs trusted, plus an untrusted counterpart.
 func TestFire_GateWithoutProofKeyPreservesAmbientAnthropicEnv(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		resolver GateProofEnvResolver
+		name      string
+		resolver  GateProofEnvResolver
+		untrusted bool
 	}{
 		{name: "nil resolver"},
 		{name: "resolver without key", resolver: fakeGateProofEnv{env: map[string]string{}}},
 		{name: "resolver with whitespace key", resolver: fakeGateProofEnv{env: map[string]string{proofenv.EnvAnthropicAPIKey: " \n\t "}}},
+		{name: "untrusted repo with a key-bearing resolver", resolver: fakeGateProofEnv{env: map[string]string{proofenv.EnvAnthropicAPIKey: "proof-key"}}, untrusted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
@@ -1621,7 +1676,7 @@ exit 0
 			job.GateCommand = "./check-ambient-env.sh"
 
 			repos := newFakeRepoStore()
-			repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+			repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath, IsTrusted: !tc.untrusted})
 			creator := newFakeCreator()
 			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
 			s.gateProofEnv = tc.resolver
@@ -1654,8 +1709,11 @@ func TestFire_ProofGateWithoutResolvedKeyPreventsSessionCreation(t *testing.T) {
 	}
 	job.GateCommand = "./fail-proof-gate.sh"
 
+	// Trusted, so the resolver is consulted and it is the missing key — not the
+	// trust gate — that blocks the fire (TestFire_UntrustedRepoGateGetsNoProofKey
+	// covers the untrusted side).
 	repos := newFakeRepoStore()
-	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath})
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath, IsTrusted: true})
 	creator := newFakeCreator()
 	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
 	s.gateProofEnv = fakeGateProofEnv{env: map[string]string{}}
@@ -1913,4 +1971,8 @@ func TestFire_ConcurrencyPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

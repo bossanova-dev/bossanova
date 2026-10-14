@@ -133,9 +133,13 @@ func (i *ChatCallbackInterest) WaitingReason() string {
 // predicate, as db.SQLiteGithubCallbackStore.AcquireLease and TriggerGroup.
 //
 // A chat may hold several live callbacks (several PRs, several triggers). The
-// winner is the OLDEST by created_at, tie-broken by the lexicographically
-// smallest id — the interest the chat has been parked on longest, and a total
-// order over a set with no natural precedence. The comparison is done here
+// winner is a PROGRESS trigger ahead of a STANDBY one
+// (models.GithubCallbackTrigger.IsStandby: checks_failed, closed — contingency
+// watches that only fire when the PR goes wrong), so a chat holding a forward
+// watch reports that rather than an older contingency (BOS-1531). Within the
+// same class the winner is the OLDEST by created_at, tie-broken by the
+// lexicographically smallest id — the interest the chat has been parked on
+// longest, and a total order. The comparison is done here
 // rather than leaning on the store's ORDER BY so the rule is testable and
 // cannot drift with a query change; map iteration is never involved.
 func ActiveInterestForChat(ctx context.Context, store interestLister, targetChatID string, now time.Time) (*ChatCallbackInterest, error) {
@@ -178,8 +182,12 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 }
 
 // earlierCallback reports whether a sorts before b under the documented
-// deterministic rule: oldest created_at first, ties broken by smallest id.
+// deterministic rule: progress triggers before standby triggers, then oldest
+// created_at, then smallest id.
 func earlierCallback(a, b *models.GithubCallback) bool {
+	if aStandby, bStandby := a.Trigger.IsStandby(), b.Trigger.IsStandby(); aStandby != bStandby {
+		return bStandby
+	}
 	if !a.CreatedAt.Equal(b.CreatedAt) {
 		return a.CreatedAt.Before(b.CreatedAt)
 	}

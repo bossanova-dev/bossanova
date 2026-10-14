@@ -33,8 +33,7 @@ import { readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
 // The citation resolver lives in its own module so a caller that needs ONLY that mechanic
-// (bs-dispatch-claims.mjs, bs-review-triage.mjs) imports it alone instead of dragging this
-// guard's whole closure into three published skill payloads. It is imported here, not
+// imports it alone instead of dragging this guard's whole closure into a published payload. It is imported here, not
 // re-exported: a second import path for one module is the drift R1 exists to close.
 import { resolveCitationCoordinate } from './citation-coordinate.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'

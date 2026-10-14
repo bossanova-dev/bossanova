@@ -601,7 +601,8 @@ For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_PL
 The very last action on every terminal path, after the report and any notes dispatch:
 `node "$BOSS_PLAN_TOOLBOX/session-self-archive.mjs" --outcome <planned|noop|epic|empty-queue|blocked|failed> --run-scratch .linear-plans/run-<RUN-SCRATCH-ID>`
 — add `--suppressed` when a calling skill or your prompt owns the session. Act on its `verdict`:
-`archive` — the archive is launched and will close this pane; end the turn with one line. `ask` —
+`archive` — the archive is launched and will close this pane; end the turn with one line. `finish` —
+the run is handed to bossd's finalize; end the turn with one line. `ask` —
 ask whether to archive now; on yes re-run with `--confirmed`, on no stop. `skip` — print the
 `reason` and stop; never an error.
 

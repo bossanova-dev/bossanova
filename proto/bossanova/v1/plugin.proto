@@ -534,8 +534,9 @@ service AgentRunnerService {
 
   // DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
   // chat's worktree under the supplied environment, plus each server's tool
-  // inventory and the tool-name prefix skills must call. Read-only: it never
-  // mutates configuration and never starts a coding turn.
+  // inventory and the tool-name prefix skills must call. Read-only apart from
+  // applying its project_trust decision (as a launch of the chat would): it
+  // never starts a coding turn.
   //
   // Fail-honest, never fail-guessing: a plugin that cannot answer returns
   // codes.Unimplemented; a probe that ran but failed returns a populated
@@ -574,6 +575,15 @@ message PreflightHeadlessRunRequest {
   string work_dir = 4;
   // Opaque agent reasoning-effort level; "" = plugin default.
   string effort = 5;
+  // project_trust is the gated launch's project-trust decision for work_dir
+  // (BOS-1562), the same value its StartAgentRunRequest or
+  // BuildInteractiveCommandRequest will carry. The preflight starts the agent in
+  // work_dir, so the runner applies the decision BEFORE probing, exactly as the
+  // launch would: on REVOKE it makes the agent distrust work_dir, or the probe
+  // loads an untrusted repo's own configuration (Codex: MCP server commands in
+  // .codex/config.toml); GRANT trusts it; DENY makes the probing agent
+  // distrust it without persisting anything; UNSPECIFIED changes nothing.
+  ProjectTrustDecision project_trust = 6;
 }
 
 message PreflightHeadlessRunResponse {
@@ -606,6 +616,20 @@ message StartAgentRunRequest {
   reserved "managed_mcp_config_path", "is_strict_managed_mcp_config";
   // Opaque agent reasoning-effort level; "" = plugin default.
   string effort = 11;
+  // project_trust is the run's project-trust decision for work_dir (BOS-1562).
+  // A headless run has no trust prompt to fall back on, so REVOKE matters most
+  // here: the runner must make the agent distrust work_dir before it starts —
+  // overriding any pre-trust left from an earlier trusted period or an
+  // interactive launch, and any trust the agent would inherit (Codex: a linked
+  // worktree inherits its main checkout's) — so the agent does not load an
+  // untrusted repo's own configuration.
+  // GRANT means what it means on an interactive launch: the runner may
+  // pre-trust work_dir (Codex: records it trusted), so a GRANT after a REVOKE
+  // restores trust for a re-trusted repo. DENY (an untrusted repo's run in its
+  // own checkout) runs this agent untrusted without persisting anything.
+  // UNSPECIFIED (no decision) changes nothing; bossd sets a decision on every
+  // headless run it launches.
+  ProjectTrustDecision project_trust = 12;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -663,6 +687,36 @@ message RemoveAgentRunHookResponse {
   bool is_supported = 1;
 }
 
+// ProjectTrustDecision is what one launch tells an agent runner about the
+// local user's trust in the repository it runs in (bossd's repos.is_trusted).
+// UNSPECIFIED is "no decision": the runner leaves any project trust it already
+// holds unchanged. bossd sends it only for requests that render argv without
+// launching: live-pane input rendering, and the launch preview of a trusted
+// repo's chat (a preview of a launch that would REVOKE or DENY sends DENY, so
+// it renders the same untrusted override and persists nothing). A runner
+// that applies project trust (Codex) applies every decision the same way on
+// every request that carries it, and refuses a value it does not recognise; a
+// runner whose agent has no project-trust gate ignores the field.
+enum ProjectTrustDecision {
+  PROJECT_TRUST_DECISION_UNSPECIFIED = 0;
+  // GRANT: the user trusts the repo; the runner may persist trust for the
+  // work dir (Codex: records it trusted).
+  PROJECT_TRUST_DECISION_GRANT = 1;
+  // REVOKE: the user does not trust the repo; the runner persists distrust
+  // for the work dir, a bossd-managed worktree, and also runs this launch
+  // untrusted in case the agent reads a config the runner did not edit
+  // (Codex: records it untrusted, plus DENY's per-process override).
+  PROJECT_TRUST_DECISION_REVOKE = 2;
+  // DENY: run THIS launch untrusted without editing the runner's persisted
+  // configuration. bossd sends it for an untrusted repo's launch in the repo's
+  // own checkout, whose persisted trust belongs to the user (and, for Codex,
+  // decides the trust of the user's linked worktrees), so a stale "trusted"
+  // entry for it — written while the repo was trusted, or by the user — must
+  // not apply to the launch, and nothing may be written over it (Codex: a
+  // per-process `-c projects=...` override marking the work dir untrusted).
+  PROJECT_TRUST_DECISION_DENY = 3;
+}
+
 message BuildInteractiveCommandRequest {
   string session_id = 1;
   bool resume = 2;
@@ -703,6 +757,32 @@ message BuildInteractiveCommandRequest {
   // receipt hook that POSTs /hooks/prompt-submitted/{session_id} to it and
   // answers can_confirm_delivery. 0 means no hook server is available.
   int32 hook_port = 16;
+  // project_trust is the launch's project-trust decision for worktree_path
+  // (BOS-1562), derived from bossd's repos.is_trusted. GRANT: the local user
+  // trusts the repo, so a runner whose agent gates repo-supplied configuration
+  // behind a project-trust prompt (Codex: MCP server commands, model provider
+  // in .codex/config.toml) may pre-trust the worktree. REVOKE: the user does
+  // not, so the runner must make the agent distrust this worktree, overriding
+  // any pre-trust (e.g. one written while the repo was still trusted) and any
+  // inherited trust (Codex: an explicit untrusted entry, since a linked
+  // worktree otherwise inherits its main checkout's trust; Codex then neither
+  // loads the config nor prompts). DENY: an untrusted repo's launch in its
+  // own checkout — the runner runs this launch untrusted without persisting
+  // anything, so the user's own trust entry for the checkout is untouched.
+  // UNSPECIFIED: no decision — metadata-only requests (input rendering for a
+  // live pane, a trusted repo's launch preview) send it, and the runner leaves
+  // any trust it already holds as it is. A launch preview never sends GRANT or
+  // REVOKE: one that would REVOKE or DENY previews as DENY.
+  ProjectTrustDecision project_trust = 17;
+  // 18 carried should_revoke_project_trust while the decision was two bools;
+  // never released, but retired so no build can mis-decode it.
+  reserved 18;
+  reserved "should_trust_project_config", "should_revoke_project_trust";
+  // hook_receipt_token is the bearer token the receipt hook must send as
+  // "Authorization: Bearer <token>" on POST /hooks/prompt-submitted/{session_id}.
+  // bossd derives it per chat and sets it beside hook_port. Empty (an older
+  // bossd) means the hook is installed without the header.
+  string hook_receipt_token = 19;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;
@@ -808,6 +888,14 @@ message SuggestPRTitleRequest {
   string git_log = 4;
   // The base branch the PR targets.
   string base_branch = 5;
+  // extra_env is the daemon-resolved environment overlay for the one-shot,
+  // applied on top of the plugin's inherited environment exactly as
+  // StartAgentRunRequest.extra_env is. The one-shot runs an agent in the
+  // session worktree, so it must carry the same repo pins a session spawn
+  // gets (dotenv.OverlayWithRepo): without them an ambient LINEAR_API_KEY,
+  // SENTRY_* or proof credential in the daemon environment reaches an
+  // untrusted repo's agent (BOS-1562). Secret-bearing: NEVER logged.
+  map<string, string> extra_env = 6;
 }
 message SuggestPRTitleResponse {
   // false = the agent has no suggestion (unimplemented / failed); the daemon
@@ -1046,6 +1134,14 @@ message DescribeMCPSurfaceRequest {
   // daemon from the same chain the spawn path uses. Secret-bearing: NEVER logged
   // by bossd or the plugin, and NEVER echoed into the response.
   map<string, string> probe_env = 4;
+  // project_trust is the chat's project-trust decision for work_dir
+  // (BOS-1562), the same value its launch carries. The probe starts the agent
+  // in work_dir, so the runner applies the decision BEFORE probing: on REVOKE
+  // it makes the agent distrust work_dir, or the probe loads an untrusted
+  // repo's own configuration (Codex: MCP server commands in
+  // .codex/config.toml); GRANT trusts it; DENY makes the probing agent
+  // distrust it without persisting anything; UNSPECIFIED changes nothing.
+  ProjectTrustDecision project_trust = 5;
 }
 
 message DescribeMCPSurfaceResponse {

@@ -34,10 +34,12 @@ func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 }
 
 // NewVersionedPluginMap wraps NewPluginMap in the go-plugin VersionedPlugins
-// shape. Do not add ProtocolVersionV1 here: its managed-MCP request fields use
-// protobuf tags that are reserved in v2, so accepting a v1 binary would launch
-// an agent without the managed configuration. A mismatched release must fail
-// handshake negotiation instead.
+// shape. Do not add ProtocolVersionV1 or ProtocolVersionV2 here: v1's
+// managed-MCP request fields use protobuf tags that are reserved since v2, and
+// a v2 binary ignores the repo-trust fields v3 added (BOS-1562), so accepting
+// either would launch an agent without the managed configuration or without
+// its trust decision. A mismatched release must fail handshake negotiation
+// instead.
 func NewVersionedPluginMap(hostService *HostServiceServer) map[int]goplugin.PluginSet {
 	return map[int]goplugin.PluginSet{
 		sharedplugin.ProtocolVersion: NewPluginMap(hostService),

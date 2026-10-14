@@ -241,6 +241,12 @@ with a nil handler and never ran, so those toggles
 (`CanAutoAddressReviews` / `CanAutoResolveConflicts` / `CanAutoFixChecks`) gated
 dead code and were collapsed into `CanAutoRepair`.
 
+### Trusted reviewer
+
+A pull-request review author whose review is allowed to drive unattended review automation: the repository's owner, a member of its organization, an invited collaborator, or a bot.
+
+Reviews from anyone else are dropped at the point they are read from GitHub. Their text never reaches an agent, they cannot set the PR's latest review state, and they cannot start an Automatic repair run; only a count of dropped reviews may be surfaced. Bot status is decided from the bot-shaped login GitHub's REST and webhook data carry, never from the association, which reports bots as unaffiliated. When a review is read from a source that does not carry that login, it is re-identified against the REST review list before it is trusted. If that lookup fails, the review stays untrusted.
+
 ### Draft PR placeholder commit
 
 An empty scaffolding commit whose only job is to make a draft pull request possible before a branch has reviewable work. It is not evidence of user work, and commit-message policy must treat it differently from non-empty work commits.
@@ -269,11 +275,11 @@ The default is copied onto the repository at registration time, not looked up ag
 
 ### Repo origin ownership
 
-The rule that a canonical repo origin is held by at most one organization across the whole installation, rather than once per organization. Ownership is enforced as a uniqueness invariant over the stored origin, so it survives any application path that forgets to check it — which is what makes the canonical form load-bearing rather than cosmetic. Re-asserting an ownership one already holds is the same claim, not a second one; asserting one another organization holds is refused.
+The rule that a canonical repo origin is held by at most one organization across the whole installation, rather than once per organization. Ownership is enforced as a uniqueness invariant over the stored origin, so it survives any application path that forgets to check it — which is what makes the canonical form load-bearing rather than cosmetic. Re-asserting an ownership one already holds is the same claim, not a second one; asserting one another organization holds is refused — except that the party with verified control of a GitHub repository may contest its origin out of whichever organization holds it, an audited move. Origins with no checkable control stay first-claim-wins.
 
 Ownership is deliberately asymmetric between reading and claiming. Asking who holds an origin one does not hold answers exactly as an unheld origin does, so the holder's identity is never disclosed by a read; attempting to claim such an origin is refused as already held. Occupancy is therefore discoverable through the claim and not through the read, which is why a caller cannot decide from a read alone whether an origin is free — and why the refusal a user sees is raised where the claim is made rather than where the mapping is loaded.
 
-Ownership is a claim, not a proof of control. Nothing in the write path demonstrates that the claiming organization has any relationship to the repository the origin names, so the first claimant of an origin holds it whether or not the repository is theirs. A reader that routes on these rows must therefore authorize independently rather than treat the row as authority: the accepted route is to serve a mapped organization only to a party that is a member of it, and to refuse otherwise. That gate removes the confidentiality harm — nobody is handed another organization's data — and leaves an availability one in its place, in that an origin claimed by a stranger stops that repository being served at all until the claim is released. The trade is deliberate: silently falling back to the default scope when the mapping does not authorize would route data somewhere the mapping says it does not belong, and do it invisibly.
+Ownership is a claim, not a proof of control. Apart from the GitHub control check, nothing in the write path demonstrates that the claiming organization has any relationship to the repository the origin names, so the first claimant of an origin holds it whether or not the repository is theirs. A reader that routes on these rows must therefore authorize independently rather than treat the row as authority: the accepted route is to serve a mapped organization only to a party that is a member of it, and to refuse otherwise. That gate removes the confidentiality harm — nobody is handed another organization's data — and leaves an availability one in its place, in that an origin claimed by a stranger stops that repository being served at all until the claim is released. The trade is deliberate: silently falling back to the default scope when the mapping does not authorize would route data somewhere the mapping says it does not belong, and do it invisibly.
 
 ## Authentication state
 
@@ -418,6 +424,16 @@ only repeat what is on screen while pushing the informative half of the line rig
 is absent or missing any of its parts is rendered as nothing at all rather than as an empty row:
 callers skip the line entirely, so the layout does not shift and no unselectable row is left for a
 cursor to strand on.
+
+### Standby watch
+
+A watch armed on a contingency trigger — checks failing, or the pull request closing — that fires
+only when the PR goes wrong or leaves the workflow. A chat holding only standby watches is not what
+the PR is waiting on: some other chat or stage owns its forward progress. Standby is decided by the
+trigger alone, in the same place the Waiting reason wording is composed, so the daemon and every
+surface share one definition. A chat's own reason and the session's reason prefer a progress wait
+over a standby one; the chat picker renders a standby-only chat muted, as `standby`, without a
+spinner; and Home never presents a standby wait as what the session is waiting on.
 
 ### Ready (hand-off status)
 
@@ -691,7 +707,8 @@ someone else is meant to submit, never does.
 Evidence, produced by the agent itself, that it submitted the input it was launched with — the
 replacement for reading the pane once input travels by **Argv delivery**. Each agent supplies its own
 kind or none: one that adopts the session id it is given posts a receipt from a prompt-submitted
-hook; one that mints its own id leaves a user turn in its own transcript. A receipt counts only if it
+hook, authenticated by a per-chat bearer token bossd derives from its socket token (a receipt without
+it is refused); one that mints its own id leaves a user turn in its own transcript. A receipt counts only if it
 is newer than the launch, because a resumed conversation already holds earlier user turns and a
 "user message present" check would pass at once.
 
@@ -1352,6 +1369,18 @@ Two independent questions about a daemon that must never collapse into one verdi
 
 Staleness is silent by construction: the service manager keeps something running, the socket comes up, and commands exit successfully, so the condition is indistinguishable from a healthy daemon at the call site and can persist for days. Only a change of process identity proves a restart actually replaced the running image, and a correct staleness signal written somewhere nobody reads is, in practice, no signal at all.
 
+### Unsupervised daemon
+
+A live local daemon that the OS service manager does not own — typically one started by hand or left detached — so nothing restarts it when it dies and it does not run with the environment its service definition would give it.
+
+The verdict is reported only when it is known: a check that cannot tell whether the service manager owns the daemon reports "not unsupervised" rather than warning, because an advisory raised on guesses trains operators to ignore it, and the daemon diagnostic is where unknowns get explained. The warning belongs on every surface the operator actually reads, so a per-command stderr notice that the full-screen TUI immediately covers needs a TUI counterpart. It describes only this machine's daemon, so a client driving a remote daemon shows nothing.
+
+### Revision drift
+
+Whether the executing CLI binary contains every commit of the checkout it is being run from — the CLI-side counterpart of daemon staleness. It is decided by git ancestry, never by dates or version strings: the binary is healthy exactly when the checkout's HEAD is an ancestor of, or equal to, the binary's revision. The direction is the whole definition; the reverse question ("does the checkout contain the binary?") grades a stale build of an older commit on the same branch as healthy and any binary carrying a commit the checkout lacks as behind. Anything that prevents the comparison — no checkout, an untrusted checkout, an unstamped or unreadable revision, a revision absent from this clone — is unknown rather than healthy.
+
+A **release build** — a binary whose own version stamp is a clean `v<semver>` — is its own unknown outcome inside a checkout rather than a drift verdict: releases are stamped on a production merge commit no development checkout contains, so comparing one against a dev tree is a category error, and its remedy is the next release, not a rebuild.
+
 ## Daemon shutdown
 
 ### Drain
@@ -1386,6 +1415,8 @@ The Redis-backed fleet-wide mapping from a hashed daemon session token to its da
 
 A short-lived Redis claim mapping a daemon, session, or chat to the bosso instance holding its live `DaemonStream`. Claims are routing metadata, refreshed by the owning registry, and rechecked at the target before pod-local state access.
 
+The organization a claim is filed under is the one the daemon's stream authenticated into, not the organization any particular session belongs to, so one daemon's claim can front sessions from several organizations. A claim's organization is therefore never an authorization answer; see **Session row organization**.
+
 ### Owner dispatch
 
 Finite daemon commands resolve a global owner and use one dispatcher: local owners enter the local stream registry; remote owners use the authenticated internal command relay. Fleet operations enumerate all ready owner claims and dispatch with bounded concurrency. Commands are never retried after ambiguous delivery.
@@ -1393,6 +1424,24 @@ Finite daemon commands resolve a global owner and use one dispatcher: local owne
 ### Raw stream routing
 
 Long-lived transports (`DaemonStream`, `TerminalStream`, attach/create/chat streams, attach-token issuance, and WebSocket attach) are proxied directly to the current owner. Load-balancer affinity is never a correctness mechanism; an exhaustive RPC catalog and source-level boundary test enforce the distinction between raw streams and distributed finite commands.
+
+### Session row organization
+
+The organization a session is filed under in the shared session record, decided by the organization its repository maps to — the authority for who outside the Machine owner may reach that session.
+
+It can differ from the organization of the daemon's **Owner claim**, which only says where the live stream is. Access is judged against the row organization, and the row consulted must belong to the same daemon the request is routed to, because session identifiers are not unique across daemons. A server that cannot read the row denies everyone but the Machine owner rather than falling back to the claim.
+
+### Machine owner
+
+The user whose daemon hosts a session — the only person who may do anything on that machine beyond interacting with an already-running chat, whatever organizations others share with them. Ownership is judged on the authenticated acting user, never on an organization.
+
+### Command actor
+
+The user a daemon command is sent on behalf of, checked against the **Machine owner** for every owner-only command bosso dispatches. It is the authenticated caller when there is one; a background sender with no request behind it (such as a trigger launch, which acts for the trigger's creator) must name its actor explicitly, and a command with no actor at all is refused rather than trusted.
+
+### Teammate
+
+A member of a session's **Session row organization** who is not its **Machine owner**. A teammate may interact with chats already running on the owner's machine — read, message, wake, attach, interrupt — and nothing else; starting a fresh conversation counts as creation and is owner-only. The permitted set is an allow-list, so any capability not explicitly granted to teammates is owner-only by default. A read-only (viewer) attach can watch a terminal but its keystrokes never reach the machine.
 
 ## Cloud billing
 
@@ -1491,6 +1540,24 @@ Membership changes are access changes first. Adding a membership can require bil
 the access grant; removing one must revoke access even when billing reconciliation is temporarily
 unavailable.
 
+### Organization owner
+
+The Organization membership role that holds billing and administrative authority over an
+organization. It is the only role allowed to change that organization's Cloud billing.
+
+Ownership is judged on the Claimed organization, and only when the membership still backs the claim.
+A claim whose membership has gone, or that carries a lesser role, is refused for any billing action
+that writes. The exception is the entitlement refresh that clients poll after checkout. For a
+non-owner it returns the read-only access answer and writes nothing, so a member's polling cannot
+move the Account setup state. A personal organization's own user is always its owner and can never
+be demoted or removed.
+
+An organization always keeps at least one owner. Demoting or removing an owner is checked and
+written in one step, serialised against every other such change for the same organization. Two
+owners demoting or removing each other at once therefore cannot both succeed. The guarantee covers
+owner changes made inside the product. Membership changes copied in from the external identity
+directory are taken as authoritative and are not held to it.
+
 ### Pending organization invitation
 
 A directory-provider invitation to join an organization that has not yet become an Organization
@@ -1534,6 +1601,21 @@ Resolution fixes resource identity, not future authority. A token-bound continua
 Resolved organization so later lookups cannot repeat broad discovery and silently select a duplicate
 identifier in another organization; it still refreshes Organization membership before use, and a
 failure to refresh remains an infrastructure error rather than proof that access was revoked.
+
+### Organization scope
+
+The tenant a server-side data read or write runs inside — an organization, and for reads that check
+Organization membership, the user who must belong to it — supplied explicitly on every call rather
+than inferred.
+
+Scoped access is the default: a row owned by another organization, or an organization the user is
+not a member of, reads as absent rather than forbidden, so the answer is no existence oracle. A
+missing or incomplete scope is an error, never a read across every organization. The only reads
+that span organizations are explicitly named unscoped exceptions, reserved for system paths with no
+caller to scope to — an inbound request authorized by its own secret, event ingest, billing
+reconciliation — and each request-serving use of one must carry a recorded reason. Distinct from the
+Claimed organization, which is what a request asserts; the scope is what the data layer enforces
+once that claim has been checked.
 
 ### Trial eligibility
 
@@ -1700,18 +1782,6 @@ The `make` → `bazel` delegation (BOS-339): `make test` and its smoke/per-modul
 
 The reconciliation between what `bazel test //...` runs and what `make` must still cover natively. A small set of tests are tagged out of the sandbox (`manual`/`local`); the ledger (`scripts/bazel/ledger.json`, mirrored in the sandbox-patterns doc) records each exclusion and its native fallback so `make test` runs them as an extra `go test` pass and no coverage is lost.
 
-### Review ledger
-
-The per-run `boss-review` dispatch ledger, stored under `.git/boss-review-ledgers/` by default. It is
-unrelated to the Bazel reconciliation ledger above: this one records reviewer coverage, not test-runner
-coverage. Each row is a dispatch record for one discovered reviewer (`lens:<id>`,
-`round:<extension>`, or `default:<capability>`) with its phase, tier, mode (`dispatched`, `inlined`,
-or `unknown`), outcome (`completed`, `skipped`, `timed-out`, or `not-reached`), cause, and timing.
-
-The important value is the seeded `not-reached` row. `boss-review` writes one before dispatching so a
-killed run, skipped tier, or missing reviewer remains visible later instead of collapsing into "no
-row, therefore no problem."
-
 ### Test command manifest
 
 A generated inventory of the repository's test commands, module targets, and command-selection
@@ -1853,6 +1923,44 @@ by design, drift is the set of deltas since that point — newly added user-faci
 owns, ownership patterns that no longer match anything, and feature commits — never the whole
 uncovered remainder. Each drift result carries a fingerprint, and a tracker issue carrying it (or
 any still-open drift issue) means the drift is already tracked, so at most one is open at a time.
+
+### Base-wins
+
+The rule that a PR's verification evidence is planned from the feature map as it stood at the PR's
+base, not as the PR leaves it, so a change cannot choose the wording its own evidence is checked
+against. Trust attaches to each criterion the base map defines, not to whichever side selected the
+feature: a criterion the base has keeps its base text and recipe even inside a feature only the head's
+map selects. Where the base is a moving branch, "the base" means the point the PR forked from, so
+later edits on the base branch are never read as the PR's own.
+
+### Change criterion
+
+A feature-map criterion the PR itself adds or rewords, driven first as the evidence of what the PR
+claims; every other criterion selected for the PR is a **Sweep criterion**. The change layer only
+adds to the **Base-wins** plan and never replaces it: an added criterion is driven with the head's
+wording because the base has none, while a reworded one is still driven with the base wording and
+merely flagged. When the two maps cannot be compared, every criterion is a sweep criterion.
+
+### Sweep criterion
+
+A criterion selected for a PR's evidence because the PR touches what its feature owns, but which the
+PR did not add or reword — regression coverage rather than the PR's own claim. Its chapter is a
+sweep chapter: recorded and decided from its assertion like any other, but never cut into the
+evidence video, so it carries no video time and is never downgraded to unproven by a render
+failure; a run of only sweep chapters renders no video. The PR evidence comment leads with the
+change chapters and their video times, and sweep criteria appear only in the criteria table.
+Contrast **Change criterion**.
+
+### Feature-map weakening
+
+A head-map edit that reduces what verification checks relative to the base map: removing a feature
+or criterion (`remove`), rewording a criterion (`edit`), newly marking an existing criterion out of
+stack (`out-of-stack`), dropping an ownership pattern (`remove-owns`), adding one (`add-owns`, which
+takes paths out of the broad sweep), narrowing the index's roots (`narrow-roots`), or dropping a
+surface (`narrow-surfaces`). New criteria, new surfaces, recipe prose and removed out-of-stack marks
+are free. A rewording is both a weakening and a **Change criterion**. A weakening the ticket's
+`## Feature map changes` section declares is planned and passes; an undeclared one parks the PR for
+human review.
 
 ### Byte ratchet
 
@@ -2031,14 +2139,6 @@ procedure fails them. The change that adds the handler is the one that declares 
 reason disappears in that change rather than lingering after the procedure starts answering.
 
 ## Review and verification
-
-### Dispatch record
-
-A single row in a durable review ledger describing the fate of one planned reviewer invocation. It is
-not a finding and it is not the human decisions ledger: it answers whether the reviewer was reached,
-how it was reached, and whether it produced a readable envelope. Report confidence and diagnostics
-consume dispatch records so a skipped or timed-out reviewer lowers confidence even when the remaining
-reviewers found no code issue.
 
 ### Absent gate
 
@@ -2865,8 +2965,8 @@ discriminator can be applied to a symbol the plan never knew about.
 
 ### Review verdict
 
-A build run's own record of how its whole-branch review settled — passed, ran but was capped short of
-a full pass, or produced no usable verdict at all — written down so a later step or a separately
+A build run's own record of how its whole-branch review settled — passed, still carried blocking
+findings after the review's one fix pass, or produced no usable verdict at all — written down so a later step or a separately
 dispatched repair pass can route on it without re-running the review.
 
 The verdict is **run-scoped, not diff-scoped**: it says this run's review passed, not that any
@@ -2876,6 +2976,21 @@ settled can never be read downstream as passed. Because one of its readers runs 
 session — one that executes neither the preflight that clears the verdict nor the step that consumes
 it — the verdict can be read back against a head no review examined; what bounds that reader is its
 own acknowledge-once contract rather than the freshness of the verdict.
+
+### Trusted tree
+
+A read-only snapshot of the repository at the base revision a verify judge already trusts for its
+policy, from which every input that decides _how_ a pull request is judged is loaded — which verify
+extensions exist, their instructions and resources, and the checks that say whether each applies.
+The pull request's own checkout remains the system under test: deciding code runs from the trusted
+tree while it observes the head. So a change cannot add, remove or edit the code that judges it, and
+a stale branch is judged by current extension code rather than the copy it forked with.
+
+The snapshot is keyed by base revision and shared by every judge on that base. When one cannot be
+produced, or disappears while a judge is still using it, the verdict waits with its evidence marked
+unknown; the pull request's checkout is never a fallback — not in the judge, and not in an extension
+it dispatches without a trusted location, which declines and routes to a person — and "no
+extensions found" in a missing tree is never read as "none apply".
 
 ### Advisory review
 
@@ -2895,7 +3010,7 @@ reviewed-tip claim is re-established rather than inherited.
 
 The two checklist sections of a build's pull-request body (human follow-up and open questions)
 whose unchecked items, or whose absence, park the PR at verification as needing a person. It is
-distinct from the Bazel **Ledger** and the **Review ledger** above. This one is the PR's own
+distinct from the Bazel **Ledger** above. This one is the PR's own
 statement that it is not finished.
 
 Only items about the change itself belong in the ledger. Each candidate follow-up is given a
@@ -3200,6 +3315,12 @@ an explicit prune); an unmarked or foreign row the file does not list is never t
 
 The plan action that claims an existing unmarked live row for a project config by stamping it with
 the project's **Ownership marker**, instead of creating a duplicate beside it.
+
+A plan reaches a live row through its identity — for a cron, its name — so adoption only prevents a
+duplicate when the live row already carries the declared identity. A live cron under a different
+name is invisible to the plan: it creates a new row beside it and, the old one being unmarked,
+leaves that one running untouched. Renaming the live row to the declared name before applying is
+what turns the create into an adoption.
 
 Adoption is an exclusive claim. A live row may be adopted only when exactly one desired row reaches
 it; when two desired rows reach the same live row — typically through a shared secondary match key

@@ -1,0 +1,28 @@
+<!-- boss-verify-evidence -->
+<!-- head=0123456789abcdef0123456789abcdef01234567 -->
+<!-- boss-evidence: {"head":"0123456789abcdef0123456789abcdef01234567","video":"https://proof.example.test/golden/video.mp4?sig=a\u0026exp=1","videoMs":134000,"proven":2,"total":3} -->
+## Verification evidence
+
+[![Verification video](https://proof.example.test/verify-evidence/AAAAAAAAAAAAAAAAAAAAAA/poster.png)](https://proof.example.test/golden/video.mp4?sig=a&exp=1)
+
+Path class: `ui` · Features: `sessions`
+
+What this PR changes:
+
+- `0:00` chapter 1 — proven
+- `1:05` chapter 2 — proven
+- `2:10` chapter 3 — unproven (stack busy)
+
+<details>
+<summary>3 criteria: 2 proven, 1 unproven</summary>
+
+| Criterion | Verdict | Chapter | Note |
+| --- | --- | --- | --- |
+| `sessions.AC1` | proven | 0:00 |  |
+| `sessions.AC2` | proven | 1:05 |  |
+| `sessions.AC3` | unproven | 2:10 | stack busy |
+
+</details>
+
+[Manifest](https://proof.example.test/verify-evidence/AAAAAAAAAAAAAAAAAAAAAA/manifest.json)
+

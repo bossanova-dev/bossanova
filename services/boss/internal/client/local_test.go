@@ -119,6 +119,12 @@ func (f *fakeDaemonRPC) LinkSessionPR(_ context.Context, _ *connect.Request[pb.L
 	})
 }
 
+func (f *fakeDaemonRPC) SetSessionTracker(_ context.Context, _ *connect.Request[pb.SetSessionTrackerRequest]) (*connect.Response[pb.SetSessionTrackerResponse], error) {
+	return sessionResp(f, func() *pb.SetSessionTrackerResponse {
+		return &pb.SetSessionTrackerResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
 func (f *fakeDaemonRPC) RefreshSessionPR(_ context.Context, _ *connect.Request[pb.RefreshSessionPRRequest]) (*connect.Response[pb.RefreshSessionPRResponse], error) {
 	return sessionResp(f, func() *pb.RefreshSessionPRResponse {
 		return &pb.RefreshSessionPRResponse{Session: &pb.Session{Id: fakeSessionID}}
@@ -193,6 +199,7 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 			return c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: "id"})
 		}},
 		{"LinkSessionPR", func(c *LocalClient) (*pb.Session, error) { return c.LinkSessionPR(ctx, "id", "1") }},
+		{"SetSessionTracker", func(c *LocalClient) (*pb.Session, error) { return c.SetSessionTracker(ctx, "id", "BOS-1") }},
 		{"RefreshSessionPR", func(c *LocalClient) (*pb.Session, error) {
 			id := "id"
 			return c.RefreshSessionPR(ctx, &pb.RefreshSessionPRRequest{Id: &id})

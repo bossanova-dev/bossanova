@@ -1109,6 +1109,74 @@ func TestDiscoverPluginsFindsDevBinFromWorkingDirectory(t *testing.T) {
 	}
 }
 
+// TestDiscoverPluginsCWDWalkRequiresOptIn asserts the dev-build walk up from the
+// working directory only runs with BOSS_DEV_PLUGINS_FROM_CWD=1 (BOS-1563).
+// Without the opt-in, a dev boss/bossd started inside an untrusted checkout
+// must not exec that checkout's bin/bossd-plugin-* (the ownership check passes
+// because the cloning user owns the files).
+func TestDiscoverPluginsCWDWalkRequiresOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		env      string
+		wantWalk bool
+	}{
+		{name: "unset", env: "", wantWalk: false},
+		{name: "not 1", env: "true", wantWalk: false},
+		{name: "opted in", env: "1", wantWalk: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			// An empty binary dir, so the binary-relative locations find nothing.
+			exeDir := filepath.Join(root, "exe")
+			if err := os.MkdirAll(exeDir, 0o755); err != nil {
+				t.Fatalf("mkdir exe dir: %v", err)
+			}
+			oldExe := osExecutable
+			osExecutable = func() (string, error) { return filepath.Join(exeDir, "bossd"), nil }
+			t.Cleanup(func() { osExecutable = oldExe })
+			// An empty per-user plugin dir, so the final fallback finds nothing.
+			settings := DefaultSettings()
+			settings.AppDataDir = filepath.Join(root, "appdata")
+			settingsPath := filepath.Join(root, "settings.json")
+			if err := SaveTo(settingsPath, settings); err != nil {
+				t.Fatalf("SaveTo: %v", err)
+			}
+			t.Setenv(settingsPathEnv, settingsPath)
+			// A checkout with bin/bossd-plugin-codex above the working directory.
+			checkout := filepath.Join(root, "checkout")
+			if err := os.MkdirAll(filepath.Join(checkout, "bin"), 0o755); err != nil {
+				t.Fatalf("mkdir bin: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(checkout, "bin", "bossd-plugin-codex"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatalf("write plugin: %v", err)
+			}
+			cwd := filepath.Join(checkout, "services", "bossd")
+			if err := os.MkdirAll(cwd, 0o755); err != nil {
+				t.Fatalf("mkdir cwd: %v", err)
+			}
+			t.Chdir(cwd)
+			t.Setenv(devPluginsFromCWDEnv, tc.env)
+
+			if got := activePolicy().allowCWDWalk; got != tc.wantWalk {
+				t.Fatalf("activePolicy().allowCWDWalk = %v with %s=%q, want %v", got, devPluginsFromCWDEnv, tc.env, tc.wantWalk)
+			}
+			plugins, rejected := DiscoverPluginsVerified()
+			if len(rejected) != 0 {
+				t.Fatalf("rejected = %v, want none", rejected)
+			}
+			if !tc.wantWalk {
+				if len(plugins) != 0 {
+					t.Fatalf("plugins = %v, want none: the CWD walk must stay off without the opt-in", plugins)
+				}
+				return
+			}
+			if len(plugins) != 1 || plugins[0].Name != "codex" {
+				t.Fatalf("plugins = %v, want the checkout's codex plugin via the CWD walk", plugins)
+			}
+		})
+	}
+}
+
 func TestDiscoverPluginsFallsBackToUserPluginDirWhenNoDevPluginsExist(t *testing.T) {
 	root := t.TempDir()
 	settingsPath := filepath.Join(root, "settings.json")

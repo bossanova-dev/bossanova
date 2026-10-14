@@ -19,6 +19,7 @@ import {
   run,
   sanitizeOutput,
 } from './codex-review.mjs'
+import { reviewTimeDefaults } from './skill-config.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./codex-review.mjs', import.meta.url))
 const PROBE_READY_TIMEOUT_MS = 10000
@@ -1010,10 +1011,32 @@ test('CLI run — requires --base and --head flags', () => {
 // Leg-fit timeout: run() with no explicit timeoutMs stays strictly below the leg
 // ---------------------------------------------------------------------------
 
+test('resolveRunTimeoutMs: the configured review hang guard sets the default timeout', () => {
+  const stderr = { write: () => {} }
+  // 45 minutes lifts the timeout past the old 30-minute constant's 29-minute ceiling...
+  assert.equal(resolveRunTimeoutMs({ BOSS_REVIEW_HANG_GUARD_MINUTES: '45' }, { stderr }), 2_640_000)
+  // ...10 lowers it...
+  assert.equal(resolveRunTimeoutMs({ BOSS_REVIEW_HANG_GUARD_MINUTES: '10' }, { stderr }), 540_000)
+  // ...and an explicit helper timeout still wins.
+  assert.equal(
+    resolveRunTimeoutMs(
+      { BOSS_REVIEW_HANG_GUARD_MINUTES: '45', BOSS_CROSS_REVIEW_TIMEOUT_MS: '120000' },
+      { stderr },
+    ),
+    120_000,
+  )
+  const repo = makeTmpDir()
+  fs.writeFileSync(
+    path.join(repo, '.boss-skills.json'),
+    JSON.stringify({ reviewDefaults: { hangGuardMinutes: 45 } }),
+  )
+  assert.equal(resolveRunTimeoutMs({}, { stderr, cwd: repo }), 2_640_000)
+})
+
 test('resolveRunTimeoutMs: the default helper timeout is clamped strictly below the leg', () => {
   const lines = []
   const stderr = { write: (line) => lines.push(line) }
-  const env = { BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000' }
+  const env = { BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000', BOSS_SKILL_EXTENSION_TIMEOUT_MS: '300000' }
   assert.equal(resolveRunTimeoutMs(env, { stderr }), 240000)
   assert.deepEqual(lines, [
     'codex-review: timeout clamped to 240000ms (requested 300000ms) to fit the 300000ms extension leg\n',
@@ -1028,6 +1051,33 @@ test('resolveRunTimeoutMs: the default helper timeout is clamped strictly below 
   assert.deepEqual(lines, [])
 })
 
+// A caller holding the review on its heartbeat waits heartbeatStaleMs between beats. A second
+// voice the explicit leg/helper overrides let run longer than that would read a live review as
+// abandoned, so the window must follow the same bound the helper does.
+test('resolveRunTimeoutMs: a raised leg override never outlives the review heartbeat window', () => {
+  const cwd = makeTmpDir()
+  const stderr = { write: () => {} }
+  const env = {
+    BOSS_SKILL_EXTENSION_TIMEOUT_MS: '3600000',
+    BOSS_CROSS_REVIEW_TIMEOUT_MS: '3500000',
+  }
+  const helper = resolveRunTimeoutMs(env, { stderr, cwd })
+  assert.equal(helper, 3_500_000)
+  const { heartbeatStaleMs } = reviewTimeDefaults(undefined, env)
+  assert.ok(helper < heartbeatStaleMs, `helper ${helper}ms must end inside ${heartbeatStaleMs}ms`)
+})
+
+test('resolveRunTimeoutMs: the default path fits the leg without a clamp note', () => {
+  const lines = []
+  const stderr = { write: (line) => lines.push(line) }
+  assert.equal(resolveRunTimeoutMs({}, { stderr, cwd: makeTmpDir() }), 1_740_000)
+  assert.equal(
+    resolveRunTimeoutMs({ BOSS_REVIEW_HANG_GUARD_MINUTES: '45' }, { stderr, cwd: makeTmpDir() }),
+    2_640_000,
+  )
+  assert.deepEqual(lines, [], 'nothing was overridden, so nothing was clamped')
+})
+
 test('run: no explicit timeoutMs applies the leg-fit clamp and says so on stderr', async () => {
   const dir = makeTmpDir()
   const lines = []
@@ -1039,7 +1089,11 @@ test('run: no explicit timeoutMs applies the leg-fit clamp and says so on stderr
       return true
     }
     const result = await run({
-      env: { BOSS_CODEX_BIN: bin, BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000' },
+      env: {
+        BOSS_CODEX_BIN: bin,
+        BOSS_CROSS_REVIEW_TIMEOUT_MS: '300000',
+        BOSS_SKILL_EXTENSION_TIMEOUT_MS: '300000',
+      },
       base: 'abc1234',
       head: 'def5678',
       repo: dir,

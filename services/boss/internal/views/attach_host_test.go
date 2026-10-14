@@ -1550,6 +1550,10 @@ func TestAttach_CodexExitPreservesChatWithoutClaudeTranscript(t *testing.T) {
 	}
 }
 
+func (s *chatMutationSpy) FinishUnattendedRun(context.Context, *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
+	panic("unused")
+}
+
 func (s *chatMutationSpy) SetChatPhase(context.Context, string, string, string) error {
 	panic("unused")
 }

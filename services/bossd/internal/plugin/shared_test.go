@@ -46,12 +46,18 @@ func TestNewHandshakeWiresCookie(t *testing.T) {
 // accidentally dropping a type when future versions are added.
 func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 	m := NewVersionedPluginMap(nil)
-	v2, ok := m[sharedplugin.ProtocolVersion]
+	current, ok := m[sharedplugin.ProtocolVersion]
 	if !ok {
 		t.Fatalf("expected entry for ProtocolVersion=%d", sharedplugin.ProtocolVersion)
 	}
+	if len(m) != 1 {
+		t.Fatalf("versioned plugin map offers %d protocol versions, want only ProtocolVersion=%d", len(m), sharedplugin.ProtocolVersion)
+	}
 	if _, ok := m[sharedplugin.ProtocolVersionV1]; ok {
 		t.Fatalf("legacy ProtocolVersion=%d must not negotiate unsafe managed MCP fields", sharedplugin.ProtocolVersionV1)
+	}
+	if _, ok := m[sharedplugin.ProtocolVersionV2]; ok {
+		t.Fatalf("legacy ProtocolVersion=%d must not negotiate: it ignores the repo-trust fields", sharedplugin.ProtocolVersionV2)
 	}
 	for _, typ := range []string{
 		sharedplugin.PluginTypeTaskSource,
@@ -59,7 +65,7 @@ func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 		sharedplugin.PluginTypeScheduler,
 		sharedplugin.PluginTypeWorkflow,
 	} {
-		if _, ok := v2[typ]; !ok {
+		if _, ok := current[typ]; !ok {
 			t.Errorf("plugin type %q missing from v%d set", typ, sharedplugin.ProtocolVersion)
 		}
 	}

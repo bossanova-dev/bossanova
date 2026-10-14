@@ -370,6 +370,80 @@ test('a non-array watches payload is treated as no watches', () => {
   assert.equal(classify({ watches: null }).state, CI_WATCH_STATES.UNWATCHED)
 })
 
+// ---------------------------------------------------------------------------
+// Handed off (BOS-1531). Once a successful verify hand-off parks the verify chat on the PR's
+// forward-progress watch, the build's own CI observation ends: a red CI after ready is the repair
+// plugin's, a merge is bossd finalize's, and a build chat woken by checks_failed would be a second
+// responder to the same failure.
+
+test('handedOff on an otherwise-unwatched input is the non-blocking handed-off verdict', () => {
+  const v = classify({ handedOff: true })
+  assert.equal(v.state, CI_WATCH_STATES.HANDED_OFF)
+  assert.equal(v.state, 'handed-off')
+  assert.equal(v.reason, CI_WATCH_REASONS.HANDED_OFF)
+  assert.equal(v.reason, 'handed-off-to-next-stage')
+  assert.equal(v.blocking, false)
+  assert.equal(v.action, CI_WATCH_ACTIONS.PROCEED)
+  assert.equal(mayStopObserving(v), true)
+})
+
+test('omitting handedOff keeps the same input unwatched — the default is unchanged', () => {
+  for (const v of [classify(), classify({ handedOff: false })]) {
+    assert.equal(v.state, CI_WATCH_STATES.UNWATCHED)
+    assert.equal(v.blocking, true)
+  }
+})
+
+test('handedOff never answers a question with no required triggers', () => {
+  const v = classify({ handedOff: true, requiredTriggers: [] })
+  assert.equal(v.reason, CI_WATCH_REASONS.NO_REQUIRED_TRIGGERS)
+  assert.equal(mayStopObserving(v), false)
+})
+
+test('handedOff outranks settled, so the hand-off is what the verdict names', () => {
+  const v = classify({
+    handedOff: true,
+    checkVerdict: { state: 'green' },
+    prView: { state: 'MERGED', isDraft: false, mergedAt: '2026-09-17T11:00:00Z' },
+    requiredTriggers: ['checks_passed', 'merged'],
+  })
+  assert.equal(v.state, CI_WATCH_STATES.HANDED_OFF)
+})
+
+test('CLI classify --handed-off yields the handed-off verdict; without it the same input is unwatched', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ci-watch-handoff-'))
+  const verdictFile = path.join(dir, 'verdict.json')
+  writeFileSync(verdictFile, JSON.stringify({ state: 'pending' }))
+  const base = [
+    'classify',
+    '--check-verdict',
+    verdictFile,
+    '--triggers',
+    'checks_failed,merged',
+    '--callbacks-available',
+    '--target-chat',
+    CHAT,
+    '--pr',
+    String(PR),
+  ]
+  const handed = runCli([...base, '--handed-off'])
+  assert.equal(handed.status, 0, handed.stderr)
+  const parsed = JSON.parse(handed.stdout)
+  assert.equal(parsed.state, CI_WATCH_STATES.HANDED_OFF)
+  assert.equal(parsed.blocking, false)
+  assert.equal(parsed.action, CI_WATCH_ACTIONS.PROCEED)
+  assert.equal(mayStopObserving(parsed), true)
+
+  const plain = runCli(base)
+  assert.equal(plain.status, 0, plain.stderr)
+  assert.equal(JSON.parse(plain.stdout).state, CI_WATCH_STATES.UNWATCHED)
+
+  const refused = runCli([...base, '--handed-off', 'maybe'])
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.stderr, /--handed-off is presence-only; got "maybe"/)
+  assert.equal(refused.stdout, '')
+})
+
 test('every verdict carries the full reporting shape', () => {
   for (const v of [
     classify(),
@@ -377,6 +451,7 @@ test('every verdict carries the full reporting shape', () => {
     classify({ callbacksAvailable: false }),
     classify({ checkVerdict: { state: 'unknown' } }),
     classify({ requiredTriggers: [] }),
+    classify({ handedOff: true }),
   ]) {
     assert.ok(Object.values(CI_WATCH_STATES).includes(v.state), `state: ${v.state}`)
     assert.equal(typeof v.reason, 'string')
@@ -428,6 +503,7 @@ test('CLI classify — every flag the verb reads is accepted', () => {
     ['--poll-completed'],
     ['--arm-attempts', '1'],
     ['--arm-error', 'group already holds checks_passed'],
+    ['--handed-off'],
   ]
   for (const probe of probes) {
     const result = runCli(['classify', '--triggers', 'checks_passed', ...probe])
@@ -508,6 +584,16 @@ const PRESENCE_BASELINE = {
     String(PR),
   ],
   'poll-completed': ['classify', '--triggers', 'checks_passed', '--callbacks-available'],
+  'handed-off': [
+    'classify',
+    '--triggers',
+    'checks_passed',
+    '--callbacks-available',
+    '--target-chat',
+    CHAT,
+    '--pr',
+    String(PR),
+  ],
 }
 
 function verdictOf(args) {
@@ -594,6 +680,7 @@ test('CLI --help, -h, help and classify --help print usage naming every flag and
       'poll-completed',
       'arm-attempts',
       'arm-error',
+      'handed-off',
     ]) {
       const line = lines.find((l) => l.trim().split(/\s+/)[0] === `--${name}`)
       assert.ok(line, `${args.join(' ')}: usage is missing --${name}`)

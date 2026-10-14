@@ -295,3 +295,78 @@ func TestRepoStore_ShouldKeepBranchesCurrent_Update(t *testing.T) {
 		t.Error("stored should_keep_branches_current = true, want false")
 	}
 }
+
+// TestRepoStore_IsTrusted_DefaultsFalse pins BOS-1562: a newly registered repo
+// starts untrusted unless registration asks otherwise.
+func TestRepoStore_IsTrusted_DefaultsFalse(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	repo := createTestRepo(t, store)
+	if repo.IsTrusted {
+		t.Fatal("new repos should default to untrusted (BOS-1562)")
+	}
+}
+
+// TestRepoStore_IsTrusted_CreateTrusted verifies registration can create a
+// repo trusted.
+func TestRepoStore_IsTrusted_CreateTrusted(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	repo, err := store.Create(context.Background(), CreateRepoParams{
+		DisplayName:       "trusted-repo",
+		LocalPath:         "/tmp/trusted-repo",
+		OriginURL:         "https://github.com/test/trusted.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		IsTrusted:         true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !repo.IsTrusted {
+		t.Fatal("Create(IsTrusted: true) returned an untrusted repo")
+	}
+}
+
+// TestRepoStore_IsTrusted_Update verifies the flag round-trips through
+// UpdateRepoParams in both directions and is persisted.
+func TestRepoStore_IsTrusted_Update(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	ctx := context.Background()
+	repo := createTestRepo(t, store)
+
+	on := true
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{IsTrusted: &on})
+	if err != nil {
+		t.Fatalf("update is_trusted on: %v", err)
+	}
+	if !updated.IsTrusted {
+		t.Error("update returned is_trusted = false, want true")
+	}
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.IsTrusted {
+		t.Error("stored is_trusted = false, want true")
+	}
+
+	// An unrelated update leaves trust alone.
+	name := "renamed"
+	if _, err := store.Update(ctx, repo.ID, UpdateRepoParams{DisplayName: &name}); err != nil {
+		t.Fatalf("update display name: %v", err)
+	}
+	if got, err = store.Get(ctx, repo.ID); err != nil || !got.IsTrusted {
+		t.Fatalf("is_trusted after unrelated update = %v (err %v), want true", got != nil && got.IsTrusted, err)
+	}
+
+	off := false
+	if _, err := store.Update(ctx, repo.ID, UpdateRepoParams{IsTrusted: &off}); err != nil {
+		t.Fatalf("update is_trusted off: %v", err)
+	}
+	got, err = store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.IsTrusted {
+		t.Error("stored is_trusted = true, want false")
+	}
+}

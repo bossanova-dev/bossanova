@@ -38,6 +38,12 @@ func (c *moveStubClient) MoveSession(_ context.Context, req *pb.MoveSessionReque
 	return &pb.Session{Id: req.GetId()}, c.moved, nil
 }
 
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*moveStubClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}
+
 func newMoveStubClient() *moveStubClient {
 	return &moveStubClient{stubSessionSettingsClient: &stubSessionSettingsClient{}, moved: true}
 }
@@ -62,7 +68,7 @@ func reorderHome(t *testing.T) (HomeModel, *moveStubClient) {
 		{Id: "sess-3", Title: "Add rate limiting", RepoDisplayName: "bossanova"},
 	}
 	h.daemonWaitingReasons = map[string]string{
-		"sess-1": "awaiting checks_failed on acme/widget#123",
+		"sess-1": "awaiting ready_for_review on acme/widget#123",
 	}
 	h.buildTableRows()
 	if got, want := len(h.table.Rows()), len(h.sessions)+1; got != want {

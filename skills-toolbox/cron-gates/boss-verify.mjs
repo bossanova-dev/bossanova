@@ -8,7 +8,9 @@
 //      `candidates`), judge each with the zero-token `judge`, then post/merge mechanically or route
 //      `/boss-verify <pr> --claim <token>` into the PR's session (its `verify` chat, a new one, or a
 //      `boss new --pr <n>` session for an orphan PR). Bounded: at most `--batch` PRs (default 3) and
-//      a 45 s budget inside the scheduler's 60 s gate timeout; the rest are `deferred`.
+//      a 45 s budget inside the scheduler's 60 s gate timeout; the rest are `deferred`. A merge is
+//      handed to a detached `verify-gate merge` and settled inside that budget; one still running
+//      at the deadline is `dispatched: merge in flight (log …)` and finishes on its own.
 //   2. Print one line per PR plus a summary line, so `gated` cron history stays readable.
 //
 // Exit codes:

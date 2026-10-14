@@ -2,6 +2,8 @@ package socketauth
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -108,4 +110,35 @@ func TestClientInterceptor_AttachesBearer(t *testing.T) {
 			}
 			return connect.NewResponse(&struct{}{}), nil
 		})(context.Background(), req)
+}
+
+func TestValidHTTPBearer(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		token  string
+		want   bool
+	}{
+		{"valid", "Bearer " + testTok, testTok, true},
+		{"missing", "", testTok, false},
+		{"wrong token", "Bearer " + strings.Repeat("f", 64), testTok, false},
+		{"no scheme", testTok, testTok, false},
+		{"basic scheme", "Basic " + testTok, testTok, false},
+		{"not hex", "Bearer not-hex", testTok, false},
+		{"empty credential", "Bearer ", testTok, false},
+		{"short", "Bearer abcd", testTok, false},
+		{"empty configured token fails closed", "Bearer ", "", false},
+		{"invalid configured token fails closed", "Bearer abcd", "abcd-not-hex", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			if tc.header != "" {
+				r.Header.Set(AuthHeader, tc.header)
+			}
+			if got := ValidHTTPBearer(r, tc.token); got != tc.want {
+				t.Fatalf("ValidHTTPBearer(%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
 }

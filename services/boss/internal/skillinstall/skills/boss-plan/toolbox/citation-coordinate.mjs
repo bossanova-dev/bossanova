@@ -3,10 +3,8 @@
 // inside the working-tree root?
 //
 // A second, subtly different resolver is the defect this module exists to prevent.
-// `plan-contract-guard.mjs` gates a plan body's citations through it and
-// `bs-dispatch-claims.mjs` adjudicates a dispatch report's cited coordinates through the
-// same function, so a coordinate a plan citation would reject can never be accepted from
-// a subagent's claim, or the reverse.
+// `plan-contract-guard.mjs` gates a plan body's citations through it; any other caller
+// that resolves a cited coordinate must use the same function.
 //
 // It sits in its OWN module rather than inside the plan guard so a caller needing only
 // this mechanic imports it alone, instead of dragging the guard's whole import closure
@@ -34,10 +32,9 @@ function containedIn(root, path) {
  *
  * It lives here, beside the confinement rule it precedes, so the tree keeps one module
  * owning what a repo root is. It is deliberately NOT a new `resolveCitationCoordinate`
- * result code: the two callers that map those codes already fail CLOSED on an unreadable
- * root — `plan-contract-guard.mjs` raises `unresolvable-citation`, `bs-review-triage.mjs`
- * rejects the finding — so threading a new code through their pinned contract strings
- * would change no outcome.
+ * result code: the caller that maps those codes already fails CLOSED on an unreadable
+ * root — `plan-contract-guard.mjs` raises `unresolvable-citation` — so threading a new code
+ * through its pinned contract strings would change no outcome.
  *
  * Not a security boundary and not a TOCTOU guarantee: the root may vanish a microsecond
  * later, and the read below reports that as unreadable. This is only the cheap distinction

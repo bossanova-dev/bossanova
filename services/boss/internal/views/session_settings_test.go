@@ -97,6 +97,9 @@ func (s *stubSessionSettingsClient) RemoveSession(context.Context, string) error
 func (s *stubSessionSettingsClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubSessionSettingsClient) SetSessionTracker(context.Context, string, string) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {
 	panic("unused")
 }
@@ -240,6 +243,10 @@ func (s *stubSessionSettingsClient) StartRepairWorkflow(context.Context) (*pb.St
 }
 func (s *stubSessionSettingsClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
+}
+
+func (s *stubSessionSettingsClient) GetSessionTimeline(context.Context, string) ([]*pb.TimelineStep, error) {
+	return nil, nil
 }
 func (s *stubSessionSettingsClient) ListAgents(context.Context) ([]client.AgentInfo, error) {
 	panic("unused")
@@ -576,6 +583,16 @@ func (s *stubSessionSettingsClient) ListSessionsWithReadFailures(ctx context.Con
 // MoveSession satisfies the BossClient seam (BOS-1231). This stub is not part
 // of a reorder test, so a call is a bug in the view under test.
 func (s *stubSessionSettingsClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
+	panic("unused")
+}
+
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*stubSessionSettingsClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}
+
+func (s *stubSessionSettingsClient) FinishUnattendedRun(context.Context, *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
 	panic("unused")
 }
 

@@ -25,6 +25,7 @@ Write a detected .boss-skills.json for this repository
 - `--state` — Linear state override role=name (repeatable)
 - `--store-env-keys` — Store LINEAR_API_KEY and SENTRY_AUTH_TOKEN from the environment
 - `--team` — Linear team name to pin as trackerConfig.linear.team (a key or id resolves to the name only when LINEAR_API_KEY lists it)
+- `--trusted` — Register the repository as trusted (Codex project trust and proof secrets for its sessions)
 - `--update-crons` — Update an existing factory job's prompt, gate and agent when they differ
 - `--yes` — Apply .boss-project.json cron prompt and gate changes without asking
 

@@ -36,7 +36,7 @@ func TestCronJobsManagedByMigration(t *testing.T) {
 	if _, ok := tableColumns(t, db, "cron_jobs")["managed_by"]; ok {
 		t.Fatal("managed_by present before its migration; the row below would not be pre-migration")
 	}
-	repo := createTestRepo(t, NewRepoStore(db))
+	repo := insertPreMigrationRepo(t, db)
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, is_enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

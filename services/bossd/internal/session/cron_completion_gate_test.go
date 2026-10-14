@@ -404,3 +404,46 @@ func TestCronCompletionGateIgnoresStaleQuietPeriod(t *testing.T) {
 		t.Fatalf("pending entry = %p, want newer entry %p", got, newer)
 	}
 }
+
+// TestCronCompletionGateDefersAuthFailedChat (BOS-1530): an unattended run whose
+// chat is auth-failed looks finished (idle, run over) but is wedged. The gate
+// must not finalize it — it returns Done and leaves the stranded sweep as the
+// single place that blocks it — while a healthy finished run still finalizes.
+func TestCronCompletionGateDefersAuthFailedChat(t *testing.T) {
+	cronID := "cron-1"
+	for _, tc := range []struct {
+		name       string
+		authFailed bool
+		want       cronCompletionGateCheckResult
+	}{
+		{name: "auth-failed chat defers", authFailed: true, want: cronCompletionGateCheckDone},
+		{name: "healthy finished run finalizes", authFailed: false, want: cronCompletionGateCheckFinalize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := newGateSessionStore()
+			agentID := "agent-1"
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:             "sess-1",
+				CronJobID:      &cronID,
+				AgentSessionID: &agentID,
+			}
+			var probed []string
+			gate := NewCronCompletionGate(CronCompletionGateDeps{
+				Sessions:              sessions,
+				Finalizer:             &recordingCronFinalizer{},
+				Logger:                zerolog.Nop(),
+				RunCompletionEvidence: func(*models.Session) (bool, string) { return true, "tmux_log_idle" },
+				ChatAuthFailed: func(s *models.Session) bool {
+					probed = append(probed, s.ID)
+					return tc.authFailed
+				},
+			})
+			if got := gate.checkAndFinalize(context.Background(), "sess-1"); got != tc.want {
+				t.Fatalf("checkAndFinalize = %d, want %d", got, tc.want)
+			}
+			if len(probed) != 1 || probed[0] != "sess-1" {
+				t.Fatalf("auth probe calls = %v, want exactly [sess-1]", probed)
+			}
+		})
+	}
+}

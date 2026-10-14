@@ -601,3 +601,144 @@ func TestTallyClaudePathWithChildrenSumsReviewerDispatches(t *testing.T) {
 		t.Errorf("TerminalState = %q, want empty: a reviewer subagent's own BLOCKED must not become the parent's terminal state", counts.TerminalState)
 	}
 }
+
+// LastOutputAt is the newest message in the window that carried output
+// tokens: a zero-token assistant message (how an auth failure is transcribed)
+// is not output, and a message outside the window is not counted.
+func TestTallyClaudeReportsTheNewestOutputTime(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:00Z","type":"assistant","usage":{"output_tokens":10}}`,
+		`{"timestamp":"2026-08-26T01:00:05Z","type":"assistant","message":{"role":"assistant","content":[],"usage":{"output_tokens":4}}}`,
+		`{"timestamp":"2026-08-26T01:00:09Z","type":"assistant","message":{"role":"assistant","content":[],"usage":{"output_tokens":0}}}`,
+	}, "\n")
+	counts, err := TallyClaude(strings.NewReader(lines))
+	if err != nil {
+		t.Fatalf("TallyClaude: %v", err)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 5, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v (the zero-token message is not output)", counts.LastOutputAt, want)
+	}
+	counts, err = TallyClaudeSince(strings.NewReader(lines), time.Date(2026, 8, 26, 1, 0, 6, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("TallyClaudeSince: %v", err)
+	}
+	if !counts.LastOutputAt.IsZero() {
+		t.Fatalf("LastOutputAt = %v, want zero: only a zero-token message is in the window", counts.LastOutputAt)
+	}
+}
+
+// For codex, a token_count whose per-turn usage carries output tokens, or
+// whose cumulative output grew, marks output at its timestamp.
+func TestTallyCodexReportsTheNewestOutputTime(t *testing.T) {
+	counts, err := TallyCodex(strings.NewReader(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":11}}}}`,
+		`{"timestamp":"2026-08-26T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":14}}}}`,
+		`{"timestamp":"2026-08-26T01:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":14}}}}`,
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("TallyCodex: %v", err)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 4, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v (an unchanged cumulative total is not output)", counts.LastOutputAt, want)
+	}
+}
+
+// Codex re-emits a token_count whose last_token_usage is the previous turn's
+// while the cumulative total stays put (a rate-limit refresh, an auth-failed
+// turn). That record is not new output: when a cumulative total exists, only
+// its growth counts, so the repeat must not move LastOutputAt — it is what a
+// restart-proof wedge reader would read as a recovered login. The token
+// totals the transcript already reported are unchanged by it.
+func TestTallyCodexRepeatedLastTokenUsageIsNotNewOutput(t *testing.T) {
+	counts, err := TallyCodex(strings.NewReader(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":5},"total_token_usage":{"output_tokens":5}}}}`,
+		`{"timestamp":"2026-08-26T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":8}}}}`,
+		`{"timestamp":"2026-08-26T01:00:09Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":8}}}}`,
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("TallyCodex: %v", err)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 4, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v (a repeated last_token_usage with an unchanged total is not output)", counts.LastOutputAt, want)
+	}
+	if counts.OutputTokenCount == nil || *counts.OutputTokenCount != 8 {
+		t.Fatalf("OutputTokenCount = %v, want 8 (the cumulative total)", counts.OutputTokenCount)
+	}
+
+	// Within a window the repeat is still not output, measured against the
+	// baseline read before the window.
+	counts, err = TallyCodexSince(strings.NewReader(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":8}}}}`,
+		`{"timestamp":"2026-08-26T01:00:09Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":8}}}}`,
+	}, "\n")), time.Date(2026, 8, 26, 1, 0, 6, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("TallyCodexSince: %v", err)
+	}
+	if !counts.LastOutputAt.IsZero() {
+		t.Fatalf("LastOutputAt = %v, want zero: the only record in the window repeats the previous turn", counts.LastOutputAt)
+	}
+
+	// Without a cumulative total, last_token_usage is the only evidence.
+	counts, err = TallyCodex(strings.NewReader(
+		`{"timestamp":"2026-08-26T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":2}}}}`))
+	if err != nil {
+		t.Fatalf("TallyCodex: %v", err)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 2, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v (per-turn usage with no total)", counts.LastOutputAt, want)
+	}
+}
+
+// A cumulative total never shrinks within one accounting, so a total below
+// the carried baseline means the total restarted (a new rollout file carries
+// the previous file's baseline): the new total is all output since the
+// restart, and it marks output rather than reading as a negative growth.
+func TestTallyCodexCumulativeTotalBelowTheBaselineIsAReset(t *testing.T) {
+	counts, err := TallyCodex(strings.NewReader(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":8}}}}`,
+		`{"timestamp":"2026-08-26T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":3}}}}`,
+		`{"timestamp":"2026-08-26T01:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":3},"total_token_usage":{"output_tokens":3}}}}`,
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("TallyCodex: %v", err)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 4, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v (a reset total is new output; its unchanged repeat is not)", counts.LastOutputAt, want)
+	}
+}
+
+// A rollout file whose cumulative total restarted below the baseline carried
+// in from the previous file produced all of that total: the final count and
+// the output time agree on it, rather than one counting a restart as new
+// output while the other clamps it to no growth.
+func TestTallyCodexRestartedTotalCountsAndTimesAlike(t *testing.T) {
+	carried := &codexTokenCount{OutputTokens: 8, ReasoningTokens: 5}
+	counts, _, err := tallyCodexSinceContextWithBaseline(context.Background(), strings.NewReader(strings.Join([]string{
+		`{"timestamp":"2026-08-26T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":3,"reasoning_output_tokens":2}}}}`,
+	}, "\n")), time.Time{}, time.Time{}, carried)
+	if err != nil {
+		t.Fatalf("tally: %v", err)
+	}
+	if counts.OutputTokenCount == nil || *counts.OutputTokenCount != 3 {
+		t.Fatalf("OutputTokenCount = %v, want 3 (the restarted total)", counts.OutputTokenCount)
+	}
+	if counts.ReasoningTokenCount == nil || *counts.ReasoningTokenCount != 2 {
+		t.Fatalf("ReasoningTokenCount = %v, want 2", counts.ReasoningTokenCount)
+	}
+	if want := time.Date(2026, 8, 26, 1, 0, 4, 0, time.UTC); !counts.LastOutputAt.Equal(want) {
+		t.Fatalf("LastOutputAt = %v, want %v", counts.LastOutputAt, want)
+	}
+}
+
+func TestCodexGrowth(t *testing.T) {
+	for _, tc := range []struct{ total, base, want int64 }{
+		{total: 10, base: 4, want: 6},
+		{total: 4, base: 4, want: 0},
+		{total: 3, base: 8, want: 3},
+		{total: 0, base: 0, want: 0},
+	} {
+		if got := codexGrowth(tc.total, tc.base); got != tc.want {
+			t.Errorf("codexGrowth(%d, %d) = %d, want %d", tc.total, tc.base, got, tc.want)
+		}
+	}
+}

@@ -27,3 +27,21 @@ func TestIsReleaseBuild(t *testing.T) {
 		}
 	}
 }
+
+func TestIsReleaseVersion(t *testing.T) {
+	for _, c := range []struct {
+		version string
+		want    bool
+	}{
+		{"v1.137.0", true},
+		{"v1.137.0-dirty", false},
+		{"v1.137.0+meta", false},
+		{"1.137.0", false},
+		{"1234567", false},
+		{"", false},
+	} {
+		if got := IsReleaseVersion(c.version); got != c.want {
+			t.Errorf("IsReleaseVersion(%q) = %v, want %v", c.version, got, c.want)
+		}
+	}
+}

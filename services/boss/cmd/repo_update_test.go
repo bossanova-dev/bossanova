@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // repoUpdateSubcommand returns a fresh `boss repo update` command from the real
@@ -73,4 +78,60 @@ func TestRepoUpdateWorktreeBaseDirFlag(t *testing.T) {
 			t.Fatalf("error = %v, want it to mention --worktree-base-dir", err)
 		}
 	})
+}
+
+// TestRepoUpdateTrustedFlag pins `boss repo update --trusted=<bool>` (BOS-1562):
+// both values map onto the request, and an unset flag leaves trust alone.
+func TestRepoUpdateTrustedFlag(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		args []string
+		want *bool
+	}{
+		{args: []string{"--trusted"}, want: ptrBool(true)},
+		{args: []string{"--trusted=true"}, want: ptrBool(true)},
+		{args: []string{"--trusted=false"}, want: ptrBool(false)},
+		{args: []string{"--name", "renamed"}, want: nil},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			t.Parallel()
+			cmd := repoUpdateSubcommand(t)
+			if err := cmd.Flags().Parse(tc.args); err != nil {
+				t.Fatalf("parse flags: %v", err)
+			}
+			req, err := buildRepoUpdateRequest(cmd, "repo-1")
+			if err != nil {
+				t.Fatalf("buildRepoUpdateRequest() error = %v", err)
+			}
+			switch {
+			case tc.want == nil && req.IsTrusted != nil:
+				t.Fatalf("IsTrusted = %v, want unset", *req.IsTrusted)
+			case tc.want != nil && (req.IsTrusted == nil || *req.IsTrusted != *tc.want):
+				t.Fatalf("IsTrusted = %v, want %v", req.IsTrusted, *tc.want)
+			}
+		})
+	}
+}
+
+func ptrBool(v bool) *bool { return &v }
+
+// TestPrintUpdatedRepoOmitsTrustForRemoteClient: the cloud proxy carries no
+// repo trust, so a remote update's repo always decodes as untrusted. Printing
+// "Trusted: false" for it would misreport a trusted repo; a local update,
+// which does see trust, still prints it.
+func TestPrintUpdatedRepoOmitsTrustForRemoteClient(t *testing.T) {
+	t.Parallel()
+	repo := &pb.Repo{Id: "repo-1", DisplayName: "r", IsTrusted: true}
+
+	var remote bytes.Buffer
+	printUpdatedRepo(&remote, client.NewRemote("https://bosso.invalid", "token"), repo)
+	if strings.Contains(remote.String(), "Trusted") {
+		t.Fatalf("remote repo update printed a trust line it cannot see:\n%s", remote.String())
+	}
+
+	var local bytes.Buffer
+	printUpdatedRepo(&local, client.NewLocalWithToken(filepath.Join(t.TempDir(), "bossd.sock"), ""), repo)
+	if !strings.Contains(local.String(), "Trusted:                true") {
+		t.Fatalf("local repo update did not print its trust:\n%s", local.String())
+	}
 }

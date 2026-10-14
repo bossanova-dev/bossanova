@@ -72,6 +72,19 @@ func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTask
 	return &bossanovav1.UpdateTaskStatusResponse{}, nil
 }
 
+// configKeyPRMatching is the ListAvailableIssues config key a caller sets to
+// prMatchingSkip when it does not need the PR annotation: the plugin then
+// makes no open-PR listing at all and returns the issues without PR fields, so
+// a slow or failing GitHub listing can neither delay nor fail the call. Any
+// other value (or none) keeps the strict default. The daemon's tracker
+// resolver sets it (linearConfigPRMatching in services/bossd/internal/server);
+// this plugin cannot import that package, so the wire value is defined on both
+// sides.
+const (
+	configKeyPRMatching = "pr_matching"
+	prMatchingSkip      = "skip"
+)
+
 // ListAvailableIssues fetches Linear issues and matches them to existing PRs.
 func (s *server) ListAvailableIssues(ctx context.Context, req *bossanovav1.ListAvailableIssuesRequest) (*bossanovav1.ListAvailableIssuesResponse, error) {
 	repoURL := req.GetRepoOriginUrl()
@@ -94,10 +107,17 @@ func (s *server) ListAvailableIssues(ctx context.Context, req *bossanovav1.ListA
 		return nil, fmt.Errorf("fetch Linear issues: %w", err)
 	}
 
-	// Fetch open PRs for matching
-	prs, err := s.host.ListOpenPRs(ctx, repoURL)
-	if err != nil {
-		return nil, fmt.Errorf("list open PRs: %w", err)
+	// Fetch open PRs for matching. A failure fails the call by default: the
+	// New Session picker reads a zero PR number as "no PR, start a fresh
+	// branch", so an unknown PR state must not look like "no PR". A caller
+	// that only needs issue ids and URLs (the daemon's tracker resolver) opts
+	// out of the listing entirely and gets the issues without PR fields.
+	var prs []*bossanovav1.PRSummary
+	if config[configKeyPRMatching] != prMatchingSkip {
+		prs, err = s.host.ListOpenPRs(ctx, repoURL)
+		if err != nil {
+			return nil, fmt.Errorf("list open PRs: %w", err)
+		}
 	}
 
 	// Convert Linear issues to TrackerIssue protos, matching to PRs

@@ -620,6 +620,9 @@ func (f *fakeSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, er
 func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	panic("not used")
+}
 func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	panic("not used")
 }
@@ -635,6 +638,10 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.Updat
 
 func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
 	panic("not used")
+}
+
+func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+	return nil
 }
 
 // fakeActivity is a minimal cron.ActivityChecker for cronJobStatus tests. It
@@ -1456,6 +1463,11 @@ func TestHydrateDisplayEntry(t *testing.T) {
 	if p.GetMergeBlock() == nil {
 		t.Error("merge_block not derived, want non-nil")
 	}
+	// BOS-1535: the polled head reaches clients so the repair-alert end rule
+	// (head moved past last_repair_head_sha) is decidable outside bossd.
+	if got := p.GetPrDisplayHeadSha(); got != checkHeadSHA {
+		t.Errorf("pr_display_head_sha = %q, want %q", got, checkHeadSHA)
+	}
 
 	// An entry with Archiving=false must leave archive_pending false — the
 	// steady-state (resurrected merged) case that must NOT show "Archiving…".
@@ -1709,4 +1721,8 @@ func TestHydrateVerifyAttention(t *testing.T) {
 		t.Errorf("Since = %v, want %v", p.GetAttentionStatus().GetSince(), updated)
 	}
 	HydrateVerifyAttention(nil, nil) // nil-safe
+}
+
+func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

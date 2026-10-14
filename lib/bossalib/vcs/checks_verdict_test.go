@@ -271,6 +271,7 @@ func TestClassifyVerify(t *testing.T) {
 		checks     []CheckResult
 		wantKind   VerifyPhaseKind
 		wantReason string
+		wantLabel  string
 	}{
 		{name: "no checks", wantKind: VerifyPhaseNone},
 		{name: "verifying claim", checks: []CheckResult{pending("verifying… 3f2a")}, wantKind: VerifyPhaseVerifying},
@@ -290,14 +291,19 @@ func TestClassifyVerify(t *testing.T) {
 		{name: "completed failure ignored", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &failure, Description: "defect: x, needs human"}}, wantKind: VerifyPhaseNone},
 		{name: "other context ignored", checks: []CheckResult{{Name: "boss/build", Status: CheckStatusQueued, Description: "needs human: x"}}, wantKind: VerifyPhaseNone},
 		{name: "case-variant context ignored", checks: []CheckResult{{Name: "BOSS/VERIFY", Status: CheckStatusQueued, Description: "needs human: x"}}, wantKind: VerifyPhaseNone},
+		{name: "labelled park splits codes from label", checks: []CheckResult{pending("needs human: human-review:security · verify gate rules")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "human-review:security", wantLabel: "verify gate rules"},
+		{name: "labelled set park keeps every code", checks: []CheckResult{pending("needs human: always-human-path,human-review:security · verify gate rules, CI workflows")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "always-human-path,human-review:security", wantLabel: "verify gate rules, CI workflows"},
+		{name: "label splits on the first separator only", checks: []CheckResult{pending("needs human: ledger-open · a · b")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "ledger-open", wantLabel: "a · b"},
+		{name: "truncated label is kept as written", checks: []CheckResult{pending("needs human: ledger-open · verify gate ru…")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "ledger-open", wantLabel: "verify gate ru…"},
+		{name: "middle dot without spaces is not a separator", checks: []CheckResult{pending("needs human: a·b")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "a·b"},
 		{name: "needs human wins over verifying", checks: []CheckResult{pending("verifying…"), pending("needs human: park")}, wantKind: VerifyPhaseNeedsHuman, wantReason: "park"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ClassifyVerify(tt.checks)
-			if got.Kind != tt.wantKind || got.Reason != tt.wantReason {
-				t.Fatalf("ClassifyVerify = %+v, want {Kind:%d Reason:%q}", got, tt.wantKind, tt.wantReason)
+			if got.Kind != tt.wantKind || got.Reason != tt.wantReason || got.Label != tt.wantLabel {
+				t.Fatalf("ClassifyVerify = %+v, want {Kind:%d Reason:%q Label:%q}", got, tt.wantKind, tt.wantReason, tt.wantLabel)
 			}
 		})
 	}

@@ -14,6 +14,8 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/detach"
+	"github.com/recurser/bossd/internal/dotenv"
+	"github.com/recurser/bossd/internal/repotrust"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -160,7 +162,11 @@ func chatCommandPrefix(agentName string) string {
 // instructions that never reached the command line. Callers still spawn from
 // GetArgv() alone — the declaration is reported, never enforced.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	// trust is the worktree's project-trust decision (Codex project trust,
+	// BOS-1562). Only a real launch decides (repotrust.ProjectTrustFor); anything
+	// that merely renders argv sends UNSPECIFIED, because a revoke sent from a
+	// preview would strip a trusted repo's trust.
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -221,6 +227,14 @@ type spawnInput struct {
 	// creation. Agent chats can carry model overrides today, but effort remains
 	// session-scoped until a chat-level field exists.
 	SessionEffectiveEffort string
+	// Repo is the parent repo (BOS-1562); nil when its lookup failed, which
+	// counts as untrusted. Every spawn is a real launch, so spawnChatTmux sends
+	// the runner repotrust.ProjectTrustFor(Repo, WorktreePath): pre-trust the
+	// worktree's own agent configuration (Codex project trust) for a trusted
+	// repo, revoke any earlier pre-trust otherwise, and deny (run untrusted
+	// without persisting anything, rather than revoke) for an untrusted repo's
+	// chat running in its own checkout.
+	Repo *models.Repo
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
 	// SessionEnvFunc lazily builds SessionEnv after liveness checks pass. It lets
@@ -407,7 +421,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 		}
 	}
 	effort := session.EffectiveEffortForAgent(in.SessionAgentName, in.SessionEffectiveEffort, in.Chat.AgentName)
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath))
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath), repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -684,7 +698,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -705,6 +719,7 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		Model:              model,
 		Effort:             effort,
 		ConfigHomeEnv:      configHomeEnv,
+		ProjectTrust:       trust,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)
@@ -722,7 +737,7 @@ func configHomeEnv(env map[string]string, worktreePath string) map[string]string
 		return nil
 	}
 	out := make(map[string]string, 2)
-	for _, key := range []string{"CODEX_HOME", "HOME"} {
+	for _, key := range dotenv.ConfigHomeKeys() {
 		if value, ok := env[key]; ok {
 			if value != "" && !filepath.IsAbs(value) {
 				value = filepath.Join(worktreePath, value)

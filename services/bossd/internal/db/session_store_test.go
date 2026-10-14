@@ -1019,6 +1019,72 @@ func TestRepairBlocked_CleanOutcomeClearsBlockedAndCount(t *testing.T) {
 	}
 }
 
+// TestClearRepairAlert_ClearsAlertKeepsHistory verifies the alert-clear write
+// drops every alert column (blocked pair, failure counter, runner/exit errors)
+// while keeping the repair head SHA and review fingerprint as history (BOS-1535).
+func TestClearRepairAlert_ClearsAlertKeepsHistory(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair alert clear test",
+		WorktreePath: "/tmp/wt/repair-alert-clear",
+		BranchName:   "feat/repair-alert-clear",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	fingerprint := "review-fp-1"
+	for range 2 {
+		if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+			SessionID: sess.ID, StartedAt: time.Now(), RunnerError: "claude not in PATH", ExitError: "exit status 1",
+			HeadSHA: "abc123", DisplayStatus: 3, ReviewFingerprint: &fingerprint,
+		}); err != nil {
+			t.Fatalf("seed failure: %v", err)
+		}
+	}
+	if err := sessionStore.UpdateRepairBlocked(ctx, sess.ID, time.Unix(1779238800, 0), "displace blocked: chat working"); err != nil {
+		t.Fatalf("UpdateRepairBlocked: %v", err)
+	}
+
+	if err := sessionStore.ClearRepairAlert(ctx, sess.ID); err != nil {
+		t.Fatalf("ClearRepairAlert: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.LastRepairBlockedReason != "" || got.LastRepairBlockedAt != nil {
+		t.Fatalf("blocked pair not cleared: reason=%q at=%v", got.LastRepairBlockedReason, got.LastRepairBlockedAt)
+	}
+	if got.LastRepairAttemptCount != 0 {
+		t.Fatalf("LastRepairAttemptCount=%d, want 0", got.LastRepairAttemptCount)
+	}
+	if got.LastRepairRunnerError != "" || got.LastRepairExitError != "" {
+		t.Fatalf("errors not cleared: runner=%q exit=%q", got.LastRepairRunnerError, got.LastRepairExitError)
+	}
+	if got.LastRepairHeadSHA != "abc123" {
+		t.Fatalf("LastRepairHeadSHA=%q, want abc123 kept for history", got.LastRepairHeadSHA)
+	}
+	if got.LastRepairReviewFingerprint != "review-fp-1" {
+		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-1 kept for history", got.LastRepairReviewFingerprint)
+	}
+
+	if err := sessionStore.ClearRepairAlert(ctx, "missing-session"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ClearRepairAlert missing id: got %v, want sql.ErrNoRows", err)
+	}
+	if err := sessionStore.ClearRepairAlert(ctx, ""); err == nil {
+		t.Fatal("ClearRepairAlert empty id: want error")
+	}
+}
+
 // TestArchiveContract locks the contract that the handler relies on (BOS-76):
 // Archive returns sql.ErrNoRows for a missing id, and nil (with archived_at set)
 // for an existing un-archived row.
@@ -1416,6 +1482,148 @@ func TestRollbackFailedResurrect_SkipsWhenRowMoved(t *testing.T) {
 		}
 		if got.State != machine.Merged {
 			t.Fatalf("state after skipped rollback = %v, want Merged (untouched)", got.State)
+		}
+	})
+}
+
+// TestLinkTrackerIfUnlinked_IsACompareAndSet pins the tracker linker's write:
+// it lands only on an active row with no tracker_url whose tracker_id still
+// equals the expected value, so a manual link that committed first survives.
+func TestLinkTrackerIfUnlinked_IsACompareAndSet(t *testing.T) {
+	ctx := context.Background()
+	const autoURL = "https://linear.app/acme/issue/ABC-1/auto"
+
+	newSession := func(t *testing.T, store *SQLiteSessionStore, repoID, name string) *models.Session {
+		t.Helper()
+		sess, err := store.Create(ctx, CreateSessionParams{
+			RepoID:       repoID,
+			Title:        name,
+			WorktreePath: "/tmp/wt/" + name,
+			BranchName:   "feat/" + name,
+			BaseBranch:   "main",
+		})
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		return sess
+	}
+	setTracker := func(t *testing.T, store *SQLiteSessionStore, id string, trackerID, trackerURL *string) {
+		t.Helper()
+		if _, err := store.Update(ctx, id, UpdateSessionParams{TrackerID: &trackerID, TrackerURL: &trackerURL}); err != nil {
+			t.Fatalf("set tracker: %v", err)
+		}
+	}
+	str := func(s string) *string { return &s }
+	derefStr := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+
+	tests := []struct {
+		name        string
+		prepare     func(t *testing.T, store *SQLiteSessionStore, id string)
+		expectedID  string
+		wantApplied bool
+		wantID      string
+		wantURL     string
+	}{
+		{
+			name:        "unlinked row is linked",
+			wantApplied: true,
+			wantID:      "ABC-1",
+			wantURL:     autoURL,
+		},
+		{
+			name: "bare tracker id matching expected is linked",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				setTracker(t, store, id, str("abc-1"), nil)
+			},
+			expectedID:  "abc-1",
+			wantApplied: true,
+			wantID:      "ABC-1",
+			wantURL:     autoURL,
+		},
+		{
+			name: "manual link already written is kept",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				setTracker(t, store, id, str("ABC-7"), str("https://linear.app/acme/issue/ABC-7/manual"))
+			},
+			wantID:  "ABC-7",
+			wantURL: "https://linear.app/acme/issue/ABC-7/manual",
+		},
+		{
+			name: "manual link on the expected tracker id is kept",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				setTracker(t, store, id, str("abc-1"), str("https://linear.app/acme/issue/ABC-1/manual"))
+			},
+			expectedID: "abc-1",
+			wantID:     "abc-1",
+			wantURL:    "https://linear.app/acme/issue/ABC-1/manual",
+		},
+		{
+			name: "tracker id changed since the read is kept",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				setTracker(t, store, id, str("ABC-9"), nil)
+			},
+			wantID: "ABC-9",
+		},
+		{
+			name: "archived row is not linked",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				if err := store.Archive(ctx, id); err != nil {
+					t.Fatalf("archive: %v", err)
+				}
+			},
+		},
+		{
+			// CreateSession inserts the row and only then sets is_quick_chat,
+			// so a pass can list the row as an ordinary session first.
+			name: "row marked quick chat since the read is not linked",
+			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
+				quick := true
+				if _, err := store.Update(ctx, id, UpdateSessionParams{IsQuickChat: &quick}); err != nil {
+					t.Fatalf("mark quick chat: %v", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			database := setupTestDB(t)
+			store := NewSessionStore(database)
+			repo := createTestRepo(t, NewRepoStore(database))
+			sess := newSession(t, store, repo.ID, "link-tracker")
+			if tt.prepare != nil {
+				tt.prepare(t, store, sess.ID)
+			}
+
+			applied, err := store.LinkTrackerIfUnlinked(ctx, sess.ID, tt.expectedID, "ABC-1", autoURL)
+			if err != nil {
+				t.Fatalf("LinkTrackerIfUnlinked: %v", err)
+			}
+			if applied != tt.wantApplied {
+				t.Fatalf("applied = %v, want %v", applied, tt.wantApplied)
+			}
+			got, err := store.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if gotID := derefStr(got.TrackerID); gotID != tt.wantID {
+				t.Fatalf("tracker_id = %q, want %q", gotID, tt.wantID)
+			}
+			if gotURL := derefStr(got.TrackerURL); gotURL != tt.wantURL {
+				t.Fatalf("tracker_url = %q, want %q", gotURL, tt.wantURL)
+			}
+		})
+	}
+
+	t.Run("missing row reports not applied", func(t *testing.T) {
+		store := NewSessionStore(setupTestDB(t))
+		applied, err := store.LinkTrackerIfUnlinked(ctx, "no-such-session", "", "ABC-1", autoURL)
+		if err != nil || applied {
+			t.Fatalf("LinkTrackerIfUnlinked = (%v, %v), want (false, nil)", applied, err)
 		}
 	})
 }

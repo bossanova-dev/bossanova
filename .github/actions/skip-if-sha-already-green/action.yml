@@ -4,9 +4,9 @@ description: >
   commit, so a second event on the same SHA can inherit the first run's result
   instead of repeating it.
 
-# Why this exists: both release PRs are opened with `--head main`
-# (create-staging-release.yml / create-production-release.yml), so a production
-# release cut from the same main tip has a BYTE-IDENTICAL head SHA to the staging
+# Why this exists: both release PRs are opened from a release/* branch cut at main's
+# tip with no new commit (create-staging-release.yml / create-production-release.yml),
+# so a production release cut from the same main tip has a BYTE-IDENTICAL head SHA to the staging
 # release that already passed. Measured on 2026-08-07: SHA c6ead945 carried two of
 # every workflow — 2x bazel, 2x smoke, 2x security, 2x codeql, 2x web — for ~$0.29
 # and ~43 min of pure repetition. GitHub keys check runs to the COMMIT, not the PR,

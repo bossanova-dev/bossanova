@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -75,6 +76,10 @@ type MockVCSProvider struct {
 
 	// ReviewComments is returned by GetReviewComments.
 	ReviewComments []vcs.ReviewComment
+
+	// PRComments are the PR conversation comments FindPRCommentsWithMarker
+	// searches, keyed by PR number.
+	PRComments map[int][]vcs.PRComment
 
 	// OpenPRs is returned by ListOpenPRs.
 	OpenPRs []vcs.PRSummary
@@ -355,4 +360,19 @@ func (m *MockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string)
 		return out, nil
 	}
 	return []string{"merge", "squash", "rebase"}, nil
+}
+
+// FindPRCommentsWithMarker returns the PRComments entries for prID that
+// contain marker, most recently written first.
+func (m *MockVCSProvider) FindPRCommentsWithMarker(_ context.Context, _ string, prID int, marker string) ([]vcs.PRComment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []vcs.PRComment
+	for _, c := range m.PRComments[prID] {
+		if strings.Contains(c.Body, marker) {
+			out = append(out, c)
+		}
+	}
+	vcs.SortPRCommentsNewestFirst(out)
+	return out, nil
 }

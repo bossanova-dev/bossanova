@@ -37,6 +37,10 @@ type codexRuntimeTarget struct {
 	// UNSPECIFIED profile and any non-bossd caller.
 	WorkDir  string
 	ExtraEnv map[string]string
+	// ProjectTrustOverride is the launch's per-process project-trust `-c`
+	// override (applyCodexProjectTrust; set for a DENY or a REVOKE), so the profiled
+	// codex distrusts WorkDir exactly as the launch it stands in for does.
+	ProjectTrustOverride string
 }
 
 type runtimeMCPServer struct {
@@ -88,6 +92,7 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 	if target.Effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(target.Effort))
 	}
+	args = appendConfigOverride(args, target.ProjectTrustOverride)
 	args = loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 	commandFactory := r.commandFactory
 	if commandFactory == nil {

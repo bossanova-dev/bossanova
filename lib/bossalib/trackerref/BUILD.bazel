@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "trackerref",
+    srcs = ["trackerref.go"],
+    importpath = "github.com/recurser/bossalib/trackerref",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "trackerref_test",
+    srcs = ["trackerref_test.go"],
+    embed = [":trackerref"],
+)

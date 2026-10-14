@@ -1611,7 +1611,7 @@ func (w *setupStreamWorktree) callRecords() ([]gitpkg.CreateOpts, []gitpkg.Creat
 		append([]gitpkg.CreateFromExistingBranchOpts(nil), w.createFromExistingCalls...)
 }
 
-func (w *setupStreamWorktree) Archive(context.Context, string) error { return nil }
+func (w *setupStreamWorktree) Archive(context.Context, string, string, string) error { return nil }
 func (w *setupStreamWorktree) Resurrect(ctx context.Context, opts gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
 	w.mu.Lock()
 	w.resurrectCalls = append(w.resurrectCalls, opts)
@@ -1767,4 +1767,44 @@ func (setupStreamProvider) GetPRMergeCommit(context.Context, string, int) (strin
 }
 func (setupStreamProvider) GetAllowedMergeStrategies(context.Context, string) ([]string, error) {
 	return []string{"merge"}, nil
+}
+
+// TestStreamCreateSession_RejectsInvalidBranchName: branch_name becomes a path
+// component of the worktree directory, so a name git would refuse is
+// InvalidArgument at the edge, before any session row or worktree work exists.
+func TestStreamCreateSession_RejectsInvalidBranchName(t *testing.T) {
+	t.Parallel()
+
+	for _, branch := range []string{"../x", "../../etc", "-x", "a..b", "a b", "x.lock", "@{-1}"} {
+		t.Run(branch, func(t *testing.T) {
+			t.Parallel()
+
+			worktrees := &setupStreamWorktree{}
+			h := newCreateSessionStreamHarness(t, worktrees, &setupStreamAgent{})
+			b := branch
+			err := h.server.StreamCreateSession(context.Background(), &pb.CreateSessionRequest{
+				RepoId:     h.repo.ID,
+				Title:      "bad branch",
+				Plan:       "do work",
+				BranchName: &b,
+			}, func(*pb.CreateSessionResponse) error { return nil })
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("code = %v (err %v), want InvalidArgument", got, err)
+			}
+			sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+			if listErr != nil {
+				t.Fatalf("list sessions: %v", listErr)
+			}
+			if len(sessions) != 0 {
+				t.Fatalf("rejected create left %d session rows", len(sessions))
+			}
+			if createCalls, existingCalls := worktrees.callRecords(); len(createCalls)+len(existingCalls) != 0 {
+				t.Fatal("rejected create touched the worktree manager")
+			}
+		})
+	}
+}
+
+func (setupStreamProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
 }

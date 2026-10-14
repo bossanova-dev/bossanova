@@ -43,6 +43,7 @@ import (
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/repotrust"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/tmux"
 )
@@ -252,6 +253,10 @@ type Lifecycle struct {
 	// uses are nil-guarded.
 	settingUpTracker settingUpTracker
 
+	// alertClear holds the BOS-1535 resolved-alert sweep's dependencies (see
+	// alert_clear.go). Zero value means the sweep is unwired and a no-op.
+	alertClear alertClearDeps
+
 	// sessionDeletedNotifier publishes session deletions triggered inside the
 	// lifecycle, such as no-change cron finalization cleanup.
 	sessionDeletedNotifier sessionDeletedNotifier
@@ -263,6 +268,14 @@ type Lifecycle struct {
 	// can still be reaped once liveness confirms the agent is gone. nil leaves
 	// the conservative "can't tell => still running" default in place.
 	liveness sessionLiveness
+
+	// chatAuthFailed reports whether an agent chat currently shows the
+	// login-required (auth-failed) terminal shape — the daemon wires the chat
+	// status tracker's AuthFailed. The stranded-cron sweep blocks such a run
+	// instead of finalizing it, and the completion gate defers it (BOS-1530).
+	// nil keeps the pre-BOS-1530 behaviour: no run is ever treated as
+	// auth-failed.
+	chatAuthFailed func(agentSessionID string) bool
 
 	// chatStatus records WORKING/STOPPED for headless runs (codex exec /
 	// claude --print), which have no tmux pane for TmuxStatusPoller and no
@@ -398,6 +411,10 @@ type Lifecycle struct {
 	// value is ready to use.
 	deliveryReceipts deliveryReceiptBook
 
+	// promptReceiptKeys holds the key the per-chat prompt-receipt bearer tokens
+	// are derived from (SetPromptReceiptKey). Zero value: no key, no tokens.
+	promptReceiptKeys promptReceiptKeyring
+
 	// draftPRRetries rate-limits RetryFailedDraftPRsPeriodic (BOS-875), keyed
 	// by session id. Deliberately in memory and NOT a column: this is a rate
 	// limiter, not a fact about the session, and it must not outlive the
@@ -427,13 +444,14 @@ type proofEnvResolver interface {
 // NewLifecycle installs a real resolver.
 func (l *Lifecycle) SetProofEnvResolver(r proofEnvResolver) { l.proofEnv = r }
 
-// resolveProofEnv returns the proof env overlay, or nil when no resolver is
-// wired (older/test wiring). Never logs values.
-func (l *Lifecycle) resolveProofEnv() map[string]string {
-	if l.proofEnv == nil {
-		return nil
-	}
-	return l.proofEnv.Resolve()
+// resolveProofEnvFor returns the proof env overlay for a session of repo, or
+// nil when repo is not trusted (BOS-1562): the global proof Anthropic key and
+// Cloudflare upload token reach only repos the local user trusts. A nil repo
+// (failed lookup) is untrusted — fail closed. Also nil when no resolver is
+// wired (older/test wiring). This is the only way to obtain the overlay, so no
+// spawn path can bypass the trust gate. Never logs values.
+func (l *Lifecycle) resolveProofEnvFor(repo *models.Repo) map[string]string {
+	return proofenv.OverlayFor(l.proofEnv, repo)
 }
 
 // accountEnvResolver resolves the per-account environment overlay for
@@ -661,7 +679,7 @@ func configHomeEnv(env map[string]string) map[string]string {
 		return nil
 	}
 	selected := make(map[string]string, 2)
-	for _, name := range []string{"CODEX_HOME", "HOME"} {
+	for _, name := range dotenv.ConfigHomeKeys() {
 		if value, ok := env[name]; ok {
 			selected[name] = value
 		}
@@ -695,6 +713,24 @@ func (l *Lifecycle) SetSessionDeletedNotifier(n func(context.Context, string)) {
 // running" behavior.
 func (l *Lifecycle) SetSessionLiveness(c sessionLiveness) {
 	l.liveness = c
+}
+
+// SetChatAuthFailedProbe wires the login-required (auth-failed) chat signal the
+// stranded-cron sweep and the cron completion gate consult before treating an
+// idle unattended run as finished. Safe to leave unset (or set nil): no run is
+// then ever treated as auth-failed, which is the prior behaviour.
+func (l *Lifecycle) SetChatAuthFailedProbe(probe func(agentSessionID string) bool) {
+	l.chatAuthFailed = probe
+}
+
+// SessionChatAuthFailed reports whether sess's agent chat is auth-failed per the
+// wired probe. It fails toward false — no probe, no agent session id — so a
+// healthy finished run is never mistaken for a wedged one.
+func (l *Lifecycle) SessionChatAuthFailed(sess *models.Session) bool {
+	if l.chatAuthFailed == nil || sess == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return false
+	}
+	return l.chatAuthFailed(*sess.AgentSessionID)
 }
 
 // SetChatStatus wires the daemon's chat status tracker so headless runs can
@@ -794,8 +830,9 @@ func (l *Lifecycle) Bootstrap(ctx context.Context) {
 	// same-port panes, and the stale-port sweep then only surfaces the residual
 	// panes whose baked port genuinely no longer matches.
 	l.adoptSurvivingPaneProxyTokens(ctx)
-	// Flag live tmux panes whose baked ANTHROPIC_BASE_URL points at a stale
-	// failover-proxy port after this restart (BOS-409). Runs after SetProxyPort
+	// Kill live tmux panes whose baked ANTHROPIC_BASE_URL points at a stale
+	// failover-proxy port after this restart (BOS-409, BOS-1563), keeping their
+	// chat rows so the wake path resumes them on the live port. Runs after SetProxyPort
 	// has stamped the live port (Bootstrap is called from main.go after the proxy
 	// block binds), so the comparison is against the real port.
 	l.detectStalePaneProxyPorts(ctx)
@@ -1337,7 +1374,13 @@ func (l *Lifecycle) SetAgentLogsDir(dir string) { l.agentLogsDir = dir }
 
 func (l *Lifecycle) SetAgentRunStore(store db.AgentRunStore) { l.agentRuns = store }
 
-func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *models.Session, worktreePath, plan string, resume *string, extraEnv map[string]string) (string, error) {
+// startHeadlessReplacementRun starts the headless run that replaces session's
+// previous one (resume, orphan resume, usage-limit rotation). repo is the
+// session's repo as the caller resolved it for the run's environment; its
+// trust becomes the run's project-trust decision for worktreePath (nil
+// revokes; an untrusted repo's own checkout denies — runs untrusted without
+// persisting anything — rather than revoking: repotrust.ProjectTrustFor).
+func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *models.Session, repo *models.Repo, worktreePath, plan string, resume *string, extraEnv map[string]string) (string, error) {
 	if l.agentRunner == nil {
 		return "", fmt.Errorf("agent runner not configured")
 	}
@@ -1348,6 +1391,7 @@ func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *mo
 		return runner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv, agent.HeadlessLaunchOptions{
 			BossSessionID:  session.ID,
 			EffectiveModel: session.EffectiveModel,
+			ProjectTrust:   repotrust.ProjectTrustFor(repo, worktreePath),
 		})
 	}
 	return l.agentRunner.StartByAgent(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv)
@@ -2363,7 +2407,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
 		defer cleanupCancel()
-		if archiveErr := l.worktrees.Archive(cleanupCtx, result.WorktreePath); archiveErr != nil {
+		if archiveErr := l.worktrees.Archive(cleanupCtx, repo.DisplayName, repo.WorktreeBaseDir, result.WorktreePath); archiveErr != nil {
 			return fmt.Errorf("%w; rollback worktree %q: %v", preflightErr, result.WorktreePath, archiveErr)
 		}
 		if createdFreshBranch {
@@ -2394,9 +2438,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if accountErr != nil {
 			return rollbackPreflightFailure(fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr)))
 		}
-		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(preflightAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath)
+		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(preflightAccountEnv, l.resolveProofEnvFor(repo)), result.WorktreePath, repo), result.WorktreePath)
 		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
 			ctx, session.AgentName, result.WorktreePath, session.Model, session.EffectiveEffort, preflightEnv, opts.HeadlessCapabilityProfile,
+			// The probe starts the agent in the worktree, so it must honour the
+			// launch's trust decision first (BOS-1562).
+			repotrust.ProjectTrustFor(repo, result.WorktreePath),
 		); err != nil {
 			return rollbackPreflightFailure(fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err))
 		}
@@ -2542,7 +2589,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			// it, not the preflight rollback.
 			return fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr))
 		}
-		headlessEnv := mergeEnv(unattendedMarkerEnv(), resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(headlessAccountEnv, l.resolveProofEnv()), result.WorktreePath, repo), result.WorktreePath))
+		headlessEnv := mergeEnv(unattendedMarkerEnv(), resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(headlessAccountEnv, l.resolveProofEnvFor(repo)), result.WorktreePath, repo), result.WorktreePath))
 		// Hand the run the loopback question-signal context (BOS-486). The
 		// token is minted BEFORE the spawn — it has to be in the child's env —
 		// and bound to the agent session id the plugin resolves AFTER it, which
@@ -2559,6 +2606,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
 			BossSessionID:             session.ID,
 			EffectiveModel:            session.EffectiveModel,
+			ProjectTrust:              repotrust.ProjectTrustFor(repo, result.WorktreePath),
 		})
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -2734,7 +2782,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 // resolveWorktreeRelativeHomes makes preflight observe HOME and CODEX_HOME as
 // the launched agent will: relative values are interpreted from its worktree.
 func resolveWorktreeRelativeHomes(env map[string]string, worktreePath string) map[string]string {
-	for _, key := range []string{"CODEX_HOME", "HOME"} {
+	for _, key := range dotenv.ConfigHomeKeys() {
 		if value := env[key]; value != "" && !filepath.IsAbs(value) {
 			env[key] = filepath.Join(worktreePath, value)
 		}
@@ -3419,11 +3467,18 @@ func (l *Lifecycle) agentSuggestedTitle(ctx context.Context, session *models.Ses
 	if err != nil || client == nil {
 		return "", false
 	}
+	// The suggester runs an agent in the session worktree, so it gets the same
+	// repo pins every spawn gets (BOS-1562): an untrusted repo's proof keys and
+	// an unconfigured repo's Linear/Sentry keys are emptied over the plugin's
+	// ambient environment. No proof grant or account layer: a title needs no
+	// credentials beyond the agent CLI's own login.
+	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "suggest PR title", l.logger)
 	resp, err := client.SuggestPRTitle(ctx, &bossanovav1.SuggestPRTitleRequest{
 		WorkDir:      session.WorktreePath,
 		CurrentTitle: currentPRTitle,
 		GitLog:       strings.Join(subjects, "\n"),
 		BaseBranch:   session.BaseBranch,
+		ExtraEnv:     dotenv.OverlayWithRepo(nil, session.WorktreePath, repo),
 	})
 	if err != nil {
 		l.logger.Warn().Err(err).
@@ -3910,19 +3965,31 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
-		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
+		err := l.worktrees.Archive(ctx, repo.DisplayName, repo.WorktreeBaseDir, session.WorktreePath)
+		switch {
+		case errors.Is(err, gitpkg.ErrPathOutsideBase):
+			// The stored path does not resolve inside the repo's CURRENT
+			// <worktree base>/<repo> — a worktree made before the repo was
+			// renamed or its base dir changed, or a tampered row. Archive
+			// deleted nothing; leave the directory (and its branch, which git
+			// refuses to drop while the worktree is registered) on disk and
+			// still archive the session, so the refusal cannot strand it.
+			l.logger.Error().Err(err).
+				Str("session", sessionID).
+				Str("path", session.WorktreePath).
+				Msg("worktree is outside the repo's worktree base; archiving the session without deleting it")
+		case err != nil:
 			return fmt.Errorf("archive worktree: %w", err)
-		}
-
-		// BOS-180: reclaim the session's LOCAL branch on archive when the repo
-		// opts in (CanAutoDeleteBranches) and the branch is safe to drop.
-		// Guarded by the same non-quick-chat condition as the worktree removal.
-		// Best-effort: the worktree is already archived, so neither a
-		// "not safe, keep it" outcome nor any git failure may fail the archive.
-		// LOCAL ONLY — never deletes or pushes the remote branch. Safety is
-		// routed through the worktree-manager interface (BranchSafeToDelete ==
-		// merge-base --is-ancestor) so this path stays testable via the mock.
-		if repo.CanAutoDeleteBranches {
+		case repo.CanAutoDeleteBranches:
+			// BOS-180: reclaim the session's LOCAL branch on archive when the
+			// repo opts in (CanAutoDeleteBranches) and the branch is safe to
+			// drop. Guarded by the same non-quick-chat condition as the
+			// worktree removal. Best-effort: the worktree is already archived,
+			// so neither a "not safe, keep it" outcome nor any git failure may
+			// fail the archive. LOCAL ONLY — never deletes or pushes the remote
+			// branch. Safety is routed through the worktree-manager interface
+			// (BranchSafeToDelete == merge-base --is-ancestor) so this path
+			// stays testable via the mock.
 			l.reapSafeLocalBranch(ctx, sessionID, repo, session)
 		}
 	}
@@ -4160,8 +4227,8 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 		if envErr != nil {
 			return "", fmt.Errorf("resolve account env: %w", redactedInjection(envErr))
 		}
-		resumeEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnv()), session.WorktreePath, repo)
-		return l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, session.Plan, resume, resumeEnv)
+		resumeEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnvFor(repo)), session.WorktreePath, repo)
+		return l.startHeadlessReplacementRun(ctx, spawnSess, repo, session.WorktreePath, session.Plan, resume, resumeEnv)
 	}()
 	if err != nil {
 		// Undo the un-archive (BOS-924). Without this the session is left live,
@@ -4244,7 +4311,7 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) err
 
 	l.logger.Info().
 		Str("repo", repo.ID).
-		Str("originURL", url).
+		Str("originURL", gitpkg.RedactURLCredentials(url)).
 		Msg("re-detected and persisted origin URL")
 
 	repo.OriginURL = url

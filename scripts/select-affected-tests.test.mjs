@@ -425,12 +425,21 @@ test('selectTargets maps the lockfile and turbo.json to the turbo web target', (
   assert.deepEqual(selectTargets(['turbo.json']), [{ kind: 'make', target: 'test-web', env: {} }])
 })
 
-test('selectTargets maps infra/install.sh to the turbo web target', () => {
-  // Marketing's prebuild copies infra/install.sh into public/, so it is a
-  // marketing build input (turbo.json globalDependencies + test-marketing.yml).
+test('selectTargets maps infra/install.sh to the script tests and the turbo web target', () => {
+  // scripts/install-sh.test.mjs runs the installer, and marketing's prebuild copies
+  // infra/install.sh into public/, so it is a marketing build input too
+  // (turbo.json globalDependencies + test-marketing.yml).
   assert.deepEqual(selectTargets(['infra/install.sh']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
+})
+
+test('selectTargets maps composite actions and dependabot.yml to script tests', () => {
+  // scripts/check-action-pins.test.mjs checks both against the real tree.
+  for (const file of ['.github/actions/x/action.yml', '.github/dependabot.yml']) {
+    assert.deepEqual(selectTargets([file]), [{ kind: 'make', target: 'test-scripts', env: {} }])
+  }
 })
 
 test('selectTargets falls back to smoke tests when no rule matches', () => {

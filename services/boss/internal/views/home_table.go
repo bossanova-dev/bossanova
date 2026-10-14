@@ -273,7 +273,7 @@ func (h *HomeModel) buildTableRows() {
 		}
 		// Why a session is parked on an external event (BOS-668). Informational,
 		// not a warning, so it is styled with the info color and sits above the
-		// danger-styled warning block. Same emit-and-count discipline as the
+		// warning block. Same emit-and-count discipline as the
 		// endpoint row: the predicate here is waitingHintLine != "", which is
 		// exactly what sessionSubRowCount counts.
 		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); waitingHint != "" {

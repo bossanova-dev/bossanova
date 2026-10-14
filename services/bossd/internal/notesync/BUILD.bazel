@@ -1,5 +1,8 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: //services/bosso/internal/auth:auth_test scans worker.go for daemon-token orchestrator calls
+exports_files(["worker.go"])
+
 go_library(
     name = "notesync",
     srcs = ["worker.go"],

@@ -132,6 +132,11 @@ func rootCmd() *cobra.Command {
 			// problem and the failure mode is not suspecting it. Warning only:
 			// one line to stderr, never stdout, exit code untouched.
 			warnIfBossBinaryBehindCheckout(cmd)
+			// BOS-1518, the same shape a third time: a detached bossd served
+			// the socket for a day and only `boss daemon doctor` said so.
+			// One line to stderr, only for an unsupervised verdict, never
+			// stdout, exit code untouched.
+			warnIfDaemonUnsupervised(cmd)
 			// gen-skill regenerates the embedded payload; the `skills` subtree is
 			// itself the explicit, no-prompt installer. Both must bypass the
 			// interactive startup installer/self-heal — otherwise `boss skills
@@ -211,7 +216,7 @@ func rootCmd() *cobra.Command {
 		}
 	}
 
-	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), archiveCmd(), renameCmd())
+	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), mergeCmd(), prCmd(), archiveCmd(), renameCmd())
 	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd(), projectCmd())
 	addGrouped("cron", cronCmd())
@@ -338,17 +343,7 @@ func sessionCmd() *cobra.Command {
 	checks.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
 	cmd.AddCommand(checks)
 	cmd.AddCommand(sessionPhaseCmd(newClient))
-	reviewLedger := &cobra.Command{
-		Use:   "review-ledger <session-id>",
-		Short: "Show a finished boss-review run's durable dispatch ledger",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSessionReviewLedger(cmd, args[0])
-		},
-	}
-	reviewLedger.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of text")
-	reviewLedger.Flags().String("run", "", "Run id to read (default newest ledger by mtime)")
-	cmd.AddCommand(reviewLedger)
+	cmd.AddCommand(sessionFinishCmd(newClient))
 	mcp := &cobra.Command{
 		Use:   "mcp <chat-id>",
 		Short: "Show which MCP servers this chat's agent actually resolved, with tools and source",
@@ -376,6 +371,7 @@ func sessionCmd() *cobra.Command {
 			return runSessionLinkPR(cmd, args[0], args[1])
 		},
 	})
+	cmd.AddCommand(sessionSetTrackerCmd(newClient))
 	refreshPR := &cobra.Command{
 		Use:   "refresh-pr [session-id]",
 		Short: "Refresh one session's cached pull request status",
@@ -567,6 +563,7 @@ func repoCmd() *cobra.Command {
 	update.Flags().Bool("no-delete-branches", false, "Disable deleting local branches after archiving")
 	update.Flags().Bool("keep-branches-current", false, "Enable proactively rebasing in-flight session branches when the base advances")
 	update.Flags().Bool("no-keep-branches-current", false, "Disable proactively rebasing in-flight session branches when the base advances")
+	update.Flags().Bool("trusted", false, "Trust this repository's own configuration: Codex project trust and proof secrets for its sessions (--trusted=false revokes)")
 
 	repo.AddCommand(
 		&cobra.Command{

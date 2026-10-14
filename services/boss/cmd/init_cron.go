@@ -842,7 +842,22 @@ func appendBaseBranchWarnings(ctx context.Context, res *initCronResult, repo *pb
 		if todo := checkBaseMCPDeclaration(ctx, repoDir, ref, res.Agent, mcpServer, env); todo != "" {
 			res.LeftToDo = append(res.LeftToDo, todo)
 		}
+		if todo := untrustedCodexMCPNote(repo, res.Agent, mcpServer); todo != "" {
+			res.LeftToDo = append(res.LeftToDo, todo)
+		}
 	}
+}
+
+// untrustedCodexMCPNote returns a left-to-do line when codex cron sessions
+// cannot see the repository's tracker MCP declaration: bossd launches an
+// untrusted repository's sessions with Codex project trust revoked (BOS-1562),
+// and an untrusted Codex project's .codex/config.toml is not loaded. Claude's
+// .mcp.json is not gated on repo trust, so only codex gets the note.
+func untrustedCodexMCPNote(repo *pb.Repo, agent, server string) string {
+	if agent != cronAgentCodex || repo.GetIsTrusted() {
+		return ""
+	}
+	return fmt.Sprintf("trust the repository: Codex runs an untrusted repository's sessions untrusted and ignores the repository's .codex/config.toml, so codex cron sessions cannot use a tracker MCP server %q declared in it; run %s (`boss init --trusted` trusts a repository only when it registers it)", server, trustRepoCommand(repo.GetId()))
 }
 
 const untilMerged = " until this is merged"
@@ -1058,7 +1073,7 @@ func runInitCronStep(out io.Writer, opts initOptions, repoDir, configPath string
 		return nil
 	}
 	if repo == nil {
-		repo, err = resolveInitRepo(ctx, c, repoDir, false, &initAppliedSteps{})
+		repo, err = resolveInitRepo(ctx, c, repoDir, initRegistration{}, &initAppliedSteps{})
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "\nCron setup skipped: no local repository id (%s).\n", err)
 			return nil

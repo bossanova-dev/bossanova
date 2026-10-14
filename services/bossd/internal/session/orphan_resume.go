@@ -167,13 +167,13 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 		l.releaseOrphanResumeClaim(ctx, claimStore, session.ID, orphanReason, priorAgentSession)
 		return false
 	}
-	mergedEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnv()), session.WorktreePath, repo)
+	mergedEnv := dotenv.OverlayWithRepo(mergeEnv(accountEnv, l.resolveProofEnvFor(repo)), session.WorktreePath, repo)
 
 	resumedPrompt := orphanResumeSteeringNotice + "\n\n" + session.Plan
 
 	// BOS-381: dispatch the restart under the primary chat's provider/model (the
 	// runtime authority), not the session's stale seed.
-	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, resumedPrompt, resume, mergedEnv)
+	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, repo, session.WorktreePath, resumedPrompt, resume, mergedEnv)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: restart failed; re-parking Orphaned")

@@ -219,6 +219,68 @@ func TestChatStatusFromSessionChats_DeterministicReasonAcrossParkedChats(t *test
 	}
 }
 
+// TestGetSessionStatuses_BlockingWaitBeatsStandbySibling pins BOS-1531: after a
+// build hands off to verify, the build chat may still hold a standby
+// checks_failed watch while the verify chat holds checks_passed_ready. The
+// session's served reason must name the blocking wait whichever chat's
+// agent-session id sorts first, and whichever order the chats are listed in.
+func TestGetSessionStatuses_BlockingWaitBeatsStandbySibling(t *testing.T) {
+	const standbyReason = "awaiting checks_failed on acme/widget#123"
+	for _, tc := range []struct {
+		name       string
+		chatOrder  []string
+		standbyID  string
+		blockingID string
+	}{
+		{"standby id sorts first, listed first", []string{"agent-aaa", "agent-zzz"}, "agent-aaa", "agent-zzz"},
+		{"standby id sorts first, listed second", []string{"agent-zzz", "agent-aaa"}, "agent-aaa", "agent-zzz"},
+		{"blocking id sorts first, listed first", []string{"agent-aaa", "agent-zzz"}, "agent-zzz", "agent-aaa"},
+		{"blocking id sorts first, listed second", []string{"agent-zzz", "agent-aaa"}, "agent-zzz", "agent-aaa"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, tracker := newWaitingStatusServer(t, tc.chatOrder...)
+			tracker.SetWaiting(tc.standbyID, standbyReason)
+			tracker.SetWaiting(tc.blockingID, waitingTestReason)
+
+			resp, err := s.GetSessionStatuses(context.Background(), connect.NewRequest(&pb.GetSessionStatusesRequest{
+				SessionIds: []string{"sess-1"},
+			}))
+			if err != nil {
+				t.Fatalf("GetSessionStatuses: %v", err)
+			}
+			if len(resp.Msg.GetStatuses()) != 1 {
+				t.Fatalf("got %d session statuses, want 1", len(resp.Msg.GetStatuses()))
+			}
+			entry := resp.Msg.GetStatuses()[0]
+			if got := entry.GetStatus(); got != pb.ChatStatus_CHAT_STATUS_WAITING {
+				t.Fatalf("status = %v, want WAITING", got)
+			}
+			if got := entry.GetWaitingReason(); got != waitingTestReason {
+				t.Fatalf("waiting_reason = %q, want the blocking %q", got, waitingTestReason)
+			}
+		})
+	}
+}
+
+// Two standby-only chats still resolve deterministically by id: the standby
+// preference reorders reasons, it never drops the tie-break.
+func TestChatStatusAndWaitingAggregate_TwoStandbyChatsTieBreakByID(t *testing.T) {
+	const (
+		reasonA = "awaiting checks_failed on acme/widget#1"
+		reasonZ = "awaiting closed on acme/widget#2"
+	)
+	for _, order := range [][]string{{"agent-aaa", "agent-zzz"}, {"agent-zzz", "agent-aaa"}} {
+		s, tracker := newWaitingStatusServer(t, order...)
+		tracker.SetWaiting("agent-aaa", reasonA)
+		tracker.SetWaiting("agent-zzz", reasonZ)
+		_, reason, _, _ := s.chatStatusAndWaitingAggregate(context.Background(),
+			s.agentChats.(*waitingChatListFake).chats, true)
+		if reason != reasonA {
+			t.Fatalf("order %v: reason = %q, want %q (smaller id)", order, reason, reasonA)
+		}
+	}
+}
+
 // The pre-existing ladder is unchanged by the new rung.
 func TestChatStatusFromSessionChats_QuestionAndLimitedStillBeatWaiting(t *testing.T) {
 	for _, tc := range []struct {

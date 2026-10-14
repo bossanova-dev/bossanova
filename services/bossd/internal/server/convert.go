@@ -56,6 +56,9 @@ func HydrateDisplayEntry(p *pb.Session, e *status.DisplayEntry) {
 	p.DisplayMerging = e.Merging
 	p.ArchivePending = e.Archiving
 	p.PrMergeable = e.Mergeable
+	// The polled PR head lets clients apply the shared repair-alert end rule
+	// (head moved past last_repair_head_sha, alertstate BOS-1535).
+	p.PrDisplayHeadSha = e.HeadSHA
 	p.MergeBlock = displayEntryToMergeBlock(e)
 }
 
@@ -125,6 +128,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		LinearApiKey:                    protoString(r.LinearAPIKey),
 		SentryApiKey:                    protoString(r.SentryAPIKey),
 		SentryOrg:                       protoString(r.SentryOrg),
+		IsTrusted:                       r.IsTrusted,
 		CreatedAt:                       timestamppb.New(r.CreatedAt),
 		UpdatedAt:                       timestamppb.New(r.UpdatedAt),
 	}
@@ -301,6 +305,10 @@ const verifyParkSummaryNoReason = "needs human — parked by the verify stage"
 //
 // e supplies the park reason and may be nil (no reason known). No-op when p is
 // nil, the display status is not NEEDS_HUMAN, or an attention is already set.
+//
+// The summary names the park codes only: e.VerifyLabel is deliberately not
+// projected here or into MergeBlock yet. The label is cached on DisplayEntry
+// so a later client surface can show it without another PR fetch.
 func HydrateVerifyAttention(p *pb.Session, e *status.DisplayEntry) {
 	if p == nil || p.GetAttentionStatus() != nil ||
 		p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {

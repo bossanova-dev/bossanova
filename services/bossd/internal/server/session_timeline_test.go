@@ -1,0 +1,940 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+
+	"github.com/recurser/bossalib/attention"
+	libevidence "github.com/recurser/bossalib/evidence"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/evidence"
+	"github.com/recurser/bossd/internal/sessionattention"
+	"github.com/recurser/bossd/internal/status"
+)
+
+const timelineHead = "29792979297929792979297929792979297929aa"
+
+// at is 2026-10-13 23:mm UTC, the evening #2979 ran.
+func at(mm int) time.Time {
+	return time.Date(2026, 10, 13, 23, mm, 0, 0, time.UTC)
+}
+
+type stubEvidence map[string]evidence.Entry
+
+func (s stubEvidence) Entry(sessionID string) (evidence.Entry, bool) {
+	e, ok := s[sessionID]
+	return e, ok
+}
+
+func checksJSON(t *testing.T, checks []vcs.CheckResult) string {
+	t.Helper()
+	raw, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatalf("marshal checks: %v", err)
+	}
+	return string(raw)
+}
+
+// greenCI is n completed, successful ordinary checks plus a pending boss/verify
+// carrying description.
+func greenCI(n int, verifyDescription string) []vcs.CheckResult {
+	success := vcs.CheckConclusionSuccess
+	out := make([]vcs.CheckResult, 0, n+1)
+	for i := range n {
+		out = append(out, vcs.CheckResult{Name: fmt.Sprintf("ci-%d", i), Status: vcs.CheckStatusCompleted, Conclusion: &success})
+	}
+	if verifyDescription != "" {
+		out = append(out, vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: verifyDescription})
+	}
+	return out
+}
+
+type wantStep struct {
+	at     time.Time
+	title  string
+	detail string
+	state  pb.TimelineStepState
+}
+
+const (
+	done    = pb.TimelineStepState_TIMELINE_STEP_STATE_DONE
+	current = pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
+	failed  = pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED
+)
+
+func assertSteps(t *testing.T, got []*pb.TimelineStep, want []wantStep) {
+	t.Helper()
+	var b strings.Builder
+	for _, st := range got {
+		fmt.Fprintf(&b, "  %s %s | %s | %s\n", st.GetAt().AsTime().Format("15:04"), st.GetTitle(), st.GetDetail(), st.GetState())
+	}
+	t.Logf("timeline:\n%s", b.String())
+	if len(got) != len(want) {
+		t.Fatalf("got %d steps, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		g := got[i]
+		if !g.GetAt().AsTime().Equal(w.at) || g.GetTitle() != w.title || g.GetDetail() != w.detail || g.GetState() != w.state {
+			t.Errorf("step %d = (%s, %q, %q, %s), want (%s, %q, %q, %s)", i,
+				g.GetAt().AsTime().Format("15:04"), g.GetTitle(), g.GetDetail(), g.GetState(),
+				w.at.Format("15:04"), w.title, w.detail, w.state)
+		}
+	}
+}
+
+// TestGetSessionTimeline_Reproduces2979 runs the #2979 fixture through the
+// handler and the real SQLite stores: agent run at 23:04, boss-build hand-off
+// at 23:20, CI green with 6 checks at 23:21, evidence 5/5 with a 160000 ms
+// video at 23:40, parked for a UI change at 23:40.
+func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
+	ctx := context.Background()
+	sqlDB := setupServerTestDB(t)
+	repos := db.NewRepoStore(sqlDB)
+	sessions := db.NewSessionStore(sqlDB)
+	runs := db.NewAgentRunStore(sqlDB)
+	snapshots := db.NewCheckSnapshotStore(sqlDB)
+
+	repo, err := repos.Create(ctx, db.CreateRepoParams{
+		DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
+		DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	pr := 2979
+	tracker := "BOS-1528"
+	sess, err := sessions.Create(ctx, db.CreateSessionParams{
+		RepoID: repo.ID, Title: "needs-you", BranchName: "feat/x", BaseBranch: "main",
+		PRNumber: &pr, TrackerID: &tracker,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	run, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	if err := runs.RecordTelemetry(ctx, run.ID, db.AgentRunTelemetry{TerminalState: db.AgentRunTerminalReviewReady}); err != nil {
+		t.Fatalf("record telemetry: %v", err)
+	}
+	if err := runs.StopRun(ctx, run.ID, db.AgentRunStopClean, at(20)); err != nil {
+		t.Fatalf("stop run: %v", err)
+	}
+
+	insert := func(head string, when time.Time, status vcs.DisplayStatus, checks []vcs.CheckResult) {
+		t.Helper()
+		if err := snapshots.Insert(ctx, db.CheckSnapshot{
+			SessionID: sess.ID, HeadSHA: head, PolledAt: when, RawJSON: checksJSON(t, checks), ComputedStatus: int(status),
+		}); err != nil {
+			t.Fatalf("insert snapshot: %v", err)
+		}
+	}
+	pending := vcs.CheckResult{Name: "ci-0", Status: vcs.CheckStatusInProgress}
+	// An earlier head's history is not this head's: its green CI must not leak in.
+	insert("0000000000000000000000000000000000000000", at(8), vcs.DisplayStatusPassing, greenCI(3, ""))
+	insert(timelineHead, at(15), vcs.DisplayStatusChecking, []vcs.CheckResult{pending})
+	insert(timelineHead, at(21), vcs.DisplayStatusVerifying, greenCI(6, "verifying…"))
+	insert(timelineHead, at(30), vcs.DisplayStatusVerifying, greenCI(6, "verifying…"))
+	park := "needs human: always-human-path,human-review:ui"
+	insert(timelineHead, at(40), vcs.DisplayStatusNeedsHuman, greenCI(6, park))
+	insert(timelineHead, at(45), vcs.DisplayStatusNeedsHuman, greenCI(6, park))
+
+	srv := New(Config{
+		Repos: repos, Sessions: sessions, AgentRuns: runs, CheckSnapshots: snapshots,
+		Evidence: stubEvidence{sess.ID: {
+			Summary:    libevidence.Summary{Head: timelineHead, VideoURL: "https://evidence.example/2979.mp4", VideoDuration: 160000 * time.Millisecond, Proven: 5, Total: 5},
+			RecordedAt: at(40),
+		}},
+	})
+	resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSessionTimeline: %v", err)
+	}
+
+	assertSteps(t, resp.Msg.GetSteps(), []wantStep{
+		{at(4), "Build started", "BOS-1528", done},
+		{at(20), "Built and reviewed", "no open findings", done},
+		{at(21), "CI passed, 6 checks", "", done},
+		{at(40), "Evidence recorded", "5 of 5 proven · 2:40 video", done},
+		{at(40), "Parked for you · UI change", "", current},
+	})
+}
+
+// TestGetSessionTimeline_ShowsEvidenceOnlyForTheNewestSnapshotHead pins the
+// handler's evidence-head guard: the evidence reader can still hold the
+// summary of an older head (a push it has not re-read yet), and that summary
+// says nothing about the head the timeline describes — the newest snapshot's
+// — so its step is left out. A summary for that head, in any hex case, is
+// shown.
+func TestGetSessionTimeline_ShowsEvidenceOnlyForTheNewestSnapshotHead(t *testing.T) {
+	const oldHead = "0000000000000000000000000000000000000000"
+	for name, tc := range map[string]struct {
+		evidenceHead string
+		wantStep     bool
+	}{
+		"an older head":                   {evidenceHead: oldHead, wantStep: false},
+		"the newest head":                 {evidenceHead: timelineHead, wantStep: true},
+		"the newest head, upper-case hex": {evidenceHead: strings.ToUpper(timelineHead), wantStep: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			sqlDB := setupServerTestDB(t)
+			repos := db.NewRepoStore(sqlDB)
+			sessions := db.NewSessionStore(sqlDB)
+			snapshots := db.NewCheckSnapshotStore(sqlDB)
+			repo, err := repos.Create(ctx, db.CreateRepoParams{
+				DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
+				DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
+			})
+			if err != nil {
+				t.Fatalf("create repo: %v", err)
+			}
+			pr := 2979
+			sess, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/x", BaseBranch: "main", PRNumber: &pr})
+			if err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			park := greenCI(3, "needs human: human-review:ui")
+			for _, sn := range []db.CheckSnapshot{
+				{SessionID: sess.ID, HeadSHA: oldHead, PolledAt: at(30), RawJSON: checksJSON(t, park), ComputedStatus: int(vcs.DisplayStatusNeedsHuman)},
+				{SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: at(40), RawJSON: checksJSON(t, park), ComputedStatus: int(vcs.DisplayStatusNeedsHuman)},
+			} {
+				if err := snapshots.Insert(ctx, sn); err != nil {
+					t.Fatalf("insert snapshot: %v", err)
+				}
+			}
+			srv := New(Config{
+				Repos: repos, Sessions: sessions, CheckSnapshots: snapshots,
+				Evidence: stubEvidence{sess.ID: {
+					Summary:    libevidence.Summary{Head: tc.evidenceHead, Proven: 5, Total: 5},
+					RecordedAt: at(35),
+				}},
+			})
+
+			resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+			if err != nil {
+				t.Fatalf("GetSessionTimeline: %v", err)
+			}
+			steps := resp.Msg.GetSteps()
+			logSteps(t, steps)
+			gotStep := slices.ContainsFunc(steps, func(st *pb.TimelineStep) bool { return st.GetTitle() == "Evidence recorded" })
+			if gotStep != tc.wantStep {
+				t.Fatalf("Evidence recorded step present = %v, want %v", gotStep, tc.wantStep)
+			}
+			if last := steps[len(steps)-1]; last.GetTitle() != "Parked for you · UI change" || last.GetState() != current {
+				t.Fatalf("last step = %q (%s), want the newest head's park CURRENT", last.GetTitle(), last.GetState())
+			}
+		})
+	}
+}
+
+func TestGetSessionTimeline_NoPRYieldsOnlyBuildStarted(t *testing.T) {
+	ctx := context.Background()
+	sqlDB := setupServerTestDB(t)
+	repos := db.NewRepoStore(sqlDB)
+	sessions := db.NewSessionStore(sqlDB)
+	runs := db.NewAgentRunStore(sqlDB)
+	repo, err := repos.Create(ctx, db.CreateRepoParams{
+		DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
+		DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	sess, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/y", BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)}); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	srv := New(Config{Repos: repos, Sessions: sessions, AgentRuns: runs, CheckSnapshots: db.NewCheckSnapshotStore(sqlDB)})
+	resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSessionTimeline: %v", err)
+	}
+	assertSteps(t, resp.Msg.GetSteps(), []wantStep{{at(4), "Build started", "", current}})
+}
+
+func TestGetSessionTimeline_Errors(t *testing.T) {
+	sqlDB := setupServerTestDB(t)
+	srv := New(Config{Repos: db.NewRepoStore(sqlDB), Sessions: db.NewSessionStore(sqlDB)})
+	_, err := srv.GetSessionTimeline(context.Background(), connect.NewRequest(&pb.GetSessionTimelineRequest{}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty session_id: code = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+	_, err = srv.GetSessionTimeline(context.Background(), connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: "missing"}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("unknown session: code = %v, want NotFound", connect.CodeOf(err))
+	}
+}
+
+func buildRun(start time.Time, stop *time.Time, reason, terminal string) db.AgentRun {
+	return db.AgentRun{StartedAt: start, StoppedAt: stop, StopReason: reason, TerminalState: terminal}
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+func snap(t *testing.T, when time.Time, status vcs.DisplayStatus, checks []vcs.CheckResult) db.CheckSnapshot {
+	t.Helper()
+	return db.CheckSnapshot{HeadSHA: timelineHead, PolledAt: when, RawJSON: checksJSON(t, checks), ComputedStatus: int(status)}
+}
+
+func rotationEvent(when time.Time, trigger pb.RotationTrigger, outcome pb.RotationOutcome, detail string) db.RotationEvent {
+	return db.RotationEvent{CreatedAt: when, Trigger: trigger.String(), Outcome: outcome.String(), Detail: detail}
+}
+
+// A fix row runs from the failure through each automatic resume attempt to
+// the give-up, even when later CI history exists: the session waits on the
+// lost login, and the give-up — not the last resume — is CURRENT.
+func TestBuildTimeline_FixRowEndsOnTheFailureAndEachResume(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	respawn := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(30), vcs.DisplayStatusPassing, greenCI(4, "")),
+		},
+		RotationEvents: []db.RotationEvent{
+			// RecentBySession is newest first; the builder must not rely on order.
+			rotationEvent(at(28), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "same 401"),
+			rotationEvent(at(27), auth, respawn, "same 401"),
+			rotationEvent(at(19), auth, respawn, "same 401"),
+			rotationEvent(at(17), auth, respawn, "same 401"),
+			rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, "401 Unauthorized"),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(30), "CI passed, 4 checks", "", done},
+		{at(16), "Lost its login", "401 Unauthorized", failed},
+		{at(17), "Resumed automatically", "same 401", done},
+		{at(19), "Resumed automatically", "same 401", done},
+		{at(27), "Resumed automatically", "same 401", done},
+		{at(28), "Stopped resuming automatically", "same 401", current},
+	})
+}
+
+// A login lost and recovered is history: the failure stays FAILED and the
+// session waits where its newer facts say.
+func TestBuildTimeline_RecoveredLoginIsNotTheWait(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Runs: []db.AgentRun{
+			buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, ""),
+			buildRun(at(18), nil, "", ""),
+		},
+		Snapshots: []db.CheckSnapshot{snap(t, at(25), vcs.DisplayStatusVerifying, greenCI(2, "verifying…"))},
+		RotationEvents: []db.RotationEvent{
+			rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
+		},
+		// The resumed run produced real output, so the login came back.
+		LastAgentActivityAt: at(20),
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(16), "Lost its login", "", failed},
+		{at(16), "Run ended unexpectedly", "", failed},
+		{at(18), "Resumed", "new run", done},
+		{at(25), "CI passed, 2 checks", "", done},
+		{at(25), "Verifying", "", current},
+	})
+}
+
+// A run starting after the daemon gave up is not recovery — it can hit the
+// same 401 — so with no agent output after the give-up the lost login stays
+// the session's wait, the same rule as alertstate.AuthWedgeCurrent.
+func TestBuildTimeline_ARunWithoutOutputDoesNotRecoverTheLogin(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	for name, activity := range map[string]time.Time{
+		"no output known":           {},
+		"output before the give-up": at(15),
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps := buildTimeline(timelineFacts{
+				HasPR: true,
+				Runs: []db.AgentRun{
+					buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, ""),
+					buildRun(at(18), nil, "", ""),
+				},
+				Snapshots: []db.CheckSnapshot{snap(t, at(25), vcs.DisplayStatusVerifying, greenCI(2, "verifying…"))},
+				RotationEvents: []db.RotationEvent{
+					rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
+				},
+				LastAgentActivityAt: activity,
+			})
+			last := steps[len(steps)-1]
+			if last.GetTitle() != "Lost its login" || last.GetState() != current {
+				t.Fatalf("last step = %q %v; want the lost login CURRENT", last.GetTitle(), last.GetState())
+			}
+		})
+	}
+}
+
+// rotationWait is the attention kind the timeline answers for facts and the
+// title of its CURRENT step.
+func rotationWait(f timelineFacts) (pb.AttentionKind, string) {
+	steps, kind := assembleTimeline(f)
+	for _, st := range steps {
+		if st.GetState() == current {
+			return kind, st.GetTitle()
+		}
+	}
+	return kind, ""
+}
+
+func TestNewestGiveUpAt(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	giveUp := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
+	resumed := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT
+	if got, ok := sessionattention.NewestGiveUpAt([]db.RotationEvent{
+		rotationEvent(at(16), auth, giveUp, ""),
+		rotationEvent(at(12), auth, resumed, ""),
+	}); !ok || !got.Equal(at(16)) {
+		t.Fatalf("newest give-up = %v, %v; want %v", got, ok, at(16))
+	}
+	if _, ok := sessionattention.NewestGiveUpAt([]db.RotationEvent{
+		rotationEvent(at(12), auth, giveUp, ""),
+		rotationEvent(at(16), auth, resumed, ""),
+	}); ok {
+		t.Fatal("a give-up followed by a resume is not the newest event; want none")
+	}
+	if _, ok := sessionattention.NewestGiveUpAt(nil); ok {
+		t.Fatal("no events: want none")
+	}
+}
+
+func TestBuildTimeline_ANewerIncidentClosesAnOlderGiveUp(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
+	kind, cur := rotationWait(timelineFacts{
+		HasPR:     true,
+		Runs:      []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Snapshots: []db.CheckSnapshot{snap(t, at(30), vcs.DisplayStatusChecking, nil)},
+		RotationEvents: []db.RotationEvent{
+			rotationEvent(at(10), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
+			rotationEvent(at(40), usage, pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, ""),
+		},
+	})
+	if kind == pb.AttentionKind_ATTENTION_KIND_FIX || cur == "Lost its login" {
+		t.Fatalf("wait = %v %q; want the older lost login closed by the newer incident", kind, cur)
+	}
+}
+
+// A merged or closed PR ends the session's work: a give-up with no recovery
+// on record is history, and the session is done.
+func TestBuildTimeline_ATerminalPRClosesTheGiveUp(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	for name, status := range map[string]vcs.DisplayStatus{"merged": vcs.DisplayStatusMerged, "closed": vcs.DisplayStatusClosed} {
+		t.Run(name, func(t *testing.T) {
+			kind, _ := rotationWait(timelineFacts{
+				HasPR:     true,
+				Runs:      []db.AgentRun{buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, "")},
+				Snapshots: []db.CheckSnapshot{snap(t, at(50), status, nil)},
+				RotationEvents: []db.RotationEvent{
+					rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
+				},
+			})
+			if kind != pb.AttentionKind_ATTENTION_KIND_DONE {
+				t.Fatalf("kind = %v; want DONE for a %s PR", kind, name)
+			}
+		})
+	}
+}
+
+// A green verdict carried only by boss/verify, or by ordinary checks that were
+// all skipped, is not CI passing: no "CI passed" step until an ordinary check
+// actually passes.
+func TestBuildTimeline_VerificationAloneIsNotCIPassing(t *testing.T) {
+	success, skipped := vcs.CheckConclusionSuccess, vcs.CheckConclusionSkipped
+	verifyPassed := vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success}
+	skippedCI := vcs.CheckResult{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &skipped}
+	passedCI := vcs.CheckResult{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success}
+	// Each not-CI-passing shape is checked on its own, ahead of a snapshot
+	// that does pass, so one shape cannot mask another.
+	for name, notPassing := range map[string][]vcs.CheckResult{
+		"only boss/verify passed": {verifyPassed},
+		"ordinary checks skipped": {skippedCI, verifyPassed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps := buildTimeline(timelineFacts{
+				HasPR: true,
+				Snapshots: []db.CheckSnapshot{
+					snap(t, at(10), vcs.DisplayStatusPassing, notPassing),
+					snap(t, at(14), vcs.DisplayStatusPassing, []vcs.CheckResult{passedCI, verifyPassed}),
+				},
+			})
+			var titles []string
+			for _, st := range steps {
+				if strings.HasPrefix(st.GetTitle(), "CI passed") {
+					titles = append(titles, st.GetAt().AsTime().Format("15:04")+" "+st.GetTitle())
+				}
+			}
+			if want := []string{"23:14 CI passed, 1 check"}; !slices.Equal(titles, want) {
+				t.Fatalf("CI passed steps = %q, want %q", titles, want)
+			}
+		})
+	}
+}
+
+// A question row ends on the question being asked.
+func TestBuildTimeline_QuestionRowEndsOnTheQuestion(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		Runs:     []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Question: &questionFact{At: at(12), ChatID: "chat-q"},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(12), "Asked you a question", "", current},
+	})
+}
+
+// A merge row ends on CI passing and the PR becoming ready.
+func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(15), vcs.DisplayStatusDraft, nil),
+			snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
+			snap(t, at(26), vcs.DisplayStatusPassing, greenCI(6, "")),
+			snap(t, at(31), vcs.DisplayStatusPassing, greenCI(6, "")),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "", done},
+		{at(21), "Ready for review", "", done},
+		{at(26), "CI passed, 6 checks", "", current},
+	})
+}
+
+// A mergeable PR whose ordinary checks were all skipped is a merge for
+// attention.Compute (a skipped check is done), yet it has no "CI passed" step
+// and, never a draft, no "Ready for review" step: the merge wait gets its own
+// step instead of an unrelated old one going CURRENT.
+func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
+	skipped := vcs.CheckConclusionSkipped
+	skippedCI := []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &skipped}}
+	steps, kind := assembleTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
+			snap(t, at(26), vcs.DisplayStatusPassing, skippedCI),
+			snap(t, at(31), vcs.DisplayStatusPassing, skippedCI),
+		},
+	})
+	if kind != pb.AttentionKind_ATTENTION_KIND_MERGE {
+		t.Fatalf("kind = %s, want MERGE", kind)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "", done},
+		{at(26), "Ready to merge", "", current},
+	})
+}
+
+// A green PR that attention.Compute does not answer MERGE for (no checks at
+// all) gets no "Ready to merge" step.
+func TestBuildTimeline_NoMergeStepWhenNotAMerge(t *testing.T) {
+	steps, kind := assembleTimeline(timelineFacts{
+		HasPR:     true,
+		Runs:      []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{snap(t, at(26), vcs.DisplayStatusPassing, nil)},
+	})
+	if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+		t.Fatalf("kind = %s, want IN_PROGRESS", kind)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "", current},
+	})
+}
+
+// A park with open findings says so on the hand-off step; an open repair
+// failure outranks the park (fix > review).
+func TestBuildTimeline_FixOutranksReview(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: ledger-open")),
+		},
+		Repair: &repairFact{FailedAt: at(35), Attempts: 3, Current: true},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "open findings", done},
+		{at(40), "CI passed, 3 checks", "", done},
+		{at(40), "Parked for you · open findings", "", done},
+		{at(35), "Automatic repair failed", "3 attempts", current},
+	})
+}
+
+func TestBuildTimeline_MergedPRWaitsOnNothing(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(21), vcs.DisplayStatusPassing, greenCI(2, "")),
+			snap(t, at(50), vcs.DisplayStatusMerged, nil),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(21), "CI passed, 2 checks", "", done},
+		{at(50), "Merged", "", done},
+	})
+}
+
+// A merged PR whose chat is still asking a question waits on the question:
+// attention.Compute ranks a question above DONE, and the timeline's CURRENT
+// step follows the kind Compute answers, as the attention row does.
+func TestBuildTimeline_MergedPRWithAnOpenQuestionWaitsOnTheQuestion(t *testing.T) {
+	steps, kind := assembleTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(21), vcs.DisplayStatusPassing, greenCI(2, "")),
+			snap(t, at(50), vcs.DisplayStatusMerged, nil),
+		},
+		Question: &questionFact{At: at(45), ChatID: "chat-q"},
+	})
+	want := attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateMerged, QuestionChatID: "chat-q"}).GetKind()
+	if want != pb.AttentionKind_ATTENTION_KIND_QUESTION || kind != want {
+		t.Fatalf("timeline kind = %s, attention.Compute kind = %s; want both QUESTION", kind, want)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(21), "CI passed, 2 checks", "", done},
+		{at(50), "Merged", "", done},
+		{at(45), "Asked you a question", "", current},
+	})
+}
+
+func TestBuildTimeline_BlockedSessionWaitsOnTheBlock(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		Runs:    []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Blocked: &blockedFact{Since: at(9), Reason: "fix loop\nexhausted"},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(9), "Blocked", "fix loop exhausted", current},
+	})
+}
+
+// A usage limit is a fix row too; while every account cools down the session
+// resumes itself, so the row is not the operator's wait, and the run's own
+// usage-exhausted stop is the same failure, not a second one.
+func TestBuildTimeline_UsageLimitWaitsForTheReset(t *testing.T) {
+	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
+	steps := buildTimeline(timelineFacts{
+		Runs: []db.AgentRun{buildRun(at(4), timePtr(at(10)), db.AgentRunStopUsageExhausted, "")},
+		RotationEvents: []db.RotationEvent{
+			rotationEvent(at(11), usage, pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "resets 01:00"),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(11), "Hit its usage limit", "resets 01:00", failed},
+		{at(11), "Waiting for the usage limit to reset", "", current},
+	})
+}
+
+func TestBuildTimeline_NothingKnownIsEmpty(t *testing.T) {
+	if steps := buildTimeline(timelineFacts{}); len(steps) != 0 {
+		t.Fatalf("got %d steps, want none", len(steps))
+	}
+}
+
+// A verify park whose codes are none of the operator's is not a review: it
+// is in progress, as attention.Compute answers, so the park is not CURRENT
+// for the operator and no "Parked for you" step claims otherwise.
+func TestBuildTimeline_ParkWithNoOperatorCodeIsNotAReview(t *testing.T) {
+	for _, park := range []string{"needs human:", "needs human: waiting: ci"} {
+		t.Run(park, func(t *testing.T) {
+			steps, kind := assembleTimeline(timelineFacts{
+				HasPR:     true,
+				Runs:      []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, park))},
+			})
+			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+				t.Fatalf("kind = %s, want IN_PROGRESS", kind)
+			}
+			last := steps[len(steps)-1]
+			if last.GetState() != current || strings.HasPrefix(last.GetTitle(), "Parked for you") {
+				t.Fatalf("last step = (%q, %s), want a CURRENT verify-waiting step", last.GetTitle(), last.GetState())
+			}
+		})
+	}
+}
+
+// A dismissed fix is not the wait: the session waits on what attention.Compute
+// answers next. A different fix row is still current.
+func TestBuildTimeline_DismissedFixIsNotTheWait(t *testing.T) {
+	facts := timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui")),
+		},
+		Repair: &repairFact{FailedAt: at(35), Attempts: 3, Current: true},
+	}
+
+	facts.DismissedAlertKey = attention.RepairFailedAlertKey
+	steps, kind := assembleTimeline(facts)
+	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Fatalf("dismissed repair: kind = %s, want REVIEW", kind)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "no open findings", done},
+		{at(35), "Automatic repair failed", "3 attempts", failed},
+		{at(40), "CI passed, 3 checks", "", done},
+		{at(40), "Parked for you · UI change", "", current},
+	})
+
+	facts.DismissedAlertKey = attention.BlockedAlertKey
+	if _, kind := assembleTimeline(facts); kind != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("a different alert dismissed: kind = %s, want FIX", kind)
+	}
+}
+
+// A dismissed fix is not where an in-progress session waits: the fallback
+// skips every fix row's steps, so the dismissed failure stays FAILED and the
+// last other step is CURRENT.
+func TestBuildTimeline_DismissedFixIsNotTheInProgressFallback(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	giveUp := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
+	for name, tc := range map[string]struct {
+		facts timelineFacts
+		want  []wantStep
+	}{
+		"dismissed Blocked": {
+			facts: timelineFacts{
+				Runs:              []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Blocked:           &blockedFact{Since: at(9), Reason: "stuck"},
+				DismissedAlertKey: attention.BlockedAlertKey,
+			},
+			want: []wantStep{
+				{at(9), "Blocked", "stuck", failed},
+				{at(4), "Build started", "", current},
+			},
+		},
+		"dismissed lost login": {
+			facts: timelineFacts{
+				Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				RotationEvents: []db.RotationEvent{
+					rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT, "401"),
+					rotationEvent(at(18), auth, giveUp, "cap"),
+				},
+				DismissedAlertKey: attention.RotationAlertKey(auth.String()),
+			},
+			want: []wantStep{
+				{at(16), "Lost its login", "401", failed},
+				{at(16), "Resumed automatically", "same account", done},
+				{at(18), "Stopped resuming automatically", "cap", failed},
+				{at(4), "Build started", "", current},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps, kind := assembleTimeline(tc.facts)
+			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+				t.Fatalf("kind = %s, want IN_PROGRESS", kind)
+			}
+			assertSteps(t, steps, tc.want)
+		})
+	}
+}
+
+// A failure is never where an in-progress session waits: a recovered lost
+// login, or an interrupted run nothing resumed, stays FAILED and the last
+// other step is CURRENT.
+func TestBuildTimeline_AFailureIsNotTheInProgressFallback(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	for name, tc := range map[string]struct {
+		facts timelineFacts
+		want  []wantStep
+	}{
+		"recovered lost login": {
+			facts: timelineFacts{
+				Runs:                []db.AgentRun{buildRun(at(4), nil, "", "")},
+				RotationEvents:      []db.RotationEvent{rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "401")},
+				LastAgentActivityAt: at(20),
+			},
+			want: []wantStep{
+				{at(16), "Lost its login", "401", failed},
+				{at(4), "Build started", "", current},
+			},
+		},
+		"interrupted run, not resumed": {
+			facts: timelineFacts{Runs: []db.AgentRun{buildRun(at(4), timePtr(at(9)), db.AgentRunStopUnknown, "")}},
+			want: []wantStep{
+				{at(9), "Run ended unexpectedly", "", failed},
+				{at(4), "Build started", "", current},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps, kind := assembleTimeline(tc.facts)
+			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+				t.Fatalf("kind = %s, want IN_PROGRESS", kind)
+			}
+			assertSteps(t, steps, tc.want)
+		})
+	}
+}
+
+// TestBuildTimeline_AgreesWithAttentionCompute pins the timeline's wait to
+// attention.Compute. Each case states, independently of the builder, the
+// attention.Input a producer would derive from the same session; the timeline
+// must answer the same kind, and its CURRENT step must be that kind's step.
+func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	giveUp := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED
+	yes := true
+	reviewReady := buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)
+	authFix := &attention.FixFact{AlertKey: attention.RotationAlertKey(auth.String())}
+	cases := []struct {
+		name        string
+		facts       timelineFacts
+		in          attention.Input
+		wantCurrent string
+	}{
+		{
+			name:        "nothing but a run is in progress",
+			facts:       timelineFacts{Runs: []db.AgentRun{buildRun(at(4), nil, "", "")}},
+			in:          attention.Input{},
+			wantCurrent: "Build started",
+		},
+		{
+			name: "operator park is a review",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui"))}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-review:ui"}, ChecksTotal: 3, ChecksDone: 3},
+			wantCurrent: "Parked for you · UI change",
+		},
+		{
+			name: "park with no codes is in progress",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human:"))}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 3, ChecksDone: 3},
+			wantCurrent: "Verify waiting",
+		},
+		{
+			name: "green mergeable PR is a merge",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+				Snapshots: []db.CheckSnapshot{snap(t, at(26), vcs.DisplayStatusPassing, greenCI(6, ""))}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 6, ChecksDone: 6, Mergeable: &yes},
+			wantCurrent: "CI passed, 6 checks",
+		},
+		{
+			name: "question outranks review",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui"))},
+				Question:  &questionFact{At: at(41), ChatID: "chat-q"}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-review:ui"}, QuestionChatID: "chat-q"},
+			wantCurrent: "Asked you a question",
+		},
+		{
+			name: "open lost login outranks a question",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				RotationEvents: []db.RotationEvent{rotationEvent(at(16), auth, giveUp, "401")},
+				Question:       &questionFact{At: at(41), ChatID: "chat-q"}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, Fix: authFix, QuestionChatID: "chat-q"},
+			wantCurrent: "Lost its login",
+		},
+		{
+			name: "dismissed lost login falls to the question",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				RotationEvents:    []db.RotationEvent{rotationEvent(at(16), auth, giveUp, "401")},
+				Question:          &questionFact{At: at(41), ChatID: "chat-q"},
+				DismissedAlertKey: authFix.AlertKey},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, Fix: authFix, DismissedAlertKey: authFix.AlertKey, QuestionChatID: "chat-q"},
+			wantCurrent: "Asked you a question",
+		},
+		{
+			name: "blocked session is a fix",
+			facts: timelineFacts{Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Blocked: &blockedFact{Since: at(9), Reason: "stuck"}},
+			in:          attention.Input{Fix: &attention.FixFact{AlertKey: attention.BlockedAlertKey}},
+			wantCurrent: "Blocked",
+		},
+		{
+			name: "merged PR is done",
+			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Snapshots: []db.CheckSnapshot{snap(t, at(50), vcs.DisplayStatusMerged, nil)}},
+			in:          attention.Input{HasPR: true, PRState: attention.PRStateMerged},
+			wantCurrent: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := attention.Compute(tc.in).GetKind()
+			steps, got := assembleTimeline(tc.facts)
+			if got != want {
+				t.Fatalf("timeline kind = %s, attention.Compute = %s", got, want)
+			}
+			currentTitle := ""
+			for _, st := range steps {
+				if st.GetState() == current {
+					currentTitle = st.GetTitle()
+				}
+			}
+			if currentTitle != tc.wantCurrent {
+				t.Fatalf("CURRENT step = %q, want %q", currentTitle, tc.wantCurrent)
+			}
+		})
+	}
+}
+
+// repairFact reads the repair lease's stall record like the resolved-alert
+// sweep does: a live stall makes the recorded head unusable for the head-moved
+// leg, so a failed repair whose head has since moved but whose CI still fails
+// stays current instead of reading as resolved.
+func TestRepairFact_HonoursTheLeaseStallRecord(t *testing.T) {
+	started := at(30)
+	pr := 1
+	sess := &models.Session{
+		ID: "s1", PRNumber: &pr,
+		LastRepairStartedAt: &started, LastRepairAttemptCount: 3,
+		LastRepairRunnerError: "boom", LastRepairHeadSHA: "old-head",
+	}
+	display := status.NewDisplayTracker()
+	display.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HeadSHA: "new-head", HasFailures: true})
+
+	clock := at(40)
+	leases := status.NewRepairLeaseManager().WithClock(2*time.Hour, func() time.Time { return clock })
+
+	s := &Server{displayTracker: display, repairLease: leases}
+	if rf := s.repairFact(sess); rf == nil || rf.Current {
+		t.Fatalf("no stall: repairFact = %+v; want the head-moved leg to resolve it", rf)
+	}
+
+	if err := leases.Acquire("s1", "plugin"); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	clock = clock.Add(status.RepairStallWindow + time.Second)
+	if _, ok := leases.StalledAt("s1"); !ok {
+		t.Fatal("expected a live stall record")
+	}
+	if rf := s.repairFact(sess); rf == nil || !rf.Current {
+		t.Fatalf("stalled: repairFact = %+v; want the alert current while the stall is live", rf)
+	}
+}

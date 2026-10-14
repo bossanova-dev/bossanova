@@ -375,6 +375,10 @@ func (h HomeModel) renderEmptyState() string {
 		// failed unless the notice comes with it.
 		content += "\n" + readFailures
 	}
+	if supervision := h.daemonSupervisionLine(); supervision != "" && !h.confirm.active {
+		// Hidden behind a confirm prompt like the re-login warning above.
+		content += "\n" + supervision
+	}
 	if gate := h.cloudGateLine(); gate != "" {
 		content += "\n" + gate
 	}
@@ -513,6 +517,10 @@ func (h HomeModel) renderSessionTableFooter() string {
 		b.WriteString("\n")
 		b.WriteString(readFailures)
 	}
+	if supervision := h.daemonSupervisionLine(); supervision != "" {
+		b.WriteString("\n")
+		b.WriteString(supervision)
+	}
 	if gate := h.cloudGateLine(); gate != "" {
 		b.WriteString("\n")
 		b.WriteString(gate)
@@ -556,6 +564,10 @@ func (h HomeModel) sessionTableFooterLineCount() int {
 		// no bounded length, so an assumed single row would push the table past
 		// the terminal exactly when the user most needs to read both.
 		lines += 1 + lipgloss.Height(readFailures)
+	}
+	if supervision := h.daemonSupervisionLine(); supervision != "" {
+		// The unsupervised-daemon line follows with its own separator row.
+		lines += 1 + lipgloss.Height(supervision)
 	}
 	return lines
 }

@@ -37,6 +37,11 @@ func copyFixture(t *testing.T, src, dst string) {
 	}
 }
 
+// sampleRolloutCWD is the session_meta cwd recorded in
+// testdata/transcripts/sample.jsonl; a lookup filtered to any other working
+// directory does not find that fixture.
+const sampleRolloutCWD = "/private/tmp/codex-spike"
+
 // shardedRolloutPath returns the canonical codex sessions filename for a
 // given UUID anchored at root: root/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl.
 // Date matches the test fixture timestamps for fidelity, not today's date.
@@ -632,11 +637,11 @@ func BenchmarkScanInteractiveSessionCandidatesInWindow(b *testing.B) {
 	}
 }
 
-// TestTranscriptPathFindsShardedFile verifies findRolloutPath globs the
+// TestTranscriptPathFindsShardedFile verifies findRolloutPath searches the
 // YYYY/MM/DD shard tree and returns the rollout file for a given UUID.
 func TestTranscriptPathFindsShardedFile(t *testing.T) {
 	root := t.TempDir()
-	uuid := "abcd-1234"
+	uuid := "019e068c-0000-7000-8000-000000000001"
 	dst := shardedRolloutPath(root, uuid)
 	copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
 
@@ -653,7 +658,7 @@ func TestTranscriptPathFindsShardedFile(t *testing.T) {
 // session" error path — used by transcriptExists to safely return false.
 func TestTranscriptPathReturnsErrorWhenMissing(t *testing.T) {
 	root := t.TempDir()
-	if _, err := findRolloutPath(root, "missing-uuid"); err == nil {
+	if _, err := findRolloutPath(root, "019e068c-0000-7000-8000-00000000000a"); err == nil {
 		t.Error("expected error for missing rollout, got nil")
 	}
 }
@@ -666,7 +671,7 @@ func TestTranscriptPathReturnsErrorWhenMissing(t *testing.T) {
 // transcriptExists() collapsing to false, defeating the resume path.
 func TestTranscriptPathPicksMostRecentOnMultiMatch(t *testing.T) {
 	root := t.TempDir()
-	uuid := "duplicate-uuid"
+	uuid := "019e068c-0000-7000-8000-000000000002"
 
 	// Stamp the older rollout into a 2026-05-01 shard.
 	older := filepath.Join(root, "2026", "05", "01",
@@ -697,13 +702,13 @@ func TestTranscriptPathPicksMostRecentOnMultiMatch(t *testing.T) {
 
 // TestFindRolloutPathRejectsTraversalSessionID verifies the BOS-415
 // root-containment guard: an agentSessionID carrying path separators or ".."
-// is rejected before it can collapse the glob pattern out of the sessions
-// root, even when a matching file is planted outside the shard tree.
+// is rejected before it can name a path outside the sessions root, even when
+// a matching file is planted outside the shard tree.
 func TestFindRolloutPathRejectsTraversalSessionID(t *testing.T) {
 	root := t.TempDir()
 
 	// Plant a rollout-shaped file one level above the sessions root that a
-	// traversal id would otherwise glob into.
+	// traversal id would otherwise reach.
 	outside := filepath.Join(filepath.Dir(root), "rollout-2026-05-08T07-45-47-escape.jsonl")
 	if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write outside file: %v", err)
@@ -762,30 +767,30 @@ func TestLastTurnIsUserTreatsTaskCompleteAsAgentTurn(t *testing.T) {
 
 // TestTranscriptExistsAcrossStates covers the "happy path", "no file",
 // and "empty file" branches of transcriptExists. We point HOME at a temp
-// dir so transcriptPath's globbing sees only fixtures we control.
+// dir so transcriptPath's shard walk sees only fixtures we control.
 func TestTranscriptExistsAcrossStates(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("CODEX_HOME", "") // guard against CODEX_HOME leaking in from the ambient environment
 
 	// 1) Missing → false.
-	if transcriptExists("/anywhere", "no-such-uuid") {
+	if transcriptExists(sampleRolloutCWD, "019e068c-0000-7000-8000-000000000009") {
 		t.Error("transcriptExists should be false when no rollout exists")
 	}
 
 	// 2) Empty → false (file present but zero bytes).
-	emptyUUID := "empty-uuid"
+	emptyUUID := "019e068c-0000-7000-8000-000000000003"
 	emptyDst := shardedRolloutPath(filepath.Join(tmpHome, codexSessionsDir), emptyUUID)
 	copyFixture(t, "testdata/transcripts/empty.jsonl", emptyDst)
-	if transcriptExists("/anywhere", emptyUUID) {
+	if transcriptExists(sampleRolloutCWD, emptyUUID) {
 		t.Error("transcriptExists should be false for empty rollout file")
 	}
 
 	// 3) Real → true.
-	realUUID := "abcd-1234"
+	realUUID := "019e068c-0000-7000-8000-000000000001"
 	realDst := shardedRolloutPath(filepath.Join(tmpHome, codexSessionsDir), realUUID)
 	copyFixture(t, "testdata/transcripts/sample.jsonl", realDst)
-	if !transcriptExists("/anywhere", realUUID) {
+	if !transcriptExists(sampleRolloutCWD, realUUID) {
 		t.Error("transcriptExists should be true for non-empty rollout file")
 	}
 }
@@ -969,7 +974,7 @@ func TestResolveLegacyInteractiveSessionIDAtReturnsAmbiguousForMultipleRollouts(
 func TestReadTranscriptAt(t *testing.T) {
 	t.Run("parses ordered messages from rollout", func(t *testing.T) {
 		root := t.TempDir()
-		uuid := "read-transcript-uuid"
+		uuid := "019e068c-0000-7000-8000-000000000004"
 		dst := shardedRolloutPath(root, uuid)
 		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
 
@@ -1008,7 +1013,7 @@ func TestReadTranscriptAt(t *testing.T) {
 
 	t.Run("MaxMessages limits to most recent N", func(t *testing.T) {
 		root := t.TempDir()
-		uuid := "read-transcript-max-uuid"
+		uuid := "019e068c-0000-7000-8000-000000000005"
 		dst := shardedRolloutPath(root, uuid)
 		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
 
@@ -1063,7 +1068,7 @@ func TestCodexSessionsRootHonorsCodexHome(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("CODEX_HOME", tmp)
 
-	uuid := "codex-home-uuid"
+	uuid := "019e068c-0000-7000-8000-000000000006"
 	dst := shardedRolloutPath(filepath.Join(tmp, "sessions"), uuid)
 	copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
 
@@ -1104,7 +1109,7 @@ func TestCodexSessionsRootUnsetIsByteIdenticalToToday(t *testing.T) {
 // (not-found) when a per-account home's sessions/ is empty/unseeded. See
 // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
 func TestTranscriptPathSharedSessionsResumeReachability(t *testing.T) {
-	uuid := "shared-sessions-uuid"
+	uuid := "019e068c-0000-7000-8000-000000000007"
 
 	t.Run("properly-seeded per-account home resolves through the symlink", func(t *testing.T) {
 		base := t.TempDir()
@@ -1288,7 +1293,7 @@ func TestInteractiveDiscoveryRejectsUnreadableMetadata(t *testing.T) {
 // written at startup, after launch — is never reported as a user turn.
 func TestReadTranscriptAt_UserTurnsCarryRolloutTimestampAndSkipSyntheticContext(t *testing.T) {
 	root := t.TempDir()
-	id := "delivery-receipt-uuid"
+	id := "019e068c-0000-7000-8000-000000000008"
 	dst := shardedRolloutPath(root, id)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)

@@ -420,7 +420,7 @@ func TestE2E_RecordChat_CodexAgentSpawnsCodexCmd(t *testing.T) {
 	codex := "codex"
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "codex-fresh-001",
+		AgentSessionId: "0199a3c1-0000-7000-8000-000000000001",
 		Title:          "fresh codex chat",
 		AgentName:      &codex,
 	}))
@@ -473,7 +473,7 @@ func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
 	})
 
 	codex := "codex"
-	const agentSessionID = "logical-codex-chat"
+	const agentSessionID = "0199a3c1-0000-7000-8000-000000000002"
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sess.Id,
 		AgentSessionId: agentSessionID,
@@ -527,7 +527,7 @@ func TestE2E_RecordChat_EmptyLogPathDoesNotInvokeTee(t *testing.T) {
 	codex := "codex"
 	if _, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "codex-no-logpath-001",
+		AgentSessionId: "0199a3c1-0000-7000-8000-000000000003",
 		Title:          "codex empty-logpath",
 		AgentName:      &codex,
 	})); err != nil {
@@ -621,7 +621,7 @@ func TestE2E_RecordChat_CodexResumeTwicePreservesChatIdentity(t *testing.T) {
 	})
 
 	codex := "codex"
-	const agentSessionID = "logical-codex-resume-twice"
+	const agentSessionID = "0199a3c1-0000-7000-8000-000000000004"
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sess.Id,
 		AgentSessionId: agentSessionID,

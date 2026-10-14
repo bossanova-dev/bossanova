@@ -5,6 +5,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import {
+  WORKFLOW_DIR,
+  WORKFLOW_EXTENSIONS,
+  classifyLines,
+  commentStart,
+  listWorkflowFiles,
+} from './workflow-yaml-lib.mjs'
 
 // A CI job's `outputs:` block is a DATA channel. Its right-hand side must be a value some step
 // produced — `steps.<id>.outputs.<name>` — never one of the two status fields GitHub Actions
@@ -80,8 +87,8 @@ const OPT_OUT = /vacuous-job-gate-ok:(.*)$/
 
 // The scan root, named in code and printed with the verdict so a pass can never read wider than
 // what was actually looked at.
-export const SCANNED_ROOT = '.github/workflows'
-export const SCANNED_EXTENSIONS = ['.yml', '.yaml']
+export const SCANNED_ROOT = WORKFLOW_DIR
+export const SCANNED_EXTENSIONS = WORKFLOW_EXTENSIONS
 
 // The gate's own test must carry the forbidden shapes verbatim as fixture text, so it is exempt
 // from the tree scan by EXACT repo-relative path.
@@ -108,47 +115,26 @@ export const SCANNED_EXTENSIONS = ['.yml', '.yaml']
 // widening quietly. Nothing else may be added here: opt out a real call site instead.
 export const SCAN_EXCLUSIONS = ['scripts/check-vacuous-job-gates.test.mjs']
 
-/**
- * Index of the character that starts a YAML comment on `line`, or -1 when the line has none.
- *
- * A `#` inside a quoted scalar is content, not a comment, so an opt-out marker written inside a
- * string is NOT an opt-out. The scan is single-line and starts fresh on every line, which is all
- * a line-oriented gate needs; YAML's block scalars can still carry a `#` that this reads as a
- * comment, and that direction is harmless — it can only make a marker count, and a marker still
- * needs a non-empty reason to suppress anything.
- *
- * @param {string} line Raw source line.
- * @returns {number} Index of the comment `#`, or -1.
- */
-export function commentStart(line) {
-  let quote = null
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    if (quote) {
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    // YAML needs whitespace (or line start) before an inline comment marker.
-    if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]))) return i
-  }
-  return -1
+// Index of the `#` that opens a comment on a classified line, or -1. The YAML scanner (shared
+// with scripts/check-action-pins.mjs) decides for structural lines. A block-scalar body
+// (`run: |`, `if: >-`) has no YAML comments and GitHub still evaluates its `${{ }}`, so there
+// only a whole-line shell comment counts: a ` #` inside a shell string neither hides the rest of
+// the line nor supplies an opt-out.
+function lineCommentStart(entry) {
+  if (entry.kind === 'scalar') return entry.raw.trimStart().startsWith('#') ? entry.indent : -1
+  return commentStart(entry.raw)
 }
 
-function hasOptOut(lines, lineNumber) {
-  for (const offset of [1, 2]) {
-    const candidate = lines[lineNumber - offset]
-    if (typeof candidate !== 'string') continue
-    const commentAt = commentStart(candidate)
-    if (commentAt === -1) continue
-    const match = OPT_OUT.exec(candidate.slice(commentAt))
-    if (!match || match[1].trim() === '') continue
-    return true
-  }
-  return false
+// An opt-out on the offending line (`index`) or the line immediately above it.
+function hasOptOut(entries, index) {
+  return [index, index - 1].some((i) => {
+    const entry = entries[i]
+    if (!entry) return false
+    const commentAt = lineCommentStart(entry)
+    if (commentAt === -1) return false
+    const match = OPT_OUT.exec(entry.raw.slice(commentAt))
+    return Boolean(match) && match[1].trim() !== ''
+  })
 }
 
 /**
@@ -158,27 +144,26 @@ function hasOptOut(lines, lineNumber) {
  * @returns {{line: number, rule: string, text: string}[]} Offenders, in source order.
  */
 export function findVacuousJobGates(contents) {
-  const lines = contents.split('\n')
+  const entries = classifyLines(contents)
   const offenders = []
 
-  lines.forEach((rawLine, index) => {
-    const lineNumber = index + 1
-    const commentAt = commentStart(rawLine)
-    const line = commentAt === -1 ? rawLine : rawLine.slice(0, commentAt)
+  entries.forEach((entry, index) => {
+    const commentAt = lineCommentStart(entry)
+    const line = commentAt === -1 ? entry.raw : entry.raw.slice(0, commentAt)
 
     const publish = JOB_OUTPUT_STEP_STATUS.exec(line)
-    if (publish && !hasOptOut(lines, lineNumber)) {
+    if (publish && !hasOptOut(entries, index)) {
       offenders.push({
-        line: lineNumber,
+        line: entry.line,
         rule: 'job-output-step-status',
         text: publish[0].trim(),
       })
     }
 
     const compare = STATUS_COMPARE_AFTER.exec(line) || STATUS_COMPARE_BEFORE.exec(line)
-    if (compare && !hasOptOut(lines, lineNumber)) {
+    if (compare && !hasOptOut(entries, index)) {
       offenders.push({
-        line: lineNumber,
+        line: entry.line,
         rule: 'status-compare-on-job-output',
         text: compare[0].trim(),
       })
@@ -203,15 +188,12 @@ export function findVacuousJobGates(contents) {
  */
 export function findWorkflowFiles(repoRoot, deps = {}) {
   const fsImpl = deps.fs || fs
-  const root = path.join(repoRoot, ...SCANNED_ROOT.split('/'))
-  if (!fsImpl.existsSync(root)) return []
   const excluded = new Set(deps.exclusions || SCAN_EXCLUSIONS)
-  return fsImpl
-    .readdirSync(root)
-    .filter((name) => SCANNED_EXTENSIONS.some((extension) => name.endsWith(extension)))
-    .map((name) => `${SCANNED_ROOT}/${name}`)
-    .filter((relative) => !excluded.has(relative))
-    .sort()
+  return listWorkflowFiles(repoRoot, {
+    fs: fsImpl,
+    dir: SCANNED_ROOT,
+    extensions: SCANNED_EXTENSIONS,
+  }).filter((relative) => !excluded.has(relative))
 }
 
 /**

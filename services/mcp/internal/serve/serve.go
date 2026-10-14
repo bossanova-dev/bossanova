@@ -6,14 +6,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/socketauth"
 )
 
 // keepAlive is the protocol-level ping interval. The SDK exposes keepalive via
@@ -65,22 +68,68 @@ func Stdio(ctx context.Context, backend bossmcp.Backend, opts bossmcp.Options) e
 	return newServer(backend, opts, detectorForSelf()).Run(ctx, &mcp.StdioTransport{})
 }
 
-// HTTP runs the MCP server as a Streamable HTTP daemon, mounting the MCP
-// endpoint at /mcp and a liveness probe at /healthz.
-func HTTP(ctx context.Context, addr string, backend bossmcp.Backend, opts bossmcp.Options) error {
-	return HTTPWithListenerHook(ctx, addr, backend, opts, nil)
+// HTTPOptions configures the Streamable HTTP daemon.
+type HTTPOptions struct {
+	// Token is the canonical hex bearer token every /mcp request must carry as
+	// "Authorization: Bearer <token>" (socketauth.LoadOrCreateHTTPToken). An
+	// empty or malformed token fails closed: every /mcp request is rejected.
+	Token string
+}
+
+// HTTP runs the MCP server as a Streamable HTTP daemon, mounting the
+// bearer-authenticated MCP endpoint at /mcp and the unauthenticated liveness
+// and build-metadata probes at /healthz and /buildinfo. addr must be a loopback
+// address.
+func HTTP(ctx context.Context, addr string, backend bossmcp.Backend, opts bossmcp.Options, httpOpts HTTPOptions) error {
+	return HTTPWithListenerHook(ctx, addr, backend, opts, httpOpts, nil)
+}
+
+// checkLoopbackAddr refuses any listen address whose host is not a loopback IP
+// or "localhost". A non-loopback bind would expose the tool surface beyond the
+// machine and turns off the SDK's DNS-rebinding Host check.
+func checkLoopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("mcp: invalid --http address %q: %w", addr, err)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("mcp: refusing to serve HTTP on non-loopback address %q; use 127.0.0.1, [::1] or localhost", addr)
+}
+
+// requireBearer wraps next so a request without "Authorization: Bearer
+// <token>" gets 401 with a Bearer challenge and never reaches the MCP handler.
+func requireBearer(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !socketauth.ValidHTTPBearer(r, token) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="bossanova-mcp"`)
+			http.Error(w, "unauthorized: run `boss mcp token` and send it as Authorization: Bearer <token>", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // HTTPWithListenerHook is HTTP with a callback invoked once the listener is
 // bound, receiving the resolved address (useful when addr requests an ephemeral
 // port). The hook is primarily a test seam.
-func HTTPWithListenerHook(ctx context.Context, addr string, backend bossmcp.Backend, opts bossmcp.Options, onListen func(addr string)) error {
+func HTTPWithListenerHook(ctx context.Context, addr string, backend bossmcp.Backend, opts bossmcp.Options, httpOpts HTTPOptions, onListen func(addr string)) error {
+	if err := checkLoopbackAddr(addr); err != nil {
+		return err
+	}
+
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return newServer(backend, opts, nil)
 	}, nil)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", requireBearer(httpOpts.Token, handler))
+	// /healthz and /buildinfo stay unauthenticated: `boss mcp status` reads them
+	// and they carry no capability.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

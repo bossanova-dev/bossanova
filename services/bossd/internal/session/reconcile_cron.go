@@ -8,6 +8,9 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/db"
 )
 
 // cronAgentIdleThreshold is how long a cron run's agent log must be unwritten
@@ -333,6 +336,10 @@ func (l *Lifecycle) RecoverStrandedCronSessionsPeriodic(ctx context.Context) (in
 // confirms are dead are touched; any ambiguity (missing log/id, running agent,
 // unwired liveness for a pre-agent state) leaves the session for the next sweep.
 //
+// An auth-failed chat (SetChatAuthFailedProbe) is the one dead-looking run that
+// is not finalized: it is blocked with the agent-auth-failed reason instead and
+// is not counted as routed (BOS-1530).
+//
 // Returns the number of sessions routed to finalization. A finalize error is
 // logged at Warn and the loop continues (the session still counts as routed); a
 // failure to list sessions aborts the sweep.
@@ -368,6 +375,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 
 	now := time.Now()
 	routed := 0
+	authBlocked := 0
 	for _, sess := range stranded {
 		// Skip archived sessions. ArchiveSession removes the worktree but leaves
 		// the row in an implementing state, and ListByStates returns archived
@@ -410,6 +418,21 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 			continue
 		}
 
+		// An auth-failed chat is idle with no pending turn, so the evidence
+		// above reads it as over — but the run died on a login-required error,
+		// it did not finish. Block it instead of finalizing (BOS-1530); it is
+		// counted apart from routed and its PR is left exactly as it is.
+		//
+		// The startup pass runs before the status poller has observed any pane,
+		// so the in-memory probe is still empty there; it re-derives the signal
+		// from the session's live panes instead (startupPaneShowsLoginRequired).
+		if l.SessionChatAuthFailed(sess) || (phase == reapStartup && l.startupPaneShowsLoginRequired(ctx, sess)) {
+			if l.blockAuthFailedStrandedSession(ctx, sess, expected, evidence) {
+				authBlocked++
+			}
+			continue
+		}
+
 		evt := l.logger.Warn().
 			Str("session", sess.ID).
 			Str("state", sess.State.String()).
@@ -433,7 +456,89 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		routed++
 	}
 
+	if authBlocked > 0 {
+		l.logger.Warn().
+			Int("auth_blocked", authBlocked).
+			Int("routed", routed).
+			Msg("stranded unattended session sweep blocked auth-failed runs instead of finalizing them")
+	}
 	return routed, nil
+}
+
+// startupPaneShowsLoginRequired re-derives the auth-failed signal straight from
+// the session's persisted tmux panes for the one-shot startup sweep. The
+// in-memory probe (SessionChatAuthFailed) is empty after a restart — the status
+// poller has not bootstrapped yet, and its marker needs consecutive fresh
+// observations — so without this a login-required run a previous daemon left
+// behind reads as idle-and-over and is finalized (BOS-1530). Each persisted chat
+// pane is captured, because an account switch can leave the parent session's
+// agent id pointing at a cleared chat. A pane that cannot be captured (gone,
+// probe error) or missing wiring fails toward false, matching the probe's own
+// posture: a false auth-failed is worse than a missed one.
+func (l *Lifecycle) startupPaneShowsLoginRequired(ctx context.Context, sess *models.Session) bool {
+	if sess == nil || l.agentChats == nil || l.tmux == nil {
+		return false
+	}
+	chats, err := l.agentChats.ListBySession(ctx, sess.ID)
+	if err != nil {
+		return false
+	}
+	for _, chat := range chats {
+		if chat == nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+			continue
+		}
+		content, err := l.tmux.CapturePane(ctx, *chat.TmuxSessionName)
+		if err != nil {
+			continue
+		}
+		if statusdetect.IsLoginRequired([]byte(content)) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockAuthFailedStrandedSession moves a stranded unattended session whose chat
+// is auth-failed to Blocked with the shared agent-auth-failed reason, and never
+// finalizes it (BOS-1530). Finalizing would push, open and ready a PR for a
+// build that died before its own finish step.
+//
+// The move is a persisted conditional transition from the session's reap set
+// straight to Blocked — the shape the finalize-failure path and the
+// stranded-bootstrap reaper use — never via Finalizing. The state machine's
+// Block event is not permitted from every reap state (pre-agent and
+// PushingBranch/OpeningDraftPR lack it), so it is deliberately not fired; the
+// conditional write is the idempotency gate, and a session that moved since the
+// listing loses it and is left alone. Returns true only when this call blocked
+// the session.
+func (l *Lifecycle) blockAuthFailedStrandedSession(ctx context.Context, sess *models.Session, expected []int, evidence string) bool {
+	moved, err := l.sessions.UpdateStateConditionalFrom(ctx, sess.ID, int(machine.Blocked), expected)
+	if err != nil {
+		l.logger.Warn().Err(err).Str("session", sess.ID).
+			Msg("stranded-cron reap: mark auth-failed session blocked failed")
+		return false
+	}
+	if !moved {
+		return false
+	}
+	reason := sessionreason.AgentAuthFailed()
+	reasonPtr := &reason
+	if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+		l.logger.Warn().Err(err).Str("session", sess.ID).
+			Msg("stranded-cron reap: persist agent-auth-failed blocked reason failed")
+	}
+
+	evt := l.logger.Warn().
+		Str("session", sess.ID).
+		Str("state", sess.State.String()).
+		Bool("tmuxUnattended", sess.IsTmuxUnattended).
+		Str("completion_evidence", evidence).
+		Bool("auth_failed", true)
+	if sess.CronJobID != nil && *sess.CronJobID != "" {
+		evt = evt.Str("cronJob", *sess.CronJobID)
+	}
+	evt.Msg("blocking stranded unattended session: agent chat is auth-failed; not finalizing")
+	return true
 }
 
 // cronRunIsOver reports whether a cron session's agent run has finished. Cron

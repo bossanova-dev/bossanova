@@ -352,6 +352,31 @@ func TestPluginRunner_StartWithHeadlessLaunchOptionsRecordsBossSessionID(t *test
 	}
 }
 
+// TestPluginRunner_StartWithHeadlessLaunchOptionsForwardsProjectTrust pins
+// BOS-1562 at the plugin boundary: the launch's project-trust decision reaches
+// StartAgentRunRequest.project_trust unchanged, so a headless REVOKE is not
+// dropped between the lifecycle and the runner.
+func TestPluginRunner_StartWithHeadlessLaunchOptionsForwardsProjectTrust(t *testing.T) {
+	for _, want := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+	} {
+		fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+		pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+		if _, err := pr.StartWithHeadlessLaunchOptions(context.Background(), "/work", "plan", nil, "", "", "", nil, HeadlessLaunchOptions{
+			BossSessionID: "boss-session",
+			ProjectTrust:  want,
+		}); err != nil {
+			t.Fatalf("%v: StartWithHeadlessLaunchOptions: %v", want, err)
+		}
+		_ = pr.Stop("sid")
+		if got := fc.startReq.Load().GetProjectTrust(); got != want {
+			t.Fatalf("StartAgentRunRequest.project_trust = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestPluginRunner_StopRecordsTelemetryFromLog(t *testing.T) {
 	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
 	logDir := t.TempDir()
@@ -670,6 +695,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 		"medium",
 		map[string]string{"CODEX_HOME": "/projected/home", "ACCOUNT_TOKEN": "secret"},
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
 	)
 	if err != nil {
 		t.Fatalf("PreflightHeadlessCapabilityProfile: %v", err)
@@ -695,6 +721,9 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfileCarriesOnlyTargetInputs(
 	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())
 	}
+	if got.GetProjectTrust() != bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE {
+		t.Fatalf("ProjectTrust = %s, want REVOKE", got.GetProjectTrust())
+	}
 }
 
 func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testing.T) {
@@ -704,6 +733,7 @@ func TestPluginRunner_PreflightHeadlessCapabilityProfilePropagatesError(t *testi
 	err := pr.PreflightHeadlessCapabilityProfile(
 		context.Background(), t.TempDir(), "model", "", nil,
 		bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED,
 	)
 	if !errors.Is(err, fc.preflightErr) {
 		t.Fatalf("PreflightHeadlessCapabilityProfile error = %v, want wrapped %v", err, fc.preflightErr)

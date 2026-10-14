@@ -523,6 +523,7 @@ job. A successful interview ends with a summary and what is left to do.
 | `--assignee-me`           | write the "only my tickets" filter, `selection.assignees.include: ["me"]`                              |
 | `--register`              | find or register this repository with local bossd                                                      |
 | `--no-register`           | require an existing repository registration                                                            |
+| `--trusted`               | register a new repository as trusted: Codex project trust and proof secrets for its sessions           |
 | `--linear-key-stdin`      | read the Linear API key from stdin and store it on the repository                                      |
 | `--sentry-token-stdin`    | read the Sentry token from stdin (with `--sentry-org`)                                                 |
 | `--sentry-org <slug>`     | Sentry organization slug (requires a token)                                                            |

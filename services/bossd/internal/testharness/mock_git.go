@@ -273,7 +273,7 @@ func (m *MockWorktreeManager) Clone(ctx context.Context, cloneURL, localPath str
 	return nil
 }
 
-func (m *MockWorktreeManager) Archive(ctx context.Context, worktreePath string) error {
+func (m *MockWorktreeManager) Archive(ctx context.Context, repoName, worktreeBaseDir, worktreePath string) error {
 	m.mu.Lock()
 	m.ArchiveCalls = append(m.ArchiveCalls, worktreePath)
 	m.mu.Unlock()

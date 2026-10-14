@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -99,6 +101,9 @@ func (m *hookMockSessionStore) Update(context.Context, string, db.UpdateSessionP
 func (m *hookMockSessionStore) UpdateStateConditional(context.Context, string, int, int) (bool, error) {
 	panic("not used")
 }
+func (m *hookMockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	panic("not used")
+}
 func (m *hookMockSessionStore) Archive(context.Context, string) error { panic("not used") }
 func (m *hookMockSessionStore) ResurrectToState(context.Context, string, int) (bool, error) {
 	panic("not used")
@@ -116,6 +121,10 @@ func (m *hookMockSessionStore) UpdateRepairDiagnostics(context.Context, db.Updat
 
 func (m *hookMockSessionStore) UpdateRepairBlocked(context.Context, string, time.Time, string) error {
 	panic("not used")
+}
+
+func (m *hookMockSessionStore) ClearRepairAlert(context.Context, string) error {
+	return nil
 }
 
 // fakeFinalizer records FinalizeSession invocations so tests can assert
@@ -537,7 +546,8 @@ type fakeAgentRunCompleter struct {
 	calls []completerCall
 	// scripted return values keyed by agent_session_id; default zero-value
 	// returns ("", plugin.ErrAgentRunNotFound) — i.e. 404.
-	scripts map[string]completerResp
+	scripts       map[string]completerResp
+	validateCalls int
 }
 
 type completerCall struct {
@@ -573,6 +583,24 @@ func (f *fakeAgentRunCompleter) CompleteAgentRun(_ context.Context, agentSession
 	return resp.sessionID, resp.err
 }
 
+// ValidateRunToken lets the fake also serve as the side-effect-free
+// RunTokenValidator the agent-run-complete handler consults before reading the
+// body: an unscripted run is unknown, a run scripted with ErrAuthMismatch has a
+// different token, anything else authenticates.
+func (f *fakeAgentRunCompleter) ValidateRunToken(_ context.Context, agentSessionID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.validateCalls++
+	resp, ok := f.scripts[agentSessionID]
+	if !ok {
+		return plugin.ErrAgentRunNotFound
+	}
+	if errors.Is(resp.err, plugin.ErrAuthMismatch) {
+		return plugin.ErrAuthMismatch
+	}
+	return nil
+}
+
 func (f *fakeAgentRunCompleter) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -593,12 +621,18 @@ func (f *fakeAgentRunCompleter) lastCall() completerCall {
 // inject the fake completer alongside the existing finalizer wiring.
 func startHookServerWithCompleter(t *testing.T, store db.SessionStore, fin HookFinalizer, completer AgentRunCompleter) string {
 	t.Helper()
-	hs := NewHookServer(HookServerConfig{
+	cfg := HookServerConfig{
 		Sessions:  store,
 		Finalizer: fin,
 		Completer: completer,
 		Logger:    zerolog.Nop(),
-	})
+	}
+	// Production wires the same HostService as both completer and run-token
+	// validator; mirror that when the fake supports it.
+	if v, ok := completer.(RunTokenValidator); ok {
+		cfg.QuestionAuth = v
+	}
+	hs := NewHookServer(cfg)
 	if err := hs.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -732,9 +766,10 @@ func TestAgentRunComplete_WrongBearerToken(t *testing.T) {
 	if status != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", status)
 	}
-	// Completer was still invoked (constant-time compare lives there).
-	if completer.callCount() != 1 {
-		t.Errorf("callCount = %d, want 1", completer.callCount())
+	// The side-effect-free pre-check rejects the token before the body is read,
+	// so the completer is never reached.
+	if completer.callCount() != 0 {
+		t.Errorf("callCount = %d, want 0", completer.callCount())
 	}
 }
 
@@ -777,6 +812,138 @@ func TestAgentRunComplete_MalformedJSON(t *testing.T) {
 	}
 	if completer.callCount() != 0 {
 		t.Errorf("completer was invoked despite malformed body; callCount = %d, want 0", completer.callCount())
+	}
+}
+
+// readRecorder is a request body that records whether anything read it.
+type readRecorder struct {
+	mu   sync.Mutex
+	read bool
+	r    io.Reader
+}
+
+func (b *readRecorder) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	b.read = true
+	b.mu.Unlock()
+	return b.r.Read(p)
+}
+
+func (b *readRecorder) wasRead() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.read
+}
+
+// serveAgentRunComplete drives handleAgentRunComplete directly (no listener)
+// so the test owns the request body reader.
+func serveAgentRunComplete(t *testing.T, completer *fakeAgentRunCompleter, auth string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{
+		Sessions:     newHookMockSessionStore(),
+		Finalizer:    newFakeFinalizer(),
+		Completer:    completer,
+		QuestionAuth: completer,
+		Logger:       zerolog.Nop(),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/hooks/agent-run-complete/agent-1", body)
+	req.SetPathValue("agent_session_id", "agent-1")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	hs.handleAgentRunComplete(rec, req)
+	return rec
+}
+
+func TestAgentRunComplete_RejectsMissingTokenBeforeReadingBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body before authenticating")
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_RejectsUnknownTokenBeforeReadingBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1", err: plugin.ErrAuthMismatch})
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "Bearer wrong", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body before validating the token")
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_UnknownRunSkipsBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter() // nothing scripted ⇒ unknown run
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "Bearer anything", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (idempotent no-op)", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body for a run it does not track")
+	}
+}
+
+// agentRunCompleteBodyOfSize returns a valid agent-run-complete JSON body of
+// exactly n bytes.
+func agentRunCompleteBodyOfSize(t *testing.T, n int) string {
+	t.Helper()
+	const prefix, suffix = `{"exit_error": "`, `"}`
+	body := prefix + strings.Repeat("x", n-len(prefix)-len(suffix)) + suffix
+	if len(body) != n {
+		t.Fatalf("body length = %d, want %d", len(body), n)
+	}
+	return body
+}
+
+// The cap is pinned by literal, not by maxAgentRunCompleteBody, so raising or
+// lowering it reds one of these two tests.
+const agentRunCompleteBodyCap = 64 << 10
+
+func TestAgentRunComplete_OversizedBodyIs413(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	big := agentRunCompleteBodyOfSize(t, agentRunCompleteBodyCap+1)
+
+	rec := serveAgentRunComplete(t, completer, "Bearer secret", strings.NewReader(big))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_BodyAtCapIsAccepted(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	atCap := agentRunCompleteBodyOfSize(t, agentRunCompleteBodyCap)
+
+	rec := serveAgentRunComplete(t, completer, "Bearer secret", strings.NewReader(atCap))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a body of exactly the cap", rec.Code)
+	}
+	if completer.callCount() != 1 {
+		t.Fatalf("completer callCount = %d, want 1", completer.callCount())
 	}
 }
 
@@ -1216,11 +1383,18 @@ func postFinalize(t *testing.T, base, sessionID, auth string) int {
 	return resp.StatusCode
 }
 
-// fakePromptReceipts records RecordPromptSubmitted calls.
+// fakePromptReceipts records RecordPromptSubmitted calls. Its receipt token
+// for a chat id is promptToken(id).
 type fakePromptReceipts struct {
 	mu    sync.Mutex
 	calls []string
 	at    []time.Time
+}
+
+func promptToken(agentSessionID string) string { return "tok-" + agentSessionID }
+
+func (f *fakePromptReceipts) ValidPromptReceiptToken(agentSessionID, token string) bool {
+	return token != "" && token == promptToken(agentSessionID)
 }
 
 func (f *fakePromptReceipts) RecordPromptSubmitted(agentSessionID string, at time.Time) bool {
@@ -1252,9 +1426,25 @@ func startPromptReceiptHookServer(t *testing.T, receipts PromptReceiptRecorder) 
 	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
 }
 
+// postPromptSubmitted posts a receipt carrying the fake's valid token for id.
 func postPromptSubmitted(t *testing.T, base, id, body string) int {
 	t.Helper()
-	resp, err := http.Post(base+"/hooks/prompt-submitted/"+id, "application/json", strings.NewReader(body))
+	return postPromptSubmittedAuth(t, base, id, "Bearer "+promptToken(id), body)
+}
+
+// postPromptSubmittedAuth posts a receipt with the given Authorization header
+// (omitted when empty).
+func postPromptSubmittedAuth(t *testing.T, base, id, auth, body string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/hooks/prompt-submitted/"+id, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post prompt-submitted: %v", err)
 	}
@@ -1293,5 +1483,40 @@ func TestHookServer_PromptSubmittedWithoutRecorderIs500(t *testing.T) {
 	base := startPromptReceiptHookServer(t, nil)
 	if got := postPromptSubmitted(t, base, "agent-1", `{}`); got != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", got)
+	}
+}
+
+func (*hookMockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func TestPromptSubmittedRejectsMissingToken(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+
+	if got := postPromptSubmittedAuth(t, base, "agent-1", "", `{"session_id":"agent-1"}`); got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if got := receipts.recorded(); len(got) != 0 {
+		t.Fatalf("recorder called without a token: %v", got)
+	}
+}
+
+func TestPromptSubmittedRejectsWrongToken(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+
+	for _, auth := range []string{
+		"Bearer wrong",
+		"Bearer " + promptToken("agent-2"), // another chat's token
+		"Basic " + promptToken("agent-1"),
+		promptToken("agent-1"),
+	} {
+		if got := postPromptSubmittedAuth(t, base, "agent-1", auth, `{"session_id":"agent-1"}`); got != http.StatusUnauthorized {
+			t.Fatalf("auth %q: status = %d, want 401", auth, got)
+		}
+	}
+	if got := receipts.recorded(); len(got) != 0 {
+		t.Fatalf("recorder called with a wrong token: %v", got)
 	}
 }

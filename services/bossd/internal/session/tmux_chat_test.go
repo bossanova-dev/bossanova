@@ -24,6 +24,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -1080,6 +1081,12 @@ func TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent(t *testing.T) {
 	}
 	if got.workDir != want {
 		t.Errorf("preflight workDir = %q, want the session worktree path %q", got.workDir, want)
+	}
+	// The probe starts the agent in that worktree before the launch applies its
+	// trust decision, so it carries the decision itself: the fixture repo is
+	// not trusted, so REVOKE (BOS-1562).
+	if got.projectTrust != bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE {
+		t.Errorf("preflight projectTrust = %s, want REVOKE for an untrusted repo", got.projectTrust)
 	}
 }
 
@@ -2410,6 +2417,152 @@ func TestStartTmuxChat_HooklessCommandDoesNotArmPollFallback(t *testing.T) {
 	}
 	if armer.armCalled {
 		t.Fatalf("poll fallback armed for tmux-hosted hookless command %q", agentSessionID)
+	}
+}
+
+// TestStartTmuxChat_ForwardsRepoTrustToRunner pins BOS-1562: the launch asks
+// the runner to pre-trust the worktree's own agent configuration (Codex
+// project trust) only when the session's repo is locally trusted, and to
+// revoke any earlier pre-trust when it is not.
+func TestStartTmuxChat_ForwardsRepoTrustToRunner(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			h.repos.repos["repo-abcdef12"].IsTrusted = trusted
+			if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+				t.Fatalf("StartTmuxChat: %v", err)
+			}
+			req := h.agentFake.LastBuildInteractiveCommand
+			if req == nil {
+				t.Fatal("BuildInteractiveCommand was not called")
+			}
+			want := bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
+			if trusted {
+				want = bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT
+			}
+			if got := req.GetProjectTrust(); got != want {
+				t.Fatalf("ProjectTrust = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestStartTmuxChat_RepoCheckoutIsNeverRevoked pins that a chat whose work dir
+// is the repo's own checkout (a zero-output or quick-chat session) never
+// revokes: that checkout's Codex trust is the user's own, and Codex derives
+// their linked worktrees' trust from it, so an untrusted repo's checkout launch
+// sends DENY — run untrusted, persist nothing. A trusted repo's checkout launch
+// still grants, as every interactive Codex launch did before BOS-1562, so it
+// cannot stall on Codex's trust prompt.
+func TestStartTmuxChat_RepoCheckoutIsNeverRevoked(t *testing.T) {
+	for _, tc := range []struct {
+		trusted bool
+		want    bossanovav1.ProjectTrustDecision
+	}{
+		{false, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY},
+		{true, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+	} {
+		t.Run(fmt.Sprintf("trusted=%v", tc.trusted), func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			checkout := t.TempDir()
+			h.repos.repos["repo-abcdef12"].IsTrusted = tc.trusted
+			h.repos.repos["repo-abcdef12"].LocalPath = checkout
+			// The trailing separator is a different spelling of the same
+			// directory; the rule compares directories, not strings.
+			h.sessions.sessions["sess-1"].WorktreePath = checkout + string(filepath.Separator)
+			if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+				t.Fatalf("StartTmuxChat: %v", err)
+			}
+			req := h.agentFake.LastBuildInteractiveCommand
+			if req == nil {
+				t.Fatal("BuildInteractiveCommand was not called")
+			}
+			if got := req.GetProjectTrust(); got != tc.want {
+				t.Fatalf("ProjectTrust = %v, want %v for the repo's own checkout", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSendInputToLiveTmuxChat_MakesNoTrustDecision pins BOS-1562's other
+// half: a message into a live pane builds its command only for input
+// rendering, so it must neither pre-trust nor revoke — a revoke here would
+// strip a trusted repo's Codex trust on every message.
+func TestSendInputToLiveTmuxChat_MakesNoTrustDecision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			h.repos.repos["repo-abcdef12"].IsTrusted = trusted
+			const agentSessionID = "agent-session-prior"
+			tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
+			h.chats.chatsBySession = map[string][]*models.AgentChat{
+				"sess-1": {{
+					ID:              "chat-prior",
+					SessionID:       "sess-1",
+					AgentSessionID:  agentSessionID,
+					TmuxSessionName: &tmuxName,
+				}},
+			}
+			if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1",
+				ChatInput{Prompt: "next", ResumeAgentSessionID: agentSessionID, Delivery: DeliverySubmit},
+				"T", HookOpts{}); err != nil {
+				t.Fatalf("StartTmuxChat resume into live pane: %v", err)
+			}
+			if h.tmuxFake.hasSubcommand("new-session") {
+				t.Fatalf("precondition: input did not take the live-pane path; calls=%v", h.tmuxFake.calls)
+			}
+			req := h.agentFake.LastBuildInteractiveCommand
+			if req == nil {
+				t.Fatal("BuildInteractiveCommand was not called")
+			}
+			if got := req.GetProjectTrust(); got != bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED {
+				t.Fatalf("live-pane input made a trust decision: %v", got)
+			}
+		})
+	}
+}
+
+// TestStartTmuxChat_PinsProofKeysForUntrustedRepo pins BOS-1562 at the
+// interactive spawn: the env bossd hands tmux for an untrusted repo carries
+// every proofenv.Keys() name pinned to "", so an ambient daemon value cannot
+// reach the agent, while a trusted repo's proof keys are the resolver's (or
+// absent with no resolver) — never pinned.
+func TestStartTmuxChat_PinsProofKeysForUntrustedRepo(t *testing.T) {
+	overlay := map[string]string{}
+	for _, key := range proofenv.Keys() {
+		overlay[key] = "proof-" + key
+	}
+	for _, tc := range []struct {
+		name     string
+		trusted  bool
+		resolver bool
+		want     func(key string) (string, bool)
+	}{
+		{"untrusted", false, true, func(string) (string, bool) { return "", true }},
+		{"trusted", true, true, func(key string) (string, bool) { return overlay[key], true }},
+		{"trusted without resolver", true, false, func(string) (string, bool) { return "", false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			h.repos.repos["repo-abcdef12"].IsTrusted = tc.trusted
+			if tc.resolver {
+				h.lc.SetProofEnvResolver(fakeProofEnvResolver{env: overlay})
+			}
+			if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+				t.Fatalf("StartTmuxChat: %v", err)
+			}
+			env := spawnEnv(t, h)
+			for _, key := range proofenv.Keys() {
+				got, ok := env[key]
+				want, wantOK := tc.want(key)
+				if ok != wantOK || got != want {
+					t.Errorf("tmux env %s = %q (present %v), want %q (present %v)", key, got, ok, want, wantOK)
+				}
+			}
+		})
 	}
 }
 
@@ -3815,7 +3968,7 @@ func (f fakeProofEnvResolver) Resolve() map[string]string { return f.env }
 
 // TestLifecycleTmuxEnvIncludesProofOverlay exercises the exact expression at
 // the tmux NewSession call site — mergeEnv(ManagedSessionEnv(...),
-// l.resolveProofEnv()) — with an injected fake resolver, asserting the proof
+// l.resolveProofEnvFor(&models.Repo{IsTrusted: true})) — with an injected fake resolver, asserting the proof
 // overlay reaches the session env while managed BOSS_* keys stay authoritative.
 func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	l := &Lifecycle{}
@@ -3827,7 +3980,7 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	}})
 
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}
-	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveProofEnv())
+	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 
 	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" || env["CLOUDFLARE_API_TOKEN"] != "secret-cf" {
 		t.Errorf("proof secrets missing from tmux env: %v", env)
@@ -3844,7 +3997,7 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 // resolver wired degrades to nil (older/test wiring) rather than panicking.
 func TestLifecycleResolveProofEnvNilResolver(t *testing.T) {
 	l := &Lifecycle{}
-	if got := l.resolveProofEnv(); got != nil {
+	if got := l.resolveProofEnvFor(&models.Repo{IsTrusted: true}); got != nil {
 		t.Errorf("expected nil overlay with no resolver, got %v", got)
 	}
 }

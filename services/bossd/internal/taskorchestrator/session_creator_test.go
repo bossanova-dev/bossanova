@@ -107,12 +107,19 @@ func (m *mockSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, 
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
+func (m *mockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 
 func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
 	return nil
 }
 
 func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
+func (m *mockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -1449,4 +1456,8 @@ func TestCreateSessionLogsAFailedLockAcquireOnTheOrchestratorPath(t *testing.T) 
 	if !strings.Contains(sink.String(), "giving up waiting for the target lock") {
 		t.Fatalf("a refused acquire logged nothing; log:\n%s", sink.String())
 	}
+}
+
+func (*mockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

@@ -14,7 +14,6 @@ import {
   settleCompletion,
   buildEnvelope,
   fastPath,
-  reviewedTreeDrift,
   commandReader,
   main,
   INELIGIBLE_REASONS,
@@ -138,6 +137,10 @@ for (const [field, reason] of unknownCases) {
 for (const [field, value, reason] of [
   ['pr', '42', 'no-pr'],
   ['reviewVerdict', {}, 'review-verdict-unknown'],
+  // One vocabulary with the ready gate: `none` is unknown, and merge eligibility never admits
+  // the operator's `disabled` opt-out.
+  ['reviewVerdict', 'none', 'review-verdict-unknown'],
+  ['reviewVerdict', 'disabled', 'review-not-clean'],
   ['reviewCoverage', {}, 'coverage-unknown'],
   ['crossModelReview', [], 'cross-model-unknown'],
   ['criteria', { total: '1', met: 1 }, 'criteria-unknown'],
@@ -337,7 +340,7 @@ function harness(t, changes = {}) {
     ...changes,
   }
   const answer = (payload, status = 0) => ({ status, stdout: JSON.stringify(payload) })
-  const spawn = (command, args, options) => {
+  const spawn = (command, args) => {
     state.calls.push([command, args])
     if (command === 'gh' && args[0] === 'repo') return answer({ nameWithOwner: 'owner/repo' })
     if (command === 'gh' && args[0] === 'pr') return answer(state.pr)
@@ -355,13 +358,6 @@ function harness(t, changes = {}) {
     if (command === 'boss' && args[0] === 'callback') return answer(state.watches)
     if (command === 'git' && args[0] === 'rev-parse')
       return { status: 0, stdout: args[1] === '--absolute-git-dir' ? dir : HEAD }
-    if (command === 'git' && args[0] === 'merge-base') return { status: 0, stdout: OTHER }
-    if (command === 'git' && args[0] === 'diff')
-      return { status: 0, stdout: 'diff --git a/x b/x\n+new\n' }
-    if (command === 'git' && args[0] === 'patch-id') {
-      assert.ok(options.input.includes('diff'))
-      return { status: 0, stdout: `${HEAD} ${OTHER}\n` }
-    }
     assert.fail(`unexpected command ${command} ${args.join(' ')}`)
   }
   const deps = { spawn, cwd: dir }
@@ -398,7 +394,7 @@ test('INELIGIBLE_REASONS no longer lists the archive-after-merge reasons', () =>
   assert.equal(INELIGIBLE_REASONS.includes('archive-after-merge'), false)
   assert.equal(INELIGIBLE_REASONS.includes('archive-after-merge-unknown'), false)
 })
-test('envelope reads live PR, env, cron consent, archive and patch-ids through spawn seam', (t) => {
+test('envelope reads live PR, env, cron consent, archive and tree drift through spawn seam', (t) => {
   const h = harness(t),
     envelope = h.envelope()
   assert.equal(envelope.mergeAuthorized, true)
@@ -438,21 +434,6 @@ test('live foreign watches make a standalone launch ineligible', (t) => {
     watches: [{ pr_number: 42, state: 'active', target_chat_id: 'coordinator' }],
   })
   assert.deepEqual(h.envelope().ineligibleReasons, ['foreign-pr-watcher'])
-})
-test('patch-id distinguishes rebases from changed cumulative work and read failure', () => {
-  let count = 0
-  const read = (cmd, args) =>
-    args[0] === 'merge-base'
-      ? { ok: true, output: OTHER }
-      : args[0] === 'diff'
-        ? { ok: true, output: 'diff' }
-        : { ok: true, output: `${++count === 1 ? HEAD : OTHER} ${HEAD}` }
-  assert.equal(reviewedTreeDrift(read, 'main', HEAD, OTHER), 'changed')
-  assert.equal(
-    reviewedTreeDrift(() => ({ ok: false }), 'main', HEAD, OTHER),
-    'unknown',
-  )
-  assert.equal(reviewedTreeDrift(read, 'main', undefined, HEAD), 'unknown')
 })
 test('spawn exceptions and malformed JSON are unreadable', () => {
   assert.equal(
@@ -971,51 +952,6 @@ for (const retired of ['merge', 'settle'])
     ))
 test('VERIFY_GATE is the sibling verify-gate.mjs', () =>
   assert.equal(VERIFY_GATE, fileURLToPath(new URL('./verify-gate.mjs', import.meta.url))))
-test('real cumulative patch-ids survive a rebase but detect a repair commit', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'completion-patch-id-test-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
-  const git = (args) => {
-    const result = spawnSync(
-      'git',
-      [
-        '-c',
-        'user.name=Completion test',
-        '-c',
-        'user.email=test@example.invalid',
-        '-c',
-        'commit.gpgsign=false',
-        ...args,
-      ],
-      { cwd: dir, encoding: 'utf8' },
-    )
-    assert.equal(result.status, 0, result.stderr)
-    return result.stdout.trim()
-  }
-  git(['init', '--initial-branch=main'])
-  writeFileSync(join(dir, 'base'), 'base\n')
-  git(['add', 'base'])
-  git(['commit', '-m', 'base'])
-  git(['update-ref', 'refs/remotes/origin/main', 'HEAD'])
-  git(['checkout', '-b', 'feature'])
-  writeFileSync(join(dir, 'feature'), 'feature\n')
-  git(['add', 'feature'])
-  git(['commit', '-m', 'feature'])
-  const reviewed = git(['rev-parse', 'HEAD'])
-  git(['checkout', 'main'])
-  writeFileSync(join(dir, 'unrelated'), 'base advanced\n')
-  git(['add', 'unrelated'])
-  git(['commit', '-m', 'advance base'])
-  git(['update-ref', 'refs/remotes/origin/main', 'HEAD'])
-  git(['checkout', 'feature'])
-  git(['rebase', 'main'])
-  const read = commandReader({ cwd: dir })
-  assert.equal(reviewedTreeDrift(read, 'main', reviewed, git(['rev-parse', 'HEAD'])), 'none')
-  writeFileSync(join(dir, 'feature'), 'feature repaired\n')
-  git(['add', 'feature'])
-  git(['commit', '-m', 'repair'])
-  assert.equal(reviewedTreeDrift(read, 'main', reviewed, git(['rev-parse', 'HEAD'])), 'changed')
-})
-
 // Parity: the shared library yields exactly the shared subset of computeEligibility's reasons, in
 // the same order, on every fixture this suite builds. The two anonymous row tables above are
 // restated here because naming them would edit existing lines.

@@ -5,12 +5,20 @@ go_library(
     srcs = ["dotenv.go"],
     importpath = "github.com/recurser/bossd/internal/dotenv",
     visibility = ["//services/bossd:__subpackages__"],
-    deps = ["//lib/bossalib/models"],
+    deps = [
+        "//lib/bossalib/models",
+        "//services/bossd/internal/proofenv",
+        "//services/bossd/internal/repotrust",
+        "@com_github_rs_zerolog//log",
+    ],
 )
 
 go_test(
     name = "dotenv_test",
     srcs = ["dotenv_test.go"],
     embed = [":dotenv"],
-    deps = ["//lib/bossalib/models"],
+    deps = [
+        "//lib/bossalib/models",
+        "//services/bossd/internal/proofenv",
+    ],
 )

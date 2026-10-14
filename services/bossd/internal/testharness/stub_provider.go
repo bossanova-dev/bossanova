@@ -203,3 +203,7 @@ func clonePRStatus(status *vcs.PRStatus) *vcs.PRStatus {
 	}
 	return &cp
 }
+
+func (p *StubProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, fmt.Errorf("stub provider: FindPRCommentsWithMarker not implemented")
+}

@@ -93,3 +93,36 @@ func ParseGitHubCheckState(s string) (CheckStatus, *CheckConclusion, bool) {
 		return CheckStatusCompleted, nil, false
 	}
 }
+
+// IsReviewBotLogin reports whether a GitHub login belongs to a bot account, as
+// the REST API and webhook payloads spell it (`name[bot]`). The GraphQL review
+// list reports the same account under a bare login, so this predicate only
+// holds on REST/webhook-shaped data.
+func IsReviewBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
+}
+
+// IsTrustedAuthorAssociation reports whether a GitHub author_association grants
+// a review the standing to drive unattended automation: the repository's
+// owner, a member of its organization, or an invited collaborator. Everyone
+// else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE, or
+// an absent value — is untrusted.
+func IsTrustedAuthorAssociation(association string) bool {
+	switch strings.ToUpper(strings.TrimSpace(association)) {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTrustedReviewAuthor reports whether a review or review comment may reach
+// the agent automation that acts on review feedback. Trusted authors hold a
+// trusted association (IsTrustedAuthorAssociation) or post as a bot
+// (IsReviewBotLogin): review bots run as GitHub Apps, which must be installed
+// on the repository to review at all, and GitHub reports them with
+// association NONE. Anything else is a drive-by review that must never start
+// a repair run, because its text is untrusted input to an agent that can push.
+func IsTrustedReviewAuthor(login, association string) bool {
+	return IsTrustedAuthorAssociation(association) || IsReviewBotLogin(login)
+}

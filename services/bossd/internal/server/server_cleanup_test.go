@@ -252,6 +252,9 @@ func (s *cleanupSessionStore) Update(context.Context, string, db.UpdateSessionPa
 func (s *cleanupSessionStore) UpdateStateConditional(context.Context, string, int, int) (bool, error) {
 	panic("not used")
 }
+func (s *cleanupSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	panic("not used")
+}
 func (s *cleanupSessionStore) Archive(context.Context, string) error {
 	panic("not used")
 }
@@ -279,6 +282,10 @@ func (s *cleanupSessionStore) UpdateRepairBlocked(context.Context, string, time.
 	panic("not used")
 }
 
+func (s *cleanupSessionStore) ClearRepairAlert(context.Context, string) error {
+	return nil
+}
+
 type cleanupWorktreeManager struct {
 	reapLocalBranchesCalls int
 	repoPath               string
@@ -298,7 +305,7 @@ func (m *cleanupWorktreeManager) Create(context.Context, gitpkg.CreateOpts) (*gi
 func (m *cleanupWorktreeManager) CreateFromExistingBranch(context.Context, gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
 	panic("not used")
 }
-func (m *cleanupWorktreeManager) Archive(context.Context, string) error {
+func (m *cleanupWorktreeManager) Archive(context.Context, string, string, string) error {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) Resurrect(context.Context, gitpkg.ResurrectOpts) (*gitpkg.ResurrectResult, error) {
@@ -394,4 +401,8 @@ func (m *cleanupWorktreeManager) CountBehindBase(context.Context, string, string
 
 func (m *cleanupWorktreeManager) RebaseOntoBaseAndPush(context.Context, string, string, string) (*gitpkg.RebaseResult, error) {
 	panic("not used")
+}
+
+func (*cleanupSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

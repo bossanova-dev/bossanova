@@ -395,3 +395,7 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+func (p *testVCSProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
+}

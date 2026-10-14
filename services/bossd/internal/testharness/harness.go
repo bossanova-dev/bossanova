@@ -364,6 +364,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	if err != nil {
 		t.Fatalf("load socket auth token: %v", err)
 	}
+	// Mirror the daemon: prompt-receipt tokens derive from the socket token.
+	lifecycle.SetPromptReceiptKey(token)
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv, connect.WithInterceptors(socketauth.NewServerInterceptor(token)))

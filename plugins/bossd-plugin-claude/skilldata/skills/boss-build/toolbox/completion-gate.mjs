@@ -1,10 +1,12 @@
-// boss-build's Step 12 helper: the session-side merge envelope, and the verify fast path that judges,
-// posts and merges through the sibling verify-gate.mjs — the one head-pinned merge path.
+// boss-build's Step 12 helper: the session-side merge envelope and the verify fast path that judges,
+// posts and merges through the sibling verify-gate.mjs — the one head-pinned merge path. The review
+// and tree-drift reasons it shares with the ready gate live in ready-gate.mjs.
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './main-module.mjs'
+import { driftReasons, reviewFiles, reviewReasons, reviewedTreeDrift } from './ready-gate.mjs'
 import { classifyChecks, isGreen } from './pr-check-state.mjs'
 import { STAGE_SKILL, invokedSkill } from './stage-chain.mjs'
 import {
@@ -132,8 +134,7 @@ export function computeEligibility(inputs = {}) {
   if (!text(i.sessionId)) add('no-session')
   if (!Number.isInteger(i.pr) || i.pr < 1) add('no-pr')
   if (typeof i.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(i.repo)) add('repo-unknown')
-  if (!text(i.reviewVerdict)) add('review-verdict-unknown')
-  else if (i.reviewVerdict !== 'clean') add('review-not-clean')
+  reasons.push(...reviewReasons(i.reviewVerdict))
   if (i.openFindings !== 0) add('open-findings')
   if (!text(i.reviewCoverage)) add('coverage-unknown')
   else if (!(
@@ -154,8 +155,7 @@ export function computeEligibility(inputs = {}) {
   reasons.push(...mergeStateReasons(i.prView))
   reasons.push(...prShapeReasons(i.prView))
   reasons.push(...headReasons([i.pushedHead, i.localHead, i.upstreamHead, i.prView?.headRefOid]))
-  if (i.treeDrift === 'changed') add('tree-changed-since-review')
-  else if (i.treeDrift !== 'none') add('tree-drift-unknown')
+  reasons.push(...driftReasons(i.treeDrift))
   reasons.push(
     ...followUpReasons({ humanFollowUp: i.humanFollowUp, openQuestions: i.openQuestions }),
   )
@@ -177,21 +177,21 @@ export function computeEligibility(inputs = {}) {
   }
 }
 
-// The only subprocess seam. A failed read is unknown, never an empty successful payload.
+// The only subprocess seam. A failed read is unknown (`{ok: false, status}`, `status` the exit code
+// or null), never an empty successful payload.
 export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
-  return (command, args, { input, json = false, timeout = 30000 } = {}) => {
+  return (command, args, { json = false, timeout = 30000 } = {}) => {
     let response
     try {
       response = spawn(command === 'boss' ? bossBin : command, args, {
         cwd,
-        input,
         encoding: 'utf8',
         timeout,
         maxBuffer: 16 * 1024 * 1024,
         killSignal: 'SIGKILL',
       })
     } catch (error) {
-      return { ok: false, error: error.code ?? 'spawn-error' }
+      return { ok: false, status: null, error: error.code ?? 'spawn-error' }
     }
     let payload
     if (json) {
@@ -204,6 +204,7 @@ export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin 
     if (response.error || response.status !== 0)
       return {
         ok: false,
+        status: response.status ?? null,
         error:
           payload?.error?.code ??
           payload?.code ??
@@ -211,7 +212,7 @@ export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin 
           `exit-${response.status}`,
         payload,
       }
-    if (json && payload === undefined) return { ok: false, error: 'unreadable-json' }
+    if (json && payload === undefined) return { ok: false, status: 0, error: 'unreadable-json' }
     return { ok: true, payload, output: String(response.stdout ?? '').trim() }
   }
 }
@@ -243,28 +244,14 @@ function prRead(read, pr, repo) {
   )
 }
 
-export function reviewedTreeDrift(read, base, reviewedHead, pushedHead) {
-  if (!sha(reviewedHead) || !sha(pushedHead) || !text(base)) return 'unknown'
-  const patch = (head) => {
-    const ancestor = read('git', ['merge-base', `origin/${base}`, head])
-    if (!ancestor.ok || !sha(ancestor.output)) return null
-    const diff = read('git', ['diff', '--no-ext-diff', '--binary', ancestor.output, head, '--'])
-    if (!diff.ok) return null
-    const id = read('git', ['patch-id', '--stable'], { input: diff.output })
-    if (!id.ok) return null
-    // Empty diffs have the same empty patch-id; nonempty unparsable results are unknown.
-    if (diff.output && !SHA.test(id.output.split(/\s/)[0])) return null
-    return id.output.split(/\s/)[0]
-  }
-  const before = patch(reviewedHead),
-    after = patch(pushedHead)
-  return before === null || after === null ? 'unknown' : before === after ? 'none' : 'changed'
-}
-
 export function buildEnvelope(options, deps = {}) {
   const read = commandReader(deps)
-  const gitDirRead = read('git', ['rev-parse', '--absolute-git-dir'])
-  const gitDir = gitDirRead.ok ? gitDirRead.output : ''
+  const {
+    reviewVerdictFile: reviewFile,
+    reviewedHeadFile: reviewedFile,
+    reviewVerdict,
+    reviewedHead,
+  } = reviewFiles(read, options)
   const repoResult = read('gh', ['repo', 'view', '--json', 'nameWithOwner'], { json: true })
   const repo = repoResult.ok ? repoResult.payload?.nameWithOwner : ''
   const envResult = read('boss', ['env', '--json'], { json: true })
@@ -288,12 +275,6 @@ export function buildEnvelope(options, deps = {}) {
           json: true,
         })
       : { ok: false }
-  const reviewFile =
-    options.reviewVerdictFile ?? (gitDir ? resolve(gitDir, 'boss-build-review-verdict') : '')
-  const reviewedFile =
-    options.reviewedHeadFile ?? (gitDir ? resolve(gitDir, 'boss-build-reviewed-head') : '')
-  const reviewVerdict = readText(reviewFile).match(/^REVIEW_VERDICT=(.*)$/m)?.[1] ?? ''
-  const reviewedHead = readText(reviewedFile)
   const { criteria } = parseLedger(prView?.body)
   const envelope = {
     runId: options.runId,

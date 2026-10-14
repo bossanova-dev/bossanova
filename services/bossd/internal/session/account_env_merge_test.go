@@ -280,7 +280,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 
 	// Interactive tmux call-site expression.
 	tmuxAccountEnv, _ := l.resolveAccountEnv(ctx, sess)
-	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), tmuxAccountEnv, l.resolveProofEnv())
+	tmuxEnv := mergeSessionEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), tmuxAccountEnv, l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 	if tmuxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("tmux: account token missing: %v", tmuxEnv)
 	}
@@ -293,7 +293,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 
 	// Headless / resume call-site expression (no managed layer).
 	headlessAccountEnv, _ := l.resolveAccountEnv(ctx, sess)
-	headlessEnv := mergeEnv(headlessAccountEnv, l.resolveProofEnv())
+	headlessEnv := mergeEnv(headlessAccountEnv, l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 	if headlessEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("headless: account token missing: %v", headlessEnv)
 	}

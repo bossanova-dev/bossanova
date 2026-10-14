@@ -33,6 +33,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 		wantHasChangesRequested bool
 		wantChangesRequestedBy  []string
 		wantVerifyReason        string
+		wantVerifyLabel         string
 	}{
 		// Verify precedence edges (BOS-1382):
 		// Conflict > Failing > Checking(ordinary) > NeedsHuman > Verifying >
@@ -110,6 +111,14 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks:           []CheckResult{greenCheck(), pendingVerify("needs human: always-human-path")},
 			wantStatus:       DisplayStatusNeedsHuman,
 			wantVerifyReason: "always-human-path",
+		},
+		{
+			name:             "verify: labelled park carries reason and label separately",
+			pr:               &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks:           []CheckResult{greenCheck(), pendingVerify("needs human: human-review:security · verify gate rules")},
+			wantStatus:       DisplayStatusNeedsHuman,
+			wantVerifyReason: "human-review:security",
+			wantVerifyLabel:  "verify gate rules",
 		},
 		{
 			name:       "verify: needs human without reason",
@@ -670,6 +679,9 @@ func TestComputeDisplayStatus(t *testing.T) {
 			}
 			if got.VerifyReason != tt.wantVerifyReason {
 				t.Errorf("VerifyReason = %q, want %q", got.VerifyReason, tt.wantVerifyReason)
+			}
+			if got.VerifyLabel != tt.wantVerifyLabel {
+				t.Errorf("VerifyLabel = %q, want %q", got.VerifyLabel, tt.wantVerifyLabel)
 			}
 		})
 	}

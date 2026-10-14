@@ -447,22 +447,56 @@ export async function linearSelectPlanned({
 // The read behind the OPTIONAL executable `readDescription` capability. `issue(id:)` resolves a UUID
 // or a human identifier, so the id is forwarded as given; `id` and `identifier` come back so the
 // caller can confirm WHICH issue answered — a key scoped to another workspace can resolve a
-// colliding identifier to a different issue, and a UUID cannot collide.
+// colliding identifier to a different issue, and a UUID cannot collide. The description-edit
+// history gives `descriptionUpdatedAt` (see descriptionUpdatedAt below).
 export const READ_DESCRIPTION_QUERY = `
   query ReadDescription($id: String!) {
     issue(id: $id) {
       id
       identifier
       description
+      history(first: 100) {
+        nodes { createdAt updatedAt updatedDescription }
+        pageInfo { hasNextPage }
+      }
     }
   }
 `
 
 /**
+ * The latest LOGGED edit of the issue's description, as an ISO string: for every `history` node
+ * with `updatedDescription: true`, both its `createdAt` and its `updatedAt` (server timestamps),
+ * never trusting the order. Linear folds later edits by one actor into an existing entry, which
+ * keeps its `createdAt` and moves its `updatedAt`, so the entry's creation alone can predate the
+ * last edit. The issue's own `createdAt` is never used: issueCreate accepts a caller-chosen one (for
+ * imports), and Linear logs no change made in the first minutes after creation, so a description
+ * set at creation or inside that window cannot be dated. `null` (unknown, never a throw) when no
+ * description edit is logged, when the history has more pages than were read, or when any history
+ * entry or either of its times cannot be read.
+ */
+export function descriptionUpdatedAt(issue) {
+  const history = issue?.history
+  if (!history || typeof history !== 'object') return null
+  if (!Array.isArray(history.nodes) || history.pageInfo?.hasNextPage !== false) return null
+  let latest = null
+  for (const node of history.nodes) {
+    if (!node || typeof node !== 'object') return null
+    if (node.updatedDescription !== true) continue
+    const entryCreated = Date.parse(node.createdAt)
+    const entryUpdated = Date.parse(node.updatedAt)
+    if (!Number.isFinite(entryCreated) || !Number.isFinite(entryUpdated)) return null
+    latest = Math.max(latest ?? -Infinity, entryCreated, entryUpdated)
+  }
+  return latest === null ? null : new Date(latest).toISOString()
+}
+
+/**
  * The executable `readDescription` capability: the issue's STORED description, verbatim. The
  * string is returned exactly as the tracker sent it — Linear stores descriptions without a trailing
  * newline, so adding one (or stripping one) would make every byte-compare against it report drift.
- * A `null` description is the tracker's spelling of "empty" and maps to `''`.
+ * A `null` description is the tracker's spelling of "empty" and maps to `''`. Also returns
+ * `descriptionUpdatedAt` (descriptionUpdatedAt): the latest logged description edit, `null` when
+ * none is logged or the history cannot be read.
  *
  * Fails CLOSED: a blank id throws before any request, an unset key throws before the network with
  * `code: TRACKER_CREDENTIALS_MISSING`, and a missing issue or a payload whose `id`, `identifier` or `description` it
@@ -503,7 +537,12 @@ export async function linearReadDescription({ apiKey, fetchImpl, endpoint, issue
       }, not a string, so it cannot be written verbatim`,
     )
   }
-  return { id: issue.id, identifier: issue.identifier, description: description ?? '' }
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    description: description ?? '',
+    descriptionUpdatedAt: descriptionUpdatedAt(issue),
+  }
 }
 
 // The one read behind `applyIssueWrites`: everything the writes resolve against (the issue's team,

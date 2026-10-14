@@ -42,13 +42,14 @@ test('terminal routes cover exactly the four published outcomes', () => {
   }
 })
 
-test('REVIEW_READY owes exactly its nine tokens and no GitHub review-label stamp', () => {
+test('REVIEW_READY owes exactly its ten tokens and no GitHub review-label stamp', () => {
   // BOS-1379 dropped the review-request GitHub label from boss-build; pinning the whole list keeps
   // a label obligation from creeping back into the receipt.
   assert.deepEqual(TERMINAL_ROUTES.REVIEW_READY, [
     'verify-only-evidence-validated',
     'premise-discharged',
     'required-deferred-asserted',
+    'review-gate-passed',
     'pr-ready',
     'claim-deleted',
     'notes-before-lock-release',
@@ -219,4 +220,19 @@ test('merged REVIEW_READY retains its outcome with completion stamped before rel
       false,
     )
   }
+})
+
+test('REVIEW_READY without review-gate-passed, or with it after pr-ready, is unsatisfied', () => {
+  const owed = TERMINAL_ROUTES.REVIEW_READY
+  const without = owed.filter((token) => token !== 'review-gate-passed').map((token) => ({ token }))
+  const missing = assertRouteSatisfied('REVIEW_READY', without)
+  assert.equal(missing.ok, false)
+  assert.deepEqual(missing.missing, ['review-gate-passed'])
+  const gate = owed.indexOf('review-gate-passed')
+  assert.equal(owed[gate + 1], 'pr-ready', 'the gate is stamped immediately before readying')
+  const late = owed.map((token) => ({ token }))
+  ;[late[gate], late[gate + 1]] = [late[gate + 1], late[gate]]
+  const outOfOrder = assertRouteSatisfied('REVIEW_READY', late)
+  assert.equal(outOfOrder.ok, false)
+  assert.equal(outOfOrder.error, 'obligations out of order')
 })

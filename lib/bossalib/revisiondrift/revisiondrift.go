@@ -2,6 +2,13 @@
 // the checkout it is being run from, answering one question: does this
 // executing binary contain the commits this working tree has?
 //
+// That holds exactly when the checkout's HEAD is an ancestor of, or equal to,
+// the binary's revision, so the query is `merge-base --is-ancestor HEAD
+// <binary>` and never the reverse. The reverse asks whether the checkout
+// contains the binary, which grades a stale build of an older commit on the
+// same lineage as healthy and any binary carrying a commit the checkout lacks —
+// a newer build, or a release merge — as behind.
+//
 // It answers by git ancestry and never by comparing dates or version strings. A
 // timestamp comparison cannot see a sibling merge, and a version string is a
 // label a build chose rather than a fact about history. The incident this
@@ -44,13 +51,15 @@ import (
 type Reason string
 
 const (
-	// ReasonDescendant is the only healthy outcome: the binary's revision is
-	// contained in the checkout's history, so every commit the working tree
-	// has is also in the executing bytes.
-	ReasonDescendant Reason = "binary revision is contained in the checkout history"
+	// ReasonDescendant is the only healthy outcome: the checkout's HEAD is an
+	// ancestor of (or equal to) the binary's revision, so every commit the
+	// working tree has is also in the executing bytes. The binary descends
+	// from HEAD, which is what the relation token names.
+	ReasonDescendant Reason = "binary revision contains the checkout HEAD"
 	// ReasonBehind is the only unhealthy outcome, and the one the incident
-	// reproduced: git proved the revision is not an ancestor of HEAD.
-	ReasonBehind Reason = "binary revision is not an ancestor of the checkout HEAD"
+	// reproduced: git proved the checkout's HEAD is not an ancestor of the
+	// binary's revision, so the working tree has commits the binary lacks.
+	ReasonBehind Reason = "checkout HEAD is not an ancestor of the binary revision"
 	// ReasonNoCheckout covers an installed binary run outside any checkout.
 	// There is nothing to compare against, which is unknown rather than
 	// healthy.
@@ -84,6 +93,17 @@ const (
 	// by a caller that could not produce the input, which is why it is in the
 	// vocabulary rather than phrased afresh at each surface.
 	ReasonRevisionUnreadable Reason = "binary's embedded revision could not be read"
+	// ReasonReleaseBuild covers a release binary run inside a checkout. The
+	// release pipeline stamps a production merge commit that no development
+	// checkout's HEAD contains, so comparing a release against a dev tree is a
+	// category error rather than a verdict: once the checkout's branch has
+	// moved past the release, the release is "behind" it for the whole release
+	// cycle, and the remedy for that is the next release, not a rebuild.
+	//
+	// Unknown rather than healthy, because healthy would claim the binary
+	// contains the checkout's commits, which stops being true the moment the
+	// branch gains one after the release.
+	ReasonReleaseBuild Reason = "binary is a release build, not built from this checkout"
 )
 
 // DevVersionFallback is the literal a version string carries when the build
@@ -123,8 +143,9 @@ func Stamped(revision string) bool {
 
 // Drift is the classifier's verdict about one binary.
 type Drift struct {
-	// Behind reports that the binary's revision is provably not contained in
-	// the checkout's history. Meaningful only when BehindKnown is true.
+	// Behind reports that the checkout provably has commits the binary's
+	// revision lacks: HEAD is not an ancestor of it. Meaningful only when
+	// BehindKnown is true.
 	Behind bool
 	// BehindKnown is false whenever the comparison could not be made at all,
 	// so an unresolvable input can never be misread as a healthy verdict.
@@ -353,6 +374,14 @@ type Options struct {
 	// caller that already owns it, so this package holds no project constants;
 	// when nil, no authentication is performed.
 	TrustCheckout func(root string) (bool, error)
+	// ReleaseBuild is the caller's claim that the binary is a release build,
+	// set from the binary's own version stamp. Release-ness is decided by the
+	// caller, which owns the version vocabulary, for the reason TrustCheckout
+	// is: this package holds no project constants.
+	//
+	// A release build inside a checkout reads ReasonReleaseBuild without any
+	// git subprocess; outside one it still reads ReasonNoCheckout.
+	ReleaseBuild bool
 }
 
 // Inspect classifies BinaryRevision against the checkout found from StartDir.
@@ -391,6 +420,14 @@ func Inspect(ctx context.Context, opts Options) Drift {
 	root, ok := findCheckout(opts.StartDir)
 	if !ok {
 		drift.Reason = ReasonNoCheckout
+		return drift
+	}
+	// After the checkout search, so a release run outside any checkout keeps
+	// its no-checkout reason, and before the trust check, so the probe that
+	// runs on every `boss` invocation spawns no git subprocess for a release.
+	// CheckoutRoot stays empty: the root was never authenticated.
+	if opts.ReleaseBuild {
+		drift.Reason = ReasonReleaseBuild
 		return drift
 	}
 	if opts.TrustCheckout != nil {
@@ -433,7 +470,10 @@ func Inspect(ctx context.Context, opts Options) Drift {
 	drift.CloneGitDir = resolveAgainst(root, commonDir)
 	drift.ShallowClone = shallowMarkerPresent(drift.CloneGitDir)
 
-	result, err := opts.Git(ctx, root, "merge-base", "--is-ancestor", opts.BinaryRevision, "HEAD")
+	// HEAD first: exit 0 means HEAD is an ancestor-or-equal of the binary, so
+	// the binary contains every commit the checkout has. The reverse order
+	// asks the opposite question; see the package doc.
+	result, err := opts.Git(ctx, root, "merge-base", "--is-ancestor", "HEAD", opts.BinaryRevision)
 	switch {
 	case err != nil:
 		drift.Reason = ReasonGitUnavailable

@@ -21,10 +21,10 @@ const SKILL_ROOTS = [
 // sweep has to be a considered edit here, not an accident.
 const SWEEP_SKILLS = [
   'bs-sweep-debt',
+  'bs-sweep-dependabot',
   'bs-sweep-mutation',
   'bs-sweep-prettify',
   'bs-sweep-releases',
-  'bs-sweep-security',
   'bs-sweep-sentry',
   'bs-sweep-tests',
   'bs-sweep-tidy-linear',

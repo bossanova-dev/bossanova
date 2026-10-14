@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "evidence",
+    srcs = ["reader.go"],
+    importpath = "github.com/recurser/bossd/internal/evidence",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/evidence",
+        "//lib/bossalib/vcs",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "evidence_test",
+    srcs = [
+        "provider_contract_test.go",
+        "reader_test.go",
+    ],
+    embed = [":evidence"],
+    deps = [
+        "//lib/bossalib/evidence",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/testharness",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

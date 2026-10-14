@@ -146,7 +146,7 @@ func TestCronConcurrencyPolicyMigrationBackfillsExistingRow(t *testing.T) {
 	if err := dbtest.RunUpTo(db, migrations, cronConcurrencyPolicyVersion); err != nil {
 		t.Fatalf("run up to %d: %v", cronConcurrencyPolicyVersion, err)
 	}
-	repo := createTestRepo(t, NewRepoStore(db))
+	repo := insertPreMigrationRepo(t, db)
 
 	if err := dbtest.RunDownTo(db, migrations, preCronConcurrencyPolicyVersion); err != nil {
 		t.Fatalf("run down: %v", err)

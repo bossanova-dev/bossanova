@@ -19,6 +19,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
+	dbpkg "github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -110,7 +111,8 @@ func TestDescribeChatMCP_ProbeEnvMatchesSharedSpawnHelper(t *testing.T) {
 	// path does, mode included. The probe ran under skipAccountUseRecord, so a
 	// difference here would mean the account-use mode had leaked into the env
 	// derivation — which is precisely what must never happen.
-	want, _ := srv.chatSpawnEnv(context.Background(), sess, chat, srv.defaultAccountIDForChat(context.Background(), sess, chat), "wake chat", recordAccountUse)
+	repo := session.RepoForSessionEnv(context.Background(), srv.repos, sess.RepoID, sess.ID, "wake chat", srv.logger)
+	want, _ := srv.chatSpawnEnv(context.Background(), sess, chat, repo, srv.defaultAccountIDForChat(context.Background(), sess, chat), recordAccountUse)
 	got := prober.gotRequest.GetProbeEnv()
 	if !maps.Equal(got, want) {
 		t.Fatalf("probe_env keys/values differ from the shared spawn helper's output\n got: %v\nwant: %v", got, want)
@@ -410,8 +412,46 @@ func TestDescribeChatMCP_DoesNotRecordAccountUse(t *testing.T) {
 	}
 
 	// The spawn/wake mode, through the same helper and the same spy, DOES record.
-	_, _ = srv.chatSpawnEnv(context.Background(), sess, chat, "", "wake chat", recordAccountUse)
+	_, _ = srv.chatSpawnEnv(context.Background(), sess, chat, nil, "", recordAccountUse)
 	if reg.touchCalls != 1 || reg.touchedID != accountID {
 		t.Fatalf("wake-mode chatSpawnEnv last-used = (calls=%d id=%q), want exactly one touch of %q — this half is what makes the probe assertion above non-vacuous", reg.touchCalls, reg.touchedID, accountID)
+	}
+}
+
+// TestDescribeChatMCP_SendsTheChatsProjectTrust pins BOS-1562 at the probe:
+// DescribeMCPSurface starts the agent in the worktree, so it must carry the
+// same project-trust decision a launch of that chat does — REVOKE for an
+// untrusted repo (and a failed lookup), GRANT for a trusted one. A probe with
+// no decision would let a stale Codex trust entry load an untrusted repo's
+// own MCP commands.
+func TestDescribeChatMCP_SendsTheChatsProjectTrust(t *testing.T) {
+	store := dbpkg.NewRepoStore(setupServerTestDB(t))
+	id := newRepoWithLinear(t, store, "")
+	ctx := context.Background()
+	probe := func(repoID string) pb.ProjectTrustDecision {
+		t.Helper()
+		chat := &models.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-trust", AgentName: "codex"}
+		sess := &models.Session{ID: "s1", RepoID: repoID, WorktreePath: t.TempDir()}
+		prober := &fakeMCPSurfaceProber{resp: &pb.DescribeMCPSurfaceResponse{}}
+		srv := newMCPTestServer(chat, sess, prober)
+		srv.repos = store
+		if _, err := srv.DescribeChatMCP(ctx, connect.NewRequest(&pb.DescribeChatMCPRequest{AgentSessionId: "agent-trust"})); err != nil {
+			t.Fatalf("DescribeChatMCP: %v", err)
+		}
+		return prober.gotRequest.GetProjectTrust()
+	}
+
+	if got := probe(id); got != pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE {
+		t.Fatalf("untrusted repo probe project_trust = %v, want REVOKE", got)
+	}
+	if got := probe("missing"); got != pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE {
+		t.Fatalf("failed-lookup probe project_trust = %v, want REVOKE", got)
+	}
+	on := true
+	if _, err := store.Update(ctx, id, dbpkg.UpdateRepoParams{IsTrusted: &on}); err != nil {
+		t.Fatalf("trust repo: %v", err)
+	}
+	if got := probe(id); got != pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT {
+		t.Fatalf("trusted repo probe project_trust = %v, want GRANT", got)
 	}
 }

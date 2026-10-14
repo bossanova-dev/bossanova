@@ -82,3 +82,52 @@ func TestLifecycle_EstablishedSendReceipt(t *testing.T) {
 		t.Fatal("the slot must close once the send releases it")
 	}
 }
+
+func TestLifecycle_PromptReceiptToken(t *testing.T) {
+	const sockTok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	unkeyed := &Lifecycle{}
+	if tok := unkeyed.PromptReceiptToken("agent-1"); tok != "" {
+		t.Fatal("without a key no token may be minted")
+	}
+	if unkeyed.ValidPromptReceiptToken("agent-1", "") {
+		t.Fatal("without a key every token must be refused, including the empty one")
+	}
+
+	l := &Lifecycle{}
+	l.SetPromptReceiptKey(sockTok)
+	tok := l.PromptReceiptToken("agent-1")
+	if len(tok) != 64 {
+		t.Fatalf("token length = %d, want 64 hex chars", len(tok))
+	}
+	if tok == sockTok {
+		t.Fatal("the receipt token must not be the socket token")
+	}
+	if !l.ValidPromptReceiptToken("agent-1", tok) {
+		t.Fatal("the derived token must validate for its own chat")
+	}
+	if l.ValidPromptReceiptToken("agent-2", tok) {
+		t.Fatal("a token must not validate for a different chat")
+	}
+	for _, bad := range []string{"", "wrong", tok[:63], tok + "0"} {
+		if l.ValidPromptReceiptToken("agent-1", bad) {
+			t.Fatalf("token %q must be refused", bad)
+		}
+	}
+	if l.PromptReceiptToken("") != "" || l.ValidPromptReceiptToken("", tok) {
+		t.Fatal("an empty chat id must never mint or validate")
+	}
+
+	// Derived from the persistent socket token, so a restarted daemon (a new
+	// Lifecycle with the same key) still accepts a pane launched before it.
+	restarted := &Lifecycle{}
+	restarted.SetPromptReceiptKey(sockTok)
+	if !restarted.ValidPromptReceiptToken("agent-1", tok) {
+		t.Fatal("the token must survive a daemon restart with the same socket token")
+	}
+	rotated := &Lifecycle{}
+	rotated.SetPromptReceiptKey("f" + sockTok[1:])
+	if rotated.ValidPromptReceiptToken("agent-1", tok) {
+		t.Fatal("a rotated socket token must invalidate earlier receipt tokens")
+	}
+}

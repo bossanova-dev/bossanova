@@ -523,6 +523,79 @@ func TestInitInteractiveFlagsAnswerTheirQuestions(t *testing.T) {
 	}
 }
 
+// TestInitInteractiveTrustedRegistersTrusted: --register --trusted on a TTY
+// registers the repository trusted, exactly as the flag path does.
+func TestInitInteractiveTrustedRegistersTrusted(t *testing.T) {
+	f := newInterviewFixture(t)
+
+	flagDaemon := f.daemon()
+	if out, err := f.runFlags("--register", "--trusted", "--store-env-keys", "--cron", "plan,build,verify,retro"); err != nil {
+		t.Fatalf("flag run: %v\n%s", err, out)
+	}
+	f.removeConfig()
+
+	interviewDaemon := f.daemon()
+	if _, out, errOut, err := f.runInterview(happyScript()[1:], "--register", "--trusted"); err != nil {
+		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
+	}
+	calls := interviewDaemon.RegisterRepoCalls()
+	if len(calls) != 1 || !calls[0].GetIsTrusted() {
+		t.Fatalf("interview RegisterRepo calls = %v, want one with IsTrusted", calls)
+	}
+	requireProtoCallsEqual(t, "RegisterRepo", flagDaemon.RegisterRepoCalls(), calls)
+}
+
+// TestInitInteractiveTrustedOnRegisteredRepoSaysHowToTrust: --trusted only
+// sets trust at registration, so on an already-registered untrusted repo the
+// interview tells the operator how to trust it, as the flag path does, rather
+// than ignoring the flag silently. An already-trusted repo gets no note.
+func TestInitInteractiveTrustedOnRegisteredRepoSaysHowToTrust(t *testing.T) {
+	const hint = "boss repo update repo-known --trusted"
+	for _, tc := range []struct {
+		name      string
+		isTrusted bool
+	}{
+		{"untrusted repo", false},
+		{"trusted repo", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInterviewFixture(t)
+			t.Setenv("LINEAR_API_KEY", "")
+			d := f.daemon()
+			d.AddRepo(&pb.Repo{Id: "repo-known", LocalPath: f.main, DisplayName: "@owner/project", IsTrusted: tc.isTrusted})
+			_, out, errOut, err := f.runInterview([]scriptStep{
+				{match: "Linear API key"},
+				{match: "Sentry auth token"},
+				{match: "--cron plan", answer: "n"},
+				{match: "--cron build", answer: "n"},
+				{match: "--cron verify", answer: "n"},
+				{match: "--cron retro", answer: "n"},
+			}, "--trusted")
+			if err != nil {
+				t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
+			}
+			if got := strings.Contains(out, hint); got == tc.isTrusted {
+				t.Fatalf("note %q shown = %v, want %v:\n%s", hint, got, !tc.isTrusted, out)
+			}
+			if len(d.UpdateRepoCalls()) != 0 || len(d.RegisterRepoCalls()) != 0 {
+				t.Error("--trusted on a registered repo must not write to the daemon")
+			}
+
+			// The flag path shows the same note under the same condition.
+			f.removeConfig()
+			flagDaemon := f.daemon()
+			flagDaemon.AddRepo(&pb.Repo{Id: "repo-known", LocalPath: f.main, DisplayName: "@owner/project", IsTrusted: tc.isTrusted})
+			flagOut, err := f.runFlags("--trusted")
+			if err != nil {
+				t.Fatalf("flag run: %v\n%s", err, flagOut)
+			}
+			if got := strings.Contains(flagOut, hint); got == tc.isTrusted {
+				t.Fatalf("flag path note %q shown = %v, want %v:\n%s", hint, got, !tc.isTrusted, flagOut)
+			}
+		})
+	}
+}
+
 // TestInitInteractiveChangedAnswersBecomeOverrides: an answer that differs
 // from its default is written exactly as the matching --state/--label would.
 func TestInitInteractiveChangedAnswersBecomeOverrides(t *testing.T) {

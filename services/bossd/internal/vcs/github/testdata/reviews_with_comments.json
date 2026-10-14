@@ -1,16 +1,19 @@
 [
   {
-    "user": {"login": "alice"},
+    "user": { "login": "alice" },
+    "author_association": "OWNER",
     "body": "LGTM, nice work.",
     "state": "APPROVED"
   },
   {
-    "user": {"login": "bob"},
+    "user": { "login": "bob" },
+    "author_association": "MEMBER",
     "body": "Please add tests for the edge case.",
     "state": "CHANGES_REQUESTED"
   },
   {
-    "user": {"login": "carol"},
+    "user": { "login": "carol" },
+    "author_association": "COLLABORATOR",
     "body": "Minor nit in the comments.",
     "state": "COMMENTED"
   }

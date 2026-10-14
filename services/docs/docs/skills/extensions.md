@@ -1,14 +1,14 @@
 ---
 title: Extension System
-description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the eleven extension roles available.
+description: How repo-local extensions add behaviour to a core boss-* skill without editing its body, and the extension roles available.
 slug: /skills/extensions
 ---
 
 # Extension System
 
 A core `boss-*` skill ships a project-agnostic workflow. The **extension system**
-lets one repository plug in its own behaviour (an extra review lens, an extra plan
-reviewer, an opinionated implementation methodology) without editing the skill body
+lets one repository plug in its own behaviour (an extra plan reviewer, an opinionated
+implementation methodology, end-of-run notes) without editing the skill body
 and without forcing that behaviour on any other repo. Extensions live in the
 repository, are discovered at run time, and an absent extension is a silent no-op.
 
@@ -23,9 +23,8 @@ installed globally; the extensions live in the repository.
 ## Naming convention
 
 An extension of a core skill named `<core>` is a skill directory named
-`<core>-<suffix>` under `.claude/skills/`. For example, an extra review lens for
-`boss-review` is a directory such as `.claude/skills/boss-review-golang/`, and an
-implementation methodology for `boss-build` is `.claude/skills/boss-build-ce/`.
+`<core>-<suffix>` under `.claude/skills/`. For example, an implementation methodology for
+`boss-build` is `.claude/skills/boss-build-ce/`.
 
 ## The `x-boss-extension` discovery marker
 
@@ -34,28 +33,18 @@ when its `SKILL.md` frontmatter carries an `x-boss-extension` marker block:
 
 ```yaml
 x-boss-extension:
-  extends: boss-review
-  role: lens
+  extends: boss-build
+  role: methodology
   order: 40
-  lens: go
 ```
 
 - `extends` — the core skill this extension joins. An extension is only accepted when
   `extends` equals the core being discovered.
-- `role` — one of the ten roles below; it decides which pipeline the extension
+- `role` — one of the roles below; it decides which pipeline the extension
   plugs into.
 - `order` — optional integer run order, default `100`. Extensions run in ascending
   `(order, name)` order, so runs are reproducible regardless of filesystem
   enumeration.
-- `lens` — optional, and meaningful only for `role: lens`: the id of the review lens, in the
-  repository's own lens registry, that this extension serves. Declaring it is what binds the
-  extension into `boss-review`'s lens phase; an extension that declares none is discovered but
-  never dispatched as a lens.
-- `capability` — optional, and meaningful only for `role: round`: the id of the review capability
-  this round already covers, such as `second-voice` or `code-review`. It is what lets a core tell
-  that a repo-local round already does the job of a **default round** it would otherwise run itself,
-  so the repository gets one pass instead of two. Declaring none is safe; the round still runs, it
-  just suppresses nothing.
 - `modes`: the run modes the extension is discovered in, a comma-separated subset of
   `interactive` and `headless` (for example `modes: interactive`). Absent means every mode. A
   present but unusable value (empty, or a token outside that set) is skipped as `invalid-modes`
@@ -77,17 +66,17 @@ recording any directory that was excluded and why. With nothing installed it pri
 Passing `--mode <interactive|headless>` names the run mode the caller is in. Omitting it applies
 no mode filter; an unknown value exits `2` before scanning.
 
-Each `skipped` entry carries four fields — the human `reason`, plus a stable `code` to branch on
-and a `deliberate` classification:
+Each `skipped` entry carries four fields: the extension `name`, the human `reason`, a stable `code`
+to branch on, and a `deliberate` classification.
 
 ```json
 {
   "extensions": [],
   "skipped": [
     {
-      "name": "boss-review-golang",
-      "reason": "invalid \"lens\" binding (expected a non-empty string)",
-      "code": "invalid-lens-binding",
+      "name": "boss-build-ce",
+      "reason": "invalid \"modes\" (expected a comma-separated subset of interactive, headless)",
+      "code": "invalid-modes",
       "deliberate": false
     },
     {
@@ -120,13 +109,11 @@ Recording is all that is due; a discovery skip is never fatal and never changes 
 
 ## Extension roles
 
-There are ten roles. Each attaches to a specific core skill and plugs into a
+Each role attaches to a specific core skill and plugs into a
 specific step of that core's pipeline.
 
 | Role            | Extends       | What it adds                                                                                      | Example extension                |
 | --------------- | ------------- | ------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `lens`          | `boss-review` | A specialist review lens, bound to a lens id and matched to a subset of changed files.            | `boss-review-golang`             |
-| `round`         | `boss-review` | An always-on whole-branch review round merged into the findings pool.                             | `boss-review-thermonuclear`      |
 | `surface`       | —             | An extra declarative evidence surface. The role stays in the schema; no in-repo core reads it.    | —                                |
 | `plan-reviewer` | `boss-plan`   | An extra plan-review voice scoped to plan sections.                                               | `boss-plan-<reviewer>`           |
 | `agent-driver`  | —             | A bespoke, code-driven evidence surface. The role stays in the schema; no in-repo core reads it.  | —                                |
@@ -139,35 +126,6 @@ specific step of that core's pipeline.
 The `plan-reviewer` and `verify` roles have no default Bossanova extension
 shipped; their example names above are illustrative of the `<core>-<suffix>` convention. Every
 other role has a concrete reference extension committed under `.claude/skills/`.
-
-### How a `lens` extension is dispatched
-
-A `lens` extension is dispatched only when it declares which lens it serves. `boss-review`
-discovers the `lens` role once per run and indexes the returned descriptors by the `lens` id each
-one declares, then resolves every matched lens through three tiers: the bound extension, read from
-its descriptor's `skillPath` on disk; then that lens's configured review skill; then that lens's
-inline fallback rubric. A lens with no bound extension simply starts at the second tier, so
-declaring the binding is purely additive, and nothing about the lens registry changes. A bound
-extension that fails to run is recorded as skipped and its lens falls through to the next tier
-rather than going unreviewed.
-
-### Default rounds and the `capability` binding
-
-A core can also run a **default round**: a review capability it attempts on every run (an
-independent second opinion from the other coding agent, say) and quietly does without when the
-machine cannot supply it. Which capabilities a repository wants is configuration, not something
-baked into the portable core, so the core knows a capability only by its id and how to probe for it.
-
-Two things make this safe to leave on by default:
-
-- A **default round** is checked against the `capability` each discovered round extension declares.
-  When a repo-local round already covers that capability and actually ran, the default round is
-  dropped, and the repository gets its own round, not a duplicate pass.
-- When the capability is unavailable (the other agent's CLI is not installed or not signed in, the
-  configured review skill is not present), the round is **silently** skipped. It is recorded in the
-  run's ledger and nowhere else: never a warning, never a blocked run. Absence is the normal case on
-  most machines, and a default round is additive, so it is never a substitute for the core's own
-  guaranteed review pass.
 
 ## Graceful degradation
 
@@ -183,9 +141,7 @@ Extensions are additive and never load-bearing:
 - Where a core defines a **fallback tier**, it uses that when no extension **ran
   successfully**, not merely when none was discovered. A discovered extension that fails to
   load or returns no valid result is recorded as skipped and the core falls through to the
-  next tier, so the layer is never silently dropped. `boss-review`, for instance, reviews
-  through an inline rubric declared in the lens's `.boss-skills.json` row when the lens skill
-  itself is unavailable.
+  next tier, so the layer is never silently dropped.
 
 Because discovery is repo-local and degradation is silent, a repository can adopt the
 `boss-*` cores as-is and add its own extensions incrementally, while other repos that

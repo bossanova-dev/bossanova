@@ -4,6 +4,7 @@
     "id": 987654321,
     "state": "changes_requested",
     "body": "needs work",
+    "author_association": "MEMBER",
     "user": {
       "login": "reviewer"
     }

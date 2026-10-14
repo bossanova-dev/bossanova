@@ -457,11 +457,18 @@ func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ strin
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
+func (m *mockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
 	return nil
 }
 
 func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
+func (m *mockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -3818,4 +3825,8 @@ func TestTmuxStatusPoller_BoxedApprovalYieldsQuestion(t *testing.T) {
 	if entry := poll(answered); entry.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Error("menu gone from the pane but status stayed QUESTION")
 	}
+}
+
+func (*mockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

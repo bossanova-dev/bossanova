@@ -42,6 +42,7 @@ import {
   waitExitCode,
 } from './bs-dispatch-await.mjs'
 import { DISPATCH_FAILURE, makeRunContext, writeSentinel } from './bs-run-sentinel.mjs'
+import { DEFAULT_CONFIG, reviewTimeDefaults } from './skill-config.mjs'
 
 const scriptPath = fileURLToPath(new URL('./bs-dispatch-await.mjs', import.meta.url))
 
@@ -1085,6 +1086,73 @@ test('wait: a live heartbeat suppresses abandoned on a stale seed (budget exit 9
   assert.equal(res.status, 98)
   assert.equal(res.json.status, STILL_RUNNING)
   assert.equal(res.json.heartbeat.status, HEARTBEAT_LIVE)
+})
+
+// A review beats before each dispatch wave, and one wave may run its whole hang guard. Held on the
+// default 30-minute window, a review whose last beat is one hang guard (+1 s) old reads abandoned
+// while its subagent is still running a round; held on the review's derived window it does not.
+test('a live review whose beat is one full hang guard old is not abandoned under its own window', () => {
+  for (const env of [{}, { BOSS_REVIEW_HANG_GUARD_MINUTES: '45' }]) {
+    const { hangGuardMs, heartbeatStaleMs } = reviewTimeDefaults(DEFAULT_CONFIG, env)
+    const ctx = context()
+    writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+    const now = Date.now()
+    const ago = hangGuardMs + 1_000
+    const hb = join(ctx.dir, 'review.heartbeat')
+    touchHeartbeat(hb, { now: now - ago })
+    const opts = { now, openedAt: now - 2 * ago, deadlineAt: Infinity, heartbeatPath: hb }
+    const held = classifyDispatch(ctx, 'review', { ...opts, staleAfterMs: heartbeatStaleMs })
+    assert.equal(held.status, STILL_RUNNING, `hang guard ${hangGuardMs}ms`)
+    assert.equal(held.heartbeat.status, HEARTBEAT_LIVE)
+    // A beat older than the derived window still reads abandoned: the window is wider, not open.
+    touchHeartbeat(hb, { now: now - heartbeatStaleMs })
+    const dead = classifyDispatch(ctx, 'review', {
+      ...opts,
+      openedAt: now - 2 * heartbeatStaleMs,
+      staleAfterMs: heartbeatStaleMs,
+    })
+    assert.equal(dead.status, ABANDONED)
+  }
+})
+
+test('wait and disposition --stale hold a review the default window would abandon', () => {
+  const { hangGuardMs, heartbeatStaleMs } = reviewTimeDefaults(DEFAULT_CONFIG, {})
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'blocked', { provisional: true })
+  backdate(ctx.sentinelPath('review'), hangGuardMs + 60_000)
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: Date.now() - hangGuardMs - 1_000 })
+  const stale = `${heartbeatStaleMs}`
+  const held = waitCli(ctx, 'review', ['--heartbeat', hb, '--stale', stale, '--budget', '50'])
+  assert.equal(held.status, 98)
+  assert.equal(held.json.status, STILL_RUNNING)
+  const unheld = waitCli(ctx, 'review', ['--heartbeat', hb, '--budget', '50'])
+  assert.equal(unheld.status, 97, 'the default window is the defect this flag exists to widen')
+  // A provisional seed resumes before any age is read, so the disposition leg is exercised on a
+  // missing sentinel held on the caller's dispatch clock — the arm where the window decides.
+  const dispatchedAt = `${Date.now() - hangGuardMs - 60_000}`
+  const disposition = (extra) =>
+    JSON.parse(
+      runCli([
+        'disposition',
+        ctx.dir,
+        ctx.runId,
+        'draft',
+        '--heartbeat',
+        hb,
+        '--dispatched-at',
+        dispatchedAt,
+        ...extra,
+      ]).stdout,
+    )
+  const decided = disposition(['--stale', stale])
+  assert.equal(decided.status, TIMED_OUT)
+  assert.equal(decided.disposition, 'resume')
+  assert.equal(disposition([]).disposition, 'discard')
+  for (const bad of ['0', '-1', 'soon', '']) {
+    assert.equal(waitCli(ctx, 'review', ['--stale', bad, '--budget', '50']).status, 2)
+    assert.equal(runCli(['disposition', ctx.dir, ctx.runId, 'review', '--stale', bad]).status, 2)
+  }
 })
 
 test('wait: timed-out exit 96 on a passed --deadline over a fresh seed', () => {

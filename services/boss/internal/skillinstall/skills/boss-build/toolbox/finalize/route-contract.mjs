@@ -13,6 +13,8 @@ export const TERMINAL_ROUTES = Object.freeze({
     'verify-only-evidence-validated',
     'premise-discharged',
     'required-deferred-asserted',
+    // ready-gate.mjs said ready: clean review, no unreviewed patch change.
+    'review-gate-passed',
     'pr-ready',
     'claim-deleted',
     'notes-before-lock-release',

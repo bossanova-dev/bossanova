@@ -110,6 +110,15 @@ func (m ChatPickerModel) isWaitingWithReason(chatID string) bool {
 	return m.daemonStatuses[chatID] == statusWaiting && m.daemonWaitingReasons[chatID] != ""
 }
 
+// isStandbyWait reports whether chatID is waiting only on a standby
+// (contingency) callback — checks_failed or closed (BOS-1531). Such a chat is
+// not what the PR is waiting on: it renders muted, and the waiting line
+// describes a blocking chat ahead of it. The daemon's reason decides, so the
+// answer never waits on the callback fetch.
+func (m ChatPickerModel) isStandbyWait(chatID string) bool {
+	return m.isWaitingWithReason(chatID) && displaystatus.IsStandbyWaitingReason(m.daemonWaitingReasons[chatID])
+}
+
 // syncArmedCallbacks drops armed entries whose chat stopped waiting on that
 // reason (the same rule daemonWaitingReasons follows, BOS-668) and returns a
 // fetch only when the waiting set differs from the one last fetched for.
@@ -204,14 +213,19 @@ func armedParkSummary(sess *pb.Session) string {
 
 // armedLine composes the full, untruncated waiting line for chat, or "" when
 // the chat is not waiting with a reason. The park precedes the expiry so a
-// truncated line drops the expiry first.
+// truncated line drops the expiry first. A standby reason is prefixed
+// "standby: " (never "waiting: "), so the line never presents a contingency
+// watch as what the chat is waiting on (BOS-1531).
 func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 	id := chat.GetAgentSessionId()
 	if !m.isWaitingWithReason(id) {
 		return ""
 	}
 	reason := m.daemonWaitingReasons[id]
-	if waitingBadgeSuperseded(m.session) {
+	switch {
+	case m.isStandbyWait(id):
+		reason = displaystatus.StandbyLabel + ": " + reason
+	case waitingBadgeSuperseded(m.session):
 		reason = statusWaiting + ": " + reason
 	}
 	parts := []string{chatDisplayTitle(chat), reason}
@@ -224,15 +238,24 @@ func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 	return strings.Join(parts, " · ")
 }
 
-// waitingLineChat picks the chat the waiting line describes: the cursor chat
-// when it is waiting, otherwise the first waiting chat in table order.
+// waitingLineChat picks the chat the waiting line describes, blocking waits
+// first (BOS-1531): the cursor chat when it is a blocking wait, then the first
+// blocking wait in table order, then the cursor chat when it is a standby wait,
+// then the first standby wait.
 func (m ChatPickerModel) waitingLineChat() *pb.ClaudeChat {
-	if chat := m.selectedChat(); chat != nil && m.isWaitingWithReason(chat.GetAgentSessionId()) {
-		return chat
-	}
-	for _, chat := range m.chats {
-		if m.isWaitingWithReason(chat.GetAgentSessionId()) {
-			return chat
+	selected := m.selectedChat()
+	for _, standby := range []bool{false, true} {
+		matches := func(chat *pb.ClaudeChat) bool {
+			id := chat.GetAgentSessionId()
+			return m.isWaitingWithReason(id) && m.isStandbyWait(id) == standby
+		}
+		if selected != nil && matches(selected) {
+			return selected
+		}
+		for _, chat := range m.chats {
+			if matches(chat) {
+				return chat
+			}
 		}
 	}
 	return nil

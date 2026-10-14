@@ -99,6 +99,10 @@ type MockDaemon struct {
 	// renders.
 	checkSnapshots map[string][]*pb.CheckSnapshot
 
+	// sessionTimelines holds the GetSessionTimeline steps seeded per session
+	// id, oldest first as the real daemon returns them.
+	sessionTimelines map[string][]*pb.TimelineStep
+
 	// lastCreateSession records the most recent CreateSession request so tests
 	// can assert on what the TUI sent (e.g. that filter-narrowed selection uses
 	// the correct original-index PR).
@@ -122,6 +126,9 @@ type MockDaemon struct {
 	// moveSessionCalls records every MoveSession request (BOS-1231) so tests
 	// can assert the TUI asked for the move it rendered.
 	moveSessionCalls []*pb.MoveSessionRequest
+	// setSessionTrackerCalls records every SetSessionTracker request so tests
+	// can assert the CLI asked for the link it printed.
+	setSessionTrackerCalls []*pb.SetSessionTrackerRequest
 
 	// moveSessionBehaviour decides where a move lands. nil means the default
 	// adjacent swap; see MoveSession and RankedBlockMoveBehaviour.
@@ -475,6 +482,7 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		broadcastSubscriptions: make(map[string]*pb.BroadcastSubscription),
 		notes:                  make(map[string]*pb.Note),
 		checkSnapshots:         make(map[string][]*pb.CheckSnapshot),
+		sessionTimelines:       make(map[string][]*pb.TimelineStep),
 		accounts:               make(map[string]*pb.Account),
 		accountCredentials:     make(map[string][]byte),
 		prs:                    make(map[string][]*pb.PRSummary),
@@ -621,6 +629,16 @@ func (m *MockDaemon) UpdateSessionCalls() []*pb.UpdateSessionRequest {
 	return out
 }
 
+// SetSessionTrackerCalls returns a copy of every SetSessionTracker request
+// recorded by the mock.
+func (m *MockDaemon) SetSessionTrackerCalls() []*pb.SetSessionTrackerRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.SetSessionTrackerRequest, len(m.setSessionTrackerCalls))
+	copy(out, m.setSessionTrackerCalls)
+	return out
+}
+
 // Sessions returns a copy of the current sessions.
 func (m *MockDaemon) Sessions() []*pb.Session {
 	m.mu.RLock()
@@ -672,6 +690,18 @@ func (m *MockDaemon) AddCheckSnapshots(sessionID string, snaps ...*pb.CheckSnaps
 	for _, s := range snaps {
 		m.checkSnapshots[sessionID] = append(m.checkSnapshots[sessionID], cloneMsg(s))
 	}
+}
+
+// SetSessionTimeline seeds the steps GetSessionTimeline returns for a
+// session, oldest first.
+func (m *MockDaemon) SetSessionTimeline(sessionID string, steps ...*pb.TimelineStep) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cloned := make([]*pb.TimelineStep, 0, len(steps))
+	for _, st := range steps {
+		cloned = append(cloned, cloneMsg(st))
+	}
+	m.sessionTimelines[sessionID] = cloned
 }
 
 // SetResolvedContext seeds what ResolveContext reports for any working
@@ -1470,6 +1500,9 @@ func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.Updat
 			if req.Msg.ShouldKeepBranchesCurrent != nil {
 				r.ShouldKeepBranchesCurrent = *req.Msg.ShouldKeepBranchesCurrent
 			}
+			if req.Msg.IsTrusted != nil {
+				r.IsTrusted = *req.Msg.IsTrusted
+			}
 			if req.Msg.CanAutoRepair != nil {
 				r.CanAutoRepair = *req.Msg.CanAutoRepair
 			}
@@ -1550,6 +1583,7 @@ func (m *MockDaemon) RegisterRepo(_ context.Context, req *connect.Request[pb.Reg
 		DefaultBaseBranch: req.Msg.DefaultBaseBranch,
 		WorktreeBaseDir:   req.Msg.WorktreeBaseDir,
 		SetupScript:       req.Msg.SetupScript,
+		IsTrusted:         req.Msg.GetIsTrusted(),
 		CreatedAt:         timestamppb.Now(),
 		UpdatedAt:         timestamppb.Now(),
 	}
@@ -1945,6 +1979,41 @@ func (m *MockDaemon) LinkSessionPR(_ context.Context, req *connect.Request[pb.Li
 			s.PrNumber = &prNumber
 			s.PrUrl = &prURL
 			return connect.NewResponse(&pb.LinkSessionPRResponse{Session: s}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+}
+
+// DismissSessionAlert satisfies DaemonServiceHandler (BOS-1537). The mock
+// keeps no dismissal state — pb.Session carries none — so it validates like
+// the daemon and echoes the session back.
+func (m *MockDaemon) DismissSessionAlert(_ context.Context, req *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error) {
+	if req.Msg.GetSessionId() == "" || req.Msg.GetAlertKey() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id and alert_key are required"))
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.GetSessionId() {
+			return connect.NewResponse(&pb.DismissSessionAlertResponse{Session: s}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetSessionId()))
+}
+
+// SetSessionTracker records the call and links the session to the issue. The
+// mock has no tracker, so the URL is a fixed mock shape.
+func (m *MockDaemon) SetSessionTracker(_ context.Context, req *connect.Request[pb.SetSessionTrackerRequest]) (*connect.Response[pb.SetSessionTrackerResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setSessionTrackerCalls = append(m.setSessionTrackerCalls, req.Msg)
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.Id {
+			id := req.Msg.TrackerId
+			url := "https://linear.app/mock/issue/" + id
+			s.TrackerId = &id
+			s.TrackerUrl = &url
+			return connect.NewResponse(&pb.SetSessionTrackerResponse{Session: s}), nil
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
@@ -2795,6 +2864,34 @@ func (m *MockDaemon) ListCheckSnapshots(_ context.Context, req *connect.Request[
 	return connect.NewResponse(resp), nil
 }
 
+// GetSessionTimeline mirrors the real daemon's contract
+// (services/bossd/internal/server/session_timeline.go): session_id is
+// required, an unknown session is NotFound, and the seeded steps come back
+// oldest first.
+func (m *MockDaemon) GetSessionTimeline(_ context.Context, req *connect.Request[pb.GetSessionTimelineRequest]) (*connect.Response[pb.GetSessionTimelineResponse], error) {
+	sessionID := req.Msg.GetSessionId()
+	if sessionID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	known := false
+	for _, s := range m.sessions {
+		if s.GetId() == sessionID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", sessionID))
+	}
+	resp := &pb.GetSessionTimelineResponse{}
+	for _, st := range m.sessionTimelines[sessionID] {
+		resp.Steps = append(resp.Steps, cloneMsg(st))
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2981,6 +3078,18 @@ func removeSocket(path string) error {
 		return err
 	}
 	return nil
+}
+
+// FinishUnattendedRun mirrors the daemon's contract for CLI tests: a caller's
+// own request is always deferred on itself.
+func (m *MockDaemon) FinishUnattendedRun(_ context.Context, req *connect.Request[pb.FinishUnattendedRunRequest]) (*connect.Response[pb.FinishUnattendedRunResponse], error) {
+	if req.Msg.GetSessionId() == "" || req.Msg.GetRequesterAgentSessionId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id and requester_agent_session_id are required"))
+	}
+	return connect.NewResponse(&pb.FinishUnattendedRunResponse{
+		IsDeferred:             true,
+		BlockingAgentSessionId: req.Msg.GetRequesterAgentSessionId(),
+	}), nil
 }
 
 // SetChatPhase updates fixture statuses for CLI-driven phase tests.

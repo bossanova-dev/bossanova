@@ -1,5 +1,5 @@
 // scripts/sweep-maingate-gate.mjs
-// Pure-core decision logic for the bs-sweep-security "main-gate health probe".
+// Pure-core decision logic for the bs-sweep-dependabot "main-gate health probe".
 // NO side effects in the decision core (selectStub / markerFor); the only I/O is
 // the thin, injected Linear marker-fetch wrapper at the bottom, mirroring the
 // established sweep-sentry-gate.mjs shape.
@@ -64,7 +64,7 @@ function bodyFor(check, marker) {
     )
   }
   lines.push('')
-  lines.push('Detected by the `bs-sweep-security` daily main-gate health probe (BOS-491).')
+  lines.push('Detected by the `bs-sweep-dependabot` daily main-gate health probe (BOS-491).')
   lines.push('Findings run through the exact CI flags from `.github/workflows/security.yml`.')
   if (findings.length > 0) {
     lines.push('')

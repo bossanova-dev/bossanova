@@ -202,4 +202,27 @@ test('stripHtmlTags preserves markdown, inequalities, and autolinks', () => {
   assert.equal(stripHtmlTags('if a < b and c > d'), 'if a < b and c > d')
   // Markdown autolink: the URL text survives (it is not an HTML tag).
   assert.equal(stripHtmlTags('see <https://example.com> now'), 'see <https://example.com> now')
+  assert.equal(stripHtmlTags('mail <mailto:hi@example.com>'), 'mail <mailto:hi@example.com>')
+  assert.equal(stripHtmlTags('> quoted\n\n`x`  a<=b, 3<4'), '> quoted\n\n`x`  a<=b, 3<4')
+})
+
+test('stripHtmlTags cannot reassemble a tag from nested input', () => {
+  for (const input of [
+    '<scr<b>ipt>alert(1)</scr</b>ipt>',
+    '<<script>script>alert(1)<</script>/script>',
+    '<scr<scr<i>ipt>ipt>alert(1)',
+    '<img<b>/src=x onerror=alert(1)>',
+  ]) {
+    const out = stripHtmlTags(input)
+    assert.doesNotMatch(out, /<script/i, input)
+    assert.doesNotMatch(out, /<[a-z/!?]/i, `${input} -> ${out}`)
+  }
+})
+
+test('stripHtmlTags escapes a tag opener it could not strip', () => {
+  // No closing `>`, so it is not a whole tag to strip, but a later `>` in the
+  // rendered page could close it.
+  assert.equal(stripHtmlTags('<img src=x onerror=alert(1)'), '&lt;img src=x onerror=alert(1)')
+  assert.equal(stripHtmlTags('<!-- c'), '&lt;!-- c')
+  assert.equal(stripHtmlTags('<javascript:alert(1)>'), '&lt;javascript:alert(1)>')
 })

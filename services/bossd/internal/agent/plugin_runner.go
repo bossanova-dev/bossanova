@@ -104,26 +104,26 @@ func (r *PluginRunner) SetAgentRunStore(store db.AgentRunStore) {
 // Start forwards the request to the agent plugin via gRPC and then opens the
 // tailer on the resolved session ID so that Subscribe / History work immediately.
 func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string) (string, error) {
-	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED, sessionID, "")
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, HeadlessLaunchOptions{BossSessionID: sessionID})
 }
 
 // StartWithHeadlessCapabilityProfile carries an explicit runtime-operation
 // requirement to the plugin. It is called only by opted-in headless launches;
 // Start above preserves the historical wire request exactly.
 func (r *PluginRunner) StartWithHeadlessCapabilityProfile(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error) {
-	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, profile, sessionID, "")
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, HeadlessLaunchOptions{HeadlessCapabilityProfile: profile, BossSessionID: sessionID})
 }
 
 // StartWithHeadlessLaunchOptions forwards every panel-less launch control to
 // the plugin in one request so a capability profile cannot be dropped.
 func (r *PluginRunner) StartWithHeadlessLaunchOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
-	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, options.HeadlessCapabilityProfile, options.BossSessionID, options.EffectiveModel)
+	return r.startWithBossSession(ctx, workDir, plan, resume, sessionID, model, effort, extraEnv, options)
 }
 
 // PreflightHeadlessCapabilityProfile asks the plugin to validate a required
 // operation surface using the same managed account/model/work-dir inputs the
 // gated run will launch with. It performs no run or tailer side effects.
-func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error {
+func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, projectTrust bossanovav1.ProjectTrustDecision) error {
 	client, ok := r.client.(headlessCapabilityProfilePreflightClient)
 	if !ok {
 		return ErrHeadlessCapabilityProfileUnsupported
@@ -134,6 +134,7 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, w
 		ExtraEnv:                  extraEnv,
 		HeadlessCapabilityProfile: profile,
 		WorkDir:                   workDir,
+		ProjectTrust:              projectTrust,
 	})
 	if err != nil {
 		return fmt.Errorf("plugin PreflightHeadlessRun: %w", err)
@@ -141,7 +142,8 @@ func (r *PluginRunner) PreflightHeadlessCapabilityProfile(ctx context.Context, w
 	return nil
 }
 
-func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, bossSessionID, effectiveModel string) (string, error) {
+func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan string, resume *string, sessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error) {
+	bossSessionID, effectiveModel := options.BossSessionID, options.EffectiveModel
 	logKey := sessionID
 	if logKey == "" {
 		logKey = bossSessionID
@@ -164,7 +166,8 @@ func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan s
 		Model:                     model,
 		Effort:                    effort,
 		ExtraEnv:                  extraEnv,
-		HeadlessCapabilityProfile: profile,
+		HeadlessCapabilityProfile: options.HeadlessCapabilityProfile,
+		ProjectTrust:              options.ProjectTrust,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

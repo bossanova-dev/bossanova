@@ -1481,6 +1481,120 @@ func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
 	}
 }
 
+// TestProxyListen_FixedPortLostReported asserts that losing the configured fixed
+// port to another listener is recorded (BOS-1563): Listen still succeeds on an
+// ephemeral port, FixedPortLost reports true, and the loss is logged at ERROR
+// level naming the configured port. Live panes keep the old ANTHROPIC_BASE_URL,
+// so whoever holds the fixed port receives their traffic — the operator must
+// see it.
+func TestProxyListen_FixedPortLostReported(t *testing.T) {
+	port := freeLoopbackPort(t)
+	held, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Skipf("could not hold port %d for the lost-port case: %v", port, err)
+	}
+	defer func() { _ = held.Close() }()
+
+	var logBuf syncBuffer
+	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.New(&logBuf), Port: port})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	if err := ps.Listen(); err != nil {
+		t.Fatalf("Listen must fall back, not error: %v", err)
+	}
+	defer func() { _, _ = ps.Shutdown(context.Background()) }()
+	if got := ps.Port(); got == port || got == 0 {
+		t.Fatalf("Port() = %d, want a non-zero ephemeral port other than the held %d", got, port)
+	}
+	if !ps.FixedPortLost() {
+		t.Fatal("FixedPortLost() = false after the fixed port was held by another listener, want true")
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, `"level":"error"`) {
+		t.Fatalf("expected an error-level log for the lost fixed port, got: %s", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf(`"configured_port":%d`, port)) {
+		t.Fatalf("expected the lost-port log to name port %d, got: %s", port, out)
+	}
+}
+
+// TestProxyListen_FixedPortNotLostOnNormalBind asserts FixedPortLost stays false
+// when the fixed port binds normally, and for the explicit ephemeral opt-out.
+func TestProxyListen_FixedPortNotLostOnNormalBind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		port int
+	}{
+		{name: "fixed port free", port: freeLoopbackPort(t)},
+		{name: "ephemeral opt-out", port: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: tc.port})
+			if err != nil {
+				t.Fatalf("NewProxyServer: %v", err)
+			}
+			if err := ps.Listen(); err != nil {
+				t.Fatalf("Listen: %v", err)
+			}
+			defer func() { _, _ = ps.Shutdown(context.Background()) }()
+			if ps.FixedPortLost() {
+				t.Fatal("FixedPortLost() = true on a normal bind, want false")
+			}
+		})
+	}
+}
+
+// TestProxyListen_RefusesToCoBindALiveFixedPort is the BOS-1530 root-cause
+// guard. A second bossd (a verify stack, a dev daemon) configured with the same
+// fixed port as a LIVE production proxy must not co-bind it: on Darwin the
+// listener sets SO_REUSEPORT, so a co-bound second listener would have the
+// kernel route the production panes' requests to the later-bound empty registry
+// and 401 them as "unknown session token". The second server must fall back to an
+// ephemeral port, and every request to the fixed port must reach the first.
+func TestProxyListen_RefusesToCoBindALiveFixedPort(t *testing.T) {
+	port := freeLoopbackPort(t)
+	_, srv := newFakeUpstream(t)
+
+	f1 := &fakeFailover{currentBearer: "second-token"}
+	ps1, _ := startProxyConfigured(t, f1, srv.URL, zerolog.Nop(), func(ps *ProxyServer) {
+		ps.port = port
+	})
+	if got := ps1.Port(); got != port {
+		t.Skipf("first server did not get the fixed port %d (got %d); cannot run the co-bind case", port, got)
+	}
+	tok := ps1.TokenForSession("sess-live")
+	if tok == "" {
+		t.Fatal("mint returned an empty token")
+	}
+
+	var log2 syncBuffer
+	f2 := &fakeFailover{currentBearer: "second-token"}
+	ps2, _ := startProxyConfigured(t, f2, srv.URL, zerolog.New(&log2), func(ps *ProxyServer) {
+		ps.port = port
+	})
+	if got := ps2.Port(); got == port {
+		t.Fatalf("second server co-bound the live fixed port %d; it must fall back to an ephemeral port", port)
+	}
+	if !strings.Contains(log2.String(), "another listener") {
+		t.Fatalf("expected a log naming the held port, got: %s", log2.String())
+	}
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	for i := range 50 {
+		resp, err := client.Do(newSentinelReq(t, base, tok))
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d to the fixed port got %d; it reached a server without the live registration", i, resp.StatusCode)
+		}
+	}
+}
+
 // --- BOS-483 pass-through observability ---
 
 // ptClock is a monotonic, race-safe injectable clock for the pass-through

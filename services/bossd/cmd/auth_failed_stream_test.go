@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -13,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/upstream"
 )
@@ -477,5 +479,49 @@ func TestStreamHydrator_VerifyParkAttentionOnNoChatsBranch(t *testing.T) {
 	h.Hydrate(t.Context(), verifying)
 	if verifying.GetAttentionStatus() != nil {
 		t.Fatalf("verifying session attention = %+v, want nil", verifying.GetAttentionStatus())
+	}
+}
+
+// TestStreamHydrator_RestartProofAgentActivity proves the reverse-stream
+// projection (the web's only source) makes last_agent_activity_at
+// restart-proof exactly as GetSession does: with the live tracker empty after
+// a restart, transcript output after the newest give-up becomes the activity,
+// so the web's auth-wedge hint ends where the TUI's and the timeline's do.
+func TestStreamHydrator_RestartProofAgentActivity(t *testing.T) {
+	t.Parallel()
+
+	giveUpAt := time.Date(2026, 10, 13, 23, 16, 0, 0, time.UTC)
+	outputAt := giveUpAt.Add(4 * time.Minute)
+	sessionID, agentSessionID := "sess-wedge-1", "agent-wedge-1"
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+		agentSessionID: {ID: "chat-wedge-1", SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude"},
+	}}
+	rotationEvents := fakeRotationEventStore{bySession: map[string][]db.RotationEvent{
+		sessionID: {{
+			ID: "rot-wedge-1", SessionID: sessionID, ChatID: agentSessionID, Provider: "claude",
+			Trigger:   "ROTATION_TRIGGER_AUTH_INVALIDATED",
+			Outcome:   "ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED",
+			CreatedAt: giveUpAt,
+		}},
+	}}
+	var tallied []time.Time
+	h := &streamSessionHydrator{
+		agentChats:        chats,
+		chatStatusTracker: status.NewTracker(),
+		rotationEvents:    rotationEvents,
+		wedgeActivity: server.WedgeActivity{Tally: func(_ context.Context, _ string, chat *models.AgentChat, since, _ time.Time) (agenttelemetry.Counts, error) {
+			tallied = append(tallied, since)
+			return agenttelemetry.Counts{LastOutputAt: outputAt}, nil
+		}},
+		logger: zerolog.Nop(),
+	}
+	pbSess := &bossanovav1.Session{Id: sessionID, WorktreePath: "/wt"}
+	h.Hydrate(t.Context(), pbSess)
+
+	if len(tallied) != 1 || !tallied[0].Equal(giveUpAt) {
+		t.Fatalf("tally windows = %v, want one from the give-up %v", tallied, giveUpAt)
+	}
+	if ts := pbSess.GetLastAgentActivityAt(); ts == nil || !ts.AsTime().Equal(outputAt) {
+		t.Fatalf("last_agent_activity_at = %v, want the transcript output %v", ts, outputAt)
 	}
 }

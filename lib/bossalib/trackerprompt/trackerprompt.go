@@ -14,21 +14,27 @@ import (
 // Format renders the issue under a source-specific label ("Linear issue:" or
 // "Sentry issue:"). Missing fields are individually omitted so we never render
 // blank lines for absent data. A nil issue formats to "".
+//
+// A Sentry title is client-reported free text, so the Sentry header carries
+// only the external id: the title already sits inside the description's
+// fenced untrusted-data section and must not reach the prompt unfenced.
 func Format(issue *pb.TrackerIssue, source string) string {
 	if issue == nil {
 		return ""
 	}
 	label := "Linear issue:"
+	title := issue.Title
 	if source == "sentry" {
 		label = "Sentry issue:"
+		title = ""
 	}
 	var b strings.Builder
 	b.WriteString(label)
 	b.WriteString("\n\n")
-	header := issue.Title
+	header := title
 	if issue.ExternalId != "" {
 		if header != "" {
-			header = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
+			header = fmt.Sprintf("[%s] %s", issue.ExternalId, title)
 		} else {
 			header = fmt.Sprintf("[%s]", issue.ExternalId)
 		}

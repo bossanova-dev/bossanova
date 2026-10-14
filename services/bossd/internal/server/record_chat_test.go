@@ -83,8 +83,9 @@ func TestRecordChat_AgentNameOverridePreferred(t *testing.T) {
 	srv, chats := newRecordChatTestServer(sess)
 
 	resp, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
-		SessionId:      "s1",
-		AgentSessionId: "agent-1",
+		SessionId: "s1",
+		// A codex chat requires a canonical UUID id.
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60",
 		Title:          "hello",
 		AgentName:      strPtr("codex"),
 	}))
@@ -762,4 +763,69 @@ func TestRecordInteractiveAgentRunStartResetsModelAcrossAgents(t *testing.T) {
 			t.Fatalf("recorded model = %q, want the session's claude-opus-4", got)
 		}
 	})
+}
+
+// TestRecordChat_RejectsGlobShapedAgentSessionID: an agent_session_id ends up
+// in transcript lookups, so glob metacharacters and path separators are refused
+// for every agent before a row is created.
+func TestRecordChat_RejectsGlobShapedAgentSessionID(t *testing.T) {
+	for _, id := range []string{"*", "a?b", "[0-9a-f]*", "a/b", `a\b`, "../x"} {
+		t.Run(id, func(t *testing.T) {
+			srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: "claude"})
+			_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId:      "s1",
+				AgentSessionId: id,
+			}))
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("RecordChat(%q) code = %v (err %v), want InvalidArgument", id, connect.CodeOf(err), err)
+			}
+			if chats.created != nil {
+				t.Fatalf("RecordChat(%q) created a row", id)
+			}
+		})
+	}
+}
+
+// TestRecordChat_CodexRequiresCanonicalUUID: the Codex plugin resolves the
+// transcript from this id, so a Codex chat only accepts a canonical lowercase
+// UUID — whether Codex comes from the override or the session's agent.
+func TestRecordChat_CodexRequiresCanonicalUUID(t *testing.T) {
+	const valid = "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f"
+	for _, tc := range []struct {
+		name     string
+		override *string
+		sessAgt  string
+	}{
+		{"override", strPtr("codex"), "claude"},
+		{"inherited", nil, "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, id := range []string{"*", "agent-1", "0199A3C1-7B2E-7D40-9C55-1A2B3C4D5E6F", "{" + valid + "}", valid + "x"} {
+				srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: tc.sessAgt})
+				_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+					SessionId:      "s1",
+					AgentSessionId: id,
+					AgentName:      tc.override,
+				}))
+				if connect.CodeOf(err) != connect.CodeInvalidArgument {
+					t.Fatalf("RecordChat(%q) code = %v (err %v), want InvalidArgument", id, connect.CodeOf(err), err)
+				}
+				if chats.created != nil {
+					t.Fatalf("RecordChat(%q) created a row", id)
+				}
+			}
+
+			srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: tc.sessAgt})
+			if _, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId:      "s1",
+				AgentSessionId: valid,
+				AgentName:      tc.override,
+			})); err != nil {
+				t.Fatalf("RecordChat(canonical UUID): %v", err)
+			}
+			if chats.created == nil || chats.created.AgentSessionID != valid {
+				t.Fatalf("canonical UUID not recorded: %+v", chats.created)
+			}
+		})
+	}
 }

@@ -977,3 +977,66 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 		}
 	}
 }
+
+// TestPreflightHeadlessRunRevokesTrustBeforeProbing pins BOS-1562 for the
+// preflight: the probe starts `codex app-server` in the work dir, which loads
+// a trusted worktree's .codex/config.toml (and spawns its MCP commands). A
+// launch bossd marks untrusted must therefore drop a stale pre-trust from both
+// the plugin's and the launch's Codex home BEFORE the probe runs; GRANT and
+// UNSPECIFIED leave it alone.
+func TestPreflightHeadlessRunRevokesTrustBeforeProbing(t *testing.T) {
+	for _, tc := range []struct {
+		decision    bossanovav1.ProjectTrustDecision
+		wantTrusted bool
+	}{
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED, true},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT, true},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE, false},
+	} {
+		t.Run(tc.decision.String(), func(t *testing.T) {
+			baseHome := t.TempDir()
+			t.Setenv("CODEX_HOME", baseHome)
+			accountHome := t.TempDir()
+			workDir := t.TempDir()
+			trusted := `[projects."` + tomlBasicStringEscape(workDir) + `"]` + "\ntrust_level = \"trusted\"\n"
+			for _, home := range []string{baseHome, accountHome} {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(trusted), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			probed := false
+			srv := newTestServer(t)
+			srv.operationRegistry = runtimeOperationRegistryFunc(func(_ context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
+				probed = true
+				for name, home := range map[string]string{"account": target.Home, "base": baseHome} {
+					got, err := os.ReadFile(filepath.Join(home, "config.toml"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if has := strings.Contains(string(got), `trust_level = "trusted"`); has != tc.wantTrusted {
+						t.Errorf("%s Codex home trusts the work dir at probe time = %v, want %v", name, has, tc.wantTrusted)
+					}
+				}
+				return runtimeOperationSurface{
+					Source: codexOperationRegistrySource,
+					Servers: []runtimeMCPServer{{
+						Name:       "linear@openai-curated",
+						AuthStatus: "oAuth",
+						Operations: realLinearConnectorOperations(),
+					}},
+				}, nil
+			})
+
+			req := fullProfileRequest(accountHome)
+			req.WorkDir = workDir
+			req.ProjectTrust = tc.decision
+			if _, err := srv.PreflightHeadlessRun(context.Background(), req); err != nil {
+				t.Fatalf("PreflightHeadlessRun: %v", err)
+			}
+			if !probed {
+				t.Fatal("preflight never probed the runtime")
+			}
+		})
+	}
+}

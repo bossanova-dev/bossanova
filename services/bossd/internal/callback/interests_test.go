@@ -336,6 +336,60 @@ func TestActiveInterestForChat_MultipleArmedPicksDeterministicWinner(t *testing.
 	}
 }
 
+// TestActiveInterestForChat_ProgressBeatsOlderStandby pins BOS-1531: a chat
+// holding an old standby watch (checks_failed) and a newer progress watch
+// (merged / checks_passed_ready) is parked on the progress one. The standby
+// watch only matters if the PR goes wrong; the progress watch is what the chat
+// is actually waiting for.
+func TestActiveInterestForChat_ProgressBeatsOlderStandby(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	for _, progress := range []models.GithubCallbackTrigger{
+		models.GithubCallbackTriggerMerged,
+		models.GithubCallbackTriggerChecksPassedReady,
+	} {
+		t.Run(string(progress), func(t *testing.T) {
+			callbacks := []*models.GithubCallback{
+				chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerChecksFailed, 7, models.GithubCallbackStateActive),
+				chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerClosed, 7, models.GithubCallbackStateLeased),
+				chatCB("cb-z", "chat-a", base.Add(time.Hour), progress, 7, models.GithubCallbackStateActive),
+			}
+			want := "awaiting " + string(progress) + " on acme/widget#7"
+			for i := range callbacks {
+				rotated := append(append([]*models.GithubCallback{}, callbacks[i:]...), callbacks[:i]...)
+				got, err := ActiveInterestForChat(context.Background(), &fakeInterestStore{callbacks: rotated}, "chat-a", base)
+				if err != nil {
+					t.Fatalf("ActiveInterestForChat: %v", err)
+				}
+				if got == nil || got.ID != "cb-z" {
+					t.Fatalf("rotation %d: got %+v, want cb-z (progress beats older standby)", i, got)
+				}
+				if got.WaitingReason() != want {
+					t.Fatalf("rotation %d: WaitingReason() = %q, want %q", i, got.WaitingReason(), want)
+				}
+			}
+		})
+	}
+}
+
+// TestActiveInterestForChat_StandbyOnlyChatKeepsItsReason: with no progress
+// watch the standby one is still the chat's interest (oldest first) — the
+// ranking reorders reasons, it never hides one.
+func TestActiveInterestForChat_StandbyOnlyChatKeepsItsReason(t *testing.T) {
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+		chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerClosed, 7, models.GithubCallbackStateActive),
+		chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerChecksFailed, 7, models.GithubCallbackStateActive),
+	}}
+	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
+	if err != nil {
+		t.Fatalf("ActiveInterestForChat: %v", err)
+	}
+	const want = "awaiting checks_failed on acme/widget#7"
+	if got == nil || got.WaitingReason() != want {
+		t.Fatalf("got %+v, want %q", got, want)
+	}
+}
+
 func TestActiveInterestForChat_EmptyChatIDIsNoLookup(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	store := &fakeInterestStore{err: errors.New("must not be queried")}

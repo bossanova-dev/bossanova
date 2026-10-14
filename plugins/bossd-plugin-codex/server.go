@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -134,7 +135,7 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 //     preflight launched without it profiles a runtime that never saw the MCP
 //     servers the repo declares for itself (BOS-865).
 func (s *Server) runtimeTarget(reqModel, reqEffort, workDir string, extraEnv map[string]string) codexRuntimeTarget {
-	home, _ := codexConfigDirForEnv(extraEnv)
+	home, _ := codexConfigDirForEnv(extraEnv, workDir)
 	return codexRuntimeTarget{
 		Home:     home,
 		Model:    resolveCodexModel(reqModel, s.runner.model),
@@ -144,12 +145,64 @@ func (s *Server) runtimeTarget(reqModel, reqEffort, workDir string, extraEnv map
 	}
 }
 
+// applyCodexProjectTrust applies bossd's project-trust decision for workDir
+// (BOS-1562) and returns the per-process `-c` override, if any, that every
+// codex process the request starts must carry. It is the one place every RPC
+// that starts codex in workDir — BuildInteractiveCommand, StartRun,
+// PreflightHeadlessRun, DescribeMCPSurface — applies the decision, so it means
+// the same on every path. GRANT records workDir trusted (so a GRANT after a
+// REVOKE restores trust) and REVOKE records it explicitly untrusted, in every
+// Codex home the launch can read trust from (codexTrustDirs, with
+// configHomeEnv supplying the launch's CODEX_HOME / HOME). REVOKE also returns
+// codexUntrustedOverride: codex starts through the user's login shell and tmux
+// server, whose own CODEX_HOME can name a home REVOKE never edited, and the
+// per-process override keeps that launch untrusted regardless. DENY edits
+// nothing and returns the same override, so this launch alone runs untrusted.
+// UNSPECIFIED (no decision) leaves the config alone; an unrecognised value is
+// an error. An error means the decision could not be applied; the caller must
+// not start codex.
+func applyCodexProjectTrust(decision bossanovav1.ProjectTrustDecision, workDir string, configHomeEnv map[string]string) (string, error) {
+	switch decision {
+	case bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT:
+		if err := trustCodexWorktree(workDir, configHomeEnv); err != nil {
+			return "", fmt.Errorf("trust codex worktree: %w", err)
+		}
+	case bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE:
+		if err := untrustCodexWorktree(workDir, configHomeEnv); err != nil {
+			return "", fmt.Errorf("untrust codex worktree: %w", err)
+		}
+		override, err := codexUntrustedOverride(workDir)
+		if err != nil {
+			return "", fmt.Errorf("untrust codex worktree: %w", err)
+		}
+		return override, nil
+	case bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY:
+		override, err := codexUntrustedOverride(workDir)
+		if err != nil {
+			return "", fmt.Errorf("deny codex worktree trust: %w", err)
+		}
+		return override, nil
+	case bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED:
+	default:
+		// A value this plugin does not know may be a decision to distrust;
+		// reading it as UNSPECIFIED would leave stale trust in force.
+		return "", fmt.Errorf("unknown project trust decision %d", decision)
+	}
+	return "", nil
+}
+
 func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
-	return s.preflightHeadlessCapabilityProfile(
-		ctx,
-		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), req.GetExtraEnv()),
-	)
+	// The probe starts `codex app-server` in the work dir, which loads the
+	// worktree's .codex/config.toml (and spawns its MCP commands) whenever the
+	// Codex home trusts it, so the launch's trust decision is applied before
+	// probing, exactly as StartRun does before its own preflight (BOS-1562).
+	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorkDir(), req.GetExtraEnv())
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	target := s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), req.GetExtraEnv())
+	target.ProjectTrustOverride = trustOverride
+	return s.preflightHeadlessCapabilityProfile(ctx, req.GetHeadlessCapabilityProfile(), target)
 }
 
 func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
@@ -163,11 +216,21 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	// profiles is therefore the runtime that starts, with no substitution between
 	// the two.
 	extraEnv := req.GetExtraEnv()
-	if _, err := s.preflightHeadlessCapabilityProfile(
-		ctx,
-		req.GetHeadlessCapabilityProfile(),
-		s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), extraEnv),
-	); err != nil {
+	// `codex exec` has no trust prompt but still loads the worktree's
+	// .codex/config.toml (MCP server commands, model provider) when its Codex
+	// home trusts it (directly, or through the main checkout of a linked
+	// worktree), so the run's trust decision is applied before the preflight,
+	// which then profiles the runtime the run gets: a run bossd marks untrusted
+	// records the worktree as untrusted, a trusted one as trusted, and a denied
+	// one (an untrusted repo's own checkout) runs both the probe and the run
+	// with the same per-process untrusted override.
+	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorkDir(), extraEnv)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	target := s.runtimeTarget(req.GetModel(), req.GetEffort(), req.GetWorkDir(), extraEnv)
+	target.ProjectTrustOverride = trustOverride
+	if _, err := s.preflightHeadlessCapabilityProfile(ctx, req.GetHeadlessCapabilityProfile(), target); err != nil {
 		return nil, err
 	}
 	// Detach the spawned subprocess from this RPC handler's context. The
@@ -176,7 +239,7 @@ func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunReq
 	// codex process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths. (Mirrors the claude plugin
 	// fix in services/bossd's host_service.)
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), extraEnv)
+	sid, err := s.runner.startRun(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), trustOverride, extraEnv)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -328,18 +391,31 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 			args = append(args, "-c", "model_reasoning_effort="+effort)
 		}
 	}
+	// Pre-trust the worktree only when bossd says the local user trusts the
+	// repo (BOS-1562). Codex project trust is the only gate on a repo's
+	// .codex/config.toml (MCP server commands, model provider), so a launch
+	// bossd marks untrusted records the worktree as explicitly untrusted —
+	// overriding a pre-trust written while the repo was still trusted, and the
+	// trust a linked worktree would otherwise inherit from the user's main
+	// checkout. A DENY (an untrusted repo's launch in its own checkout) runs
+	// this launch untrusted through a `-c` override and edits nothing; an
+	// UNSPECIFIED decision (a launch preview, input rendering for a live pane)
+	// leaves the config alone.
+	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorktreePath(), req.GetConfigHomeEnv())
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	args = appendConfigOverride(args, trustOverride)
 	initialInput := codexInitialInput(req)
 	if initialInput != "" {
 		// `--` keeps an input naming a subcommand (exec, review) or starting
-		// with '-' a prompt; verified against codex-cli 0.161.0.
+		// with '-' a prompt; verified against codex-cli 0.161.0. Every codex
+		// option, the trust override included, must precede it.
 		args = append(args, "--")
 	}
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
-	}
-	if err := trustCodexWorktree(req.GetWorktreePath()); err != nil {
-		return nil, status.Errorf(codes.Internal, "trust codex worktree: %v", err)
 	}
 	// With an input file the rendered input is read at exec time instead of
 	// riding in argv; without one (or with no supported login shell) it is

@@ -274,3 +274,26 @@ func TestLastLinesStripsBlankLinesAndBoundsBytes(t *testing.T) {
 		t.Fatalf("ansi strip = %q", got)
 	}
 }
+
+// The launch hands the runner the per-chat receipt token, derived from the
+// socket token and keyed on the id the hook posts to, so the hook it installs
+// authenticates against ValidPromptReceiptToken.
+func TestStartTmuxChat_PassesDerivedReceiptToken(t *testing.T) {
+	h := newDeliveryHarness(t, 5*time.Second)
+	h.lc.SetHookPort(4242)
+	h.lc.SetPromptReceiptKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	posted := postReceiptWhenAwaited(t, h.lc, "agent-1")
+
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", submitInput("implement the plan"), "T", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	<-posted
+	req := h.agentFake.LastBuildInteractiveCommand
+	tok := req.GetHookReceiptToken()
+	if tok == "" {
+		t.Fatal("hook_receipt_token is empty")
+	}
+	if !h.lc.ValidPromptReceiptToken(req.GetSessionId(), tok) {
+		t.Fatal("hook_receipt_token does not validate for the id the hook posts to")
+	}
+}

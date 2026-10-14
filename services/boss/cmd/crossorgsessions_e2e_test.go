@@ -121,3 +121,9 @@ func TestApplyE2ECrossOrgSessionsWithholdsTheFailedOrganization(t *testing.T) {
 func (s *stubCrossOrgClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
 }
+
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*stubCrossOrgClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}

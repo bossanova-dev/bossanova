@@ -36,6 +36,7 @@ go_test(
         "proxy_list_sessions_owner_resolution_test.go",
         "ready_test.go",
         "released_test.go",
+        "session_attention_change_test.go",
         "session_list_rank_order_test.go",
         "superseded_credential_class_test.go",
         "transform_test.go",

@@ -55,7 +55,7 @@ func TestInitRepoRegistration(t *testing.T) {
 				}
 			}
 			steps := &initAppliedSteps{}
-			repo, err := resolveInitRepo(context.Background(), c, target, true, steps)
+			repo, err := resolveInitRepo(context.Background(), c, target, initRegistration{allow: true}, steps)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,7 +67,7 @@ func TestInitRepoRegistration(t *testing.T) {
 				if len(calls) != 1 || calls[0].DisplayName != "@owner/project" || calls[0].DefaultBaseBranch != "develop" || !steps.Registered {
 					t.Fatal("registration defaults incorrect")
 				}
-				_, err = resolveInitRepo(context.Background(), c, target, true, steps)
+				_, err = resolveInitRepo(context.Background(), c, target, initRegistration{allow: true}, steps)
 				if err != nil || len(daemon.RegisterRepoCalls()) != 1 {
 					t.Fatal("registration not convergent")
 				}
@@ -78,6 +78,28 @@ func TestInitRepoRegistration(t *testing.T) {
 	}
 }
 
+// TestInitRepoRegistrationTrust pins BOS-1562's registration surface: a new
+// registration is untrusted unless --trusted asks for it.
+func TestInitRepoRegistrationTrust(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		dir := initGitRepo(t)
+		daemon := tuitest.NewMockDaemon(t)
+		c := client.NewLocal(daemon.SocketPath())
+		daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{IsValid: true, DefaultBranch: "main"})
+		repo, err := resolveInitRepo(context.Background(), c, dir, initRegistration{allow: true, trusted: trusted}, &initAppliedSteps{})
+		if err != nil {
+			t.Fatalf("trusted=%v: %v", trusted, err)
+		}
+		calls := daemon.RegisterRepoCalls()
+		if len(calls) != 1 {
+			t.Fatalf("trusted=%v: RegisterRepo calls = %d, want 1", trusted, len(calls))
+		}
+		if calls[0].GetIsTrusted() != trusted || repo.GetIsTrusted() != trusted {
+			t.Fatalf("trusted=%v: request IsTrusted = %v, repo IsTrusted = %v", trusted, calls[0].GetIsTrusted(), repo.GetIsTrusted())
+		}
+	}
+}
+
 func TestInitRepoNonGitAndNoRegister(t *testing.T) {
 	daemon := tuitest.NewMockDaemon(t)
 	c := client.NewLocal(daemon.SocketPath())
@@ -85,7 +107,7 @@ func TestInitRepoNonGitAndNoRegister(t *testing.T) {
 		dir, want string
 		allow     bool
 	}{{t.TempDir(), "git repository", true}, {initGitRepo(t), "--register", false}} {
-		_, err := resolveInitRepo(context.Background(), c, tc.dir, tc.allow, &initAppliedSteps{})
+		_, err := resolveInitRepo(context.Background(), c, tc.dir, initRegistration{allow: tc.allow}, &initAppliedSteps{})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatal("expected actionable refusal")
 		}

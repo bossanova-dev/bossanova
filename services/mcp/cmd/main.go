@@ -14,6 +14,7 @@ import (
 
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossanova-mcp/internal/serve"
 	"github.com/recurser/bossanova-mcp/internal/socketbackend"
 )
@@ -89,5 +90,12 @@ func run(args []string) error {
 	if *httpAddr == "" {
 		return serve.Stdio(ctx, backend, opts)
 	}
-	return serve.HTTP(ctx, *httpAddr, backend, opts)
+	// The HTTP flavor is a persistent listener, so it requires a bearer token
+	// that lives next to the daemon socket (`boss mcp token` prints it). Stdio
+	// mode has no listener and needs none.
+	token, err := socketauth.LoadOrCreateHTTPToken(resolvedSocket)
+	if err != nil {
+		return fmt.Errorf("load MCP HTTP token: %w", err)
+	}
+	return serve.HTTP(ctx, *httpAddr, backend, opts, serve.HTTPOptions{Token: token})
 }

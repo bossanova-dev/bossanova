@@ -32,7 +32,6 @@ import {
   SCAN_EXCLUSIONS,
   STATUS_VOCABULARY,
   STEP_STATUS_FIELDS,
-  commentStart,
   findVacuousJobGates,
   findVacuousJobGatesInRepo,
   findWorkflowFiles,
@@ -244,6 +243,54 @@ test('an opt-out without a non-empty reason is rejected', () => {
   }
 })
 
+test('a shell " #" inside a block-scalar body neither hides a comparison nor opts out', () => {
+  const hidden = [
+    '    steps:',
+    '      - run: |',
+    `          X="a # \${{ needs.check.outputs.status == 'success' }}"`,
+    '      - if: >-',
+    "          startsWith('x # y', 'x') && needs.check.outputs.status == 'success'",
+    '        run: true',
+  ].join('\n')
+  assert.deepEqual(
+    findVacuousJobGates(hidden).map((offender) => offender.line),
+    [3, 5],
+    'YAML has no comments inside a block scalar, so the comparison after " #" is still live',
+  )
+
+  const fakeOptOut = [
+    '      - run: |',
+    '          echo "see # vacuous-job-gate-ok: not a comment"',
+    `          echo \${{ needs.check.outputs.status == 'success' }}`,
+  ].join('\n')
+  assert.equal(findVacuousJobGates(fakeOptOut).length, 1, 'a marker inside a shell string')
+
+  const shellComment = [
+    '      - run: |',
+    '          # vacuous-job-gate-ok: documented exception',
+    `          echo \${{ needs.check.outputs.status == 'success' }}`,
+  ].join('\n')
+  assert.deepEqual(findVacuousJobGates(shellComment), [], 'a whole-line shell comment opts out')
+})
+
+test('a CRLF workflow reads opt-outs like an LF one', () => {
+  const reasoned = [
+    '    outputs:',
+    '      # vacuous-job-gate-ok: documented exception',
+    '      status: ${{ steps.changes.conclusion }}',
+    '      - run: |',
+    '          # vacuous-job-gate-ok: documented exception',
+    `          echo \${{ needs.check.outputs.status == 'success' }}`,
+  ].join('\r\n')
+  assert.deepEqual(findVacuousJobGates(reasoned), [])
+  const unexplained = [
+    '    outputs:',
+    '      # vacuous-job-gate-ok:',
+    '      status: ${{ steps.changes.conclusion }}',
+  ].join('\r\n')
+  assert.equal(findVacuousJobGates(unexplained).length, 1)
+})
+
 test('an opt-out marker inside a quoted scalar is not an opt-out', () => {
   const source = [
     '    outputs:',
@@ -256,13 +303,6 @@ test('an opt-out marker inside a quoted scalar is not an opt-out', () => {
     1,
     'a marker inside a string must not suppress a vacuous job gate',
   )
-})
-
-test('commentStart ignores a hash inside a quoted scalar', () => {
-  assert.equal(commentStart('      key: "a # b"'), -1)
-  assert.equal(commentStart("      key: 'a # b' # real"), 19)
-  assert.equal(commentStart('      key: value'), -1)
-  assert.equal(commentStart('# whole-line comment'), 0)
 })
 
 // --- The corpus -------------------------------------------------------------------------

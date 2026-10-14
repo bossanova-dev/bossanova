@@ -38,6 +38,11 @@ service DaemonService {
   // list while the web list is unchanged — the guarantee is the destination,
   // not yet the interim state.
   rpc MoveSession(MoveSessionRequest) returns (MoveSessionResponse);
+  // DismissSessionAlert records the operator's dismissal of one session alert
+  // (the `x` key on a fix row) and returns the refreshed session. One key is
+  // kept per session, so the dismissed alert stays hidden while a different
+  // one shows again. The session's event history is untouched.
+  rpc DismissSessionAlert(DismissSessionAlertRequest) returns (DismissSessionAlertResponse);
   rpc AttachSession(AttachSessionRequest) returns (stream AttachSessionResponse);
   rpc StopSession(StopSessionRequest) returns (StopSessionResponse);
   rpc PauseSession(PauseSessionRequest) returns (PauseSessionResponse);
@@ -48,6 +53,9 @@ service DaemonService {
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
+  // SetSessionTracker links a session to a tracker issue, resolved against the
+  // repo's own tracker. It overwrites an existing link (the correction path).
+  rpc SetSessionTracker(SetSessionTrackerRequest) returns (SetSessionTrackerResponse);
   // RefreshSessionPR fetches one linked PR from the VCS provider immediately,
   // updates the daemon's cached/display PR state, and returns the refreshed
   // session snapshot. It accepts a session id, a PR number, or both.
@@ -60,6 +68,13 @@ service DaemonService {
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
+  // FinishUnattendedRun is an unattended run telling bossd it is done. bossd
+  // records the request and runs the run's normal finalize (the same pipeline
+  // the stranded-run sweep uses) once every chat is idle, the requesting chat
+  // has settled, and the session's agent logs have gone quiet. The requester's
+  // own call therefore always comes back deferred. bossd-local; not part of the
+  // versioned orchestrator surface.
+  rpc FinishUnattendedRun(FinishUnattendedRunRequest) returns (FinishUnattendedRunResponse);
   // ResurrectSession re-creates the archived session's worktree, runs the
   // repo's setup script in it, and restarts the agent. Server-streaming for
   // the same reason CreateSession is (BOS-984): the setup script alone may run
@@ -316,6 +331,13 @@ service DaemonService {
   // failing?" without re-running `gh pr checks` by hand.
   rpc ListCheckSnapshots(ListCheckSnapshotsRequest) returns (ListCheckSnapshotsResponse);
 
+  // GetSessionTimeline returns the dated steps of a session's run on its
+  // current PR head — build started, built and reviewed, CI passed, evidence
+  // recorded, failures and automatic resumes, the question asked, the park —
+  // assembled from what the daemon already persists. The last step is where
+  // the session waits. Steps with no evidence are omitted, never guessed.
+  rpc GetSessionTimeline(GetSessionTimelineRequest) returns (GetSessionTimelineResponse);
+
   // GetRunCost returns daemon-owned agent-run cost telemetry for one session
   // or an aggregate filter set. Duration and parallelism are computed in the
   // daemon so the CLI never creates a second timestamp semantic.
@@ -383,6 +405,9 @@ message RegisterRepoRequest {
   string default_base_branch = 3;
   string worktree_base_dir = 4;
   optional string setup_script = 5;
+  // Register the repository as trusted (see Repo.is_trusted). Absent or false
+  // registers it untrusted.
+  optional bool is_trusted = 6;
 }
 
 message RegisterRepoResponse {
@@ -448,6 +473,9 @@ message UpdateRepoRequest {
   // Per-repo base directory for new session worktrees. Must be absolute; an
   // empty value is rejected rather than clearing it.
   optional string worktree_base_dir = 22;
+  // Local trust toggle (see Repo.is_trusted). Deliberately absent from the
+  // stream UpdateRepoCommand: the orchestrator must not be able to flip it.
+  optional bool is_trusted = 23;
 }
 
 message UpdateRepoResponse {
@@ -640,6 +668,18 @@ message MoveSessionResponse {
   bool is_moved = 2;
 }
 
+message DismissSessionAlertRequest {
+  // The session whose alert is dismissed. Required.
+  string session_id = 1;
+  // The alert's dismissal key (for example "resume:auth_expired"). Required.
+  string alert_key = 2;
+}
+
+message DismissSessionAlertResponse {
+  // The session after the dismissal.
+  Session session = 1;
+}
+
 message AttachSessionRequest {
   string id = 1;
 }
@@ -752,6 +792,15 @@ message LinkSessionPRResponse {
   Session session = 1;
 }
 
+message SetSessionTrackerRequest {
+  string id = 1;
+  string tracker_id = 2;
+}
+
+message SetSessionTrackerResponse {
+  Session session = 1;
+}
+
 message RefreshSessionPRRequest {
   optional string id = 1;
   optional int32 pr_number = 2;
@@ -796,6 +845,23 @@ message ArchiveSessionResponse {
   // The agent session id of the chat the deferred archive is waiting on. Empty
   // when the archive ran immediately.
   string blocking_agent_session_id = 3;
+}
+
+message FinishUnattendedRunRequest {
+  string session_id = 1;
+  // The agent session id of the chat making the request ($BOSS_AGENT_SESSION_ID).
+  // It must be one of the session's chats, and it counts as busy until the
+  // tracker observes it settle.
+  string requester_agent_session_id = 2;
+}
+
+message FinishUnattendedRunResponse {
+  // True when the finish is pending until the session settles. The caller's
+  // own request is always deferred.
+  bool is_deferred = 1;
+  // The agent session id of the chat the deferred finish is waiting on. Empty
+  // when the finish ran immediately.
+  string blocking_agent_session_id = 2;
 }
 
 message ResurrectSessionRequest {
@@ -1983,6 +2049,42 @@ message CheckSnapshot {
 
 message ListCheckSnapshotsResponse {
   repeated CheckSnapshot snapshots = 1;
+}
+
+// --- Session Timeline ---
+
+message GetSessionTimelineRequest {
+  string session_id = 1;
+}
+
+message GetSessionTimelineResponse {
+  // Chronological (oldest first), except that the group of steps the session
+  // waits on is moved to the end, in its own chronological order, so its last
+  // step (the CURRENT one) is last even when other steps happened after it.
+  // With no wait (a merged or closed PR with no open fix or question) the
+  // list is purely chronological.
+  repeated TimelineStep steps = 1;
+}
+
+// TimelineStepState is how one timeline step ended.
+enum TimelineStepState {
+  TIMELINE_STEP_STATE_UNSPECIFIED = 0;
+  // The step happened and the session moved on.
+  TIMELINE_STEP_STATE_DONE = 1;
+  // The session is waiting here now. At most one step, always the last.
+  TIMELINE_STEP_STATE_CURRENT = 2;
+  // The step is a failure (a lost login, an interrupted run, a failed repair).
+  TIMELINE_STEP_STATE_FAILED = 3;
+}
+
+message TimelineStep {
+  // When the step happened.
+  google.protobuf.Timestamp at = 1;
+  // What happened, e.g. "Build started", "CI passed, 6 checks".
+  string title = 2;
+  // Optional supporting detail, e.g. "5 of 5 proven · 2:40 video".
+  string detail = 3;
+  TimelineStepState state = 4;
 }
 
 // --- Run Cost ---

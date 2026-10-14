@@ -319,6 +319,11 @@ func (a *App) newHomeModel() HomeModel {
 	// notification and the user's click doesn't drop the auto-open (BOS-459).
 	home.focused = a.home.focused
 	home.pendingAttentionSessionID = a.home.pendingAttentionSessionID
+	// Carry the supervision probe and its last answer (BOS-1520), or the
+	// unsupervised-daemon line flickers off every time the user returns to
+	// Home until the rebuilt model's own probe lands.
+	home.SetDaemonSupervisionProbe(a.supervisionProbe)
+	home.supervision = a.home.supervision
 	return home
 }
 

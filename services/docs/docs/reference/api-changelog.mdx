@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-16**. The engineering procedure for adding a new
+The current version is **2026-09-17**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -560,7 +560,7 @@ PR label replaced a waiting one; the down-convert restores the label rather
 than clearing that mark, for the same reason the list ordering is re-sorted
 rather than stripped.
 
-### 2026-09-16 — Verifying, Needs human and Ready statuses (Current)
+### 2026-09-16 — Verifying, Needs human and Ready statuses
 
 `Session.display_status` and `Session.merge_block.display_status` serve two new
 values, `DISPLAY_STATUS_VERIFYING` and `DISPLAY_STATUS_NEEDS_HUMAN`, with the
@@ -604,6 +604,35 @@ The additive transport facts `Session.has_build_receipt` and
 2026-09-15 or older receive the preceding composite on session-bearing unary
 responses. The waiting inverse mark is stamped by list recomputation; a
 single-session read without that mark restores the underlying green PR label.
+
+### 2026-09-17 — Session attention (Current)
+
+`Session` carries a new `attention` field, a `SessionAttention` that answers
+"what does this session need from you" in one place:
+
+- `kind` is one of `ATTENTION_KIND_FIX`, `ATTENTION_KIND_QUESTION`,
+  `ATTENTION_KIND_REVIEW`, `ATTENTION_KIND_MERGE` (these four need you),
+  `ATTENTION_KIND_IN_PROGRESS` or `ATTENTION_KIND_DONE`.
+- `sentence` says what to do, for example `Review the migration, then approve`.
+- `actions` lists the `AttentionAction` values a client offers for that kind,
+  such as `ATTENTION_ACTION_APPROVE` or `ATTENTION_ACTION_MERGE`. A session
+  linked to a tracker issue also offers `ATTENTION_ACTION_TRACKER` (open its
+  `tracker_url`) last, whatever the kind.
+- `progress_label` describes work that does not need you (`building`,
+  `CI 3/7`, `waiting for main CI`).
+- `since`, `park_codes`, `alert_key`, `target_chat_id` and `evidence_url`
+  carry the facts behind the answer.
+
+`Session.attention_status` is unchanged.
+
+This version defines the field; the service starts populating it in a
+follow-up release. Until then, responses at 2026-09-17 carry no `attention`
+either, so treat an absent value as "not yet computed" rather than "nothing
+needed".
+
+Clients pinned to 2026-09-16 or older receive no `attention` on every
+session-bearing response, including the streamed `ProxyCreateSession` created
+message.
 
 ## Additive changes
 

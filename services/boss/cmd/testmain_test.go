@@ -34,6 +34,14 @@ func TestMain(m *testing.M) {
 	// a blocked interview; tests that want the interview force it on.
 	initIsTerminal = func() bool { return false }
 
+	// Third leak, same shape: every rootCmd execution now observes whether the
+	// local profile's daemon is supervised, which would read the developer's
+	// real state record and launchd/systemd. Default to "no state record";
+	// tests that care stub daemonLocalSupervisionObservation themselves.
+	daemonLocalSupervisionObservation = func() daemonSupervisionObservation {
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNoStateRecord}
+	}
+
 	dir, err := os.MkdirTemp("", "boss-cmd-settings-*")
 	if err != nil {
 		panic(err)

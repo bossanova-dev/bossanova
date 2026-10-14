@@ -134,9 +134,13 @@ func daemonRestartedWithNewPID(oldPID int) bool {
 
 func (h HomeModel) handleDaemonRestart(msg daemonRestartMsg) (tea.Model, tea.Cmd) {
 	h.restarting = false
+	// A restart is the moment supervision is most likely to have changed, so
+	// re-probe now — superseding any probe still in flight, whose answer
+	// predates the restart — whether or not the restart reported success.
+	probe := h.startDaemonSupervisionProbe()
 	if msg.err != nil {
 		h.upgradeError = msg.err.Error()
-		return h, nil
+		return h, probe
 	}
 	h.upgradeError = ""
 	h.restartPrompt = false
@@ -144,7 +148,7 @@ func (h HomeModel) handleDaemonRestart(msg daemonRestartMsg) (tea.Model, tea.Cmd
 	h.pollFailures = 0
 	h.err = nil
 	h.daemonRemediation = ""
-	return h, nil
+	return h, probe
 }
 
 // The --host destination and its accessors live in hostcontext.go: a dropped

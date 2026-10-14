@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -37,6 +38,7 @@ type DisplayPoller struct {
 	archiveTracker     ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
 	receiptPoster      vcs.CommitStatusPoster // optional; nil (or nil receiptProbe) disables receipt carrying
 	receiptProbe       ReceiptPushProbe       // optional; see SetReceiptCarrier
+	evidence           EvidenceObserver       // optional; nil disables evidence reads
 	interval           time.Duration
 	logger             zerolog.Logger
 	done               chan struct{}
@@ -79,19 +81,70 @@ func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
 	p.snapshots = s
 }
 
-// ReceiptPushProbe reports whether a session's own worktree pushed newSHA on
-// top of fromSHA. *git.Manager satisfies it with SessionPushedHead; it is
-// declared here so the poller needs no dependency on the large worktree
-// interface.
+// EvidenceObserver receives each poll's view of a session's PR so the verify
+// evidence summary for the current head can be kept (*evidence.Reader).
+type EvidenceObserver interface {
+	Observe(ctx context.Context, obs evidence.Observation)
+	// Retain is called once per poll cycle with every session the cycle
+	// listed, so state for archived and deleted sessions can be dropped.
+	Retain(live map[string]struct{})
+}
+
+// SetEvidenceObserver wires the verify evidence reader. nil-safe: leaving it
+// unset reads no evidence.
+func (p *DisplayPoller) SetEvidenceObserver(o EvidenceObserver) {
+	p.evidence = o
+}
+
+// observeEvidence reports one poll to the evidence observer. The verify stage
+// holds the head only while the display status is NeedsHuman or Verifying, and
+// has finished with it once a completed boss/verify status is on it; the
+// observer uses both to decide when the head's evidence is worth re-reading.
+// checks is nil where the poll read none (a draft PR); an ended PR is
+// reported by settleEndedPR.
+func (p *DisplayPoller) observeEvidence(ctx context.Context, sessionID, repoPath string, prNumber int, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {
+	if p.evidence == nil || prStatus == nil {
+		return
+	}
+	p.evidence.Observe(ctx, evidence.Observation{
+		SessionID:         sessionID,
+		RepoPath:          repoPath,
+		PRNumber:          prNumber,
+		HeadSHA:           prStatus.HeadSHA,
+		IsPROpen:          prStatus.State == vcs.PRStateOpen,
+		IsVerifyActive:    info.Status == vcs.DisplayStatusNeedsHuman || info.Status == vcs.DisplayStatusVerifying,
+		IsVerifyConcluded: hasConcludedVerify(checks),
+	})
+}
+
+// hasConcludedVerify reports whether checks carry a completed boss/verify
+// status: the verify stage finished on the head (passed or failed).
+func hasConcludedVerify(checks []vcs.CheckResult) bool {
+	for _, c := range checks {
+		if c.Name == vcs.VerifyStatusContext && c.Status == vcs.CheckStatusCompleted {
+			return true
+		}
+	}
+	return false
+}
+
+// ReceiptPushProbe is the git evidence receipt carrying needs: whether a
+// session's own worktree pushed newSHA on top of fromSHA (SessionPushedHead),
+// and whether two commits carry identical content (SameTree). *git.Manager
+// satisfies it; it is declared here so the poller needs no dependency on the
+// large worktree interface.
 type ReceiptPushProbe interface {
 	SessionPushedHead(ctx context.Context, worktreePath, branch, fromSHA, newSHA string) (bool, error)
+	SameTree(ctx context.Context, worktreePath, a, b string) (bool, error)
 }
 
 // SetReceiptCarrier wires boss/build receipt carrying (BOS-1452): when a
 // session's own worktree pushes a head descending from the last receipted
-// head, the poller posts a carried receipt on the new head so the hand-off
-// status survives the session's follow-up commits. nil-safe: either argument
-// nil disables carrying.
+// head with the same tree (no content change, e.g. an empty commit), the
+// poller posts a carried receipt on the new head so the hand-off status
+// survives it. A head that changed content is never carried; it stays
+// unreceipted and verify parks it as no-receipt for a human (see
+// maybeCarryReceipt). nil-safe: either argument nil disables carrying.
 func (p *DisplayPoller) SetReceiptCarrier(poster vcs.CommitStatusPoster, probe ReceiptPushProbe) {
 	p.receiptPoster = poster
 	p.receiptProbe = probe
@@ -283,7 +336,10 @@ func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prN
 		if sess.PRNumber == nil || *sess.PRNumber != prNumber {
 			continue
 		}
-		if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
+		// A head-less end (the PR-merged/closed webhook's) is read now, so
+		// the end reaches the snapshot history and the evidence reader without
+		// waiting for the session's scheduled poll.
+		if isSettledEnd(p.tracker.Get(sess.ID)) {
 			continue
 		}
 		if p.pollSession(ctx, repo, sess, *sess.PRNumber) {
@@ -320,6 +376,10 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 	now := time.Now()
 	p.pruneWebhookRefreshes(now)
 	activeSessions := make(map[string]struct{})
+	// listed is every non-archived session, terminal PRs included, for the
+	// evidence observer; it is only complete when every listing succeeded.
+	listed := make(map[string]struct{})
+	listedAll := true
 	repos, err := p.repos.List(ctx)
 	if err != nil {
 		p.logger.Error().Err(err).Msg("display poller: list repos")
@@ -330,15 +390,23 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 		sessions, err := p.sessions.ListActive(ctx, repo.ID)
 		if err != nil {
 			p.logger.Error().Err(err).Str("repo", repo.ID).Msg("display poller: list sessions")
+			listedAll = false
 			continue
 		}
 
 		for _, sess := range sessions {
+			listed[sess.ID] = struct{}{}
 			if sess.PRNumber == nil {
 				continue
 			}
-			// Skip terminal PR states — no further polling needed.
-			if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
+			// Skip a terminal PR whose end carries its head — no further
+			// polling needed — but settle the end into the snapshot history and
+			// the evidence reader, which RefreshSessionPR skipped. The
+			// PR-merged/closed webhook's entry carries no head: that session
+			// takes the throttled poll below, which records the end on the head
+			// the PR ended on, or, if the PR was reopened, polls it open again.
+			if entry := p.tracker.Get(sess.ID); isSettledEnd(entry) {
+				p.settleEndedPR(ctx, repo.OriginURL, sess.ID, *sess.PRNumber, entry)
 				continue
 			}
 			activeSessions[sess.ID] = struct{}{}
@@ -349,6 +417,11 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 		}
 	}
 	p.pruneLastPoll(activeSessions)
+	// A partial listing would drop the sessions it missed, blanking their
+	// evidence until a later cycle observes and re-reads them.
+	if p.evidence != nil && listedAll {
+		p.evidence.Retain(listed)
+	}
 }
 
 // pollSession fetches PR status, checks, and reviews for a single session
@@ -381,8 +454,14 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		}
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
+		// The end is dated when the daemon learned of it: by the webhook's
+		// entry when one already marked the PR so, otherwise by this poll.
+		end := &status.DisplayEntry{Status: info.Status, HeadSHA: info.HeadSHA, UpdatedAt: time.Now()}
+		if prev := p.tracker.Get(sessionID); prev != nil && prev.Status == info.Status {
+			end.UpdatedAt = prev.UpdatedAt
+		}
 		p.tracker.Set(sessionID, info)
-		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
+		p.settleEndedPR(ctx, repoPath, sessionID, prNumber, end)
 		return true
 	}
 
@@ -394,6 +473,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
 		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
+		p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, nil, info)
 		return true
 	}
 
@@ -433,6 +513,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	info.Mergeable = prStatus.Mergeable
 	p.tracker.Set(sessionID, info)
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+	p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, checks, info)
 
 	// A session Blocked by a stale fix-loop exhaustion is never re-examined by
 	// the state-machine poller (pollableState excludes Blocked), so once the PR
@@ -450,11 +531,16 @@ const carriedReceiptDescriptionPrefix = "carried by bossd from "
 
 // maybeCarryReceipt posts a carried boss/build receipt on head when the
 // session's own worktree pushed it on top of the last receipted head
-// (BOS-1452), and reports whether a receipt is now on head. Conditions are
-// checked cheapest first; the git probe runs only for a session whose head
-// moved off a latched receipt with no boss/build status of its own. A failed
-// probe or post is never fatal: it claims no receipt and the next poll
-// retries.
+// (BOS-1452) and head carries the same content as that receipted head, and
+// reports whether a receipt is now on head. The receipt is carried only
+// across content-identical commits (same tree, e.g. an empty commit): a head
+// whose content changed after review is unreviewed, so bossd never receipts it
+// and verify parks it as no-receipt; whether anything else may receipt it is
+// the ready gate's call (skills-toolbox/ready-gate.mjs), not this poller's.
+// Conditions are checked cheapest first; the git probes run only for a
+// session whose head moved off a latched receipt with no boss/build status of
+// its own. A failed probe or post is never fatal: it claims no receipt and the
+// next poll retries.
 func (p *DisplayPoller) maybeCarryReceipt(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int, head string, checkSet vcs.CheckSet) bool {
 	if p.receiptPoster == nil || p.receiptProbe == nil {
 		return false
@@ -482,6 +568,18 @@ func (p *DisplayPoller) maybeCarryReceipt(ctx context.Context, repo *models.Repo
 			Str("from", from).
 			Str("to", head).
 			Msg("display poller: head not carried; not this session's own push on the receipted head")
+		return false
+	}
+	// SessionPushedHead already proved strict descent, so "same patch" reduces
+	// to tree equality: any commit that changed content is unreviewed.
+	same, err := p.receiptProbe.SameTree(ctx, sess.WorktreePath, from, head)
+	if err != nil || !same {
+		p.logger.Debug().Err(err).
+			Str("session_id", sess.ID).
+			Int("pr_number", prNumber).
+			Str("from", from).
+			Str("to", head).
+			Msg("display poller: head not carried; content differs from the receipted head or the tree probe failed")
 		return false
 	}
 	err = p.receiptPoster.PostCommitStatus(ctx, repo.OriginURL, head, vcs.CommitStatus{
@@ -735,20 +833,102 @@ func isTerminalDisplayStatus(status vcs.DisplayStatus) bool {
 	return status == vcs.DisplayStatusMerged || status == vcs.DisplayStatusClosed
 }
 
+// isSettledEnd reports whether a display entry is a merged or closed PR's end
+// carrying the head it ended on, so poll() and RefreshPR need not read the
+// provider for it. The PR-merged/closed webhook's entry carries no head and is
+// not settled: the next read records the end on the head the provider reports,
+// or finds the PR reopened.
+func isSettledEnd(entry *status.DisplayEntry) bool {
+	return entry != nil && isTerminalDisplayStatus(entry.Status) && entry.HeadSHA != ""
+}
+
 func (p *DisplayPoller) persistSnapshot(ctx context.Context, sessionID string, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {
-	if p.snapshots != nil {
-		raw, err := json.Marshal(checks)
-		if err != nil {
-			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: marshal checks for snapshot")
-			return
+	p.insertSnapshot(ctx, sessionID, prStatus.HeadSHA, checks, info.Status, time.Time{})
+}
+
+// insertSnapshot persists one check snapshot; a zero polledAt is stamped by
+// the store. nil-safe on the store.
+func (p *DisplayPoller) insertSnapshot(ctx context.Context, sessionID, headSHA string, checks []vcs.CheckResult, st vcs.DisplayStatus, polledAt time.Time) {
+	if p.snapshots == nil {
+		return
+	}
+	raw, err := json.Marshal(checks)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: marshal checks for snapshot")
+		return
+	}
+	if err := p.snapshots.Insert(ctx, db.CheckSnapshot{
+		SessionID:      sessionID,
+		PolledAt:       polledAt,
+		HeadSHA:        headSHA,
+		RawJSON:        string(raw),
+		ComputedStatus: int(st),
+	}); err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: persist check snapshot")
+	}
+}
+
+// settleEndedPR carries a merged or closed PR's end into the persisted
+// snapshot history and the evidence reader. pollSession records an end it
+// reads through it, and poll() settles through it every cycle a terminal entry
+// carrying its head (RefreshSessionPR's) is skipped, since RefreshSessionPR
+// sets the entry without recording a snapshot or telling the reader; without
+// this the timeline — which reads the PR's status from the newest snapshot —
+// would keep the open PR's last wait current, and the head the PR ended on
+// would never get its ended evidence read.
+//
+// The end is recorded on one head, which the snapshot history and the reader
+// then share (the timeline matches evidence against the newest snapshot's
+// head): see endedHead. A reopened PR needs nothing here: its entry turns
+// non-terminal, poll() resumes, and newer open snapshots supersede the
+// terminal one. The ended observation is reported every cycle; the reader
+// reads an ended head once, and again only after a failed read once its
+// refresh interval has passed.
+func (p *DisplayPoller) settleEndedPR(ctx context.Context, repoPath, sessionID string, prNumber int, entry *status.DisplayEntry) {
+	// An end with no head has nothing to record: the entry stays head-less, so
+	// the next poll reads the PR again.
+	if entry.HeadSHA == "" {
+		return
+	}
+	head, ok := p.endedHead(ctx, sessionID, entry)
+	if !ok || head == "" || p.evidence == nil {
+		return
+	}
+	p.evidence.Observe(ctx, evidence.Observation{
+		SessionID: sessionID,
+		RepoPath:  repoPath,
+		PRNumber:  prNumber,
+		HeadSHA:   head,
+	})
+}
+
+// endedHead returns the head a merged or closed PR ended on, recording the end
+// as a snapshot when the newest snapshot does not already say so. The head is
+// the newest snapshot's when that snapshot is terminal; otherwise it is the
+// entry's, and one terminal snapshot is inserted on it, dated by the entry but
+// never before the snapshot it supersedes (a poll in flight when the PR ended
+// can persist an open snapshot after the end), so later cycles find it newest
+// and write nothing. ok is false when the snapshot history could not be read;
+// the next cycle retries.
+func (p *DisplayPoller) endedHead(ctx context.Context, sessionID string, entry *status.DisplayEntry) (head string, ok bool) {
+	if p.snapshots == nil {
+		return entry.HeadSHA, true
+	}
+	newest, err := p.snapshots.RecentBySession(ctx, sessionID, 1)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: read newest check snapshot of an ended PR")
+		return "", false
+	}
+	at := entry.UpdatedAt
+	if len(newest) > 0 {
+		latest := newest[0]
+		if isTerminalDisplayStatus(vcs.DisplayStatus(latest.ComputedStatus)) {
+			return latest.HeadSHA, true
 		}
-		if err := p.snapshots.Insert(ctx, db.CheckSnapshot{
-			SessionID:      sessionID,
-			HeadSHA:        prStatus.HeadSHA,
-			RawJSON:        string(raw),
-			ComputedStatus: int(info.Status),
-		}); err != nil {
-			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: persist check snapshot")
+		if at.Before(latest.PolledAt) {
+			at = latest.PolledAt
 		}
 	}
+	p.insertSnapshot(ctx, sessionID, entry.HeadSHA, nil, entry.Status, at)
+	return entry.HeadSHA, true
 }

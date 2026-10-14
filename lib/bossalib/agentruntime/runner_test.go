@@ -236,6 +236,31 @@ func TestRunnerStart_ExtraEnvOverridesInheritedKey(t *testing.T) {
 	}
 }
 
+// TestRunnerStart_EmptyOverlayValueShadowsInheritedKey pins the other half of
+// BOS-1562's repo-scoped credential guarantee: bossd pins SENTRY_API_KEY to ""
+// for a repo with no Sentry configuration, and that explicitly empty overlay
+// value must hide an ambient value the plugin process inherited.
+func TestRunnerStart_EmptyOverlayValueShadowsInheritedKey(t *testing.T) {
+	t.Setenv("SENTRY_API_KEY", "ambient-must-not-leak")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'SENTRY=[%s]\n' "$SENTRY_API_KEY"`)),
+	)
+
+	texts := runnerLogTexts(t, r, dir, logPath, "env-empty-pin",
+		map[string]string{"SENTRY_API_KEY": ""})
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "SENTRY=[]") {
+		t.Errorf("empty overlay value must shadow the inherited key; log=%s", joined)
+	}
+	if strings.Contains(joined, "ambient-must-not-leak") {
+		t.Errorf("inherited SENTRY_API_KEY leaked past the empty pin; log=%s", joined)
+	}
+}
+
 func TestRunnerStart_NoExtraEnvStillInherits(t *testing.T) {
 	t.Setenv("PROOF_TEST_INHERITED", "still-here")
 	dir := t.TempDir()

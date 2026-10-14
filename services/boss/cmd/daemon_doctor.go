@@ -364,6 +364,76 @@ func resolvedPath(path string) string {
 	return filepath.Clean(path)
 }
 
+// skipDaemonSupervisionWarningEnv suppresses the unsupervised-daemon warning
+// for scripted use, following the BOSS_SKIP_REVISION_DRIFT_WARNING precedent.
+const skipDaemonSupervisionWarningEnv = "BOSS_SKIP_SUPERVISION_WARNING"
+
+// daemonUnsupervisedWarningText is the single line every `boss` subcommand may
+// emit when the daemon serving this profile is live and the service manager
+// does not own it. The PID is appended per invocation.
+//
+// Deliberately short: daemonUnsupervisedConsequences is the full explanation
+// and belongs in doctor, not on every command.
+const daemonUnsupervisedWarningText = "boss: the service manager does not own the bossd serving this profile " +
+	"(details: boss daemon doctor)"
+
+// daemonSupervisionWarningRemedyCommands are the commands that already report
+// supervision in full, or that are themselves its remedy. `boss daemon start`
+// is deliberately absent: with a detached daemon already serving it prints
+// "Daemon is already running.", and the operator should learn what kind.
+var daemonSupervisionWarningRemedyCommands = []string{
+	"boss daemon doctor",
+	"boss daemon status",
+	"boss daemon stop",
+	"boss daemon restart",
+	"boss daemon install",
+	"boss daemon uninstall",
+}
+
+// warnIfDaemonUnsupervised writes at most one stderr line when the bossd
+// serving this profile is live and the service manager does not own it — the
+// third per-invocation warning beside warnIfDaemonBinaryStale and
+// warnIfBossBinaryBehindCheckout, for the same "detection exists, nobody sees
+// it" failure: on 2026-10-11 a detached bossd served the socket for a day while
+// only `boss daemon doctor` said so.
+//
+// It reads the observation doctor renders (daemonLocalSupervisionObservation)
+// rather than re-deriving one, and only the unsupervised verdict warns. Every
+// unknown stays silent: a per-invocation line for a probe that could not tell
+// trains operators to ignore it, and doctor is where unknowns are explained.
+//
+// It can never fail a command: nothing is written to stdout — a --json
+// consumer would be corrupted — and the exit code is untouched.
+//
+// PersistentPreRunE runs before newClient's auto-start, so an invocation that
+// itself spawns a detached daemon stays silent and the next one reports it.
+func warnIfDaemonUnsupervised(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if os.Getenv(skipDaemonSupervisionWarningEnv) != "" {
+		return
+	}
+	// Under BOSS_DAEMON_SKIP_LAUNCHCTL the status shape is byte-identical to a
+	// detached daemon; see reportDaemonSupervision.
+	if daemonServiceProbingDisabled() {
+		return
+	}
+	// --remote, --host and BOSS_SOCKET all name a daemon other than this
+	// profile's, which is exactly when newClient skips local startup.
+	if !needsLocalDaemonStartup(cmd) {
+		return
+	}
+	if commandPathIsOneOf(cmd.CommandPath(), daemonSupervisionWarningRemedyCommands) {
+		return
+	}
+	observation := daemonLocalSupervisionObservation()
+	if !observation.unsupervised() {
+		return
+	}
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s [PID %d]\n", daemonUnsupervisedWarningText, observation.RecordedPID)
+}
+
 // warnIfDaemonBinaryStale writes at most one line to stderr when the running
 // bossd is behind the installed build. It is called from rootCmd's
 // PersistentPreRunE and must never fail a command: every error inside is
@@ -775,60 +845,55 @@ func reportDaemonSupervision(
 	supervision daemon.SupervisionModeStatus,
 	ownership daemon.WatchdogOwnership,
 ) (unhealthy bool, remediation daemonSupervisionRemediation) {
-	// Checked BEFORE the service view is read, not after. Under this env var
-	// platformGetStatus deliberately returns Installed=true, Running=false
-	// without ever asking launchd or systemd — which is byte-identical to the
-	// detached-daemon shape this function exists to flag. Interpreting it would
-	// turn every test harness and CI run into a FAIL, which is precisely how a
-	// diagnostic gets ignored on the host where it is telling the truth.
-	if os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != "" {
+	// The gather ladder lives in observeDaemonSupervision
+	// (daemon_supervision.go) so the per-invocation warning reads the same
+	// observation this renders; only the wording and the remediation are
+	// chosen here.
+	observation := observeDaemonSupervision(metadata, metadataErr, supervision, ownership)
+	switch observation.Stop {
+	case daemonSupervisionStopNone:
+		// A verdict was reached; it is rendered below.
+	case daemonSupervisionStopProbingDisabled:
+		// Checked BEFORE the service view is read, not after. Under this env
+		// var platformGetStatus deliberately returns Installed=true,
+		// Running=false without ever asking launchd or systemd — which is
+		// byte-identical to the detached-daemon shape this function exists to
+		// flag. Interpreting it would turn every test harness and CI run into
+		// a FAIL, which is precisely how a diagnostic gets ignored on the host
+		// where it is telling the truth.
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (service-manager probing disabled by BOSS_DAEMON_SKIP_LAUNCHCTL)")
 		return false, daemonSupervisionRemediationNone
-	}
-
-	st, statusErr := daemonGetStatus()
-	switch {
-	case statusErr != nil:
-		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (service status unavailable: %v)\n", statusErr)
+	case daemonSupervisionStopStatusUnavailable:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (service status unavailable: %v)\n", observation.Err)
 		return false, daemonSupervisionRemediationNone
-	case metadataErr != nil:
-		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (no daemon state record: %v)\n", metadataErr)
+	case daemonSupervisionStopNoStateRecord:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (no daemon state record: %v)\n", observation.Err)
 		return false, daemonSupervisionRemediationNone
-	case !st.Installed && !daemonUnattendedSubstrateOwnsVerdict(supervision):
+	case daemonSupervisionStopNotInstalled:
 		// "not installed" has its own check and its own remedy below; claiming
-		// it here too would print two failures for one fact.
-		//
-		// BOS-1204: `st.Installed` is the per-user LaunchAgent, and an
-		// unattended install deliberately supersedes that agent — so on a
-		// correctly supervised unattended host this rung is TRUE and used to
-		// swallow the verdict entirely, leaving doctor saying "unknown" where
-		// status said "supervised". That is a divergence beyond the single one
-		// TestDaemonSupervisionVerdictsMatchDoctor declares, which is why the
-		// guard is here rather than left to the wording below.
+		// it here too would print two failures for one fact. The unattended
+		// substrate is exempted inside the gather, which is what keeps this
+		// from being a divergence beyond the single one
+		// TestDaemonSupervisionVerdictsMatchDoctor declares.
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no service is installed)")
 		return false, daemonSupervisionRemediationNone
-	case metadata.PID <= 0:
+	case daemonSupervisionStopNoRecordedPID:
 		_, _ = fmt.Fprintln(out, "daemon supervision: unknown (no recorded daemon PID)")
 		return false, daemonSupervisionRemediationNone
-	}
-
-	alive, aliveErr := daemonProcessAlive(metadata.PID)
-	switch {
-	case aliveErr != nil:
-		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d could not be checked: %v)\n", metadata.PID, aliveErr)
+	case daemonSupervisionStopLivenessUnchecked:
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d could not be checked: %v)\n", observation.RecordedPID, observation.Err)
 		return false, daemonSupervisionRemediationNone
-	case !alive:
+	case daemonSupervisionStopNotRunning:
 		// Nothing is running under the recorded PID. The running-process check
 		// below owns that story.
-		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d is not running)\n", metadata.PID)
+		_, _ = fmt.Fprintf(out, "daemon supervision: unknown (recorded PID %d is not running)\n", observation.RecordedPID)
 		return false, daemonSupervisionRemediationNone
 	}
 
-	// The verdict is decided by daemonSupervisionOfLiveRecord — the one
+	// The verdict was decided by daemonSupervisionOfLiveRecord — the one
 	// decision `boss daemon status` renders too and `boss daemon restart`
-	// branches on, via daemon.ClassifyServingMode. Only the wording and the
-	// remediation flags are chosen here.
-	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID, supervision, ownership)
+	// branches on, via daemon.ClassifyServingMode.
+	verdict, reason, st := observation.Verdict, observation.Reason, observation.Status
 	switch reason {
 	case daemonSupervisionReasonDetached:
 		_, _ = fmt.Fprintf(out,
@@ -2144,11 +2209,34 @@ func revisionDriftOptions() revisiondrift.Options {
 	}
 }
 
+// revisionDriftReleaseBuild reports whether a version stamp is a stable
+// release version, which is how the classifier is told a binary is a release
+// build rather than a build from some checkout. It is buildinfo's own
+// release-version predicate applied to the stamp's first field, so this check
+// and plugin checksum enforcement cannot disagree about what a release is.
+//
+// The release pipeline stamps exactly v<semver> on a production merge commit
+// that no development checkout contains. Checkout builds stamp git describe
+// output, a -dirty suffix, a bare --always SHA, or the dev fallback, and all
+// of those fail here. The one checkout stamp that passes is a build made at
+// exactly a stable tag, which reads as bare v<semver>; that is harmless,
+// because stable tags sit only on the production lineage, so such a build's
+// content is the release's and the release remedy fits it.
+//
+// The version stamp decides rather than the install path, because the bossd
+// file doctor reads may be a checkout build sitting on $PATH; the stamp is
+// intrinsic to the bytes and means the same for both binaries.
+func revisionDriftReleaseBuild(version string) bool {
+	fields := strings.Fields(version)
+	return len(fields) > 0 && buildinfo.IsReleaseVersion(fields[0])
+}
+
 // inspectBossRevisionDrift classifies the EXECUTING boss binary against the
 // checkout the command is being run from.
 func inspectBossRevisionDrift(ctx context.Context) revisiondrift.Drift {
 	options := revisionDriftOptions()
 	options.BinaryRevision, options.BinaryVersion = daemonDoctorBossRevision()
+	options.ReleaseBuild = revisionDriftReleaseBuild(options.BinaryVersion)
 	return revisiondrift.Inspect(ctx, options)
 }
 
@@ -2173,7 +2261,24 @@ func inspectBossdFileRevisionDrift(ctx context.Context) revisiondrift.Drift {
 	}
 	options := revisionDriftOptions()
 	options.BinaryRevision, options.BinaryVersion = revision, version
+	options.ReleaseBuild = revisionDriftReleaseBuild(version)
 	return revisiondrift.Inspect(ctx, options)
+}
+
+// daemonRevisionDriftReleasePointer is the remedy that fits a release install:
+// a newer release, never a rebuild from this checkout. It rides the unknown
+// line rather than the Remediation block, because a release build is not a
+// failure and daemonRevisionDriftRemediation is the rebuild text.
+const daemonRevisionDriftReleasePointer = " — check for a newer release with 'boss upgrade --check'"
+
+// revisionDriftUnknownPointer returns the one-line pointer an unknown outcome
+// carries, keyed on the install kind its reason establishes. Only a release
+// build has one today.
+func revisionDriftUnknownPointer(reason revisiondrift.Reason) string {
+	if reason == revisiondrift.ReasonReleaseBuild {
+		return daemonRevisionDriftReleasePointer
+	}
+	return ""
 }
 
 // reportDaemonRevisionDrift prints whether one binary contains the commits this
@@ -2192,7 +2297,7 @@ func reportDaemonRevisionDrift(out io.Writer, binaryLabel string, drift revision
 		_, _ = fmt.Fprintf(out, "FAIL %s\n", line)
 		return true, daemonRevisionDriftRemediation
 	case drift.Unknown():
-		_, _ = fmt.Fprintf(out, "%s — unknown, so neither healthy nor stale\n", line)
+		_, _ = fmt.Fprintf(out, "%s — unknown, so neither healthy nor stale%s\n", line, revisionDriftUnknownPointer(drift.Reason))
 		return false, ""
 	default:
 		_, _ = fmt.Fprintln(out, line)

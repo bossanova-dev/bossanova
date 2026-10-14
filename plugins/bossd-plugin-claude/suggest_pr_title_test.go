@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,7 +68,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("success returns sanitized title", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
 			return "  \"Better title\"\nignored second line\n", nil
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -80,7 +82,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("exec error -> not supported (no error returned)", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
 			return "", errors.New("claude failed")
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -94,7 +96,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("empty output -> not supported", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
 			return "  \n ", nil
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -105,4 +107,52 @@ func TestSuggestPRTitle(t *testing.T) {
 			t.Fatal("supported should be false on empty output")
 		}
 	})
+}
+
+// TestRunClaudeOneShotAppliesExtraEnvOverAmbient pins BOS-1562 for the PR-title
+// one-shot: it runs claude in the session worktree, so the daemon's repo pins
+// (empty proof, Linear and Sentry keys for an untrusted repo) must override the
+// plugin's ambient values in the child, exactly as a session spawn does.
+func TestRunClaudeOneShotAppliesExtraEnvOverAmbient(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncat >/dev/null\nprintf 'linear=[%s] proof=[%s] keep=[%s]\\n' \"$LINEAR_API_KEY\" \"$PROOF_ANTHROPIC_API_KEY\" \"$ONESHOT_AMBIENT_KEEP\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("LINEAR_API_KEY", "ambient-linear")
+	t.Setenv("PROOF_ANTHROPIC_API_KEY", "ambient-proof")
+	t.Setenv("ONESHOT_AMBIENT_KEEP", "inherited")
+
+	s := &Server{logger: zerolog.Nop()}
+	out, err := s.runClaudeOneShot(context.Background(), t.TempDir(), "prompt", map[string]string{
+		"LINEAR_API_KEY":          "",
+		"PROOF_ANTHROPIC_API_KEY": "",
+	})
+	if err != nil {
+		t.Fatalf("runClaudeOneShot: %v", err)
+	}
+	if want := "linear=[] proof=[] keep=[inherited]"; strings.TrimSpace(out) != want {
+		t.Fatalf("child env = %q, want %q (pins must override ambient; unpinned keys still inherited)", strings.TrimSpace(out), want)
+	}
+}
+
+// TestSuggestPRTitleForwardsExtraEnv proves the request's overlay reaches the
+// one-shot rather than being dropped on the way.
+func TestSuggestPRTitleForwardsExtraEnv(t *testing.T) {
+	var got map[string]string
+	s := &Server{logger: zerolog.Nop()}
+	s.oneShot = func(_ context.Context, _, _ string, env map[string]string) (string, error) {
+		got = env
+		return "Title", nil
+	}
+	if _, err := s.SuggestPRTitle(context.Background(), &bossanovav1.SuggestPRTitleRequest{
+		WorkDir:  "/wt",
+		ExtraEnv: map[string]string{"LINEAR_API_KEY": ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got["LINEAR_API_KEY"]; !ok || v != "" {
+		t.Fatalf("one-shot env = %v, want LINEAR_API_KEY pinned empty", got)
+	}
 }

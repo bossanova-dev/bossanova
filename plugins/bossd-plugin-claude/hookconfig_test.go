@@ -938,7 +938,7 @@ func TestWritePromptSubmitHookConfig_ExactlyOneEntryAndUserHooksKept(t *testing.
 	}
 
 	for range 2 {
-		if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242); err != nil {
+		if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242, ""); err != nil {
 			t.Fatalf("WritePromptSubmitHookConfig: %v", err)
 		}
 	}
@@ -956,7 +956,7 @@ func TestWritePromptSubmitHookConfig_ExactlyOneEntryAndUserHooksKept(t *testing.
 
 	// A later chat's start replaces the earlier chat's entry rather than
 	// stacking one curl per chat onto every prompt.
-	if err := WritePromptSubmitHookConfig(wt, "agent-2", 4242); err != nil {
+	if err := WritePromptSubmitHookConfig(wt, "agent-2", 4242, ""); err != nil {
 		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
 	}
 	bossd, all = promptSubmitEntries(t, readSettings(t, wt))
@@ -971,7 +971,7 @@ func TestRemoveRunHookConfig_RemovesPromptSubmitEntryOnly(t *testing.T) {
 	if err := WriteHookConfig(wt, "sess-1", "agent-1", "tok", 4242); err != nil {
 		t.Fatalf("WriteHookConfig: %v", err)
 	}
-	if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242); err != nil {
+	if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242, ""); err != nil {
 		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
 	}
 	settings := readSettings(t, wt)
@@ -1000,12 +1000,44 @@ func TestRemoveRunHookConfig_RemovesPromptSubmitEntryOnly(t *testing.T) {
 func TestWritePromptSubmitHookConfig_ValidationErrors(t *testing.T) {
 	wt := t.TempDir()
 	for name, call := range map[string]func() error{
-		"no worktree": func() error { return WritePromptSubmitHookConfig("", "a", 1) },
-		"no id":       func() error { return WritePromptSubmitHookConfig(wt, "", 1) },
-		"no port":     func() error { return WritePromptSubmitHookConfig(wt, "a", 0) },
+		"no worktree":      func() error { return WritePromptSubmitHookConfig("", "a", 1, "") },
+		"no id":            func() error { return WritePromptSubmitHookConfig(wt, "", 1, "") },
+		"no port":          func() error { return WritePromptSubmitHookConfig(wt, "a", 0, "") },
+		"shell-meta token": func() error { return WritePromptSubmitHookConfig(wt, "a", 1, `x" ; touch /tmp/p; "`) },
 	} {
 		if err := call(); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+func TestWritePromptSubmitHookConfig_CarriesBearerHeaderWhenTokenGiven(t *testing.T) {
+	wt := t.TempDir()
+	const tok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242, tok); err != nil {
+		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
+	}
+	bossd, _ := promptSubmitEntries(t, readSettings(t, wt))
+	if len(bossd) != 1 {
+		t.Fatalf("bossd prompt-submitted entries = %d, want 1", len(bossd))
+	}
+	assertCommandContains(t, bossd[0],
+		`-H "Authorization: Bearer `+tok+`"`,
+		"http://127.0.0.1:4242/hooks/prompt-submitted/agent-1",
+		">/dev/null 2>&1 || true",
+	)
+}
+
+func TestWritePromptSubmitHookConfig_OmitsBearerHeaderWhenTokenEmpty(t *testing.T) {
+	wt := t.TempDir()
+	if err := WritePromptSubmitHookConfig(wt, "agent-1", 4242, ""); err != nil {
+		t.Fatalf("WritePromptSubmitHookConfig: %v", err)
+	}
+	bossd, _ := promptSubmitEntries(t, readSettings(t, wt))
+	if len(bossd) != 1 {
+		t.Fatalf("bossd prompt-submitted entries = %d, want 1", len(bossd))
+	}
+	if entryCommandContains(bossd[0], "Authorization") {
+		t.Fatalf("empty token must write the command without an Authorization header: %#v", bossd[0])
 	}
 }

@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "reposecrets",
+    srcs = ["reposecrets.go"],
+    importpath = "github.com/recurser/bossd/internal/reposecrets",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/safego",
+        "@com_github_rs_zerolog//log",
+    ],
+)
+
+go_test(
+    name = "reposecrets_test",
+    srcs = ["reposecrets_test.go"],
+    deps = [
+        ":reposecrets",
+        "//services/bossd/internal/reposecrets/reposecretstest",
+    ],
+)

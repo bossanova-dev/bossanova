@@ -22,6 +22,8 @@ const gateTestLinearKey = "lin_api_gate_test"
 // runner over it. probeDir is outside the repo: gates drop evidence there.
 type gateFixture struct {
 	runner   *TriggerGateRunner
+	repos    *db.SQLiteRepoStore
+	repoID   string
 	repoDir  string
 	probeDir string
 }
@@ -50,6 +52,8 @@ func newGateFixture(t *testing.T) *gateFixture {
 	t.Setenv("GATE_TEST_PROBE", probeDir)
 	return &gateFixture{
 		runner:   &TriggerGateRunner{Repos: repos, ProofEnv: proofenv.NewNoop(), Logger: zerolog.Nop()},
+		repos:    repos,
+		repoID:   repo.ID,
 		repoDir:  repoDir,
 		probeDir: probeDir,
 	}
@@ -281,6 +285,43 @@ func TestTriggerGateRunner_Environment(t *testing.T) {
 		if v, ok := env[name]; ok {
 			t.Errorf("gate saw proof variable %s=%q", name, v)
 		}
+	}
+}
+
+// TestTriggerGateRunner_ProofKeyOnlyForTrustedRepo pins BOS-1562 for trigger
+// gates: an untrusted repo's gate sees no PROOF_ANTHROPIC_API_KEY — neither the
+// overlay's nor an ambient one — and the same gate sees the overlay key once
+// the repo is trusted.
+func TestTriggerGateRunner_ProofKeyOnlyForTrustedRepo(t *testing.T) {
+	fx := newGateFixture(t)
+	t.Setenv(proofenv.EnvAnthropicAPIKey, "ambient-proof-key")
+	fx.runner.ProofEnv = proofenv.StaticResolver{Env: map[string]string{
+		proofenv.EnvAnthropicAPIKey: "overlay-proof-key",
+	}}
+	probe := gateCmd(`echo "[${PROOF_ANTHROPIC_API_KEY-unset}]" > "$GATE_TEST_PROBE/proof"`)
+	readProbe := func() string {
+		t.Helper()
+		res, _, err := fx.runner.Run(context.Background(), probe)
+		if err != nil || res.GetVerdict() != pb.TriggerGateVerdict_TRIGGER_GATE_VERDICT_PASSED {
+			t.Fatalf("Run = %+v, %v; want PASSED", res, err)
+		}
+		raw, err := os.ReadFile(filepath.Join(fx.probeDir, "proof"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+
+	if got := readProbe(); got != "[unset]" {
+		t.Errorf("untrusted repo gate PROOF_ANTHROPIC_API_KEY = %s, want unset", got)
+	}
+
+	trusted := true
+	if _, err := fx.repos.Update(context.Background(), fx.repoID, db.UpdateRepoParams{IsTrusted: &trusted}); err != nil {
+		t.Fatalf("trust repo: %v", err)
+	}
+	if got := readProbe(); got != "[overlay-proof-key]" {
+		t.Errorf("trusted repo gate PROOF_ANTHROPIC_API_KEY = %s, want the overlay key", got)
 	}
 }
 

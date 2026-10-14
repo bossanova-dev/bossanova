@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "attention",
+    srcs = [
+        "alertkeys.go",
+        "attention.go",
+        "templates.go",
+    ],
+    importpath = "github.com/recurser/bossalib/attention",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "attention_test",
+    srcs = [
+        "alertkeys_test.go",
+        "attention_test.go",
+    ],
+    embed = [":attention"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

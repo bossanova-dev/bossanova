@@ -67,37 +67,37 @@ test('discoverExtensions scans agent-neutral roots with first-root dedupe by ext
     for (const skillRoot of scenario.roots) {
       writeSkill(
         root,
-        'boss-review-alpha',
+        'boss-plan-alpha',
         [
-          'name: boss-review-alpha',
+          'name: boss-plan-alpha',
           'x-boss-extension:',
-          '  extends: boss-review',
-          '  role: round',
+          '  extends: boss-plan',
+          '  role: plan-reviewer',
           '  order: 20',
         ],
         skillRoot,
       )
       writeSkill(
         root,
-        'boss-review-beta',
+        'boss-plan-beta',
         [
-          'name: boss-review-beta',
+          'name: boss-plan-beta',
           'x-boss-extension:',
-          '  extends: boss-review',
-          '  role: round',
+          '  extends: boss-plan',
+          '  role: plan-reviewer',
           '  order: 10',
         ],
         skillRoot,
       )
     }
 
-    const result = discoverExtensions({ core: 'boss-review', root, role: 'round' })
+    const result = discoverExtensions({ core: 'boss-plan', root, role: 'plan-reviewer' })
     assert.deepEqual(
       descriptorSummary(result),
       {
         extensions: [
-          { name: 'boss-review-beta', role: 'round', order: 10 },
-          { name: 'boss-review-alpha', role: 'round', order: 20 },
+          { name: 'boss-plan-beta', role: 'plan-reviewer', order: 10 },
+          { name: 'boss-plan-alpha', role: 'plan-reviewer', order: 20 },
         ],
         skipped: [],
       },
@@ -231,8 +231,6 @@ test('discoverExtensions silently omits notes extensions for established roles',
   ])
 
   const establishedRoles = [
-    'lens',
-    'round',
     'surface',
     'plan-reviewer',
     'agent-driver',
@@ -266,7 +264,7 @@ test('discoverExtensions silently omits notes extensions for established roles',
 
 test('notes discovery is stdout-only and exact for an empty root for every terminal core', () => {
   const root = scratchRoot()
-  for (const core of ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']) {
+  for (const core of ['boss-build', 'boss-plan', 'boss-epic', 'boss-repair']) {
     const result = spawnSync(
       process.execPath,
       [
@@ -286,21 +284,6 @@ test('notes discovery is stdout-only and exact for an empty root for every termi
     assert.equal(result.status, 0, core)
     assert.equal(result.stderr, '', core)
     assert.equal(result.stdout, '{"extensions":[],"skipped":[]}\n', core)
-  }
-})
-
-test('validateResult accepts lens and round envelopes that declare an inline fallback', () => {
-  for (const role of ['lens', 'round']) {
-    const envelope = {
-      ok: true,
-      extension: 'boss-review-example',
-      role,
-      items: [],
-      notes: '',
-      error: null,
-      fallback: 'wrapped reviewer unavailable; ran the inline rubric',
-    }
-    assert.deepEqual(validateResult(envelope, role), { ok: true, errors: [] })
   }
 })
 
@@ -382,17 +365,16 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // BOS-1386: ten → eleven; verify is the boss-verify stage's judgment role.
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
   // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
+  // eleven → ten: lens and round retire with boss-review's lens map and round extensions.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
     'knowledge',
-    'lens',
     'maintenance',
     'methodology',
     'notes',
     'plan-reviewer',
     'release',
-    'round',
     'surface',
     'verify',
   ])
@@ -403,7 +385,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
 
 test('published built-in notes extensions are discoverable for each terminal core', () => {
   const root = path.resolve(import.meta.dirname, '..')
-  const cores = ['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair']
+  const cores = ['boss-build', 'boss-plan', 'boss-epic', 'boss-repair']
 
   for (const core of cores) {
     const { extensions, skipped } = discoverExtensions({

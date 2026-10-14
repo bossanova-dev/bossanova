@@ -40,8 +40,13 @@ import (
 //     next session is handed. Both modes still go through account.Resolver's
 //     single shared body, so the ENV they produce cannot diverge.
 //
-// Values are secret-bearing. Callers must never log them, and op names the
-// operation only so a repo-lookup failure is attributable in the daemon log.
+// repo is the spawn's one repo lookup (session.RepoForSessionEnv, which logs a
+// failure and returns nil). The caller feeds that same value to the launch's
+// project-trust decision (repotrust.ProjectTrustFor), so the env overlay and
+// the trust decision cannot disagree about the repo; nil pins the env as for
+// an untrusted repo and makes the decision fail closed.
+//
+// Values are secret-bearing. Callers must never log them.
 //
 // BOS-1142: an error means the chat is bound to a managed account whose
 // credentials could not be injected. Both callers propagate it rather than
@@ -52,15 +57,14 @@ func (s *Server) chatSpawnEnv(
 	ctx context.Context,
 	sess *models.Session,
 	chat *models.AgentChat,
+	repo *models.Repo,
 	defaultAccountID string,
-	op string,
 	use accountUseRecording,
 ) (map[string]string, error) {
 	accountEnv, err := s.resolveChatAccountEnvForSpawn(ctx, sess, chat, defaultAccountID, use)
 	if err != nil {
 		return nil, err
 	}
-	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, op, s.logger)
 	return dotenv.OverlayWithRepo(
 		mergeManagedOverAccount(
 			session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),

@@ -407,9 +407,10 @@ func decodeClaudeInitEvent(r io.Reader) (claudeInitEvent, error) {
 	return claudeInitEvent{}, fmt.Errorf("claude emitted no system/init event")
 }
 
-// probeEnviron applies the chat's own environment overlay on top of the
-// daemon's. A nil overlay inherits the daemon environment unchanged, which is
-// exec's own behaviour for a nil Env.
+// probeEnviron applies a daemon-resolved environment overlay (the chat's own
+// for a probe, the session's repo-pinned one for a one-shot) on top of the
+// daemon's, last value winning. A nil overlay inherits the daemon environment
+// unchanged, which is exec's own behaviour for a nil Env.
 func probeEnviron(extraEnv map[string]string) []string {
 	if len(extraEnv) == 0 {
 		return nil

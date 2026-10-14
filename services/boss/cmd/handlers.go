@@ -427,6 +427,10 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	}
 	app := views.NewApp(c, authMgr)
 	app.WithSettings(settings)
+	// BOS-1520: the stderr unsupervised-daemon warning is printed before the
+	// alt screen takes over, so the TUI carries its own health line. nil under
+	// --remote/--host/BOSS_SOCKET, where Home stays silent.
+	app.WithDaemonSupervisionProbe(tuiDaemonSupervisionProbe(cmd))
 	if resolveE2ELoginEmail() != "" || resolveE2ECloudAccessClient() != nil {
 		views.DisableExternalBrowserForE2E()
 	}
@@ -4523,20 +4527,31 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		return fmt.Errorf("update repo: %w", err)
 	}
 
-	fmt.Printf("Repository updated.\n")
-	fmt.Printf("  ID:       %s\n", repo.Id)
-	fmt.Printf("  Name:     %s\n", repo.DisplayName)
-	fmt.Printf("  Strategy: %s\n", repo.MergeStrategy)
-	if repo.SetupScript != nil {
-		fmt.Printf("  Setup:    %s\n", *repo.SetupScript)
-	}
-	fmt.Printf("  Worktree base:          %s\n", repo.WorktreeBaseDir)
-	fmt.Printf("  Mark ready on green:    %v\n", repo.CanAutoMerge)
-	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
-	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
-	fmt.Printf("  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
-	fmt.Printf("  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
+	printUpdatedRepo(os.Stdout, c, repo)
 	return nil
+}
+
+// printUpdatedRepo writes the `boss repo update` summary. The Trusted line is
+// omitted for a remote client: the cloud proxy deliberately carries no trust
+// (a cloud caller must not see or flip a daemon's local trust), so its repo
+// always decodes as untrusted and printing it would misreport a trusted repo.
+func printUpdatedRepo(w io.Writer, c client.BossClient, repo *pb.Repo) {
+	_, _ = fmt.Fprintf(w, "Repository updated.\n")
+	_, _ = fmt.Fprintf(w, "  ID:       %s\n", repo.Id)
+	_, _ = fmt.Fprintf(w, "  Name:     %s\n", repo.DisplayName)
+	_, _ = fmt.Fprintf(w, "  Strategy: %s\n", repo.MergeStrategy)
+	if repo.SetupScript != nil {
+		_, _ = fmt.Fprintf(w, "  Setup:    %s\n", *repo.SetupScript)
+	}
+	_, _ = fmt.Fprintf(w, "  Worktree base:          %s\n", repo.WorktreeBaseDir)
+	_, _ = fmt.Fprintf(w, "  Mark ready on green:    %v\n", repo.CanAutoMerge)
+	_, _ = fmt.Fprintf(w, "  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
+	_, _ = fmt.Fprintf(w, "  Automatic repair:       %v\n", repo.CanAutoRepair)
+	_, _ = fmt.Fprintf(w, "  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
+	_, _ = fmt.Fprintf(w, "  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
+	if _, remote := c.(*client.RemoteClient); !remote {
+		_, _ = fmt.Fprintf(w, "  Trusted:                %v\n", repo.IsTrusted)
+	}
 }
 
 // buildRepoUpdateRequest maps the `boss repo update` flags that were actually
@@ -4572,6 +4587,11 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 		req.WorktreeBaseDir = &v
 		anyChanged = true
 	}
+	if cmd.Flags().Changed("trusted") {
+		v, _ := cmd.Flags().GetBool("trusted")
+		req.IsTrusted = &v
+		anyChanged = true
+	}
 
 	// Boolean flag pairs.
 	boolPairs := []struct {
@@ -4601,7 +4621,7 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 	}
 
 	if !anyChanged {
-		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, or boolean flags")
+		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags")
 	}
 	return req, nil
 }

@@ -49,6 +49,18 @@ func (s *Server) DescribeMCPSurface(
 		ProbedAt:    timestamppb.Now(),
 	}
 
+	// The probe starts `codex app-server` in the work dir, which loads the
+	// worktree's .codex/config.toml (and spawns its MCP commands) whenever the
+	// Codex home trusts it, so the chat's trust decision is applied before
+	// probing, as PreflightHeadlessRun does (BOS-1562); a decision that cannot
+	// be applied skips the probe rather than run it with the wrong trust.
+	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorkDir(), req.GetProbeEnv())
+	if err != nil {
+		resp.ProbeError = err.Error()
+		return resp, nil
+	}
+	target.ProjectTrustOverride = trustOverride
+
 	surface, err := registry.Operations(ctx, target)
 	if err != nil {
 		resp.ProbeError = err.Error()
@@ -124,7 +136,7 @@ func newCodexSourceAttribution(workDir string, probeEnv map[string]string) codex
 			attribution.repoDetail = filepath.Join(".codex", "config.toml")
 		}
 	}
-	if home, err := codexConfigDirForEnv(probeEnv); err == nil && strings.TrimSpace(home) != "" {
+	if home, err := codexConfigDirForEnv(probeEnv, workDir); err == nil && strings.TrimSpace(home) != "" {
 		userPath := filepath.Join(home, "config.toml")
 		if keys, ok := readCodexMCPServerKeys(userPath); ok {
 			attribution.userKeys = keys

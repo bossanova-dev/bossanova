@@ -168,6 +168,12 @@ type mockSessionStore struct {
 	sessions map[string]*models.Session
 	updates  []mockSessionUpdate
 
+	// clearRepairAlertCalls records every ClearRepairAlert session ID, in order.
+	clearRepairAlertCalls []string
+
+	// archivedIDs records every Archive session ID, in order.
+	archivedIDs []string
+
 	updateHook                 func(id string, params db.UpdateSessionParams) error
 	updateStateConditionalHook func(id string)
 
@@ -420,12 +426,20 @@ func (m *mockSessionStore) updatesFor(field string) []db.UpdateSessionParams {
 }
 
 func (m *mockSessionStore) Archive(_ context.Context, id string) error {
-	s, ok := m.sessions[id]
-	if !ok {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[id]; !ok {
 		return fmt.Errorf("session %s not found", id)
 	}
-	_ = s
+	m.archivedIDs = append(m.archivedIDs, id)
 	return nil
+}
+
+// archived returns the session IDs Archive was called with, in order.
+func (m *mockSessionStore) archived() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.archivedIDs...)
 }
 
 // ResurrectToState mirrors the SQLite CAS: it moves the row only while it is
@@ -524,6 +538,22 @@ func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, sessionID stri
 	return nil
 }
 
+func (m *mockSessionStore) ClearRepairAlert(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clearRepairAlertCalls = append(m.clearRepairAlertCalls, sessionID)
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	s.LastRepairBlockedReason = ""
+	s.LastRepairBlockedAt = nil
+	s.LastRepairAttemptCount = 0
+	s.LastRepairRunnerError = ""
+	s.LastRepairExitError = ""
+	return nil
+}
+
 func (m *mockSessionStore) ListByState(_ context.Context, state int) ([]*models.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -591,6 +621,19 @@ func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, 
 		return false, nil
 	}
 	s.State = machine.State(newState)
+	return true, nil
+}
+
+// LinkTrackerIfUnlinked mirrors the store's compare-and-set link write.
+func (m *mockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || !trackerLinkCASHolds(s, expectedTrackerID) {
+		return false, nil
+	}
+	s.TrackerID = &trackerID
+	s.TrackerURL = &trackerURL
 	return true, nil
 }
 
@@ -1128,6 +1171,8 @@ type mockWorktreeManager struct {
 	archiveHook                 func() // if set, invoked inside Archive() mid-run (used to observe transient flags)
 	archiveCtx                  context.Context
 	archiveCtxLive              bool
+	archiveRepoName             string // repoName passed to the last Archive call
+	archiveBaseDir              string // worktreeBaseDir passed to the last Archive call
 	resurrected                 []gitpkg.ResurrectOpts
 	// resurrectFunc overrides the default Resurrect behavior when set (BOS-984:
 	// slow setup scripts, and setup scripts that fail).
@@ -1228,7 +1273,9 @@ func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) 
 	}, nil
 }
 
-func (m *mockWorktreeManager) Archive(ctx context.Context, path string) error {
+func (m *mockWorktreeManager) Archive(ctx context.Context, repoName, worktreeBaseDir, path string) error {
+	m.archiveRepoName = repoName
+	m.archiveBaseDir = worktreeBaseDir
 	m.archiveCtx = ctx
 	m.archiveCtxLive = ctx.Err() == nil
 	m.archived = append(m.archived, path)
@@ -1472,12 +1519,13 @@ type mockAgentRunner struct {
 }
 
 type mockPreflightCall struct {
-	agentName string
-	workDir   string
-	model     string
-	effort    string
-	env       map[string]string
-	profile   pb.HeadlessCapabilityProfile
+	agentName    string
+	workDir      string
+	model        string
+	effort       string
+	env          map[string]string
+	profile      pb.HeadlessCapabilityProfile
+	projectTrust pb.ProjectTrustDecision
 }
 
 type mockStartCall struct {
@@ -1490,6 +1538,7 @@ type mockStartCall struct {
 	profile        pb.HeadlessCapabilityProfile
 	bossSessionID  string
 	effectiveModel string
+	projectTrust   pb.ProjectTrustDecision
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1572,6 +1621,7 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Contex
 		profile:        options.HeadlessCapabilityProfile,
 		bossSessionID:  options.BossSessionID,
 		effectiveModel: options.EffectiveModel,
+		projectTrust:   options.ProjectTrust,
 	})
 	if m.startErr != nil {
 		return "", m.startErr
@@ -1583,15 +1633,16 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Contex
 	return id, nil
 }
 
-func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, workDir, model, effort string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (m *mockAgentRunner) PreflightByAgentWithHeadlessCapabilityProfile(_ context.Context, agentName, workDir, model, effort string, extraEnv map[string]string, profile pb.HeadlessCapabilityProfile, projectTrust pb.ProjectTrustDecision) error {
 	m.preflightCalls++
 	m.preflights = append(m.preflights, mockPreflightCall{
-		agentName: agentName,
-		workDir:   workDir,
-		model:     model,
-		effort:    effort,
-		env:       extraEnv,
-		profile:   profile,
+		agentName:    agentName,
+		workDir:      workDir,
+		model:        model,
+		effort:       effort,
+		env:          extraEnv,
+		profile:      profile,
+		projectTrust: projectTrust,
 	})
 	if m.preflightErrFromCall > 0 && m.preflightCalls < m.preflightErrFromCall {
 		return nil
@@ -1626,6 +1677,7 @@ type mockVCSProvider struct {
 	createPRErr        error
 	listOpenPRErr      error
 	updatePRTitleErr   error
+	prStatusErr        error
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
@@ -1670,6 +1722,9 @@ func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts
 
 func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, prNumber int) (*vcs.PRStatus, error) {
 	m.getPRStatusPRNumbers = append(m.getPRStatusPRNumbers, prNumber)
+	if m.prStatusErr != nil {
+		return nil, m.prStatusErr
+	}
 	if m.nextPRStatus != nil {
 		return m.nextPRStatus, nil
 	}
@@ -2135,6 +2190,97 @@ func TestStartSession_HeadlessRunCarriesExplicitCapabilityProfile(t *testing.T) 
 	// one side without the other.
 	if got := runner.preflights[0].workDir; got == "" || got != runner.started[0].workDir {
 		t.Fatalf("preflight workDir = %q, want the started run's worktree path %q", got, runner.started[0].workDir)
+	}
+}
+
+// TestStartSession_ProfilePreflightCarriesProjectTrust pins BOS-1562 for the
+// headless capability preflight: it starts the agent in the worktree before
+// the launch applies its trust decision, so it must carry that same decision —
+// REVOKE for an untrusted repo, so the runner drops a stale pre-trust before
+// probing, and GRANT for a trusted one.
+func TestStartSession_ProfilePreflightCarriesProjectTrust(t *testing.T) {
+	for _, tc := range []struct {
+		trusted bool
+		want    pb.ProjectTrustDecision
+	}{
+		{trusted: false, want: pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+		{trusted: true, want: pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+	} {
+		t.Run(tc.want.String(), func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			runner := newMockAgentRunner()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees", IsTrusted: tc.trusted}
+			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Profiled", Plan: "p", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
+			lc := newTestLifecycle(sessions, repos, nil, nil, &mockWorktreeManager{}, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+				Detach:                    true,
+				HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+			}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			awaitDraftPR(t, lc, "sess-1")
+			if len(runner.preflights) != 1 || len(runner.started) != 1 {
+				t.Fatalf("preflights = %d, starts = %d; want 1 each", len(runner.preflights), len(runner.started))
+			}
+			if got := runner.preflights[0].projectTrust; got != tc.want {
+				t.Fatalf("preflight projectTrust = %s, want %s", got, tc.want)
+			}
+			if got := runner.started[0].projectTrust; got != runner.preflights[0].projectTrust {
+				t.Fatalf("preflight trust %s diverges from the run's %s", runner.preflights[0].projectTrust, got)
+			}
+		})
+	}
+}
+
+// TestStartSession_ZeroOutputNeverRevokesTheCheckout pins that a zero-output
+// session — which runs in the repo's own checkout, not a bossd worktree —
+// sends DENY on its preflight and its headless run for an untrusted repo: the
+// run is untrusted, but nothing is persisted, because a REVOKE there would
+// rewrite the user's own checkout's Codex trust (and, through Codex's
+// main-checkout fallback, that of their linked worktrees). A trusted repo's
+// zero-output session still grants, and a managed worktree launch of an
+// untrusted repo still revokes.
+func TestStartSession_ZeroOutputNeverRevokesTheCheckout(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		zeroOutput bool
+		trusted    bool
+		want       pb.ProjectTrustDecision
+	}{
+		{name: "zero output", zeroOutput: true, want: pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY},
+		{name: "trusted zero output", zeroOutput: true, trusted: true, want: pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+		{name: "managed worktree", zeroOutput: false, want: pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			runner := newMockAgentRunner()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: t.TempDir(), DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees", IsTrusted: tc.trusted}
+			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Zero output", Plan: "p", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
+			lc := newTestLifecycle(sessions, repos, nil, nil, &mockWorktreeManager{}, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+				Detach:                    true,
+				DeferPR:                   true,
+				ZeroOutput:                tc.zeroOutput,
+				HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+			}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			if len(runner.preflights) != 1 || len(runner.started) != 1 {
+				t.Fatalf("preflights = %d, starts = %d; want 1 each", len(runner.preflights), len(runner.started))
+			}
+			if got := runner.preflights[0].projectTrust; got != tc.want {
+				t.Fatalf("preflight projectTrust = %s, want %s", got, tc.want)
+			}
+			if got := runner.started[0].projectTrust; got != tc.want {
+				t.Fatalf("run projectTrust = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -2643,12 +2789,15 @@ func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testin
 			runner := newMockAgentRunner()
 			tx := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 
+			// Trusted: only a trusted repo's worktree .env may set the agent
+			// config homes (an untrusted repo's are dropped, BOS-1562).
 			repos.repos["repo-1"] = &models.Repo{
 				ID:                "repo-1",
 				LocalPath:         repoDir,
 				DefaultBaseBranch: "main",
 				WorktreeBaseDir:   "/tmp/worktrees",
 				OriginURL:         "owner/repo",
+				IsTrusted:         true,
 			}
 			sessions.sessions["sess-1"] = &models.Session{
 				ID:              "sess-1",
@@ -2740,12 +2889,15 @@ func TestStartSession_ProfilePreflightUsesWorktreeEnvAfterSetup(t *testing.T) {
 		},
 	}
 	runner := newMockAgentRunner()
+	// Trusted: only a trusted repo's worktree .env may set the agent config
+	// homes (an untrusted repo's are dropped, BOS-1562).
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                "repo-1",
 		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 		SetupScript:       &setupScript,
+		IsTrusted:         true,
 	}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:         "sess-1",
@@ -2773,6 +2925,147 @@ func TestStartSession_ProfilePreflightUsesWorktreeEnvAfterSetup(t *testing.T) {
 	}
 	if got := runner.started[0]; got.env["CODEX_HOME"] != filepath.Join(worktreeDir, ".codex") || got.env["HOME"] != filepath.Join(worktreeDir, "home") {
 		t.Errorf("headless start env = %v, want relative homes resolved from the setup worktree", got.env)
+	}
+}
+
+// TestStartSession_CommittedDotenvDoesNotSteerAgentEnv pins BOS-1562: a .env
+// the checked-out branch commits (tracked in the worktree's index) must not
+// relocate HOME / CODEX_HOME into the worktree, where a branch-supplied
+// .zshenv would run under the login-shell launch before the agent starts.
+func TestStartSession_CommittedDotenvDoesNotSteerAgentEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{
+			"-C", worktreeDir,
+			"-c", "user.name=test", "-c", "user.email=test@example.com",
+			"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main",
+		}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	runGit("init", "-q")
+	if err := os.WriteFile(filepath.Join(worktreeDir, ".env"), []byte("CODEX_HOME=.codex\nHOME=home\n"), 0o600); err != nil {
+		t.Fatalf("write worktree .env: %v", err)
+	}
+	runGit("add", ".env")
+	runGit("commit", "-q", "-m", "branch-supplied .env")
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	worktrees := &mockWorktreeManager{worktreePath: worktreeDir}
+	runner := newMockAgentRunner()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         t.TempDir(),
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Committed env",
+		Plan:       "do work",
+		BaseBranch: "main",
+		AgentName:  "codex",
+		Model:      "gpt-5-codex",
+		State:      machine.CreatingWorktree,
+	}
+	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(runner.preflights) != 1 || len(runner.started) != 1 {
+		t.Fatalf("preflights = %d, starts = %d; want 1 each", len(runner.preflights), len(runner.started))
+	}
+	for name, env := range map[string]map[string]string{
+		"preflight":      runner.preflights[0].env,
+		"headless start": runner.started[0].env,
+	} {
+		for _, key := range []string{"HOME", "CODEX_HOME"} {
+			if v, ok := env[key]; ok {
+				t.Errorf("%s env %s = %q, want absent (committed .env must be ignored)", name, key, v)
+			}
+		}
+	}
+}
+
+// TestStartSession_ProofEnvOnlyForTrustedRepo pins BOS-1562: the global proof
+// secrets reach a session only when its repo is trusted, and an untrusted
+// repo's spawn pins every proof key to "" so the daemon's ambient environment
+// cannot supply one either.
+func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			worktrees := &mockWorktreeManager{worktreePath: t.TempDir()}
+			runner := newMockAgentRunner()
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                "repo-1",
+				LocalPath:         t.TempDir(),
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   "/tmp/worktrees",
+				IsTrusted:         trusted,
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Proof scope",
+				Plan:       "do work",
+				BaseBranch: "main",
+				AgentName:  "claude",
+				State:      machine.CreatingWorktree,
+			}
+			lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+			lifecycle.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{
+				"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
+				"CLOUDFLARE_API_TOKEN":    "secret-cf",
+			}})
+
+			if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			if len(runner.started) != 1 {
+				t.Fatalf("headless starts = %d, want 1", len(runner.started))
+			}
+			// The same trust is the headless run's project-trust decision: an
+			// untrusted repo's run revokes any earlier pre-trust (BOS-1562).
+			wantTrust := pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
+			if trusted {
+				wantTrust = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT
+			}
+			if got := runner.started[0].projectTrust; got != wantTrust {
+				t.Errorf("headless project trust = %v, want %v", got, wantTrust)
+			}
+			env := runner.started[0].env
+			for key, want := range map[string]string{
+				"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
+				"CLOUDFLARE_API_TOKEN":    "secret-cf",
+			} {
+				got, ok := env[key]
+				switch {
+				case trusted && got != want:
+					t.Errorf("trusted repo env %s = %q, want %q", key, got, want)
+				case !trusted && (!ok || got != ""):
+					t.Errorf("untrusted repo env %s = %q (present %v), want pinned to empty", key, got, ok)
+				}
+			}
+			if !trusted {
+				for _, key := range proofenv.Keys() {
+					if got, ok := env[key]; !ok || got != "" {
+						t.Errorf("untrusted repo env %s = %q (present %v), want pinned to empty", key, got, ok)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -3447,6 +3740,141 @@ func TestArchiveSession(t *testing.T) {
 	}
 }
 
+// TestArchiveSession_PassesRepoWorktreeBase pins that ArchiveSession hands the
+// worktree manager the repo's own worktree base and name, so the manager can
+// refuse a stored path outside <worktree base>/<repo> before deleting it.
+func TestArchiveSession_PassesRepoWorktreeBase(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "Test Repo",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.ImplementingPlan,
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+	}
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if wt.archiveRepoName != "Test Repo" || wt.archiveBaseDir != "/tmp/worktrees" {
+		t.Errorf("Archive got repoName=%q baseDir=%q, want %q and %q",
+			wt.archiveRepoName, wt.archiveBaseDir, "Test Repo", "/tmp/worktrees")
+	}
+}
+
+// TestArchiveSession_OutsideBaseArchivesWithoutDeleting covers a stored
+// worktree path the manager refuses as outside the repo's current worktree
+// base (a repo renamed or re-based after the worktree was made, or a tampered
+// row). Nothing is deleted and the branch is not reaped, but the session is
+// still archived rather than stranded.
+func TestArchiveSession_OutsideBaseArchivesWithoutDeleting(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		branchSafeToDelete: true,
+		archiveErr:         fmt.Errorf("archive worktree: %w", gitpkg.ErrPathOutsideBase),
+	}
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                    "repo-1",
+		DisplayName:           "renamed",
+		LocalPath:             "/tmp/repo",
+		WorktreeBaseDir:       "/tmp/worktrees",
+		CanAutoDeleteBranches: true,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.ImplementingPlan,
+		WorktreePath: "/tmp/worktrees/old-name/feature",
+		BranchName:   "feature",
+		BaseBranch:   "main",
+	}
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lc.ArchiveSession(context.Background(), "sess-1"); err != nil {
+		t.Fatalf("ArchiveSession with an out-of-base worktree = %v, want nil", err)
+	}
+	if got := sessions.archived(); len(got) != 1 || got[0] != "sess-1" {
+		t.Fatalf("archived session rows = %v, want [sess-1]", got)
+	}
+	if len(wt.deletedLocalBranches) != 0 {
+		t.Errorf("branch reaped although the worktree was not removed: %v", wt.deletedLocalBranches)
+	}
+
+	// Any other Archive failure still fails the archive.
+	wt.archiveErr = fmt.Errorf("permission denied")
+	if err := lc.ArchiveSession(context.Background(), "sess-1"); err == nil {
+		t.Fatal("ArchiveSession swallowed a non-containment Archive failure")
+	}
+}
+
+// TestFinalizeNoChanges_OutsideBaseWorktreeKeepsSessionRow pins the other half
+// of the ErrPathOutsideBase policy. hardDeleteSession DESTROYS the session row,
+// and that row is the only record of a directory sitting outside the managed
+// base, so the refusal stays a cleanup failure there: outcome cleanup_failed,
+// row preserved and Blocked, branch not reaped. (ArchiveSession keeps its row,
+// so it can tolerate the same refusal; see the test above.)
+func TestFinalizeNoChanges_OutsideBaseWorktreeKeepsSessionRow(t *testing.T) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:          "", // no changes: the deleted_no_changes hard-delete path
+		branchSafeToDelete: true,
+		archiveErr:         fmt.Errorf("archive worktree: %w", gitpkg.ErrPathOutsideBase),
+	}
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "renamed",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.ImplementingPlan,
+		WorktreePath: "/tmp/worktrees/old-name/cron-feature",
+		BranchName:   "cron-feature",
+		BaseBranch:   "main",
+		CronJobID:    &cronJobID,
+	}
+	lc := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+	res, err := lc.FinalizeSession(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeCleanupFailed || res.Deleted {
+		t.Fatalf("outcome = %q (deleted=%v), want cleanup_failed with the row kept", res.Outcome, res.Deleted)
+	}
+	if !errors.Is(res.Err, gitpkg.ErrPathOutsideBase) {
+		t.Errorf("result error = %v, want ErrPathOutsideBase", res.Err)
+	}
+	got, getErr := sessions.Get(context.Background(), "sess-1")
+	if getErr != nil {
+		t.Fatalf("session row deleted although its worktree was left on disk: %v", getErr)
+	}
+	if got.State != machine.Blocked {
+		t.Errorf("state = %s, want blocked", got.State)
+	}
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/old-name/cron-feature" ||
+		wt.archiveRepoName != "renamed" || wt.archiveBaseDir != "/tmp/worktrees" {
+		t.Errorf("Archive called with (repo %q, base %q, paths %v), want (renamed, /tmp/worktrees, [/tmp/worktrees/old-name/cron-feature])",
+			wt.archiveRepoName, wt.archiveBaseDir, wt.archived)
+	}
+	if len(wt.deletedLocalBranches) != 0 {
+		t.Errorf("branch reaped although the worktree was not removed: %v", wt.deletedLocalBranches)
+	}
+}
+
 func TestArchiveSessionDeletesLocalBranch(t *testing.T) {
 	// buildLifecycle wires a lifecycle around a session on branch "feature" whose
 	// worktree differs from the repo local path (the non-quick-chat path).
@@ -3587,6 +4015,7 @@ func TestResurrectSession(t *testing.T) {
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
 		LocalPath: "/tmp/repo",
+		IsTrusted: true,
 	}
 
 	now := func() *models.Session {
@@ -3646,6 +4075,11 @@ func TestResurrectSession(t *testing.T) {
 	}
 	if cr.started[0].resume == nil || *cr.started[0].resume != "claude-old" {
 		t.Errorf("expected claude resume with 'claude-old', got %v", cr.started[0].resume)
+	}
+	// The resumed headless run carries its repo's trust (BOS-1562): repo-1 is
+	// trusted, so a resurrect that lost the repo would read REVOKE here.
+	if got := cr.started[0].projectTrust; got != pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT {
+		t.Errorf("resurrect project trust = %v, want GRANT for a trusted repo", got)
 	}
 
 	// Verify session state is ImplementingPlan.
@@ -9271,7 +9705,7 @@ func (r *labeledRunner) StartWithHeadlessLaunchOptions(ctx context.Context, work
 // policy now requires TRACKER_PLAN_ATTACHMENT_V1 for — still exercises real
 // dispatcher routing instead of failing closed on a runner that predates the
 // profile seam. Both record what they saw so routing assertions still hold.
-func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _, _, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile) error {
+func (r *labeledRunner) PreflightHeadlessCapabilityProfile(_ context.Context, _, _, _ string, _ map[string]string, profile pb.HeadlessCapabilityProfile, _ pb.ProjectTrustDecision) error {
 	r.profileSeen.Store(int32(profile))
 	return nil
 }
@@ -10221,7 +10655,7 @@ func TestStartHeadlessReplacementRunCarriesSessionAttribution(t *testing.T) {
 	}
 	resume := "agent-prior"
 
-	gotID, err := lc.startHeadlessReplacementRun(context.Background(), session, "/work", "resume work", &resume, map[string]string{"A": "B"})
+	gotID, err := lc.startHeadlessReplacementRun(context.Background(), session, &models.Repo{IsTrusted: true}, "/work", "resume work", &resume, map[string]string{"A": "B"})
 	if err != nil {
 		t.Fatalf("startHeadlessReplacementRun: %v", err)
 	}
@@ -10240,6 +10674,31 @@ func TestStartHeadlessReplacementRunCarriesSessionAttribution(t *testing.T) {
 	}
 	if got.resume == nil || *got.resume != "agent-prior" || got.env["A"] != "B" {
 		t.Fatalf("start call = %#v, want resume/env preserved", got)
+	}
+}
+
+// TestStartHeadlessReplacementRun_SendsRepoProjectTrust pins BOS-1562 on every
+// replacement run (resume, orphan resume, rotation): the run is headless, so
+// the repo's trust must reach the runner as a decision — REVOKE for an
+// untrusted or unresolved repo, so a pre-trust left from an earlier trusted
+// period cannot make the agent load the repo's own configuration.
+func TestStartHeadlessReplacementRun_SendsRepoProjectTrust(t *testing.T) {
+	for name, tc := range map[string]struct {
+		repo *models.Repo
+		want pb.ProjectTrustDecision
+	}{
+		"trusted":    {&models.Repo{IsTrusted: true}, pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+		"untrusted":  {&models.Repo{}, pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+		"unresolved": {nil, pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+	} {
+		runner := newMockAgentRunner()
+		lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, nil, nil, runner, nil, newMockVCSProvider(), zerolog.Nop())
+		if _, err := lc.startHeadlessReplacementRun(context.Background(), &models.Session{ID: "sess-1", AgentName: "codex"}, tc.repo, "/work", "plan", nil, nil); err != nil {
+			t.Fatalf("%s: startHeadlessReplacementRun: %v", name, err)
+		}
+		if len(runner.started) != 1 || runner.started[0].projectTrust != tc.want {
+			t.Fatalf("%s: start calls = %+v, want one with project trust %v", name, runner.started, tc.want)
+		}
 	}
 }
 
@@ -10499,4 +10958,12 @@ func TestBootstrapWarnsOnceWhenTmuxServerCarriesArgvEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (*mockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (m *mockVCSProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
 }

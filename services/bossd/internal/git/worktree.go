@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -458,8 +459,11 @@ type WorktreeManager interface {
 	// and creates a worktree tracking it.
 	CreateFromExistingBranch(ctx context.Context, opts CreateFromExistingBranchOpts) (*CreateResult, error)
 
-	// Archive removes the worktree directory but keeps the branch alive.
-	Archive(ctx context.Context, worktreePath string) error
+	// Archive removes the worktree directory but keeps the branch alive. It
+	// deletes nothing unless worktreePath lies strictly inside
+	// <worktreeBaseDir>/<repoName> (symlinks resolved); a path outside it
+	// returns an error wrapping ErrPathOutsideBase.
+	Archive(ctx context.Context, repoName, worktreeBaseDir, worktreePath string) error
 
 	// PurgeWorktree removes any worktree (registration + on-disk directory) for
 	// branch under worktreeBaseDir without deleting the branch. Best-effort
@@ -1528,6 +1532,12 @@ func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Every error below carries the argv and git's stderr, and both can hold
+		// a credential-bearing URL (https://user:token@host/...). Redact them
+		// once here so every git failure — clone, fetch, push, ls-remote — is
+		// covered by one rule; git itself still ran with the real URL (BOS-1563).
+		argv := redactedGitArgv(args)
+		errOut := redactURLCredentials(strings.TrimSpace(stderr.String()))
 		// Context attribution comes FIRST, and stays truthful with WaitDelay set:
 		// a killed-by-deadline git reports the deadline, which is the useful fact,
 		// rather than the pipe-drain expiry that followed it. Only a command that
@@ -1540,9 +1550,9 @@ func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string
 			// in" — reporting the per-invocation budget in the latter case would
 			// send a reader looking for a five-minute git command that never ran.
 			if parentErr := parent.Err(); parentErr != nil {
-				return "", fmt.Errorf("git %s: %w (caller's context ended): %s", strings.Join(args, " "), parentErr, strings.TrimSpace(stderr.String()))
+				return "", fmt.Errorf("git %s: %w (caller's context ended): %s", argv, parentErr, errOut)
 			}
-			return "", fmt.Errorf("git %s: %w (after %s): %s", strings.Join(args, " "), ctxErr, timeout, strings.TrimSpace(stderr.String()))
+			return "", fmt.Errorf("git %s: %w (after %s): %s", argv, ctxErr, timeout, errOut)
 		}
 		if errors.Is(err, exec.ErrWaitDelay) {
 			// git itself finished; a process it left behind held the output pipe
@@ -1550,12 +1560,17 @@ func runGitWithTimeout(parent context.Context, timeout time.Duration, dir string
 			// to go looking at — its output was abandoned mid-read, so the result
 			// cannot be trusted either way.
 			return "", fmt.Errorf("git %s: %w: a child process held the output pipe open for more than %s after git exited: %s",
-				strings.Join(args, " "), err, gitWaitDelay, strings.TrimSpace(stderr.String()))
+				argv, err, gitWaitDelay, errOut)
 		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git %s: %w: %s", argv, err, errOut)
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
+
+// runGitWithTimeoutFn is the git invocation Manager.Clone runs every command
+// through. A var so a test can record the exact argv git receives — the
+// credential-in-argv check needs to see it — while still running real git.
+var runGitWithTimeoutFn = runGitWithTimeout
 
 // gitRemoteRetryPolicy bounds the retry ladder every remote-touching git
 // invocation runs under. A var in the same spirit as gitWaitDelay above: a test
@@ -1638,7 +1653,7 @@ func runGitRemote(ctx context.Context, dir string, args ...string) (string, erro
 			log.Warn().
 				Err(lastErr).
 				Str("git", verb).
-				Str("args", strings.Join(args, " ")).
+				Str("args", redactedGitArgv(args)).
 				Str("dir", dir).
 				Int("attempt", attempt).
 				Msg("retrying git remote operation after a transient failure")
@@ -1957,8 +1972,17 @@ func (m *Manager) reapBazelOutputBase(base string) {
 //   - PurgeWorktree: it is only ever handed the branch of a session whose
 //     bootstrap has already failed or been declared dead.
 //
-// All steps are best-effort.
-func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath string) {
+// All steps are best-effort, with one exception: wtPath must lie strictly
+// inside repoBase (<worktree base>/<repo>), checked by ensureWithin before
+// anything is removed. A violation deletes nothing and is returned — it is the
+// only non-nil result.
+func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, repoBase, wtPath string) error {
+	if err := ensureWithin(repoBase, wtPath); err != nil {
+		m.logger.Error().Err(err).Str("path", wtPath).Str("base", repoBase).
+			Msg("refusing to clear a worktree path outside the repo's worktree base")
+		return err
+	}
+
 	// Capture the Bazel output base BEFORE the worktree dir (and its in-worktree
 	// `bazel-out` symlink) is removed, then reap it AFTER. Typically a no-op here:
 	// PurgeWorktree (which delegates to this) runs after a FAILED session start,
@@ -1996,9 +2020,16 @@ func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath strin
 		// Do not tear down this worktree's Bazel server/output base while its
 		// directory remains usable. A later cleanup attempt can reap it after
 		// successful removal.
-		return
+		return nil
 	}
 	m.reapBazelOutputBase(base)
+	return nil
+}
+
+// worktreeRepoBase is the directory every worktree of one repo lives under,
+// and the containment root for every cleanup of those worktrees.
+func worktreeRepoBase(worktreeBaseDir, repoName string) string {
+	return filepath.Join(worktreeBaseDir, sanitizeDirName(repoName))
 }
 
 // PurgeWorktree removes any worktree (git registration + on-disk directory) for
@@ -2016,11 +2047,19 @@ func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath strin
 // call directly while already holding it.
 //
 // The error reports whether the purge RAN, not whether it succeeded: the steps
-// inside are best-effort and log their own failures. Only the refused gate
-// returns non-nil, and it is returned rather than swallowed because the caller
-// must then skip the branch reap — see the caller contract on
+// inside are best-effort and log their own failures. Only a refused purge
+// returns non-nil — the refused gate, a branch name git rejects (a session
+// stored before validation existed), or a path outside the repo's worktree
+// base — and it is returned rather than swallowed because the caller must then
+// skip the branch reap — see the caller contract on
 // WorktreeManager.PurgeWorktree.
 func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error {
+	if err := ValidateBranchName(ctx, branch); err != nil {
+		m.logger.Error().Err(err).Str("repo", repoPath).Str("branch", branch).
+			Msg("purge worktree: refusing to derive a worktree path from an invalid branch name; nothing was deleted")
+		return err
+	}
+
 	release, err := m.acquireCloneGate(ctx, repoPath, "purge worktree")
 	if err != nil {
 		// Skipping is the only safe choice — stalling a caller that has no
@@ -2035,9 +2074,8 @@ func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktre
 	}
 	defer release()
 
-	wtPath := filepath.Join(worktreeBaseDir, sanitizeDirName(repoName), branch)
-	m.clearStaleWorktree(ctx, repoPath, wtPath)
-	return nil
+	repoBase := worktreeRepoBase(worktreeBaseDir, repoName)
+	return m.clearStaleWorktree(ctx, repoPath, repoBase, filepath.Join(repoBase, branch))
 }
 
 // acquireCloneGate takes the per-clone gate for a MUTATING operation on the
@@ -2075,6 +2113,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 
 	if opts.BaseBranch == "" {
 		return nil, fmt.Errorf("base branch is required")
+	}
+	// The branch becomes a path component below, and clearStaleWorktree
+	// recursively deletes that path before `git worktree add` would have
+	// rejected the name — so validate it first.
+	if err := ValidateBranchName(ctx, branch); err != nil {
+		return nil, err
 	}
 
 	// Serialize the mutating git window against this clone (see repoCloneGates).
@@ -2116,7 +2160,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		branch = uniqueBranch
 	}
 
-	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), branch)
+	repoBase := worktreeRepoBase(opts.WorktreeBaseDir, opts.RepoName)
+	wtPath := filepath.Join(repoBase, branch)
+	if err := ensureWithin(repoBase, wtPath); err != nil {
+		return nil, err
+	}
 
 	// Ensure the worktree base directory exists.
 	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o750); err != nil {
@@ -2171,7 +2219,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 
 	// Clear any stale worktree left at this path by an orphaned prior session
 	// so the add below doesn't fail with "already exists".
-	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
+	if err := m.clearStaleWorktree(ctx, opts.RepoPath, repoBase, wtPath); err != nil {
+		return nil, err
+	}
 
 	// git worktree add --no-track -b <branch> <path> origin/<baseBranch>
 	//
@@ -2317,15 +2367,31 @@ func (m *Manager) availableNewBranchName(ctx context.Context, repoPath, branch s
 }
 
 // Archive removes the worktree directory but keeps the git branch alive.
-func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
+//
+// Containment is checked once, up front, against the same
+// <worktreeBaseDir>/<repoName> root Create derives worktree paths under: both
+// removal routes below — `git worktree remove --force` and the direct
+// os.RemoveAll fallback — delete the directory, so neither may run for a
+// stored path that resolves outside it.
+func (m *Manager) Archive(ctx context.Context, repoName, worktreeBaseDir, worktreePath string) error {
 	m.logger.Info().Str("path", worktreePath).Msg("archiving worktree")
+
+	if worktreeBaseDir == "" {
+		return fmt.Errorf("archive worktree %q: %w: no worktree base dir", worktreePath, ErrPathOutsideBase)
+	}
+	repoBase := worktreeRepoBase(worktreeBaseDir, repoName)
+	if err := ensureWithin(repoBase, worktreePath); err != nil {
+		m.logger.Error().Err(err).Str("path", worktreePath).Str("base", repoBase).
+			Msg("refusing to archive worktree outside the repo's worktree base")
+		return fmt.Errorf("archive worktree: %w", err)
+	}
 
 	// Capture the Bazel output base from the in-worktree `bazel-out` symlink
 	// BEFORE any removal path runs, and reap it only AFTER a removal path
 	// succeeds. base=="" (worktree never built) is a clean no-op.
 	base := m.bazelOutputBaseForWorktree(worktreePath)
 	removeAndReap := func() error {
-		if err := removeWorktreeDir(worktreePath); err != nil {
+		if err := removeWorktreeDir(repoBase, worktreePath); err != nil {
 			return err
 		}
 		m.reapBazelOutputBase(base)
@@ -2357,8 +2423,15 @@ func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 	return nil
 }
 
-// removeWorktreeDir removes a worktree directory directly via os.RemoveAll.
-func removeWorktreeDir(path string) error {
+// removeWorktreeDir removes a worktree directory directly via os.RemoveAll,
+// only when path lies strictly inside repoBase (<worktree base>/<repo>). Archive
+// has already checked the same containment; repeating it here, immediately
+// before the recursive delete, keeps the delete itself guarded and narrows the
+// window in which an ancestor could be swapped for a symlink.
+func removeWorktreeDir(repoBase, path string) error {
+	if err := ensureWithin(repoBase, path); err != nil {
+		return fmt.Errorf("remove worktree dir: %w", err)
+	}
 	if err := os.RemoveAll(path); err != nil {
 		return fmt.Errorf("remove worktree dir: %w", err)
 	}
@@ -3357,17 +3430,257 @@ func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePat
 	return verification, nil
 }
 
-// Clone clones a remote repository to the given local path.
+// ErrUnsafeCloneURL is returned (wrapped) by ValidateCloneURL, Manager.Clone
+// and CloneAndRegisterRepo when a clone URL could be parsed by git as an
+// option or a remote-helper transport, or is not one of the accepted forms.
+var ErrUnsafeCloneURL = errors.New("unsafe clone URL")
+
+// cloneTransportPrefix matches git's `<transport>::<address>` remote-helper
+// syntax (e.g. `ext::`, `fd::`), which can run arbitrary commands.
+var cloneTransportPrefix = regexp.MustCompile(`^[A-Za-z0-9+.\-]+::`)
+
+// cloneURLScheme matches an RFC 3986 scheme followed by "://".
+var cloneURLScheme = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.\-]*)://`)
+
+// cloneSCPLike matches git's scp-style `[user@]host:path` form: no '/' before
+// the first ':', a non-empty host that does not start with '-', and a path.
+var cloneSCPLike = regexp.MustCompile(`^(?:[^@/:\s]+@)?[^@/:\s\-][^@/:\s]*:[^\s].*$`)
+
+// ValidateCloneURL rejects clone URLs git could misread as an option or a
+// command-running transport. It accepts only http(s)://, ssh://, git:// and
+// file:// URLs, scp-style `[user@]host:path`, and absolute local paths, and
+// rejects anything starting with '-', any `<transport>::` form, and any URL
+// containing control characters. The returned error wraps ErrUnsafeCloneURL
+// and never echoes the URL (it may carry credentials).
+func ValidateCloneURL(cloneURL string) error {
+	reject := func(reason string) error {
+		return fmt.Errorf("%w: %s", ErrUnsafeCloneURL, reason)
+	}
+	switch {
+	case cloneURL == "":
+		return reject("clone URL is empty")
+	case strings.HasPrefix(cloneURL, "-"):
+		return reject("clone URL must not start with '-'")
+	case strings.IndexFunc(cloneURL, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
+		return reject("clone URL contains control characters")
+	case cloneTransportPrefix.MatchString(cloneURL):
+		return reject("remote-helper transports (<transport>::address) are not allowed")
+	}
+
+	if m := cloneURLScheme.FindStringSubmatch(cloneURL); m != nil {
+		scheme := strings.ToLower(m[1])
+		u, err := url.Parse(cloneURL)
+		if err != nil {
+			return reject("clone URL does not parse")
+		}
+		switch scheme {
+		case "http", "https", "ssh", "git":
+			if u.Host == "" {
+				return reject("clone URL has no host")
+			}
+			if strings.HasPrefix(u.Hostname(), "-") {
+				return reject("clone URL host must not start with '-'")
+			}
+			// ssh is handed the user as well as the host; git blocks a
+			// dash-led one today, but do not rely on that.
+			if strings.HasPrefix(u.User.Username(), "-") {
+				return reject("clone URL user must not start with '-'")
+			}
+			return nil
+		case "file":
+			if u.Host != "" || !filepath.IsAbs(u.Path) {
+				return reject("file:// clone URL must name an absolute local path")
+			}
+			return nil
+		default:
+			return reject("unsupported clone URL scheme " + scheme + " (use http(s), ssh, git or file)")
+		}
+	}
+
+	if filepath.IsAbs(cloneURL) {
+		return nil
+	}
+	if cloneSCPLike.MatchString(cloneURL) {
+		return nil
+	}
+	return reject("clone URL must be an http(s)://, ssh://, git:// or file:// URL, scp-style user@host:path, or an absolute local path")
+}
+
+// cloneCredentialFileName is the file, inside the clone's .git directory, that
+// holds the credentials a clone URL carried. git's store helper reads it.
+const cloneCredentialFileName = "boss-credentials"
+
+// Clone clones a remote repository to the given local path. The URL is
+// validated with ValidateCloneURL and passed after `--`, so it can never be
+// parsed as a git option.
+//
+// An http(s) URL whose userinfo carries a password (https://user:token@host/...)
+// is never passed to git as argv, where it would be visible in ps for the
+// clone's lifetime and then written into .git/config (BOS-1587). The userinfo
+// is stripped, written to a 0600 file in a fresh 0700 temp directory, and git
+// reads it through `credential.helper=store --file=<file>` — only the file path
+// is in argv. After a successful clone the file moves to
+// .git/boss-credentials and the repo-local credential.helper points at it, so
+// later fetches and pushes still authenticate.
+//
+// The guarantee covers password userinfo only. A bare username
+// (https://alice@host/...) is passed through unchanged so the configured
+// credential helpers still see who is asking — and that includes a token
+// placed in the username slot (https://<token>@host/...), which therefore
+// reaches argv, .git/config and the recorded origin like any other username.
+// Any other URL (ssh, scp-like, unparseable) is also cloned as given.
 func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
+	if err := ValidateCloneURL(cloneURL); err != nil {
+		return fmt.Errorf("clone: %w", err)
+	}
 	m.logger.Info().
-		Str("url", cloneURL).
+		Str("url", redactURLCredentials(cloneURL)).
 		Str("path", localPath).
 		Msg("cloning repository")
 
-	if _, err := runGitWithTimeout(ctx, GitCloneTimeout, ".", "clone", cloneURL, localPath); err != nil {
+	plainURL, credential, ok := splitCloneCredentials(cloneURL)
+	if !ok {
+		if _, err := runGitWithTimeoutFn(ctx, GitCloneTimeout, ".", "clone", "--", cloneURL, localPath); err != nil {
+			return fmt.Errorf("clone: %w", err)
+		}
+		return nil
+	}
+
+	// Whether this call creates localPath: only then may a failure after the
+	// clone remove it (git clone also accepts an existing empty directory).
+	_, statErr := os.Lstat(localPath)
+	createsLocalPath := errors.Is(statErr, fs.ErrNotExist)
+
+	// MkdirTemp creates the directory 0700.
+	credDir, err := os.MkdirTemp("", "boss-clone-credentials-")
+	if err != nil {
+		return fmt.Errorf("clone: credential directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(credDir) }()
+	credFile := filepath.Join(credDir, "credentials")
+	if err := os.WriteFile(credFile, []byte(credential+"\n"), 0o600); err != nil {
+		return fmt.Errorf("clone: write credential file: %w", err)
+	}
+
+	// The empty credential.helper first clears any configured helpers (an
+	// osxkeychain helper would otherwise be offered, and asked to keep, the
+	// token).
+	if _, err := runGitWithTimeoutFn(ctx, GitCloneTimeout, ".",
+		"-c", "credential.helper=",
+		"-c", "credential.helper="+credentialStoreHelper(credFile),
+		"clone", "--", plainURL, localPath,
+	); err != nil {
 		return fmt.Errorf("clone: %w", err)
 	}
+	if err := keepCloneCredentials(ctx, credFile, localPath); err != nil {
+		// Without its credential helper the clone cannot fetch or push, and a
+		// retry would find a matching origin and register it as is. Remove
+		// the clone this call created so a retry clones again.
+		if createsLocalPath {
+			if rmErr := os.RemoveAll(localPath); rmErr != nil {
+				m.logger.Warn().Err(rmErr).Str("path", localPath).
+					Msg("remove clone after keeping its credentials failed")
+			}
+		}
+		return fmt.Errorf("clone: keep credentials: %w", err)
+	}
 	return nil
+}
+
+// CloneURLWithoutCredentials returns raw as Clone records it for origin: an
+// http(s) URL with its user:password removed. Any URL Clone passes through
+// unchanged (no password — including a token in the username slot — ssh,
+// unparseable) is returned as is.
+func CloneURLWithoutCredentials(raw string) string {
+	plainURL, _, _ := splitCloneCredentials(raw)
+	return plainURL
+}
+
+// splitCloneCredentials separates an http(s) URL's userinfo from the URL. It
+// returns the URL without userinfo and the git-credential-store line
+// (scheme://user:password@host/path?query#fragment) and true, or false for any URL it leaves alone:
+// no userinfo, an unparseable URL, a non-http(s) scheme, where userinfo is a
+// login name (ssh://git@host) rather than a credential, or userinfo with no
+// password (https://alice@host), which only names the user for the configured
+// credential helpers and must keep reaching them. That last case is decided by
+// shape alone: a token in the username slot (https://<token>@host) is
+// indistinguishable from a username, so it is passed through and is not kept
+// out of argv.
+func splitCloneCredentials(raw string) (plainURL, credential string, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil || u.Host == "" {
+		return raw, "", false
+	}
+	if _, hasPassword := u.User.Password(); !hasPassword {
+		return raw, "", false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return raw, "", false
+	}
+	// The stored line carries everything after the host: git's
+	// credential-store only matches an entry that has every field the lookup
+	// carries, and with credential.useHttpPath=true the lookup's path is all
+	// of the URL after the host — path, query string and fragment (git 2.53
+	// passes path=o/r.git?x=1#frag to the helper on a real clone). A lookup
+	// without a path (the default) still matches an entry that has one.
+	cred := url.URL{
+		Scheme: strings.ToLower(u.Scheme), User: u.User, Host: u.Host,
+		Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery,
+		Fragment: u.Fragment, RawFragment: u.RawFragment,
+	}
+	stripped := *u
+	stripped.User = nil
+	return stripped.String(), cred.String(), true
+}
+
+// credentialStoreHelper is the credential.helper value that reads path. git
+// runs a helper through the shell, so the path is single-quoted.
+func credentialStoreHelper(path string) string {
+	return "store --file=" + shellSingleQuote(path)
+}
+
+// keepCloneCredentials moves the clone-time credential file into the new
+// repository's .git directory (0600) and points the repo-local
+// credential.helper at it. Like the clone itself, the helper list is reset
+// first so a global helper is never asked to store the token.
+func keepCloneCredentials(ctx context.Context, credFile, localPath string) error {
+	repoPath, err := filepath.Abs(localPath)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(repoPath, ".git", cloneCredentialFileName)
+	if err := moveFile0600(credFile, dest); err != nil {
+		return err
+	}
+	for _, value := range []string{"", credentialStoreHelper(dest)} {
+		if _, err := runGitWithTimeoutFn(ctx, GitCommandTimeout, repoPath,
+			"config", "--local", "--add", "credential.helper", value,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// moveFile0600 moves src to dst with mode 0600, copying when a rename cannot
+// cross filesystems (the temp directory and the clone often differ).
+func moveFile0600(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return os.Chmod(dst, 0o600)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(dst, 0o600); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 // DetectOriginURL returns the "origin" remote URL for the given repo path.
@@ -3682,6 +3995,31 @@ func (m *Manager) SessionPushedHead(ctx context.Context, worktreePath, branch, f
 		return false, fmt.Errorf("session pushed head: read HEAD reflog: %w", err)
 	}
 	return headReflogAuthoredLocally(headLog, newSHA), nil
+}
+
+// SameTree reports whether commits a and b in the repository at worktreePath
+// record the same root tree, i.e. carry identical content. A missing object or
+// any other git failure is an error, never true.
+func (m *Manager) SameTree(ctx context.Context, worktreePath, a, b string) (bool, error) {
+	if worktreePath == "" || a == "" || b == "" {
+		return false, errors.New("same tree: worktree path and both commits are required")
+	}
+	if strings.HasPrefix(a, "-") || strings.HasPrefix(b, "-") {
+		return false, fmt.Errorf("same tree: invalid commit %q / %q", a, b)
+	}
+	out, err := runGit(ctx, worktreePath, "rev-parse", "--verify", "--quiet", a+"^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("same tree: resolve %s tree: %w", a, err)
+	}
+	other, err := runGit(ctx, worktreePath, "rev-parse", "--verify", "--quiet", b+"^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("same tree: resolve %s tree: %w", b, err)
+	}
+	ta, tb := strings.TrimSpace(out), strings.TrimSpace(other)
+	if ta == "" || tb == "" {
+		return false, errors.New("same tree: git resolved an empty tree id")
+	}
+	return ta == tb, nil
 }
 
 // headReflogAuthoredLocally reports whether the HEAD reflog entry that first
@@ -4479,7 +4817,15 @@ func (m *Manager) DetectDefaultBranch(ctx context.Context, repoPath string) (str
 // CreateFromExistingBranch creates a worktree from an existing remote branch.
 // It fetches the branch from origin and creates a worktree tracking it.
 func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromExistingBranchOpts) (*CreateResult, error) {
-	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), opts.BranchName)
+	// Validated before the path is derived, for the same reason as Create.
+	if err := ValidateBranchName(ctx, opts.BranchName); err != nil {
+		return nil, err
+	}
+	repoBase := worktreeRepoBase(opts.WorktreeBaseDir, opts.RepoName)
+	wtPath := filepath.Join(repoBase, opts.BranchName)
+	if err := ensureWithin(repoBase, wtPath); err != nil {
+		return nil, err
+	}
 
 	// Ensure the worktree base directory exists.
 	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o750); err != nil {
@@ -4518,7 +4864,9 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	// Clear any stale worktree left at this path by an orphaned prior session
 	// before updating the local branch ref. Git refuses to move a branch that is
 	// still checked out in a registered stale worktree.
-	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
+	if err := m.clearStaleWorktree(ctx, opts.RepoPath, repoBase, wtPath); err != nil {
+		return nil, err
+	}
 
 	if _, err := runGit(ctx, opts.RepoPath,
 		"branch", "-f", opts.BranchName, "refs/remotes/origin/"+opts.BranchName,

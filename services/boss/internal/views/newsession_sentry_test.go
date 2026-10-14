@@ -161,7 +161,7 @@ func TestNewSession_SentryCreatesSessionWithMarkdownPlan(t *testing.T) {
 		t.Errorf("BranchName = %q, want fix/web-1a", req.GetBranchName())
 	}
 	// The plan is the self-formatted Sentry markdown.
-	want := "Sentry issue:\n\n[WEB-1A] TypeError: undefined\n\n**Culprit:** app/main.js   **Level:** error\n\nhttps://acme.sentry.io/issues/123/\n"
+	want := "Sentry issue:\n\n[WEB-1A]\n\n**Culprit:** app/main.js   **Level:** error\n\nhttps://acme.sentry.io/issues/123/\n"
 	if req.Plan != want {
 		t.Errorf("Plan mismatch:\n--- got ---\n%s\n--- want ---\n%s", req.Plan, want)
 	}
@@ -175,7 +175,7 @@ func TestFormatSentryPrompt_Golden(t *testing.T) {
 		Url:         "https://acme.sentry.io/issues/123/",
 	}
 	want := "Sentry issue:\n\n" +
-		"[WEB-1A] TypeError: undefined\n\n" +
+		"[WEB-1A]\n\n" +
 		"**Culprit:** app/main.js\n\n### Latest stacktrace\n```\napp/a.js:fn:10\n```\n\n" +
 		"https://acme.sentry.io/issues/123/\n"
 	if got := trackerprompt.Format(issue, "sentry"); got != want {

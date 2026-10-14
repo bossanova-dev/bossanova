@@ -168,6 +168,7 @@ func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) 
 	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:    "agent-1",
 		WorktreePath: worktree,
+		ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
@@ -183,6 +184,104 @@ func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) 
 	wantHeader := `[projects."` + tomlBasicStringEscape(worktree) + `"]`
 	if !strings.Contains(string(config), wantHeader+"\ntrust_level = \"trusted\"") {
 		t.Fatalf("codex config missing trusted worktree block:\n%s", config)
+	}
+}
+
+// TestBuildInteractiveCommandLeavesUntrustedWorktreeUntrusted pins BOS-1562:
+// a request with no trust decision never writes project trust into the user's
+// Codex config, so a repo's .codex/config.toml stays behind Codex's own trust
+// prompt until the user accepts it.
+func TestBuildInteractiveCommandLeavesUntrustedWorktreeUntrusted(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	srv := &Server{}
+
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "agent-1",
+		WorktreePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if len(resp.Argv) == 0 {
+		t.Fatal("Argv is empty")
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); !os.IsNotExist(err) {
+		config, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+		t.Fatalf("codex config written for an untrusted repo (stat err %v):\n%s", err, config)
+	}
+}
+
+// TestBuildInteractiveCommandRevokesTrustForUntrustedRepo pins that a
+// worktree pre-trusted while its repo was trusted loses that trust once bossd
+// sends PROJECT_TRUST_DECISION_REVOKE (boss repo update --trusted=false): the
+// entry becomes an explicit "untrusted", so Codex neither loads the repo's
+// .codex/config.toml nor prompts for it.
+func TestBuildInteractiveCommandRevokesTrustForUntrustedRepo(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	worktree := t.TempDir()
+	srv := &Server{}
+	req := &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "agent-1",
+		WorktreePath: worktree,
+		ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
+	}
+	if _, err := srv.BuildInteractiveCommand(context.Background(), req); err != nil {
+		t.Fatalf("trusted BuildInteractiveCommand: %v", err)
+	}
+	trustLine := `[projects."` + tomlBasicStringEscape(worktree) + `"]` + "\ntrust_level = \"trusted\""
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil || !strings.Contains(string(config), trustLine) {
+		t.Fatalf("precondition: worktree not trusted (err %v):\n%s", err, config)
+	}
+
+	req.ProjectTrust = bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
+	if _, err := srv.BuildInteractiveCommand(context.Background(), req); err != nil {
+		t.Fatalf("untrusted BuildInteractiveCommand: %v", err)
+	}
+	config, err = os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	if strings.Contains(string(config), `trust_level = "trusted"`) || !strings.Contains(string(config), `trust_level = "untrusted"`) {
+		t.Fatalf("worktree not explicitly Codex-untrusted after trust was revoked:\n%s", config)
+	}
+}
+
+// TestBuildInteractiveCommandWithoutTrustDecisionKeepsTrust pins that a
+// request carrying no trust decision (PROJECT_TRUST_DECISION_UNSPECIFIED)
+// leaves an existing trust entry alone. bossd sends exactly that for metadata-only requests — a launch
+// preview and input rendering for a live pane — of a TRUSTED repo, so
+// treating it as a revoke would strip that repo's Codex trust.
+func TestBuildInteractiveCommandWithoutTrustDecisionKeepsTrust(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	worktree := t.TempDir()
+	srv := &Server{}
+	if _, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "agent-1",
+		WorktreePath: worktree,
+		ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
+	}); err != nil {
+		t.Fatalf("trusted BuildInteractiveCommand: %v", err)
+	}
+	trustLine := `[projects."` + tomlBasicStringEscape(worktree) + `"]` + "\ntrust_level = \"trusted\""
+
+	if _, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "agent-1",
+		Resume:        true,
+		WorktreePath:  worktree,
+		InitialPrompt: "next message",
+	}); err != nil {
+		t.Fatalf("metadata BuildInteractiveCommand: %v", err)
+	}
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	if !strings.Contains(string(config), trustLine) {
+		t.Fatalf("trusted worktree lost its Codex trust on a request with no trust decision:\n%s", config)
 	}
 }
 
@@ -206,7 +305,7 @@ func TestTrustCodexWorktreeSerializesConcurrentConfigUpdates(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- trustCodexWorktree(worktree)
+			errs <- trustCodexWorktree(worktree, nil)
 		}()
 	}
 	wg.Wait()
@@ -1055,7 +1154,7 @@ func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 	// Missing.
 	resp, err := s.TranscriptExists(context.Background(), &bossanovav1.TranscriptExistsRequest{
 		WorkDir:        "/anywhere",
-		AgentSessionId: "no-such-uuid",
+		AgentSessionId: "019e068c-0000-7000-8000-00000000000c",
 	})
 	if err != nil {
 		t.Fatalf("TranscriptExists(missing): %v", err)
@@ -1065,11 +1164,11 @@ func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 	}
 
 	// Present.
-	uuid := "rpc-test-uuid"
+	uuid := "019e068c-0000-7000-8000-00000000000b"
 	dst := shardedRolloutPath(filepath.Join(tmpHome, codexSessionsDir), uuid)
 	copyFixture(t, "testdata/transcripts/sample.jsonl", dst)
 	respHave, err := s.TranscriptExists(context.Background(), &bossanovav1.TranscriptExistsRequest{
-		WorkDir:        "/anywhere",
+		WorkDir:        sampleRolloutCWD,
 		AgentSessionId: uuid,
 	})
 	if err != nil {
@@ -1345,7 +1444,7 @@ func TestGetChatTitle_EmptyThreadNameFallsBackToRollout(t *testing.T) {
 
 	s := newTestServer(t)
 	resp, err := s.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
-		WorkDir: "/anywhere", SessionId: sessionID,
+		WorkDir: sampleRolloutCWD, SessionId: sessionID,
 	})
 	if err != nil {
 		t.Fatalf("GetChatTitle: %v", err)

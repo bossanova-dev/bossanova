@@ -120,7 +120,7 @@ func TestCronZeroOutputMigrationBackfillsExistingRow(t *testing.T) {
 	if err := dbtest.RunUpTo(db, migrations, cronZeroOutputVersion); err != nil {
 		t.Fatalf("run up to %d: %v", cronZeroOutputVersion, err)
 	}
-	repo := createTestRepo(t, NewRepoStore(db))
+	repo := insertPreMigrationRepo(t, db)
 
 	// Roll back to before BOS-563 so the column genuinely does not exist.
 	if err := dbtest.RunDownTo(db, migrations, preCronZeroOutputVersion); err != nil {

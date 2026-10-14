@@ -268,6 +268,27 @@ func (m *RepairLeaseManager) StallReason(sessionID string) string {
 	return m.stalls[sessionID].reason
 }
 
+// ClearStall drops the session's stall record once the alert it raised is no
+// longer current (BOS-1535: the head moved, CI went green, or the PR left the
+// repair-eligible states). It reports whether a record was cleared. A live
+// lease is never touched, and while one is held no record is cleared: a held
+// lease means a repair round is in flight and owns the session's repair state.
+func (m *RepairLeaseManager) ClearStall(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, live := m.evaluateLocked(sessionID, m.now()); live {
+		return false
+	}
+	if _, ok := m.stalls[sessionID]; !ok {
+		return false
+	}
+	delete(m.stalls, sessionID)
+	return true
+}
+
 // HydrateSession applies the whole BOS-515 read-side contract to one proto
 // Session in the single order every hydration site must use: feed the heartbeat
 // with the current evidence, THEN read the (possibly just-released) lease, then

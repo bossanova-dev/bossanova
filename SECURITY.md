@@ -1,8 +1,8 @@
 # Security Policy
 
-This document describes how to report a vulnerability in Bossanova, what the CI
-security gate enforces, how findings may be suppressed, and how to disable the
-gate in an emergency.
+This document describes how to report a vulnerability in Bossanova, which
+security scans run and when, how findings may be suppressed, and how to disable
+a scan in an emergency.
 
 ## Reporting a vulnerability
 
@@ -22,69 +22,58 @@ If private reporting is unavailable to you, contact the repository maintainer
 initial assessment (severity + remediation plan) within **10 business days**.
 Please give us a reasonable window to ship a fix before any public disclosure.
 
-## What blocks a release (the gate policy)
+## What runs, and when
 
-Security scanning runs in [`.github/workflows/security.yml`](.github/workflows/security.yml)
-and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml). The intended
-gate policy is:
+Security scanning lives in [`.github/workflows/security.yml`](.github/workflows/security.yml)
+and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml).
 
-| Scanner         | Scope                                                                                                                                                                          | Gate                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
-| **gosec**       | Go SAST, all `go.work` modules, threshold severity≥medium / confidence≥medium (`-severity`/`-confidence` flags in `security.yml`; `.gosec.json` carries the `global` settings) | **Blocks**                                               |
-| **govulncheck** | Call-reachable vulnerabilities in Go code + stdlib/toolchain                                                                                                                   | **Blocks**                                               |
-| **pnpm audit**  | `--prod --audit-level=high` (production dependency advisories, high/critical)                                                                                                  | **Blocks**                                               |
-| **CodeQL**      | Semantic analysis (Go + JS/TS)                                                                                                                                                 | **Advisory** — results in the Security tab, never blocks |
-| Secret scanning | Committed-credential detection                                                                                                                                                 | **GitGuardian (external)** — not in this workflow        |
+| Scanner         | Scope                                                                                                                                                                          | When it runs                                                                                    | On findings                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | --------------------------- |
+| **CodeQL**      | Semantic analysis (Go + JS/TS)                                                                                                                                                 | Pushes to and PRs into `staging`/`production`, weekly on `main` (`27 3 * * 1`), manual dispatch | **Advisory** — never blocks |
+| **gosec**       | Go SAST, all `go.work` modules, threshold severity≥medium / confidence≥medium (`-severity`/`-confidence` flags in `security.yml`; `.gosec.json` carries the `global` settings) | **Manual dispatch only**                                                                        | Fails the run               |
+| **govulncheck** | Call-reachable vulnerabilities in Go code + stdlib/toolchain                                                                                                                   | **Manual dispatch only**                                                                        | Fails the run               |
+| **pnpm audit**  | `--prod --audit-level=high` (production dependency advisories, high/critical)                                                                                                  | **Manual dispatch only**                                                                        | Fails the run               |
+| Secret scanning | Committed-credential detection                                                                                                                                                 | GitGuardian (external)                                                                          | Not part of these workflows |
 
-> **Current status — gosec, govulncheck, and pnpm audit are BLOCKING.**
-> The Go/dependency scanners fail the build on findings. The BOS-9 baseline was
-> triaged to green (see the [`docs/security/threat-model.md`](docs/security/threat-model.md)
-> findings register) and the flips landed via **BOS-411** (govulncheck),
-> **BOS-412** (pnpm audit), and **BOS-28** (gosec). For reference, each flip
-> removed a findings-only success-forcing control:
+> **gosec, govulncheck and pnpm audit do not run automatically and gate nothing.**
+> `security.yml` used to run on every release PR, on pushes to the release
+> branches and weekly on `main`; on 2026-08-07 the repository owner made it
+> dispatch-only because it was blocking releases on advisory churn (the
+> rationale is recorded in the workflow's `on:` block, and
+> `scripts/security-workflow.test.mjs` pins the trigger so it is not re-added by
+> accident). Within a run the three scanners still fail on findings — the BOS-9
+> baseline was triaged to green and the flips landed via **BOS-411**
+> (govulncheck), **BOS-412** (pnpm audit) and **BOS-28** (gosec) — but nothing
+> stops a vulnerable dependency or an unjustified `#nosec` from reaching a
+> release unless someone runs the workflow. The weekly sweep was the only scan
+> of unchanged code against newly published advisories, so that gap is real.
 >
-> - **gosec** — dropped `-no-fail` and now propagates gosec's own exit code
->   (`${PIPESTATUS[0]}`). `.gosec.json` no longer sets `nosec: enabled`, so the
->   scan honors metadata-complete `#nosec` suppressions and blocks only on
->   unsuppressed findings; the "Golang errors" scan-error branch still fails the
->   job on load/compile errors so the notify alert fires.
-> - **pnpm audit** — removed the JSON wrapper that converted valid advisory
->   reports back to success (execution errors still fail the job). **Known
->   exception:** with `pnpm@10` pinned (`packageManager` in `package.json`), npm
->   has retired the legacy audit endpoint pnpm 10 targets, so the scan returns
->   `ERR_PNPM_AUDIT_BAD_RESPONSE` (HTTP 410) and is degraded to a non-blocking
->   warning pending the pnpm 11 bulk-advisory migration — see
->   [Dependency advisory exceptions](#dependency-advisory-exceptions). Every
->   other execution error and any high/critical production advisory still fails
->   the job.
-> - **govulncheck** — fails when `.finding` records exist instead of exiting 0
->   under `-format json`.
+> Run the scanners before a release, or after a dependency advisory you care
+> about, with:
 >
-> CodeQL is non-blocking by design and stays that way.
+> ```bash
+> gh workflow run security.yml --ref <branch>
+> gh run watch "$(gh run list --workflow security.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+> ```
+>
+> CodeQL runs with `upload: never` and GitHub Advanced Security is not enabled,
+> so its results stay in the run's logs and artifacts — they do not appear in
+> the Security tab and are not a required check.
 
 ## Failure monitoring
 
-There is no PR to surface a red ❌ when a scan fails on `main` or on a scheduled
-run, so failures are pushed to a GitHub issue instead.
-
-- **Scheduled coverage of `main`.** `codeql.yml` runs on push-to-`main` and
-  weekly (`27 3 * * 1`). `security.yml` ignores pushes to `main`, so
-  gosec/govulncheck/pnpm-audit also run weekly (`41 4 * * 1`) to cover `main`.
-- **Notification.** Both workflows have a `notify` job
-  (`if: failure() && github.event_name != 'pull_request'`) that runs the
+- **Notification.** Both workflows have a `notify` job that runs the
   [`notify-security-failure`](.github/actions/notify-security-failure/action.yml)
-  composite action. On a failed push/scheduled run it opens — or comments on the
-  existing open — issue labelled **`security-scan-failure`** (deduped to one open
-  issue). Close it once resolved; the next failure opens a fresh one. PR
-  failures are intentionally excluded — they are already visible on the PR.
-- **Scope.** Now that gosec/govulncheck/pnpm-audit are blocking, a finding fails
-  the job and — on a push or scheduled run (not a PR, which is already visible) —
-  the same notifier alerts on it, alongside genuine **workflow/infra failures**
-  (broken build, matrix generation, setup/install errors, CodeQL init). The
-  expected "GHAS not enabled" SARIF-upload error stays swallowed at the step level
-  so it does not false-alarm.
-- **Manual checks.** `gh run list --branch main --status failure`, and the
-  **Security** tab for CodeQL/gosec SARIF findings.
+  composite action on a failed scheduled run, manual dispatch, or push to
+  `staging`/`production` (PR runs are excluded — they are already visible on
+  the PR). It opens — or comments on the existing open — issue labelled
+  **`security-scan-failure`** (deduped to one open issue). Close it once
+  resolved; the next failure opens a fresh one.
+- **Scope.** A finding fails the job, and so does a genuine workflow/infra
+  failure (broken build, matrix generation, setup/install errors, CodeQL init);
+  either one triggers the notifier on the runs above.
+- **Manual checks.** `gh run list --workflow security.yml` and
+  `gh run list --workflow codeql.yml --status failure`.
 
 ## Suppressions
 
@@ -110,7 +99,7 @@ Rules:
 - **No silent suppressions.** Every suppression is an inline `#nosec` comment
   carrying the metadata above **and** is mirrored in the findings register in
   [`docs/security/threat-model.md`](docs/security/threat-model.md), so each one
-  is greppable and auditable (`grep -rn '#nosec'`). The blocking gosec gate
+  is greppable and auditable (`grep -rn '#nosec'`). The gosec scan
   honors `#nosec` and fails only on **unsuppressed** findings; it no longer runs
   in `nosec: enabled` audit mode, which ignored every suppression and would make
   the gate unpassable. Because the gate now honors inline suppressions, the
@@ -139,12 +128,11 @@ and a `review-by=YYYY-MM-DD` date. Excepted advisories are reviewed at least
 **quarterly** and removed as soon as a patched version is available. The file is
 created on first need; until then there are no standing exceptions.
 
-**Standing environment exception — pnpm 10 audit endpoint.** npm retired the
-legacy `/-/npm/v1/security/audits/quick` endpoint that `pnpm@10` (currently
-pinned via `packageManager`) targets; it now returns HTTP 410
-(`ERR_PNPM_AUDIT_BAD_RESPONSE`). The workflow treats that specific
+**Standing environment exception — retired audit endpoint.** npm retired the
+legacy `/-/npm/v1/security/audits/quick` endpoint that `pnpm@10` targeted; it
+returns HTTP 410 (`ERR_PNPM_AUDIT_BAD_RESPONSE`). The workflow treats that specific
 endpoint-retired error as a non-blocking warning (`security.yml`, pnpm-audit
-step) so the release gate is not held hostage to a dead endpoint. This means the
+step) so a dead endpoint does not fail the run. This means the
 production-advisory scan is effectively skipped until the project migrates to
 pnpm 11's bulk advisory endpoint; every **other** execution error still fails
 loud. Restoring the fully-blocking advisory path is the pnpm 11 migration's
@@ -152,33 +140,20 @@ responsibility.
 
 ## Emergency disable / rollback
 
-If the security gate misfires and blocks legitimate merges, restore merge
-capability immediately using **one** of the following. The owner of this
-procedure is the **repository admin (currently @recurser)**.
+`security.yml` runs only when dispatched, so it cannot block a merge or a
+release on its own; if a manual run misfires, do not act on it and fix the scan.
+CodeQL is advisory and never blocks. If a security workflow is ever made
+required or automatic again and misfires, the repository admin (currently
+@recurser) restores merge capability with **one** of:
 
-1. **Mark the `security` check non-required (fastest).**
-   The gate runs on pull requests into (and pushes to) **`staging`** and
-   **`production`** — not `main` (`security.yml` ignores `main` pushes; the
-   weekly schedule covers `main`). GitHub → **Settings → Branches → Branch
-   protection rules for `staging` and `production`** → under _Require status
-   checks to pass_, remove the **`security`** check → **Save**. This unblocks
-   merges without a code change. Re-add it once the gate is fixed.
-
-2. **Revert the gate-flip commit.**
-   If the gate was made blocking by a specific commit (the "flip the gate"
-   change — e.g. gosec's `-no-fail` removal + exit propagation), revert it:
-
-   ```bash
-   git revert <flip-commit-sha>   # restores the scanner's findings-only success-forcing control
-   git push
-   ```
-
-   The scanners return to non-blocking (still reporting), and merges flow again.
-
-3. **Disable the workflow entirely (last resort).**
-   GitHub → **Actions → `security` workflow → ⋯ → Disable workflow**, or set the
-   job to `if: false`. Use only if 1 and 2 are insufficient.
+1. **Mark the check non-required.** GitHub → **Settings → Branches → Branch
+   protection rules** for the affected branch → under _Require status checks to
+   pass_, remove the check → **Save**. Re-add it once the scan is fixed.
+2. **Revert the commit that made it blocking** (`git revert <sha>`), which
+   returns the scanner to reporting-only.
+3. **Disable the workflow** (last resort): GitHub → **Actions** → the workflow
+   → **⋯ → Disable workflow**.
 
 **Re-enable requirement:** any emergency disable MUST be tracked by an issue and
-the gate re-enabled within **5 business days**, once the underlying finding is
-triaged. Leaving the gate disabled silently is itself a security regression.
+the check re-enabled within **5 business days**, once the underlying finding is
+triaged. Leaving a check disabled silently is itself a security regression.

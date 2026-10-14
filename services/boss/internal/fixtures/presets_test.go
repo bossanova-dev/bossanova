@@ -21,7 +21,7 @@ import (
 )
 
 // allPresetNames is the exact, sorted set the registry must expose.
-var allPresetNames = []string{"accounts-superseded", "archive-signal", "armed-verify", "async-create", "boxed-approval", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "ready-handoff", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "session-phase", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
+var allPresetNames = []string{"accounts-superseded", "archive-signal", "armed-verify", "async-create", "boxed-approval", "build-handoff-standby", "busy", "cloud-error", "demo", "empty", "errored-status", "http-endpoints", "live-past-failure", "login", "onboarding", "question-row", "ready-handoff", "repo-organization", "respawn-history", "resurrect-progress", "rotation-history", "session-phase", "setup-progress", "slow-agent-probe", "transient-pr-failure", "waiting-callback", "waiting-demoted", "wedged-daemon"}
 
 func TestPresetsExactSet(t *testing.T) {
 	got := make([]string, 0, len(Presets()))
@@ -123,6 +123,48 @@ func TestArmedVerifyWorldIsCoherent(t *testing.T) {
 	}
 	if !verifyTitled {
 		t.Fatal("the armed chat must be titled verify, as stage-chain names it")
+	}
+}
+
+// TestBuildHandoffStandbyWorldIsCoherent pins what the BOS-1531 proof depends
+// on: each waiting chat's callback recomposes to exactly its reason, the build
+// chat's reason is standby and its agent-session id sorts first (the shape that
+// used to win the tie-break), and the session aggregate names verify.
+func TestBuildHandoffStandbyWorldIsCoherent(t *testing.T) {
+	w := Presets()["build-handoff-standby"].World()
+	if len(w.Sessions) != 1 || len(w.GithubCallbacks) != 2 || len(w.SessionStatuses) != 1 {
+		t.Fatalf("sessions=%d callbacks=%d session statuses=%d, want 1, 2, 1", len(w.Sessions), len(w.GithubCallbacks), len(w.SessionStatuses))
+	}
+	reasons := map[string]string{}
+	for _, e := range w.ChatStatuses {
+		if e.GetStatus() != pb.ChatStatus_CHAT_STATUS_WAITING {
+			t.Fatalf("chat %s status = %v, want WAITING", e.GetAgentSessionId(), e.GetStatus())
+		}
+		reasons[e.GetAgentSessionId()] = e.GetWaitingReason()
+	}
+	var buildID, verifyID string
+	for _, cb := range w.GithubCallbacks {
+		got := displaystatus.CallbackWaitingReason(cb.GetTrigger(), cb.GetRepoOwner(), cb.GetRepoName(), int(cb.GetPrNumber()))
+		if got != reasons[cb.GetTargetChatId()] {
+			t.Fatalf("callback %s reason %q, chat reason %q", cb.GetId(), got, reasons[cb.GetTargetChatId()])
+		}
+		if cb.GetState() != "active" || !cb.GetExpiresAt().AsTime().After(time.Now()) {
+			t.Fatalf("callback %s must be live against the real clock", cb.GetId())
+		}
+		if displaystatus.IsStandbyWaitingReason(got) {
+			buildID = cb.GetTargetChatId()
+		} else {
+			verifyID = cb.GetTargetChatId()
+		}
+	}
+	if buildID == "" || verifyID == "" || buildID >= verifyID {
+		t.Fatalf("build %q must hold the standby wait and sort before verify %q", buildID, verifyID)
+	}
+	if reasons[buildID] != BuildHandoffStandbyReason || reasons[verifyID] != BuildHandoffVerifyReason {
+		t.Fatalf("reasons = %v", reasons)
+	}
+	if got := w.SessionStatuses[0].GetWaitingReason(); got != BuildHandoffVerifyReason {
+		t.Fatalf("session waiting reason = %q, want the blocking %q", got, BuildHandoffVerifyReason)
 	}
 }
 

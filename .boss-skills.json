@@ -1,57 +1,4 @@
 {
-  "lensMap": [
-    {
-      "id": "go",
-      "skill": "golang-pro",
-      "glob": "**/*.go",
-      "fallbackRubric": "review through an inline Go rubric: idiomatic error handling and wrapping, goroutine/channel safety and leaks, interface and generics design, allocation on hot paths, and table-driven test coverage for new/changed logic"
-    },
-    {
-      "id": "tui",
-      "skill": "tui-design",
-      "glob": "services/boss/**",
-      "fallbackRubric": "review through an inline Bubbletea v2 rubric: view/update purity, key-binding and action-bar consistency, layout-constant reuse, confirmation-dialog patterns, and no blocking work in Update"
-    },
-    {
-      "id": "web",
-      "skill": "impeccable",
-      "glob": "services/web/**",
-      "fallbackRubric": "review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code"
-    },
-    {
-      "id": "db",
-      "skill": "database-review",
-      "glob": "**/migrations/**",
-      "fallbackRubric": "review through an inline schema/migration rubric: audit each changed column/table against the database-design standard \u2014 boolean prefixes (is_/has_/should_/can_), count form ({noun}_count not num_*), timestamp form ({event}_at as TEXT ISO-8601, never an epoch integer in an _at column), date form ({event}_on), snake_case identifiers, and foreign-key naming ({singular_table}_id)"
-    },
-    {
-      "id": "api",
-      "skill": "api-review",
-      "globs": [
-        "proto/**",
-        "lib/bossalib/apiversion/**",
-        "services/bosso/internal/server/**",
-        "services/web/src/api.ts"
-      ],
-      "fallbackRubric": "review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break \u2014 an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply Go/gRPC hygiene: deliberate error codes, edge-case validation, context honoured, reserved tags on field removal, and snake_case field names with is_/has_/should_/can_ boolean prefixes"
-    }
-  ],
-  "reviewDefaults": {
-    "deltaFileThreshold": 20,
-    "maxDispatchedRounds": 6,
-    "forceFull": false,
-    "rounds": [
-      {
-        "capability": "second-voice",
-        "kind": "cross-agent"
-      },
-      {
-        "capability": "code-review",
-        "kind": "skill",
-        "skill": "compound-engineering:ce-code-review"
-      }
-    ]
-  },
   "commands": {
     "test": "make test-full",
     "testAffected": "make test-affected",
@@ -126,9 +73,6 @@
       "baseUrl": "https://proof.bossanova.dev"
     }
   },
-  "reviewLedger": {
-    "dir": ".git/boss-review-ledgers"
-  },
   "planDependencies": {
     "moduleRoots": [
       "docs",
@@ -167,11 +111,23 @@
       "database": ["services/bossd/migrations/**", "services/bosso/migrations_postgres/**"],
       "security": [
         ".boss-project.json",
-        ".boss-skills.json",
+        {
+          "glob": ".boss-skills.json",
+          "label": "verify gate rules (how PRs get merged)"
+        },
         ".claude/settings.json",
-        ".claude/skills/boss-verify-*/**",
-        ".codex/skills/boss-verify-*/**",
-        ".github/workflows/**",
+        {
+          "glob": ".claude/skills/boss-verify-*/**",
+          "label": "verify gate rules (how PRs get merged)"
+        },
+        {
+          "glob": ".codex/skills/boss-verify-*/**",
+          "label": "verify gate rules (how PRs get merged)"
+        },
+        {
+          "glob": ".github/workflows/**",
+          "label": "CI workflows"
+        },
         "lib/bossalib/authlock/**",
         "lib/bossalib/authtoken/**",
         "lib/bossalib/gatecmd/**",
@@ -199,11 +155,23 @@
     },
     "alwaysHumanPaths": [
       ".boss-project.json",
-      ".boss-skills.json",
+      {
+        "glob": ".boss-skills.json",
+        "label": "verify gate rules (how PRs get merged)"
+      },
       ".claude/settings.json",
-      ".claude/skills/boss-verify-*/**",
-      ".codex/skills/boss-verify-*/**",
-      ".github/workflows/**",
+      {
+        "glob": ".claude/skills/boss-verify-*/**",
+        "label": "verify gate rules (how PRs get merged)"
+      },
+      {
+        "glob": ".codex/skills/boss-verify-*/**",
+        "label": "verify gate rules (how PRs get merged)"
+      },
+      {
+        "glob": ".github/workflows/**",
+        "label": "CI workflows"
+      },
       "lib/bossalib/authlock/**",
       "lib/bossalib/authtoken/**",
       "lib/bossalib/gatecmd/**",

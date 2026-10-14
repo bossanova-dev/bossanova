@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dotenv"
 	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/repotrust"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog/log"
@@ -312,13 +313,12 @@ type proofEnvResolver interface {
 // NewHostServiceServer installs a real resolver.
 func (s *HostServiceServer) SetProofEnvResolver(r proofEnvResolver) { s.proofEnv = r }
 
-// resolveProofEnv returns the proof env overlay, or nil when no resolver is
-// wired. Never logs values.
-func (s *HostServiceServer) resolveProofEnv() map[string]string {
-	if s.proofEnv == nil {
-		return nil
-	}
-	return s.proofEnv.Resolve()
+// resolveProofEnvFor returns the proof env overlay for a run in repo, or nil
+// when repo is not trusted (BOS-1562; see repotrust.Allowed) or no resolver
+// is wired. This is the only way to obtain the overlay, so no spawn path can
+// bypass the trust gate. Never logs values.
+func (s *HostServiceServer) resolveProofEnvFor(repo *models.Repo) map[string]string {
+	return proofenv.OverlayFor(s.proofEnv, repo)
 }
 
 // accountEnvResolver resolves the per-account spawn env overlay for a session's
@@ -1371,7 +1371,10 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		Plan:     req.GetPrompt(),
 		LogPath:  bossalog.AgentLogFile(s.agentLogsDir, "repair-"+sessionID),
 		Model:    sess.Model,
-		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnv(), accountEnv), sess.WorktreePath, repo),
+		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnvFor(repo), accountEnv), sess.WorktreePath, repo),
+		// The repair run is headless: an untrusted (or unresolved) repo revokes
+		// any pre-trust of the worktree's own agent configuration (BOS-1562).
+		ProjectTrust: repotrust.ProjectTrustFor(repo, sess.WorktreePath),
 	}
 	startedAt := time.Now()
 	startResp, err := client.StartRun(context.Background(), startReq)

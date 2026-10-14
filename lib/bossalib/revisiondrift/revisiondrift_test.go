@@ -40,6 +40,18 @@ func (f *fakeGit) runner() GitRunner {
 	}
 }
 
+// ancestryCall returns the recorded `merge-base --is-ancestor` argument vector,
+// or nil when none ran. The fake answers that subcommand whichever way round
+// its arguments are, so a test that cares about direction asserts on this.
+func (f *fakeGit) ancestryCall() []string {
+	for _, call := range f.calls {
+		if len(call) >= 2 && call[0] == "merge-base" && call[1] == "--is-ancestor" {
+			return call
+		}
+	}
+	return nil
+}
+
 func (f *fakeGit) sawSubcommand(name string) bool {
 	for _, call := range f.calls {
 		if len(call) > 0 && call[0] == name {
@@ -83,6 +95,20 @@ func TestInspectAncestorRevisionIsDescendant(t *testing.T) {
 	}
 	if got.Relation() != "descendant" {
 		t.Errorf("Relation() = %q, want descendant", got.Relation())
+	}
+}
+
+// TestInspectAsksWhetherHeadIsAnAncestorOfTheBinary pins the argument order in
+// the fake as well as against real git, so a future swap fails a unit test
+// that needs no repository. HEAD first: the question is whether the binary
+// contains the checkout, not whether the checkout contains the binary.
+func TestInspectAsksWhetherHeadIsAnAncestorOfTheBinary(t *testing.T) {
+	git := &fakeGit{head: "headsha", ancestor: GitResult{ExitCode: 0}}
+	Inspect(context.Background(), optionsFor("binarysha", "v1.2.3-4-gbinarysha", git.runner()))
+
+	want := []string{"merge-base", "--is-ancestor", "HEAD", "binarysha"}
+	if got := git.ancestryCall(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("ancestry call = %q, want %q", got, want)
 	}
 }
 
@@ -450,8 +476,8 @@ func TestInspectFromLinkedWorktreeReadsTheClonesCommonGitDir(t *testing.T) {
 	if !got.BehindKnown {
 		t.Fatalf("no verdict from a linked worktree: %+v", got)
 	}
-	if got.Behind {
-		t.Errorf("the first commit is an ancestor of the linked worktree HEAD: %+v", got)
+	if !got.Behind || got.Reason != ReasonBehind {
+		t.Errorf("a binary at the first commit lacks the linked worktree HEAD's second commit, want behind: %+v", got)
 	}
 	if got.CheckoutRevision != headRevision {
 		t.Errorf("CheckoutRevision = %q, want the linked worktree HEAD %q", got.CheckoutRevision, headRevision)
@@ -473,6 +499,189 @@ func TestInspectFromLinkedWorktreeReadsTheClonesCommonGitDir(t *testing.T) {
 	shallow := Inspect(context.Background(), opts)
 	if !shallow.ShallowClone {
 		t.Fatalf("ShallowClone = false from a linked worktree of a clone marked shallow: %+v", shallow)
+	}
+}
+
+// TestInspectStaleCheckoutBuildIsBehind is the BOS-1300 incident shape against
+// real git: a binary built from an older commit on HEAD's own lineage, run in a
+// checkout that has since moved on. The checkout has a commit the binary lacks,
+// so the verdict must be behind. The fake runner cannot see this — it answers
+// `merge-base --is-ancestor` whichever way round the arguments are — so only
+// real git can catch an inverted ancestry query.
+func TestInspectStaleCheckoutBuildIsBehind(t *testing.T) {
+	repo := initTestRepo(t)
+	binaryRevision := gitOutput(t, repo, "rev-parse", "HEAD")
+	writeCommit(t, repo, "second.txt", "second")
+
+	got := Inspect(context.Background(), realGitOptions(repo, binaryRevision, "v1.2.3-1-g"+binaryRevision[:9]))
+
+	if !got.BehindKnown || !got.Behind {
+		t.Fatalf("a binary missing the checkout's newest commit was not reported behind: %+v", got)
+	}
+	if got.Reason != ReasonBehind {
+		t.Errorf("Reason = %q, want %q", got.Reason, ReasonBehind)
+	}
+}
+
+// TestInspectNewerBinaryIsNotBehind is the converse against real git: a binary
+// built from a commit the checkout has not reached yet contains every commit
+// the checkout has, so it is healthy, not behind.
+func TestInspectNewerBinaryIsNotBehind(t *testing.T) {
+	repo := initTestRepo(t)
+	checkoutRevision := gitOutput(t, repo, "rev-parse", "HEAD")
+	writeCommit(t, repo, "second.txt", "second")
+	binaryRevision := gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "--detach", checkoutRevision)
+
+	got := Inspect(context.Background(), realGitOptions(repo, binaryRevision, "v1.2.3-1-g"+binaryRevision[:9]))
+
+	if !got.BehindKnown || got.Behind || got.Reason != ReasonDescendant {
+		t.Fatalf("a binary ahead of the checkout was not reported healthy: %+v", got)
+	}
+	if got.Relation() != "descendant" {
+		t.Errorf("Relation() = %q, want descendant", got.Relation())
+	}
+}
+
+// releaseMergeFixture builds the release shape: a `production` branch that
+// merges `main` with --no-ff, so the merge commit exists only on production
+// and `main` is checked out at the merged parent. It returns the repository,
+// the merge commit and the merged main parent.
+func releaseMergeFixture(t *testing.T) (repo, merge, mainParent string) {
+	t.Helper()
+	repo = initTestRepo(t)
+	runGit(t, repo, "branch", "production")
+	writeCommit(t, repo, "feature.go", "package feature")
+	mainParent = gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "production")
+	writeCommit(t, repo, "VERSION", "v1.137.0")
+	runGit(t, repo, "merge", "--no-ff", "-m", "release v1.137.0", "main")
+	merge = gitOutput(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "checkout", "main")
+	return repo, merge, mainParent
+}
+
+// recordingGit wraps the production runner and records every invocation, so a
+// test can assert that a short-circuit spawned no git at all.
+func recordingGit(calls *[][]string) GitRunner {
+	return func(ctx context.Context, repoRoot string, args ...string) (GitResult, error) {
+		*calls = append(*calls, args)
+		return ExecGit(ctx, repoRoot, args...)
+	}
+}
+
+// TestInspectReleaseBuildInCheckoutIsReleaseBuildWithoutGit covers the ticket
+// symptom: a release binary is stamped with a production merge commit that no
+// development checkout contains, so comparing it is a category error. It must
+// read as its own unknown outcome, and it must not pay for any git subprocess
+// on the way — this probe runs on every `boss` invocation.
+func TestInspectReleaseBuildInCheckoutIsReleaseBuildWithoutGit(t *testing.T) {
+	repo, merge, _ := releaseMergeFixture(t)
+
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{name: "main at the merged parent", setup: func(*testing.T) {}},
+		{name: "main moved past the release by a docs-only commit", setup: func(t *testing.T) {
+			writeCommit(t, repo, "CHANGELOG.md", "changelog")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t)
+			var calls [][]string
+			opts := realGitOptions(repo, merge, "v1.137.0")
+			opts.Git = recordingGit(&calls)
+			opts.ReleaseBuild = true
+
+			got := Inspect(context.Background(), opts)
+
+			if got.Reason != ReasonReleaseBuild {
+				t.Fatalf("Reason = %q, want %q: %+v", got.Reason, ReasonReleaseBuild, got)
+			}
+			if !got.Unknown() || got.Behind {
+				t.Errorf("a release build reached a verdict: %+v", got)
+			}
+			if got.Relation() != "unknown" {
+				t.Errorf("Relation() = %q, want unknown", got.Relation())
+			}
+			if got.CheckoutRoot != "" {
+				t.Errorf("CheckoutRoot = %q, want empty — the root was never authenticated", got.CheckoutRoot)
+			}
+			if len(calls) != 0 {
+				t.Errorf("a release build spawned git: %v", calls)
+			}
+		})
+	}
+}
+
+// TestInspectReleaseMergeNotMarkedReleaseIsDescendant proves the corrected
+// direction on its own, without the release carve-out: a binary at the
+// production merge contains the merged main parent, so with HEAD there it is
+// healthy. Under the inverted query the merge-only commit read as behind.
+func TestInspectReleaseMergeNotMarkedReleaseIsDescendant(t *testing.T) {
+	repo, merge, mainParent := releaseMergeFixture(t)
+	if head := gitOutput(t, repo, "rev-parse", "HEAD"); head != mainParent {
+		t.Fatalf("fixture HEAD = %s, want the merged main parent %s", head, mainParent)
+	}
+
+	got := Inspect(context.Background(), realGitOptions(repo, merge, "v1.137.0"))
+
+	if !got.BehindKnown || got.Behind || got.Reason != ReasonDescendant {
+		t.Fatalf("a binary at the release merge read as stale against its own merged parent: %+v", got)
+	}
+}
+
+// TestInspectReleaseBuildOutsideACheckoutKeepsNoCheckout pins the ordering: the
+// release short-circuit runs after the checkout search, so an installed release
+// run from a home directory still reads as not-in-a-checkout.
+func TestInspectReleaseBuildOutsideACheckoutKeepsNoCheckout(t *testing.T) {
+	git := &fakeGit{}
+	opts := optionsFor("releasesha", "v1.137.0", git.runner())
+	opts.ReleaseBuild = true
+	opts.FindCheckout = func(string) (string, bool) { return "", false }
+
+	got := Inspect(context.Background(), opts)
+
+	if got.Reason != ReasonNoCheckout {
+		t.Fatalf("Reason = %q, want %q", got.Reason, ReasonNoCheckout)
+	}
+	if len(git.calls) != 0 {
+		t.Errorf("git was consulted outside a checkout: %v", git.calls)
+	}
+}
+
+// TestInspectReleaseBuildShortCircuitsBeforeTrust pins the other half of the
+// ordering: the trust check spawns git subprocesses of its own, so a release
+// build must be classified before it runs.
+func TestInspectReleaseBuildShortCircuitsBeforeTrust(t *testing.T) {
+	git := &fakeGit{}
+	opts := optionsFor("releasesha", "v1.137.0", git.runner())
+	opts.ReleaseBuild = true
+	opts.TrustCheckout = func(string) (bool, error) {
+		t.Fatalf("the trust check ran for a release build")
+		return false, nil
+	}
+
+	got := Inspect(context.Background(), opts)
+
+	if got.Reason != ReasonReleaseBuild {
+		t.Fatalf("Reason = %q, want %q", got.Reason, ReasonReleaseBuild)
+	}
+	if len(git.calls) != 0 {
+		t.Errorf("git was consulted for a release build: %v", git.calls)
+	}
+}
+
+// realGitOptions points Inspect at a real repository through the production
+// runner, with the checkout pinned so the structural search is not under test.
+func realGitOptions(repo, revision, version string) Options {
+	return Options{
+		BinaryRevision: revision,
+		BinaryVersion:  version,
+		StartDir:       repo,
+		Git:            ExecGit,
+		FindCheckout:   func(string) (string, bool) { return repo, true },
 	}
 }
 

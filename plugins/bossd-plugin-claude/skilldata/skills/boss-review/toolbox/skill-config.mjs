@@ -6,7 +6,7 @@
 // the reusable toolbox and runs in dependency-free cron worktrees.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, dirname, isAbsolute, parse as parsePath, posix } from 'node:path'
+import { join, dirname, isAbsolute, parse as parsePath } from 'node:path'
 import { effectiveSelection, stageLabelRoles, validateSelectionBlock } from './selection.mjs'
 
 export const CONFIG_FILENAME = '.boss-skills.json'
@@ -103,82 +103,19 @@ export function withTrackerDefaults(config) {
 }
 
 export const DEFAULT_CONFIG = Object.freeze({
-  // Deliberately NOT a copy of any one checkout's lensMap — the inverse of the pin this
-  // block used to carry. The published cores install into every user's GLOBAL skill
-  // directory, so these defaults are what a foreign repo inherits: a static, language-shaped
-  // catalogue whose every glob starts with `**/` and therefore anchors to no top-level
-  // directory. A repo's own path-anchored lenses (and its build commands, test manifest and
-  // tracker identity) live ONLY in that checkout's own .boss-skills.json. The catalogue is
-  // not gated on marker files because a lens self-selects by matching changed files: an
-  // entry that matches nothing is simply inert, whereas gating could only subtract a lens
-  // that would otherwise have been correct. Every entry still carries a non-empty
-  // fallbackRubric, written for a FOREIGN repo, because bs-review substitutes it into
-  // Phase 1 when the named skill can't be loaded (e.g. an operator-global skill like
-  // impeccable off the author's machine) — the graceful-degradation path the skill relies on.
   // The `commands` and `test` blocks are absent by design: see detectRepoDefaults().
-  lensMap: [
-    {
-      id: 'go',
-      skill: 'golang-pro',
-      glob: '**/*.go',
-      fallbackRubric:
-        'review through an inline Go rubric: idiomatic error handling and wrapping, goroutine/channel safety and leaks, interface and generics design, allocation on hot paths, and table-driven test coverage for new/changed logic',
-    },
-    {
-      id: 'web',
-      skill: 'impeccable',
-      // Multi-extension matchers MUST use the globs array: globToRegExp escapes `{`/`}`
-      // as literals, so `**/*.{ts,tsx}` would match a file literally named that.
-      // Plain JS carries the same rubric as TS: a repo that never adopted TypeScript (and
-      // dependency-free `.mjs` tooling anywhere) would otherwise match no lens at all.
-      globs: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs', '**/*.css'],
-      fallbackRubric:
-        'review through an inline React/TypeScript/web-UI rubric: component correctness, hook/effect races, accessibility, type-boundary cleanliness, dead/duplicated code',
-    },
-    {
-      id: 'db',
-      skill: 'database-review',
-      globs: ['**/migrations/**', '**/*.sql'],
-      fallbackRubric:
-        'review through an inline schema/migration rubric: audit each changed column and table for naming and shape — snake_case identifiers, boolean columns prefixed is_/has_/should_/can_, counts as {noun}_count rather than num_*, timestamps as {event}_at and dates as {event}_on, foreign keys as {singular_table}_id — then check that each migration is reversible or explicitly documented as one-way, that an added column is nullable or carries a default so the deploy does not block on a table rewrite, that every new query predicate is indexed, and that no destructive drop or rename ships without a backfill and a compatibility window',
-    },
-    {
-      id: 'api',
-      skill: 'api-review',
-      globs: ['**/*.proto', '**/*.graphql', '**/openapi*.yaml'],
-      fallbackRubric:
-        'review through an inline API-contract rubric: classify each change as additive, behavioural, or a wire break — an added field or procedure is safe, while a behavioural change (a client built against the old code observing a different response value, default, validation, ordering, error code, or side effect) and a wire break (a removed, renumbered, or retyped field) are compatibility events that must be handled deliberately by whatever versioning discipline this project already uses, and never shipped silently; where the project does version its API, require that the change add a version rather than mutate an existing one, that any compatibility shim target only the affected procedure, convert toward the older client rather than upgrading it, guard every type assertion so it cannot panic, and be a no-op for every other method, proved by a unit test that the shim fires one version back and is a no-op at the newest version, an end-to-end test through the real server, and a client version pin that stays consistent; treat internal-only behaviour no external client can observe, a security fix, and a bug fix that restores documented behaviour as deliberate exemptions rather than demanding a bump; then apply the schema hygiene the format supports: deliberate and specific error codes, edge-case validation, cancellation/deadline propagation, reserved tags or deprecation markers when a field is removed, and consistent snake_case field names with is_/has_/should_/can_ boolean prefixes',
-    },
-  ],
-  // Opportunistic default review rounds — the registry boss-review's Phase D probes.
   //
-  // The published core knows only the CAPABILITY id and the dispatch shape; a vendor skill name
-  // appears ONLY here, in config, and never in core markdown. That split is deliberate and is the
-  // seam the published-core foreign-skill gate scopes itself out of: it scans markdown, because a
-  // config default naming a skill is the intended design rather than a leak. Keep it that way — a
-  // core that learned the name below would fail that gate, and the remedy is always to reword the
-  // core, never to widen the gate.
-  //
-  // `kind` decides how the capability is probed:
-  //   - 'cross-agent' — a shell-queryable binary. The core resolves the opposite agent and probes
-  //     it; anything other than a ready classification is a silent skip.
-  //   - 'skill' — no shell-queryable fact exists, so the probe IS the dispatch: the worker attempts
-  //     to load `skill` and returns a skip envelope rather than findings when it cannot.
-  // Every absent capability is a silent, non-fatal skip: a ledger line, never a warning or BLOCKED.
+  // The review boss-build runs. `skill` (absent by default) names a repo skill — or a chain of
+  // skills, run in order — that REPLACES boss-review; it must emit the same verdict JSON
+  // (review-verdict.mjs). `secondModel` turns boss-review's cross-agent second model on or off.
+  review: { secondModel: true },
+  // Review dispatch bounds. Review time is never predicted: `hangGuardMinutes` bounds one dispatch
+  // so a hung worker is not waited on forever (env: BOSS_REVIEW_HANG_GUARD_MINUTES), and
+  // `softBudgetMinutes` bounds only the optional second model (env:
+  // BOSS_REVIEW_SOFT_BUDGET_MINUTES).
   reviewDefaults: {
-    rounds: [
-      { capability: 'second-voice', kind: 'cross-agent' },
-      { capability: 'code-review', kind: 'skill', skill: 'compound-engineering:ce-code-review' },
-    ],
-    // Maximum cumulative changed files since the most recent full review before a delta round
-    // escalates back to full. Zero is valid and means every non-empty delta escalates.
-    deltaFileThreshold: 20,
-    // Maximum non-guaranteed round-role dispatches in one review run. Lower-only in config/env;
-    // the guaranteed whole-branch pass is admitted independently of this cap.
-    maxDispatchedRounds: 6,
-    // Emergency switch for hosts that need to suppress delta review entirely without changing
-    // round sequencing state. Only boolean true enables it; every other value resolves false.
-    forceFull: false,
+    softBudgetMinutes: 60,
+    hangGuardMinutes: 30,
   },
   // Epic scheduling budgets. Only the per-child wall clock lives here today: the epic driver reads
   // it once and hands the expired/not-expired bit to `classifyChildLiveness`, which short-circuits
@@ -240,9 +177,6 @@ export const DEFAULT_CONFIG = Object.freeze({
   // continue using the publish adapter even when implementation plans live on
   // the configured tracker.
   planStorage: { kind: 'tracker-attachment' },
-  // Durable boss-review dispatch ledger location. Repo-relative so published
-  // cores keep storage in the checkout that produced the review.
-  reviewLedger: { dir: '.git/boss-review-ledgers' },
   // boss-plan dependency-scan tuning a repo declares ONCE instead of rebuilding per run:
   // `moduleRoots` (top-level module names area extraction resolves against), `repoWideTokens`
   // (append-only registries and generated mirrors too shared to mean a conflict) and
@@ -294,7 +228,7 @@ export function mergeConfig(base, override) {
   for (const [k, v] of Object.entries(override || {})) {
     const b = base[k]
     if (Array.isArray(v)) {
-      out[k] = v // arrays replace wholesale (predictable lensMap override)
+      out[k] = v // arrays replace wholesale (a predictable override)
     } else if (v && typeof v === 'object' && b && typeof b === 'object' && !Array.isArray(b)) {
       out[k] = { ...b, ...v } // objects shallow-merge per key
     } else {
@@ -306,13 +240,20 @@ export function mergeConfig(base, override) {
 
 export const ADAPTER_KINDS = new Set(['tracker', 'publish', 'sessionRunner'])
 
-// How a default review round's capability is probed. 'cross-agent' is shell-queryable (resolve the
-// opposite agent's binary and classify the probe); 'skill' is not, so its probe is the dispatch.
-export const REVIEW_DEFAULT_ROUND_KINDS = new Set(['cross-agent', 'skill'])
+// Top-level and reviewDefaults keys of the retired review machinery, tolerated with a warning.
+const RETIRED_REVIEW_KEYS = Object.freeze(['lensMap', 'reviewLedger'])
+const RETIRED_REVIEW_DEFAULT_KEYS = Object.freeze([
+  'rounds',
+  'deltaFileThreshold',
+  'maxDispatchedRounds',
+  'forceFull',
+])
 
-export const REVIEW_DEFAULT_DELTA_FILE_THRESHOLD = DEFAULT_CONFIG.reviewDefaults.deltaFileThreshold
-export const REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS =
-  DEFAULT_CONFIG.reviewDefaults.maxDispatchedRounds
+export const REVIEW_DEFAULT_SOFT_BUDGET_MINUTES = DEFAULT_CONFIG.reviewDefaults.softBudgetMinutes
+export const REVIEW_DEFAULT_HANG_GUARD_MINUTES = DEFAULT_CONFIG.reviewDefaults.hangGuardMinutes
+// Slack a caller holding a review on its heartbeat adds to the hang guard, so a dispatch that runs
+// its full guard is not read as an abandoned review.
+export const REVIEW_HEARTBEAT_MARGIN_MS = 15 * 60_000
 
 export const EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES =
   DEFAULT_CONFIG.epicDefaults.childWallClockMinutes
@@ -444,46 +385,14 @@ export function validateConfig(config, source) {
     throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
   }
   if (config.retro !== undefined) validateRetro(config.retro, fail)
-  if (!Array.isArray(config.lensMap)) fail('lensMap must be an array')
-  for (const rule of config.lensMap) {
-    if (!rule || typeof rule !== 'object') fail('lensMap entries must be objects')
-    if (typeof rule.id !== 'string' || rule.id.length === 0) {
-      fail(`lensMap entry ${JSON.stringify(rule)} needs a non-empty string id`)
-    }
-    if (typeof rule.skill !== 'string' || rule.skill.length === 0) {
-      // An empty skill makes skillForLens() return "" and dispatch nothing;
-      // reject it here rather than accept an unusable lens.
-      fail(`lensMap entry "${rule.id}" needs a non-empty string skill`)
-    }
-    const hasGlob = typeof rule.glob === 'string'
-    const hasGlobs = Array.isArray(rule.globs)
-    if (!hasGlob && !hasGlobs) {
-      fail(`lensMap entry "${rule.id}" needs a glob or globs matcher`)
-    }
-    if (hasGlob && rule.glob.length === 0) {
-      fail(`lensMap entry "${rule.id}" glob must be a non-empty string`)
-    }
-    if (
-      hasGlobs &&
-      (rule.globs.length === 0 || !rule.globs.every((g) => typeof g === 'string' && g.length > 0))
-    ) {
-      fail(`lensMap entry "${rule.id}" globs must be a non-empty array of non-empty strings`)
-    }
-    // Every lens must carry a real inline fallback rubric: bs-review substitutes it
-    // into Phase 1 when the named skill can't be loaded (e.g. an operator-global
-    // skill like impeccable off the author's machine), so a lens without one would
-    // silently drop its specialist pass. Enforce it here rather than emit a
-    // fallback-less lens from a consuming repo's config or the defaults.
-    if (typeof rule.fallbackRubric !== 'string' || rule.fallbackRubric.length === 0) {
-      fail(`lensMap entry "${rule.id}" needs a non-empty string fallbackRubric`)
+  // Retired review keys (the lens map, default review rounds, delta-depth tuning and the dispatch
+  // ledger) are tolerated so an older .boss-skills.json keeps loading; each is ignored with a warning.
+  for (const key of RETIRED_REVIEW_KEYS) {
+    if (config[key] !== undefined) {
+      console.warn(`skill-config: ${source}: ${key} is retired and ignored`)
+      delete config[key]
     }
   }
-  // reviewDefaults: the opportunistic default-round registry. Optional as a whole (a hand-built
-  // config predating the block, or a repo that merged it away, resolves to no default rounds and
-  // the accessor returns []), but a PRESENT block must be usable: reviewDefaultRounds() hands each
-  // entry straight to a core's Phase D, which dereferences `capability`, switches on `kind`, and —
-  // for kind:'skill' — dispatches `skill`. A malformed entry would otherwise surface as a default
-  // round that silently probes nothing, which is indistinguishable from a capability being absent.
   if (config.reviewDefaults !== undefined) {
     if (
       !config.reviewDefaults ||
@@ -492,66 +401,43 @@ export function validateConfig(config, source) {
     ) {
       fail('reviewDefaults must be an object when present')
     }
-    if (config.reviewDefaults.rounds !== undefined) {
-      if (!Array.isArray(config.reviewDefaults.rounds)) {
-        fail('reviewDefaults.rounds must be an array')
-      }
-      // Phase D's duplicate suppression and its ledger lines are both keyed on `capability`, so
-      // two entries sharing one id are not two rounds — they are one id whose ledger line cannot
-      // say which entry produced it, and whose "covered by extension" drop silently applies to
-      // both. Reject the collision at config time rather than let it read as a working registry.
-      const seenCapabilities = new Set()
-      for (const round of config.reviewDefaults.rounds) {
-        if (!round || typeof round !== 'object' || Array.isArray(round)) {
-          fail('reviewDefaults.rounds entries must be objects')
-        }
-        if (typeof round.capability !== 'string' || round.capability.length === 0) {
-          fail(
-            `reviewDefaults.rounds entry ${JSON.stringify(round)} needs a non-empty string capability`,
-          )
-        }
-        if (!REVIEW_DEFAULT_ROUND_KINDS.has(round.kind)) {
-          fail(
-            `reviewDefaults.rounds entry "${round.capability}" kind must be one of ${[...REVIEW_DEFAULT_ROUND_KINDS].join(', ')}`,
-          )
-        }
-        // A kind:'skill' entry with no skill names nothing to dispatch, so its round would probe
-        // an undefined skill and skip every time — a capability quietly retired, not configured.
-        if (
-          round.kind === 'skill' &&
-          (typeof round.skill !== 'string' || round.skill.length === 0)
-        ) {
-          fail(`reviewDefaults.rounds entry "${round.capability}" needs a non-empty string skill`)
-        }
-        if (seenCapabilities.has(round.capability)) {
-          fail(`reviewDefaults.rounds entry "${round.capability}" duplicates an earlier capability`)
-        }
-        seenCapabilities.add(round.capability)
+    for (const key of RETIRED_REVIEW_DEFAULT_KEYS) {
+      if (config.reviewDefaults[key] !== undefined) {
+        console.warn(`skill-config: ${source}: reviewDefaults.${key} is retired and ignored`)
+        delete config.reviewDefaults[key]
       }
     }
-    if (
-      config.reviewDefaults.deltaFileThreshold === undefined ||
-      !Number.isInteger(config.reviewDefaults.deltaFileThreshold) ||
-      config.reviewDefaults.deltaFileThreshold < 0
-    ) {
-      console.warn(
-        `skill-config: ${source}: reviewDefaults.deltaFileThreshold must be a non-negative integer; using ${REVIEW_DEFAULT_DELTA_FILE_THRESHOLD}`,
-      )
-      config.reviewDefaults.deltaFileThreshold = REVIEW_DEFAULT_DELTA_FILE_THRESHOLD
+    for (const [key, fallback] of [
+      ['softBudgetMinutes', REVIEW_DEFAULT_SOFT_BUDGET_MINUTES],
+      ['hangGuardMinutes', REVIEW_DEFAULT_HANG_GUARD_MINUTES],
+    ]) {
+      const value = config.reviewDefaults[key]
+      if (value === undefined) {
+        config.reviewDefaults[key] = fallback
+      } else if (!Number.isInteger(value) || value < 1) {
+        console.warn(
+          `skill-config: ${source}: reviewDefaults.${key} must be a positive integer of minutes; using ${fallback}`,
+        )
+        config.reviewDefaults[key] = fallback
+      }
     }
-    if (
-      config.reviewDefaults.maxDispatchedRounds === undefined ||
-      !Number.isInteger(config.reviewDefaults.maxDispatchedRounds) ||
-      config.reviewDefaults.maxDispatchedRounds < 1 ||
-      config.reviewDefaults.maxDispatchedRounds > REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
-    ) {
-      console.warn(
-        `skill-config: ${source}: reviewDefaults.maxDispatchedRounds must be an integer in [1, ${REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS}]; using ${REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS}`,
-      )
-      config.reviewDefaults.maxDispatchedRounds = REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+  }
+  // review: which review boss-build runs. A malformed value warns and falls back to the default
+  // review (boss-review with its second model on) rather than refusing to load.
+  if (config.review !== undefined) {
+    if (!config.review || typeof config.review !== 'object' || Array.isArray(config.review)) {
+      console.warn(`skill-config: ${source}: review must be an object; using the default review`)
+      config.review = { ...DEFAULT_CONFIG.review }
     }
-    if (config.reviewDefaults.forceFull !== true) {
-      config.reviewDefaults.forceFull = false
+    if (config.review.secondModel !== undefined && typeof config.review.secondModel !== 'boolean') {
+      console.warn(`skill-config: ${source}: review.secondModel must be true or false; using true`)
+      config.review.secondModel = true
+    }
+    if (config.review.skill !== undefined && reviewSkillChain(config.review.skill) === null) {
+      console.warn(
+        `skill-config: ${source}: review.skill must be a skill name or a non-empty list of them; using boss-review`,
+      )
+      delete config.review.skill
     }
   }
   // epicDefaults: the epic scheduling budgets. Optional as a whole (a config predating the block,
@@ -868,26 +754,6 @@ export function validateConfig(config, source) {
   } else if (config.planStorage.kind !== 'tracker-attachment') {
     fail('planStorage.kind must be "tracker-attachment"')
   }
-  if (
-    !config.reviewLedger ||
-    typeof config.reviewLedger !== 'object' ||
-    Array.isArray(config.reviewLedger)
-  ) {
-    fail('reviewLedger must be an object')
-  }
-  if (typeof config.reviewLedger.dir !== 'string' || config.reviewLedger.dir.length === 0) {
-    fail('reviewLedger.dir must be a non-empty string')
-  }
-  if (config.reviewLedger.dir.includes('\\')) {
-    fail('reviewLedger.dir must use POSIX separators')
-  }
-  if (isAbsolute(config.reviewLedger.dir)) {
-    fail('reviewLedger.dir must be repo-relative')
-  }
-  const normalizedReviewLedgerDir = posix.normalize(config.reviewLedger.dir)
-  if (normalizedReviewLedgerDir === '..' || normalizedReviewLedgerDir.startsWith('../')) {
-    fail('reviewLedger.dir must stay within the repository')
-  }
   validatePlanDependencies(config.planDependencies, fail)
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
@@ -1168,65 +1034,91 @@ export function loadSkillConfig({ cwd = process.cwd() } = {}) {
   return merged
 }
 
-// --- Accessors: lenses, commands, manifest, headless, adapters ------------
+// --- Accessors: review, commands, manifest, headless, adapters ------------
 
-function ruleGlobs(rule) {
-  return Array.isArray(rule.globs) ? rule.globs : [rule.glob]
-}
-
-export function lensesForFile(config, filePath) {
-  return config.lensMap
-    .filter((rule) => ruleGlobs(rule).some((g) => globToRegExp(g).test(filePath)))
-    .map((rule) => rule.id)
-}
-
-export function detectChangeTypes(files, lensMap = DEFAULT_CONFIG.lensMap) {
-  const list = Array.isArray(files) ? files : []
-  const cfg = { lensMap }
-  const out = {}
-  for (const rule of lensMap) out[rule.id] = false
-  for (const f of list) {
-    for (const id of lensesForFile(cfg, f)) out[id] = true
-  }
-  return out
-}
-
-export function skillForLens(config, id) {
-  const rule = config.lensMap.find((r) => r.id === id)
-  return rule ? rule.skill : null
+/**
+ * A `review.skill` value as an ordered skill chain, or null when it names nothing usable. A string
+ * is a one-skill chain; an array must be a non-empty list of skill names. Each name is one token
+ * (`boss-review`, `plugin:skill`), since it is written one per line and dropped into a prompt.
+ * @returns {string[]|null}
+ */
+export function reviewSkillChain(value) {
+  const name = (v) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(v.trim())
+  if (name(value)) return [value.trim()]
+  if (Array.isArray(value) && value.length > 0 && value.every(name))
+    return value.map((v) => v.trim())
+  return null
 }
 
 /**
- * The opportunistic default review rounds this repo resolves — `[]` when the config carries none.
- *
- * `[]` is the honest "this repo default-runs no extra round", and it is what a core's Phase D
- * treats as an empty (silent, non-fatal) phase. Returning the array rather than throwing is what
- * lets a config predating the block, or one that deliberately merged it away, degrade to no
- * default rounds instead of failing a review run.
- * @returns {{capability: string, kind: 'cross-agent'|'skill', skill?: string}[]}
+ * The review boss-build dispatches: the repo's replacement skill chain from `review.skill`, or
+ * `['boss-review']` when none is configured. A replacement receives the same inputs and must emit
+ * the same verdict JSON (review-verdict.mjs); boss-build consumes nothing else.
+ * @returns {{skills: string[], override: boolean}}
  */
-export function reviewDefaultRounds(config) {
-  const rounds = config?.reviewDefaults?.rounds
-  return Array.isArray(rounds) ? rounds : []
+export function reviewSkillFor(config) {
+  const chain = reviewSkillChain(config?.review?.skill)
+  return chain ? { skills: chain, override: true } : { skills: ['boss-review'], override: false }
 }
 
-export function reviewDeltaDefaults(config) {
-  const defaults = config?.reviewDefaults || {}
-  const threshold =
-    Number.isInteger(defaults.deltaFileThreshold) && defaults.deltaFileThreshold >= 0
-      ? defaults.deltaFileThreshold
-      : REVIEW_DEFAULT_DELTA_FILE_THRESHOLD
-  return {
-    deltaFileThreshold: threshold,
-    forceFull: defaults.forceFull === true,
+/** Whether boss-review runs its cross-agent second model. On unless `review.secondModel` is false. */
+export function reviewSecondModel(config) {
+  return config?.review?.secondModel !== false
+}
+
+/**
+ * The review run's time settings, in the units callers compare against: `softBudgetSeconds`
+ * gates optional review work after a round finishes, and `hangGuardMs` bounds one dispatch as a
+ * hang guard. A positive-integer env value (`BOSS_REVIEW_SOFT_BUDGET_MINUTES`,
+ * `BOSS_REVIEW_HANG_GUARD_MINUTES`) overrides the config, which overrides the default. Either way
+ * may RAISE the value: these are not caps on review quality, so they are not lower-only.
+ * Self-defending like the other accessors: anything unreadable resolves to the default.
+ *
+ * `dispatchLegMs` is the leg a review's cross-model helper runs inside: the configured hang guard
+ * unless an explicit `BOSS_SKILL_EXTENSION_TIMEOUT_MS` (plain positive decimal digits) names
+ * another; the helper's timeout is fitted strictly below it (`cross-review-lib.mjs
+ * fitTimeoutToLeg`). `hangGuardMs` is the ONE bound the orchestrator waits each dispatch on, so it
+ * is never below that leg: a longer explicit leg raises it, and a helper running its whole leg is
+ * never recorded as timed out mid-run. A shorter leg bounds only the helper; every other dispatch
+ * keeps the configured guard.
+ * `heartbeatStaleMs` is DERIVED, never configured: the hang guard plus
+ * REVIEW_HEARTBEAT_MARGIN_MS — the staleness window a caller holding the review on its heartbeat
+ * (`bs-dispatch-await.mjs wait --stale`) must use so a dispatch that runs its full bound is not
+ * read as an abandoned review.
+ * @returns {{softBudgetSeconds: number, hangGuardMs: number, dispatchLegMs: number, heartbeatStaleMs: number}}
+ */
+export function reviewTimeDefaults(config, env = process.env) {
+  const minutes = (envKey, configValue, fallback) => {
+    const raw = env?.[envKey]
+    if (typeof raw === 'string' && /^[0-9]+$/.test(raw.trim())) {
+      const n = Number.parseInt(raw.trim(), 10)
+      if (n >= 1) return n
+    }
+    return Number.isInteger(configValue) && configValue >= 1 ? configValue : fallback
   }
-}
-
-export function reviewMaxDispatchedRoundDefault(config) {
-  const value = config?.reviewDefaults?.maxDispatchedRounds
-  return Number.isInteger(value) && value >= 1 && value <= REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
-    ? value
-    : REVIEW_DEFAULT_MAX_DISPATCHED_ROUNDS
+  const defaults = config?.reviewDefaults || {}
+  const configuredGuardMs =
+    minutes(
+      'BOSS_REVIEW_HANG_GUARD_MINUTES',
+      defaults.hangGuardMinutes,
+      REVIEW_DEFAULT_HANG_GUARD_MINUTES,
+    ) * 60_000
+  const legRaw = env?.BOSS_SKILL_EXTENSION_TIMEOUT_MS
+  const leg = legRaw != null && /^[0-9]+$/.test(String(legRaw)) ? Number(legRaw) : 0
+  const dispatchLegMs = Number.isSafeInteger(leg) && leg > 0 ? leg : configuredGuardMs
+  // The one bound the orchestrator waits a dispatch on: never below the leg a helper runs inside.
+  const hangGuardMs = Math.max(configuredGuardMs, dispatchLegMs)
+  return {
+    softBudgetSeconds:
+      minutes(
+        'BOSS_REVIEW_SOFT_BUDGET_MINUTES',
+        defaults.softBudgetMinutes,
+        REVIEW_DEFAULT_SOFT_BUDGET_MINUTES,
+      ) * 60,
+    hangGuardMs,
+    dispatchLegMs,
+    heartbeatStaleMs: hangGuardMs + REVIEW_HEARTBEAT_MARGIN_MS,
+  }
 }
 
 /**
@@ -1256,10 +1148,6 @@ export function notesSampleRate(config) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
     ? value
     : NOTES_DEFAULT_SAMPLE_RATE
-}
-
-export function reviewLedgerConfig(config) {
-  return config?.reviewLedger || DEFAULT_CONFIG.reviewLedger
 }
 
 /**
@@ -3789,10 +3677,36 @@ export function verifyAlwaysHumanPaths(config) {
 /** The closed set of named human-review categories under `verifyDefaults.humanReview`. */
 export const VERIFY_HUMAN_REVIEW_CATEGORIES = Object.freeze(['database', 'security', 'ui'])
 
+/** The longest operator-written label a `{glob, label}` policy entry may carry. */
+export const VERIFY_PATH_LABEL_MAX = 60
+
+// A policy entry is a glob string or `{glob, label?}`; `label` names the paths for the person a park
+// pages. These readers drop malformed entries (a config that skipped validation); the validator
+// below rejects them.
+const entryGlob = (entry) =>
+  typeof entry === 'string'
+    ? entry
+    : entry && typeof entry === 'object' && !Array.isArray(entry)
+      ? entry.glob
+      : undefined
 const globList = (paths) =>
-  Array.isArray(paths) ? paths.filter((g) => typeof g === 'string' && g.length > 0) : []
-const isGlobList = (paths) =>
-  Array.isArray(paths) && paths.every((g) => typeof g === 'string' && g.length > 0)
+  Array.isArray(paths)
+    ? paths.map(entryGlob).filter((g) => typeof g === 'string' && g.length > 0)
+    : []
+const isPathLabel = (label) =>
+  typeof label === 'string' &&
+  label.trim().length > 0 &&
+  !/[\r\n]/.test(label) &&
+  Array.from(label).length <= VERIFY_PATH_LABEL_MAX
+const isGlobEntry = (entry) => {
+  if (typeof entry === 'string') return entry.length > 0
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+  if (Object.keys(entry).some((key) => key !== 'glob' && key !== 'label')) return false
+  if (typeof entry.glob !== 'string' || entry.glob.length === 0) return false
+  return entry.label === undefined || isPathLabel(entry.label)
+}
+const isGlobList = (paths) => Array.isArray(paths) && paths.every(isGlobEntry)
+const GLOB_LIST_SHAPE = `an array of non-empty glob strings or {glob, label} objects (label: one line, at most ${VERIFY_PATH_LABEL_MAX} chars)`
 
 // verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
 // DEFAULT_CONFIG (an absent block reads as an empty policy), but a PRESENT block must be an object
@@ -3804,7 +3718,7 @@ function validateVerifyDefaults(block, fail) {
   if (!block || typeof block !== 'object' || Array.isArray(block))
     fail('verifyDefaults must be an object when present')
   if (block.alwaysHumanPaths !== undefined && !isGlobList(block.alwaysHumanPaths))
-    fail('verifyDefaults.alwaysHumanPaths must be an array of non-empty glob strings')
+    fail(`verifyDefaults.alwaysHumanPaths must be ${GLOB_LIST_SHAPE}`)
   if (block.requireGreenBase !== undefined && typeof block.requireGreenBase !== 'boolean')
     fail('verifyDefaults.requireGreenBase must be a boolean when present')
   const review = block.humanReview
@@ -3816,8 +3730,7 @@ function validateVerifyDefaults(block, fail) {
       fail(
         `verifyDefaults.humanReview.${key} is unknown (expected ${VERIFY_HUMAN_REVIEW_CATEGORIES.join(', ')})`,
       )
-    if (!isGlobList(value))
-      fail(`verifyDefaults.humanReview.${key} must be an array of non-empty glob strings`)
+    if (!isGlobList(value)) fail(`verifyDefaults.humanReview.${key} must be ${GLOB_LIST_SHAPE}`)
   }
 }
 
@@ -3837,10 +3750,32 @@ export function verifyHumanReviewPaths(config) {
 }
 
 /**
+ * The labelled policy globs, in config order (`alwaysHumanPaths`, then each `humanReview` category
+ * in VERIFY_HUMAN_REVIEW_CATEGORIES order), as `{list, glob, label}` where `list` is
+ * `alwaysHumanPaths` or `humanReview.<category>`. Unlabelled and malformed entries are skipped.
+ * @returns {{list: string, glob: string, label: string}[]}
+ */
+export function verifyPathLabels(config) {
+  const block = config?.verifyDefaults
+  const review =
+    block?.humanReview && typeof block.humanReview === 'object' ? block.humanReview : {}
+  const lists = [
+    ['alwaysHumanPaths', block?.alwaysHumanPaths],
+    ...VERIFY_HUMAN_REVIEW_CATEGORIES.map((c) => [`humanReview.${c}`, review[c]]),
+  ]
+  const out = []
+  for (const [list, entries] of lists)
+    for (const entry of Array.isArray(entries) ? entries : [])
+      if (isGlobEntry(entry) && typeof entry === 'object' && entry.label !== undefined)
+        out.push({ list, glob: entry.glob, label: entry.label.trim() })
+  return out
+}
+
+/**
  * The verify policy from a config file's raw text, validating only its `verifyDefaults` block: the
  * verify stage reads policy from the base branch, where the rest of the config is irrelevant.
  * Throws on invalid JSON, a non-object document, or an invalid `verifyDefaults`.
- * @returns {{alwaysHumanPaths: string[], humanReview: {database: string[], security: string[], ui: string[]}}}
+ * @returns {{requireGreenBase: boolean, alwaysHumanPaths: string[], humanReview: {database: string[], security: string[], ui: string[]}, pathLabels: {list: string, glob: string, label: string}[]}}
  */
 export function verifyPolicyFromConfigText(text, source) {
   let parsed
@@ -3859,6 +3794,7 @@ export function verifyPolicyFromConfigText(text, source) {
     requireGreenBase: parsed.verifyDefaults?.requireGreenBase === true,
     alwaysHumanPaths: verifyAlwaysHumanPaths(parsed),
     humanReview: verifyHumanReviewPaths(parsed),
+    pathLabels: verifyPathLabels(parsed),
   }
 }
 

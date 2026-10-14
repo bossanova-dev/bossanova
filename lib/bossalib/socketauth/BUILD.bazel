@@ -8,7 +8,10 @@ go_library(
     ],
     importpath = "github.com/recurser/bossalib/socketauth",
     visibility = ["//visibility:public"],
-    deps = ["@com_connectrpc_connect//:connect"],
+    deps = [
+        "@com_connectrpc_connect//:connect",
+        "@com_github_gofrs_flock//:flock",
+    ],
 )
 
 go_test(
@@ -18,5 +21,8 @@ go_test(
         "token_test.go",
     ],
     embed = [":socketauth"],
-    deps = ["@com_connectrpc_connect//:connect"],
+    deps = [
+        "@com_connectrpc_connect//:connect",
+        "@com_github_gofrs_flock//:flock",
+    ],
 )

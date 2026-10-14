@@ -11,7 +11,8 @@
 //
 //   wait                 nothing
 //   human                post --verdict human
-//   pass                 post --verdict pass, then merge (needs `boss`)
+//   pass                 post --verdict pass, then hand the merge to a detached
+//                        `verify-gate merge` (needs `boss`)
 //   extensions-required  post --verdict claim; on a won claim, route `/boss-verify <pr> --claim
 //                        <token>` into the PR's session (needs `boss`)
 //
@@ -20,13 +21,22 @@
 // `boss new --pr <n>` — a session on the PR's own head — spawned fully detached. Nothing waits for a
 // dispatched verify: a send that times out is `dispatch-unknown`, and the claim it holds goes stale.
 //
+// Merges: a head-pinned merge waits on the repo merge lock and the daemon's post-merge refresh, so
+// it can outlast any per-call bound, and a killed merge loses its result and its tracker write. So
+// a merge is never run inside the sweep: it is spawned detached (its own log, unbound by this
+// budget, so it always finishes and moves the ticket to Done, or prints `merge-error` if it
+// crashes), and after the candidate loop the
+// sweep polls each merge's log for its result. Once only OBSERVE_TIMEOUT_MS per open merge is left,
+// each one still open gets one read-only `verify-gate observe-merge`: merged on GitHub is
+// `merged <sha>`, anything else is `dispatched: merge in flight (log …)`.
+//
 // Every subprocess goes through one injected `run(cmd, args, {timeoutMs, json, env})` seam whose
 // failed read is unknown, never an empty success. One deadline bounds the whole sweep: discovery
 // reads up to 3x `--batch` PRs within min(30 s, remaining - 15 s), every other call gets
 // min(15 s, remaining), no new PR starts with less than 15 s left, and at most `--batch` PRs are
 // acted on. What is left over is reported `deferred` for the next run.
 
-import { closeSync, openSync } from 'node:fs'
+import { closeSync, openSync, readFileSync } from 'node:fs'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -42,6 +52,12 @@ export const DEFAULT_BATCH = 3
 export const CALL_TIMEOUT_MS = 15_000
 // A new PR is not started with less than this left on the deadline.
 export const START_FLOOR_MS = 15_000
+// Each handed-off merge still open when polling stops gets one read-only observation bounded by
+// this; polling stops while that much per open merge is left, so every observation ends in budget.
+export const OBSERVE_TIMEOUT_MS = 5_000
+export const MERGE_POLL_MS = 500
+// An observation is not started with less than this left.
+const MIN_OBSERVE_MS = 1_000
 // The verify chat's title and finder are stage-chain.mjs's, so this router and boss-build's
 // `arm-verify` always pick the same chat.
 export { VERIFY_CHAT_TITLE }
@@ -107,15 +123,22 @@ export function timedRunner({ spawn = spawnSync, cwd = process.cwd(), env = proc
  * Spawn a command fully detached: its own process group, stdio to a log file (never the caller's
  * pipes), unref'd. The cron gate's runner waits on its child's stdout pipe, so a child that
  * inherited it would hold the gate open past its own exit and turn every dispatch into a gate
- * failure.
+ * failure. `label` names the log (`boss-verify-<label>-<ms>-<pid>.log`), so children spawned in the
+ * same millisecond under different labels never share one.
  */
 export function spawnDetached(
   command,
   args,
-  { env = process.env, cwd = process.cwd(), logDir = tmpdir(), now = Date.now } = {},
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    logDir = tmpdir(),
+    now = Date.now,
+    label = 'dispatch',
+  } = {},
   { spawn = nodeSpawn, open = openSync, close = closeSync } = {},
 ) {
-  const log = join(logDir, `boss-verify-dispatch-${now()}-${process.pid}.log`)
+  const log = join(logDir, `boss-verify-${label}-${now()}-${process.pid}.log`)
   let fd
   try {
     fd = open(log, 'a')
@@ -132,6 +155,32 @@ export function spawnDetached(
   } finally {
     close(fd)
   }
+}
+
+/**
+ * A detached `verify-gate merge`'s result from its log, or `null` while it is not done. verify-gate
+ * prints exactly one JSON object on stdout at exit and stderr shares the log, so this is the last
+ * complete line that parses to an object carrying a boolean `merged`; a line still being written
+ * (no newline yet) is not done.
+ */
+export function readMergeResult(log) {
+  if (typeof log !== 'string') return null
+  const complete = log.split('\n').slice(0, -1)
+  for (let i = complete.length - 1; i >= 0; i--) {
+    let value
+    try {
+      value = JSON.parse(complete[i])
+    } catch {
+      continue
+    }
+    if (value && typeof value === 'object' && typeof value.merged === 'boolean') return value
+  }
+  return null
+}
+
+// A synchronous sleep, so `sweep` stays synchronous while it polls.
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms))
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +346,9 @@ export function sweep(options = {}, deps = {}) {
   const remaining = () => deadline - now()
   const timeout = () => Math.max(1000, Math.min(CALL_TIMEOUT_MS, remaining()))
   const run = deps.run ?? timedRunner({ cwd, env })
+  const readFile = deps.readFile ?? ((path) => readFileSync(path, 'utf8'))
+  const sleep = deps.sleep ?? sleepSync
+  const logDir = deps.logDir ?? tmpdir()
   const node = deps.nodeBin ?? process.execPath
   const resolved = (deps.resolveBoss ?? resolveBossBinary)(env, { cwd })
   // verify-gate's own `boss` calls (merge, session reads) go by PATH, so the resolved binary's
@@ -321,6 +373,8 @@ export function sweep(options = {}, deps = {}) {
   const records = []
   const record = (pr, outcome, line, extra = {}) =>
     records.push({ pr, outcome, line: `#${pr} ${line}`, ...extra })
+  // Handed-off merges, each holding its PR's record slot so lines stay in candidate order.
+  const pending = []
   let acted = 0
   let undispatchable = null
   let dispatchState = null
@@ -428,14 +482,18 @@ export function sweep(options = {}, deps = {}) {
         record(pr, 'merged', `merged (dry-run: would merge ${head})`)
         continue
       }
-      const merged = gate(['merge', '--pr', String(pr), '--head', head, ...repoArgs])
-      const m = merged.payload ?? {}
-      if (merged.ok && m.merged === true) record(pr, 'merged', `merged ${m.mergeSha ?? ''}`.trim())
-      else if (m.abandoned === 'claim-lost') record(pr, 'skipped', 'skipped: claim lost')
-      else {
-        const why = m.reason ?? (Array.isArray(m.reasons) ? m.reasons.join(',') : merged.error)
-        record(pr, 'skipped', `${m.verdict ?? 'merge'}: ${why ?? 'unknown'}`)
+      const handed = spawnDetached(
+        node,
+        [VERIFY_GATE, 'merge', '--pr', String(pr), '--head', head, ...repoArgs],
+        { env: childEnv, cwd, logDir, now, label: `merge-${pr}` },
+        { spawn: deps.spawn ?? nodeSpawn },
+      )
+      if (!handed.ok) {
+        record(pr, 'skipped', `merge: spawn failed (${handed.error ?? 'unknown'})`)
+        continue
       }
+      pending.push({ pr, repoArgs, log: handed.log, slot: records.length })
+      records.push(null)
       continue
     }
     if (j.verdict === 'extensions-required') {
@@ -495,9 +553,69 @@ export function sweep(options = {}, deps = {}) {
     record(pr, 'skipped', `skipped: unexpected verdict ${j.verdict}`)
   }
 
+  settleMerges(pending, records, { readFile, sleep, remaining, gate })
+
   const summary = Object.fromEntries(OUTCOMES.map((o) => [o, 0]))
   for (const r of records) summary[r.outcome]++
   return { records, summary, undispatchable, dryRun }
+}
+
+/**
+ * Fill each handed-off merge's record slot: poll the logs while more than OBSERVE_TIMEOUT_MS per
+ * open merge is left, then give each merge still open one read-only `observe-merge` that ends
+ * inside the budget. A merge with no result by then is still running detached: `dispatched`.
+ */
+function settleMerges(pending, records, { readFile, sleep, remaining, gate }) {
+  const fill = (p, outcome, line) =>
+    (records[p.slot] = { pr: p.pr, outcome, line: `#${p.pr} ${line}`, log: p.log })
+  const result = (p) => {
+    try {
+      return readMergeResult(readFile(p.log))
+    } catch {
+      return null
+    }
+  }
+  const observe = (p) => {
+    const left = remaining()
+    const seen =
+      left >= MIN_OBSERVE_MS
+        ? gate(
+            ['observe-merge', '--pr', String(p.pr), ...p.repoArgs],
+            Math.min(OBSERVE_TIMEOUT_MS, left),
+          )
+        : null
+    return seen?.ok && seen.payload?.merged === true && text(seen.payload.mergeSha)
+      ? seen.payload.mergeSha
+      : null
+  }
+  const settled = (p) => {
+    const m = result(p)
+    if (!m) return false
+    // A merge that crashed may have merged first (a failed tracker write throws after the merge):
+    // GitHub decides, not the crash.
+    const crashedButMerged = m.reason === 'merge-error' ? observe(p) : null
+    if (crashedButMerged) fill(p, 'merged', `merged ${crashedButMerged}`)
+    else if (m.merged === true) fill(p, 'merged', `merged ${m.mergeSha ?? ''}`.trim())
+    else if (m.abandoned === 'claim-lost') fill(p, 'skipped', 'skipped: claim lost')
+    else {
+      const why = m.reason ?? (Array.isArray(m.reasons) ? m.reasons.join(',') : undefined)
+      fill(p, 'skipped', `${m.verdict ?? 'merge'}: ${why ?? 'unknown'}`)
+    }
+    return true
+  }
+  let open = pending.filter((p) => !settled(p))
+  while (open.length > 0) {
+    const slack = remaining() - OBSERVE_TIMEOUT_MS * open.length
+    if (slack <= 0) break
+    sleep(Math.min(MERGE_POLL_MS, slack))
+    open = open.filter((p) => !settled(p))
+  }
+  for (const p of open) {
+    if (settled(p)) continue
+    const mergeSha = observe(p)
+    if (mergeSha) fill(p, 'merged', `merged ${mergeSha}`)
+    else fill(p, 'dispatched', `dispatched: merge in flight (log ${p.log})`)
+  }
 }
 
 function postWhy(result) {

@@ -349,6 +349,47 @@ func TestRepairLease_NewAcquireClearsStall(t *testing.T) {
 	}
 }
 
+// TestRepairLease_ClearStall covers the BOS-1535 alert-clear path: a live stall
+// record is dropped, a session with no record reports nothing cleared, and a
+// held lease is never touched.
+func TestRepairLease_ClearStall(t *testing.T) {
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	clock, cur := fixedClock(base)
+	m := NewRepairLeaseManager().withClock(2*time.Hour, clock)
+
+	if err := m.Acquire("s1", "plugin"); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if m.ClearStall("s1") {
+		t.Fatal("ClearStall on a held lease with no stall must report nothing cleared")
+	}
+	if !m.Active("s1") {
+		t.Fatal("ClearStall must never release a held lease")
+	}
+
+	*cur = base.Add(RepairStallWindow + time.Second)
+	if _, ok := m.StalledAt("s1"); !ok {
+		t.Fatal("expected a stall record")
+	}
+	if !m.ClearStall("s1") {
+		t.Fatal("ClearStall should report the live stall record cleared")
+	}
+	if _, ok := m.StalledAt("s1"); ok {
+		t.Fatal("stall record survived ClearStall")
+	}
+	if reason := m.StallReason("s1"); reason != "" {
+		t.Fatalf("StallReason after ClearStall = %q, want empty", reason)
+	}
+	if m.ClearStall("s1") {
+		t.Fatal("second ClearStall should report nothing cleared")
+	}
+
+	var nilMgr *RepairLeaseManager
+	if nilMgr.ClearStall("s1") || m.ClearStall("") {
+		t.Fatal("nil manager / empty session must be a no-op")
+	}
+}
+
 func TestRepairLease_ProgressClearsStallRecordOnNextRound(t *testing.T) {
 	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	clock, cur := fixedClock(base)

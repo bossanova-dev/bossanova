@@ -329,7 +329,7 @@ here is inert until you run `boss daemon restart`.
 ## `subagent_dispatch_grant`
 
 Most boss skills mandate subagent dispatch as part of their protocol:
-`boss-review` runs its lenses and round extensions as subagents, `boss-plan`
+`boss-review` runs its finders and verifiers as subagents, `boss-plan`
 dispatches its drafting and reviewer extensions, `boss-repair` and `boss-epic`
 fan out the same way. Coding-agent harnesses ship a standing system-prompt line
 that tells the agent not to dispatch subagents unless the user asked for it.

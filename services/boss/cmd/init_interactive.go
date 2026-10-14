@@ -247,6 +247,9 @@ func (iv *initInterview) askRepo() error {
 		iv.repo = repo
 		iv.steps.RepoID = repo.GetId()
 		iv.p.Say("Repository %s is registered with bossd (id %s).", repoLabel(repo), repo.GetId())
+		if note := trustedIgnoredNote(o.trusted, repo); note != "" {
+			iv.p.Say("%s", strings.TrimRight(note, "\n"))
+		}
 		return iv.noteConfigLocation()
 	}
 	if o.noRegister {
@@ -264,7 +267,7 @@ func (iv *initInterview) askRepo() error {
 		return nil
 	}
 	if err := iv.step(func() error {
-		repo, err = resolveInitRepo(iv.ctx, c, iv.repoDir, true, iv.steps)
+		repo, err = resolveInitRepo(iv.ctx, c, iv.repoDir, initRegistration{allow: true, trusted: o.trusted}, iv.steps)
 		return err
 	}); err != nil {
 		return err

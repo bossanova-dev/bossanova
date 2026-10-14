@@ -1,6 +1,6 @@
 # Pre-PR knowledge extensions (repo opt-in)
 
-The `knowledge` phase runs **between Step 6 and Step 7**: after the review stack returned `clean` and
+The `knowledge` phase runs **between Step 6 and Step 7**: after the review returned `clean` and
 its fixes are committed, and **before** Step 7 pushes and captures the reviewed tip. A `knowledge`
 extension records what the run learned — terms, concepts, durable solutions — as a committed artifact
 so it ships **inside** the PR.
@@ -157,13 +157,7 @@ Each receives:
     "planPath": "<$PLAN_FILE, the fetched plan; otherwise null>",
     "mergeBase": "<REVIEW_BASE>",
     "head": "<current HEAD after Step 6 fixes are committed>",
-    "carriedObservations": [
-      {
-        "round": 2,
-        "category": "false-universal",
-        "paragraph": "Within-run observation from round 2: …"
-      }
-    ],
+    "reviewVerdictPath": "<$(git rev-parse --git-dir)/boss-build/review-verdict.json>",
     "repoId": "<BOSS_REPO_ID when present; otherwise null>"
   },
   "runTmp": "<KNOWLEDGE_RUN_TMP>",
@@ -172,9 +166,9 @@ Each receives:
 ```
 
 There is deliberately **no `outcome` key**: this phase runs pre-PR, so no terminal outcome exists yet.
-`carriedObservations` is the distilled within-run trail from the review loop. It is input to the
-knowledge extension's overlap/synthesis work only; this phase still owns any durable `docs/` or
-`CONCEPTS.md` write, and the mid-run observation step never writes those paths.
+`reviewVerdictPath` is the run's pooled review verdict (`review-verdict.mjs`): its verified findings
+are input to the knowledge extension's overlap/synthesis work only; this phase still owns any durable
+`docs/` or `CONCEPTS.md` write.
 
 ## Validation and the ledger
 

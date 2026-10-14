@@ -1156,9 +1156,18 @@ test('readDescription sends issue(id:) with the id as given, trimmed, for a UUID
     assert.equal(impl.bodies[0].headers.Authorization, 'raw-key')
   }
   assert.match(READ_DESCRIPTION_QUERY, /issue\(id: \$id\)/)
-  for (const field of ['id', 'identifier', 'description']) {
+  for (const field of [
+    'id',
+    'identifier',
+    'description',
+    'createdAt',
+    'updatedAt',
+    'updatedDescription',
+    'hasNextPage',
+  ]) {
     assert.match(READ_DESCRIPTION_QUERY, new RegExp(`\\b${field}\\b`))
   }
+  assert.match(READ_DESCRIPTION_QUERY, /history\(first: 100\)/)
 })
 
 test('readDescription returns the stored description byte-verbatim (BOS-1303)', async () => {
@@ -1166,7 +1175,12 @@ test('readDescription returns the stored description byte-verbatim (BOS-1303)', 
     const impl = describeFetch({ id: 'u-1', identifier: 'BOS-1', description })
     const adapter = createLinearAdapter({ apiKey: 'k', fetchImpl: impl })
     const got = await adapter.readDescription('BOS-1')
-    assert.deepEqual(got, { id: 'u-1', identifier: 'BOS-1', description })
+    assert.deepEqual(got, {
+      id: 'u-1',
+      identifier: 'BOS-1',
+      description,
+      descriptionUpdatedAt: null,
+    })
     assert.equal(Buffer.byteLength(got.description), Buffer.byteLength(description))
   }
 })
@@ -1174,7 +1188,127 @@ test('readDescription returns the stored description byte-verbatim (BOS-1303)', 
 test('readDescription maps a null description to an empty string (BOS-1303)', async () => {
   const impl = describeFetch({ id: 'u-1', identifier: 'BOS-1', description: null })
   const got = await linearReadDescription({ apiKey: 'k', fetchImpl: impl, issueId: 'BOS-1' })
-  assert.deepEqual(got, { id: 'u-1', identifier: 'BOS-1', description: '' })
+  assert.deepEqual(got, {
+    id: 'u-1',
+    identifier: 'BOS-1',
+    description: '',
+    descriptionUpdatedAt: null,
+  })
+})
+
+const history = (nodes, hasNextPage = false) => ({ nodes, pageInfo: { hasNextPage } })
+// One history entry, never updated after it was created unless `updatedAt` says otherwise.
+const edit = (createdAt, updatedDescription, updatedAt = createdAt) => ({
+  createdAt,
+  updatedAt,
+  updatedDescription,
+})
+const describeAt = (extra) => ({
+  id: 'u-1',
+  identifier: 'BOS-1',
+  description: 'd',
+  createdAt: '2026-10-01T00:00:00.000Z',
+  ...extra,
+})
+
+test('readDescription reports when the description was last set: the latest description edit, in any order', async () => {
+  const issue = describeAt({
+    history: history([
+      edit('2026-10-07T12:00:00.000Z', true),
+      edit('2026-10-09T00:00:00.000Z', false),
+      edit('2026-10-05T00:00:00.000Z', true),
+      edit('2026-10-02T00:00:00.000Z', null),
+    ]),
+  })
+  const got = await linearReadDescription({
+    apiKey: 'k',
+    fetchImpl: describeFetch(issue),
+    issueId: 'BOS-1',
+  })
+  assert.equal(got.descriptionUpdatedAt, '2026-10-07T12:00:00.000Z')
+  assert.equal(got.description, 'd', 'the description contract is unchanged')
+})
+
+test('readDescription never dates a description by the issue creation time, which a caller can set', async () => {
+  // issueCreate takes a caller-chosen `createdAt` (for imports), and Linear logs no change made in
+  // the first minutes after creation, so only a logged description edit dates the description.
+  const read = async (issue) =>
+    (
+      await linearReadDescription({
+        apiKey: 'k',
+        fetchImpl: describeFetch(issue),
+        issueId: 'BOS-1',
+      })
+    ).descriptionUpdatedAt
+  const observed = {
+    'never edited': await read(describeAt({ history: history([]) })),
+    'backdated, never edited': await read(
+      describeAt({ createdAt: '2020-01-01T00:00:00.000Z', history: history([]) }),
+    ),
+    'only other edits': await read(
+      describeAt({ history: history([edit('2026-10-04T00:00:00.000Z', false)]) }),
+    ),
+    'backdated, edited later': await read(
+      describeAt({
+        createdAt: '2020-01-01T00:00:00.000Z',
+        history: history([edit('2026-10-04T00:00:00.000Z', true)]),
+      }),
+    ),
+    'no creation time, edited': await read(
+      describeAt({
+        createdAt: undefined,
+        history: history([edit('2026-10-04T00:00:00.000Z', true)]),
+      }),
+    ),
+  }
+  assert.deepEqual(observed, {
+    'never edited': null,
+    'backdated, never edited': null,
+    'only other edits': null,
+    'backdated, edited later': '2026-10-04T00:00:00.000Z',
+    'no creation time, edited': '2026-10-04T00:00:00.000Z',
+  })
+})
+
+test('readDescription dates a coalesced description edit by its last update, not its creation', async () => {
+  // Linear folds later edits by one actor into an existing entry: createdAt stays, updatedAt moves.
+  const issue = describeAt({
+    history: history([
+      edit('2026-10-03T00:00:00.000Z', true, '2026-10-08T09:00:00.000Z'),
+      edit('2026-10-06T00:00:00.000Z', true),
+      edit('2026-10-02T00:00:00.000Z', false, '2026-10-10T00:00:00.000Z'),
+    ]),
+  })
+  const got = await linearReadDescription({
+    apiKey: 'k',
+    fetchImpl: describeFetch(issue),
+    issueId: 'BOS-1',
+  })
+  assert.equal(got.descriptionUpdatedAt, '2026-10-08T09:00:00.000Z')
+})
+
+test('readDescription reports an unknown edit time, never a throw, for a partial or unreadable history', async () => {
+  for (const extra of [
+    { history: history([], true) },
+    { history: undefined },
+    { history: null },
+    { history: { nodes: [] } },
+    { history: { nodes: null, pageInfo: { hasNextPage: false } } },
+    { history: history([edit('not a time', true, '2026-10-02T00:00:00.000Z')]) },
+    { history: history([edit('2026-10-02T00:00:00.000Z', true, 'not a time')]) },
+    { history: history([{ createdAt: '2026-10-02T00:00:00.000Z', updatedDescription: true }]) },
+    { history: history([null]) },
+    { history: history([edit('2026-10-02T00:00:00.000Z', true), null]) },
+    { createdAt: undefined, history: history([]) },
+  ]) {
+    const got = await linearReadDescription({
+      apiKey: 'k',
+      fetchImpl: describeFetch(describeAt(extra)),
+      issueId: 'BOS-1',
+    })
+    assert.equal(got.descriptionUpdatedAt, null, JSON.stringify(extra))
+    assert.equal(got.description, 'd')
+  }
 })
 
 test('readDescription fails closed on a missing issue or an unreadable payload (BOS-1303)', async () => {

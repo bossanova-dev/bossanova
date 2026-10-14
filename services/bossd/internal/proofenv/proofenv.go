@@ -33,3 +33,10 @@ const (
 	// bucket. Not a credential.
 	EnvCloudflareAccountID = "CLOUDFLARE_ACCOUNT_ID"
 )
+
+// Keys returns every allowlisted overlay name. A spawn for a repo that may not
+// receive the overlay pins each of them to "" (dotenv.OverlayWithRepo) so the
+// daemon's ambient environment cannot supply one either.
+func Keys() []string {
+	return []string{EnvAnthropicAPIKey, EnvCloudflareAPIToken, EnvR2Bucket, EnvPublicBaseURL, EnvCloudflareAccountID}
+}

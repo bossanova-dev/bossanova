@@ -303,6 +303,18 @@ func Presets() map[string]Preset {
 			SeedKind:   SeedAcknowledged,
 			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
+		// build-handoff-standby: a REVIEW_READY build handed off to verify, for
+		// the BOS-1531 proof. The finished build chat holds a standby
+		// checks_failed watch and sorts first by agent-session id; the verify
+		// chat holds the blocking checks_passed_ready watch. The picker renders
+		// the build row as muted "standby" and describes verify on the waiting
+		// line; Home shows no checks_failed hint. Same cloud-access e2e pin as
+		// demo.
+		"build-handoff-standby": {
+			World:      BuildHandoffStandbyWorld,
+			SeedKind:   SeedAcknowledged,
+			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+		},
 		"ready-handoff": {
 			World:      ReadyHandoffWorld,
 			SeedKind:   SeedAcknowledged,

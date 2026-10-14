@@ -52,6 +52,7 @@ var ReleasedVersions = []Version{
 	"2026-09-13", // V20260913 — SupersededCredentialClassChange (BOS-1175 AuthCheck.failure_class "credential_superseded" alongside a healthy outcome).
 	"2026-09-14", // V20260914 — RefreshChainUnprovenOutcomeChange (BOS-1174 clean check that could not prove the refresh chain).
 	"2026-09-15", // V20260915 — SessionListRankOrderChange and WaitingDemotionLabelChange (BOS-1232 manual session rank order, BOS-1269 waiting demotion).
+	"2026-09-16", // V20260916 — VerifyDisplayStatusChange and ReadyDisplayLabelChange (BOS-1382 Verifying / Needs human, Ready label).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

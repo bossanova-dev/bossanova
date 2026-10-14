@@ -94,6 +94,12 @@ type HeadlessLaunchOptions struct {
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
 	BossSessionID             string
 	EffectiveModel            string
+	// ProjectTrust is the run's project-trust decision for its work dir
+	// (repotrust.ProjectTrustFor, BOS-1562). A headless run has no trust prompt,
+	// so REVOKE is what makes a runner distrust the work dir — overriding a
+	// pre-trust left from an earlier trusted period, or trust inherited from the
+	// repo's main checkout — before the agent loads the repo's own configuration.
+	ProjectTrust bossanovav1.ProjectTrustDecision
 }
 
 // HeadlessLaunchOptionsRunner is implemented by runners that preserve the
@@ -111,8 +117,13 @@ type HeadlessLaunchOptionsRunner interface {
 // preflight profiles the same repo-level agent configuration the run will load
 // — agents discover per-repo config relative to their working directory — and
 // an empty value preserves the historical inherit-the-daemon-cwd behaviour.
+//
+// projectTrust is the gated launch's project-trust decision for workDir
+// (repotrust.ProjectTrustFor, BOS-1562). The preflight starts the agent in
+// workDir, so a REVOKE must reach the runner before it probes, or the probe
+// loads an untrusted repo's own agent configuration.
 type HeadlessCapabilityProfilePreflightRunner interface {
-	PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) error
+	PreflightHeadlessCapabilityProfile(ctx context.Context, workDir, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile, projectTrust bossanovav1.ProjectTrustDecision) error
 }
 
 // HeadlessCapabilityProfileDispatcher is the explicit-by-agent equivalent for
@@ -148,6 +159,7 @@ type HeadlessCapabilityProfilePreflightDispatcher interface {
 		agentName, workDir, model, effort string,
 		extraEnv map[string]string,
 		profile bossanovav1.HeadlessCapabilityProfile,
+		projectTrust bossanovav1.ProjectTrustDecision,
 	) error
 }
 

@@ -66,6 +66,9 @@ type CreateRepoParams struct {
 	DefaultBaseBranch string
 	WorktreeBaseDir   string
 	SetupScript       *string
+	// IsTrusted registers the repo as trusted (models.Repo.IsTrusted); the
+	// zero value registers it untrusted.
+	IsTrusted bool
 }
 
 // UpdateRepoParams holds the fields that can be updated on a repo.
@@ -90,6 +93,8 @@ type UpdateRepoParams struct {
 	LinearAPIKey              *string
 	SentryAPIKey              *string
 	SentryOrg                 *string
+	// IsTrusted toggles local trust (models.Repo.IsTrusted).
+	IsTrusted *bool
 	// ExpectedUpdatedAt, when non-nil, enables an optimistic-concurrency guard:
 	// the update is applied only while the repo's stored updated_at still matches
 	// this token (compared at the stored millisecond string granularity). A
@@ -270,6 +275,14 @@ type SessionStore interface {
 	// exactly one row transitioned; false if the row was already past the
 	// expected state (duplicate event or stale transition).
 	UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error)
+	// LinkTrackerIfUnlinked writes tracker_id and tracker_url only while the
+	// session is still active, is not a quick chat (is_quick_chat is set by an
+	// Update after the row is created), has no tracker_url, and still carries
+	// expectedTrackerID ("" for none): the compare-and-set the automatic
+	// tracker linker uses so a manual SetSessionTracker that commits after the
+	// linker's read is never overwritten. Returns true if exactly one row was
+	// linked; false means the row changed (or is gone) and nothing was written.
+	LinkTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
 	// UpdateStateConditionalFrom transitions the session to newState only when
 	// its current state is one of expectedStates. From-set variant of
 	// UpdateStateConditional backing the broadened stranded-cron reap
@@ -317,6 +330,18 @@ type SessionStore interface {
 	// the exponential backoff. UpdateRepairDiagnostics clears the pair on
 	// the next real outcome.
 	UpdateRepairBlocked(ctx context.Context, sessionID string, at time.Time, reason string) error
+
+	// ClearRepairAlert ends a latched repair alert (BOS-1535): it clears the
+	// blocked pair, last_repair_attempt_count and the runner/exit errors, and
+	// leaves last_repair_head_sha and the review fingerprint as history.
+	ClearRepairAlert(ctx context.Context, sessionID string) error
+
+	// SetDismissedAlert records the operator's dismissal of one session alert
+	// (BOS-1537): sessions.dismissed_alert_key = key, dismissed_alert_at = at.
+	// One key per session — the latest replaces any earlier one — so the same
+	// alert stays hidden and a different one shows again. Returns
+	// sql.ErrNoRows when no session has the id.
+	SetDismissedAlert(ctx context.Context, id, key string, at time.Time) error
 }
 
 // OrphanHeadlessRunStore atomically stamps the daemon-restart orphan reason
@@ -456,6 +481,30 @@ type AttemptStore interface {
 	ListBySession(ctx context.Context, sessionID string) ([]*models.Attempt, error)
 	Update(ctx context.Context, id string, params UpdateAttemptParams) (*models.Attempt, error)
 	Delete(ctx context.Context, id string) error
+}
+
+// RecordResumeAttemptParams describes one automatic resume of a dead run.
+// FailureClass must be one of the resumepolicy.FailureClass values; an empty
+// class records "unknown".
+type RecordResumeAttemptParams struct {
+	SessionID     string
+	RunKey        string
+	AttemptedAt   time.Time
+	FailureClass  string
+	FailureDetail string
+}
+
+// ResumeAttemptStore is the durable ledger of automatic resumes (BOS-1537),
+// so the resume budget and the fix sentence survive a daemon restart.
+type ResumeAttemptStore interface {
+	// Record appends an attempt to its run, numbering it one past the run's
+	// highest attempt_number in the same statement.
+	Record(ctx context.Context, params RecordResumeAttemptParams) (*models.ResumeAttempt, error)
+	// ListForRun returns one run's attempts, oldest (lowest number) first.
+	ListForRun(ctx context.Context, sessionID, runKey string) ([]*models.ResumeAttempt, error)
+	// DeleteForRun clears one run's attempts — a manual resume resets the
+	// budget — and returns how many rows it removed.
+	DeleteForRun(ctx context.Context, sessionID, runKey string) (int64, error)
 }
 
 // CreateWorkflowParams holds the parameters for creating a new workflow.

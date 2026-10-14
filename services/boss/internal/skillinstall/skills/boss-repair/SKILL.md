@@ -104,7 +104,7 @@ judgement.
    `present` with `state: success` ⇒ this pass carries the receipt; `absent` or `unknown` ⇒ it does
    not. Read the PR, its checks (via the classifier), its open review feedback (via the probe),
    mergeability, and the worktree state. Decide what is wrong: conflict,
-   failing checks, review feedback, a must-fix finding recorded only in the PR body or the
+   failing checks, review feedback, a blocking finding recorded only in the PR body or the
    dispatching core's review report, or nothing. A probe answer you could not read counts as "there
    may be something" — never report "nothing to repair" without having looked.
 2. **Repair**, review feedback first (its content does not go stale), then conflicts, then failing
@@ -126,8 +126,9 @@ judgement.
 4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions. When the
    pass carries the receipt, rule 5 confirmed the push landed, and `HEAD` equals `origin/<branch>`,
    carry it to the new head — in default mode and on every pushing Watch-mode pass, whose next start
-   head is then the receipted one. A non-zero exit only warns; it never changes the pass outcome or
-   its exit code:
+   head is then the receipted one. The helper runs its sibling `ready-gate.mjs` first and refuses
+   (exit 3, `refused`, nothing posted) a head the gate does not call ready, such as a repair commit
+   no review saw. A non-zero exit only warns; it never changes the pass outcome or its exit code:
 
    ```bash
    BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"

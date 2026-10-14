@@ -49,6 +49,23 @@ func createTestRepo(t *testing.T, store *SQLiteRepoStore) *models.Repo {
 	return repo
 }
 
+// insertPreMigrationRepo inserts a repo row with only the initial-schema
+// columns and returns it (only ID is populated). Migration tests that stop at an older schema use
+// it instead of createTestRepo, whose INSERT names columns later migrations add
+// (repos.is_trusted).
+func insertPreMigrationRepo(t *testing.T, db *sql.DB) *models.Repo {
+	t.Helper()
+	const id = "repo-pre-migration"
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, "test-repo", "/tmp/test-repo", "https://github.com/test/repo.git", "main", "/tmp/worktrees",
+	); err != nil {
+		t.Fatalf("insert pre-migration repo: %v", err)
+	}
+	return &models.Repo{ID: id}
+}
+
 func TestMigrationRunner(t *testing.T) {
 	db := setupTestDB(t)
 

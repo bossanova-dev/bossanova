@@ -171,17 +171,23 @@ test('resolveTimeoutMs: valid positive integer is honored', () => {
   assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '120000' }), 120000)
 })
 
-test('resolveTimeoutMs: unset / empty / non-positive / garbage → default 300000', () => {
-  assert.equal(resolveTimeoutMs({}), 300000)
-  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '' }), 300000)
-  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '0' }), 300000)
-  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '-5' }), 300000)
+// The default helper timeout: the 30-minute hang guard less the wrapper's one-minute reserve.
+const DEFAULT_HELPER_TIMEOUT_MS = 1_740_000
+
+test('resolveTimeoutMs: unset / empty / non-positive / garbage → the default helper timeout', () => {
+  assert.equal(resolveTimeoutMs({}), DEFAULT_HELPER_TIMEOUT_MS)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '' }), DEFAULT_HELPER_TIMEOUT_MS)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '0' }), DEFAULT_HELPER_TIMEOUT_MS)
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '-5' }), DEFAULT_HELPER_TIMEOUT_MS)
   // Strict Number() parsing rejects trailing garbage (parseInt would yield 100).
-  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '100abc' }), 300000)
-  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1.5' }), 300000)
+  assert.equal(
+    resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '100abc' }),
+    DEFAULT_HELPER_TIMEOUT_MS,
+  )
+  assert.equal(resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: '1.5' }), DEFAULT_HELPER_TIMEOUT_MS)
 })
 
-test('resolveTimeoutMs: exotic Number() forms the shell gates cannot express → default 300000', () => {
+test('resolveTimeoutMs: exotic Number() forms the shell gates cannot express → the default helper timeout', () => {
   // BOS-758 round 3. These are all LEGAL Number() input and a bare `Number()` honoured every one of
   // them, but the budget gates that price this timeout are POSIX shell and their normalization is a
   // digits-only `case` glob plus `$(( 10# ))` — no glob can match an exponent, a sign, a hex prefix,
@@ -192,7 +198,7 @@ test('resolveTimeoutMs: exotic Number() forms the shell gates cannot express →
   for (const raw of ['1.8e6', '1e3', '0x2710', '0b11', '0o17', '+600000', ' 1800000', '1800000 ']) {
     assert.equal(
       resolveTimeoutMs({ BOSS_CROSS_REVIEW_TIMEOUT_MS: raw }),
-      300000,
+      DEFAULT_HELPER_TIMEOUT_MS,
       `${JSON.stringify(raw)} is not plain decimal digits and must take the default`,
     )
   }

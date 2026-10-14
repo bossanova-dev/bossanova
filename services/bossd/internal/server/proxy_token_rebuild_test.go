@@ -526,3 +526,88 @@ func TestProxyTokenRegistry_PruneFailureDoesNotBlockRebuild(t *testing.T) {
 		t.Fatalf("prune failure was swallowed silently; log = %s", logB.String())
 	}
 }
+
+// TestProxyTokenRegistry_LiveChatSurvivesRestartAdoptionCollision is the
+// BOS-1530 AC1 regression. It replays the incident's restart sequence for a
+// LIVE chat pane, in the order the daemon runs it:
+//
+//  1. daemon A mints the pane's chat token (the URL the pane bakes);
+//  2. daemon B (fresh maps, same store) rebuilds the registry from durable rows;
+//  3. the surviving-pane sweep adopts the same token with the account it
+//     resolves NOW, which differs from the spawn-time account — the "already
+//     registered to a different target" collision the incident log showed for
+//     three tokens;
+//  4. a later respawn re-mints for the same chat.
+//
+// The collision keeps the rebuilt registration, and nothing in the request path
+// deletes from the registry, so the pane's frozen token must keep resolving
+// (HTTP 200) through every step. This pins that the registry was NOT the cause
+// of the incident's 401 — a second daemon co-bound on the port was.
+func TestProxyTokenRegistry_LiveChatSurvivesRestartAdoptionCollision(t *testing.T) {
+	ctx := context.Background()
+	up, srv := newFakeUpstream(t)
+
+	sqlDB := rebuildTestDB(t)
+	store := db.NewProxyTokenStore(sqlDB)
+	sessionID := rebuildTestSession(t, sqlDB)
+
+	const (
+		agentSessionID = "agent-session-1530"
+		acctA          = "acct-spawn-time"
+		acctB          = "acct-adoption-time"
+	)
+
+	// --- daemon A: the chat pane spawns and bakes its URL ---
+	daemonA := newRebuildProxy(t, store, &bytes.Buffer{})
+	paneToken := daemonA.TokenForChat(sessionID, agentSessionID, acctA)
+	if paneToken == "" {
+		t.Fatal("mint returned an empty chat token")
+	}
+	wantTarget := session.ProxyTargetForChat(agentSessionID, acctA)
+
+	// --- daemon B: live listener, durable rebuild, then the sweep's adoption ---
+	var logB syncBuffer
+	fB := &fakeFailover{currentBearer: "second-token"}
+	daemonB, base := startProxyConfigured(t, fB, srv.URL, zerolog.New(&logB), func(ps *ProxyServer) {
+		ps.proxyTokens = store
+	})
+	if err := daemonB.RebuildTokenRegistry(ctx); err != nil {
+		t.Fatalf("RebuildTokenRegistry: %v", err)
+	}
+	daemonB.AdoptTokenForChat(sessionID, agentSessionID, acctB, paneToken)
+	if !strings.Contains(logB.String(), "adopt chat token already registered to a different target") {
+		t.Fatalf("adoption did not hit the different-target collision; log = %s", logB.String())
+	}
+
+	assertPaneOK := func(step string) {
+		t.Helper()
+		resp, err := httpDo(newSentinelReq(t, base, paneToken))
+		if err != nil {
+			t.Fatalf("%s: pane request: %v", step, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(body) != "pong" {
+			t.Fatalf("%s: live chat pane lost its registration: status=%d body=%q", step, resp.StatusCode, body)
+		}
+		if fB.currentBearerID != wantTarget {
+			t.Fatalf("%s: pane resolved to %q, want the rebuilt chat target %q", step, fB.currentBearerID, wantTarget)
+		}
+	}
+
+	assertPaneOK("after rebuild + colliding adoption")
+
+	// --- a later respawn re-mints for the same chat ---
+	fresh := daemonB.TokenForChat(sessionID, agentSessionID, acctB)
+	if fresh == "" {
+		t.Fatal("respawn re-mint returned an empty token")
+	}
+	assertPaneOK("after respawn re-mint")
+
+	if got := len(up.all()); got != 2 {
+		t.Fatalf("upstream saw %d requests, want 2", got)
+	}
+	if strings.Contains(logB.String(), "rejected request with unknown session token") {
+		t.Fatalf("the live pane was rejected as unknown at some point; log = %s", logB.String())
+	}
+}

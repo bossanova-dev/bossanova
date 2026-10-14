@@ -48,6 +48,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
@@ -57,12 +58,15 @@ import (
 	"github.com/recurser/bossd/internal/chatupload"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/evidence"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/inflight"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/proofenvkeyring"
+	"github.com/recurser/bossd/internal/reposecrets"
+	"github.com/recurser/bossd/internal/reposecrets/oskeyring"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/server"
@@ -598,8 +602,11 @@ type streamSessionHydrator struct {
 	chatStatusTracker *status.Tracker
 	displayTracker    *status.DisplayTracker
 	rotationEvents    db.RotationEventStore
-	accountLabeler    streamAccountLabeler
-	logger            zerolog.Logger
+	// wedgeActivity makes last_agent_activity_at restart-proof, as the local
+	// GetSession/ListSessions RPCs do.
+	wedgeActivity  server.WedgeActivity
+	accountLabeler streamAccountLabeler
+	logger         zerolog.Logger
 }
 
 func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1.Session) {
@@ -656,6 +663,7 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 		chats,
 		server.AuthInvalidationCorroboratedFromStore(ctx, h.rotationEvents, h.chatStatusTracker, h.logger, pbSess, chats),
 	)
+	server.HydrateRestartProofActivity(ctx, pbSess, chats, h.wedgeActivity)
 }
 
 // publishAgentMarkerSessionDelta re-hydrates the session owning agentSessionID
@@ -1448,9 +1456,31 @@ func run(opts runOpts) error {
 	}
 	log.Info().Msg("migrations complete")
 
+	// --- Repo API keys (BOS-1587) ---
+	//
+	// Repo Linear / Sentry keys live in the shared bossanova keyring. Move any
+	// still-plaintext column values there once; a row that fails stays as it
+	// was and is retried on the next start. The move is bounded by moveCtx:
+	// reposecrets.Store returns ctx.Err() when it expires even while a keychain
+	// call is still blocked (an unanswered approval prompt), so a hung keyring
+	// delays startup by at most a minute and never blocks it. A write abandoned
+	// that way may still land, but its row stays unflagged and its columns stay
+	// authoritative until a later start moves it. Values are never logged.
+	repoSecrets := reposecrets.New(oskeyring.Open)
+	{
+		moveCtx, cancelMove := context.WithTimeout(context.Background(), time.Minute)
+		moved, err := db.MigrateRepoSecretsFromSQLite(moveCtx, database, repoSecrets)
+		cancelMove()
+		if err != nil {
+			log.Warn().Err(err).Int("moved", moved).Msg("moving repo API keys into the keyring did not finish; remaining rows retry on next start")
+		} else if moved > 0 {
+			log.Info().Int("moved", moved).Msg("moved repo API keys into the keyring")
+		}
+	}
+
 	// --- Stores ---
 
-	repos := db.NewRepoStore(database)
+	repos := db.NewRepoStore(database, db.WithRepoSecrets(repoSecrets))
 	rawSessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
 	// Wrap the raw chat store with a notifier so chat lifecycle events
@@ -1514,6 +1544,13 @@ func run(opts runOpts) error {
 	// hydrator (which publishes full Session replacements to bosso).
 	// Auditing never fails a rotation — the Recorder swallows insert errors.
 	rotationEvents := db.NewRotationEventStore(database)
+	// agentRuns is created early so the reverse-stream hydrator can read a
+	// session's runs for the restart-proof agent activity; the open-run
+	// reconcile below still runs where it always did.
+	agentRuns := db.NewAgentRunStore(database)
+	// wedgeActivityCache is shared by the reverse-stream hydrator and the
+	// server so the web and the TUI read the same restart-proof activity.
+	wedgeActivityCache := server.NewWedgeActivityCache()
 	rotationRecorder := rotation.NewRecorder(db.NewRotationAuditStore(rotationEvents), log.Logger)
 
 	// The display-status computer needs to read the bare stores; wrap them
@@ -1577,6 +1614,7 @@ func run(opts runOpts) error {
 		chatStatusTracker: chatStatusTracker,
 		displayTracker:    displayTracker,
 		rotationEvents:    rotationEvents,
+		wedgeActivity:     server.WedgeActivity{Runs: server.AgentRunsForWedge(agentRuns), Cache: wedgeActivityCache, Logger: log.Logger},
 		accountLabeler:    accountLabeler,
 		logger:            log.Logger,
 	}
@@ -1655,10 +1693,12 @@ func run(opts runOpts) error {
 		}
 		_ = displayComputer.Recompute(ctx, chat.SessionID)
 
-		// A chat leaving WORKING may free a session whose archive is waiting
-		// on it (BOS-1380). The nudge is non-blocking.
+		// A chat leaving WORKING may free a session whose archive (BOS-1380)
+		// or unattended-run finish (BOS-1508) is waiting on it. The nudges are
+		// non-blocking.
 		if srv := archiveSeam.Load(); srv != nil {
 			srv.NudgePendingArchive(chat.SessionID)
+			srv.NudgePendingFinish(chat.SessionID)
 		}
 
 		// Auto-rotate interactive chats on LIMITED transitions (BOS-175). The
@@ -1837,31 +1877,34 @@ func run(opts runOpts) error {
 		tmux.WithSendReadyDeadline(settings.TmuxDelivery.SendReadyDeadline()),
 	)
 	ghProvider := github.New(log.Logger)
+	// publishStoreSessionUpdate emits the update event for a session a daemon
+	// pass wrote directly through the store. The PR-association reconcile
+	// (rename to the PR title) and the tracker linker (tracker_id/tracker_url)
+	// both bypass the UpdateSession RPC that would emit it, so without this
+	// bosso/web keep showing stale fields until the next full snapshot.
+	publishStoreSessionUpdate := func(ctx context.Context, sess *models.Session) {
+		pbSess := server.SessionToProto(sess)
+		// bosso applies session deltas as full replacements
+		// (state.go applySessionDelta), so populate the joined repo
+		// display name or the web UI would lose the Repo column.
+		if sess.RepoID != "" {
+			if r, err := repos.Get(ctx, sess.RepoID); err == nil && r != nil {
+				pbSess.RepoDisplayName = r.DisplayName
+				pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
+			}
+		}
+		hydrateSessionForStream(ctx, pbSess)
+		streamBus.Publish(upstream.StreamEvent{
+			Session: &upstream.SessionEvent{
+				Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
+				Session: pbSess,
+			},
+		})
+	}
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
 		WithBranchResolver(worktrees).
 		WithCronJobs(cronJobs).
-		WithUpdateNotifier(func(ctx context.Context, sess *models.Session) {
-			// Reconcile renames the session to the PR title via a direct store
-			// write, bypassing the UpdateSession RPC that would emit the event.
-			// Publish it here so bosso/web don't show a stale title.
-			pbSess := server.SessionToProto(sess)
-			// bosso applies session deltas as full replacements
-			// (state.go applySessionDelta), so populate the joined repo
-			// display name or the web UI would lose the Repo column.
-			if sess.RepoID != "" {
-				if r, err := repos.Get(ctx, sess.RepoID); err == nil && r != nil {
-					pbSess.RepoDisplayName = r.DisplayName
-					pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
-				}
-			}
-			hydrateSessionForStream(ctx, pbSess)
-			streamBus.Publish(upstream.StreamEvent{
-				Session: &upstream.SessionEvent{
-					Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
-					Session: pbSess,
-				},
-			})
-		})
+		WithUpdateNotifier(publishStoreSessionUpdate)
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Uses live branch state.
@@ -1939,7 +1982,15 @@ func run(opts runOpts) error {
 	// Carry the boss/build receipt forward when a session's own worktree
 	// pushes on top of a receipted head (BOS-1452).
 	displayPoller.SetReceiptCarrier(ghProvider, worktrees)
-	agentRuns := db.NewAgentRunStore(database)
+	// Keep each session's verify evidence summary (video, length, proven
+	// counts) for its current PR head. The poller reports every poll; package
+	// evidence documents when the reader actually reads PR comments.
+	// The reader reads through the daemon's vcs.Provider, not the GitHub
+	// type, so any provider's FindPRCommentsWithMarker feeds it; the contract
+	// it relies on is pinned in internal/evidence/provider_contract_test.go.
+	var evidenceComments vcs.Provider = ghProvider
+	evidenceReader := evidence.NewReader(evidenceComments, log.Logger)
+	displayPoller.SetEvidenceObserver(evidenceReader)
 	if reconciled, err := agentRuns.ReconcileOpen(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), agentChats, tmuxClient)); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile open agent runs")
 	} else if reconciled > 0 {
@@ -1950,6 +2001,15 @@ func run(opts runOpts) error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
+	// The tracker linker links active, unlinked sessions to the tracker issue
+	// their PR title, branch or title names, confirmed against the repo's own
+	// tracker. It runs on the periodic reconcile tick below, never at startup:
+	// the startup reconcile runs before plugins load.
+	trackerLinker := session.NewTrackerLinker(sessions, repos,
+		server.NewTrackerResolver(pluginHost),
+		prAssociationResolver.OpenPRs,
+		publishStoreSessionUpdate,
+		log.Logger)
 	pluginHost.SetSessionDeps(repos, sessions, agentChats, displayTracker, chatStatusTracker)
 	// The live pane-pid lookup lets the host service's codex provider-id
 	// discovery pass a chat's real pane, so the plugin runs authoritative fd
@@ -2271,6 +2331,10 @@ func run(opts runOpts) error {
 	}
 	lifecycle.SetAgentRunStore(agentRuns)
 	lifecycle.SetChatStatus(chatStatusTracker)
+	// An auth-failed (login-required) chat looks idle-and-finished to the
+	// stranded-cron sweep and the completion gate; this probe lets them block it
+	// rather than finalize a PR for a build that died on auth (BOS-1530).
+	lifecycle.SetChatAuthFailedProbe(chatStatusTracker.AuthFailed)
 	// Manual account switch (BOS-171): the registry validates the target
 	// account, the transcript probe drives resume-vs-fresh via the agent
 	// plugins, and the mid-turn reader adapts the server-held status.Tracker so
@@ -2498,6 +2562,9 @@ func run(opts runOpts) error {
 		// this a paused run would be finalized — opening a junk PR and Blocking a
 		// still-working session. Same criterion the stranded-cron sweep uses.
 		RunCompletionEvidence: lifecycle.CronRunCompletionEvidence,
+		// Defer an auth-failed chat instead of finalizing it; the stranded sweep
+		// blocks it (BOS-1530).
+		ChatAuthFailed: lifecycle.SessionChatAuthFailed,
 	})
 	lifecycle.SetCronCompletionNotifier(cronGate)
 	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun
@@ -2931,7 +2998,7 @@ func run(opts runOpts) error {
 	// and every session shows whatever it computed to before the gh
 	// poller had run, which is uniformly "idle" for sessions whose chat
 	// status is IDLE and whose PR check state is UNSPECIFIED.
-	displayComputer.SetOnUpdate(func(ctx context.Context, sessionID string) {
+	publishSessionUpdated := func(ctx context.Context, sessionID string) {
 		row, err := rawSessions.Get(ctx, sessionID)
 		if err != nil {
 			log.Debug().Err(err).Str("session_id", sessionID).Msg("display update: session lookup failed")
@@ -2958,6 +3025,17 @@ func run(opts runOpts) error {
 				Session: pbSess,
 			},
 		})
+	}
+	displayComputer.SetOnUpdate(publishSessionUpdated)
+
+	// BOS-1535: the resolved-alert sweep clears a latched repair alert (and its
+	// stall record) once the head moved, CI went green, or the PR left the
+	// repair-eligible states. A cleared row rarely changes the display trio, so
+	// Recompute alone would not reach the stream — publish the UPDATED delta
+	// explicitly after recomputing.
+	lifecycle.SetAlertClearDeps(displayTracker, repairLease, func(ctx context.Context, sessionID string) {
+		_ = displayComputer.Recompute(ctx, sessionID)
+		publishSessionUpdated(ctx, sessionID)
 	})
 
 	// Wire the auth-failed change hook: when a chat's login-required state flips
@@ -3182,8 +3260,20 @@ func run(opts runOpts) error {
 			authToken = tokenProvider.Token()
 		}
 
+		// The machine identity key proves to bosso that this machine holds
+		// the key pinned to cfg.DaemonID, so another account that learns the
+		// id cannot re-register it (BOS-1580). Loaded once; a keyring failure
+		// is logged and the daemon registers without a proof, which bosso
+		// still accepts for an id that has no pinned key.
+		identityKey, keyErr := upstream.LoadDaemonIdentityKey(cfg.DaemonID)
+		if keyErr != nil {
+			log.Warn().Err(keyErr).Str("daemon_id", cfg.DaemonID).
+				Msg("daemon identity key unavailable; registering without a possession proof")
+			identityKey = nil
+		}
+
 		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		sessionToken, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, authToken, repoIDs)
+		sessionToken, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, authToken, repoIDs, identityKey)
 		regCancel()
 		if err != nil {
 			// Non-fatal: the stream's outer Run loop sees CodeUnauthenticated
@@ -3416,7 +3506,7 @@ func run(opts runOpts) error {
 			}
 			regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			tok, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+			tok, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids, identityKey)
 			if err != nil {
 				return "", err
 			}
@@ -3681,6 +3771,8 @@ func run(opts runOpts) error {
 		CheckSnapshots:          checkSnapshots,
 		AgentRuns:               agentRuns,
 		RotationEvents:          rotationEvents,
+		Evidence:                evidenceReader,
+		WedgeActivityCache:      wedgeActivityCache,
 		CronScheduler:           cronScheduler,
 		CronActivity:            cronActivity,
 		ChatStatus:              chatStatusTracker,
@@ -3907,6 +3999,12 @@ func run(opts runOpts) error {
 	// closes archive tracking, and the archives it fires are handed to
 	// trackArchiveDone so that drain joins them.
 	trackDone("archive-deferrer", srv.RunArchiveDeferrer(pollerCtx, trackArchiveDone))
+	// The finish deferrer (BOS-1508) fires unattended-run finalizes requested
+	// through FinishUnattendedRun once the session settles. A finalize can
+	// hard-delete a worktree, so it is joined exactly like the archive
+	// deferrer: stopped before the archive drain, its work handed to
+	// trackArchiveDone.
+	trackDone("finish-deferrer", srv.RunFinishDeferrer(pollerCtx, trackArchiveDone))
 
 	// --- GitHub callback delivery worker (BOS-468) ---
 	//
@@ -4100,6 +4198,16 @@ func run(opts runOpts) error {
 		hookCfg.Completer = hs
 		hookCfg.QuestionAuth = hs
 	}
+	// Per-chat prompt-receipt bearer tokens are derived from the persistent
+	// socket token (the same file srv.Listen loads below), so they survive a
+	// daemon restart. Set before the hook server serves and before Bootstrap
+	// re-launches any chat. Never log the token.
+	socketToken, err := socketauth.LoadOrCreateToken(socketPath)
+	if err != nil {
+		return fmt.Errorf("load socket auth token for prompt receipts: %w", err)
+	}
+	lifecycle.SetPromptReceiptKey(socketToken)
+
 	hookSrv := server.NewHookServer(hookCfg)
 	hookSrv.SetCronCompletionNotifier(cronGate)
 	if err := hookSrv.Listen(); err != nil {
@@ -4395,6 +4503,16 @@ func run(opts runOpts) error {
 				} else if n > 0 {
 					log.Info().Int64("count", n).Msg("periodic reconcile: linked sessions to existing PRs")
 				}
+				// After the PR reconcile, so a just-associated PR's title is
+				// already a candidate source for this pass.
+				if n, err := trackerLinker.LinkActive(pollerCtx); errors.Is(err, session.ErrTrackerLinkPassTimedOut) {
+					// The pass spent its own budget; the next tick resumes it.
+					log.Info().Err(err).Int64("count", n).Msg("periodic tracker link: pass budget spent")
+				} else if err != nil {
+					log.Warn().Err(err).Msg("periodic tracker link: failed")
+				} else if n > 0 {
+					log.Info().Int64("count", n).Msg("periodic tracker link: linked sessions to tracker issues")
+				}
 				// Same tick, deliberately AFTER the reconcile above (BOS-875):
 				// a session that merely LOST its PR association is attached by
 				// the reconcile, so by the time this runs the remaining PR-less
@@ -4404,6 +4522,27 @@ func run(opts runOpts) error {
 					log.Warn().Err(err).Msg("periodic draft-PR retry: failed")
 				} else if n > 0 {
 					log.Info().Int("count", n).Msg("periodic draft-PR retry: re-attempted PR creation for failed sessions")
+				}
+			}
+		}
+	})
+
+	// Periodically clear repair alerts whose condition has ended (BOS-1535):
+	// a blocked/failed/stalled repair alert used to outlive the head, CI run and
+	// PR state that raised it. 60s matches the PR-association reconcile; the
+	// sweep reads only the DB and the in-memory display/lease state.
+	trackedGo("resolved-alert-clear", func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := lifecycle.ClearResolvedAlerts(pollerCtx); err != nil {
+					log.Warn().Err(err).Msg("periodic resolved-alert clear: failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("periodic resolved-alert clear: cleared resolved repair alerts")
 				}
 			}
 		}

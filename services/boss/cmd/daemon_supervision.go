@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/views"
+	"github.com/recurser/bossalib/daemonstate"
 )
 
 // daemonUnsupervisedConsequences is the one sentence every surface that
@@ -459,4 +463,168 @@ func describeUnattendedSupervisionMode(st daemon.SupervisionModeStatus) (string,
 		// anything a host can produce. Name the mode, claim nothing.
 		return base, false
 	}
+}
+
+// daemonSupervisionStop names the rung of the gather ladder that stopped
+// before a verdict could be reached. It is an enum rather than a sentence so a
+// caller decides from it and each surface words it in its own voice.
+type daemonSupervisionStop int
+
+const (
+	// daemonSupervisionStopNone means the ladder reached
+	// daemonSupervisionOfLiveRecord and the observation carries its verdict.
+	daemonSupervisionStopNone daemonSupervisionStop = iota
+	// daemonSupervisionStopProbingDisabled is BOSS_DAEMON_SKIP_LAUNCHCTL: the
+	// status shape under it is byte-identical to a detached daemon, so nothing
+	// may be read from it.
+	daemonSupervisionStopProbingDisabled
+	// daemonSupervisionStopStatusUnavailable is daemonGetStatus failing.
+	daemonSupervisionStopStatusUnavailable
+	// daemonSupervisionStopNoStateRecord is a missing or unreadable state
+	// record for the profile.
+	daemonSupervisionStopNoStateRecord
+	// daemonSupervisionStopNotInstalled is no service installed on a host whose
+	// verdict the LaunchAgent would own. Doctor's not-installed check owns that
+	// fact and its remedy.
+	daemonSupervisionStopNotInstalled
+	// daemonSupervisionStopNoRecordedPID is a state record naming a
+	// non-positive PID.
+	daemonSupervisionStopNoRecordedPID
+	// daemonSupervisionStopLivenessUnchecked is the signal-0 probe failing.
+	daemonSupervisionStopLivenessUnchecked
+	// daemonSupervisionStopNotRunning is a recorded PID with no process.
+	daemonSupervisionStopNotRunning
+)
+
+// daemonSupervisionObservation is what the supervision gather saw, separated
+// from how `boss daemon doctor` writes it so a caller that is not doctor — the
+// per-invocation warning, the TUI — reads the same answer doctor renders
+// instead of re-deriving it (the split-brain class BOS-1183/BOS-1204 removed).
+//
+// Verdict and Reason are meaningful only when Stop is daemonSupervisionStopNone;
+// on any other rung Verdict is daemonSupervisionUnknown, the zero value.
+type daemonSupervisionObservation struct {
+	Verdict     daemonSupervisionVerdict
+	Reason      daemonSupervisionReason
+	Stop        daemonSupervisionStop
+	RecordedPID int
+	// Status is the service-manager view that was read, nil on the rungs that
+	// stop before reading it.
+	Status *daemon.Status
+	// Err is the error the stopping rung saw, for the rungs that have one.
+	Err error
+}
+
+// observeDaemonSupervision walks the gather ladder doctor's supervision check
+// has always walked — probing disabled, service status, state record, the
+// not-installed rung, the recorded PID, liveness — and hands the live record to
+// daemonSupervisionOfLiveRecord. The ORDER is doctor's, unchanged: in
+// particular the service status is read before the state record is consulted,
+// which is why a per-invocation caller guards the record itself first
+// (observeLocalDaemonSupervision).
+func observeDaemonSupervision(
+	metadata daemonstate.Metadata,
+	metadataErr error,
+	supervision daemon.SupervisionModeStatus,
+	ownership daemon.WatchdogOwnership,
+) daemonSupervisionObservation {
+	if daemonServiceProbingDisabled() {
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopProbingDisabled}
+	}
+	st, statusErr := daemonGetStatus()
+	switch {
+	case statusErr != nil:
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopStatusUnavailable, Err: statusErr}
+	case metadataErr != nil:
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNoStateRecord, Status: st, Err: metadataErr}
+	case !st.Installed && !daemonUnattendedSubstrateOwnsVerdict(supervision):
+		// BOS-1204: `st.Installed` is the per-user LaunchAgent, and an
+		// unattended install deliberately supersedes that agent — so on a
+		// correctly supervised unattended host this rung would otherwise
+		// swallow the verdict.
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNotInstalled, Status: st, RecordedPID: metadata.PID}
+	case metadata.PID <= 0:
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNoRecordedPID, Status: st, RecordedPID: metadata.PID}
+	}
+
+	alive, aliveErr := daemonProcessAlive(metadata.PID)
+	switch {
+	case aliveErr != nil:
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopLivenessUnchecked, Status: st, RecordedPID: metadata.PID, Err: aliveErr}
+	case !alive:
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNotRunning, Status: st, RecordedPID: metadata.PID}
+	}
+
+	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID, supervision, ownership)
+	return daemonSupervisionObservation{
+		Verdict:     verdict,
+		Reason:      reason,
+		Stop:        daemonSupervisionStopNone,
+		RecordedPID: metadata.PID,
+		Status:      st,
+	}
+}
+
+// daemonLocalSupervisionObservation is the seam a per-invocation caller reads
+// the local profile's supervision through: the stderr warning on every `boss`
+// command, and the TUI's health line. Tests stub it; TestMain pins it to an
+// unknown so no test in this package reads the developer's real daemon.
+var daemonLocalSupervisionObservation = observeLocalDaemonSupervision
+
+// observeLocalDaemonSupervision observes supervision for the profile this
+// invocation resolves, without writing anything.
+//
+// The guards are ordered by cost, and that ordering is the point: this runs on
+// every `boss` invocation, so a host with no daemon — no state record, or one
+// naming no PID — pays for resolving the profile and reading one file, and
+// never reaches the service-manager probe inside daemonGetStatus. A guard that
+// ran after the probe would be a filter on the output, not a guard on the cost
+// (the same reasoning warnIfBossBinaryBehindCheckout documents).
+func observeLocalDaemonSupervision() daemonSupervisionObservation {
+	if daemonServiceProbingDisabled() {
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopProbingDisabled}
+	}
+	metadata, err := daemonMetadataForDoctor()
+	if err != nil {
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNoStateRecord, Err: err}
+	}
+	if metadata.PID <= 0 {
+		return daemonSupervisionObservation{Stop: daemonSupervisionStopNoRecordedPID, RecordedPID: metadata.PID}
+	}
+	supervision, ownership := daemonSupervisionInputs()
+	return observeDaemonSupervision(metadata, nil, supervision, ownership)
+}
+
+// unsupervised reports whether the observation is the one verdict the
+// per-invocation surfaces speak up for: a live daemon the service manager does
+// not own. Every other rung, and an unknown verdict, is silent — doctor is
+// where those are explained.
+func (o daemonSupervisionObservation) unsupervised() bool {
+	return o.Stop == daemonSupervisionStopNone && o.Verdict == daemonSupervisionUnsupervised
+}
+
+// tuiDaemonSupervisionProbe returns the probe behind the TUI's
+// unsupervised-daemon health line (BOS-1520), or nil when the TUI is not
+// driving this profile's daemon — --remote, --host and BOSS_SOCKET all name
+// another daemon, and this machine's supervision says nothing about it.
+//
+// The probe reads the same observation the stderr warning and doctor read
+// (daemonLocalSupervisionObservation) and maps it to the views-side value;
+// views cannot import this package, so the mapping lives here.
+func tuiDaemonSupervisionProbe(cmd *cobra.Command) views.DaemonSupervisionProbe {
+	if !needsLocalDaemonStartup(cmd) {
+		return nil
+	}
+	return func() views.DaemonSupervision {
+		return tuiDaemonSupervision(daemonLocalSupervisionObservation())
+	}
+}
+
+// tuiDaemonSupervision maps an observation to the TUI's value: unsupervised
+// with its recorded PID, or the zero value for every other answer.
+func tuiDaemonSupervision(o daemonSupervisionObservation) views.DaemonSupervision {
+	if !o.unsupervised() {
+		return views.DaemonSupervision{}
+	}
+	return views.DaemonSupervision{Unsupervised: true, PID: o.RecordedPID}
 }

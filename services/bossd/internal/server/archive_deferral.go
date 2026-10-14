@@ -17,6 +17,11 @@ package server
 // this seam too, and an explicit `boss archive` (or a self-archive) lost to a
 // restart simply leaves the session unarchived, which loses no data and can be
 // re-issued. The pending window is one agent turn.
+//
+// The same deferrer type also backs FinishUnattendedRun (BOS-1508; see
+// finish_run.go): a second instance with a finalize executor, a longer fire
+// budget, and an extra settled predicate (agent-log quiet window) consulted
+// after the chat-busy check.
 
 import (
 	"context"
@@ -115,6 +120,11 @@ type archiveDeferrer struct {
 	sessions archiveSessionGetter
 	execute  func(ctx context.Context, sessionID string) error
 	logger   zerolog.Logger
+	// settled is an optional extra gate consulted once no chat is busy: a
+	// non-empty result names the chat the session is still waiting on. The
+	// archive instance leaves it nil; the finish instance uses it for the
+	// agent-log quiet window.
+	settled func(ctx context.Context, sessionID string) (string, error)
 
 	now      func() time.Time
 	interval time.Duration
@@ -181,7 +191,7 @@ func (d *archiveDeferrer) request(ctx context.Context, sessionID string, req Arc
 		gen, requesters := d.requestersLocked(sessionID, req.RequesterAgentSessionID, acceptedAt)
 		d.mu.Unlock()
 
-		blocking, err := d.blockingChat(ctx, sessionID, requesters)
+		blocking, err := d.blockingFor(ctx, sessionID, requesters)
 		if err != nil {
 			return ArchiveOutcome{}, err
 		}
@@ -220,7 +230,7 @@ func (d *archiveDeferrer) request(ctx context.Context, sessionID string, req Arc
 		d.logger.Info().
 			Str("session", sessionID).
 			Str("blocking_agent_session_id", blocking).
-			Msg("archive deferred until every chat is idle")
+			Msg("request deferred until every chat settles")
 		return ArchiveOutcome{Pending: true, BlockingAgentSessionID: blocking}, nil
 	}
 }
@@ -298,6 +308,17 @@ func (d *archiveDeferrer) join(ctx context.Context, f *inflightArchive) (Archive
 		return ArchiveOutcome{}, f.err
 	}
 	return ArchiveOutcome{Archived: true}, nil
+}
+
+// blockingFor returns what sessionID is waiting on: the first busy chat, or,
+// when none is busy and a settled predicate is set, whatever that predicate
+// reports. "" means the session may fire.
+func (d *archiveDeferrer) blockingFor(ctx context.Context, sessionID string, requesters map[string]time.Time) (string, error) {
+	blocking, err := d.blockingChat(ctx, sessionID, requesters)
+	if err != nil || blocking != "" || d.settled == nil {
+		return blocking, err
+	}
+	return d.settled(ctx, sessionID)
 }
 
 // blockingChat returns the agent session id of the first busy chat of
@@ -485,7 +506,7 @@ func (d *archiveDeferrer) sweep(ctx context.Context, track session.ArchiveWorker
 				continue
 			}
 		}
-		blocking, err := d.blockingChat(ctx, id, snaps[id].requesters)
+		blocking, err := d.blockingFor(ctx, id, snaps[id].requesters)
 		if err != nil {
 			d.logger.Warn().Err(err).Str("session", id).Msg("pending archive: chat lookup failed")
 			continue

@@ -1,5 +1,5 @@
 // scripts/sweep-maingate-gate.test.mjs
-// Table-driven tests for the bs-sweep-security "main-gate health probe" pure core.
+// Table-driven tests for the bs-sweep-dependabot "main-gate health probe" pure core.
 // The decision engine (selectStub) is I/O-free and deterministic; these tests pin
 // the contract the SKILL.md Phase 1.5 depends on: one stub per run, priority
 // (nosec-metadata before gosec, then module order), already-tracked dedupe by

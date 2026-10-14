@@ -32,6 +32,8 @@ argv and runs nothing.
 - Otherwise on `REVIEW_READY` ⇒ `arm-verify`. It reuses the session's live chat titled `verify` (the
   same chat the verify router sends to) or creates one, and never sends `/boss-verify` now: the
   callback is the deferred send, so verify judges a settled head.
+- `armed` / `already-armed` ends the build's own CI observation: Step 12 classifies with
+  `--handed-off` and re-arms nothing.
 
 The callback is **state-matched** by default, because the verify receiver is idempotent per head —
 a callback that fires on an already-green head costs one cheap judge. Only a `defect` the fast path

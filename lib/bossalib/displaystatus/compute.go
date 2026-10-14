@@ -9,10 +9,12 @@ package displaystatus
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
 )
 
@@ -183,6 +185,50 @@ func CallbackWaitingReason(trigger, repoOwner, repoName string, prNumber int) st
 		return ""
 	}
 	return fmt.Sprintf("awaiting %s on %s/%s#%d", trigger, repoOwner, repoName, prNumber)
+}
+
+// StandbyLabel is the display label for a chat parked only on a standby
+// (contingency) callback — see IsStandbyWaitingReason. It carries no spinner:
+// the chat is not what the PR is waiting on.
+const StandbyLabel = "standby"
+
+// CallbackWaitingTrigger is the exact inverse of CallbackWaitingReason: it
+// returns the trigger named by a canonical waiting reason, or "" for anything
+// that is not that wording. Parsing lives beside the producer so no caller
+// re-spells the sentence.
+func CallbackWaitingTrigger(reason string) string {
+	rest, ok := strings.CutPrefix(reason, "awaiting ")
+	if !ok {
+		return ""
+	}
+	trigger, target, ok := strings.Cut(rest, " on ")
+	if !ok {
+		return ""
+	}
+	owner, nameAndPR, ok := strings.Cut(target, "/")
+	if !ok {
+		return ""
+	}
+	hash := strings.LastIndex(nameAndPR, "#")
+	if hash < 0 {
+		return ""
+	}
+	prNumber, err := strconv.Atoi(nameAndPR[hash+1:])
+	if err != nil {
+		return ""
+	}
+	if CallbackWaitingReason(trigger, owner, nameAndPR[:hash], prNumber) != reason {
+		return ""
+	}
+	return trigger
+}
+
+// IsStandbyWaitingReason reports whether reason is a canonical callback waiting
+// reason whose trigger is a standby (contingency) trigger — checks_failed or
+// closed (models.GithubCallbackTrigger.IsStandby). The daemon and the TUI both
+// decide "standby" here, so neither re-spells the wording or the trigger set.
+func IsStandbyWaitingReason(reason string) bool {
+	return models.GithubCallbackTrigger(CallbackWaitingTrigger(reason)).IsStandby()
 }
 
 // Package-level label constants shared between the base cascade producer

@@ -55,6 +55,9 @@ const (
 	// It is distinct from NOT_FOUND because the caller's remedy differs: a
 	// longer prefix fixes this, a different id fixes that.
 	codeAmbiguousPrefix = "AMBIGUOUS_PREFIX"
+	// codeAmbiguousPR tags a PR number that matches sessions in more than one
+	// place (`boss pr`). The remedy is --repo, not a longer id.
+	codeAmbiguousPR = "AMBIGUOUS_PR"
 	// codeMergeStrategyIncompatible mirrors the daemon's
 	// mergepolicy.ErrMergeStrategyIncompatible sentinel.
 	codeMergeStrategyIncompatible = "MERGE_STRATEGY_INCOMPATIBLE"

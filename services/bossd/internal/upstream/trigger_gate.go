@@ -40,8 +40,9 @@ const (
 // command behaves the same whichever kind of gate runs it.
 type TriggerGateRunner struct {
 	Repos TriggerRepoResolver
-	// ProofEnv resolves the proof overlay; a gate receives only its Anthropic
-	// key (see proofenv.GateEnv). Nil means no proof injection.
+	// ProofEnv resolves the proof overlay; a gate of a trusted repo receives
+	// only its Anthropic key (see proofenv.GateEnvFor). Nil means no proof
+	// injection.
 	ProofEnv proofenv.Resolver
 	Logger   zerolog.Logger
 }
@@ -79,7 +80,7 @@ func (r *TriggerGateRunner) Run(ctx context.Context, cmd *pb.RunTriggerGateComma
 		Logger()
 
 	var output bytes.Buffer
-	key, unset := proofenv.GateEnv(r.ProofEnv)
+	key, unset := proofenv.GateEnvFor(r.ProofEnv, repo) // trusted repos only (BOS-1562)
 	result := gatecmd.Run(ctx, gatecmd.Options{
 		Command:              gateCommand,
 		RepoPath:             repo.LocalPath,

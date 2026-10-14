@@ -50,13 +50,6 @@ PR apply to `BOSSD_MANAGED=1` only. Standalone has neither, and collapses to exa
 The `foreign` guard (a branch carrying real work matching no ownership signal ⇒ `NO_CHANGE`) is
 unchanged and applies in both modes.
 
-## Step 3 — guard the session link on env presence
-
-`update_session` links the boss session to the ticket for the TUI `[l]inear` shortcut. It is called
-only when `BOSS_SESSION_ID` is set (`BOSSD_MANAGED=1`). Under `BOSSD_MANAGED=0` there is no bossd
-session to link, so the call is skipped — expected standalone degradation, not an error. It is
-best-effort and non-fatal.
-
 ## Step 12 — Stop-hook removal is an inherent no-op
 
 bossd installs the Stop-hooks the skill removes so bossd does not double-finalize. Under

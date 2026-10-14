@@ -1697,7 +1697,7 @@ func TestArchive(t *testing.T) {
 	}
 
 	// Archive it.
-	if err := mgr.Archive(context.Background(), result.WorktreePath); err != nil {
+	if err := mgr.Archive(context.Background(), "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -1739,7 +1739,7 @@ func TestArchive_CorruptedWorktree(t *testing.T) {
 	}
 
 	// Archive should succeed via the fallback path.
-	if err := mgr.Archive(context.Background(), result.WorktreePath); err != nil {
+	if err := mgr.Archive(context.Background(), "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive of corrupted worktree should succeed, got: %v", err)
 	}
 
@@ -1754,8 +1754,9 @@ func TestArchive_MissingWorktree(t *testing.T) {
 	mgr := NewManager(logger)
 
 	// Archive a path that doesn't exist — should succeed (os.RemoveAll is a no-op).
-	nonexistent := filepath.Join(t.TempDir(), "does-not-exist")
-	if err := mgr.Archive(context.Background(), nonexistent); err != nil {
+	wtBase := t.TempDir()
+	nonexistent := filepath.Join(wtBase, "my-repo", "does-not-exist")
+	if err := mgr.Archive(context.Background(), "my-repo", wtBase, nonexistent); err != nil {
 		t.Fatalf("Archive of non-existent path should succeed, got: %v", err)
 	}
 }
@@ -1778,7 +1779,7 @@ func TestResurrect(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := mgr.Archive(context.Background(), result.WorktreePath); err != nil {
+	if err := mgr.Archive(context.Background(), "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -1822,7 +1823,7 @@ func TestResurrect_IgnoresBossDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -1892,7 +1893,7 @@ func TestResurrect_BranchDeletedRecreatesFromBase(t *testing.T) {
 	// Archive, then simulate BOS-180's safe-delete: prune worktree refs and
 	// delete the local branch. initTestRepo never pushes the feature branch, so
 	// there is no origin/<branch> to DWIM to.
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	gitOutput(t, repoDir, "worktree", "prune")
@@ -1945,7 +1946,7 @@ func TestResurrect_RecreatedBranchTracksItself(t *testing.T) {
 	// Remove the worktree, the local branch and its config section, and the
 	// local base, so the recreate falls through to refs/remotes/origin/main —
 	// the remote-tracking start point that used to record the base as upstream.
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	gitOutput(t, repoDir, "worktree", "prune")
@@ -1989,7 +1990,7 @@ func TestResurrect_ZeroCommitBranchRecreatesFromBase(t *testing.T) {
 
 	// No commits on the branch: its tip is main's tip (a zero-commit NO_CHANGE
 	// branch). Archive, then simulate BOS-180's safe-delete.
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	gitOutput(t, repoDir, "worktree", "prune")
@@ -2045,7 +2046,7 @@ func TestResurrect_PrefersOriginBranchWhenPresent(t *testing.T) {
 	gitOutput(t, result.WorktreePath, "push", "-u", "origin", result.BranchName)
 	originTip := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
 
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	gitOutput(t, repoDir, "worktree", "prune")
@@ -2106,7 +2107,7 @@ func TestResurrect_PrefersLocalBaseOverStaleOriginBase(t *testing.T) {
 		t.Fatalf("precondition failed: local main should be ahead of origin/main")
 	}
 
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	gitOutput(t, repoDir, "worktree", "prune")
@@ -4135,7 +4136,7 @@ func TestResurrect_LogsSetupScriptDurationAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+	if err := mgr.Archive(ctx, "my-repo", wtBase, result.WorktreePath); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -5281,6 +5282,41 @@ func TestSessionPushedHead_MissingWorktreeNeverTrue(t *testing.T) {
 	}
 }
 
+func TestSameTree(t *testing.T) {
+	f := newSessionPushFixture(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	empty := f.commit(t, "empty, no content change")
+	if same, err := mgr.SameTree(ctx, f.worktree, f.receipted, empty); err != nil || !same {
+		t.Fatalf("SameTree(A, empty commit) = %v, %v; want true, nil", same, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(f.worktree, "changed.txt"), []byte("new content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, f.worktree, "add", "changed.txt")
+	changed := f.commit(t, "content change")
+	if same, err := mgr.SameTree(ctx, f.worktree, f.receipted, changed); err != nil || same {
+		t.Fatalf("SameTree(A, content change) = %v, %v; want false, nil", same, err)
+	}
+
+	if same, err := mgr.SameTree(ctx, f.worktree, f.receipted, strings.Repeat("0", 40)); err == nil || same {
+		t.Fatalf("SameTree with a missing object = %v, %v; want false and an error", same, err)
+	}
+	if same, err := mgr.SameTree(ctx, "", f.receipted, empty); err == nil || same {
+		t.Fatalf("SameTree with an empty worktree path = %v, %v; want false and an error", same, err)
+	}
+	// rev-parse would reject "--all^{tree}" on its own, so assert the guard's
+	// own error: the option-shaped commit must never reach git, on either side.
+	for _, pair := range [][2]string{{"--all", empty}, {empty, "--all"}} {
+		same, err := mgr.SameTree(ctx, f.worktree, pair[0], pair[1])
+		if err == nil || same || !strings.Contains(err.Error(), "invalid commit") {
+			t.Fatalf("SameTree(%q, %q) = %v, %v; want false and the invalid-commit guard error", pair[0], pair[1], same, err)
+		}
+	}
+}
+
 func TestReflogIsPushChain(t *testing.T) {
 	entry := func(sha, subject string) string { return sha + "\x00" + subject }
 	for _, tc := range []struct {
@@ -5301,5 +5337,117 @@ func TestReflogIsPushChain(t *testing.T) {
 				t.Fatalf("reflogIsPushChain = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateCloneURL(t *testing.T) {
+	t.Parallel()
+
+	accepted := []string{
+		"https://github.com/owner/repo.git",
+		"HTTPS://github.com/owner/repo",
+		// Plain http carries no option or transport, and Clone's credential
+		// handling supports it.
+		"http://example.com/repo.git",
+		"ssh://git@github.com/owner/repo.git",
+		"ssh://git@[::1]:2222/owner/repo.git",
+		"git://example.com/repo.git",
+		"file:///tmp/repo",
+		"git@github.com:owner/repo.git",
+		"github-work:owner/repo.git",
+		"/abs/path/to/repo",
+		// A dash inside (not leading) the user or host is ordinary.
+		"ssh://deploy-bot@git-host.example.com/owner/repo.git",
+	}
+	for _, u := range accepted {
+		if err := ValidateCloneURL(u); err != nil {
+			t.Errorf("ValidateCloneURL(%q) = %v, want nil", u, err)
+		}
+	}
+
+	rejected := []string{
+		"",
+		"--upload-pack=touch /tmp/x",
+		"-c core.sshCommand=sh",
+		"ext::sh -c touch% /tmp/x",
+		"fd::17",
+		"git-remote-foo::bar",
+		"http://-evil/repo",
+		"ftp://example.com/repo.git",
+		"https://",
+		"file://relative/path",
+		"relative/path",
+		"../repo",
+		"git@-oProxyCommand=sh:repo",
+		// A host git would hand to ssh as an option.
+		"ssh://-oProxyCommand=sh/repo",
+		"ssh://git@-oProxyCommand=sh/repo",
+		"https://-evil/repo",
+		"git://-evil/repo",
+		// A user git would hand to ssh as an option (git also blocks it).
+		"ssh://-oProxyCommand=sh@example.com/repo",
+		"ssh://-oProxyCommand=sh:pw@example.com/repo",
+		// file:// with a host (the path alone is absolute).
+		"file://example.com/tmp/repo",
+		"https://example.com/repo\n--upload-pack=sh",
+		"https://example.com/re\x00po",
+	}
+	for _, u := range rejected {
+		err := ValidateCloneURL(u)
+		if !errors.Is(err, ErrUnsafeCloneURL) {
+			t.Errorf("ValidateCloneURL(%q) = %v, want ErrUnsafeCloneURL", u, err)
+		}
+	}
+}
+
+func TestCloneRejectsOptionLikeURL(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "x")
+	dest := filepath.Join(dir, "dest")
+	mgr := NewManager(zerolog.Nop())
+
+	err := mgr.Clone(context.Background(), "--upload-pack=touch "+marker, dest)
+	if !errors.Is(err, ErrUnsafeCloneURL) {
+		t.Fatalf("Clone(option-like URL) = %v, want ErrUnsafeCloneURL", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("marker file exists (stat err %v): the option-like URL ran a command", statErr)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("destination was created (stat err %v)", statErr)
+	}
+}
+
+func TestCloneRejectsExtTransport(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "x")
+	mgr := NewManager(zerolog.Nop())
+
+	err := mgr.Clone(context.Background(), "ext::sh -c touch% "+marker, filepath.Join(dir, "dest"))
+	if !errors.Is(err, ErrUnsafeCloneURL) {
+		t.Fatalf("Clone(ext:: URL) = %v, want ErrUnsafeCloneURL", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("marker file exists (stat err %v): the ext:: transport ran a command", statErr)
+	}
+}
+
+// TestCloneLocalRepoStillWorks proves the `--` boundary and validation leave a
+// legitimate absolute-path clone working.
+func TestCloneLocalRepoStillWorks(t *testing.T) {
+	t.Parallel()
+
+	src := initTestRepo(t)
+	dest := filepath.Join(t.TempDir(), "clone")
+	mgr := NewManager(zerolog.Nop())
+	if err := mgr.Clone(context.Background(), src, dest); err != nil {
+		t.Fatalf("Clone(local repo): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err != nil {
+		t.Fatalf("cloned repo has no .git: %v", err)
 	}
 }

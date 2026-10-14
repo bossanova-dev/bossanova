@@ -46,8 +46,10 @@ type Server struct {
 	runner *Runner
 
 	// oneShot runs a single read-only claude prompt and returns its text output.
-	// Defaults to runClaudeOneShot; overridable in tests so they never exec claude.
-	oneShot func(ctx context.Context, workDir, prompt string) (string, error)
+	// extraEnv is the daemon-resolved overlay applied on top of the inherited
+	// environment. Defaults to runClaudeOneShot; overridable in tests so they
+	// never exec claude.
+	oneShot func(ctx context.Context, workDir, prompt string, extraEnv map[string]string) (string, error)
 
 	// httpClient and usage URLs back ProbeRateLimit; all are overridable in tests.
 	httpClient  *http.Client
@@ -285,7 +287,7 @@ func (s *Server) installPromptSubmitHook(req *bossanovav1.BuildInteractiveComman
 	if req.GetHookPort() <= 0 || req.GetWorktreePath() == "" || req.GetSessionId() == "" {
 		return false
 	}
-	if err := WritePromptSubmitHookConfig(req.GetWorktreePath(), req.GetSessionId(), int(req.GetHookPort())); err != nil {
+	if err := WritePromptSubmitHookConfig(req.GetWorktreePath(), req.GetSessionId(), int(req.GetHookPort()), req.GetHookReceiptToken()); err != nil {
 		s.logger.Warn().Err(err).
 			Str("session_id", req.GetSessionId()).
 			Msg("could not install prompt-submitted receipt hook; first-prompt delivery stays unconfirmed")
@@ -356,7 +358,7 @@ func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 	runCtx, cancel := context.WithTimeout(ctx, suggestPRTitleTimeout)
 	defer cancel()
 
-	out, err := s.oneShot(runCtx, req.WorkDir, buildPRTitlePrompt(req))
+	out, err := s.oneShot(runCtx, req.WorkDir, buildPRTitlePrompt(req), req.GetExtraEnv())
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("claude SuggestPRTitle failed; daemon will fall back to its deterministic title")
 		return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
@@ -373,7 +375,12 @@ func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 // forbids edits/executes; piping on stdin avoids ARG_MAX limits for large
 // prompts. The caller-supplied ctx bounds the run (exec.CommandContext kills the
 // process when ctx is done).
-func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string) (string, error) {
+//
+// extraEnv is applied on top of the plugin's inherited environment, the same
+// last-wins layering a session spawn gets. The run happens in the session
+// worktree, so the daemon's repo pins (an untrusted repo's emptied proof,
+// Linear and Sentry keys) must override the ambient values here too (BOS-1562).
+func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string, extraEnv map[string]string) (string, error) {
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
@@ -384,6 +391,7 @@ func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string) (
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workDir
+	cmd.Env = probeEnviron(extraEnv)
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

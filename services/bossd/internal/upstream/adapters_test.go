@@ -22,6 +22,7 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
+	lastUpdateRepo             *pb.UpdateRepoRequest
 	lastRecordChat             *pb.RecordChatRequest
 	lastTranscriptID           string
 	lastSendReq                *pb.SendChatMessageRequest
@@ -165,7 +166,8 @@ func (f *fakeSessionCommandServer) GetRepoSettings(_ context.Context, _ *connect
 	return connect.NewResponse(&pb.GetRepoSettingsResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) UpdateRepo(_ context.Context, _ *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
+func (f *fakeSessionCommandServer) UpdateRepo(_ context.Context, req *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
+	f.lastUpdateRepo = req.Msg
 	return connect.NewResponse(&pb.UpdateRepoResponse{}), nil
 }
 
@@ -2811,5 +2813,39 @@ func assertCronCommandFieldsCopied(t *testing.T, source, got protoreflect.Messag
 		if source.Has(sf) != got.Has(gf) || source.Get(sf).Interface() != got.Get(gf).Interface() {
 			t.Fatalf("field %s = %v (set %v), want %v (set %v)", sf.Name(), got.Get(gf), got.Has(gf), source.Get(sf), source.Has(sf))
 		}
+	}
+}
+
+// TestCommandHandlerAdapter_UpdateRepoNeverSetsTrust pins BOS-1562: local repo
+// trust is not reachable from the orchestrator stream. The stream command has
+// no trust field, and a fully populated command still produces a daemon
+// UpdateRepoRequest with IsTrusted unset.
+func TestCommandHandlerAdapter_UpdateRepoNeverSetsTrust(t *testing.T) {
+	if fd := (&pb.UpdateRepoCommand{}).ProtoReflect().Descriptor().Fields().ByName("is_trusted"); fd != nil {
+		t.Fatal("UpdateRepoCommand gained an is_trusted field; the stream must not be able to flip local trust")
+	}
+	name, setup, org := "n", "s", "o"
+	on := true
+	strategy := pb.MergeStrategy_MERGE_STRATEGY_SQUASH
+	fake := &fakeSessionCommandServer{}
+	adapter := &CommandHandlerAdapter{Commands: fake}
+	if _, err := adapter.UpdateRepo(context.Background(), &pb.UpdateRepoCommand{
+		RepoId:                          "repo-1",
+		DisplayName:                     &name,
+		SetupScript:                     &setup,
+		MergeStrategy:                   &strategy,
+		CanAutoMerge:                    &on,
+		CanAutoMergeDependabot:          &on,
+		CanAutoRepair:                   &on,
+		ShouldArchiveSessionsAfterMerge: &on,
+		SentryOrg:                       &org,
+	}); err != nil {
+		t.Fatalf("UpdateRepo: %v", err)
+	}
+	if fake.lastUpdateRepo == nil {
+		t.Fatal("adapter did not reach the daemon UpdateRepo handler")
+	}
+	if fake.lastUpdateRepo.IsTrusted != nil {
+		t.Fatalf("stream UpdateRepo set IsTrusted = %v, want unset", *fake.lastUpdateRepo.IsTrusted)
 	}
 }

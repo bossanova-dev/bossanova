@@ -96,7 +96,17 @@ type BossClient interface {
 	// error, so a held-down key does not start failing. RemoteClient refuses:
 	// the orchestrator has no proxy for this RPC yet (BOS-1232).
 	MoveSession(ctx context.Context, req *pb.MoveSessionRequest) (*pb.Session, bool, error)
+	// DismissSessionAlert records the operator's dismissal of one session
+	// alert (BOS-1537) and returns the refreshed session. The daemon keeps one
+	// dismissed key per session, so the same alert stays hidden and a
+	// different one shows again. RemoteClient refuses: the orchestrator has no
+	// proxy for this RPC.
+	DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error)
 	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
+	// SetSessionTracker links a session to a tracker issue the repo's own
+	// tracker confirms, overwriting any existing link. Local-daemon only:
+	// RemoteClient returns CodeUnimplemented.
+	SetSessionTracker(ctx context.Context, id, trackerID string) (*pb.Session, error)
 	RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
 	// SwitchSessionAccount stops the session's live chat, rebinds it to the
 	// chosen rotation account, and brings the chat back up under it. Local-daemon
@@ -166,6 +176,9 @@ type BossClient interface {
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	// SetChatPhase sets an in-memory working phase; an empty phase clears it. Local-only.
 	SetChatPhase(ctx context.Context, sessionID, agentSessionID, phase string) error
+	// FinishUnattendedRun tells the daemon an unattended run is done; the daemon
+	// finalizes it once the session settles. Local-only.
+	FinishUnattendedRun(ctx context.Context, req *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error)
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
 
@@ -262,6 +275,10 @@ type BossClient interface {
 
 	// ListCheckSnapshots — surfaced via `boss session checks <id>`.
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
+
+	// GetSessionTimeline returns the dated steps of a session's run on its
+	// current PR head, oldest first; the last step is where it waits.
+	GetSessionTimeline(ctx context.Context, sessionID string) ([]*pb.TimelineStep, error)
 
 	// ListAgents returns the agent runner plugins currently loaded by the
 	// daemon. Used by the TUI to drive provider-aware UI (onboarding, the

@@ -51,7 +51,6 @@ test('is append-safe: N calls produce N lines in call order', () => {
     ['plan-contract-guard', 'pass', 'ok'],
     ['plan-image-guard', 'fire', 'unreadable-input'],
     ['plan-run-guards.premises', 'fire', 'premise-drift'],
-    ['bs-review-caps.admit-fix-round', 'pass', 'within-budget'],
   ]
   for (const [gate, outcome, reason] of calls) {
     assert.equal(recordGateOutcome(gate, outcome, reason, { path }), true)
@@ -300,7 +299,6 @@ const TOOLBOX_DIR = fileURLToPath(new URL('.', import.meta.url))
 
 /** The guard scripts that record a gate outcome. Reaching one of these can write a line. */
 const RECORDING_GUARDS = Object.freeze([
-  'bs-review-caps.mjs',
   'plan-contract-guard.mjs',
   'plan-image-guard.mjs',
   'plan-run-guards.mjs',

@@ -571,3 +571,18 @@ func makeEmptyResponse() graphqlResponse {
 		},
 	}
 }
+
+func TestExtractIssueNumber_IdentifierWithDigitsInTeamKey(t *testing.T) {
+	cases := map[string]int{
+		"ENG2-42":  42,
+		"FRE-1181": 1181,
+		"1181":     1181,
+		"fix 12 a": 12,
+	}
+	for query, want := range cases {
+		got, ok := extractIssueNumber(query)
+		if !ok || got != want {
+			t.Errorf("extractIssueNumber(%q) = %d, %v; want %d, true", query, got, ok, want)
+		}
+	}
+}

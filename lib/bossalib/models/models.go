@@ -79,8 +79,13 @@ type Repo struct {
 	LinearAPIKey              string
 	SentryAPIKey              string
 	SentryOrg                 string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// IsTrusted records that the local user trusts this repo's own
+	// configuration: only a trusted repo's agents get Codex project trust and
+	// the global proof secrets (BOS-1562). Set locally only — the orchestrator
+	// stream cannot change it. New repos default untrusted.
+	IsTrusted bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Session represents an agent coding session.
@@ -214,6 +219,13 @@ type Session struct {
 	// still starts — so this flags the degraded state for the TUI and
 	// `boss show`. Empty for clean runs or repos with no setup script.
 	SetupError string
+
+	// DismissedAlertKey is the key of the alert the operator last dismissed
+	// on this session (BOS-1537); "" means nothing is dismissed. It is one
+	// key, not a set: the same alert stays hidden while a different one shows
+	// again. DismissedAlertAt is when that dismissal happened (nil = never).
+	DismissedAlertKey string
+	DismissedAlertAt  *time.Time
 }
 
 // Attempt represents a fix attempt within a session.
@@ -225,6 +237,24 @@ type Attempt struct {
 	Error     *string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// ResumeAttempt is one automatic resume of a dead run (BOS-1537), persisted
+// so the resume budget and the fix sentence survive a daemon restart. RunKey
+// identifies the run the attempt belongs to (a cron fire, or the original
+// prompt's chat), so a new run starts a fresh budget. AttemptNumber is
+// 1-based within (SessionID, RunKey). FailureClass is one of the
+// session_resume_attempts.failure_class CHECK values (see
+// resumepolicy.FailureClass); FailureDetail is free text for diagnostics.
+type ResumeAttempt struct {
+	ID            string
+	SessionID     string
+	RunKey        string
+	AttemptNumber int
+	AttemptedAt   time.Time
+	FailureClass  string
+	FailureDetail string
+	CreatedAt     time.Time
 }
 
 // AgentChat represents an agent conversation associated with a session.

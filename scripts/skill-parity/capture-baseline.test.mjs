@@ -4,8 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { matchLenses } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/bs-review-detect.mjs'
-import { loadSkillConfig } from '../../services/boss/internal/skillinstall/skills/boss-review/toolbox/skill-config.mjs'
 import {
   buildGraph,
   nextToMerge,
@@ -13,14 +11,12 @@ import {
 } from '../../services/boss/internal/skillinstall/skills/boss-epic/toolbox/dag-scheduler.mjs'
 import {
   BASELINE_DIR,
-  REPO_ROOT,
   computeDagScheduleSignature,
-  computeReviewLensSignature,
   stableStringify,
   writeAll,
 } from './capture-baseline.mjs'
 
-const SNAPSHOT_NAMES = ['review-lens.snapshot.json', 'dag-schedule.snapshot.json']
+const SNAPSHOT_NAMES = ['dag-schedule.snapshot.json']
 
 function readFixture(name) {
   return JSON.parse(readFileSync(join(BASELINE_DIR, name), 'utf8'))
@@ -59,32 +55,9 @@ test('well-formedness: every committed snapshot is present, valid JSON, and non-
     assert.ok(files.includes(name), `missing snapshot file ${name}`)
   }
 
-  const reviewLens = JSON.parse(readSnapshot('review-lens.snapshot.json'))
-  assert.ok(Array.isArray(reviewLens.matchedLensIds) && reviewLens.matchedLensIds.length > 0)
-  assert.ok(Array.isArray(reviewLens.lenses) && reviewLens.lenses.length > 0)
-  for (const entry of reviewLens.lenses) {
-    assert.equal(typeof entry.lens, 'string')
-    assert.equal(typeof entry.skill, 'string')
-    assert.equal(typeof entry.fallbackRubric, 'string')
-    assert.ok(Array.isArray(entry.files) && entry.files.length > 0)
-  }
-
   const dagSchedule = JSON.parse(readSnapshot('dag-schedule.snapshot.json'))
   assert.ok(Array.isArray(dagSchedule.readyIds) && dagSchedule.readyIds.length > 0)
   assert.ok(Array.isArray(dagSchedule.mergeOrder) && dagSchedule.mergeOrder.length > 0)
-})
-
-test('signature: boss-review matchLenses over the committed fixture matches the committed snapshot', () => {
-  const changedFiles = readFixture('review-lens.input.json')
-  const lensMap = loadSkillConfig({ cwd: REPO_ROOT }).lensMap
-  const rawMatched = matchLenses(changedFiles, lensMap)
-  const expectedIds = [...new Set(rawMatched.map((m) => m.lens))].sort()
-
-  const result = computeReviewLensSignature(changedFiles)
-  assert.deepEqual(result.matchedLensIds, expectedIds)
-  assert.deepEqual(result, JSON.parse(readSnapshot('review-lens.snapshot.json')))
-  // Today's real fixture is designed to exercise all three lenses.
-  assert.deepEqual(result.matchedLensIds, ['go', 'tui', 'web'])
 })
 
 test('signature: dag-scheduler ready/merge order over the committed fixture matches the committed snapshot', () => {

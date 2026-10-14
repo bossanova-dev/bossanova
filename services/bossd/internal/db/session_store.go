@@ -42,6 +42,25 @@ func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id stri
 	return n == 1, nil
 }
 
+// LinkTrackerIfUnlinked is the tracker linker's compare-and-set write: it
+// links the session only while it is still unarchived, is not a quick chat,
+// has no tracker_url, and its tracker_id still equals expectedTrackerID (NULL
+// reads as ""). is_quick_chat is re-checked because CreateSession sets it in
+// an Update after the insert, so a pass can read the row before it is marked.
+func (s *SQLiteSessionStore) LinkTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET tracker_id = ?, tracker_url = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND is_quick_chat = 0 AND COALESCE(tracker_url, '') = '' AND COALESCE(tracker_id, '') = ?`,
+		trackerID, trackerURL, sqlutil.TimeNow(), id, expectedTrackerID)
+	if err != nil {
+		return false, fmt.Errorf("link tracker if unlinked: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 // OrphanHeadlessRun atomically records the daemon-restart marker with the
 // ImplementingPlan→Orphaned transition. Keeping both writes in one UPDATE
 // avoids leaving a markerless Orphaned row that an auto-resume sweep cannot
@@ -694,6 +713,61 @@ func (s *SQLiteSessionStore) UpdateRepairBlocked(ctx context.Context, sessionID 
 	return nil
 }
 
+// ClearRepairAlert ends a latched repair alert once its condition is over
+// (BOS-1535): it drops the blocked pair, the consecutive-failure counter and
+// the runner/exit errors. last_repair_head_sha, last_repair_display_status,
+// last_repair_started_at and the review fingerprint are history, not alert
+// state, and are left untouched.
+func (s *SQLiteSessionStore) ClearRepairAlert(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("clear repair alert: session ID required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions
+		 SET last_repair_blocked_reason = '',
+		     last_repair_blocked_at     = NULL,
+		     last_repair_attempt_count  = 0,
+		     last_repair_runner_error   = '',
+		     last_repair_exit_error     = ''
+		 WHERE id = ?`,
+		sessionID)
+	if err != nil {
+		return fmt.Errorf("clear repair alert: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// SetDismissedAlert records the operator's dismissal of one session alert
+// (BOS-1537): it overwrites sessions.dismissed_alert_key and
+// dismissed_alert_at. Dismissal is one key per session — the latest — so a
+// later dismissal replaces an earlier one. It deliberately leaves updated_at
+// alone: a dismissal is not a content change, and the recovery scans order by
+// that column. Returns sql.ErrNoRows when no session has the id.
+func (s *SQLiteSessionStore) SetDismissedAlert(ctx context.Context, id, key string, at time.Time) error {
+	if id == "" {
+		return fmt.Errorf("set dismissed alert: session ID required")
+	}
+	if key == "" {
+		return fmt.Errorf("set dismissed alert: alert key required")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions
+		 SET dismissed_alert_key = ?,
+		     dismissed_alert_at  = ?
+		 WHERE id = ?`,
+		key, sqlutil.FormatTime(at), id)
+	if err != nil {
+		return fmt.Errorf("set dismissed alert: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	// Use a transaction to ensure atomic cleanup of all dependent records.
 	// We don't rely on ON DELETE CASCADE because the PRAGMA foreign_keys=ON
@@ -725,6 +799,9 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete attempts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_resume_attempts WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete resume attempts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE cron_jobs SET last_run_session_id = NULL WHERE last_run_session_id = ?`, id); err != nil {
 		return fmt.Errorf("detach cron job last run session: %w", err)
@@ -770,7 +847,8 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
-	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank
+	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
+	s.dismissed_alert_key, s.dismissed_alert_at
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -786,6 +864,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
 	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
+	s.dismissed_alert_key, s.dismissed_alert_at,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -814,6 +893,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var lastRepairStartedAt *string
 	var lastRepairBlockedAt *string
 	var rotationResumeAt *string
+	var dismissedAlertAt *string
 	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -826,7 +906,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
-		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank, &repoDisplayName, &repoOriginURL)
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
+		&sess.DismissedAlertKey, &dismissedAlertAt, &repoDisplayName, &repoOriginURL)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -854,6 +935,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	}
 	sess.LastRepairStartedAt = sqlutil.ParseOptionalTime(lastRepairStartedAt)
 	sess.LastRepairBlockedAt = sqlutil.ParseOptionalTime(lastRepairBlockedAt)
+	sess.DismissedAlertAt = sqlutil.ParseOptionalTime(dismissedAlertAt)
 	return &sess, repoDisplayName, repoOriginURL, nil
 }
 
@@ -867,6 +949,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var lastRepairStartedAt *string
 	var lastRepairBlockedAt *string
 	var rotationResumeAt *string
+	var dismissedAlertAt *string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
@@ -878,7 +961,8 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
-		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank)
+		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
+		&sess.DismissedAlertKey, &dismissedAlertAt)
 	if err != nil {
 		return nil, err
 	}
@@ -906,5 +990,6 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	}
 	sess.LastRepairStartedAt = sqlutil.ParseOptionalTime(lastRepairStartedAt)
 	sess.LastRepairBlockedAt = sqlutil.ParseOptionalTime(lastRepairBlockedAt)
+	sess.DismissedAlertAt = sqlutil.ParseOptionalTime(dismissedAlertAt)
 	return &sess, nil
 }

@@ -1,19 +1,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import {
   CALL_TIMEOUT_MS,
   DEFAULT_BATCH,
   DEFAULT_BUDGET_MS,
+  OBSERVE_TIMEOUT_MS,
   START_FLOOR_MS,
   UsageError,
   liveSessionsFor,
   lsFailureIsUnreachable,
   newSessionArgv,
   parseSweepArgs,
+  readMergeResult,
   spawnDetached,
   sweep,
   timedRunner,
@@ -37,19 +40,24 @@ const candidate = (n, extra = {}) => ({
 
 /**
  * A fake world behind the one `run` seam: `node verify-gate.mjs <verb>` and `boss <cmd>`. Every call
- * is recorded; `mutating()` is every call that would write (a non-dry post/merge, chat new/send),
- * and `spawns` every detached spawn.
+ * is recorded; `mutating()` is every call that would write (a non-dry post, chat new/send), and
+ * `spawns` every detached spawn. A merge is a detached `node verify-gate.mjs merge` spawn whose
+ * result lands in its log `mergeDelay[pr]` ms of fake clock later (never, for Infinity); `sleep`
+ * advances the clock, and `tick` (a number, or per-verb `ticks`) is what each `run` call costs.
  */
 function world(opts = {}) {
   const w = {
     calls: [],
     spawns: [],
+    merges: {},
+    sleeps: [],
+    reads: 0,
     clock: opts.clock ?? T0,
     tick: opts.tick ?? 0,
   }
   const verdicts = opts.verdicts ?? {}
   w.run = (cmd, args, options = {}) => {
-    w.clock += w.tick
+    w.clock += (cmd === NODE ? opts.ticks?.[args[1]] : undefined) ?? w.tick
     w.calls.push({ cmd, args: [...args], timeoutMs: options.timeoutMs, env: options.env })
     const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
     const fail = (error = 'exit-1', extra = {}) => ({
@@ -82,7 +90,11 @@ function world(opts = {}) {
           return ok({ verdict, posted: false, trackerWrites: 'unavailable' })
         return ok({ ...(dry ? { dryRun: true } : {}), verdict, posted: true })
       }
-      if (verb === 'merge') return ok({ merged: true, mergeSha: sha(900 + pr) })
+      if (verb === 'observe-merge') {
+        const seen = opts.observed?.[pr]
+        if (seen?.error) return fail(seen.error, { exit: null })
+        return ok(seen ?? { merged: false, state: 'OPEN' })
+      }
       return fail('unexpected-verb')
     }
     if (cmd === BOSS) {
@@ -110,13 +122,37 @@ function world(opts = {}) {
         (c.cmd === BOSS && c.args[0] === 'chat'),
     )
   w.spawn = (cmd, args, options) => {
+    if (opts.spawnFails) throw Object.assign(new Error('spawn'), { code: opts.spawnFails })
     w.spawns.push({ cmd, args: [...args], options })
+    if (cmd === NODE && args[1] === 'merge') {
+      const pr = Number(args[args.indexOf('--pr') + 1])
+      w.merges[pr] = {
+        readyAt: w.clock + (opts.mergeDelay?.[pr] ?? 0),
+        result: opts.mergeResults?.[pr] ?? { merged: true, mergeSha: sha(900 + pr) },
+      }
+    }
     return { pid: 4242, unref() {}, on() {} }
+  }
+  w.mergeSpawns = () => w.spawns.filter((s) => s.cmd === NODE && s.args[1] === 'merge')
+  // A merge's log: stderr noise until its result is due, then the one JSON line verify-gate prints.
+  w.readFile = (path) => {
+    w.reads++
+    const m = basename(path).match(/^boss-verify-merge-(\d+)-/)
+    const merge = m ? w.merges[Number(m[1])] : undefined
+    if (!merge) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    if (w.clock < merge.readyAt) return 'gh: still working\n'
+    return `gh: still working\n${JSON.stringify(merge.result)}\n`
+  }
+  w.sleep = (ms) => {
+    w.sleeps.push(ms)
+    w.clock += ms
   }
   w.deps = (extra = {}) => ({
     run: w.run,
     nodeBin: NODE,
     now: () => w.clock,
+    readFile: w.readFile,
+    sleep: w.sleep,
     resolveBoss: () => opts.boss ?? { ok: true, path: BOSS, reason: '' },
     spawn: w.spawn,
     env: { PATH: '/usr/bin', LINEAR_API_KEY: 'k', REPO_DIR: '/repo' },
@@ -277,12 +313,12 @@ test('timedRunner: a failed read is unknown, never an empty success', () => {
 // ---------------------------------------------------------------------------
 // The sweep.
 
-test('gate-only mode: a pass posts verified then merges the judged head', () => {
+test('gate-only mode: a pass posts verified then hands the judged head to a detached merge', () => {
   const w = world()
   const r = sweep({}, w.deps())
   assert.deepEqual(
     w.verbs().map((v) => v[0]),
-    ['candidates', 'judge', 'post', 'merge'],
+    ['candidates', 'judge', 'post'],
   )
   assert.deepEqual(w.posts()[0].slice(0, 7), [
     'post',
@@ -295,9 +331,14 @@ test('gate-only mode: a pass posts verified then merges the judged head', () => 
   ])
   assert.deepEqual(lines(r), [`#1 merged ${sha(901)}`])
   assert.equal(r.summary.merged, 1)
+  const [merge] = w.mergeSpawns()
+  assert.deepEqual(merge.args.slice(1), ['merge', '--pr', '1', '--head', sha(1), '--repo', 'o/r'])
+  assert.match(merge.args[0], /verify-gate\.mjs$/)
+  // Detached, its stdio a log file — never the gate's pipes.
+  assert.equal(merge.options.detached, true)
+  assert.ok(merge.options.stdio.every((s) => s === 'ignore' || (typeof s === 'number' && s > 2)))
   // verify-gate's own `boss` calls find the resolved binary first on PATH.
-  const merge = w.calls.find((c) => c.args[1] === 'merge')
-  assert.equal(merge.env.PATH, '/fake/bin:/usr/bin')
+  assert.equal(merge.options.env.PATH, '/fake/bin:/usr/bin')
 })
 
 test('a human verdict posts needs-human and parks; tracker writes unavailable is a skip', () => {
@@ -478,9 +519,9 @@ test('the batch bound: 5 candidates and --batch 2 act on 2 and defer 3', () => {
 
 test('the deadline: no new PR starts once less than the start floor remains', () => {
   const budgetMs = 30_000
-  // Each subprocess call advances the fake clock; after candidates + judge/post/merge for #1 the
-  // clock sits past budgetMs - START_FLOOR_MS, so #2 must not start.
-  const w = world({ candidates: [candidate(1), candidate(2)], tick: 4_000 })
+  // Each subprocess call advances the fake clock; after candidates + judge/post for #1 the clock
+  // sits past budgetMs - START_FLOOR_MS, so #2 must not start.
+  const w = world({ candidates: [candidate(1), candidate(2)], tick: 6_000 })
   const r = sweep({ budgetMs }, w.deps())
   assert.ok(w.clock - T0 > budgetMs - START_FLOOR_MS)
   assert.deepEqual(lines(r), [`#1 merged ${sha(901)}`, '#2 deferred: budget'])
@@ -568,4 +609,228 @@ test('--dry-run: zero mutating calls and zero spawns, the planned routes printed
     `#3 merged (dry-run: would merge ${sha(3)})`,
   ])
   assert.deepEqual(r.records[1].argv.slice(0, 5), ['new', '--repo', '/repo', '--pr', '2'])
+})
+
+// ---------------------------------------------------------------------------
+// The merge hand-off: a merge runs detached and is settled inside the budget (BOS-1532).
+
+test('readMergeResult: the last complete JSON line with a boolean merged, past stderr noise', () => {
+  const done = JSON.stringify({ merged: true, mergeSha: sha(5) })
+  assert.deepEqual(readMergeResult(`warn: x\n${done}\nlate stderr\n`), {
+    merged: true,
+    mergeSha: sha(5),
+  })
+  assert.equal(readMergeResult(''), null)
+  assert.equal(readMergeResult('gh: still working\n'), null)
+  // A line still being written is not a result yet, even when it would parse.
+  assert.equal(readMergeResult(done), null)
+  assert.equal(readMergeResult('{"merged": tr'), null)
+  // Only an object carrying a boolean `merged` is verify-gate's terminal line.
+  assert.equal(readMergeResult('{"progress":1}\n[1]\n"merged"\n{"merged":"yes"}\n'), null)
+  assert.equal(readMergeResult(null), null)
+})
+
+test('spawnDetached names a labelled log after its label; the default stays a dispatch log', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-route-label-'))
+  const spawn = () => ({ pid: 1, unref() {}, on() {} })
+  const a = spawnDetached(BOSS, [], { logDir: dir, now: () => 5, label: 'merge-7' }, { spawn })
+  const b = spawnDetached(BOSS, [], { logDir: dir, now: () => 5, label: 'merge-8' }, { spawn })
+  const c = spawnDetached(BOSS, [], { logDir: dir, now: () => 5 }, { spawn })
+  assert.match(a.log, /boss-verify-merge-7-5-\d+\.log$/)
+  assert.match(b.log, /boss-verify-merge-8-5-\d+\.log$/)
+  assert.match(c.log, /boss-verify-dispatch-5-\d+\.log$/)
+})
+
+test('a slow merge that outlasts the per-call timeout and then succeeds is reported merged', () => {
+  const w = world({ mergeDelay: { 1: CALL_TIMEOUT_MS + 5_000 } })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), [`#1 merged ${sha(901)}`])
+  assert.equal(r.summary.merged, 1)
+  assert.equal(r.summary.skipped, 0)
+  assert.ok(lines(r).every((l) => !l.includes('ETIMEDOUT')))
+  assert.ok(w.sleeps.length > 0, 'the settle phase polled the log')
+  assert.ok(w.clock - T0 <= DEFAULT_BUDGET_MS)
+  assert.equal(
+    w.verbs().some((v) => v[0] === 'observe-merge'),
+    false,
+    'a merge whose result landed needs no observation',
+  )
+})
+
+test('a merge GitHub confirms only after the poll window is reported merged via observe-merge', () => {
+  const w = world({
+    mergeDelay: { 1: Infinity },
+    observed: { 1: { merged: true, mergeSha: sha(777), observed: 'merged' } },
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), [`#1 merged ${sha(777)}`])
+  const observe = w.calls.filter((c) => c.args[1] === 'observe-merge')
+  assert.equal(observe.length, 1)
+  assert.deepEqual(observe[0].args.slice(2), ['--pr', '1', '--repo', 'o/r'])
+  assert.ok(observe[0].timeoutMs <= OBSERVE_TIMEOUT_MS)
+  assert.equal(w.mutating().filter((c) => c.args[1] === 'observe-merge').length, 0)
+})
+
+test('a merge still in flight at the deadline is dispatched, never skipped or ETIMEDOUT', () => {
+  const w = world({ mergeDelay: { 1: Infinity } })
+  const r = sweep({}, w.deps())
+  const [merge] = w.mergeSpawns()
+  assert.ok(merge)
+  assert.equal(r.records[0].outcome, 'dispatched')
+  assert.match(
+    lines(r)[0],
+    /^#1 dispatched: merge in flight \(log .*boss-verify-merge-1-.*\.log\)$/,
+  )
+  assert.deepEqual(r.summary, { merged: 0, parked: 0, dispatched: 1, skipped: 0, deferred: 0 })
+
+  // An observation that itself times out is the same hand-off, not an error line.
+  const t = world({ mergeDelay: { 1: Infinity }, observed: { 1: { error: 'ETIMEDOUT' } } })
+  const timedOut = sweep({}, t.deps())
+  assert.match(lines(timedOut)[0], /^#1 dispatched: merge in flight \(log /)
+  assert.ok(lines(timedOut).every((l) => !l.includes('ETIMEDOUT')))
+})
+
+test('one slow merge no longer defers the others: three passes are all handed off', () => {
+  // The incident's clock: candidates + judge + post, then a merge slower than CALL_TIMEOUT_MS.
+  // Run synchronously, two such merges left #3 under START_FLOOR_MS and deferred it.
+  const w = world({
+    candidates: [candidate(1), candidate(2), candidate(3)],
+    ticks: { candidates: 2_000, judge: 1_000, post: 1_000 },
+    mergeDelay: {
+      1: CALL_TIMEOUT_MS + 1_000,
+      2: CALL_TIMEOUT_MS + 1_000,
+      3: CALL_TIMEOUT_MS + 1_000,
+    },
+  })
+  const r = sweep({}, w.deps())
+  assert.equal(w.mergeSpawns().length, 3)
+  assert.deepEqual(lines(r), [
+    `#1 merged ${sha(901)}`,
+    `#2 merged ${sha(902)}`,
+    `#3 merged ${sha(903)}`,
+  ])
+  assert.equal(r.summary.deferred, 0)
+  assert.ok(w.clock - T0 <= DEFAULT_BUDGET_MS)
+})
+
+test('a refused merge is still reported: reverify, wait reasons, and a lost claim', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(2), candidate(3)],
+    mergeResults: {
+      1: { merged: false, verdict: 'reverify', reason: 'head-mismatch' },
+      2: { merged: false, abandoned: 'claim-lost' },
+      3: {
+        merged: false,
+        verdict: 'wait',
+        reasons: ['merge-state-blocked', 'ci-not-green-on-head'],
+      },
+    },
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), [
+    '#1 reverify: head-mismatch',
+    '#2 skipped: claim lost',
+    '#3 wait: merge-state-blocked,ci-not-green-on-head',
+  ])
+  assert.equal(r.summary.skipped, 3)
+})
+
+test('a crashed merge prints a merge-error result the sweep settles as skipped', () => {
+  const gate = new URL('./verify-gate.mjs', import.meta.url).pathname
+  const out = spawnSync(process.execPath, [gate, 'merge', '--pr', '1'], { encoding: 'utf8' })
+  assert.notEqual(out.status, 0)
+  assert.match(out.stderr, /merge needs --head/)
+  const result = readMergeResult(out.stdout)
+  assert.equal(result?.merged, false)
+  assert.equal(result?.reason, 'merge-error')
+  assert.match(result?.error, /merge needs --head/)
+
+  const w = world({ mergeResults: { 1: result } })
+  const r = sweep({}, w.deps())
+  assert.equal(r.records[0].outcome, 'skipped')
+  assert.deepEqual(lines(r), ['#1 merge: merge-error'])
+})
+
+test('a merge that crashed after merging (a failed tracker write) is reported merged, not skipped', () => {
+  const w = world({
+    mergeResults: { 1: { merged: false, reason: 'merge-error', error: 'tracker write failed' } },
+    observed: { 1: { merged: true, mergeSha: sha(778), observed: 'merged' } },
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), [`#1 merged ${sha(778)}`])
+  assert.equal(r.summary.merged, 1)
+  assert.equal(r.summary.skipped, 0)
+})
+
+test('every observation fits the budget, and none starts once less than a second is left', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(2), candidate(3)],
+    mergeDelay: { 1: Infinity, 2: Infinity, 3: Infinity },
+    ticks: { 'observe-merge': OBSERVE_TIMEOUT_MS },
+  })
+  const r = sweep({}, w.deps())
+  const observe = w.calls.filter((c) => c.args[1] === 'observe-merge')
+  assert.equal(observe.length, 3)
+  assert.ok(observe.every((c) => c.timeoutMs <= OBSERVE_TIMEOUT_MS))
+  assert.ok(w.clock - T0 <= DEFAULT_BUDGET_MS, `clock ran ${w.clock - T0} ms`)
+  assert.equal(r.summary.dispatched, 3)
+
+  // The candidate loop spent the whole budget: the merge is handed off and not observed at all.
+  const late = world({ mergeDelay: { 1: Infinity }, ticks: { judge: 8_000, post: 8_000 } })
+  const lr = sweep({ budgetMs: 16_000 }, late.deps())
+  assert.equal(
+    late.calls.some((c) => c.args[1] === 'observe-merge'),
+    false,
+  )
+  assert.match(lines(lr)[0], /^#1 dispatched: merge in flight/)
+  assert.ok(late.clock - T0 <= 16_000)
+})
+
+test('handed-off merges keep candidate order and each gets its own log', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(2), candidate(3)],
+    verdicts: { 2: { verdict: 'human', reason: 'no-receipt' } },
+    // #3's merge lands before #1's.
+    mergeDelay: { 1: 3_000, 3: 0 },
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), [
+    `#1 merged ${sha(901)}`,
+    '#2 parked: needs human (no-receipt)',
+    `#3 merged ${sha(903)}`,
+  ])
+  const logs = r.records.filter((rec) => rec.log).map((rec) => rec.log)
+  assert.equal(logs.length, 2)
+  assert.notEqual(logs[0], logs[1])
+})
+
+test('a merge that cannot be spawned is a skip naming why', () => {
+  const w = world({ spawnFails: 'EAGAIN' })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), ['#1 merge: spawn failed (EAGAIN)'])
+  assert.equal(r.summary.skipped, 1)
+})
+
+test('real-process settle: a detached child writes its result to the log and the sweep reads it', () => {
+  const mergeSha = sha(4321)
+  const script = `setTimeout(() => {
+    process.stderr.write('gh: merging\\n')
+    process.stdout.write(JSON.stringify({ merged: true, mergeSha: '${mergeSha}' }) + '\\n')
+  }, 300)`
+  const w = world()
+  const started = Date.now()
+  const r = sweep(
+    {},
+    w.deps({
+      // A real spawn needs a real cwd; the fake world's `/repo` does not exist.
+      cwd: tmpdir(),
+      now: Date.now,
+      readFile: undefined,
+      sleep: undefined,
+      spawn: (cmd, args, options) => nodeSpawn(process.execPath, ['-e', script], options),
+    }),
+  )
+  assert.deepEqual(lines(r), [`#1 merged ${mergeSha}`])
+  assert.ok(Date.now() - started < DEFAULT_BUDGET_MS)
+  assert.match(readFileSync(r.records[0].log, 'utf8'), /gh: merging/)
 })

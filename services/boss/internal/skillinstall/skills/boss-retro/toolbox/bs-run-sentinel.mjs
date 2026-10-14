@@ -14,9 +14,8 @@
 // bs-sweep-security's `REPAIR_RESULT` set and its matcher. Children 2–5 reuse
 // the mechanics verbatim and layer their own token sets on top.
 //
-// Node built-ins only — cron worktrees are dependency-free. Mirrors the shape
-// of bs-review-caps.mjs (module + thin CLI + a byte-stable token set
-// pinned by bs-run-sentinel.test.mjs).
+// Node built-ins only — cron worktrees are dependency-free. A module plus a
+// thin CLI, with a byte-stable token set pinned by bs-run-sentinel.test.mjs.
 
 import {
   existsSync,

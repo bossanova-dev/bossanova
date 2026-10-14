@@ -369,7 +369,7 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 	// rotated run keeps its own repo's Linear workspace. A repo lookup failure
 	// is non-fatal (OverlayWithRepo still guarantees LINEAR_API_KEY). Never logged.
 	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "usage-limit rotation", l.logger)
-	mergedEnv := dotenv.OverlayWithRepo(mergeSessionEnv(nil, envOverlay, l.resolveProofEnv()), session.WorktreePath, repo)
+	mergedEnv := dotenv.OverlayWithRepo(mergeSessionEnv(nil, envOverlay, l.resolveProofEnvFor(repo)), session.WorktreePath, repo)
 
 	resumedPrompt := steeringNotice + "\n\n" + session.Plan
 
@@ -381,7 +381,7 @@ func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Sessio
 	// runtime authority), not the session's stale seed. The account overlay is
 	// already the rotation-selected `next` account, materialized above.
 	spawnSess := l.effectiveSpawnSession(ctx, session)
-	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, session.WorktreePath, resumedPrompt, resume, mergedEnv)
+	newID, err := l.startHeadlessReplacementRun(ctx, spawnSess, repo, session.WorktreePath, resumedPrompt, resume, mergedEnv)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).
 			Msg("usage-limit rotation: restart failed")

@@ -26,10 +26,20 @@ const (
 	// the managed MCP configuration with an old counterpart.
 	ProtocolVersionV1 = 1
 
+	// ProtocolVersionV2 is the protocol that protected the managed MCP fields
+	// whose original protobuf tags remain permanently reserved. New binaries
+	// must not negotiate it either: a v2 counterpart predates the
+	// security-bearing fields v3 protects and silently ignores them.
+	ProtocolVersionV2 = 2
+
 	// ProtocolVersion is bumped whenever host/plugin wire semantics change in a
-	// way an older binary cannot safely ignore. Version 2 protects the managed
-	// MCP fields whose original protobuf tags remain permanently reserved.
-	ProtocolVersion = 2
+	// way an older binary cannot safely ignore. Version 3 protects the
+	// repo-trust fields (BOS-1562): project_trust on BuildInteractiveCommand,
+	// StartAgentRun, PreflightHeadlessRun and DescribeMCPSurface, and
+	// SuggestPRTitleRequest.extra_env. A v2 plugin drops them unread, so an
+	// untrusted repo's worktree would keep a stale Codex trust entry and a
+	// PR-title one-shot would run under the daemon's ambient environment.
+	ProtocolVersion = 3
 	MagicCookieKey  = "BOSSANOVA_PLUGIN"
 )
 

@@ -930,6 +930,10 @@ func TestRenderTmuxAttachDiagnosticSanitizesTail(t *testing.T) {
 	}
 }
 
+func (s *attachLaunchOrderStub) FinishUnattendedRun(context.Context, *pb.FinishUnattendedRunRequest) (*pb.FinishUnattendedRunResponse, error) {
+	panic("unused")
+}
+
 func (s *attachLaunchOrderStub) SetChatPhase(context.Context, string, string, string) error {
 	panic("unused")
 }

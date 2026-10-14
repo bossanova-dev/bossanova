@@ -37,3 +37,12 @@ func TestCreateSessionConnectError_UnrelatedErrorStaysInternal(t *testing.T) {
 		t.Errorf("code = %v, want %v", connect.CodeOf(got), connect.CodeInternal)
 	}
 }
+
+// A branch git rejects that surfaces from deep in the create (a PR head, or a
+// title that sanitizes to nothing) is the caller's bad input, not a daemon fault.
+func TestCreateSessionConnectError_InvalidBranchNameIsInvalidArgument(t *testing.T) {
+	err := fmt.Errorf("create worktree: %w", fmt.Errorf("%w: %q", gitpkg.ErrInvalidBranchName, "a..b"))
+	if got := connect.CodeOf(createSessionConnectError(err)); got != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want %v", got, connect.CodeInvalidArgument)
+	}
+}

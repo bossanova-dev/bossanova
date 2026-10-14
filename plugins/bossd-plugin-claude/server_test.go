@@ -1251,6 +1251,7 @@ func TestServer_BuildInteractiveCommand_ReceiptHookAndCapability(t *testing.T) {
 			wt := t.TempDir()
 			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 				SessionId: "abc-123", InitialPrompt: tc.prompt, WorktreePath: wt, HookPort: tc.port,
+				HookReceiptToken: "feedface",
 				InitialInputPath: filepath.Join(t.TempDir(), "abc-123.initial-input"),
 			})
 			if err != nil {
@@ -1270,7 +1271,7 @@ func TestServer_BuildInteractiveCommand_ReceiptHookAndCapability(t *testing.T) {
 			if len(bossd) != 1 {
 				t.Fatalf("prompt-submitted entries = %d, want 1", len(bossd))
 			}
-			assertCommandContains(t, bossd[0], "/hooks/prompt-submitted/abc-123", ":4242")
+			assertCommandContains(t, bossd[0], "/hooks/prompt-submitted/abc-123", ":4242", "Authorization: Bearer feedface")
 		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/spf13/cobra"
 )
 
@@ -52,8 +53,21 @@ func mcpCmd() *cobra.Command {
 	install.Flags().Bool("force", false, "Overwrite existing service file")
 	install.Flags().Int("port", daemon.DefaultMcpPort, "Loopback port for the MCP HTTP server")
 
+	token := &cobra.Command{
+		Use:   "token",
+		Short: "Print the bearer token MCP hosts must send to the HTTP server",
+		Long: "Print the bearer token that the MCP HTTP server (`boss mcp install`) requires on every /mcp request.\n" +
+			"Configure your MCP host to send it as the header `Authorization: Bearer <token>`.\n" +
+			"The token lives next to the daemon socket and is created on first use.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runMcpToken(cmd)
+		},
+	}
+	token.Flags().Bool("json", false, "Output as JSON (token, header, token_path)")
+
 	m.AddCommand(
 		install,
+		token,
 		&cobra.Command{
 			Use:   "uninstall",
 			Short: "Uninstall the MCP server service",
@@ -87,8 +101,57 @@ func mcpCmd() *cobra.Command {
 	return m
 }
 
+// mcpTokenJSON is the `boss mcp token --json` shape.
+type mcpTokenJSON struct {
+	Token     string `json:"token"`
+	Header    string `json:"header"`
+	TokenPath string `json:"token_path"`
+}
+
+// loadMcpHTTPToken resolves the daemon socket path the MCP server also resolves
+// and returns the MCP HTTP bearer token beside it, creating it when absent.
+func loadMcpHTTPToken() (token, tokenPath string, err error) {
+	socketPath, err := defaultSocketPath()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve socket path: %w", err)
+	}
+	token, err = socketauth.LoadOrCreateHTTPToken(socketPath)
+	if err != nil {
+		return "", "", fmt.Errorf("load MCP HTTP token: %w", err)
+	}
+	return token, socketauth.HTTPTokenPath(socketPath), nil
+}
+
+func runMcpToken(cmd *cobra.Command) error {
+	token, tokenPath, err := loadMcpHTTPToken()
+	if err != nil {
+		return err
+	}
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		b, err := json.MarshalIndent(mcpTokenJSON{
+			Token:     token,
+			Header:    socketauth.AuthHeader + ": Bearer " + token,
+			TokenPath: tokenPath,
+		}, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal token: %w", err)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		return nil
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), token)
+	return nil
+}
+
 func runMcpInstall(cmd *cobra.Command) error {
 	mcpPath, err := daemon.ResolveMcpPath()
+	if err != nil {
+		return err
+	}
+
+	// Create the bearer token before the service starts, so the service loads
+	// this file rather than racing to create its own.
+	_, tokenPath, err := loadMcpHTTPToken()
 	if err != nil {
 		return err
 	}
@@ -106,6 +169,9 @@ func runMcpInstall(cmd *cobra.Command) error {
 	if st != nil && st.ServicePath != "" {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
+	fmt.Printf("  token:   %s\n", tokenPath)
+	fmt.Println("Add this header to your MCP host config (run 'boss mcp token' for the value):")
+	fmt.Println("  Authorization: Bearer <token>")
 	fmt.Print(daemonInstallSettingsLine())
 	return nil
 }

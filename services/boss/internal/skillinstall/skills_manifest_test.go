@@ -904,18 +904,7 @@ func foreignSkillRefs(content string) []string {
 // of that contended file into a red build. What the presence key still catches is what matters: a
 // NEW token in a baselined file fails, any token in an unbaselined file fails, and an entry whose
 // last occurrence is gone fails as stale.
-//
-// The entries below are un-drained and owned by no ticket: boss-review/SKILL.md's frontmatter and
-// opening section are contended by several in-flight tickets at once, so rewording them from here
-// would be a merge conflict rather than a fix.
-var knownForeignSkillRefs = map[string]map[string]bool{
-	"boss-review/SKILL.md": {
-		// Named as a conditional Go lens in the opening summary; deferred with the file.
-		"golang-pro": true,
-		// Named as a conditional web lens in the opening summary; deferred with the file.
-		"impeccable": true,
-	},
-}
+var knownForeignSkillRefs = map[string]map[string]bool{}
 
 // TestPublishedCoresNameNoForeignSkills is the fourth leg of the payload-reference triangle. The
 // other three gate artifacts that carry a path prefix — repo-root `scripts/<path>`,

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -34,7 +35,7 @@ var (
 // outdated (BOS-665). When every thread is resolved or outdated, the review
 // stays as COMMENTED (showing as "reviewed" rather than "rejected").
 func isReviewBotLogin(login string) bool {
-	return strings.HasSuffix(login, "[bot]")
+	return vcs.IsReviewBotLogin(login)
 }
 
 // ghFunc is the signature for executing gh CLI commands.
@@ -379,8 +380,17 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 		BaseRefName      string `json:"baseRefName"`
 		HeadRefOid       string `json:"headRefOid"`
 		ReviewDecision   string `json:"reviewDecision"`
-		Reviews          []struct {
-			State string `json:"state"`
+		// Each review object already carries its author's association; a
+		// top-level authorAssociation field would be the PR author's instead.
+		Reviews []struct {
+			// ID is the review's GraphQL node ID, the same value the REST
+			// review list reports as node_id.
+			ID     string `json:"id"`
+			State  string `json:"state"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			AuthorAssociation string `json:"authorAssociation"`
 		} `json:"reviews"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
@@ -417,7 +427,23 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	}
 	status.ReviewDecisionState = parseReviewDecision(raw.ReviewDecision)
 	status.LatestReviewState = status.ReviewDecisionState
+	// Only a trusted author's review may move LatestReviewState: the session
+	// poller turns it into a ReviewSubmitted event that can start the fix
+	// loop. This GraphQL-shaped list reports bots under a bare login with
+	// association NONE, so a review that fails the association check is
+	// re-identified against the REST list (where bots carry the [bot] suffix)
+	// by node ID; a review that cannot be matched there stays skipped.
+	var restTrusted map[string]bool
 	for _, review := range raw.Reviews {
+		if !vcs.IsTrustedAuthorAssociation(review.AuthorAssociation) {
+			if restTrusted == nil {
+				restTrusted = p.trustedReviewNodeIDs(ctx, repoPath, prID)
+			}
+			if review.ID == "" || !restTrusted[review.ID] {
+				p.logUntrustedReview(prID, review.Author.Login, review.AuthorAssociation, "pr status")
+				continue
+			}
+		}
 		state := parseReviewState(review.State)
 		if state != vcs.ReviewStateUnspecified {
 			status.LatestReviewState = state
@@ -429,6 +455,25 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	}
 
 	return status, nil
+}
+
+// trustedReviewNodeIDs returns the node IDs of the PR's reviews whose REST
+// author passes vcs.IsTrustedReviewAuthor, which recognises bots that the
+// GraphQL review list cannot. It fails closed: on a fetch error it returns an
+// empty (non-nil) set, so every untrusted-association review stays skipped.
+func (p *Provider) trustedReviewNodeIDs(ctx context.Context, repoPath string, prID int) map[string]bool {
+	trusted := map[string]bool{}
+	raw, err := p.listRawReviews(ctx, repoPath, prID)
+	if err != nil {
+		p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to identify review authors; skipping untrusted-association reviews")
+		return trusted
+	}
+	for _, r := range raw {
+		if r.NodeID != "" && vcs.IsTrustedReviewAuthor(r.User.Login, r.AuthorAssociation) {
+			trusted[r.NodeID] = true
+		}
+	}
+	return trusted
 }
 
 type pullRequestMergeability struct {
@@ -709,31 +754,95 @@ func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID
 // a null `is_bot`. Anything that must tell a bot review from a human one has to
 // read it from here.
 type rawReview struct {
-	ID   int64 `json:"id"`
-	User struct {
+	ID int64 `json:"id"`
+	// NodeID is the review's GraphQL node ID; it joins this entry to the
+	// same review in the `gh pr view --json reviews` list.
+	NodeID string `json:"node_id"`
+	User   struct {
 		Login string `json:"login"`
 	} `json:"user"`
-	Body  string `json:"body"`
-	State string `json:"state"`
+	// AuthorAssociation is the reviewer's relationship to the repository
+	// (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). It decides
+	// whether the review may reach review automation at all; see
+	// vcs.IsTrustedReviewAuthor.
+	AuthorAssociation string `json:"author_association"`
+	Body              string `json:"body"`
+	State             string `json:"state"`
+}
+
+// logUntrustedReview records, at debug level, that a review or review comment
+// from an untrusted author was dropped. It logs who and how they relate to the
+// repository, never the body: the body is exactly the untrusted text being
+// kept away from the agent.
+func (p *Provider) logUntrustedReview(prID int, login, association, source string) {
+	p.logger.Debug().
+		Int("pr", prID).
+		Str("author", login).
+		Str("author_association", association).
+		Str("source", source).
+		Msg("dropped review from untrusted author")
+}
+
+// trustedReviews returns the reviews whose authors may drive review
+// automation (vcs.IsTrustedReviewAuthor), preserving GitHub's chronological
+// order. Untrusted reviews are dropped before any later pass reads them, so
+// they can neither be surfaced, promoted, nor have their inline comments
+// fetched.
+func (p *Provider) trustedReviews(prID int, raw []rawReview) []rawReview {
+	trusted := make([]rawReview, 0, len(raw))
+	for _, r := range raw {
+		if !vcs.IsTrustedReviewAuthor(r.User.Login, r.AuthorAssociation) {
+			p.logUntrustedReview(prID, r.User.Login, r.AuthorAssociation, "review")
+			continue
+		}
+		trusted = append(trusted, r)
+	}
+	return trusted
 }
 
 // listRawReviews fetches the unfiltered REST review list for a PR. It is the
 // single source both GetReviewComments (which then filters it down to the
 // actionable set) and GetReviewObservation (which only tallies it) read, so the
 // two can never disagree about what was submitted.
+//
+// It reads every page: GitHub returns reviews oldest first, 30 per page by
+// default, so an unpaginated read silently drops the newest reviews on a busy
+// PR — exactly the ones that decide the latest review state.
 func (p *Provider) listRawReviews(ctx context.Context, repoPath string, prID int) ([]rawReview, error) {
 	out, err := p.gh(ctx,
-		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repoFlag(repoPath), prID),
+		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews?per_page=100", repoFlag(repoPath), prID),
+		"--paginate",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get reviews: %w", err)
 	}
+	return decodePaginatedPages[rawReview](out, "reviews")
+}
 
-	var raw []rawReview
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parse reviews: %w", err)
+// decodePaginatedPages decodes `gh api --paginate` output, which is one JSON
+// array per page written back to back rather than a single merged array. what
+// names the listed items in errors ("parse <what>: ..."); output with no page
+// at all is an error, not an empty list.
+func decodePaginatedPages[T any](out, what string) ([]T, error) {
+	var all []T
+	pages := 0
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var page []T
+		err := dec.Decode(&page)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", what, err)
+		}
+		pages++
+		all = append(all, page...)
 	}
-	return raw, nil
+	if pages == 0 {
+		return nil, fmt.Errorf("parse %s: empty response", what)
+	}
+	return all, nil
 }
 
 // GetReviewObservation implements vcs.ReviewObserver: it reports what the PR's
@@ -768,6 +877,10 @@ func (p *Provider) fetchReviewComments(ctx context.Context, repoPath string, prI
 	if err != nil {
 		return nil, err
 	}
+	// Drop untrusted authors first, so every pass below — bot promotion,
+	// inline-comment fetches, the surfaced set — only ever sees reviews that
+	// may drive the repair agent.
+	raw = p.trustedReviews(prID, raw)
 	// First pass: collect the bots whose LATEST review is COMMENTED — the only
 	// ones a promotion could still apply to. If none exist, skip the GraphQL
 	// call entirely (zero overhead for non-bot PRs).
@@ -935,9 +1048,10 @@ func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string,
 		User struct {
 			Login string `json:"login"`
 		} `json:"user"`
-		Body string  `json:"body"`
-		Path *string `json:"path"`
-		Line *int    `json:"line"`
+		AuthorAssociation string  `json:"author_association"`
+		Body              string  `json:"body"`
+		Path              *string `json:"path"`
+		Line              *int    `json:"line"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse review comments: %w", err)
@@ -945,6 +1059,10 @@ func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string,
 
 	comments := make([]vcs.ReviewComment, 0, len(raw))
 	for _, r := range raw {
+		if !vcs.IsTrustedReviewAuthor(r.User.Login, r.AuthorAssociation) {
+			p.logUntrustedReview(prID, r.User.Login, r.AuthorAssociation, "inline comment")
+			continue
+		}
 		comments = append(comments, vcs.ReviewComment{
 			Author: r.User.Login,
 			Body:   r.Body,

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/rs/zerolog"
+
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/tmux"
@@ -36,24 +38,33 @@ func stalePaneProxyPort(bakedURL string, livePort int) (int, bool) {
 	return bakedPort, bakedPort != livePort
 }
 
-// detectStalePaneProxyPorts is a best-effort startup sweep (BOS-409) that flags
+// detectStalePaneProxyPorts is a best-effort startup sweep (BOS-409) that finds
 // live managed tmux panes whose baked ANTHROPIC_BASE_URL points at a proxy port
 // other than the one this (post-restart) daemon actually bound. Such a pane's
 // already-running Claude REPL froze the old URL in its own process environment,
-// so it retries a dead port forever — a permanent ConnectionRefused wedge that a
-// pane restart is the only in-place cure for. Re-pointing a running REPL's env
-// is infeasible (tmux set-environment only affects newly-spawned processes), so
-// the repair is to SURFACE: a loud Warn plus a durable rotation audit marker the
-// operator can see. The pane is NEVER auto-killed — that would destroy the live
-// REPL/scrollback.
+// so it can never reach this daemon again, and re-pointing a running REPL's env
+// is infeasible (tmux set-environment only affects newly-spawned processes).
+//
+// Each such pane is KILLED (BOS-1563), reversing BOS-409's original "surface,
+// never auto-kill" rule for this one case: while the pane lives it keeps
+// sending its credentials and prompts to whatever binds the old port — another
+// local user's listener can answer them with tool calls that run as us — and
+// losing its scrollback is the smaller cost. The kill clears the chat row's
+// pane pointer first (the idle-reap shape, ReapIdleChatTmuxSession) and leaves
+// the row itself in place, so the existing wake path respawns the conversation
+// on the live port. A durable rotation audit marker records why.
+//
+// Fail-closed: only a baked URL tmux actually returned can condemn a pane. An
+// unset or unreadable value (paneBakedProxyURL declines both) and any parse
+// failure leave the pane alone.
 //
 // It mirrors reArmSurvivingTmuxChats: iterate agent_chats rows that carry a tmux
 // session, resolve each one's tmux session name, and skip any whose pane is not
-// live. A single bad row (DB miss, parse error, dead pane) never blocks the
-// rest. The whole sweep is inert when the proxy is off or unbound, and after the
-// root fix ships (a fixed port that survives restarts) it only fires on the
-// transitional edges — a changed port config, or a pane baked a pre-upgrade
-// ephemeral port.
+// live. A single bad row (DB miss, parse error, dead pane, failed kill) never
+// blocks the rest. The whole sweep is inert when the proxy is off or unbound,
+// and with a fixed port that survives restarts it only fires on a changed port
+// config, a pane baked a pre-upgrade ephemeral port, or a lost fixed port
+// (ProxyServer.FixedPortLost).
 func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 	if l.agentChats == nil {
 		return
@@ -106,14 +117,28 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 			continue
 		}
 
-		l.logger.Warn().
-			Str("chat_id", chat.ID).
-			Str("agent_session", chat.AgentSessionID).
-			Str("session", chat.SessionID).
-			Str("tmux_session", tmuxName).
-			Int("baked_port", bakedPort).
-			Int("live_port", l.proxyPort).
-			Msg("failover proxy: tmux pane baked to a stale proxy port after a daemon restart; restart this pane to reconnect")
+		logEv := func() *zerolog.Event {
+			return l.logger.Error().
+				Str("chat_id", chat.ID).
+				Str("agent_session", chat.AgentSessionID).
+				Str("session", chat.SessionID).
+				Str("tmux_session", tmuxName).
+				Int("baked_port", bakedPort).
+				Int("live_port", l.proxyPort)
+		}
+		var detail string
+		if kerr := l.killStalePane(ctx, chat, tmuxName); kerr != nil {
+			logEv().Err(kerr).
+				Msg("failover proxy: could not kill a tmux pane baked to a stale proxy port; it may still send traffic to whatever holds that port — kill it by hand")
+			detail = fmt.Sprintf(
+				"stale failover-proxy port: pane baked %d, live proxy on %d — kill failed (%v); kill this pane by hand (BOS-1563)",
+				bakedPort, l.proxyPort, kerr)
+		} else {
+			logEv().Msg("failover proxy: killed a tmux pane baked to a stale proxy port; its chat resumes on the live port when woken")
+			detail = fmt.Sprintf(
+				"stale failover-proxy port: pane baked %d, live proxy on %d — pane killed so it cannot send traffic to whatever holds the old port; the chat resumes on the live port when woken (BOS-1563)",
+				bakedPort, l.proxyPort)
+		}
 
 		// Durable needs-attention marker via the existing rotation audit sink
 		// (Recorder is nil-safe). Trigger/Outcome are left empty — this is not a
@@ -123,9 +148,22 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 			SessionID: chat.SessionID,
 			ChatID:    chat.ID,
 			Provider:  string(models.AccountProviderClaude),
-			Detail: fmt.Sprintf(
-				"stale failover-proxy port: pane baked %d, live proxy on %d — restart this pane to reconnect (BOS-409)",
-				bakedPort, l.proxyPort),
+			Detail:    detail,
 		})
 	}
+}
+
+// killStalePane tears down a stale-port pane while keeping its chat row
+// resumable. A row that points at the pane goes through
+// ReapIdleChatTmuxSession, which clears the pointer before killing (and
+// restores it if the kill fails): a POINTED row over a dead pane is what the
+// session guard reads as the agent having exited, which would finalize the
+// session instead of letting the wake path resume it. A row with no pointer
+// (the name was recomputed) has nothing to clear, so the pane is killed
+// directly.
+func (l *Lifecycle) killStalePane(ctx context.Context, chat *models.AgentChat, tmuxName string) error {
+	if persistedChatPaneName(chat) == tmuxName {
+		return l.ReapIdleChatTmuxSession(ctx, chat.SessionID, chat.AgentSessionID, tmuxName)
+	}
+	return l.tmux.KillSession(ctx, tmuxName)
 }

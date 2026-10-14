@@ -17,6 +17,7 @@ import {
   reviewPreamble,
   resolveAgentBin,
   sanitizeOutput,
+  reviewHelperTimeoutMs,
 } from './cross-review-lib.mjs'
 
 // Cross-model "outside voice" review helper for bs-implement.
@@ -173,11 +174,6 @@ function codexAdapter(tierAProbeRoot) {
   }
 }
 
-// Default review timeout, env-overridable via BOSS_CROSS_REVIEW_TIMEOUT_MS.
-// Raised from the original 120_000 to 300_000 (cross-model review over a large
-// diff with high reasoning effort routinely needs more than two minutes).
-const DEFAULT_TIMEOUT_MS = 300_000
-
 // Cap on an embedded diff. Above this we fall back to instruct-mode (ask the
 // reviewer to read the range itself) rather than ballooning the prompt.
 const EMBED_DIFF_LIMIT_BYTES = 200 * 1024
@@ -190,35 +186,37 @@ const EMBED_DIFF_LIMIT_BYTES = 200 * 1024
 const DIFF_COLLECTION_BUDGET_MS = 30_000
 
 // resolveTimeoutMs(env) → positive integer ms.
-// Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default unless the
-// value is a run of PLAIN DECIMAL DIGITS denoting a positive number. Trailing
+// Parses BOSS_CROSS_REVIEW_TIMEOUT_MS; falls back to the default — the review
+// dispatch leg less the wrapper's reserve (reviewHelperTimeoutMs: the leg is the
+// hang guard, BOSS_REVIEW_HANG_GUARD_MINUTES, else `.boss-skills.json`
+// reviewDefaults.hangGuardMinutes, else 30 minutes, unless an explicit
+// BOSS_SKILL_EXTENSION_TIMEOUT_MS names another), shared by both cross-model
+// reviewers so the one configured guard tunes them — unless the value is a run
+// of PLAIN DECIMAL DIGITS denoting a positive number. The guard stops a hung
+// reviewer, never a slow one. Trailing
 // garbage like "100abc" and fractional "1.5" are rejected to the default rather
 // than silently truncated to 100 / 1, as they always were.
 //
-// The digits-only shape gate is load bearing, not belt-and-braces on top of
-// Number(). Number() alone also accepts `1.8e6`, `0x2710`, `+600000` and
-// whitespace-padded ` 1800000` — forms no POSIX shell glob can express, and the
-// budget gates that PRICE this timeout are shell. boss-build's Step 6b gate
-// (its review-stack reference) normalizes with a digits-only `case` glob plus an
-// explicit base-10 `$(( 10# ))` radix, so every form Number() accepted but the
-// glob cannot is one where the gate reserves a different number of minutes than
-// the helper then spends: `1.8e6` reserves 5 minutes for a leg granted 30, and
-// the run eats its own post-review reserve. Narrowing the accepted set to what
-// BOTH readers parse identically closes that divergence at the source, instead
-// of teaching the shell one more literal form per round. `0600000` stays valid
-// (600000 ms): it is plain digits, and the gate's `10#` radix reads it the same.
-export function resolveTimeoutMs(env = process.env) {
+// The digits-only shape gate keeps one contract for every reader of this knob:
+// Number() alone also accepts `1.8e6`, `0x2710`, `+600000` and whitespace-padded
+// ` 1800000`, forms a shell reader's digits-only `case` glob and `$(( 10# ))`
+// radix read differently. Plain decimal digits are the one form both agree on;
+// `0600000` stays valid (600000 ms).
+export function resolveTimeoutMs(env = process.env, { cwd } = {}) {
   const raw = env?.BOSS_CROSS_REVIEW_TIMEOUT_MS
-  if (raw == null || !/^[0-9]+$/.test(String(raw))) return DEFAULT_TIMEOUT_MS
-  const n = Number(raw)
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS
+  if (raw != null && /^[0-9]+$/.test(String(raw))) {
+    const n = Number(raw)
+    if (Number.isInteger(n) && n > 0) return n
+  }
+  return reviewHelperTimeoutMs(env, { cwd })
 }
 
 // resolveRunTimeoutMs(env) → the timeout run() uses when none is passed:
 // resolveTimeoutMs clamped strictly below the extension leg (fitTimeoutToLeg),
-// printing one stderr line naming both numbers whenever it clamps.
-export function resolveRunTimeoutMs(env = process.env, { stderr = process.stderr } = {}) {
-  const fit = resolveLegFitTimeout('codex-review', resolveTimeoutMs(env), env)
+// printing one stderr line naming both numbers whenever it clamps — only an
+// explicit BOSS_CROSS_REVIEW_TIMEOUT_MS can, since the default is already fitted.
+export function resolveRunTimeoutMs(env = process.env, { stderr = process.stderr, cwd } = {}) {
+  const fit = resolveLegFitTimeout('codex-review', resolveTimeoutMs(env, { cwd }), env, { cwd })
   if (fit.note) stderr.write(`${fit.note}\n`)
   return fit.timeoutMs
 }
@@ -421,7 +419,8 @@ export async function run({
     return { ok: false, output: '', stderr: '', timedOut: false }
   }
 
-  const effectiveTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : resolveRunTimeoutMs(env)
+  const effectiveTimeoutMs =
+    typeof timeoutMs === 'number' ? timeoutMs : resolveRunTimeoutMs(env, { cwd: repo })
   const tierARequested =
     typeof falsificationReference === 'string' && path.isAbsolute(falsificationReference)
   const tierAEnabled = tierARequested && canConfineCodexTierAReads()

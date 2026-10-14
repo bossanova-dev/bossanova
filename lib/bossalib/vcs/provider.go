@@ -28,6 +28,13 @@ type Provider interface {
 	// GetReviewComments returns review comments on a pull/merge request.
 	GetReviewComments(ctx context.Context, repoPath string, prID int) ([]ReviewComment, error)
 
+	// FindPRCommentsWithMarker returns every PR conversation comment whose
+	// body contains marker, most recently written first. It does not judge
+	// the comments: anyone who can comment can copy a marker, so the caller
+	// picks the first candidate whose author it trusts and whose body it can
+	// use. An empty result means no comment carries the marker.
+	FindPRCommentsWithMarker(ctx context.Context, repoPath string, prID int, marker string) ([]PRComment, error)
+
 	// ListOpenPRs returns all open pull/merge requests for a repository.
 	ListOpenPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
 

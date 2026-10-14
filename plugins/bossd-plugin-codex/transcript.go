@@ -50,7 +50,8 @@ const transcriptTailSize = 32 * 1024
 //	~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO-ts>-<UUID>.jsonl
 //
 // The path is sharded by date — there is no per-worktree key — so we find the
-// transcript for a given session UUID by globbing across the date shards.
+// transcript for a given session UUID by listing the date shard directories
+// (os.ReadDir, see rolloutFiles) and matching the filename suffix.
 const codexSessionsDir = ".codex/sessions"
 
 // codexSessionsRoot returns the codex sessions/ directory, honoring CODEX_HOME
@@ -64,17 +65,22 @@ func codexSessionsRoot() (string, error) {
 	return filepath.Join(dir, "sessions"), nil
 }
 
-// transcriptPath resolves the on-disk codex rollout JSONL file for the
-// given agent session UUID by globbing every date shard under the codex
-// sessions root (honoring CODEX_HOME; see codexSessionsRoot). The workDir
-// argument is unused (codex transcripts are not keyed by working directory)
-// but kept in the signature to match the daemon-side host_service contract
-// that all agent plugins share.
+// canonicalSessionUUID is the only agent session id shape a rollout lookup
+// accepts. The id is matched against rollout filenames, so anything looser —
+// glob metacharacters, case variants, braces — would widen the match to other
+// sessions' transcripts.
+var canonicalSessionUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// transcriptPath resolves the on-disk codex rollout JSONL file for the given
+// agent session UUID under the codex sessions root (honoring CODEX_HOME; see
+// codexSessionsRoot). Codex shards rollouts by date, not by working directory,
+// so workDir is a filter rather than a key: when it is non-empty, a rollout
+// whose session_meta records a different cwd is not this session's transcript
+// (see findRolloutPathInWorkDir).
 //
-// Returns ("", error) when the sessions root is unresolvable, when no
-// rollout file matches the UUID, or when more than one match exists (which
-// would indicate a corrupted sessions tree).
-func transcriptPath(_ string, agentSessionID string) (string, error) {
+// Returns ("", error) when the sessions root is unresolvable, the id is not a
+// canonical UUID, or no rollout matches.
+func transcriptPath(workDir, agentSessionID string) (string, error) {
 	if agentSessionID == "" {
 		return "", errors.New("agentSessionID is empty")
 	}
@@ -82,46 +88,101 @@ func transcriptPath(_ string, agentSessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return findRolloutPath(root, agentSessionID)
+	return findRolloutPathInWorkDir(root, workDir, agentSessionID)
 }
 
-// findRolloutPath globs `<root>/<YYYY>/<MM>/<DD>/rollout-*-<uuid>.jsonl`
-// and returns the match. In practice codex emits one rollout per UUID; if
-// duplicates ever appear (e.g. clock skew, crashed-and-restarted runs)
-// we prefer the most recently modified file rather than failing — the
-// freshest transcript is the one the daemon's status path should read.
-// Exposed for tests so the sessions root can be redirected to a temp dir.
-func findRolloutPath(root, agentSessionID string) (string, error) {
-	// agentSessionID is externally supplied and interpolated into the glob
-	// pattern below. A codex session id is a single UUID segment; reject any id
-	// carrying path separators or ".." so a crafted value cannot collapse the
-	// pattern out of the sessions root and read an arbitrary file.
-	if strings.ContainsAny(agentSessionID, `/\`) || strings.Contains(agentSessionID, "..") {
-		return "", fmt.Errorf("invalid codex session id %q", agentSessionID)
+// findRolloutPathInWorkDir finds `<root>/<YYYY>/<MM>/<DD>/rollout-*-<uuid>.jsonl`
+// by listing the date shards and matching the filename suffix literally — the
+// id never reaches a glob. When workDir is non-empty, rollouts whose
+// session_meta cwd names a different directory (compared through symlinks, so
+// macOS /var and /private/var agree) are dropped; a rollout with no recorded
+// cwd (older codex builds) is kept, and one whose session_meta cannot be read
+// is dropped.
+//
+// In practice codex emits one rollout per UUID; if duplicates ever appear (e.g.
+// clock skew, crashed-and-restarted runs) the most recently modified one wins
+// rather than failing — the freshest transcript is the one the daemon's status
+// path should read.
+func findRolloutPathInWorkDir(root, workDir, agentSessionID string) (string, error) {
+	if !canonicalSessionUUID.MatchString(agentSessionID) {
+		return "", fmt.Errorf("invalid codex session id %q: want a canonical lowercase UUID", agentSessionID)
 	}
-	pattern := filepath.Join(root, "*", "*", "*", fmt.Sprintf("rollout-*-%s.jsonl", agentSessionID))
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return "", fmt.Errorf("glob codex sessions: %w", err)
-	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no codex rollout for session %s", agentSessionID)
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-	best := matches[0]
-	bestInfo, _ := os.Stat(best)
-	for _, m := range matches[1:] {
-		info, err := os.Stat(m)
+	suffix := "-" + agentSessionID + ".jsonl"
+	var best string
+	var bestInfo os.FileInfo
+	for _, path := range rolloutFiles(root) {
+		if !strings.HasSuffix(filepath.Base(path), suffix) {
+			continue
+		}
+		if workDir != "" && !rolloutInWorkDir(path, workDir) {
+			continue
+		}
+		info, err := os.Stat(path)
 		if err != nil {
 			continue
 		}
-		if bestInfo == nil || info.ModTime().After(bestInfo.ModTime()) {
-			best, bestInfo = m, info
+		if best == "" || info.ModTime().After(bestInfo.ModTime()) {
+			best, bestInfo = path, info
 		}
 	}
+	if best == "" {
+		return "", fmt.Errorf("no codex rollout for session %s", agentSessionID)
+	}
 	return best, nil
+}
+
+// rolloutFiles lists every `rollout-*.jsonl` entry three shard levels below
+// root (<YYYY>/<MM>/<DD>), in lexical order. Unreadable levels are skipped, so
+// a missing root lists nothing. It reads directories rather than globbing so a
+// root containing glob metacharacters cannot change what is listed.
+func rolloutFiles(root string) []string {
+	levels := []string{root}
+	for depth := 0; depth < 3; depth++ {
+		var next []string
+		for _, dir := range levels {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				next = append(next, filepath.Join(dir, e.Name()))
+			}
+		}
+		levels = next
+	}
+	var files []string
+	for _, dir := range levels {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl") {
+				files = append(files, filepath.Join(dir, name))
+			}
+		}
+	}
+	return files
+}
+
+// rolloutInWorkDir reports whether the rollout at path may belong to a session
+// running in workDir: its first record must parse as session_meta, and that
+// record's cwd, when recorded, must name the same directory. A rollout whose
+// session_meta is unreadable, malformed or missing proves nothing about where
+// it ran, so it is not eligible — otherwise it could win by mtime over a
+// rollout that does name workDir and hand back another worktree's transcript.
+// Only a parsed session_meta with no cwd (older codex builds) is accepted
+// unverified.
+func rolloutInWorkDir(path, workDir string) bool {
+	meta, ok := readSessionMeta(path)
+	if !ok {
+		return false
+	}
+	if meta.CWD == "" {
+		return true
+	}
+	return sameWorkDir(meta.CWD, workDir)
 }
 
 // transcriptExists reports whether a codex rollout transcript for the given
@@ -1039,18 +1100,19 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 }
 
 // readTranscriptAt resolves the rollout JSONL for agentSessionID under root
-// and returns parsed chat messages. When no rollout file is found it returns
+// (filtered to workDir, as transcriptPath does) and returns parsed chat
+// messages. When no rollout file is found it returns
 // {Exists:false} with nil error — callers treat that as transcript-not-yet-
-// written rather than a hard failure. Exposed for tests so the sessions root
-// can be redirected to a temp dir (mirrors findRolloutPath).
+// written rather than a hard failure. Takes root explicitly so tests can
+// redirect the sessions root to a temp dir.
 //
 // logger carries the skip report. Nothing reaches the CLI: `boss chat show`
 // renders chat messages, and a skipped record is a function_call_output
 // envelope that was never one — so nothing the user asked for is missing and
 // a warning there would be noise. The operator-facing surface is this log,
 // which is where "the transcript you are reading dropped N records" belongs.
-func readTranscriptAt(root, _, agentSessionID string, maxMessages int32, logger zerolog.Logger) (*bossanovav1.ReadTranscriptResponse, error) {
-	path, err := findRolloutPath(root, agentSessionID)
+func readTranscriptAt(root, workDir, agentSessionID string, maxMessages int32, logger zerolog.Logger) (*bossanovav1.ReadTranscriptResponse, error) {
+	path, err := findRolloutPathInWorkDir(root, workDir, agentSessionID)
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}

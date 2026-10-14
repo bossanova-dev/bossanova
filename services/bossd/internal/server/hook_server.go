@@ -49,8 +49,13 @@ type RunTokenValidator interface {
 // agent_session_id, with the receipt's arrival time. Satisfied by
 // *session.Lifecycle.RecordPromptSubmitted, which keeps a receipt only while a
 // launch is confirming that chat's first input and reports whether one was.
+//
+// ValidPromptReceiptToken authenticates the per-chat receipt bearer token
+// (session.Lifecycle derives it from the daemon socket token), with no side
+// effect.
 type PromptReceiptRecorder interface {
 	RecordPromptSubmitted(agentSessionID string, at time.Time) bool
+	ValidPromptReceiptToken(agentSessionID, token string) bool
 }
 
 // finalizeDispatchTimeout bounds the background FinalizeSession call spawned
@@ -296,6 +301,10 @@ func (h *HookServer) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// maxAgentRunCompleteBody caps the agent-run-complete payload. It carries one
+// short exit_error string, so 64 KiB is generous while bounding allocation.
+const maxAgentRunCompleteBody = 64 << 10
+
 // agentRunCompletePayload is the JSON body expected on
 // POST /hooks/agent-run-complete/{agent_session_id}. Empty string on
 // clean exit; populated when claude crashed or returned non-zero.
@@ -305,9 +314,15 @@ type agentRunCompletePayload struct {
 
 // handleAgentRunComplete implements POST /hooks/agent-run-complete/{agent_session_id}.
 //
+// Auth runs before the body is read: the Authorization header shape is checked
+// first, then the token is validated with no side effect through the
+// RunTokenValidator (when wired), and only then is the body read, capped at
+// maxAgentRunCompleteBody.
+//
 // Response codes:
 //   - 400 — agent_session_id path parameter missing, or malformed JSON body
 //   - 401 — Authorization header missing/malformed or token mismatch
+//   - 413 — body larger than maxAgentRunCompleteBody
 //   - 500 — completer not configured (misconfiguration; should not happen in production)
 //   - 200 — auth succeeded and waiter signalled, OR the run is unknown/already
 //     completed (idempotent no-op; a duplicate or post-cleanup ping)
@@ -332,10 +347,48 @@ func (h *HookServer) handleAgentRunComplete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Authenticate before touching the body, so a caller without a run token
+	// cannot make the daemon read (or allocate for) anything.
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		// Log auth failures as Warn so operators see token-rotation or
+		// pointing-at-wrong-daemon issues immediately, instead of waiting
+		// ~30 minutes for the WaitChatRun deadline to elapse.
+		h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: agent-run-complete auth failed")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// Side-effect-free pre-check through the same validator the question hook
+	// uses. CompleteAgentRun repeats the authoritative constant-time check, so
+	// valid callers see no change.
+	if h.questionAuth != nil {
+		switch err := h.questionAuth.ValidateRunToken(r.Context(), agentSessionID, token); {
+		case err == nil:
+		case errors.Is(err, plugin.ErrAgentRunNotFound):
+			// Idempotent no-op for a run the daemon no longer tracks; see the
+			// matching branch after CompleteAgentRun below.
+			w.WriteHeader(http.StatusOK)
+			return
+		case errors.Is(err, plugin.ErrAuthMismatch):
+			h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: agent-run-complete auth failed")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		default:
+			h.logger.Error().Err(err).Str("agent_session", agentSessionID).Msg("hook: agent-run-complete auth error")
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Body is optional; an empty body is treated as {"exit_error": ""}.
 	var payload agentRunCompletePayload
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAgentRunCompleteBody))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		h.logger.Error().Err(err).Str("agent_session", agentSessionID).Msg("hook: read body failed")
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
@@ -345,16 +398,6 @@ func (h *HookServer) handleAgentRunComplete(w http.ResponseWriter, r *http.Reque
 			http.Error(w, "malformed JSON body", http.StatusBadRequest)
 			return
 		}
-	}
-
-	token, ok := bearerToken(r.Header.Get("Authorization"))
-	if !ok {
-		// Log auth failures as Warn so operators see token-rotation or
-		// pointing-at-wrong-daemon issues immediately, instead of waiting
-		// ~30 minutes for the WaitChatRun deadline to elapse.
-		h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: agent-run-complete auth failed")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
 	}
 
 	sessionID, err := h.completer.CompleteAgentRun(r.Context(), agentSessionID, token, payload.ExitError)
@@ -483,16 +526,20 @@ type promptSubmittedPayload struct {
 // handlePromptSubmitted implements POST /hooks/prompt-submitted/{agent_session_id},
 // the first-input delivery receipt posted by Claude's UserPromptSubmit hook.
 //
-// It is unauthenticated by design: the hook is installed for every tmux-hosted
-// start, not only token-bearing runs, so there is no per-run token to carry.
-// The listener is loopback-only, and a receipt is kept only while a launch is
-// confirming that very chat, so a stray or forged POST can at most confirm a
-// start whose agent is already up. Every Claude process in a worktree fires
-// every hook entry in its settings, so a payload whose session_id names a
-// different chat is acknowledged and dropped.
+// It requires "Authorization: Bearer <token>", where token is the per-chat
+// receipt token bossd derives (PromptReceiptRecorder.ValidPromptReceiptToken)
+// and hands the runner in BuildInteractiveCommandRequest.hook_receipt_token, so
+// a local process that can see a chat id cannot forge its delivery receipt. The
+// token is checked before the body is read. A stale runner that sends no header
+// gets 401 and its launch stays unconfirmed, the same degraded path a failed
+// hook install takes. A receipt is kept only while a launch is confirming that
+// very chat. Every Claude process in a worktree fires every hook entry in its
+// settings, so a payload whose session_id names a different chat is
+// acknowledged and dropped.
 //
 // Response codes:
 //   - 400 — agent_session_id path parameter missing
+//   - 401 — Authorization header missing/malformed or the token is wrong
 //   - 500 — receipt recorder not wired (misconfiguration)
 //   - 200 — everything else, recorded or not: the hook discards the response,
 //     and a receipt nobody awaits is not an error
@@ -506,6 +553,12 @@ func (h *HookServer) handlePromptSubmitted(w http.ResponseWriter, r *http.Reques
 	if h.promptReceipts == nil {
 		h.logger.Error().Str("agent_session", agentSessionID).Msg("hook: prompt receipt recorder not configured")
 		http.Error(w, "prompt receipts not configured", http.StatusInternalServerError)
+		return
+	}
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok || !h.promptReceipts.ValidPromptReceiptToken(agentSessionID, token) {
+		h.logger.Debug().Str("agent_session", agentSessionID).Msg("hook: prompt-submitted auth failed")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var payload promptSubmittedPayload

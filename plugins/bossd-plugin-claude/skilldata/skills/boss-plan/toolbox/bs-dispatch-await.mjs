@@ -771,8 +771,8 @@ export async function awaitAll(dispatchNodes, dispatcher, opts = {}) {
 function usage() {
   return [
     'usage: bs-dispatch-await.mjs <classify <dir> <runId> <name> <deadlineAtMs> [nowMs] [heartbeatPath]',
-    '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]... [--heartbeat <path>] [--dispatched-at <ms>]',
-    '  | wait <dir> <runId> <name> [--heartbeat <path>] [--dispatched-at <ms>] [--deadline <ms>] [--budget <ms>] [--interval <ms>] [--while-live]',
+    '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]... [--heartbeat <path>] [--dispatched-at <ms>] [--stale <ms>]',
+    '  | wait <dir> <runId> <name> [--heartbeat <path>] [--dispatched-at <ms>] [--deadline <ms>] [--budget <ms>] [--interval <ms>] [--stale <ms>] [--while-live]',
     '    (exit 0 completed | 96 timed-out | 97 abandoned | 98 budget spent, re-arm)',
     '  | probe <path>... | guard-discard <path>...',
     '  | heartbeat <path> [note] | liveness <path> [nowMs] [staleMs]',
@@ -803,12 +803,17 @@ function parseDispositionFlags(argv, fail) {
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]
     const value = argv[i + 1]
-    if (!['--artifact', '--deadline', '--now', '--heartbeat', '--dispatched-at'].includes(flag)) {
+    if (
+      !['--artifact', '--deadline', '--now', '--heartbeat', '--dispatched-at', '--stale'].includes(
+        flag,
+      )
+    ) {
       return fail(`unknown disposition flag: ${flag}`)
     }
     if (value === undefined) return fail(`${flag} requires a value`)
     if (flag === '--artifact') opts.artifacts.push(value)
     else if (flag === '--heartbeat') opts.heartbeatPath = value
+    else if (flag === '--stale') opts.staleAfterMs = parseStaleFlag(value, fail)
     else if (flag === '--dispatched-at') {
       requireFiniteArgs([[flag, value]], fail)
       opts.dispatchedAtRaw = value
@@ -837,7 +842,25 @@ function parseDispositionFlags(argv, fail) {
   return opts
 }
 
-const WAIT_VALUE_FLAGS = ['--heartbeat', '--dispatched-at', '--deadline', '--budget', '--interval']
+// `--stale` widens (or narrows) the liveness window for a dispatch whose own beats are farther apart
+// than DEFAULT_OPEN_DISPATCH_STALE_MS — a review whose single dispatch may run a whole hang guard
+// between beats passes `reviewTimeDefaults().heartbeatStaleMs`. The same value must reach `wait`
+// and `disposition`, or the re-classification disagrees with the hold.
+function parseStaleFlag(value, fail) {
+  requireFiniteArgs([['--stale', value]], fail)
+  const parsed = Number(value)
+  if (parsed <= 0) return fail(`--stale requires a positive number, got: ${value}`)
+  return parsed
+}
+
+const WAIT_VALUE_FLAGS = [
+  '--heartbeat',
+  '--dispatched-at',
+  '--deadline',
+  '--budget',
+  '--interval',
+  '--stale',
+]
 
 function parseWaitFlags(argv, fail) {
   const opts = {}
@@ -853,6 +876,10 @@ function parseWaitFlags(argv, fail) {
     i += 1
     if (flag === '--heartbeat') {
       opts.heartbeatPath = value
+      continue
+    }
+    if (flag === '--stale') {
+      opts.staleAfterMs = parseStaleFlag(value, fail)
       continue
     }
     requireFiniteArgs([[flag, value]], fail)

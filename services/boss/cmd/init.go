@@ -164,6 +164,7 @@ func initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&assigneeMe, "assignee-me", false, "Include only my tickets when no shared assignee filter exists")
 	cmd.Flags().BoolVar(&repoOpts.register, "register", false, "Find or register this repository with local bossd")
 	cmd.Flags().BoolVar(&repoOpts.noRegister, "no-register", false, "Require an existing repository registration")
+	cmd.Flags().BoolVar(&repoOpts.trusted, "trusted", false, "Register the repository as trusted (Codex project trust and proof secrets for its sessions)")
 	cmd.Flags().BoolVar(&repoOpts.linearStdin, "linear-key-stdin", false, "Read the Linear API key from stdin")
 	cmd.Flags().BoolVar(&repoOpts.sentryStdin, "sentry-token-stdin", false, "Read the Sentry token from stdin")
 	cmd.Flags().StringVar(&repoOpts.sentryOrg, "sentry-org", "", "Sentry organization slug (requires a token)")
@@ -609,11 +610,10 @@ func detectedBuildSystems(commands map[string]string) []string {
 // default surface rather than the subset that happened to seem interesting.
 var skippedBlocks = []struct{ name, reason string }{
 	{"trackerConfig", "written only when a Linear team is resolved (one team visible to LINEAR_API_KEY, or --team); otherwise the skills resolve the team at run time and self-disable cleanly when none or several are visible"},
-	{"lensMap", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"adapters", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planStorage", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
-	{"reviewLedger", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planContract", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
+	{"review", "which review a repo runs is an operator choice, not a property of its files; the built-in review with its cross-agent second model applies until an operator names a replacement review skill"},
 	{"reviewDefaults", "not detectable from a repo's files; the built-in defaults supply it when the config is loaded"},
 	{"planDependencies", "which shared files every ticket appends to is a fact about this repo's history, not its files; the built-in block is empty and the dependency scan uses only its per-run payload until an operator declares them"},
 	{"epicDefaults", "how long a child of an epic typically runs is a fact about this repo's work, not about its files, so it cannot be detected; the built-in child wall clock applies until an operator measures otherwise"},

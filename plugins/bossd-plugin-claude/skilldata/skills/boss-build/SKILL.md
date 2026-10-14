@@ -17,19 +17,22 @@ Print exactly one, as the first token of its own line, followed by the ticket id
 summary (cost extraction matches a line-leading token).
 
 - `REVIEW_READY` — PR pushed, green and ready; ticket moved to the **in-review** state; PR URL
-  commented on the ticket. Open review findings do **not** prevent this: a
-  round-capped review ships here with the findings **published** (PR comment, ticket comment, a
-  `## Review findings` pointer in the body). Human review is the next gate. A verified Step 12
-  completion merge keeps the token and prints
+  commented on the ticket. Requires `ready-gate.mjs` → `ready` on the pushed head:
+  a clean review and no commit after the reviewed head that changed its tree. Human review is the
+  next gate. A verified Step 12 completion merge keeps the token and prints
   `REVIEW_READY <ticket> <pr-url> merged <sha> — <summary>`; the ticket moves to `.done`.
-- `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied **and**
-  certified by the review, and everything left undone is an unmet in-scope criterion. Ticket stays
-  **in-progress**; PR ready but marked do-not-merge.
-- `BLOCKED` — only when the run physically cannot finish: **(1)** quality gates are still red after
-  the repair cap, or **(2)** the branch cannot be pushed. Ticket stays **in-progress** with a blocker
-  comment (`file:line`, what was tried); PR left draft. Nothing else is BLOCKED — not open findings
-  of any kind, not an unreadable review, not an uncertified criterion. boss-build builds what the
-  plan says; judging the work belongs to the planner and the human reviewer.
+- `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied on a
+  branch whose review produced a verdict, and everything left undone is an unmet in-scope criterion. Ticket stays
+  **in-progress**; PR ready but marked do-not-merge. Requires `ready-gate.mjs` → `ready` on the
+  PARTIAL route (Step 9).
+- `BLOCKED` — **(1)** quality gates are still red after the repair cap, **(2)** the branch cannot be
+  pushed, or **(3)** the review is not clean — `ready-gate.mjs` is not ready: blocking findings left
+  after the review's one fix pass, an unusable or never-run review, or commits after the reviewed
+  head that no review saw. Ticket stays **in-progress** with a blocker comment (`file:line`, what was
+  tried); PR left draft (`gh pr ready --undo` if this run readied it). Cause 3 lists every blocking
+  finding at `file:line` in that comment and in the PR's `## Review findings`, and still upserts the
+  `<!-- bs-review -->` comment ([`references/publish.md`](references/publish.md)). An unmet
+  criterion alone is not BLOCKED.
 - `NO_CHANGE` — no eligible candidate, claim lost with no runner-up, a foreign branch carrying other
   work, a peer already holding the worktree lock, or nothing committable after claiming (ticket
   restored to its entry state).
@@ -81,6 +84,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Are the checks green / is the merge state blocking? | `node pr-check-state.mjs classify\|merge-state …`                           |
 | Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
 | May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
+| May this head be readied / receipted?               | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)       |
 | Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
 | Where does a follow-up go?                          | `node followup-route.mjs route --candidates <file> --notes-out <file>`      |
 | Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
@@ -147,8 +151,9 @@ command -v git; command -v gh; gh auth status
 
 ```bash
 START_SHA="$(git rev-parse HEAD)"
-# Clear a previous run's Step 6 review-verdict note (contract: Step 6).
-rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict"
+# Clear a previous run's Step 6 review state and Step 9 ready-route note (contracts: Steps 6, 9).
+rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict" "$(git rev-parse --git-dir)/boss-build-ready-route"
+rm -rf "$(git rev-parse --git-dir)/boss-build/review" "$(git rev-parse --git-dir)/boss-build/review-verdict.json"
 SESSION_BRANCH="$(git branch --show-current)"
 BASE_UPSTREAM="$(git rev-parse --abbrev-ref "$SESSION_BRANCH@{upstream}" 2>/dev/null)"
 BASE_REMOTE="${BASE_UPSTREAM%%/*}"
@@ -375,8 +380,6 @@ node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comment
 - exit 4 (NO_WINNER) — delete your claim and repeat Step 3 once; again ⇒ `NO_CHANGE`.
 - anything else ⇒ `BLOCKED: claim`.
 
-Once WON, link the session per the reference (best-effort).
-
 ## Step 4: Read the plan
 
 Select the plan attachment and read it with `readPlanAttachment` (by attachment **id**). The plan is
@@ -517,113 +520,66 @@ base-drift `note`:
 - `deletedByBranch` ⇒ fix the base-side references.
 - verdict `unevaluated` ⇒ not clean: run the module tests and record it.
 
-**Depth.** Full review unless the diff is small and touches no configured lens: quick when
-`reviewDeltaDefaults(config).forceFull` is false, no changed file matches a lens
-(`lensesForFile(config, path)` is empty for every file), and fewer than
-`reviewDeltaDefaults(config).deltaFileThreshold` (default 20) files changed. An unreadable diff is
-full. The quick tier disables the optional default rounds (`BOSS_REVIEW_DEFAULT_ROUNDS=0`) and gets two
-legs of time instead of three; it still runs the whole-branch review, its fix loop and the
-acceptance-criteria certification. Depth is chosen from the diff, never from a clock.
+**Which review.** `reviewSkillFor(config)` (`skill-config.mjs`) names it: `boss-review` by default,
+or the repo's replacement skill — or chain of skills, run in order — from `review.skill`. Every one
+receives the same inputs and must write the same verdict file (`review-verdict.mjs` is the contract);
+boss-build reads nothing else from it.
 
-**Deadline and run file.**
-
-```bash
-leg_ms=${BOSS_SKILL_EXTENSION_TIMEOUT_MS:-300000}
-case "$leg_ms" in '' | *[!0-9]*) leg_ms=300000 ;; esac
-leg_ms=$(( 10#$leg_ms )); [ "$leg_ms" -gt 0 ] || leg_ms=300000
-LEG=$(( (leg_ms + 999) / 1000 )); [ "$LEG" -ge 300 ] || LEG=300
-LEGS=3                                   # 2 on the quick tier
-STEP_6C_DEADLINE=$(( $(date +%s) + LEGS * LEG ))
-FUNDING="$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" funding \
-  "{\"allowanceSeconds\": $(( LEGS * LEG )), \"legSeconds\": $LEG, \"initialLegs\": $LEGS}")" ||
-  FUNDING='{"reason":"funding-unpriced"}'
-STEP_6C_FUNDING_REASON="$(printf '%s' "$FUNDING" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')"
-echo "STEP_6C_DEADLINE=$STEP_6C_DEADLINE STEP_6C_FUNDING_REASON=$STEP_6C_FUNDING_REASON"
-```
+**Dispatch.** Each Step 6 pass gets its own numbered directory under the run's review root
+(preflight clears it), and each chain member a numbered directory inside that, created before the
+dispatch so a member that never writes its verdict is counted as missing:
 
 ```bash
-RUN_SENTINEL="$BOSS_BUILD_TOOLBOX/bs-run-sentinel.mjs"
-test -f "$RUN_SENTINEL" || { echo "BLOCKED: bs-run-sentinel.mjs missing"; exit 1; }
-RUN="$(node "$RUN_SENTINEL" make-ctx boss-build)"
-RUN_ID="${RUN%%$'\t'*}"; RUN_DIR="${RUN#*$'\t'}"
-DISPATCH_FAILURE="dispatch-failure"   # byte-identical to the module's DISPATCH_FAILURE
-export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX RUN_SENTINEL RUN_ID RUN_DIR DISPATCH_FAILURE
-# Seed a provisional pessimistic verdict: GENERATE the line; a hand-written literal is unmatchable.
-node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" review \
-  "$(node "$BOSS_BUILD_TOOLBOX/bs-review-caps.mjs" sentinel capped 1)" '{"provisional":true}'rm -f "$(git rev-parse --git-dir)/boss-build/review-report.md"   # never post a previous run's report
+REVIEW_ROOT="$(git rev-parse --git-dir)/boss-build/review"; mkdir -p "$REVIEW_ROOT"
+REVIEW_PASS="$(find "$REVIEW_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+REVIEW_PASS=$((REVIEW_PASS + 1))
+node --input-type=module -e '
+  import{pathToFileURL as u}from"node:url"
+  const m = await import(u(process.env.BOSS_BUILD_TOOLBOX+"/skill-config.mjs").href)
+  process.stdout.write(m.reviewSkillFor(m.loadSkillConfig()).skills.join("\n") + "\n")
+' >"$REVIEW_ROOT/skills.txt"
+N=0
+while IFS= read -r SKILL; do
+  N=$((N + 1)); mkdir -p "$REVIEW_ROOT/$REVIEW_PASS/$N"; echo "member $N: $SKILL OUT_DIR=$REVIEW_ROOT/$REVIEW_PASS/$N"
+done <"$REVIEW_ROOT/skills.txt"
 ```
 
-**Dispatch exactly one review.** One fresh awaited subagent runs the `boss-review` skill over
-`$REVIEW_BASE...HEAD` and nothing else — `boss-review` already carries the lenses, the repo's review
-rounds, the cross-model second voice and its own fix loop, so never add a review of your own before
-or after it. Its prompt's **first line is exactly `[bs-reviewer-dispatch]`** (an inert marker the
-cost telemetry counts). State in the prompt, by these exact names: `REVIEW_BASE`,
-`STEP_6C_DEADLINE`, `STEP_6C_FUNDING_REASON` (only when non-empty), `RUN_DIR`, `RUN_ID`,
-`BOSS_NOTES_SUPPRESSED=1`, `BOSS_REVIEW_DEFAULT_ROUNDS=0` on the quick tier, the plan path and its
-acceptance criteria (and required proof), the base-drift note, and on a resume the Step 4.5 map. It
-must also beat `$RUN_DIR/review.heartbeat`
-(`node "$BOSS_BUILD_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$RUN_DIR/review.heartbeat"`) at every
-phase boundary, write the rendered report to `$(git rev-parse --git-dir)/boss-build/review-report.md`
-(the run dir is cleaned up after classification), and return only:
+For each skill in the chain, dispatch one fresh awaited subagent that runs it and nothing else —
+never add a review of your own around it. Its prompt's **first line is exactly
+`[bs-reviewer-dispatch]`**, and it states `BASE=$REVIEW_BASE`, `HEAD=<current HEAD>`,
+`PLAN_FILE=$PLAN_FILE`, `OUT_DIR=` the path the block printed for that member,
+`--fix`, the base-drift note and, on a resume, the Step 4.5 map. It returns one summary line; the
+verdict file is the result. Wait for each dispatch up to the hang guard
+(`reviewTimeDefaults(config).hangGuardMs`); a dispatch that never writes its verdict is an error, not
+a pass. If the dispatch tool itself fails, run the same review inline once.
 
-- boss-review's `bs-review-ledger.mjs tokens` output verbatim: `coverage` (`full` |
-  `reduced (<misses>)`) is the `## Review coverage` token; `crossModel.token` (`skipped: <misses>`)
-  is the `## Cross-model review` token, or when `crossModel.ran` is true `clean` |
-  `findings-fixed (<dispositions>)` from the report; `error: <reason>` only when it never ran;
-- the base-drift note and a one-line summary of open findings.
-
-`boss-review` writes the earned verdict into the run file itself. If the dispatch tool itself fails,
-run the same single review inline. Hold it in the foreground:
-`node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" wait "$RUN_DIR" "$RUN_ID" review --heartbeat "$RUN_DIR/review.heartbeat" --while-live`
-until the subagent returns or it exits 0, 96 or 97.
-
-**Classify from the run file only** — never the returned prose:
+**Classify** from the verdict files only — never the returned prose. Every pass this run is pooled,
+so a later re-review can never clear an earlier blocking finding:
 
 ```bash
-DISP="$(node "${RUN_SENTINEL%/*}/bs-dispatch-await.mjs" disposition "$RUN_DIR" "$RUN_ID" review --heartbeat "$RUN_DIR/review.heartbeat")"
-if [ "$(printf '%s' "$DISP" | jq -r '.publishable')" = "true" ]; then
-  # matchSentinel classifies the byte-stable `bs-review clean:` / `bs-review capped:` prefixes.
-  VERDICT="$(node "${RUN_SENTINEL%/*}/bs-review-caps.mjs" match "$(printf '%s' "$DISP" | jq -r '.kind')" | jq -r '.status // empty')"
-  if [ -z "$VERDICT" ]; then VERDICT="$DISPATCH_FAILURE"; fi
-  PROVISIONAL=
-else
-  # Every non-publishable disposition — a provisional payload on ANY kind, a missing sentinel (dead
-  # subagent), a stale one (foreign leftover), a timed-out or abandoned dispatch — is a distinct
-  # dispatch-failure that routes to the SAFE non-clean branch and is NEVER treated as clean.
-  # `.reason` says which; only `provisional-payload` takes the coverage-unknown arm.
-  VERDICT="$DISPATCH_FAILURE"
-  PROVISIONAL="$(printf '%s' "$DISP" | jq -r 'if .reason == "provisional-payload" then "true" else empty end')"
-fi
-node "$RUN_SENTINEL" cleanup "$RUN_DIR"
-case "$VERDICT" in clean|capped) REVIEW_VERDICT="$VERDICT" ;; *) REVIEW_VERDICT="none" ;; esac
-printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" \
-  >"$(git rev-parse --git-dir)/boss-build-review-verdict"
+BUILD_STATE="$(git rev-parse --git-dir)/boss-build"; REVIEW_ROOT="$BUILD_STATE/review"
+VERDICT="$BUILD_STATE/review-verdict.json"
+find "$REVIEW_ROOT" -mindepth 2 -maxdepth 2 -type d | sort | sed 's#$#/review-verdict.json#' >"$BUILD_STATE/review-verdicts.txt"
+rm -f "$VERDICT"
+tr '\n' '\0' <"$BUILD_STATE/review-verdicts.txt" | xargs -0 node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" merge --out "$VERDICT" >/dev/null
+STATUS="$(node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" status "$VERDICT")"
+case "$STATUS" in pass) REVIEW_VERDICT=clean ;; blocked) REVIEW_VERDICT=capped ;; *) REVIEW_VERDICT=none ;; esac
+printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" >"$(git rev-parse --git-dir)/boss-build-review-verdict"
+node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" render "$VERDICT" --report >"$BUILD_STATE/review-report.md"
 ```
 
-**Route.**
+A missing or invalid verdict reads `error`, so the note is `none` — never a silent pass. Route:
+`clean` → Step 6.5, then Step 7. `capped` (blocking findings remain after the review's one fix pass)
+and `none` go straight to Step 7 so the work is pushed and visible; their terminal route is
+`BLOCKED` cause 3 at Step 9's gate. On `none`, run
+`node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger dispatch-failed --where "boss-build Step 6 review"` (never fatal).
 
-- `clean` → Step 6.5, then Step 7 (full coverage).
-- `capped` → Step 7 with the findings to publish. Coverage keeps the token the review earned.
-- `PROVISIONAL=true` (the seed was never upgraded — nothing settled a verdict) → Step 7 with
-  `## Review coverage` = `none: review coverage unknown (review stack entered; provisional verdict never upgraded — <reason>)`
-  and `## Cross-model review` = `error: <reason>`. Never `PARTIAL`.
-- `dispatch-failure` → Step 7. Missing/stale run file: `none: review coverage unknown (<reason>)`.
-  Present but unmatchable: keep the returned tokens annotated, else
-  `none: review verdict unreadable (<reason>)`. Cross-model `error: <reason>`.
-- `clean` with no returned coverage token → `none: review coverage unknown (<reason>)`; routing
-  still follows the file.
-
-On `dispatch-failure`, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger dispatch-failed --where "boss-build Step 6 review dispatch"` (never fatal).
-For any `none: review coverage unknown` (including a moved post-review tip), run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger evidence-unknown --where "boss-build review coverage"` (never fatal).
-
-`BOSS_BS_REVIEW=0` is the one way to skip review: dispatch nothing, write `sentinel capped 1`, and
-publish `none: review stack did not run (disabled by BOSS_BS_REVIEW=0)` / cross-model
+`BOSS_BS_REVIEW=0` is the one way to skip review: dispatch nothing, write `REVIEW_VERDICT=disabled`
+(the ready gate passes the operator's opt-out), and publish `## Review coverage`
+`none: review did not run (disabled by BOSS_BS_REVIEW=0)` and `## Cross-model review`
 `skipped: disabled`.
 
-An unreviewed or capped branch is never fatal: it ships, saying so in the PR. Only red gates and an
-unpushable branch block.
-
-When the review stack has returned, `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase building` (never fatal).
+When the review has returned, `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" phase building` (never fatal).
 
 ## Step 6.5: Knowledge extensions (repo opt-in)
 
@@ -651,22 +607,27 @@ Every route from Step 6 comes through here.
    coverage tokens ([`references/publish.md`](references/publish.md)) and go to Step 12.
 
 2. **Did the reviewed tree ship?** `git fetch -q origin "$SESSION_BRANCH"`; if `FETCH_HEAD` is not
-   `REVIEWED_HEAD` (someone pushed on top, or the push rebased), either re-run Steps 5–6 on the new
-   tip and persist that reviewed head again, or publish
+   `REVIEWED_HEAD` (someone pushed on top, or the push rebased), either re-review the new tip as
+   Step 9's re-review does, or publish
    `none: review coverage unknown (branch tip moved after review: <A> → <B>)`. Never
    claim coverage of a tree that was not reviewed.
 
 3. **PR.** Compose the body in a temp file outside the worktree
    ([`references/publish.md`](references/publish.md) has the template), then create a **draft**
    (`gh pr create --draft --title "[<ISSUE-ID>] <issue title>" --body-file …`)
-   when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Run
+   when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Its review
+   sections come from `node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" render <verdict> --pr-section`
+   (`$(git rev-parse --git-dir)/boss-build/review-verdict.json`), pasted verbatim — except under
+   `BOSS_BS_REVIEW=0`, where there is no verdict and Step 6's disabled sections are published. Run
    `validateVerifyOnlyEvidence(config, body)` and `validateLocalVerification(config, body)` over the
    body before publishing it. Fix local-verification findings in the body and validate again; they
    never change the route or yield BLOCKED. Write every candidate follow-up as `{text, source}` (plus
    the optional fields `FOLLOWUP_SOURCES` in the helper names per source: `outside-worktree`, `host`,
-   `stage-evidence`, `plan-question`) to a JSON file and run
+   `stage-evidence`, `plan-question`, `review-finding`) to a JSON file — including every candidate
+   `review-verdict.mjs followups <verdict>` prints — and run
    `node "$BOSS_BUILD_TOOLBOX/followup-route.mjs" route --candidates <file> --notes-out <notes-file>`.
-   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## Host notes` when present)
+   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## Host notes` /
+   `## Review follow-ups` when present)
    into the body and append its `decisions` to `## Autonomous decisions`; each `warnings` entry names
    an item it parked or dropped for being unclassified or incomplete. When the notes file holds any
    entry, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger host-environment --from <notes-file>`
@@ -676,7 +637,10 @@ Every route from Step 6 comes through here.
    gate matches it).
 
 4. **Review comment.** Upsert exactly one `<!-- bs-review -->` comment: the review report
-   (`$(git rev-parse --git-dir)/boss-build/review-report.md`), or an honest fallback note saying what ran and why there is no report.
+   (`$(git rev-parse --git-dir)/boss-build/review-report.md`, rendered by Step 6 — it reports an
+   unusable verdict honestly too). Under `BOSS_BS_REVIEW=0` there is no report: the comment body is
+   `<!-- bs-review -->` and `review did not run (disabled by BOSS_BS_REVIEW=0)`, so no earlier
+   run's verdict stays on the PR.
 
 ## Step 8: Tag and get to green
 
@@ -724,15 +688,29 @@ Re-inject the tag only if boss-repair added untagged non-empty commits (then pus
 wait for CI again). Add repair and readiness-rebase test re-runs to `## Local verification` as
 phase-labelled bullets (repair row `<command>: <result>` ⇒ ``repair: `<command>` → <result>``); fix findings from
 `validateLocalVerification(config, body)` and validate again before `gh pr ready`. Green CI on the head is the full test run; do not repeat it locally. Then
-decide:
+decide, asking the gate first on the head you would ready:
+`node "$BOSS_BUILD_TOOLBOX/ready-gate.mjs"` (base: the PR's; exit 0 `ready`, 3 not ready with
+`reasons`; any other exit is not ready). Before asking, persist the route: write `partial` to
+`$(git rev-parse --git-dir)/boss-build-ready-route` only when the criteria point to the PARTIAL route
+below, and remove that file otherwise. The gate reads it on every later ask, so no flag is carried.
 
-- **Every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or a
-  `(verify-only)` criterion carrying its recorded check) **and no review finding is open** ⇒
-  `REVIEW_READY`.
-- **Open review findings** (capped, provisional, unreadable, or an uncertified criterion) on a green
-  branch ⇒ `REVIEW_READY` with findings published.
-- **Only unmet in-scope criteria remain**, at least one criterion certified by a review that really
-  ran, and nothing else open ⇒ `PARTIAL`.
+- **`ready`, and every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or
+  a `(verify-only)` criterion carrying its recorded check) ⇒ `REVIEW_READY`; stamp
+  `review-gate-passed`. On a `ready` head, a criterion PARTIAL cannot take is published with it.
+- **Only unmet in-scope criteria remain**, at least one criterion met, the review produced a
+  verdict, and nothing else open ⇒ `PARTIAL` when the gate, on the persisted PARTIAL route, says `ready` (T3 in
+  [`references/publish.md`](references/publish.md)).
+- **Re-review.** A commit after the reviewed head (a boss-repair fix, a conflict resolution, a
+  Step 10 fix) is unreviewed, not a defect. When `tree-changed-since-review` is the gate's only
+  reason, re-run Step 6 over the new tip (`REVIEW_BASE` = the old `REVIEWED_HEAD` when it is an
+  ancestor of `HEAD`, else the whole branch) as a new pass — Step 6 pools it with every earlier pass,
+  so it can add blocking findings but never clear one — re-publish the review sections and comment,
+  persist the tip after that review's own fix commits as `REVIEWED_HEAD`, push, wait for CI as Step
+  8 does, and ask the gate again. At most two re-reviews per run; drift after that is `BLOCKED` cause 3 like any other
+  not-ready reason.
+- **Not `ready`** otherwise — the review or re-review is not clean, or the drift or verdict is
+  unknown ⇒ `BLOCKED` cause 3: publish per [`references/publish.md`](references/publish.md), never
+  ready.
 
 Readying, on every non-BLOCKED route:
 
@@ -764,6 +742,9 @@ if [ "$MERGEABLE" != "MERGEABLE" ] || [ "$MERGE_STATE" = "DIRTY" ] || [ "$MERGE_
   MERGE_STATE="$(printf '%s' "$PR_STATE" | jq -r .mergeStateStatus)"
   test "$MERGEABLE" = "MERGEABLE" || exit 1
   test "$MERGE_STATE" != "DIRTY" || exit 1
+  # Re-ask the gate on the rebased head. Not ready (a conflict resolution no review saw is
+  # tree-changed-since-review) returns to the Step 9 decision above and is never readied.
+  node "$BOSS_BUILD_TOOLBOX/ready-gate.mjs" || exit 1
 fi
 # Ready the PR — the finalize adapter's readyPr capability (isDraft==true guard; command: gh pr ready).
 if [ "$(printf '%s' "$PR_STATE" | jq -r .isDraft)" = "true" ]; then gh pr ready "$PR_NUMBER"; fi
@@ -790,7 +771,7 @@ Stamp each obligation into the route receipt (created in Step 1) as you complete
 `node "$BOSS_BUILD_TOOLBOX/finalize/route-contract.mjs" stamp --receipt "$BOSS_BUILD_ROUTE_RECEIPT" --token <token> --run-id "$BLI_RUNID"`.
 Tokens:
 `REVIEW_READY` — `verify-only-evidence-validated`, `premise-discharged`, `required-deferred-asserted`,
-`pr-ready`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
+`review-gate-passed`, `pr-ready`; `PARTIAL` — `partial-gate-satisfied`, `pr-ready`,
 `do-not-merge-marked`; every route — `claim-deleted`, `notes-before-lock-release`,
 `stop-hooks-removed`, `completion-phase-done`, `lock-released`; optional — `blocked-pr-left-draft`,
 `entry-state-restored`,
@@ -810,7 +791,9 @@ bounded poll, capped by `policy.settleCap` (3) cycles. Then by source:
 - **Human change requests and red CI** go back to Step 8 and spend a cycle. `UNSTABLE` with no
   failing check and no open thread is pending, not red.
 - Feedback you cannot fix: respond per finding and stay `REVIEW_READY`. Re-quarantine (draft, blocker
-  comment, `BLOCKED`) only when a `BLOCKED` cause actually holds.
+  comment, `BLOCKED`) only when a `BLOCKED` cause actually holds. Every Step 10 push re-asks
+  `ready-gate.mjs` (it reads the persisted route); not ready ⇒ unwind (`gh pr ready --undo`, ticket
+  back to `.inProgress`) and return to the Step 9 decision, whose re-review may clear it.
 
 ## Step 11: Evidence (verify stage)
 
@@ -840,8 +823,10 @@ may change it.
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
 - **Receipt** (`REVIEW_READY` only, before Completion): post the `boss/build` commit status on the
-  head this run pushed (again, when Step 10 moved the head after Step 9's post). `posted` ⇒ done; a non-zero exit or a moved branch only warns — never
-  certify a head this run did not push. `OUTCOME` never changes.
+  head this run pushed (again, when Step 10 moved the head after Step 9's post). The helper runs the
+  ready gate itself and refuses (exit 3, `refused`, nothing posted) a head that is not ready.
+  `posted` ⇒ done; a non-zero exit or a moved branch only warns — never certify a head this run did
+  not push. `OUTCOME` never changes.
 
   ```bash
   SESSION_BRANCH="${SESSION_BRANCH:-$(git branch --show-current)}"
@@ -892,9 +877,12 @@ rm -f "$RC_ERR"
 - On every route with a PR, first `boss callback remove --all --pr "$PR_NUMBER" --repo <owner/name> --json`; a non-zero
   exit is a failed cleanup to report (callback-watches.md step 6). Nothing is re-armed except below,
   and `$WATCH_LIST_JSON` must be listed after this cleanup, never reused from before it.
-- When the completion record is `merged`, skip CI-watch classification after callback cleanup;
-  there is no open PR to watch. On other `REVIEW_READY` / `PARTIAL` runs, decide whether you may
-  stop watching CI:
+- **Hand-off** ([`references/stage-chaining.md`](references/stage-chaining.md)), after that cleanup: a `merged` completion record ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" run-next --stage verify`; otherwise on `REVIEW_READY` ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" arm-verify --pr "$PR_NUMBER" --completion "$(git rev-parse --git-dir)/boss-build-completion.json" --run-id "$BLI_RUNID"`. Print its line; never fatal; `OUTCOME` never changes. Set `HANDED_OFF=1` when its `action` is
+  `armed` or `already-armed`: verify now holds the PR's forward-progress watch.
+
+- When the completion record is `merged`, skip CI-watch classification; there is no open PR to
+  watch. On other `REVIEW_READY` / `PARTIAL` runs, after the hand-off, decide whether you may stop
+  watching CI:
 
 ```bash
 node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
@@ -907,14 +895,12 @@ node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
       process.stdout.write(resolveCallbackAdapter(process.env).policy.watchTriggers.join(","))
     '
   )" \
-  ${CALLBACKS_AVAILABLE:+--callbacks-available} --arm-attempts "$ARM_ATTEMPTS"
+  ${CALLBACKS_AVAILABLE:+--callbacks-available} ${HANDED_OFF:+--handed-off} --arm-attempts "$ARM_ATTEMPTS"
 ```
 
-`settled`, `watched`, `polled` ⇒ print. `unwatched` ⇒ arm the `missingTriggers` it names, classify
-once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then print. Never
-arm twice.
-
-**Hand-off** ([`references/stage-chaining.md`](references/stage-chaining.md)), after that cleanup: a `merged` completion record ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" run-next --stage verify`; otherwise on `REVIEW_READY` ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" arm-verify --pr "$PR_NUMBER" --completion "$(git rev-parse --git-dir)/boss-build-completion.json" --run-id "$BLI_RUNID"`. Print its line; never fatal; `OUTCOME` never changes.
+`handed-off`, `settled`, `watched`, `polled` ⇒ print. `unwatched` ⇒ arm the `missingTriggers` it
+names, classify once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then
+print. Never arm twice.
 
 Then print the terminal state, adding `merged <sha>` only for a verified completion merge.
 

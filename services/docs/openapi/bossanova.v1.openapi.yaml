@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-16'
+  version: '2026-09-17'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -5022,7 +5022,7 @@ components:
         - ATTACH_SCOPE_VIEWER
       description: |-
         AttachScope distinguishes editor (input allowed) from viewer (read-only)
-         attach modes. v1 ships only EDITOR semantics; VIEWER is wire-reserved.
+         attach modes.
     bossanova.v1.AttachSessionCommand:
       type: object
       properties:
@@ -5123,6 +5123,39 @@ components:
         - ATTEMPT_TRIGGER_CONFLICT
         - ATTEMPT_TRIGGER_REVIEW_FEEDBACK
       description: AttemptTrigger represents what triggered a fix attempt.
+    bossanova.v1.AttentionAction:
+      type: string
+      title: AttentionAction
+      enum:
+        - ATTENTION_ACTION_UNSPECIFIED
+        - ATTENTION_ACTION_RESUME
+        - ATTENTION_ACTION_DISMISS
+        - ATTENTION_ACTION_OPEN_CHAT
+        - ATTENTION_ACTION_ANSWER
+        - ATTENTION_ACTION_APPROVE
+        - ATTENTION_ACTION_SEND_BACK
+        - ATTENTION_ACTION_GITHUB
+        - ATTENTION_ACTION_VIDEO
+        - ATTENTION_ACTION_MERGE
+        - ATTENTION_ACTION_TRACKER
+      description: |-
+        AttentionAction is one operator action a client offers for a
+         SessionAttention. The set per kind is fixed by lib/bossalib/attention.
+    bossanova.v1.AttentionKind:
+      type: string
+      title: AttentionKind
+      enum:
+        - ATTENTION_KIND_UNSPECIFIED
+        - ATTENTION_KIND_FIX
+        - ATTENTION_KIND_QUESTION
+        - ATTENTION_KIND_REVIEW
+        - ATTENTION_KIND_MERGE
+        - ATTENTION_KIND_IN_PROGRESS
+        - ATTENTION_KIND_DONE
+      description: |-
+        AttentionKind is the one answer to "what does this session need from me".
+         FIX, QUESTION, REVIEW and MERGE need the operator; IN_PROGRESS and DONE do
+         not.
     bossanova.v1.AttentionReason:
       type: string
       title: AttentionReason
@@ -5213,6 +5246,25 @@ components:
       description: |-
         AuthKind identifies how an agent's per-account credential is injected into a
          spawned process. Reported by RotationCapability.
+    bossanova.v1.AuthzLevel:
+      type: string
+      title: AuthzLevel
+      enum:
+        - AUTHZ_LEVEL_UNSPECIFIED
+        - AUTHZ_LEVEL_PUBLIC
+        - AUTHZ_LEVEL_USER
+        - AUTHZ_LEVEL_DAEMON
+        - AUTHZ_LEVEL_USER_OR_DAEMON
+        - AUTHZ_LEVEL_ORG_MEMBER
+        - AUTHZ_LEVEL_ORG_OWNER
+      description: |-
+        AuthzLevel is the coarse identity an RPC requires before its handler runs.
+         bosso's authorization interceptor reads it from each OrchestratorService
+         method's options and refuses a call whose authenticated identity does not
+         meet it. Handlers keep their own record- and organization-level checks; the
+         level only states the floor every call must clear.
+
+         A daemon-token identity satisfies only DAEMON and USER_OR_DAEMON.
     bossanova.v1.Broadcast:
       type: object
       properties:
@@ -5605,6 +5657,34 @@ components:
              A runner that can confirm its first input reached the agent installs a
              receipt hook that POSTs /hooks/prompt-submitted/{session_id} to it and
              answers can_confirm_delivery. 0 means no hook server is available.
+        projectTrust:
+          title: project_trust
+          description: |-
+            project_trust is the launch's project-trust decision for worktree_path
+             (BOS-1562), derived from bossd's repos.is_trusted. GRANT: the local user
+             trusts the repo, so a runner whose agent gates repo-supplied configuration
+             behind a project-trust prompt (Codex: MCP server commands, model provider
+             in .codex/config.toml) may pre-trust the worktree. REVOKE: the user does
+             not, so the runner must make the agent distrust this worktree, overriding
+             any pre-trust (e.g. one written while the repo was still trusted) and any
+             inherited trust (Codex: an explicit untrusted entry, since a linked
+             worktree otherwise inherits its main checkout's trust; Codex then neither
+             loads the config nor prompts). DENY: an untrusted repo's launch in its
+             own checkout — the runner runs this launch untrusted without persisting
+             anything, so the user's own trust entry for the checkout is untouched.
+             UNSPECIFIED: no decision — metadata-only requests (input rendering for a
+             live pane, a trusted repo's launch preview) send it, and the runner leaves
+             any trust it already holds as it is. A launch preview never sends GRANT or
+             REVOKE: one that would REVOKE or DENY previews as DENY.
+          $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
+        hookReceiptToken:
+          type: string
+          title: hook_receipt_token
+          description: |-
+            hook_receipt_token is the bearer token the receipt hook must send as
+             "Authorization: Bearer <token>" on POST /hooks/prompt-submitted/{session_id}.
+             bossd derives it per chat and sets it beside hook_port. Empty (an older
+             bossd) means the hook is installed without the header.
       title: BuildInteractiveCommandRequest
       additionalProperties: false
     bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry:
@@ -7775,7 +7855,9 @@ components:
         secret:
           type: string
           title: secret
-          description: If empty, a random secret will be generated.
+          description: |-
+            Ignored: the server always generates the secret and returns it once, in
+             CreateWebhookConfigResponse.
       title: CreateWebhookConfigRequest
       additionalProperties: false
     bossanova.v1.CreateWebhookConfigResponse:
@@ -8611,6 +8693,17 @@ components:
             probe_env is the chat's OWN resolved environment overlay, re-derived by the
              daemon from the same chain the spawn path uses. Secret-bearing: NEVER logged
              by bossd or the plugin, and NEVER echoed into the response.
+        projectTrust:
+          title: project_trust
+          description: |-
+            project_trust is the chat's project-trust decision for work_dir
+             (BOS-1562), the same value its launch carries. The probe starts the agent
+             in work_dir, so the runner applies the decision BEFORE probing: on REVOKE
+             it makes the agent distrust work_dir, or the probe loads an untrusted
+             repo's own configuration (Codex: MCP server commands in
+             .codex/config.toml); GRANT trusts it; DENY makes the probing agent
+             distrust it without persisting anything; UNSPECIFIED changes nothing.
+          $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
       title: DescribeMCPSurfaceRequest
       additionalProperties: false
     bossanova.v1.DescribeMCPSurfaceRequest.ProbeEnvEntry:
@@ -8684,6 +8777,28 @@ components:
     bossanova.v1.DisconnectGitHubAppRepoResponse:
       type: object
       title: DisconnectGitHubAppRepoResponse
+      additionalProperties: false
+    bossanova.v1.DismissSessionAlertRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+          description: The session whose alert is dismissed. Required.
+        alertKey:
+          type: string
+          title: alert_key
+          description: The alert's dismissal key (for example "resume:auth_expired"). Required.
+      title: DismissSessionAlertRequest
+      additionalProperties: false
+    bossanova.v1.DismissSessionAlertResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          description: The session after the dismissal.
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: DismissSessionAlertResponse
       additionalProperties: false
     bossanova.v1.DisplayIntent:
       type: string
@@ -8863,6 +8978,38 @@ components:
       title: ExternalCheckEvent
       additionalProperties: false
       description: ExternalCheckEvent signals an external check result (eg. from a non-GitHub CI).
+    bossanova.v1.FinishUnattendedRunRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        requesterAgentSessionId:
+          type: string
+          title: requester_agent_session_id
+          description: |-
+            The agent session id of the chat making the request ($BOSS_AGENT_SESSION_ID).
+             It must be one of the session's chats, and it counts as busy until the
+             tracker observes it settle.
+      title: FinishUnattendedRunRequest
+      additionalProperties: false
+    bossanova.v1.FinishUnattendedRunResponse:
+      type: object
+      properties:
+        isDeferred:
+          type: boolean
+          title: is_deferred
+          description: |-
+            True when the finish is pending until the session settles. The caller's
+             own request is always deferred.
+        blockingAgentSessionId:
+          type: string
+          title: blocking_agent_session_id
+          description: |-
+            The agent session id of the chat the deferred finish is waiting on. Empty
+             when the finish ran immediately.
+      title: FinishUnattendedRunResponse
+      additionalProperties: false
     bossanova.v1.FireSessionEventRequest:
       type: object
       properties:
@@ -9478,6 +9625,30 @@ components:
             $ref: '#/components/schemas/bossanova.v1.SessionStatusEntry'
           title: statuses
       title: GetSessionStatusesResponse
+      additionalProperties: false
+    bossanova.v1.GetSessionTimelineRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: GetSessionTimelineRequest
+      additionalProperties: false
+    bossanova.v1.GetSessionTimelineResponse:
+      type: object
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.TimelineStep'
+          title: steps
+          description: |-
+            Chronological (oldest first), except that the group of steps the session
+             waits on is moved to the end, in its own chronological order, so its last
+             step (the CURRENT one) is last even when other steps happened after it.
+             With no wait (a merged or closed PR with no open fix or question) the
+             list is purely chronological.
+      title: GetSessionTimelineResponse
       additionalProperties: false
     bossanova.v1.GetSessionWebhookDeliveryRequest:
       type: object
@@ -13109,6 +13280,18 @@ components:
           type: string
           title: effort
           description: Opaque agent reasoning-effort level; "" = plugin default.
+        projectTrust:
+          title: project_trust
+          description: |-
+            project_trust is the gated launch's project-trust decision for work_dir
+             (BOS-1562), the same value its StartAgentRunRequest or
+             BuildInteractiveCommandRequest will carry. The preflight starts the agent in
+             work_dir, so the runner applies the decision BEFORE probing, exactly as the
+             launch would: on REVOKE it makes the agent distrust work_dir, or the probe
+             loads an untrusted repo's own configuration (Codex: MCP server commands in
+             .codex/config.toml); GRANT trusts it; DENY makes the probing agent
+             distrust it without persisting anything; UNSPECIFIED changes nothing.
+          $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
       title: PreflightHeadlessRunRequest
       additionalProperties: false
     bossanova.v1.PreflightHeadlessRunRequest.ExtraEnvEntry:
@@ -13202,6 +13385,25 @@ components:
           $ref: '#/components/schemas/bossanova.v1.RateLimitStatus'
       title: ProbeRateLimitResponse
       additionalProperties: false
+    bossanova.v1.ProjectTrustDecision:
+      type: string
+      title: ProjectTrustDecision
+      enum:
+        - PROJECT_TRUST_DECISION_UNSPECIFIED
+        - PROJECT_TRUST_DECISION_GRANT
+        - PROJECT_TRUST_DECISION_REVOKE
+        - PROJECT_TRUST_DECISION_DENY
+      description: |-
+        ProjectTrustDecision is what one launch tells an agent runner about the
+         local user's trust in the repository it runs in (bossd's repos.is_trusted).
+         UNSPECIFIED is "no decision": the runner leaves any project trust it already
+         holds unchanged. bossd sends it only for requests that render argv without
+         launching: live-pane input rendering, and the launch preview of a trusted
+         repo's chat (a preview of a launch that would REVOKE or DENY sends DENY, so
+         it renders the same untrusted override and persists nothing). A runner
+         that applies project trust (Codex) applies every decision the same way on
+         every request that carries it, and refuses a value it does not recognise; a
+         runner whose agent has no project-trust gate ignores the field.
     bossanova.v1.ProxyAddAccountRequest:
       type: object
       properties:
@@ -15893,6 +16095,33 @@ components:
           description: |-
             User email from the WorkOS device code response.
              Used for JIT user creation when the user doesn't exist in the DB yet.
+        daemonPublicKey:
+          type: string
+          title: daemon_public_key
+          format: byte
+          description: |-
+            Proof that the caller holds the machine key pinned to daemon_id
+             (BOS-1580). All three are optional while older daemons still register
+             without them; when daemon_public_key is set, possession_signature and
+             signed_at_unix must be set too. The signature is Ed25519 over the bytes
+             lib/bossalib/daemonproof.Message builds from daemon_id, the SHA-256 of the
+             bearer token this request is sent with, and signed_at_unix.
+
+             The 32-byte Ed25519 public key of the daemon's machine key.
+        possessionSignature:
+          type: string
+          title: possession_signature
+          format: byte
+          description: Ed25519 signature over daemonproof.Message(daemon_id, bearer, signed_at_unix).
+        signedAtUnix:
+          type:
+            - integer
+            - string
+          title: signed_at_unix
+          format: int64
+          description: |-
+            Unix seconds the signature was made at; must be within 5 minutes of the
+             server's clock.
       title: RegisterDaemonRequest
       additionalProperties: false
     bossanova.v1.RegisterDaemonResponse:
@@ -15927,6 +16156,14 @@ components:
             - string
             - "null"
           title: setup_script
+        isTrusted:
+          type:
+            - boolean
+            - "null"
+          title: is_trusted
+          description: |-
+            Register the repository as trusted (see Repo.is_trusted). Absent or false
+             registers it untrusted.
       title: RegisterRepoRequest
       additionalProperties: false
     bossanova.v1.RegisterRepoResponse:
@@ -16221,6 +16458,15 @@ components:
         sentryOrg:
           type: string
           title: sentry_org
+        isTrusted:
+          type: boolean
+          title: is_trusted
+          description: |-
+            Whether the local user trusts this repository's own configuration. Gates
+             repo-supplied agent configuration (Codex project trust) and the global
+             proof secrets. Local-only: set through the daemon's RegisterRepo /
+             UpdateRepo, never through the orchestrator stream. Existing repos were
+             backfilled trusted; newly registered repos default untrusted.
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
@@ -17693,7 +17939,15 @@ components:
           title: last_agent_activity_at
           description: |-
             Most-recent real agent output across the session's chats; advances on
-             genuine output, NOT pane mtime. Absent when never observed.
+             genuine output, NOT pane mtime. Absent when never observed. Normally the
+             live chat tracker's value, which is empty after a bossd restart and skips
+             stopped chats. When the newest lost-login or usage-limit event in
+             rotation_events gave up and live output is not after it, bossd also reads
+             the persisted evidence after that give-up — transcript messages with
+             output tokens and productive agent runs — so a recovery survives a
+             restart; that persisted value is skipped once the PR is merged or closed.
+             Clients judge a give-up recovered when this field is after it or when
+             display_status is merged or closed.
         accountId:
           type:
             - string
@@ -17846,6 +18100,14 @@ components:
           description: |-
             Transport-only inverse mark: Ready replaced an undemoted waiting composite.
              Computed with the served label, never persisted.
+        attention:
+          title: attention
+          description: |-
+            The single "what does this session need from you" answer, computed from
+             session facts by lib/bossalib/attention. Additive alongside
+             attention_status (22), which is unchanged. Served from API version
+             2026-09-17; older pins receive it cleared.
+          $ref: '#/components/schemas/bossanova.v1.SessionAttention'
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -17892,6 +18154,55 @@ components:
          Reuses OutputLine / StateChange / SessionEnded from daemon.proto so the
          orchestrator can forward these verbatim to the proxied AttachSession
          response.
+    bossanova.v1.SessionAttention:
+      type: object
+      properties:
+        kind:
+          title: kind
+          $ref: '#/components/schemas/bossanova.v1.AttentionKind'
+        sentence:
+          type: string
+          title: sentence
+          description: |-
+            One human sentence saying what to do, e.g. "Review the migration, then
+             approve". Empty for IN_PROGRESS and DONE.
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AttentionAction'
+          title: actions
+          description: The actions a client offers, in display order.
+        since:
+          title: since
+          description: When the current kind began.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        progressLabel:
+          type: string
+          title: progress_label
+          description: |-
+            Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
+             main CI", "working", "idle").
+        parkCodes:
+          type: array
+          items:
+            type: string
+          title: park_codes
+          description: The verify-stage park codes behind a REVIEW, in report order.
+        alertKey:
+          type: string
+          title: alert_key
+          description: Identifies the FIX alert so a dismissal can be matched to it.
+        targetChatId:
+          type: string
+          title: target_chat_id
+          description: The chat a FIX or QUESTION action should open.
+        evidenceUrl:
+          type: string
+          title: evidence_url
+          description: Evidence (video) URL behind a REVIEW, when one exists.
+      title: SessionAttention
+      additionalProperties: false
+      description: SessionAttention is the computed attention answer for one session.
     bossanova.v1.SessionCreateChunk:
       type: object
       allOf:
@@ -18417,6 +18728,25 @@ components:
           $ref: '#/components/schemas/bossanova.v1.RepoOrganizationMapping'
       title: SetRepoOrganizationResponse
       additionalProperties: false
+    bossanova.v1.SetSessionTrackerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        trackerId:
+          type: string
+          title: tracker_id
+      title: SetSessionTrackerRequest
+      additionalProperties: false
+    bossanova.v1.SetSessionTrackerResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: SetSessionTrackerResponse
+      additionalProperties: false
     bossanova.v1.SetupScriptOutput:
       type: object
       properties:
@@ -18499,6 +18829,23 @@ components:
           type: string
           title: effort
           description: Opaque agent reasoning-effort level; "" = plugin default.
+        projectTrust:
+          title: project_trust
+          description: |-
+            project_trust is the run's project-trust decision for work_dir (BOS-1562).
+             A headless run has no trust prompt to fall back on, so REVOKE matters most
+             here: the runner must make the agent distrust work_dir before it starts —
+             overriding any pre-trust left from an earlier trusted period or an
+             interactive launch, and any trust the agent would inherit (Codex: a linked
+             worktree inherits its main checkout's) — so the agent does not load an
+             untrusted repo's own configuration.
+             GRANT means what it means on an interactive launch: the runner may
+             pre-trust work_dir (Codex: records it trusted), so a GRANT after a REVOKE
+             restores trust for a re-trusted repo. DENY (an untrusted repo's run in its
+             own checkout) runs this agent untrusted without persisting anything.
+             UNSPECIFIED (no decision) changes nothing; bossd sets a decision on every
+             headless run it launches.
+          $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:
@@ -18771,7 +19118,32 @@ components:
           type: string
           title: base_branch
           description: The base branch the PR targets.
+        extraEnv:
+          type: object
+          title: extra_env
+          additionalProperties:
+            type: string
+            title: value
+          description: |-
+            extra_env is the daemon-resolved environment overlay for the one-shot,
+             applied on top of the plugin's inherited environment exactly as
+             StartAgentRunRequest.extra_env is. The one-shot runs an agent in the
+             session worktree, so it must carry the same repo pins a session spawn
+             gets (dotenv.OverlayWithRepo): without them an ambient LINEAR_API_KEY,
+             SENTRY_* or proof credential in the daemon environment reaches an
+             untrusted repo's agent (BOS-1562). Secret-bearing: NEVER logged.
       title: SuggestPRTitleRequest
+      additionalProperties: false
+    bossanova.v1.SuggestPRTitleRequest.ExtraEnvEntry:
+      type: object
+      properties:
+        key:
+          type: string
+          title: key
+        value:
+          type: string
+          title: value
+      title: ExtraEnvEntry
       additionalProperties: false
     bossanova.v1.SuggestPRTitleResponse:
       type: object
@@ -19592,6 +19964,35 @@ components:
           $ref: '#/components/schemas/bossanova.v1.TriggerInvocation'
       title: TestTriggerResponse
       additionalProperties: false
+    bossanova.v1.TimelineStep:
+      type: object
+      properties:
+        at:
+          title: at
+          description: When the step happened.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        title:
+          type: string
+          title: title
+          description: What happened, e.g. "Build started", "CI passed, 6 checks".
+        detail:
+          type: string
+          title: detail
+          description: Optional supporting detail, e.g. "5 of 5 proven · 2:40 video".
+        state:
+          title: state
+          $ref: '#/components/schemas/bossanova.v1.TimelineStepState'
+      title: TimelineStep
+      additionalProperties: false
+    bossanova.v1.TimelineStepState:
+      type: string
+      title: TimelineStepState
+      enum:
+        - TIMELINE_STEP_STATE_UNSPECIFIED
+        - TIMELINE_STEP_STATE_DONE
+        - TIMELINE_STEP_STATE_CURRENT
+        - TIMELINE_STEP_STATE_FAILED
+      description: TimelineStepState is how one timeline step ended.
     bossanova.v1.TokenRefresh:
       type: object
       properties:
@@ -20740,6 +21141,14 @@ components:
           description: |-
             Per-repo base directory for new session worktrees. Must be absolute; an
              empty value is rejected rather than clearing it.
+        isTrusted:
+          type:
+            - boolean
+            - "null"
+          title: is_trusted
+          description: |-
+            Local trust toggle (see Repo.is_trusted). Deliberately absent from the
+             stream UpdateRepoCommand: the orchestrator must not be able to flip it.
       title: UpdateRepoRequest
       additionalProperties: false
     bossanova.v1.UpdateRepoResponse:
@@ -21394,7 +21803,9 @@ components:
         secret:
           type: string
           title: secret
-          description: HMAC secret for signature verification.
+          description: |-
+            HMAC secret for signature verification. Server-generated, and returned
+             only in CreateWebhookConfigResponse; ListWebhookConfigs leaves it empty.
         createdAt:
           title: created_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'

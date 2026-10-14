@@ -941,3 +941,9 @@ func (s *trashStubClient) ListSessionsWithReadFailures(ctx context.Context, req 
 func (s *trashStubClient) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
 }
+
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*trashStubClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}

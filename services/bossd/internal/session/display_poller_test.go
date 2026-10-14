@@ -1744,6 +1744,18 @@ func (m *mockCheckSnapshotStore) RecentBySession(_ context.Context, sessionID st
 	return out, nil
 }
 
+func (m *mockCheckSnapshotStore) ListBySessionHead(_ context.Context, sessionID, headSHA string) ([]db.CheckSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []db.CheckSnapshot
+	for _, snap := range m.snaps {
+		if headSHA != "" && snap.SessionID == sessionID && snap.HeadSHA == headSHA {
+			out = append(out, snap)
+		}
+	}
+	return out, nil
+}
+
 func (m *mockCheckSnapshotStore) all() []db.CheckSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1788,14 +1800,22 @@ func (c *carryProvider) InvalidatePR(_ string, prID int) { c.invalidated = appen
 type probeCall struct{ worktreePath, branch, from, to string }
 
 type fakePushProbe struct {
-	pushed bool
-	err    error
-	calls  []probeCall
+	pushed    bool
+	err       error
+	calls     []probeCall
+	sameTree  bool
+	treeErr   error
+	treeCalls []probeCall
 }
 
 func (f *fakePushProbe) SessionPushedHead(_ context.Context, worktreePath, branch, fromSHA, newSHA string) (bool, error) {
 	f.calls = append(f.calls, probeCall{worktreePath, branch, fromSHA, newSHA})
 	return f.pushed, f.err
+}
+
+func (f *fakePushProbe) SameTree(_ context.Context, worktreePath, a, b string) (bool, error) {
+	f.treeCalls = append(f.treeCalls, probeCall{worktreePath: worktreePath, from: a, to: b})
+	return f.sameTree, f.treeErr
 }
 
 type carryFixture struct {
@@ -1823,7 +1843,7 @@ func newCarryFixture(t *testing.T, wired bool) *carryFixture {
 	tracker := status.NewDisplayTracker()
 	logs := &bytes.Buffer{}
 	poller := NewDisplayPoller(sessions, repos, provider, tracker, time.Minute, zerolog.New(logs).Level(zerolog.DebugLevel))
-	probe := &fakePushProbe{pushed: true}
+	probe := &fakePushProbe{pushed: true, sameTree: true}
 	if wired {
 		poller.SetReceiptCarrier(provider, probe)
 	}
@@ -1865,6 +1885,9 @@ func TestDisplayPollerCarriesReceiptToSessionsOwnPush(t *testing.T) {
 	}
 	if want := (probeCall{"/wt/sess-1", "feature", carryHeadA, carryHeadB}); len(f.probe.calls) != 1 || f.probe.calls[0] != want {
 		t.Fatalf("probe calls = %+v, want [%+v]", f.probe.calls, want)
+	}
+	if want := (probeCall{worktreePath: "/wt/sess-1", from: carryHeadA, to: carryHeadB}); len(f.probe.treeCalls) != 1 || f.probe.treeCalls[0] != want {
+		t.Fatalf("tree probe calls = %+v, want [%+v]", f.probe.treeCalls, want)
 	}
 	if len(f.provider.invalidated) != 1 || f.provider.invalidated[0] != carryPR {
 		t.Fatalf("invalidated = %v, want the PR's cached reads dropped", f.provider.invalidated)
@@ -1911,6 +1934,8 @@ func TestDisplayPollerDoesNotCarryReceipt(t *testing.T) {
 		{name: "foreign push", wired: true, setup: func(f *carryFixture) { f.probe.pushed = false }},
 		{name: "force-push", wired: true, setup: func(f *carryFixture) { f.probe.pushed = false }},
 		{name: "probe error", wired: true, setup: func(f *carryFixture) { f.probe.pushed, f.probe.err = true, fmt.Errorf("reflog unreadable") }},
+		{name: "content changed since the receipted head", wired: true, setup: func(f *carryFixture) { f.probe.sameTree = false }},
+		{name: "tree probe error", wired: true, setup: func(f *carryFixture) { f.probe.sameTree, f.probe.treeErr = true, fmt.Errorf("tree unreadable") }},
 		{name: "new head already has a boss/build status", wired: true, set: vcs.CheckSet{BuildReceiptSeen: true}},
 		{name: "no latch after restart", wired: true, skipFirst: true},
 		{name: "same head", wired: true, head: carryHeadA},

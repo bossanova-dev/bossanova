@@ -3394,3 +3394,7 @@ func TestAutoMergeRebaseRepairQueuesBehindActiveSession(t *testing.T) {
 		t.Fatalf("queued repair title = %q", queued.task.GetTitle())
 	}
 }
+
+func (m *mockProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
+}

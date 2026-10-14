@@ -12,7 +12,9 @@ import (
 // RepoForSessionEnv looks up repoID to source a session's repo-config secrets
 // (LINEAR_API_KEY / SENTRY_*) for dotenv.OverlayWithRepo. It is the single home
 // for the non-fatal "load the repo, or warn and carry on with nil" policy that
-// every session-spawn site shares.
+// every session-spawn site shares. A spawn reads its repo here once and feeds
+// the same value to its project-trust decision (repotrust.ProjectTrustFor),
+// where nil fails closed.
 //
 // A nil store or a failed lookup is non-fatal by design: it logs one warning
 // tagged with op and returns nil, on which OverlayWithRepo's fail-clean

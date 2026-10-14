@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -29,6 +30,20 @@ func (f *fakeCheckSnapshotStore) RecentBySession(_ context.Context, _ string, li
 		return nil, f.err
 	}
 	return f.snaps, nil
+}
+
+func (f *fakeCheckSnapshotStore) ListBySessionHead(_ context.Context, sessionID, headSHA string) ([]db.CheckSnapshot, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []db.CheckSnapshot
+	for _, snap := range f.snaps {
+		if headSHA != "" && snap.SessionID == sessionID && snap.HeadSHA == headSHA {
+			out = append(out, snap)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b db.CheckSnapshot) int { return a.PolledAt.Compare(b.PolledAt) })
+	return out, nil
 }
 
 func TestListCheckSnapshotsRequiresSessionID(t *testing.T) {

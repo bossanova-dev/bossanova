@@ -99,6 +99,19 @@ test('park reasons include unknown codes, defects and the two approval paths', (
     ],
   )
 })
+test('a labelled park groups by its codes, not its label', () => {
+  const p = pr(1, [
+    status('boss/verify', 'PENDING', 'needs human: human-review:security · verify gate rules'),
+  ])
+  const q = pr(2, [status('boss/verify', 'PENDING', 'needs human: human-review:security')])
+  assert.deepEqual(
+    collectParks([p, q]).notes.map((n) => n.where),
+    [
+      'boss/verify needs human: human-review:security',
+      'boss/verify needs human: human-review:security',
+    ],
+  )
+})
 test('merged approval only uses the head park, while older commits retain park occurrences', () => {
   const p = pr(1, [status('boss/verify', 'PENDING', 'needs human: ledger-open')])
   p.state = 'MERGED'

@@ -1,0 +1,238 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import { followUpReasons, parseFollowUps, sections } from './merge-eligibility.mjs'
+import { renderFollowUpSections, routeFollowUps } from './followup-route.mjs'
+import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const BASE = 'a'.repeat(40)
+const HEAD = 'b'.repeat(40)
+
+const finding = (over = {}) => ({
+  id: 'f1',
+  severity: 'P1',
+  introduced: true,
+  file: 'src/a.go',
+  line: 12,
+  title: 'nil map write',
+  evidence: 'm is never initialised before m[k] = v on line 12',
+  source: 'correctness',
+  verified: true,
+  fixed: false,
+  ...over,
+})
+
+const verdict = (findings = [], over = {}) => ({
+  version: 1,
+  status: 'pass',
+  base: BASE,
+  head: HEAD,
+  findings,
+  fixPass: { ran: false },
+  secondModel: { ran: false, reason: 'codex not installed' },
+  ...over,
+})
+
+function run(argv, files = {}) {
+  const out = []
+  const err = []
+  const memFs = {
+    writeFileSync: (p, data) => {
+      files[p] = String(data)
+    },
+    readFileSync: (p) => {
+      if (!(p in files)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return files[p]
+    },
+  }
+  const code = main(argv, { fs: memFs, stdout: (s) => out.push(s), stderr: (s) => err.push(s) })
+  return { code, out: out.join(''), err: err.join('') }
+}
+
+const withVerdict = (v) => ({ '/v.json': JSON.stringify(v) })
+
+test('only a verified, introduced, unfixed P0/P1 finding blocks', () => {
+  const cases = [
+    [finding(), 'blocked'],
+    [finding({ severity: 'P0' }), 'blocked'],
+    [finding({ severity: 'P2' }), 'pass'],
+    [finding({ severity: 'P3' }), 'pass'],
+    [finding({ verified: false }), 'pass'],
+    [finding({ introduced: false }), 'pass'],
+    [finding({ fixed: true, fixCommit: 'c'.repeat(40) }), 'pass'],
+  ]
+  for (const [f, want] of cases)
+    assert.equal(verdictStatus(verdict([f], { status: want })).status, want, JSON.stringify(f))
+})
+
+test('a stated status that contradicts the findings is corrected and warned, never trusted', () => {
+  const lying = verdictStatus(verdict([finding()], { status: 'pass' }))
+  assert.equal(lying.status, 'blocked')
+  assert.ok(lying.warnings.some((w) => w.includes('contradicts')))
+  const pessimist = verdictStatus(verdict([finding({ severity: 'P3' })], { status: 'blocked' }))
+  assert.equal(pessimist.status, 'pass')
+})
+
+test('an error verdict stays an error whatever its findings say', () => {
+  const r = verdictStatus({ version: 1, status: 'error', error: 'finder dispatch failed' })
+  assert.equal(r.status, 'error')
+  assert.deepEqual(r.errors, [])
+})
+
+test('cosmetic slips are normalised toward blocking; unsafe gaps are errors', () => {
+  const sloppy = verdictStatus(
+    verdict([
+      {
+        ...finding({ severity: 'p1', line: '12' }),
+        introduced: undefined,
+        fixed: undefined,
+        source: undefined,
+      },
+    ]),
+  )
+  assert.equal(sloppy.status, 'blocked')
+  assert.ok(sloppy.warnings.length >= 4)
+  assert.equal(sloppy.verdict.findings[0].source, 'unknown')
+
+  const noVerified = finding()
+  delete noVerified.verified
+  assert.equal(verdictStatus(verdict([noVerified])).status, 'error')
+  assert.equal(verdictStatus(verdict([], { head: 'not-a-sha' })).status, 'error')
+  assert.equal(verdictStatus(verdict([finding(), finding()])).status, 'error') // duplicate id
+  assert.equal(verdictStatus(verdict([], { version: 2 })).status, 'error')
+})
+
+test('status CLI prints the recomputed word; an unreadable file is error with exit 2', () => {
+  assert.deepEqual(run(['status', '/v.json'], withVerdict(verdict([finding()]))).out, 'blocked\n')
+  const missing = run(['status', '/missing.json'])
+  assert.equal(missing.out, 'error\n')
+  assert.equal(missing.code, 2)
+  const garbled = run(['status', '/v.json'], { '/v.json': '{not json' })
+  assert.equal(garbled.out, 'error\n')
+  assert.equal(garbled.code, 2)
+})
+
+test('validate exits 0 for a valid verdict and 2 for an invalid one', () => {
+  assert.equal(run(['validate', '/v.json'], withVerdict(verdict())).code, 0)
+  assert.equal(run(['validate', '/v.json'], withVerdict({ status: 'pass' })).code, 2)
+})
+
+test('usage errors exit 2', () => {
+  assert.equal(run(['status']).code, 2)
+  assert.equal(run(['bogus', '/v.json']).code, 2)
+  assert.equal(run(['status', '/v.json', '--report']).code, 2)
+  assert.equal(run(['render', '/v.json', '--pr-section', '--report']).code, 2)
+  assert.equal(run(['render', '/v.json', '--unknown']).code, 2)
+})
+
+test('a passing PR section carries no Review findings heading; a blocked one names file:line', () => {
+  const pass = run(
+    ['render', '/v.json', '--pr-section'],
+    withVerdict(verdict([finding({ severity: 'P2' })])),
+  )
+  const passSections = sections(pass.out)
+  assert.equal(passSections.has('review findings'), false)
+  assert.ok(passSections.get('unapplied review findings').some((l) => l.includes('src/a.go:12')))
+
+  const blocked = run(['render', '/v.json', '--pr-section'], withVerdict(verdict([finding()])))
+  assert.ok(
+    sections(blocked.out)
+      .get('review findings')
+      .some((l) => l.includes('src/a.go:12')),
+  )
+
+  const error = run(['render', '/v.json', '--pr-section'], { '/v.json': '[]' })
+  assert.equal(error.code, 2)
+  assert.ok(sections(error.out).has('review findings'))
+})
+
+test('PR sections always carry the coverage and cross-model tokens the review earned', () => {
+  const ran = verdict([], { secondModel: { ran: true, agent: 'codex' } })
+  const ok = sections(run(['render', '/v.json', '--pr-section'], withVerdict(ran)).out)
+  assert.deepEqual(ok.get('review coverage').filter(Boolean), ['full'])
+  assert.deepEqual(ok.get('cross-model review').filter(Boolean), ['ran (codex)'])
+  const skipped = sections(run(['render', '/v.json', '--pr-section'], withVerdict(verdict())).out)
+  assert.match(skipped.get('cross-model review').find(Boolean), /^skipped: codex not installed/)
+  const broken = sections(run(['render', '/v.json', '--pr-section'], {}).out)
+  assert.match(broken.get('review coverage').find(Boolean), /^none: /)
+  assert.match(broken.get('cross-model review').find(Boolean), /^error: /)
+})
+
+test('merge pools a chain into one verdict; any unusable member makes it an error', () => {
+  const files = {
+    '/a.json': JSON.stringify(verdict([finding({ severity: 'P3' })])),
+    '/b.json': JSON.stringify(verdict([finding()], { base: 'c'.repeat(40), head: 'd'.repeat(40) })),
+  }
+  const merged = run(['merge', '--out', '/m.json', '/a.json', '/b.json'], files)
+  assert.equal(merged.out, 'blocked\n')
+  const pooled = JSON.parse(files['/m.json'])
+  assert.equal(pooled.findings.length, 2) // same id in both members stays distinct
+  assert.equal(pooled.base, BASE)
+  assert.equal(pooled.head, 'd'.repeat(40))
+  assert.equal(run(['status', '/m.json'], files).out, 'blocked\n')
+
+  const withMissing = run(['merge', '--out', '/m.json', '/a.json', '/gone.json'], files)
+  assert.equal(withMissing.code, 2)
+  assert.equal(run(['status', '/m.json'], files).out, 'error\n')
+  assert.equal(run(['merge', '/a.json'], files).code, 2) // --out is required
+})
+
+test('the report leads with the comment marker so PR upserts find it, in every status', () => {
+  for (const files of [withVerdict(verdict([finding()])), withVerdict(verdict()), {}]) {
+    const { out } = run(['render', '/v.json', '--report'], files)
+    assert.equal(out.split('\n')[0], REPORT_MARKER)
+  }
+})
+
+test('no rendering ever spells the reserved partial-marker phrase', () => {
+  const v = verdict([finding({ title: 'Do not merge this path', evidence: 'do not merge' })])
+  for (const flag of ['--report', '--pr-section'])
+    assert.doesNotMatch(run(['render', '/v.json', flag], withVerdict(v)).out, /do not merge/i)
+})
+
+test('followups emit only serious pre-existing findings, and routing them never parks the PR', () => {
+  const v = verdict([
+    finding({ id: 'blocker' }),
+    finding({ id: 'old-p1', introduced: false, file: 'old.go', line: 4 }),
+    finding({ id: 'old-p3', introduced: false, severity: 'P3' }),
+    finding({ id: 'unverified', introduced: false, verified: false }),
+    finding({ id: 'fixed', introduced: false, fixed: true }),
+  ])
+  const { out, code } = run(['followups', '/v.json'], withVerdict(v))
+  assert.equal(code, 0)
+  const candidates = JSON.parse(out)
+  assert.equal(candidates.length, 1)
+  assert.ok(candidates[0].text.includes('old.go:4'))
+
+  const routed = routeFollowUps(candidates)
+  assert.deepEqual(routed.warnings, [])
+  const body = ['## Acceptance criteria', '- [x] done', '', renderFollowUpSections(routed)].join(
+    '\n',
+  )
+  assert.deepEqual(followUpReasons(parseFollowUps(body)), [])
+  assert.ok(sections(body).has('review follow-ups'))
+})
+
+test('followups on an unusable verdict exit 2 rather than print an empty list', () => {
+  const r = run(['followups', '/missing.json'])
+  assert.equal(r.code, 2)
+  assert.equal(r.out, '')
+})
+
+test('the CLI runs as an entry point', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-verdict-'))
+  const file = path.join(dir, 'review-verdict.json')
+  fs.writeFileSync(file, JSON.stringify(verdict([finding()])))
+  const r = spawnSync(process.execPath, [path.join(HERE, 'review-verdict.mjs'), 'status', file], {
+    encoding: 'utf8',
+  })
+  fs.rmSync(dir, { recursive: true, force: true })
+  assert.equal(r.status, 0)
+  assert.equal(r.stdout, 'blocked\n')
+})

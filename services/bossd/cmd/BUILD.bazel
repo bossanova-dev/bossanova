@@ -1,5 +1,8 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
+# keep: //services/bosso/internal/auth:auth_test scans main.go for daemon-token orchestrator calls
+exports_files(["main.go"])
+
 go_library(
     name = "cmd_lib",
     srcs = [
@@ -33,6 +36,7 @@ go_library(
         "//lib/bossalib/migrate",
         "//lib/bossalib/models",
         "//lib/bossalib/safego",
+        "//lib/bossalib/socketauth",
         "//lib/bossalib/telemetry",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/account",
@@ -44,12 +48,15 @@ go_library(
         "//services/bossd/internal/chatupload",
         "//services/bossd/internal/cron",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/evidence",
         "//services/bossd/internal/git",
         "//services/bossd/internal/inflight",
         "//services/bossd/internal/notesync",
         "//services/bossd/internal/plugin",
         "//services/bossd/internal/plugin/eventbus",
         "//services/bossd/internal/proofenvkeyring",
+        "//services/bossd/internal/reposecrets",
+        "//services/bossd/internal/reposecrets/oskeyring",
         "//services/bossd/internal/resume",
         "//services/bossd/internal/rotation",
         "//services/bossd/internal/server",
@@ -118,6 +125,7 @@ go_test(
     ],
     embed = [":cmd_lib"],
     deps = [
+        "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/config",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

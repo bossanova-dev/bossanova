@@ -14,12 +14,14 @@ import {
   createTierAProbeRoot,
   CROSS_REVIEW_LEG_RESERVE_MS,
   fitTimeoutToLeg,
+  extensionLegTimeoutMs,
   interpretResult,
   removeTierAProbeRoot,
   REVIEW_PREAMBLE,
   reviewPreamble,
   resolveAgentBin,
   resolveLegFitTimeout,
+  reviewHelperTimeoutMs,
   sanitizeOutput,
   sliceLenUtf8Safe,
 } from './cross-review-lib.mjs'
@@ -421,9 +423,43 @@ test('REVIEW_PREAMBLE carries the core safety constraints', () => {
 // fitTimeoutToLeg — the helper timeout always stays strictly below the leg
 // ---------------------------------------------------------------------------
 
-test('fitTimeoutToLeg: default leg clamps the default helper timeout to 240000', () => {
+test('fitTimeoutToLeg: the default leg is the 30-minute review hang guard', () => {
   assert.equal(CROSS_REVIEW_LEG_RESERVE_MS, 60_000)
-  assert.equal(fitTimeoutToLeg(300_000, {}), 240_000)
+  assert.equal(extensionLegTimeoutMs({}), 1_800_000)
+  // The default helper timeout is already fitted below the leg.
+  assert.equal(reviewHelperTimeoutMs({}), 1_740_000)
+  // A five-minute helper timeout is no longer clamped under the default leg...
+  assert.equal(fitTimeoutToLeg(300_000, {}), 300_000)
+  // ...and the default helper timeout keeps only the wrapper's reserve below it.
+  assert.equal(fitTimeoutToLeg(1_800_000, {}), 1_740_000)
+})
+
+// The configured hang guard is what bounds the second voice: with no explicit leg or helper env,
+// raising it to 45 minutes must lift the leg past the old 30-minute constant, and lowering it to
+// 10 must cut it — otherwise a healthy cross-model review dies at ~29 minutes whatever is set.
+test('the configured review hang guard is the default leg, from env or config', () => {
+  assert.equal(extensionLegTimeoutMs({ BOSS_REVIEW_HANG_GUARD_MINUTES: '45' }), 2_700_000)
+  assert.equal(fitTimeoutToLeg(2_700_000, { BOSS_REVIEW_HANG_GUARD_MINUTES: '45' }), 2_640_000)
+  assert.equal(extensionLegTimeoutMs({ BOSS_REVIEW_HANG_GUARD_MINUTES: '10' }), 600_000)
+  // An explicit leg still wins over the guard.
+  assert.equal(
+    extensionLegTimeoutMs({
+      BOSS_REVIEW_HANG_GUARD_MINUTES: '45',
+      BOSS_SKILL_EXTENSION_TIMEOUT_MS: '600000',
+    }),
+    600_000,
+  )
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'crl-hang-guard-'))
+  fs.writeFileSync(
+    path.join(repo, '.boss-skills.json'),
+    JSON.stringify({ reviewDefaults: { hangGuardMinutes: 45 } }),
+  )
+  assert.equal(reviewHelperTimeoutMs({}, { cwd: repo }), 2_640_000)
+  assert.equal(extensionLegTimeoutMs({}, { cwd: repo }), 2_700_000)
+  // A broken config never fails the second voice: it resolves the default guard.
+  const broken = fs.mkdtempSync(path.join(os.tmpdir(), 'crl-hang-guard-broken-'))
+  fs.writeFileSync(path.join(broken, '.boss-skills.json'), '{not json')
+  assert.equal(extensionLegTimeoutMs({}, { cwd: broken }), 1_800_000)
 })
 
 test('fitTimeoutToLeg: a longer leg leaves a smaller helper timeout untouched', () => {
@@ -441,15 +477,18 @@ test('fitTimeoutToLeg: a helper override above the leg is clamped strictly below
 
 test('fitTimeoutToLeg: a non-digit or zero leg means the default leg', () => {
   for (const leg of ['10s', '1e6', ' 600000', '', '0']) {
-    assert.equal(fitTimeoutToLeg(300_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: leg }), 240_000)
+    assert.equal(fitTimeoutToLeg(1_800_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: leg }), 1_740_000)
   }
 })
 
 test('resolveLegFitTimeout: names both numbers only when it clamps', () => {
-  assert.deepEqual(resolveLegFitTimeout('codex-review', 300_000, {}), {
-    timeoutMs: 240_000,
-    note: 'codex-review: timeout clamped to 240000ms (requested 300000ms) to fit the 300000ms extension leg',
-  })
+  assert.deepEqual(
+    resolveLegFitTimeout('codex-review', 300_000, { BOSS_SKILL_EXTENSION_TIMEOUT_MS: '300000' }),
+    {
+      timeoutMs: 240_000,
+      note: 'codex-review: timeout clamped to 240000ms (requested 300000ms) to fit the 300000ms extension leg',
+    },
+  )
   assert.deepEqual(resolveLegFitTimeout('codex-review', 120_000, {}), {
     timeoutMs: 120_000,
     note: null,

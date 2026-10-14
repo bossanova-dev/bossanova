@@ -219,6 +219,51 @@ func TestDescribeChatLaunch_ResolvesModelLikeTheSpawn(t *testing.T) {
 	})
 }
 
+// TestDescribeChatLaunch_PreviewsTheTrustOverrideWithoutDeciding pins
+// BOS-1562 on the preview: rendering a launch command is not a launch, so it
+// must never send GRANT or REVOKE — both persist a decision into the agent's
+// config, and a REVOKE would strip a trusted repo's Codex trust every time the
+// operator looked at the command. But a launch that would DENY or REVOKE runs
+// with a per-process untrusted override in its real argv, so the preview sends
+// DENY (which renders that override and writes nothing) for those, and
+// UNSPECIFIED for a GRANT, whose real argv carries no override.
+func TestDescribeChatLaunch_PreviewsTheTrustOverrideWithoutDeciding(t *testing.T) {
+	const (
+		unspecified = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED
+		deny        = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY
+	)
+	for _, tc := range []struct {
+		chatSpawnTrustCase
+		wantPreview pb.ProjectTrustDecision
+	}{
+		{chatSpawnTrustCase{name: "trusted worktree", trusted: true}, unspecified},
+		{chatSpawnTrustCase{name: "trusted repo checkout", trusted: true, inCheckout: true}, unspecified},
+		{chatSpawnTrustCase{name: "untrusted worktree"}, deny},
+		{chatSpawnTrustCase{name: "failed repo lookup", missingRepo: true}, deny},
+		{chatSpawnTrustCase{name: "untrusted repo checkout", inCheckout: true}, deny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, sess := chatSpawnTrustFixture(t, tc.chatSpawnTrustCase)
+			chat := &models.AgentChat{ID: "c1", SessionID: sess.ID, AgentSessionID: "agent-1", AgentName: "codex"}
+			builder := codexArgvBuilderForPreview()
+			srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+			srv.repos = store
+
+			if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+				AgentSessionId: "agent-1",
+			})); err != nil {
+				t.Fatalf("DescribeChatLaunch: %v", err)
+			}
+			if len(builder.calls) != 1 {
+				t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+			}
+			if got := builder.calls[0].trust; got != tc.wantPreview {
+				t.Fatalf("preview trust decision = %v, want %v", got, tc.wantPreview)
+			}
+		})
+	}
+}
+
 // codexArgvBuilderForPreview answers for a codex chat the way claudeArgvBuilder
 // answers for a claude one, so the preview handler reaches BuildInteractive
 // instead of failing on an unrouted agent name.

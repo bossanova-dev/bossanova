@@ -3,7 +3,9 @@ package vcs
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 )
 
 // ErrRepoNotReady is returned when a repository does not have enough commit
@@ -244,6 +246,25 @@ type ReviewComment struct {
 	State  ReviewState
 	Path   *string
 	Line   *int
+}
+
+// PRComment is one PR conversation (issue) comment.
+type PRComment struct {
+	Body string
+	// AuthorLogin and AuthorAssociation identify who wrote the comment; a
+	// reader decides trust from them (IsTrustedReviewAuthor).
+	AuthorLogin       string
+	AuthorAssociation string
+	// WrittenAt is when the body was last written: the comment's update
+	// time, or its creation time when it was never edited.
+	WrittenAt time.Time
+}
+
+// SortPRCommentsNewestFirst orders comments most recently written first,
+// keeping the read order of equal times. Every FindPRCommentsWithMarker
+// implementation returns this order.
+func SortPRCommentsNewestFirst(comments []PRComment) {
+	slices.SortStableFunc(comments, func(a, b PRComment) int { return b.WrittenAt.Compare(a.WrittenAt) })
 }
 
 // PRSummary is a lightweight representation of a PR for listing.

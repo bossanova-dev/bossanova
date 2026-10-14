@@ -516,12 +516,17 @@ func TestStreamAuthWedgeReRegisterWarnsOnEscalationIteration(t *testing.T) {
 	const reRegisterWarn = "stream: re-register failed after auth rejection"
 	const reRegisterDebug = "stream: re-register still failing after auth rejection"
 
-	h.step()
+	// Every count is read with the loop parked (awaitAttempt), never after a
+	// release: a released loop runs the next iteration free, and reading there
+	// races the escalation iteration's own warn (see release).
+	h.awaitAttempt() // attempt #1: the first failure warns
 	if got := strings.Count(h.logs.String(), reRegisterWarn); got != 1 {
 		t.Fatalf("re-register warn count after the first failure = %d, want 1", got)
 	}
+	h.release()
 
-	h.steps(authWedgeWarnBudget - 1)
+	h.steps(authWedgeWarnBudget - 2)
+	h.awaitAttempt() // the last suppressed attempt, one short of the budget
 	mid := h.logs.String()
 	if !strings.Contains(mid, reRegisterDebug) {
 		t.Fatalf("suppressed re-register failures never logged at debug: %s", mid)
@@ -529,8 +534,9 @@ func TestStreamAuthWedgeReRegisterWarnsOnEscalationIteration(t *testing.T) {
 	if got := strings.Count(mid, reRegisterWarn); got != 1 {
 		t.Fatalf("re-register warn count inside the budget = %d, want 1", got)
 	}
+	h.release()
 
-	h.step() // budget crossed: suppressFailureWarn=false again
+	h.awaitAttempt() // budget crossed: suppressFailureWarn=false again
 	if got := strings.Count(h.logs.String(), reRegisterWarn); got != 2 {
 		t.Fatalf("re-register warn count on the escalation iteration = %d, want 2", got)
 	}

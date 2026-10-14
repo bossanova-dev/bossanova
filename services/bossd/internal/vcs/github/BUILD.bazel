@@ -4,6 +4,7 @@ go_library(
     name = "github",
     srcs = [
         "actionable_errors.go",
+        "pr_comments.go",
         "provider.go",
         "ratelimit.go",
         "readcache.go",
@@ -20,6 +21,7 @@ go_library(
 go_test(
     name = "github_test",
     srcs = [
+        "pr_comments_test.go",
         "provider_e2e_test.go",
         "provider_test.go",
         "ratelimit_test.go",

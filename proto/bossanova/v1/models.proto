@@ -189,6 +189,12 @@ message Repo {
   string sentry_api_key = 17;
   string sentry_org = 18;
   reserved 19; // was sentry_project (removed: issues are listed org-wide)
+  // Whether the local user trusts this repository's own configuration. Gates
+  // repo-supplied agent configuration (Codex project trust) and the global
+  // proof secrets. Local-only: set through the daemon's RegisterRepo /
+  // UpdateRepo, never through the orchestrator stream. Existing repos were
+  // backfilled trusted; newly registered repos default untrusted.
+  bool is_trusted = 25;
 }
 
 // MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
@@ -412,7 +418,15 @@ message Session {
   MergeBlock merge_block = 55;
 
   // Most-recent real agent output across the session's chats; advances on
-  // genuine output, NOT pane mtime. Absent when never observed.
+  // genuine output, NOT pane mtime. Absent when never observed. Normally the
+  // live chat tracker's value, which is empty after a bossd restart and skips
+  // stopped chats. When the newest lost-login or usage-limit event in
+  // rotation_events gave up and live output is not after it, bossd also reads
+  // the persisted evidence after that give-up — transcript messages with
+  // output tokens and productive agent runs — so a recovery survives a
+  // restart; that persisted value is skipped once the PR is merged or closed.
+  // Clients judge a give-up recovered when this field is after it or when
+  // display_status is merged or closed.
   optional google.protobuf.Timestamp last_agent_activity_at = 56;
 
   // account_id binds the session to a rotation account; empty/absent =
@@ -527,6 +541,12 @@ message Session {
   // Transport-only inverse mark: Ready replaced an undemoted waiting composite.
   // Computed with the served label, never persisted.
   bool is_ready_over_waiting = 77;
+
+  // The single "what does this session need from you" answer, computed from
+  // session facts by lib/bossalib/attention. Additive alongside
+  // attention_status (22), which is unchanged. Served from API version
+  // 2026-09-17; older pins receive it cleared.
+  SessionAttention attention = 78;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -679,6 +699,65 @@ message AttentionStatus {
   AttentionReason reason = 2;
   string summary = 3;
   google.protobuf.Timestamp since = 4;
+}
+
+// AttentionKind is the one answer to "what does this session need from me".
+// FIX, QUESTION, REVIEW and MERGE need the operator; IN_PROGRESS and DONE do
+// not.
+enum AttentionKind {
+  ATTENTION_KIND_UNSPECIFIED = 0;
+  // A fault the operator must resolve (or dismiss) before work continues.
+  ATTENTION_KIND_FIX = 1;
+  // The agent asked a question and is waiting for an answer.
+  ATTENTION_KIND_QUESTION = 2;
+  // The verify stage parked the PR for a human decision.
+  ATTENTION_KIND_REVIEW = 3;
+  // The PR is open, green and mergeable, and nothing else will merge it.
+  ATTENTION_KIND_MERGE = 4;
+  // Work is moving without the operator.
+  ATTENTION_KIND_IN_PROGRESS = 5;
+  // The PR merged or closed.
+  ATTENTION_KIND_DONE = 6;
+}
+
+// AttentionAction is one operator action a client offers for a
+// SessionAttention. The set per kind is fixed by lib/bossalib/attention.
+enum AttentionAction {
+  ATTENTION_ACTION_UNSPECIFIED = 0;
+  ATTENTION_ACTION_RESUME = 1;
+  ATTENTION_ACTION_DISMISS = 2;
+  ATTENTION_ACTION_OPEN_CHAT = 3;
+  ATTENTION_ACTION_ANSWER = 4;
+  ATTENTION_ACTION_APPROVE = 5;
+  ATTENTION_ACTION_SEND_BACK = 6;
+  ATTENTION_ACTION_GITHUB = 7;
+  ATTENTION_ACTION_VIDEO = 8;
+  ATTENTION_ACTION_MERGE = 9;
+  // Open the session's linked tracker issue (tracker_url).
+  ATTENTION_ACTION_TRACKER = 10;
+}
+
+// SessionAttention is the computed attention answer for one session.
+message SessionAttention {
+  AttentionKind kind = 1;
+  // One human sentence saying what to do, e.g. "Review the migration, then
+  // approve". Empty for IN_PROGRESS and DONE.
+  string sentence = 2;
+  // The actions a client offers, in display order.
+  repeated AttentionAction actions = 3;
+  // When the current kind began.
+  google.protobuf.Timestamp since = 4;
+  // Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
+  // main CI", "working", "idle").
+  string progress_label = 5;
+  // The verify-stage park codes behind a REVIEW, in report order.
+  repeated string park_codes = 6;
+  // Identifies the FIX alert so a dismissal can be matched to it.
+  string alert_key = 7;
+  // The chat a FIX or QUESTION action should open.
+  string target_chat_id = 8;
+  // Evidence (video) URL behind a REVIEW, when one exists.
+  string evidence_url = 9;
 }
 
 // DisplayStatus represents the unified display status for a session in the TUI.

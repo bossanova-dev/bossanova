@@ -924,3 +924,9 @@ func TestAccountsListRefreshChainUnprovenRendersAsItself(t *testing.T) {
 func (s *accountsStub) MoveSession(context.Context, *pb.MoveSessionRequest) (*pb.Session, bool, error) {
 	panic("unused")
 }
+
+// DismissSessionAlert satisfies the BossClient seam (BOS-1537). This stub is
+// not part of any dismiss test.
+func (*accountsStub) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
+	return nil, nil
+}

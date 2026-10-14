@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
@@ -147,7 +149,7 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 	t.Helper()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", CanAutoRotate: true}
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", CanAutoRotate: true, IsTrusted: true}
 
 	oldID := "agent-old"
 	sessions.sessions["sess-1"] = &models.Session{
@@ -985,5 +987,43 @@ func TestHasLiveRotationSeams(t *testing.T) {
 	f.lc.rateLimitProbe = nil
 	if f.lc.HasLiveRotationSeams() {
 		t.Fatal("HasLiveRotationSeams = true with nil probe, want false")
+	}
+}
+
+// TestReplacementRunSites_SendRepoProjectTrust pins BOS-1562 at the rotation
+// and orphan-resume sites: each passes its session's repo through to the
+// headless replacement run, so an untrusted repo's run revokes any pre-trust of
+// the worktree's own agent configuration and a trusted one grants.
+func TestReplacementRunSites_SendRepoProjectTrust(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		want := pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
+		if trusted {
+			want = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT
+		}
+		t.Run(fmt.Sprintf("rotation/trusted=%v", trusted), func(t *testing.T) {
+			f := newRotationFixture(t)
+			f.lc.repos.(*mockRepoStore).repos["repo-1"].IsTrusted = trusted
+			f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+			if !f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached: try later") {
+				t.Fatal("expected handled=true on rotate")
+			}
+			if len(f.runner.started) != 1 || f.runner.started[0].projectTrust != want {
+				t.Fatalf("start calls = %+v, want one with project trust %v", f.runner.started, want)
+			}
+		})
+		t.Run(fmt.Sprintf("orphan-resume/trusted=%v", trusted), func(t *testing.T) {
+			f := newOrphanResumeFixture(t)
+			f.lc.repos.(*mockRepoStore).repos["repo-1"].IsTrusted = trusted
+			f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+				f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+			}}
+			if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
+				t.Fatalf("resumed = %d, want 1", n)
+			}
+			if len(f.runner.started) != 1 || f.runner.started[0].projectTrust != want {
+				t.Fatalf("start calls = %+v, want one with project trust %v", f.runner.started, want)
+			}
+		})
 	}
 }

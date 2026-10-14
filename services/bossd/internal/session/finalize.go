@@ -15,6 +15,7 @@ import (
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	libvcs "github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
@@ -696,7 +697,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		if isCronSession(session) {
 			l.logger.Info().
 				Str("session", session.ID).
-				Str("origin", repo.OriginURL).
+				Str("origin", gitpkg.RedactURLCredentials(repo.OriginURL)).
 				Msg("finalize: cron session has changes but origin is not GitHub; hard-deleting")
 			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 				return &FinalizeResult{
@@ -708,7 +709,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		}
 		l.logger.Info().
 			Str("session", session.ID).
-			Str("origin", repo.OriginURL).
+			Str("origin", gitpkg.RedactURLCredentials(repo.OriginURL)).
 			Msg("finalize: changes present but origin is not GitHub; preserving worktree")
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
 	}
@@ -976,7 +977,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 			l.logger.Info().
 				Str("session", session.ID).
 				Str("branch", session.BranchName).
-				Str("origin", originURL).
+				Str("origin", gitpkg.RedactURLCredentials(originURL)).
 				Msg("finalize: clean branch has committed work but origin is not GitHub; hard-deleting cron session")
 			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 				return &FinalizeResult{
@@ -989,7 +990,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		l.logger.Info().
 			Str("session", session.ID).
 			Str("branch", session.BranchName).
-			Str("origin", originURL).
+			Str("origin", gitpkg.RedactURLCredentials(originURL)).
 			Msg("finalize: clean branch has committed work but origin is not GitHub; preserving worktree")
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
 	}
@@ -1120,7 +1121,7 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 
 	l.logger.Info().
 		Str("repo", repo.ID).
-		Str("originURL", url).
+		Str("originURL", gitpkg.RedactURLCredentials(url)).
 		Msg("re-detected and persisted origin URL")
 
 	repo.OriginURL = url
@@ -1154,7 +1155,13 @@ func (l *Lifecycle) hardDeleteSession(ctx context.Context, session *models.Sessi
 	}
 
 	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
-		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
+		// Strict on ErrPathOutsideBase too, unlike ArchiveSession. This path
+		// DELETES the session row, which is the only record of a directory
+		// left outside the managed base; tolerating the refusal would orphan
+		// it untracked. Failing keeps the row (cleanup_failed → Blocked) for
+		// the operator, who can still archive it — ArchiveSession tolerates
+		// the refusal because it keeps its row.
+		if err := l.worktrees.Archive(ctx, repo.DisplayName, repo.WorktreeBaseDir, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)
 		}
 

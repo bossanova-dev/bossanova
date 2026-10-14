@@ -58,6 +58,10 @@ type DisplayInfo struct {
 	// DisplayStatusNeedsHuman, and may be empty there when the boss/verify
 	// description names no reason.
 	VerifyReason string
+	// VerifyLabel is the operator-written label a park carries after its
+	// codes. Populated only for DisplayStatusNeedsHuman, and empty when the
+	// park names no label.
+	VerifyLabel string
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
@@ -150,7 +154,7 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	// Ordinary CI has settled; a pending boss/verify now holds the head.
 	switch verify := ClassifyVerify(checks); verify.Kind {
 	case VerifyPhaseNeedsHuman:
-		return DisplayInfo{Status: DisplayStatusNeedsHuman, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy, VerifyReason: verify.Reason}
+		return DisplayInfo{Status: DisplayStatusNeedsHuman, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy, VerifyReason: verify.Reason, VerifyLabel: verify.Label}
 	case VerifyPhaseVerifying:
 		return DisplayInfo{Status: DisplayStatusVerifying, HasChangesRequested: hasChangesRequested, ChangesRequestedBy: changesRequestedBy}
 	case VerifyPhaseNone:

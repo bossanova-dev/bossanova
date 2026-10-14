@@ -25,6 +25,7 @@ import (
 	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/repotrust"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
@@ -665,7 +666,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// outcome survives this seam.
 		return "", fmt.Errorf("resolve account env for session %s: %w", sessionID, redactedInjection(accountErr))
 	}
-	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), chatAccountEnv, l.resolveProofEnv()), sess.WorktreePath, repo), sess.WorktreePath)
+	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
@@ -693,6 +694,13 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Effort:             spawnEffort,
 		ConfigHomeEnv:      configHomeEnv(tmuxEnv),
 		HookPort:           clampInt32(l.hookPort),
+		// Only a locally trusted repo may have its own agent configuration
+		// pre-trusted (Codex project trust, BOS-1562); a failed lookup is
+		// untrusted, and an untrusted launch revokes any earlier pre-trust —
+		// except in the repo's own checkout, where it denies: that launch runs
+		// untrusted and nothing is persisted.
+		ProjectTrust:     repotrust.ProjectTrustFor(repo, sess.WorktreePath),
+		HookReceiptToken: l.PromptReceiptToken(providerSessionID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -736,7 +744,11 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		if !ok {
 			return "", capabilityPreflightError{fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", hookOpts.HeadlessCapabilityProfile, spawnAgentName)}
 		}
-		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, sess.WorktreePath, spawnModel, spawnEffort, tmuxEnv, hookOpts.HeadlessCapabilityProfile); err != nil {
+		// Same trust decision the BuildInteractiveCommand above carried. That
+		// call already applied it to the worktree's agent config (the runner
+		// writes project trust while building argv), so this probe sees the
+		// launch's trust; passing it again keeps the probe right on its own.
+		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(ctx, spawnAgentName, sess.WorktreePath, spawnModel, spawnEffort, tmuxEnv, hookOpts.HeadlessCapabilityProfile, repotrust.ProjectTrustFor(repo, sess.WorktreePath)); err != nil {
 			return "", capabilityPreflightError{fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", spawnAgentName, hookOpts.HeadlessCapabilityProfile, err)}
 		}
 	}
@@ -1233,7 +1245,9 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 	}
 	// BuildInteractiveCommand supplies input-rendering metadata for a live pane;
 	// its argv is never executed here. Do not prepare a launch-only MCP config or
-	// enable its strict validation for this metadata-only request.
+	// enable its strict validation for this metadata-only request, and make no
+	// project-trust decision (BOS-1562): project_trust stays UNSPECIFIED, so the
+	// runner leaves whatever trust it already holds.
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      resumeSessionID,
 		Resume:         true,
@@ -2123,7 +2137,7 @@ const unattendedSubagentDirective = "Launching this boss-managed unattended sess
 // WHY THE DEFAULT FLIPPED. Attended chats were previously excluded on a
 // no-surprise-fan-out rationale, which turned out to buy nothing: nearly every
 // boss skill's protocol mandates awaited dispatch (boss-plan's drafting and
-// extension reviewers, boss-review's lenses and round extensions, boss-repair
+// extension reviewers, boss-review's finders and verifiers, boss-repair
 // Phase 2, boss-epic's child fan-out), so the exclusion did not prevent fan-out
 // — it silently collapsed protocol-mandated work into the parent context while
 // the skill could still report a clean run. Where a skill promotes confidence on

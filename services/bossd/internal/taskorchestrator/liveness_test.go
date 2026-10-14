@@ -75,6 +75,9 @@ func (m *mockSessionStoreLiveness) AdvanceOrphanedSessions(_ context.Context) (i
 func (m *mockSessionStoreLiveness) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
+func (m *mockSessionStoreLiveness) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
@@ -89,6 +92,10 @@ func (m *mockSessionStoreLiveness) UpdateRepairDiagnostics(_ context.Context, _ 
 }
 
 func (m *mockSessionStoreLiveness) UpdateRepairBlocked(_ context.Context, _ string, _ time.Time, _ string) error {
+	return nil
+}
+
+func (m *mockSessionStoreLiveness) ClearRepairAlert(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -283,4 +290,8 @@ func TestLivenessChecker_AgentForSessionNil(t *testing.T) {
 	if got := checker.SessionLiveness(context.Background(), "sess-5"); got != session.LivenessDead {
 		t.Errorf("agentForSession nil and no other liveness signal: got %s, want dead", got)
 	}
+}
+
+func (*mockSessionStoreLiveness) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
 }

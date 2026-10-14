@@ -514,9 +514,12 @@ type RefMsg struct {
 // DISPLAY_STATUS_VERIFYING / DISPLAY_STATUS_NEEDS_HUMAN back to
 // DISPLAY_STATUS_CHECKING on Session.display_status and
 // Session.merge_block.display_status, restores the "checking" composite, and
-// clears the verify-park AWAITING_HUMAN_INPUT attention. It is the newest
-// change, so it runs first, and every older display transform then sees the
-// CHECKING shape it was written against.
+// clears the verify-park AWAITING_HUMAN_INPUT attention. Every older display
+// transform runs after it and sees the CHECKING shape it was written against.
+//
+// SessionAttentionChange (introduced at V20260917), which clears BOS-1534's
+// Session.attention. It is the newest change, so it runs first; it touches no
+// field any older transform reads.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -571,6 +574,7 @@ func ProductionChanges() *Changes {
 		WaitingDemotionLabelChange{},
 		VerifyDisplayStatusChange{},
 		ReadyDisplayLabelChange{},
+		SessionAttentionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -2860,4 +2864,58 @@ func downconvertReadySession(s *pb.Session) *pb.Session {
 // TransformResponse restores every session-bearing unary response.
 func (ReadyDisplayLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertReadySession)
+}
+
+// SessionAttentionChange is the production VersionChange introduced at
+// V20260917.
+//
+// V20260917 defines Session.attention (field 78), the SessionAttention answer
+// computed by lib/bossalib/attention. Nothing populates it yet — a follow-up
+// change wires the producer — so until then responses at V20260917 carry no
+// attention either; this change only guarantees older pins never see it.
+// A client pinned to an older version was built before the attention contract
+// existed, so for any request resolved older than V20260917 this change clears
+// the field. Session.attention_status is untouched.
+//
+// It targets the same carriers VerifyDisplayStatusChange does: the full unary
+// session-bearing OrchestratorService set PLUS the created message of the
+// streaming ProxyCreateSession.
+type SessionAttentionChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260917, so
+// it is applied to any request resolved to a strictly older version.
+func (SessionAttentionChange) Version() Version { return V20260917 }
+
+// downconvertAttentionSession returns the Session to place in the response for
+// a pre-V20260917 client: a clone with attention cleared. Cloning is essential,
+// as for every session transform here: bosso's single-instance registry path
+// holds the same pointers it caches. Sessions without attention do not
+// allocate.
+func downconvertAttentionSession(s *pb.Session) *pb.Session {
+	if s.GetAttention() == nil {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.Attention = nil
+	return clone
+}
+
+// TransformResponse implements VersionChange. It clears Session.attention on
+// every session-bearing response — the unary set and the streamed
+// ProxyCreateSession created message alike.
+func (SessionAttentionChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertAttentionSession) {
+		return
+	}
+	if method != bossanovav1connect.OrchestratorServiceProxyCreateSessionProcedure {
+		return
+	}
+	if m, ok := msg.(*pb.ProxyCreateSessionResponse); ok {
+		if created, ok := m.Body.(*pb.ProxyCreateSessionResponse_Created); ok {
+			created.Created = downconvertAttentionSession(created.Created)
+		}
+	}
 }

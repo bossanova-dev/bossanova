@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
@@ -141,6 +142,7 @@ type Server struct {
 	checkSnapshots          db.CheckSnapshotStore
 	agentRuns               db.AgentRunStore
 	rotationEvents          db.RotationEventStore
+	evidence                EvidenceSource
 	cronScheduler           *cron.Scheduler
 	// cronActivity is the agent-liveness seam used to derive cron STATUS
 	// (RUNNING only when the last-run agent is actively working). Shares the
@@ -155,13 +157,25 @@ type Server struct {
 	// assembled as a struct literal still has one.
 	archiveDeferrerOnce sync.Once
 	archiveDeferrer     *archiveDeferrer
+	// finishDeferrer holds explicit unattended-run finishes deferred until the
+	// session settles (BOS-1508). A second archiveDeferrer instance with the
+	// finalize executor; built lazily by finishDeferral.
+	finishDeferrerOnce sync.Once
+	finishDeferrer     *archiveDeferrer
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
 	// the SetMerging block there). Optional, may be nil in tests / older wiring.
 	prRefresher PRRefresher
 	repairLease *status.RepairLeaseManager
-	tmuxPoller  *status.TmuxStatusPoller
-	lifecycle   *session.Lifecycle
+	// transcriptTally reads a chat transcript's telemetry for the
+	// restart-proof agent activity (wedgeActivity); nil means
+	// tallyInteractiveAgentRunForServer (tests substitute it).
+	transcriptTally TranscriptTallier
+	// wedgeCache memoises the restart-proof agent activity, shared with the
+	// reverse-stream hydrator (Config.WedgeActivityCache).
+	wedgeCache *WedgeActivityCache
+	tmuxPoller *status.TmuxStatusPoller
+	lifecycle  *session.Lifecycle
 	// promptReceipts confirms a Claude send by its UserPromptSubmit receipt
 	// (BOS-1506). New derives it from Lifecycle; nil disables the receipt, which
 	// leaves the pane verifier as the only signal.
@@ -256,6 +270,10 @@ type Server struct {
 	// lexical derivation so the two surfaces cannot disagree — see
 	// protectedRootsReadableCheck. Nil unless the macOS startup diagnostic ran.
 	protectedRoots []string
+
+	// trackerResolver confirms tracker ids for SetSessionTracker. New builds
+	// it over pluginHost; tests substitute a fake.
+	trackerResolver session.TrackerIssueResolver
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
@@ -396,7 +414,15 @@ type Config struct {
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents db.RotationEventStore
-	CronScheduler  *cron.Scheduler
+	// Evidence serves each session's current-head verify evidence summary for
+	// GetSessionTimeline (*evidence.Reader). Optional, may be nil; the
+	// timeline then omits the evidence step.
+	Evidence EvidenceSource
+	// WedgeActivityCache memoises the restart-proof agent activity
+	// (WedgeActivity). Pass the reverse-stream hydrator's cache so both hand
+	// clients the same value. Optional; nil gives the server its own.
+	WedgeActivityCache *WedgeActivityCache
+	CronScheduler      *cron.Scheduler
 	// CronActivity is the agent-liveness checker shared with the cron
 	// scheduler's overlap suppression; cronJobStatus uses it so the TUI STATUS
 	// column reads RUNNING only for an actively-working last run. Optional, may
@@ -695,6 +721,8 @@ func New(cfg Config) *Server {
 		checkSnapshots:   cfg.CheckSnapshots,
 		agentRuns:        cfg.AgentRuns,
 		rotationEvents:   cfg.RotationEvents,
+		evidence:         cfg.Evidence,
+		wedgeCache:       cfg.WedgeActivityCache,
 		cronScheduler:    cfg.CronScheduler,
 		cronActivity:     cfg.CronActivity,
 		chatStatus:       cfg.ChatStatus,
@@ -713,6 +741,7 @@ func New(cfg Config) *Server {
 
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
+		trackerResolver:    NewTrackerResolver(cfg.PluginHost),
 		tmux:               cfg.Tmux,
 		repoMergeGates:     map[string]*repoMergeGate{},
 		completionNotifier: cfg.CompletionNotifier,
@@ -733,6 +762,9 @@ func New(cfg Config) *Server {
 	}
 	if cfg.Lifecycle != nil {
 		srv.promptReceipts = cfg.Lifecycle
+	}
+	if srv.wedgeCache == nil {
+		srv.wedgeCache = NewWedgeActivityCache()
 	}
 	if srv.bootstrapRunner == nil && cfg.Lifecycle != nil {
 		// Fallback for wiring that predates the runner (and for tests that build a
@@ -1011,6 +1043,7 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		DefaultBaseBranch: msg.DefaultBaseBranch,
 		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
+		IsTrusted:         msg.GetIsTrusted(),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
@@ -1026,6 +1059,14 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 	}
 	if msg.LocalPath == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path is required"))
+	}
+	// Refuse option-shaped, <transport>:: and unrecognised URL forms, and a
+	// relative destination, before anything touches disk.
+	if err := gitpkg.ValidateCloneURL(msg.CloneUrl); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("clone_url: %w", err))
+	}
+	if !filepath.IsAbs(msg.LocalPath) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path must be absolute"))
 	}
 
 	// Resolve the worktree base before cloning so a bad value never leaves a
@@ -1045,8 +1086,11 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 		if existingOrigin == "" {
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path already exists but is not a git repository"))
 		}
-		// Origin exists but doesn't match — error.
-		if existingOrigin != msg.CloneUrl {
+		// Origin exists but doesn't match — error. Clone records an http(s)
+		// URL's origin without its user:password, so a retry with the same
+		// credentialed URL matches the stripped origin; an older clone that
+		// kept the credentials in origin still matches the URL as given.
+		if existingOrigin != msg.CloneUrl && existingOrigin != gitpkg.CloneURLWithoutCredentials(msg.CloneUrl) {
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path is a git repo with different origin %q", existingOrigin))
 		}
 		// Matching origin — skip clone, just register.
@@ -1136,6 +1180,9 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	}
 	if msg.CanAutoDeleteBranches != nil {
 		params.CanAutoDeleteBranches = msg.CanAutoDeleteBranches
+	}
+	if msg.IsTrusted != nil {
+		params.IsTrusted = msg.IsTrusted
 	}
 	if msg.MergeStrategy != nil {
 		// Normalize at the storage boundary so an empty/unknown legacy string is
@@ -1290,58 +1337,14 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 		want = "linear"
 	}
 
-	// Validate credentials and build the plugin config map for the chosen
-	// source. Each source addresses its API differently, so the required fields
-	// differ; a missing field is reported by name.
-	var config map[string]string
-	switch want {
-	case "linear":
-		if repo.LinearAPIKey == "" {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear_api_key not configured for this repo"))
+	// Validate credentials, build the plugin config map and find the plugin
+	// for the chosen source.
+	source, config, err := trackerSource(ctx, s.taskSources(), repo, want)
+	if err != nil {
+		if errors.Is(err, errUnknownTrackerSource) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		config = map[string]string{
-			"linear_api_key": repo.LinearAPIKey,
-		}
-	case "sentry":
-		var missing []string
-		if repo.SentryAPIKey == "" {
-			missing = append(missing, "sentry_api_key")
-		}
-		if repo.SentryOrg == "" {
-			missing = append(missing, "sentry_org")
-		}
-		if len(missing) > 0 {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sentry not configured for this repo: missing %s", strings.Join(missing, ", ")))
-		}
-		config = map[string]string{
-			"sentry_api_key": repo.SentryAPIKey,
-			"sentry_org":     repo.SentryOrg,
-		}
-	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown tracker source %q", want))
-	}
-
-	// Find the matching task source plugin by name.
-	if s.pluginHost == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("plugin host not available"))
-	}
-	sources := s.pluginHost.GetTaskSources()
-	if len(sources) == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugins available"))
-	}
-
-	source := selectTaskSource(ctx, sources, want)
-	if source == nil {
-		// Distinguish "no plugin by this name is loaded" from a runtime failure:
-		// the usual cause is a plugin binary that exists but isn't loaded (config
-		// stripped the entry, or the daemon wasn't restarted after it was added).
-		// List what IS loaded and point at the fix instead of a bare "not found".
-		loaded := loadedTaskSourceNames(ctx, sources)
-		available := "none"
-		if len(loaded) > 0 {
-			available = strings.Join(loaded, ", ")
-		}
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugin named %q is loaded (loaded task sources: %s); add it to settings.json and restart bossd", want, available))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
 	// Call ListAvailableIssues. The query is optional; when set, the plugin pushes
@@ -1360,6 +1363,15 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 	issues = keys.excludeIssues(issues)
 
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
+}
+
+// taskSources returns the plugin host's task-source lister, or nil when no
+// plugin host is wired.
+func (s *Server) taskSources() func() []plugin.TaskSource {
+	if s.pluginHost == nil {
+		return nil
+	}
+	return s.pluginHost.GetTaskSources
 }
 
 // selectTaskSource returns the first task source whose GetInfo name matches
@@ -1609,6 +1621,11 @@ func createSessionConnectError(err error) error {
 	if errors.Is(err, gitpkg.ErrRefLockContended) {
 		return connect.NewError(connect.CodeUnavailable, err)
 	}
+	// A branch git rejects (e.g. a PR head or a title that sanitizes to
+	// nothing) is a bad request, not a daemon fault.
+	if errors.Is(err, gitpkg.ErrInvalidBranchName) {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if refusal, ok := injectionRefusalConnectError(err, "start session"); ok {
 		return refusal
 	}
@@ -1716,6 +1733,16 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	}
 	if msg.Title == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+	}
+	// branch_name becomes a path component of the worktree directory; refuse a
+	// name git would reject before anything is stored or touched on disk.
+	if branch := msg.GetBranchName(); branch != "" {
+		if err := gitpkg.ValidateBranchName(ctx, branch); err != nil {
+			if errors.Is(err, gitpkg.ErrInvalidBranchName) {
+				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("branch_name: %w", err))
+			}
+			return connect.NewError(connect.CodeInternal, err)
+		}
 	}
 	if zeroOutput {
 		// Zero output never checks out a branch, and quick chat is a different
@@ -2326,6 +2353,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		if loaded, err := s.agentChats.ListBySession(ctx, session.ID); err == nil {
 			chats = loaded
 			HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
+			HydrateRestartProofActivity(ctx, p, chats, s.wedgeActivity())
 		}
 	}
 	// The verify-park attention ranks below every attention above, so it only
@@ -2469,6 +2497,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	for _, p := range pbSessions {
 		chats := chatsBySession[p.Id]
 		HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
+		HydrateRestartProofActivity(ctx, p, chats, s.wedgeActivity())
 		// Lowest-ranked attention: applied after the agent overlay (BOS-1382).
 		HydrateVerifyAttention(p, entries[p.Id])
 	}
@@ -4329,6 +4358,11 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 	if msg.AgentSessionId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
 	}
+	// The agent-independent half of the shape check runs before the lookup;
+	// the per-agent half needs the agent, so it runs before the insert below.
+	if err := validateAgentSessionID("", msg.AgentSessionId); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	// Idempotent: reuse the existing row if one already exists for this
 	// agent_session_id (resume case), otherwise insert a new one.
@@ -4353,6 +4387,9 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 				agentName = sess.AgentName
 			}
 		}
+		if err := validateAgentSessionID(agentName, msg.AgentSessionId); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		chat, err = s.agentChats.Create(ctx, db.CreateAgentChatParams{
 			SessionID:      msg.SessionId,
 			AgentSessionID: msg.AgentSessionId,
@@ -4366,6 +4403,9 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		// NEW chat row does: a resumed chat, a prompt or a callback delivery
 		// just keeps a chat busy, so the archive keeps waiting.
 		s.CancelPendingArchive(msg.SessionId)
+		// The same holds for a pending unattended-run finish (BOS-1508): a new
+		// chat means the run is not done.
+		s.CancelPendingFinish(msg.SessionId)
 	}
 
 	// Ensure a tmux session is alive to host the chat. The tmux server is
@@ -4457,6 +4497,9 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 			accountEnv,
 		), nil
 	}
+	// One repo lookup per spawn: the trust decision (Repo) and the env overlay
+	// below both read this value (BOS-1562).
+	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 	appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:                      chat,
@@ -4466,19 +4509,18 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		RequireResume:             resume && chat.AgentName == "codex",
 		AppendSystemPrompt:        appendPrompt,
 		AppendSystemPromptClasses: promptClasses,
+		Repo:                      repo,
 		SessionEnvFunc: func() (map[string]string, error) {
 			// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath the
 			// worktree .env so the attached chat authenticates to its own repo's
-			// Linear workspace, not the daemon's ambient one. Fetched lazily here
-			// because this closure runs only when a fresh tmux is actually needed;
-			// a missing/failed repo lookup is non-fatal (OverlayWithRepo still
-			// guarantees LINEAR_API_KEY is present). A credential-injection
-			// refusal is fatal, though — see sessionEnvFunc.
+			// Linear workspace, not the daemon's ambient one. A missing/failed
+			// repo lookup is non-fatal (OverlayWithRepo still guarantees
+			// LINEAR_API_KEY is present). A credential-injection refusal is
+			// fatal, though — see sessionEnvFunc.
 			base, err := sessionEnvFunc()
 			if err != nil {
 				return nil, err
 			}
-			repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "attach chat", s.logger)
 			return dotenv.OverlayWithRepo(base, sess.WorktreePath, repo), nil
 		},
 		Model:                  chat.Model,
@@ -5439,9 +5481,9 @@ func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*mod
 		waitingIdle.Observe(e.Status, st)
 		rank := sessionChatStatusRank(st)
 		bestRank := sessionChatStatusRank(best)
-		// Strictly better wins; an equal-ranked chat only wins the tie when its
-		// id sorts first, so several parked chats always yield the same reason.
-		if rank > bestRank || (rank == bestRank && bestChatID != "" && c.AgentSessionID < bestChatID) {
+		// Strictly better wins; an equal-ranked chat only wins the tie under
+		// winsWaitingTie, so several parked chats always yield the same reason.
+		if rank > bestRank || (rank == bestRank && bestChatID != "" && winsWaitingTie(reason, c.AgentSessionID, bestReason, bestChatID)) {
 			best, bestReason, bestChatID = st, reason, c.AgentSessionID
 		}
 	}
@@ -5460,9 +5502,26 @@ func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*mod
 	return best, bestReason, true, waitingIdle.AllIdle(best)
 }
 
+// winsWaitingTie reports whether a candidate chat beats the current winner of
+// an equal-ranked fold step. A blocking (non-standby) waiting reason beats a
+// standby one (displaystatus.IsStandbyWaitingReason: a checks_failed/closed
+// contingency watch), so the session names the wait actually holding the PR
+// rather than a finished stage's standby watch (BOS-1531); otherwise the
+// smaller agent-session id wins. Both keys are total, so the result is
+// independent of chat order. Non-WAITING chats carry no reason and fall
+// straight through to the id rule.
+func winsWaitingTie(reason, chatID, bestReason, bestChatID string) bool {
+	if standby, bestStandby := displaystatus.IsStandbyWaitingReason(reason), displaystatus.IsStandbyWaitingReason(bestReason); standby != bestStandby {
+		return bestStandby
+	}
+	return chatID < bestChatID
+}
+
 // agentAuthFailedBlockedReason is the stable, machine-matchable blocked_reason
 // stamped on a session whose agent pane shows the login-required terminal shape.
-const agentAuthFailedBlockedReason = "agent-auth-failed"
+// It is the shared sessionreason value, so the daemon's persisted block of an
+// auth-failed stranded run (BOS-1530) and this overlay read as one reason.
+var agentAuthFailedBlockedReason = sessionreason.AgentAuthFailed()
 
 // agentAuthFailedSummary is the human-readable attention summary for a
 // login-required (auth-failed) session.

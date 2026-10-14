@@ -666,6 +666,13 @@ func (r *PRAssociationResolver) liveBranchForSession(ctx context.Context, s *mod
 	return strings.TrimSpace(branch)
 }
 
+// OpenPRs returns the repo's open PRs from the resolver's cached listing, so
+// other daemon passes (the tracker linker) share its cache and negative cache
+// instead of listing PRs themselves.
+func (r *PRAssociationResolver) OpenPRs(ctx context.Context, repoID, originURL string) ([]vcs.PRSummary, error) {
+	return r.prsForRepo(ctx, repoID, originURL)
+}
+
 func (r *PRAssociationResolver) prsForRepo(ctx context.Context, repoID, originURL string) ([]vcs.PRSummary, error) {
 	cacheKey := repoID
 	if cacheKey == "" {

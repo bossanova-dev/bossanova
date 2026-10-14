@@ -84,9 +84,10 @@ in Todo. A ticket that needs a decision first leaves with
 
 `boss-build` picks a Todo ticket with `agent-build` whose blockers have merged. It
 claims the ticket, moves it to In Progress, and implements the plan in its own
-worktree. Before it publishes anything, it runs `boss-review`: specialist lenses
-over the files that changed, whole-branch review rounds, and a fix for every
-must-fix finding.
+worktree. Before it publishes anything, it runs `boss-review`: parallel finders
+(plus a second model from the other coding agent) propose issues, a fresh
+verifier checks each one against the code, and only verified serious issues the
+change introduced block the PR. Those get one fix pass and a re-review of the fix.
 
 The run ends with a review-ready PR, a `boss/build` success status on its commit,
 and the ticket in In Review. When the PR's checks settle, build hands the PR to the
@@ -327,15 +328,19 @@ lists everything waiting for you, at any stage.
 
 Read the findings, then approve the PR one of three ways:
 
-1. Remove `needs-human` from the ticket. Verification runs again, and a parked
-   defect still goes through repair and a fresh verdict.
-2. Have a teammate approve the PR on GitHub. Verification accepts an approval on the
-   current commit and still checks the required gates.
+1. Run `boss pr approve <pr>`. It records an approval bound to the PR's current
+   commit, so verification waives exactly the parked reasons on that commit and
+   judges any later push afresh. Removing `needs-human` from the ticket alone no
+   longer hands a park back; on a parked defect it still asks for a fresh verdict.
+2. Have a teammate approve the PR on GitHub. Verification accepts the review
+   approval and still checks the required gates.
 3. Merge the PR yourself after your own review.
 
-GitHub does not let authors approve their own PRs, so for solo work, removing the
-label is the approval path. Approval does not waive a broken required verify
-extension; fix the extension.
+To reject a commit instead, run `boss pr send-back <pr> "<note>"`. It revokes any
+approval of that commit, so verification neither waives nor merges it, and starts a
+repair. GitHub does not let authors approve their own PRs, so for solo work
+`boss pr approve` is the approval path. Approval does not waive a broken required
+verify extension; fix the extension.
 
 ## Filtering and extending
 

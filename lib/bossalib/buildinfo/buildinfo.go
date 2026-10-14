@@ -24,5 +24,11 @@ var releaseVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 // tag. Release builds enforce plugin checksum verification; dev builds skip it
 // (path hardening still applies). See docs/plans/BOS-27-*.md.
 func IsReleaseBuild() bool {
-	return releaseVersionRE.MatchString(Version)
+	return IsReleaseVersion(Version)
+}
+
+// IsReleaseVersion reports whether v is a clean release stamp (vMAJOR.MINOR.PATCH)
+// rather than git describe output, a dirty build, or a dev default.
+func IsReleaseVersion(v string) bool {
+	return releaseVersionRE.MatchString(v)
 }

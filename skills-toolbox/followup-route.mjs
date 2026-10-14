@@ -17,6 +17,8 @@ export const FOLLOWUP_SOURCES = Object.freeze({
     'Evidence a later pipeline stage produces (`stage`, default `verify`). Recorded as an autonomous decision; never parks the PR.',
   'plan-question':
     'One of the plan’s open questions, with `chosen` (the option built) and `alternative` (the one not taken). With `chosen`, recorded as an autonomous decision; without it, parks the PR under ## Open questions.',
+  'review-finding':
+    'A serious problem the review verified in code this change did not introduce (`review-verdict.mjs followups`). Optional `where`: its file:line. Listed under ## Review follow-ups for a tracker ticket; never parks the PR.',
 })
 
 const RESERVED_PHRASE = /do not merge/i
@@ -78,6 +80,9 @@ export const ROUTES = Object.freeze({
       `Plan question: ${text} — built: ${chosen}; alternative not taken: ${alternative}`,
     )
   },
+  'review-finding': ({ text, routed }) => {
+    routed.reviewFollowUps.push(text)
+  },
 })
 
 function parkUnclassified({ text, label, source, routed }) {
@@ -89,13 +94,14 @@ function parkUnclassified({ text, label, source, routed }) {
 
 /**
  * @param {unknown} candidates `{ text, source, criterion?, stage?, chosen?, alternative?, where? }[]`
- * @returns {{humanFollowUp: string[], openQuestions: string[], hostNotes: {where: string, detail: string}[], decisions: string[], warnings: string[]}}
+ * @returns {{humanFollowUp: string[], openQuestions: string[], hostNotes: {where: string, detail: string}[], reviewFollowUps: string[], decisions: string[], warnings: string[]}}
  */
 export function routeFollowUps(candidates) {
   const routed = {
     humanFollowUp: [],
     openQuestions: [],
     hostNotes: [],
+    reviewFollowUps: [],
     decisions: [],
     warnings: [],
   }
@@ -127,7 +133,8 @@ const ledgerSection = (heading, items) => [
 const listOf = (value) => (Array.isArray(value) ? value : [])
 
 /**
- * Body text for `## Human follow-up`, `## Open questions` and, when non-empty, `## Host notes`.
+ * Body text for `## Human follow-up`, `## Open questions` and, when non-empty, `## Host notes` and
+ * `## Review follow-ups`.
  * @param {ReturnType<typeof routeFollowUps>} routed
  */
 export function renderFollowUpSections(routed) {
@@ -142,6 +149,9 @@ export function renderFollowUpSections(routed) {
       lines.push(`- ${note.detail ? `${note.where}: ${note.detail}` : note.where}`)
     lines.push('')
   }
+  const reviewFollowUps = listOf(routed?.reviewFollowUps)
+  if (reviewFollowUps.length)
+    lines.push('## Review follow-ups', ...reviewFollowUps.map((t) => `- ${t}`), '')
   return lines.join('\n')
 }
 

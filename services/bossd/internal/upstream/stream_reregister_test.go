@@ -107,7 +107,7 @@ func TestStreamClient_ReRegistersOnStaleSessionToken(t *testing.T) {
 	// bossd. The StreamClient starts with a DIFFERENT, stale token —
 	// the sort of state we'd be in if a peer daemon rotated the token
 	// right before us.
-	_, err := Register(context.Background(), client, "daemon-reregister-test", "host", "jwt", []string{"repo-1"})
+	_, err := Register(context.Background(), client, "daemon-reregister-test", "host", "jwt", []string{"repo-1"}, nil)
 	if err != nil {
 		t.Fatalf("seed Register failed: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestStreamClient_ReRegistersOnStaleSessionToken(t *testing.T) {
 		Stores:       stores,
 		Events:       NewStreamBus(zerolog.Nop()),
 		ReRegister: func(ctx context.Context) (string, error) {
-			return Register(ctx, client, "daemon-reregister-test", "host", "jwt", []string{"repo-1"})
+			return Register(ctx, client, "daemon-reregister-test", "host", "jwt", []string{"repo-1"}, nil)
 		},
 		Logger: zerolog.Nop(),
 	})

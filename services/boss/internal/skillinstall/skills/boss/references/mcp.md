@@ -40,7 +40,7 @@ Manages the local MCP server, which exposes the boss operations as MCP tools ove
 
 Install the MCP server as an auto-starting service
 
-Installs the MCP server as an auto-starting service and starts it. Use `--force` to overwrite an existing service file, and `--port` to change the loopback port (default 8765). The server listens on `http://127.0.0.1:<port>/mcp`.
+Installs the MCP server as an auto-starting service and starts it. Use `--force` to overwrite an existing service file, and `--port` to change the loopback port (default 8765). The server listens on `http://127.0.0.1:<port>/mcp` and requires every request to carry `Authorization: Bearer <token>` (see `boss mcp token`).
 
 **Flags:**
 
@@ -79,6 +79,21 @@ Stops the managed MCP service (leaving its service file in place) and also termi
 
 ```bash
 boss mcp stop
+```
+
+### `boss mcp token [flags]`
+
+Print the bearer token MCP hosts must send to the HTTP server
+
+Prints the bearer token the MCP HTTP server requires on every `/mcp` request. Configure the MCP host to send it as `Authorization: Bearer <token>`. The token is stored 0600 beside the daemon socket (separate from the daemon's own socket token) and is created on first use. `/healthz` and `/buildinfo` need no token.
+
+**Flags:**
+
+- `--json` — Output as JSON (token, header, token_path)
+
+```bash
+boss mcp token
+boss mcp token --json
 ```
 
 ### `boss mcp uninstall`

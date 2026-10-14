@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { evaluateBossVerifyGate } from './boss-verify.mjs'
@@ -13,15 +13,17 @@ const NODE = 'node'
 const sha = (n) => n.toString(16).padStart(40, '0')
 const ENV = { PATH: '/usr/bin', LINEAR_API_KEY: 'lin_test', REPO_DIR: '/repo' }
 
-// A fake `run` seam playing verify-gate's verbs (`node verify-gate.mjs <verb>`) and `boss`.
+// A fake `run` seam playing verify-gate's verbs (`node verify-gate.mjs <verb>`) and `boss`. A merge
+// is a detached spawn whose result lands in its log `mergeDelay` ms of fake clock later.
 function world({
   candidates = [1],
   verdict = 'pass',
   reason = 'verified',
   boss,
   candidatesFail,
+  mergeDelay = 0,
 } = {}) {
-  const w = { calls: [], spawns: [] }
+  const w = { calls: [], spawns: [], merges: {}, clock: 0 }
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
   w.run = (cmd, args) => {
     w.calls.push({ cmd, args: [...args] })
@@ -45,7 +47,7 @@ function world({
       }
       if (verb === 'judge') return ok({ verdict, reason, headSha: sha(pr) })
       if (verb === 'post') return ok({ posted: true, won: true, token: 'tok' })
-      if (verb === 'merge') return ok({ merged: true, mergeSha: sha(900) })
+      if (verb === 'observe-merge') return ok({ merged: false, state: 'OPEN' })
     }
     if (cmd === BOSS && args[0] === 'ls') return ok({ sessions: [] })
     return { ok: false, error: 'unexpected', exit: 1, output: '' }
@@ -53,20 +55,32 @@ function world({
   w.deps = {
     run: w.run,
     nodeBin: NODE,
-    now: () => 0,
+    now: () => w.clock,
     resolveBoss: () => boss ?? { ok: true, path: BOSS, reason: '' },
     spawn: (cmd, a, options) => {
       w.spawns.push({ cmd, args: a, options })
+      if (cmd === NODE && a[1] === 'merge')
+        w.merges[Number(a[a.indexOf('--pr') + 1])] = w.clock + mergeDelay
       return { pid: 1, unref() {}, on() {} }
+    },
+    readFile: (path) => {
+      const readyAt = w.merges[Number(basename(path).match(/^boss-verify-merge-(\d+)-/)?.[1])]
+      if (readyAt === undefined || w.clock < readyAt) return ''
+      return `${JSON.stringify({ merged: true, mergeSha: sha(900) })}\n`
+    },
+    sleep: (ms) => {
+      w.clock += ms
     },
     cwd: '/repo',
     logDir: mkdtempSync(join(tmpdir(), 'boss-verify-gate-')),
   }
-  w.writes = () =>
-    w.calls.filter(
+  w.writes = () => [
+    ...w.calls.filter(
       (c) =>
         c.cmd === NODE && ['post', 'merge'].includes(c.args[1]) && !c.args.includes('--dry-run'),
-    )
+    ),
+    ...w.spawns.filter((s) => s.cmd === NODE && s.args[1] === 'merge'),
+  ]
   return w
 }
 
@@ -83,6 +97,24 @@ test('gate-only mode: post then merge, a readable line per PR plus the summary, 
     `#1 merged ${sha(900)}`,
     'boss-verify gate: merged=1 parked=0 dispatched=0 skipped=0 deferred=0',
   ])
+  assert.equal(exitCode, 1)
+})
+
+test('a merge slower than the per-call timeout that succeeds reports merged, not ETIMEDOUT', () => {
+  const w = world({ mergeDelay: 20_000 })
+  const { exitCode, lines } = gate(w)
+  assert.deepEqual(lines, [
+    `#1 merged ${sha(900)}`,
+    'boss-verify gate: merged=1 parked=0 dispatched=0 skipped=0 deferred=0',
+  ])
+  assert.equal(exitCode, 1)
+})
+
+test('a merge still in flight at the deadline is dispatched with its log, and exits 1', () => {
+  const w = world({ mergeDelay: Infinity })
+  const { exitCode, lines } = gate(w)
+  assert.match(lines[0], /^#1 dispatched: merge in flight \(log .*boss-verify-merge-1-.*\.log\)$/)
+  assert.equal(lines[1], 'boss-verify gate: merged=0 parked=0 dispatched=1 skipped=0 deferred=0')
   assert.equal(exitCode, 1)
 })
 

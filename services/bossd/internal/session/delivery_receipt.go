@@ -1,9 +1,24 @@
 package session
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"sync"
 	"time"
 )
+
+// promptReceiptKeyLabel domain-separates the receipt-token key derived from the
+// daemon socket token, so the key is useless for anything else.
+const promptReceiptKeyLabel = "bossd prompt-receipt v1"
+
+// promptReceiptKeyring holds the HMAC key per-chat prompt-receipt tokens are
+// derived from. The zero value has no key: it mints no tokens and accepts none.
+type promptReceiptKeyring struct {
+	mu  sync.RWMutex
+	key []byte
+}
 
 // deliveryReceiptBook records "the agent submitted a prompt" receipts for the
 // chats bossd is currently confirming. A receipt is kept only while a launch
@@ -106,4 +121,65 @@ func (l *Lifecycle) PromptSubmittedSince(key string, since time.Time) bool {
 		return false
 	}
 	return l.deliveryReceipts.receivedSince(key, since)
+}
+
+// SetPromptReceiptKey derives the prompt-receipt HMAC key from the daemon's
+// persistent socket token: key = HMAC-SHA256(socketToken, "bossd prompt-receipt v1").
+// Deriving from the persistent token (rather than storing a per-chat secret)
+// means a pane launched before a daemon restart still confirms later sends. The
+// daemon calls this once at startup, before any chat is launched. An empty
+// socketToken clears the key, so no token is minted or accepted.
+func (l *Lifecycle) SetPromptReceiptKey(socketToken string) {
+	var key []byte
+	if socketToken != "" {
+		mac := hmac.New(sha256.New, []byte(socketToken))
+		mac.Write([]byte(promptReceiptKeyLabel))
+		key = mac.Sum(nil)
+	}
+	l.promptReceiptKeys.mu.Lock()
+	l.promptReceiptKeys.key = key
+	l.promptReceiptKeys.mu.Unlock()
+}
+
+// promptReceiptMAC returns HMAC-SHA256(key, agentSessionID), or nil when no
+// key is set or the id is empty.
+func (l *Lifecycle) promptReceiptMAC(agentSessionID string) []byte {
+	if agentSessionID == "" {
+		return nil
+	}
+	l.promptReceiptKeys.mu.RLock()
+	key := l.promptReceiptKeys.key
+	l.promptReceiptKeys.mu.RUnlock()
+	if len(key) == 0 {
+		return nil
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(agentSessionID))
+	return mac.Sum(nil)
+}
+
+// PromptReceiptToken returns the bearer token the receipt hook for
+// agentSessionID must send to /hooks/prompt-submitted/{agentSessionID}: the hex
+// HMAC of the id under the receipt key. It returns "" when no key is set, in
+// which case the runner installs the hook without a header.
+func (l *Lifecycle) PromptReceiptToken(agentSessionID string) string {
+	sum := l.promptReceiptMAC(agentSessionID)
+	if sum == nil {
+		return ""
+	}
+	return hex.EncodeToString(sum)
+}
+
+// ValidPromptReceiptToken reports, in constant time, whether token is the
+// receipt token for agentSessionID. With no key set every token is refused.
+func (l *Lifecycle) ValidPromptReceiptToken(agentSessionID, token string) bool {
+	want := l.promptReceiptMAC(agentSessionID)
+	if want == nil || token == "" {
+		return false
+	}
+	got, err := hex.DecodeString(token)
+	if err != nil || len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare(got, want) == 1
 }

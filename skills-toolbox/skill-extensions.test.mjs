@@ -142,9 +142,13 @@ test('parseFrontmatter ends a block scalar on dedent and resumes extension mappi
 
 test('extensionMarker reads the x-boss-extension block', () => {
   const { data } = parseFrontmatter(
-    '---\nname: bs-review-security\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  order: 20\n---\n',
+    '---\nname: bs-review-security\nx-boss-extension:\n  extends: bs-review\n  role: plan-reviewer\n  order: 20\n---\n',
   )
-  assert.deepEqual(extensionMarker(data), { extends: 'bs-review', role: 'lens', order: 20 })
+  assert.deepEqual(extensionMarker(data), {
+    extends: 'bs-review',
+    role: 'plan-reviewer',
+    order: 20,
+  })
 })
 
 test('extensionMarker returns null when the block is absent', () => {
@@ -152,118 +156,11 @@ test('extensionMarker returns null when the block is absent', () => {
   assert.equal(extensionMarker(data), null)
 })
 
-test('extensionMarker surfaces the optional lens binding when declared', () => {
-  const { data } = parseFrontmatter(
-    '---\nname: bs-review-golang\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  order: 40\n  lens: go\n---\n',
-  )
-  assert.deepEqual(extensionMarker(data), {
-    extends: 'bs-review',
-    role: 'lens',
-    order: 40,
-    lens: 'go',
-  })
-})
-
-test('extensionMarker omits the lens field entirely when the marker declares none', () => {
-  const { data } = parseFrontmatter(
-    '---\nname: bs-review-round\nx-boss-extension:\n  extends: bs-review\n  role: round\n---\n',
-  )
-  const marker = extensionMarker(data)
-  assert.equal('lens' in marker, false, `expected no lens key, got ${JSON.stringify(marker)}`)
-})
-
-test('extensionMarker ignores a non-string or empty lens binding rather than failing', () => {
-  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
-    const { data } = parseFrontmatter(
-      `---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n${declared}\n---\n`,
-    )
-    const marker = extensionMarker(data)
-    assert.ok(marker, `marker should still resolve for ${declared}`)
-    assert.equal('lens' in marker, false, `${declared}: ${JSON.stringify(marker)}`)
-  }
-})
-
-// BOS-744: `extensionMarker`'s contract above is unchanged — it is role-generic and simply omits an
-// unusable binding. What changes is that `discoverExtensions` no longer lets that omission pass
-// SILENTLY for a `role: lens` descriptor. Before this, a lens extension that declared `lens: 42` was
-// reported by the core as `unbound` — the same line a descriptor that never declared a binding gets
-// — so the operator had no signal that the extension tried to bind and failed.
-test('discoverExtensions reports an invalid lens binding as a skip instead of dropping it', () => {
-  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
-    const root = scratchRoot()
-    writeSkill(root, 'bs-review-misbound', [
-      'name: bs-review-misbound',
-      'x-boss-extension:',
-      '  extends: bs-review',
-      '  role: lens',
-      declared,
-    ])
-    const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-    assert.deepEqual(
-      extensions,
-      [],
-      `${declared}: a rejected extension must never reach .extensions`,
-    )
-    assert.deepEqual(skipped, [
-      {
-        name: 'bs-review-misbound',
-        reason: 'invalid "lens" binding (expected a non-empty string)',
-        code: 'invalid-lens-binding',
-        deliberate: false,
-      },
-    ])
-  }
-})
-
-test('discoverExtensions still admits a lens extension that declares no binding at all', () => {
-  // The boundary on the other side of the skip above: an ABSENT `lens` key is the documented
-  // unbound-but-valid case (it starts at tier 2), not a failed declaration.
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-unbound', [
-    'name: bs-review-unbound',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-  ])
-  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-  assert.deepEqual(
-    extensions.map((e) => e.name),
-    ['bs-review-unbound'],
-  )
-  assert.deepEqual(skipped, [])
-})
-
-test('extensionMarker keeps a quoted numeric lens binding as a string', () => {
-  // A config lens id only has to be a non-empty string, so "42" is a legal id. The
-  // quoted marker must survive frontmatter coercion as the string "42" — coercing it
-  // to Number 42 makes extensionMarker drop the field and the lens never dispatches.
-  const { data } = parseFrontmatter(
-    '---\nname: bs-review-42\nx-boss-extension:\n  extends: bs-review\n  role: lens\n  lens: "42"\n---\n',
-  )
-  const marker = extensionMarker(data)
-  assert.equal(marker.lens, '42')
-  assert.equal(typeof marker.lens, 'string')
-})
-
-test('discoverExtensions binds a descriptor to a quoted numeric lens id', () => {
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-numeric', [
-    'name: bs-review-numeric',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-    '  lens: "42"',
-  ])
-  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-  assert.equal(extensions.length, 1)
-  assert.equal(extensions[0].lens, '42')
-})
-
 test('coercion keeps unquoted integers numeric and quoted ones stringly typed', () => {
   const marker = (declared) =>
     extensionMarker(
       parseFrontmatter(
-        `---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n${declared}\n---\n`,
+        `---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: plan-reviewer\n${declared}\n---\n`,
       ).data,
     )
   // Bare integer -> Number, and extensionMarker honours it as the declared order.
@@ -274,9 +171,13 @@ test('coercion keeps unquoted integers numeric and quoted ones stringly typed', 
 
 test('extensionMarker defaults order to 100 when the marker omits it', () => {
   const { data } = parseFrontmatter(
-    '---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: lens\n---\n',
+    '---\nname: bs-review-x\nx-boss-extension:\n  extends: bs-review\n  role: plan-reviewer\n---\n',
   )
-  assert.deepEqual(extensionMarker(data), { extends: 'bs-review', role: 'lens', order: 100 })
+  assert.deepEqual(extensionMarker(data), {
+    extends: 'bs-review',
+    role: 'plan-reviewer',
+    order: 100,
+  })
 })
 
 test('discoverExtensions finds prefixed skills, orders by (order, name), filters non-matching', () => {
@@ -286,21 +187,21 @@ test('discoverExtensions finds prefixed skills, orders by (order, name), filters
     'name: bs-review-zeta',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lens',
+    '  role: plan-reviewer',
     '  order: 50',
   ])
   writeSkill(root, 'bs-review-alpha', [
     'name: bs-review-alpha',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lens',
+    '  role: plan-reviewer',
     '  order: 50',
   ])
   writeSkill(root, 'bs-review-early', [
     'name: bs-review-early',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lens',
+    '  role: plan-reviewer',
     '  order: 10',
   ])
   writeSkill(root, 'bs-review-foreign', [
@@ -329,7 +230,7 @@ test('discoverExtensions omits known cross-role siblings when role is supplied',
     'name: bs-plan-mislabeled',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens', // extends bs-plan but declares the wrong role
+    '  role: draft', // extends bs-plan but declares another known role
   ])
   const { extensions, skipped } = discoverExtensions({
     core: 'bs-plan',
@@ -343,162 +244,17 @@ test('discoverExtensions omits known cross-role siblings when role is supplied',
   assert.deepEqual(skipped, [])
 })
 
-// BOS-678: the lens binding is declared extension-side, as an optional `lens: <lensMap id>` key
-// on the marker, so `boss-review` Phase 1 can index discovered lens extensions by the lens entry
-// they serve without adding a key to `.boss-skills.json` `lensMap` (a repo-local surface that
-// BOS-850 deliberately keeps separate from the published `DEFAULT_CONFIG` catalogue).
-test('discoverExtensions carries a declared lens binding onto the descriptor', () => {
+test('discoverExtensions builds a minimal descriptor when the marker declares no optional keys', () => {
   const root = scratchRoot()
-  writeSkill(root, 'bs-review-golang', [
-    'name: bs-review-golang',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-    '  order: 40',
-    '  lens: go',
-  ])
-  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-  assert.deepEqual(
-    extensions.map((e) => e.lens),
-    ['go'],
-  )
-})
-
-test('discoverExtensions omits the lens field for an unbound extension', () => {
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-unbound', [
-    'name: bs-review-unbound',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-  ])
-  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-  assert.equal(extensions.length, 1)
-  assert.deepEqual(Object.keys(extensions[0]).sort(), ['dir', 'name', 'order', 'role', 'skillPath'])
-})
-
-test('discoverExtensions does not filter a round extension carrying a stray lens key', () => {
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-strayround', [
-    'name: bs-review-strayround',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: round',
-    '  lens: go',
-  ])
-  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
-  assert.deepEqual(
-    extensions.map((e) => e.name),
-    ['bs-review-strayround'],
-  )
-  assert.equal(extensions[0].lens, 'go')
-  assert.deepEqual(skipped, [])
-})
-
-// BOS-744, the falsification for the SCOPING of the new `invalid-lens-binding` skip. The test above
-// pairs a non-`lens` role with a VALID `lens` value, so it passes with or without the
-// `marker.role === 'lens'` guard in discoverExtensions — `marker.lens` is defined either way and the
-// skip could never fire. Only an INVALID value on a non-`lens` role separates the two: with the
-// guard the descriptor is carried through (the `lens` key is role-generic, so a stray one on another
-// role is inert), without it every round extension carrying a mistyped key would be rejected into
-// `skipped` and its Tier-1 dispatch would vanish.
-test('discoverExtensions does not skip a non-lens role whose stray lens key is invalid', () => {
-  for (const declared of ['  lens:', '  lens: 42', '  lens: ""']) {
-    const root = scratchRoot()
-    writeSkill(root, 'bs-review-strayinvalid', [
-      'name: bs-review-strayinvalid',
-      'x-boss-extension:',
-      '  extends: bs-review',
-      '  role: round',
-      declared,
-    ])
-    const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
-    assert.deepEqual(
-      extensions.map((e) => e.name),
-      ['bs-review-strayinvalid'],
-      `${declared}: a stray invalid lens key must not reject a non-lens descriptor`,
-    )
-    // The unusable value is dropped by extensionMarker exactly as before, so the descriptor is
-    // byte-identical to one authored without the key at all.
-    assert.equal(extensions[0].lens, undefined, declared)
-    assert.deepEqual(skipped, [], declared)
-  }
-})
-
-// BOS-856: `capability` is the round-side mirror of `lens` — it binds a discovered round to the
-// review capability it covers, so a core running that capability as a DEFAULT round can tell the
-// repo already has it and run one pass instead of two. The byte-identity assertions below are the
-// real contract: an extension that declares nothing must be indistinguishable from one authored
-// before the key existed, or adding the key silently changes every existing repo's descriptors.
-test('discoverExtensions carries a declared capability binding onto the descriptor', () => {
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-crossmodel', [
-    'name: bs-review-crossmodel',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: round',
-    '  order: 20',
-    '  capability: second-voice',
-  ])
-  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
-  assert.deepEqual(
-    extensions.map((e) => e.capability),
-    ['second-voice'],
-  )
-})
-
-test('discoverExtensions omits capability for absent, blank, or non-string declarations', () => {
-  // One descriptor is built with no capability key at all — that is "today's" shape — and every
-  // malformed declaration must produce a descriptor whose JSON matches it exactly.
-  const baselineRoot = scratchRoot()
-  writeSkill(baselineRoot, 'bs-review-plain', [
+  writeSkill(root, 'bs-review-plain', [
     'name: bs-review-plain',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: round',
+    '  role: plan-reviewer',
   ])
-  const baseline = discoverExtensions({ core: 'bs-review', root: baselineRoot, role: 'round' })
-    .extensions[0]
-  assert.equal('capability' in baseline, false)
-  const stripPaths = (d) => JSON.stringify({ ...d, dir: '', skillPath: '', name: '' })
-
-  for (const declared of ['  capability:', '  capability: 42', '  capability: ""']) {
-    const root = scratchRoot()
-    writeSkill(root, 'bs-review-plain', [
-      'name: bs-review-plain',
-      'x-boss-extension:',
-      '  extends: bs-review',
-      '  role: round',
-      declared,
-    ])
-    const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'round' })
-    assert.equal(extensions.length, 1, `${declared} should still be discovered`)
-    assert.equal(
-      stripPaths(extensions[0]),
-      stripPaths(baseline),
-      `${declared}: descriptor must be byte-identical to the undeclared one`,
-    )
-  }
-})
-
-test('discoverExtensions does not filter a lens extension carrying a stray capability key', () => {
-  // Same role-generic tolerance `lens` gets: the key is meaningful only for rounds, but a stray
-  // one is inert rather than a discovery failure.
-  const root = scratchRoot()
-  writeSkill(root, 'bs-review-straylens', [
-    'name: bs-review-straylens',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-    '  capability: second-voice',
-  ])
-  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
-  assert.deepEqual(
-    extensions.map((e) => e.name),
-    ['bs-review-straylens'],
-  )
-  assert.equal(extensions[0].capability, 'second-voice')
-  assert.deepEqual(skipped, [])
+  const { extensions } = discoverExtensions({ core: 'bs-review', root, role: 'plan-reviewer' })
+  assert.equal(extensions.length, 1)
+  assert.deepEqual(Object.keys(extensions[0]).sort(), ['dir', 'name', 'order', 'role', 'skillPath'])
 })
 
 test('discoverExtensions recognizes notes extensions and their result schema', () => {
@@ -635,7 +391,7 @@ test('discoverExtensions reports an unknown requested role as a skip', () => {
     'name: boss-review-house',
     'x-boss-extension:',
     '  extends: boss-review',
-    '  role: lens',
+    '  role: plan-reviewer',
   ])
   const { extensions, skipped } = discoverExtensions({
     core: 'boss-review',
@@ -676,14 +432,14 @@ test('discoverExtensions returns every marker-matched role when role is omitted'
     '  extends: bs-plan',
     '  role: plan-reviewer',
   ])
-  writeSkill(root, 'bs-plan-lensy', [
-    'name: bs-plan-lensy',
+  writeSkill(root, 'bs-plan-drafty', [
+    'name: bs-plan-drafty',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: draft',
   ])
   const { extensions } = discoverExtensions({ core: 'bs-plan', root })
-  assert.deepEqual(extensions.map((e) => e.name).sort(), ['bs-plan-lensy', 'bs-plan-reviewer'])
+  assert.deepEqual(extensions.map((e) => e.name).sort(), ['bs-plan-drafty', 'bs-plan-reviewer'])
 })
 
 // Repo-local tier-1 discovery regression (BOS-288). Bossanova rides its own opinionated
@@ -702,46 +458,6 @@ test('discoverExtensions finds the committed boss-plan draft extension repo-loca
     `expected boss-plan-compound-engineering in ${JSON.stringify(extensions.map((e) => e.name))}`,
   )
   assert.equal(found.role, 'draft')
-})
-
-test('discoverExtensions finds the committed boss-review round extensions repo-local', () => {
-  const { extensions } = discoverExtensions({ core: 'boss-review', root: repoRoot, role: 'round' })
-  const names = extensions.map((e) => e.name)
-  for (const expected of [
-    'boss-review-ce',
-    'boss-review-crossmodel',
-    'boss-review-thermonuclear',
-  ]) {
-    assert.ok(names.includes(expected), `expected ${expected} in ${JSON.stringify(names)}`)
-  }
-  assert.ok(
-    extensions.every((e) => e.role === 'round'),
-    `every round descriptor should carry role "round": ${JSON.stringify(extensions)}`,
-  )
-})
-
-test('the committed boss-review rounds declare the capabilities they cover', () => {
-  // These bindings are what suppress boss-review's default rounds for this repo. Losing one does
-  // not fail loudly — it just makes the repo run the capability twice — so assert them directly.
-  const { extensions } = discoverExtensions({ core: 'boss-review', root: repoRoot, role: 'round' })
-  const bound = Object.fromEntries(extensions.map((e) => [e.name, e.capability]))
-  assert.equal(bound['boss-review-ce'], 'code-review')
-  assert.equal(bound['boss-review-crossmodel'], 'second-voice')
-})
-
-test('discoverExtensions finds the committed boss-review lens extensions with their bindings', () => {
-  const { extensions, skipped } = discoverExtensions({
-    core: 'boss-review',
-    root: repoRoot,
-    role: 'lens',
-  })
-  assert.deepEqual(skipped, [])
-  const bound = Object.fromEntries(extensions.map((e) => [e.name, e.lens]))
-  assert.deepEqual(bound, {
-    'boss-review-golang': 'go',
-    'boss-review-tui': 'tui',
-    'boss-review-web': 'web',
-  })
 })
 
 test('discoverExtensions finds the committed boss-build methodology extension repo-local', () => {
@@ -784,7 +500,7 @@ test('discoverExtensions skips a malformed manifest without throwing', () => {
 // SKILL.md whose frontmatter is valid and simply declares no marker. Cores are entitled to ignore
 // the latter (a markerless same-prefix helper is a deliberate non-extension), so collapsing the
 // two would let a genuine Tier-1 extension whose fence is broken, or whose marker is half-written,
-// vanish under that exemption and let the lens report Tier 2 as its intended tier. Each failed
+// vanish under that exemption and let the core report Tier 2 as its intended tier. Each failed
 // declaration therefore needs a reason of its own, distinct from the markerless one.
 test('discoverExtensions separates malformed frontmatter and a partial marker from markerless', () => {
   const root = scratchRoot()
@@ -793,20 +509,24 @@ test('discoverExtensions separates malformed frontmatter and a partial marker fr
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'SKILL.md'), text)
   }
-  // A real lens extension whose closing `---` is missing.
+  // A real extension whose closing `---` is missing.
   write(
     'bs-review-unfenced',
-    '---\nname: bs-review-unfenced\nx-boss-extension:\n  extends: bs-review\n  role: lens\n\n# body\n',
+    '---\nname: bs-review-unfenced\nx-boss-extension:\n  extends: bs-review\n  role: plan-reviewer\n\n# body\n',
   )
-  // A real lens extension whose marker omits the required `role`.
+  // A real extension whose marker omits the required `role`.
   write(
     'bs-review-partial',
-    '---\nname: bs-review-partial\nx-boss-extension:\n  extends: bs-review\n  lens: tui\n---\n\n# body\n',
+    '---\nname: bs-review-partial\nx-boss-extension:\n  extends: bs-review\n  order: 10\n---\n\n# body\n',
   )
   // A deliberate non-extension: valid frontmatter, no marker at all.
   writeSkill(root, 'bs-review-helper', ['name: bs-review-helper', 'description: a helper'])
 
-  const { extensions, skipped } = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  const { extensions, skipped } = discoverExtensions({
+    core: 'bs-review',
+    root,
+    role: 'plan-reviewer',
+  })
 
   assert.deepEqual(extensions, [])
   const reasonFor = (name) => skipped.find((s) => s.name === name)?.reason
@@ -883,7 +603,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     'name: bs-review-foreign',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: plan-reviewer',
   ])
   // extends-other-core: the genuine nesting case. `bs-plan` really does own `bs-plan-notes`, so
   // the `bs` pass below must stay quiet about it.
@@ -891,29 +611,21 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     'name: bs-plan-notes',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: plan-reviewer',
   ])
   // wrong-role
   writeSkill(root, 'bs-review-typo', [
     'name: bs-review-typo',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lenz',
-  ])
-  // invalid-lens-binding
-  writeSkill(root, 'bs-review-misbound', [
-    'name: bs-review-misbound',
-    'x-boss-extension:',
-    '  extends: bs-review',
-    '  role: lens',
-    '  lens: 42',
+    '  role: plan-reviwer',
   ])
   // invalid-modes
   writeSkill(root, 'bs-review-badmodes', [
     'name: bs-review-badmodes',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lens',
+    '  role: plan-reviewer',
     '  modes: sometimes',
   ])
   // mode-not-declared (reached only by the headless pass below)
@@ -921,7 +633,7 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     'name: bs-review-attended',
     'x-boss-extension:',
     '  extends: bs-review',
-    '  role: lens',
+    '  role: plan-reviewer',
     '  modes: interactive',
   ])
 
@@ -942,19 +654,19 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
   ])
   const emitted = new Set()
   for (const { core, role, mode } of [
-    { core: 'bs-review', role: 'lens' },
+    { core: 'bs-review', role: 'plan-reviewer' },
     { core: 'bs-review', role: 'release' },
     { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
-    { core: 'bs-review', role: 'lens', mode: 'headless' },
-    // 'lenz' is an unknown REQUESTED role; it is a property of the caller's argument rather than
+    { core: 'bs-review', role: 'plan-reviewer', mode: 'headless' },
+    // 'plan-reviwer' is an unknown REQUESTED role; it is a property of the caller's argument rather than
     // of any fixture, so it needs its own pass.
-    { core: 'bs-review', role: 'lenz' },
+    { core: 'bs-review', role: 'plan-reviwer' },
     // The NESTING core. `bs-` prefixes every directory above, so this pass is the only one that
     // can reach `extends-other-core` — and it reaches it through `bs-plan-notes`, whose declared
     // `bs-plan` genuinely owns it. `bs-review-foreign` is NOT that case even from here: no core
     // named `bs-plan` can ever enumerate a `bs-review-*` directory, so it stays reportable.
-    { core: 'bs', role: 'lens' },
+    { core: 'bs', role: 'plan-reviewer' },
   ]) {
     const { skipped } = discoverExtensions({ core, root, role, mode })
     for (const entry of skipped) {
@@ -1000,7 +712,6 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'extends-unrelated-core',
     'incomplete-marker',
     'invalid-applies',
-    'invalid-lens-binding',
     'invalid-modes',
     'invalid-release-marker',
     'malformed-frontmatter',
@@ -1023,11 +734,11 @@ test('a wrong extends is reportable, while a nesting core stays quiet about its 
     'name: bs-review-typoextends',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: plan-reviewer',
   ])
 
   // From `bs-review`: `bs-plan` is not a `bs-review-` descendant, so the marker is simply wrong.
-  const near = discoverExtensions({ core: 'bs-review', root, role: 'lens' })
+  const near = discoverExtensions({ core: 'bs-review', root, role: 'plan-reviewer' })
   assert.deepEqual(near.extensions, [])
   assert.deepEqual(near.skipped, [
     {
@@ -1043,7 +754,7 @@ test('a wrong extends is reportable, while a nesting core stays quiet about its 
   // asking: `bs-plan` can only ever enumerate `bs-plan-*`, so no core anywhere would report this
   // typo if `bs` stayed quiet about it. Classifying on the two core names instead would suppress it
   // here — the silent drop this ticket exists to end.
-  const nesting = discoverExtensions({ core: 'bs', root, role: 'lens' })
+  const nesting = discoverExtensions({ core: 'bs', root, role: 'plan-reviewer' })
   assert.deepEqual(nesting.extensions, [])
   assert.deepEqual(nesting.skipped, [
     {
@@ -1060,9 +771,9 @@ test('a wrong extends is reportable, while a nesting core stays quiet about its 
     'name: bs-plan-notes',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: plan-reviewer',
   ])
-  const owned = discoverExtensions({ core: 'bs', root, role: 'lens' })
+  const owned = discoverExtensions({ core: 'bs', root, role: 'plan-reviewer' })
   assert.deepEqual(
     owned.skipped.find((s) => s.name === 'bs-plan-notes'),
     {
@@ -1074,34 +785,24 @@ test('a wrong extends is reportable, while a nesting core stays quiet about its 
   )
 })
 
-test('validateResult accepts a well-formed lens envelope', () => {
+test('validateResult accepts a well-formed findings envelope', () => {
   const envelope = {
     ok: true,
-    extension: 'bs-review-security',
-    role: 'lens',
-    items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't', detail: 'd' }],
+    extension: 'bs-plan-house-style',
+    role: 'plan-reviewer',
+    items: [{ severity: 'Warning', section: 'Scope', title: 't', detail: 'd' }],
   }
-  assert.deepEqual(validateResult(envelope, 'lens'), { ok: true, errors: [] })
-})
-
-test('validateResult accepts a well-formed round envelope', () => {
-  const envelope = {
-    ok: true,
-    extension: 'boss-review-ce',
-    role: 'round',
-    items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't', detail: 'd' }],
-  }
-  assert.deepEqual(validateResult(envelope, 'round'), { ok: true, errors: [] })
+  assert.deepEqual(validateResult(envelope, 'plan-reviewer'), { ok: true, errors: [] })
 })
 
 test('validateResult accepts a findings envelope with a malformed item, reporting it as a warning', () => {
   const envelope = {
     ok: true,
-    extension: 'boss-review-ce',
-    role: 'round',
-    items: [{ severity: 'Warning', file: 'a.go', line: 3, title: 't' }],
+    extension: 'bs-plan-house-style',
+    role: 'plan-reviewer',
+    items: [{ severity: 'Warning', section: 'Scope', title: 't' }],
   }
-  const result = validateResult(envelope, 'round')
+  const result = validateResult(envelope, 'plan-reviewer')
   assert.equal(result.ok, true)
   assert.ok(result.warnings.some((e) => /missing "detail"/.test(e)))
 })
@@ -1117,7 +818,7 @@ test('validateResult accepts a well-formed surface envelope', () => {
 })
 
 test('validateResult rejects an envelope missing the ok / extension fields', () => {
-  const result = validateResult({ role: 'lens', items: [] }, 'lens')
+  const result = validateResult({ role: 'plan-reviewer', items: [] }, 'plan-reviewer')
   assert.equal(result.ok, false)
   assert.ok(result.errors.some((e) => /ok is not a boolean/.test(e)))
   assert.ok(result.errors.some((e) => /extension is not a non-empty string/.test(e)))
@@ -1127,27 +828,33 @@ test('validateResult rejects a handled-failure envelope (ok:false) and surfaces 
   const envelope = {
     ok: false,
     extension: 'bs-review-security',
-    role: 'lens',
+    role: 'plan-reviewer',
     items: [],
     error: 'subagent timed out',
   }
-  const result = validateResult(envelope, 'lens')
+  const result = validateResult(envelope, 'plan-reviewer')
   assert.equal(result.ok, false)
   assert.ok(result.errors.some((e) => /ok:false/.test(e) && /subagent timed out/.test(e)))
 })
 
 test('validateResult rejects ok:false without an error field, with a fallback reason', () => {
-  const envelope = { ok: false, extension: 'x', role: 'lens', items: [] }
-  const result = validateResult(envelope, 'lens')
+  const envelope = { ok: false, extension: 'x', role: 'plan-reviewer', items: [] }
+  const result = validateResult(envelope, 'plan-reviewer')
   assert.equal(result.ok, false)
   assert.ok(result.errors.some((e) => /ok:false/.test(e) && /no error detail/.test(e)))
 })
 
 test('validateResult warns on a findings-role mismatch and rejects one for a persistence role', () => {
-  const lens = validateResult({ ok: true, extension: 'x', role: 'surface', items: [] }, 'lens')
-  assert.equal(lens.ok, true)
-  assert.ok(lens.warnings.some((e) => /role/.test(e)))
-  const notes = validateResult({ ok: true, extension: 'x', role: 'lens', items: [] }, 'notes')
+  const findings = validateResult(
+    { ok: true, extension: 'x', role: 'surface', items: [] },
+    'plan-reviewer',
+  )
+  assert.equal(findings.ok, true)
+  assert.ok(findings.warnings.some((e) => /role/.test(e)))
+  const notes = validateResult(
+    { ok: true, extension: 'x', role: 'plan-reviewer', items: [] },
+    'notes',
+  )
   assert.equal(notes.ok, false)
   assert.ok(notes.errors.some((e) => /role/.test(e)))
 })
@@ -1165,7 +872,7 @@ test('validateResult reports findings items missing required keys as warnings', 
 })
 
 test('validateResult never throws on a non-object envelope', () => {
-  const result = validateResult(null, 'lens')
+  const result = validateResult(null, 'plan-reviewer')
   assert.equal(result.ok, false)
 })
 
@@ -1179,21 +886,19 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
   // BOS-1386: verify (the boss-verify stage's judgment role) makes it eleven.
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
   // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
+  // eleven → ten: lens and round retire with boss-review's lens map and round extensions.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
     'knowledge',
-    'lens',
     'maintenance',
     'methodology',
     'notes',
     'plan-reviewer',
     'release',
-    'round',
     'surface',
     'verify',
   ])
-  assert.deepEqual(ROLE_SCHEMAS.round, ROLE_SCHEMAS.lens)
 })
 
 test('the merged role table is the single source for discovery and validation', () => {
@@ -1326,7 +1031,7 @@ test('CLI discover --role omits known cross-role siblings', () => {
     'name: bs-plan-mislabeled',
     'x-boss-extension:',
     '  extends: bs-plan',
-    '  role: lens',
+    '  role: draft',
   ])
   const out = execFileSync(
     'node',
@@ -1364,24 +1069,24 @@ test('CLI validate exits 0 on a valid envelope file and 1 on an invalid one', ()
     JSON.stringify({
       ok: true,
       extension: 'bs-review-x',
-      role: 'lens',
-      items: [{ severity: 'W', file: 'a', line: 1, title: 't', detail: 'd' }],
+      role: 'plan-reviewer',
+      items: [{ severity: 'W', section: 's', title: 't', detail: 'd' }],
     }),
   )
-  const okRun = runCli(['validate', '--role', 'lens', '--file', good])
+  const okRun = runCli(['validate', '--role', 'plan-reviewer', '--file', good])
   assert.equal(okRun.status, 0)
   assert.equal(JSON.parse(okRun.stdout).ok, true)
 
   const bad = path.join(root, 'bad.json')
   fs.writeFileSync(bad, JSON.stringify({ role: 'surface', items: [] }))
-  const badRun = runCli(['validate', '--role', 'lens', '--file', bad])
+  const badRun = runCli(['validate', '--role', 'plan-reviewer', '--file', bad])
   assert.equal(badRun.status, 1)
   assert.equal(JSON.parse(badRun.stdout).ok, false)
 })
 
 test('CLI validate reports a missing file as clean JSON, never a stack trace', () => {
   const missing = path.join(scratchRoot(), 'nope.json')
-  const run = runCli(['validate', '--role', 'lens', '--file', missing])
+  const run = runCli(['validate', '--role', 'plan-reviewer', '--file', missing])
   assert.equal(run.status, 1)
   const parsed = JSON.parse(run.stdout) // must be parseable JSON, not a thrown stack trace
   assert.equal(parsed.ok, false)
@@ -1741,7 +1446,7 @@ test('validateResult rejects malformed verify results', () => {
       'finding 0 needs a non-empty string "title"',
     ],
     [verifyResult({ findings: {} }), 'findings must be an array'],
-    [verifyResult({ role: 'lens' }), 'envelope role "lens" does not match expected "verify"'],
+    [verifyResult({ role: 'draft' }), 'envelope role "draft" does not match expected "verify"'],
     [verifyResult({ ok: false, error: 'boom' }), 'extension reported failure (ok:false): boom'],
   ]
   for (const [result, error] of cases) {
@@ -2014,10 +1719,10 @@ test('the applies marker key is carried on a verify descriptor and omitted when 
     }),
   )
   // The key belongs to the verify role: on any other role it is inert, never carried or skipped.
-  const lens = extensionMarker({
-    'x-boss-extension': { extends: 'boss-verify', role: 'lens', applies: 'x.mjs' },
+  const other = extensionMarker({
+    'x-boss-extension': { extends: 'boss-verify', role: 'draft', applies: 'x.mjs' },
   })
-  assert.equal('applies' in lens, false)
+  assert.equal('applies' in other, false)
 })
 
 test('a traversing, absolute or unusable applies path is skipped as invalid-applies', () => {
@@ -2083,14 +1788,14 @@ test('the malfunctionReason marker key is carried when it has the human-review s
     'human-review:data-loss',
   )
   // The key belongs to the verify role: on any other role it is inert.
-  const lens = extensionMarker({
+  const other = extensionMarker({
     'x-boss-extension': {
       extends: 'boss-verify',
-      role: 'lens',
+      role: 'draft',
       malfunctionReason: 'human-review:security',
     },
   })
-  assert.equal('malfunctionReason' in lens, false)
+  assert.equal('malfunctionReason' in other, false)
 })
 
 test('an invalid malfunctionReason is dropped and the extension is still discovered', () => {
@@ -2265,7 +1970,7 @@ test('release discovery normalizes environment forms and skips invalid declarati
     extensionMarker({
       'x-boss-extension': {
         extends: 'boss-review',
-        role: 'round',
+        role: 'draft',
         environments: 'bad / name',
         state: 'bad',
       },

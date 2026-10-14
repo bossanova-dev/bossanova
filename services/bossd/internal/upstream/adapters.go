@@ -8,6 +8,7 @@ package upstream
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,11 +16,13 @@ import (
 
 	"connectrpc.com/connect"
 	bcast "github.com/recurser/bossalib/broadcast"
+	"github.com/recurser/bossalib/daemonproof"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/safego"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -1631,17 +1634,78 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 // startup before the StreamClient.Run loop kicks in. Callers pass the
 // WorkOS JWT as bearer; on success the returned session_token is what
 // bosso will verify on subsequent DaemonStream opens.
+//
+// identityKey is the machine's identity key (LoadDaemonIdentityKey). When it
+// is non-nil the request carries a possession proof bound to daemonID and
+// userJWT (lib/bossalib/daemonproof, BOS-1580); nil registers without one,
+// which bosso still accepts for ids no key has been pinned to.
+//
+// A keyed registration bosso refuses with PermissionDenied or Unauthenticated
+// is retried once without a proof. PermissionDenied is the machine whose
+// keyring lost its item (a keychain reset mints a new key that no longer
+// matches the pin); Unauthenticated includes a proof refused as stale because
+// this machine's clock is outside the server's window. bosso still admits the
+// pin's own account keylessly, and an unpinned id as before, so the owner
+// keeps registering, while any other account is refused again. A retry after
+// a genuinely rejected bearer is refused the same way, at the cost of one
+// extra call. When the retry is refused too, the returned error carries the
+// retry's code and also names the keyed refusal (such as the clock window),
+// which is often the actual cause.
 func Register(
 	ctx context.Context,
 	client bossanovav1connect.OrchestratorServiceClient,
 	daemonID, hostname, userJWT string,
 	repoIDs []string,
+	identityKey ed25519.PrivateKey,
 ) (sessionToken string, err error) {
-	req := connect.NewRequest(&pb.RegisterDaemonRequest{
+	sessionToken, err = registerOnce(ctx, client, daemonID, hostname, userJWT, repoIDs, identityKey)
+	if identityKey != nil && retryKeyless(err) {
+		log.Warn().Err(err).
+			Str("daemon_id", daemonID).
+			Msg("keyed daemon registration refused; registering without a possession proof")
+		keyedErr := err
+		sessionToken, err = registerOnce(ctx, client, daemonID, hostname, userJWT, repoIDs, nil)
+		if err != nil {
+			return "", fmt.Errorf("%w (the keyed registration before it was refused: %v)", err, keyedErr)
+		}
+		return sessionToken, nil
+	}
+	return sessionToken, err
+}
+
+// retryKeyless reports whether a keyed registration refusal is one a keyless
+// retry can recover from: a key that no longer matches the pin
+// (PermissionDenied) or a proof the server could not verify, such as one
+// signed on a skewed clock (Unauthenticated).
+func retryKeyless(err error) bool {
+	switch connect.CodeOf(err) {
+	case connect.CodePermissionDenied, connect.CodeUnauthenticated:
+		return true
+	default:
+		return false
+	}
+}
+
+func registerOnce(
+	ctx context.Context,
+	client bossanovav1connect.OrchestratorServiceClient,
+	daemonID, hostname, userJWT string,
+	repoIDs []string,
+	identityKey ed25519.PrivateKey,
+) (string, error) {
+	msg := &pb.RegisterDaemonRequest{
 		DaemonId: daemonID,
 		Hostname: hostname,
 		RepoIds:  repoIDs,
-	})
+	}
+	if len(identityKey) == ed25519.PrivateKeySize {
+		// An ed25519 private key is seed || public key.
+		signedAt := time.Now().Unix()
+		msg.DaemonPublicKey = append([]byte(nil), identityKey[ed25519.SeedSize:]...)
+		msg.PossessionSignature = daemonproof.Sign(identityKey, daemonID, userJWT, signedAt)
+		msg.SignedAtUnix = signedAt
+	}
+	req := connect.NewRequest(msg)
 	if userJWT != "" {
 		req.Header().Set("Authorization", "Bearer "+userJWT)
 	}

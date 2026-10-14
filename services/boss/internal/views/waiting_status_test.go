@@ -13,7 +13,9 @@ import (
 )
 
 // An actionable waiting reason that remains visible beneath the status badge.
-const testWaitingReason = "awaiting checks_failed on acme/widget#123"
+// ready_for_review is neither routine (#2901) nor standby (BOS-1531), so Home
+// keeps it.
+const testWaitingReason = "awaiting ready_for_review on acme/widget#123"
 
 // Home hides routine PR waits (#2901); the chat picker shows them, because in
 // the chat view that wait is all the parked chat is doing (BOS-1517).
@@ -95,7 +97,7 @@ func TestWaitingHintLine(t *testing.T) {
 	if got != want {
 		t.Fatalf("waitingHintLine = %q, want %q", got, want)
 	}
-	if !strings.Contains(got, "checks_failed") || !strings.Contains(got, "#123") {
+	if !strings.Contains(got, "ready_for_review") || !strings.Contains(got, "#123") {
 		t.Fatalf("waiting hint must carry the trigger and PR number: %q", got)
 	}
 	if got := waitingHintLine("", false); got != "" {
@@ -113,7 +115,7 @@ func TestWaitingHintLine_DemotedRowRegainsItsAntecedent(t *testing.T) {
 	if got != want {
 		t.Fatalf("waitingHintLine(demoted) = %q, want %q", got, want)
 	}
-	if !strings.Contains(got, "checks_failed") || !strings.Contains(got, "#123") {
+	if !strings.Contains(got, "ready_for_review") || !strings.Contains(got, "#123") {
 		t.Fatalf("the demoted hint must still carry the trigger and PR number: %q", got)
 	}
 }
@@ -216,7 +218,7 @@ func TestHome_WaitingReasonSubRow(t *testing.T) {
 	if !strings.Contains(rendered, displaystatus.WaitingLabel) {
 		t.Fatalf("home list missing the waiting status in:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "checks_failed") {
+	if !strings.Contains(rendered, "ready_for_review") {
 		t.Fatalf("home list missing the waiting trigger in:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "#123") {
@@ -281,7 +283,7 @@ func TestChatPicker_WaitingRendersReasonAndBadge(t *testing.T) {
 	m.session = &pb.Session{Id: "session-1"}
 
 	rendered := stripANSI(m.View().Content)
-	for _, token := range []string{displaystatus.WaitingLabel, "working", "checks_failed", "#123"} {
+	for _, token := range []string{displaystatus.WaitingLabel, "working", "ready_for_review", "#123"} {
 		if !strings.Contains(rendered, token) {
 			t.Fatalf("session detail missing %q in:\n%s", token, rendered)
 		}

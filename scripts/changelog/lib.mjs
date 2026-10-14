@@ -83,10 +83,32 @@ export function previousVersionTag(names, tag) {
 // never needs raw HTML, so strip HTML tags (and whole script/style blocks)
 // before writing. Markdown emphasis, inequalities (`a < b`), and autolinks
 // (`<https://…>`) are preserved — only real tags (`<name ...>`, `</name>`) go.
-export function stripHtmlTags(text) {
-  return String(text)
+//
+// One pass is not enough: removing an inner tag can splice the outer text into a
+// new one (`<scr<b>ipt>` -> `<script>`), so the strip repeats until the text stops
+// changing. Whatever tag opener is left after that (an unterminated `<img …`, a
+// `<!--`, a non-web autolink) has its `<` escaped, so no tag can reach the page.
+// A `<` that cannot open a tag (`a < b`, `3<4`) and `>` are left alone, which
+// keeps inequalities and Markdown blockquotes intact.
+const MAX_STRIP_PASSES = 20
+const SAFE_AUTOLINK = /^<(?:https?:\/\/|mailto:)[^\s<>]*>/i
+
+function stripTagsOnce(text) {
+  return text
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
     .replace(/<\/?[a-z][a-z0-9-]*(\s+[^<>]*?)?\/?>/gi, '')
+}
+
+export function stripHtmlTags(text) {
+  let out = String(text)
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
+    const next = stripTagsOnce(out)
+    if (next === out) break
+    out = next
+  }
+  return out.replace(/<(?=[a-z/!?])/gi, (lt, offset, whole) =>
+    SAFE_AUTOLINK.test(whole.slice(offset)) ? lt : '&lt;',
+  )
 }
 
 function yamlString(value) {

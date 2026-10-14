@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -359,9 +360,11 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 // /hooks/prompt-submitted/{agentSessionID}, where bossd records that the
 // chat's prompt was submitted.
 //
-// The hook carries no bearer token: it is installed for every tmux-hosted
-// start, not only token-bearing runs, and a receipt is accepted only while bossd
-// is waiting on that id. Every Claude process in the worktree fires every
+// receiptToken is the per-chat bearer token bossd derives and expects as
+// "Authorization: Bearer <token>"; bossd rejects a receipt without it. An empty
+// token (an older bossd that sends none) writes the command without the
+// header. The token must be URL-safe base64/hex characters only, because it is
+// embedded in a shell command. Every Claude process in the worktree fires every
 // entry, so bossd also discards a payload whose session_id names another chat.
 //
 // The command can never block or alter a prompt: UserPromptSubmit treats exit
@@ -372,7 +375,7 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 // belong to earlier chats whose start window has passed (one chat starts at a
 // time per worktree), so they are pruned, as the question hook does. User
 // hooks are never touched. The write is atomic, mirroring WriteHookConfig.
-func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int) error {
+func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, receiptToken string) error {
 	if worktreePath == "" {
 		return errors.New("worktreePath is required")
 	}
@@ -381,6 +384,9 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int) 
 	}
 	if port <= 0 {
 		return fmt.Errorf("port must be positive, got %d", port)
+	}
+	if !receiptTokenPattern.MatchString(receiptToken) {
+		return errors.New("receipt token contains characters that are unsafe in a shell command")
 	}
 	claudeDir := filepath.Join(worktreePath, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
@@ -394,7 +400,7 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int) 
 	hooks := asMap(root, "hooks")
 	urlPath := promptSubmittedHookURLPrefix + agentSessionID
 	submits := pruneCommandURLHooks(asSlice(hooks, "UserPromptSubmit"), promptSubmittedHookURLPrefix)
-	hooks["UserPromptSubmit"] = append(submits, bossdPromptSubmittedEntry(urlPath, port))
+	hooks["UserPromptSubmit"] = append(submits, bossdPromptSubmittedEntry(urlPath, port, receiptToken))
 	root["hooks"] = hooks
 
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -404,6 +410,10 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int) 
 	out = append(out, '\n')
 	return atomicWrite(claudeDir, target, out)
 }
+
+// receiptTokenPattern bounds the prompt-receipt token to characters that are
+// inert inside the double-quoted curl header (bossd sends lowercase hex).
+var receiptTokenPattern = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]*$`)
 
 // pruneCommandURLHooks drops every entry whose command contains urlPrefix.
 // Returns a fresh slice — never aliases or mutates the input backing array.
@@ -421,10 +431,14 @@ func pruneCommandURLHooks(entries []any, urlPrefix string) []any {
 // bossdPromptSubmittedEntry returns the UserPromptSubmit group for the
 // delivery receipt. The empty matcher fires on every prompt; the payload is
 // forwarded from stdin so bossd can check its session_id.
-func bossdPromptSubmittedEntry(urlPath string, port int) map[string]any {
+func bossdPromptSubmittedEntry(urlPath string, port int, receiptToken string) map[string]any {
+	auth := ""
+	if receiptToken != "" {
+		auth = fmt.Sprintf(`-H "Authorization: Bearer %s" `, receiptToken)
+	}
 	cmd := fmt.Sprintf(
-		`curl -s --max-time 2 -X POST -H "Content-Type: application/json" --data-binary @- http://127.0.0.1:%d%s >/dev/null 2>&1 || true`,
-		port, urlPath,
+		`curl -s --max-time 2 -X POST %s-H "Content-Type: application/json" --data-binary @- http://127.0.0.1:%d%s >/dev/null 2>&1 || true`,
+		auth, port, urlPath,
 	)
 	return map[string]any{
 		"matcher": "",

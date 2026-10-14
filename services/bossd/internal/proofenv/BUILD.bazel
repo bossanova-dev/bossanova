@@ -9,10 +9,15 @@ go_library(
     ],
     importpath = "github.com/recurser/bossd/internal/proofenv",
     visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/models",
+        "//services/bossd/internal/repotrust",
+    ],
 )
 
 go_test(
     name = "proofenv_test",
     srcs = ["proofenv_test.go"],
     embed = [":proofenv"],
+    deps = ["//lib/bossalib/models"],
 )

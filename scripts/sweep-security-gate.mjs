@@ -1,5 +1,5 @@
 // scripts/sweep-security-gate.mjs
-// Pure-core decision logic for the bs-sweep-security skill. NO side effects,
+// Pure-core decision logic for the bs-sweep-dependabot skill. NO side effects,
 // NO imports beyond node builtins — the cron worktree is dependency-free.
 
 const SEVERITY_WEIGHT = { critical: 400, high: 300, medium: 200, low: 100 }
@@ -40,6 +40,7 @@ export function dedupeAgainstPRs(alerts, openPRs = []) {
   const sentinels = new Set()
   const depBranchText = []
   for (const pr of openPRs) {
+    // Wire format: PRs opened under the skill's former name carry this marker, so it keeps that name.
     for (const m of String(pr.body ?? '').matchAll(/bs-sweep-security:ghsa:([A-Za-z0-9-]+)/g)) {
       sentinels.add(m[1])
     }
@@ -116,6 +117,7 @@ export function classifyOutcome(repairResult, mergeable, reviewDecision) {
   return 'retry'
 }
 
+// Wire format: sticky state on PRs opened under the skill's former name, so it keeps that name.
 const STATE_SENTINEL = '<!-- bs-sweep-security:state -->'
 
 export function parseState(body = '') {
@@ -132,10 +134,11 @@ export function parseState(body = '') {
 }
 
 export function renderState({ attempts, lastSha, lastOutcome, batchGhsas = [], updatedAt }) {
+  // Same wire-format marker dedupeAgainstPRs reads back; it keeps the former name too.
   const ghsaLines = batchGhsas.map((g) => `<!-- bs-sweep-security:ghsa:${g} -->`).join('\n')
   return [
     STATE_SENTINEL,
-    '🔒 **bs-sweep-security** automated security fix PR.',
+    '🔒 **bs-sweep-dependabot** automated security fix PR.',
     '',
     '```',
     `attempts: ${Number(attempts)}`,

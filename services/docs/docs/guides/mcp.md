@@ -46,6 +46,12 @@ Install and start the local MCP HTTP daemon:
 cli="boss mcp install"
 />
 
+Print the bearer token HTTP clients must send (`--json` adds the full header and the token file path):
+
+<CommandTabs
+cli="boss mcp token"
+/>
+
 Show whether the service is installed and running, plus the instance inventory:
 
 <CommandTabs
@@ -75,6 +81,32 @@ platform user service manager: launchd (`~/Library/LaunchAgents/com.bossanova.mc
 on macOS, or systemd (`~/.config/systemd/user/bossanova-mcp.service`) on Linux.
 It accepts `--port <n>` (default 8765) and `--force` (overwrite an existing
 service file).
+
+#### Authenticating HTTP clients
+
+Every request to `/mcp` must carry `Authorization: Bearer <token>`. The token
+lives in `mcp-http.token` next to the bossd socket (mode 0600, created on first
+start) and `boss mcp token` prints it. Add the header to your HTTP MCP client's
+config, for example:
+
+```json
+{
+  "mcpServers": {
+    "bossanova": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": { "Authorization": "Bearer <output of boss mcp token>" }
+    }
+  }
+}
+```
+
+Requests without the header, or with a wrong one, get `401` and run no tool.
+`/healthz` and `/buildinfo` need no token. The server refuses to listen on
+anything but a loopback address (`127.0.0.1`, `[::1]` or `localhost`). The token
+is separate from the daemon's own socket token, so to rotate it delete
+`mcp-http.token` and restart the service (`boss mcp start`), then update your
+client config. Stdio hosts need none of this.
 
 #### What `boss mcp stop` owns, and what it leaves alone
 
@@ -144,7 +176,7 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 ## Modes
 
 - **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
-- **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port) serves `/mcp` and `/healthz`, useful for `curl` or a browser-based MCP inspector. Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
+- **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port; non-loopback addresses are refused) serves `/mcp`, `/healthz` and `/buildinfo`, useful for `curl` or a browser-based MCP inspector. `/mcp` requires `Authorization: Bearer <token>` (see [Authenticating HTTP clients](#authenticating-http-clients)). Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
 Pass `--read-only` to register only the 29 read-only tools; mutating and destructive tools then never appear in `tools/list`.
 

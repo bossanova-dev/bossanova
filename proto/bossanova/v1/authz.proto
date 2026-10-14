@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "google/protobuf/descriptor.proto";
+
+// AuthzLevel is the coarse identity an RPC requires before its handler runs.
+// bosso's authorization interceptor reads it from each OrchestratorService
+// method's options and refuses a call whose authenticated identity does not
+// meet it. Handlers keep their own record- and organization-level checks; the
+// level only states the floor every call must clear.
+//
+// A daemon-token identity satisfies only DAEMON and USER_OR_DAEMON.
+enum AuthzLevel {
+  // Fail-closed: a method declaring no level (or this value) is refused.
+  AUTHZ_LEVEL_UNSPECIFIED = 0;
+  // No identity required.
+  AUTHZ_LEVEL_PUBLIC = 1;
+  // An authenticated user (OIDC JWT), in any organization state.
+  AUTHZ_LEVEL_USER = 2;
+  // A daemon session token only.
+  AUTHZ_LEVEL_DAEMON = 3;
+  // Either a user or a daemon session token.
+  AUTHZ_LEVEL_USER_OR_DAEMON = 4;
+  // A user whose organization claim is valid and who belongs to at least one
+  // organization. The handler still authorizes the organization it acts on.
+  AUTHZ_LEVEL_ORG_MEMBER = 5;
+  // A user who owns the organization their token claims.
+  AUTHZ_LEVEL_ORG_OWNER = 6;
+}
+
+extend google.protobuf.MethodOptions {
+  // authz_level declares the identity an RPC requires. Field number from the
+  // 50000-99999 range reserved for an organization's own options.
+  AuthzLevel authz_level = 51001;
+}

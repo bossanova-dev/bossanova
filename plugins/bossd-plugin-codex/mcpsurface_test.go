@@ -437,3 +437,106 @@ func TestDescribeMCPSurfaceNeverEchoesProbeEnv(t *testing.T) {
 		t.Fatal("the response echoed a probe_env value")
 	}
 }
+
+// TestDescribeMCPSurfaceAppliesTrustBeforeProbing pins BOS-1562 for the MCP
+// surface probe: like the headless preflight it starts `codex app-server` in
+// the work dir, which loads a trusted worktree's .codex/config.toml (and
+// spawns its MCP commands). The chat's decision therefore reaches both the
+// plugin's and the probe's Codex home BEFORE the probe runs: REVOKE drops a
+// stale pre-trust, GRANT writes "trusted" back over the explicit "untrusted"
+// entry an earlier REVOKE left (the repo was re-trusted), and UNSPECIFIED
+// leaves the config alone.
+func TestDescribeMCPSurfaceAppliesTrustBeforeProbing(t *testing.T) {
+	for _, tc := range []struct {
+		decision    bossanovav1.ProjectTrustDecision
+		startLevel  string
+		wantTrusted bool
+	}{
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED, codexTrustedProjectLevel, true},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT, codexUntrustedProjectLevel, true},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE, codexTrustedProjectLevel, false},
+	} {
+		t.Run(tc.decision.String(), func(t *testing.T) {
+			baseHome := t.TempDir()
+			t.Setenv("CODEX_HOME", baseHome)
+			accountHome := t.TempDir()
+			workDir := t.TempDir()
+			start := `[projects."` + tomlBasicStringEscape(workDir) + `"]` + "\ntrust_level = \"" + tc.startLevel + "\"\n"
+			for _, home := range []string{baseHome, accountHome} {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(start), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			probed := false
+			srv := newTestServer(t)
+			srv.operationRegistry = runtimeOperationRegistryFunc(func(_ context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
+				probed = true
+				for name, home := range map[string]string{"account": target.Home, "base": baseHome} {
+					got, err := os.ReadFile(filepath.Join(home, "config.toml"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Trusted means a "trusted" entry and no "untrusted" one
+					// left behind under any spelling of the work dir.
+					config := string(got)
+					trusted := strings.Contains(config, `trust_level = "trusted"`) && !strings.Contains(config, `trust_level = "untrusted"`)
+					if trusted != tc.wantTrusted {
+						t.Errorf("%s Codex home trusts the work dir at probe time = %v, want %v:\n%s", name, trusted, tc.wantTrusted, got)
+					}
+				}
+				return runtimeOperationSurface{Source: codexOperationRegistrySource}, nil
+			})
+
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+				WorkDir:      workDir,
+				ProbeEnv:     map[string]string{"CODEX_HOME": accountHome},
+				ProjectTrust: tc.decision,
+			})
+			if err != nil {
+				t.Fatalf("DescribeMCPSurface: %v", err)
+			}
+			if resp.GetProbeError() != "" {
+				t.Fatalf("probe_error = %q", resp.GetProbeError())
+			}
+			if !probed {
+				t.Fatal("DescribeMCPSurface never probed the runtime")
+			}
+		})
+	}
+}
+
+// TestDescribeMCPSurfaceRevokeFailureSkipsProbe pins the fail-closed half: a
+// revoke that cannot be applied must not fall through to a probe that would
+// load the untrusted repo's own configuration. It is reported in-band as
+// probe_error, like any probe that could not run.
+func TestDescribeMCPSurfaceRevokeFailureSkipsProbe(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	// A config whose project table is an inline table cannot be edited safely,
+	// so the revoke refuses.
+	workDir := t.TempDir()
+	config := `projects = { "` + tomlBasicStringEscape(workDir) + `" = { trust_level = "trusted" } }` + "\n"
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probed := false
+	srv := newTestServer(t)
+	srv.operationRegistry = runtimeOperationRegistryFunc(func(context.Context, codexRuntimeTarget) (runtimeOperationSurface, error) {
+		probed = true
+		return runtimeOperationSurface{}, nil
+	})
+	resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{
+		WorkDir:      workDir,
+		ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+	})
+	if err != nil {
+		t.Fatalf("DescribeMCPSurface: %v", err)
+	}
+	if probed {
+		t.Fatal("DescribeMCPSurface probed after its revoke failed")
+	}
+	if !strings.Contains(resp.GetProbeError(), "untrust codex worktree") {
+		t.Fatalf("probe_error = %q, want the revoke failure", resp.GetProbeError())
+	}
+}

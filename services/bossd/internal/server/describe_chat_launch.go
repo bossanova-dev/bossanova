@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/repotrust"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -64,7 +65,12 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	if model == "" {
 		model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
 	}
-	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", model, effort, nil)
+	// A preview neither pre-trusts nor revokes the worktree — persisted trust
+	// is a side effect of a real launch — but a launch that would run untrusted
+	// carries a per-process override in its argv, so the preview asks for that
+	// override without persisting anything (repotrust.PreviewFor, BOS-1562).
+	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "describe chat launch", s.logger)
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", model, effort, nil, repotrust.PreviewFor(repo, sess.WorktreePath))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

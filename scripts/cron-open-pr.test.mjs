@@ -23,5 +23,5 @@ test('hasOpenCronPR matches open PR head refs by cron slug prefix', () => {
   assert.equal(hasOpenCronPR(prs, 'BS Sweep Mutation!'), true)
   assert.equal(hasOpenCronPR(prs, 'Bossanova sweep debt'), true)
   assert.equal(hasOpenCronPR(prs, ['Bossanova sweep mutation', 'bs-sweep-mutation']), true)
-  assert.equal(hasOpenCronPR(prs, 'bs-sweep-security'), false)
+  assert.equal(hasOpenCronPR(prs, 'bs-sweep-dependabot'), false)
 })

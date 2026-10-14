@@ -380,3 +380,7 @@ func waitEntered(t *testing.T, p *blockingMergeProvider) {
 		t.Fatal("timed out waiting for a merge to enter its critical section")
 	}
 }
+
+func (p *blockingMergeProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
+	return nil, nil
+}

@@ -45,7 +45,12 @@ type DisplayEntry struct {
 	// DisplayStatusNeedsHuman (and possibly empty there). Like Mergeable it is
 	// refreshed by every poll via Set, not preserved.
 	VerifyReason string
-	UpdatedAt    time.Time
+	// VerifyLabel is the operator-written label the park carries after its
+	// codes (empty when it names none). Refreshed by every poll, like
+	// VerifyReason. Cached for the session read path only: no client
+	// projection reads it yet (HydrateVerifyAttention names codes alone).
+	VerifyLabel string
+	UpdatedAt   time.Time
 }
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.
@@ -118,6 +123,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		HeadSHA:             info.HeadSHA,
 		Mergeable:           info.Mergeable,
 		VerifyReason:        info.VerifyReason,
+		VerifyLabel:         info.VerifyLabel,
 		UpdatedAt:           time.Now(),
 	}
 	t.entries[sessionID] = newEntry
@@ -158,6 +164,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		HeadSHA:             e.HeadSHA,
 		Mergeable:           e.Mergeable,
 		VerifyReason:        e.VerifyReason,
+		VerifyLabel:         e.VerifyLabel,
 		UpdatedAt:           e.UpdatedAt,
 	}
 }
@@ -186,6 +193,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			HeadSHA:             e.HeadSHA,
 			Mergeable:           e.Mergeable,
 			VerifyReason:        e.VerifyReason,
+			VerifyLabel:         e.VerifyLabel,
 			UpdatedAt:           e.UpdatedAt,
 		}
 	}

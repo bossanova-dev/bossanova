@@ -203,7 +203,11 @@ func liveTempDir(t *testing.T) string {
 func liveCodexHome(t *testing.T, workDir string) string {
 	t.Helper()
 	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(setCodexProjectTrust("", workDir)), 0o600); err != nil {
+	config, err := setCodexProjectTrustLevel("", workDir, codexTrustedProjectLevel)
+	if err != nil {
+		t.Fatalf("build CODEX_HOME config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write CODEX_HOME config.toml: %v", err)
 	}
 	return home

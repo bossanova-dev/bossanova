@@ -330,12 +330,13 @@ type argvCall struct {
 	model              string
 	effort             string
 	configHomeEnv      map[string]string
+	trust              bossanovav1.ProjectTrustDecision
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv, trust: trust})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -381,6 +382,80 @@ func TestSpawnChatTmux_ForwardsConfigHomeEnvBeforeArgvBuild(t *testing.T) {
 	}
 	if got := builder.calls[0].configHomeEnv; !reflect.DeepEqual(got, map[string]string{"CODEX_HOME": "/selected/codex", "HOME": "/selected/home"}) {
 		t.Fatalf("ConfigHomeEnv = %#v, want selected homes only", got)
+	}
+}
+
+// TestSpawnChatTmux_ForwardsRepoTrust pins BOS-1562 on the attach/wake spawn
+// path: every spawn is a real launch, so the repo's trust reaches the argv
+// builder as a decision — grant for a trusted repo, revoke for an untrusted one
+// or a failed lookup (nil) — never as "unchanged", and deny (run untrusted,
+// persist nothing) when an untrusted repo's chat runs in its own checkout.
+func TestSpawnChatTmux_ForwardsRepoTrust(t *testing.T) {
+	for name, tc := range map[string]struct {
+		repo       *models.Repo
+		inCheckout bool
+		want       bossanovav1.ProjectTrustDecision
+	}{
+		"trusted":            {&models.Repo{LocalPath: t.TempDir(), IsTrusted: true}, false, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+		"untrusted":          {&models.Repo{LocalPath: t.TempDir()}, false, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+		"unresolved":         {nil, false, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+		"untrusted checkout": {&models.Repo{LocalPath: t.TempDir()}, true, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY},
+	} {
+		worktree := t.TempDir()
+		if tc.inCheckout {
+			worktree = tc.repo.LocalPath
+		}
+		builder := claudeArgvBuilder()
+		if _, err := spawnChatTmux(context.Background(), spawnDeps{
+			Tmux:        &fakeTmuxClient{available: true, hasSession: false},
+			Transcripts: &fakeTranscriptOracle{exists: false},
+			Argv:        builder,
+		}, spawnInput{
+			Chat:         newTestChat(t),
+			WorktreePath: worktree,
+			TmuxName:     "boss-agent-session-1",
+			Repo:         tc.repo,
+		}); err != nil {
+			t.Fatalf("%s: spawnChatTmux: %v", name, err)
+		}
+		if len(builder.calls) != 1 || builder.calls[0].trust != tc.want {
+			t.Fatalf("%s: BuildInteractive calls = %+v, want trust %v", name, builder.calls, tc.want)
+		}
+	}
+}
+
+// trustRecordingAgentClient records the BuildInteractiveCommand request the
+// live argv builder sends, so a test can read project_trust off the wire.
+type trustRecordingAgentClient struct {
+	*listAgentsFakeClient
+	last *bossanovav1.BuildInteractiveCommandRequest
+}
+
+func (c *trustRecordingAgentClient) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	c.last = req
+	return &bossanovav1.BuildInteractiveCommandResponse{Argv: []string{"codex"}}, nil
+}
+
+// TestLiveArgvBuilder_MapsTrustDecisionToRequest pins BOS-1562 at the plugin
+// boundary: the decision reaches the request's project_trust unchanged, so a
+// launch preview's UNSPECIFIED leaves a trusted repo's existing trust alone.
+func TestLiveArgvBuilder_MapsTrustDecisionToRequest(t *testing.T) {
+	for _, tc := range []struct {
+		trust bossanovav1.ProjectTrustDecision
+	}{
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE},
+		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY},
+	} {
+		client := &trustRecordingAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}}
+		builder := liveArgvBuilder{clients: map[string]agent.AgentRunnerClient{"codex": client}}
+		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, tc.trust); err != nil {
+			t.Fatalf("trust=%v: BuildInteractive: %v", tc.trust, err)
+		}
+		if got := client.last.GetProjectTrust(); got != tc.trust {
+			t.Errorf("ProjectTrust = %v, want %v", got, tc.trust)
+		}
 	}
 }
 

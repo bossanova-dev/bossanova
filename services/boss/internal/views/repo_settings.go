@@ -188,8 +188,9 @@ func organizationLabel(o *pb.Organization) string {
 // user can act on.
 //
 // PermissionDenied at this endpoint is not evidence of non-membership. bosso
-// raises it from two unrelated places: the cloud-access gate raises it for an
-// entitlement lapse, and only the other case is a genuine membership refusal.
+// raises it from three unrelated places: the owner gate raises it for a member
+// who is not an owner, the cloud-access gate raises it for an entitlement
+// lapse, and only the last case is a genuine membership refusal.
 // The picker offers exactly what ListOrganizations returned — organizations the
 // caller is already a member of — so for anything it can offer, "you are not a
 // member" is the one reading that is certainly wrong, and it sends the user to
@@ -201,8 +202,10 @@ func organizationLabel(o *pb.Organization) string {
 // than the membership table, so mapping a repo into any organization you were
 // not currently signed in to was refused as "membership required" — which was
 // false, and which this message had to hedge around. That gate now authorizes by
-// membership, so an entitlement lapse is the only thing left for a member to
-// check.
+// membership, so what is left for a member to check is the owner role -- mapping
+// and clearing are owner-only, because a mapping decides where other members'
+// sessions land -- and the entitlement. The code alone cannot tell those two
+// apart, so the sentence names both.
 //
 // FailedPrecondition is deliberately not classified here. bosso raises it as
 // "re-authenticate with an organization-scoped token", a better instruction than
@@ -224,7 +227,7 @@ func (m RepoSettingsModel) organizationSetRefusalMessage(err error, organization
 		return repoSettingsNotAMemberPrefix + " that organization, so the mapping was refused."
 	}
 	return "Bossanova refused the mapping to " + label +
-		". You are a member of it, so check that your Bossanova Cloud subscription is active."
+		". You are a member of it, so check that you are one of its owners and that your Bossanova Cloud subscription is active."
 }
 
 // callerOrganization reports an organization's display label and whether it is

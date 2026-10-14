@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
@@ -344,6 +345,21 @@ func TestRepairHint(t *testing.T) {
 			name: "blocked_reason_renders_blocked_hint",
 			sess: &pb.Session{
 				LastRepairBlockedReason: "chat at prompt",
+			},
+			want: "repair blocked: chat at prompt",
+		},
+		{
+			name: "blocked_on_current_head_older_round_head_kept",
+			sess: &pb.Session{
+				LastRepairBlockedReason: "chat at prompt",
+				LastRepairBlockedAt:     timestamppb.New(time.Unix(200, 0)),
+				LastRepairAttemptCount:  1,
+				LastRepairRunnerError:   "exit status 1",
+				LastRepairStartedAt:     timestamppb.New(time.Unix(100, 0)),
+				LastRepairHeadSha:       "old",
+				PrDisplayHeadSha:        "new",
+				DisplayStatus:           pb.DisplayStatus_DISPLAY_STATUS_FAILING,
+				DisplayHasFailures:      true,
 			},
 			want: "repair blocked: chat at prompt",
 		},
@@ -848,6 +864,113 @@ func TestRotationRespawnCapHint_WiredIntoWarnings(t *testing.T) {
 	})
 	if hint := rotationRespawnCapHint(healed); hint != "" {
 		t.Errorf("respawned-same-account should not warn, got %q", hint)
+	}
+}
+
+// TestRotationRespawnCapHint_EndsOnLaterAgentOutput proves the auth-wedge hint
+// is current only until any chat in the session produces real output after the
+// wedge (BOS-1535): output after the event ends it, output before it does not.
+func TestRotationRespawnCapHint_EndsOnLaterAgentOutput(t *testing.T) {
+	wedgeAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	wedged := func(activity time.Time) *pb.Session {
+		sess := rotationSession(&pb.RotationEvent{
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+			CreatedAt: timestamppb.New(wedgeAt),
+		})
+		if !activity.IsZero() {
+			sess.LastAgentActivityAt = timestamppb.New(activity)
+		}
+		return sess
+	}
+	if hint := rotationRespawnCapHint(wedged(wedgeAt.Add(time.Minute))); hint != "" {
+		t.Errorf("output after the wedge should end it, got %q", hint)
+	}
+	if hint := rotationRespawnCapHint(wedged(wedgeAt.Add(-time.Minute))); hint == "" {
+		t.Error("output before the wedge must not end it")
+	}
+	if hint := rotationRespawnCapHint(wedged(time.Time{})); hint == "" {
+		t.Error("no output since the wedge must keep it")
+	}
+}
+
+// TestRotationRespawnCapHint_EndsWhenPRDone proves a merged or closed PR ends
+// the auth-wedge hint with no output since, the same recovery rule the session
+// timeline applies (alertstate.WedgeRecovery).
+func TestRotationRespawnCapHint_EndsWhenPRDone(t *testing.T) {
+	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_MERGED, pb.DisplayStatus_DISPLAY_STATUS_CLOSED} {
+		sess := rotationSession(&pb.RotationEvent{
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+			CreatedAt: timestamppb.New(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)),
+		})
+		sess.DisplayStatus = status
+		if hint := rotationRespawnCapHint(sess); hint != "" {
+			t.Errorf("%v PR should end the wedge, got %q", status, hint)
+		}
+	}
+}
+
+// TestRotationHistoryBlock_KeepsEndedWedge proves history is not current state:
+// once later agent output ends the auth wedge, the hint goes but the rotation
+// history still lists the wedge event (BOS-1535).
+func TestRotationHistoryBlock_KeepsEndedWedge(t *testing.T) {
+	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
+	wedgeAt := now.Add(-2 * time.Hour)
+	sess := rotationSession(&pb.RotationEvent{
+		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+		CreatedAt: timestamppb.New(wedgeAt),
+	})
+	sess.LastAgentActivityAt = timestamppb.New(wedgeAt.Add(10 * time.Minute))
+
+	if hint := rotationRespawnCapHint(sess); hint != "" {
+		t.Fatalf("wedge should no longer be current, got %q", hint)
+	}
+	got := rotationHistoryBlock(sess, 80, now)
+	if !strings.Contains(got, "auth-wedge respawn cap reached") {
+		t.Fatalf("rotation history lost the ended wedge event: %q", got)
+	}
+}
+
+// issue2986Session is #2986's shape: a respawn-cap wedge, a stored repair
+// failure plus a stall-overlaid blocked reason, all raised on head aaa111.
+// advanced moves the PR head on and has a chat produce output after the wedge.
+func issue2986Session(advanced bool) *pb.Session {
+	wedgeAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	sess := &pb.Session{
+		DisplayStatus:           pb.DisplayStatus_DISPLAY_STATUS_FAILING,
+		DisplayHasFailures:      true,
+		LastRepairHeadSha:       "aaa111",
+		PrDisplayHeadSha:        "aaa111",
+		LastRepairAttemptCount:  2,
+		LastRepairExitError:     "exit status 1",
+		LastRepairBlockedReason: "repair stalled: no output and no head advance for 8m",
+		RotationEvents: []*pb.RotationEvent{{
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
+			CreatedAt: timestamppb.New(wedgeAt),
+		}},
+	}
+	if advanced {
+		sess.PrDisplayHeadSha = "bbb222"
+		sess.LastAgentActivityAt = timestamppb.New(wedgeAt.Add(30 * time.Minute))
+	}
+	return sess
+}
+
+// TestSessionWarningHints_Issue2986StaleAlertsClear is the #2986 regression: two
+// hours after the wedge and the stall, with the head advanced and the agent
+// producing output again, neither "auth wedge unresolved" nor a repair line may
+// render. The un-advanced control proves both hints are otherwise present.
+func TestSessionWarningHints_Issue2986StaleAlertsClear(t *testing.T) {
+	stale := issue2986Session(false)
+	texts := strings.Join(sessionWarningHintTexts(stale), "\n")
+	if !strings.Contains(texts, "auth wedge unresolved") || !strings.Contains(texts, "repair stalled") {
+		t.Fatalf("control: un-advanced #2986 session should show both alerts, got %q", texts)
+	}
+
+	ended := issue2986Session(true)
+	for _, hint := range sessionWarningHintTexts(ended) {
+		if strings.Contains(hint, "auth wedge") || strings.Contains(hint, "repair") {
+			t.Errorf("#2986: stale alert still rendered after its condition ended: %q", hint)
+		}
 	}
 }
 
@@ -1613,6 +1736,201 @@ func TestWarningHintStyle_MergedRowStillFades(t *testing.T) {
 	}
 	if got, want := warningHintStyle(neither, exempt).Render(text), styleStatusDanger.Render(text); got != want {
 		t.Errorf("neither merged nor live: rendered %q, want full danger %q", got, want)
+	}
+}
+
+// assertWarningTierStylesDiffer extends assertFadedStylesDiffer to the warning
+// tier (BOS-1522): every verify-park assertion compares a warning style against
+// a danger style, so if the two tiers rendered identically — or the warning fade
+// were a no-op — those comparisons would pass vacuously.
+func assertWarningTierStylesDiffer(t *testing.T) {
+	t.Helper()
+	assertFadedStylesDiffer(t)
+	const probe = "probe"
+	if styleStatusWarning.Render(probe) == styleStatusDanger.Render(probe) {
+		t.Fatalf("styleStatusWarning and styleStatusDanger render identically (%q) — warning-vs-danger assertions would be vacuous",
+			styleStatusWarning.Render(probe))
+	}
+	if styleStatusWarningFaded.Render(probe) == styleStatusWarning.Render(probe) {
+		t.Fatalf("styleStatusWarningFaded and styleStatusWarning render identically (%q) — fade assertions on the warning tier would be vacuous",
+			styleStatusWarning.Render(probe))
+	}
+	if styleStatusWarningFaded.Render(probe) == styleStatusDangerFaded.Render(probe) {
+		t.Fatalf("styleStatusWarningFaded and styleStatusDangerFaded render identically (%q)",
+			styleStatusWarningFaded.Render(probe))
+	}
+}
+
+// verifyParkSession builds the session shape the bossd verify-park overlay
+// produces (HydrateVerifyAttention): NEEDS_HUMAN display status on a live
+// (non-orphaned) session carrying an AWAITING_HUMAN_INPUT attention whose summary
+// is "needs human: <reason>".
+func verifyParkSession(label string) *pb.Session {
+	return &pb.Session{
+		Id:            "verify-park",
+		Title:         "verify park",
+		State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		DisplayLabel:  label,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			Summary:        "needs human: ledger-open",
+		},
+	}
+}
+
+// soleHint returns the session's only warning hint, failing when there is not
+// exactly one.
+func soleHint(t *testing.T, sess *pb.Session) sessionHint {
+	t.Helper()
+	hints := sessionWarningHints(sess)
+	if len(hints) != 1 {
+		t.Fatalf("sessionWarningHints len = %d, want 1: %+v", len(hints), hints)
+	}
+	return hints[0]
+}
+
+// TestWarningHintStyle_VerifyParkRendersWarningTier is the BOS-1522 fix: the
+// verify-park "needs human: …" hint renders in the warning tone — matching the
+// row's warning STATUS label and "!" — at full intensity on a non-live row and
+// faded on a live-activity row, through both render sites.
+func TestWarningHintStyle_VerifyParkRendersWarningTier(t *testing.T) {
+	assertWarningTierStylesDiffer(t)
+	tests := []struct {
+		name   string
+		label  string
+		want   lipgloss.Style
+		reject []lipgloss.Style
+	}{
+		{name: "non-live needs human row", label: "needs human", want: styleStatusWarning,
+			reject: []lipgloss.Style{styleStatusDanger, styleStatusDangerFaded, styleStatusWarningFaded}},
+		{name: "live waiting row", label: "waiting", want: styleStatusWarningFaded,
+			reject: []lipgloss.Style{styleStatusDanger, styleStatusDangerFaded, styleStatusWarning}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := verifyParkSession(tt.label)
+			hint := soleHint(t, sess)
+			if !hint.NeedsHuman {
+				t.Fatalf("verify-park hint %q is not flagged NeedsHuman", hint.Text)
+			}
+			got := warningHintStyle(sess, hint).Render(hint.Text)
+			if want := tt.want.Render(hint.Text); got != want {
+				t.Errorf("warningHintStyle rendered %q, want %q", got, want)
+			}
+			for _, unwanted := range tt.reject {
+				if got == unwanted.Render(hint.Text) {
+					t.Errorf("warningHintStyle rendered with an unwanted style: %q", got)
+				}
+			}
+			block := selectedSessionWarningBlock(sess, nil, len(hint.Text))
+			if want := tt.want.Width(len(hint.Text)).Render(hint.Text); block != want {
+				t.Errorf("selectedSessionWarningBlock = %q, want %q", block, want)
+			}
+		})
+	}
+}
+
+// TestWarningHintStyle_VerifyParkMergedRowFadesWarning pins the style gate's
+// axis independence: for a hint built while the session was verify-parked
+// (NeedsHuman set), the merged/closed demotion fades it without dropping its
+// warning tone tier. This is a unit-level property of warningHintStyle; a
+// session whose DisplayStatus is already MERGED/CLOSED is not verify-park
+// attention, so its hint is built danger-tier and fades to danger-faded (see
+// the reachable-production assertion below).
+func TestWarningHintStyle_VerifyParkMergedRowFadesWarning(t *testing.T) {
+	assertWarningTierStylesDiffer(t)
+	sess := verifyParkSession("needs human")
+	hint := soleHint(t, sess)
+	sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
+	if got, want := warningHintStyle(sess, hint).Render(hint.Text), styleStatusWarningFaded.Render(hint.Text); got != want {
+		t.Errorf("NeedsHuman hint on merged row: rendered %q, want faded warning %q", got, want)
+	}
+
+	// Reachable production behaviour: the hint is derived from the
+	// already-merged session, so it is not verify-park attention.
+	merged := verifyParkSession("needs human")
+	merged.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
+	mergedHint := soleHint(t, merged)
+	if mergedHint.NeedsHuman {
+		t.Fatalf("merged session hint %q flagged NeedsHuman; merged rows are not verify-park attention", mergedHint.Text)
+	}
+	if got, want := warningHintStyle(merged, mergedHint).Render(mergedHint.Text), styleStatusDangerFaded.Render(mergedHint.Text); got != want {
+		t.Errorf("merged session: rendered %q, want faded danger %q", got, want)
+	}
+}
+
+// TestWarningHintStyle_VerifyParkNegativesStayDanger pins the scope: only the
+// exact verify-park triple moves to the warning tier. Each near-miss keeps its
+// red, because the discriminator is the structured status/state/reason triple,
+// never the summary text.
+func TestWarningHintStyle_VerifyParkNegativesStayDanger(t *testing.T) {
+	assertWarningTierStylesDiffer(t)
+	tests := []struct {
+		name   string
+		mutate func(*pb.Session)
+	}{
+		{name: "orphaned session", mutate: func(s *pb.Session) {
+			s.State = pb.SessionState_SESSION_STATE_ORPHANED
+		}},
+		{name: "awaiting human input without NEEDS_HUMAN display status", mutate: func(s *pb.Session) {
+			s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_PASSING
+		}},
+		{name: "blocked hint on a NEEDS_HUMAN session", mutate: func(s *pb.Session) {
+			s.AttentionStatus.Reason = pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS
+			s.AttentionStatus.Summary = "blocked after 5 attempts"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := verifyParkSession("needs human")
+			tt.mutate(sess)
+			hint := soleHint(t, sess)
+			if hint.NeedsHuman {
+				t.Fatalf("hint %q flagged NeedsHuman on a non-verify-park session", hint.Text)
+			}
+			got := warningHintStyle(sess, hint).Render(hint.Text)
+			if want := styleStatusDanger.Render(hint.Text); got != want {
+				t.Errorf("warningHintStyle rendered %q, want full danger %q", got, want)
+			}
+			block := selectedSessionWarningBlock(sess, nil, len(hint.Text))
+			if want := styleStatusDanger.Width(len(hint.Text)).Render(hint.Text); block != want {
+				t.Errorf("selectedSessionWarningBlock = %q, want full danger %q", block, want)
+			}
+		})
+	}
+}
+
+// TestSelectedSessionWarningBlock_VerifyParkMixedRow is the mixed case: a
+// verify-park hint beside an exempt setup-error hint renders exactly one warning
+// line and one danger line, and the home table resolves the same style per hint.
+func TestSelectedSessionWarningBlock_VerifyParkMixedRow(t *testing.T) {
+	assertWarningTierStylesDiffer(t)
+	sess := verifyParkSession("needs human")
+	sess.SetupError = "npm install failed: ENOENT"
+	hints := sessionWarningHints(sess)
+	if len(hints) != 2 {
+		t.Fatalf("sessionWarningHints len = %d, want 2 (verify-park + setup error): %+v", len(hints), hints)
+	}
+	var warning, danger int
+	for _, h := range hints {
+		got := warningHintStyle(sess, h).Render(h.Text)
+		switch got {
+		case styleStatusWarning.Render(h.Text):
+			warning++
+		case styleStatusDanger.Render(h.Text):
+			danger++
+		default:
+			t.Fatalf("hint %q rendered with neither full warning nor full danger: %q", h.Text, got)
+		}
+		block := selectedSessionWarningBlock(sess, nil, len(h.Text))
+		if !strings.Contains(block, strings.TrimSpace(got)) {
+			t.Errorf("selected block %q does not carry the home table's styling of %q (%q)", block, h.Text, got)
+		}
+	}
+	if warning != 1 || danger != 1 {
+		t.Fatalf("warning = %d, danger = %d, want exactly one of each", warning, danger)
 	}
 }
 

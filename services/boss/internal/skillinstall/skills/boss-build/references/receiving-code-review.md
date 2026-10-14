@@ -17,12 +17,6 @@ WHEN receiving code review feedback:
 6. IMPLEMENT: One item at a time, test each
 ```
 
-## Within-Run Observations
-
-When the fix brief includes carried observations, treat them as constraints on what the fix may
-write. Verify the current premise first, then avoid introducing the named defect class while making
-the fix.
-
 ## Forbidden Responses
 
 **NEVER:**
@@ -93,10 +87,12 @@ dir, outside the worktree, which survives the fresh shell each later block runs 
 `git rev-parse --git-dir` resolves per worktree, so a repair pass in a worktree reads that run's
 verdict and never a sibling session's.
 
-`REVIEW_VERDICT` is exactly one of `clean`, `capped`, or `none`: the `case` that writes it collapses
-`dispatch-failure`, and anything else it cannot classify, to `none`. boss-build's Preflight clears any
-note a previous run left, so the file can never carry a stale verdict across runs. The note is
-advisory routing input only — it never substitutes for the file verdict Step 6 itself routes on.
+`REVIEW_VERDICT` is exactly one of `clean`, `capped`, `none`, or `disabled` (`BOSS_BS_REVIEW=0`):
+it maps the verdict's `review-verdict.mjs status` (`pass` → `clean`, `blocked` → `capped`, anything
+else → `none`). boss-build's Preflight clears any note a previous run left, so the file can never carry a
+stale verdict across runs. Paired with `boss-build-reviewed-head`, the note is the ready gate's
+only review input: `ready-gate.mjs` reads it to decide whether the head may be readied and
+receipted. It never substitutes for the file verdict Step 6 itself routes on.
 
 The note is run-scoped, not diff-scoped: it records that this run's whole-branch review passed, and
 it is deliberately not re-pinned to a later HEAD when the settle loop or a repair pass commits on

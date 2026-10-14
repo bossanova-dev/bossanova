@@ -34,6 +34,70 @@ const DEGRADED_READ_TOKEN = 'DEGRADED_READ'
 
 let contractPrinted = false
 
+// TRUSTED_AUTHOR_ASSOCIATIONS are the GitHub author associations whose review text may reach the
+// repair agent: the repository owner, organization members, and invited collaborators. Anyone can
+// review a public pull request, so feedback from every other association (CONTRIBUTOR,
+// FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE, or none reported) is dropped before it is
+// printed. Review bots are trusted separately: GitHub reports them with association NONE, and a
+// GitHub App must be installed on the repository to review it at all.
+const TRUSTED_AUTHOR_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+
+function isTrustedReviewAuthor({ association, login, isBot = false }) {
+  if (
+    TRUSTED_AUTHOR_ASSOCIATIONS.has(
+      String(association || '')
+        .trim()
+        .toUpperCase(),
+    )
+  ) {
+    return true
+  }
+  return isBot || String(login || '').endsWith('[bot]')
+}
+
+// GraphQL reports a bot under a bare login, so its identity comes from the actor's __typename.
+function isTrustedThreadComment(comment) {
+  return isTrustedReviewAuthor({
+    association: comment?.authorAssociation,
+    login: comment?.author?.login,
+    isBot: comment?.author?.__typename === 'Bot',
+  })
+}
+
+// REST spells a bot as `name[bot]` with user.type "Bot".
+function isTrustedRestComment(comment) {
+  return isTrustedReviewAuthor({
+    association: comment?.author_association,
+    login: comment?.user?.login,
+    isBot: comment?.user?.type === 'Bot',
+  })
+}
+
+// partitionTrustedThreads keeps a thread only when its opening comment is from a trusted author, and
+// strips untrusted replies from the threads it keeps, so neither an untrusted opener nor an untrusted
+// reply is ever printed or folded into a thread's disposition identity.
+function partitionTrustedThreads(threads) {
+  const trusted = []
+  let dropped = 0
+  for (const thread of threads) {
+    const nodes = thread?.comments?.nodes || []
+    if (nodes.length === 0 || !isTrustedThreadComment(nodes[0])) {
+      dropped += 1
+      continue
+    }
+    trusted.push({
+      ...thread,
+      comments: { ...thread.comments, nodes: nodes.filter(isTrustedThreadComment) },
+    })
+  }
+  return { trusted, dropped }
+}
+
+function partitionTrustedComments(comments) {
+  const trusted = comments.filter(isTrustedRestComment)
+  return { trusted, dropped: comments.length - trusted.length }
+}
+
 function printContract() {
   if (!contractPrinted) {
     console.log(`probe_contract=${CONTRACT_VERSION}`)
@@ -703,7 +767,8 @@ function fetchReviewThreads({ owner, name, pr, host }) {
                   body
                   path
                   line
-                  author { login }
+                  author { __typename login }
+                  authorAssociation
                   url
                 }
               }
@@ -883,7 +948,7 @@ function probe(context, prView) {
   const repo = `${context.owner}/${context.name}`
   const pr = context.pr || prView.number
 
-  const comments = parsePaginatedArray(
+  const allComments = parsePaginatedArray(
     runGh([
       'api',
       ...hostnameArgs(context.host),
@@ -896,6 +961,7 @@ function probe(context, prView) {
       'per_page=100',
     ]),
   )
+  const { trusted: comments, dropped: untrustedComments } = partitionTrustedComments(allComments)
 
   let threads
   try {
@@ -908,24 +974,28 @@ function probe(context, prView) {
     if (!DEGRADABLE_FAILURE_CLASSES.has(classified.failureClass)) {
       throw error
     }
-    return printDegradedProbe(context, prView, comments, {
+    return printDegradedProbe(context, prView, comments, untrustedComments, {
       ...classified,
       retryAfter: readGraphqlRetryHorizon(context) || classified.retryAfter,
     })
   }
 
-  const unresolved = threads.filter((thread) => !thread.isResolved)
+  const { trusted: unresolved, dropped: untrustedThreads } = partitionTrustedThreads(
+    threads.filter((thread) => !thread.isResolved),
+  )
   const reconciliation = reconcileReviewThreads(context, unresolved)
   const latestCommented = (prView.latestReviews || []).some(
     (review) => review.state === 'COMMENTED',
   )
-  const suspiciousZero = latestCommented && comments.length === 0 && threads.length === 0
+  // Suspicious-zero is an observation-integrity check, so it counts every comment read, trusted or not.
+  const suspiciousZero = latestCommented && allComments.length === 0 && threads.length === 0
   const degradedIdentity = context.degradedIdentity || null
 
   console.log(`repo=${repo} pr=${pr}`)
   console.log(`host=${context.host}`)
   console.log(`inline_comments=${comments.length}`)
   console.log(`review_threads=${threads.length} unresolved_threads=${unresolved.length}`)
+  printUntrustedCounts({ threads: untrustedThreads, comments: untrustedComments })
   console.log(`latest_review_commented=${latestCommented}`)
   const probeStatus = suspiciousZero ? 'suspicious_zero' : degradedIdentity ? 'degraded' : 'ok'
   console.log(`probe_status=${probeStatus}`)
@@ -997,6 +1067,13 @@ function probe(context, prView) {
   }
 }
 
+// printUntrustedCounts reports how much review feedback was dropped because its author is untrusted,
+// so the agent knows it exists without ever seeing its text.
+function printUntrustedCounts({ threads, comments }) {
+  console.log(`untrusted_threads_dropped=${threads}`)
+  console.log(`untrusted_inline_comments_dropped=${comments}`)
+}
+
 // printProbeFailureFields prints the three failure-routing fields on every path, degraded or not, so
 // a consumer can read them positionally and never has to distinguish "field absent" from "field
 // empty". A null argument means the run observed everything it needed to.
@@ -1011,7 +1088,7 @@ function printProbeFailureFields(degraded) {
 // resolved. `repair_status` therefore stays `not_evaluated` — including when REST returns zero
 // comments, because the absence of REST-visible comments is not evidence that no unresolved thread
 // exists.
-function printDegradedProbe(context, prView, comments, degraded) {
+function printDegradedProbe(context, prView, comments, untrustedComments, degraded) {
   const repo = `${context.owner}/${context.name}`
   const pr = context.pr || prView.number
   const clusters = clusterCommentsByParentage(comments)
@@ -1020,6 +1097,7 @@ function printDegradedProbe(context, prView, comments, degraded) {
   console.log(`host=${context.host}`)
   console.log(`inline_comments=${comments.length}`)
   console.log(`review_threads=unknown unresolved_threads=unknown`)
+  printUntrustedCounts({ threads: 'unknown', comments: untrustedComments })
   console.log(
     `latest_review_commented=${(prView.latestReviews || []).some((review) => review.state === 'COMMENTED')}`,
   )
@@ -1040,6 +1118,9 @@ function printDegradedProbe(context, prView, comments, degraded) {
 module.exports = {
   classifyGhFailure,
   clearDeferredResolution,
+  isTrustedReviewAuthor,
+  partitionTrustedComments,
+  partitionTrustedThreads,
   clearThreadDisposition,
   journalKey,
   listDeferredResolutions,

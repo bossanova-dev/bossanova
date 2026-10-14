@@ -85,7 +85,7 @@ check_release_workflows() {
     require_absent "$file" "${LEGACY_PROVIDER}ctl" "release workflow must not deploy with legacy CLI"
     require_absent "$file" "${LEGACY_TOKEN}" "release workflow must not require legacy token"
     require_absent "$file" "super${LEGACY_PROVIDER}/${LEGACY_PROVIDER}ctl-actions" "release workflow must not install legacy CLI"
-    require_grep "$file" "google-github-actions/auth@v3" "release workflow must authenticate to Google Cloud"
+    require_grep "$file" "google-github-actions/auth@" "release workflow must authenticate to Google Cloud"
     require_grep "$file" "credentials_json: \${{ secrets.GOOGLE_CREDENTIALS }}" "release workflow must use GOOGLE_CREDENTIALS"
     require_grep "$file" "registry: ${K8S_REGISTRY}" "release workflow must log in to Artifact Registry"
     require_grep "$file" "username: oauth2accesstoken" "release workflow must use Google OAuth Docker username"

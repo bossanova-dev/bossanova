@@ -32,6 +32,25 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// waitForStartLockAcquire blocks until the create running in the background
+// has logged that it is about to acquire the session start locks, failing the
+// test if the create returns first or never gets there.
+func waitForStartLockAcquire(t *testing.T, sink *syncBuffer, done <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(sink.String(), "acquiring session start locks") {
+		select {
+		case err := <-done:
+			t.Fatalf("create returned (%v) before reaching the start locks; log:\n%s", err, sink.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("create never reached the start locks; log:\n%s", sink.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestCreateSessionLogsBeforeAcquiringStartLocks is the AC-3 proof: lock waits
 // are visible in the daemon log BEFORE they become hangs.
 //
@@ -65,18 +84,7 @@ func TestCreateSessionLogsBeforeAcquiringStartLocks(t *testing.T) {
 	}()
 
 	// The pre-acquire line must appear while the create is still blocked.
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(sink.String(), "acquiring session start locks") {
-		select {
-		case err := <-done:
-			t.Fatalf("create returned (%v) before the lock-wait line was logged; log:\n%s", err, sink.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no lock-wait line logged while the create was blocked; log:\n%s", sink.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForStartLockAcquire(t, sink, done)
 
 	// Still blocked: the line really was emitted before acquisition, not after.
 	select {
@@ -110,14 +118,26 @@ func TestCreateSessionWarnsOnContendedStartLocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre-acquire target lock: %v", err)
 	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			release()
+		}
+	})
 
 	done := make(chan error, 1)
 	go func() {
 		done <- h.createBranchSession(context.Background(), h.repo.ID, "contended", branch)
 	}()
 
+	// Hold the lock for longer than the threshold measured from the moment the
+	// create is actually waiting on it, not from goroutine start: the create
+	// runs work before it reaches the lock (branch validation spawns git), so
+	// a fixed sleep from launch can expire before the acquire even begins.
+	waitForStartLockAcquire(t, sink, done)
 	time.Sleep(100 * time.Millisecond)
 	release()
+	released = true
 
 	if err := <-done; err != nil {
 		t.Fatalf("create = %v, want nil", err)

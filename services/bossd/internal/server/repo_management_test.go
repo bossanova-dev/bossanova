@@ -292,6 +292,7 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 	}
 	missingDir := filepath.Join(baseDir, "missing")
 	setup := "echo hi"
+	credMarker := "pw-" + "marker"
 
 	tests := []struct {
 		name       string
@@ -315,6 +316,27 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			wantErrSub: "local_path is required",
 		},
 		{
+			name:       "option-shaped clone url is rejected before cloning",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "--upload-pack=touch /tmp/pwned", LocalPath: missingDir},
+			worktrees:  &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantErrSub: "unsafe clone URL",
+			wantCode:   connect.CodeInvalidArgument,
+		},
+		{
+			name:       "ext transport clone url is rejected before cloning",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "ext::sh -c touch% /tmp/pwned", LocalPath: missingDir},
+			worktrees:  &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantErrSub: "unsafe clone URL",
+			wantCode:   connect.CodeInvalidArgument,
+		},
+		{
+			name:       "relative local path is rejected before cloning",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: "relative/repo"},
+			worktrees:  &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantErrSub: "local_path must be absolute",
+			wantCode:   connect.CodeInvalidArgument,
+		},
+		{
 			name:       "existing path not a git repo",
 			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: existingDir},
 			worktrees:  &repoMgmtWorktree{originURL: ""},
@@ -331,6 +353,18 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			req:       &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: existingDir},
 			worktrees: &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
 			wantClone: false,
+		},
+		{
+			name:      "existing clone retried with credentialed url skips clone",
+			req:       &pb.CloneAndRegisterRepoRequest{CloneUrl: "https://alice:" + credMarker + "@github.com/o/r.git", LocalPath: existingDir},
+			worktrees: &repoMgmtWorktree{originURL: "https://github.com/o/r.git"},
+			wantClone: false,
+		},
+		{
+			name:       "credentialed url does not match a different stripped origin",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "https://alice:" + credMarker + "@github.com/o/r.git", LocalPath: existingDir},
+			worktrees:  &repoMgmtWorktree{originURL: "https://github.com/other/x.git"},
+			wantErrSub: "different origin",
 		},
 		{
 			name:      "missing path clones and registers",

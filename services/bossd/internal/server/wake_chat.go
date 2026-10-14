@@ -142,6 +142,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		defaultAccountID := ""
+		// One repo lookup per spawn: the trust decision (Repo) and the env
+		// overlay (chatSpawnEnv) both read this value (BOS-1562).
+		repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "wake chat", s.logger)
 		appendPrompt, promptClasses := session.BuildAppendSystemPrompt(sess, chat.AgentSessionID, chat.AgentName, session.ResolveSubagentGrantForSpawn(s.logger))
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
 			Chat:                      chat,
@@ -150,6 +153,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			ForceFresh:                forceFresh,
 			AppendSystemPrompt:        appendPrompt,
 			AppendSystemPromptClasses: promptClasses,
+			Repo:                      repo,
 			SessionEnvFunc: func() (map[string]string, error) {
 				// The bound account's spawn env sits UNDER the managed session env
 				// so a persisted account_id gets its credentials materialized on
@@ -165,7 +169,7 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 				// session is needed, which is what keeps account last-used updates
 				// off already-live wakes.
 				defaultAccountID = s.defaultAccountIDForChat(ctx, sess, chat)
-				return s.chatSpawnEnv(ctx, sess, chat, defaultAccountID, "wake chat", recordAccountUse)
+				return s.chatSpawnEnv(ctx, sess, chat, repo, defaultAccountID, recordAccountUse)
 			},
 			Model:                  chat.Model,
 			SessionAgentName:       sess.AgentName,

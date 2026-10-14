@@ -1284,3 +1284,35 @@ func TestDispatch_InvalidatesCacheThenPollsPR(t *testing.T) {
 		t.Fatalf("steps = %v, want both a poll and a refresh of #42", steps)
 	}
 }
+
+// TestDispatch_UntrustedReviewEmitsNoRealtimeEvent pins the dispatcher seam: a
+// review webhook from an untrusted author emits no session event and fetches no
+// inline comments, so the fix loop never sees its text.
+func TestDispatch_UntrustedReviewEmitsNoRealtimeEvent(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["author_association"] = "NONE"
+		review["user"].(map[string]any)["login"] = "drive-by"
+	})
+
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(&fakePRRefresher{}, emitter, reviews, zerolog.Nop())
+
+	if err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	}); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(emitter.calls) != 0 {
+		t.Fatalf("EmitForPR call count = %d, want 0 for an untrusted review", len(emitter.calls))
+	}
+	if len(reviews.inlineCalls) != 0 || len(reviews.calls) != 0 {
+		t.Fatalf("review comment fetches = %d inline, %d full; want none", len(reviews.inlineCalls), len(reviews.calls))
+	}
+}

@@ -57,6 +57,7 @@ func (f *recordChatStoreFake) Create(_ context.Context, params db.CreateAgentCha
 		AgentSessionID: params.AgentSessionID,
 		AgentName:      params.AgentName,
 		Title:          params.Title,
+		Role:           params.Role,
 	}, nil
 }
 
@@ -128,6 +129,34 @@ func TestRecordChat_InheritsSessionAgentWhenUnset(t *testing.T) {
 	}
 	if chats.created.AgentName != "claude" {
 		t.Fatalf("Create params AgentName = %q, want %q (should inherit from session)", chats.created.AgentName, "claude")
+	}
+}
+
+func TestRecordChat_RoleDefaultsToOperatorAndHonoursAnExplicitRole(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  pb.ChatRole
+		want pb.ChatRole
+	}{
+		{"unspecified is an operator chat", pb.ChatRole_CHAT_ROLE_UNSPECIFIED, pb.ChatRole_CHAT_ROLE_OPERATOR},
+		{"verify is kept", pb.ChatRole_CHAT_ROLE_VERIFY, pb.ChatRole_CHAT_ROLE_VERIFY},
+		{"an enum value this binary does not know is an operator chat", pb.ChatRole(99), pb.ChatRole_CHAT_ROLE_OPERATOR},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: "claude"})
+			resp, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId:      "s1",
+				AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e70",
+				Title:          "verify",
+				Role:           tc.req,
+			}))
+			if err != nil {
+				t.Fatalf("RecordChat: %v", err)
+			}
+			if got := resp.Msg.GetChat().GetRole(); got != tc.want {
+				t.Fatalf("chat role = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

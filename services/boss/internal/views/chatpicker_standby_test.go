@@ -141,11 +141,11 @@ func TestWaitingHintLine_HidesStandby(t *testing.T) {
 				t.Fatalf("waitingHintLine(%q, %v) = %q, want empty", reason, demoted, got)
 			}
 		}
-		if got := sessionSubRowCount(&pb.Session{Id: "s1"}, reason); got != 0 {
-			t.Fatalf("sessionSubRowCount(%q) = %d, want 0", reason, got)
+		if got := sessionSubRowCount(&pb.Session{Id: "s1"}, reason, 60); got != 0 {
+			t.Fatalf("sessionSubRowCount(%q, 60) = %d, want 0", reason, got)
 		}
-		if got := sessionSubRowCount(&pb.Session{Id: "s1", IsWaitingDemoted: true}, reason); got != 0 {
-			t.Fatalf("demoted sessionSubRowCount(%q) = %d, want 0", reason, got)
+		if got := sessionSubRowCount(&pb.Session{Id: "s1", IsWaitingDemoted: true}, reason, 60); got != 0 {
+			t.Fatalf("demoted sessionSubRowCount(%q, 60) = %d, want 0", reason, got)
 		}
 	}
 }

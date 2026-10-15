@@ -222,15 +222,9 @@ func planLocalProject(ctx context.Context, cmd *cobra.Command, env projectApplyE
 	if err != nil {
 		return nil, errors.New("could not connect to local bossd")
 	}
-	main, err := mainCheckout(ctx, proj.checkout)
+	opts, main, warnings, err := localProjectOptions(ctx, env, proj, prune)
 	if err != nil {
 		return nil, err
-	}
-	identity, identityWarning := applyDaemonIdentity(env.export)
-	home, _ := env.export.homeDir()
-	warnings := append([]string(nil), proj.warnings...)
-	if identityWarning != "" {
-		warnings = append(warnings, identityWarning)
 	}
 
 	var factory projectconfig.FactoryResolver
@@ -242,6 +236,30 @@ func planLocalProject(ctx context.Context, cmd *cobra.Command, env projectApplyE
 			factory = r
 		}
 	}
+
+	state, err := projectconfig.ObserveLocal(ctx, proj.cfg, c, factory, opts)
+	if err != nil {
+		return nil, err
+	}
+	plan := projectconfig.PlanLocal(proj.cfg, state, opts)
+	plan.Warnings = append(warnings, plan.Warnings...)
+	return &projectRun{proj: proj, c: c, state: state, plan: plan}, nil
+}
+
+// localProjectOptions gives planning and the pre-write branch check the same
+// daemon identity and target-checkout resolution.
+func localProjectOptions(ctx context.Context, env projectApplyEnv, proj *loadedProject, prune bool) (projectconfig.LocalOptions, string, []string, error) {
+	main, err := mainCheckout(ctx, proj.checkout)
+	if err != nil {
+		return projectconfig.LocalOptions{}, "", nil, err
+	}
+	identity, identityWarning := applyDaemonIdentity(env.export)
+	home, _ := env.export.homeDir()
+	warnings := append([]string(nil), proj.warnings...)
+	if identityWarning != "" {
+		warnings = append(warnings, identityWarning)
+	}
+
 	opts := projectconfig.LocalOptions{
 		Daemon:       identity,
 		CheckoutPath: main,
@@ -250,13 +268,26 @@ func planLocalProject(ctx context.Context, cmd *cobra.Command, env projectApplyE
 		Secrets:      projectconfig.EnvResolver(env.getenv),
 		MainCheckout: mainCheckout,
 	}
-	state, err := projectconfig.ObserveLocal(ctx, proj.cfg, c, factory, opts)
+	return opts, main, warnings, nil
+}
+
+// observeProjectBranchState reads only daemon state: factory resolution needs
+// the skills config that init has not written yet. Failures retain the
+// pre-check's file/origin-HEAD fallback.
+func observeProjectBranchState(ctx context.Context, cmd *cobra.Command, env projectApplyEnv, proj *loadedProject) *projectconfig.LocalState {
+	c, err := newClient(cmd)
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	plan := projectconfig.PlanLocal(proj.cfg, state, opts)
-	plan.Warnings = append(warnings, plan.Warnings...)
-	return &projectRun{proj: proj, c: c, state: state, plan: plan}, nil
+	opts, _, _, err := localProjectOptions(ctx, env, proj, false)
+	if err != nil {
+		return nil
+	}
+	state, err := projectconfig.ObserveLocal(ctx, proj.cfg, c, nil, opts)
+	if err != nil {
+		return nil
+	}
+	return state
 }
 
 func hasFactoryCron(cfg *projectconfig.Config) bool {
@@ -285,6 +316,22 @@ func onDefaultBranch(have, want string) bool {
 	return have != "" && want != "" && have == want
 }
 
+// projectDefaultBranch resolves the trust gate's default branch from the
+// file, registration, daemon detection, then the checkout's origin HEAD.
+// A nil state retains the file and origin HEAD fallback.
+func projectDefaultBranch(ctx context.Context, env projectApplyEnv, proj *loadedProject, state *projectconfig.LocalState) string {
+	if want := state.DefaultBranch(proj.cfg); want != "" {
+		return want
+	}
+	return env.originHead(ctx, proj.checkout)
+}
+
+func projectBranchCheck(ctx context.Context, env projectApplyEnv, proj *loadedProject, state *projectconfig.LocalState) (have, want string, ok bool) {
+	have = env.branch(ctx, proj.checkout)
+	want = projectDefaultBranch(ctx, env, proj, state)
+	return have, want, onDefaultBranch(have, want)
+}
+
 // errProjectNotConfirmed is a declined or unconfirmable plan.
 var errProjectNotConfirmed = errors.New("project config not applied")
 
@@ -292,11 +339,8 @@ func checkProjectTrust(ctx context.Context, cmd *cobra.Command, env projectApply
 	if !run.hasWrites() {
 		return nil
 	}
-	want := run.state.DefaultBranch(run.proj.cfg)
-	if want == "" {
-		want = env.originHead(ctx, run.proj.checkout)
-	}
-	if have := env.branch(ctx, run.proj.checkout); !onDefaultBranch(have, want) && !trust.allowBranch {
+	have, want, onDefault := projectBranchCheck(ctx, env, run.proj, run.state)
+	if !onDefault && !trust.allowBranch {
 		where := fmt.Sprintf("on branch %q", have)
 		if have == "" {
 			where = "not on a branch"

@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,15 +13,22 @@ import (
 )
 
 // seedChatPickerParked returns a picker whose session carries the verify-park
-// attention on PR #42, the state [m]approve exists for.
+// attention on PR #42, the state [m]erge approves the park for. The park only
+// asks for a UI sign-off.
 func seedChatPickerParked(stub *chatPickerStub) ChatPickerModel {
+	return seedChatPickerParkedWith(stub, "needs human: human-review:ui")
+}
+
+// seedChatPickerParkedWith is seedChatPickerParked with the park's attention
+// summary, in the daemon's "needs human: <codes>" shape.
+func seedChatPickerParkedWith(stub *chatPickerStub, summary string) ChatPickerModel {
 	prNum := int32(42)
 	m := seedChatPicker(stub, statusWorking)
 	m.session = &pb.Session{
 		Id:              "session-1",
 		PrNumber:        &prNum,
 		DisplayStatus:   pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
-		AttentionStatus: &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT},
+		AttentionStatus: &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT, Summary: summary},
 	}
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
 	return updated.(ChatPickerModel)
@@ -48,15 +56,24 @@ func approveThroughConfirm(t *testing.T, m ChatPickerModel) ChatPickerModel {
 	return updated.(ChatPickerModel)
 }
 
-func TestChatPicker_ParkedPROffersApproveOnTheMergeKey(t *testing.T) {
+// assertNoApproveWording fails when the rendered picker names an approval: the
+// parked-PR [m]erge runs one, but the TUI presents it only as a merge.
+func assertNoApproveWording(t *testing.T, m ChatPickerModel) {
+	t.Helper()
+	if got := m.View().Content; strings.Contains(strings.ToLower(got), "approv") {
+		t.Fatalf("the picker still says approve:\n%s", got)
+	}
+}
+
+func TestChatPicker_ParkedPROffersMergeOnTheMergeKey(t *testing.T) {
 	m := seedChatPickerParked(&chatPickerStub{})
 	if !m.canApprove() || m.canMerge() {
 		t.Fatalf("canApprove=%v canMerge=%v, want approve only on a parked PR", m.canApprove(), m.canMerge())
 	}
-	rendered := m.View().Content
-	if !strings.Contains(rendered, "[m]approve") || strings.Contains(rendered, "[m]erge") {
-		t.Fatalf("action bar on a parked PR should offer [m]approve, not [m]erge:\n%s", rendered)
+	if rendered := m.View().Content; !strings.Contains(rendered, "[m]erge") {
+		t.Fatalf("action bar on a parked PR should offer [m]erge:\n%s", rendered)
 	}
+	assertNoApproveWording(t, m)
 }
 
 func TestChatPicker_ApproveNeedsTheVerifyPark(t *testing.T) {
@@ -81,14 +98,71 @@ func TestChatPicker_ApproveConfirmNamesWhatHappensAndCancels(t *testing.T) {
 	m := seedChatPickerParked(stub)
 	updated, _ := m.Update(keyPress('m'))
 	m = updated.(ChatPickerModel)
-	if got := m.View().Content; !strings.Contains(got, "Approve PR #42? Verify waives its needs-human park on the current head, then re-checks and merges it.") ||
-		!strings.Contains(got, "[y/enter] confirm  [n/esc] cancel") {
+	if got := stripANSI(m.View().Content); !strings.Contains(got, "Merge PR #42? Verify waives its park on the current head, re-checks it, then merges:") ||
+		!strings.Contains(got, "human-review:ui: a UI change; watch the evidence before it merges") ||
+		!strings.Contains(got, "[y/enter] confirm  [n/esc] cancel") || strings.Contains(got, "overrides") {
 		t.Fatalf("approve confirm not rendered:\n%s", got)
 	}
+	assertNoApproveWording(t, m)
 	updated, cmd := m.Update(keyPress('n'))
 	m = updated.(ChatPickerModel)
 	if cmd != nil || m.approving || m.confirm != confirmNone || len(stub.approveCalls) != 0 {
 		t.Fatalf("declining approved anyway: cmd=%v approving=%v calls=%v", cmd != nil, m.approving, stub.approveCalls)
+	}
+}
+
+// TestChatPicker_ApproveOverAFailureNamesItAndDefaultsToCancel is the failure
+// half of the confirm: each code in plain words, which failure merging
+// overrides, the send-back alternative, and enter cancels where y merges.
+func TestChatPicker_ApproveOverAFailureNamesItAndDefaultsToCancel(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPickerParkedWith(stub, "needs human: human-review:ui,ledger-open")
+	// More chats than the terminal holds, so the table height is bound by the
+	// footer reservation rather than by the row count.
+	chats := make([]*pb.ClaudeChat, 40)
+	for i := range chats {
+		chats[i] = &pb.ClaudeChat{SessionId: "session-1", AgentSessionId: fmt.Sprintf("agent-%d", i), Title: fmt.Sprintf("chat %d", i)}
+	}
+	updated, _ := m.Update(chatsListedMsg{chats: chats})
+	m = updated.(ChatPickerModel)
+	heightBefore := m.table.Height()
+	updated, _ = m.Update(keyPress('m'))
+	m = updated.(ChatPickerModel)
+	got := stripANSI(m.View().Content)
+	if lines := strings.Count(strings.TrimRight(got, "\n"), "\n") + 1; lines > 30 {
+		t.Fatalf("the confirm pushed the view to %d lines on a 30-line terminal:\n%s", lines, got)
+	}
+	for _, want := range []string{
+		"Merge PR #42 anyway? Verify waives its park on the current head",
+		"ledger-open: review left must-fix findings open",
+		"human-review:ui: a UI change; watch the evidence before it merges",
+		"Merging overrides ledger-open (review left must-fix findings open).",
+		`To send it back instead: boss pr send-back 42 "<note>"`,
+		"[y] merge anyway  [n/enter/esc] cancel",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("failure confirm missing %q:\n%s", want, got)
+		}
+	}
+	assertNoApproveWording(t, m)
+	if m.table.Height() >= heightBefore {
+		t.Fatalf("table height %d with the confirm open, want it shrunk below %d for the code lines", m.table.Height(), heightBefore)
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(ChatPickerModel)
+	if cmd != nil || m.approving || m.confirm != confirmNone || len(stub.approveCalls) != 0 {
+		t.Fatalf("enter merged over a failure: cmd=%v approving=%v calls=%v", cmd != nil, m.approving, stub.approveCalls)
+	}
+	if m.table.Height() != heightBefore {
+		t.Fatalf("table height %d after the confirm closed, want %d restored", m.table.Height(), heightBefore)
+	}
+
+	updated, _ = m.Update(keyPress('m'))
+	updated, cmd = updated.(ChatPickerModel).Update(keyPress('y'))
+	m = updated.(ChatPickerModel)
+	if !m.approving || cmd == nil {
+		t.Fatalf("y did not merge over the failure (approving=%v, cmd nil=%v)", m.approving, cmd == nil)
 	}
 }
 
@@ -97,9 +171,10 @@ func TestChatPicker_ApproveInFlightShowsSpinnerAndSwallowsKeys(t *testing.T) {
 	updated, _ := m.Update(keyPress('m'))
 	updated, _ = updated.(ChatPickerModel).Update(keyPress('y'))
 	m = updated.(ChatPickerModel)
-	if got := m.View().Content; !strings.Contains(got, "Approving PR #42…") {
+	if got := m.View().Content; !strings.Contains(got, "Requesting merge of PR #42…") {
 		t.Fatalf("in-flight approval not shown:\n%s", got)
 	}
+	assertNoApproveWording(t, m)
 	updated, _ = m.Update(keyPress('m'))
 	if updated.(ChatPickerModel).confirm != confirmNone {
 		t.Fatal("m during an in-flight approval raised another confirm")
@@ -117,13 +192,14 @@ func TestChatPicker_ApprovedLandsTheSharedVerdictAndHidesApprove(t *testing.T) {
 	if m.approving || m.statusMsg != "" {
 		t.Fatalf("approving=%v statusMsg=%q after a successful approval", m.approving, m.statusMsg)
 	}
-	const want = "Approved #42: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge."
+	const want = "Merge requested for #42: verify waived ledger-open on head abcdef01 and will re-check and merge (record: https://x/9)."
 	if m.statusNote != want {
 		t.Fatalf("statusNote = %q, want %q", m.statusNote, want)
 	}
-	if m.canApprove() || strings.Contains(m.View().Content, "[m]approve") {
-		t.Fatal("[m]approve still offered after the approval succeeded")
+	if m.canApprove() || strings.Contains(m.View().Content, "[m]erge") {
+		t.Fatal("[m]erge still offered after the merge request succeeded")
 	}
+	assertNoApproveWording(t, m)
 }
 
 func TestChatPicker_ApproveRefusalAndErrorLandAsTheStatusLine(t *testing.T) {
@@ -133,11 +209,11 @@ func TestChatPicker_ApproveRefusalAndErrorLandAsTheStatusLine(t *testing.T) {
 		want string
 	}{
 		{"a refusal names the reason", &chatPickerStub{approveResult: &pb.VerifyApproveResult{Reason: "no-standing-park"}},
-			"PR #42 not approved: no `needs human:` park stands on the PR's current head [no-standing-park]"},
-		{"a daemon error says it could not approve", &chatPickerStub{approveErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("boss-verify toolbox not found"))},
-			"Couldn't approve: "},
+			"PR #42 not merged: no `needs human:` park stands on the PR's current head [no-standing-park]"},
+		{"a daemon error says it could not request the merge", &chatPickerStub{approveErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("boss-verify toolbox not found"))},
+			"Couldn't request the merge: "},
 		{"a timeout says the record may already be posted", &chatPickerStub{approveErr: connect.NewError(connect.CodeDeadlineExceeded, errors.New("verify-gate timed out"))},
-			"an approval record may already be posted, so approve again to confirm"},
+			"verify may already have recorded it, so merge again to confirm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := approveThroughConfirm(t, seedChatPickerParked(tc.stub))
@@ -145,8 +221,9 @@ func TestChatPicker_ApproveRefusalAndErrorLandAsTheStatusLine(t *testing.T) {
 				t.Fatalf("statusMsg = %q statusNote = %q, want %q", m.statusMsg, m.statusNote, tc.want)
 			}
 			if !m.canApprove() {
-				t.Fatal("a failed approval must leave [m]approve available to retry")
+				t.Fatal("a failed merge request must leave [m]erge available to retry")
 			}
+			assertNoApproveWording(t, m)
 		})
 	}
 }

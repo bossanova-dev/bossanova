@@ -114,6 +114,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
 		repoSettingsRowMergeStrategy,
+		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
@@ -163,6 +164,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
 		repoSettingsRowMergeStrategy,
+		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
@@ -598,6 +600,7 @@ func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
 		repoSettingsRowName,
 		repoSettingsRowSetupScript,
 		repoSettingsRowMergeStrategy,
+		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
@@ -683,6 +686,10 @@ func (s *stubRepoClient) PauseSession(context.Context, string) (*pb.Session, err
 func (s *stubRepoClient) ResumeSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) ResumeSessionRun(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
+
 func (s *stubRepoClient) RetrySession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
@@ -722,7 +729,7 @@ func (s *stubRepoClient) ResurrectSession(context.Context, string) (client.Resur
 func (s *stubRepoClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *stubRepoClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -886,3 +893,60 @@ func (s *stubRepoClient) FinishUnattendedRun(context.Context, *pb.FinishUnattend
 }
 
 func (s *stubRepoClient) SetChatPhase(context.Context, string, string, string) error { panic("unused") }
+
+func TestRepoSettings_TrustControl(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: 'y', Text: "y"}, {Code: 'Y', Text: "Y"}} {
+		t.Run(key.String(), func(t *testing.T) {
+			stub := &stubRepoClient{repos: []*pb.Repo{{Id: "repo-1"}}, updated: &pb.Repo{Id: "repo-1", IsTrusted: true}}
+			m := initSettings(t, stub)
+			if !strings.Contains(m.View().Content, "Trust this repository") {
+				t.Fatal("repository settings has no trust control")
+			}
+			cursorToRow(t, &m, repoSettingsRowIsTrusted)
+			model, cmd := m.activateRow()
+			m = model.(RepoSettingsModel)
+			if cmd != nil || stub.updateReq != nil || m.repo.IsTrusted {
+				t.Fatal("enabling trust wrote before confirmation")
+			}
+			if !strings.Contains(m.View().Content, "run commands on this machine") {
+				t.Fatal("confirmation must explain command execution")
+			}
+			model, cmd = m.Update(key)
+			m = model.(RepoSettingsModel)
+			if cmd == nil {
+				t.Fatal("confirming trust did not save")
+			}
+			model, _ = m.Update(cmd())
+			m = model.(RepoSettingsModel)
+			if stub.updateReq.IsTrusted == nil || !*stub.updateReq.IsTrusted || !m.repo.IsTrusted {
+				t.Fatal("confirmation did not persist trust")
+			}
+			model, cmd = m.activateRow()
+			m = model.(RepoSettingsModel)
+			if cmd == nil || m.trustConfirm {
+				t.Fatal("disabling trust should save immediately")
+			}
+			cmd()
+			if stub.updateReq.IsTrusted == nil || *stub.updateReq.IsTrusted {
+				t.Fatal("disabling trust did not send false")
+			}
+		})
+	}
+}
+
+func TestRepoSettings_TrustCancel(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'n', Text: "n"}, {Code: 'N', Text: "N"}} {
+		t.Run(key.String(), func(t *testing.T) {
+			stub := &stubRepoClient{repos: []*pb.Repo{{Id: "repo-1"}}}
+			m := initSettings(t, stub)
+			cursorToRow(t, &m, repoSettingsRowIsTrusted)
+			model, _ := m.activateRow()
+			m = model.(RepoSettingsModel)
+			model, cmd := m.Update(key)
+			m = model.(RepoSettingsModel)
+			if cmd != nil || stub.updateReq != nil || m.repo.IsTrusted || m.trustConfirm || m.Cancelled() {
+				t.Fatal("cancel should leave trust unchanged and return to settings")
+			}
+		})
+	}
+}

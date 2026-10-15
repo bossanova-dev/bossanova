@@ -182,12 +182,16 @@ func (m ChatPickerModel) keyOpenTracker() (tea.Model, tea.Cmd) {
 	}
 }
 
-// keyMerge handles [m]: on a verify-parked PR it raises the approve
-// confirmation, otherwise the merge confirmation when merge is available.
+// keyMerge handles [m]: on a verify-parked PR it raises the confirmation that
+// approves the park so verify merges, otherwise the merge confirmation when
+// merge is available.
 func (m ChatPickerModel) keyMerge() (tea.Model, tea.Cmd) {
 	switch {
 	case m.canApprove():
 		m.confirm = confirmApprove
+		// The park's code list grows the confirm past one line; shrink the
+		// table so the confirm does not push its last row off screen.
+		m.table.SetHeight(m.tableHeight())
 	case m.canMerge():
 		m.confirm = confirmMerge
 	}
@@ -353,7 +357,28 @@ func (m ChatPickerModel) keyOpenChat() (tea.Model, tea.Cmd) {
 // updateConfirm handles the y/n keys for whichever confirmKind is active.
 // It clears the prompt, flips any in-flight spinner, and returns the RPC cmd.
 func (m ChatPickerModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	wasApprove := m.confirm == confirmApprove
+	model, cmd := m.resolveConfirm(msg)
+	if wasApprove {
+		if next, ok := model.(ChatPickerModel); ok && next.confirm == confirmNone {
+			next.table.SetHeight(next.tableHeight())
+			return next, cmd
+		}
+	}
+	return model, cmd
+}
+
+// resolveConfirm applies one key to the active confirm. Over a park that
+// reports a failure, enter cancels rather than merging: merging over a failure
+// takes an explicit y.
+func (m ChatPickerModel) resolveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if key == "enter" && m.confirm == confirmApprove {
+		if _, overridesFailure := m.approveConfirm(); overridesFailure {
+			key = "n"
+		}
+	}
+	switch key {
 	case "y", "enter":
 		k := m.confirm
 		m.confirm = confirmNone

@@ -4197,7 +4197,15 @@ type chatsJSON struct {
 type chatJSON struct {
 	AgentSessionID string `json:"agent_session_id"`
 	Title          string `json:"title"`
-	CreatedAt      string `json:"created_at"`
+	// Role is the purpose the chat was created for ("build", "repair",
+	// "verify", "operator"); "" for a legacy chat. Key on it, not on Title,
+	// which agents and operators rename.
+	Role      string `json:"role"`
+	CreatedAt string `json:"created_at"`
+	// ReclaimedAt and ReclaimReason say automation replaced this chat on purpose
+	// (an idle agent-owned chat repair reclaimed); empty when it never was.
+	ReclaimedAt   string `json:"reclaimed_at"`
+	ReclaimReason string `json:"reclaim_reason"`
 	// Status is the trimmed enum string ("IDLE"), not the numeric value: a
 	// driver comparing against "IDLE" is the intended use, and a number would
 	// invite off-by-one coupling to the enum.
@@ -4208,8 +4216,9 @@ type chatJSON struct {
 	// staleness until the chat is IDLE. "IDLE and stale" is a sound settled
 	// gate; "stale" alone is not.
 	LastOutputAt string `json:"last_output_at"`
-	// WaitingReason explains a WAITING chat's block; empty for every other
-	// status.
+	// WaitingReason names the callback a chat has armed: the block of a WAITING
+	// chat, or the callback a WORKING chat will park on once it goes idle.
+	// Empty for every other status.
 	WaitingReason string `json:"waiting_reason"`
 	Phase         string `json:"phase"`
 	// The three liveness discriminators the daemon already computes on
@@ -4241,7 +4250,10 @@ func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntr
 		out.Chats = append(out.Chats, chatJSON{
 			AgentSessionID: chat.GetAgentSessionId(),
 			Title:          chat.GetTitle(),
+			Role:           chatRoleName(chat.GetRole()),
 			CreatedAt:      rfc3339OrEmpty(chat.GetCreatedAt()),
+			ReclaimedAt:    rfc3339OrEmpty(chat.GetReclaimedAt()),
+			ReclaimReason:  chat.GetReclaimReason(),
 			Status:         chatStatusName(st.GetStatus()),
 			LastOutputAt:   rfc3339OrEmpty(st.GetLastOutputAt()),
 			WaitingReason:  st.GetWaitingReason(),

@@ -1388,6 +1388,32 @@ func TestResurrectToState_IgnoresLiveRow(t *testing.T) {
 	}
 }
 
+// TestResurrectToState_ClearsRunBlockedReason: a resurrect starts a new agent
+// run, so a BLOCKED report the archived run left unconsumed must not carry over
+// and keep the new run's PR draft.
+func TestResurrectToState_ClearsRunBlockedReason(t *testing.T) {
+	database := setupTestDB(t)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+
+	id, _ := newResurrectTestSession(t, store, repo.ID, "resurrect-run-blocked")
+	report := strPtr("needs a product call")
+	if _, err := store.Update(ctx, id, UpdateSessionParams{RunBlockedReason: &report}); err != nil {
+		t.Fatalf("seed run_blocked_reason: %v", err)
+	}
+	if resurrected, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil || !resurrected {
+		t.Fatalf("ResurrectToState = %v, %v; want true", resurrected, err)
+	}
+	got, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get after resurrect: %v", err)
+	}
+	if got.RunBlockedReason != nil {
+		t.Fatalf("RunBlockedReason after resurrect = %q, want nil", *got.RunBlockedReason)
+	}
+}
+
 // TestRollbackFailedResurrect_RestoresOriginalArchivedAt pins the [P2] contract:
 // the row returns to the timestamp and state the failed attempt found it in, so
 // its trash age is not silently reset.
@@ -1706,5 +1732,65 @@ func TestSessionWorktreeOwnershipMigrationLeavesLegacyUnknown(t *testing.T) {
 	}
 	if at != nil || owned {
 		t.Fatal("migration claimed legacy ownership")
+	}
+}
+
+// TestRunBlockedReason_SurvivesBlockedReasonWrites: the run-blocked report has
+// its own column, so setting or clearing blocked_reason (the usage-limit park,
+// the draft-PR markers, a retry) leaves it intact on every read path until it
+// is cleared explicitly.
+func TestRunBlockedReason_SurvivesBlockedReasonWrites(t *testing.T) {
+	database := setupTestDB(t)
+	store := NewSessionStore(database)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "run-blocked",
+		WorktreePath: "/tmp/wt/run-blocked",
+		BranchName:   "feat/run-blocked",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.RunBlockedReason != nil {
+		t.Fatalf("new session RunBlockedReason = %q, want nil", *sess.RunBlockedReason)
+	}
+
+	report := strPtr("needs a product call")
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{RunBlockedReason: &report}); err != nil {
+		t.Fatalf("set run_blocked_reason: %v", err)
+	}
+	parked := strPtr("usage-limited: all accounts cooling until 12:00")
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &parked}); err != nil {
+		t.Fatalf("set blocked_reason: %v", err)
+	}
+	var cleared *string
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &cleared}); err != nil {
+		t.Fatalf("clear blocked_reason: %v", err)
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.RunBlockedReason == nil || *got.RunBlockedReason != "needs a product call" {
+		t.Fatalf("Get RunBlockedReason = %v, want the report", got.RunBlockedReason)
+	}
+	withRepo, err := store.ListActiveWithRepo(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list with repo: %v", err)
+	}
+	if len(withRepo) != 1 || withRepo[0].RunBlockedReason == nil ||
+		*withRepo[0].RunBlockedReason != "needs a product call" {
+		t.Fatalf("ListActiveWithRepo = %+v, want the report on the one row", withRepo)
+	}
+
+	if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{RunBlockedReason: &cleared}); err != nil {
+		t.Fatalf("clear run_blocked_reason: %v", err)
+	}
+	if got, err = store.Get(ctx, sess.ID); err != nil || got.RunBlockedReason != nil {
+		t.Fatalf("after clear RunBlockedReason = %v err = %v, want nil", got.RunBlockedReason, err)
 	}
 }

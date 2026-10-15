@@ -111,6 +111,10 @@ def main():
         if name == "close_stdin":
             close_stdin_after_reply = True
             result = _text("closing stdin")
+        elif name == "stop_reading":
+            _send({"jsonrpc": "2.0", "id": message["id"], "result": _text("not reading stdin")})
+            time.sleep(3600)
+            return
         else:
             result = _call(name, params.get("arguments") or {}, socket_path)
         if result is None:

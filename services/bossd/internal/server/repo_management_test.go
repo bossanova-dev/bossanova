@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -320,16 +322,17 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 	credMarker := "s3cret-pass"
 
 	tests := []struct {
-		name       string
-		req        *pb.CloneAndRegisterRepoRequest
-		worktrees  *repoMgmtWorktree
-		createErr  error
-		wantErrSub string
-		wantCode   connect.Code
-		wantClone  bool
-		wantSetup  *string
-		wantBase   string
-		wantOrigin string
+		name        string
+		req         *pb.CloneAndRegisterRepoRequest
+		worktrees   *repoMgmtWorktree
+		createErr   error
+		wantErrSub  string
+		wantCode    connect.Code
+		wantClone   bool
+		wantSetup   *string
+		wantBase    string
+		wantOrigin  string
+		wantTrusted bool
 	}{
 		{
 			name:       "empty clone url",
@@ -414,6 +417,13 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			wantBase:  seededWorktreeBase,
 		},
 		{
+			name:        "explicit trust is preserved",
+			req:         &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: missingDir, IsTrusted: proto.Bool(true)},
+			worktrees:   &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
+			wantClone:   true,
+			wantTrusted: true,
+		},
+		{
 			name:      "explicit base is preserved",
 			req:       &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: missingDir, WorktreeBaseDir: "/explicit/wt"},
 			worktrees: &repoMgmtWorktree{originURL: "git@github.com:o/r.git"},
@@ -483,6 +493,9 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			}
 			if resp.Msg.Repo == nil {
 				t.Fatal("CloneAndRegisterRepo() returned nil repo")
+			}
+			if repos.createParams.IsTrusted != tc.wantTrusted {
+				t.Fatalf("Create IsTrusted = %v, want %v", repos.createParams.IsTrusted, tc.wantTrusted)
 			}
 			if gotClone := wt.cloneCalls > 0; gotClone != tc.wantClone {
 				t.Fatalf("Clone called = %v, want %v", gotClone, tc.wantClone)

@@ -89,7 +89,8 @@ Prints the bearer token the MCP HTTP server requires on every `/mcp` request. Co
 
 **Flags:**
 
-- `--json` — Output as JSON (token, header, token_path)
+- `--json` — Output as JSON (token, header, token_path, restarted)
+- `--rotate` — Replace the token and restart a running managed MCP service
 
 ```bash
 boss mcp token

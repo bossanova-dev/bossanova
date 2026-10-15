@@ -151,7 +151,7 @@ func TestSetRPCStallForMatchesTheMethodSegmentExactly(t *testing.T) {
 	armed := time.Now()
 	d.SetRPCStallFor("Chat", stallWindow)
 
-	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", false); err != nil {
+	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", pb.ChatRole_CHAT_ROLE_OPERATOR, false); err != nil {
 		t.Fatalf("RecordChat: %v", err)
 	}
 	if waited := time.Since(armed); waited >= stallWindow {
@@ -168,7 +168,7 @@ func TestSetRPCStallForMatchesTheMethodSegmentExactly(t *testing.T) {
 	// scoping result and not a stall that silently failed to arm.
 	armed = time.Now()
 	d.SetRPCStallFor("RecordChat", stallWindow)
-	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", false); err != nil {
+	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", pb.ChatRole_CHAT_ROLE_OPERATOR, false); err != nil {
 		t.Fatalf("RecordChat: %v", err)
 	}
 	if waited := time.Since(armed); waited < stallWindow {
@@ -195,7 +195,7 @@ func TestSetRPCStallForScopesToOneProcedure(t *testing.T) {
 		t.Fatalf("ListSessions took %v under a RecordChat-scoped stall; the scope leaked", elapsed)
 	}
 
-	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", false); err != nil {
+	if _, err := c.RecordChat(ctx, "sess-1", "agent-1", "New chat", "", pb.ChatRole_CHAT_ROLE_OPERATOR, false); err != nil {
 		t.Fatalf("RecordChat: %v", err)
 	}
 	if waited := time.Since(armed); waited < stallWindow {

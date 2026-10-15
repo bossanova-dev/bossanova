@@ -518,8 +518,25 @@ type RefMsg struct {
 // transform runs after it and sees the CHECKING shape it was written against.
 //
 // SessionAttentionChange (introduced at V20260917), which clears BOS-1534's
-// Session.attention. It is the newest change, so it runs first; it touches no
-// field any older transform reads.
+// Session.attention. It touches no field any older transform reads.
+//
+// NeedsHumanWaitDemotionChange (introduced at V20260918), which restores the
+// "waiting" composite on a NEEDS_HUMAN session whose idle-derived wait the
+// cascade now demotes beneath the verify park, so every older display
+// transform sees the "waiting" row it was written against.
+//
+// VerifyParkSplitChange (also V20260918), which restores "needs human" on a
+// verify park the cascade now serves as "needs sign-off" or "blocked". It and
+// NeedsHumanWaitDemotionChange rewrite disjoint rows in either order, and
+// VerifyDisplayStatusChange accepts all three park labels, so the chain does
+// not depend on which of the V20260918 changes runs first.
+//
+// WorkingOverWaitingChange (also V20260918), which restores WAITING on a
+// working chat whose armed callback no longer hides its work, and the waiting
+// (or Ready) composite on a session marked is_working_over_waiting. Its rows
+// read "working" and carry no is_waiting_demoted mark, so the other V20260918
+// changes never touch them; the older chain then sees the WAITING it was
+// written against.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -575,6 +592,10 @@ func ProductionChanges() *Changes {
 		VerifyDisplayStatusChange{},
 		ReadyDisplayLabelChange{},
 		SessionAttentionChange{},
+		NeedsHumanWaitDemotionChange{},
+		ResumeAttentionActionsChange{},
+		VerifyParkSplitChange{},
+		WorkingOverWaitingChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -2246,6 +2267,237 @@ func (WaitingDemotionLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertWaitingDemotedSession)
 }
 
+// NeedsHumanWaitDemotionChange is the production VersionChange introduced at
+// V20260918.
+//
+// At V20260918 the BOS-1269 demotion gate also opens for
+// DISPLAY_STATUS_NEEDS_HUMAN: a session whose verify stage parked the head for a
+// human, and whose waiting chats are all idle on an armed callback, serves
+// "needs human" / WARNING / no spinner with is_waiting_demoted set, where it
+// served "waiting" / INFO / spinner before. The inverse is
+// displaystatus.PreNeedsHumanWaitDemotionOutput, which rewrites only a marked
+// NEEDS_HUMAN row; a demoted passing or approved row stays V20260915's.
+//
+// Registered last, so it runs first: VerifyDisplayStatusChange then sees a
+// "waiting" label it leaves alone (it rewrites only a "needs human" composite),
+// and WaitingDemotionLabelChange and WaitingChatStatusChange compose exactly as
+// they did for this row before. It shares WaitingDemotionLabelChange's reach,
+// including the single-session read gap that type documents: the mark is
+// stamped only by the ListSessions recompute.
+type NeedsHumanWaitDemotionChange struct{}
+
+// Version implements VersionChange. The change was introduced at V20260918, so
+// it is applied to any request resolved to a strictly older version.
+func (NeedsHumanWaitDemotionChange) Version() Version { return V20260918 }
+
+// downconvertNeedsHumanWaitSession clones before writing for the same reason
+// downconvertWaitingDemotedSession does: bosso's registry path caches these
+// pointers. Only a session the inverse actually changes allocates.
+func downconvertNeedsHumanWaitSession(s *pb.Session) *pb.Session {
+	if s == nil || !s.GetIsWaitingDemoted() {
+		return s
+	}
+	out := displaystatus.PreNeedsHumanWaitDemotionOutput(s)
+	if out.Label == s.GetDisplayLabel() &&
+		out.Intent == s.GetDisplayIntent() &&
+		out.Spinner == s.GetDisplaySpinner() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores the waiting composite
+// on every session-bearing unary response and is a no-op elsewhere.
+func (NeedsHumanWaitDemotionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertNeedsHumanWaitSession)
+}
+
+// VerifyParkSplitChange is the production VersionChange introduced at
+// V20260918.
+//
+// At V20260918 a DISPLAY_STATUS_NEEDS_HUMAN session no longer serves one
+// "needs human" composite for every verify park. A park whose codes are all
+// policy codes (a person signs off verified work) serves "needs sign-off" /
+// WARNING; a park with any failure or incomplete code, an unknown code or no
+// code serves "blocked" / DANGER. Both carry no spinner, as before. The
+// display_status enum, merge_block and attention_status are unchanged. The
+// inverse is displaystatus.PreVerifyParkSplitOutput.
+//
+// Like the other display changes it reaches the full unary session-bearing
+// set, and like them it shares the persisted-composite reach: the label is
+// computed by both bossd producers, so single-session reads carry it too.
+type VerifyParkSplitChange struct{}
+
+// Version implements VersionChange.
+func (VerifyParkSplitChange) Version() Version { return V20260918 }
+
+// downconvertVerifyParkSplitSession clones before writing because bosso's
+// registry path caches these pointers. Only a park row allocates.
+func downconvertVerifyParkSplitSession(s *pb.Session) *pb.Session {
+	if s == nil {
+		return s
+	}
+	out := displaystatus.PreVerifyParkSplitOutput(s)
+	if out.Label == s.GetDisplayLabel() && out.Intent == s.GetDisplayIntent() && out.Spinner == s.GetDisplaySpinner() {
+		return s
+	}
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	return clone
+}
+
+// TransformResponse implements VersionChange. It restores "needs human" on
+// every session-bearing unary response and is a no-op elsewhere.
+func (VerifyParkSplitChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertVerifyParkSplitSession)
+}
+
+// WorkingOverWaitingChange is the production VersionChange introduced at
+// V20260918.
+//
+// At V20260918 an armed callback stops hiding live work. A chat that reports
+// CHAT_STATUS_WORKING while it holds an armed GitHub callback is served WORKING
+// (keeping its waiting_reason) where it was served WAITING, and a session whose
+// working chats all hold one reads "working" where it read "waiting", or
+// "✓ ready" over a receipted green PR. Only an idle chat with an armed callback
+// is WAITING now. A Claude chat idle at its prompt while a background subagent
+// runs also reports WORKING from this version; that is a detection fix with no
+// inverse, because nothing on the wire says what an older daemon would have
+// seen.
+//
+// The chat-status leg maps a WORKING entry that carries a waiting_reason back
+// to WAITING (clearing the phase a WAITING entry never carried) on
+// GetChatStatuses, GetSessionStatuses, their Orchestrator proxies and the
+// ProxyStreamChats snapshot and status delta. WaitingChatStatusChange then maps
+// that WAITING on to WORKING for pins older than V20260804, exactly as before.
+// The display leg restores the composite on Session.is_working_over_waiting
+// rows through displaystatus.PreWorkingOverWaitingOutput, stamping
+// is_ready_over_waiting so ReadyDisplayLabelChange composes. Like the other
+// marks, only the ListSessions recompute stamps it.
+type WorkingOverWaitingChange struct{}
+
+// Version implements VersionChange.
+func (WorkingOverWaitingChange) Version() Version { return V20260918 }
+
+// armedWorking reports whether a status/reason pair is a working chat whose
+// armed callback an older version would have served as WAITING.
+func armedWorking(st pb.ChatStatus, reason string) bool {
+	return st == pb.ChatStatus_CHAT_STATUS_WORKING && reason != ""
+}
+
+// downconvertWorkingOverWaitingChatEntry clones before writing: bosso's
+// registry path caches these pointers. Only an armed working entry allocates.
+func downconvertWorkingOverWaitingChatEntry(e *pb.ChatStatusEntry) *pb.ChatStatusEntry {
+	if e == nil || !armedWorking(e.GetStatus(), e.GetWaitingReason()) {
+		return e
+	}
+	clone, ok := proto.Clone(e).(*pb.ChatStatusEntry)
+	if !ok {
+		return e
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WAITING
+	clone.Phase = ""
+	return clone
+}
+
+func downconvertWorkingOverWaitingSessionEntry(e *pb.SessionStatusEntry) *pb.SessionStatusEntry {
+	if e == nil || !armedWorking(e.GetStatus(), e.GetWaitingReason()) {
+		return e
+	}
+	clone, ok := proto.Clone(e).(*pb.SessionStatusEntry)
+	if !ok {
+		return e
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WAITING
+	clone.Phase = ""
+	return clone
+}
+
+func downconvertWorkingOverWaitingDelta(d *pb.ChatStatusDelta) *pb.ChatStatusDelta {
+	if d == nil || !armedWorking(d.GetStatus(), d.GetWaitingReason()) {
+		return d
+	}
+	clone, ok := proto.Clone(d).(*pb.ChatStatusDelta)
+	if !ok {
+		return d
+	}
+	clone.Status = pb.ChatStatus_CHAT_STATUS_WAITING
+	return clone
+}
+
+func downconvertWorkingOverWaitingSession(s *pb.Session) *pb.Session {
+	if s == nil || !s.GetIsWorkingOverWaiting() {
+		return s
+	}
+	out, readyOverWaiting := displaystatus.PreWorkingOverWaitingOutput(s)
+	clone, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	clone.DisplayLabel = out.Label
+	clone.DisplayIntent = out.Intent
+	clone.DisplaySpinner = out.Spinner
+	clone.IsReadyOverWaiting = readyOverWaiting
+	clone.IsWorkingOverWaiting = false
+	return clone
+}
+
+// TransformResponse implements VersionChange.
+func (WorkingOverWaitingChange) TransformResponse(method string, msg any) {
+	if transformUnarySessionResponse(method, msg, downconvertWorkingOverWaitingSession) {
+		return
+	}
+	switch method {
+	case bossanovav1connect.DaemonServiceGetChatStatusesProcedure:
+		if m, ok := msg.(*pb.GetChatStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWorkingOverWaitingChatEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetChatStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetChatStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWorkingOverWaitingChatEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.DaemonServiceGetSessionStatusesProcedure:
+		if m, ok := msg.(*pb.GetSessionStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWorkingOverWaitingSessionEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyGetSessionStatusesProcedure:
+		if m, ok := msg.(*pb.ProxyGetSessionStatusesResponse); ok {
+			for i := range m.Statuses {
+				m.Statuses[i] = downconvertWorkingOverWaitingSessionEntry(m.Statuses[i])
+			}
+		}
+	case bossanovav1connect.OrchestratorServiceProxyStreamChatsProcedure:
+		if m, ok := msg.(*pb.ProxyChatListEvent); ok {
+			if snapshot := m.GetSnapshot(); snapshot != nil {
+				for i := range snapshot.Statuses {
+					snapshot.Statuses[i] = downconvertWorkingOverWaitingChatEntry(snapshot.Statuses[i])
+				}
+			}
+			if statusDelta := downconvertWorkingOverWaitingDelta(m.GetStatusDelta()); statusDelta != m.GetStatusDelta() {
+				m.Event = &pb.ProxyChatListEvent_StatusDelta{StatusDelta: statusDelta}
+			}
+		}
+	}
+}
+
 // VerifyDisplayStatusChange is the production VersionChange introduced at
 // V20260916.
 //
@@ -2918,4 +3170,28 @@ func (SessionAttentionChange) TransformResponse(method string, msg any) {
 			created.Created = downconvertAttentionSession(created.Created)
 		}
 	}
+}
+
+// ResumeAttentionActionsChange preserves the original fix action list for
+// clients pinned before resumability-aware actions were introduced.
+type ResumeAttentionActionsChange struct{}
+
+func (ResumeAttentionActionsChange) Version() Version { return V20260918 }
+func (ResumeAttentionActionsChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, func(s *pb.Session) *pb.Session {
+		if s.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+			return s
+		}
+		for _, a := range s.Attention.Actions {
+			if a == pb.AttentionAction_ATTENTION_ACTION_RESUME {
+				return s
+			}
+		}
+		cloned, ok := proto.Clone(s).(*pb.Session)
+		if !ok {
+			return s
+		}
+		cloned.Attention.Actions = append([]pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME}, cloned.Attention.Actions...)
+		return cloned
+	})
 }

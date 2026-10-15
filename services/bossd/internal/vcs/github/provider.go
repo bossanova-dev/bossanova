@@ -524,6 +524,7 @@ func (p *Provider) ListWorkflowRuns(ctx context.Context, repoPath, headSHA strin
 		TotalCount   int `json:"total_count"`
 		WorkflowRuns []struct {
 			Name       string `json:"name"`
+			Event      string `json:"event"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HeadSHA    string `json:"head_sha"`
@@ -538,7 +539,7 @@ func (p *Provider) ListWorkflowRuns(ctx context.Context, repoPath, headSHA strin
 	}
 	runs := make([]vcs.WorkflowRun, 0, len(raw.WorkflowRuns))
 	for _, r := range raw.WorkflowRuns {
-		runs = append(runs, vcs.WorkflowRun{Name: r.Name, Status: r.Status, Conclusion: r.Conclusion, HeadSHA: r.HeadSHA})
+		runs = append(runs, vcs.WorkflowRun{Name: r.Name, Status: r.Status, Conclusion: r.Conclusion, HeadSHA: r.HeadSHA, Event: r.Event})
 	}
 	return runs, nil
 }

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
 	"github.com/recurser/bossalib/models"
+
+	"github.com/recurser/bossd/internal/db"
 )
 
 // finishQuietWindow is how long every agent log of a session must have gone
@@ -57,11 +60,46 @@ func (l *Lifecycle) FinishUnattendedRun(ctx context.Context, sessionID string) (
 	if sess.ArchivedAt != nil {
 		return &FinalizeResult{NoOp: true}, nil
 	}
+	return l.finalizeSessionFrom(ctx, sessionID, finishStateInts(sess))
+}
+
+// finishStateInts is the state set an explicit finish finalizes sess from.
+func finishStateInts(sess *models.Session) []int {
 	expected := periodicReapStateInts()
 	if isZeroOutputSession(sess) {
 		expected = withZeroOutputReapStates(expected)
 	}
-	return l.finalizeSessionFrom(ctx, sessionID, expected)
+	return expected
+}
+
+// ErrRunAlreadyFinalized is returned by ReportRunBlocked for a session whose
+// finalize has already run or started: the report can no longer change it.
+var ErrRunAlreadyFinalized = errors.New("unattended run is already finalized")
+
+// ReportRunBlocked records that an unattended run ended BLOCKED on a person.
+// The reason is persisted in the session's run_blocked_reason, which no other
+// writer touches, so every later finalize of this run — the deferred finish,
+// the Stop-hook gate, the stranded sweep, before or after a daemon restart or a
+// usage-limit park — leaves its PR draft and Blocks the session with the
+// reason. Reporting twice rewrites the same field.
+func (l *Lifecycle) ReportRunBlocked(ctx context.Context, sessionID, reason string) error {
+	sess, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if !isUnattendedSession(sess) {
+		return ErrNotUnattendedRun
+	}
+	if !slices.Contains(finishStateInts(sess), int(sess.State)) {
+		return fmt.Errorf("%w (state %s)", ErrRunAlreadyFinalized, sess.State)
+	}
+	reason = truncateBlockedReason(reason)
+	reasonPtr := &reason
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{RunBlockedReason: &reasonPtr}); err != nil {
+		return fmt.Errorf("persist run blocked reason: %w", err)
+	}
+	l.logger.Info().Str("session", sessionID).Str("reason", reason).Msg("unattended run reported blocked")
+	return nil
 }
 
 // UnattendedRunQuiet reports which chat, if any, still has recent output. It

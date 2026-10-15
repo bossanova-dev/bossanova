@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -330,5 +334,117 @@ func TestFinishDeferral_Wiring(t *testing.T) {
 	}
 	if f.display != nil {
 		t.Error("finish deferrer raises the archiving flag")
+	}
+}
+
+// Update applies the run_blocked_reason write ReportRunBlocked makes.
+func (s *deferralSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.rows[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	if params.RunBlockedReason != nil {
+		r.RunBlockedReason = *params.RunBlockedReason
+	}
+	cp := *r
+	return &cp, nil
+}
+
+// TestFinishUnattendedRun_BlockedReportPersistsBeforeDeferring: a blocked
+// finish writes the run's reason onto the session row at request time, so a
+// finalize from any path sees it, and the finish itself is still deferred.
+func TestFinishUnattendedRun_BlockedReportPersistsBeforeDeferring(t *testing.T) {
+	h := newFinishHarness(t, "chat-self")
+	h.sessions.rows[deferralSessionID].State = machine.ImplementingPlan
+	h.srv.lifecycle = session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+	resp, err := h.rpc(&pb.FinishUnattendedRunRequest{
+		SessionId:               deferralSessionID,
+		RequesterAgentSessionId: "chat-self",
+		IsBlocked:               true,
+		BlockedReason:           "unresolved P1 in review",
+	})
+	if err != nil {
+		t.Fatalf("FinishUnattendedRun: %v", err)
+	}
+	if !resp.GetIsDeferred() {
+		t.Fatalf("response = %+v, want deferred", resp)
+	}
+	got, _ := h.sessions.Get(context.Background(), deferralSessionID)
+	if got.RunBlockedReason == nil || *got.RunBlockedReason != "unresolved P1 in review" {
+		t.Fatalf("run_blocked_reason = %v, want the run's report", got.RunBlockedReason)
+	}
+	if got.State != machine.ImplementingPlan {
+		t.Fatalf("state = %v, the report must not finalize the run itself", got.State)
+	}
+}
+
+// TestFinishUnattendedRun_LateBlockedReportRefused: once finalize has moved
+// the run on, a blocked report can no longer keep its PR draft, so it is
+// refused rather than silently dropped, and no finish is queued.
+func TestFinishUnattendedRun_LateBlockedReportRefused(t *testing.T) {
+	h := newFinishHarness(t, "chat-self")
+	h.sessions.rows[deferralSessionID].State = machine.ReadyForReview
+	h.srv.lifecycle = session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+	_, err := h.rpc(&pb.FinishUnattendedRunRequest{
+		SessionId:               deferralSessionID,
+		RequesterAgentSessionId: "chat-self",
+		IsBlocked:               true,
+		BlockedReason:           "too late",
+	})
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", got, err)
+	}
+	if h.d.has(deferralSessionID) {
+		t.Error("a refused blocked report left a pending finish")
+	}
+	if got, _ := h.sessions.Get(context.Background(), deferralSessionID); got.RunBlockedReason != nil {
+		t.Errorf("run_blocked_reason = %q, want untouched", *got.RunBlockedReason)
+	}
+}
+
+// TestRunBlockedSessionDisplaysAsBlocked: once finalize has Blocked a run that
+// reported BLOCKED, its row carries the run's reason as attention and its
+// draft PR renders red, never a green ready label.
+func TestRunBlockedSessionDisplaysAsBlocked(t *testing.T) {
+	reason := "run blocked: review left an unresolved P1"
+	sess := &models.Session{ID: "sess-1", RepoID: "repo-1", State: machine.Blocked, BlockedReason: &reason}
+	p := SessionToProto(sess)
+	HydrateBaseAttention(p, sess, &models.Repo{ID: "repo-1"})
+
+	if a := p.GetAttentionStatus(); !a.GetNeedsAttention() || a.GetSummary() != reason {
+		t.Fatalf("attention = %+v, want needs attention with %q", a, reason)
+	}
+	p.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_DRAFT
+	out := displaystatus.Compute(displaystatus.Input{Session: p, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE})
+	if out.Label != "draft" || out.Intent != pb.DisplayIntent_DISPLAY_INTENT_DANGER {
+		t.Fatalf("display = %+v, want a red draft label", out)
+	}
+}
+
+func TestNew_RegistersChatCreatedCancel(t *testing.T) {
+	h := newDeferralHarness(t, "chat-a")
+	lc := session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+	srv := New(Config{Lifecycle: lc, Sessions: h.sessions, AgentChats: h.chats, ChatStatus: h.tracker, DisplayTracker: h.display, Logger: zerolog.Nop()})
+	srv.archiveDeferrerOnce.Do(func() { srv.archiveDeferrer = h.d })
+	finish := newArchiveDeferrer(h.chats, h.tracker, nil, h.sessions, h.exec.archive, zerolog.Nop())
+	srv.finishDeferrerOnce.Do(func() { srv.finishDeferrer = finish })
+	h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	if out, err := srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{}); err != nil || !out.Pending {
+		t.Fatalf("archive = %+v, err = %v", out, err)
+	}
+	if out, err := finish.request(context.Background(), deferralSessionID, ArchiveRequest{}); err != nil || !out.Pending {
+		t.Fatalf("finish = %+v, err = %v", out, err)
+	}
+	lc.NotifyChatCreated("another-session")
+	if !h.d.has(deferralSessionID) || !finish.has(deferralSessionID) || !h.archiving() {
+		t.Fatal("another session cancelled pending work")
+	}
+	lc.NotifyChatCreated(deferralSessionID)
+	if h.d.has(deferralSessionID) || finish.has(deferralSessionID) || h.archiving() {
+		t.Fatal("new chat did not clear both pending deferrals and archiving flag")
 	}
 }

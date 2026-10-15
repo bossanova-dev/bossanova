@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -1757,5 +1758,50 @@ func TestEnabledAgentNamesExcludesLegacyEnabledExperimental(t *testing.T) {
 		if n == "opencode" {
 			t.Errorf("enabledAgentNames offered opencode as a default with no opt-in; the daemon forces it off")
 		}
+	}
+}
+
+func TestGeneralSettings_MCPTokenRevealAndRotate(t *testing.T) {
+	withTempConfigHome(t)
+	token := strings.Repeat("a", 60) + "1234"
+	oldLoad, oldRotate := generalSettingsLoadMCPToken, generalSettingsRotateMCPToken
+	t.Cleanup(func() { generalSettingsLoadMCPToken = oldLoad; generalSettingsRotateMCPToken = oldRotate })
+	generalSettingsLoadMCPToken = func() (string, error) { return token, nil }
+	calls := 0
+	generalSettingsRotateMCPToken = func() (daemon.MCPTokenRotation, error) {
+		calls++
+		return daemon.MCPTokenRotation{Token: strings.Repeat("b", 64), Restarted: true}, nil
+	}
+	m := NewGeneralSettingsModel(nil, context.Background())
+	loaded, _ := m.Update(m.Init()())
+	m = loaded.(GeneralSettingsModel)
+	if !strings.Contains(m.View().Content, "1234") || strings.Contains(m.View().Content, token) {
+		t.Fatal("token not masked")
+	}
+	m.cursor = rowIndexByKind(t, m, settingsRowKindMCPToken)
+	m, _ = m.activateRow()
+	if !strings.Contains(m.View().Content, token) {
+		t.Fatal("reveal did not show token")
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = next.(GeneralSettingsModel)
+	if calls != 0 || cmd != nil || !m.confirmMCPRotate {
+		t.Fatal("rotation bypassed confirmation")
+	}
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(GeneralSettingsModel)
+	if calls != 0 || m.confirmMCPRotate {
+		t.Fatal("cancel rotated token")
+	}
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'r'})
+	m = next.(GeneralSettingsModel)
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirmation did not schedule rotation")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(GeneralSettingsModel)
+	if calls != 1 || m.mcpTokenRevealed || m.mcpToken != strings.Repeat("b", 64) {
+		t.Fatal("rotation result not applied safely")
 	}
 }

@@ -32,6 +32,7 @@ import {
   approveMarker,
   commandReader,
   candidates,
+  carryMarker,
   extensionsConsulted,
   extensionRecord,
   extensionRecordMarker,
@@ -64,6 +65,7 @@ import {
   readApprovalAnchor,
   readOperatorMarkers,
   resolveApprovalAnchor,
+  resolvePriorHead,
   rearm,
   rearmArgv,
   selectBaseOwnCheckRuns,
@@ -71,6 +73,10 @@ import {
   sendBackMarker,
   verifyMarker,
   standingPark,
+  parkStillRaised,
+  extensionRunBeforePark,
+  policyFingerprint,
+  policyMarker,
 } from './verify-gate.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from './skill-config.mjs'
 import { DESCRIPTION_LIMIT } from './commit-status.mjs'
@@ -207,6 +213,12 @@ function world(opts = {}) {
     // The approval-anchor GraphQL read: a readable payload with no approvals by default, `null`
     // for a failed read.
     graphql: pick('graphql', anchorPayload()),
+    priorHead: pick('priorHead', priorPayload([])),
+    headRuns: pick('headRuns', [
+      {
+        workflow_runs: [{ name: 'CI', status: 'completed', conclusion: 'success', head_sha: HEAD }],
+      },
+    ]),
     // Compare reads `<BASE>...<sha>`: `{[sha]: files[] | payload | null}`; a missing key fails.
     compare: opts.compare ?? {},
     // The config file at the base tip: absent (a 404) by default, `null` for a failed read, a
@@ -245,7 +257,12 @@ function world(opts = {}) {
     }
     if (command === 'gh' && args[0] === 'repo') return ok({ nameWithOwner: REPO })
     if (command === 'gh' && args[0] === 'api') {
-      if (args[1] === 'graphql') return w.graphql === null ? fail() : ok(w.graphql)
+      if (args[1] === 'graphql') {
+        const payload = args.some((a) => a.includes('timelineItems(last: 30'))
+          ? w.priorHead
+          : w.graphql
+        return payload === null ? fail() : ok(payload)
+      }
       // The account approve runs as: 'operator' (an admin by default), `null` for a failed read.
       if (args[1] === 'user') return w.user === null ? fail() : ok({ login: w.user })
       // The PR's files, as `--paginate --slurp` returns them: one array per page of 100. A `diff`
@@ -341,6 +358,8 @@ function world(opts = {}) {
         if (w.base === null) return fail()
         return ok({ sha: BASE })
       }
+      if (/actions\/runs\?head_sha=/.test(path) && !path.includes(BASE))
+        return w.headRuns === null ? fail() : ok(w.headRuns)
       if (path.includes(`actions/runs?head_sha=${BASE}`)) {
         if (w.base.workflowRunsFail) return fail()
         return ok(w.base.workflowRuns ?? [{ total_count: 0, workflow_runs: [] }])
@@ -376,7 +395,13 @@ function world(opts = {}) {
         return { state: get('state'), description: get('description'), target: get('target_url') }
       })
   w.notes = () => w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'notes')
-  w.graphqlReads = () => w.calls.filter((c) => c.args[0] === 'api' && c.args[1] === 'graphql')
+  w.graphqlReads = () =>
+    w.calls.filter(
+      (c) =>
+        c.args[0] === 'api' &&
+        c.args[1] === 'graphql' &&
+        c.args.some((a) => a.includes('reviews(last: 100)')),
+    )
   w.compareReads = () =>
     w.calls.filter((c) => c.args[0] === 'api' && String(c.args[1]).includes('/compare/'))
   return w
@@ -2895,6 +2920,58 @@ test('post pass writes verified, and verified (approved) under a waiver', async 
 })
 
 // ---------------------------------------------------------------------------
+// post: a verdict that parks nothing clears a needs-human label an older head left.
+
+test('post clears a stale needs-human label only once the head stands on a verdict that parks nothing', async () => {
+  const dir = tmp()
+  try {
+    for (const verdict of ['pass', 'defect']) {
+      const w = world()
+      const adapter = fakeAdapter()
+      const r = await post(
+        { pr: 7, head: HEAD, verdict, findings: findingsFile(dir), repo: REPO },
+        deps(w, { adapter }),
+      )
+      assert.deepEqual([r.verdict, r.posted, r.staleLabel], [verdict, true, { outcome: 'ok' }])
+      assert.deepEqual(
+        adapter.writeCalls(),
+        [{ issueId: 'BOS-1', removeLabels: ['needs-human'] }],
+        verdict,
+      )
+    }
+    const parked = world()
+    const parkAdapter = fakeAdapter()
+    const park = await post(
+      { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO },
+      deps(parked, { adapter: parkAdapter }),
+    )
+    assert.equal(park.posted, true)
+    assert.equal(park.staleLabel, undefined)
+    assert.deepEqual(
+      parkAdapter.writeCalls().map((c) => [c.addLabels, c.removeLabels]),
+      [[['needs-human'], undefined]],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('post keeps the needs-human label when the head moved after its verdict', async () => {
+  const w = world()
+  const read = w.read
+  w.read = (command, args, o) => {
+    const r = read(command, args, o)
+    if (command === 'gh' && args[1] === '--method' && /\/statuses\//.test(args[3]))
+      w.pr = prView({ headRefOid: OTHER })
+    return r
+  }
+  const adapter = fakeAdapter()
+  const r = await post({ pr: 7, head: HEAD, verdict: 'pass', repo: REPO }, deps(w, { adapter }))
+  assert.deepEqual([r.posted, r.staleLabel], [true, { outcome: 'skipped', why: 'head-moved' }])
+  assert.deepEqual(adapter.writeCalls(), [])
+})
+
+// ---------------------------------------------------------------------------
 // post: defect.
 
 function findingsFile(dir) {
@@ -2905,12 +2982,13 @@ test('post defect with auto-repair on: findings comment, then failure targeting 
   const dir = tmp()
   try {
     const w = world()
-    const adapter = fakeAdapter()
+    const adapter = fakeAdapter({ labels: ['agent-build'] })
     const r = await post(
       { pr: 7, head: HEAD, verdict: 'defect', findings: findingsFile(dir), repo: REPO },
       deps(w, { adapter }),
     )
     assert.equal(r.verdict, 'defect')
+    assert.equal(r.staleLabel, undefined)
     const order = w
       .mutating()
       .filter((c) => c.command === 'gh')
@@ -3357,6 +3435,7 @@ test('approval: label removal alone never waives a park; a head-bound record wai
   assert.deepEqual(await approval({ pr: 7, repo: REPO }, deps(bare, { adapter: unlabelled() })), {
     approval: 'none',
     headSha: HEAD,
+    park: 'no-receipt',
   })
 
   const w = world({
@@ -3607,71 +3686,161 @@ test('parseParkDescription splits codes from the label; unlabelled parks parse a
     assert.equal(parseParkDescription(notPark), null, String(notPark))
 })
 
-test('post writes the labelled description; a long label is truncated with the codes intact', async () => {
-  const w = world()
-  const adapter = fakeAdapter()
-  const r = await post(
-    {
-      pr: 7,
-      head: HEAD,
-      verdict: 'human',
-      reason: 'human-review:security,always-human-path',
-      label: 'verify gate rules, CI workflows',
-      repo: REPO,
-      dryRun: true,
-    },
-    deps(w, { adapter }),
+test('main post derives the park label from policy and changed paths', async () => {
+  const w = world({ diff: ['gate/rules.mjs', 'ci/build.yml'], baseConfig: labelledPolicy() })
+  const r = await main(
+    [
+      'post',
+      '--pr',
+      '7',
+      '--head',
+      HEAD,
+      '--repo',
+      REPO,
+      '--verdict',
+      'human',
+      '--reason',
+      'human-review:security',
+      '--dry-run',
+    ],
+    deps(w),
   )
-  assert.equal(r.reason, 'always-human-path,human-review:security')
-  const status = r.writes.find((x) => x.kind === 'status')
+  assert.equal(r.label, 'verify gate rules, CI workflows')
   assert.equal(
-    status.description,
-    'needs human: always-human-path,human-review:security · verify gate rules, CI workflows',
+    r.writes.find((x) => x.kind === 'status').description,
+    'needs human: human-review:security · verify gate rules, CI workflows',
   )
   assert.match(
     r.writes.find((x) => x.kind === 'tracker').comment,
     /verify gate rules, CI workflows/,
   )
-
-  const lw = world()
-  await post(
-    {
-      pr: 7,
-      head: HEAD,
-      verdict: 'human',
-      reason: 'ledger-open',
-      label: 'y'.repeat(300),
-      repo: REPO,
-    },
-    deps(lw, { adapter: fakeAdapter() }),
-  )
-  const [posted] = lw.statusPosts()
-  assert.equal(Array.from(posted.description).length, DESCRIPTION_LIMIT)
-  assert.ok(posted.description.startsWith('needs human: ledger-open · y'))
-  assert.ok(posted.description.endsWith('…'))
+  assert.equal(w.mutating().length, 0)
 })
 
-test('post: a labelled park already standing is not re-posted', async () => {
-  const description = 'needs human: ledger-open · verify gate rules'
-  const w = world({
-    statuses: [
-      { context: 'boss/verify', state: 'pending', description, updated_at: iso(1000) },
-      receipt(),
-    ],
-  })
-  const r = await post(
-    {
-      pr: 7,
-      head: HEAD,
-      verdict: 'human',
-      reason: 'ledger-open',
-      label: 'verify gate rules',
-      repo: REPO,
-    },
-    deps(w, { adapter: fakeAdapter() }),
+test('main post rejects the removed label flag', async () => {
+  await assert.rejects(
+    main(
+      [
+        'post',
+        '--pr',
+        '7',
+        '--head',
+        HEAD,
+        '--verdict',
+        'human',
+        '--reason',
+        'no-receipt',
+        '--label',
+        'invented',
+      ],
+      deps(world()),
+    ),
+    UsageError,
   )
-  assert.equal(r.skipped, 'already-posted')
-  assert.equal(w.statusPosts().length, 0)
+})
+
+const humanPost = (reason, extra = {}) => ({
+  pr: 7,
+  head: HEAD,
+  repo: REPO,
+  verdict: 'human',
+  reason,
+  ...extra,
+})
+
+test('post labels only posted codes, deduplicating labels in code order', async () => {
+  for (const [reason, label] of [
+    ['human-review:ui', 'web UI'],
+    ['always-human-path,human-review:security', 'verify gate rules'],
+    ['human-review:security,human-review:ui', 'verify gate rules, web UI'],
+  ]) {
+    const w = world({ diff: ['gate/rules.mjs', 'web/a.tsx'], baseConfig: labelledPolicy() })
+    const r = await post(humanPost(reason), deps(w))
+    assert.equal(r.label, label)
+    assert.equal(w.statusPosts()[0].description, needsHumanDescription(r.reason, label))
+    assert.ok(r.writes.find((x) => x.kind === 'tracker').comment.includes(label))
+    if (reason === 'human-review:ui')
+      assert.ok(!r.writes.find((x) => x.kind === 'tracker').comment.includes('verify gate rules'))
+  }
+})
+
+test('post avoids label reads for non-path codes and diff reads for unlabelled codes', async () => {
+  const w = world({ baseConfig: labelledPolicy() })
+  const r = await post(humanPost('no-receipt'), deps(w))
+  assert.equal(r.label, '')
+  assert.equal(
+    w.calls.some((c) =>
+      c.args.some((a) => String(a).includes('/contents/') || String(a).includes('/commits/main')),
+    ),
+    false,
+  )
+  assert.equal(diffReads(w), 0)
+  const unlabelled = world({ baseConfig: policyText({ humanReview: { ui: ['web/**'] } }) })
+  assert.equal((await post(humanPost('human-review:ui'), deps(unlabelled))).label, '')
+  assert.equal(diffReads(unlabelled), 0)
+})
+
+test('post preserves a park with labelUnread when base, policy or diff is unreadable', async () => {
+  for (const options of [
+    { base: null },
+    { baseConfig: null },
+    { baseConfig: '{' },
+    { diff: null },
+  ]) {
+    const w = world({ baseConfig: labelledPolicy(), diff: ['web/a.tsx'], ...options })
+    const r = await post(humanPost('human-review:ui'), deps(w))
+    assert.equal(r.label, '')
+    assert.ok(r.labelUnread)
+    assert.equal(r.posted, true)
+    assert.equal(w.statusPosts()[0].description, 'needs human: human-review:ui')
+    assert.ok(r.writes.some((x) => x.kind === 'tracker'))
+  }
+})
+
+test('post derives the same label as judge from an approved park delta', async () => {
+  const w = world({
+    baseConfig: labelledPolicy(),
+    graphql: approvedAt(ANCHOR),
+    diff: ['gate/rules.mjs', 'web/a.tsx'],
+    compare: {
+      [ANCHOR]: [cfile('gate/rules.mjs', 'old')],
+      [HEAD]: [cfile('gate/rules.mjs', 'old'), UI_FILE],
+    },
+  })
+  const j = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.equal(j.reason, 'always-human-path,human-review:ui')
+  const r = await post(humanPost(j.reason), deps(w))
+  assert.equal(r.label, j.labels.join(', '))
+  assert.equal(r.label, 'web UI')
+  assert.equal(diffReads(w), 0)
+})
+
+test('post keeps repair-exhausted defects unlabelled', async () => {
+  const w = world({
+    diff: ['gate/rules.mjs'],
+    baseConfig: labelledPolicy(),
+    show: { repo_can_auto_repair: true, last_repair: { attempt_count: REPAIR_EXHAUSTED_AFTER } },
+  })
+  const dir = tmp()
+  let r
+  try {
+    r = await post({ ...humanPost(''), verdict: 'defect', findings: findingsFile(dir) }, deps(w))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  assert.equal(r.reason, 'repair-exhausted')
+  assert.equal(r.label, '')
+  assert.equal(w.statusPosts()[0].description, 'needs human: repair-exhausted')
+})
+
+test('post skips an identical derived park but refreshes a stale label', async () => {
+  const w = world({ diff: ['web/a.tsx'], baseConfig: labelledPolicy() })
+  assert.equal((await post(humanPost('human-review:ui'), deps(w))).posted, true)
+  assert.equal((await post(humanPost('human-review:ui'), deps(w))).skipped, 'already-posted')
+  assert.equal(w.statusPosts().length, 1)
+  w.baseConfig = policyText({ humanReview: { ui: [{ glob: 'web/**', label: 'new UI label' }] } })
+  assert.equal((await post(humanPost('human-review:ui'), deps(w))).posted, true)
+  assert.equal(w.statusPosts()[1].description, 'needs human: human-review:ui · new UI label')
 })
 
 test('approval of a labelled park waives exactly its codes, never the label', async () => {
@@ -3716,33 +3885,6 @@ test('approval of a labelled park waives exactly its codes, never the label', as
       claim: 'none',
       parked: 'parked',
     },
-  )
-})
-
-test('main post passes --label through to the park description', async () => {
-  const w = world()
-  const r = await main(
-    [
-      'post',
-      '--pr',
-      '7',
-      '--head',
-      HEAD,
-      '--verdict',
-      'human',
-      '--reason',
-      'human-review:security',
-      '--label',
-      'verify gate rules',
-      '--repo',
-      REPO,
-      '--dry-run',
-    ],
-    deps(w, { adapter: fakeAdapter() }),
-  )
-  assert.equal(
-    r.writes.find((x) => x.kind === 'status').description,
-    'needs human: human-review:security · verify gate rules',
   )
 })
 
@@ -4113,7 +4255,7 @@ test('candidates: an attachment links a PR whose body carries no ticket line', a
   )
 })
 
-test('candidates: needs-human is excluded unless approval hands it back', async () => {
+test('candidates: a parked needs-human head is excluded unless approval hands it back', async () => {
   const nh = (n) => ({
     identifier: `BOS-${n}`,
     labels: ['agent-build', 'needs-human'],
@@ -4134,17 +4276,90 @@ test('candidates: needs-human is excluded unless approval hands it back', async 
   assert.deepEqual(
     r.candidates.map((c) => ({ pr: c.pr, approval: c.approval, waive: c.waive })),
     [
+      { pr: 1, approval: undefined, waive: undefined },
       { pr: 2, approval: 'policy-park-approved', waive: 'ledger-open' },
       { pr: 3, approval: 'reverify', waive: undefined },
     ],
   )
   assert.deepEqual(
     r.skipped.map((s) => [s.ticket, s.reason]),
+    [['BOS-4', 'parked']],
+  )
+})
+
+// The newest status first; `at` is ms ago.
+const verifyNodes = (...nodes) =>
+  nodes.map(([state, description, at]) => ({
+    context: 'boss/verify',
+    state,
+    description,
+    updated_at: iso(at),
+  }))
+
+test('candidates: needs-human holds only a head its own park stands on', async () => {
+  const nh = (n) => ({
+    identifier: `BOS-${n}`,
+    labels: ['agent-build', 'needs-human'],
+    attachments: [],
+  })
+  const w = candidateWorld({
+    tickets: [1, 2, 3, 4, 5, 6].map(nh),
+    statuses: {
+      // BOS-1: a new head with no verify status. BOS-2: the park sits on an older head only.
+      [SHA_OF(102)]: verifyStatus('pending', 'needs human: ledger-open'),
+      [SHA_OF(3)]: verifyStatus('pending', 'needs human: ledger-open'),
+      [SHA_OF(4)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['pending', 'needs human: no-receipt', 5000],
+      ),
+      [SHA_OF(5)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['failure', 'defect: 1 finding(s)', 5000],
+      ),
+      [SHA_OF(6)]: verifyNodes(
+        ['pending', 'verifying… t0k3n', 3_600_000],
+        ['failure', 'defect: 2 finding(s), needs human', 3_700_000],
+      ),
+    },
+  })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    r.candidates.map((c) => [c.ticket, c.headSha, c.claim]),
     [
-      ['BOS-1', 'needs-human'],
-      ['BOS-4', 'parked'],
+      ['BOS-1', SHA_OF(1), 'none'],
+      ['BOS-2', SHA_OF(2), 'none'],
+      ['BOS-5', SHA_OF(5), 'waiting'],
     ],
   )
+  assert.deepEqual(
+    r.skipped.map((s) => [s.ticket, s.reason]),
+    [
+      ['BOS-3', 'parked'],
+      ['BOS-4', 'needs-human'],
+      ['BOS-6', 'needs-human'],
+    ],
+  )
+})
+
+test('candidates: a needs-human head whose park beneath a wait cannot be read is unknown', async () => {
+  const w = candidateWorld({
+    tickets: [{ identifier: 'BOS-1', labels: ['agent-build', 'needs-human'], attachments: [] }],
+    statuses: { [SHA_OF(1)]: verifyStatus('pending', 'waiting: stack-busy') },
+  })
+  const read = w.read
+  let statusReads = 0
+  w.read = (command, args, o) => {
+    if (command === 'gh' && args[0] === 'api' && /\/statuses/.test(args[1]) && ++statusReads > 1)
+      return { ok: false, error: 'exit-1', exit: 1, output: '' }
+    return read(command, args, o)
+  }
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(r.candidates, [])
+  assert.deepEqual(
+    r.skipped.map((s) => [s.ticket, s.reason]),
+    [['BOS-1', 'unknown:status']],
+  )
+  assert.equal(statusReads, 2)
 })
 
 test('candidates: unreadable per-head evidence is unknown:<what>, never a candidate', async () => {
@@ -5100,6 +5315,7 @@ test('race: a send-back after an approval revokes it until a later approve of th
     approval: 'none',
     reason: 'sent-back',
     headSha: HEAD,
+    park: 'ledger-open',
   })
   // The verify run re-entering with no --waive re-parks the rejected head.
   const j = await judge({ pr: 7, repo: REPO }, unlabelled())
@@ -5484,4 +5700,725 @@ test('main accepts --flag=value, so a note that looks like a flag reaches send-b
   assert.ok(body.includes('--dry-run is not a flag here'), body)
   await assert.rejects(main(['approve', '--pr=7', '--dry-run=yes'], deps(world())), UsageError)
   await assert.rejects(main(['approve', '--pr=7', '--note=x'], deps(world())), UsageError)
+})
+
+// ---------------------------------------------------------------------------
+// Stale parks: a park the base's current verify policy would no longer raise is re-judged.
+
+const OLD_POLICY = 'f'.repeat(16)
+const UI_POLICY = policyText({ humanReview: { ui: ['web/**'] } })
+const parkStatus = (description, msAgo = 1000) => ({
+  context: 'boss/verify',
+  state: 'pending',
+  description,
+  updated_at: iso(msAgo),
+})
+const claimStatus = (msAgo) => parkStatus('verifying… t0k3n', msAgo)
+
+// The single-PR world, also answering the candidates read for its one PR on ticket BOS-1.
+function sweepWorld(opts = {}) {
+  const w = world(opts)
+  const read = w.read
+  w.read = (command, args, o) => {
+    if (command === 'gh' && args[0] === 'pr' && args[1] === 'list') {
+      w.calls.push({ command, args: [...args] })
+      const { number, url, body, headRefOid, isDraft, baseRefName } = w.pr
+      const pr = { number, url, body, headRefOid, isDraft, baseRefName }
+      return { ok: true, payload: [pr], output: JSON.stringify([pr]), exit: 0 }
+    }
+    return read(command, args, o)
+  }
+  return w
+}
+function sweepDeps(w, { discover = () => ({ extensions: [] }), adapter = fakeAdapter() } = {}) {
+  const ticket = { identifier: 'BOS-1', labels: ['agent-build', 'needs-human'], attachments: [] }
+  return deps(w, {
+    discover,
+    loadConfig: () => candidateConfig(),
+    adapter: { ...adapter, selectPlanned: async () => [ticket] },
+  })
+}
+const judged = (w, d) => judge({ pr: 7, repo: REPO }, d)
+const parkPost = (j, d) =>
+  post(
+    {
+      pr: 7,
+      head: j.headSha,
+      verdict: 'human',
+      reason: j.reason,
+      policy: j.policyFingerprint,
+      repo: REPO,
+    },
+    d,
+  )
+const policyComments = (w) =>
+  w.comments.filter((c) => c.body.trim().split('\n').at(-1).startsWith('<!-- boss-policy-record'))
+
+test('a park raised under a path list that is now empty is re-judged, passes and merges', async () => {
+  const w = sweepWorld({
+    statuses: [parkStatus('needs human: human-review:security'), receipt()],
+    baseConfig: policyText({ humanReview: { security: [] } }),
+    diff: ['src/auth/login.go'],
+    comments: [operatorComment(policyMarker(HEAD, OLD_POLICY))],
+    prAfterMerge: prView({ state: 'MERGED', mergeCommit: { oid: MERGED_SHA } }),
+  })
+  const adapter = fakeAdapter()
+  const d = sweepDeps(w, { adapter })
+  const found = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    found.candidates.map((c) => [c.pr, c.rejudge, c.approval]),
+    [[7, 'policy-changed', undefined]],
+  )
+  const j = await judged(w, d)
+  assert.deepEqual([j.verdict, j.reason, j.held], ['pass', 'verified', undefined])
+  const passed = await post({ pr: 7, head: j.headSha, verdict: 'pass', repo: REPO }, d)
+  assert.equal(passed.posted, true)
+  const merged = await merge({ pr: 7, head: j.headSha, repo: REPO }, d)
+  assert.deepEqual([merged.merged, merged.mergeSha], [true, MERGED_SHA])
+  assert.deepEqual(w.statusPosts(), [
+    { state: 'success', description: 'verified', target: undefined },
+  ])
+  // The pass clears the label the superseded park left; the merge's Done write repeats it.
+  assert.deepEqual(
+    adapter.writeCalls().map((c) => c.removeLabels),
+    [['needs-human'], ['needs-human']],
+  )
+})
+
+test('a new head under a needs-human label an older head left is judged, and its pass clears the label', async () => {
+  const w = sweepWorld({ statuses: [receipt()] })
+  const adapter = fakeAdapter()
+  const d = sweepDeps(w, { adapter })
+  const found = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    found.candidates.map((c) => [c.pr, c.headSha, c.claim]),
+    [[7, HEAD, 'none']],
+  )
+  const j = await judged(w, d)
+  assert.deepEqual([j.verdict, j.reason], ['pass', 'verified'])
+  const passed = await post({ pr: 7, head: j.headSha, verdict: 'pass', repo: REPO }, d)
+  assert.deepEqual([passed.posted, passed.staleLabel], [true, { outcome: 'ok' }])
+  assert.deepEqual(adapter.writeCalls(), [{ issueId: 'BOS-1', removeLabels: ['needs-human'] }])
+})
+
+test('a park whose codes still stand under the recorded policy is never re-judged and writes nothing', async () => {
+  const fingerprint = policyFingerprint(JSON.parse(UI_POLICY).verifyDefaults, [], { root: TRUSTED })
+  const w = sweepWorld({
+    statuses: [parkStatus('needs human: human-review:ui'), receipt()],
+    baseConfig: UI_POLICY,
+    diff: ['web/a.tsx'],
+    comments: [operatorComment(policyMarker(HEAD, fingerprint))],
+  })
+  const adapter = fakeAdapter()
+  const found = await candidates({ repo: REPO }, sweepDeps(w, { adapter }))
+  assert.deepEqual(found.candidates, [])
+  assert.deepEqual(
+    found.skipped.map((x) => [x.pr, x.reason]),
+    [[7, 'parked']],
+  )
+  assert.deepEqual(w.mutating(), [])
+  assert.deepEqual(adapter.writeCalls(), [])
+})
+
+test('an unmarked legacy park is re-judged once, left standing, and skipped on the next sweep', async () => {
+  const labelled = 'needs human: human-review:ui · web UI'
+  const w = sweepWorld({
+    statuses: [parkStatus(labelled), receipt()],
+    baseConfig: policyText({ humanReview: { ui: [{ glob: 'web/**', label: 'web UI' }] } }),
+    diff: ['web/a.tsx'],
+  })
+  const adapter = fakeAdapter()
+  const d = sweepDeps(w, { adapter })
+  const first = await candidates({ repo: REPO }, d)
+  assert.deepEqual(
+    first.candidates.map((c) => [c.pr, c.rejudge]),
+    [[7, 'unrecorded']],
+  )
+  const j = await judged(w, d)
+  assert.deepEqual([j.verdict, j.reason, j.held], ['human', 'human-review:ui', true])
+  assert.match(j.policyFingerprint, /^[0-9a-f]{16}$/)
+  const posted = await parkPost(j, d)
+  assert.deepEqual(
+    [posted.posted, posted.skipped, posted.policyRecord],
+    [false, 'already-posted', 'posted'],
+  )
+  assert.deepEqual(w.statusPosts(), [], 'the park and its label are not re-posted')
+  assert.deepEqual(adapter.writeCalls(), [], 'no tracker label or comment')
+  assert.equal(policyComments(w).length, 1)
+  assert.equal(
+    policyComments(w)[0].body.trim().split('\n').at(-1),
+    policyMarker(HEAD, j.policyFingerprint),
+  )
+
+  const before = w.mutating().length
+  const second = await candidates({ repo: REPO }, d)
+  assert.deepEqual(second.candidates, [])
+  assert.deepEqual(
+    second.skipped.map((x) => [x.pr, x.reason]),
+    [[7, 'parked']],
+  )
+  // A repeated post of the same park records nothing twice.
+  assert.equal((await parkPost(j, d)).policyRecord, 'current')
+  assert.equal(w.mutating().length, before)
+})
+
+test('a park raised by an extension stands while it is installed and is released once it is removed', async () => {
+  const record = `${EXT.name}:pass,${OTHER_EXT.name}:${SECURITY}`
+  const parkedWorld = () =>
+    sweepWorld({
+      statuses: [parkStatus(`needs human: ${SECURITY}`), claimStatus(120_000), receipt()],
+      comments: [recordComment(HEAD, record), operatorComment(policyMarker(HEAD, OLD_POLICY))],
+    })
+
+  const installed = parkedWorld()
+  const stands = await judged(installed, sweepDeps(installed, { discover: discoverBoth }))
+  assert.deepEqual([stands.verdict, stands.reason, stands.held], ['human', SECURITY, true])
+
+  const removed = parkedWorld()
+  const d = sweepDeps(removed, { discover: () => ({ extensions: [EXT] }) })
+  assert.deepEqual(
+    (await candidates({ repo: REPO }, d)).candidates.map((c) => c.rejudge),
+    ['policy-changed'],
+  )
+  const released = await judged(removed, d)
+  assert.equal(released.verdict, 'extensions-required', 'the remaining extension runs, unparked')
+  assert.deepEqual(released.facts.extensionsApplicable, [EXT.name])
+  assert.deepEqual(removed.mutating(), [])
+})
+
+test('parkStillRaised attributes each code to the zero-token judge, a recorded extension, or any live one', () => {
+  const rec = [
+    { extension: 'a', outcome: 'pass' },
+    { extension: 'b', outcome: SECURITY },
+  ]
+  const ui = 'human-review:ui'
+  const cases = [
+    ['still a path hit', [ui], { fresh: [ui] }, true],
+    ['path list emptied, an extension still applies', [ui], { applicable: ['a'] }, true],
+    ['no extension ran', [ui], { extensionsRan: false, applicable: ['a'] }, false],
+    ['no extension left', [SECURITY], { applicable: [] }, false],
+    ['recorded raiser live', [SECURITY], { applicable: ['b'], record: rec }, true],
+    ['recorded raiser gone', [SECURITY], { applicable: ['a'], record: rec }, false],
+    ['path code beside a record', [ui], { applicable: ['a'], record: rec }, false],
+    [
+      'malfunction ignores the record',
+      ['extension-failed', SECURITY],
+      { applicable: ['a'], record: rec },
+      true,
+    ],
+    ['repair gave up', ['repair-exhausted'], { extensionsRan: false }, true],
+    [
+      'one stale code releases',
+      [ui, 'ledger-open'],
+      { fresh: ['ledger-open'], extensionsRan: false },
+      false,
+    ],
+  ]
+  for (const [name, codes, facts, want] of cases)
+    assert.equal(parkStillRaised(codes, facts), want, name)
+})
+
+test('extensionRunBeforePark: only a claim beneath the newest park counts; unreadable is yes', () => {
+  const park = parkStatus('needs human: human-review:ui', 1000)
+  assert.equal(extensionRunBeforePark([park, receipt()]), false)
+  assert.equal(extensionRunBeforePark([park, claimStatus(60_000)]), true)
+  assert.equal(extensionRunBeforePark([claimStatus(500), park]), false, 'a claim after the park')
+  assert.equal(extensionRunBeforePark(null), true)
+})
+
+test('an approval and a send-back on a park the policy no longer raises behave as before', async () => {
+  const stale = (comments) =>
+    sweepWorld({
+      statuses: [parkStatus('needs human: human-review:security'), receipt()],
+      baseConfig: policyText({ humanReview: { security: [] } }),
+      comments,
+    })
+  const approved = stale([operatorComment(approveMarker(HEAD, [SECURITY]))])
+  const handed = await candidates({ repo: REPO }, sweepDeps(approved))
+  assert.deepEqual(
+    handed.candidates.map((c) => [c.approval, c.waive, c.rejudge]),
+    [['policy-park-approved', SECURITY, undefined]],
+  )
+  const j = await judge({ pr: 7, repo: REPO, waive: SECURITY }, sweepDeps(approved))
+  assert.deepEqual([j.verdict, j.reason], ['pass', 'approved'])
+
+  const sent = stale([operatorComment(sendBackMarker(HEAD))])
+  const kept = await candidates({ repo: REPO }, sweepDeps(sent))
+  assert.deepEqual(kept.candidates, [])
+  assert.deepEqual(
+    kept.skipped.map((x) => x.reason),
+    ['parked'],
+  )
+  assert.deepEqual(sent.mutating(), [])
+})
+
+test('candidates leaves a park standing when the policy it would be re-judged under is unreadable', async () => {
+  const w = sweepWorld({
+    statuses: [parkStatus('needs human: human-review:security'), receipt()],
+    baseConfig: null,
+  })
+  const r = await candidates({ repo: REPO }, sweepDeps(w))
+  assert.deepEqual(
+    r.skipped.map((x) => x.reason),
+    ['parked'],
+  )
+})
+
+test('post --policy goes with a human verdict and a well-formed fingerprint only', async () => {
+  for (const options of [
+    { verdict: 'pass', policy: OLD_POLICY },
+    { verdict: 'human', reason: 'ledger-open', policy: 'not-a-print' },
+  ])
+    await assert.rejects(
+      post({ pr: 7, head: HEAD, repo: REPO, ...options }, deps(world())),
+      UsageError,
+      JSON.stringify(options),
+    )
+})
+
+function priorPayload(nodes) {
+  return { data: { repository: { pullRequest: { timelineItems: { nodes } } } } }
+}
+function priorCommit(contexts, sha = OTHER, hasNextPage = false) {
+  return {
+    commit: {
+      oid: sha,
+      statusCheckRollup: { contexts: { pageInfo: { hasNextPage }, nodes: contexts } },
+    },
+  }
+}
+const priorAction = {
+  __typename: 'CheckRun',
+  name: 'test-go',
+  status: 'COMPLETED',
+  conclusion: 'SUCCESS',
+  checkSuite: { workflowRun: { workflow: { name: 'CI' } } },
+}
+
+test('judge and merge hold a shrinking push whose Actions workflow ran on the head', async () => {
+  const opts = { priorHead: priorPayload([priorCommit([priorAction])]) }
+  const w = world(opts)
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.equal(r.verdict, 'wait')
+  assert.equal(r.reason, 'ci-absent-gate')
+  const m = world({ ...opts, statuses: verifyStatus('success', 'verified') })
+  const merged = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
+  assert.equal(merged.merged, false)
+  assert.equal(merged.verdict, 'wait')
+  assert.equal(merged.reason, 'ci-absent-gate')
+  assert.equal(
+    m.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+    false,
+  )
+})
+
+test('judge fails closed on failed prior and head run reads', async () => {
+  for (const opts of [
+    { priorHead: null },
+    { headRuns: null },
+    { priorHead: {} },
+    { headRuns: {} },
+    { headRuns: [] },
+    { headRuns: [null] },
+    { headRuns: [{ workflow_runs: [], total_count: 1 }] },
+  ]) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(world(opts)))
+    assert.equal(r.verdict, 'wait')
+    assert.equal(r.facts.ci.reason, 'unreadable')
+    const merging = world({ ...opts, statuses: verifyStatus('success', 'verified') })
+    const result = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(merging))
+    assert.equal(result.merged, false)
+    assert.equal(result.verdict, 'wait')
+    assert.equal(
+      merging.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+      false,
+    )
+  }
+})
+
+test('judge discounts untriggered workflows and successful workflow-less prior contexts', async () => {
+  for (const opts of [
+    {
+      priorHead: priorPayload([priorCommit([priorAction])]),
+      headRuns: [
+        { workflow_runs: [{ name: 'Other workflow', status: 'completed', head_sha: HEAD }] },
+      ],
+    },
+    {
+      priorHead: priorPayload([
+        priorCommit([{ __typename: 'StatusContext', context: 'review', state: 'SUCCESS' }]),
+      ]),
+    },
+    {
+      priorHead: priorPayload([
+        priorCommit([
+          {
+            name: 'app-review',
+            status: 'COMPLETED',
+            conclusion: 'NEUTRAL',
+            checkSuite: { workflowRun: null },
+          },
+        ]),
+      ]),
+    },
+    {},
+  ])
+    assert.equal((await judge({ pr: 7, repo: REPO }, deps(world(opts)))).verdict, 'pass')
+  const failed = world({
+    priorHead: priorPayload([priorCommit([{ context: 'review', state: 'FAILURE' }])]),
+  })
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(failed))).reason, 'ci-absent-gate')
+  const blocked = world({
+    priorHead: priorPayload([priorCommit([{ context: 'review', state: 'SUCCESS' }])]),
+    pr: { mergeStateStatus: 'BLOCKED' },
+  })
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(blocked))).verdict, 'wait')
+  const running = world({
+    headRuns: [{ workflow_runs: [{ name: 'CI', status: 'in_progress', head_sha: HEAD }] }],
+  })
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(running))).reason, 'ci-not-settled')
+})
+
+test('resolvePriorHead resolves complete prior sets and rejects incomplete evidence', () => {
+  const prior = priorCommit([priorAction])
+  assert.deepEqual(resolvePriorHead(priorPayload([{ beforeCommit: prior.commit }]), HEAD), {
+    known: true,
+    sha: OTHER,
+    contexts: [{ ...priorAction, workflowName: 'CI' }],
+  })
+  for (const node of [
+    priorCommit([], HEAD),
+    priorCommit([]),
+    priorCommit([{ context: 'boss/build', state: 'SUCCESS' }]),
+  ])
+    assert.equal(resolvePriorHead(priorPayload([prior, node]), HEAD).sha, OTHER)
+  assert.deepEqual(resolvePriorHead(priorPayload([]), HEAD), { known: true, sha: null })
+  assert.deepEqual(
+    resolvePriorHead(priorPayload([priorCommit([priorAction], OTHER, true)]), HEAD),
+    { known: false },
+  )
+  assert.deepEqual(resolvePriorHead({}, HEAD), { known: false })
+})
+
+// ---------------------------------------------------------------------------
+// Approval carry: a rebase that leaves the approved change unchanged keeps the approval.
+
+// A real repository: main M0 -> M1 (a generator bump rewrites gen/api_pb.ts), the approved head A
+// on M0, its rebase B onto M1 with gen/api_pb.ts regenerated differently, and C, a rebase that also
+// edits hand-written code. `approved` and `rebased` replace the hand-written change A and B make.
+const FEATURE = { 'src/app.go': 'package app\n\nfunc Feature() {}\n' }
+function carryRepo({ approved = FEATURE, rebased = FEATURE } = {}) {
+  const dir = tmp()
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+  const git = (...args) => {
+    const r = spawnSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+      { cwd: dir, env, encoding: 'utf8' },
+    )
+    assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`)
+    return r.stdout.trim()
+  }
+  const commit = (files, message) => {
+    for (const [path, body] of Object.entries(files)) {
+      mkdirSync(join(dir, path, '..'), { recursive: true })
+      writeFileSync(join(dir, path), body)
+    }
+    git('add', '-A')
+    git('commit', '-q', '-m', message)
+    return git('rev-parse', 'HEAD')
+  }
+  git('init', '-q', '-b', 'main')
+  const m0 = commit({ 'src/app.go': 'package app\n', 'gen/api_pb.ts': 'v0\n' }, 'm0')
+  const m1 = commit({ 'src/other.go': 'package other\n', 'gen/api_pb.ts': 'v1\n' }, 'm1')
+  git('checkout', '-q', '-b', 'pr', m0)
+  const a = commit({ ...approved, 'gen/api_pb.ts': 'v0\nfeature\n' }, 'feature')
+  git('checkout', '-q', '-b', 'rebased', m1)
+  const b = commit({ ...rebased, 'gen/api_pb.ts': 'v1\nfeature-v1\n' }, 'feature')
+  const c = commit({ 'src/app.go': 'package app\n\nfunc Feature() { panic(1) }\n' }, 'edit')
+  return { dir, m1, a, b, c }
+}
+
+// The world's gh reads, with git reads served by the real repository: the fake base tip is M1, the
+// approved head (ANCHOR) is A, and the judged head (HEAD) is `head`. `failGit` fails matching reads.
+function carryRead(w, repo, head, failGit = () => false) {
+  const real = commandReader({ cwd: repo.dir })
+  const shas = [
+    [BASE, repo.m1],
+    [ANCHOR, repo.a],
+    [HEAD, head],
+  ]
+  const map = (arg) => shas.reduce((out, [fake, sha]) => out.replaceAll(fake, sha), arg)
+  return (command, args, opts) => {
+    if (command !== 'git') return w.read(command, args, opts)
+    if (failGit(args)) return { ok: false, error: 'exit-1', exit: 1, output: '' }
+    return real(command, args.map(map), opts)
+  }
+}
+
+const CARRIED = 'no-receipt,human-review:ui'
+const carryPolicy = (extra = {}) =>
+  policyText({
+    humanReview: { ui: ['web/**'] },
+    generatedPaths: ['gen/**'],
+    generatedChecks: ['drift'],
+    ...extra,
+  })
+const drift = (conclusion) => ({ name: 'drift', status: 'COMPLETED', conclusion })
+const PROVEN = [...green, drift('SUCCESS')]
+
+// An unreceipted head that touches ui paths, so it parks `no-receipt,human-review:ui` unless an
+// approval waives both. CI, `drift` included, is green.
+function carryWorld({ comments, pr, ...opts } = {}) {
+  return world({
+    statuses: [],
+    diff: ['web/a.tsx'],
+    baseConfig: carryPolicy(),
+    comments: comments ?? [operatorComment(approveMarker(ANCHOR, CARRIED.split(',')))],
+    pr: { statusCheckRollup: PROVEN, ...pr },
+    ...opts,
+  })
+}
+
+const judgeCarried = (w, repo, head = repo.b, failGit) =>
+  judge({ pr: 7, repo: REPO }, deps(w, { read: carryRead(w, repo, head, failGit) }))
+
+const withCarryRepo = async (fn, shape) => {
+  const repo = carryRepo(shape)
+  try {
+    await fn(repo)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+  }
+}
+
+test('judge carries an approval across a rebase whose only drift is in generated paths', () =>
+  withCarryRepo(async (repo) => {
+    const r = await judgeCarried(carryWorld(), repo)
+    assert.equal(r.verdict, 'pass')
+    assert.equal(r.reason, 'approved')
+    assert.equal(r.facts.carry.from, ANCHOR)
+    assert.equal(r.facts.carry.waives, CARRIED)
+    assert.match(r.facts.carry.patchId, /^[0-9a-f]{40}$/)
+    assert.equal(r.carryRecord, `${ANCHOR}:${r.facts.carry.patchId}`)
+
+    // Without generatedPaths nothing is left out, so the regenerated file is a different change.
+    const bare = carryWorld({ baseConfig: policyText({ humanReview: { ui: ['web/**'] } }) })
+    const parked = await judgeCarried(bare, repo)
+    assert.equal(parked.verdict, 'human')
+    assert.equal(parked.reason, CARRIED)
+    assert.equal(parked.carryRecord, undefined)
+    assert.deepEqual(parked.facts.carry, { why: 'change-differs', from: ANCHOR })
+  }))
+
+test('judge does not carry an approval to a rebase that changes hand-written code', () =>
+  withCarryRepo(async (repo) => {
+    const r = await judgeCarried(carryWorld(), repo, repo.c)
+    assert.equal(r.verdict, 'human')
+    assert.equal(r.reason, CARRIED)
+    assert.deepEqual(r.facts.carry, { why: 'change-differs', from: ANCHOR })
+  }))
+
+test('judge: a carried approval never grows, so a code it does not name parks the whole set', () =>
+  withCarryRepo(async (repo) => {
+    const comments = [operatorComment(approveMarker(ANCHOR, ['no-receipt']))]
+    const r = await judgeCarried(carryWorld({ comments }), repo)
+    assert.equal(r.verdict, 'human')
+    assert.equal(r.reason, CARRIED)
+    assert.equal(r.carryRecord, undefined)
+    assert.deepEqual(r.facts.carry, { why: 'codes-not-covered', from: ANCHOR })
+  }))
+
+test('judge: a send-back after the approval, of that head or any other, blocks the carry', () =>
+  withCarryRepo(async (repo) => {
+    const approved = operatorComment(approveMarker(ANCHOR, CARRIED.split(',')), { msAgo: 120_000 })
+    for (const sentBack of [ANCHOR, OTHER]) {
+      const comments = [approved, operatorComment(sendBackMarker(sentBack), { msAgo: 60_000 })]
+      const r = await judgeCarried(carryWorld({ comments }), repo)
+      assert.equal(r.verdict, 'human', sentBack)
+      assert.deepEqual(r.facts.carry, { why: 'sent-back-after-approval' })
+    }
+    // A send-back the approval came after does not block it.
+    const earlier = [operatorComment(sendBackMarker(OTHER), { msAgo: 180_000 }), approved]
+    assert.equal((await judgeCarried(carryWorld({ comments: earlier }), repo)).verdict, 'pass')
+    // A head the operator already decided on is judged on its own decision, even a narrower one.
+    const own = [approved, operatorComment(approveMarker(HEAD, ['no-receipt']), { msAgo: 60_000 })]
+    const decided = await judgeCarried(carryWorld({ comments: own }), repo)
+    assert.equal(decided.verdict, 'human')
+    assert.deepEqual(decided.facts.carry, { why: 'head-decided' })
+  }))
+
+test('judge: an untrusted approval or a forged carry record carries nothing', () =>
+  withCarryRepo(async (repo) => {
+    const marker = approveMarker(ANCHOR, CARRIED.split(','))
+    const untrusted = [
+      { comments: [operatorComment(marker, { association: 'NONE' })] },
+      { comments: [operatorComment(marker, { login: 'reader' })], permissions: { reader: 'read' } },
+    ]
+    for (const opts of untrusted) {
+      const r = await judgeCarried(carryWorld(opts), repo)
+      assert.equal(r.verdict, 'human')
+      assert.deepEqual(r.facts.carry, { why: 'no-earlier-approval' })
+    }
+    // A carry record is never a waiver, whoever wrote it.
+    const forged = operatorComment(carryMarker(HEAD, ANCHOR, 'f'.repeat(40)))
+    const r = await judgeCarried(carryWorld({ comments: [forged] }), repo)
+    assert.equal(r.verdict, 'human')
+    assert.deepEqual(r.facts.carry, { why: 'no-earlier-approval' })
+  }))
+
+test('judge carries only on green CI and passed generation checks', () =>
+  withCarryRepo(async (repo) => {
+    const red = [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }]
+    const waits = await judgeCarried(carryWorld({ pr: { statusCheckRollup: red } }), repo)
+    assert.equal(waits.verdict, 'wait')
+    assert.equal(waits.reason, 'ci-not-green-on-head')
+
+    const baseConfig = carryPolicy()
+    for (const rollup of [green, [...green, drift('SKIPPED')]]) {
+      const r = await judgeCarried(
+        carryWorld({ baseConfig, pr: { statusCheckRollup: rollup } }),
+        repo,
+      )
+      assert.equal(r.verdict, 'human')
+      assert.deepEqual(r.facts.carry, { why: 'generation-checks-not-passed', from: ANCHOR })
+    }
+    const rollup = [...green, drift('SUCCESS')]
+    const proven = await judgeCarried(
+      carryWorld({ baseConfig, pr: { statusCheckRollup: rollup } }),
+      repo,
+    )
+    assert.equal(proven.verdict, 'pass')
+  }))
+
+test('judge: generatedPaths with no generatedChecks carries nothing, since nothing proves them', () =>
+  withCarryRepo(async (repo) => {
+    const unchecked = [
+      policyText({ humanReview: { ui: ['web/**'] }, generatedPaths: ['gen/**'] }),
+      carryPolicy({ generatedChecks: [] }),
+    ]
+    for (const baseConfig of unchecked) {
+      const r = await judgeCarried(carryWorld({ baseConfig }), repo)
+      assert.equal(r.verdict, 'human')
+      assert.equal(r.carryRecord, undefined)
+      assert.deepEqual(r.facts.carry, { why: 'generated-paths-unproven', from: ANCHOR })
+    }
+  }))
+
+// Approved and rebased hand-written changes that differ only in whitespace or a file name's
+// leading space: each is code the operator never saw, so none carries.
+const UNSEEN = [
+  {
+    name: 'indentation only',
+    approved: { 'src/job.py': 'def run(x):\n    if x:\n        a()\n    c()\n' },
+    rebased: { 'src/job.py': 'def run(x):\n    if x:\n        a()\n        c()\n' },
+  },
+  {
+    name: 'whitespace inside a line',
+    approved: { 'scripts/clean.sh': 'rm -rf /tmp/x /tmp/y\n' },
+    rebased: { 'scripts/clean.sh': 'rm -rf /tmp/x/tmp/y\n' },
+  },
+  {
+    name: 'trailing whitespace on the last line of the diff',
+    approved: { 'src/z.txt': 'x = 1\n' },
+    rebased: { 'src/z.txt': 'x = 1  \n' },
+  },
+  {
+    name: 'a file whose name starts with a space',
+    approved: { ...FEATURE, ' lead.txt': 'benign\n' },
+    rebased: { ...FEATURE, ' lead.txt': 'MALICIOUS\n' },
+  },
+]
+
+for (const { name, approved, rebased } of UNSEEN)
+  test(`judge does not carry an approval across a change in ${name}`, () =>
+    withCarryRepo(
+      async (repo) => {
+        const r = await judgeCarried(carryWorld(), repo)
+        assert.equal(r.verdict, 'human')
+        assert.equal(r.carryRecord, undefined)
+        assert.deepEqual(r.facts.carry, { why: 'change-differs', from: ANCHOR })
+      },
+      { approved, rebased },
+    ))
+
+test('judge: a commit, diff or comment read that fails carries nothing', () =>
+  withCarryRepo(async (repo) => {
+    const missing = await judgeCarried(carryWorld(), repo, '1'.repeat(40))
+    assert.equal(missing.verdict, 'human')
+    assert.deepEqual(missing.facts.carry, { why: 'head-commit-unavailable', from: ANCHOR })
+
+    const noDiff = await judgeCarried(carryWorld(), repo, repo.b, (args) => args[0] === 'diff')
+    assert.equal(noDiff.verdict, 'human')
+    assert.deepEqual(noDiff.facts.carry, { why: 'approved-head-diff-unreadable', from: ANCHOR })
+
+    const unread = await judgeCarried(carryWorld({ commentsReadFails: true }), repo)
+    assert.notEqual(unread.verdict, 'pass')
+    assert.equal(unread.carryRecord, undefined)
+  }))
+
+test('post --carry-record posts the visible carry record once, then the approved pass', async () => {
+  const patch = '9'.repeat(40)
+  const record = `${ANCHOR}:${patch}`
+  const approved = operatorComment(approveMarker(ANCHOR, CARRIED.split(',')))
+  const args = { pr: 7, head: HEAD, verdict: 'pass', reason: 'approved', repo: REPO }
+  const w = world({ comments: [approved] })
+  const r = await post({ ...args, carryRecord: record }, deps(w))
+  assert.equal(r.posted, true)
+  assert.equal(r.carryRecord, 'posted')
+  const comment = w.comments.at(-1)
+  assert.ok(comment.body.endsWith(carryMarker(HEAD, ANCHOR, patch)))
+  assert.ok(comment.body.includes(approved.html_url))
+  assert.ok(comment.body.includes(CARRIED))
+  assert.deepEqual(
+    operatorMarkers([comment]).map((m) => [m.kind, m.head, m.from, m.patch]),
+    [['carry', HEAD, ANCHOR, patch]],
+  )
+  assert.deepEqual(w.statusPosts(), [
+    { state: 'success', description: 'verified (approved)', target: undefined },
+  ])
+
+  // The trusted record already stands, so a re-post writes no second one.
+  const again = world({ comments: [approved, comment] })
+  const r2 = await post({ ...args, carryRecord: record }, deps(again))
+  assert.equal(r2.carryRecord, 'current')
+  assert.equal(again.commentPosts, 0)
+
+  // A dry run plans the record and writes nothing.
+  const dry = world({ comments: [approved] })
+  const planned = await post({ ...args, carryRecord: record, dryRun: true }, deps(dry))
+  assert.equal(planned.carryRecord, 'planned')
+  assert.deepEqual(dry.mutating(), [])
+  assert.ok(planned.writes.some((x) => x.kind === 'pr-comment' && x.body.includes(ANCHOR)))
+})
+
+test('post --carry-record refuses a carry the comments no longer support and posts no pass', async () => {
+  const record = `${ANCHOR}:${'9'.repeat(40)}`
+  const args = { pr: 7, head: HEAD, verdict: 'pass', reason: 'approved', repo: REPO }
+  const approved = operatorComment(approveMarker(ANCHOR, CARRIED.split(',')), { msAgo: 120_000 })
+  for (const [comments, reason] of [
+    [[approved, operatorComment(sendBackMarker(ANCHOR), { msAgo: 60_000 })], 'carry-unconfirmed'],
+    [
+      [operatorComment(approveMarker(ANCHOR, ['no-receipt']), { association: 'NONE' })],
+      'carry-unconfirmed',
+    ],
+    [[approved], 'comments-unreadable'],
+  ]) {
+    const w = world({ comments, commentsReadFails: reason === 'comments-unreadable' })
+    const r = await post({ ...args, carryRecord: record }, deps(w))
+    assert.equal(r.posted, false)
+    assert.equal(r.reason, reason)
+    assert.deepEqual(w.mutating(), [])
+  }
+
+  for (const options of [
+    { verdict: 'pass', carryRecord: record },
+    { verdict: 'human', reason: 'no-receipt', carryRecord: record },
+    { verdict: 'pass', reason: 'approved', carryRecord: 'not-a-record' },
+  ])
+    await assert.rejects(
+      post({ pr: 7, head: HEAD, repo: REPO, ...options }, deps(world())),
+      UsageError,
+      JSON.stringify(options),
+    )
 })

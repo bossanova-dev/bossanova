@@ -1904,6 +1904,7 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: stale rejected PR",
+			Role:            models.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -1934,8 +1935,11 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 	if chat.TmuxSessionName != nil {
 		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
 	}
-	if chat.StartError == nil || *chat.StartError != reason {
-		t.Fatalf("StartError = %v, want %q", chat.StartError, reason)
+	if chat.ReclaimedAt == nil || chat.ReclaimReason == nil || *chat.ReclaimReason != reason {
+		t.Fatalf("ReclaimedAt = %v, ReclaimReason = %v, want reclaimed for %q", chat.ReclaimedAt, chat.ReclaimReason, reason)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q; a reclaimed chat ran, it is not a failed start", *chat.StartError)
 	}
 }
 
@@ -1956,6 +1960,7 @@ func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "$boss-finalize",
+			Role:            models.AgentChatRoleBuild,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -1986,11 +1991,11 @@ func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
 	if chat.TmuxSessionName != nil {
 		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
 	}
-	if chat.StartError == nil {
-		t.Fatal("StartError = nil, want replacement reason")
+	if chat.ReclaimReason == nil || chat.StartError != nil {
+		t.Fatalf("ReclaimReason = %v, StartError = %v; want a replacement reason and no start error", chat.ReclaimReason, chat.StartError)
 	}
-	if !strings.Contains(*chat.StartError, "auto-repair replacing idle chat") {
-		t.Fatalf("StartError = %q, want replacement reason", *chat.StartError)
+	if !strings.Contains(*chat.ReclaimReason, "auto-repair replacing idle chat") {
+		t.Fatalf("ReclaimReason = %q, want replacement reason", *chat.ReclaimReason)
 	}
 }
 
@@ -2010,6 +2015,7 @@ func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "$boss-finalize",
+			Role:            models.AgentChatRoleBuild,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2053,6 +2059,7 @@ func TestReclaimRepairChat_RefusesWhenTmuxLivenessErrors(t *testing.T) {
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: tmux unavailable",
+			Role:            models.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2131,6 +2138,7 @@ func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: already dead",
+			Role:            models.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2158,8 +2166,11 @@ func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
 	if chat.TmuxSessionName != nil {
 		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
 	}
-	if chat.StartError == nil || *chat.StartError != reason {
-		t.Fatalf("StartError = %v, want %q", chat.StartError, reason)
+	if chat.ReclaimedAt == nil || chat.ReclaimReason == nil || *chat.ReclaimReason != reason {
+		t.Fatalf("ReclaimedAt = %v, ReclaimReason = %v, want reclaimed for %q", chat.ReclaimedAt, chat.ReclaimReason, reason)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q; a reclaimed chat ran, it is not a failed start", *chat.StartError)
 	}
 }
 
@@ -4808,5 +4819,83 @@ func TestManagedSessionEnv_ZeroOutputMarker(t *testing.T) {
 				t.Fatalf("%s set to %q, want absent", zeroOutputEnvKey, got)
 			}
 		})
+	}
+}
+
+func TestStartTmuxChat_FreshChatNotifiesChatCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow tmux test")
+	}
+	for _, failStamp := range []bool{false, true} {
+		t.Run(fmt.Sprint(failStamp), func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			var notified []string
+			h.lc.SetChatCreatedNotifier(func(id string) { notified = append(notified, id) })
+			if failStamp {
+				h.chats.updateTmuxNameErr = fmt.Errorf("stamp failed")
+			}
+			_, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
+			if (err != nil) != failStamp {
+				t.Fatalf("StartTmuxChat error = %v, failStamp = %v", err, failStamp)
+			}
+			if len(notified) != 1 || notified[0] != "sess-1" {
+				t.Fatalf("notifications = %v, want [sess-1]", notified)
+			}
+		})
+	}
+}
+
+func TestStartTmuxChat_ResumeDoesNotNotifyChatCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow tmux test")
+	}
+	h := newStartTmuxChatHarness(t)
+	prior := &models.AgentChat{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior", AgentName: "claude"}
+	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.tmuxFake.failSubcommand["has-session"] = true
+	calls := 0
+	h.lc.SetChatCreatedNotifier(func(string) { calls++ })
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("resume notified %d times", calls)
+	}
+	if len(h.chats.rebindCalls) != 1 {
+		t.Fatal("resume did not rebind prior row")
+	}
+}
+
+func TestStartTmuxChat_FailedStartDoesNotNotifyChatCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow tmux test")
+	}
+	h := newStartTmuxChatHarness(t)
+	h.tmuxFake.failSubcommand["new-session"] = true
+	calls := 0
+	h.lc.SetChatCreatedNotifier(func(string) { calls++ })
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{}); err == nil {
+		t.Fatal("expected launch failure")
+	}
+	if len(h.chats.createCalls) != 1 {
+		t.Fatal("failed-start bookkeeping row missing")
+	}
+	if calls != 0 {
+		t.Fatalf("failed start notified %d times", calls)
+	}
+}
+
+func TestLifecycle_NotifyChatCreatedNilSafe(t *testing.T) {
+	var nilLifecycle *Lifecycle
+	nilLifecycle.NotifyChatCreated("sess-1")
+	lc := &Lifecycle{}
+	lc.NotifyChatCreated("sess-1")
+	calls := 0
+	lc.SetChatCreatedNotifier(func(string) { calls++ })
+	lc.NotifyChatCreated("sess-1")
+	lc.SetChatCreatedNotifier(nil)
+	lc.NotifyChatCreated("sess-1")
+	if calls != 1 {
+		t.Fatalf("notifications = %d, want 1", calls)
 	}
 }

@@ -45,7 +45,7 @@ func (f *prFake) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ 
 	return f.sessions, f.listErr
 }
 
-func (f *prFake) RecordChat(_ context.Context, sessionID, agentSessionID, title, _ string, resume bool) (*pb.ClaudeChat, error) {
+func (f *prFake) RecordChat(_ context.Context, sessionID, agentSessionID, title, _ string, _ pb.ChatRole, resume bool) (*pb.ClaudeChat, error) {
 	f.log = append(f.log, "record-chat")
 	f.chatTitle, f.chatSessID = title, sessionID
 	if resume {
@@ -187,6 +187,8 @@ func TestPrApprove(t *testing.T) {
 			t.Fatalf("verbs = %+v, want one approve of s-a", f.verbs)
 		}
 		want := "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+			"  ledger-open: review left must-fix findings open\n" +
+			"Approving overrode ledger-open (review left must-fix findings open); if that was not intended, boss pr send-back 7 \"<note>\" revokes the approval and sends the head back.\n" +
 			"The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
@@ -234,7 +236,23 @@ func TestPrApprove(t *testing.T) {
 		if !f.verbs[0].dryRun {
 			t.Fatal("--dry-run did not reach the daemon")
 		}
-		if got := out.String(); got != "Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" {
+		want := "Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" +
+			"  ledger-open: review left must-fix findings open\n" +
+			"Approving would override ledger-open (review left must-fix findings open); boss pr send-back 7 \"<note>\" sends the head back instead.\n"
+		if got := out.String(); got != want {
+			t.Fatalf("output = %q", got)
+		}
+	})
+
+	t.Run("a sign-off approval lists the codes in plain words and warns of nothing", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:database", HeadSha: "abcdef0123456789", TrackerWrites: "ok", ApprovalUrl: "https://x/9"}}
+		cmd, out := prTestCmd(false)
+		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7}); err != nil {
+			t.Fatalf("prApprove: %v", err)
+		}
+		want := "Approved #7: waived human-review:database on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+			"  human-review:database: a database migration for a person to review\n"
+		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
 	})

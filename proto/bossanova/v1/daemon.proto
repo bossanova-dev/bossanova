@@ -47,6 +47,9 @@ service DaemonService {
   rpc StopSession(StopSessionRequest) returns (StopSessionResponse);
   rpc PauseSession(PauseSessionRequest) returns (PauseSessionResponse);
   rpc ResumeSession(ResumeSessionRequest) returns (ResumeSessionResponse);
+  // ResumeSessionRun restarts a stopped agent in the existing session.
+  // Daemon-local; ResumeSession separately controls automation.
+  rpc ResumeSessionRun(ResumeSessionRunRequest) returns (ResumeSessionRunResponse);
   rpc RetrySession(RetrySessionRequest) returns (RetrySessionResponse);
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
   rpc MergeSession(MergeSessionRequest) returns (MergeSessionResponse);
@@ -434,6 +437,7 @@ message CloneAndRegisterRepoRequest {
   string default_base_branch = 4;
   string worktree_base_dir = 5;
   optional string setup_script = 6;
+  optional bool is_trusted = 7;
 }
 
 message CloneAndRegisterRepoResponse {
@@ -577,6 +581,7 @@ message CreateSessionRequest {
   // branch, setup script, or PR, and no worktree base dir or base branch is
   // required. Set by trigger launches and honoured for every caller. Cannot be
   // combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
+  // Requires is_tmux_unattended; bare detach is insufficient (InvalidArgument).
   // Mirrors StartSessionOpts.ZeroOutput.
   bool is_zero_output = 22;
 }
@@ -749,6 +754,14 @@ message ResumeSessionResponse {
   Session session = 1;
 }
 
+message ResumeSessionRunRequest {
+  string session_id = 1;
+}
+
+message ResumeSessionRunResponse {
+  Session session = 1;
+}
+
 message RetrySessionRequest {
   string id = 1;
 }
@@ -914,6 +927,12 @@ message FinishUnattendedRunRequest {
   // It must be one of the session's chats, and it counts as busy until the
   // tracker observes it settle.
   string requester_agent_session_id = 2;
+  // True when the run ended BLOCKED on a person. bossd persists blocked_reason
+  // on the session before deferring the finish, so whichever finalize reaches
+  // the run leaves its PR draft and moves the session to Blocked.
+  bool is_blocked = 3;
+  // Why the run is blocked; used only with is_blocked. Blank gets a default.
+  string blocked_reason = 4;
 }
 
 message FinishUnattendedRunResponse {
@@ -994,6 +1013,9 @@ message RecordChatRequest {
   // plugin is loaded — otherwise dispatch falls back per AgentDispatcher
   // resolution rules.
   optional string agent_name = 5;
+  // role is the purpose of a NEW chat. UNSPECIFIED records an operator chat.
+  // Ignored when the chat already exists: a chat's role never changes.
+  ChatRole role = 6;
 }
 
 message RecordChatResponse {
@@ -1261,8 +1283,10 @@ message ChatStatusEntry {
   ChatStatus status = 2;
   google.protobuf.Timestamp last_output_at = 3;
   // Short human-readable reason the chat is waiting, e.g.
-  // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-  // CHAT_STATUS_WAITING.
+  // "awaiting checks_passed_ready on owner/repo#123": the callback the chat
+  // has armed. Set on CHAT_STATUS_WAITING and, from API version 2026-09-18, on
+  // a CHAT_STATUS_WORKING chat whose armed callback no longer hides its work
+  // (older pins receive WAITING). Empty otherwise.
   string waiting_reason = 4;
   // True when the chat's pane currently shows a live agent spinner (either
   // agent's "esc to interrupt" footer, or Claude's background-agent wait).
@@ -1305,8 +1329,10 @@ message SessionStatusEntry {
   string session_id = 1;
   ChatStatus status = 2;       // Best status across all chats (working > idle > stopped)
   // Short human-readable reason the session's chats are waiting, e.g.
-  // "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-  // CHAT_STATUS_WAITING.
+  // "awaiting checks_passed_ready on owner/repo#123". Set on
+  // CHAT_STATUS_WAITING and, from API version 2026-09-18, on CHAT_STATUS_WORKING
+  // when every working chat has an armed callback (older pins receive
+  // WAITING). Empty otherwise.
   string waiting_reason = 3;
   // Skill-reported stage, distinct from AgentProgressPhase.
   // Empty unless status is CHAT_STATUS_WORKING.

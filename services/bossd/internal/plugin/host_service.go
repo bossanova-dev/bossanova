@@ -992,8 +992,8 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 					hasActiveChat = true
 				} else {
 					for _, chat := range chats {
-						if session.IsRepairChatTitle(chat.Title) {
-							// BOS-153: a repair-titled chat the tracker deems
+						if chat.Role == models.AgentChatRoleRepair {
+							// BOS-153: a repair chat the tracker deems
 							// displaceable (idle past the repair window, at a
 							// long-stuck question, or stopped) is a dead/dying
 							// run — do not count it as an active chat, which
@@ -1016,15 +1016,15 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 								continue
 							}
 						}
-						// Skip chats whose start failed: the agent_chats row is
-						// preserved (so the operator sees the × failed badge) but
-						// the agent never came up, so any tracker entry on its
+						// Skip retired chats (start failed, or replaced by
+						// repair): the agent_chats row is preserved as history
+						// but its pane is gone, so any tracker entry on its
 						// AgentSessionID is an orphan tmux pane keeping the
 						// heartbeat warm. Counting it as an active chat makes the
 						// repair plugin's idle gate defer forever — the
 						// failed-start row would permanently block its own session
 						// from being auto-repaired.
-						if chat.StartError != nil && *chat.StartError != "" {
+						if chat.IsRetired() {
 							continue
 						}
 						chatEntry := s.chatTracker.Get(chat.AgentSessionID)
@@ -1133,15 +1133,18 @@ func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanova
 	// Create state machine with full session context so guards (fixOrBlock,
 	// retryOrBlock) correctly evaluate AttemptCount and HasPR.
 	hasPR := session.PRNumber != nil
-	sm := machine.NewWithContext(session.State, &machine.SessionContext{
-		AttemptCount: session.AttemptCount,
-		MaxAttempts:  machine.MaxAttempts,
-		HasPR:        hasPR,
-		IsQuickChat:  session.IsQuickChat,
-	})
-
-	// Fire event
 	event := protoToSessionEvent(req.GetEvent())
+	var blockedReason string
+	if event == machine.Block {
+		blockedReason = strings.TrimSpace(req.GetBlockedReason())
+	}
+	sm := machine.NewWithContext(session.State, &machine.SessionContext{
+		AttemptCount:  session.AttemptCount,
+		MaxAttempts:   machine.MaxAttempts,
+		HasPR:         hasPR,
+		IsQuickChat:   session.IsQuickChat,
+		BlockedReason: blockedReason,
+	})
 
 	// A quick chat has no branch to push and no PR to await, so the machine
 	// guard refuses PlanComplete out of ImplementingPlan (BOS-1514). Name that
@@ -2164,6 +2167,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		Command:              req.GetCommand(),
 		Delivery:             session.DeliverySubmit,
 		ResumeAgentSessionID: req.GetResumeAgentSessionId(),
+		Role:                 startChatRunRole(req),
 	}
 	// Every launch through this RPC is autonomous (see above), so declare that
 	// intent and let StartTmuxChat pick the capability profile. Deciding it here
@@ -2179,12 +2183,34 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	startedAt := time.Now()
 	registration := s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
-	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
+	// A repair run clears its way chat by chat: an idle agent-owned blocker is
+	// replaced (when the plugin authorized replacement), and an operator or
+	// legacy blocker is never killed, so the run starts beside it instead, but
+	// only once the tracker shows that chat quiet. Each pass either removes one
+	// live chat or switches to a sibling launch, so the bound only guards
+	// against a lifecycle that keeps reporting new blockers.
+	for pass := 0; pass < maxRepairBlockingChats && input.Role == models.AgentChatRoleRepair && grpcstatus.Code(err) == codes.AlreadyExists; pass++ {
 		blockingAgentSessionID := agentSessionID
 		if blockingAgentSessionID == "" {
 			blockingAgentSessionID = parseAlreadyExistsAgentSessionID(grpcstatus.Convert(err).Message())
 		}
-		if blockingAgentSessionID != "" {
+		if blockingAgentSessionID == "" {
+			break
+		}
+		if s.chatNeverReclaimed(ctx, blockingAgentSessionID) {
+			if quietErr := s.chatQuietEnoughToStartBeside(blockingAgentSessionID, req); quietErr != nil {
+				err = quietErr
+				break
+			}
+			log.Info().
+				Str("session", sessionID).
+				Str("blocking_agent_session", blockingAgentSessionID).
+				Msg("StartChatRun: blocking chat is not agent-owned; starting the repair chat beside it")
+			hookOpts.AllowSiblingChat = true
+		} else {
+			if !req.GetReplaceExistingChat() || replacedActiveRun {
+				break
+			}
 			s.restoreChatRun(registration)
 			if replaceErr := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); replaceErr != nil {
 				return nil, replaceErr
@@ -2194,8 +2220,8 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 			// Restore above let cleanup signal the original waiter. Register
 			// again before the retry so its completion POST is accepted.
 			registration = s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
-			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 		}
+		agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	}
 	if err != nil {
 		s.restoreChatRun(registration)
@@ -2305,9 +2331,61 @@ func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, se
 	return nil
 }
 
+// maxRepairBlockingChats bounds StartChatRun's replace-or-start-beside passes.
+const maxRepairBlockingChats = 8
+
+// chatNeverReclaimed reports whether repair must leave the chat alone because
+// its role is not agent-owned: an operator chat, or a legacy chat whose purpose
+// is unknown. A failed lookup reports false, leaving the decision to the
+// lifecycle's reclaim, which refuses such a chat on its own.
+func (s *HostServiceServer) chatNeverReclaimed(ctx context.Context, agentSessionID string) bool {
+	if s.agentChats == nil {
+		return false
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil {
+		return false
+	}
+	return !chat.Role.IsAgentOwned()
+}
+
+// chatQuietEnoughToStartBeside refuses a sibling repair launch beside an
+// operator or legacy chat unless the tracker shows that chat idle past the
+// repair window. With no tracker evidence (a cold tracker after a daemon
+// restart reports no active chat, so the plugin skipped its own idle gate) the
+// operator may still be typing, and two agents would edit one worktree; the
+// refusal lets the next sweep retry once the tracker has warmed.
+func (s *HostServiceServer) chatQuietEnoughToStartBeside(agentSessionID string, req *bossanovav1.StartChatRunHostRequest) error {
+	var observed time.Time
+	if ts := req.GetReplaceExistingObservedLastChatActivityAt(); ts != nil {
+		observed = ts.AsTime()
+	}
+	pol := displacePolicy{MinIdle: repairDisplaceMinIdle, QuestionIdle: repairDisplaceQuestionIdle}
+	if err := s.chatDisplaceable(agentSessionID, observed, pol, time.Now()); err != nil {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "start repair beside chat %s: %s", agentSessionID, grpcstatus.Convert(err).Message())
+	}
+	return nil
+}
+
+// startChatRunRole is the role of the chat a StartChatRun creates. The repair
+// plugin names REPAIR; one built before roles existed names nothing, and its
+// boss-repair command identifies it.
+func startChatRunRole(req *bossanovav1.StartChatRunHostRequest) models.AgentChatRole {
+	if role := models.AgentChatRoleFromProto(req.GetRole()); role != models.AgentChatRoleUnknown {
+		return role
+	}
+	if isRepairCommand(req.GetCommand()) {
+		return models.AgentChatRoleRepair
+	}
+	return models.AgentChatRoleUnknown
+}
+
+func isRepairCommand(command string) bool {
+	return strings.TrimPrefix(command, "/") == "boss-repair"
+}
+
 func isAuthorizedRepairReplacement(req *bossanovav1.StartChatRunHostRequest) bool {
-	return strings.TrimPrefix(req.GetCommand(), "/") == "boss-repair" &&
-		strings.HasPrefix(req.GetTitle(), "Repair: ") &&
+	return startChatRunRole(req) == models.AgentChatRoleRepair &&
 		strings.TrimSpace(req.GetReplaceExistingReason()) != "" &&
 		req.GetReplaceExistingObservedLastChatActivityAt() != nil
 }

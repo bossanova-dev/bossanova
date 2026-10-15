@@ -364,3 +364,20 @@ test('classifyMergeResult maps accepted, HEAD_MISMATCH, and refusals', () => {
   )
   assert.equal(classifyMergeResult({ ok: false, error: 'exit-1' }), 'merge-refused:exit-1')
 })
+
+test('judgeCiOnHead forwards read failures and structural absence', () => {
+  const base = {
+    headSHA: HEAD,
+    observedSHA: HEAD,
+    rollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+  }
+  const unreadable = judgeCiOnHead({ ...base, readError: true })
+  assert.equal(unreadable.verdict.reason, 'unreadable')
+  assert.equal(unreadable.green, false)
+  const structural = judgeCiOnHead({
+    ...base,
+    priorContexts: [...base.rollup, { name: 'review', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    structurallyAbsentContexts: ['review'],
+  })
+  assert.equal(structural.green, true)
+})

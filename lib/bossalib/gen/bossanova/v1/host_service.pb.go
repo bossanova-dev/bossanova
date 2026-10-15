@@ -581,7 +581,10 @@ type FireSessionEventRequest struct {
 	// Session ID to fire event on.
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// Event to fire.
-	Event         SessionEvent `protobuf:"varint,2,opt,name=event,proto3,enum=bossanova.v1.SessionEvent" json:"event,omitempty"`
+	Event SessionEvent `protobuf:"varint,2,opt,name=event,proto3,enum=bossanova.v1.SessionEvent" json:"event,omitempty"`
+	// Why the session is blocked, recorded as its blocked_reason. Honoured only
+	// for SESSION_EVENT_BLOCK; empty keeps the state machine's default reason.
+	BlockedReason string `protobuf:"bytes,3,opt,name=blocked_reason,json=blockedReason,proto3" json:"blocked_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -628,6 +631,13 @@ func (x *FireSessionEventRequest) GetEvent() SessionEvent {
 		return x.Event
 	}
 	return SessionEvent_SESSION_EVENT_UNSPECIFIED
+}
+
+func (x *FireSessionEventRequest) GetBlockedReason() string {
+	if x != nil {
+		return x.BlockedReason
+	}
+	return ""
 }
 
 type FireSessionEventResponse struct {
@@ -1006,8 +1016,13 @@ type StartChatRunHostRequest struct {
 	// attempts. Used by auto-repair to make each loop iteration continue the
 	// previous iteration's conversation. Empty = fresh start.
 	ResumeAgentSessionId string `protobuf:"bytes,8,opt,name=resume_agent_session_id,json=resumeAgentSessionId,proto3" json:"resume_agent_session_id,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// The purpose of the chat this run creates. A REPAIR run that finds an
+	// operator or legacy chat in the session starts beside it instead of
+	// replacing it. UNSPECIFIED with the boss-repair command is read as REPAIR so
+	// an older repair plugin keeps working.
+	Role          ChatRole `protobuf:"varint,9,opt,name=role,proto3,enum=bossanova.v1.ChatRole" json:"role,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartChatRunHostRequest) Reset() {
@@ -1094,6 +1109,13 @@ func (x *StartChatRunHostRequest) GetResumeAgentSessionId() string {
 		return x.ResumeAgentSessionId
 	}
 	return ""
+}
+
+func (x *StartChatRunHostRequest) GetRole() ChatRole {
+	if x != nil {
+		return x.Role
+	}
+	return ChatRole_CHAT_ROLE_UNSPECIFIED
 }
 
 type StartChatRunHostResponse struct {
@@ -1824,11 +1846,12 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"T\n" +
 	"\x19GetReviewCommentsResponse\x127\n" +
-	"\bcomments\x18\x01 \x03(\v2\x1b.bossanova.v1.ReviewCommentR\bcomments\"j\n" +
+	"\bcomments\x18\x01 \x03(\v2\x1b.bossanova.v1.ReviewCommentR\bcomments\"\x91\x01\n" +
 	"\x17FireSessionEventRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
-	"\x05event\x18\x02 \x01(\x0e2\x1a.bossanova.v1.SessionEventR\x05event\"7\n" +
+	"\x05event\x18\x02 \x01(\x0e2\x1a.bossanova.v1.SessionEventR\x05event\x12%\n" +
+	"\x0eblocked_reason\x18\x03 \x01(\tR\rblockedReason\"7\n" +
 	"\x18FireSessionEventResponse\x12\x1b\n" +
 	"\tnew_state\x18\x01 \x01(\tR\bnewState\"\x7f\n" +
 	"\x16SetRepairStatusRequest\x12\x1d\n" +
@@ -1849,7 +1872,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"9\n" +
 	"\x18WaitAgentRunHostResponse\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x01 \x01(\tR\texitError\"\xa3\x03\n" +
+	"exit_error\x18\x01 \x01(\tR\texitError\"\xcf\x03\n" +
 	"\x17StartChatRunHostRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -1859,7 +1882,8 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x15replace_existing_chat\x18\x05 \x01(\bR\x13replaceExistingChat\x126\n" +
 	"\x17replace_existing_reason\x18\x06 \x01(\tR\x15replaceExistingReason\x12~\n" +
 	"/replace_existing_observed_last_chat_activity_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR)replaceExistingObservedLastChatActivityAt\x125\n" +
-	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\"f\n" +
+	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\x12*\n" +
+	"\x04role\x18\t \x01(\x0e2\x16.bossanova.v1.ChatRoleR\x04role\"f\n" +
 	"\x18StartChatRunHostResponse\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12 \n" +
 	"\fagent_run_id\x18\x02 \x01(\tR\n" +
@@ -1991,7 +2015,8 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ReviewComment)(nil),                   // 35: bossanova.v1.ReviewComment
 	(SessionEvent)(0),                       // 36: bossanova.v1.SessionEvent
 	(*timestamppb.Timestamp)(nil),           // 37: google.protobuf.Timestamp
-	(DisplayStatus)(0),                      // 38: bossanova.v1.DisplayStatus
+	(ChatRole)(0),                           // 38: bossanova.v1.ChatRole
+	(DisplayStatus)(0),                      // 39: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	31, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
@@ -2002,45 +2027,46 @@ var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	35, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
 	36, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
 	37, // 7: bossanova.v1.StartChatRunHostRequest.replace_existing_observed_last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	38, // 8: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
-	29, // 9: bossanova.v1.RecordRunTelemetryRequest.children:type_name -> bossanova.v1.AgentRunChildTelemetry
-	37, // 10: bossanova.v1.AgentRunChildTelemetry.started_at:type_name -> google.protobuf.Timestamp
-	37, // 11: bossanova.v1.AgentRunChildTelemetry.stopped_at:type_name -> google.protobuf.Timestamp
-	0,  // 12: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
-	2,  // 13: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
-	4,  // 14: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
-	6,  // 15: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
-	8,  // 16: bossanova.v1.HostService.ListSessions:input_type -> bossanova.v1.HostServiceListSessionsRequest
-	10, // 17: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
-	12, // 18: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
-	14, // 19: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
-	16, // 20: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
-	18, // 21: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
-	20, // 22: bossanova.v1.HostService.StartChatRun:input_type -> bossanova.v1.StartChatRunHostRequest
-	22, // 23: bossanova.v1.HostService.WaitChatRun:input_type -> bossanova.v1.WaitChatRunHostRequest
-	24, // 24: bossanova.v1.HostService.ReclaimRepairChat:input_type -> bossanova.v1.ReclaimRepairChatHostRequest
-	26, // 25: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
-	28, // 26: bossanova.v1.HostService.RecordRunTelemetry:input_type -> bossanova.v1.RecordRunTelemetryRequest
-	1,  // 27: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	3,  // 28: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	5,  // 29: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	7,  // 30: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
-	9,  // 31: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
-	11, // 32: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
-	13, // 33: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
-	15, // 34: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
-	17, // 35: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
-	19, // 36: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
-	21, // 37: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
-	23, // 38: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
-	25, // 39: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
-	27, // 40: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
-	30, // 41: bossanova.v1.HostService.RecordRunTelemetry:output_type -> bossanova.v1.RecordRunTelemetryResponse
-	27, // [27:42] is the sub-list for method output_type
-	12, // [12:27] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	38, // 8: bossanova.v1.StartChatRunHostRequest.role:type_name -> bossanova.v1.ChatRole
+	39, // 9: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	29, // 10: bossanova.v1.RecordRunTelemetryRequest.children:type_name -> bossanova.v1.AgentRunChildTelemetry
+	37, // 11: bossanova.v1.AgentRunChildTelemetry.started_at:type_name -> google.protobuf.Timestamp
+	37, // 12: bossanova.v1.AgentRunChildTelemetry.stopped_at:type_name -> google.protobuf.Timestamp
+	0,  // 13: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
+	2,  // 14: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
+	4,  // 15: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
+	6,  // 16: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
+	8,  // 17: bossanova.v1.HostService.ListSessions:input_type -> bossanova.v1.HostServiceListSessionsRequest
+	10, // 18: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
+	12, // 19: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
+	14, // 20: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
+	16, // 21: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
+	18, // 22: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
+	20, // 23: bossanova.v1.HostService.StartChatRun:input_type -> bossanova.v1.StartChatRunHostRequest
+	22, // 24: bossanova.v1.HostService.WaitChatRun:input_type -> bossanova.v1.WaitChatRunHostRequest
+	24, // 25: bossanova.v1.HostService.ReclaimRepairChat:input_type -> bossanova.v1.ReclaimRepairChatHostRequest
+	26, // 26: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
+	28, // 27: bossanova.v1.HostService.RecordRunTelemetry:input_type -> bossanova.v1.RecordRunTelemetryRequest
+	1,  // 28: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	3,  // 29: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	5,  // 30: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	7,  // 31: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	9,  // 32: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
+	11, // 33: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
+	13, // 34: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
+	15, // 35: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
+	17, // 36: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
+	19, // 37: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
+	21, // 38: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
+	23, // 39: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
+	25, // 40: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
+	27, // 41: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
+	30, // 42: bossanova.v1.HostService.RecordRunTelemetry:output_type -> bossanova.v1.RecordRunTelemetryResponse
+	28, // [28:43] is the sub-list for method output_type
+	13, // [13:28] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_host_service_proto_init() }

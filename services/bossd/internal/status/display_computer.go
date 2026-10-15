@@ -174,8 +174,10 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	pbSess := sessionToProto(sess)
 
 	// Hydrate display tracker fields onto the proto session.
+	var parkCodes []string
 	if c.display != nil {
 		if e := c.display.Get(sessionID); e != nil {
+			parkCodes = e.ParkCodes()
 			pbSess.DisplayStatus = pb.DisplayStatus(clampInt32(int(e.Status)))
 			pbSess.HasBuildReceipt = e.HasBuildReceipt
 			pbSess.DisplayHasFailures = e.HasFailures
@@ -249,12 +251,12 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 				}
 				// An inactive chat parked on an external event reads as WAITING
 				// from here down.
-				status := c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status)
+				status, reason := c.deriveChatStatus(ctx, chat.AgentSessionID, e.Status)
 				// BOS-1269: the REPORTED status is in hand right here and was
 				// previously discarded. Accumulate it before it is lost — the
 				// cascade needs to know whether the wait is refining idle or
 				// working, and nothing downstream can recover it.
-				waitingIdle.Observe(e.Status, status)
+				waitingIdle.Observe(e.Status, status, reason)
 				resolved = append(resolved, resolvedChat{
 					status:  status,
 					resetAt: e.ResetAt,
@@ -302,6 +304,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		Session:     pbSess,
 		ChatStatus:  chatStatus,
 		ChatResetAt: chatResetAt,
+		ParkCodes:   parkCodes,
 		// BOS-1269. AllIdle is false unless the fold actually landed on
 		// WAITING, so a session holding one parked chat and one genuinely
 		// working chat carries a false aggregate exactly as it should.
@@ -359,15 +362,16 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	return nil
 }
 
-// deriveChatStatus resolves one chat's effective status, rewriting a WORKING
-// chat that is parked on an external event to CHAT_STATUS_WAITING and storing
-// the reason on the tracker (BOS-668). It returns reported unchanged for every
-// other status, and always writes the chat's current reason — including "" —
-// so a reason can never outlive the condition that produced it.
+// deriveChatStatus resolves one chat's effective status and the callback
+// reason it carries, storing the reason on the tracker (BOS-668) and resolving
+// through PromoteWaiting: an IDLE chat with an armed callback reads
+// CHAT_STATUS_WAITING, a WORKING one stays WORKING with its reason. It always
+// writes the chat's current reason — including "" — so a reason can never
+// outlive the condition that produced it.
 //
 // The precedence it implements, for a single chat, is
 //
-//	LIMITED > QUESTION > STALLED-attention > WAITING > WORKING
+//	LIMITED > QUESTION > STALLED-attention > WORKING > WAITING > IDLE
 //
 // read as: waiting loses to everything that demands a human. LIMITED and
 // QUESTION are statuses the chat itself reports, so they are simply never
@@ -380,7 +384,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 // Over-reporting waiting is the failure mode to guard against, so every
 // uncertain path — no lookup wired, a lookup error, an empty reason — resolves
 // to "not waiting".
-func (c *DisplayStatusComputer) deriveChatStatus(ctx context.Context, agentSessionID string, reported pb.ChatStatus) pb.ChatStatus {
+func (c *DisplayStatusComputer) deriveChatStatus(ctx context.Context, agentSessionID string, reported pb.ChatStatus) (pb.ChatStatus, string) {
 	writer, canWrite := c.chat.(WaitingWriter)
 
 	eligible := (reported == pb.ChatStatus_CHAT_STATUS_WORKING ||
@@ -406,10 +410,7 @@ func (c *DisplayStatusComputer) deriveChatStatus(ctx context.Context, agentSessi
 	if canWrite {
 		writer.SetWaiting(agentSessionID, reason)
 	}
-	if reason == "" {
-		return reported
-	}
-	return pb.ChatStatus_CHAT_STATUS_WAITING
+	return PromoteWaiting(reported, reason)
 }
 
 // sessionToProto builds a minimal *pb.Session for the display computer's

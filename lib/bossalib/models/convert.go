@@ -372,3 +372,29 @@ func CronJobConcurrencyPolicyFromProto(p pb.CronJobConcurrencyPolicy) CronJobCon
 		return CronJobConcurrencyPolicySkip
 	}
 }
+
+// --- AgentChatRole conversion ---
+
+var agentChatRoleProto = map[AgentChatRole]pb.ChatRole{
+	AgentChatRoleUnknown:  pb.ChatRole_CHAT_ROLE_UNSPECIFIED,
+	AgentChatRoleBuild:    pb.ChatRole_CHAT_ROLE_BUILD,
+	AgentChatRoleRepair:   pb.ChatRole_CHAT_ROLE_REPAIR,
+	AgentChatRoleVerify:   pb.ChatRole_CHAT_ROLE_VERIFY,
+	AgentChatRoleOperator: pb.ChatRole_CHAT_ROLE_OPERATOR,
+}
+
+// AgentChatRoleToProto maps a role onto the wire enum.
+func AgentChatRoleToProto(r AgentChatRole) pb.ChatRole {
+	return agentChatRoleProto[r]
+}
+
+// AgentChatRoleFromProto maps the wire enum onto a role. An enum value this
+// binary does not know reads as the unknown role.
+func AgentChatRoleFromProto(p pb.ChatRole) AgentChatRole {
+	for role, wire := range agentChatRoleProto {
+		if wire == p {
+			return role
+		}
+	}
+	return AgentChatRoleUnknown
+}

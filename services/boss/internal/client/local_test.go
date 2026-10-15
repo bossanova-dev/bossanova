@@ -23,10 +23,11 @@ type fakeDaemonRPC struct {
 
 	// Captured requests for the wrappers that shape optional fields before
 	// dispatching (so the request-mutation branches can be asserted).
-	lastTrackerReq *pb.ListTrackerIssuesRequest
-	lastRecordReq  *pb.RecordChatRequest
-	lastGetReq     *pb.GetSessionRequest
-	lastListReq    *pb.ListSessionsRequest
+	lastResumeRunReq *pb.ResumeSessionRunRequest
+	lastTrackerReq   *pb.ListTrackerIssuesRequest
+	lastRecordReq    *pb.RecordChatRequest
+	lastGetReq       *pb.GetSessionRequest
+	lastListReq      *pb.ListSessionsRequest
 
 	// ArchiveSession (BOS-1380): the request as sent, and an optional canned
 	// response carrying the deferral fields.
@@ -86,6 +87,13 @@ func (f *fakeDaemonRPC) PauseSession(_ context.Context, _ *connect.Request[pb.Pa
 func (f *fakeDaemonRPC) ResumeSession(_ context.Context, _ *connect.Request[pb.ResumeSessionRequest]) (*connect.Response[pb.ResumeSessionResponse], error) {
 	return sessionResp(f, func() *pb.ResumeSessionResponse {
 		return &pb.ResumeSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) ResumeSessionRun(_ context.Context, req *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
+	f.lastResumeRunReq = req.Msg
+	return sessionResp(f, func() *pb.ResumeSessionRunResponse {
+		return &pb.ResumeSessionRunResponse{Session: &pb.Session{Id: fakeSessionID}}
 	})
 }
 
@@ -189,6 +197,7 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 		{"StopSession", func(c *LocalClient) (*pb.Session, error) { return c.StopSession(ctx, "id") }},
 		{"PauseSession", func(c *LocalClient) (*pb.Session, error) { return c.PauseSession(ctx, "id") }},
 		{"ResumeSession", func(c *LocalClient) (*pb.Session, error) { return c.ResumeSession(ctx, "id") }},
+		{"ResumeSessionRun", func(c *LocalClient) (*pb.Session, error) { return c.ResumeSessionRun(ctx, "id") }},
 		{"RetrySession", func(c *LocalClient) (*pb.Session, error) { return c.RetrySession(ctx, "id") }},
 		{"CloseSession", func(c *LocalClient) (*pb.Session, error) { return c.CloseSession(ctx, "id") }},
 		{"MergeSession", func(c *LocalClient) (*pb.Session, error) {
@@ -453,7 +462,7 @@ func TestLocalClientRecordChat(t *testing.T) {
 	t.Run("agent name set is forwarded", func(t *testing.T) {
 		fake := &fakeDaemonRPC{}
 		c := &LocalClient{rpc: fake}
-		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", true)
+		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", pb.ChatRole_CHAT_ROLE_VERIFY, true)
 		if err != nil {
 			t.Fatalf("unexpected err %v", err)
 		}
@@ -466,12 +475,15 @@ func TestLocalClientRecordChat(t *testing.T) {
 		if !fake.lastRecordReq.Resume {
 			t.Fatalf("Resume = false, want true forwarded")
 		}
+		if got := fake.lastRecordReq.GetRole(); got != pb.ChatRole_CHAT_ROLE_VERIFY {
+			t.Fatalf("Role = %v, want CHAT_ROLE_VERIFY forwarded", got)
+		}
 	})
 
 	t.Run("empty agent name stays nil", func(t *testing.T) {
 		fake := &fakeDaemonRPC{}
 		c := &LocalClient{rpc: fake}
-		if _, err := c.RecordChat(ctx, "sess", "agent", "title", "", false); err != nil {
+		if _, err := c.RecordChat(ctx, "sess", "agent", "title", "", pb.ChatRole_CHAT_ROLE_UNSPECIFIED, false); err != nil {
 			t.Fatalf("unexpected err %v", err)
 		}
 		if fake.lastRecordReq.AgentName != nil {
@@ -481,7 +493,7 @@ func TestLocalClientRecordChat(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
-		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", false)
+		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", pb.ChatRole_CHAT_ROLE_UNSPECIFIED, false)
 		if !errors.Is(err, errRPC) {
 			t.Fatalf("got err %v, want %v", err, errRPC)
 		}
@@ -558,5 +570,23 @@ func TestLocalClientArchiveSessionPassesOptionsAndDeferral(t *testing.T) {
 	}
 	if !resp.GetIsDeferred() || resp.GetBlockingAgentSessionId() != "chat-1" {
 		t.Fatalf("response = %v, want the deferral fields", resp)
+	}
+}
+
+func TestLocalClientResumeSessionRunForwardsSessionID(t *testing.T) {
+	rpc := &fakeDaemonRPC{}
+	c := &LocalClient{rpc: rpc}
+	if _, err := c.ResumeSessionRun(context.Background(), "session-to-resume"); err != nil {
+		t.Fatal(err)
+	}
+	if rpc.lastResumeRunReq.GetSessionId() != "session-to-resume" {
+		t.Fatalf("request = %v", rpc.lastResumeRunReq)
+	}
+}
+
+func TestRemoteClientResumeSessionRunIsLocalOnly(t *testing.T) {
+	_, err := (&RemoteClient{}).ResumeSessionRun(context.Background(), "id")
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("err = %v, want Unimplemented", err)
 	}
 }

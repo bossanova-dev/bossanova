@@ -241,10 +241,10 @@ func TestCLI_Chats_JSONEmitsNoSettledBoolean(t *testing.T) {
 		t.Fatalf("unmarshal %q: %v", res.Stdout, err)
 	}
 	want := map[string]bool{
-		"agent_session_id": true, "title": true, "created_at": true,
+		"agent_session_id": true, "title": true, "created_at": true, "role": true,
 		"status": true, "last_output_at": true, "waiting_reason": true, "phase": true,
 		"spinner_present": true, "last_substantive_output_at": true,
-		"last_output_seeded": true,
+		"last_output_seeded": true, "reclaimed_at": true, "reclaim_reason": true,
 	}
 	// Booleans the daemon computes and the CLI copies through verbatim. A
 	// boolean NOT listed here is a verdict the CLI invented, which is the thing

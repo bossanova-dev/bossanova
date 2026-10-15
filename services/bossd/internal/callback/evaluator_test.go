@@ -1,8 +1,12 @@
 package callback
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -610,6 +614,10 @@ func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
 		trigger  models.GithubCallbackTrigger
 		wantFire bool
 	}{
+		{"waiting run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "waiting", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
+		{"action required, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "action_required", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
+		{"push run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "queued", Event: "push", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
+		{"schedule run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "pending", Event: "schedule", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
 		{"run in progress, checks_passed", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassed, false},
 		{"run in progress, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassedReady, false},
 		{"run in progress, merged pr, merged", prStatus(vcs.PRStateMerged), inProgress, nil, models.GithubCallbackTriggerMerged, true},
@@ -803,5 +811,86 @@ func TestReconcileAll_SafetyNetForWebhookHealthyRepos(t *testing.T) {
 				t.Fatalf("PR read %d times over four passes, want %d", prov.statusCalls, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunsSettled_HoldLogs(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		level  string
+		class  string
+	}{
+		{"waiting", "warn", "awaiting-approval"},
+		{"ACTION_REQUIRED", "warn", "awaiting-approval"},
+		{"in_progress", "debug", "in-flight"},
+		{"queued", "debug", "in-flight"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			var buf bytes.Buffer
+			prov := &fakeProvider{runs: []vcs.WorkflowRun{{Name: "deploy", Status: tc.status, Event: "push", HeadSHA: testHeadSHA}}}
+			ev := NewEvaluator(nil, prov, fixedNow(), zerolog.New(&buf))
+			if settled, _ := ev.runsSettled(context.Background(), "acme/widgets", 7, prStatus(vcs.PRStateOpen)); settled {
+				t.Fatal("held run must not settle")
+			}
+			var record struct {
+				Level   string `json:"level"`
+				Repo    string `json:"repo"`
+				PR      int    `json:"pr"`
+				HeadSHA string `json:"head_sha"`
+				Runs    []struct {
+					Name   string `json:"name"`
+					Status string `json:"status"`
+					Class  string `json:"class"`
+					Event  string `json:"event"`
+				} `json:"held_runs"`
+			}
+			dec := json.NewDecoder(&buf)
+			if err := dec.Decode(&record); err != nil {
+				t.Fatalf("decode hold log: %v", err)
+			}
+			if record.Level != tc.level || record.Repo != "acme/widgets" || record.PR != 7 || record.HeadSHA != testHeadSHA {
+				t.Fatalf("hold log context = %+v", record)
+			}
+			if len(record.Runs) != 1 || record.Runs[0].Name != "deploy" || record.Runs[0].Status != tc.status || record.Runs[0].Class != tc.class || record.Runs[0].Event != "push" {
+				t.Fatalf("held runs = %+v", record.Runs)
+			}
+			var extra any
+			if err := dec.Decode(&extra); err != io.EOF {
+				t.Fatalf("expected exactly one hold log, got %v (%v)", extra, err)
+			}
+		})
+	}
+}
+
+func TestRunsSettled_ClassifiesAndSortsHeldRuns(t *testing.T) {
+	prov := &fakeProvider{runs: []vcs.WorkflowRun{
+		{Name: "z-deploy", Status: "WAITING", Event: "schedule", HeadSHA: testHeadSHA},
+		{Name: "done", Status: "COMPLETED", HeadSHA: testHeadSHA},
+		{Name: "other-head", Status: "waiting", HeadSHA: "other"},
+		{Name: "a-build", Status: "queued", Event: "push", HeadSHA: testHeadSHA},
+		{Name: "approval", Status: "action_required", Event: "pull_request", HeadSHA: testHeadSHA},
+		{Name: "unknown", Status: "unexpected", HeadSHA: testHeadSHA},
+	}}
+	var buf bytes.Buffer
+	ev := NewEvaluator(nil, prov, fixedNow(), zerolog.New(&buf))
+	settled, held := ev.runsSettled(context.Background(), "acme/widgets", 7, prStatus(vcs.PRStateOpen))
+	want := []heldWorkflowRun{
+		{Name: "a-build", Status: "queued", Event: "push", Class: "in-flight"},
+		{Name: "approval", Status: "action_required", Event: "pull_request", Class: "awaiting-approval"},
+		{Name: "unknown", Status: "unexpected", Class: "in-flight"},
+		{Name: "z-deploy", Status: "WAITING", Event: "schedule", Class: "awaiting-approval"},
+	}
+	if settled || !reflect.DeepEqual(held, want) {
+		t.Fatalf("settled=%v held=%+v, want %+v", settled, held, want)
+	}
+	var record struct {
+		Level string            `json:"level"`
+		Runs  []heldWorkflowRun `json:"held_runs"`
+	}
+	if err := json.NewDecoder(&buf).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Level != "warn" || !reflect.DeepEqual(record.Runs, want) {
+		t.Fatalf("mixed hold log = %+v", record)
 	}
 }

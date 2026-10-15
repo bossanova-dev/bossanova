@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -1721,4 +1721,68 @@ test('provesGreenAgrees — the boolean and the reason agree on every verdict cl
   const reasons = new Set(verdicts.map((v) => provesGreenReason(v)))
   assert.ok(reasons.has(PROVES_GREEN_REASONS.OK), 'the matrix must include a proving verdict')
   assert.ok(reasons.size > 1, 'and at least one non-proving one')
+})
+
+test('CLI required payload files fail closed when empty or missing', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'check-state-required-'))
+  const empty = path.join(dir, 'empty.json')
+  writeFileSync(empty, '')
+  try {
+    for (const flag of ['workflow-runs', 'check-runs', 'rollup']) {
+      for (const file of [empty, path.join(dir, 'missing.json')]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            SCRIPT_PATH,
+            'classify',
+            '--checks',
+            JSON.stringify([{ name: 'ci', state: 'SUCCESS', bucket: 'pass' }]),
+            `--${flag}`,
+            file,
+          ],
+          { encoding: 'utf8' },
+        )
+        assert.equal(result.status, 0, result.stderr)
+        const verdict = JSON.parse(result.stdout)
+        assert.equal(verdict.state, 'unknown', `${flag} ${file}`)
+        assert.equal(verdict.reason, 'unreadable')
+        assert.equal(verdict.green, false)
+        assert.match(result.stderr, new RegExp(`--${flag}`))
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('blockingAbsent is the exact undiscounted absent set', () => {
+  const verdict = classifyChecks({
+    buckets: [{ name: 'ci', state: 'SUCCESS', bucket: 'pass' }],
+    priorContexts: ['ci', 'missing', 'advisory'],
+    structurallyAbsentContexts: ['advisory'],
+  })
+  assert.deepEqual(verdict.blockingAbsent, ['missing'])
+  assert.equal(
+    absentGateRemedy({ reason: 'absent-gate', absent: ['missing'], reportedOnPrior: ['missing'] }),
+    ABSENT_GATE_REMEDIES.RETRIGGER,
+  )
+})
+
+test('CLI optional empty checks and missing prior retain their meanings', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'check-state-optional-'))
+  try {
+    const empty = path.join(dir, 'empty')
+    writeFileSync(empty, '')
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, 'classify', '--checks', empty, '--prior', path.join(dir, 'missing')],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    const verdict = JSON.parse(result.stdout)
+    assert.equal(verdict.reason, 'no-checks')
+    assert.equal(verdict.priorKnown, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

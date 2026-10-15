@@ -346,6 +346,7 @@ func (m *mockChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ str
 	return nil
 }
 func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
+func (m *mockChatStore) MarkReclaimed(_ context.Context, _, _ string) error   { return nil }
 func (m *mockChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
 	return nil
 }

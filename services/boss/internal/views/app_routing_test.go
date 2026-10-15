@@ -556,18 +556,18 @@ func TestArchiveFailureRebuildsHomeRows(t *testing.T) {
 	}}
 	a.home.markArchiving("s1")
 	a.home.buildTableRows()
-	if !strings.Contains(a.home.table.Rows()[0][5], "archiving") {
+	if !strings.Contains(a.home.table.Rows()[0][4], "archiving") {
 		t.Fatal("precondition: expected cached row to render archiving")
 	}
 
 	model, _ := a.Update(archiveResultMsg{sessionID: "s1", err: errors.New("boom")})
 	got := model.(App)
 
-	if strings.Contains(got.home.table.Rows()[0][5], "archiving") {
+	if strings.Contains(got.home.table.Rows()[0][4], "archiving") {
 		t.Fatal("failed archive left cached row rendering archiving")
 	}
-	if !strings.Contains(got.home.table.Rows()[0][5], "passing") {
-		t.Fatalf("failed archive row status = %q, want real status", got.home.table.Rows()[0][5])
+	if !strings.Contains(got.home.table.Rows()[0][4], "passing") {
+		t.Fatalf("failed archive row status = %q, want real status", got.home.table.Rows()[0][4])
 	}
 }
 

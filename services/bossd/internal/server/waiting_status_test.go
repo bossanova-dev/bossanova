@@ -50,6 +50,13 @@ func newWaitingStatusServer(t *testing.T, agentSessionIDs ...string) (*Server, *
 	}, tracker
 }
 
+// park makes a chat idle on an armed callback: the state the daemon serves as
+// WAITING. A working chat with the same callback stays WORKING.
+func park(tracker *status.Tracker, id, reason string) {
+	tracker.Update(id, pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	tracker.SetWaiting(id, reason)
+}
+
 func chatEntryByID(statuses []*pb.ChatStatusEntry, id string) *pb.ChatStatusEntry {
 	for _, e := range statuses {
 		if e.GetAgentSessionId() == id {
@@ -59,12 +66,12 @@ func chatEntryByID(statuses []*pb.ChatStatusEntry, id string) *pb.ChatStatusEntr
 	return nil
 }
 
-// A chat the derivation layer marked as parked must be SERVED as waiting, with
-// the canonical reason attached — the marker is useless if the RPC keeps
-// reporting the raw WORKING heartbeat.
+// A chat idle on an armed callback must be SERVED as waiting, with the
+// canonical reason attached — the marker is useless if the RPC keeps reporting
+// the raw IDLE heartbeat.
 func TestGetChatStatuses_ArmedCallbackChatReportsWaiting(t *testing.T) {
 	s, tracker := newWaitingStatusServer(t, "agent-a")
-	tracker.SetWaiting("agent-a", waitingTestReason)
+	park(tracker, "agent-a", waitingTestReason)
 
 	resp, err := s.GetChatStatuses(context.Background(), connect.NewRequest(&pb.GetChatStatusesRequest{
 		SessionId: "sess-1",
@@ -81,6 +88,30 @@ func TestGetChatStatuses_ArmedCallbackChatReportsWaiting(t *testing.T) {
 	}
 	if got := entry.GetWaitingReason(); got != waitingTestReason {
 		t.Fatalf("waiting_reason = %q, want %q", got, waitingTestReason)
+	}
+}
+
+// An armed callback never hides live work: a working chat with one is served
+// WORKING, keeping its reason and phase, at both the chat and session level.
+func TestGetChatStatuses_ArmedCallbackKeepsAWorkingChatWorking(t *testing.T) {
+	s, tracker := newWaitingStatusServer(t, "agent-a")
+	tracker.SetPhase("agent-a", "building")
+	tracker.SetWaiting("agent-a", waitingTestReason)
+
+	resp, err := s.GetChatStatuses(context.Background(), connect.NewRequest(&pb.GetChatStatusesRequest{SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatalf("GetChatStatuses: %v", err)
+	}
+	entry := chatEntryByID(resp.Msg.GetStatuses(), "agent-a")
+	if entry.GetStatus() != pb.ChatStatus_CHAT_STATUS_WORKING || entry.GetWaitingReason() != waitingTestReason || entry.GetPhase() != "building" {
+		t.Fatalf("entry = %v, want WORKING with its reason and phase", entry)
+	}
+	sessions, err := s.GetSessionStatuses(context.Background(), connect.NewRequest(&pb.GetSessionStatusesRequest{SessionIds: []string{"sess-1"}}))
+	if err != nil {
+		t.Fatalf("GetSessionStatuses: %v", err)
+	}
+	if got := sessions.Msg.GetStatuses()[0]; got.GetStatus() != pb.ChatStatus_CHAT_STATUS_WORKING || got.GetWaitingReason() != waitingTestReason {
+		t.Fatalf("session entry = %v, want WORKING carrying the armed reason", got)
 	}
 }
 
@@ -134,7 +165,7 @@ func TestGetChatStatuses_MarkerOnNonWorkingChatIsIgnored(t *testing.T) {
 
 func TestGetSessionStatuses_SurfacesWaitingReason(t *testing.T) {
 	s, tracker := newWaitingStatusServer(t, "agent-a")
-	tracker.SetWaiting("agent-a", waitingTestReason)
+	park(tracker, "agent-a", waitingTestReason)
 
 	resp, err := s.GetSessionStatuses(context.Background(), connect.NewRequest(&pb.GetSessionStatusesRequest{
 		SessionIds: []string{"sess-1"},
@@ -178,7 +209,7 @@ func TestChatStatusFromSessionChats_WorkingSiblingBeatsWaiting(t *testing.T) {
 // is merely sitting at a prompt.
 func TestChatStatusFromSessionChats_WaitingBeatsIdle(t *testing.T) {
 	s, tracker := newWaitingStatusServer(t, "agent-parked", "agent-idle")
-	tracker.SetWaiting("agent-parked", waitingTestReason)
+	park(tracker, "agent-parked", waitingTestReason)
 	tracker.Update("agent-idle", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
 
 	got, reason, ok, _ := s.chatStatusAndWaitingAggregate(context.Background(),
@@ -199,8 +230,8 @@ func TestChatStatusFromSessionChats_WaitingBeatsIdle(t *testing.T) {
 func TestChatStatusFromSessionChats_DeterministicReasonAcrossParkedChats(t *testing.T) {
 	const otherReason = "awaiting merged on acme/widget#7"
 	s, tracker := newWaitingStatusServer(t, "agent-b", "agent-a")
-	tracker.SetWaiting("agent-b", otherReason)
-	tracker.SetWaiting("agent-a", waitingTestReason)
+	park(tracker, "agent-b", otherReason)
+	park(tracker, "agent-a", waitingTestReason)
 
 	chats := s.agentChats.(*waitingChatListFake).chats
 	for i := 0; i < 50; i++ {
@@ -239,8 +270,8 @@ func TestGetSessionStatuses_BlockingWaitBeatsStandbySibling(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, tracker := newWaitingStatusServer(t, tc.chatOrder...)
-			tracker.SetWaiting(tc.standbyID, standbyReason)
-			tracker.SetWaiting(tc.blockingID, waitingTestReason)
+			park(tracker, tc.standbyID, standbyReason)
+			park(tracker, tc.blockingID, waitingTestReason)
 
 			resp, err := s.GetSessionStatuses(context.Background(), connect.NewRequest(&pb.GetSessionStatusesRequest{
 				SessionIds: []string{"sess-1"},
@@ -455,20 +486,30 @@ func TestListSessions_IdleDerivedWaitingOverPassingPRServesThePRLabelAndTheMark(
 	}
 }
 
-// TestListSessions_WorkingDerivedWaitingKeepsWaitingAndCarriesNoMark is R2 at
-// the serving producer. The absent mark matters as much as the label: a mark on
-// a row that never demoted would make the down-convert manufacture a wait.
-func TestListSessions_WorkingDerivedWaitingKeepsWaitingAndCarriesNoMark(t *testing.T) {
+// TestListSessions_ArmedCallbackDoesNotHideLiveWork pins that an armed callback
+// never hides a working chat, at both producers: the row reads "working", it
+// is never demoted, and it carries is_working_over_waiting so the down-convert
+// can restore the "waiting" an older pin saw. A sibling working chat with no
+// callback is plain live work and carries no mark.
+func TestListSessions_ArmedCallbackDoesNotHideLiveWork(t *testing.T) {
 	d := newDemotionStores(t)
 	d.addChat(t, "working", pb.ChatStatus_CHAT_STATUS_WORKING, true)
 	d.display.Set(d.sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 
-	got := d.served(t)
-	if got.GetDisplayLabel() != displaystatus.WaitingLabel {
-		t.Fatalf("display_label = %q, want %q", got.GetDisplayLabel(), displaystatus.WaitingLabel)
+	if persisted := d.persisted(t); persisted != displaystatus.WorkingLabel {
+		t.Fatalf("persisting producer wrote %q, want %q", persisted, displaystatus.WorkingLabel)
 	}
-	if got.GetIsWaitingDemoted() {
-		t.Fatal("is_waiting_demoted = true on an un-demoted row, want false")
+	got := d.served(t)
+	if got.GetDisplayLabel() != displaystatus.WorkingLabel {
+		t.Fatalf("display_label = %q, want %q", got.GetDisplayLabel(), displaystatus.WorkingLabel)
+	}
+	if got.GetIsWaitingDemoted() || !got.GetIsWorkingOverWaiting() {
+		t.Fatalf("demoted/working-over-waiting = %v/%v, want false/true", got.GetIsWaitingDemoted(), got.GetIsWorkingOverWaiting())
+	}
+
+	d.addChat(t, "busy", pb.ChatStatus_CHAT_STATUS_WORKING, false)
+	if got := d.served(t); got.GetDisplayLabel() != displaystatus.WorkingLabel || got.GetIsWorkingOverWaiting() {
+		t.Fatalf("with an unarmed working sibling: label %q working-over-waiting=%v, want working / false", got.GetDisplayLabel(), got.GetIsWorkingOverWaiting())
 	}
 }
 
@@ -553,16 +594,17 @@ func TestChatStatusAndWaitingAggregate_IsOrderIndependent(t *testing.T) {
 			{AgentSessionID: secondID, SessionID: "sess-1"},
 		}
 		s := &Server{chatStatus: tracker, agentChats: &waitingChatListFake{chats: chats}}
-		st, _, _, allIdle := s.chatStatusAndWaitingAggregate(context.Background(), chats, true)
-		return st, allIdle
+		st, _, _, agg := s.chatStatusAndWaitingAggregate(context.Background(), chats, true)
+		return st, agg.AllIdle(st)
 	}
 
-	// One idle-derived, one working-derived parked chat. The aggregate must be
-	// false either way round, so the tie-break winner cannot decide the label.
+	// One idle parked chat and one working chat with an armed callback. The
+	// working chat is live work, so the session folds to WORKING either way
+	// round and never carries the idle aggregate.
 	stA, idleA := build("agent-aaa", "agent-zzz", pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WORKING)
 	stB, idleB := build("agent-aaa", "agent-zzz", pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_IDLE)
-	if stA != pb.ChatStatus_CHAT_STATUS_WAITING || stB != pb.ChatStatus_CHAT_STATUS_WAITING {
-		t.Fatalf("precondition: folded statuses = %v/%v, want both WAITING", stA, stB)
+	if stA != pb.ChatStatus_CHAT_STATUS_WORKING || stB != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Fatalf("folded statuses = %v/%v, want both WORKING: an armed callback must not hide live work", stA, stB)
 	}
 	if idleA || idleB {
 		t.Fatalf("aggregate = %v/%v after swapping which id is idle-derived, want both false", idleA, idleB)
@@ -583,7 +625,6 @@ func TestReadyComposite_BothProducersAndPreReadyWaitingMarks(t *testing.T) {
 		wantDemoted, wantReadyOverWaiting bool
 	}{
 		{"idle-derived wait retains old demotion mark", pb.ChatStatus_CHAT_STATUS_IDLE, true, false},
-		{"working-derived wait records Ready override", pb.ChatStatus_CHAT_STATUS_WORKING, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDemotionStores(t)
@@ -598,6 +639,82 @@ func TestReadyComposite_BothProducersAndPreReadyWaitingMarks(t *testing.T) {
 			}
 			if got.GetIsWaitingDemoted() != tc.wantDemoted || got.GetIsReadyOverWaiting() != tc.wantReadyOverWaiting {
 				t.Fatalf("demoted/ready-over-waiting = %v/%v, want %v/%v", got.GetIsWaitingDemoted(), got.GetIsReadyOverWaiting(), tc.wantDemoted, tc.wantReadyOverWaiting)
+			}
+		})
+	}
+}
+
+// TestReadyNeverCoversLiveWork is the observed bug: a receipted, settled green
+// PR whose agent is still working with an armed callback read "✓ ready". Both
+// producers now serve "working"; the served row is marked so an older pin gets
+// back the Ready-over-waiting it saw. The same session idle on that callback
+// still reads "✓ ready".
+func TestReadyNeverCoversLiveWork(t *testing.T) {
+	d := newDemotionStores(t)
+	d.addChat(t, "agent", pb.ChatStatus_CHAT_STATUS_WORKING, true)
+	d.display.Set(d.sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true})
+	if label := d.persisted(t); label != displaystatus.WorkingLabel {
+		t.Fatalf("persisted label = %q, want working", label)
+	}
+	got := d.served(t)
+	if got.GetDisplayLabel() != displaystatus.WorkingLabel || got.GetIsReadyOverWaiting() || !got.GetIsWorkingOverWaiting() {
+		t.Fatalf("served %q ready-over-waiting=%v working-over-waiting=%v, want working / false / true",
+			got.GetDisplayLabel(), got.GetIsReadyOverWaiting(), got.GetIsWorkingOverWaiting())
+	}
+
+	d.chatState.Update("agent-agent", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	if label := d.persisted(t); label != displaystatus.ReadyLabel {
+		t.Fatalf("idle on the callback: persisted label = %q, want Ready", label)
+	}
+	if got := d.served(t); got.GetDisplayLabel() != displaystatus.ReadyLabel || got.GetIsWorkingOverWaiting() {
+		t.Fatalf("idle on the callback: served %q working-over-waiting=%v, want Ready / false", got.GetDisplayLabel(), got.GetIsWorkingOverWaiting())
+	}
+}
+
+// TestListSessions_VerifyParkOverIdleWaitServesNeedsHuman drives the observed
+// row from real check results: every CI check green, boss/verify pending with a
+// "needs human:" park, and the verify chat parked idle on an armed callback. The
+// row must read the park, not the "waiting" spinner: "needs sign-off" for a
+// policy code, "blocked" for a failure code, from both producers. A live claim,
+// a genuinely pending CI check and a failing check keep the composite they had.
+func TestListSessions_VerifyParkOverIdleWaitServesNeedsHuman(t *testing.T) {
+	success, failure := vcs.CheckConclusionSuccess, vcs.CheckConclusionFailure
+	green := vcs.CheckResult{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success}
+	verify := func(description string) vcs.CheckResult {
+		return vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: description}
+	}
+	park := verify("needs human: human-review:security")
+	cases := []struct {
+		name         string
+		checks       []vcs.CheckResult
+		wantLabel    string
+		wantSpinner  bool
+		wantDemotion bool
+	}{
+		{"park is the only pending context", []vcs.CheckResult{green, park}, displaystatus.NeedsSignOffLabel, false, true},
+		{"failure park is the only pending context", []vcs.CheckResult{green, verify("needs human: human-review:ui,ledger-open")}, displaystatus.BlockedLabel, false, true},
+		{"live verify claim", []vcs.CheckResult{green, verify("verifying… tok")}, displaystatus.WaitingLabel, true, false},
+		{"real CI check still pending", []vcs.CheckResult{green, park, {Name: "e2e", Status: vcs.CheckStatusInProgress}}, displaystatus.WaitingLabel, true, false},
+		{"a CI check failed", []vcs.CheckResult{park, {Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &failure}}, displaystatus.WaitingLabel, true, false},
+	}
+	mergeable := true
+	pr := &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable, HeadSHA: "abc123"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDemotionStores(t)
+			d.addChat(t, "verify", pb.ChatStatus_CHAT_STATUS_IDLE, true)
+			d.display.Set(d.sessionID, vcs.ComputeDisplayStatus(pr, tc.checks, nil))
+
+			got := d.served(t)
+			if got.GetDisplayLabel() != tc.wantLabel || got.GetDisplaySpinner() != tc.wantSpinner {
+				t.Fatalf("composite = %q spinner=%v, want %q spinner=%v",
+					got.GetDisplayLabel(), got.GetDisplaySpinner(), tc.wantLabel, tc.wantSpinner)
+			}
+			if got.GetIsWaitingDemoted() != tc.wantDemotion {
+				t.Fatalf("is_waiting_demoted = %v, want %v", got.GetIsWaitingDemoted(), tc.wantDemotion)
+			}
+			if persisted := d.persisted(t); persisted != tc.wantLabel {
+				t.Fatalf("persisting producer wrote %q, want %q", persisted, tc.wantLabel)
 			}
 		})
 	}

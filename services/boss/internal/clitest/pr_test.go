@@ -37,7 +37,9 @@ func TestCLI_PrApprove_RunsOnTheDaemon(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if want := "Approved #42: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n"; res.Stdout != want {
+	if want := "Approved #42: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+		"  ledger-open: review left must-fix findings open\n" +
+		"Approving overrode ledger-open (review left must-fix findings open); if that was not intended, boss pr send-back 42 \"<note>\" revokes the approval and sends the head back.\n"; res.Stdout != want {
 		t.Fatalf("stdout = %q, want %q", res.Stdout, want)
 	}
 	calls := h.Daemon.ApproveSessionPRCalls()

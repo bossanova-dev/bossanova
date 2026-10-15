@@ -64,6 +64,26 @@ func (f *initProjectFixture) configWritten() bool {
 }
 
 func TestInitProjectConfig(t *testing.T) {
+	for _, branch := range []string{"main", "develop"} {
+		t.Run("registered default develop with checkout on "+branch, func(t *testing.T) {
+			f := newInitProjectFixture(t)
+			f.daemon.AddRepo(&pb.Repo{Id: "repo-1", LocalPath: f.main, OriginUrl: "https://github.com/acme/widget", DefaultBaseBranch: "develop"})
+			if branch != "main" {
+				if out, err := exec.Command("git", "-C", f.dir, "checkout", "-q", "-b", branch).CombinedOutput(); err != nil {
+					t.Fatalf("%v %s", err, out)
+				}
+			}
+			f.write(t, f.projectFile(twoCrons, ""))
+			out, err := f.runInit(t, initOptions{projectTrust: projectTrust{yes: true}})
+			if branch == "main" {
+				if err == nil || !strings.Contains(err.Error(), "--allow-branch") || !strings.Contains(err.Error(), `"develop"`) || f.configWritten() || f.writes() != 0 {
+					t.Fatalf("err %v config %v writes %d\n%s", err, f.configWritten(), f.writes(), out)
+				}
+			} else if err != nil || !f.configWritten() || len(f.daemon.CreateCronJobCalls()) != 2 {
+				t.Fatalf("err %v config %v creates %d\n%s", err, f.configWritten(), len(f.daemon.CreateCronJobCalls()), out)
+			}
+		})
+	}
 	t.Run("file present with --yes: repo and crons converge and join the applied list", func(t *testing.T) {
 		f := newInitProjectFixture(t)
 		f.write(t, f.projectFile(twoCrons, `"settings": {"canAutoMerge": true}`))

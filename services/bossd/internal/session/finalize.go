@@ -71,6 +71,7 @@ type FinalizeResult struct {
 //   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
 //   - pr_failed                — clean committed branch could not open or attach a PR
 //   - pr_created               — clean committed branch opened/attached a PR; PR tags injected
+//   - run_blocked              — any pr_created or preserved pr_skipped_no_github result of a run that reported itself BLOCKED (ReportRunBlocked): PR left draft, session Blocked with the run's reason
 //
 // After the outcome is classified, FinalizeSession writes
 // cron_jobs.last_run_outcome (step 4) and, on the terminal-success paths
@@ -127,10 +128,9 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	// otherwise inspect, push, or create a PR from that checkout. The predicate
 	// is "unattended", not "cron": a trigger's zero-output session carries no
 	// CronJobID (BOS-1477). An attended quick chat is not unattended and keeps
-	// its existing path; the other unattended shapes (/boss-epic tmux_unattended,
-	// --detach) never set IsQuickChat.
+	// its existing path. Tmux-hosted detach runs can also be zero-output.
 	var result *FinalizeResult
-	if isUnattendedSession(session) && session.IsQuickChat {
+	if isZeroOutputSession(session) {
 		repo, repoErr := l.repos.Get(ctx, session.RepoID)
 		if repoErr != nil {
 			return nil, fmt.Errorf("get repo for zero-output finalize: %w", repoErr)
@@ -143,6 +143,18 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	} else {
 		// Step 2 + 3: classify outcome by examining the worktree.
 		result = l.classifyFinalizeOutcome(ctx, session)
+	}
+	runBlocked := session.RunBlockedReason != nil
+	if runBlocked && !result.Deleted {
+		// The run reported itself BLOCKED (ReportRunBlocked), so
+		// markFinalizePRReady left any PR draft. A finalize that otherwise
+		// succeeded is recorded as run_blocked so step 6 Blocks the session;
+		// a finalize failure keeps its own outcome and appends to the reason.
+		switch result.Outcome {
+		case models.CronJobOutcomePRCreated, models.CronJobOutcomePRSkippedNoGitHub:
+			result.Outcome = models.CronJobOutcomeRunBlocked
+		default:
+		}
 	}
 
 	// Step 4: record the outcome on the cron job row. Non-cron sessions
@@ -239,9 +251,18 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	// (Deleted=true) have no row to transition — skip them regardless of outcome.
 	if needsAttention(result.Outcome) && !result.Deleted {
 		reason := sessionreason.FinalizeFailure(string(result.Outcome), result.Err)
+		var consumeReport **string
+		if runBlocked {
+			// The report's reason moves into blocked_reason and the report is
+			// cleared, so nothing later re-reads it.
+			reason = withRunBlockedReason(*session.RunBlockedReason, result.Outcome, reason)
+			var consumed *string
+			consumeReport = &consumed
+		}
 		reasonPtr := &reason
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-			BlockedReason: &reasonPtr,
+			BlockedReason:    &reasonPtr,
+			RunBlockedReason: consumeReport,
 		}); err != nil {
 			l.logger.Error().Err(err).Str("session", sessionID).
 				Msg("failed to persist finalize blocked reason")
@@ -270,6 +291,8 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 		// GitHub. Its own bucket keeps it out of the error rate rather than
 		// inflating it on every session in a non-GitHub repo.
 		outcome = "skipped_no_github"
+	case models.CronJobOutcomeRunBlocked:
+		outcome = "blocked"
 	case models.CronJobOutcomePRFailed,
 		models.CronJobOutcomeChatSpawnFailed,
 		models.CronJobOutcomeCleanupFailed,
@@ -384,13 +407,25 @@ func (l *Lifecycle) injectPRTagsAndPush(ctx context.Context, sessionID string) e
 	return nil
 }
 
-func (l *Lifecycle) markFinalizePRReady(ctx context.Context, sessionID, originURL string) error {
+// markFinalizePRReady marks the session's PR ready for review, unless the run
+// reported itself BLOCKED: that PR stays draft. session is the snapshot
+// finalizeSessionFrom read, so this decision and the run_blocked outcome come
+// from the same read.
+func (l *Lifecycle) markFinalizePRReady(ctx context.Context, session *models.Session, originURL string) error {
+	sessionID := session.ID
 	cur, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("refresh session before mark ready: %w", err)
 	}
 	if cur.PRNumber == nil || *cur.PRNumber <= 0 {
 		return fmt.Errorf("no PR number resolved for mark ready")
+	}
+	if session.RunBlockedReason != nil {
+		l.logger.Info().
+			Str("session", sessionID).
+			Int("pr", *cur.PRNumber).
+			Msg("finalize: run reported blocked; leaving PR draft")
+		return nil
 	}
 	if err := l.assertPRHasDiffBeforeMarkReady(ctx, cur); err != nil {
 		return err
@@ -786,7 +821,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
-	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
@@ -918,7 +953,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
-	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
@@ -1031,7 +1066,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
-	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
@@ -1301,9 +1336,16 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 		}
 
 		recoverReason := sessionreason.FinalizeRecovered()
+		var consumeReport **string
+		if sess.RunBlockedReason != nil {
+			recoverReason = sessionreason.RunBlocked(*sess.RunBlockedReason) + "; " + recoverReason
+			var consumed *string
+			consumeReport = &consumed
+		}
 		recoverReasonPtr := &recoverReason
 		if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-			BlockedReason: &recoverReasonPtr,
+			BlockedReason:    &recoverReasonPtr,
+			RunBlockedReason: consumeReport,
 		}); err != nil {
 			l.logger.Error().Err(err).Str("session", sess.ID).
 				Msg("recover: failed to persist blocked reason")
@@ -1316,6 +1358,17 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 	}
 
 	return recovered, nil
+}
+
+// withRunBlockedReason is the blocked reason for a run that reported itself
+// BLOCKED with runReason: the run's own reason, followed by the finalize
+// failure when finalize also failed.
+func withRunBlockedReason(runReason string, outcome models.CronJobOutcome, finalizeFailure string) string {
+	blocked := sessionreason.RunBlocked(runReason)
+	if outcome == models.CronJobOutcomeRunBlocked {
+		return blocked
+	}
+	return blocked + "; " + finalizeFailure
 }
 
 // needsAttention reports whether a finalize outcome should drop the session
@@ -1339,7 +1392,8 @@ func needsAttention(o models.CronJobOutcome) bool {
 	case models.CronJobOutcomePRFailed,
 		models.CronJobOutcomeChatSpawnFailed,
 		models.CronJobOutcomeCleanupFailed,
-		models.CronJobOutcomePRNoChanges:
+		models.CronJobOutcomePRNoChanges,
+		models.CronJobOutcomeRunBlocked:
 		return true
 	case models.CronJobOutcomeDeletedNoChanges,
 		models.CronJobOutcomeZeroOutput,

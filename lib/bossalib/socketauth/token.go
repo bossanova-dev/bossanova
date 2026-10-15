@@ -133,6 +133,22 @@ func LoadOrCreateHTTPToken(socketPath string) (string, error) {
 	return loadOrCreateTokenFile(HTTPTokenPath(socketPath))
 }
 
+// RotateHTTPToken replaces the MCP HTTP credential without changing the daemon
+// socket credential. It shares the creation lock so a concurrent initializer
+// cannot overwrite the rotated token.
+func RotateHTTPToken(socketPath string) (string, error) {
+	path := HTTPTokenPath(socketPath)
+	unlock, err := lockTokenFile(path)
+	switch {
+	case err == nil:
+		defer unlock()
+	case errors.Is(err, errLockUnsupported):
+	default:
+		return "", err
+	}
+	return generateTokenFile(path)
+}
+
 func loadOrCreateTokenFile(path string) (string, error) {
 	if tok, err := readTokenFile(path); err == nil {
 		return tok, nil
@@ -161,11 +177,15 @@ func loadOrCreateTokenFile(path string) (string, error) {
 	} else if !errors.Is(err, ErrTokenMissing) && !errors.Is(err, ErrTokenInvalid) {
 		return "", err
 	}
+	return generateTokenFile(path)
+}
+
+func generateTokenFile(path string) (string, error) {
 	buf := make([]byte, tokenBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("socketauth: generate token: %w", err)
 	}
-	tok = hex.EncodeToString(buf)
+	tok := hex.EncodeToString(buf)
 	if err := writeTokenAtomic(path, tok); err != nil {
 		return "", err
 	}

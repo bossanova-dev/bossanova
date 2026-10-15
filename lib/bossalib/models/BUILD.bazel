@@ -24,6 +24,7 @@ go_library(
 go_test(
     name = "models_test",
     srcs = [
+        "agent_chat_role_test.go",
         "broadcast_test.go",
         "convert_test.go",
         "cron_job_test.go",

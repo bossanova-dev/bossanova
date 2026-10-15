@@ -1,4 +1,6 @@
+import json
 import os
+import threading
 import time
 import unittest
 
@@ -67,6 +69,75 @@ class McpClientTest(unittest.TestCase):
         # A protocol error leaves the server healthy.
         self.call("plain_text")
         self.assertEqual(self.plugin.starts(), 1)
+
+    def start_stalled_write(self):
+        self.call("stop_reading")
+        popen = self.client._proc.popen
+        outcome = {}
+
+        def write():
+            started = time.monotonic()
+            try:
+                self.call("echo", {"text": "x" * (4 * 1024 * 1024)}, timeout=0.5)
+            except Exception as exc:
+                outcome["error"] = exc
+            finally:
+                outcome["elapsed"] = time.monotonic() - started
+
+        thread = threading.Thread(target=write, daemon=True)
+
+        def cleanup():
+            # Kill before client.close(), even when the old synchronous write
+            # hangs: closing its BufferedWriter first would hang teardown too.
+            if popen.poll() is None:
+                popen.kill()
+            popen.wait(timeout=5)
+            thread.join(timeout=5)
+
+        self.addCleanup(cleanup)
+        thread.start()
+        return popen, thread, outcome
+
+    def test_large_write_to_a_stalled_server_times_out_and_kills_it(self):
+        popen, thread, outcome = self.start_stalled_write()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive(), "stalled stdin write exceeded its deadline")
+        self.assertIsInstance(outcome.get("error"), self.mod.McpTimeout)
+        self.assertIn("did not accept", str(outcome["error"]))
+        self.assertLess(outcome["elapsed"], 5)
+        self.assertIsNotNone(popen.poll())
+        self.assertIsNone(self.client._proc)
+        self.assertEqual(self.call("plain_text")["content"][0]["text"], "hello from the fake server")
+        self.assertEqual(self.plugin.starts(), 2)
+
+    def test_lock_is_released_for_a_waiting_caller(self):
+        _, writer, outcome = self.start_stalled_write()
+        deadline = time.monotonic() + 5
+        while not self.client._lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertTrue(self.client._lock.locked(), "writer did not acquire the client lock")
+        result = {}
+
+        def call():
+            try:
+                result["value"] = self.call("plain_text", timeout=10)
+            except Exception as exc:
+                result["error"] = exc
+
+        waiter = threading.Thread(target=call, daemon=True)
+        waiter.start()
+        waiter.join(timeout=10)
+        self.assertFalse(waiter.is_alive(), "waiting caller remained blocked after the write deadline")
+        writer.join(timeout=5)
+        self.assertIsInstance(outcome.get("error"), self.mod.McpTimeout)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["value"]["content"][0]["text"], "hello from the fake server")
+        self.assertEqual(self.plugin.starts(), 2)
+
+    def test_large_request_round_trips(self):
+        arguments = {"text": "x" * (1024 * 1024)}
+        result = self.call("echo", arguments)
+        self.assertEqual(json.loads(result["content"][0]["text"]), arguments)
 
     def test_unstartable_binary_raises_mcp_error(self):
         spec = self.mod.LaunchSpec(os.path.join(self.plugin.root, "missing"), self.plugin.socket)

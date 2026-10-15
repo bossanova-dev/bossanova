@@ -27,38 +27,7 @@ func (h HomeModel) tableAvailWidth() int {
 	return fitAvailWidth(h.width, homeTableBlockPadding)
 }
 
-// homeNameMinWidth returns the floor fitColumns may squeeze Home's NAME column
-// to at a given terminal width. NAME is priority 0 — it is never dropped,
-// because a session list without session names is not a session list — so it
-// is the only column that ever reaches the squeeze pass, and this is the number
-// that decides how much of a title survives there.
-//
-// The floors are per-tier in principle because a 40-column window can live with
-// a heavily truncated title while a 100-column one should not be: the narrow
-// tier is already a compromise, the compact tier is a normal working terminal,
-// and the full tier is a board that should read exactly as it always has.
-//
-// ON HOME TODAY, ONLY THE NARROW FLOOR IS REACHABLE — say so rather than let
-// the paragraph above read as a live policy. fitColumns runs the drop loop to
-// exhaustion before it squeezes anything, so the squeeze pass is only entered
-// once the set is down to cursor + attention + NAME, which costs
-// 1 + 1 + nameWidth + 3 gaps. NAME is capped at 60 (+ tableColumnSep = 61), so
-// that set is over budget only while width - 2 < 66, i.e. below 68 columns; and
-// the floor only BINDS (rather than merely being the clamp target) below about
-// 23 columns. Both are far inside narrowWidthMax, so homeNameMinWidthCompact
-// and homeNameMinWidthFull are currently inert: replacing this function with
-// the constant homeNameMinWidthNarrow would render byte-identically at every
-// terminal width.
-//
-// They are kept, and kept named, because the reachability above is a
-// consequence of NAME's 60-column cap and of the drop-before-squeeze ordering,
-// not a property of the layout — retune either (the BOS-570 follow-up recorded
-// in buildTableRows would retune both) and the compact and full floors start
-// biting immediately. A floor invented under pressure at that point would be a
-// literal buried in a switch; these are a one-line edit where a reader looking
-// for layout numbers will find them. An unknown width uses the full-tier floor
-// for the same reason tableAvailWidth returns 0 there: assume the unfitted
-// board until told otherwise.
+// NAME remains selectable and visible when optional columns are dropped.
 const (
 	homeNameMinWidthNarrow  = 16
 	homeNameMinWidthCompact = 24
@@ -80,6 +49,9 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
+	if sess.GetAttention() != nil {
+		return renderAttentionStatus(sess.GetAttention())
+	}
 	if sess != nil && sess.GetDisplayLabel() == statusWorking {
 		if phase := h.daemonPhases[sess.GetId()]; phase != "" {
 			label := phase
@@ -92,37 +64,10 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	return renderDisplayStatus(sess, h.spinner)
 }
 
-// renderAttentionIndicator returns a colored "!" for sessions needing attention,
-// or an empty string otherwise.
-//
-// BOS-855: the indicator goes recessive only when every warning hint on the row
-// is itself demoted (attentionIndicatorDemoted). It reads only
-// AttentionStatus.Reason, so it cannot see the rotation/setup/start-error/
-// draft-PR hints — routing the decision through the shared gate is what stops a
-// faded "!" appearing above a bright exempt hint.
-func renderAttentionIndicator(sess *pb.Session) string {
-	if sess.AttentionStatus == nil || !sess.AttentionStatus.NeedsAttention {
-		return ""
-	}
-	demoted := attentionIndicatorDemoted(sess)
-	switch sess.AttentionStatus.Reason {
-	case pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS:
-		if demoted {
-			return styleStatusDangerFaded.Render("!")
-		}
-		return styleStatusDanger.Render("!")
-	case pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE:
-		return ""
-	default:
-		if demoted {
-			return styleStatusWarningFaded.Render("!")
-		}
-		return styleStatusWarning.Render("!")
-	}
-}
-
 // buildTableRows rebuilds the table columns and rows from h.sessions.
 func (h *HomeModel) buildTableRows() {
+	h.sessions = attentionBoard(h.sessions)
+	grouped := h.hasAttentionBoard()
 	if len(h.sessions) == 0 {
 		h.table.SetRows(nil)
 		return
@@ -145,10 +90,14 @@ func (h *HomeModel) buildTableRows() {
 		if sessionHasEndpointRow(sess) {
 			nameWidthLabels = append(nameWidthLabels, sessionEndpointLabels(sess))
 		}
-		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); waitingHint != "" {
+		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); sess.GetAttention() == nil && waitingHint != "" {
 			nameWidthLabels = append(nameWidthLabels, waitingHint)
 		}
-		nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
+		if sess.GetAttention() == nil {
+			nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
+		} else if sess.GetAttention().GetSentence() != "" {
+			nameWidthLabels = append(nameWidthLabels, sess.GetAttention().GetSentence())
+		}
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
@@ -159,75 +108,47 @@ func (h *HomeModel) buildTableRows() {
 		}
 	}
 
-	// The declared column set, widest-first, carrying the session list's drop
-	// order (BOS-572). Every width expression is unchanged from the pre-BOS-572
-	// literal; only the priority/minWidth metadata is new.
-	//
-	// Drop order, most expendable first: REPO (the repo is usually obvious from
-	// the session title and is constant down a single-repo board), then PR (the
-	// number is a convenience, not an identity), then STATUS (the last thing to
-	// go — it is the one cell that changes on its own). NAME and the two
-	// one-column indicators are priority 0: a session list must always say
-	// which session a row is, and which row the cursor is on.
-	//
-	// The minWidth on a droppable column is INERT today — fitColumns runs the
-	// drop loop to exhaustion before it squeezes anything, so a column with
-	// priority > 0 is always gone before the squeeze pass could reach it. Each
-	// one is declared anyway so that re-ordering a priority later is a one-line
-	// edit rather than an invitation to invent a floor under pressure.
-	//
-	// KNOWN LIMITATION of that drop-before-squeeze ordering, which the plan
-	// specifies and this code implements faithfully: because NAME keeps its full
-	// 60-column cap until every droppable column is gone, a long-titled board
-	// can drop STATUS at a width where squeezing NAME by a handful of columns
-	// would have kept it — leaving terminal width unused next to a column the
-	// drop order calls "the last thing to go". Measured against
-	// responsiveHomeSessions (a 71-character title), the board is
-	// cursor+attention+NAME from 20 columns all the way to 85, and STATUS only
-	// returns at 86 — so at 85 the drop leaves 17 columns unused, one short of
-	// the 18 STATUS needs. The stranding is always bounded by the width of the
-	// column that was dropped; it is a drop-overshoot, not unbounded dead space.
-	//
-	// DO NOT "fix" this by squeezing before each drop without also re-specifying
-	// the acceptance criteria. That ordering is not merely a policy change: with
-	// this same fixture at 72 columns, NAME has 45 columns of squeeze headroom
-	// against a 32-column overflow, so a squeeze-first fit keeps ALL SIX columns
-	// and the branch stops satisfying BOS-572's committed criterion "at a
-	// 72-column terminal at least one of REPO / PR is absent". The follow-up that
-	// re-policies this (a BOS-570 child, since the primitive is the epic's shared
-	// producer) has to move the criterion and the tier constants together, and
-	// re-capture the narrow proof still. Retuning the tiers above is the cheap
-	// half-measure in the meantime.
+	// Keep the attention board's STATUS visible at ordinary terminal widths;
+	// legacy boards retain the existing drop-before-squeeze fit.
+	if grouped {
+		nameWidthLabels = append(nameWidthLabels, "IN PROGRESS · 999")
+	}
+	nameWidth := maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep
+	if grouped && h.tableAvailWidth() > 0 {
+		other := 1 + (maxColWidth("REPO", repos, 20) + tableColumnSep) + (maxColWidth("PR", prLabels, 8) + tableColumnSep) + (homeStatusWidth + tableColumnSep) + 5
+		nameWidth = min(nameWidth, max(homeNameMinWidth(h.width), h.tableAvailWidth()-other))
+	}
 	rcols := []responsiveColumn{
 		{col: cursorColumn, priority: 0, minWidth: 1},
-		{col: table.Column{Title: " ", Width: 1}, priority: 0, minWidth: 1},
 		{col: table.Column{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep}, priority: 3, minWidth: 6},
-		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep}, priority: 0, minWidth: homeNameMinWidth(h.width)},
+		{col: table.Column{Title: "NAME", Width: nameWidth}, priority: 0, minWidth: homeNameMinWidth(h.width)},
 		{col: table.Column{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep}, priority: 2, minWidth: 3},
 		{col: table.Column{Title: "STATUS", Width: homeStatusWidth + tableColumnSep}, priority: 1, minWidth: 8},
 	}
 
 	fitted := fitColumnsIndexed(rcols, h.tableAvailWidth())
 	cols := fittedColumns(fitted)
+	cursor := h.table.Cursor()
+	sentenceWidth := 60
+	for _, col := range cols {
+		if col.Title == "NAME" {
+			sentenceWidth = col.Width
+		}
+	}
 
-	// project maps a row built in the FULL declared order onto the surviving
-	// columns. Every row — primary, endpoint, warning — is built with all six
-	// cells and then projected here, so no call site ever writes a column index
-	// by hand: the NAME cell moves from index 3 to index 2 the moment REPO is
-	// dropped, and a hard-coded index would silently put an endpoint list or a
-	// setup-failure hint in the wrong column (or off the end of a shortened
-	// row) on any narrow board.
+	// Project primary and auxiliary rows onto the surviving columns.
 	project := func(full table.Row) table.Row { return projectRow(fitted, full) }
 
 	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)
 
-	cursor := h.table.Cursor()
 	rows := make([]table.Row, 0, len(h.sessions)*2)
 	for i, sess := range h.sessions {
+		if h.sectionStarts(i, grouped) {
+			rows = append(rows, project(table.Row{"", "", styleSubtle.Render(h.sectionTitle(i)), "", ""}))
+		}
 		rowIndex := len(rows)
 		statusStyled := h.renderSessionStatus(sess)
 
-		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
 		selected := rowIndex == cursor
 		merged := sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
@@ -241,11 +162,6 @@ func (h *HomeModel) buildTableRows() {
 			name = renderMutedTrackerLink(sess, names[i])
 			pr = renderMutedPRLink(sess)
 		case selected:
-			// The table applies the selected (blue) foreground to the whole
-			// row, but a styled leading cell (the attention "!") emits a full
-			// SGR reset that cancels it for the cells after it (repo/name/pr).
-			// Re-assert the selection color on those cells with raw ANSI so it
-			// survives regardless of the reset. See BOS-103.
 			repo = renderSelectedText(repos[i])
 			name = renderSelectedTrackerLink(sess, names[i])
 			if sess.PrNumber != nil {
@@ -259,7 +175,7 @@ func (h *HomeModel) buildTableRows() {
 		if rowIndex == cursor {
 			indicator = cursorChevron
 		}
-		row := project(table.Row{indicator, attn, repo, name, pr, statusStyled})
+		row := project(table.Row{indicator, repo, name, pr, statusStyled})
 		rows = append(rows, row)
 		// The session's verified machine-local HTTP endpoints (BOS-474) sit
 		// directly under the session they belong to and ABOVE any warning rows,
@@ -269,7 +185,13 @@ func (h *HomeModel) buildTableRows() {
 		// predicate sessionSubRowCount uses, so every cursor/height helper
 		// agrees with what is actually emitted here.
 		if sessionHasEndpointRow(sess) {
-			rows = append(rows, project(table.Row{"", "", "", renderSessionEndpoints(sess), "", ""}))
+			rows = append(rows, project(table.Row{"", "", renderSessionEndpoints(sess), "", ""}))
+		}
+		if sess.GetAttention() != nil {
+			for _, line := range attentionSentenceLines(sess, sentenceWidth) {
+				rows = append(rows, project(table.Row{"", "", styleSubtle.Render(line), "", ""}))
+			}
+			continue
 		}
 		// Why a session is parked on an external event (BOS-668). Informational,
 		// not a warning, so it is styled with the info color and sits above the
@@ -277,7 +199,7 @@ func (h *HomeModel) buildTableRows() {
 		// endpoint row: the predicate here is waitingHintLine != "", which is
 		// exactly what sessionSubRowCount counts.
 		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); waitingHint != "" {
-			rows = append(rows, project(table.Row{"", "", "", styleStatusInfo.Render(waitingHint), "", ""}))
+			rows = append(rows, project(table.Row{"", "", styleStatusInfo.Render(waitingHint), "", ""}))
 		}
 		// Warning sub-rows. The style is resolved PER HINT through the shared
 		// BOS-855 gate, which folds in both reasons a hint goes recessive: the
@@ -287,7 +209,7 @@ func (h *HomeModel) buildTableRows() {
 		// live-activity label. selectedSessionWarningBlock calls the same helper,
 		// so the list and the detail view cannot disagree.
 		for _, hint := range sessionWarningHints(sess) {
-			hintRow := project(table.Row{"", "", "", warningHintStyle(sess, hint).Render(hint.Text), "", ""})
+			hintRow := project(table.Row{"", "", warningHintStyle(sess, hint).Render(hint.Text), "", ""})
 			rows = append(rows, hintRow)
 		}
 	}

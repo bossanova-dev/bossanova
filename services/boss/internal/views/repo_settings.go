@@ -87,6 +87,7 @@ const (
 	repoSettingsRowSetupScript
 	repoSettingsRowOrganization
 	repoSettingsRowMergeStrategy
+	repoSettingsRowIsTrusted
 	repoSettingsRowCanAutoMerge
 	repoSettingsRowCanAutoMergeDependabot
 	repoSettingsRowCanAutoRepair
@@ -300,6 +301,8 @@ type RepoSettingsModel struct {
 	orgPickerCursor int
 	orgSaving       bool
 
+	trustConfirm bool
+
 	githubAppClient      GitHubAppClient
 	githubAppStatus      *pb.GitHubAppRepoStatus
 	githubAppStatusErr   error
@@ -404,6 +407,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 	}
 	rows = append(rows,
 		repoSettingsRowMergeStrategy,
+		repoSettingsRowIsTrusted,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
 		repoSettingsRowCanAutoRepair,
@@ -591,6 +595,17 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.trustConfirm {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.trustConfirm = false
+				v := true
+				return m, m.saveSettings(&pb.UpdateRepoRequest{Id: m.repoID, IsTrusted: &v})
+			case "n", "N", "esc":
+				m.trustConfirm = false
+			}
+			return m, nil
+		}
 		if m.githubAppMode != repoSettingsGitHubModeNone {
 			return m.updateGitHubMode(msg)
 		}
@@ -808,6 +823,13 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:            m.repoID,
 			MergeStrategy: &next,
 		})
+	case repoSettingsRowIsTrusted:
+		if !m.repo.IsTrusted {
+			m.trustConfirm = true
+			return m, nil
+		}
+		v := false
+		return m, m.saveSettings(&pb.UpdateRepoRequest{Id: m.repoID, IsTrusted: &v})
 	case repoSettingsRowCanAutoMerge:
 		v := !m.repo.CanAutoMerge
 		m.repo.CanAutoMerge = v
@@ -1200,6 +1222,11 @@ func (m RepoSettingsModel) textEntryActive() bool {
 }
 
 func (m RepoSettingsModel) View() tea.View {
+	if m.trustConfirm {
+		return tea.NewView(styleTitle.Render("Trust this repository?") + "\n\n" +
+			lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render(repoTrustExplanation) + "\n" +
+			styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	}
 	if m.orgPickerOpen {
 		return tea.NewView(m.organizationPickerContent())
 	}
@@ -1303,6 +1330,11 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString(renderFieldRow(focused, renderCheckboxLabel(cb.checked, cb.label)))
 		b.WriteString("\n")
 	}
+
+	renderCheckbox(checkboxRow{"Trust this repository's own configuration", m.repo.IsTrusted, repoSettingsRowIsTrusted})
+	b.WriteString(lipgloss.NewStyle().Faint(true).Padding(0, 4).Width(m.width).Render("Project MCP servers, agent project settings, proof secrets."))
+	b.WriteString("\n")
+	b.WriteString("\n")
 
 	// Automations section. Non-navigable heading label. Groups the per-repo
 	// automation toggles: "Mark ready for review when checks pass" (CanAutoMerge,

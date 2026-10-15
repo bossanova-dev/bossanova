@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -317,7 +318,7 @@ func HydrateVerifyAttention(p *pb.Session, e *status.DisplayEntry) {
 	}
 	summary := verifyParkSummaryNoReason
 	if e != nil && e.VerifyReason != "" {
-		summary = "needs human: " + protoString(e.VerifyReason)
+		summary = displaystatus.VerifyParkSummary(protoString(e.VerifyReason))
 	}
 	p.AttentionStatus = &pb.AttentionStatus{
 		NeedsAttention: true,
@@ -350,6 +351,7 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 		Title:          protoString(c.Title),
 		DaemonId:       protoString(c.DaemonID),
 		CreatedAt:      timestamppb.New(c.CreatedAt),
+		Role:           models.AgentChatRoleToProto(c.Role),
 	}
 	if c.TmuxSessionName != nil {
 		out.TmuxSessionName = protoString(*c.TmuxSessionName)
@@ -359,6 +361,12 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	}
 	if c.StartError != nil {
 		out.StartError = protoString(*c.StartError)
+	}
+	if c.ReclaimedAt != nil {
+		out.ReclaimedAt = timestamppb.New(*c.ReclaimedAt)
+	}
+	if c.ReclaimReason != nil {
+		out.ReclaimReason = protoString(*c.ReclaimReason)
 	}
 	return out
 }

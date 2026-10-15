@@ -553,6 +553,25 @@ const V20260916 Version = "2026-09-16"
 // responses at V20260917 carry no attention either.
 const V20260917 Version = "2026-09-17"
 
+// V20260918 ships NeedsHumanWaitDemotionChange: the display cascade demotes an
+// idle-derived "waiting" composite beneath a verify park, so a session whose PR
+// is DISPLAY_STATUS_NEEDS_HUMAN and whose only waiting chats are idle on an
+// armed callback now serves "needs human" (WARNING, no spinner) and carries
+// is_waiting_demoted. For any request resolved older than V20260918 the
+// transform restores the "waiting" / INFO / spinner composite.
+// V20260918 gates resume actions on whether a stopped run can be restarted.
+//
+// The same window ships VerifyParkSplitChange: a verify park serves "needs
+// sign-off" (WARNING) when its codes are all policy codes and "blocked"
+// (DANGER) otherwise, where it served "needs human" (WARNING); older pins get
+// "needs human" back.
+//
+// And WorkingOverWaitingChange: an armed callback no longer turns a WORKING
+// chat into WAITING, so such a chat is served WORKING with its waiting_reason
+// and its session reads "working" (marked is_working_over_waiting) where it
+// read "waiting" or "✓ ready"; older pins get WAITING and that composite back.
+const V20260918 Version = "2026-09-18"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -705,8 +724,9 @@ func DefaultRegistry() *Registry {
 			V20260915,
 			V20260916,
 			V20260917,
+			V20260918,
 		},
-		V20260917,
+		V20260918,
 		Baseline,
 	)
 	if err != nil {

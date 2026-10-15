@@ -42,9 +42,14 @@ func TestSessionFinishCommand(t *testing.T) {
 		resp                  *pb.FinishUnattendedRunResponse
 		daemonErr             error
 		wantSession, wantChat string
+		wantBlocked           bool
+		wantReason            string
 		wantOutput, wantErr   string
 		wantJSON              *sessionFinishJSON
 	}{
+		{name: "blocked with reason", args: []string{"--blocked", "--reason", "  unresolved P1  "}, env: envIDs, resp: pending, wantSession: "session-env", wantChat: "chat-env", wantBlocked: true, wantReason: "unresolved P1", wantOutput: "finish pending (waiting on chat-env)\n"},
+		{name: "blocked without reason", args: []string{"--blocked"}, env: envIDs, resp: pending, wantSession: "session-env", wantChat: "chat-env", wantBlocked: true, wantOutput: "finish pending (waiting on chat-env)\n"},
+		{name: "reason without blocked", args: []string{"--reason", "why"}, env: envIDs, wantErr: "--reason is only used with --blocked"},
 		{name: "environment defaults", env: envIDs, resp: pending, wantSession: "session-env", wantChat: "chat-env", wantOutput: "finish pending (waiting on chat-env)\n"},
 		{name: "flags override", args: []string{"--session", "session-flag", "--chat", "chat-flag"}, env: envIDs, resp: &pb.FinishUnattendedRunResponse{IsDeferred: true, BlockingAgentSessionId: "chat-flag"}, wantSession: "session-flag", wantChat: "chat-flag", wantOutput: "finish pending (waiting on chat-flag)\n"},
 		{name: "finished synchronously", env: envIDs, resp: &pb.FinishUnattendedRunResponse{}, wantSession: "session-env", wantChat: "chat-env", wantOutput: "finished\n"},
@@ -84,6 +89,9 @@ func TestSessionFinishCommand(t *testing.T) {
 			}
 			if wantCalls == 1 && (c.req.GetSessionId() != tt.wantSession || c.req.GetRequesterAgentSessionId() != tt.wantChat) {
 				t.Fatalf("request = (%q,%q), want (%q,%q)", c.req.GetSessionId(), c.req.GetRequesterAgentSessionId(), tt.wantSession, tt.wantChat)
+			}
+			if wantCalls == 1 && (c.req.GetIsBlocked() != tt.wantBlocked || c.req.GetBlockedReason() != tt.wantReason) {
+				t.Fatalf("blocked = (%v,%q), want (%v,%q)", c.req.GetIsBlocked(), c.req.GetBlockedReason(), tt.wantBlocked, tt.wantReason)
 			}
 			if tt.wantJSON != nil {
 				var got map[string]any

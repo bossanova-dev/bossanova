@@ -33,7 +33,9 @@ func sessionFinishCmd(connectClient func(*cobra.Command) (client.BossClient, err
 			"(records its outcome and cleans it up) once every chat is idle and the " +
 			"session's agent output has gone quiet, instead of waiting for the idle sweep. " +
 			"Run it from inside the session: the ids default to BOSS_SESSION_ID and " +
-			"BOSS_AGENT_SESSION_ID.",
+			"BOSS_AGENT_SESSION_ID. With --blocked the run reports it ended blocked on a " +
+			"person: the daemon records --reason on the session, and the finalize leaves " +
+			"the PR draft and blocks the session instead of marking the PR ready.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
@@ -53,6 +55,11 @@ func sessionFinishCmd(connectClient func(*cobra.Command) (client.BossClient, err
 			if chatID == "" {
 				return emitJSONFailure(cmd, asJSON, fmt.Errorf("chat id is required: use --chat or BOSS_AGENT_SESSION_ID"))
 			}
+			blocked, _ := cmd.Flags().GetBool("blocked")
+			reason, _ := cmd.Flags().GetString("reason")
+			if cmd.Flags().Changed("reason") && !blocked {
+				return emitJSONFailure(cmd, asJSON, fmt.Errorf("--reason is only used with --blocked"))
+			}
 			c, err := connectClient(cmd)
 			if err != nil {
 				return emitJSONFailure(cmd, asJSON, err)
@@ -62,6 +69,8 @@ func sessionFinishCmd(connectClient func(*cobra.Command) (client.BossClient, err
 			resp, err := c.FinishUnattendedRun(ctx, &pb.FinishUnattendedRunRequest{
 				SessionId:               sessionID,
 				RequesterAgentSessionId: chatID,
+				IsBlocked:               blocked,
+				BlockedReason:           strings.TrimSpace(reason),
 			})
 			if err != nil {
 				return emitJSONFailure(cmd, asJSON, err)
@@ -83,6 +92,8 @@ func sessionFinishCmd(connectClient func(*cobra.Command) (client.BossClient, err
 	}
 	cmd.Flags().String("session", "", "Session id (default BOSS_SESSION_ID)")
 	cmd.Flags().String("chat", "", "Requesting chat id (default BOSS_AGENT_SESSION_ID)")
+	cmd.Flags().Bool("blocked", false, "The run ended blocked on a person: finalize leaves its PR draft and blocks the session")
+	cmd.Flags().String("reason", "", "Why the run is blocked (with --blocked)")
 	cmd.Flags().Bool(jsonFlagName, false, `Emit {"outcome","blocking_agent_session_id"} as JSON on stdout`)
 	return cmd
 }

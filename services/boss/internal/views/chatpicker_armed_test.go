@@ -494,7 +494,9 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 	m := armedPicker(t, stub, sess, w.Chats, statuses, reasons)
 
 	line := m.waitingReasonLine()
-	wantPrefix := "verify · " + fixtures.ArmedVerifyReason + " · " + fixtures.ArmedVerifyPark + " · expires in "
+	// The row badge reads "blocked", so the line restores the wait's
+	// antecedent the way every demoted row does (BOS-1269).
+	wantPrefix := "verify · waiting: " + fixtures.ArmedVerifyReason + " · " + fixtures.ArmedVerifyPark + " · expires in "
 	if !strings.HasPrefix(line, wantPrefix) {
 		t.Fatalf("waitingReasonLine = %q, want prefix %q", line, wantPrefix)
 	}
@@ -523,5 +525,17 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 	}
 	if strings.Contains(home, fixtures.ArmedVerifyReason) {
 		t.Fatalf("Home must keep hiding the routine wait (#2901):\n%s", home)
+	}
+	var row string
+	for _, line := range strings.Split(home, "\n") {
+		if strings.Contains(line, sess.GetTitle()) {
+			row = line
+		}
+	}
+	if !strings.Contains(row, displaystatus.BlockedLabel) || strings.Contains(row, displaystatus.WaitingLabel) {
+		t.Fatalf("parked row reads %q, want %q and no %q", row, displaystatus.BlockedLabel, displaystatus.WaitingLabel)
+	}
+	if hint := "blocked: ledger-open"; !strings.Contains(home, hint) {
+		t.Fatalf("Home is missing the park hint %q:\n%s", hint, home)
 	}
 }

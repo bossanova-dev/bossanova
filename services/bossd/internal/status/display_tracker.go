@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +52,16 @@ type DisplayEntry struct {
 	// projection reads it yet (HydrateVerifyAttention names codes alone).
 	VerifyLabel string
 	UpdatedAt   time.Time
+}
+
+// ParkCodes returns the verify park's codes for displaystatus.Input.ParkCodes:
+// the comma-joined VerifyReason of a NeedsHuman entry, or nil for a nil entry
+// or any other status.
+func (e *DisplayEntry) ParkCodes() []string {
+	if e == nil || e.Status != vcs.DisplayStatusNeedsHuman || e.VerifyReason == "" {
+		return nil
+	}
+	return strings.Split(e.VerifyReason, ",")
 }
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.

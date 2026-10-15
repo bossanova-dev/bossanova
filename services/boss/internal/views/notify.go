@@ -226,7 +226,7 @@ func notifyForSessions(sessions []*pb.Session) tea.Cmd {
 			}
 			_ = runNotify(notifyRequest{
 				Title: "Bossanova",
-				Body:  fmt.Sprintf("%s needs your input", notificationSessionName(sess)),
+				Body:  attentionNotificationBody(sess),
 				Sound: true,
 			})
 		}
@@ -242,4 +242,27 @@ func notificationSessionName(sess *pb.Session) string {
 		return branch
 	}
 	return sess.GetId()
+}
+
+func attentionNotificationBody(s *pb.Session) string {
+	a := s.GetAttention()
+	if a == nil {
+		return fmt.Sprintf("%s needs your input", notificationSessionName(s))
+	}
+	name := notificationSessionName(s)
+	if s.GetPrNumber() != 0 {
+		name = fmt.Sprintf("#%d", s.GetPrNumber())
+	}
+	switch a.GetKind() {
+	case pb.AttentionKind_ATTENTION_KIND_FIX:
+		return name + " needs a fix · " + a.GetSentence()
+	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
+		return a.GetSentence()
+	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
+		return name + " needs you · review · " + a.GetSentence()
+	case pb.AttentionKind_ATTENTION_KIND_MERGE:
+		return name + " is ready to merge"
+	default:
+		return ""
+	}
 }

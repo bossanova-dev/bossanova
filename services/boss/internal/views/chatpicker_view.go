@@ -207,7 +207,7 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 			m.spinner.View() + label))
 	} else if m.approving {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
-			m.spinner.View() + fmt.Sprintf("Approving PR #%d…", m.session.GetPrNumber())))
+			m.spinner.View() + fmt.Sprintf("Requesting merge of PR #%d…", m.session.GetPrNumber())))
 	} else if m.isArchiving() {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session…"))
@@ -243,12 +243,15 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if m.confirm == confirmApprove {
+		lines, overridesFailure := m.approveConfirm()
+		color, keys := colorWarning, "[y/enter] confirm  [n/esc] cancel"
+		if overridesFailure {
+			color, keys = colorDanger, "[y] merge anyway  [n/enter/esc] cancel"
+		}
 		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(fmt.Sprintf(
-			"Approve PR #%d? Verify waives its needs-human park on the current head, then re-checks and merges it.",
-			m.session.GetPrNumber())))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(color).Render(strings.Join(lines, "\n")))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+		b.WriteString(styleActionBar.Render(keys))
 	} else if m.confirm == confirmArchive {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?"))
@@ -307,10 +310,7 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	if m.canOpenTracker() {
 		middle = append(middle, "[l]inear")
 	}
-	switch {
-	case m.canApprove():
-		middle = append(middle, "[m]approve")
-	case m.canMerge():
+	if m.canApprove() || m.canMerge() {
 		middle = append(middle, "[m]erge")
 	}
 	if m.sessionID != "" {

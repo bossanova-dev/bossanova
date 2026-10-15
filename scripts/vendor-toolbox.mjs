@@ -482,6 +482,10 @@ export const VENDOR_MAP = {
     'commit-status.mjs',
     // commit-status.mjs imports ready-gate.mjs, the gate a boss/build success post must pass.
     'ready-gate.mjs',
+    // receipt-carry.mjs decides carry / re-review / refusal for the pushed head and reads the
+    // re-review's verdict through review-verdict.mjs; its other imports already ship here.
+    'receipt-carry.mjs',
+    'review-verdict.mjs',
     // stage-chain.mjs (BOS-1388): the `repairing` phase report; its imports already ship here.
     'stage-chain.mjs',
   ],

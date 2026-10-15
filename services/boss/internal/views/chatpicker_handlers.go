@@ -201,7 +201,7 @@ func (m ChatPickerModel) handleMergeResult(msg mergeResultMsg) (tea.Model, tea.C
 }
 
 // handleApproveResult lands the approval outcome as the status line, worded as
-// `boss pr approve` words it.
+// the merge that [m]erge presents it as.
 func (m ChatPickerModel) handleApproveResult(msg approveResultMsg) (tea.Model, tea.Cmd) {
 	if msg.sessionID != m.sessionID {
 		return m, nil // orphan completion from a session the user navigated away from
@@ -210,14 +210,14 @@ func (m ChatPickerModel) handleApproveResult(msg approveResultMsg) (tea.Model, t
 	r := msg.result
 	switch {
 	case connect.CodeOf(msg.err) == connect.CodeDeadlineExceeded:
-		m.statusMsg = rpcStatusMessage("Couldn't confirm the approval", msg.err) + "; an approval record may already be posted, so approve again to confirm"
+		m.statusMsg = rpcStatusMessage("Couldn't confirm the merge request", msg.err) + "; verify may already have recorded it, so merge again to confirm"
 	case msg.err != nil:
-		m.statusMsg = rpcStatusMessage("Couldn't approve", msg.err)
+		m.statusMsg = rpcStatusMessage("Couldn't request the merge", msg.err)
 	case !r.GetIsApproved():
-		m.statusMsg = prverdict.ApproveRefusal(msg.pr, r)
+		m.statusMsg = prverdict.MergeRefusal(msg.pr, r)
 	default:
 		m.approved = true
-		m.statusNote = strings.Join(prverdict.ApproveLines(msg.pr, r), " ")
+		m.statusNote = strings.Join(prverdict.MergeLines(msg.pr, r), " ")
 	}
 	return m, nil
 }

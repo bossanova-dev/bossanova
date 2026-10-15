@@ -334,7 +334,7 @@ Read the findings, then approve the PR one of three ways:
    longer hands a park back; on a parked defect it still asks for a fresh verdict.
    The daemon runs the approval on its own host with the repo's stored Linear key,
    so it works from any machine connected to that daemon. In the TUI, open the
-   parked session and press `m`, which reads `[m]approve` there.
+   parked session and press `m`, which reads `[m]erge` as it does on a passing PR.
 2. Have a teammate approve the PR on GitHub. Verification accepts the review
    approval and still checks the required gates.
 3. Merge the PR yourself after your own review.

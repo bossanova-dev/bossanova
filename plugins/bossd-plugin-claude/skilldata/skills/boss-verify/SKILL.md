@@ -39,7 +39,7 @@ forms).
 
 ## Single PR: `/boss-verify <pr|ticket>`
 
-This normally runs in the PR's own session, in its chat titled `verify`. First report the phase:
+This normally runs in the PR's own session, in its verify chat (role `verify`). First report the phase:
 `node "$BOSS_VERIFY_TOOLBOX/stage-chain.mjs" phase verifying` (never fatal).
 
 1. **Hand-back.** If the head's `boss/verify` status reads `needs human:` or is a `failure`, run
@@ -52,12 +52,12 @@ This normally runs in the PR's own session, in its chat titled `verify`. First r
 2. **Judge.** `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" judge --pr <n> [--waive <code>]` (zero tokens, never writes). Act on
    `verdict`:
 
-| Verdict               | Action                                                                                                                                                                                                                           |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wait`                | In a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"`; otherwise report. The cron gate retries.                                                                           |
-| `human`               | `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" post --pr <n> --head <sha> --verdict human --reason <reason> [--label <labels>]`, where `<labels>` is the judge's `labels` joined with `, ` (one quoted argument; omit when empty). |
-| `pass`                | `post --verdict pass` (with `--reason approved` when `reason` is `approved`), then `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" merge --pr <n> --head <sha>`.                                                                    |
-| `extensions-required` | Run the extensions (below).                                                                                                                                                                                                      |
+| Verdict               | Action                                                                                                                                                                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wait`                | In a boss chat, `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"`; otherwise report. The cron gate retries.                                                                              |
+| `human`               | `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" post --pr <n> --head <sha> --verdict human --reason <reason>`. `post` derives the park label; report `labelUnread` when present.                                                       |
+| `pass`                | `post --verdict pass` (with `--reason approved` when `reason` is `approved`, and `--carry-record <carryRecord>` when the judge output carries one), then `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" merge --pr <n> --head <sha>`. |
+| `extensions-required` | Run the extensions (below).                                                                                                                                                                                                         |
 
 `<sha>` is always the judged `headSha`. A writing verb that returns `abandoned: claim-lost` means a
 later run owns the head: stop quietly. `post` returning `trackerWrites: unavailable` wrote nothing:
@@ -89,10 +89,10 @@ otherwise report. Once `merge` reports the PR merged, hand off to the next stage
    returned nothing is `crashed: true`.
 5. **Re-judge.** `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" judge --pr <n> --extension-results <file>`,
    then post that verdict with your token:
-   - `pass` → `post --verdict pass`, then `merge`;
+   - `pass` → `post --verdict pass` (flags as in the table), then `merge`;
    - `defect` → `post --verdict defect --findings <file>` (the judge output's `findings`), then in a
      boss chat `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"` (a new head re-judges), then stop;
-   - `human` → `post --verdict human --reason <reason> [--label <labels>]` (as in the table), adding
+   - `human` → `post --verdict human --reason <reason>` (as in the table), adding
      `--extension-record <extensionRecord>` when the judge output carries one (an approval of the
      park then reuses this run instead of re-running the extensions), then stop;
    - `wait` → `post --verdict wait --reason <reason>`, then in a boss chat `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"`, then stop.

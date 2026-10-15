@@ -365,6 +365,30 @@ test('a human verdict posts needs-human and parks; tracker writes unavailable is
   assert.deepEqual(lines(sweep({}, u.deps())), ['#1 skipped: tracker writes unavailable'])
 })
 
+test('the sweep leaves label derivation to the human post gate', () => {
+  const w = world({
+    verdicts: { 1: { verdict: 'human', reason: 'human-review:ui', labels: ['web UI'] } },
+  })
+  sweep({}, w.deps())
+  assert.equal(w.posts()[0].includes('--label'), false)
+  assert.ok(w.posts()[0].includes('human-review:ui'))
+})
+
+test('a human post carries the policy fingerprint the judge read, so the park records it', () => {
+  const fingerprint = '0123456789abcdef'
+  const w = world({
+    verdicts: { 1: { verdict: 'human', reason: 'no-receipt', policyFingerprint: fingerprint } },
+  })
+  sweep({}, w.deps())
+  const human = w.posts()[0]
+  assert.equal(human[human.indexOf('--policy') + 1], fingerprint)
+
+  // A judge that could not read the policy names none, and none is posted.
+  const unknown = world({ verdicts: { 1: { verdict: 'human', reason: 'no-receipt' } } })
+  sweep({}, unknown.deps())
+  assert.equal(unknown.posts()[0].includes('--policy'), false)
+})
+
 test('a set-valued park is posted unchanged and a set waiver is forwarded unchanged', () => {
   const set = 'always-human-path,human-review:ui'
   const w = world({ verdicts: { 1: { verdict: 'human', reason: set } } })
@@ -430,7 +454,7 @@ test('no verify chat: chat new --title verify, then chat send to the new chat', 
   const bossCalls = w.calls.filter((c) => c.cmd === BOSS).map((c) => c.args)
   assert.deepEqual(bossCalls.slice(1), [
     ['chats', '--json', 's-new'],
-    ['chat', 'new', 's-new', '--title', 'verify', '--json'],
+    ['chat', 'new', 's-new', '--title', 'verify', '--role', 'verify', '--json'],
     ['chat', 'send', 'chat-new', '/boss-verify 1 --claim tok-1', '--json'],
   ])
   assert.deepEqual(lines(r), ['#1 dispatched: new-verify-chat (newest of 2 live sessions)'])

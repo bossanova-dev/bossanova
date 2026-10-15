@@ -32,3 +32,12 @@ func TestFixLoopExhausted(t *testing.T) {
 		t.Fatalf("FixLoopExhausted = %q", got)
 	}
 }
+
+func TestRunBlocked(t *testing.T) {
+	if got := RunBlocked("  unresolved P1 in review  "); got != "run blocked: unresolved P1 in review" {
+		t.Fatalf("RunBlocked = %q", got)
+	}
+	if blank := RunBlocked(" "); blank != "run blocked: no reason given" {
+		t.Fatalf("RunBlocked(blank) = %q", blank)
+	}
+}

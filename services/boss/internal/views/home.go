@@ -279,7 +279,7 @@ func (h HomeModel) sessionWaitingReason(sess *pb.Session) string {
 
 // subRowCount is sessionSubRowCount bound to this model's waiting reasons.
 func (h HomeModel) subRowCount(sess *pb.Session) int {
-	return sessionSubRowCount(sess, h.sessionWaitingReason(sess))
+	return sessionSubRowCount(sess, h.sessionWaitingReason(sess), h.attentionSentenceWidth())
 }
 
 func (h HomeModel) Init() tea.Cmd {

@@ -95,7 +95,7 @@ type prApproveClient interface {
 type prChatClient interface {
 	prSessionLister
 	SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error)
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error)
 	SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
 }
 
@@ -329,7 +329,7 @@ func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, opts pr
 	// The comment is on the PR from here on, so every later failure names it:
 	// the operator must not re-run and post the note twice.
 	posted := fmt.Sprintf("the note is posted at %s", r.GetCommentUrl())
-	chat, err := c.RecordChat(ctx, s.GetId(), uuid.NewString(), sendBackChatTitle, "", false)
+	chat, err := c.RecordChat(ctx, s.GetId(), uuid.NewString(), sendBackChatTitle, "", pb.ChatRole_CHAT_ROLE_OPERATOR, false)
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("start the %q chat for PR #%d (%s): %w", sendBackChatTitle, opts.pr, posted, err))
 	}

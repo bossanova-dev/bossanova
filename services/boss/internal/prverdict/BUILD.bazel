@@ -5,7 +5,10 @@ go_library(
     srcs = ["prverdict.go"],
     importpath = "github.com/recurser/boss/internal/prverdict",
     visibility = ["//services/boss:__subpackages__"],
-    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+    deps = [
+        "//lib/bossalib/attention",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+    ],
 )
 
 go_test(

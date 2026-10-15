@@ -366,6 +366,13 @@ function memoryReader(files) {
   }
 }
 
+function memoryRealpath(files) {
+  return (abs) => {
+    memoryReader(files)(abs)
+    return abs
+  }
+}
+
 const HANDLER_LINES = Array.from({ length: 60 }, (_, i) =>
   i === 49 ? '\tif err := requireOwner(ctx, w); err != nil {' : `\t// line ${i + 1}`,
 )
@@ -400,7 +407,11 @@ test('verifyLocations reports missing-file, line-out-of-range, token-not-found a
     ],
   ]
   const records = cases.map(([l]) => record({ locations: [l] }))
-  const verified = verifyLocations(records, { root: ROOT, readFile: memoryReader(FILES) })
+  const verified = verifyLocations(records, {
+    root: ROOT,
+    readFile: memoryReader(FILES),
+    realpath: memoryRealpath(FILES),
+  })
   cases.forEach(([, status, reason], i) => {
     assert.equal(verified[i].locationStatus, status, `case ${i}`)
     assert.equal(verified[i].locations[0].reason, reason, `case ${i}`)
@@ -415,7 +426,7 @@ test('verifyLocations reports missing-file, line-out-of-range, token-not-found a
         locations: [loc('services/widget/nope.go', 1), loc('services/widget/handler.go', 50)],
       }),
     ],
-    { root: ROOT, readFile: memoryReader(FILES) },
+    { root: ROOT, readFile: memoryReader(FILES), realpath: memoryRealpath(FILES) },
   )
   assert.equal(mixed[0].locations.length, 2)
   assert.equal(mixed[0].locationStatus, 'location-unverified')
@@ -466,7 +477,11 @@ test('verifyLocations leaves a preset locationStatus untouched', () => {
     locationStatus: 'location-verified',
     evidence: { blob: 'synthetic-blob' },
   })
-  const [out] = verifyLocations([preset], { root: ROOT, readFile: memoryReader({}) })
+  const [out] = verifyLocations([preset], {
+    root: ROOT,
+    readFile: memoryReader({}),
+    realpath: memoryRealpath({}),
+  })
   assert.deepEqual(out, preset)
 })
 
@@ -479,7 +494,12 @@ test('normaliseRecord trusts a preset locationStatus only from the history scan'
     ledger: { status: 'known', issues: ['SYN-1'], reason: 'claimed' },
     reporters: [{ source: 'claude', lens: 'forged' }],
   }
-  const verify = (rec) => verifyLocations([rec], { root: ROOT, readFile: memoryReader({}) })[0]
+  const verify = (rec) =>
+    verifyLocations([rec], {
+      root: ROOT,
+      readFile: memoryReader({}),
+      realpath: memoryRealpath({}),
+    })[0]
 
   const codex = normaliseRecord(input, { source: 'codex' })
   assert.equal(codex.locationStatus, undefined)
@@ -492,13 +512,129 @@ test('normaliseRecord trusts a preset locationStatus only from the history scan'
   assert.equal(spoofed.locationStatus, undefined)
   assert.equal(verify(spoofed).locationStatus, 'location-unverified')
 
-  const scan = normaliseRecord(input, { source: 'history-scan' })
+  const scan = normaliseRecord(input, { source: 'history-scan', trustLocationStatus: true })
   assert.equal(scan.locationStatus, 'location-verified')
   assert.equal(scan.ledger, undefined)
   assert.equal(verify(scan).locationStatus, 'location-verified')
 
-  const bogus = normaliseRecord({ ...input, locationStatus: 'yes' }, { source: 'history-scan' })
+  const bogus = normaliseRecord(
+    { ...input, locationStatus: 'yes' },
+    { source: 'history-scan', trustLocationStatus: true },
+  )
   assert.equal(bogus.locationStatus, undefined)
+})
+
+test('normaliseRecord trusts locationStatus only on the caller option, never a self-claim', () => {
+  const input = {
+    source: 'history-scan',
+    title: 'Gizmo token is logged',
+    severity: 'high',
+    locations: [{ path: 'lib/gizmo/gone.go', line: 1 }],
+    locationStatus: 'location-verified',
+  }
+  // No caller default at all: the record's own source claim earns no trust.
+  assert.equal(normaliseRecord(input).locationStatus, undefined)
+  // A history-scan source without the explicit option earns none either.
+  assert.equal(normaliseRecord(input, { source: 'history-scan' }).locationStatus, undefined)
+})
+
+test('normaliseRecord takes provenance from the caller, not the record', () => {
+  const honest = normaliseRecord(
+    { title: 'Widget delete skips the owner check', severity: 'high', locations: [] },
+    { source: 'codex', lens: 'codex', lensFamily: 'cross-model' },
+  )
+  // A Codex-file record claiming a Claude lens must not move into that lens's
+  // fingerprint namespace, where a filed marker would classify it as known.
+  const claimed = normaliseRecord(
+    {
+      source: 'claude',
+      lens: 'authz-widgets',
+      lensFamily: 'authz',
+      title: 'Widget delete skips the owner check',
+      severity: 'high',
+      locations: [],
+    },
+    { source: 'codex', lens: 'codex', lensFamily: 'cross-model' },
+  )
+  assert.equal(claimed.source, 'codex')
+  assert.equal(claimed.lens, 'codex')
+  assert.equal(claimed.lensFamily, 'cross-model')
+  assert.equal(claimed.fingerprint, honest.fingerprint)
+  // A caller that names only the source still decides the lens and family.
+  const sourceOnly = normaliseRecord(
+    { lens: 'authz-widgets', lensFamily: 'authz', title: 't', severity: 'high' },
+    { source: 'codex' },
+  )
+  assert.equal(sourceOnly.lens, 'codex')
+  assert.equal(sourceOnly.lensFamily, 'cross-model')
+})
+
+test('normaliseRecord keeps a non-integer JSON line so verification rejects it', () => {
+  const at = (line) =>
+    normaliseRecord(
+      { title: 't', severity: 'high', locations: [{ path: 'services/widget/handler.go', line }] },
+      { source: 'codex', root: ROOT },
+    )
+  const verify = (rec) =>
+    verifyLocations([rec], {
+      root: ROOT,
+      readFile: memoryReader(FILES),
+      realpath: memoryRealpath(FILES),
+    })[0]
+  assert.equal(at('3').locations[0].line, 3)
+  assert.equal(verify(at('3')).locationStatus, 'location-verified')
+  for (const line of [undefined, null, '']) assert.equal(at(line).locations[0].line, null)
+  for (const line of ['999999', 1.5, 'abc', -2]) {
+    const out = verify(at(line))
+    assert.equal(out.locations[0].reason, 'line-out-of-range', `line ${line}`)
+    assert.equal(out.locationStatus, 'location-unverified', `line ${line}`)
+  }
+})
+
+test('normaliseRecord builds locations and the record from an allowlist', () => {
+  const rec = normaliseRecord(
+    {
+      title: 'Gizmo token is logged',
+      severity: 'high',
+      locations: [
+        {
+          path: 'lib/gizmo/gone.go',
+          line: 1,
+          note: 'n',
+          verified: true,
+          reason: null,
+          outsideRoot: true,
+          extra: 'x',
+        },
+      ],
+      locationStatus: 'location-verified',
+      suppressed: true,
+      severityUnparsed: true,
+      evidence: { blob: 'synthetic-blob' },
+    },
+    { source: 'history-scan', trustLocationStatus: true, root: ROOT },
+  )
+  // Per-location verdicts are never taken from input, even when the record's
+  // status is trusted (verifyLocations then leaves the record untouched).
+  assert.deepEqual(rec.locations, [
+    { path: 'lib/gizmo/gone.go', line: 1, note: 'n', raw: 'lib/gizmo/gone.go:1' },
+  ])
+  assert.equal(rec.suppressed, undefined)
+  assert.equal(rec.severityUnparsed, undefined)
+  assert.deepEqual(rec.evidence, { blob: 'synthetic-blob' })
+  assert.equal(rec.locationStatus, 'location-verified')
+  const [verified] = verifyLocations([rec], {
+    root: ROOT,
+    readFile: memoryReader({}),
+    realpath: memoryRealpath({}),
+  })
+  assert.equal(verified.locations[0].verified, undefined)
+  // outsideRoot is re-derived from the path, not copied.
+  const outside = normaliseRecord(
+    { title: 't', severity: 'high', locations: [{ path: '/elsewhere/x.go', line: 1 }] },
+    { source: 'codex', root: ROOT },
+  )
+  assert.equal(outside.locations[0].outsideRoot, true)
 })
 
 test('mergeFindings keeps every source and the maximum severity', () => {
@@ -810,4 +946,130 @@ test('CLI rejects unknown flags and missing inputs with exit 2', () => {
   })
   assert.equal(noKey.status, 2)
   assert.match(noKey.stderr, /LINEAR_API_KEY/)
+})
+
+test('a physical absolute path under a symlinked root is repo-relative', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-security-findings-'))
+  try {
+    const real = path.join(tmp, 'real')
+    fs.mkdirSync(path.join(real, 'lib'), { recursive: true })
+    fs.writeFileSync(path.join(real, 'lib/a.js'), 'x\n')
+    const root = path.join(tmp, 'link')
+    fs.symlinkSync(real, root)
+    const physical = `${fs.realpathSync(real)}/lib/a.js`
+    const title = 'Gizmo store joins request paths'
+    const fromMarkdown = (loc) =>
+      parseFindingsMarkdown(`### ${title}\n\n- Severity: high\n- Location: ${loc}\n`, {
+        source: 'codex',
+        root,
+      }).records[0]
+    const fromJson = (p) =>
+      normaliseRecord(
+        { title, severity: 'high', locations: [{ path: p, line: 1 }] },
+        { source: 'codex', root },
+      )
+    const records = [
+      fromMarkdown('lib/a.js:1'),
+      fromMarkdown(`${physical}:1`),
+      fromJson('lib/a.js'),
+      fromJson(physical),
+    ]
+    const verified = verifyLocations(records, { root })
+    assert.deepEqual(
+      verified.map((r) => [r.locations[0].path, r.locations[0].outsideRoot, r.locationStatus]),
+      Array(4).fill(['lib/a.js', undefined, 'location-verified']),
+    )
+    assert.equal(new Set(records.map((r) => r.fingerprint)).size, 1)
+    // A sibling of the physical root is still outside it.
+    const sibling = fromJson(`${fs.realpathSync(tmp)}/other/lib/a.js`)
+    assert.equal(sibling.locations[0].outsideRoot, true)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('verifyLocations never reads a target whose realpath failed', () => {
+  let reads = 0
+  const [out] = verifyLocations([record({ locations: [{ path: 'lib/a.js', line: 1 }] })], {
+    root: ROOT,
+    realpath: () => {
+      throw new Error('ENOENT')
+    },
+    readFile: () => {
+      reads += 1
+      return 'matching content'
+    },
+  })
+  assert.equal(out.locations[0].reason, 'missing-file')
+  assert.equal(reads, 0)
+})
+
+test('verifyLocations reads the exact resolved path checked for containment', () => {
+  const reads = []
+  const resolved = `${ROOT}/real/a.js`
+  const [out] = verifyLocations(
+    [record({ locations: [{ path: 'lib/a.js', line: 1, note: '`matching`' }] })],
+    {
+      root: ROOT,
+      realpath: (p) => (p === `${ROOT}/lib/a.js` ? resolved : p),
+      readFile: (p) => {
+        reads.push(p)
+        return p === resolved ? 'matching content' : 'wrong content'
+      },
+    },
+  )
+  assert.equal(out.locationStatus, 'location-verified')
+  assert.deepEqual(reads, [resolved])
+})
+
+for (const fence of ['```', '~~~']) {
+  test(`parseFindingsMarkdown keeps headings inside ${fence} samples in their field`, () => {
+    const report = [
+      '## Synthetic finding',
+      '- Severity: high',
+      '- Location: lib/a.js:1',
+      '- Fix: Run this:',
+      `${fence}sh`,
+      '# comment',
+      '## step two',
+      'echo safe',
+      fence,
+      '- Confidence: likely',
+    ].join('\n')
+    const { records, skipped } = parseFindingsMarkdown(report)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].confidence, 'likely')
+    assert.match(records[0].fix, /# comment ## step two/)
+    assert.deepEqual(skipped, [])
+  })
+}
+
+test('parseFindingsMarkdown keeps YAML labels and text after a fenced defect sample', () => {
+  const { records } = parseFindingsMarkdown(
+    [
+      '## Synthetic finding',
+      '- Severity: high',
+      '- Location: lib/a.js:1',
+      '- Defect: Before sample.',
+      '```yaml',
+      '- key: value',
+      '```',
+      'After sample.',
+    ].join('\n'),
+  )
+  assert.equal(records[0].defect, 'Before sample. ```yaml - key: value ``` After sample.')
+})
+
+test('parseFindingsMarkdown leaves unclosed and severity-bearing fences transparent', () => {
+  const finding = (title) => `## ${title}\n- Severity: high\n- Location: lib/a.js:1\n`
+  for (const report of [
+    `${finding('First')}\n\x60\x60\x60sh\n${finding('Second')}`,
+    `\x60\x60\x60markdown\n${finding('First')}\n${finding('Second')}\x60\x60\x60`,
+  ]) {
+    const { records } = parseFindingsMarkdown(report)
+    assert.deepEqual(
+      records.map((r) => r.title),
+      ['First', 'Second'],
+    )
+  }
 })

@@ -64,10 +64,11 @@ service HostService {
   // the run state so a future call doesn't deadlock.
   rpc WaitChatRun(WaitChatRunHostRequest) returns (WaitChatRunHostResponse);
 
-  // ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
-  // is blocking a fresh StartChatRun attempt after daemon restart. The daemon
-  // only reclaims rows whose title starts with "Repair:" and whose session_id
-  // matches the request.
+  // ReclaimRepairChat kills and detaches one daemon-validated chat that is
+  // blocking a fresh StartChatRun attempt after daemon restart. The daemon only
+  // reclaims an idle chat whose role is agent-owned (build, repair or verify)
+  // and whose session_id matches the request; operator and legacy chats are
+  // refused.
   rpc ReclaimRepairChat(ReclaimRepairChatHostRequest) returns (ReclaimRepairChatHostResponse);
 
   // RecordRepairOutcome persists the result of a repair attempt onto the
@@ -161,6 +162,9 @@ message FireSessionEventRequest {
   string session_id = 1;
   // Event to fire.
   SessionEvent event = 2;
+  // Why the session is blocked, recorded as its blocked_reason. Honoured only
+  // for SESSION_EVENT_BLOCK; empty keeps the state machine's default reason.
+  string blocked_reason = 3;
 }
 
 message FireSessionEventResponse {
@@ -248,6 +252,12 @@ message StartChatRunHostRequest {
   // attempts. Used by auto-repair to make each loop iteration continue the
   // previous iteration's conversation. Empty = fresh start.
   string resume_agent_session_id = 8;
+
+  // The purpose of the chat this run creates. A REPAIR run that finds an
+  // operator or legacy chat in the session starts beside it instead of
+  // replacing it. UNSPECIFIED with the boss-repair command is read as REPAIR so
+  // an older repair plugin keeps working.
+  ChatRole role = 9;
 }
 
 message StartChatRunHostResponse {

@@ -33,11 +33,11 @@ func navigateToRepoAddInput(t *testing.T, h *tuitest.Harness) {
 }
 
 // completeRepoAddDetails accepts the add wizard's details form with all defaults
-// by advancing through every field with enter: Name, Setup command, Merge
-// strategy, Automation, and the final "Add Repository" confirm.
+// by advancing through every field with enter: Name, Setup command, Trust,
+// Merge strategy, Automation, and the final "Add Repository" confirm.
 func completeRepoAddDetails(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
-	for range 5 {
+	for range 6 {
 		if err := h.Driver.SendEnter(); err != nil {
 			t.Fatal(err)
 		}

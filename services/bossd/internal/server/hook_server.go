@@ -58,6 +58,12 @@ type PromptReceiptRecorder interface {
 	ValidPromptReceiptToken(agentSessionID, token string) bool
 }
 
+// BackgroundAgentRecorder records how many background subagents a chat's last
+// finished turn left running (*status.Tracker).
+type BackgroundAgentRecorder interface {
+	SetBackgroundAgents(agentSessionID string, count int)
+}
+
 // finalizeDispatchTimeout bounds the background FinalizeSession call spawned
 // by the Stop hook. Five minutes comfortably covers the worst-case
 // EnsurePR + push + chat-spawn path on a slow repo while still preventing
@@ -122,6 +128,7 @@ type HookServer struct {
 	questionSignals        QuestionSignalRecorder
 	questionAuth           RunTokenValidator
 	promptReceipts         PromptReceiptRecorder
+	backgroundAgents       BackgroundAgentRecorder
 	logger                 zerolog.Logger
 	listener               net.Listener
 	srv                    *http.Server
@@ -148,20 +155,26 @@ type HookServerConfig struct {
 	// first-input delivery receipt. Optional for legacy/test wiring; when nil
 	// the endpoint returns 500. Production wires the session.Lifecycle.
 	PromptReceipts PromptReceiptRecorder
-	Logger         zerolog.Logger
+	// BackgroundAgents backs POST /hooks/turn-ended/{agent_session_id}, which
+	// keeps a chat idle over a running background subagent WORKING. Optional:
+	// when nil the endpoint acknowledges and records nothing, and the chat's
+	// status falls back to the pane. Production wires the status tracker.
+	BackgroundAgents BackgroundAgentRecorder
+	Logger           zerolog.Logger
 }
 
 // NewHookServer constructs a HookServer. Call Listen to bind, then Serve
 // (typically in a goroutine). Shutdown is safe after either.
 func NewHookServer(cfg HookServerConfig) *HookServer {
 	return &HookServer{
-		sessions:        cfg.Sessions,
-		finalizer:       cfg.Finalizer,
-		completer:       cfg.Completer,
-		questionSignals: cfg.QuestionSignals,
-		questionAuth:    cfg.QuestionAuth,
-		promptReceipts:  cfg.PromptReceipts,
-		logger:          cfg.Logger,
+		sessions:         cfg.Sessions,
+		finalizer:        cfg.Finalizer,
+		completer:        cfg.Completer,
+		questionSignals:  cfg.QuestionSignals,
+		questionAuth:     cfg.QuestionAuth,
+		promptReceipts:   cfg.PromptReceipts,
+		backgroundAgents: cfg.BackgroundAgents,
+		logger:           cfg.Logger,
 	}
 }
 
@@ -189,6 +202,7 @@ func (h *HookServer) Listen() error {
 	mux.HandleFunc("POST /hooks/agent-run-complete/{agent_session_id}", h.handleAgentRunComplete)
 	mux.HandleFunc("POST /hooks/question/{agent_session_id}", h.handleQuestion)
 	mux.HandleFunc("POST /hooks/prompt-submitted/{agent_session_id}", h.handlePromptSubmitted)
+	mux.HandleFunc("POST /hooks/turn-ended/{agent_session_id}", h.handleTurnEnded)
 
 	h.srv = &http.Server{
 		Handler:           mux,
@@ -573,11 +587,86 @@ func (h *HookServer) handlePromptSubmitted(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	// The main loop is running again, so the last turn's background-agent
+	// report no longer describes the chat; the turn's own Stop reports afresh.
+	// A background subagent reporting back arrives as a prompt too.
+	if h.backgroundAgents != nil {
+		h.backgroundAgents.SetBackgroundAgents(agentSessionID, 0)
+	}
 	recorded := h.promptReceipts.RecordPromptSubmitted(agentSessionID, at)
 	h.logger.Debug().
 		Str("agent_session", agentSessionID).
 		Bool("awaited", recorded).
 		Msg("hook: prompt-submitted receipt")
+	w.WriteHeader(http.StatusOK)
+}
+
+// maxTurnEndedBody caps how much of the forwarded Stop payload is read. It
+// carries the turn's last assistant message, so the cap is generous; a larger
+// body fails to parse and records nothing.
+const maxTurnEndedBody = 8 << 20
+
+// turnEndedPayload is the part of Claude's Stop hook payload bossd reads.
+type turnEndedPayload struct {
+	SessionID       string `json:"session_id"`
+	BackgroundTasks []struct {
+		Type string `json:"type"`
+	} `json:"background_tasks"`
+}
+
+// backgroundSubagents counts the payload's running background subagents.
+// Shells and monitors are already read off the pane ("N shell still running");
+// only a subagent leaves the pane looking idle.
+func (p turnEndedPayload) backgroundSubagents() int {
+	n := 0
+	for _, task := range p.BackgroundTasks {
+		if task.Type == "subagent" {
+			n++
+		}
+	}
+	return n
+}
+
+// handleTurnEnded implements POST /hooks/turn-ended/{agent_session_id}, posted
+// by the Claude Stop hook bossd installs with the prompt receipt. It records how
+// many background subagents the finished turn left running, so the tmux poller
+// keeps a chat whose main loop sits idle at its prompt over a running subagent
+// WORKING (and an armed callback cannot then turn it into a waiting "✓ ready").
+//
+// Auth is the prompt-receipt token. Every Claude process in a worktree fires
+// every chat's entry, so a payload naming another chat is ignored, as the
+// receipt does. An unreadable or unparsable body records nothing: the chat
+// falls back to what its pane shows.
+//
+// Response codes:
+//   - 400 — agent_session_id path parameter missing
+//   - 401 — Authorization header missing/malformed or the token is wrong
+//   - 200 — everything else; the hook discards the response
+func (h *HookServer) handleTurnEnded(w http.ResponseWriter, r *http.Request) {
+	agentSessionID := r.PathValue("agent_session_id")
+	if agentSessionID == "" {
+		http.Error(w, "agent_session_id required", http.StatusBadRequest)
+		return
+	}
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok || h.promptReceipts == nil || !h.promptReceipts.ValidPromptReceiptToken(agentSessionID, token) {
+		h.logger.Debug().Str("agent_session", agentSessionID).Msg("hook: turn-ended auth failed")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTurnEndedBody))
+	var payload turnEndedPayload
+	if err != nil || len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if payload.SessionID != "" && payload.SessionID != agentSessionID {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if h.backgroundAgents != nil {
+		h.backgroundAgents.SetBackgroundAgents(agentSessionID, payload.backgroundSubagents())
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -584,6 +584,7 @@ export function classifyChecks(options) {
     // Every absent name, whatever discounts it — the existing field contract. The two subsets
     // below say which of them no longer hold the verdict, and why.
     absent: diff.absent,
+    blockingAbsent,
     structurallyAbsent,
     notTriggered,
     // Absent names that concluded SUCCESS or NEUTRAL on the prior head; `absentGateRemedy` reads
@@ -740,11 +741,9 @@ export function absentGateRemedy(verdict) {
   // that already ran was red.
   if (verdict.reason !== CHECK_REASONS.ABSENT_GATE) return ABSENT_GATE_REMEDIES.NONE
   const list = (field) => new Set(Array.isArray(verdict[field]) ? verdict[field] : [])
-  const discounted = new Set([...list('structurallyAbsent'), ...list('notTriggered')])
+  if (!Array.isArray(verdict.blockingAbsent)) return ABSENT_GATE_REMEDIES.RETRIGGER
   const reported = list('reportedOnPrior')
-  const blocking = (Array.isArray(verdict.absent) ? verdict.absent : []).filter(
-    (name) => !discounted.has(name),
-  )
+  const blocking = verdict.blockingAbsent
   if (blocking.length > 0 && blocking.every((name) => reported.has(name))) {
     return ABSENT_GATE_REMEDIES.REPORTED_ON_PRIOR_HEAD
   }
@@ -935,7 +934,7 @@ function parseFlags(argv) {
 // value raises naming the path-or-`-` contract.
 const PAYLOAD_SHAPE = '<path>|- (stdin)|inline JSON'
 
-function readPayload(flags, name) {
+function readPayload(flags, name, onUnreadable = () => {}) {
   const value = flags[name]
   if (value === undefined || value === true || value === '') return null
   // Inline arm: a value whose first non-space character opens a JSON array or object was never a
@@ -955,23 +954,21 @@ function readPayload(flags, name) {
   try {
     raw = value === '-' ? readFileSync(0, 'utf8') : readFileSync(value, 'utf8')
   } catch (err) {
-    // A payload file that is not there is an ABSENT input, not a reason to abort with no verdict at
-    // all. Degrading to null keeps the documented fail-closed reading — a missing --prior reports
-    // priorKnown:false / provesGreen:false, a missing --checks reports no-checks/unknown — and never
-    // reports green. The miss goes to stderr so a mistyped path stays visible without corrupting the
-    // single JSON line on stdout. This arm is deliberately NARROW: it covers a path that is simply
-    // not there (the shipped recipes pass --prior unconditionally into a fresh mktemp dir), and
-    // nothing else. Every other read failure — ENAMETOOLONG, EISDIR, EACCES — is a value that is not
-    // a usable path at all, and raises by name instead of reaching a verdict.
+    // Optional --prior/--checks inputs may be absent. Required fetched payloads report a
+    // read error through the classifier, preserving its single JSON verdict on stdout.
     if (err?.code === 'ENOENT') {
       process.stderr.write(`pr-check-state: --${name} payload not found: ${value}\n`)
+      onUnreadable(name)
       return null
     }
     throw new Error(
       `pr-check-state: --${name} (${PAYLOAD_SHAPE}) — cannot read payload ${JSON.stringify(value)}: ${err?.code ?? err?.message ?? err}`,
     )
   }
-  if (raw.trim() === '') return null
+  if (raw.trim() === '') {
+    onUnreadable(name)
+    return null
+  }
   return JSON.parse(raw)
 }
 
@@ -1041,14 +1038,33 @@ export function main(argv) {
 
   if (cmd === 'classify') {
     assertKnownFlags('classify', flags)
+    const readErrors = []
+    const payload = (name) =>
+      readPayload(flags, name, () => {
+        if (!['rollup', 'check-runs', 'workflow-runs'].includes(name)) return
+        const message = `pr-check-state: --${name} payload is empty or missing`
+        process.stderr.write(`${message}\n`)
+        readErrors.push(message)
+      })
+    // Read first: a later failed workflow-runs read must affect the same verdict.
+    const rollup = payload('rollup')
+    const buckets = payload('checks')
+    const checkRuns = payload('check-runs')
+    const priorContexts = payload('prior')
+    const workflowRuns = payload('workflow-runs')
     const verdict = classifyChecks({
       headSHA: typeof flags['head-sha'] === 'string' ? flags['head-sha'] : '',
       observedSHA: typeof flags['observed-sha'] === 'string' ? flags['observed-sha'] : '',
-      rollup: readPayload(flags, 'rollup'),
-      buckets: readPayload(flags, 'checks'),
-      checkRuns: readPayload(flags, 'check-runs'),
-      priorContexts: readPayload(flags, 'prior'),
-      readError: typeof flags['read-error'] === 'string' ? flags['read-error'] : null,
+      rollup,
+      buckets,
+      checkRuns,
+      priorContexts,
+      readError:
+        readErrors.length > 0
+          ? readErrors.join('; ')
+          : typeof flags['read-error'] === 'string'
+            ? flags['read-error']
+            : null,
       acceptNoGateRan: flags['accept-no-gate-ran'] === true,
       // Comma-separated names, not a payload path: this is the caller's own assertion about its
       // repository, not bytes it fetched, and reading it from a file would be a filesystem read
@@ -1057,7 +1073,7 @@ export function main(argv) {
         typeof flags['structurally-absent'] === 'string'
           ? flags['structurally-absent'].split(',')
           : [],
-      workflowRuns: readPayload(flags, 'workflow-runs'),
+      workflowRuns,
     })
     return {
       ...verdict,

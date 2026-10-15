@@ -78,6 +78,10 @@ func (f *deleteChatStoreFake) MarkStartFailed(context.Context, string, string) e
 	return nil
 }
 
+func (f *deleteChatStoreFake) MarkReclaimed(context.Context, string, string) error {
+	return nil
+}
+
 func (f *deleteChatStoreFake) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
 	return nil
 }

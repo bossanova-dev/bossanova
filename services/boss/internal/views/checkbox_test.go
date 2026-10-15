@@ -177,11 +177,11 @@ func TestRepoAddDetailsForm_AutomationKeepsCheckboxGlyphsWhenBlurred(t *testing.
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 	form := updated.(RepoAddModel)
 
-	// Four tabs walk Name → Setup command → Merge strategy → Automation →
-	// Confirm, leaving the multi-select blurred but still on screen. huh
+	// Five tabs walk Name → Setup command → Trust → Merge strategy →
+	// Automation → Confirm, leaving the multi-select blurred but still on screen. huh
 	// advances the field through a returned command, so each one has to be run
 	// and fed back before the move lands.
-	const tabsToConfirmButtons = 4
+	const tabsToConfirmButtons = 5
 	for range tabsToConfirmButtons {
 		next, cmd := form.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		form = next.(RepoAddModel)

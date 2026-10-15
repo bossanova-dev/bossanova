@@ -180,16 +180,16 @@ func TestRecompute_NoCallbackStaysWorking(t *testing.T) {
 
 func TestRecompute_CallbackDrainingClearsWaiting(t *testing.T) {
 	// A delivered/expired/canceled callback simply stops producing a reason;
-	// the derived state must fall back to working, not stick.
+	// the derived state must fall back to idle, not stick.
 	f := newWaitingFixture(t)
-	id := f.addChat(t, "a", pb.ChatStatus_CHAT_STATUS_WORKING, armedReason)
+	id := f.addChat(t, "a", pb.ChatStatus_CHAT_STATUS_IDLE, armedReason)
 	if got := f.label(t); got != displaystatus.WaitingLabel {
 		t.Fatalf("precondition: label = %q, want waiting", got)
 	}
 
 	delete(f.reasons, id)
-	if got := f.label(t); got != "working" {
-		t.Fatalf("label after drain = %q, want working", got)
+	if got := f.label(t); got != "idle" {
+		t.Fatalf("label after drain = %q, want idle", got)
 	}
 	if got := f.tracker.Waiting(id); got != "" {
 		t.Fatalf("tracker reason after drain = %q, want empty", got)
@@ -207,9 +207,9 @@ func TestRecompute_LookupErrorFailsToWorking(t *testing.T) {
 	}
 }
 
-// TestRecompute_PrecedenceLadder pins LIMITED > QUESTION > STALLED > WAITING >
-// WORKING, one case per adjacent pair. Every case gives the chat an armed
-// callback, so any missing guard shows up as a wrongly-derived "waiting".
+// TestRecompute_PrecedenceLadder pins LIMITED > QUESTION > STALLED > WORKING >
+// WAITING > IDLE, one case per adjacent pair. Every case gives the chat an
+// armed callback, so any missing guard shows up as a wrongly-derived "waiting".
 func TestRecompute_PrecedenceLadder(t *testing.T) {
 	t.Run("limited beats question", func(t *testing.T) {
 		f := newWaitingFixture(t)
@@ -264,9 +264,20 @@ func TestRecompute_PrecedenceLadder(t *testing.T) {
 		}
 	})
 
+	t.Run("working beats an armed callback", func(t *testing.T) {
+		f := newWaitingFixture(t)
+		id := f.addChat(t, "w", pb.ChatStatus_CHAT_STATUS_WORKING, armedReason)
+		if got := f.label(t); got != "working" {
+			t.Fatalf("label = %q, want working: an armed callback must not hide live work", got)
+		}
+		if got := f.tracker.Waiting(id); got != armedReason {
+			t.Fatalf("the working chat keeps its armed reason, got %q", got)
+		}
+	})
+
 	t.Run("waiting beats nothing-else-notable", func(t *testing.T) {
 		f := newWaitingFixture(t)
-		f.addChat(t, "w", pb.ChatStatus_CHAT_STATUS_WORKING, armedReason)
+		f.addChat(t, "w", pb.ChatStatus_CHAT_STATUS_IDLE, armedReason)
 		f.addChat(t, "i", pb.ChatStatus_CHAT_STATUS_IDLE, "")
 		if got := f.label(t); got != displaystatus.WaitingLabel {
 			t.Fatalf("label = %q, want %q", got, displaystatus.WaitingLabel)
@@ -329,9 +340,10 @@ func TestRecompute_QuestionChatDoesNotSkipSiblingWaitingDerivation(t *testing.T)
 
 // PromoteWaiting is the ONE definition of "what status is this chat served
 // with"; the RPC layer, the stream deltas and the snapshot all route through
-// it, so the rule cannot drift between them. Waiting refines an otherwise
-// inactive chat: a callback can be armed after the agent has gone idle. States
-// that need human attention still pass through untouched and drop the reason.
+// it, so the rule cannot drift between them. Waiting refines only an idle chat:
+// a callback can be armed after the agent has gone idle, and an armed callback
+// never hides live work. States that need human attention still pass through
+// untouched and drop the reason.
 func TestPromoteWaiting_RefinesInactiveChat(t *testing.T) {
 	const reason = "awaiting checks_passed_ready on acme/widget#123"
 	for _, tc := range []struct {
@@ -341,7 +353,7 @@ func TestPromoteWaiting_RefinesInactiveChat(t *testing.T) {
 		wantStatus pb.ChatStatus
 		wantReason string
 	}{
-		{"working with reason promotes", pb.ChatStatus_CHAT_STATUS_WORKING, reason, pb.ChatStatus_CHAT_STATUS_WAITING, reason},
+		{"working with reason stays working and keeps the reason", pb.ChatStatus_CHAT_STATUS_WORKING, reason, pb.ChatStatus_CHAT_STATUS_WORKING, reason},
 		{"working without reason stays", pb.ChatStatus_CHAT_STATUS_WORKING, "", pb.ChatStatus_CHAT_STATUS_WORKING, ""},
 		{"question is untouched", pb.ChatStatus_CHAT_STATUS_QUESTION, reason, pb.ChatStatus_CHAT_STATUS_QUESTION, ""},
 		{"limited is untouched", pb.ChatStatus_CHAT_STATUS_LIMITED, reason, pb.ChatStatus_CHAT_STATUS_LIMITED, ""},
@@ -388,10 +400,16 @@ func (f *waitingFixture) composite(t *testing.T) (string, int32, bool) {
 // the label depend on how the uuids sorted. A conjunction cannot, and this
 // proves it by feeding every permutation of a mixed chat set.
 func TestIdleWaitingAggregate_IsOrderIndependent(t *testing.T) {
-	type chat struct{ reported, resolved pb.ChatStatus }
-	idleWaiting := chat{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING}
-	workingWaiting := chat{pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_WAITING}
-	plainIdle := chat{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_IDLE}
+	type chat struct {
+		reported, resolved pb.ChatStatus
+		reason             string
+	}
+	const armed = "awaiting checks_passed_ready on acme/widget#123"
+	idleWaiting := chat{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING, armed}
+	// A chat that reported WAITING itself is the one waiting-resolved chat that
+	// is not idle-derived now that a working chat never resolves to WAITING.
+	workingWaiting := chat{pb.ChatStatus_CHAT_STATUS_WAITING, pb.ChatStatus_CHAT_STATUS_WAITING, armed}
+	plainIdle := chat{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_IDLE, ""}
 
 	tests := []struct {
 		name  string
@@ -411,7 +429,7 @@ func TestIdleWaitingAggregate_IsOrderIndependent(t *testing.T) {
 			for _, perm := range permuteChats(tc.chats) {
 				var agg IdleWaitingAggregate
 				for _, c := range perm {
-					agg.Observe(c.reported, c.resolved)
+					agg.Observe(c.reported, c.resolved, c.reason)
 				}
 				if got := agg.AllIdle(pb.ChatStatus_CHAT_STATUS_WAITING); got != tc.want {
 					t.Fatalf("AllIdle() = %v for permutation %v, want %v", got, perm, tc.want)
@@ -442,9 +460,49 @@ func permuteChats[T any](in []T) [][]T {
 // TestIdleWaitingAggregate_IsFalseUnlessTheSessionFoldedToWaiting keeps the
 // fail-safe honest: the aggregate is only meaningful for a session the cascade
 // will route down the waiting branch.
+// TestIdleWaitingAggregate_WorkingOverWaiting pins the down-convert's mark: it
+// holds only for a session that folded to WORKING with an armed callback on
+// every working chat, in every chat order, and never vacuously.
+func TestIdleWaitingAggregate_WorkingOverWaiting(t *testing.T) {
+	type chat struct {
+		reported, resolved pb.ChatStatus
+		reason             string
+	}
+	const armed = "awaiting checks_passed_ready on acme/widget#123"
+	armedWorking := chat{pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_WORKING, armed}
+	plainWorking := chat{pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_WORKING, ""}
+	idleWaiting := chat{pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING, armed}
+	for _, tc := range []struct {
+		name  string
+		chats []chat
+		want  bool
+	}{
+		{"every working chat armed", []chat{armedWorking, armedWorking}, true},
+		{"an armed working chat beside an idle parked one", []chat{armedWorking, idleWaiting}, true},
+		{"one working chat with no callback is plain live work", []chat{armedWorking, plainWorking}, false},
+		{"no armed working chat", []chat{plainWorking, idleWaiting}, false},
+		{"no working chat at all is never true", []chat{idleWaiting}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, perm := range permuteChats(tc.chats) {
+				var agg IdleWaitingAggregate
+				for _, c := range perm {
+					agg.Observe(c.reported, c.resolved, c.reason)
+				}
+				if got := agg.WorkingOverWaiting(pb.ChatStatus_CHAT_STATUS_WORKING); got != tc.want {
+					t.Fatalf("WorkingOverWaiting() = %v for permutation %v, want %v", got, perm, tc.want)
+				}
+				if agg.WorkingOverWaiting(pb.ChatStatus_CHAT_STATUS_QUESTION) {
+					t.Fatalf("WorkingOverWaiting(QUESTION) = true for %v; the mark needs a WORKING fold", perm)
+				}
+			}
+		})
+	}
+}
+
 func TestIdleWaitingAggregate_IsFalseUnlessTheSessionFoldedToWaiting(t *testing.T) {
 	var agg IdleWaitingAggregate
-	agg.Observe(pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING)
+	agg.Observe(pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING, "awaiting checks_passed_ready on acme/widget#123")
 	if !agg.AllIdle(pb.ChatStatus_CHAT_STATUS_WAITING) {
 		t.Fatal("precondition: the aggregate should hold for a WAITING fold")
 	}
@@ -482,26 +540,28 @@ func TestRecompute_IdleChatOverPassingPRShowsThePRLabel(t *testing.T) {
 	}
 }
 
-// TestRecompute_WorkingChatOverPassingPRStaysWaiting is R2 at the producer: a
-// chat that was mid-run when the callback was armed keeps today's behaviour.
-func TestRecompute_WorkingChatOverPassingPRStaysWaiting(t *testing.T) {
+// TestRecompute_WorkingChatOverPassingPRReadsWorking pins at the persisting
+// producer that an armed callback never hides live work: a chat still working
+// when its callback is armed reads "working" over a green PR, and with a build
+// receipt it never reads "✓ ready".
+func TestRecompute_WorkingChatOverPassingPRReadsWorking(t *testing.T) {
 	f := newWaitingFixture(t)
 	f.addChat(t, "a", pb.ChatStatus_CHAT_STATUS_WORKING, armedReason)
-	f.setPR(vcs.DisplayStatusPassing)
+	f.display.Set(f.sessID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HasBuildReceipt: true})
 
 	label, intent, spinner := f.composite(t)
-	if label != displaystatus.WaitingLabel {
-		t.Fatalf("label = %q, want %q", label, displaystatus.WaitingLabel)
+	if label != displaystatus.WorkingLabel {
+		t.Fatalf("label = %q, want %q", label, displaystatus.WorkingLabel)
 	}
-	if intent != int32(pb.DisplayIntent_DISPLAY_INTENT_INFO) || !spinner {
-		t.Fatalf("intent/spinner = %v/%v, want INFO/true", intent, spinner)
+	if intent != int32(pb.DisplayIntent_DISPLAY_INTENT_SUCCESS) || !spinner {
+		t.Fatalf("intent/spinner = %v/%v, want SUCCESS/true", intent, spinner)
 	}
 }
 
-// TestRecompute_MixedWaitingChatsSuppressTheDemotion pins the conservative half
-// of the conjunction: one working-derived parked chat suppresses the demotion
-// for the whole session, whichever order the chats are visited in.
-func TestRecompute_MixedWaitingChatsSuppressTheDemotion(t *testing.T) {
+// TestRecompute_MixedChatsFoldToWorking pins that a working chat with an armed
+// callback beside an idle parked one is live work, whichever order the chats
+// are visited in: the session folds to WORKING and is never demoted.
+func TestRecompute_MixedChatsFoldToWorking(t *testing.T) {
 	for _, order := range [][2]string{{"a-idle", "b-working"}, {"b-working", "a-idle"}} {
 		t.Run(order[0]+" first", func(t *testing.T) {
 			f := newWaitingFixture(t)
@@ -514,12 +574,8 @@ func TestRecompute_MixedWaitingChatsSuppressTheDemotion(t *testing.T) {
 			}
 			f.setPR(vcs.DisplayStatusPassing)
 
-			// The aggregate ranks WORKING above WAITING, so a genuinely working
-			// chat would fold the session to "working". Both chats here are
-			// PARKED — the working one is working-DERIVED, not live — so the
-			// fold is WAITING and the aggregate is what suppresses the demotion.
-			if label, _, _ := f.composite(t); label != displaystatus.WaitingLabel {
-				t.Fatalf("label = %q, want %q", label, displaystatus.WaitingLabel)
+			if label, _, _ := f.composite(t); label != displaystatus.WorkingLabel {
+				t.Fatalf("label = %q, want %q", label, displaystatus.WorkingLabel)
 			}
 		})
 	}

@@ -20,6 +20,7 @@ go_test(
     srcs = [
         "alertkeys_test.go",
         "attention_test.go",
+        "park_kind_test.go",
     ],
     embed = [":attention"],
     deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],

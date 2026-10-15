@@ -835,19 +835,22 @@ func lastTurnIsUser(path string) bool {
 }
 
 // chatTitle reads codex's session index for the current thread name, falling
-// back to the rollout JSONL's first user-typed message. A non-empty index name
-// is authoritative because it is the only representation codex gives a native
-// `/rename`; the rollout fallback is a heuristic and stays non-authoritative so
-// it can only backfill placeholder titles.
-func chatTitle(workDir, agentSessionID string) (title string, explicit bool) {
+// back to the rollout JSONL's first user-typed message. Neither is an explicit
+// rename, so either can only backfill a placeholder title. Codex auto-names
+// every thread from its first prompt and records that name in
+// session_index.jsonl exactly as it records a native `/rename`, with no field or
+// rollout event telling the two apart. Claiming authority for it let codex's
+// auto-name replace the title a chat was created with (`boss chat new --title
+// verify`) or renamed to.
+func chatTitle(workDir, agentSessionID string) string {
 	if name := sessionIndexThreadName(agentSessionID); name != "" {
-		return name, true
+		return name
 	}
 	path, err := transcriptPath(workDir, agentSessionID)
 	if err != nil {
-		return "", false
+		return ""
 	}
-	return chatTitleAtPath(path), false
+	return chatTitleAtPath(path)
 }
 
 type codexSessionIndexEntry struct {
@@ -882,12 +885,10 @@ func sessionIndexThreadName(agentSessionID string) string {
 		if entry.ID != agentSessionID {
 			continue
 		}
-		// Keep the last non-empty thread_name for this id. Codex upserts one
-		// entry per session id (keyed by id, carrying updated_at), so in
-		// practice there is a single match and "latest wins" is trivial; the
-		// full scan just makes us robust if codex ever switches to append.
-		// An empty thread_name never overwrites a real name and leaves title
-		// "", so chatTitle falls back to the non-explicit rollout title.
+		// Keep the last non-empty thread_name for this id: codex appends a
+		// new entry each time it names or renames a thread. An empty
+		// thread_name never overwrites a real name and leaves title "", so
+		// chatTitle falls back to the rollout title.
 		if t := truncate(firstLine(stripXMLTags(entry.ThreadName))); t != "" {
 			title = t
 		}

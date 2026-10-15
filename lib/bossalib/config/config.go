@@ -805,6 +805,9 @@ type ManagedAccountsConfig struct {
 	// is independent of the rotation kill switch (no ManagedAccountsEnabled()
 	// coupling); the resume restarts on the SAME account, never rotating.
 	AutoResumeOrphans *bool `json:"auto_resume_orphans,omitempty"`
+
+	// AutoResumeDroppedRuns retries unfinished unattended runs; nil defaults on.
+	AutoResumeDroppedRuns *bool `json:"auto_resume_dropped_runs,omitempty"`
 }
 
 // AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
@@ -2100,4 +2103,9 @@ func syncDirectory(f interface{ Sync() error }) error {
 		return err
 	}
 	return nil
+}
+
+// AutoResumeDroppedRunsEnabled reports whether dropped-run recovery is enabled.
+func (c ManagedAccountsConfig) AutoResumeDroppedRunsEnabled() bool {
+	return c.AutoResumeDroppedRuns == nil || *c.AutoResumeDroppedRuns
 }

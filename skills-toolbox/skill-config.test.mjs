@@ -4295,6 +4295,8 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     alwaysHumanPaths: [],
     humanReview: { database: [], security: [], ui: [] },
     pathLabels: [],
+    generatedPaths: [],
+    generatedChecks: [],
   })
   const text = JSON.stringify({
     lensMap: 'not an array',
@@ -4305,6 +4307,8 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     alwaysHumanPaths: ['billing/**'],
     humanReview: { database: [], security: [], ui: ['web/**'] },
     pathLabels: [],
+    generatedPaths: [],
+    generatedChecks: [],
   })
   assert.throws(
     () =>
@@ -4314,6 +4318,51 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
       ),
     /verifyDefaults\.humanReview\.uii is unknown/,
   )
+})
+
+test('verifyDefaults.generatedPaths and generatedChecks are optional validated lists', () => {
+  const policy = (verifyDefaults) =>
+    verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base')
+  const declared = policy({
+    generatedPaths: ['gen/**', { glob: 'api/*.ts' }],
+    generatedChecks: ['drift'],
+  })
+  assert.deepEqual(declared.generatedPaths, ['gen/**', 'api/*.ts'])
+  assert.deepEqual(declared.generatedChecks, ['drift'])
+  for (const [verifyDefaults, message] of [
+    [{ generatedPaths: 'gen/**' }, /generatedPaths must be an array/],
+    [{ generatedPaths: [''] }, /generatedPaths must be an array/],
+    [{ generatedChecks: 'drift' }, /generatedChecks must be an array/],
+    [{ generatedChecks: [' '] }, /generatedChecks must be an array/],
+    [{ generatedChecks: ['a\nb'] }, /generatedChecks must be an array/],
+  ]) {
+    assert.throws(() => policy(verifyDefaults), message, JSON.stringify(verifyDefaults))
+    assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'), message)
+  }
+})
+
+test('generatedPaths with no generatedChecks loads with a warning that nothing carries', () => {
+  const originalWarn = console.warn
+  const warned = (verifyDefaults) => {
+    const warnings = []
+    console.warn = (message) => warnings.push(String(message))
+    try {
+      validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test')
+    } finally {
+      console.warn = originalWarn
+    }
+    return warnings.filter((w) => w.includes('generatedChecks'))
+  }
+  for (const verifyDefaults of [
+    { generatedPaths: ['gen/**'] },
+    { generatedPaths: ['gen/**'], generatedChecks: [] },
+  ]) {
+    const warnings = warned(verifyDefaults)
+    assert.equal(warnings.length, 1, JSON.stringify(verifyDefaults))
+    assert.match(warnings[0], /no approval carries/)
+  }
+  assert.deepEqual(warned({ generatedPaths: ['gen/**'], generatedChecks: ['drift'] }), [])
+  assert.deepEqual(warned({ generatedPaths: [] }), [])
 })
 
 test('a {glob, label} entry validates in alwaysHumanPaths and humanReview', () => {

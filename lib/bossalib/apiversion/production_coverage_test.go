@@ -241,6 +241,29 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				s.GetDisplaySpinner() &&
 				s.GetIsWaitingDemoted()
 		})
+	case NeedsHumanWaitDemotionChange:
+		return sessionProbes(demotedNeedsHumanSession, func(s *pb.Session) bool {
+			return s.GetDisplayLabel() == displaystatus.WaitingLabel &&
+				s.GetDisplayIntent() == pb.DisplayIntent_DISPLAY_INTENT_INFO &&
+				s.GetDisplaySpinner() &&
+				s.GetIsWaitingDemoted()
+		})
+	case WorkingOverWaitingChange:
+		probes := sessionProbes(workingOverWaitingSession, func(s *pb.Session) bool {
+			return s.GetDisplayLabel() == displaystatus.WaitingLabel && !s.GetIsWorkingOverWaiting()
+		})
+		return append(probes, statusProbes(
+			pb.ChatStatus_CHAT_STATUS_WORKING,
+			"callback",
+			func(status pb.ChatStatus, waitingReason string) bool {
+				return status == pb.ChatStatus_CHAT_STATUS_WAITING && waitingReason == "callback"
+			},
+		)...)
+	case VerifyParkSplitChange:
+		return sessionProbes(func() *pb.Session { return parkSplitSession(displaystatus.BlockedLabel) }, func(s *pb.Session) bool {
+			return s.GetDisplayLabel() == displaystatus.NeedsHumanLabel &&
+				s.GetDisplayIntent() == pb.DisplayIntent_DISPLAY_INTENT_WARNING
+		})
 	case ReadyDisplayLabelChange:
 		return sessionProbes(func() *pb.Session {
 			return &pb.Session{DisplayLabel: displaystatus.ReadyLabel, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, HasBuildReceipt: true}
@@ -277,6 +300,17 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				return downconverted(body.Created)
 			},
 		}}, sessionProbes(verifySession, downconverted)...)
+	case ResumeAttentionActionsChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX}}
+		}, func(s *pb.Session) bool {
+			for _, a := range s.GetAttention().GetActions() {
+				if a == pb.AttentionAction_ATTENTION_ACTION_RESUME {
+					return true
+				}
+			}
+			return false
+		})
 	case SessionAttentionChange:
 		cleared := func(s *pb.Session) bool { return s.GetAttention() == nil }
 		return append([]responseProbe{{

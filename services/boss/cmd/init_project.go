@@ -12,7 +12,8 @@ import (
 
 // boss init applies a committed .boss-project.json through the same engine
 // as `boss project apply`, never pruning. The file is loaded and validated,
-// and the branch check runs, before init writes anything; the project step
+// and the branch check runs, before init writes anything. The pre-check and
+// apply gate share one default-branch resolver. The project step
 // itself runs last, after the config write and the factory cron step, so a
 // refusal leaves init's other converging work standing. Without the file init
 // is unchanged.
@@ -49,14 +50,8 @@ func prepareInitProject(ctx context.Context, repoDir string, opts *initOptions) 
 		return nil
 	}
 	env := newProjectApplyEnv()
-	want := ""
-	if b := proj.cfg.Repo.DefaultBaseBranch; b != nil {
-		want = *b
-	}
-	if want == "" {
-		want = env.originHead(ctx, proj.checkout)
-	}
-	if have := env.branch(ctx, proj.checkout); !onDefaultBranch(have, want) {
+	state := observeProjectBranchState(ctx, opts.command, env, proj)
+	if _, want, ok := projectBranchCheck(ctx, env, proj, state); !ok {
 		return fmt.Errorf("%s is present and the checkout is not on the repo's default branch %q; nothing was written (re-run with --allow-branch to apply it from here)", proj.path, want)
 	}
 	return nil

@@ -822,6 +822,8 @@ may change it.
   For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
+- On `BLOCKED` with `BOSS_SESSION_ID` set, tell bossd so its finalize keeps the PR draft and
+  Blocks the session: `boss session finish --blocked --reason "<one line>" --json` (never fatal).
 - **Receipt** (`REVIEW_READY` only, before Completion): post the `boss/build` commit status on the
   head this run pushed (again, when Step 10 moved the head after Step 9's post). The helper runs the
   ready gate itself and refuses (exit 3, `refused`, nothing posted) a head that is not ready.

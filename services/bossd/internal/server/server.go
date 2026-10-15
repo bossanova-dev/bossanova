@@ -770,6 +770,7 @@ func New(cfg Config) *Server {
 	}
 	if cfg.Lifecycle != nil {
 		srv.promptReceipts = cfg.Lifecycle
+		cfg.Lifecycle.SetChatCreatedNotifier(srv.cancelPendingForNewChat)
 	}
 	if srv.wedgeCache == nil {
 		srv.wedgeCache = NewWedgeActivityCache()
@@ -1127,6 +1128,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 		DefaultBaseBranch: msg.DefaultBaseBranch,
 		WorktreeBaseDir:   worktreeBaseDir,
 		SetupScript:       setupScript,
+		IsTrusted:         msg.GetIsTrusted(),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
@@ -1766,12 +1768,13 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output cannot be combined with branch_name"))
 		case msg.IsQuickChat:
 			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output cannot be combined with is_quick_chat"))
-		case !msg.GetIsTmuxUnattended() && !msg.GetDetach():
+		case !msg.GetIsTmuxUnattended():
 			// Finalize hard-deletes a zero-output run (and the system prompt
 			// forbids commits) only for an unattended session; an attended one
 			// would be classified against the user's checkout and could open a
-			// PR from it, so refuse an attended zero-output create.
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output requires is_tmux_unattended or detach"))
+			// PR from it. Bare detach depends on host tmux availability, so
+			// require an explicit tmux-unattended launch before accepting.
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_zero_output requires is_tmux_unattended"))
 		}
 	}
 	// needsWorktree is false for the two shapes that run from the repo checkout.
@@ -2530,7 +2533,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 
 	for _, p := range pbSessions {
 		_, hasDisplayEntry := entries[p.Id]
-		chatStatus, _, ok, allWaitingIdle := s.chatStatusAndWaitingAggregate(ctx, chatsBySession[p.Id], chatsLoaded)
+		chatStatus, _, ok, agg := s.chatStatusAndWaitingAggregate(ctx, chatsBySession[p.Id], chatsLoaded)
 		if !ok || (!hasDisplayEntry && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED) {
 			continue
 		}
@@ -2543,7 +2546,8 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		in := displaystatus.Input{
 			Session:             p,
 			ChatStatus:          chatStatus,
-			AllWaitingChatsIdle: allWaitingIdle,
+			AllWaitingChatsIdle: agg.AllIdle(chatStatus),
+			ParkCodes:           entries[p.Id].ParkCodes(),
 		}
 		out := displaystatus.Compute(in)
 		p.DisplayLabel = out.Label
@@ -2555,6 +2559,10 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		// "waiting", manufacturing a wait that never happened.
 		p.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
 		p.IsReadyOverWaiting = displaystatus.WasReadyOverWaiting(in, out)
+		// Transport-only like the two marks above: the session reads WORKING
+		// only because armed callbacks no longer hide live work, so the
+		// down-convert can restore the WAITING composite older pins saw.
+		p.IsWorkingOverWaiting = agg.WorkingOverWaiting(chatStatus) && out.Label == displaystatus.WorkingLabel
 	}
 
 	// BOS-473: hydrate verified machine-local endpoints LAST, and only for an
@@ -4366,6 +4374,15 @@ func (s *Server) switchTargetAgentName(ctx context.Context, sessionID, agentSess
 
 // --- Claude Chat Tracking ---
 
+// recordChatRole is the role a new RecordChat row gets. A caller that names no
+// role is a person, or a tool acting for one, so the chat is the operator's.
+func recordChatRole(r pb.ChatRole) models.AgentChatRole {
+	if role := models.AgentChatRoleFromProto(r); role != models.AgentChatRoleUnknown {
+		return role
+	}
+	return models.AgentChatRoleOperator
+}
+
 func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	msg := req.Msg
 	if msg.SessionId == "" {
@@ -4425,17 +4442,14 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 			AgentSessionID: msg.AgentSessionId,
 			AgentName:      agentName,
 			Title:          msg.Title,
+			Role:           recordChatRole(msg.GetRole()),
 		})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
 		}
-		// New work in the session cancels a pending archive (BOS-1380). Only a
-		// NEW chat row does: a resumed chat, a prompt or a callback delivery
-		// just keeps a chat busy, so the archive keeps waiting.
-		s.CancelPendingArchive(msg.SessionId)
-		// The same holds for a pending unattended-run finish (BOS-1508): a new
-		// chat means the run is not done.
-		s.CancelPendingFinish(msg.SessionId)
+		// Only a NEW chat row cancels: resuming, prompts and callbacks keep
+		// an existing chat busy, so the pending request keeps waiting.
+		s.cancelPendingForNewChat(msg.SessionId)
 	}
 
 	// Ensure a tmux session is alive to host the chat. The tmux server is
@@ -4590,7 +4604,7 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 		ev.Msg("interactive provider session id not discovered after launch")
 		if deps.Resolver != nil && !result.DiscoveryAmbiguous {
-			s.discoverProviderSessionIDInBackground(chat, sess.WorktreePath, tmuxName, result.LaunchedAt, deps.Resolver)
+			s.discoverProviderSessionIDInBackground(chat, sess.WorktreePath, tmuxName, result.LaunchedAt, deps.Resolver, deps.Tmux)
 		}
 	}
 	// Only write a provider session id when none is stored. A codex id is
@@ -4838,7 +4852,7 @@ func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *model
 	return true, "", nil
 }
 
-func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, worktreePath, tmuxName string, launchedAt time.Time, resolver interactiveSessionResolver) {
+func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, worktreePath, tmuxName string, launchedAt time.Time, resolver interactiveSessionResolver, tmuxer tmuxSpawner) {
 	if chat == nil || resolver == nil || launchedAt.IsZero() {
 		return
 	}
@@ -4864,12 +4878,7 @@ func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, w
 		// case most prone to the sibling-collision race (BOS-290). A tmux
 		// failure or empty name leaves panePID 0 and falls back to the
 		// time-window scan, as before.
-		panePID := 0
-		if s.tmux != nil && tmuxName != "" {
-			if pid, err := s.tmux.PanePID(ctx, tmuxName); err == nil {
-				panePID = pid
-			}
-		}
+		panePID := panePIDForChat(ctx, tmuxer, tmuxName)
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -5473,24 +5482,28 @@ func sessionChatStatusRank(st pb.ChatStatus) int {
 // WAITING. The reduction walks the ordered chats slice rather than the GetBatch
 // map so the winning chat — and therefore the reason — is a function of the
 // data, never of Go's randomized map iteration.
-// It also returns BOS-1269's order-independent aggregate: whether every chat
-// that resolved to WAITING had reported IDLE rather than WORKING. Only the
-// ListSessions display recompute reads that fourth value; every other caller
-// discards it.
+// It also returns the order-independent status.IdleWaitingAggregate (BOS-1269's
+// all-idle rule and the working-over-waiting mark). Only the ListSessions
+// display recompute reads that fourth value; every other caller discards it.
+//
+// A WORKING session surfaces a reason only when every working chat carries an
+// armed callback (WorkingOverWaiting), which is when it folded to WAITING
+// before; a working chat with no callback means plain live work.
 //
 // The aggregate is deliberately NOT derived from the winning chat. The winner
 // is decided by the lexicographic tie-break below, so a status-shaped carrier
 // would make the session's label depend on how its agent-session uuids happened
 // to sort. status.IdleWaitingAggregate is a conjunction, which cannot.
-func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, string, bool, bool) {
+func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, string, bool, status.IdleWaitingAggregate) {
+	var waitingIdle status.IdleWaitingAggregate
 	if s.chatStatus == nil || s.agentChats == nil {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, waitingIdle
 	}
 	if !loaded {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false, false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", false, waitingIdle
 	}
 	if len(chats) == 0 {
-		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, false
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, "", true, waitingIdle
 	}
 
 	agentSessionIDs := make([]string, len(chats))
@@ -5506,7 +5519,6 @@ func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*mod
 	best := pb.ChatStatus_CHAT_STATUS_STOPPED
 	bestReason := ""
 	bestChatID := ""
-	var waitingIdle status.IdleWaitingAggregate
 	for _, c := range chats {
 		e, ok := entries[c.AgentSessionID]
 		if !ok || e == nil {
@@ -5515,7 +5527,7 @@ func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*mod
 		st, reason := status.PromoteWaiting(e.Status, s.chatStatus.Waiting(c.AgentSessionID))
 		// BOS-1269: accumulate the reported status PromoteWaiting is about to
 		// discard, in the same loop that already visits every chat.
-		waitingIdle.Observe(e.Status, st)
+		waitingIdle.Observe(e.Status, st, reason)
 		rank := sessionChatStatusRank(st)
 		bestRank := sessionChatStatusRank(best)
 		// Strictly better wins; an equal-ranked chat only wins the tie under
@@ -5536,7 +5548,10 @@ func (s *Server) chatStatusAndWaitingAggregate(ctx context.Context, chats []*mod
 			}
 		}
 	}
-	return best, bestReason, true, waitingIdle.AllIdle(best)
+	if best == pb.ChatStatus_CHAT_STATUS_WORKING && !waitingIdle.WorkingOverWaiting(best) {
+		bestReason = ""
+	}
+	return best, bestReason, true, waitingIdle
 }
 
 // winsWaitingTie reports whether a candidate chat beats the current winner of

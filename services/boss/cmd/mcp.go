@@ -22,6 +22,7 @@ import (
 var (
 	mcpGetStatus     = daemon.McpGetStatus
 	mcpStop          = daemon.McpStop
+	mcpStart         = daemon.McpStart
 	mcpResolvePath   = daemon.ResolveMcpPath
 	mcpFindInstances = daemon.FindMcpInstances
 	mcpStopInstances = daemon.StopMcpInstances
@@ -63,7 +64,8 @@ func mcpCmd() *cobra.Command {
 			return runMcpToken(cmd)
 		},
 	}
-	token.Flags().Bool("json", false, "Output as JSON (token, header, token_path)")
+	token.Flags().Bool("json", false, "Output as JSON (token, header, token_path, restarted)")
+	token.Flags().Bool("rotate", false, "Replace the token and restart a running managed MCP service")
 
 	m.AddCommand(
 		install,
@@ -106,6 +108,7 @@ type mcpTokenJSON struct {
 	Token     string `json:"token"`
 	Header    string `json:"header"`
 	TokenPath string `json:"token_path"`
+	Restarted bool   `json:"restarted"`
 }
 
 // loadMcpHTTPToken resolves the daemon socket path the MCP server also resolves
@@ -123,15 +126,35 @@ func loadMcpHTTPToken() (token, tokenPath string, err error) {
 }
 
 func runMcpToken(cmd *cobra.Command) error {
-	token, tokenPath, err := loadMcpHTTPToken()
-	if err != nil {
-		return err
+	var token, tokenPath string
+	var restarted bool
+	rotate, _ := cmd.Flags().GetBool("rotate")
+	if rotate {
+		socketPath, err := defaultSocketPath()
+		if err != nil {
+			return fmt.Errorf("resolve socket path: %w", err)
+		}
+		result, err := daemon.RotateMCPHTTPToken(socketPath, mcpGetStatus, mcpStop, mcpStart)
+		if err != nil {
+			return err
+		}
+		token, tokenPath, restarted = result.Token, socketauth.HTTPTokenPath(socketPath), result.Restarted
+		if result.ManualRestartRequired {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning: restart any manually started mcp --http server to apply the new token.")
+		}
+	} else {
+		var err error
+		token, tokenPath, err = loadMcpHTTPToken()
+		if err != nil {
+			return err
+		}
 	}
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
 		b, err := json.MarshalIndent(mcpTokenJSON{
 			Token:     token,
 			Header:    socketauth.AuthHeader + ": Bearer " + token,
 			TokenPath: tokenPath,
+			Restarted: restarted,
 		}, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal token: %w", err)
@@ -140,6 +163,9 @@ func runMcpToken(cmd *cobra.Command) error {
 		return nil
 	}
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), token)
+	if rotate {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), socketauth.AuthHeader+": Bearer "+token)
+	}
 	return nil
 }
 

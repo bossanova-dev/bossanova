@@ -37,6 +37,7 @@ go_binary(
 go_test(
     name = "bossd-plugin-repair_test",
     srcs = [
+        "escalation_test.go",
         "helpers_test.go",
         "host_test.go",
         "main_test.go",

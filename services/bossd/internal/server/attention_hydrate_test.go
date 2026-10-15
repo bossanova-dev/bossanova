@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,7 +149,7 @@ func TestAttentionQuestionCache(t *testing.T) {
 
 func TestAttentionResumeDismissalAndRecovery(t *testing.T) {
 	chatID := "run-a"
-	row := &models.Session{ID: "s", RepoID: "r", AgentSessionID: &chatID}
+	row := &models.Session{ID: "s", RepoID: "r", AgentSessionID: &chatID, State: machine.Blocked}
 	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
 	s := &Server{resumeAttempts: ledger}
 	p := SessionToProto(row)
@@ -162,6 +163,7 @@ func TestAttentionResumeDismissalAndRecovery(t *testing.T) {
 		t.Fatal("dismissed alert still visible")
 	}
 	row.DismissedAlertKey = ""
+	row.State = machine.ImplementingPlan
 	p.LastAgentActivityAt = timestamppb.New(at(15))
 	s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
 	if p.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX {
@@ -193,5 +195,68 @@ func TestAttention2986NoStaleAlert(t *testing.T) {
 		if got := onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
 			t.Fatalf("state=%v attention=%v", state, got)
 		}
+	}
+}
+
+func TestAttentionResumeActionsMatchResumableStates(t *testing.T) {
+	for _, kind := range []string{"blocked", "repair-exhausted", "auth-wedge", "archived", "no-prompt"} {
+		t.Run(kind, func(t *testing.T) {
+			id := "run"
+			row := &models.Session{ID: "s", State: machine.Blocked, AgentSessionID: &id, Plan: "/boss-build TEST-1", WorktreePath: "/tmp/work"}
+			p := SessionToProto(row)
+			switch kind {
+			case "repair-exhausted":
+				row.State = machine.FixingChecks
+				row.LastRepairAttemptCount = 5
+				n := 1
+				row.PRNumber = &n
+			case "auth-wedge":
+				row.State = machine.ImplementingPlan
+				p.RotationEvents = []*pb.RotationEvent{{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, CreatedAt: timestamppb.New(time.Now())}}
+			case "archived":
+				now := time.Now()
+				row.ArchivedAt = &now
+			case "no-prompt":
+				row.Plan = ""
+			}
+			s := &Server{}
+			s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
+			if p.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+				t.Fatalf("attention=%v", p.Attention)
+			}
+			offered := slices.Contains(p.Attention.Actions, pb.AttentionAction_ATTENTION_ACTION_RESUME)
+			want := kind != "archived" && kind != "no-prompt"
+			if offered != want {
+				t.Fatalf("offered=%v want=%v", offered, want)
+			}
+		})
+	}
+}
+
+func TestAttentionResumeLedgerKeepsOriginalRunKey(t *testing.T) {
+	original := "first"
+	latest := "third"
+	cron := "cron-job"
+	reason := "automatic resume ledger: attempt budget exhausted"
+	row := &models.Session{ID: "s", State: machine.Blocked, AgentSessionID: &latest, CronJobID: &cron, Plan: "prompt", WorktreePath: "/tmp/work", BlockedReason: &reason}
+	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
+	s := &Server{resumeAttempts: ledger}
+	p := SessionToProto(row)
+	p.LastAgentActivityAt = timestamppb.New(at(13))
+	s.hydrateAttention(context.Background(), p, attentionDeps{row: row, chats: []*models.AgentChat{{ID: "first", AgentSessionID: original, CreatedAt: at(1)}, {ID: "third", AgentSessionID: latest, CreatedAt: at(12)}}})
+	if ledger.key != "cron-job:first" || !strings.Contains(p.Attention.Sentence, "same 401") {
+		t.Fatalf("key=%q attention=%v", ledger.key, p.Attention)
+	}
+}
+
+func TestAttentionResumeDoesNotExhaustLiveReplacement(t *testing.T) {
+	id := "third"
+	row := &models.Session{ID: "s", State: machine.ImplementingPlan, AgentSessionID: &id, Plan: "prompt", WorktreePath: "/tmp/work"}
+	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "crash"}, {AttemptedAt: at(12), FailureClass: "crash"}, {AttemptedAt: at(20), FailureClass: "unknown"}}}
+	s := &Server{resumeAttempts: ledger}
+	p := SessionToProto(row)
+	s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
+	if p.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("third replacement has not failed: %v", p.Attention)
 	}
 }

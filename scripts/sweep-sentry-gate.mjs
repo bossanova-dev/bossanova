@@ -364,8 +364,23 @@ export async function fetchMarkedLinearIssues({
     })
     const conn = data?.issues
     if (!conn) throw new Error('Linear marker scan returned no issues connection')
-    nodes.push(...(conn.nodes ?? []))
-    if (!conn.pageInfo?.hasNextPage) return nodes
+    // A connection missing its nodes or pageInfo (a drifted custom query) cannot
+    // prove the scan finished, so it fails closed rather than reading as complete.
+    if (!Array.isArray(conn.nodes)) {
+      throw new Error('Linear marker scan returned no nodes array — dedupe snapshot incomplete')
+    }
+    if (typeof conn.pageInfo?.hasNextPage !== 'boolean') {
+      throw new Error(
+        'Linear marker scan returned no pageInfo.hasNextPage — dedupe snapshot incomplete',
+      )
+    }
+    if (conn.pageInfo.hasNextPage && !conn.pageInfo.endCursor) {
+      throw new Error(
+        'Linear marker scan reported a next page without an endCursor — dedupe snapshot incomplete',
+      )
+    }
+    nodes.push(...conn.nodes)
+    if (!conn.pageInfo.hasNextPage) return nodes
     after = conn.pageInfo.endCursor
   }
   throw new Error(`Linear marker scan exceeded ${maxPages} pages — dedupe snapshot incomplete`)

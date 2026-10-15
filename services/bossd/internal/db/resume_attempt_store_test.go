@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/machine"
 )
 
 func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
@@ -210,5 +212,174 @@ func TestSetDismissedAlert_RoundTrips(t *testing.T) {
 	}
 	if err := sessions.SetDismissedAlert(ctx, sess.ID, "", at); err == nil {
 		t.Fatal("empty key: want error")
+	}
+}
+
+func TestResumeAttemptStoreSetFailure(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, NewSessionStore(database), repo.ID)
+	store := NewResumeAttemptStore(database)
+	attempt, err := store.Record(ctx, RecordResumeAttemptParams{SessionID: sess.ID, RunKey: "run", AttemptedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFailure(ctx, attempt.ID, "auth_expired"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.ListForRun(ctx, sess.ID, "run")
+	if err != nil || len(rows) != 1 || rows[0].FailureClass != "auth_expired" {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if err := store.SetFailure(ctx, attempt.ID, "invalid"); err == nil {
+		t.Fatal("invalid failure class accepted")
+	}
+}
+
+func TestCommitRunResumeRejectsConcurrentCompletionOrArchive(t *testing.T) {
+	for _, kind := range []string{"completion", "archive", "replacement"} {
+		t.Run(kind, func(t *testing.T) {
+			database := setupTestDB(t)
+			ctx := context.Background()
+			store := NewSessionStore(database)
+			repo := createTestRepo(t, NewRepoStore(database))
+			sess := createTestSession(t, store, repo.ID)
+			prior := "old"
+			priorPtr := &prior
+			working := int(machine.ImplementingPlan)
+			if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{State: &working, AgentSessionID: &priorPtr}); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "completion":
+				done := int(machine.Merged)
+				if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{State: &done}); err != nil {
+					t.Fatal(err)
+				}
+			case "archive":
+				if err := store.Archive(ctx, sess.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "replacement":
+				other := "other"
+				p := &other
+				if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{AgentSessionID: &p}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.CommitRunResume(ctx, sess.ID, working, &prior, "new"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("err=%v want lost ownership", err)
+			}
+			current, err := store.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.AgentSessionID != nil && *current.AgentSessionID == "new" {
+				t.Fatal("overwrote newer session state")
+			}
+		})
+	}
+}
+
+func TestObserveRunDeathPersistsAcrossRestartAndResetsForReplacement(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	store := NewSessionStore(database)
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, store, repo.ID)
+	prior := "old"
+	priorPtr := &prior
+	working := int(machine.ImplementingPlan)
+	row, err := store.Update(ctx, sess.ID, UpdateSessionParams{State: &working, AgentSessionID: &priorPtr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 14, 0, 0, 0, time.UTC)
+	first, err := store.ObserveRunDeath(ctx, sess.ID, prior, working, at)
+	if err != nil || !first.Equal(at) {
+		t.Fatalf("death=%v err=%v", first, err)
+	}
+	// A fresh store after a daemon restart keeps the first observed death.
+	restarted := NewSessionStore(database)
+	again, err := restarted.ObserveRunDeath(ctx, sess.ID, prior, working, at.Add(30*time.Second))
+	if err != nil || !again.Equal(at) {
+		t.Fatalf("death=%v err=%v", again, err)
+	}
+	after, err := store.Get(ctx, sess.ID)
+	if err != nil || !after.UpdatedAt.Equal(row.UpdatedAt) {
+		t.Fatalf("observation changed UpdatedAt: before=%v after=%v err=%v", row.UpdatedAt, after.UpdatedAt, err)
+	}
+	if _, err = store.CommitRunResume(ctx, sess.ID, working, &prior, "new"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := store.ObserveRunDeath(ctx, sess.ID, "new", working, at.Add(time.Hour))
+	if err != nil || !next.Equal(at.Add(time.Hour)) {
+		t.Fatalf("new death=%v err=%v", next, err)
+	}
+}
+
+func TestGiveUpRunResumePreservesConcurrentOwner(t *testing.T) {
+	for _, kind := range []string{"exhausted", "completion", "finalization", "replacement", "archive", "terminal-telemetry"} {
+		t.Run(kind, func(t *testing.T) {
+			database := setupTestDB(t)
+			ctx := context.Background()
+			store := NewSessionStore(database)
+			repo := createTestRepo(t, NewRepoStore(database))
+			sess := createTestSession(t, store, repo.ID)
+			prior := "old"
+			priorPtr := &prior
+			working := int(machine.ImplementingPlan)
+			if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{State: &working, AgentSessionID: &priorPtr}); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "completion", "finalization":
+				state := int(machine.Merged)
+				if kind == "finalization" {
+					state = int(machine.Finalizing)
+				}
+				if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{State: &state}); err != nil {
+					t.Fatal(err)
+				}
+			case "archive":
+				if err := store.Archive(ctx, sess.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "replacement":
+				other := "replacement"
+				p := &other
+				if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{AgentSessionID: &p}); err != nil {
+					t.Fatal(err)
+				}
+			case "terminal-telemetry":
+				if _, err := NewAgentRunStore(database).Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: prior, TerminalState: AgentRunTerminalReviewReady}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := store.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = store.GiveUpRunResume(ctx, sess.ID, working, &prior, "budget exhausted")
+			if kind == "exhausted" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("err=%v want lost ownership", err)
+			}
+			after, err := store.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "exhausted" {
+				if after.State != machine.Blocked || after.BlockedReason == nil || *after.BlockedReason != "budget exhausted" {
+					t.Fatalf("give-up not persisted: %+v", after)
+				}
+			} else if after.State != before.State || after.BlockedReason != nil || !after.UpdatedAt.Equal(before.UpdatedAt) || *after.AgentSessionID != *before.AgentSessionID || (after.ArchivedAt == nil) != (before.ArchivedAt == nil) {
+				t.Fatalf("stale give-up changed newer owner: before=%+v after=%+v", before, after)
+			}
+		})
 	}
 }

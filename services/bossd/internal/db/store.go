@@ -190,6 +190,10 @@ type UpdateSessionParams struct {
 	IsAutomationEnabled     *bool
 	AttemptCount            *int
 	BlockedReason           **string
+	// RunBlockedReason follows the nullable-string double-pointer convention:
+	// nil = don't touch, *nil = clear (finalize consumed the report), *val =
+	// the run reported itself BLOCKED with that reason.
+	RunBlockedReason **string
 	// LastAttemptHeadSHA follows the nullable-string double-pointer convention:
 	// nil = don't touch, *nil = clear to NULL (reset on green / auto-unblock),
 	// *val = set the SHA at which an attempt was just counted (BOS-235).
@@ -395,6 +399,9 @@ type CreateAgentChatParams struct {
 	// Model is the per-chat agent model id; empty inherits the agent CLI
 	// default (BOS-381). bossd never enumerates valid models.
 	Model string
+	// Role is the purpose the chat is created for; the unknown role is
+	// stored as NULL.
+	Role models.AgentChatRole
 }
 
 // AgentChatStore defines the interface for agent chat persistence.
@@ -423,6 +430,11 @@ type AgentChatStore interface {
 	// DeleteByAgentSessionID: the row is preserved so the chat list
 	// can surface the failed attempt.
 	MarkStartFailed(ctx context.Context, agentSessionID, reason string) error
+	// MarkReclaimed records that automation replaced this chat (reclaimed_at
+	// and reclaim_reason), clears tmux_session_name, and clears start_error:
+	// a replaced chat ran, so it is not a failed start. Returns a wrapped
+	// ErrAgentChatNotFound when no row carries agentSessionID.
+	MarkReclaimed(ctx context.Context, agentSessionID, reason string) error
 	// DeleteByAgentSessionID removes the chat and, in the same
 	// transaction, the durable proxy-token row that resolved to it
 	// (BOS-979). The delete is explicit rather than a cascade: no
@@ -499,6 +511,8 @@ type RecordResumeAttemptParams struct {
 // ResumeAttemptStore is the durable ledger of automatic resumes (BOS-1537),
 // so the resume budget and the fix sentence survive a daemon restart.
 type ResumeAttemptStore interface {
+	// SetFailure records the outcome when an attempted replacement dies.
+	SetFailure(ctx context.Context, id, failureClass string) error
 	// Record appends an attempt to its run, numbering it one past the run's
 	// highest attempt_number in the same statement.
 	Record(ctx context.Context, params RecordResumeAttemptParams) (*models.ResumeAttempt, error)
@@ -1055,4 +1069,21 @@ type ProxyTokenStore interface {
 	// merely idle or archived session, so the boot-time rebuild prunes by age
 	// before it reads.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// RunResumeCommitter atomically installs a replacement only while the original
+// run still owns an unarchived session. A late completion or archive wins.
+type RunResumeCommitter interface {
+	CommitRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error)
+}
+
+// RunResumeGiveUpper blocks an exhausted run only while it still owns the session.
+type RunResumeGiveUpper interface {
+	GiveUpRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error
+}
+
+// RunDeathObserver persists the first observed death of the current agent run
+// without changing session activity timestamps.
+type RunDeathObserver interface {
+	ObserveRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error)
 }

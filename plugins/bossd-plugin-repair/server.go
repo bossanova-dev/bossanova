@@ -280,6 +280,7 @@ type repairMonitor struct {
 	lastAttemptCommit            map[string]string    // Head SHA of last repair attempt per session
 	lastAttemptDisplayStatus     map[string]bossanovav1.DisplayStatus
 	lastAttemptReviewFingerprint map[string]string
+	refusals                     map[string]refusalStreak
 	testSweepInterval            time.Duration // Override sweep interval for tests
 	testStuckTimeout             time.Duration // Override stuck timeout for tests
 	testForceAdvanceTimeout      time.Duration // Override force-advance timeout for tests
@@ -317,6 +318,7 @@ func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 		lastAttemptCommit:            make(map[string]string),
 		lastAttemptDisplayStatus:     make(map[string]bossanovav1.DisplayStatus),
 		lastAttemptReviewFingerprint: make(map[string]string),
+		refusals:                     make(map[string]refusalStreak),
 	}
 }
 
@@ -627,6 +629,11 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	sessionTitle := info.SessionTitle
 	headSHA := info.HeadSHA
 
+	if reason, exhausted := repairExhaustedReason(info); exhausted {
+		m.blockSession(repairCtx, sessionID, reason)
+		return
+	}
+
 	// Authoritative exponential-backoff gate. Sourced from persisted
 	// last_repair_started_at + last_repair_attempt_count so a daemon
 	// restart can't reset the schedule and let the next sweep fire an
@@ -722,6 +729,94 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		defer m.wg.Done()
 		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk)
 	}()
+}
+
+// repairExhaustedReason reports whether automatic repair has failed
+// maxRepairLoopAttempts times in a row on the session's current head, the same
+// count the repair-exhausted alert uses, and the reason to block it with. The
+// persisted counter survives restarts and is reset by a clean run or a head
+// move, so it already counts consecutive failures on one head.
+func repairExhaustedReason(info sessionInfo) (string, bool) {
+	if info.LastRepairAttemptCount < maxRepairLoopAttempts || info.HeadSHA == "" || info.LastRepairHeadSHA != info.HeadSHA {
+		return "", false
+	}
+	last := info.LastRepairExitError
+	if last == "" {
+		last = info.LastRepairRunnerError
+	}
+	return fmt.Sprintf("automatic repair failed %d times in a row on %s; last error: %s",
+		info.LastRepairAttemptCount, shortSHA(info.HeadSHA), firstLine(last)), true
+}
+
+// refusalStreak counts consecutive start refusals (the daemon would not start
+// the repair chat) on one head. It is in memory: a plugin restart starts a
+// fresh streak, which only delays escalation.
+type refusalStreak struct {
+	headSHA string
+	first   time.Time
+	count   int
+}
+
+// repairRefusalEscalateAfter is how long refusals on one head must persist
+// before repair gives up. Refusals the daemon expects to clear by themselves
+// (a tracker still warming after a restart, a chat not yet idle long enough,
+// a question younger than its 15m window) all clear well inside it.
+const repairRefusalEscalateAfter = 30 * time.Minute
+
+// noteRefusal records one start refusal and reports whether the streak now
+// warrants blocking the session: maxRepairLoopAttempts refusals in a row on the
+// same head, spread over at least repairRefusalEscalateAfter.
+func (m *repairMonitor) noteRefusal(sessionID, headSHA string, now time.Time) (refusalStreak, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	streak := m.refusals[sessionID]
+	if streak.count == 0 || streak.headSHA != headSHA {
+		streak = refusalStreak{headSHA: headSHA, first: now}
+	}
+	streak.count++
+	m.refusals[sessionID] = streak
+	return streak, headSHA != "" && streak.count >= maxRepairLoopAttempts && now.Sub(streak.first) >= repairRefusalEscalateAfter
+}
+
+func (m *repairMonitor) clearRefusals(sessionID string) {
+	m.mu.Lock()
+	delete(m.refusals, sessionID)
+	m.mu.Unlock()
+}
+
+// blockSession stops retrying a session repair cannot fix and hands it to a
+// person: the session moves to Blocked with the concrete reason, which takes
+// it out of the repairable set. A failed block floors the next retry at the
+// base cooldown, so a session the machine will not block is not hammered.
+func (m *repairMonitor) blockSession(ctx context.Context, sessionID, reason string) {
+	log := m.logger.With().Str("session_id", sessionID).Str("reason", reason).Logger()
+	if _, err := m.host.FireSessionEvent(ctx, &bossanovav1.FireSessionEventRequest{
+		SessionId:     sessionID,
+		Event:         bossanovav1.SessionEvent_SESSION_EVENT_BLOCK,
+		BlockedReason: reason,
+	}); err != nil {
+		m.mu.Lock()
+		m.cooldowns[sessionID] = time.Now()
+		m.mu.Unlock()
+		log.Warn().Err(err).Msg("repair gave up but could not block the session")
+		return
+	}
+	m.clearRefusals(sessionID)
+	log.Info().Msg("repair gave up; session blocked for a person")
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // sessionInfo is the small bundle maybeRepair needs about a target session
@@ -1336,6 +1431,7 @@ func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason str
 		Command:              repairCommand,
 		Title:                "Repair: " + sessionName,
 		ResumeAgentSessionId: resumeAgentSessionID,
+		Role:                 bossanovav1.ChatRole_CHAT_ROLE_REPAIR,
 	}
 	if replaceExistingReason != "" {
 		req.ReplaceExistingChat = true
@@ -1667,6 +1763,10 @@ func (m *repairMonitor) runRepairAttempt(
 		m.cooldowns[sessionID] = time.Now()
 		m.mu.Unlock()
 		log.Info().Err(err).Msg("repair start refused; recorded as blocked")
+		if streak, escalate := m.noteRefusal(sessionID, headSHA, time.Now()); escalate {
+			m.blockSession(ctx, sessionID, fmt.Sprintf("automatic repair could not start %d times in a row over %s on %s; last refusal: %s",
+				streak.count, time.Since(streak.first).Round(time.Minute), shortSHA(headSHA), firstLine(outcomeBlockedReason)))
+		}
 	}
 
 	log.Info().
@@ -1737,6 +1837,7 @@ func (m *repairMonitor) runRepairAttempt(
 		}
 	}
 	runOwned = true
+	m.clearRefusals(sessionID)
 	outcomeShouldRecord = true
 	agentSessionID := startResp.GetAgentSessionId()
 	outcomeAgentSessionID = agentSessionID

@@ -1310,7 +1310,7 @@ func TestListSessions_IgnoresStaleRepairChatsForActiveCheck(t *testing.T) {
 	srv.agentChats = &fakeAgentChatStore{
 		chatsBySession: map[string][]*models.AgentChat{
 			sessID: {
-				{AgentSessionID: repairAgentSessionID, Title: "Repair: my session", TmuxSessionName: &tmuxName},
+				{AgentSessionID: repairAgentSessionID, Title: "Repair: my session", Role: models.AgentChatRoleRepair, TmuxSessionName: &tmuxName},
 			},
 		},
 	}
@@ -2688,6 +2688,25 @@ func TestStartChatRun_CommandPath(t *testing.T) {
 
 	if lc.lastReq.input.Command != "boss-repair" || lc.lastReq.input.Prompt != "" {
 		t.Fatalf("StartTmuxChat input = %+v, want command boss-repair", lc.lastReq.input)
+	}
+	if lc.lastReq.input.Role != models.AgentChatRoleRepair {
+		t.Fatalf("role = %q, want repair: a repair plugin that names no role is still the repair plugin", lc.lastReq.input.Role)
+	}
+}
+
+func TestStartChatRun_ForwardsRequestedRole(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "check the build",
+		Title:     "Anything",
+		Role:      bossanovav1.ChatRole_CHAT_ROLE_VERIFY,
+	}); err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if lc.lastReq.input.Role != models.AgentChatRoleVerify {
+		t.Fatalf("role = %q, want verify", lc.lastReq.input.Role)
 	}
 }
 

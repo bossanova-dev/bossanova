@@ -1,7 +1,9 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/rs/zerolog"
@@ -113,18 +116,19 @@ type countingTriggerLaunches struct {
 	onClaimN func(n int32)
 }
 
-func (c *countingTriggerLaunches) Claim(ctx context.Context, invocationID, triggerID string, staleBefore time.Time) (bool, error) {
-	won, err := c.TriggerLaunchStore.Claim(ctx, invocationID, triggerID, staleBefore)
+func (c *countingTriggerLaunches) Claim(ctx context.Context, invocationID, triggerID string, staleBefore time.Time) (string, bool, error) {
+	token, won, err := c.TriggerLaunchStore.Claim(ctx, invocationID, triggerID, staleBefore)
 	n := c.claims.Add(1)
 	if c.onClaimN != nil {
 		c.onClaimN(n)
 	}
-	return won, err
+	return token, won, err
 }
 
 // triggerFixture is a launcher over a real in-memory daemon DB with one
 // registered repo.
 type triggerFixture struct {
+	sqlDB    *sql.DB
 	launches *db.SQLiteTriggerLaunchStore
 	repoID   string
 	launcher *TriggerSessionLauncher
@@ -147,6 +151,7 @@ func newTriggerFixture(t *testing.T, creator *fakeTriggerCreator) *triggerFixtur
 	}
 	launches := db.NewTriggerLaunchStore(sqlDB)
 	return &triggerFixture{
+		sqlDB:    sqlDB,
 		launches: launches,
 		repoID:   repo.ID,
 		creator:  creator,
@@ -608,4 +613,139 @@ func TestLaunchTriggerSessionDoesNotBlockReader(t *testing.T) {
 	if got := ev.GetResult().GetLaunchTriggerSession().GetSessionId(); got != "sess-slow" {
 		t.Fatalf("launch payload session = %q, want sess-slow", got)
 	}
+}
+
+// failingTriggerLaunches exercises persistence failures against the real store.
+type failingTriggerLaunches struct {
+	db.TriggerLaunchStore
+	setFailures int
+	setCalls    int
+	markError   error
+}
+
+func (s *failingTriggerLaunches) SetSession(ctx context.Context, invocationID, token, sessionID string) error {
+	s.setCalls++
+	if s.setFailures < 0 || s.setCalls <= s.setFailures {
+		return errors.New("temporary SQLite failure")
+	}
+	return s.TriggerLaunchStore.SetSession(ctx, invocationID, token, sessionID)
+}
+func (s *failingTriggerLaunches) MarkAccepted(ctx context.Context, invocationID, token, sessionID string) error {
+	if s.markError != nil {
+		return s.markError
+	}
+	return s.TriggerLaunchStore.MarkAccepted(ctx, invocationID, token, sessionID)
+}
+
+func TestLaunchTriggerSessionDurableAcceptance(t *testing.T) {
+	t.Run("settled launch replays after session writes fail", func(t *testing.T) {
+		fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-durable"})
+		failing := &failingTriggerLaunches{TriggerLaunchStore: fx.launches, setFailures: -1}
+		fx.launcher.Launches = failing
+		first, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-durable"))
+		if err != nil || first.GetSessionId() != "sess-durable" {
+			t.Fatalf("launch = %v, %v", first, err)
+		}
+		if failing.setCalls != 3 {
+			t.Fatalf("SetSession attempts = %d, want 3", failing.setCalls)
+		}
+		if _, err := fx.sqlDB.Exec("UPDATE trigger_launches SET created_at = ?", sqlutil.FormatTime(time.Now().Add(-time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		second, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-durable"))
+		if err != nil || second.GetSessionId() != first.GetSessionId() || !second.GetIsReplay() {
+			t.Fatalf("replay = %v, %v", second, err)
+		}
+		if fx.creator.calls.Load() != 1 {
+			t.Fatal("replay created a duplicate session")
+		}
+		row, err := fx.launches.Get(context.Background(), "inv-durable")
+		if err != nil || row == nil || row.SessionID != "sess-durable" {
+			t.Fatalf("promoted row = %+v, %v", row, err)
+		}
+	})
+	t.Run("transient session write is retried", func(t *testing.T) {
+		fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-retry"})
+		failing := &failingTriggerLaunches{TriggerLaunchStore: fx.launches, setFailures: 1}
+		fx.launcher.Launches = failing
+		if _, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-retry")); err != nil {
+			t.Fatal(err)
+		}
+		if failing.setCalls != 2 {
+			t.Fatalf("SetSession attempts = %d, want 2", failing.setCalls)
+		}
+		replay, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-retry"))
+		if err != nil || !replay.GetIsReplay() || replay.GetSessionId() != "sess-retry" {
+			t.Fatalf("replay = %v, %v", replay, err)
+		}
+		if fx.creator.calls.Load() != 1 {
+			t.Fatal("retry created a duplicate")
+		}
+	})
+	t.Run("crash after accept replays without repo resolution", func(t *testing.T) {
+		fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "never"})
+		if _, err := fx.sqlDB.Exec(`INSERT INTO trigger_launches (invocation_id, trigger_id, claim_token, accepted_session_id, created_at) VALUES ('inv-crash', 'trg', 'old', 'sess-crash', ?)`, sqlutil.FormatTime(time.Now().Add(-time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		cmd := triggerCmd("inv-crash")
+		cmd.RepoOriginUrl = "https://github.com/missing/repo.git"
+		replay, _, err := fx.launcher.Launch(context.Background(), cmd)
+		if err != nil || !replay.GetIsReplay() || replay.GetSessionId() != "sess-crash" {
+			t.Fatalf("replay = %v, %v", replay, err)
+		}
+		if fx.creator.calls.Load() != 0 {
+			t.Fatal("crashed launch relaunched")
+		}
+	})
+	t.Run("accepted id is durable before settle", func(t *testing.T) {
+		creator := &fakeTriggerCreator{sessionID: "sess-gated", gate: make(chan struct{})}
+		fx := newTriggerFixture(t, creator)
+		done := make(chan error, 1)
+		go func() { _, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-gated")); done <- err }()
+		defer func() {
+			close(creator.gate)
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		}()
+		deadline := time.After(5 * time.Second)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			row, err := fx.launches.Get(context.Background(), "inv-gated")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row != nil && row.AcceptedSessionID == "sess-gated" {
+				if row.SessionID != "" {
+					t.Fatal("session settled while gate held")
+				}
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("accepted id was not persisted before settle")
+			case <-ticker.C:
+			}
+		}
+	})
+	t.Run("accept persistence failure never aborts stream", func(t *testing.T) {
+		for _, markErr := range []error{errors.New("temporary SQLite failure"), db.ErrTriggerLaunchClaimLost} {
+			fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-mark"})
+			fx.launcher.Launches = &failingTriggerLaunches{TriggerLaunchStore: fx.launches, markError: markErr}
+			var logs bytes.Buffer
+			fx.launcher.Logger = zerolog.New(&logs)
+			res, _, err := fx.launcher.Launch(context.Background(), triggerCmd("inv-mark"))
+			if err != nil || res.GetSessionId() != "sess-mark" {
+				t.Fatalf("launch = %v, %v", res, err)
+			}
+			wantMessage := "record accepted session on claim"
+			if errors.Is(markErr, db.ErrTriggerLaunchClaimLost) {
+				wantMessage = "claim taken over mid-create"
+			}
+			if !strings.Contains(logs.String(), wantMessage) || !strings.Contains(logs.String(), `"level":"error"`) {
+				t.Fatalf("acceptance error not logged: %s", logs.String())
+			}
+		}
+	})
 }

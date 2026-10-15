@@ -104,6 +104,9 @@ func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reas
 // archived_at IS NOT NULL`. ResurrectSession (session/lifecycle.go) is the only
 // caller.
 //
+// It also clears run_blocked_reason: the resurrected session starts a new agent
+// run, which must not inherit a BLOCKED report an earlier run left unconsumed.
+//
 // The single statement is the whole point. Clearing archived_at and writing the
 // state as two writes leaves the row wearing {archived_at NULL, state Merged}
 // in between — byte-for-byte the predicate archiveMergedButUnarchived
@@ -121,7 +124,7 @@ func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reas
 func (s *SQLiteSessionStore) ResurrectToState(ctx context.Context, id string, newState int) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET archived_at = NULL, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
+		`UPDATE sessions SET archived_at = NULL, run_blocked_reason = NULL, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
 		newState, newState, now, now, id)
 	if err != nil {
 		return false, fmt.Errorf("resurrect session to state: %w", err)
@@ -536,6 +539,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "blocked_reason = ?")
 		args = append(args, *params.BlockedReason)
 	}
+	if params.RunBlockedReason != nil {
+		sets = append(sets, "run_blocked_reason = ?")
+		args = append(args, *params.RunBlockedReason)
+	}
 	if params.LastAttemptHeadSHA != nil {
 		sets = append(sets, "last_attempt_head_sha = ?")
 		args = append(args, *params.LastAttemptHeadSHA)
@@ -856,7 +863,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
 	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
-	s.dismissed_alert_key, s.dismissed_alert_at
+	s.dismissed_alert_key, s.dismissed_alert_at, s.run_blocked_reason
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -872,7 +879,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
 	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
-	s.dismissed_alert_key, s.dismissed_alert_at,
+	s.dismissed_alert_key, s.dismissed_alert_at, s.run_blocked_reason,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -915,7 +922,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
 		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
-		&sess.DismissedAlertKey, &dismissedAlertAt, &repoDisplayName, &repoOriginURL)
+		&sess.DismissedAlertKey, &dismissedAlertAt, &sess.RunBlockedReason, &repoDisplayName, &repoOriginURL)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -971,7 +978,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
 		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
-		&sess.DismissedAlertKey, &dismissedAlertAt)
+		&sess.DismissedAlertKey, &dismissedAlertAt, &sess.RunBlockedReason)
 	if err != nil {
 		return nil, err
 	}
@@ -1002,4 +1009,63 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	sess.LastRepairBlockedAt = sqlutil.ParseOptionalTime(lastRepairBlockedAt)
 	sess.DismissedAlertAt = sqlutil.ParseOptionalTime(dismissedAlertAt)
 	return &sess, nil
+}
+
+// CommitRunResume guards the spawn-to-persist handoff against late completion,
+// archive and a competing replacement. sql.ErrNoRows means ownership was lost.
+func (s *SQLiteSessionStore) CommitRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state = ?, state_entered_at = ?, agent_session_id = ?, blocked_reason = NULL, run_blocked_reason = NULL, is_automation_enabled = 1, run_dropped_at = NULL, run_dropped_agent_session_id = NULL, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ? AND agent_session_id IS ?`, int(machine.ImplementingPlan), now, newAgentID, now, id, expectedState, priorAgentID)
+	if err != nil {
+		return nil, fmt.Errorf("commit run resume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n != 1 {
+		return nil, sql.ErrNoRows
+	}
+	return s.Get(ctx, id)
+}
+
+// GiveUpRunResume preserves concurrent completion, finalization, archive and
+// replacement. sql.ErrNoRows means the exhausted run no longer owns the session.
+func (s *SQLiteSessionStore) GiveUpRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state = ?, state_entered_at = ?, blocked_reason = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ? AND agent_session_id IS ? AND NOT EXISTS (SELECT 1 FROM agent_runs WHERE session_id = sessions.id AND agent_session_id IS ? AND terminal_state != '')`, int(machine.Blocked), now, reason, now, id, expectedState, priorAgentID, priorAgentID)
+	if err != nil {
+		return fmt.Errorf("give up run resume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ObserveRunDeath is level-triggered: the first observation survives restarts,
+// while a different agent id starts a new death clock. It leaves updated_at
+// untouched, so background observation is never mistaken for user activity.
+func (s *SQLiteSessionStore) ObserveRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error) {
+	stamp := sqlutil.FormatTime(at)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET run_dropped_at = CASE WHEN run_dropped_agent_session_id = ? AND run_dropped_at IS NOT NULL THEN run_dropped_at ELSE ? END, run_dropped_agent_session_id = ? WHERE id = ? AND agent_session_id = ? AND state = ? AND archived_at IS NULL`, agentID, stamp, agentID, id, agentID, expectedState)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("observe run death: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if n != 1 {
+		return time.Time{}, sql.ErrNoRows
+	}
+	var observed string
+	if err := s.db.QueryRowContext(ctx, `SELECT run_dropped_at FROM sessions WHERE id = ? AND run_dropped_agent_session_id = ?`, id, agentID).Scan(&observed); err != nil {
+		return time.Time{}, err
+	}
+	return sqlutil.ParseTime(observed), nil
 }

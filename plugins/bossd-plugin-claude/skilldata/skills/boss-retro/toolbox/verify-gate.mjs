@@ -8,7 +8,8 @@
 //   judge    --pr <n> [--repo o/r] [--extension-results <file>] [--waive <code>[,<code>…]]
 //                                                                                   never writes
 //   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>[,…]]
-//            [--findings <file>] [--extension-record <record>] [--token <t>] [--repo o/r] [--dry-run]
+//            [--findings <file>] [--extension-record <record>] [--policy <fingerprint>]
+//            [--carry-record <record>] [--token <t>] [--repo o/r] [--dry-run]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
 //   observe-merge --pr <n> [--repo o/r]                                              never writes
 //   approval --pr <n> [--repo o/r]                                                   never writes
@@ -28,7 +29,7 @@
 // failure starts the repair plugin, which cannot fix anything a human verdict names.
 
 import { spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   existsSync,
   lstatSync,
@@ -56,7 +57,7 @@ import {
   sections,
   sharedEligibility,
 } from './merge-eligibility.mjs'
-import { CHECK_REASONS, CHECK_STATES, epochMs } from './pr-check-state.mjs'
+import { CHECK_REASONS, CHECK_STATES, epochMs, normalizeRollup } from './pr-check-state.mjs'
 import {
   DESCRIPTION_LIMIT,
   RECEIPT_CONTEXT,
@@ -194,10 +195,11 @@ export class UsageError extends Error {}
 
 // ---------------------------------------------------------------------------
 // The one subprocess seam. A failed read is unknown, never an empty success: `ok` is false and
-// `error` names why. `boss --json` failures carry their machine code in `error`.
+// `error` names why. `boss --json` failures carry their machine code in `error`. Output is trimmed
+// unless `raw`: a NUL-delimited list or a patch loses meaning to a trim.
 
 export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
-  return (command, args, { input, json = false } = {}) => {
+  return (command, args, { input, json = false, raw = false } = {}) => {
     let response
     try {
       response = spawn(command === 'boss' ? bossBin : command, args, {
@@ -211,7 +213,8 @@ export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin 
     } catch (error) {
       return { ok: false, error: error?.code ?? 'spawn-error', exit: null, output: '' }
     }
-    const output = String(response?.stdout ?? '').trim()
+    const stdout = String(response?.stdout ?? '')
+    const output = raw ? stdout : stdout.trim()
     let payload
     if (json) {
       try {
@@ -265,7 +268,7 @@ const parkLabelText = (label) =>
   typeof label === 'string' ? label.replace(/\s+/g, ' ').trim() : ''
 
 /**
- * `needs human: <codes>`, plus ` · <label>` when a label is given. The codes are never shortened
+ * `needs human: <codes>`, plus ` · <label>` for derived operator wording. The codes are never shortened
  * (`post` refuses a set that does not fit); the label is cut with `…` to keep the whole description
  * within DESCRIPTION_LIMIT, and dropped when not even one of its characters fits.
  */
@@ -560,6 +563,7 @@ export function decideVerdict(facts) {
   if (f.prUnreadable) return wait('pr-unreadable')
   if (f.prState !== 'OPEN') return wait('pr-not-open')
   if (f.isDraft !== false) return wait('pr-draft')
+  if (f.ci?.reason === 'absent-gate') return wait('ci-absent-gate')
   if (!f.ci?.settled) return wait('ci-not-settled')
   if (!f.ci?.green) return wait('ci-not-green-on-head')
   const split = splitEligibility(f.eligibilityReasons)
@@ -678,6 +682,35 @@ export function extensionsConsulted(facts) {
   return (
     decideVerdict({ ...facts, extensionResults: undefined, extensionRecord: undefined }).verdict ===
     'extensions-required'
+  )
+}
+
+// Park codes no verify policy raises: they record what repair or the merge path ran into, so a
+// policy change never releases them.
+const NON_POLICY_CODES = new Set(['repair-exhausted', 'no-session'])
+
+/**
+ * Does the base, as it stands now, still raise every code of a standing park? `fresh` is the codes a
+ * zero-token judge of the head raises now (PR state and path codes). A code it no longer raises
+ * stands only when an extension may still raise it, and an extension raised nothing unless one ran
+ * on the head before the park (`extensionsRan`). Then `record`, the head's clean-run extension
+ * record, names which extension parked on which code, and that code stands while one of those
+ * extensions is still `applicable`; a malfunction park, or a park without a record, cannot say
+ * which extension raised it, so its codes stand while any extension still applies.
+ */
+export function parkStillRaised(
+  codes,
+  { fresh = [], extensionsRan = true, applicable = [], record = null } = {},
+) {
+  const live = new Set(applicable)
+  const judged = codes.includes('extension-failed') ? null : record
+  const byExtension = (code) =>
+    extensionsRan &&
+    (Array.isArray(judged)
+      ? judged.some((e) => e.outcome === code && live.has(e.extension))
+      : live.size > 0)
+  return codes.every(
+    (code) => NON_POLICY_CODES.has(code) || fresh.includes(code) || byExtension(code),
   )
 }
 
@@ -813,15 +846,20 @@ export function selectBaseOwnCheckRuns({ checkRuns, workflowRuns, sha } = {}) {
   return { ok: true, checkRuns: selected, foreign }
 }
 
+// The base branch's tip SHA, or '' when it cannot be read.
+export function readBaseTipSha(read, repo, baseRefName) {
+  if (!text(baseRefName)) return ''
+  const tip = read('gh', ['api', `${apiRepo(repo)}/commits/${encodeURIComponent(baseRefName)}`], {
+    json: true,
+  })
+  return tip.ok && isSha(tip.payload?.sha) ? tip.payload.sha : ''
+}
+
 // The base branch tip, classified with `boss/*` excluded and judged from the base's own CI only
 // (`selectBaseOwnCheckRuns`). `green`/`pending`/`no gate` proceed; `failing` is red; a failed read,
 // an unattributable run or an unreadable/unclassified set is unknown (fail closed).
 export function readBaseState(read, repo, baseRefName) {
-  if (!text(baseRefName)) return { state: 'unknown', sha: '' }
-  const tip = read('gh', ['api', `${apiRepo(repo)}/commits/${encodeURIComponent(baseRefName)}`], {
-    json: true,
-  })
-  const sha = tip.ok && isSha(tip.payload?.sha) ? tip.payload.sha : ''
+  const sha = readBaseTipSha(read, repo, baseRefName)
   if (!sha) return { state: 'unknown', sha: '' }
   const runs = read(
     'gh',
@@ -911,6 +949,108 @@ export const APPROVAL_ANCHOR_QUERY = `query($owner: String!, $name: String!, $nu
     }
   }
 }`
+
+const PRIOR_CONTEXT_FIELDS = `oid statusCheckRollup { contexts(first: 100) {
+  pageInfo { hasNextPage }
+  nodes {
+    __typename
+    ... on CheckRun { name status conclusion checkSuite { workflowRun { workflow { name } } } }
+    ... on StatusContext { context state }
+  }
+} }`
+
+export const PRIOR_HEAD_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 30, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+        nodes {
+          ... on PullRequestCommit { commit { ${PRIOR_CONTEXT_FIELDS} } }
+          ... on HeadRefForcePushedEvent { beforeCommit { ${PRIOR_CONTEXT_FIELDS} } }
+        }
+      }
+    }
+  }
+}`
+
+export function resolvePriorHead(payload, headSha) {
+  const unknown = { known: false }
+  if (!plainObject(payload) || payload.errors !== undefined) return unknown
+  const nodes = payload.data?.repository?.pullRequest?.timelineItems?.nodes
+  if (!Array.isArray(nodes)) return unknown
+  for (const node of [...nodes].reverse()) {
+    const commit = node?.commit ?? node?.beforeCommit
+    if (!isSha(commit?.oid)) return unknown
+    if (commit.oid.toLowerCase() === headSha.toLowerCase()) continue
+    if (commit.statusCheckRollup === null) continue
+    const connection = commit.statusCheckRollup?.contexts
+    if (
+      !plainObject(connection) ||
+      connection.pageInfo?.hasNextPage !== false ||
+      !Array.isArray(connection.nodes)
+    )
+      return unknown
+    const contexts = []
+    for (const context of connection.nodes) {
+      const name = context?.name ?? context?.context
+      if (typeof name !== 'string' || !name.trim()) return unknown
+      if (name.startsWith('boss/')) continue
+      const workflowName = context.checkSuite?.workflowRun?.workflow?.name
+      contexts.push({ ...context, ...(workflowName ? { workflowName } : {}) })
+    }
+    if (contexts.length) return { known: true, sha: commit.oid.toLowerCase(), contexts }
+  }
+  return { known: true, sha: null }
+}
+
+// Judge and merge share these reads so a missing context cannot disappear between their policies.
+export function readCiOnHead(read, repo, pr, view, headSha) {
+  const [owner, name] = text(repo) ? repo.split('/') : []
+  const previous = read(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '-f',
+      `query=${PRIOR_HEAD_QUERY}`,
+      ...(owner && name
+        ? ['-f', `owner=${owner}`, '-f', `name=${name}`]
+        : ['-F', 'owner={owner}', '-F', 'name={repo}']),
+      '-F',
+      `number=${pr}`,
+    ],
+    { json: true },
+  )
+  const prior = previous.ok ? resolvePriorHead(previous.payload, headSha) : { known: false }
+  const runs = read(
+    'gh',
+    [
+      'api',
+      `${apiRepo(repo)}/actions/runs?head_sha=${headSha}&per_page=100`,
+      '--paginate',
+      '--slurp',
+    ],
+    { json: true },
+  )
+  const runsReadable =
+    runs.ok &&
+    Array.isArray(runs.payload) &&
+    runs.payload.length > 0 &&
+    runs.payload.every((page) => plainObject(page) && Array.isArray(page.workflow_runs))
+  const input = {
+    headSHA: headSha,
+    observedSHA: view.headRefOid ?? '',
+    rollup: view.statusCheckRollup,
+    priorContexts: prior.contexts ?? null,
+    workflowRuns: runs.payload,
+    readError: !prior.known || !runsReadable ? 'CI evidence unreadable' : null,
+  }
+  const ci = judgeCiOnHead(input)
+  const reported = new Set(ci.verdict.reportedOnPrior ?? [])
+  const advisory = (prior.contexts ?? [])
+    .filter((context) => !context.workflowName && reported.has(context.name ?? context.context))
+    .map((context) => context.name ?? context.context)
+  return advisory.length ? judgeCiOnHead({ ...input, structurallyAbsentContexts: advisory }) : ci
+}
 
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -1081,6 +1221,8 @@ const EMPTY_POLICY = Object.freeze({
   alwaysHumanPaths: [],
   humanReview: Object.fromEntries(HUMAN_REVIEW_CATEGORIES.map((c) => [c, []])),
   pathLabels: [],
+  generatedPaths: [],
+  generatedChecks: [],
 })
 
 // A failed `gh api` read the forge answered with a 404: the thing is absent, not unknown.
@@ -1089,9 +1231,10 @@ const isGhNotFound = (r) =>
 
 /**
  * The verify policy as the base tip holds it: the config file's contents at `baseSha`, read through
- * the forge so a PR head can never narrow its own policy. `{state: 'ok'|'absent', policy}` or
+ * the forge so a PR head can never narrow its own policy. `{state: 'ok'|'absent', policy, block}` or
  * `{state: 'unreadable'|'invalid', policy: null, why}`; an absent file is an empty policy, and
- * anything else that is not a readable, valid `verifyDefaults` is unknown, never empty.
+ * anything else that is not a readable, valid `verifyDefaults` is unknown, never empty. `block` is
+ * the raw `verifyDefaults` object (null when absent), whose keys an applicability check may read.
  */
 export function readBasePolicy(read, repo, baseSha) {
   if (!isSha(baseSha)) return { state: 'unreadable', policy: null, why: 'no-base-sha' }
@@ -1100,7 +1243,7 @@ export function readBasePolicy(read, repo, baseSha) {
   })
   if (!r.ok) {
     return isGhNotFound(r)
-      ? { state: 'absent', policy: EMPTY_POLICY }
+      ? { state: 'absent', policy: EMPTY_POLICY, block: null }
       : { state: 'unreadable', policy: null, why: r.error ?? 'read-failed' }
   }
   const p = r.payload
@@ -1108,7 +1251,8 @@ export function readBasePolicy(read, repo, baseSha) {
     return { state: 'unreadable', policy: null, why: 'not-a-file' }
   try {
     const raw = Buffer.from(p.content, 'base64').toString('utf8')
-    return { state: 'ok', policy: verifyPolicyFromConfigText(raw, `${CONFIG_FILENAME}@${baseSha}`) }
+    const policy = verifyPolicyFromConfigText(raw, `${CONFIG_FILENAME}@${baseSha}`)
+    return { state: 'ok', policy, block: JSON.parse(raw).verifyDefaults ?? null }
   } catch (error) {
     return { state: 'invalid', policy: null, why: error?.message ?? 'invalid' }
   }
@@ -1208,6 +1352,42 @@ export function pathParkLabels(paths, verifyPolicy) {
     if (!labels.includes(entry.label)) labels.push(entry.label)
   }
   return out
+}
+
+/** Derive operator wording for exactly the posted path codes. Cosmetic read failures never prevent posting. */
+export function deriveParkLabel(read, { repo, pr, baseRefName, headSha, codes }) {
+  if (
+    !codes.some(
+      (code) => code === 'always-human-path' || code.startsWith(HUMAN_REVIEW_REASON_PREFIX),
+    )
+  )
+    return { label: '' }
+  try {
+    const baseSha = readBaseTipSha(read, repo, baseRefName)
+    if (!baseSha) return { label: '', why: 'no-base-sha' }
+    const base = readBasePolicy(read, repo, baseSha)
+    if (!base.policy) return { label: '', why: base.why }
+    const hasLabel = base.policy.pathLabels.some((entry) =>
+      codes.includes(
+        entry.list === 'alwaysHumanPaths'
+          ? 'always-human-path'
+          : `${HUMAN_REVIEW_REASON_PREFIX}${entry.list.slice('humanReview.'.length)}`,
+      ),
+    )
+    if (!hasLabel) return { label: '' }
+    const { paths } = selectChangedRange(read, {
+      repo,
+      pr,
+      baseSha,
+      headSha,
+      readMarkers: () => readOperatorMarkers(read, repo, pr),
+    })
+    if (paths === null) return { label: '', why: 'diff-unreadable' }
+    const labels = pathParkLabels(paths, base.policy)
+    return { label: [...new Set(codes.flatMap((code) => labels[code] ?? []))].join(', ') }
+  } catch (error) {
+    return { label: '', why: error?.message ?? 'read-failed' }
+  }
 }
 
 function loadConfig(deps) {
@@ -1329,6 +1509,14 @@ export function reapTrustedTrees({ tmpRoot = tmpdir(), keep, now = Date.now(), s
   return reaped
 }
 
+// Is commit `sha` in the local object store, fetching it from origin once when it is not?
+function ensureCommit(git, sha) {
+  const commit = `${sha}^{commit}`
+  if (git('git', ['cat-file', '-e', commit]).ok) return true
+  git('git', ['fetch', '--no-tags', '--quiet', 'origin', sha])
+  return git('git', ['cat-file', '-e', commit]).ok
+}
+
 /**
  * Produces the trusted tree for `baseSha` from the checkout at `cwd`: `{ok: true, root, reused}` or
  * `{ok: false, why}`. The path is content-addressed by `baseSha`, so concurrent judges of PRs on one
@@ -1366,12 +1554,7 @@ export function materializeTrustedTree({
     // A reaper may have renamed it away between the check and the touch: extract afresh then.
     if (isDirectory(root)) return done({ ok: true, root, reused: true })
   }
-  const commit = `${baseSha}^{commit}`
-  if (!git('git', ['cat-file', '-e', commit]).ok) {
-    git('git', ['fetch', '--no-tags', '--quiet', 'origin', baseSha])
-    if (!git('git', ['cat-file', '-e', commit]).ok)
-      return done({ ok: false, why: 'commit-unavailable' })
-  }
+  if (!ensureCommit(git, baseSha)) return done({ ok: false, why: 'commit-unavailable' })
   let staging
   try {
     staging = mkdtempSync(`${root}.partial-`)
@@ -1396,6 +1579,84 @@ export function materializeTrustedTree({
   } finally {
     if (staging) rmSync(staging, { recursive: true, force: true })
   }
+}
+
+/**
+ * The verify extensions the trusted tree for `baseSha` installs: `{trusted, root, installed, lost,
+ * treeExists}`. `root` is null when no tree could be produced, and `lost` says the tree was reaped
+ * mid-discovery, which reads as zero extensions and is unknown, never an empty set. An injected
+ * `deps.trustedTree` is a fake root; `deps.treeExists` then decides (default: present).
+ */
+function readTrustedExtensions(read, baseSha, deps) {
+  const treeExists = deps.treeExists ?? (deps.trustedTree ? () => true : isDirectory)
+  if (!baseSha) return { trusted: null, root: null, installed: [], lost: false, treeExists }
+  const trusted = (deps.trustedTree ?? materializeTrustedTree)({
+    baseSha,
+    cwd: deps.cwd ?? process.cwd(),
+    read,
+  })
+  const root = trusted?.ok ? trusted.root : null
+  const discovered = root
+    ? (deps.discover ?? discoverExtensions)({ core: VERIFY_CORE, role: 'verify', root })
+    : { extensions: [] }
+  const lost = root !== null && !treeExists(root)
+  return { trusted, root, installed: lost ? [] : (discovered?.extensions ?? []), lost, treeExists }
+}
+
+const readTextFile = (path) => {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+const canonicalJson = (value) =>
+  Array.isArray(value)
+    ? `[${value.map(canonicalJson).join(',')}]`
+    : plainObject(value)
+      ? `{${Object.keys(value)
+          .sort()
+          .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+          .join(',')}}`
+      : JSON.stringify(value ?? null)
+
+export const POLICY_FINGERPRINT = /^[0-9a-f]{16}$/
+
+/**
+ * A digest of what a verdict on a head was judged under: the base's raw `verifyDefaults` block and
+ * every verify extension the trusted tree at `root` installs (its descriptor and the bytes of its
+ * applicability check). A park judged under the digest the base has now would be judged the same
+ * way again, so only a park recorded under another digest, or none, is worth re-judging.
+ */
+export function policyFingerprint(block, installed, { root = null, readText = readTextFile } = {}) {
+  const extensions = (Array.isArray(installed) ? installed : [])
+    .map((ext) => ({
+      name: String(ext?.name ?? ''),
+      optional: ext?.optional === true,
+      malfunctionReason: ext?.malfunctionReason ?? null,
+      applies: text(ext?.applies) ? ext.applies : null,
+      check: text(ext?.applies) && text(root) ? readText(join(root, ext.applies)) : null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  return createHash('sha256')
+    .update(canonicalJson({ verifyDefaults: block ?? null, extensions }))
+    .digest('hex')
+    .slice(0, 16)
+}
+
+/**
+ * The fingerprint the base branch `baseRefName` would judge under now, or null when its tip, its
+ * policy or its trusted tree cannot be read: unknown, so no park is re-judged on it.
+ */
+function currentPolicyFingerprint(read, repo, baseRefName, deps) {
+  const baseSha = readBaseTipSha(read, repo, baseRefName)
+  if (!baseSha) return null
+  const basePolicy = readBasePolicy(read, repo, baseSha)
+  if (!basePolicy.policy) return null
+  const tree = readTrustedExtensions(read, baseSha, deps)
+  if (!tree.root || tree.lost) return null
+  return policyFingerprint(basePolicy.block, tree.installed, { root: tree.root })
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,6 +1699,115 @@ export function recordNote({ trigger, body, pr, headSha }, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Approval carry. An approval binds to one head, so a rebase that only moves the base under an
+// approved change would page the operator again. A head with no operator decision of its own
+// inherits the newest approval of an earlier head when the PR's own change is the same: each head
+// diffed against its merge base with the base tip has one whitespace-exact patch-id, with the base
+// policy's `generatedPaths` left out. Leaving generated files out is safe only because CI proves
+// them regenerated from source: the checks the base names in `generatedChecks` must have passed on
+// the head, and judge tries a carry only past its CI gate, so every other check is green too. The
+// carry waives exactly the codes the original approval named.
+
+const later = (a, b) => a.at > b.at || (a.at === b.at && a.id > b.id)
+
+/**
+ * The approval `headSha` could inherit from the trusted `markers`: `{from, waives, url}` for the
+ * newest approval record on another head, or `{why}`. Nothing carries to a head the operator
+ * already decided on, from an approval that waives nothing, or past a send-back of any head made
+ * after that approval (which revokes it, or says the PR as a whole was sent back).
+ */
+export function carryCandidate(markers, headSha) {
+  const head = String(headSha ?? '').toLowerCase()
+  if (!isSha(head)) return { why: 'no-head' }
+  const list = Array.isArray(markers) ? markers : []
+  if (operatorDecision(list, head).decision !== null) return { why: 'head-decided' }
+  let newest = null
+  for (const m of list)
+    if (m?.kind === 'approve' && m.head !== head && (!newest || later(m, newest))) newest = m
+  if (!newest) return { why: 'no-earlier-approval' }
+  if (!newest.waives) return { why: 'nothing-to-carry' }
+  if (list.some((m) => m?.kind === 'send-back' && later(m, newest)))
+    return { why: 'sent-back-after-approval' }
+  return { from: newest.head, waives: newest.waives, url: newest.url ?? '' }
+}
+
+/** Has every check named in `names` reported on the head's rollup, and passed every time? */
+export function generationChecksPassed(rollup, names = []) {
+  const entries = normalizeRollup(rollup)
+  return names.every((name) => {
+    const runs = entries.filter((entry) => entry.name === name)
+    return runs.length > 0 && runs.every((e) => String(e.conclusion).toUpperCase() === 'SUCCESS')
+  })
+}
+
+/**
+ * The whitespace-exact patch-id of `headSha`'s own change: its diff against its merge base with
+ * `baseSha`, paths matching `generatedPaths` left out, binary contents included. `{patchId,
+ * mergeBase}` or `{why}` when a commit, the merge base, the diff or the id cannot be read, or
+ * nothing is left.
+ */
+export function readChangePatchId(read, { baseSha, headSha, generatedPaths = [] }) {
+  if (!isSha(baseSha) || !isSha(headSha)) return { why: 'no-sha' }
+  if (!ensureCommit(read, baseSha) || !ensureCommit(read, headSha))
+    return { why: 'commit-unavailable' }
+  const mb = read('git', ['merge-base', baseSha, headSha])
+  if (!mb.ok || !isSha(mb.output)) return { why: 'merge-base-unreadable' }
+  const range = [mb.output, headSha]
+  const names = read('git', ['diff', '--name-only', '-z', '--no-renames', ...range], { raw: true })
+  if (!names.ok) return { why: 'diff-unreadable' }
+  const generated = generatedPaths.map(globToRegExp)
+  const kept = names.output
+    .split('\0')
+    .filter((path) => path && !generated.some((re) => re.test(path)))
+  if (kept.length === 0) return { why: 'no-hand-written-change' }
+  const diff = read(
+    'git',
+    [
+      'diff',
+      '--binary',
+      '--no-renames',
+      '--no-color',
+      '--no-ext-diff',
+      '--no-textconv',
+      ...range,
+      '--',
+      ...kept.map((path) => `:(literal)${path}`),
+    ],
+    { raw: true },
+  )
+  if (!diff.ok) return { why: 'diff-unreadable' }
+  // --verbatim keeps whitespace in the hash: the default strips it, so an indentation-only change
+  // to Python or a split shell argument would carry an approval to code nobody saw.
+  const id = read('git', ['patch-id', '--verbatim'], { input: diff.output })
+  const patchId = id.ok ? id.output.split(/\s+/)[0].toLowerCase() : ''
+  return isSha(patchId) ? { patchId, mergeBase: mb.output } : { why: 'patch-id-unreadable' }
+}
+
+/**
+ * Does an earlier head's approval carry to `headSha`? `{carry: {from, waives, url, patchId}}`, or
+ * `{why, from?}`. `markers` must be the trusted operator markers; `policy` is the base tip's.
+ * Call it only past the CI gate. Any read that fails is no carry.
+ */
+export function judgeCarry(read, { markers, headSha, baseSha, rollup, policy }) {
+  const candidate = carryCandidate(markers, headSha)
+  if (candidate.why) return candidate
+  const { from } = candidate
+  const generatedPaths = policy?.generatedPaths ?? []
+  const generatedChecks = policy?.generatedChecks ?? []
+  // An empty check list proves nothing, so generated paths are left out only when checks are named.
+  if (generatedPaths.length > 0 && generatedChecks.length === 0)
+    return { why: 'generated-paths-unproven', from }
+  if (!generationChecksPassed(rollup, generatedChecks))
+    return { why: 'generation-checks-not-passed', from }
+  const approved = readChangePatchId(read, { baseSha, headSha: from, generatedPaths })
+  if (approved.why) return { why: `approved-head-${approved.why}`, from }
+  const current = readChangePatchId(read, { baseSha, headSha, generatedPaths })
+  if (current.why) return { why: `head-${current.why}`, from }
+  if (approved.patchId !== current.patchId) return { why: 'change-differs', from }
+  return { carry: { ...candidate, patchId: current.patchId } }
+}
+
+// ---------------------------------------------------------------------------
 // Verbs.
 
 const APPROVAL_UNREADABLE = new Set(['pr-unreadable', 'status-unreadable', 'comments-unreadable'])
@@ -1471,11 +1841,7 @@ export async function judge(options, deps = {}) {
   // head never reaches another pushed in between.
   if (waive && String(appr.headSha ?? '').toLowerCase() !== headSha.toLowerCase()) waive = null
   const ticket = parseLinearIssueLine(p.body)
-  const ci = judgeCiOnHead({
-    headSHA: headSha,
-    observedSHA: p.headRefOid ?? '',
-    rollup: p.statusCheckRollup,
-  })
+  const ci = readCiOnHead(read, repo, pr, p, headSha)
   const ledger = parseLedger(p.body)
   const eligibility = sharedEligibility({
     criteria: ledger.criteria,
@@ -1492,7 +1858,7 @@ export async function judge(options, deps = {}) {
     isDraft: p.isDraft,
     headSha,
     ticket,
-    ci: { settled: ci.settled, green: ci.green },
+    ci: { settled: ci.settled, green: ci.green, reason: ci.verdict.reason },
     eligibilityReasons: eligibility.reasons,
     waive,
     cleanReview: cleanReviewBody(p.body),
@@ -1533,29 +1899,16 @@ export async function judge(options, deps = {}) {
   // Extensions are discovered from a snapshot of the base revision (its config's extension roots,
   // its SKILL.md files, its `applies` scripts), so a head can never change how it is judged and a
   // stale branch runs current extension code. Re-judges materialize (reuse) the same tree.
-  const trusted = baseState.sha
-    ? (deps.trustedTree ?? materializeTrustedTree)({
-        baseSha: baseState.sha,
-        cwd: deps.cwd ?? process.cwd(),
-        read,
-      })
-    : null
-  const trustedRoot = trusted?.ok ? trusted.root : null
-  facts.trustedTreeUnavailable = trusted !== null && !trustedRoot
-  const discovered = trustedRoot
-    ? (deps.discover ?? discoverExtensions)({
-        core: VERIFY_CORE,
-        role: 'verify',
-        root: trustedRoot,
-      })
-    : { extensions: [] }
-  // A tree reaped mid-discovery reads as zero extensions; that is unknown, never an empty set.
-  // An injected trustedTree is a fake root; deps.treeExists then decides (default: present).
-  const treeExists = deps.treeExists ?? (deps.trustedTree ? () => true : isDirectory)
-  const treeLost = trustedRoot !== null && !treeExists(trustedRoot)
-  if (treeLost) facts.trustedTreeUnavailable = true
-  const installed = treeLost ? [] : (discovered?.extensions ?? [])
+  const tree = readTrustedExtensions(read, baseState.sha, deps)
+  const { trusted, treeExists } = tree
+  const trustedRoot = tree.root
+  facts.trustedTreeUnavailable = (trusted !== null && !trustedRoot) || tree.lost
+  const installed = tree.installed
   facts.extensions = installed
+  const fingerprint =
+    basePolicy?.policy && trustedRoot && !tree.lost
+      ? policyFingerprint(basePolicy.block, installed, { root: trustedRoot })
+      : null
   const appliesScripts = installed.map((ext) => ext?.applies).filter(text)
   // The diff is read only when something consumes it: a non-empty policy list, an applicability
   // check (recomputed on every judge, re-judges included), or the extension envelope.
@@ -1603,7 +1956,29 @@ export async function judge(options, deps = {}) {
   // decideVerdict ranks this wait after every other wait; it is set before the applicability
   // check so a head that will wait runs no applies script.
   facts.approvalUnreadable = APPROVAL_UNREADABLE.has(appr.reason)
-  if (extensionsConsulted(facts)) {
+  // An unapproved head may inherit an earlier head's approval (judgeCarry). It is tried only where
+  // a waiver could matter: a zero-token park, or a re-judge that brings extension results.
+  let carry = null
+  if (
+    !waive &&
+    basePolicy?.policy &&
+    (options.extensionResults !== undefined ||
+      decideVerdict({ ...facts, extensions: [] }).verdict === 'human')
+  ) {
+    const comments = readMarkers()
+    carry = comments.readable
+      ? judgeCarry(read, {
+          markers: comments.markers,
+          headSha,
+          baseSha: baseState.sha,
+          rollup: p.statusCheckRollup,
+          policy: verifyPolicy,
+        })
+      : { why: 'comments-unreadable' }
+    if (carry.carry) facts.waive = waive = parseHumanReasonList(carry.carry.waives)
+  }
+  const consulted = extensionsConsulted(facts)
+  if (consulted) {
     const split = partitionApplicable(installed, context, {
       read,
       nodeBin: deps.nodeBin,
@@ -1628,10 +2003,55 @@ export async function judge(options, deps = {}) {
     const comments = readMarkers()
     facts.extensionRecord = comments.readable ? recordedExtensions(comments.markers, headSha) : null
   }
-  const verdict = decideVerdict(facts)
+  let verdict = decideVerdict(facts)
+  // A carry that leaves any code parked is dropped, so the park names the whole set and one
+  // approval of this head covers it.
+  if (carry?.carry && verdict.verdict === 'human') {
+    carry = { why: 'codes-not-covered', from: carry.carry.from }
+    facts.waive = waive = null
+    verdict = decideVerdict(facts)
+  }
+  // A park nobody approved or sent back is re-judged only to release what the base would no longer
+  // raise; while every code it names still stands it is reported as it is, so nothing is re-posted.
+  const parked =
+    !waive &&
+    options.extensionResults === undefined &&
+    appr.approval === 'none' &&
+    appr.reason !== 'sent-back' &&
+    String(appr.headSha ?? '').toLowerCase() === headSha.toLowerCase()
+      ? parseHumanReasonList(appr.park ?? '')
+      : null
+  if (parked && verdict.verdict !== 'wait') {
+    const zeroToken = decideVerdict({ ...facts, extensions: [] })
+    const markers = readMarkers()
+    const stands = parkStillRaised(parked, {
+      fresh: zeroToken.verdict === 'human' ? zeroToken.reasons : [],
+      extensionsRan: extensionRunBeforePark(readStatusNodes(read, headSha, repo)),
+      applicable: consulted ? facts.extensions.map((ext) => ext.name) : [],
+      record: markers.readable ? recordedExtensions(markers.markers, headSha) : null,
+    })
+    if (stands)
+      verdict = {
+        verdict: 'human',
+        reason: parked.join(','),
+        reasons: parked,
+        labels: [],
+        held: true,
+        headSha,
+        baseSha: baseState.sha,
+        ticket,
+        notes: [],
+      }
+  }
   const out = {
     ...verdict,
+    ...(fingerprint ? { policyFingerprint: fingerprint } : {}),
+    // A pass the carry made rides with its record, for `post --carry-record`.
+    ...(carry?.carry && verdict.verdict === 'pass'
+      ? { carryRecord: `${carry.carry.from}:${carry.carry.patchId}` }
+      : {}),
     facts: factsOut({
+      carry: carry?.carry ?? carry,
       base: {
         sha: baseState.sha,
         state: baseState.state,
@@ -1813,6 +2233,22 @@ export async function post(options, deps = {}) {
     throw new UsageError(
       'verify-gate: post --extension-record takes the judge output extensionRecord, with --verdict human only',
     )
+  const carryRecord =
+    options.carryRecord === undefined ? null : String(options.carryRecord).match(CARRY_RECORD)
+  if (
+    options.carryRecord !== undefined &&
+    (verdict !== 'pass' || options.reason !== 'approved' || !carryRecord)
+  )
+    throw new UsageError(
+      'verify-gate: post --carry-record takes the judge output carryRecord, with --verdict pass --reason approved only',
+    )
+  if (
+    options.policy !== undefined &&
+    (verdict !== 'human' || !POLICY_FINGERPRINT.test(String(options.policy)))
+  )
+    throw new UsageError(
+      'verify-gate: post --policy takes the judge output policyFingerprint, with --verdict human only',
+    )
   let findings = []
   if (verdict === 'defect') {
     const parsed = readJsonFile(options.findings ?? '')
@@ -1896,17 +2332,41 @@ export async function post(options, deps = {}) {
   const ticket = parseLinearIssueLine(p.body)
   const names = trackerNames(deps)
   const marker = verifyMarker(headSha)
+  // A needs-human label an older head's park left on the ticket goes once this head stands on a
+  // verdict that parks nothing: the same housekeeping as approve, never part of the verdict.
+  const clearStaleLabel = async (result) => {
+    if (dryRun || !result.posted) return finish(result)
+    const labelRemoval = { issueId: ticket?.id ?? '', removeLabels: [names.needsHuman] }
+    const tracker = await removeNeedsHumanLabel(
+      deps,
+      ticket,
+      labelRemoval,
+      () => stillStands(read, pr, repo, headSha, unparkedVerdict),
+      { ifPresent: true },
+    )
+    if (tracker.outcome === 'absent') return finish(result)
+    if (tracker.attempted) writes.push({ kind: 'tracker', ...labelRemoval })
+    const why = tracker.why ? { why: tracker.why } : {}
+    return finish({ ...result, staleLabel: { outcome: tracker.outcome, ...why } })
+  }
 
   if (verdict === 'pass') {
+    // A pass a carried approval made posts its record first: a carry nobody can see does not pass.
+    let carried = {}
+    if (carryRecord) {
+      const [, from, patchId] = carryRecord
+      carried = recordCarry(read, { repo, pr, headSha, from, patchId, dryRun, writes })
+      if (carried.reason) return finish({ verdict, posted: false, reason: carried.reason })
+    }
     const description =
       options.reason === 'approved'
         ? VERIFY_DESCRIPTIONS.verifiedApproved
         : VERIFY_DESCRIPTIONS.verified
     if (current.status?.state === 'success' && current.status.description === description)
-      return finish({ verdict, posted: false, skipped: 'already-posted' })
+      return finish({ verdict, posted: false, skipped: 'already-posted', ...carried })
     const posted = runStatus(status('success', description)).ok
     flushNotes()
-    return finish({ verdict, posted })
+    return clearStaleLabel({ verdict, posted, ...carried })
   }
 
   let effective = verdict
@@ -1944,15 +2404,48 @@ export async function post(options, deps = {}) {
   if (effective === 'human') {
     // The label names the paths the person is asked about; it rides only on a judged park, never on
     // a defect that became human because repair gave up.
-    const label = verdict === 'human' ? parkLabelText(options.label) : ''
+    const derived =
+      verdict === 'human'
+        ? deriveParkLabel(read, {
+            repo,
+            pr,
+            baseRefName: p.baseRefName,
+            headSha,
+            codes: humanCodes,
+          })
+        : { label: '' }
+    const label = parkLabelText(derived.label)
+    const labelResult = { label, ...(derived.why ? { labelUnread: derived.why } : {}) }
     trackerWrite.comment = humanComment({ code: reason, pr, url: p.url, label })
     const description = needsHumanDescription(reason, label)
+    // The policy a park was judged under rides beside it, so a sweep re-judges it only once the
+    // base's policy changes. Only a park that stands carries one.
+    const recordPolicy = () => {
+      if (options.policy === undefined) return {}
+      const markers = readOperatorMarkers(read, repo, pr)
+      if (!markers.readable) return { policyRecord: 'unknown' }
+      if (recordedPolicy(markers.markers, headSha) === options.policy)
+        return { policyRecord: 'current' }
+      const body = policyComment(headSha, options.policy)
+      writes.push({ kind: 'pr-comment', body })
+      if (dryRun) return {}
+      return { policyRecord: postPrComment(read, repo, pr, body) ? 'posted' : 'failed' }
+    }
+    // A matching description already carries this code set and its derived label.
     if (current.status?.state === 'pending' && current.status.description === description)
-      return finish({ verdict: effective, reason, posted: false, skipped: 'already-posted' })
+      return finish({
+        verdict: effective,
+        ...labelResult,
+        reason,
+        posted: false,
+        skipped: 'already-posted',
+        ...recordPolicy(),
+      })
     writes.push({ kind: 'tracker', ...trackerWrite })
     if (!probe.available) {
       return finish({
         verdict: effective,
+        ...labelResult,
         reason,
         posted: false,
         trackerWrites: 'unavailable',
@@ -1964,6 +2457,7 @@ export async function post(options, deps = {}) {
       if (applied?.outcome !== 'ok')
         return finish({
           verdict: effective,
+          ...labelResult,
           reason,
           posted: false,
           trackerWrites: applied?.outcome ?? 'failed',
@@ -1980,9 +2474,11 @@ export async function post(options, deps = {}) {
     flushNotes()
     return finish({
       verdict: effective,
+      ...labelResult,
       reason,
       posted,
       ...(extensionRecord ? { extensionRecord } : {}),
+      ...(posted ? recordPolicy() : {}),
     })
   }
 
@@ -2033,7 +2529,8 @@ export async function post(options, deps = {}) {
     status('failure', defectDescription(findings.length, parked), commentUrl || undefined),
   ).ok
   flushNotes()
-  return finish({ verdict: effective, posted, commentUrl, autoRepair: repair?.autoRepair ?? null })
+  const result = { verdict: effective, posted, commentUrl, autoRepair: repair?.autoRepair ?? null }
+  return parked ? finish(result) : clearStaleLabel(result)
 }
 
 export async function merge(options, deps = {}) {
@@ -2077,11 +2574,7 @@ export async function merge(options, deps = {}) {
   if (current.status?.state !== 'success')
     return finish({ merged: false, verdict: 'wait', reason: 'not-verified' })
 
-  const ci = judgeCiOnHead({
-    headSHA: headSha,
-    observedSHA: p.headRefOid,
-    rollup: p.statusCheckRollup,
-  })
+  const ci = readCiOnHead(read, repo, options.pr, p, headSha)
   const ledger = parseLedger(p.body)
   const eligibility = sharedEligibility({
     criteria: ledger.criteria,
@@ -2100,6 +2593,8 @@ export async function merge(options, deps = {}) {
   const reasons = eligibility.reasons.filter((r) => !(approved && LEDGER_REASONS.has(r)))
   if (ci.settled && !ci.green && !reasons.includes('ci-not-green-on-head'))
     reasons.push('ci-not-green-on-head')
+  if (ci.verdict.reason === 'absent-gate')
+    return finish({ merged: false, verdict: 'wait', reason: 'ci-absent-gate', reasons })
   if (reasons.length > 0) return finish({ merged: false, verdict: 'wait', reasons })
 
   const session = readSessionRow(read, p.url)
@@ -2160,12 +2655,7 @@ export function observeMerge(options, deps = {}) {
  * @returns {{state: string, description: string} | null}
  */
 export function standingPark(nodes) {
-  const verify = (Array.isArray(nodes) ? nodes : [])
-    .filter((n) => n?.context === VERIFY_CONTEXT)
-    .map((n, i) => ({ n, i, at: Date.parse(n.updated_at ?? n.created_at ?? '') }))
-    // Newest first; the API's own reverse-chronological order breaks ties and unreadable times.
-    .sort((a, b) => (Number.isFinite(b.at) && Number.isFinite(a.at) ? b.at - a.at : 0) || a.i - b.i)
-  for (const { n } of verify) {
+  for (const n of newestVerifyFirst(nodes)) {
     const description = typeof n.description === 'string' ? n.description : ''
     if (n.state === 'pending' && parseParkDescription(description))
       return { state: n.state, description }
@@ -2174,12 +2664,57 @@ export function standingPark(nodes) {
   return null
 }
 
+// A head's `boss/verify` statuses, newest first; the API's own reverse-chronological order breaks
+// ties and unreadable times.
+function newestVerifyFirst(nodes) {
+  return (Array.isArray(nodes) ? nodes : [])
+    .filter((n) => n?.context === VERIFY_CONTEXT)
+    .map((n, i) => ({ n, i, at: Date.parse(n.updated_at ?? n.created_at ?? '') }))
+    .sort((a, b) => (Number.isFinite(b.at) && Number.isFinite(a.at) ? b.at - a.at : 0) || a.i - b.i)
+    .map(({ n }) => n)
+}
+
+const isClaim = (n) =>
+  n?.state === 'pending' && String(n.description ?? '').startsWith(VERIFY_DESCRIPTIONS.verifying)
+
+/**
+ * Did a verify run claim this head before its newest park? Only a run that consults extensions
+ * claims, so a park with no claim beneath it was decided without them. `nodes` is the raw status
+ * list; an unreadable list (null) is a yes, so no extension-raised code is released on a guess.
+ */
+export function extensionRunBeforePark(nodes) {
+  if (!Array.isArray(nodes)) return true
+  const verify = newestVerifyFirst(nodes)
+  const at = verify.findIndex(
+    (n) => n.state === 'pending' && parseParkDescription(n.description ?? ''),
+  )
+  return at === -1 || verify.slice(at + 1).some(isClaim)
+}
+
 // A wait or a claim: the statuses that replace a park while a run works on it.
 const replacesPark = (status) =>
   status?.state === 'pending' &&
   typeof status.description === 'string' &&
   (status.description.startsWith(VERIFY_DESCRIPTIONS.waiting) ||
     status.description.startsWith(VERIFY_DESCRIPTIONS.verifying))
+
+// A verdict that parks nothing: a pass, or a defect left to repair.
+const unparkedVerdict = (status) =>
+  isVerified(status) ||
+  (status?.state === 'failure' &&
+    typeof status.description === 'string' &&
+    status.description.startsWith(VERIFY_DESCRIPTIONS.defect) &&
+    !status.description.endsWith(VERIFY_DESCRIPTIONS.defectParkedSuffix))
+
+/**
+ * Does no verify park stand on this head? Beneath any claims and waits, its newest `boss/verify`
+ * status is absent or a verdict that parks nothing. The needs-human label is not bound to a head,
+ * so on a head like this it was left by an older head's park. `nodes` is the raw status list.
+ */
+function headStandsUnparked(nodes) {
+  const decided = newestVerifyFirst(nodes).find((n) => !replacesPark(n))
+  return !decided || unparkedVerdict(decided)
+}
 
 export async function approval(options, deps = {}) {
   const read = deps.read ?? commandReader(deps)
@@ -2201,6 +2736,7 @@ export async function approval(options, deps = {}) {
   const ticket = parseLinearIssueLine(p.body)
   const probe = await trackerProbe(resolveAdapter(deps), ticket)
   const names = trackerNames(deps)
+  const park = status?.state === 'pending' ? parseParkDescription(status.description ?? '') : null
   return {
     ...classifyApproval({
       prState: p.state,
@@ -2211,6 +2747,8 @@ export async function approval(options, deps = {}) {
       operator,
     }),
     headSha,
+    // The code set of the park standing on the head, which `judge` re-judges when nobody acted.
+    ...(park?.codes ? { park: park.codes.join(',') } : {}),
   }
 }
 
@@ -2289,11 +2827,77 @@ const EXTENSION_RECORD_MARKER =
   /^<!-- boss-extension-record head=([0-9a-fA-F]{40}) judged=(\S+) -->$/
 
 /**
- * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions',
- * head, waives?, judged?, at, id, login, url}]`. Only a comment by an owner, member or collaborator
- * is a candidate (readOperatorMarkers then keeps only authors with write access), and only when its
- * last non-blank line is a well-formed marker: an approve marker names a known code set or none at
- * all (`waives` is then ''), a send-back marker names no codes, and an extension record parses.
+ * The hidden last line of the PR comment that records the policy fingerprint a park on `headSha`
+ * was judged under. It only spares a re-judge: a forged or stale one costs a zero-token judge or
+ * keeps a park standing, never releases one.
+ */
+export function policyMarker(headSha, fingerprint) {
+  return `<!-- boss-policy-record head=${headSha} policy=${fingerprint} -->`
+}
+
+const POLICY_MARKER = /^<!-- boss-policy-record head=([0-9a-fA-F]{40}) policy=([0-9a-f]{16}) -->$/
+
+/**
+ * The hidden last line of the PR comment that records an approval carried to `headSha` from the
+ * approved head `from`, whose own change has the same whitespace-exact patch-id. The record is what
+ * makes a carry visible; it never waives anything, so a forged one only spares a re-post.
+ */
+export function carryMarker(headSha, from, patchId) {
+  return `<!-- boss-approval-carry head=${headSha} from=${from} patch=${patchId} -->`
+}
+
+const CARRY_MARKER =
+  /^<!-- boss-approval-carry head=([0-9a-fA-F]{40}) from=([0-9a-fA-F]{40}) patch=([0-9a-f]{40}) -->$/
+
+// The judge output `carryRecord`: `<approved head>:<patch-id>`.
+const CARRY_RECORD = /^([0-9a-f]{40}):([0-9a-f]{40})$/
+
+/**
+ * Posts the carry record for a pass on `headSha`, unless a trusted one for the same approved head
+ * and patch-id is already on the PR. The approval is re-read through the trusted filter, so a
+ * record is written only while `from` is still the approval `headSha` inherits (carryCandidate).
+ * `{carryRecord: 'posted'|'current'|'planned'}`, or `{reason}` when it cannot be written.
+ */
+function recordCarry(read, { repo, pr, headSha, from, patchId, dryRun, writes }) {
+  const markers = readOperatorMarkers(read, repo, pr)
+  if (!markers.readable) return { reason: 'comments-unreadable' }
+  const candidate = carryCandidate(markers.markers, headSha)
+  if (candidate.from !== from) return { reason: 'carry-unconfirmed' }
+  const recorded = markers.markers.some(
+    (m) => m.kind === 'carry' && m.head === headSha && m.from === from && m.patch === patchId,
+  )
+  if (recorded) return { carryRecord: 'current' }
+  const body = carryComment(headSha, { ...candidate, patchId })
+  writes.push({ kind: 'pr-comment', body })
+  if (dryRun) return { carryRecord: 'planned' }
+  return postPrComment(read, repo, pr, body)
+    ? { carryRecord: 'posted' }
+    : { reason: 'carry-record-failed' }
+}
+
+function carryComment(headSha, { from, waives, url, patchId }) {
+  const approval = url ? `[approval](${url})` : 'approval'
+  return [
+    '**Approval carried across a rebase**',
+    `The operator's ${approval} of \`${from}\` carries to \`${headSha}\`: both heads make the same change against their merge base (whitespace-exact patch-id \`${patchId}\`, generated paths left out), and CI is green on \`${headSha}\`. It waives \`${waives}\` only.`,
+    carryMarker(headSha, from, patchId),
+  ].join('\n\n')
+}
+
+function policyComment(headSha, fingerprint) {
+  return [
+    `boss-verify judged the park on \`${headSha.slice(0, 12)}\` under verify policy \`${fingerprint}\`. If the base's verify policy or verify extensions change, the next verify sweep re-judges it and releases the codes the base no longer raises.`,
+    policyMarker(headSha, fingerprint),
+  ].join('\n\n')
+}
+
+/**
+ * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions'|
+ * 'policy'|'carry', head, waives?, judged?, policy?, from?, patch?, at, id, login, url}]`. Only a
+ * comment by an owner, member or collaborator is a candidate (readOperatorMarkers then keeps only
+ * authors with write access), and only when its last non-blank line is a well-formed marker: an
+ * approve marker names a known code set or none at all (`waives` is then ''), a send-back marker
+ * names no codes, and an extension record parses.
  */
 export function operatorMarkers(comments) {
   const out = []
@@ -2316,6 +2920,16 @@ export function operatorMarkers(comments) {
       login,
       url: text(comment.html_url) ? comment.html_url : '',
     })
+    const carried = last.match(CARRY_MARKER)
+    if (carried) {
+      out.push({ ...stamp('carry', carried[1]), from: carried[2].toLowerCase(), patch: carried[3] })
+      continue
+    }
+    const fingerprint = last.match(POLICY_MARKER)
+    if (fingerprint) {
+      out.push({ ...stamp('policy', fingerprint[1]), policy: fingerprint[2] })
+      continue
+    }
     const recorded = last.match(EXTENSION_RECORD_MARKER)
     if (recorded) {
       const judged = parseExtensionRecord(recorded[2])
@@ -2350,6 +2964,11 @@ export function operatorDecision(markers, headSha) {
   return { decision: null }
 }
 
+/** The newest policy fingerprint recorded for a park on `headSha`, or null when none. */
+function recordedPolicy(markers, headSha) {
+  return newestFor(markers, headSha, (kind) => kind === 'policy')?.policy ?? null
+}
+
 /** The newest extension record on `headSha` as `[{extension, outcome}]`, or null when none. */
 function recordedExtensions(markers, headSha) {
   return newestFor(markers, headSha, (kind) => kind === 'extensions')?.judged ?? null
@@ -2362,8 +2981,7 @@ function newestFor(markers, headSha, wanted) {
   let newest = null
   for (const marker of Array.isArray(markers) ? markers : []) {
     if (!isSha(head) || marker?.head !== head || !wanted(marker.kind)) continue
-    if (!newest || marker.at > newest.at || (marker.at === newest.at && marker.id > newest.id))
-      newest = marker
+    if (!newest || later(marker, newest)) newest = marker
   }
   return newest
 }
@@ -2620,11 +3238,23 @@ export async function approve(options, deps = {}) {
 // The needs-human label removal after an effective approval: housekeeping, never a refusal.
 // `{attempted, outcome, why?}`: `skipped` (why `head-moved` or `pr-not-open`) when what was
 // approved no longer stands after the tracker probe, so a newly parked head keeps its label;
-// `unavailable` (why the probe's reason or the failed re-read) when it could not be done.
-async function removeNeedsHumanLabel(deps, ticket, labelRemoval, stands) {
+// `unavailable` (why the probe's reason or the failed re-read) when it could not be done. With
+// `ifPresent`, `absent` when the probe does not show the label on the ticket.
+async function removeNeedsHumanLabel(
+  deps,
+  ticket,
+  labelRemoval,
+  stands,
+  { ifPresent = false } = {},
+) {
   const adapter = resolveAdapter(deps)
   const probe = await trackerProbe(adapter, ticket)
   if (!probe.available) return { attempted: false, outcome: 'unavailable', why: probe.why }
+  if (
+    ifPresent &&
+    !(Array.isArray(probe.labels) && probe.labels.includes(labelRemoval.removeLabels[0]))
+  )
+    return { attempted: false, outcome: 'absent' }
   // What stood is gone: the label is deliberately left on (`skipped`). A re-read that failed
   // leaves the removal undone for a person to finish (`unavailable`).
   const verdict = stands()
@@ -2730,7 +3360,7 @@ export async function policy(options = {}, deps = {}) {
 // One open-PR page is the whole universe a sweep considers; more open PRs than this is a repo the
 // verify stage does not scale to yet, and the oldest-first walk below still makes progress.
 export const CANDIDATE_PR_LIST_LIMIT = 200
-const PR_LIST_FIELDS = 'number,url,body,headRefOid,isDraft'
+const PR_LIST_FIELDS = 'number,url,body,headRefOid,isDraft,baseRefName'
 
 // The PR numbers a ticket's attachments name in this repository (`…/<owner>/<repo>/pull/<n>`).
 export function attachedPrNumbers(ticket, repo) {
@@ -2828,10 +3458,14 @@ function candidateQuery(config, flags, ticket) {
 }
 
 /**
- * `{candidates: [{ticket, pr, url, headSha, repo, approval?, waive?, claim}], skipped: [{ticket,
- * pr?, reason}]}`. Unknown per-head evidence is a `unknown:<what>` skip; a failed tracker read, an
- * unloadable config or an unreadable `gh pr list` throws, so the CLI exits non-zero rather than
- * printing an empty list.
+ * `{candidates: [{ticket, pr, url, headSha, repo, approval?, waive?, rejudge?, claim}], skipped:
+ * [{ticket, pr?, reason}]}`. Unknown per-head evidence is a `unknown:<what>` skip; a failed tracker
+ * read, an unloadable config or an unreadable `gh pr list` throws, so the CLI exits non-zero rather
+ * than printing an empty list. A park nobody approved or sent back comes back as `rejudge`
+ * (`policy-changed`, or `unrecorded` for a park with no recorded fingerprint) when the policy its
+ * base would judge under now differs from the one recorded beside it. A needs-human ticket is
+ * skipped only while a park stands on its PR's current head (`headStandsUnparked`): the label
+ * outlives the head it parked, and a later head is judged afresh.
  */
 export async function candidates(options = {}, deps = {}) {
   const read = deps.read ?? commandReader(deps)
@@ -2882,6 +3516,13 @@ export async function candidates(options = {}, deps = {}) {
   const linkedSet = linkTicketsToPrs(tickets, list.payload, repo)
   skipped.push(...linkedSet.skipped)
   const needsHuman = roleName(labelName, config, 'needsHuman', DEFAULT_PIPELINE_LABELS.needsHuman)
+  // One fingerprint read per base branch serves every park on it.
+  const fingerprints = new Map()
+  const fingerprintFor = (baseRefName) => {
+    if (!fingerprints.has(baseRefName))
+      fingerprints.set(baseRefName, currentPolicyFingerprint(read, repo, baseRefName, deps))
+    return fingerprints.get(baseRefName)
+  }
   const out = []
   for (const { ticket, pr } of linkedSet.linked) {
     if (out.length >= limit) break
@@ -2904,7 +3545,9 @@ export async function candidates(options = {}, deps = {}) {
     }
     const entry = { ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo, claim: head.claim }
     if (head.parked) {
-      const appr = await approval({ pr: pr.number, repo }, { ...deps, read })
+      let markers = null
+      const readMarkers = () => (markers ??= readOperatorMarkers(read, repo, pr.number))
+      const appr = await approval({ pr: pr.number, repo, readMarkers }, { ...deps, read })
       if (APPROVAL_UNREADABLE.has(appr.reason)) {
         skip('unknown:approval')
         continue
@@ -2915,14 +3558,30 @@ export async function candidates(options = {}, deps = {}) {
       } else if (appr.approval === 'reverify') {
         entry.approval = appr.approval
       } else {
-        skip(head.parked)
-        continue
+        const fingerprint =
+          head.parked === 'parked' && appr.park && appr.reason !== 'sent-back'
+            ? fingerprintFor(pr.baseRefName)
+            : null
+        const recorded = fingerprint ? recordedPolicy(readMarkers().markers, headSha) : null
+        if (!fingerprint || recorded === fingerprint) {
+          skip(head.parked)
+          continue
+        }
+        entry.rejudge = recorded ? 'policy-changed' : 'unrecorded'
       }
     }
     const labels = Array.isArray(ticket.labels) ? ticket.labels : []
-    if (labels.includes(needsHuman) && !entry.approval) {
-      skip('needs-human')
-      continue
+    if (labels.includes(needsHuman) && !entry.approval && !entry.rejudge) {
+      // Only a park on this head holds it; a head with no verify status has no park to read.
+      const nodes = head.claim === 'none' ? [] : readStatusNodes(read, headSha, repo)
+      if (!nodes) {
+        skip('unknown:status')
+        continue
+      }
+      if (!headStandsUnparked(nodes)) {
+        skip('needs-human')
+        continue
+      }
     }
     const view = read(
       'gh',
@@ -2981,11 +3640,12 @@ const FLAGS = Object.freeze({
       'head',
       'verdict',
       'reason',
-      'label',
       'findings',
       'token',
       'repo',
       'extension-record',
+      'policy',
+      'carry-record',
     ],
     bools: ['dry-run'],
   },
@@ -3057,9 +3717,10 @@ export async function main(argv, deps = {}) {
         head: f.head,
         verdict: f.verdict,
         reason: f.reason,
-        label: f.label,
         findings: f.findings,
         extensionRecord: f['extension-record'],
+        policy: f.policy,
+        carryRecord: f['carry-record'],
         token: f.token,
         repo: f.repo,
         dryRun: f['dry-run'] === true,

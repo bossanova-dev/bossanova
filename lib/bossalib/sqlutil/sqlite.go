@@ -36,8 +36,10 @@ const maxFilePoolConns = 8
 // the extra complexity today. Revisit if SQLITE_BUSY surfaces under load.
 //
 // Why pragmas live in the DSN:
-// foreign_keys and busy_timeout are per-connection. With a pool larger than
-// 1, a one-shot db.Exec("PRAGMA …") would only configure the first
+// foreign_keys, busy_timeout and secure_delete are per-connection.
+// secure_delete=FAST clears freed cells in written pages; the daemon scrubs
+// historical free pages separately after moving plaintext keys. With a pool
+// larger than 1, a one-shot db.Exec("PRAGMA …") would only configure the first
 // connection ever drawn. modernc.org/sqlite's _pragma= URL parameter runs
 // each pragma on every connection open, so all pooled conns share the same
 // configuration. journal_mode=WAL is per-database (persists in the file)
@@ -81,7 +83,7 @@ func OpenInMemory() (*sql.DB, error) {
 // query string for non-"file:" DSNs and applies _pragma= entries after the
 // underlying SQLite open, which is why ":memory:?_pragma=…" works here.
 func buildDSN(path string) string {
-	const pragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+	const pragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=secure_delete(FAST)"
 	if strings.Contains(path, "?") {
 		return path + "&" + pragmas
 	}

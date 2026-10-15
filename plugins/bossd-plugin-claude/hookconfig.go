@@ -41,6 +41,17 @@ const questionHookURLPrefix = "/hooks/question/"
 // user-authored UserPromptSubmit hook is never touched.
 const promptSubmittedHookURLPrefix = "/hooks/prompt-submitted/"
 
+// turnEndedHookURLPrefix is the unique substring of the turn-ended Stop hook's
+// POST URL (/hooks/turn-ended/{id}). Owned by URL like the prompt receipt, so a
+// user-authored or run-keyed Stop hook is never touched.
+const turnEndedHookURLPrefix = "/hooks/turn-ended/"
+
+// maxTurnEndedHooks caps the turn-ended entries one settings file keeps. Unlike
+// the prompt receipt, every chat in a worktree needs its own (a build chat and
+// a verify chat run side by side), and every Claude process there fires every
+// entry, so the oldest are dropped past the cap rather than one per file.
+const maxTurnEndedHooks = 8
+
 // WriteHookConfig writes (or merges) a Stop-hook entry into
 // worktreePath/.claude/settings.local.json. The entry POSTs to the
 // bossd loopback hook server with a Bearer token so FinalizeSession (or,
@@ -342,6 +353,7 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	changed = removeMatcherFromHookArray(hooks, "Stop", matcher) || changed
 	changed = removeCommandURLFromHookArray(hooks, "Notification", questionHookURLPrefix+agentSessionID) || changed
 	changed = removeCommandURLFromHookArray(hooks, "UserPromptSubmit", promptSubmittedHookURLPrefix+agentSessionID) || changed
+	changed = removeCommandURLFromHookArray(hooks, "Stop", turnEndedHookURLPrefix+agentSessionID) || changed
 	if !changed {
 		return nil // nothing removed — don't rewrite the file
 	}
@@ -401,6 +413,16 @@ func WritePromptSubmitHookConfig(worktreePath, agentSessionID string, port int, 
 	urlPath := promptSubmittedHookURLPrefix + agentSessionID
 	submits := pruneCommandURLHooks(asSlice(hooks, "UserPromptSubmit"), promptSubmittedHookURLPrefix)
 	hooks["UserPromptSubmit"] = append(submits, bossdPromptSubmittedEntry(urlPath, port, receiptToken))
+	// The turn-ended hook reports the background work a finished turn leaves
+	// running, so a chat idle at its prompt over a running subagent reads
+	// WORKING. bossd authenticates it with the receipt token, so an older bossd
+	// that sends none gets no entry.
+	if receiptToken != "" {
+		turnURL := turnEndedHookURLPrefix + agentSessionID
+		stops := pruneCommandURLHooks(asSlice(hooks, "Stop"), turnURL)
+		stops = append(stops, bossdTurnEndedEntry(turnURL, port, receiptToken))
+		hooks["Stop"] = capCommandURLHooks(stops, turnEndedHookURLPrefix, maxTurnEndedHooks)
+	}
 	root["hooks"] = hooks
 
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -426,6 +448,49 @@ func pruneCommandURLHooks(entries []any, urlPrefix string) []any {
 		kept = append(kept, raw)
 	}
 	return kept
+}
+
+// capCommandURLHooks keeps at most limit entries whose command contains
+// urlPrefix, dropping the oldest (earliest in the slice); every other entry is
+// kept in place. Returns a fresh slice.
+func capCommandURLHooks(entries []any, urlPrefix string, limit int) []any {
+	owned := 0
+	for _, raw := range entries {
+		if entryCommandContains(raw, urlPrefix) {
+			owned++
+		}
+	}
+	drop := owned - limit
+	kept := make([]any, 0, len(entries))
+	for _, raw := range entries {
+		if drop > 0 && entryCommandContains(raw, urlPrefix) {
+			drop--
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	return kept
+}
+
+// bossdTurnEndedEntry returns the Stop group that forwards the hook payload
+// (its session_id and background_tasks) to bossd when a turn ends. Like the
+// prompt receipt it can never alter the turn: a Stop hook's exit code 2 or a
+// JSON "block" decision on stdout would keep Claude running, so curl's output
+// is discarded and its exit status forced to 0.
+func bossdTurnEndedEntry(urlPath string, port int, receiptToken string) map[string]any {
+	cmd := fmt.Sprintf(
+		`curl -s --max-time 2 -X POST -H "Authorization: Bearer %s" -H "Content-Type: application/json" --data-binary @- http://127.0.0.1:%d%s >/dev/null 2>&1 || true`,
+		receiptToken, port, urlPath,
+	)
+	return map[string]any{
+		"matcher": "",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": cmd,
+			},
+		},
+	}
 }
 
 // bossdPromptSubmittedEntry returns the UserPromptSubmit group for the

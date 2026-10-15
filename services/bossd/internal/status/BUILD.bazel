@@ -36,6 +36,7 @@ go_library(
 go_test(
     name = "status_test",
     srcs = [
+        "background_agents_test.go",
         "display_computer_test.go",
         "display_tracker_test.go",
         "phase_test.go",

@@ -1,6 +1,9 @@
 package sessionreason
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // FinalizeFailure formats the persisted blocked reason for a finalize
 // pipeline failure. outcome is the models.CronJobOutcome string.
@@ -22,4 +25,14 @@ func FinalizeRecovered() string {
 // case so the generic Blocked default no longer claims a fix loop ran.
 func FixLoopExhausted() string {
 	return "fix loop exhausted, needs human intervention"
+}
+
+// RunBlocked is the blocked reason finalize gives a session whose unattended
+// run reported that it ended BLOCKED on a person with reason.
+func RunBlocked(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "no reason given"
+	}
+	return "run blocked: " + reason
 }

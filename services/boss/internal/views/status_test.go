@@ -1529,7 +1529,7 @@ func TestSessionSubRowCount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionSubRowCount(tc.sess, ""); got != tc.want {
+			if got := sessionSubRowCount(tc.sess, "", 60); got != tc.want {
 				t.Errorf("sessionSubRowCount = %d, want %d", got, tc.want)
 			}
 		})
@@ -1764,7 +1764,8 @@ func assertWarningTierStylesDiffer(t *testing.T) {
 // verifyParkSession builds the session shape the bossd verify-park overlay
 // produces (HydrateVerifyAttention): NEEDS_HUMAN display status on a live
 // (non-orphaned) session carrying an AWAITING_HUMAN_INPUT attention whose summary
-// is "needs human: <reason>".
+// is "needs human: <reason>". Its park only asks for a sign-off; see
+// blockedVerifyParkSession for a failure park.
 func verifyParkSession(label string) *pb.Session {
 	return &pb.Session{
 		Id:            "verify-park",
@@ -1775,8 +1776,41 @@ func verifyParkSession(label string) *pb.Session {
 		AttentionStatus: &pb.AttentionStatus{
 			NeedsAttention: true,
 			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
-			Summary:        "needs human: ledger-open",
+			Summary:        "needs human: human-review:security",
 		},
+	}
+}
+
+// blockedVerifyParkSession is verifyParkSession for a park whose codes report a
+// failure, which the row serves as "blocked".
+func blockedVerifyParkSession(label string) *pb.Session {
+	sess := verifyParkSession(label)
+	sess.AttentionStatus.Summary = "needs human: human-review:ui,ledger-open"
+	return sess
+}
+
+// TestWarningHintStyle_BlockedVerifyParkRendersDangerTier is the other half of
+// the park split: a park with a failure code renders its hint as
+// "blocked: <codes>" on the danger tier, matching the row's red "blocked"
+// label; a sign-off park names itself the same way on the warning tier.
+func TestWarningHintStyle_BlockedVerifyParkRendersDangerTier(t *testing.T) {
+	assertWarningTierStylesDiffer(t)
+	blocked := blockedVerifyParkSession(displaystatus.BlockedLabel)
+	hint := soleHint(t, blocked)
+	if hint.Text != "blocked: ledger-open,human-review:ui" || hint.SignOff {
+		t.Fatalf("blocked park hint = %q signOff=%v, want %q on the danger tier", hint.Text, hint.SignOff, "blocked: ledger-open,human-review:ui")
+	}
+	if got, want := warningHintStyle(blocked, hint).Render(hint.Text), styleStatusDanger.Render(hint.Text); got != want {
+		t.Errorf("blocked park hint rendered %q, want full danger %q", got, want)
+	}
+
+	signOff := verifyParkSession(displaystatus.NeedsSignOffLabel)
+	signOffHint := soleHint(t, signOff)
+	if signOffHint.Text != "needs sign-off: human-review:security" || !signOffHint.SignOff {
+		t.Fatalf("sign-off park hint = %q signOff=%v", signOffHint.Text, signOffHint.SignOff)
+	}
+	if got, want := warningHintStyle(signOff, signOffHint).Render(signOffHint.Text), styleStatusWarning.Render(signOffHint.Text); got != want {
+		t.Errorf("sign-off park hint rendered %q, want full warning %q", got, want)
 	}
 }
 
@@ -1803,7 +1837,7 @@ func TestWarningHintStyle_VerifyParkRendersWarningTier(t *testing.T) {
 		want   lipgloss.Style
 		reject []lipgloss.Style
 	}{
-		{name: "non-live needs human row", label: "needs human", want: styleStatusWarning,
+		{name: "non-live needs sign-off row", label: displaystatus.NeedsSignOffLabel, want: styleStatusWarning,
 			reject: []lipgloss.Style{styleStatusDanger, styleStatusDangerFaded, styleStatusWarningFaded}},
 		{name: "live waiting row", label: "waiting", want: styleStatusWarningFaded,
 			reject: []lipgloss.Style{styleStatusDanger, styleStatusDangerFaded, styleStatusWarning}},
@@ -1812,8 +1846,8 @@ func TestWarningHintStyle_VerifyParkRendersWarningTier(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sess := verifyParkSession(tt.label)
 			hint := soleHint(t, sess)
-			if !hint.NeedsHuman {
-				t.Fatalf("verify-park hint %q is not flagged NeedsHuman", hint.Text)
+			if !hint.SignOff {
+				t.Fatalf("verify-park hint %q is not flagged SignOff", hint.Text)
 			}
 			got := warningHintStyle(sess, hint).Render(hint.Text)
 			if want := tt.want.Render(hint.Text); got != want {
@@ -1834,27 +1868,27 @@ func TestWarningHintStyle_VerifyParkRendersWarningTier(t *testing.T) {
 
 // TestWarningHintStyle_VerifyParkMergedRowFadesWarning pins the style gate's
 // axis independence: for a hint built while the session was verify-parked
-// (NeedsHuman set), the merged/closed demotion fades it without dropping its
+// (SignOff set), the merged/closed demotion fades it without dropping its
 // warning tone tier. This is a unit-level property of warningHintStyle; a
 // session whose DisplayStatus is already MERGED/CLOSED is not verify-park
 // attention, so its hint is built danger-tier and fades to danger-faded (see
 // the reachable-production assertion below).
 func TestWarningHintStyle_VerifyParkMergedRowFadesWarning(t *testing.T) {
 	assertWarningTierStylesDiffer(t)
-	sess := verifyParkSession("needs human")
+	sess := verifyParkSession(displaystatus.NeedsSignOffLabel)
 	hint := soleHint(t, sess)
 	sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
 	if got, want := warningHintStyle(sess, hint).Render(hint.Text), styleStatusWarningFaded.Render(hint.Text); got != want {
-		t.Errorf("NeedsHuman hint on merged row: rendered %q, want faded warning %q", got, want)
+		t.Errorf("SignOff hint on merged row: rendered %q, want faded warning %q", got, want)
 	}
 
 	// Reachable production behaviour: the hint is derived from the
 	// already-merged session, so it is not verify-park attention.
-	merged := verifyParkSession("needs human")
+	merged := verifyParkSession(displaystatus.NeedsSignOffLabel)
 	merged.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
 	mergedHint := soleHint(t, merged)
-	if mergedHint.NeedsHuman {
-		t.Fatalf("merged session hint %q flagged NeedsHuman; merged rows are not verify-park attention", mergedHint.Text)
+	if mergedHint.SignOff {
+		t.Fatalf("merged session hint %q flagged SignOff; merged rows are not verify-park attention", mergedHint.Text)
 	}
 	if got, want := warningHintStyle(merged, mergedHint).Render(mergedHint.Text), styleStatusDangerFaded.Render(mergedHint.Text); got != want {
 		t.Errorf("merged session: rendered %q, want faded danger %q", got, want)
@@ -1884,11 +1918,11 @@ func TestWarningHintStyle_VerifyParkNegativesStayDanger(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sess := verifyParkSession("needs human")
+			sess := verifyParkSession(displaystatus.NeedsSignOffLabel)
 			tt.mutate(sess)
 			hint := soleHint(t, sess)
-			if hint.NeedsHuman {
-				t.Fatalf("hint %q flagged NeedsHuman on a non-verify-park session", hint.Text)
+			if hint.SignOff {
+				t.Fatalf("hint %q flagged SignOff on a non-verify-park session", hint.Text)
 			}
 			got := warningHintStyle(sess, hint).Render(hint.Text)
 			if want := styleStatusDanger.Render(hint.Text); got != want {
@@ -1907,7 +1941,7 @@ func TestWarningHintStyle_VerifyParkNegativesStayDanger(t *testing.T) {
 // line and one danger line, and the home table resolves the same style per hint.
 func TestSelectedSessionWarningBlock_VerifyParkMixedRow(t *testing.T) {
 	assertWarningTierStylesDiffer(t)
-	sess := verifyParkSession("needs human")
+	sess := verifyParkSession(displaystatus.NeedsSignOffLabel)
 	sess.SetupError = "npm install failed: ENOENT"
 	hints := sessionWarningHints(sess)
 	if len(hints) != 2 {
@@ -1964,53 +1998,6 @@ func TestHomeTableAndSelectedBlockAgreeOnStyle(t *testing.T) {
 	}
 }
 
-// TestAttentionIndicator_FadedOnlyWhenEveryHintIsDemotable covers the mixed case
-// specifically: one demotable plus one exempt hint keeps the "!" loud.
-func TestAttentionIndicator_FadedOnlyWhenEveryHintIsDemotable(t *testing.T) {
-	assertFadedStylesDiffer(t)
-	attention := func() *pb.AttentionStatus {
-		return &pb.AttentionStatus{
-			NeedsAttention: true,
-			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
-			Summary:        "finalize failed (pr_skipped_no_github)",
-		}
-	}
-	allDemotable := &pb.Session{DisplayLabel: "working", AttentionStatus: attention()}
-	mixed := &pb.Session{DisplayLabel: "working", AttentionStatus: attention(), SetupError: "npm install failed: ENOENT"}
-	notLive := &pb.Session{DisplayLabel: "idle", AttentionStatus: attention()}
-
-	if got, want := renderAttentionIndicator(allDemotable), styleStatusDangerFaded.Render("!"); got != want {
-		t.Errorf("all-demotable row: indicator = %q, want faded %q", got, want)
-	}
-	if got, want := renderAttentionIndicator(mixed), styleStatusDanger.Render("!"); got != want {
-		t.Errorf("mixed row: indicator = %q, want FULL intensity %q — one exempt hint keeps the ! loud", got, want)
-	}
-	if got, want := renderAttentionIndicator(notLive), styleStatusDanger.Render("!"); got != want {
-		t.Errorf("non-live row: indicator = %q, want full intensity %q", got, want)
-	}
-
-	// A merged/closed row fades its "!" even when a hint is EXEMPT, because
-	// attentionIndicatorDemoted routes through hintDemoted, whose BOS-246
-	// finished arm short-circuits ahead of the demotable check. That extends
-	// BOS-246 — which faded the hint lines but left the "!" loud — and it is the
-	// intended reading: a bright "!" above an entirely faded hint block is the
-	// same self-contradiction this work exists to remove. Pinned so the
-	// extension cannot be undone silently.
-	// Same shape as `mixed` above — whose "!" stays loud — but merged.
-	mergedExempt := &pb.Session{
-		DisplayLabel:    "working",
-		DisplayStatus:   pb.DisplayStatus_DISPLAY_STATUS_MERGED,
-		AttentionStatus: attention(),
-		SetupError:      "npm install failed: ENOENT",
-	}
-	if got, want := renderAttentionIndicator(mergedExempt), styleStatusDangerFaded.Render("!"); got != want {
-		t.Errorf("merged row with an exempt hint: indicator = %q, want faded %q", got, want)
-	}
-	if unwanted := styleStatusDanger.Render("!"); renderAttentionIndicator(mergedExempt) == unwanted {
-		t.Error("merged row rendered a full-intensity ! above an entirely faded hint block")
-	}
-}
-
 // TestDraftPRFailure_SuccessCompositeWithExemptHint is the sole-carrier case
 // that forces the exemption. The background create never transitions the
 // session, so displaystatus's errored recolor never fires and the composite is a
@@ -2048,7 +2035,7 @@ func TestDraftPRFailure_SuccessCompositeWithExemptHint(t *testing.T) {
 	if unwanted := styleStatusDangerFaded.Render(hints[0].Text); warningHintStyle(sess, hints[0]).Render(hints[0].Text) == unwanted {
 		t.Error("hint rendered faded on a row that is never recolored")
 	}
-	if got := sessionSubRowCount(sess, ""); got != 1 {
+	if got := sessionSubRowCount(sess, "", 60); got != 1 {
 		t.Errorf("sessionSubRowCount = %d, want 1 (the hint adds a row)", got)
 	}
 }
@@ -2276,7 +2263,7 @@ func TestSessionWarningHints_EdgeCasesProduceNoRow(t *testing.T) {
 			if got := selectedSessionWarningBlock(tc.sess, nil, 80); got != "" {
 				t.Errorf("selectedSessionWarningBlock = %q, want an empty string (no styled empty row)", got)
 			}
-			if got := sessionSubRowCount(tc.sess, ""); got != 0 {
+			if got := sessionSubRowCount(tc.sess, "", 60); got != 0 {
 				t.Errorf("sessionSubRowCount = %d, want 0", got)
 			}
 		})
@@ -2300,7 +2287,7 @@ func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
 	}
 	wantExtra := 0
 	for _, sess := range sessions {
-		wantExtra += sessionSubRowCount(sess, "")
+		wantExtra += sessionSubRowCount(sess, "", 60)
 	}
 	if wantExtra == 0 {
 		t.Fatal("fixture produced no auxiliary rows; the test would be vacuous")
@@ -2313,13 +2300,13 @@ func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
 		t.Fatalf("buildTableRows emitted %d rows, want %d (%d primary + %d auxiliary)",
 			gotRows, want, len(sessions), wantExtra)
 	}
-	if got, want := sessionSubRowCount(sessions[0], ""), 0; got != want {
+	if got, want := sessionSubRowCount(sessions[0], "", 60), 0; got != want {
 		t.Errorf("no-hint session sub-rows = %d, want %d", got, want)
 	}
-	if got, want := sessionSubRowCount(sessions[1], ""), 1; got != want {
+	if got, want := sessionSubRowCount(sessions[1], "", 60), 1; got != want {
 		t.Errorf("one-hint session sub-rows = %d, want %d", got, want)
 	}
-	if got, want := sessionSubRowCount(sessions[2], ""), 3; got != want {
+	if got, want := sessionSubRowCount(sessions[2], "", 60), 3; got != want {
 		t.Errorf("several-hint session sub-rows = %d, want %d", got, want)
 	}
 }
@@ -2388,12 +2375,15 @@ func TestDraftPRFailureHint_AuthAndTransientDoNotCollide(t *testing.T) {
 
 // TestRenderDisplayStatus_VerifyRows renders the two BOS-1382 rows from
 // fixtures whose composite comes from displaystatus.Compute: "verifying" spins
-// in the info style, and "needs human" renders static in the warning style with
-// the attention "!" its AWAITING_HUMAN_INPUT overlay raises.
+// in the info style, and a sign-off park renders "needs sign-off" static in the
+// warning style with the attention "!" its AWAITING_HUMAN_INPUT overlay raises.
 func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 	sp := newStatusSpinner()
 	fixture := func(s *pb.Session) *pb.Session {
-		out := displaystatus.Compute(displaystatus.Input{Session: s})
+		out := displaystatus.Compute(displaystatus.Input{
+			Session:   s,
+			ParkCodes: displaystatus.VerifyParkSummaryCodes(s.GetAttentionStatus().GetSummary()),
+		})
 		s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = out.Label, out.Intent, out.Spinner
 		return s
 	}
@@ -2416,14 +2406,11 @@ func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 		},
 	})
 	gotParked := renderDisplayStatus(parked, sp)
-	if want := styleStatusWarning.Render("needs human"); gotParked != want {
-		t.Errorf("needs-human row = %q, want %q (warning style, no spinner)", gotParked, want)
+	if want := styleStatusWarning.Render("needs sign-off"); gotParked != want {
+		t.Errorf("sign-off park row = %q, want %q (warning style, no spinner)", gotParked, want)
 	}
 	if styled := styledPRStatus(parked, sp); styled != gotParked {
 		t.Errorf("legacy styledPRStatus = %q, want parity with the composite %q", styled, gotParked)
-	}
-	if got := renderAttentionIndicator(parked); got != styleStatusWarning.Render("!") {
-		t.Errorf("attention indicator = %q, want the warning %q", got, styleStatusWarning.Render("!"))
 	}
 
 	// Changes requested recolors verifying DANGER in both renderers, like checking.

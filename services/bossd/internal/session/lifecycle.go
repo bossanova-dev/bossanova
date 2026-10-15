@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -53,6 +54,10 @@ var (
 	conventionalCommitPrefixRE = regexp.MustCompile(`^[[:alpha:]][[:alnum:]-]*(\([^)]*\))?!?:[[:space:]]+`)
 	prNumberPrefixRE           = regexp.MustCompile(`^\[#[0-9]+\][[:space:]]+`)
 )
+
+// ErrZeroOutputRequiresUnattended rejects launches that could finalize against
+// the user's checkout instead of taking the unattended zero-output teardown.
+var ErrZeroOutputRequiresUnattended = errors.New("zero-output requires a tmux-hosted unattended launch")
 
 // preflightRollbackTimeout bounds cleanup after a post-setup capability check
 // fails. The request may already be canceled, but its unrecorded worktree and
@@ -116,16 +121,18 @@ type questionSignalReader interface {
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
-	sessions    db.SessionStore
-	repos       db.RepoStore
-	agentChats  db.AgentChatStore
-	cronJobs    db.CronJobStore
-	worktrees   gitpkg.WorktreeManager
-	agentRunner agent.AgentDispatcher
-	tmux        *tmux.Client
-	provider    vcs.Provider
-	logger      zerolog.Logger
-	telemetry   libtelemetry.Client
+	runResumeMu    sync.Mutex
+	runResumeStore db.ResumeAttemptStore
+	sessions       db.SessionStore
+	repos          db.RepoStore
+	agentChats     db.AgentChatStore
+	cronJobs       db.CronJobStore
+	worktrees      gitpkg.WorktreeManager
+	agentRunner    agent.AgentDispatcher
+	tmux           *tmux.Client
+	provider       vcs.Provider
+	logger         zerolog.Logger
+	telemetry      libtelemetry.Client
 
 	// branchResolver, when set, lets the finalize attach path match PRs
 	// against the worktree's live branch (the agent may have switched
@@ -260,6 +267,7 @@ type Lifecycle struct {
 	// sessionDeletedNotifier publishes session deletions triggered inside the
 	// lifecycle, such as no-change cron finalization cleanup.
 	sessionDeletedNotifier sessionDeletedNotifier
+	onChatCreated          atomic.Pointer[func(sessionID string)]
 
 	// liveness reports whether a boss session's agent is still running, across
 	// both headless subprocesses and tmux-hosted chats. The stranded-cron sweep
@@ -705,6 +713,27 @@ func (l *Lifecycle) SetDisplayTracker(t settingUpTracker) {
 // cleanup paths that delete sessions outside the server RPC handlers.
 func (l *Lifecycle) SetSessionDeletedNotifier(n func(context.Context, string)) {
 	l.sessionDeletedNotifier = n
+}
+
+// SetChatCreatedNotifier sets a callback called synchronously after each successful
+// agent_chats insert representing new work, never a resume/rebind or failed-start
+// bookkeeping row. The callback must be cheap and non-blocking. Nil clears it.
+func (l *Lifecycle) SetChatCreatedNotifier(fn func(sessionID string)) {
+	if fn == nil {
+		l.onChatCreated.Store(nil)
+		return
+	}
+	l.onChatCreated.Store(&fn)
+}
+
+// NotifyChatCreated reports new work in a session to the registered callback.
+func (l *Lifecycle) NotifyChatCreated(sessionID string) {
+	if l == nil {
+		return
+	}
+	if fn := l.onChatCreated.Load(); fn != nil && *fn != nil {
+		(*fn)(sessionID)
+	}
 }
 
 // SetSessionLiveness wires the liveness checker used by the stranded-cron sweep
@@ -2224,8 +2253,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// orphans on restart — so detachViaTmux (and thus the persisted Detach flag)
 	// is set ONLY on the successful tmux-hosted branch. tmuxHosted unifies every
 	// durable-tmux provenance for the routing/hook/liveness decisions below.
+	// A zero-output detach without tmux is refused before persisting any fields.
 	detachViaTmux := opts.Detach && l.tmux != nil && l.tmux.Available(ctx)
 	tmuxHosted := opts.CronJobID != "" || opts.IsTmuxUnattended || detachViaTmux
+	if opts.ZeroOutput && !tmuxHosted {
+		return fmt.Errorf("%w; tmux unavailable for --detach or no unattended launch requested", ErrZeroOutputRequiresUnattended)
+	}
 
 	// Initialize state machine at CreatingWorktree.
 	sm := machine.New(machine.CreatingWorktree)
@@ -2686,9 +2719,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				Title:          session.Title,
 				AccountID:      session.AccountID,
 				Model:          session.Model,
+				Role:           models.AgentChatRoleBuild,
 			}); err != nil {
 				return fmt.Errorf("create agent_chats row for headless run of session %s: %w", sessionID, err)
 			}
+			l.NotifyChatCreated(sessionID)
 		}
 		if headlessRun && claudeSessionID != "" && l.chatStatus != nil {
 			agentName := session.AgentName

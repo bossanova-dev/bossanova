@@ -597,6 +597,27 @@ func TestPlanCloud(t *testing.T) {
 		}
 	})
 
+	t.Run("a retire-only webhook is never matched, disabled or pruned", func(t *testing.T) {
+		// bosso marks an orphaned endpoint is_retire_only and withholds its URL
+		// from an owner who may only retire it (BOS-1593). Its identity is
+		// unknown, so it is not this file's row to disable or delete -- even
+		// under --prune, and even carrying this project's marker.
+		withheld := liveWebhook("", cloudMarker)
+		withheld.Id, withheld.IsRetireOnly = "wh-orphan", true
+		f := &fakeCloud{webhooks: []*pb.SessionWebhook{withheld}}
+		cfg := cloudConfig(t, `{"webhooks": [{"url": "https://hooks.example.com/a", "eventTypes": ["session.merged"]}]}`)
+		for _, prune := range []bool{false, true} {
+			p := planOf(t, cfg, f, CloudOptions{CanMintSecrets: true, Prune: prune})
+			changeOf(t, p, ResourceWebhook, "https://hooks.example.com/a", ActionCreate)
+			if len(p.Changes) != 1 {
+				t.Fatalf("prune=%v: the retire-only webhook was planned:\n%s", prune, p.Text())
+			}
+			if !slices.ContainsFunc(p.Warnings, func(w string) bool { return strings.Contains(w, "wh-orphan") }) {
+				t.Fatalf("prune=%v: no warning names the retire-only webhook: %q", prune, p.Warnings)
+			}
+		}
+	})
+
 	t.Run("an owner-refused webhook read skips every webhook while triggers still plan", func(t *testing.T) {
 		f := &fakeCloud{listWebhooksErr: connect.NewError(connect.CodePermissionDenied, errors.New("organization owner role required"))}
 		cfg := cloudConfig(t, `{"triggers": [`+httpTrigger+`], "webhooks": [

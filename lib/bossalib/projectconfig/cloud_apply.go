@@ -63,9 +63,10 @@ func (r CloudResult) Text() string {
 // remote cron write the proxy answers Unavailable is ReasonDaemonOffline, and
 // one whose echoed row lacks the marker is ReasonDaemonTooOld. Every secret bosso mints reaches sink
 // before the next write. A write whose echoed row lacks the project marker
-// fails with ReasonServerTooOld; ALREADY_EXISTS on a trigger write is
-// ReasonManagedByOtherMember; FAILED_PRECONDITION or INVALID_ARGUMENT on a
-// webhook create is a conflict whose detail is bosso's message. The error is
+// fails with ReasonServerTooOld; ALREADY_EXISTS on a trigger write or a
+// webhook create is ReasonManagedByOtherMember; FAILED_PRECONDITION or INVALID_ARGUMENT on a
+// webhook create, and FAILED_PRECONDITION on a webhook update or rotate, is a
+// conflict whose detail is bosso's message. The error is
 // non-nil when any write failed; it never carries a secret value.
 func ApplyCloud(ctx context.Context, w CloudWriter, sink SecretSink, p CloudPlan) (CloudResult, error) {
 	outcomes := make([]opOutcome, len(p.ops))
@@ -139,9 +140,17 @@ func cloudFailure(change Change, op cloudOp, err error) LocalFailure {
 		change.Action, change.Reason = ActionConflict, ReasonManagedByOtherMember
 		change.Detail = "another member of the organization already has a trigger with this name managed by this project"
 	case op.createWebhook != nil && connect.CodeOf(err) == connect.CodeAlreadyExists:
-		change.Action, change.Reason = ActionConflict, ReasonManagedByOther
-		change.Detail = "another webhook for this URL is already managed by this project"
+		// The plan creates only when it saw no row with this URL and marker, so
+		// the row that conflicts is one bosso did not list: another owner's,
+		// hidden while the organization does not share sessions (BOS-1593).
+		change.Action, change.Reason = ActionConflict, ReasonManagedByOtherMember
+		change.Detail = "another member of the organization already has a webhook for this URL managed by this project"
 	case op.createWebhook != nil && (connect.CodeOf(err) == connect.CodeFailedPrecondition || connect.CodeOf(err) == connect.CodeInvalidArgument):
+		change.Action, change.Reason = ActionConflict, ReasonRefused
+		change.Detail = connectMessage(err)
+	case (op.updateWebhook != nil || op.rotateWebhook != nil) && connect.CodeOf(err) == connect.CodeFailedPrecondition:
+		// An endpoint whose creator is no longer an owner is listed to every
+		// owner but may only be disabled or deleted (BOS-1593).
 		change.Action, change.Reason = ActionConflict, ReasonRefused
 		change.Detail = connectMessage(err)
 	}

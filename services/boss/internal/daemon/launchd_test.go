@@ -1493,6 +1493,13 @@ func TestGeneratePlistIncludesShimDirectories(t *testing.T) {
 			t.Errorf("bossd plist PATH missing baseline entry %q", want)
 		}
 	}
+	// macOS keeps lsof in /usr/sbin; without it the codex plugin cannot probe
+	// a launched codex's open rollout and bossd kills every codex session.
+	for _, want := range []string{":/usr/sbin:", ":/sbin:"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("bossd plist PATH missing system entry %q", strings.Trim(want, ":"))
+		}
+	}
 }
 
 // TestGeneratePlistAndMcpPlistShareOnePath is the parity invariant itself: a

@@ -2,7 +2,11 @@ package main
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 	"time"
 )
@@ -265,4 +269,45 @@ func TestResolveByPIDPartialProbeFailureWithNoRolloutIsInconclusive(t *testing.T
 	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, workDir, 100); outcome != fdOutcomeProbeFailed {
 		t.Fatalf("outcome = %v, want fdOutcomeProbeFailed for a partially-observed tree with no rollout", outcome)
 	}
+}
+
+// TestOSProcessInspectorWorksWithoutSystemDirsOnPATH: bossd's service PATH need
+// not include /usr/sbin, where macOS keeps lsof. The real inspector must still
+// see this process and the file it holds open, or every codex launch probe
+// fails and the daemon kills the session.
+func TestOSProcessInspectorWorksWithoutSystemDirsOnPATH(t *testing.T) {
+	for _, tool := range []string{"ps", "lsof"} {
+		if tool == "lsof" && runtime.GOOS == "linux" {
+			continue // Linux reads /proc, not lsof.
+		}
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not installed on this host", tool)
+		}
+	}
+	held, err := os.CreateTemp(t.TempDir(), "rollout-held-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Close() }()
+	want, err := filepath.EvalSymlinks(held.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	insp := osProcessInspector{}
+	pid := os.Getpid()
+	if tree := insp.Descendants(pid); !slices.Contains(tree, pid) {
+		t.Fatalf("Descendants(%d) = %v, want it to include the process itself", pid, tree)
+	}
+	files, err := insp.OpenFiles(pid)
+	if err != nil {
+		t.Fatalf("OpenFiles(%d) with a PATH lacking the system dirs: %v", pid, err)
+	}
+	for _, f := range files {
+		if resolved, err := filepath.EvalSymlinks(f); err == nil && resolved == want {
+			return
+		}
+	}
+	t.Fatalf("OpenFiles(%d) = %v, want it to include the held file %s", pid, files, want)
 }

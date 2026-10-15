@@ -38,6 +38,11 @@ func TestCreateSessionBootstrapDeadlineFailsAndCleansUp(t *testing.T) {
 		// Mirror the real Create: `git worktree add` lands and reports what it
 		// made, and only THEN does the setup script hang forever. Reporting is
 		// what leaves the row able to name — and prove ownership of — the branch.
+		if opts.OnWorktreeAdded != nil {
+			if err := opts.OnWorktreeAdded("/tmp/worktrees/repo/bos-717-deadline"); err != nil {
+				return nil, err
+			}
+		}
 		if opts.OnWorktreeReady != nil {
 			opts.OnWorktreeReady(ctx, "bos-717-deadline", "/tmp/worktrees/repo/bos-717-deadline")
 		}
@@ -83,7 +88,7 @@ func TestCreateSessionBootstrapDeadlineFailsAndCleansUp(t *testing.T) {
 	}
 
 	reaped, purged := worktrees.cleanupRecords()
-	if !slices.Contains(purged, "bos-717-deadline") {
+	if !slices.Contains(purged, "/tmp/worktrees/repo/bos-717-deadline") {
 		t.Fatalf("purged worktrees = %v, want the session's branch", purged)
 	}
 	if !slices.Contains(reaped, "bos-717-deadline") {
@@ -142,6 +147,11 @@ func TestCreateSessionBootstrapDeadlineCleansUpATitleDerivedBranch(t *testing.T)
 		if opts.BranchName != "" {
 			t.Errorf("createFn BranchName = %q, want empty (this create derives its branch)", opts.BranchName)
 		}
+		if opts.OnWorktreeAdded != nil {
+			if err := opts.OnWorktreeAdded("/tmp/worktrees/repo/" + derivedBranch); err != nil {
+				return nil, err
+			}
+		}
 		if opts.OnWorktreeReady == nil {
 			t.Error("CreateOpts.OnWorktreeReady is nil; the caller cannot learn the derived branch")
 		} else {
@@ -180,7 +190,7 @@ func TestCreateSessionBootstrapDeadlineCleansUpATitleDerivedBranch(t *testing.T)
 	}
 
 	reaped, purged := worktrees.cleanupRecords()
-	if !slices.Contains(purged, derivedBranch) {
+	if !slices.Contains(purged, "/tmp/worktrees/repo/"+derivedBranch) {
 		t.Fatalf("purged worktrees = %v, want the derived branch %q — the worktree is orphaned", purged, derivedBranch)
 	}
 	if !slices.Contains(reaped, derivedBranch) {
@@ -211,6 +221,11 @@ func TestCreateSessionAbandonedBootstrapReapsTheFreshBranch(t *testing.T) {
 
 	worktrees := &setupStreamWorktree{}
 	worktrees.createFn = func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
+		if opts.OnWorktreeAdded != nil {
+			if err := opts.OnWorktreeAdded("/tmp/worktrees/repo/" + derivedBranch); err != nil {
+				return nil, err
+			}
+		}
 		if opts.OnWorktreeReady != nil {
 			opts.OnWorktreeReady(ctx, derivedBranch, "/tmp/worktrees/repo/"+derivedBranch)
 		}
@@ -265,7 +280,7 @@ func TestCreateSessionAbandonedBootstrapReapsTheFreshBranch(t *testing.T) {
 	}
 
 	reaped, purged := worktrees.cleanupRecords()
-	if !slices.Contains(purged, derivedBranch) {
+	if !slices.Contains(purged, "/tmp/worktrees/repo/"+derivedBranch) {
 		t.Fatalf("purged worktrees = %v, want %q", purged, derivedBranch)
 	}
 	if !slices.Contains(reaped, derivedBranch) {

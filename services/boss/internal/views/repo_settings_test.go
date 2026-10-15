@@ -692,6 +692,14 @@ func (s *stubRepoClient) CloseSession(context.Context, string) (*pb.Session, err
 func (s *stubRepoClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
+
+func (s *stubRepoClient) ApproveSessionPR(context.Context, string, bool) (*pb.VerifyApproveResult, error) {
+	return nil, nil
+}
+
+func (s *stubRepoClient) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
+	return nil, nil
+}
 func (s *stubRepoClient) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *stubRepoClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")

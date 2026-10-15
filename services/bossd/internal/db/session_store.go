@@ -468,6 +468,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "state = ?")
 		args = append(args, *params.State)
 	}
+	if params.IsBranchCreated != nil {
+		sets = append(sets, "is_branch_created = ?")
+		args = append(args, *params.IsBranchCreated)
+	}
+	if params.WorktreeCreatedAt != nil {
+		sets = append(sets, "worktree_created_at = ?")
+		args = append(args, *params.WorktreeCreatedAt)
+	}
 	if params.WorktreePath != nil {
 		sets = append(sets, "worktree_path = ?")
 		args = append(args, *params.WorktreePath)
@@ -839,7 +847,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 	return sessions, rows.Err()
 }
 
-const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
+const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.worktree_created_at, s.is_branch_created, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at,
 	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
@@ -855,7 +863,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // can return display names alongside each session in a single round trip.
 // LEFT JOIN keeps sessions whose repo was concurrently deleted — the row
 // still appears with an empty display name.
-const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
+const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.worktree_created_at, s.is_branch_created, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.last_check_state_head_sha, s.last_check_state_at, s.state_entered_at,
 	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
@@ -886,7 +894,7 @@ func collectSessionsWithRepo(rows *sql.Rows) ([]*SessionWithRepo, error) {
 func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, error) {
 	var sess models.Session
 	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat, detach int
-	var archivedAt, createdAt, updatedAt *string
+	var archivedAt, createdAt, updatedAt, worktreeCreatedAt *string
 	var lastCheckStateAt, stateEnteredAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -896,7 +904,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	var dismissedAlertAt *string
 	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
-		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
+		&sess.WorktreePath, &worktreeCreatedAt, &sess.IsBranchCreated, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &sess.LastCheckStateHeadSHA, &lastCheckStateAt, &stateEnteredAt,
@@ -911,6 +919,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	if err != nil {
 		return nil, "", "", err
 	}
+	sess.WorktreeCreatedAt = sqlutil.ParseOptionalTime(worktreeCreatedAt)
 	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
 	sess.LastCheckStateAt = sqlutil.ParseOptionalTime(lastCheckStateAt)
 	sess.StateEnteredAt = sqlutil.ParseOptionalTime(stateEnteredAt)
@@ -942,7 +951,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
 	var state, lastCheckState, lastObservedReviewState, automationEnabled, tmuxUnattended, quickChat, detach int
-	var archivedAt, createdAt, updatedAt *string
+	var archivedAt, createdAt, updatedAt, worktreeCreatedAt *string
 	var lastCheckStateAt, stateEnteredAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -951,7 +960,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var rotationResumeAt *string
 	var dismissedAlertAt *string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
-		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
+		&sess.WorktreePath, &worktreeCreatedAt, &sess.IsBranchCreated, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &sess.LastCheckStateHeadSHA, &lastCheckStateAt, &stateEnteredAt,
@@ -966,6 +975,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	sess.WorktreeCreatedAt = sqlutil.ParseOptionalTime(worktreeCreatedAt)
 	sess.RotationResumeAt = sqlutil.ParseOptionalTime(rotationResumeAt)
 	sess.LastCheckStateAt = sqlutil.ParseOptionalTime(lastCheckStateAt)
 	sess.StateEnteredAt = sqlutil.ParseOptionalTime(stateEnteredAt)

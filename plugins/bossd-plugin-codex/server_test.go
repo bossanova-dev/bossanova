@@ -520,7 +520,7 @@ func TestBuildInteractiveCommandKeepsTTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand(resume): %v", err)
 	}
-	want := []string{"codex", "resume", "uuid-9", "-c", "model_reasoning_effort=" + defaultCodexEffort}
+	want := []string{"codex", "resume", "uuid-9", "-c", "model_reasoning_effort=" + defaultCodexEffort, "-c", "tui.disable_paste_burst=true"}
 	if !equalStrings(respR.Argv, want) {
 		t.Errorf("resume argv = %v, want %v", respR.Argv, want)
 	}
@@ -739,6 +739,35 @@ func TestBuildInteractiveCommandIncludesDangerouslyBypass(t *testing.T) {
 	}
 }
 
+// A live-pane send types its text and presses Enter at once; with codex's paste
+// burst on, that Enter becomes a literal newline and the message never submits.
+func TestBuildInteractiveCommandDisablesPasteBurst(t *testing.T) {
+	for name, req := range map[string]*bossanovav1.BuildInteractiveCommandRequest{
+		"fresh":       {SessionId: "abc"},
+		"resume":      {SessionId: "uuid-9", Resume: true},
+		"no runner":   {SessionId: "abc"},
+		"with prompt": {SessionId: "abc", InitialPrompt: "hello"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &Server{runner: &Runner{}}
+			if name == "no runner" {
+				s = &Server{}
+			}
+			resp, err := s.BuildInteractiveCommand(context.Background(), req)
+			if err != nil {
+				t.Fatalf("BuildInteractiveCommand: %v", err)
+			}
+			joined := strings.Join(resp.Argv, "\x00")
+			if !strings.Contains(joined, "-c\x00tui.disable_paste_burst=true") {
+				t.Fatalf("argv lacks the paste-burst override: %v", resp.Argv)
+			}
+			if sep := strings.Index(joined, "\x00--\x00"); sep >= 0 && strings.Index(joined, "tui.disable_paste_burst") > sep {
+				t.Fatalf("paste-burst override lands after `--`, where codex reads it as prompt: %v", resp.Argv)
+			}
+		})
+	}
+}
+
 func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
 	s := &Server{runner: &Runner{loginShell: "/opt/homebrew/bin/fish"}}
 	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
@@ -755,6 +784,8 @@ func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
 		"-c",
 		"exec $argv",
 		"codex",
+		"-c",
+		"tui.disable_paste_burst=true",
 		"--",
 		"$boss-repair",
 	}

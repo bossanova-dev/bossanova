@@ -109,6 +109,15 @@ type mergeResultMsg struct {
 	err       error
 }
 
+// approveResultMsg carries the result of an async ApproveSessionPR call for PR
+// pr. sessionID tags the session it was issued for, like mergeResultMsg.
+type approveResultMsg struct {
+	sessionID string
+	pr        int
+	result    *pb.VerifyApproveResult
+	err       error
+}
+
 // archiveResultMsg carries the result of an async ArchiveSession RPC call.
 // sessionID tags the session this archive was issued for so a completion that
 // resolves after the user navigated to a different session is discarded rather
@@ -134,6 +143,7 @@ const (
 	confirmMerge
 	confirmArchive
 	confirmSwitch // switch-account against a mid-turn (WORKING) chat
+	confirmApprove
 )
 
 // wakeResultMsg carries the result of an async WakeChat RPC call.

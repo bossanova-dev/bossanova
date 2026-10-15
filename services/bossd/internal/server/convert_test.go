@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,17 @@ func TestRepoToRepoSettings_ArchiveAfterMerge(t *testing.T) {
 	off := repoToRepoSettings(&models.Repo{ID: "r", ShouldArchiveSessionsAfterMerge: false})
 	if off.GetShouldArchiveSessionsAfterMerge() {
 		t.Error("ShouldArchiveSessionsAfterMerge should project false")
+	}
+}
+
+func TestRepoToProto_CredentialedOrigin(t *testing.T) {
+	password := "s3cret-pass"
+	p := repoToProto(&models.Repo{OriginURL: "https://alice:" + password + "@github.com/o/r.git"})
+	if strings.Contains(p.OriginUrl, password) {
+		t.Error("repoToProto leaked stored origin password")
+	}
+	if p.OriginUrl != "https://github.com/o/r.git" {
+		t.Errorf("OriginUrl = %q, want stripped origin", p.OriginUrl)
 	}
 }
 

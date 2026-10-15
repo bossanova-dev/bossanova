@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -50,8 +52,9 @@ type promptReceiptBook interface {
 // returns the check the verifier consults (nil when the send has no receipt to
 // wait for) and the slot's release.
 //
-// Only Claude chats get one: Codex has no prompt hook, so its sends keep the
-// pane verifier as their only signal. The slot is keyed by the id the chat's
+// Only Claude chats get one: Codex has no prompt hook, so its sends are
+// confirmed from its rollout instead (expectRolloutReceipt). The slot is keyed
+// by the id the chat's
 // runner was launched with — its provider session id when one is bound, else
 // bossd's agent_session_id — because that is the id the hook URL carries.
 //
@@ -70,6 +73,68 @@ func (s *Server) expectPromptReceipt(chat *models.AgentChat, willSubmit bool) (s
 	release = book.ExpectPromptSubmitted(key)
 	since := time.Now()
 	return func() bool { return book.PromptSubmittedSince(key, since) }, release
+}
+
+// rolloutReceiptReadTimeout bounds each rollout read, the probe before the send
+// and every read inside the submit verifier, so a stalled plugin cannot hold the
+// send past its budget. The read parses the whole rollout, which a long chat
+// makes large.
+const rolloutReceiptReadTimeout = time.Second
+
+// expectRolloutReceipt returns the check that confirms a submitted Codex send
+// from the agent's own rollout: a user turn recorded at or after the send began,
+// the same receipt that confirms a launch's first input. The rollout records
+// every turn Codex takes, so the verifier treats its absence as evidence too
+// (tmux.SendHooks.ReceiptRequired).
+//
+// It returns nil, leaving the pane verifier as the only signal, when there is no
+// rollout to read: no provider session id bound, no codex runner, or a rollout
+// that cannot be read within rolloutReceiptReadTimeout. A slash command (a Codex built-in such as
+// /status) starts no turn, so it gets no receipt either.
+func (s *Server) expectRolloutReceipt(ctx context.Context, chat *models.AgentChat, workDir, message string, willSubmit bool) func() bool {
+	if !willSubmit || chat.AgentName != "codex" || chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" {
+		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(message), "/") {
+		return nil
+	}
+	client, ok := s.agentClients[chat.AgentName]
+	if !ok || client == nil {
+		return nil
+	}
+	rolloutID := *chat.ProviderSessionID
+	since := time.Now()
+	probeCtx, cancel := context.WithTimeout(ctx, rolloutReceiptReadTimeout)
+	defer cancel()
+	probe, err := client.ReadTranscript(probeCtx, &pb.ReadTranscriptRequest{WorkDir: workDir, AgentSessionId: rolloutID, MaxMessages: 1})
+	if err != nil || !probe.GetExists() {
+		return nil
+	}
+	return func() bool {
+		readCtx, cancel := context.WithTimeout(ctx, rolloutReceiptReadTimeout)
+		defer cancel()
+		return session.TranscriptHasUserMessageSince(readCtx, client, workDir, rolloutID, since)
+	}
+}
+
+// deliveryConfirmation names the signal that settled a send, for the delivery
+// log line.
+func deliveryConfirmation(sendErr error, willSubmit, receiptSeen bool) string {
+	if receiptSeen {
+		return "receipt"
+	}
+	if sendErr == nil {
+		if willSubmit {
+			return "pane"
+		}
+		return "none"
+	}
+	switch tmux.OutcomeOf(sendErr) {
+	case tmux.OutcomeQueued, tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal:
+		return "pane"
+	default:
+		return "none"
+	}
 }
 
 // isClaudeChat reports whether a chat runs Claude; an empty agent name is the
@@ -290,13 +355,44 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// before each pane read and before its clear-and-redeliver retry, and a
 	// receipt that lands after the verifier gave up still settles the outcome
 	// here.
+	//
+	// A Codex send is confirmed by the user turn its rollout records. That
+	// receipt is required, not just preferred: Codex can hold a typed burst
+	// undrawn, so an empty composer alone does not prove the send was taken.
 	submitted, releaseReceipt := s.expectPromptReceipt(chat, willSubmit)
 	defer releaseReceipt()
+	receiptRequired := false
+	if rollout := s.expectRolloutReceipt(ctx, chat, sess.WorktreePath, message, willSubmit); rollout != nil {
+		submitted, receiptRequired = rollout, true
+	}
+	var receiptSeen atomic.Bool
+	if check := submitted; check != nil {
+		submitted = func() bool {
+			if check() {
+				receiptSeen.Store(true)
+				return true
+			}
+			return false
+		}
+	}
 	sendErr := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
-		tmux.SendHooks{BeforeSubmit: beforeSubmit, Submitted: submitted})
+		tmux.SendHooks{BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired})
 	if receiptOverridesOutcome(sendErr, submitted) {
 		sendErr = nil
 	}
+	deliveryOutcome := tmux.OutcomeOf(sendErr).String()
+	if sendErr == nil && !willSubmit {
+		deliveryOutcome = "prefilled"
+	}
+	s.logger.Info().
+		Str("chat_id", chat.ID).
+		Str("agent_session_id", chat.AgentSessionID).
+		Str("session_id", chat.SessionID).
+		Str("agent", chat.AgentName).
+		Str("delivery_state", deliveryOutcome).
+		Str("confirmed_by", deliveryConfirmation(sendErr, willSubmit, receiptSeen.Load())).
+		Bool("receipt_required", receiptRequired).
+		Msg("chat message delivery")
 	if err := sendErr; err != nil {
 		// Three outcomes, three answers (BOS-598). Only the verifier classifies an
 		// error; everything else (ready-marker timeout, a tmux command that failed

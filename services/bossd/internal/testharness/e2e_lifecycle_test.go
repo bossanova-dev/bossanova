@@ -862,14 +862,14 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 	// Record a chat.
 	chatResp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-chat-001",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000064",
 		Title:          "First chat",
 	}))
 	if err != nil {
 		t.Fatalf("record chat: %v", err)
 	}
-	if chatResp.Msg.Chat.AgentSessionId != "claude-chat-001" {
-		t.Fatalf("expected agent_session_id = %q, got %q", "claude-chat-001", chatResp.Msg.Chat.AgentSessionId)
+	if chatResp.Msg.Chat.AgentSessionId != "0199a3c1-7b2e-7d40-9c55-000000000064" {
+		t.Fatalf("expected agent_session_id = %q, got %q", "0199a3c1-7b2e-7d40-9c55-000000000064", chatResp.Msg.Chat.AgentSessionId)
 	}
 	if chatResp.Msg.Chat.Title != "First chat" {
 		t.Fatalf("expected title = %q, got %q", "First chat", chatResp.Msg.Chat.Title)
@@ -878,7 +878,7 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 	// Record a second chat.
 	_, err = h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-chat-002",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000065",
 		Title:          "Second chat",
 	}))
 	if err != nil {
@@ -901,7 +901,7 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 
 	// Update chat title by claude_id.
 	_, err = h.Client.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
-		AgentSessionId: "claude-chat-001",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000064",
 		Title:          "Updated first chat",
 	}))
 	if err != nil {
@@ -917,7 +917,7 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 	}
 	found := false
 	for _, c := range listResp.Msg.Chats {
-		if c.AgentSessionId == "claude-chat-001" && c.Title == "Updated first chat" {
+		if c.AgentSessionId == "0199a3c1-7b2e-7d40-9c55-000000000064" && c.Title == "Updated first chat" {
 			found = true
 			break
 		}
@@ -934,7 +934,7 @@ func TestE2E_RecordChat_ValidationErrors(t *testing.T) {
 
 	t.Run("missing session_id", func(t *testing.T) {
 		_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-			AgentSessionId: "claude-001",
+			AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000066",
 		}))
 		if err == nil {
 			t.Fatal("expected error for missing session_id")

@@ -24,6 +24,9 @@ type webhookJSON struct {
 	CreatedAt       string   `json:"created_at"`
 	UpdatedAt       string   `json:"updated_at"`
 	SecretRotatedAt string   `json:"secret_rotated_at"`
+	// RetireOnly is true for a webhook the caller may only disable or delete
+	// (its url is then empty); see SessionWebhook.is_retire_only.
+	RetireOnly bool `json:"retire_only"`
 }
 
 // webhookSecretJSON is the add / rotate-secret envelope: the only schema that
@@ -119,6 +122,7 @@ func webhookToJSON(w *pb.SessionWebhook) webhookJSON {
 		CreatedAt:       rfc3339OrEmpty(w.GetCreatedAt()),
 		UpdatedAt:       rfc3339OrEmpty(w.GetUpdatedAt()),
 		SecretRotatedAt: rfc3339OrEmpty(w.GetSecretRotatedAt()),
+		RetireOnly:      w.GetIsRetireOnly(),
 	}
 }
 

@@ -337,20 +337,49 @@ func TestExportNeverLeaksSecrets(t *testing.T) {
 	}
 }
 
+// TestExportSkipsRetireOnlyWebhooks: bosso lists an orphaned session webhook
+// -- one whose creator is no longer an organization owner -- marked
+// is_retire_only and without its URL while the organization does not share
+// sessions (BOS-1593). The URL is the file's identity for a webhook, so the
+// export leaves that webhook out with a warning rather than writing a file
+// that does not validate.
+func TestExportSkipsRetireOnlyWebhooks(t *testing.T) {
+	in := baseExportInput()
+	in.Cloud = cloudExportInput()
+	in.Cloud.Webhooks = append(in.Cloud.Webhooks, &pb.SessionWebhook{
+		Id: "w-orphan", Description: "deploy alerts", EventTypes: []string{"session.merged"}, IsEnabled: true, Format: "raw", IsRetireOnly: true,
+	})
+	cfg, warnings, _ := mustExport(t, in)
+	if len(cfg.Cloud.Webhooks) != 2 {
+		t.Fatalf("exported webhooks %+v, want the two the caller controls", cfg.Cloud.Webhooks)
+	}
+	if !slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, "w-orphan") && strings.Contains(w, "URL") }) {
+		t.Fatalf("no warning names the skipped webhook: %q", warnings)
+	}
+}
+
 func TestExportWebhookWarnsOnEmbeddedCredential(t *testing.T) {
 	cases := []struct {
-		url  string
-		warn bool
+		url    string
+		format string
+		warn   bool
 	}{
-		{"https://hooks.example.com/in", false},
-		{"https://hooks.example.com/in?token=s3cr3t", true},
-		{"https://user:s3cr3t@hooks.example.com/in", true},
+		{"https://hooks.example.com/in", "", false},
+		{"https://hooks.example.com/in?token=s3cr3t", "", true},
+		{"https://user:s3cr3t@hooks.example.com/in", "", true},
+		{"https://user:s3cr3t@hooks.example.com/in?token=s3cr3t", "slack", true},
+		{"https://hooks.example.com/services/team/channel/s3cr3t", "slack", false},
 	}
 	for _, tc := range cases {
-		_, warnings := ExportWebhook(&pb.SessionWebhook{Url: tc.url, EventTypes: []string{"session.completed"}})
+		_, warnings := ExportWebhook(&pb.SessionWebhook{Url: tc.url, Format: tc.format, EventTypes: []string{"session.completed"}})
 		got := slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, "may embed a credential") })
 		if got != tc.warn {
 			t.Errorf("%s: credential warning = %v, want %v (warnings %q)", tc.url, got, tc.warn, warnings)
+		}
+		if tc.format != "" && !slices.ContainsFunc(warnings, func(w string) bool {
+			return strings.Contains(w, "cloud.webhooks[https://hooks.example.com].format") && strings.Contains(w, `"slack"`)
+		}) {
+			t.Errorf("%s: no host-only format warning: %q", tc.url, warnings)
 		}
 		for _, w := range warnings {
 			if strings.Contains(w, "s3cr3t") {

@@ -188,6 +188,44 @@ func TestTUI_ChatPicker_MergeConfirm_CancelKeepsPicker(t *testing.T) {
 	}
 }
 
+func TestTUI_ChatPicker_ApproveParkedPR(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
+	sessions[0].AttentionStatus = &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT}
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+		tuitest.WithChats(testChats()...),
+	)
+	h.Daemon.SetApproveResult(&pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"})
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "[m]approve"); err != nil {
+		t.Fatalf("parked PR does not offer [m]approve; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('m'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Approve PR #597?"); err != nil {
+		t.Fatalf("approve confirm not shown; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Approved #597"); err != nil {
+		t.Fatalf("approval outcome not shown; screen:\n%s", h.Driver.Screen())
+	}
+	calls := h.Daemon.ApproveSessionPRCalls()
+	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetIsDryRun() {
+		t.Fatalf("ApproveSessionPRCalls = %v, want one real approve of sess-aaa-111", calls)
+	}
+}
+
 func TestTUI_ChatPicker_DeleteConfirm_CancelKeepsPicker(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

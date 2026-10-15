@@ -960,6 +960,26 @@ func TestExportProjectConfigTool(t *testing.T) {
 		}
 	})
 
+	t.Run("gateway: a retire-only webhook is left out with a warning", func(t *testing.T) {
+		c := newProjectCloud()
+		c.webhooks = []*pb.SessionWebhook{
+			{Id: "wh-1", Url: "https://hooks.example.com/a", EventTypes: []string{"session.merged"}, IsEnabled: true, Format: "raw"},
+			// An orphaned endpoint bosso lists retire-only, without its URL (BOS-1593).
+			{Id: "wh-orphan", EventTypes: []string{"session.merged"}, IsEnabled: true, Format: "raw", IsRetireOnly: true},
+		}
+		out := callProjectOK(t, c, "export_project_config", map[string]any{"repo_origin_url": projectOrigin, "organization_id": projectOrg})
+		cfg, _, err := projectconfig.Decode([]byte(out.Content))
+		if err != nil {
+			t.Fatalf("content does not decode: %v\n%s", err, out.Content)
+		}
+		if len(cfg.Cloud.Webhooks) != 1 || cfg.Cloud.Webhooks[0].URL != "https://hooks.example.com/a" {
+			t.Fatalf("exported webhooks %+v", cfg.Cloud.Webhooks)
+		}
+		if !slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.Contains(w, "wh-orphan") }) {
+			t.Fatalf("warnings %q", out.Warnings)
+		}
+	})
+
 	t.Run("gateway: the origin and organization are required", func(t *testing.T) {
 		c := newProjectCloud()
 		if msg := callProjectErr(t, c, "export_project_config", map[string]any{"organization_id": projectOrg}); !strings.Contains(msg, "repo_origin_url") {

@@ -113,6 +113,7 @@ func seedWorktreeBaseSettings(t *testing.T) {
 }
 
 func TestRegisterRepo(t *testing.T) {
+	password := "s3cret-pass"
 	seedWorktreeBaseSettings(t)
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "file")
@@ -130,6 +131,7 @@ func TestRegisterRepo(t *testing.T) {
 		wantCode   connect.Code
 		wantSetup  *string
 		wantBase   string
+		wantOrigin string
 	}{
 		{
 			name:       "empty local path",
@@ -151,6 +153,20 @@ func TestRegisterRepo(t *testing.T) {
 			req:        &pb.RegisterRepoRequest{LocalPath: dir},
 			worktrees:  &repoMgmtWorktree{isGitRepo: false},
 			wantErrSub: "not a git repository",
+		},
+		{
+			name:       "credentialed origin",
+			req:        &pb.RegisterRepoRequest{LocalPath: dir},
+			worktrees:  &repoMgmtWorktree{isGitRepo: true, originURL: "https://alice:" + password + "@github.com/o/r.git"},
+			wantOrigin: "https://github.com/o/r.git",
+		},
+		{
+			name:       "credentialed origin create fails",
+			req:        &pb.RegisterRepoRequest{LocalPath: dir},
+			worktrees:  &repoMgmtWorktree{isGitRepo: true, originURL: "https://alice:" + password + "@github.com/o/r.git"},
+			createErr:  errors.New("boom"),
+			wantErrSub: "create repo",
+			wantOrigin: "https://github.com/o/r.git",
 		},
 		{
 			name:      "valid with setup script",
@@ -210,6 +226,15 @@ func TestRegisterRepo(t *testing.T) {
 			s := New(Config{Repos: repos, Worktrees: wt})
 
 			resp, err := s.RegisterRepo(context.Background(), connect.NewRequest(tc.req))
+			if tc.wantOrigin != "" && repos.createParams.OriginURL != tc.wantOrigin {
+				t.Errorf("Create OriginURL = %q, want %q", repos.createParams.OriginURL, tc.wantOrigin)
+			}
+			if strings.Contains(repos.createParams.OriginURL, password) || (err != nil && strings.Contains(err.Error(), password)) {
+				t.Error("RegisterRepo leaked origin password")
+			}
+			if resp != nil && strings.Contains(resp.Msg.GetRepo().GetOriginUrl(), password) {
+				t.Error("RegisterRepo response leaked origin password")
+			}
 			if tc.wantErrSub != "" {
 				if err == nil {
 					t.Fatalf("RegisterRepo() error = nil, want substring %q", tc.wantErrSub)
@@ -292,7 +317,7 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 	}
 	missingDir := filepath.Join(baseDir, "missing")
 	setup := "echo hi"
-	credMarker := "pw-" + "marker"
+	credMarker := "s3cret-pass"
 
 	tests := []struct {
 		name       string
@@ -304,6 +329,7 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 		wantClone  bool
 		wantSetup  *string
 		wantBase   string
+		wantOrigin string
 	}{
 		{
 			name:       "empty clone url",
@@ -347,6 +373,19 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "git@github.com:o/r.git", LocalPath: existingDir},
 			worktrees:  &repoMgmtWorktree{originURL: "git@github.com:other/x.git"},
 			wantErrSub: "different origin",
+		},
+		{
+			name:       "existing credentialed origin matches",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "https://alice:" + credMarker + "@github.com/o/r.git", LocalPath: existingDir},
+			worktrees:  &repoMgmtWorktree{originURL: "https://alice:" + credMarker + "@github.com/o/r.git"},
+			wantOrigin: "https://github.com/o/r.git",
+		},
+		{
+			name:       "existing credentialed origin differs",
+			req:        &pb.CloneAndRegisterRepoRequest{CloneUrl: "https://github.com/other/r.git", LocalPath: existingDir},
+			worktrees:  &repoMgmtWorktree{originURL: "https://alice:" + credMarker + "@github.com/o/r.git"},
+			wantErrSub: "different origin",
+			wantCode:   connect.CodeAlreadyExists,
 		},
 		{
 			name:      "existing path matching origin skips clone",
@@ -413,6 +452,15 @@ func TestCloneAndRegisterRepo(t *testing.T) {
 			s := New(Config{Repos: repos, Worktrees: wt})
 
 			resp, err := s.CloneAndRegisterRepo(context.Background(), connect.NewRequest(tc.req))
+			if tc.wantOrigin != "" && repos.createParams.OriginURL != tc.wantOrigin {
+				t.Errorf("Create OriginURL = %q, want %q", repos.createParams.OriginURL, tc.wantOrigin)
+			}
+			if strings.Contains(repos.createParams.OriginURL, credMarker) || (err != nil && strings.Contains(err.Error(), credMarker)) {
+				t.Error("CloneAndRegisterRepo leaked origin password")
+			}
+			if resp != nil && strings.Contains(resp.Msg.GetRepo().GetOriginUrl(), credMarker) {
+				t.Error("CloneAndRegisterRepo response leaked origin password")
+			}
 			if tc.wantErrSub != "" {
 				if err == nil {
 					t.Fatalf("CloneAndRegisterRepo() error = nil, want substring %q", tc.wantErrSub)

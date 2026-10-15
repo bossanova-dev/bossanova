@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/socketauth"
@@ -397,12 +398,34 @@ func (c *LocalClient) CloseSession(ctx context.Context, id string) (*pb.Session,
 	return resp.Msg.Session, nil
 }
 
+// MergeSession probes pinned merges so an older daemon cannot silently discard the pin.
 func (c *LocalClient) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
+	if matchHead != "" {
+		if err := daemoncaps.Require(ctx, c.rpc, daemoncaps.MergeExpectedHeadSHA); err != nil {
+			return nil, "", err
+		}
+	}
 	resp, err := c.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: matchHead}))
 	if err != nil {
 		return nil, "", err
 	}
 	return resp.Msg.GetSession(), resp.Msg.GetDetail(), nil
+}
+
+func (c *LocalClient) ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error) {
+	resp, err := c.rpc.ApproveSessionPR(ctx, connect.NewRequest(&pb.ApproveSessionPRRequest{Id: id, IsDryRun: dryRun}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetResult(), nil
+}
+
+func (c *LocalClient) SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error) {
+	resp, err := c.rpc.SendBackSessionPR(ctx, connect.NewRequest(&pb.SendBackSessionPRRequest{Id: id, Note: note, IsDryRun: dryRun}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 func (c *LocalClient) RemoveSession(ctx context.Context, id string) error {

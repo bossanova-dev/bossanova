@@ -19,6 +19,7 @@ go_library(
     deps = [
         "//lib/bossalib/apiversion",
         "//lib/bossalib/config",
+        "//lib/bossalib/daemoncaps",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "//lib/bossalib/socketauth",
@@ -46,6 +47,7 @@ go_test(
         "remote_test.go",
         "remote_triggers_test.go",
         "rpcdeadline_prod_test.go",
+        "verify_pr_test.go",
     ],
     embed = [":client"],
     deps = [

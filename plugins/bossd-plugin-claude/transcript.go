@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/recurser/bossalib/agentsession"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -77,14 +78,8 @@ func classifyTranscriptScanErr(err error, path string, line int) error {
 
 // transcriptPath resolves ~/.claude/projects/<key>/<agentSessionID>.jsonl.
 func transcriptPath(worktreePath, agentSessionID string) (string, error) {
-	// agentSessionID is caller-supplied over the bossd↔plugin gRPC boundary
-	// (req.AgentSessionId) and is interpolated straight into the projects
-	// path below. A Claude Code session id is a single UUID segment; reject
-	// any id carrying path separators or ".." so a crafted value cannot
-	// traverse out of ~/.claude/projects and open an arbitrary .jsonl file
-	// (gosec G304). Mirrors the codex findRolloutPath guard.
-	if strings.ContainsAny(agentSessionID, `/\`) || strings.Contains(agentSessionID, "..") {
-		return "", fmt.Errorf("invalid claude session id %q", agentSessionID)
+	if !agentsession.IsCanonicalUUID(agentSessionID) {
+		return "", fmt.Errorf("invalid claude session id %q: want a canonical lowercase UUID", agentSessionID)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -231,13 +226,7 @@ func chatTitle(worktreePath, claudeID string) (title string, explicit bool) {
 // chatTitleInDir reads the JSONL file for a Claude session from a specific
 // directory. Used by chatTitle and useful for testing.
 func chatTitleInDir(projectDir, claudeID string) (title string, explicit bool) {
-	// claudeID is caller-supplied over the bossd↔plugin gRPC boundary
-	// (GetChatTitle's req.SessionId) and is interpolated straight into the
-	// path below. Reject any id carrying path separators or ".." so a crafted
-	// value cannot traverse out of projectDir and read an arbitrary .jsonl
-	// file (gosec G304). Fail closed (no title). Mirrors transcriptPath and the
-	// codex findRolloutPath guard.
-	if strings.ContainsAny(claudeID, `/\`) || strings.Contains(claudeID, "..") {
+	if !agentsession.IsCanonicalUUID(claudeID) {
 		return "", false
 	}
 	path := filepath.Join(projectDir, claudeID+".jsonl")

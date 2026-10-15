@@ -92,6 +92,8 @@ type Server struct {
 	workflows       db.WorkflowStore
 	taskMappings    db.TaskMappingStore
 	cronJobs        db.CronJobStore
+	resumeAttempts  db.ResumeAttemptStore
+	attentionCache  attentionCache
 	githubCallbacks db.GithubCallbackStore
 	telemetry       libtelemetry.Client
 	// broadcasts persists broadcasts and their per-target deliveries (BOS-556);
@@ -275,6 +277,10 @@ type Server struct {
 	// it over pluginHost; tests substitute a fake.
 	trackerResolver session.TrackerIssueResolver
 
+	// newVerifyVerbs builds the boss-verify toolbox runner ApproveSessionPR and
+	// SendBackSessionPR use; nil means verifybridge.Bridge (see verify_pr.go).
+	newVerifyVerbs func(env []string) verifyVerbs
+
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
@@ -333,14 +339,15 @@ var (
 // Config holds all dependencies for creating a new Server.
 type Config struct {
 	// AgentLogsDir is the daemon-owned directory containing live agent logs.
-	AgentLogsDir string
-	Repos        db.RepoStore
-	Sessions     db.SessionStore
-	Attempts     db.AttemptStore
-	AgentChats   db.AgentChatStore
-	Workflows    db.WorkflowStore
-	TaskMappings db.TaskMappingStore
-	CronJobs     db.CronJobStore
+	AgentLogsDir   string
+	Repos          db.RepoStore
+	Sessions       db.SessionStore
+	Attempts       db.AttemptStore
+	AgentChats     db.AgentChatStore
+	Workflows      db.WorkflowStore
+	TaskMappings   db.TaskMappingStore
+	CronJobs       db.CronJobStore
+	ResumeAttempts db.ResumeAttemptStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
 	// May be nil in tests/contexts that do not exercise the callback surface.
 	GithubCallbacks db.GithubCallbackStore
@@ -698,6 +705,7 @@ func New(cfg Config) *Server {
 		workflows:       cfg.Workflows,
 		taskMappings:    cfg.TaskMappings,
 		cronJobs:        cfg.CronJobs,
+		resumeAttempts:  cfg.ResumeAttempts,
 		githubCallbacks: cfg.GithubCallbacks,
 		telemetry:       cfg.Telemetry,
 
@@ -993,6 +1001,7 @@ func (s *Server) ValidateRepoPath(ctx context.Context, req *connect.Request[pb.V
 
 	// Detect metadata.
 	originURL, _ := s.worktrees.DetectOriginURL(ctx, localPath)
+	originURL = gitpkg.CloneURLWithoutCredentials(originURL)
 	defaultBranch, _ := s.worktrees.DetectDefaultBranch(ctx, localPath)
 
 	return connect.NewResponse(&pb.ValidateRepoPathResponse{
@@ -1035,6 +1044,7 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 
 	// Auto-detect origin URL from git config.
 	originURL, _ := s.worktrees.DetectOriginURL(ctx, msg.LocalPath)
+	originURL = gitpkg.CloneURLWithoutCredentials(originURL)
 
 	repo, err := s.repos.Create(ctx, db.CreateRepoParams{
 		DisplayName:       msg.DisplayName,
@@ -1091,7 +1101,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 		// credentialed URL matches the stripped origin; an older clone that
 		// kept the credentials in origin still matches the URL as given.
 		if existingOrigin != msg.CloneUrl && existingOrigin != gitpkg.CloneURLWithoutCredentials(msg.CloneUrl) {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path is a git repo with different origin %q", existingOrigin))
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path is a git repo with different origin %q", gitpkg.RedactURLCredentials(existingOrigin)))
 		}
 		// Matching origin — skip clone, just register.
 	} else {
@@ -1103,6 +1113,7 @@ func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[
 
 	// Auto-detect origin URL from the cloned repo.
 	originURL, _ := s.worktrees.DetectOriginURL(ctx, msg.LocalPath)
+	originURL = gitpkg.CloneURLWithoutCredentials(originURL)
 
 	var setupScript *string
 	if msg.SetupScript != nil {
@@ -2378,6 +2389,8 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		s.hydrateSessionEndpoints(chats, p, session, req.Msg.GetClientNetworkNamespace())
 	}
 
+	s.hydrateAttention(ctx, p, attentionDeps{row: session, display: displayEntry, chats: chats})
+
 	return connect.NewResponse(&pb.GetSessionResponse{Session: p}), nil
 }
 
@@ -2551,6 +2564,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		s.hydrateSessionEndpointsBatch(pbSessions, sessByID, chatsBySession, msg.GetClientNetworkNamespace())
 	}
 
+	for _, p := range pbSessions {
+		s.hydrateAttention(ctx, p, attentionDeps{row: sessByID[p.Id], display: entries[p.Id], chats: chatsBySession[p.Id]})
+	}
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
 }
 
@@ -4374,19 +4390,33 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		// mismatch here means the requested session_id never owned this chat.
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat does not belong to session %q", msg.SessionId))
 	}
+	if err == nil && chat != nil {
+		agentName := chat.AgentName
+		if agentName == "" {
+			agentName = "claude"
+		}
+		if err := validateAgentSessionID(agentName, msg.AgentSessionId); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
 	if err != nil {
 		// Prefer an explicit override on the request, falling back to the
 		// parent session's agent_name. Without the fallback, the SQLite
 		// store would default to "claude" regardless of which agent
 		// actually owns the session. Empty override + missing session →
-		// empty AgentName, which the store handles via its existing
-		// ""→"claude" default.
+		// the default Claude agent.
 		agentName := msg.GetAgentName()
 		if agentName == "" {
 			if sess, sErr := s.sessions.Get(ctx, msg.SessionId); sErr == nil {
 				agentName = sess.AgentName
 			}
 		}
+		if agentName == "" {
+			agentName = "claude"
+		}
+		// Existing clients already use canonical Claude/Codex UUIDs. This safety
+		// check cannot be version-gated: transcript plugins reject unsafe ids for
+		// every client. See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 		if err := validateAgentSessionID(agentName, msg.AgentSessionId); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -5335,6 +5365,13 @@ func (s *Server) phaseForSession(ctx context.Context, sessionID string, served p
 	}
 	chats, err := s.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
+		return ""
+	}
+	return s.phaseForChats(chats, served)
+}
+
+func (s *Server) phaseForChats(chats []*models.AgentChat, served pb.ChatStatus) string {
+	if served != pb.ChatStatus_CHAT_STATUS_WORKING || s.chatStatus == nil {
 		return ""
 	}
 	var winnerID, phase string

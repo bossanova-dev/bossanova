@@ -33,8 +33,12 @@ import {
   commandReader,
   candidates,
   extensionsConsulted,
+  extensionRecord,
+  extensionRecordMarker,
+  parseExtensionRecord,
   claimState,
   classifyApproval,
+  decideVerdict,
   judge,
   main,
   materializeTrustedTree,
@@ -1835,6 +1839,182 @@ test('judge: a waiver lifts an extension human reason only when it names that re
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// An approved park whose clean extension run was recorded on the head settles from that record.
+const SECURITY = 'human-review:security'
+const RECORD = `${EXT.name}:pass,${OTHER_EXT.name}:${SECURITY}`
+const recordComment = (head, record, opts) =>
+  operatorComment(extensionRecordMarker(head, record), opts)
+const judgeWith = (w, options = {}, discover = discoverBoth) =>
+  judge({ pr: 7, repo: REPO, ...options }, deps(w, { discover }))
+
+test('judge: an approved park after a clean extension run settles from its recorded run', async () => {
+  const dir = tmp()
+  try {
+    const w = world()
+    const results = jsonFile(dir, 'r.json', [
+      { extension: EXT.name, result: passResult },
+      { extension: OTHER_EXT.name, result: humanResult(SECURITY) },
+    ])
+    const parked = await judgeWith(w, { extensionResults: results })
+    assert.equal(parked.verdict, 'human')
+    assert.equal(parked.extensionRecord, RECORD)
+
+    const posted = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'human',
+        reason: parked.reason,
+        extensionRecord: parked.extensionRecord,
+        repo: REPO,
+      },
+      deps(w),
+    )
+    assert.equal(posted.posted, true)
+    assert.equal(posted.extensionRecord, 'posted')
+    assert.equal(w.comments.at(-1).body.split('\n').at(-1), extensionRecordMarker(HEAD, RECORD))
+
+    approving(w, SECURITY)
+    const before = w.mutating().length
+    for (const options of [{ waive: SECURITY }, {}]) {
+      const settled = await judgeWith(w, options)
+      assert.equal(settled.verdict, 'pass', 'no extensions-required, so no claim and no dispatch')
+      assert.equal(settled.reason, 'approved')
+      assert.equal(settled.extensions.reused, true)
+      assert.deepEqual(
+        settled.extensions.outcomes.map((o) => [o.extension, o.verdict]),
+        [
+          [EXT.name, 'pass'],
+          [OTHER_EXT.name, 'human'],
+        ],
+      )
+      assert.equal(settled.extensionEnvelope, undefined)
+    }
+    assert.equal(w.mutating().length, before, 'judge never writes')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('judge: a recorded run is reused only under a waiver, on its own head, covering every applicable extension', async () => {
+  const unapproved = world({ comments: [recordComment(HEAD, RECORD)] })
+  assert.equal((await judgeWith(unapproved)).verdict, 'extensions-required', 'no waiver')
+  const facts = {
+    prState: 'OPEN',
+    isDraft: false,
+    ci: { settled: true, green: true },
+    receipt: 'success',
+    extensions: both,
+    extensionRecord: parseExtensionRecord(RECORD),
+  }
+  assert.equal(decideVerdict(facts).verdict, 'extensions-required', 'a record without a waiver')
+  assert.equal(decideVerdict({ ...facts, waive: SECURITY }).verdict, 'pass')
+
+  const otherHead = approving(world({ comments: [recordComment(OTHER, RECORD)] }), SECURITY)
+  assert.equal((await judgeWith(otherHead)).verdict, 'extensions-required', 'another head')
+
+  const onePass = () =>
+    approving(world({ comments: [recordComment(HEAD, `${EXT.name}:pass`)] }), SECURITY)
+  assert.equal((await judgeWith(onePass())).verdict, 'extensions-required', 'a newly added one')
+  assert.equal(
+    (await judgeWith(onePass(), {}, () => ({ extensions: [EXT] }))).verdict,
+    'pass',
+    'the same record covers the one extension installed',
+  )
+})
+
+test('judge: a record by an account without write access, or one that does not parse, is no record', async () => {
+  const cases = [
+    {
+      comments: [recordComment(HEAD, RECORD, { login: 'mallory' })],
+      permissions: { mallory: 'read' },
+    },
+    { comments: [recordComment(HEAD, RECORD, { association: 'CONTRIBUTOR' })] },
+    { comments: [recordComment(HEAD, `${EXT.name}:pass,${OTHER_EXT.name}:fail`)] },
+    { comments: [recordComment(HEAD, `${EXT.name}:pass,${EXT.name}:pass`)] },
+  ]
+  for (const opts of cases) {
+    const r = await judgeWith(approving(world(opts), SECURITY))
+    assert.equal(r.verdict, 'extensions-required', opts.comments[0].body)
+  }
+  const unreadable = await judgeWith(
+    approving(
+      world({ comments: [recordComment(HEAD, RECORD)], commentsReadFails: true }),
+      SECURITY,
+    ),
+  )
+  assert.notEqual(unreadable.verdict, 'pass', 'an unreadable comment read never passes')
+})
+
+test('judge: a recorded human reason outside the waiver still parks', async () => {
+  const baseConfig = policyText({ humanReview: { ui: ['web/**'] } })
+  const w = approving(
+    world({ diff: ['web/a.tsx'], baseConfig, comments: [recordComment(HEAD, RECORD)] }),
+    'human-review:ui',
+  )
+  const r = await judgeWith(w)
+  assert.equal(r.verdict, 'human')
+  assert.equal(r.reason, SECURITY)
+})
+
+test('extensionRecord records only a clean run: no malfunction, finding or wait', () => {
+  const agg = (entries, installed = []) => aggregateExtensions(entries, installed)
+  const abstained = envelope({ verdict: 'abstain', evidence: [], findings: [] })
+  assert.equal(
+    extensionRecord(
+      agg([
+        { extension: EXT.name, result: passResult },
+        { extension: OTHER_EXT.name, result: humanResult(SECURITY) },
+      ]),
+    ),
+    RECORD,
+  )
+  assert.equal(
+    extensionRecord(agg([{ extension: EXT.name, result: abstained }])),
+    `${EXT.name}:abstain`,
+  )
+  assert.equal(extensionRecord(agg([{ extension: EXT.name, result: failResult }])), null)
+  assert.equal(extensionRecord(agg([{ extension: EXT.name, result: waitResult() }])), null)
+  assert.equal(
+    extensionRecord(agg([{ extension: EXT.name, optional: true, timedOut: true }])),
+    null,
+    'an optional extension that timed out',
+  )
+  assert.equal(extensionRecord(agg([], [EXT])), null, 'an installed extension with no result')
+  assert.deepEqual(parseExtensionRecord(RECORD), [
+    { extension: EXT.name, outcome: 'pass' },
+    { extension: OTHER_EXT.name, outcome: SECURITY },
+  ])
+  for (const bad of ['', 'x', ':pass', 'a:pass,', 'a b:pass', 'a:human-review:nope'])
+    assert.equal(parseExtensionRecord(bad), null, bad)
+})
+
+test('post --extension-record goes with a human verdict only and must parse', async () => {
+  for (const options of [
+    { verdict: 'pass', extensionRecord: RECORD },
+    { verdict: 'human', reason: SECURITY, extensionRecord: 'not a record' },
+  ])
+    await assert.rejects(
+      post({ pr: 7, head: HEAD, repo: REPO, ...options }, deps(world())),
+      UsageError,
+    )
+  const w = world()
+  const dry = await post(
+    {
+      pr: 7,
+      head: HEAD,
+      verdict: 'human',
+      reason: SECURITY,
+      extensionRecord: RECORD,
+      repo: REPO,
+      dryRun: true,
+    },
+    deps(w),
+  )
+  assert.equal(dry.writes.filter((x) => x.kind === 'pr-comment').length, 1)
+  assert.equal(w.mutating().length, 0, 'a dry run plans the record and posts nothing')
 })
 
 test('judge: a malfunction parks with the path codes and extension reasons in one status', async () => {

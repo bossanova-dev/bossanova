@@ -521,6 +521,21 @@ service OrchestratorService {
   // webhook's existence is not disclosed. The signing secret is returned ONLY
   // by CreateSessionWebhook and RotateSessionWebhookSecret.
   //
+  // Member session sharing (BOS-1593,
+  // Organization.is_member_session_sharing_enabled, false by default) narrows
+  // this further. While it is off an endpoint delivers only its creator's
+  // sessions, so only its creator may act on it: another owner's endpoint is
+  // not listed, and every id-addressed RPC answers NOT_FOUND for it --
+  // GetSessionWebhookDelivery too, even for a delivery about the caller's own
+  // session. The exception is an orphaned endpoint, whose creator is no
+  // longer an owner of the organization: it is listed to every owner with
+  // SessionWebhook.is_retire_only set and an empty url (the URL is often a
+  // bearer credential), and any owner may delete it or disable it with an
+  // UpdateSessionWebhook that sets nothing but is_enabled=false (whose
+  // response is marked and withholds the url the same way). Every other RPC
+  // on an orphaned endpoint answers FAILED_PRECONDITION. While sharing is on,
+  // every owner may act on every endpoint.
+  //
   // ListSessionWebhookEventTypes returns the event catalog an endpoint can
   // subscribe to, in canonical order.
   rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse) {
@@ -531,7 +546,10 @@ service OrchestratorService {
   rpc ListSessionWebhookFormats(ListSessionWebhookFormatsRequest) returns (ListSessionWebhookFormatsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
-  // ListSessionWebhooks returns the organization's endpoints, oldest first.
+  // ListSessionWebhooks returns the organization's endpoints the caller may
+  // act on, oldest first: every one while member session sharing is on,
+  // otherwise the caller's own plus any orphaned one, marked is_retire_only
+  // with its url empty.
   // Never returns a secret.
   rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
@@ -542,23 +560,29 @@ service OrchestratorService {
   // address), an empty or unknown event type set, an unknown format, a
   // description over 200 characters, or a caller-supplied secret that is not
   // 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
-  // has 20 endpoints.
+  // has 20 endpoints, counting other owners' endpoints the caller cannot see.
   rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
   // UpdateSessionWebhook changes only the fields that are present and returns
   // the endpoint without its secret. Disabling an endpoint or changing its URL
   // cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+  // While member session sharing is off: NOT_FOUND for another owner's
+  // endpoint, and FAILED_PRECONDITION for an orphaned one unless the update
+  // sets nothing but is_enabled=false.
   rpc UpdateSessionWebhook(UpdateSessionWebhookRequest) returns (UpdateSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
   // RotateSessionWebhookSecret replaces the signing secret; undelivered events
   // are signed with the new one. The new secret is returned ONLY here.
+  // While member session sharing is off: NOT_FOUND for another owner's
+  // endpoint, FAILED_PRECONDITION for an orphaned one.
   rpc RotateSessionWebhookSecret(RotateSessionWebhookSecretRequest) returns (RotateSessionWebhookSecretResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
   // DeleteSessionWebhook permanently deletes an endpoint with its delivery
-  // history.
+  // history. While member session sharing is off: NOT_FOUND for another
+  // owner's endpoint; an orphaned one may be deleted.
   rpc DeleteSessionWebhook(DeleteSessionWebhookRequest) returns (DeleteSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
@@ -573,19 +597,27 @@ service OrchestratorService {
   // created_at and forces is_test to true. The body is then rendered through
   // the endpoint's format, exactly as a live delivery is; a payload the format
   // cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
-  // RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+  // RESOURCE_EXHAUSTED past 10 test sends per minute per organization. While
+  // member session sharing is off: NOT_FOUND for another owner's endpoint,
+  // FAILED_PRECONDITION for an orphaned one.
   rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
   // ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
   // first. INVALID_ARGUMENT for a page_token that does not decode, an
-  // unknown status, or a negative page_size.
+  // unknown status, or a negative page_size. While member session sharing is
+  // off it lists only test deliveries and deliveries about the caller's own
+  // sessions, and answers NOT_FOUND for another owner's endpoint and
+  // FAILED_PRECONDITION for an orphaned one.
   rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
   // GetSessionWebhookDelivery returns one delivery with its attempts in order,
   // the request body rendered through the endpoint's current format and the
-  // request headers. Never returns a secret.
+  // request headers. Never returns a secret. While member session sharing is
+  // off: NOT_FOUND for a delivery about another member's session or on
+  // another owner's endpoint, FAILED_PRECONDITION for one on an orphaned
+  // endpoint.
   rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
   }
@@ -597,9 +629,14 @@ service OrchestratorService {
   // prefix. Every RPC below requires user authentication (daemon tokens are
   // refused) and passes the cloud access policy for the trigger's organization
   // (PERMISSION_DENIED when it refuses). A trigger is visible only to its
-  // creator: any id-addressed call on a trigger the caller did not create, or
-  // in an organization the caller is not a member of, returns NOT_FOUND so the
-  // trigger's existence is not disclosed.
+  // creator and to the owners of its organization: any id-addressed call on a
+  // trigger by anyone else -- another member, or a caller outside the
+  // organization -- returns NOT_FOUND so the trigger's existence is not
+  // disclosed. An owner may get, disable, delete, rotate the secret of and
+  // list the invocations of a member's trigger, each recorded in the audit
+  // log; enabling, editing and testing a trigger stay with its creator, and an
+  // owner attempting them gets PERMISSION_DENIED, because a trigger launches
+  // sessions on its creator's machines.
   //
   // GetTriggerCatalog returns the trigger types, event types, and filter
   // fields bosso accepts. Needs user authentication only; it is static
@@ -609,11 +646,15 @@ service OrchestratorService {
   }
   // ListTriggers returns the caller's own triggers, in organization_id when
   // set (the caller must be a member) or across every organization the caller
-  // belongs to. Never returns a secret.
+  // belongs to. With should_include_member_triggers it returns every member's
+  // triggers in that organization instead (organization_id, or the caller's
+  // active organization when absent), which needs the owner role there
+  // (PERMISSION_DENIED otherwise). Never returns a secret.
   rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
-  // GetTrigger returns one trigger the caller created. Never returns a secret.
+  // GetTrigger returns one trigger the caller created, or, for an owner of its
+  // organization, a member's trigger. Never returns a secret.
   rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
@@ -626,18 +667,21 @@ service OrchestratorService {
   }
   // UpdateTrigger changes fields of a trigger the caller created; absent
   // fields are left unchanged. trigger_type is immutable. Never returns or
-  // changes the secret.
+  // changes the secret. An owner of the trigger's organization may disable a
+  // member's trigger (is_enabled false and nothing else); enabling it or any
+  // other change is PERMISSION_DENIED for anyone but the creator.
   rpc UpdateTrigger(UpdateTriggerRequest) returns (UpdateTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
-  // DeleteTrigger permanently deletes a trigger the caller created, together
-  // with its secret and invocation history. Its endpoint stops accepting
-  // requests immediately.
+  // DeleteTrigger permanently deletes a trigger the caller created, or, for an
+  // owner of its organization, a member's trigger, together with its secret
+  // and invocation history. Its endpoint stops accepting requests immediately.
   rpc DeleteTrigger(DeleteTriggerRequest) returns (DeleteTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
   // RotateTriggerSecret replaces the signing secret of an HTTP trigger the
-  // caller created; the old secret stops validating immediately. The new
+  // caller created, or, for an owner of its organization, a member's HTTP
+  // trigger; the old secret stops validating immediately. The new
   // secret is returned ONLY in this response. FAILED_PRECONDITION for a
   // trigger type with no secret.
   rpc RotateTriggerSecret(RotateTriggerSecretRequest) returns (RotateTriggerSecretResponse) {
@@ -647,12 +691,14 @@ service OrchestratorService {
   // applying the same filters and policies as a real invocation, and records
   // the result as a TriggerInvocation with source "test". It launches a
   // session only when should_launch is set; otherwise the invocation stops at
-  // its decision.
+  // its decision. Only the creator may test a trigger; an owner of its
+  // organization gets PERMISSION_DENIED.
   rpc TestTrigger(TestTriggerRequest) returns (TestTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
   // ListTriggerInvocations returns the invocation history of a trigger the
-  // caller created, newest first.
+  // caller created, or, for an owner of its organization, a member's trigger,
+  // newest first.
   rpc ListTriggerInvocations(ListTriggerInvocationsRequest) returns (ListTriggerInvocationsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
@@ -2181,6 +2227,13 @@ message Organization {
   // Active membership count; per-seat Stripe quantity tracks this value.
   int32 member_count = 6;
   google.protobuf.Timestamp created_at = 7;
+  // Whether members may see and reach each other's sessions, chats and
+  // machines. False (the default for every organization) means only the
+  // machine owner -- the user whose daemon runs a session -- can reach it;
+  // organization owners are restricted too. True applies the teammate model:
+  // any member may see the organization's sessions and run the teammate
+  // allow-list on them. Read-only: no RPC sets it yet (BOS-1593).
+  bool is_member_session_sharing_enabled = 8;
 }
 
 message OrganizationMember {
@@ -2362,7 +2415,8 @@ message ListRepoOrganizationsResponse {
 message SessionWebhook {
   string id = 1;
   string organization_id = 2;
-  // The https URL deliveries are POSTed to.
+  // The https URL deliveries are POSTed to. Empty whenever is_retire_only is
+  // true: the URL is withheld from a caller who may only retire the endpoint.
   string url = 3;
   string description = 4;
   // Subscribed event types (SessionWebhookEventType.type), sorted.
@@ -2381,6 +2435,15 @@ message SessionWebhook {
   // Config-ownership marker: "boss-project:<project>" for an endpoint a
   // project config created or adopted; empty for a hand-made endpoint.
   string managed_by = 12;
+  // Output only. True when the caller may only retire this endpoint: member
+  // session sharing is off and its creator is no longer an owner of the
+  // organization (an orphaned endpoint). Such an endpoint may only be deleted
+  // or disabled (an UpdateSessionWebhook that sets nothing but
+  // is_enabled=false); every other RPC on it answers FAILED_PRECONDITION, and
+  // its url is withheld (empty). Decide what to offer from this field, not
+  // from an empty url. False for the caller's own endpoint and for every
+  // endpoint while sharing is on.
+  bool is_retire_only = 13;
 }
 
 // SessionWebhookEventType is one entry of the event catalog.
@@ -2623,6 +2686,11 @@ message ListTriggersRequest {
   // Restrict to one organization the caller belongs to. Absent lists the
   // caller's triggers across every organization they belong to.
   optional string organization_id = 1;
+  // List every member's triggers in the organization rather than only the
+  // caller's: organization_id when set, otherwise the caller's active
+  // organization. Requires the owner role there; PERMISSION_DENIED otherwise.
+  // Absent or false lists only the caller's own triggers.
+  optional bool should_include_member_triggers = 2;
 }
 
 message ListTriggersResponse {

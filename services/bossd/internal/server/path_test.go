@@ -103,6 +103,7 @@ func TestListenRejectsRegularFileSocketPathWithoutRemovingIt(t *testing.T) {
 }
 
 func TestValidateRepoPath(t *testing.T) {
+	password := "s3cret-pass"
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "not-dir")
 	if err := os.WriteFile(filePath, []byte("contents"), 0o600); err != nil {
@@ -140,6 +141,14 @@ func TestValidateRepoPath(t *testing.T) {
 			wantErrorContains: "not a git repository",
 		},
 		{
+			name:          "credentialed github repo",
+			path:          dir,
+			worktrees:     &validateRepoPathWorktree{isGitRepo: true, originURL: "https://alice:" + password + "@github.com/o/r.git"},
+			wantValid:     true,
+			wantOriginURL: "https://github.com/o/r.git",
+			wantIsGitHub:  true,
+		},
+		{
 			name:              "valid github repo",
 			path:              dir,
 			worktrees:         &validateRepoPathWorktree{isGitRepo: true, originURL: "git@github.com:recurser/bossanova.git", defaultBranch: "trunk"},
@@ -162,6 +171,9 @@ func TestValidateRepoPath(t *testing.T) {
 			}
 
 			got := resp.Msg
+			if strings.Contains(got.OriginUrl, password) || strings.Contains(got.ErrorMessage, password) {
+				t.Error("ValidateRepoPath leaked origin password")
+			}
 			if got.IsValid != tc.wantValid {
 				t.Fatalf("ValidateRepoPath().IsValid = %v, want %v", got.IsValid, tc.wantValid)
 			}

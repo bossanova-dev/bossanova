@@ -640,3 +640,49 @@ func TestCLI_Merge_MatchHeadInvalidIssuesNoRPC(t *testing.T) {
 		})
 	}
 }
+
+// A legacy daemon would silently merge without the pin if the client called it.
+func TestCLI_Merge_LegacyPinRefused(t *testing.T) {
+	h := mergeHarness(t)
+	h.Daemon.SetLegacyNoHeadPin(true)
+	res := h.Run("merge", "sess-aaa-111", "--yes", "--json", "--match-head", matchHeadPin)
+	if got := h.Daemon.MergeSessionCalls(); len(got) != 0 {
+		t.Errorf("MergeSessionCalls = %v, want none before a supported pin is confirmed", got)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if got := decodeMergeError(t, res.Stdout).Error.Code; got != "UNIMPLEMENTED" {
+		t.Errorf("error.code = %q, want UNIMPLEMENTED", got)
+	}
+}
+
+func TestCLI_Merge_MissingPinCapability(t *testing.T) {
+	h := mergeHarness(t)
+	h.Daemon.SetOmitHeadPinCapability(true)
+	res := h.Run("merge", "sess-aaa-111", "--yes", "--json", "--match-head", matchHeadPin)
+	if got := h.Daemon.MergeSessionCalls(); len(got) != 0 {
+		t.Errorf("MergeSessionCalls = %v, want none", got)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("exit=%d, want 1 (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if got := decodeMergeError(t, res.Stdout).Error.Code; got != "UNIMPLEMENTED" {
+		t.Errorf("error.code = %q, want UNIMPLEMENTED", got)
+	}
+}
+
+func TestCLI_Merge_LegacyUnpinned(t *testing.T) {
+	h := mergeHarness(t)
+	h.Daemon.SetLegacyNoHeadPin(true)
+	res := h.Run("merge", "sess-aaa-111", "--yes", "--json")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if got := h.Daemon.MergeSessionCalls(); len(got) != 1 {
+		t.Fatalf("MergeSessionCalls = %v, want one", got)
+	}
+	if got := h.Daemon.GetDaemonCapabilitiesCalls(); got != 0 {
+		t.Fatalf("capability probe calls = %d, want zero for an unpinned merge", got)
+	}
+}

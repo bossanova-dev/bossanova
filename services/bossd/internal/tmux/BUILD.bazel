@@ -38,6 +38,7 @@ go_test(
         "tmux_submit_verify_codex_test.go",
         "tmux_submit_verify_paste_test.go",
         "tmux_submit_verify_queued_test.go",
+        "tmux_submit_verify_receipt_test.go",
         "tmux_test.go",
     ],
     data = glob(["testdata/**"]),

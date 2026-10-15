@@ -205,6 +205,9 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
+	} else if m.approving {
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
+			m.spinner.View() + fmt.Sprintf("Approving PR #%d…", m.session.GetPrNumber())))
 	} else if m.isArchiving() {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session…"))
@@ -239,6 +242,13 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(prompt))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else if m.confirm == confirmApprove {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(fmt.Sprintf(
+			"Approve PR #%d? Verify waives its needs-human park on the current head, then re-checks and merges it.",
+			m.session.GetPrNumber())))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if m.confirm == confirmArchive {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?"))
@@ -256,6 +266,10 @@ func (m ChatPickerModel) renderActionBar() string {
 	var b strings.Builder
 	if m.statusMsg != "" {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+		b.WriteString("\n")
+	}
+	if m.statusNote != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.statusNote)))
 		b.WriteString("\n")
 	}
 	// Passive system/notice line for the switch-account outcome (BOS-171):
@@ -293,7 +307,10 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	if m.canOpenTracker() {
 		middle = append(middle, "[l]inear")
 	}
-	if m.canMerge() {
+	switch {
+	case m.canApprove():
+		middle = append(middle, "[m]approve")
+	case m.canMerge():
 		middle = append(middle, "[m]erge")
 	}
 	if m.sessionID != "" {

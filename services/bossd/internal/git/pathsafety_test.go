@@ -110,9 +110,6 @@ func TestEntryPointsRejectContainedInvalidBranchWithoutDeleting(t *testing.T) {
 			})
 			return err
 		},
-		"PurgeWorktree": func(mgr *Manager, repoDir, wtBase, branch string) error {
-			return mgr.PurgeWorktree(context.Background(), repoDir, "my-repo", wtBase, branch)
-		},
 	}
 	for name, call := range entryPoints {
 		for _, branch := range []string{"a..b", "x.lock", "a b", "-x", "@{-1}"} {

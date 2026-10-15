@@ -20,6 +20,7 @@ type fixture struct {
 	worktree string
 	argvFile string
 	cwdFile  string
+	envFile  string
 }
 
 func newFixture(t *testing.T, stdout, stderr string, code int) *fixture {
@@ -39,6 +40,7 @@ func newFixture(t *testing.T, stdout, stderr string, code int) *fixture {
 		worktree: filepath.Join(dir, "worktree"),
 		argvFile: filepath.Join(dir, "argv"),
 		cwdFile:  filepath.Join(dir, "cwd"),
+		envFile:  filepath.Join(dir, "env"),
 	}
 	if err := os.Mkdir(f.worktree, 0o755); err != nil {
 		t.Fatal(err)
@@ -55,6 +57,7 @@ func newFixture(t *testing.T, stdout, stderr string, code int) *fixture {
 	body := "#!/bin/sh\n" +
 		"for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" + f.argvFile + "'\n" +
 		"pwd -P > '" + f.cwdFile + "'\n" +
+		"printf '%s' \"${BRIDGE_PROBE-unset}\" > '" + f.envFile + "'\n" +
 		"cat '" + outFile + "'\n" +
 		"cat '" + errFile + "' >&2\n" +
 		"exit " + strconv.Itoa(code) + "\n"
@@ -81,6 +84,41 @@ func (f *fixture) cwd(t *testing.T) string {
 		t.Fatalf("stub node never ran: %v", err)
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func TestBridgeEnvIsTheChildsWholeEnvironment(t *testing.T) {
+	const out = `{"posted":true,"commentUrl":"https://x/1"}`
+	t.Setenv("BRIDGE_PROBE", "inherited")
+
+	t.Run("nil inherits this process's environment", func(t *testing.T) {
+		f := newFixture(t, out, "", 0)
+		if _, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Dir: f.worktree}, "x"); err != nil {
+			t.Fatalf("SendBack: %v", err)
+		}
+		if got := readFile(t, f.envFile); got != "inherited" {
+			t.Fatalf("BRIDGE_PROBE = %q, want the inherited value", got)
+		}
+	})
+
+	t.Run("a set Env replaces it, the later of two entries winning", func(t *testing.T) {
+		f := newFixture(t, out, "", 0)
+		f.bridge.Env = []string{"PATH=" + os.Getenv("PATH"), "BRIDGE_PROBE=first", "BRIDGE_PROBE=repo"}
+		if _, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Dir: f.worktree}, "x"); err != nil {
+			t.Fatalf("SendBack: %v", err)
+		}
+		if got := readFile(t, f.envFile); got != "repo" {
+			t.Fatalf("BRIDGE_PROBE = %q, want the last Env entry", got)
+		}
+	})
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("stub node never ran: %v", err)
+	}
+	return string(b)
 }
 
 func resolved(t *testing.T, path string) string {

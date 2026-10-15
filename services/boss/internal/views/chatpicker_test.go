@@ -67,6 +67,12 @@ type chatPickerStub struct {
 	callbacks     []*pb.GithubCallback
 	callbacksErr  error
 	callbackCalls []*pb.ListGithubCallbacksRequest
+
+	// Verify-park approval. approveResult / approveErr answer ApproveSessionPR
+	// and approveCalls records each session id it was asked to approve.
+	approveResult *pb.VerifyApproveResult
+	approveErr    error
+	approveCalls  []string
 }
 
 // titleUpdateCall is one recorded UpdateChatTitle RPC.
@@ -164,6 +170,17 @@ func (s *chatPickerStub) RetrySession(context.Context, string) (*pb.Session, err
 func (s *chatPickerStub) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *chatPickerStub) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
+}
+
+func (s *chatPickerStub) ApproveSessionPR(_ context.Context, id string, _ bool) (*pb.VerifyApproveResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approveCalls = append(s.approveCalls, id)
+	return s.approveResult, s.approveErr
+}
+
+func (s *chatPickerStub) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
+	return nil, nil
 }
 func (s *chatPickerStub) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *chatPickerStub) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {

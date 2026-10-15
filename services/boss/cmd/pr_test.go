@@ -9,26 +9,26 @@ import (
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
-	"github.com/recurser/boss/internal/verifybridge"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// prFake is the daemon client and the verify-gate bridge behind `boss pr`. Every
-// call lands in one ordered log, so a test can assert the comment is posted
-// before the chat is created and the chat before the message is delivered.
+// prFake is the daemon client behind `boss pr`. Every call lands in one ordered
+// log, so a test can assert the comment is posted before the chat is created
+// and the chat before the message is delivered.
 type prFake struct {
 	sessions []*pb.Session
 	listErr  error
 	log      []string
 
-	approve    verifybridge.ApproveResult
+	approve    *pb.VerifyApproveResult
 	approveErr error
-	sendBack   verifybridge.SendBackResult
+	sendBack   *pb.SendBackSessionPRResponse
 	sendErr    error
-	targets    []verifybridge.Target
+	verbs      []prVerbCall
 	notes      []string
 
 	chatTmux   string
@@ -70,17 +70,29 @@ func (f *prFake) SendChatMessage(_ context.Context, req *pb.SendChatMessageReque
 	return &pb.SendChatMessageResponse{Delivered: true, TmuxSessionName: "tmux-1"}, nil
 }
 
-func (f *prFake) Approve(_ context.Context, t verifybridge.Target) (verifybridge.ApproveResult, error) {
-	f.log = append(f.log, "approve")
-	f.targets = append(f.targets, t)
-	return f.approve, f.approveErr
+// prVerbCall is one daemon verify verb request.
+type prVerbCall struct {
+	sessionID string
+	dryRun    bool
 }
 
-func (f *prFake) SendBack(_ context.Context, t verifybridge.Target, note string) (verifybridge.SendBackResult, error) {
+func (f *prFake) ApproveSessionPR(_ context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error) {
+	f.log = append(f.log, "approve")
+	f.verbs = append(f.verbs, prVerbCall{id, dryRun})
+	if f.approveErr != nil {
+		return nil, f.approveErr
+	}
+	return f.approve, nil
+}
+
+func (f *prFake) SendBackSessionPR(_ context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error) {
 	f.log = append(f.log, "send-back")
-	f.targets = append(f.targets, t)
+	f.verbs = append(f.verbs, prVerbCall{id, dryRun})
 	f.notes = append(f.notes, note)
-	return f.sendBack, f.sendErr
+	if f.sendErr != nil {
+		return nil, f.sendErr
+	}
+	return f.sendBack, nil
 }
 
 func prSession(id string, pr int32, origin, worktree string) *pb.Session {
@@ -165,183 +177,92 @@ func TestParsePRNumber(t *testing.T) {
 func TestPrApprove(t *testing.T) {
 	sessions := []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}
 
-	t.Run("approved runs the verb in the session worktree and says verify will re-check", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Approved: true, Waives: "ledger-open,human-review:ui", HeadSHA: "abcdef0123456789", TrackerWrites: "ok", ApprovalURL: "https://github.com/acme/app/pull/7#issuecomment-9"}}
+	t.Run("approved asks the daemon for the PR's session and prints the shared verdict", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", TrackerWrites: "unavailable", Why: "TRACKER_CREDENTIALS_MISSING", ApprovalUrl: "https://x/9"}}
 		cmd, out := prTestCmd(false)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); err != nil {
+		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7}); err != nil {
 			t.Fatalf("prApprove: %v", err)
 		}
-		want := verifybridge.Target{PR: 7, Repo: "acme/app", Dir: "/wt/a"}
-		if len(f.targets) != 1 || f.targets[0] != want {
-			t.Fatalf("targets = %+v, want %+v", f.targets, want)
-		}
-		if got := out.String(); got != "Approved #7: waived ledger-open,human-review:ui on head abcdef01 (record: https://github.com/acme/app/pull/7#issuecomment-9). Verify will re-check and merge.\n" {
-			t.Fatalf("output = %q", got)
-		}
-	})
-
-	t.Run("a refusal is a non-zero exit naming the reason", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Reason: "no-standing-park", HeadSHA: "abc"}}
-		cmd, _ := prTestCmd(false)
-		err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7})
-		if err == nil || !strings.Contains(err.Error(), "no-standing-park") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("a refusal after the record was posted names the record and what it still does", func(t *testing.T) {
-		const url = "https://github.com/acme/app/pull/7#issuecomment-9"
-		for _, tc := range []struct{ reason, want string }{
-			{"head-moved", "the record at " + url + " names head abcdef01 only and waives nothing that stands now"},
-			{"approval-superseded", "a later operator decision on the head (a send-back or another approval)"},
-			{"approval-unconfirmed", "the record at " + url + " may still stand for head abcdef01, so re-run approve to confirm"},
-		} {
-			f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Reason: tc.reason, HeadSHA: "abcdef0123456789", ApprovalURL: url}}
-			cmd, _ := prTestCmd(false)
-			err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7})
-			if err == nil || !strings.Contains(err.Error(), "["+tc.reason+"]") || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("%s: err = %v", tc.reason, err)
-			}
-		}
-		unconfirmed := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Reason: "approval-unconfirmed", HeadSHA: "abc"}}
-		cmd, _ := prTestCmd(false)
-		err := prApprove(context.Background(), cmd, unconfirmed, unconfirmed, prOptions{pr: 7})
-		if err == nil || !strings.Contains(err.Error(), "whether the approval record was posted and took effect could not be read back [approval-unconfirmed]; re-run approve to confirm") {
-			t.Fatalf("approval-unconfirmed without a URL: err = %v", err)
-		}
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Reason: "approval-record-failed", HeadSHA: "abc"}}
-		cmd, _ = prTestCmd(false)
-		err = prApprove(context.Background(), cmd, f, f, prOptions{pr: 7})
-		if err == nil || !strings.Contains(err.Error(), "could not be posted on the PR, so nothing is approved") || strings.Contains(err.Error(), "the record at") {
-			t.Fatalf("approval-record-failed: err = %v", err)
-		}
-	})
-
-	t.Run("an approval whose label removal failed still reports the approval", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Approved: true, Waives: "ledger-open", HeadSHA: "abcdef0123456789", ApprovalURL: "https://x/9", TrackerWrites: "failed", Why: "rate-limited"}}
-		cmd, out := prTestCmd(false)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); err != nil {
-			t.Fatalf("prApprove: %v", err)
+		if len(f.verbs) != 1 || f.verbs[0] != (prVerbCall{"s-a", false}) {
+			t.Fatalf("verbs = %+v, want one approve of s-a", f.verbs)
 		}
 		want := "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-			"The needs-human label could not be removed (failed: rate-limited); remove it on the ticket by hand if this head still stands.\n"
+			"The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
 	})
 
-	t.Run("a lifted send-back says so and names how to merge", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Approved: true, Lifted: "sent-back", HeadSHA: "abcdef0123456789", ApprovalURL: "https://x/9"}}
-		cmd, out := prTestCmd(false)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); err != nil {
-			t.Fatalf("prApprove: %v", err)
-		}
-		if got := out.String(); got != "Approved #7: lifted the send-back of head abcdef01 (record: https://x/9). Run /boss-verify 7 to merge it.\n" {
-			t.Fatalf("output = %q", got)
-		}
-	})
-
-	t.Run("an approval whose label removal did not happen names why the label stays", func(t *testing.T) {
-		for _, tc := range []struct{ writes, why, want string }{
-			{"unavailable", "TRACKER_CREDENTIALS_MISSING", "The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands.\n"},
-			{"skipped", "head-moved", "The PR's head or its park changed after the approval, so the needs-human label was left on.\n"},
-			{"skipped", "status-unreadable", "The needs-human label was left on (status-unreadable); remove it on the ticket by hand if this head still stands.\n"},
-			{"skipped", "pr-not-open", "The PR is no longer open, so the needs-human label was left on; remove it on the ticket by hand if the work is done.\n"},
-			{"unavailable", "status-unreadable", "The needs-human label could not be removed (unavailable: status-unreadable); remove it on the ticket by hand if this head still stands.\n"},
-		} {
-			f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Approved: true, Waives: "ledger-open", HeadSHA: "abcdef0123456789", ApprovalURL: "https://x/9", TrackerWrites: tc.writes, Why: tc.why}}
-			cmd, out := prTestCmd(false)
-			if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); err != nil {
-				t.Fatalf("%s: prApprove: %v", tc.writes, err)
-			}
-			if got := out.String(); !strings.HasSuffix(got, tc.want) || !strings.HasPrefix(got, "Approved #7: waived ledger-open on head abcdef01") {
-				t.Fatalf("%s: output = %q", tc.writes, got)
-			}
-		}
-	})
-
-	t.Run("the human-readable dry run names what would be written", func(t *testing.T) {
-		for _, tc := range []struct {
-			result verifybridge.ApproveResult
-			want   string
-		}{
-			{verifybridge.ApproveResult{Planned: true, DryRun: true, Waives: "ledger-open", HeadSHA: "abcdef0123456789"},
-				"Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n"},
-			{verifybridge.ApproveResult{Planned: true, DryRun: true, Lifted: "sent-back", HeadSHA: "abcdef0123456789"},
-				"Would approve #7: record an approval lifting the send-back of head abcdef01 (dry run; nothing written).\n"},
-		} {
-			f := &prFake{sessions: sessions, approve: tc.result}
-			cmd, out := prTestCmd(false)
-			if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7, dryRun: true}); err != nil {
-				t.Fatalf("prApprove: %v", err)
-			}
-			if got := out.String(); got != tc.want {
-				t.Fatalf("output = %q, want %q", got, tc.want)
-			}
-		}
-	})
-
-	t.Run("a bridge timeout says the approval may already be recorded, except on a dry run", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approveErr: fmt.Errorf("%w: slow", verifybridge.ErrNodeTimeout)}
+	t.Run("a refusal is a non-zero exit naming the reason", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{Reason: "no-standing-park", HeadSha: "abc"}}
 		cmd, _ := prTestCmd(false)
-		err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7})
-		if !errors.Is(err, verifybridge.ErrNodeTimeout) || !strings.Contains(err.Error(), "re-run approve to confirm") {
+		err := prApprove(context.Background(), cmd, f, prOptions{pr: 7})
+		if err == nil || !strings.Contains(err.Error(), "PR #7 not approved: no `needs human:` park stands on the PR's current head [no-standing-park]") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("a daemon timeout says the approval may already be recorded, except on a dry run", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approveErr: connect.NewError(connect.CodeDeadlineExceeded, errors.New("verify-gate timed out"))}
+		cmd, _ := prTestCmd(false)
+		err := prApprove(context.Background(), cmd, f, prOptions{pr: 7})
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || !strings.Contains(err.Error(), "an approval record may already be posted, so re-run approve to confirm") {
 			t.Fatalf("err = %v", err)
 		}
 		cmd, _ = prTestCmd(false)
-		err = prApprove(context.Background(), cmd, f, f, prOptions{pr: 7, dryRun: true})
-		if !errors.Is(err, verifybridge.ErrNodeTimeout) || strings.Contains(err.Error(), "may already be posted") {
+		err = prApprove(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true})
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || strings.Contains(err.Error(), "may already be posted") {
 			t.Fatalf("dry run: err = %v", err)
 		}
 	})
 
-	t.Run("every reason approve refuses with renders its own detail", func(t *testing.T) {
-		// The refusal reasons skills-toolbox/verify-gate.mjs approve returns.
-		for _, reason := range []string{
-			"pr-unreadable", "pr-not-open", "head-unreadable", "status-unreadable",
-			"park-codes-unknown", "comments-unreadable", "no-standing-park",
-			"sent-back-approved-head", "approver-not-writer", "approver-unreadable",
-			"head-moved", "approval-superseded", "approval-record-failed", "approval-unconfirmed",
-		} {
-			if got := refusalDetail(reason, "", ""); strings.HasPrefix(got, "refused [") {
-				t.Errorf("reason %q falls back to the generic detail: %q", reason, got)
-			}
-		}
-	})
-
-	t.Run("a bridge failure is an error", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approveErr: verifybridge.ErrEmptyOutput}
+	t.Run("any other daemon failure is an error without the timeout advice", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approveErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("boss-verify toolbox not found"))}
 		cmd, _ := prTestCmd(false)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); !errors.Is(err, verifybridge.ErrEmptyOutput) {
+		err := prApprove(context.Background(), cmd, f, prOptions{pr: 7})
+		if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "toolbox not found") || strings.Contains(err.Error(), "may already be posted") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 
-	t.Run("--dry-run --json reports the plan", func(t *testing.T) {
-		f := &prFake{sessions: sessions, approve: verifybridge.ApproveResult{Planned: true, DryRun: true, Waives: "ledger-open", HeadSHA: "abc"}}
-		cmd, out := prTestCmd(true)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7, dryRun: true, asJSON: true}); err != nil {
+	t.Run("the human-readable dry run passes --dry-run and names what would be written", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "ledger-open", HeadSha: "abcdef0123456789"}}
+		cmd, out := prTestCmd(false)
+		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true}); err != nil {
 			t.Fatalf("prApprove: %v", err)
 		}
-		if !f.targets[0].DryRun {
-			t.Fatal("--dry-run did not reach the verb")
+		if !f.verbs[0].dryRun {
+			t.Fatal("--dry-run did not reach the daemon")
 		}
-		var env prApproveJSON
-		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		if got := out.String(); got != "Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" {
+			t.Fatalf("output = %q", got)
+		}
+	})
+
+	t.Run("--json keeps verify-gate's field names", func(t *testing.T) {
+		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "ledger-open", HeadSha: "abc"}}
+		cmd, out := prTestCmd(true)
+		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true, asJSON: true}); err != nil {
+			t.Fatalf("prApprove: %v", err)
+		}
+		want := `{"pr":7,"repo":"acme/app","session_id":"s-a","result":{"approved":false,"planned":true,"dryRun":true,"waives":"ledger-open","headSha":"abc"}}`
+		var got, wantV any
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 			t.Fatalf("decode %q: %v", out.String(), err)
 		}
-		if env.PR != 7 || env.Repo != "acme/app" || env.SessionID != "s-a" || !env.Result.Planned || env.Result.Waives != "ledger-open" {
-			t.Fatalf("envelope = %+v", env)
+		_ = json.Unmarshal([]byte(want), &wantV)
+		if fmt.Sprint(got) != fmt.Sprint(wantV) {
+			t.Fatalf("envelope = %s, want %s", out.String(), want)
 		}
 	})
 
 	t.Run("an ambiguous number never runs the verb", func(t *testing.T) {
 		f := &prFake{sessions: append(sessions, prSession("s-b", 7, originB, "/wt/b"))}
 		cmd, _ := prTestCmd(false)
-		if err := prApprove(context.Background(), cmd, f, f, prOptions{pr: 7}); errorCodeFor(err) != codeAmbiguousPR {
+		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7}); errorCodeFor(err) != codeAmbiguousPR {
 			t.Fatalf("err = %v", err)
 		}
-		if len(f.targets) != 0 {
+		if len(f.verbs) != 0 {
 			t.Fatal("the verb ran for an ambiguous PR")
 		}
 	})
@@ -350,33 +271,33 @@ func TestPrApprove(t *testing.T) {
 func TestPrSendBack(t *testing.T) {
 	sessions := []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}
 
-	t.Run("a bridge timeout warns the note may already be posted, except on a dry run", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendErr: fmt.Errorf("%w: slow", verifybridge.ErrNodeTimeout)}
+	t.Run("a daemon timeout warns the note may already be posted, except on a dry run", func(t *testing.T) {
+		f := &prFake{sessions: sessions, sendErr: connect.NewError(connect.CodeDeadlineExceeded, errors.New("verify-gate timed out"))}
 		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7}, "fix it")
-		if !errors.Is(err, verifybridge.ErrNodeTimeout) || !strings.Contains(err.Error(), "the note may already be posted") {
+		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "fix it")
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || !strings.Contains(err.Error(), "the note may already be posted") {
 			t.Fatalf("err = %v", err)
 		}
 		cmd, _ = prTestCmd(false)
-		err = prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7, dryRun: true}, "fix it")
-		if !errors.Is(err, verifybridge.ErrNodeTimeout) || strings.Contains(err.Error(), "may already be posted") {
+		err = prSendBack(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true}, "fix it")
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || strings.Contains(err.Error(), "may already be posted") {
 			t.Fatalf("dry run: err = %v", err)
 		}
 	})
-	posted := verifybridge.SendBackResult{Posted: true, CommentURL: "https://github.com/acme/app/pull/7#issuecomment-1", HeadSHA: "abc"}
+	posted := &pb.SendBackSessionPRResponse{IsPosted: true, CommentUrl: "https://github.com/acme/app/pull/7#issuecomment-1", HeadSha: "abc"}
 
 	t.Run("posts the comment, then starts a send back chat delivering the repair", func(t *testing.T) {
 		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1"}
 		cmd, out := prTestCmd(false)
 		note := "The empty state copy is wrong."
-		if err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7}, note); err != nil {
+		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, note); err != nil {
 			t.Fatalf("prSendBack: %v", err)
 		}
 		if got := strings.Join(f.log, ","); got != "list,send-back,record-chat,send-message" {
 			t.Fatalf("call order = %s", got)
 		}
-		if f.notes[0] != note || f.targets[0] != (verifybridge.Target{PR: 7, Repo: "acme/app", Dir: "/wt/a"}) {
-			t.Fatalf("verb got %+v %q", f.targets[0], f.notes[0])
+		if f.notes[0] != note || f.verbs[0] != (prVerbCall{"s-a", false}) {
+			t.Fatalf("verb got %+v %q", f.verbs[0], f.notes[0])
 		}
 		if f.chatTitle != "send back" || f.chatSessID != "s-a" {
 			t.Fatalf("chat = %q in %q", f.chatTitle, f.chatSessID)
@@ -389,15 +310,15 @@ func TestPrSendBack(t *testing.T) {
 			t.Fatalf("send request = %+v", f.sent)
 		}
 		got := out.String()
-		if !strings.Contains(got, posted.CommentURL) || !strings.Contains(got, f.sent.GetAgentSessionId()) {
+		if !strings.Contains(got, posted.GetCommentUrl()) || !strings.Contains(got, f.sent.GetAgentSessionId()) {
 			t.Fatalf("output %q must name the comment URL and the chat id", got)
 		}
 	})
 
 	t.Run("a refused comment starts no chat", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: verifybridge.SendBackResult{Reason: "pr-not-open"}}
+		f := &prFake{sessions: sessions, sendBack: &pb.SendBackSessionPRResponse{Reason: "pr-not-open"}}
 		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7}, "x")
+		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
 		if err == nil || !strings.Contains(err.Error(), "pr-not-open") {
 			t.Fatalf("err = %v", err)
 		}
@@ -409,8 +330,8 @@ func TestPrSendBack(t *testing.T) {
 	t.Run("a chat with no live agent is an error naming the posted comment", func(t *testing.T) {
 		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: ""}
 		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7}, "x")
-		if errorCodeFor(err) != codeAgentNotSpawned || !strings.Contains(err.Error(), posted.CommentURL) {
+		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
+		if errorCodeFor(err) != codeAgentNotSpawned || !strings.Contains(err.Error(), posted.GetCommentUrl()) {
 			t.Fatalf("err = %v", err)
 		}
 		if strings.Contains(strings.Join(f.log, ","), "send-message") {
@@ -421,16 +342,16 @@ func TestPrSendBack(t *testing.T) {
 	t.Run("a failed delivery is an error naming the chat to retry", func(t *testing.T) {
 		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1", deliverErr: errors.New("pane gone")}
 		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7}, "x")
+		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
 		if err == nil || !strings.Contains(err.Error(), "pane gone") || !strings.Contains(err.Error(), "boss chat send") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 
 	t.Run("--dry-run plans the comment and starts no chat", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: verifybridge.SendBackResult{Planned: true, DryRun: true, HeadSHA: "abc"}}
+		f := &prFake{sessions: sessions, sendBack: &pb.SendBackSessionPRResponse{IsPlanned: true, IsDryRun: true, HeadSha: "abc"}}
 		cmd, out := prTestCmd(false)
-		if err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7, dryRun: true}, "x"); err != nil {
+		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true}, "x"); err != nil {
 			t.Fatalf("prSendBack: %v", err)
 		}
 		if got := strings.Join(f.log, ","); got != "list,send-back" {
@@ -441,20 +362,59 @@ func TestPrSendBack(t *testing.T) {
 		}
 	})
 
+	t.Run("an empty note is refused before any daemon call", func(t *testing.T) {
+		f := &prFake{sessions: sessions}
+		cmd, _ := prTestCmd(false)
+		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "  "); errorCodeFor(err) != codeInvalidArgument {
+			t.Fatalf("err = %v", err)
+		}
+		if len(f.log) != 0 {
+			t.Fatalf("calls = %v", f.log)
+		}
+	})
+
 	t.Run("--json carries the comment, the chat and the delivery", func(t *testing.T) {
 		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1"}
 		cmd, out := prTestCmd(true)
-		if err := prSendBack(context.Background(), cmd, f, f, prOptions{pr: 7, asJSON: true}, "x"); err != nil {
+		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7, asJSON: true}, "x"); err != nil {
 			t.Fatalf("prSendBack: %v", err)
 		}
 		var env prSendBackJSON
 		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 			t.Fatalf("decode %q: %v", out.String(), err)
 		}
-		if env.Result.CommentURL != posted.CommentURL || env.Chat == nil || env.Chat.Title != "send back" || env.Chat.AgentSessionID == "" || env.Delivery == nil || !env.Delivery.Delivered {
+		if env.Result.CommentURL != posted.GetCommentUrl() || env.Chat == nil || env.Chat.Title != "send back" || env.Chat.AgentSessionID == "" || env.Delivery == nil || !env.Delivery.Delivered {
 			t.Fatalf("envelope = %+v", env)
 		}
 	})
+}
+
+func TestPrVerbsRefuseInsideAnAgentChat(t *testing.T) {
+	orig := osGetenv
+	t.Cleanup(func() { osGetenv = orig })
+	osGetenv = func(key string) string {
+		if key == "BOSS_AGENT_SESSION_ID" {
+			return "chat-123"
+		}
+		return ""
+	}
+	for _, verb := range []string{"approve", "send-back"} {
+		cmd, _ := prTestCmd(false)
+		cmd.Use = verb
+		cmd.Flags().Bool("dry-run", false, "")
+		cmd.Flags().String("repo", "", "")
+		ran := false
+		err := runPrVerb(cmd, "7", func(context.Context, client.BossClient, prOptions) error {
+			ran = true
+			return nil
+		})
+		if ran {
+			t.Fatalf("%s ran inside an agent chat", verb)
+		}
+		if connect.CodeOf(err) != connect.CodePermissionDenied || !strings.Contains(err.Error(), "chat-123") || !strings.Contains(err.Error(), "your own terminal") {
+			t.Fatalf("%s: err = %v", verb, err)
+		}
+	}
 }
 
 func TestPrCmdIsRegistered(t *testing.T) {

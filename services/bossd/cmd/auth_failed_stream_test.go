@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -524,4 +527,54 @@ func TestStreamHydrator_RestartProofAgentActivity(t *testing.T) {
 	if ts := pbSess.GetLastAgentActivityAt(); ts == nil || !ts.AsTime().Equal(outputAt) {
 		t.Fatalf("last_agent_activity_at = %v, want the transcript output %v", ts, outputAt)
 	}
+}
+
+// Both stream snapshots and full-replacement deltas use Hydrate; compare its
+// attention against the public RPC rather than duplicating resolver expectations.
+func TestStreamHydrator_AttentionMatchesGetSession(t *testing.T) {
+	t.Parallel()
+	row := &models.Session{ID: "attention-stream", RepoID: "r", State: machine.ReadyForReview, UpdatedAt: time.Now()}
+	sessions := &fakeSessionStore{byID: map[string]*models.Session{row.ID: row}}
+	repos := &fakeRepoStore{byID: map[string]*models.Repo{"r": {ID: "r"}}}
+	tracker := status.NewDisplayTracker()
+	tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui"})
+	srv := server.New(server.Config{Sessions: sessions, Repos: repos, DisplayTracker: tracker, Logger: zerolog.Nop()})
+	rpc, err := srv.GetSession(t.Context(), connect.NewRequest(&bossanovav1.GetSessionRequest{Id: row.ID}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &streamSessionHydrator{rawSessions: sessions, repos: repos, displayTracker: tracker, attention: srv.HydrateAttentionForStream, logger: zerolog.Nop()}
+	stream := server.SessionToProto(row)
+	h.Hydrate(t.Context(), stream)
+	if stream.GetAttention() == nil || stream.GetAttention().GetKind() != bossanovav1.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Fatalf("stream attention = %v, want review", stream.GetAttention())
+	}
+	if !proto.Equal(stream.GetAttention(), rpc.Msg.Session.GetAttention()) {
+		t.Fatalf("stream attention = %v, RPC attention = %v", stream.GetAttention(), rpc.Msg.Session.GetAttention())
+	}
+}
+
+func TestStreamHydrator_AttentionRunsAfterLegacyOverlays(t *testing.T) {
+	t.Parallel()
+	tracker := status.NewDisplayTracker()
+	tracker.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui"})
+	for _, chats := range []db.AgentChatStore{nil, &fakeAgentChatStore{}, failingStreamChatStore{}} {
+		called := false
+		h := &streamSessionHydrator{displayTracker: tracker, agentChats: chats, logger: zerolog.Nop(), attention: func(_ context.Context, p *bossanovav1.Session) {
+			called = true
+			if p.GetAttentionStatus().GetSummary() != "needs human: human-review:ui" {
+				t.Fatalf("shared attention ran before legacy verify hydration: %v", p.GetAttentionStatus())
+			}
+		}}
+		h.Hydrate(t.Context(), &bossanovav1.Session{Id: "s"})
+		if !called {
+			t.Fatal("attention callback did not run")
+		}
+	}
+}
+
+type failingStreamChatStore struct{ db.AgentChatStore }
+
+func (failingStreamChatStore) ListBySession(context.Context, string) ([]*models.AgentChat, error) {
+	return nil, sql.ErrNoRows
 }

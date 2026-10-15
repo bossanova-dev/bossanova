@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/resumepolicy"
@@ -15,7 +16,26 @@ var _ ResumeAttemptStore = (*SQLiteResumeAttemptStore)(nil)
 // SQLiteResumeAttemptStore implements ResumeAttemptStore over the
 // session_resume_attempts table.
 type SQLiteResumeAttemptStore struct {
-	db *sql.DB
+	db         *sql.DB
+	onChangeMu sync.RWMutex
+	onChange   func(sessionID string)
+}
+
+// SetOnChange sets the callback called after a successful ledger change.
+// The callback may read the store and replace itself.
+func (s *SQLiteResumeAttemptStore) SetOnChange(fn func(sessionID string)) {
+	s.onChangeMu.Lock()
+	s.onChange = fn
+	s.onChangeMu.Unlock()
+}
+
+func (s *SQLiteResumeAttemptStore) notifyChange(sessionID string) {
+	s.onChangeMu.RLock()
+	fn := s.onChange
+	s.onChangeMu.RUnlock()
+	if fn != nil {
+		fn(sessionID)
+	}
 }
 
 // NewResumeAttemptStore creates a SQLite-backed ResumeAttemptStore.
@@ -65,7 +85,12 @@ func (s *SQLiteResumeAttemptStore) Record(ctx context.Context, params RecordResu
 	}
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+resumeAttemptColumns+` FROM session_resume_attempts WHERE id = ?`, id)
-	return scanResumeAttempt(row)
+	attempt, err := scanResumeAttempt(row)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyChange(params.SessionID)
+	return attempt, nil
 }
 
 // ListForRun returns one run's attempts, lowest attempt number first.
@@ -101,6 +126,9 @@ func (s *SQLiteResumeAttemptStore) DeleteForRun(ctx context.Context, sessionID, 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	if n > 0 {
+		s.notifyChange(sessionID)
 	}
 	return n, nil
 }

@@ -105,8 +105,14 @@ function world(opts = {}) {
       if (args[0] === 'chats') return ok({ chats: opts.chats?.[args[2]] ?? [] })
       if (args[0] === 'chat' && args[1] === 'new')
         return ok({ chat: { agent_session_id: 'chat-new', session_id: args[2], title: 'verify' } })
-      if (args[0] === 'chat' && args[1] === 'send')
-        return opts.sendTimesOut ? fail('ETIMEDOUT', { exit: null }) : ok({})
+      if (args[0] === 'chat' && args[1] === 'send') {
+        if (opts.sendTimesOut) return fail('ETIMEDOUT', { exit: null })
+        if (opts.sendResult) return opts.sendResult
+        return ok({
+          agent_session_id: args[2],
+          delivery: { delivered: true, delivery_state: 'DELIVERY_STATE_SUBMITTED' },
+        })
+      }
       return fail('unexpected-boss')
     }
     return fail('unexpected-command')
@@ -402,7 +408,7 @@ test('with extensions: the claim is posted before routing and its token is in th
   assert.deepEqual(w.posts()[0].slice(5, 7), ['--verdict', 'claim'])
   // An existing `verify` chat (matched case-insensitively) gets the message.
   const send = w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'send')
-  assert.deepEqual(send.args, ['chat', 'send', 'chat-v', '/boss-verify 1 --claim tok-1'])
+  assert.deepEqual(send.args, ['chat', 'send', 'chat-v', '/boss-verify 1 --claim tok-1', '--json'])
   assert.equal(
     w.calls.some((c) => c.args[1] === 'new'),
     false,
@@ -425,7 +431,7 @@ test('no verify chat: chat new --title verify, then chat send to the new chat', 
   assert.deepEqual(bossCalls.slice(1), [
     ['chats', '--json', 's-new'],
     ['chat', 'new', 's-new', '--title', 'verify', '--json'],
-    ['chat', 'send', 'chat-new', '/boss-verify 1 --claim tok-1'],
+    ['chat', 'send', 'chat-new', '/boss-verify 1 --claim tok-1', '--json'],
   ])
   assert.deepEqual(lines(r), ['#1 dispatched: new-verify-chat (newest of 2 live sessions)'])
 })
@@ -449,7 +455,7 @@ test('the verify chat is the one boss-build arms: newest live wins, a STOPPED on
   })
   sweep({}, w.deps())
   const send = w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'send')
-  assert.deepEqual(send.args, ['chat', 'send', 'v-new', '/boss-verify 1 --claim tok-1'])
+  assert.deepEqual(send.args, ['chat', 'send', 'v-new', '/boss-verify 1 --claim tok-1', '--json'])
 })
 
 test('no live session: a detached boss new --pr whose stdio is not the gate’s', () => {
@@ -500,6 +506,40 @@ test('a send that times out is dispatch-unknown and is not retried', () => {
   const r = sweep({}, w.deps())
   assert.deepEqual(lines(r), ['#1 dispatch-unknown: existing-verify-chat (ETIMEDOUT)'])
   assert.equal(w.calls.filter((c) => c.args[1] === 'send').length, 1)
+})
+
+test('only a submitted or queued delivery counts as dispatched', () => {
+  const route = (sendResult) => {
+    const w = world({
+      verdicts: { 1: EXT },
+      sendResult,
+      sessions: [{ id: 's1', pr_url: url(1) }],
+      chats: { s1: [{ agent_session_id: 'chat-v', title: 'verify' }] },
+    })
+    const r = sweep({}, w.deps())
+    assert.equal(w.calls.filter((c) => c.args[1] === 'send').length, 1)
+    return lines(r)
+  }
+  const delivery = (delivered, state) => ({
+    ok: true,
+    payload: { agent_session_id: 'chat-v', delivery: { delivered, delivery_state: state } },
+    exit: 0,
+  })
+  assert.deepEqual(route(delivery(true, 'DELIVERY_STATE_SUBMITTED')), [
+    '#1 dispatched: existing-verify-chat',
+  ])
+  assert.deepEqual(route(delivery(true, 'DELIVERY_STATE_QUEUED')), [
+    '#1 dispatched: existing-verify-chat',
+  ])
+  assert.deepEqual(route(delivery(false, 'DELIVERY_STATE_UNCONFIRMED')), [
+    '#1 dispatch-unknown: existing-verify-chat (DELIVERY_STATE_UNCONFIRMED)',
+  ])
+  assert.deepEqual(route({ ok: false, error: 'unreadable-json', exit: 0, output: 'sent' }), [
+    '#1 dispatch-unknown: existing-verify-chat (unreadable-json)',
+  ])
+  assert.deepEqual(route({ ok: true, payload: { agent_session_id: 'chat-v' }, exit: 0 }), [
+    '#1 dispatch-unknown: existing-verify-chat (unreadable-delivery)',
+  ])
 })
 
 test('the batch bound: 5 candidates and --batch 2 act on 2 and defer 3', () => {

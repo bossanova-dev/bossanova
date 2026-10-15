@@ -20,6 +20,7 @@ const SKILL_ROOTS = [
 // explicit list rather than the discovered `bs-sweep-*` directory set: a new
 // sweep has to be a considered edit here, not an accident.
 const SWEEP_SKILLS = [
+  'bs-security',
   'bs-sweep-debt',
   'bs-sweep-dependabot',
   'bs-sweep-mutation',
@@ -76,9 +77,11 @@ function skillFiles() {
   return files
 }
 
-test('every bs-sweep-* skill disables model invocation', () => {
+test('every repository security and sweep skill disables model invocation', () => {
   const sweeps = skillFiles().filter(
-    (skill) => skill.root === '.claude/skills' && skill.name.startsWith('bs-sweep-'),
+    (skill) =>
+      skill.root === '.claude/skills' &&
+      (skill.name.startsWith('bs-sweep-') || skill.name === 'bs-security'),
   )
 
   // Discovered-vs-expected first: a new sweep fails here whether or not it

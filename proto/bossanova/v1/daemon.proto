@@ -50,6 +50,15 @@ service DaemonService {
   rpc RetrySession(RetrySessionRequest) returns (RetrySessionResponse);
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
   rpc MergeSession(MergeSessionRequest) returns (MergeSessionResponse);
+  // ApproveSessionPR runs the boss-verify toolbox's `approve` verb for the
+  // session's PR on the daemon host, in the session worktree, with the repo's
+  // stored tracker credentials. It hands a `needs human:` verify park on the
+  // PR's current head back to verify.
+  rpc ApproveSessionPR(ApproveSessionPRRequest) returns (ApproveSessionPRResponse);
+  // SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
+  // session's PR: it posts the operator's note on the PR as a rejection of its
+  // current head. Starting the repair chat stays with the caller.
+  rpc SendBackSessionPR(SendBackSessionPRRequest) returns (SendBackSessionPRResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
@@ -354,6 +363,10 @@ service DaemonService {
   // `boss plugin list` so operators can debug "did my plugin actually
   // load?" without grepping daemon logs.
   rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+
+  // GetDaemonCapabilities lists optional request features the daemon honours,
+  // so clients can refuse features an older daemon would silently drop.
+  rpc GetDaemonCapabilities(GetDaemonCapabilitiesRequest) returns (GetDaemonCapabilitiesResponse);
 
   // --- Global Settings ---
 
@@ -764,6 +777,54 @@ message MergeSessionResponse {
   // Human-readable note about how the merge was performed, e.g. a merge
   // strategy substitution. Empty when the merge ran exactly as configured.
   string detail = 2;
+}
+
+message ApproveSessionPRRequest {
+  string id = 1;
+  bool is_dry_run = 2;
+}
+
+message ApproveSessionPRResponse {
+  VerifyApproveResult result = 1;
+}
+
+// VerifyApproveResult is `verify-gate.mjs approve`'s outcome. is_approved is
+// true only when the head-bound approval record (approval_url) took effect on
+// head_sha: it waives `waives` there, or, with lifted "sent-back", it lifts a
+// send-back of a head verify already passed. tracker_writes reports the
+// needs-human label removal that follows. A refusal carries reason, plus
+// approval_url when a posted record waives nothing.
+message VerifyApproveResult {
+  bool is_approved = 1;
+  bool is_planned = 2;
+  bool is_dry_run = 3;
+  string reason = 4;
+  string waives = 5;
+  string lifted = 6;
+  string head_sha = 7;
+  string tracker_writes = 8;
+  string approval_url = 9;
+  string why = 10;
+  string park = 11;
+  string state = 12;
+}
+
+message SendBackSessionPRRequest {
+  string id = 1;
+  string note = 2;
+  bool is_dry_run = 3;
+}
+
+// SendBackSessionPRResponse is `verify-gate.mjs send-back`'s outcome. is_posted
+// is true only when the PR comment was created; a refusal carries reason.
+message SendBackSessionPRResponse {
+  bool is_posted = 1;
+  bool is_planned = 2;
+  bool is_dry_run = 3;
+  string reason = 4;
+  string comment_url = 5;
+  string head_sha = 6;
+  string state = 7;
 }
 
 message RemoveSessionRequest {
@@ -2267,4 +2328,11 @@ message AgentSettingsUpdate {
 
 message UpdateSettingsResponse {
   GlobalSettings settings = 1;
+}
+
+// GetDaemonCapabilitiesRequest probes the running daemon, independent of version.
+message GetDaemonCapabilitiesRequest {}
+
+message GetDaemonCapabilitiesResponse {
+  repeated string capabilities = 1;
 }

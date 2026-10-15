@@ -133,6 +133,9 @@ func runTriggerList(cmd *cobra.Command, c triggerClient) error {
 		org := strings.TrimSpace(v)
 		req.OrganizationId = &org
 	}
+	if all, _ := cmd.Flags().GetBool("all-members"); all {
+		req.ShouldIncludeMemberTriggers = &all
+	}
 	triggers, err := c.ListTriggers(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("list triggers: %w", err)
@@ -529,6 +532,7 @@ func triggerCmd() *cobra.Command {
 		}),
 	}
 	list.Flags().String("org", "", "Restrict to one organization id (default: every organization you belong to)")
+	list.Flags().Bool("all-members", false, "List every member's triggers in the organization (--org, or your active one); needs the owner role")
 	list.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema ({triggers}) instead of a table")
 
 	show := &cobra.Command{

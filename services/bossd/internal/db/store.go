@@ -174,6 +174,8 @@ type UpdateSessionParams struct {
 	Title                   *string
 	State                   *int
 	WorktreePath            *string
+	WorktreeCreatedAt       **string
+	IsBranchCreated         *bool
 	BranchName              *string
 	AgentSessionID          **string
 	PRNumber                **int

@@ -1,10 +1,9 @@
-// The repo's verify policy no longer parks a PR for a human just because it edits the verify
-// evidence harness (`.claude/skills/verify/**`, `.codex/skills/verify/**`): the core judges and
-// dispatches verify extensions from the base revision, and the evidence extension drives the PR head
-// with the base revision's harness, so a head's harness edits cannot weaken the base's criteria
-// for its own verdict (a feature new in the head brings its head recipe, adding criteria only). The
-// verify extension directories (`boss-verify-*`) still park: they decide which extensions exist and
-// how they are dispatched.
+// The repo's verify policy parks a PR for a human only for visual changes: the TUI view package and
+// the visible parts of services/web, services/marketing and services/docs (`humanReview.ui`).
+// Security-sensitive code, migrations, CI and the verify evidence harness (`.claude/skills/verify/**`,
+// `.codex/skills/verify/**`) merge without a human. The verify extension directories
+// (`boss-verify-*`) and `.boss-skills.json` still park for every category through the policy
+// surface: they decide which extensions exist, how they are dispatched, and what parks.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -30,11 +29,35 @@ const HARNESS_PATHS = [
   '.claude/skills/verify/features/sessions.md',
   '.codex/skills/verify/lib/stack.mjs',
 ]
-const EXTENSION_PATHS = [
+const POLICY_SURFACE_PATHS = [
+  CONFIG_FILENAME,
   '.claude/skills/boss-verify-evidence/SKILL.md',
   '.codex/skills/boss-verify-evidence/SKILL.md',
 ]
 const CONTROL_PATH = 'services/bossd/internal/session/tmux_chat.go'
+const ALL_CATEGORIES = ['human-review:database', 'human-review:security', 'human-review:ui']
+
+// [path, parks as ui]. A test file beside a component parks too: globs cannot exclude it.
+const SAMPLE_PATHS = [
+  ['services/web/src/components/Button.tsx', true],
+  ['services/web/src/components/Button.test.tsx', true],
+  ['services/web/src/lib/x.ts', false],
+  ['lib/ui-tokens/index.css', true],
+  ['lib/ui-tokens/package.json', false],
+  ['services/web/index.html', true],
+  ['services/web/public/_headers', false],
+  ['services/marketing/src/pages/index.astro', true],
+  ['services/marketing/public/_redirects', false],
+  ['services/docs/docs/intro.md', true],
+  ['services/docs/package.json', false],
+  ['services/docs/styles/BossanovaProse/BannedWords.yml', false],
+  ['services/boss/internal/views/home_view.go', true],
+  ['services/bosso/internal/auth/x.go', false],
+  ['services/bossd/migrations/001.sql', false],
+  ['services/bosso/migrations_postgres/001.sql', false],
+  ['.github/workflows/ci.yml', false],
+  ['.claude/settings.json', false],
+]
 
 // Facts for a head that passes every other gate: open, ready, CI settled and green on the head,
 // receipt posted, base green, no verify extensions installed.
@@ -60,16 +83,25 @@ function factsFor(changedPaths) {
   }
 }
 
+for (const [path, parks] of SAMPLE_PATHS) {
+  test(`a PR touching only ${path} ${parks ? 'parks as ui' : 'passes without a human'}`, () => {
+    const facts = factsFor([path])
+    assert.equal(facts.policySurfaceHit, false)
+    const r = decideVerdict(facts)
+    if (parks) {
+      assert.equal(r.verdict, 'human')
+      assert.deepEqual(r.reasons, ['human-review:ui'])
+    } else {
+      assert.equal(r.verdict, 'pass', `reasons: ${r.reasons}`)
+    }
+  })
+}
+
 for (const path of HARNESS_PATHS) {
   test(`a PR touching only ${path} passes without a human`, () => {
     const facts = factsFor([path])
     assert.equal(facts.policySurfaceHit, false)
-    const r = decideVerdict(facts)
-    // A `pass` verdict carries no `reasons` list; a park carries one.
-    const reasons = r.reasons ?? []
-    assert.ok(!reasons.includes('always-human-path'), `reasons: ${reasons}`)
-    assert.ok(!reasons.includes('human-review:security'), `reasons: ${reasons}`)
-    assert.equal(r.verdict, 'pass', `reasons: ${reasons}`)
+    assert.equal(decideVerdict(facts).verdict, 'pass')
   })
 }
 
@@ -78,23 +110,25 @@ test('harness edits mixed with ordinary changes pass', () => {
   assert.equal(r.verdict, 'pass', `reasons: ${r.reasons}`)
 })
 
-for (const path of EXTENSION_PATHS) {
-  test(`a PR touching ${path} still parks for a human`, () => {
-    const r = decideVerdict(factsFor([path]))
+// The gate counts the policy surface only while the base policy is configured; the ui list is what
+// keeps it configured now that every other list is empty.
+for (const path of POLICY_SURFACE_PATHS) {
+  test(`a PR touching ${path} still parks for every category`, () => {
+    const facts = factsFor([path])
+    assert.equal(facts.policySurfaceHit, true)
+    const r = decideVerdict(facts)
     assert.equal(r.verdict, 'human')
-    assert.ok(r.reasons.includes('always-human-path'), `reasons: ${r.reasons}`)
-    assert.ok(r.reasons.includes('human-review:security'), `reasons: ${r.reasons}`)
+    assert.deepEqual(r.reasons, ALL_CATEGORIES)
   })
 }
 
-test('an extension edit mixed with harness edits still parks', () => {
-  const r = decideVerdict(factsFor([HARNESS_PATHS[0], EXTENSION_PATHS[0]]))
+test('a policy-surface edit mixed with harness edits still parks', () => {
+  const r = decideVerdict(factsFor([HARNESS_PATHS[0], POLICY_SURFACE_PATHS[1]]))
   assert.equal(r.verdict, 'human')
-  assert.ok(r.reasons.includes('always-human-path'))
-  assert.ok(r.reasons.includes('human-review:security'))
+  assert.deepEqual(r.reasons, ALL_CATEGORIES)
 })
 
-test('a PR outside the harness and the policy still passes', () => {
+test('a PR outside the visual paths and the policy surface passes', () => {
   const r = decideVerdict(factsFor([CONTROL_PATH]))
   assert.equal(r.verdict, 'pass')
 })

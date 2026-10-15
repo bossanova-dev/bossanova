@@ -1,8 +1,10 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -306,7 +308,7 @@ func TestPurgeThenReapActuallyRemovesTheBranch(t *testing.T) {
 	}
 
 	// The order every caller uses.
-	if err := mgr.PurgeWorktree(context.Background(), repoDir, "my-repo", wtBase, res.BranchName); err != nil {
+	if err := mgr.PurgeWorktree(context.Background(), repoDir, "my-repo", wtBase, res.WorktreePath); err != nil {
 		t.Fatalf("PurgeWorktree: %v", err)
 	}
 	if err := mgr.ReapLocalBranches(context.Background(), repoDir, []string{res.BranchName}); err != nil {
@@ -405,7 +407,7 @@ func TestPurgeAndReapSerializeWithoutDeadlockingAgainstACreate(t *testing.T) {
 		// The purge must RUN here, not merely be attempted: the reap that follows
 		// is refused while the worktree is still registered, so a skipped purge
 		// would turn this into a test of the wrong failure.
-		if purgeErr := mgr.PurgeWorktree(ctx, repoDir, "my-repo", wtBase, victim.BranchName); purgeErr != nil {
+		if purgeErr := mgr.PurgeWorktree(ctx, repoDir, "my-repo", wtBase, victim.WorktreePath); purgeErr != nil {
 			cleanupDone <- purgeErr
 			return
 		}
@@ -630,7 +632,7 @@ func TestPurgeWorktreeReportsThatItDidNotRun(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := mgr.PurgeWorktree(cancelled, repoDir, "my-repo", wtBase, res.BranchName); err == nil {
+	if err := mgr.PurgeWorktree(cancelled, repoDir, "my-repo", wtBase, res.WorktreePath); err == nil {
 		t.Fatal("PurgeWorktree returned nil for a purge it could not run; every caller would go on to a reap git refuses")
 	}
 	// And it really did skip, rather than reporting an error for work it did.
@@ -639,7 +641,7 @@ func TestPurgeWorktreeReportsThatItDidNotRun(t *testing.T) {
 	}
 
 	// The happy path still reports success, so the error is not a constant.
-	if err := mgr.PurgeWorktree(context.Background(), repoDir, "my-repo", wtBase, res.BranchName); err != nil {
+	if err := mgr.PurgeWorktree(context.Background(), repoDir, "my-repo", wtBase, res.WorktreePath); err != nil {
 		t.Fatalf("PurgeWorktree on an uncontended clone: %v", err)
 	}
 }
@@ -648,3 +650,102 @@ func TestPurgeWorktreeReportsThatItDidNotRun(t *testing.T) {
 type writerFunc func(p []byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestCreateRecordsOwnershipBeforeSetupAndRemovesOnFailure(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		for _, refuse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("existing=%t/refuse=%t", existing, refuse), func(t *testing.T) {
+				repo := initTestRepo(t)
+				if existing {
+					if _, err := runGit(context.Background(), repo, "push", "origin", "main:owned-existing"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				base := filepath.Join(t.TempDir(), "worktrees")
+				mgr := NewManager(zerolog.Nop())
+				var recorded string
+				setup := "test -f ownership-recorded && echo setup-ran"
+				var output bytes.Buffer
+				refusal := errors.New("cannot record ownership")
+				callback := func(path string) error {
+					recorded = path
+					if refuse {
+						return refusal
+					}
+					return os.WriteFile(filepath.Join(path, "ownership-recorded"), []byte("owned"), 0600)
+				}
+				var result *CreateResult
+				var err error
+				if existing {
+					result, err = mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{RepoPath: repo, BranchName: "owned-existing", WorktreeBaseDir: base, RepoName: "repo", SetupScript: &setup, SetupScriptOutput: &output, OnWorktreeAdded: callback})
+				} else {
+					result, err = mgr.Create(context.Background(), CreateOpts{RepoPath: repo, BaseBranch: "main", Title: "owned-new", WorktreeBaseDir: base, RepoName: "repo", SetupScript: &setup, SetupScriptOutput: &output, OnWorktreeAdded: callback})
+				}
+				if recorded == "" {
+					t.Fatal("ownership callback never ran")
+				}
+				if refuse {
+					if !errors.Is(err, refusal) {
+						t.Fatalf("error = %v", err)
+					}
+					if _, statErr := os.Stat(recorded); !os.IsNotExist(statErr) {
+						t.Fatalf("unrecorded directory survives: %v", statErr)
+					}
+					list, listErr := runGit(context.Background(), repo, "worktree", "list", "--porcelain")
+					if listErr != nil {
+						t.Fatal(listErr)
+					}
+					if strings.Contains(list, recorded) {
+						t.Fatal("unrecorded registration survives")
+					}
+					if strings.Contains(output.String(), "setup-ran") {
+						t.Fatal("setup ran after recording failed")
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if recorded != result.WorktreePath || !strings.Contains(output.String(), "setup-ran") {
+						t.Fatalf("setup ran before recorded ownership: %+v output=%s", result, output.String())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPurgeWorktreeUsesRecordedCollisionPath(t *testing.T) {
+	repo := initTestRepo(t)
+	base := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	opts := CreateOpts{RepoPath: repo, BaseBranch: "main", RepoName: "repo", WorktreeBaseDir: base, Title: "collision"}
+	first, err := mgr.Create(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := mgr.Create(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.WorktreePath == first.WorktreePath {
+		t.Fatal("collision not exercised")
+	}
+	if err = mgr.PurgeWorktree(context.Background(), repo, "repo", base, second.WorktreePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(first.WorktreePath); err != nil {
+		t.Fatalf("peer directory removed: %v", err)
+	}
+	if _, err = os.Stat(second.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("owned directory survived: %v", err)
+	}
+	if err = mgr.PurgeWorktree(context.Background(), repo, "repo", base, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = mgr.PurgeWorktree(context.Background(), repo, "repo", base, repo); err == nil {
+		t.Fatal("accepted repository checkout")
+	}
+	if _, err = os.Stat(repo); err != nil {
+		t.Fatal(err)
+	}
+}

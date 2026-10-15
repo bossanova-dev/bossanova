@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3777,18 +3778,22 @@ func TestWaitChatRun_DeadlineExpires(t *testing.T) {
 		t.Error("IsRepairing should remain owned by the live run after WaitChatRun deadline")
 	}
 
+	srv.runMu.Lock()
+	finalizer := srv.chatRunFinalizers["agent-x"]
+	srv.runMu.Unlock()
+	if finalizer == nil {
+		t.Fatal("deadline should leave a completion finalizer waiting on the run")
+	}
+
 	if _, err := srv.CompleteAgentRun(t.Context(), "agent-x", "tok", ""); err != nil {
 		t.Fatalf("CompleteAgentRun after deadline: %v", err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		runs.mu.Lock()
-		stopped := len(runs.stopped)
-		runs.mu.Unlock()
-		if stopped == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The finalizer's done channel is what a retried WaitChatRun returns on;
+	// it closes only after cleanupRun, so the registry must be clear by then.
+	select {
+	case <-finalizer.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delayed completion finalizer did not finish")
 	}
 	runs.mu.Lock()
 	stopped := append([]string(nil), runs.stopped...)
@@ -4308,6 +4313,339 @@ func TestStartChatRun_ResumeRekeyMovesRegistration(t *testing.T) {
 	}
 	if _, ok := srv.runCompletion["agent-durable"]; !ok {
 		t.Error("the run must be registered under the resolved id")
+	}
+}
+
+func TestStartChatRun_ResumeAlreadyExistsKeepsLiveRegistration(t *testing.T) {
+	testFailedResumeKeepsLiveRegistration(t, "agent-other", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active"), codes.AlreadyExists)
+}
+
+func TestStartChatRun_ResumeFailedDeliveryKeepsLiveRegistration(t *testing.T) {
+	testFailedResumeKeepsLiveRegistration(t, "", errors.New("first input not confirmed"), codes.Internal)
+}
+
+func testFailedResumeKeepsLiveRegistration(t *testing.T, blockingID string, startErr error, wantCode codes.Code) {
+	t.Helper()
+	lc := &fakeChatLifecycle{startResp: blockingID, startErr: startErr}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	ch := srv.registerRunWithCompletionMode("sess-1", "agent-live", "live-token", chatRunCompletionExplicit, "", time.Now())
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Prompt: "p", Title: "T", ResumeAgentSessionId: "agent-live",
+	})
+	if grpcstatus.Code(err) != wantCode {
+		t.Fatalf("code = %v, want %v", grpcstatus.Code(err), wantCode)
+	}
+	srv.runMu.Lock()
+	token := srv.runHookTokens["agent-live"]
+	run := srv.runCompletion["agent-live"]
+	sessionID := srv.runSessionByID["agent-live"]
+	srv.runMu.Unlock()
+	if token != "live-token" || run.done != ch || sessionID != "sess-1" {
+		t.Fatalf("live registration changed: token restored=%v, channel restored=%v, session=%q", token == "live-token", run.done == ch, sessionID)
+	}
+	if _, err := srv.CompleteAgentRun(t.Context(), "agent-live", "live-token", ""); err != nil {
+		t.Fatalf("CompleteAgentRun: %v", err)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Fatal("live waiter did not receive completion")
+	}
+}
+
+func TestStartChatRun_ResumeHooklessCompletionDuringStartReachesLiveWaiter(t *testing.T) {
+	lc := &fakeChatLifecycle{}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	ch := srv.registerRunWithCompletionMode("sess-1", "agent-live", "live-token", chatRunCompletionExplicit, "", time.Now())
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		srv.SignalRunComplete("sess-1", "agent-live", "pane finished")
+		return "agent-other", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+	}
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Prompt: "p", Title: "T", ResumeAgentSessionId: "agent-live",
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	select {
+	case res := <-ch:
+		if res.exitError != "pane finished" {
+			t.Fatalf("exitError = %q, want pane finished", res.exitError)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hookless completion did not reach live waiter")
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if _, ok := srv.runCompletion["agent-live"]; ok {
+		t.Error("completed run should retain only a tombstone")
+	}
+	if srv.runHookTokens["agent-live"] != "live-token" || srv.runSessionByID["agent-live"] != "sess-1" {
+		t.Error("live tombstone was not restored")
+	}
+}
+
+func TestHostServiceStartChatRun_ReplaceRefusedKeepsLiveRegistration(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-live", startErr: grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	ch := srv.registerRunWithCompletionMode("sess-1", "agent-live", "live-token", chatRunCompletionExplicit, "", time.Now())
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-live", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: sess-1", ResumeAgentSessionId: "agent-live",
+		ReplaceExistingChat: true, ReplaceExistingReason: "replace idle chat",
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", grpcstatus.Code(err))
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if srv.runHookTokens["agent-live"] != "live-token" || srv.runCompletion["agent-live"].done != ch || srv.runSessionByID["agent-live"] != "sess-1" {
+		t.Error("refused replacement changed live registration")
+	}
+	if lc.startCalls != 1 {
+		t.Errorf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+}
+
+func TestHostServiceStartChatRun_ReplaceSameIDSignalsLiveWaiter(t *testing.T) {
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-resume", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		}
+		return "agent-resume", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	ch := srv.registerRunWithCompletionMode("sess-1", "agent-resume", "live-token", chatRunCompletionExplicit, "", time.Now())
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-resume", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: sess-1", ResumeAgentSessionId: "agent-resume",
+		ReplaceExistingChat: true, ReplaceExistingReason: "replace idle chat",
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	select {
+	case res := <-ch:
+		if res.exitError != "chat run replaced by newer repair attempt" {
+			t.Fatalf("exitError = %q, want replacement notice", res.exitError)
+		}
+	default:
+		t.Fatal("replaced live waiter was not signaled")
+	}
+	srv.runMu.Lock()
+	defer srv.runMu.Unlock()
+	if token := srv.runHookTokens["agent-resume"]; token == "" || token == "live-token" {
+		t.Error("replacement must use the new token")
+	}
+	if done := srv.runCompletion["agent-resume"].done; done == nil || done == ch {
+		t.Error("replacement must have its own completion channel")
+	}
+}
+
+// delayedRunChatStore parks the old waiter after it has captured its run,
+// before it can finalize or install a background finalizer.
+type delayedRunChatStore struct {
+	db.AgentChatStore
+	entered chan struct{}
+	release chan struct{}
+	blocked atomic.Bool
+}
+
+func (f *delayedRunChatStore) GetByAgentSessionID(context.Context, string) (*models.AgentChat, error) {
+	if f.blocked.CompareAndSwap(false, true) {
+		close(f.entered)
+		<-f.release
+	}
+	return nil, nil
+}
+
+type replacementRunStore struct {
+	db.AgentRunStore
+	mu      sync.Mutex
+	stopped bool
+}
+
+func (f *replacementRunStore) Start(_ context.Context, run db.AgentRun) (db.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = false
+	run.ID = "replacement-run"
+	return run, nil
+}
+
+func (f *replacementRunStore) Stop(context.Context, string, string, time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = true
+	return nil
+}
+
+type pausedCleanupRecomputer struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *pausedCleanupRecomputer) Recompute(context.Context, string) error {
+	close(r.entered)
+	<-r.release
+	return nil
+}
+
+func TestWaitChatRun_CancelDuringReplacementCleanupDoesNotLeaveStaleFinalizer(t *testing.T) {
+	srv := newRunCompleteServer()
+	srv.registerRunWithCompletionMode("sess-1", "agent-resume", "old-token", chatRunCompletionExplicit, "", time.Now())
+	srv.runMu.Lock()
+	oldRun := srv.runCompletion["agent-resume"]
+	srv.runMu.Unlock()
+	paused := &pausedCleanupRecomputer{entered: make(chan struct{}), release: make(chan struct{})}
+	srv.displayTracker.SetRecomputer(paused)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		srv.signalAndCleanupReplacedRun("agent-resume")
+	}()
+	var release sync.Once
+	defer release.Do(func() { close(paused.release) })
+	select {
+	case <-paused.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement did not reach post-registry cleanup")
+	}
+	// A cancelled waiter resumes here after cleanup removed the old registry
+	// entries, while the replacement still waits for display recomputation.
+	srv.finalizeChatRunWhenDone("agent-resume", oldRun)
+	srv.runMu.Lock()
+	stale := srv.chatRunFinalizers["agent-resume"]
+	srv.runMu.Unlock()
+	release.Do(func() { close(paused.release) })
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement cleanup did not finish")
+	}
+	if stale != nil {
+		select {
+		case <-stale.done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("displaced finalizer did not finish")
+		}
+	}
+	srv.displayTracker.SetRecomputer(nil)
+	srv.registerRunWithCompletionMode("sess-1", "agent-resume", "new-token", chatRunCompletionExplicit, "", time.Now())
+	srv.runMu.Lock()
+	leaked := srv.chatRunFinalizers["agent-resume"]
+	srv.runMu.Unlock()
+	if leaked != nil {
+		t.Fatal("successor inherited the displaced waiter's finalizer")
+	}
+	if stale != nil {
+		t.Fatal("cancelled waiter installed a finalizer while replacement cleanup was in flight")
+	}
+}
+
+func TestHostServiceStartChatRun_ReplacementSurvivesDelayedWaiter(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelled=%v", cancelled), func(t *testing.T) {
+			lc := &fakeChatLifecycle{}
+			lc.startFunc = func(context.Context, string, session.ChatInput, string, session.HookOpts) (string, error) {
+				if lc.startCalls == 1 {
+					return "agent-resume", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+				}
+				return "agent-resume", nil
+			}
+			srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: t.TempDir()})
+			srv.agentLogsDir = t.TempDir()
+			chats := &delayedRunChatStore{entered: make(chan struct{}), release: make(chan struct{})}
+			srv.agentChats = chats
+			runs := &replacementRunStore{}
+			srv.agentRuns = runs
+			oldDone := srv.registerRunWithCompletionMode("sess-1", "agent-resume", "live-token", chatRunCompletionExplicit, "", time.Now())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if cancelled {
+				cancel()
+			} else {
+				oldDone <- completionResult{}
+			}
+			waiter := make(chan error, 1)
+			go func() {
+				_, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-resume"})
+				waiter <- err
+			}()
+			select {
+			case <-chats.entered:
+			case <-time.After(5 * time.Second):
+				close(chats.release)
+				t.Fatal("old waiter did not reach provider lookup")
+			}
+			var release sync.Once
+			defer release.Do(func() { close(chats.release) })
+			observed := time.Now().Add(-6 * time.Minute)
+			srv.chatTracker.Update("agent-resume", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+			_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+				SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: sess-1", ResumeAgentSessionId: "agent-resume",
+				ReplaceExistingChat: true, ReplaceExistingReason: "replace idle chat",
+				ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+			})
+			if err != nil {
+				t.Fatalf("StartChatRun: %v", err)
+			}
+			srv.displayTracker.SetRepairing("sess-1", true)
+			fake := srv.agentClients["claude"].(*fakeAgentClient)
+			fake.mu.Lock()
+			hooksBefore := len(fake.removeHookReqs)
+			fake.mu.Unlock()
+			release.Do(func() { close(chats.release) })
+			select {
+			case err := <-waiter:
+				if err != nil {
+					t.Fatalf("WaitChatRun: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("old waiter did not return")
+			}
+			srv.runMu.Lock()
+			finalizer := srv.chatRunFinalizers["agent-resume"]
+			srv.runMu.Unlock()
+			if finalizer != nil {
+				select {
+				case <-finalizer.done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("old background finalizer did not finish")
+				}
+			}
+			srv.runMu.Lock()
+			token := srv.runHookTokens["agent-resume"]
+			current := srv.runCompletion["agent-resume"]
+			srv.runMu.Unlock()
+			if token == "" || token == "live-token" || current.done == nil || current.done == oldDone {
+				t.Error("delayed old waiter destroyed successor registration")
+			}
+			fake.mu.Lock()
+			hooksAfter := len(fake.removeHookReqs)
+			fake.mu.Unlock()
+			if hooksBefore != 1 || hooksAfter != hooksBefore {
+				t.Errorf("hook removals before/after old waiter = %d/%d, want 1/1", hooksBefore, hooksAfter)
+			}
+			runs.mu.Lock()
+			stopped := runs.stopped
+			runs.mu.Unlock()
+			if stopped {
+				t.Error("delayed old waiter stopped successor run")
+			}
+			if entry := srv.displayTracker.Get("sess-1"); entry == nil || !entry.IsRepairing {
+				t.Error("delayed old waiter cleared successor repairing flag")
+			}
+			if err := srv.ValidateRunToken(t.Context(), "agent-resume", token); err != nil {
+				t.Errorf("successor token: %v", err)
+			}
+		})
 	}
 }
 

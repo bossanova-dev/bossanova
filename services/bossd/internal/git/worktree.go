@@ -466,14 +466,14 @@ type WorktreeManager interface {
 	Archive(ctx context.Context, repoName, worktreeBaseDir, worktreePath string) error
 
 	// PurgeWorktree removes any worktree (registration + on-disk directory) for
-	// branch under worktreeBaseDir without deleting the branch. Best-effort
+	// the recorded path under worktreeBaseDir without deleting the branch. Best-effort
 	// cleanup after a failed session start; safe when nothing exists.
 	//
 	// A non-nil error means the purge did NOT RUN — callers must then skip the
 	// branch reap, which `git branch -D` refuses while the worktree is still
 	// registered. Its individual steps stay best-effort and are logged, not
 	// returned, so nil does not promise the directory is gone.
-	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error
+	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, recordedPath string) error
 
 	// Resurrect re-creates a worktree from an existing branch and runs the
 	// setup script if present. A non-nil error means the worktree is NOT back;
@@ -697,6 +697,9 @@ type CreateOpts struct {
 	// this create does not yet own the branch, and recording a name another
 	// create owns would point the failure cleanup at someone else's worktree.
 	OnWorktreeReady func(ctx context.Context, branch, worktreePath string)
+
+	// OnWorktreeAdded persists directory ownership before setup. A failed write removes the added worktree.
+	OnWorktreeAdded func(path string) error
 }
 
 // CreateResult holds the output of a successful worktree creation.
@@ -743,6 +746,7 @@ type CreateFromExistingBranchOpts struct {
 	RepoName          string    // Display name of the repo, used to derive worktree subdirectory.
 	SetupScript       *string   // Optional setup script to run after creation.
 	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
+	OnWorktreeAdded   func(path string) error
 }
 
 // ResurrectOpts holds the parameters for resurrecting an archived worktree.
@@ -1969,8 +1973,7 @@ func (m *Manager) reapBazelOutputBase(base string) {
 //     naming a branch some live session holds with that session.
 //   - Create with Force: no guard, by request. Force means "remove any existing
 //     branch of this name", so the caller has asked for the clobber.
-//   - PurgeWorktree: it is only ever handed the branch of a session whose
-//     bootstrap has already failed or been declared dead.
+//   - PurgeWorktree: callers supply the directory recorded at its creation.
 //
 // All steps are best-effort, with one exception: wtPath must lie strictly
 // inside repoBase (<worktree base>/<repo>), checked by ensureWithin before
@@ -2032,31 +2035,23 @@ func worktreeRepoBase(worktreeBaseDir, repoName string) string {
 	return filepath.Join(worktreeBaseDir, sanitizeDirName(repoName))
 }
 
-// PurgeWorktree removes any worktree (git registration + on-disk directory) for
-// the given branch under worktreeBaseDir, WITHOUT deleting the branch. Used to
-// clean up after a failed session start so a leftover directory can't wedge
-// future attempts (notably the dependabot repair loop). Best-effort and safe
-// when nothing exists. Path derivation matches Create/CreateFromExistingBranch.
-//
-// It takes the per-clone gate (see repoCloneGates), because `worktree remove`
-// and `worktree prune` mutate the SAME shared clone a concurrent create is
-// fetching and adding into — and since BOS-717 this really does run
-// concurrently with live creates: the stranded-bootstrap reaper calls it from
-// the daemon poller by design. The gate is not reentrant, so it is taken HERE
-// rather than in clearStaleWorktree, which Create and CreateFromExistingBranch
-// call directly while already holding it.
-//
-// The error reports whether the purge RAN, not whether it succeeded: the steps
-// inside are best-effort and log their own failures. Only a refused purge
-// returns non-nil — the refused gate, a branch name git rejects (a session
-// stored before validation existed), or a path outside the repo's worktree
-// base — and it is returned rather than swallowed because the caller must then
-// skip the branch reap — see the caller contract on
-// WorktreeManager.PurgeWorktree.
-func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) error {
-	if err := ValidateBranchName(ctx, branch); err != nil {
-		m.logger.Error().Err(err).Str("repo", repoPath).Str("branch", branch).
-			Msg("purge worktree: refusing to derive a worktree path from an invalid branch name; nothing was deleted")
+// PurgeWorktree removes only the recorded directory strictly inside the repo's
+// worktree base, preserving the branch. Empty ownership is a no-op. A refused
+// purge returns an error so callers skip branch cleanup.
+func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, recordedPath string) error {
+	if recordedPath == "" {
+		return nil
+	}
+	repoBase := worktreeRepoBase(worktreeBaseDir, repoName)
+	resolvedRepo, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve repository checkout: %w", err)
+	}
+	resolvedPath, pathErr := filepath.EvalSymlinks(recordedPath)
+	if filepath.Clean(recordedPath) == filepath.Clean(repoPath) || (pathErr == nil && filepath.Clean(resolvedPath) == filepath.Clean(resolvedRepo)) {
+		return fmt.Errorf("refusing to purge the repository checkout %q", recordedPath)
+	}
+	if err := ensureWithin(repoBase, recordedPath); err != nil {
 		return err
 	}
 
@@ -2068,14 +2063,13 @@ func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktre
 		// was actually lost. Do NOT restate the old claim that "the next
 		// create for this path clears it anyway": a create whose branch
 		// survived settles on `<branch>-2` and clears THAT path instead.
-		m.logger.Warn().Err(err).Str("repo", repoPath).Str("branch", branch).
+		m.logger.Warn().Err(err).Str("repo", repoPath).Str("path", recordedPath).
 			Msg("purge worktree: could not serialize against the shared clone; skipping (the caller reports what this leaves behind)")
 		return err
 	}
 	defer release()
 
-	repoBase := worktreeRepoBase(worktreeBaseDir, repoName)
-	return m.clearStaleWorktree(ctx, repoPath, repoBase, filepath.Join(repoBase, branch))
+	return m.clearStaleWorktree(ctx, repoPath, repoBase, recordedPath)
 }
 
 // acquireCloneGate takes the per-clone gate for a MUTATING operation on the
@@ -2239,6 +2233,15 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
 	worktreeAddDuration := time.Since(worktreeAddStarted)
+	if opts.OnWorktreeAdded != nil {
+		if err := opts.OnWorktreeAdded(wtPath); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RepoCloneCleanupGateTimeout)
+			_, removeErr := runGit(cleanupCtx, opts.RepoPath, "worktree", "remove", "--force", wtPath)
+			cleanupErr := errors.Join(removeErr, m.removeAll(wtPath))
+			cancel()
+			return nil, errors.Join(fmt.Errorf("record added worktree: %w", err), cleanupErr)
+		}
+	}
 
 	// Tell the caller what it now owns, while the hang-prone setup script is
 	// still ahead of us (BOS-717). See CreateOpts.OnWorktreeReady.
@@ -4889,6 +4892,15 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 		return nil, fmt.Errorf("create worktree from existing branch: %w", err)
 	}
 	worktreeAddDuration := time.Since(worktreeAddStarted)
+	if opts.OnWorktreeAdded != nil {
+		if err := opts.OnWorktreeAdded(wtPath); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RepoCloneCleanupGateTimeout)
+			_, removeErr := runGit(cleanupCtx, opts.RepoPath, "worktree", "remove", "--force", wtPath)
+			cleanupErr := errors.Join(removeErr, m.removeAll(wtPath))
+			cancel()
+			return nil, errors.Join(fmt.Errorf("record added worktree: %w", err), cleanupErr)
+		}
+	}
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
 	// downstream step writes into them.

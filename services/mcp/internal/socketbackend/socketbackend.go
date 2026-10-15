@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemoncaps"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -365,7 +366,13 @@ func (b *Backend) CloseSession(ctx context.Context, id string) (*pb.Session, err
 // MergeSession returns the daemon's detail note alongside the merged session.
 // MergeSessionResponse already carries it, so the local socket path can report a
 // merge-strategy substitution to an MCP caller verbatim.
+// Pinned merges probe first so an older daemon cannot silently discard the pin.
 func (b *Backend) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
+	if matchHead != "" {
+		if err := daemoncaps.Require(ctx, b.rpc, daemoncaps.MergeExpectedHeadSHA); err != nil {
+			return nil, "", err
+		}
+	}
 	resp, err := b.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: matchHead}))
 	if err != nil {
 		return nil, "", err

@@ -404,6 +404,17 @@ func (c *RemoteClient) MergeSession(ctx context.Context, id, matchHead string) (
 	return resp.Msg.GetSession(), "", nil
 }
 
+// ApproveSessionPR needs the daemon host's worktree and toolbox; the
+// orchestrator has no proxy for it.
+func (c *RemoteClient) ApproveSessionPR(context.Context, string, bool) (*pb.VerifyApproveResult, error) {
+	return nil, errLocalOnly("ApproveSessionPR")
+}
+
+// SendBackSessionPR is local-only for the same reason as ApproveSessionPR.
+func (c *RemoteClient) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
+	return nil, errLocalOnly("SendBackSessionPR")
+}
+
 func (c *RemoteClient) RemoveSession(ctx context.Context, id string) error {
 	_, err := c.rpc.ProxyRemoveSession(ctx, connect.NewRequest(&pb.ProxyRemoveSessionRequest{Id: id}))
 	return err

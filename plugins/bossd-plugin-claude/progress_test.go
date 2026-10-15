@@ -479,14 +479,14 @@ func TestProbeProgressLiveness_ViaServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "stalledsess.jsonl"), src, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f.jsonl"), src, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	srv := &Server{logger: zerolog.Nop()}
 	resp, err := srv.ProbeProgressLiveness(context.Background(), &bossanovav1.ProbeProgressLivenessRequest{
 		WorkDir:        work,
-		AgentSessionId: "stalledsess",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f",
 	})
 	if err != nil {
 		t.Fatalf("ProbeProgressLiveness: %v", err)

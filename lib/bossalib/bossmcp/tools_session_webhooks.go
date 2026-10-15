@@ -43,14 +43,14 @@ func hostedSessionWebhookBackend(backend Backend, opts Options) SessionWebhookBa
 // session webhook reads (list_session_webhook_event_types,
 // list_session_webhooks).
 type SessionWebhookOrgArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
 }
 
 // ListSessionWebhookDeliveriesArgs is the typed argument struct for
 // list_session_webhook_deliveries.
 type ListSessionWebhookDeliveriesArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
-	WebhookID      string `json:"webhook_id" jsonschema:"the session webhook id"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
+	WebhookID      string `json:"webhook_id" jsonschema:"webhook id"`
 	Status         string `json:"status,omitempty" jsonschema:"only this status: pending, in_flight, succeeded, failed or cancelled"`
 	EventType      string `json:"event_type,omitempty" jsonschema:"only this event type"`
 	IsTest         *bool  `json:"is_test,omitempty" jsonschema:"only test (true) or only live (false) deliveries"`
@@ -61,14 +61,14 @@ type ListSessionWebhookDeliveriesArgs struct {
 // GetSessionWebhookDeliveryArgs is the typed argument struct for
 // get_session_webhook_delivery.
 type GetSessionWebhookDeliveryArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
 	DeliveryID     string `json:"delivery_id" jsonschema:"the delivery id"`
 }
 
 // TestSessionWebhookArgs is the typed argument struct for test_session_webhook.
 type TestSessionWebhookArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
-	WebhookID      string `json:"webhook_id" jsonschema:"the session webhook id"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
+	WebhookID      string `json:"webhook_id" jsonschema:"webhook id"`
 	EventType      string `json:"event_type" jsonschema:"catalog event type; the webhook need not subscribe to it"`
 	PayloadJSON    string `json:"payload_json,omitempty" jsonschema:"body as a JSON object; omit to send the catalog sample"`
 }
@@ -76,8 +76,8 @@ type TestSessionWebhookArgs struct {
 // DeleteSessionWebhookArgs is the typed argument struct for
 // delete_session_webhook.
 type DeleteSessionWebhookArgs struct {
-	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
-	ID             string `json:"id" jsonschema:"the session webhook id"`
+	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
+	ID             string `json:"id" jsonschema:"webhook id"`
 	Confirm        bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the webhook"`
 }
 
@@ -89,7 +89,7 @@ type DeleteSessionWebhookArgs struct {
 type SaveSessionWebhookArgs struct {
 	ID             string   `json:"id,omitempty" jsonschema:"session webhook id; omit to create"`
 	RotateSecret   bool     `json:"rotate_secret,omitempty" jsonschema:"rotate the signing secret"`
-	OrganizationID string   `json:"organization_id,omitempty" jsonschema:"omit: only your active organization is accepted"`
+	OrganizationID string   `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
 	URL            *string  `json:"url,omitempty" jsonschema:"https URL deliveries are POSTed to; required to create"`
 	Description    *string  `json:"description,omitempty"`
 	EventTypes     []string `json:"event_types,omitempty" jsonschema:"catalog event types; required to create, non-empty replaces the set"`
@@ -177,8 +177,10 @@ func registerSessionWebhookReadTools(server *mcp.Server, backend SessionWebhookB
 	})
 
 	addTool(server, opts, &mcp.Tool{
-		Name:        "list_session_webhooks",
-		Description: "List the organization's session webhooks (owner only); secrets are never returned.",
+		Name: "list_session_webhooks",
+		Description: "List the session webhooks you may act on (owner only), without secrets. Unless member sessions are " +
+			"shared: yours, plus orphans (creator no longer an owner) with an empty url that accept only disable or delete " +
+			"(else FAILED_PRECONDITION).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionWebhookOrgArgs) (*mcp.CallToolResult, any, error) {
 		resp, err := backend.ListSessionWebhooks(ctx, &pb.ListSessionWebhooksRequest{OrganizationId: args.OrganizationID})

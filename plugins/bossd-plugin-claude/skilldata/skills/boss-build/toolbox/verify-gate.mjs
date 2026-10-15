@@ -8,7 +8,7 @@
 //   judge    --pr <n> [--repo o/r] [--extension-results <file>] [--waive <code>[,<code>…]]
 //                                                                                   never writes
 //   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>[,…]]
-//            [--findings <file>] [--token <t>] [--repo o/r] [--dry-run]
+//            [--findings <file>] [--extension-record <record>] [--token <t>] [--repo o/r] [--dry-run]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
 //   observe-merge --pr <n> [--repo o/r]                                              never writes
 //   approval --pr <n> [--repo o/r]                                                   never writes
@@ -410,6 +410,72 @@ export function aggregateExtensions(results, installed = []) {
   return { verdict: 'pass', reason: 'verified', ...out }
 }
 
+// The extension record: what a clean extension run concluded on a head, so an approval of the park
+// it led to can settle without running the extensions again. Serialized as `<name>:<outcome>,…`,
+// where an outcome is `pass`, `abstain` or the HUMAN_REASONS code the extension parked on.
+const RECORD_NAME = /^[A-Za-z0-9._-]+$/
+
+/**
+ * The record of an aggregate's outcomes, or null when the run is not recordable: any malfunction
+ * (an optional extension's included), finding or wait, or a name the record cannot carry.
+ * @returns {string | null}
+ */
+export function extensionRecord(agg) {
+  if (agg.failed.length > 0 || agg.findings.length > 0 || agg.waitReason) return null
+  const entries = []
+  for (const o of agg.outcomes) {
+    if (!RECORD_NAME.test(o.extension)) return null
+    if (o.outcome === 'abstain' && o.reason === 'abstain') entries.push(`${o.extension}:abstain`)
+    else if (o.outcome === 'ok' && o.verdict === 'pass') entries.push(`${o.extension}:pass`)
+    else if (o.outcome === 'ok' && o.verdict === 'human' && HUMAN_REASONS.includes(o.humanReason))
+      entries.push(`${o.extension}:${o.humanReason}`)
+    else return null
+  }
+  return entries.length > 0 ? entries.join(',') : null
+}
+
+/**
+ * Parses a serialized extension record into `[{extension, outcome}]`, or null when any entry is
+ * malformed, a name repeats, or the record is empty: a partly understood record is never reused.
+ */
+export function parseExtensionRecord(value) {
+  if (typeof value !== 'string' || value === '') return null
+  const judged = []
+  for (const entry of value.split(',')) {
+    const at = entry.indexOf(':')
+    const extension = entry.slice(0, at)
+    const outcome = entry.slice(at + 1)
+    if (at < 1 || !RECORD_NAME.test(extension) || judged.some((e) => e.extension === extension))
+      return null
+    if (outcome !== 'pass' && outcome !== 'abstain' && !HUMAN_REASONS.includes(outcome)) return null
+    judged.push({ extension, outcome })
+  }
+  return judged
+}
+
+/**
+ * The aggregate a recorded run stands for, judged against the extensions that apply now:
+ * `{outcomes, humanReasons}`, or null when an applicable extension is missing from the record (it
+ * was added since, so it has not judged this head). Entries for an extension whose check now says
+ * it does not apply are dropped, as its results would be.
+ */
+function reuseExtensionRecord(judged, applicable, notApplicable = []) {
+  if (!Array.isArray(judged)) return null
+  const recorded = new Set(judged.map((e) => e.extension))
+  if (!applicable.every((ext) => recorded.has(ext?.name))) return null
+  const skip = new Set(notApplicable)
+  const kept = judged.filter((e) => !skip.has(e.extension))
+  const outcomes = kept.map(({ extension, outcome }) =>
+    outcome === 'abstain'
+      ? { extension, outcome: 'abstain', reason: 'abstain', verdict: null }
+      : outcome === 'pass'
+        ? { extension, outcome: 'ok', reason: 'pass', verdict: 'pass' }
+        : { extension, outcome: 'ok', reason: 'human', verdict: 'human', humanReason: outcome },
+  )
+  const humanReasons = HUMAN_REASONS.filter((code) => kept.some((e) => e.outcome === code))
+  return { outcomes, humanReasons }
+}
+
 /**
  * The approval read: `{approval: 'merged-by-human'|'policy-park-approved'|'reverify'|'none', waive?,
  * via?, reason?}`. `labels` is the ticket's current label names, or null when they could not be
@@ -556,8 +622,19 @@ export function decideVerdict(facts) {
       ? park(codes, extra)
       : { verdict: 'pass', reason: passReason, ...base, ...extra, notes }
   if (!Array.isArray(f.extensions) || f.extensions.length === 0) return settle(pathCodes)
-  if (f.extensionResults === undefined)
-    return { verdict: 'extensions-required', reason: 'extensions-installed', ...base, notes }
+  if (f.extensionResults === undefined) {
+    // On the approval path, the record of the clean run that led to the park (`f.extensionRecord`,
+    // bound to this head) stands in for running the extensions again.
+    const reused =
+      waived.size > 0
+        ? reuseExtensionRecord(f.extensionRecord, f.extensions, f.extensionsNotApplicable)
+        : null
+    if (!reused)
+      return { verdict: 'extensions-required', reason: 'extensions-installed', ...base, notes }
+    return settle([...pathCodes, ...reused.humanReasons], {
+      extensions: { outcomes: reused.outcomes, reused: true },
+    })
+  }
   // A result from an extension whose applicability check said it does not apply is not judged.
   const notApplicable = new Set(f.extensionsNotApplicable ?? [])
   const results = Array.isArray(f.extensionResults)
@@ -586,16 +663,22 @@ export function decideVerdict(facts) {
   // An extension that asked to retry later (a busy shared resource) waits above every park: no
   // approval waives it, and the next tick re-judges.
   if (agg.waitReason) return { ...wait(agg.waitReason), extensions }
-  return settle([...pathCodes, ...agg.humanReasons], { extensions })
+  const settled = settle([...pathCodes, ...agg.humanReasons], { extensions })
+  // A park after a clean run carries its record, for `post --extension-record`.
+  const record = settled.verdict === 'human' ? extensionRecord(agg) : null
+  return record ? { ...settled, extensionRecord: record } : settled
 }
 
 /**
  * Whether `facts` reach the extension stage: no wait, no PR-state park, and at least one extension.
- * Results are excluded from the question, so the answer is the same on a first judge and a
- * re-judge whatever `facts.extensionResults` holds.
+ * Results and a recorded run are excluded from the question, so the answer is the same on a first
+ * judge and a re-judge whatever `facts.extensionResults` or `facts.extensionRecord` holds.
  */
 export function extensionsConsulted(facts) {
-  return decideVerdict({ ...facts, extensionResults: undefined }).verdict === 'extensions-required'
+  return (
+    decideVerdict({ ...facts, extensionResults: undefined, extensionRecord: undefined }).verdict ===
+    'extensions-required'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1539,6 +1622,11 @@ export async function judge(options, deps = {}) {
   if (options.extensionResults !== undefined) {
     const parsed = readJsonFile(options.extensionResults)
     facts.extensionResults = Array.isArray(parsed) ? parsed : null
+  } else if (waive) {
+    // Only the approval path reuses a recorded run, and only one recorded on this head by an
+    // account with write access; an unreadable comment read is no record.
+    const comments = readMarkers()
+    facts.extensionRecord = comments.readable ? recordedExtensions(comments.markers, headSha) : null
   }
   const verdict = decideVerdict(facts)
   const out = {
@@ -1641,6 +1729,13 @@ function humanComment({ code, pr, url, label = '' }) {
   ].join('\n\n')
 }
 
+function extensionRecordComment(headSha, reason, record) {
+  return [
+    `boss-verify parked \`${headSha.slice(0, 12)}\` for a human (\`${reason}\`) after its verify extensions ran clean. An approval of this head reuses that run; a new head is judged afresh.`,
+    extensionRecordMarker(headSha, record),
+  ].join('\n\n')
+}
+
 function defectTrackerComment({ count, pr, url, commentUrl }) {
   return [
     `boss-verify found ${count} finding(s) on PR #${pr}${url ? ` (${url})` : ''}, and auto-repair is not on for this repository.`,
@@ -1712,6 +1807,12 @@ export async function post(options, deps = {}) {
     )
   if (verdict === 'wait' && !text(options.reason))
     throw new UsageError('verify-gate: post --verdict wait needs --reason <code>')
+  const record =
+    options.extensionRecord === undefined ? null : parseExtensionRecord(options.extensionRecord)
+  if (options.extensionRecord !== undefined && (verdict !== 'human' || !record))
+    throw new UsageError(
+      'verify-gate: post --extension-record takes the judge output extensionRecord, with --verdict human only',
+    )
   let findings = []
   if (verdict === 'defect') {
     const parsed = readJsonFile(options.findings ?? '')
@@ -1868,9 +1969,21 @@ export async function post(options, deps = {}) {
           trackerWrites: applied?.outcome ?? 'failed',
         })
     }
+    // The record rides with the park it led to; without it an approval re-runs the extensions.
+    let extensionRecord
+    if (record) {
+      const body = extensionRecordComment(headSha, reason, options.extensionRecord)
+      writes.push({ kind: 'pr-comment', body })
+      if (!dryRun) extensionRecord = postPrComment(read, repo, pr, body) ? 'posted' : 'failed'
+    }
     const posted = runStatus(status('pending', description)).ok
     flushNotes()
-    return finish({ verdict: effective, reason, posted })
+    return finish({
+      verdict: effective,
+      reason,
+      posted,
+      ...(extensionRecord ? { extensionRecord } : {}),
+    })
   }
 
   // Defect: the PR findings comment first (its URL is the status target), then the tracker writes
@@ -2164,11 +2277,23 @@ const OPERATOR_MARKER =
   /^<!-- boss-(approve|send-back) head=([0-9a-fA-F]{40})(?: waives=(\S+))? -->$/
 
 /**
- * The operator decisions recorded on a PR's issue comments: `[{kind: 'approve'|'send-back', head,
- * waives?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
- * (readOperatorMarkers then keeps only authors with write access), and only when its last non-blank
- * line is a well-formed marker: an approve marker names a known code set or none at all (`waives`
- * is then ''), and a send-back marker names no codes.
+ * The hidden last line of the PR comment `post --verdict human` leaves when the park followed a
+ * clean extension run: the head and the serialized extension record. It is read back through the
+ * same trusted-author filter as an approval record.
+ */
+export function extensionRecordMarker(headSha, record) {
+  return `<!-- boss-extension-record head=${headSha} judged=${record} -->`
+}
+
+const EXTENSION_RECORD_MARKER =
+  /^<!-- boss-extension-record head=([0-9a-fA-F]{40}) judged=(\S+) -->$/
+
+/**
+ * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions',
+ * head, waives?, judged?, at, id, login, url}]`. Only a comment by an owner, member or collaborator
+ * is a candidate (readOperatorMarkers then keeps only authors with write access), and only when its
+ * last non-blank line is a well-formed marker: an approve marker names a known code set or none at
+ * all (`waives` is then ''), a send-back marker names no codes, and an extension record parses.
  */
 export function operatorMarkers(comments) {
   const out = []
@@ -2183,17 +2308,24 @@ export function operatorMarkers(comments) {
         .map((line) => line.trim())
         .filter(Boolean)
         .at(-1) ?? ''
-    const match = last.match(OPERATOR_MARKER)
-    if (!match) continue
-    const [, kind, head, waives] = match
-    const entry = {
+    const stamp = (kind, head) => ({
       kind,
       head: head.toLowerCase(),
       at: timeOf(comment.created_at),
       id: idOf(comment),
       login,
       url: text(comment.html_url) ? comment.html_url : '',
+    })
+    const recorded = last.match(EXTENSION_RECORD_MARKER)
+    if (recorded) {
+      const judged = parseExtensionRecord(recorded[2])
+      if (judged) out.push({ ...stamp('extensions', recorded[1]), judged })
+      continue
     }
+    const match = last.match(OPERATOR_MARKER)
+    if (!match) continue
+    const [, kind, head, waives] = match
+    const entry = stamp(kind, head)
     if (kind === 'approve') {
       const codes = waives === undefined ? [] : parseHumanReasonList(waives)
       if (!codes) continue
@@ -2211,17 +2343,29 @@ export function operatorMarkers(comments) {
  * re-approves it.
  */
 export function operatorDecision(markers, headSha) {
-  const head = typeof headSha === 'string' ? headSha.toLowerCase() : ''
-  let newest = null
-  for (const marker of Array.isArray(markers) ? markers : []) {
-    if (!isSha(head) || marker?.head !== head) continue
-    if (!newest || marker.at > newest.at || (marker.at === newest.at && marker.id > newest.id))
-      newest = marker
-  }
+  const newest = newestFor(markers, headSha, (kind) => kind === 'approve' || kind === 'send-back')
   if (newest?.kind === 'approve')
     return { decision: 'approved', waives: newest.waives, url: newest.url ?? '' }
   if (newest?.kind === 'send-back') return { decision: 'sent-back', url: newest.url ?? '' }
   return { decision: null }
+}
+
+/** The newest extension record on `headSha` as `[{extension, outcome}]`, or null when none. */
+function recordedExtensions(markers, headSha) {
+  return newestFor(markers, headSha, (kind) => kind === 'extensions')?.judged ?? null
+}
+
+// The newest marker for `headSha` whose kind `wanted` accepts: latest `at`, the larger id breaking
+// a tie.
+function newestFor(markers, headSha, wanted) {
+  const head = typeof headSha === 'string' ? headSha.toLowerCase() : ''
+  let newest = null
+  for (const marker of Array.isArray(markers) ? markers : []) {
+    if (!isSha(head) || marker?.head !== head || !wanted(marker.kind)) continue
+    if (!newest || marker.at > newest.at || (marker.at === newest.at && marker.id > newest.id))
+      newest = marker
+  }
+  return newest
 }
 
 // The repository permissions whose holder's markers count: a decision on a park is as strong as
@@ -2832,7 +2976,17 @@ export function parseCandidateFlags(argv) {
 const FLAGS = Object.freeze({
   judge: { values: ['pr', 'repo', 'extension-results', 'waive'], bools: [] },
   post: {
-    values: ['pr', 'head', 'verdict', 'reason', 'label', 'findings', 'token', 'repo'],
+    values: [
+      'pr',
+      'head',
+      'verdict',
+      'reason',
+      'label',
+      'findings',
+      'token',
+      'repo',
+      'extension-record',
+    ],
     bools: ['dry-run'],
   },
   merge: { values: ['pr', 'head', 'token', 'repo'], bools: ['dry-run'] },
@@ -2905,6 +3059,7 @@ export async function main(argv, deps = {}) {
         reason: f.reason,
         label: f.label,
         findings: f.findings,
+        extensionRecord: f['extension-record'],
         token: f.token,
         repo: f.repo,
         dryRun: f['dry-run'] === true,

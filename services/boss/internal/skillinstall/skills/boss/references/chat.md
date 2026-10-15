@@ -44,6 +44,7 @@ Delivers a follow-up message to a running chat identified by a session id or age
 
 **Flags:**
 
+- `--json` — Emit the delivery outcome as a machine-readable JSON envelope
 - `--submit` — Submit the message (press Enter and verify); false prefills the composer without submitting (default: true)
 - `--wake-if-asleep` — Wake a sleeping chat before delivering; false leaves a stopped chat stopped (default: true)
 

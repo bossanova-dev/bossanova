@@ -2,6 +2,7 @@ package socketbackend
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/socketauth"
@@ -36,11 +38,18 @@ type fakeDaemon struct {
 	mergeDetail string
 	// mergeReq records the last MergeSessionRequest, so the head pin can be
 	// asserted on the wire.
-	mergeReq *pb.MergeSessionRequest
+	mergeReq              *pb.MergeSessionRequest
+	legacyNoHeadPin       bool
+	omitHeadPinCapability bool
+	capabilityError       error
+	capabilityProbeCalls  int
 }
 
 func (f *fakeDaemon) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
 	f.mergeReq = req.Msg
+	if f.legacyNoHeadPin {
+		f.mergeReq.ExpectedHeadSha = ""
+	}
 	return connect.NewResponse(&pb.MergeSessionResponse{
 		Session: &pb.Session{Id: req.Msg.GetId()},
 		Detail:  f.mergeDetail,
@@ -498,5 +507,65 @@ func TestDialRetryHonorsContextCancellation(t *testing.T) {
 	// Should return well before exhausting the full retry window.
 	if elapsed >= fullWindow {
 		t.Fatalf("context cancellation not honored promptly: took %v (full window %v)", elapsed, fullWindow)
+	}
+}
+
+func (f *fakeDaemon) GetDaemonCapabilities(context.Context, *connect.Request[pb.GetDaemonCapabilitiesRequest]) (*connect.Response[pb.GetDaemonCapabilitiesResponse], error) {
+	f.capabilityProbeCalls++
+	if f.legacyNoHeadPin {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("unknown method"))
+	}
+	if f.capabilityError != nil {
+		return nil, f.capabilityError
+	}
+	capabilities := []string{daemoncaps.MergeExpectedHeadSHA}
+	if f.omitHeadPinCapability {
+		capabilities = nil
+	}
+	return connect.NewResponse(&pb.GetDaemonCapabilitiesResponse{Capabilities: capabilities}), nil
+}
+
+func TestMergePinRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fake *fakeDaemon
+		code connect.Code
+	}{
+		{"legacy", &fakeDaemon{legacyNoHeadPin: true}, connect.CodeUnimplemented},
+		{"missing", &fakeDaemon{omitHeadPinCapability: true}, connect.CodeUnimplemented},
+		{"unavailable", &fakeDaemon{capabilityError: connect.NewError(connect.CodeUnavailable, errors.New("offline"))}, connect.CodeUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socketPath := shortSocketPath(t)
+			serveFakeDaemonAt(t, tc.fake, socketPath)
+			backend, err := New(socketPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = backend.MergeSession(context.Background(), "sess-8", strings.Repeat("a", 40))
+			if connect.CodeOf(err) != tc.code {
+				t.Errorf("code=%v, want %v (err=%v)", connect.CodeOf(err), tc.code, err)
+			}
+			if tc.fake.mergeReq != nil {
+				t.Fatalf("merge attempted: %v", tc.fake.mergeReq)
+			}
+		})
+	}
+}
+
+func TestMergeLegacyUnpinned(t *testing.T) {
+	fake := &fakeDaemon{legacyNoHeadPin: true}
+	backend, err := New(serveFakeDaemon(t, fake))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := backend.MergeSession(context.Background(), "sess-8", ""); err != nil {
+		t.Fatal(err)
+	}
+	if fake.mergeReq == nil {
+		t.Fatal("unpinned merge was not attempted")
+	}
+	if fake.capabilityProbeCalls != 0 {
+		t.Fatalf("unpinned probes=%d, want zero", fake.capabilityProbeCalls)
 	}
 }

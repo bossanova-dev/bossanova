@@ -19,7 +19,7 @@ func TestGetChatTitle_FromJSONL(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-1234"
+	claudeID := "0199a3c1-7b2e-7d40-9c55-000000000000"
 
 	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
 	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
@@ -54,7 +54,7 @@ func TestGetChatTitle_SkipsMetaCaveatLeadingLine(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-caveat"
+	claudeID := "0199a3c1-7b2e-7d40-9c55-000000000001"
 
 	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
 	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
@@ -95,7 +95,7 @@ func TestGetChatTitle_FromRenameSummary(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	worktree := "/Users/dave/Code/myproj"
-	claudeID := "abcd-rename"
+	claudeID := "0199a3c1-7b2e-7d40-9c55-000000000002"
 
 	projectKey := strings.NewReplacer("/", "-", ".", "-").Replace(worktree)
 	projectDir := filepath.Join(tmpHome, ".claude", "projects", projectKey)
@@ -136,30 +136,30 @@ func TestGetChatTitle_CustomTitles(t *testing.T) {
 	}{
 		{
 			name:     "from custom title",
-			claudeID: "abcd-custom-title",
+			claudeID: "0199a3c1-7b2e-7d40-9c55-000000000003",
 			jsonl: []string{
-				`{"type":"custom-title","customTitle":"Rename Test","sessionId":"abcd-custom-title"}`,
-				`{"type":"agent-name","agentName":"Rename Test","sessionId":"abcd-custom-title"}`,
+				`{"type":"custom-title","customTitle":"Rename Test","sessionId":"0199a3c1-7b2e-7d40-9c55-000000000003"}`,
+				`{"type":"agent-name","agentName":"Rename Test","sessionId":"0199a3c1-7b2e-7d40-9c55-000000000003"}`,
 				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
 			},
 			want: "Rename Test",
 		},
 		{
 			name:     "custom title over summary",
-			claudeID: "abcd-custom-over-summary",
+			claudeID: "0199a3c1-7b2e-7d40-9c55-000000000004",
 			jsonl: []string{
 				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
 				`{"type":"summary","summary":"auto summary"}`,
-				`{"type":"custom-title","customTitle":"User Title","sessionId":"abcd-custom-over-summary"}`,
+				`{"type":"custom-title","customTitle":"User Title","sessionId":"0199a3c1-7b2e-7d40-9c55-000000000004"}`,
 			},
 			want: "User Title",
 		},
 		{
 			name:     "empty custom title falls back to summary",
-			claudeID: "abcd-empty-custom-title",
+			claudeID: "0199a3c1-7b2e-7d40-9c55-000000000005",
 			jsonl: []string{
 				`{"type":"user","message":{"role":"user","content":"Initial prompt"}}`,
-				`{"type":"custom-title","customTitle":"","sessionId":"abcd-empty-custom-title"}`,
+				`{"type":"custom-title","customTitle":"","sessionId":"0199a3c1-7b2e-7d40-9c55-000000000005"}`,
 				`{"type":"summary","summary":"rename summary"}`,
 			},
 			want: "rename summary",
@@ -202,7 +202,7 @@ func TestGetChatTitle_MissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	srv := &Server{logger: zerolog.Nop()}
 	resp, err := srv.GetChatTitle(context.Background(), &bossanovav1.GetChatTitleRequest{
-		WorkDir: "/nope", SessionId: "missing",
+		WorkDir: "/nope", SessionId: "0199a3c1-7b2e-7d40-9c55-000000000010",
 	})
 	if err != nil {
 		t.Fatalf("GetChatTitle should not error on missing file, got: %v", err)
@@ -267,18 +267,18 @@ func TestTranscriptExistsReturnsTrueForRealFile(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "sess.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "0199a3c1-7b2e-7d40-9c55-000000000006.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if !transcriptExists(work, "sess") {
+	if !transcriptExists(work, "0199a3c1-7b2e-7d40-9c55-000000000006") {
 		t.Error("expected transcriptExists=true")
 	}
 }
 
 func TestTranscriptExistsReturnsFalseForMissing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if transcriptExists(t.TempDir(), "missing") {
+	if transcriptExists(t.TempDir(), "0199a3c1-7b2e-7d40-9c55-000000000010") {
 		t.Error("expected transcriptExists=false")
 	}
 }
@@ -325,11 +325,11 @@ func TestTranscriptExistsFindsUnderscoreWorktreeTranscript(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "sess.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "0199a3c1-7b2e-7d40-9c55-000000000006.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if !transcriptExists(work, "sess") {
+	if !transcriptExists(work, "0199a3c1-7b2e-7d40-9c55-000000000006") {
 		t.Error("expected transcriptExists=true for a worktree path containing '_'")
 	}
 }
@@ -784,14 +784,14 @@ func TestReadTranscript_ViaServer(t *testing.T) {
 	}
 	jsonl := `{"type":"user","message":{"role":"user","content":"help me"}}` + "\n" +
 		`{"type":"assistant","message":{"role":"assistant","content":"I can help"}}` + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "mysess.jsonl"), []byte(jsonl), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "0199a3c1-7b2e-7d40-9c55-000000000007.jsonl"), []byte(jsonl), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	srv := &Server{logger: zerolog.Nop()}
 	resp, err := srv.ReadTranscript(context.Background(), &bossanovav1.ReadTranscriptRequest{
 		WorkDir:        work,
-		AgentSessionId: "mysess",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000007",
 		MaxMessages:    0,
 	})
 	if err != nil {
@@ -813,7 +813,7 @@ func TestReadTranscript_ViaServer_MissingFile(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop()}
 	resp, err := srv.ReadTranscript(context.Background(), &bossanovav1.ReadTranscriptRequest{
 		WorkDir:        t.TempDir(),
-		AgentSessionId: "noexist",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000010",
 	})
 	if err != nil {
 		t.Fatalf("ReadTranscript should not error on missing file, got: %v", err)
@@ -911,12 +911,12 @@ func TestTranscriptPathRejectsTraversalSessionID(t *testing.T) {
 		}
 	}
 	// A well-formed UUID-shaped id still resolves.
-	got, err := transcriptPath("/tmp/wt", "0199-abcd-ef01")
+	got, err := transcriptPath("/tmp/wt", "0199a3c1-7b2e-7d40-9c55-000000000008")
 	if err != nil {
 		t.Fatalf("transcriptPath valid id: unexpected error %v", err)
 	}
-	if !strings.HasSuffix(got, "0199-abcd-ef01.jsonl") {
-		t.Errorf("transcriptPath valid id = %q, want suffix 0199-abcd-ef01.jsonl", got)
+	if !strings.HasSuffix(got, "0199a3c1-7b2e-7d40-9c55-000000000008.jsonl") {
+		t.Errorf("transcriptPath valid id = %q, want suffix 0199a3c1-7b2e-7d40-9c55-000000000008.jsonl", got)
 	}
 }
 
@@ -945,11 +945,11 @@ func TestChatTitleInDirRejectsTraversalID(t *testing.T) {
 	}
 
 	// A well-formed id still resolves its title normally.
-	if err := os.WriteFile(filepath.Join(projectDir, "good.jsonl"),
+	if err := os.WriteFile(filepath.Join(projectDir, "0199a3c1-7b2e-7d40-9c55-000000000009.jsonl"),
 		[]byte(`{"type":"summary","summary":"real title"}`+"\n"), 0o600); err != nil {
 		t.Fatalf("write good: %v", err)
 	}
-	title, explicit := chatTitleInDir(projectDir, "good")
+	title, explicit := chatTitleInDir(projectDir, "0199a3c1-7b2e-7d40-9c55-000000000009")
 	if title != "real title" || !explicit {
 		t.Errorf("chatTitleInDir valid id = (%q, %v), want (real title, true)", title, explicit)
 	}
@@ -1058,4 +1058,34 @@ func TestReadTranscript_OversizedLine(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestClaudeTranscriptLookupsRequireCanonicalUUID(t *testing.T) {
+	const valid = "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f"
+	t.Setenv("HOME", t.TempDir())
+	projectDir := t.TempDir()
+	for _, id := range []string{"*", "?", "[0-9a-f]*", strings.ToUpper(valid), "x", ""} {
+		t.Run(id, func(t *testing.T) {
+			if _, err := transcriptPath("/tmp/wt", id); err == nil {
+				t.Errorf("transcriptPath(%q) accepted invalid id", id)
+			}
+			// Plant a file so an empty result proves rejection rather than absence.
+			if err := os.WriteFile(filepath.Join(projectDir, id+".jsonl"), []byte(`{"type":"summary","summary":"must not leak"}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if title, explicit := chatTitleInDir(projectDir, id); title != "" || explicit {
+				t.Errorf("chatTitleInDir(%q) = (%q, %v)", id, title, explicit)
+			}
+		})
+	}
+	path, err := transcriptPath("/tmp/wt", valid)
+	if err != nil || filepath.Base(path) != valid+".jsonl" {
+		t.Fatalf("canonical transcriptPath = %q, %v", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, valid+".jsonl"), []byte(`{"type":"summary","summary":"real title"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if title, explicit := chatTitleInDir(projectDir, valid); title != "real title" || !explicit {
+		t.Fatalf("canonical chatTitleInDir = %q, %v", title, explicit)
+	}
 }

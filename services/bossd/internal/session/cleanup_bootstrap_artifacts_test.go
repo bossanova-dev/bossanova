@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
+	gitpkg "github.com/recurser/bossd/internal/git"
 )
 
 // artifactWorktreeManager records only the two calls this policy makes; the
@@ -70,10 +76,12 @@ func TestCleanUpBootstrapArtifactsAppliesTheOwnershipRule(t *testing.T) {
 
 			sessions := newMockSessionStore()
 			sessions.sessions["sess-1"] = &models.Session{
-				ID:           "sess-1",
-				RepoID:       "repo-1",
-				BranchName:   "owned-branch",
-				WorktreePath: tc.worktreePath,
+				ID:                "sess-1",
+				RepoID:            "repo-1",
+				BranchName:        "owned-branch",
+				WorktreePath:      tc.worktreePath,
+				WorktreeCreatedAt: ptrTestOwnershipTime(),
+				IsBranchCreated:   true,
 			}
 			repos := newMockRepoStore()
 			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/repo", DisplayName: "repo"}
@@ -81,11 +89,13 @@ func TestCleanUpBootstrapArtifactsAppliesTheOwnershipRule(t *testing.T) {
 
 			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, worktrees, "sess-1")
 
-			if got := len(worktrees.purgedBranches); got != 1 {
-				t.Fatalf("PurgeWorktree calls = %d, want 1", got)
+			if got := len(worktrees.purgedBranches); got != tc.wantReaps {
+				t.Fatalf("PurgeWorktree calls = %d, want %d", got, tc.wantReaps)
 			}
-			if got := worktrees.purgedBranches[0]; got != "owned-branch" {
-				t.Fatalf("PurgeWorktree branch = %q, want %q", got, "owned-branch")
+			if tc.wantReaps > 0 {
+				if got := worktrees.purgedBranches[0]; got != tc.worktreePath {
+					t.Fatalf("PurgeWorktree path = %q, want %q", got, tc.worktreePath)
+				}
 			}
 			if got := len(worktrees.reapedBranches); got != tc.wantReaps {
 				t.Fatalf("ReapLocalBranches calls = %d, want %d", got, tc.wantReaps)
@@ -150,10 +160,12 @@ func TestCleanUpBootstrapArtifactsSkipsTheReapWhenThePurgeDidNotRun(t *testing.T
 
 			sessions := newMockSessionStore()
 			sessions.sessions["sess-1"] = &models.Session{
-				ID:           "sess-1",
-				RepoID:       "repo-1",
-				BranchName:   "owned-branch",
-				WorktreePath: tc.worktreePath,
+				ID:                "sess-1",
+				RepoID:            "repo-1",
+				BranchName:        "owned-branch",
+				WorktreePath:      tc.worktreePath,
+				WorktreeCreatedAt: ptrTestOwnershipTime(),
+				IsBranchCreated:   true,
 			}
 			repos := newMockRepoStore()
 			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/repo", DisplayName: "repo"}
@@ -163,6 +175,12 @@ func TestCleanUpBootstrapArtifactsSkipsTheReapWhenThePurgeDidNotRun(t *testing.T
 			var logs bytes.Buffer
 			CleanUpBootstrapArtifacts(context.Background(), zerolog.New(&logs), sessions, repos, worktrees, "sess-1")
 			got := logs.String()
+			if tc.worktreePath == "" {
+				if len(worktrees.purgedBranches) != 0 || !strings.Contains(got, "worktree ownership unknown; not purged") {
+					t.Fatalf("unknown ownership cleanup: %s", got)
+				}
+				return
+			}
 
 			if n := len(worktrees.reapedBranches); n != 0 {
 				t.Fatalf("ReapLocalBranches calls = %d, want 0 after a purge that never ran: `git branch -D` would be refused and the branch would leak", n)
@@ -221,4 +239,79 @@ func TestCleanUpBootstrapArtifactsIsANoOpWithoutWiring(t *testing.T) {
 	CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), nil, nil, nil, "sess-1")
 	CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(),
 		newMockSessionStore(), newMockRepoStore(), nil, "sess-1")
+}
+
+func ptrTestOwnershipTime() *time.Time { t := time.Now().UTC(); return &t }
+
+func TestCleanupPreservesExistingBranchAndUnknownWorktree(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			sessions := newMockSessionStore()
+			sess := &models.Session{ID: "s", RepoID: "r", BranchName: "existing", WorktreePath: "/worktrees/repo/existing-2"}
+			if !legacy {
+				sess.WorktreeCreatedAt = ptrTestOwnershipTime()
+			}
+			sessions.sessions["s"] = sess
+			repos := newMockRepoStore()
+			repos.repos["r"] = &models.Repo{ID: "r", LocalPath: "/repo", DisplayName: "repo"}
+			wt := newArtifactWorktreeManager()
+			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, wt, "s")
+			if len(wt.reapedBranches) != 0 {
+				t.Fatal("existing branch force-deleted")
+			}
+			if legacy {
+				if len(wt.purgedBranches) != 0 {
+					t.Fatal("legacy directory deleted")
+				}
+			} else if len(wt.purgedBranches) != 1 || wt.purgedBranches[0] != sess.WorktreePath {
+				t.Fatalf("purged %v", wt.purgedBranches)
+			}
+		})
+	}
+}
+
+func TestFailedBootstrapPurgesOnlyRecordedCollisionWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := t.TempDir()
+	remote := t.TempDir()
+	base := filepath.Join(t.TempDir(), "worktrees")
+	gitRun := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	gitRun(remote, "init", "--bare", "-q")
+	gitRun(repo, "init", "-q", "-b", "main")
+	gitRun(repo, "commit", "--allow-empty", "-q", "-m", "initial")
+	gitRun(repo, "remote", "add", "origin", remote)
+	gitRun(repo, "push", "-q", "origin", "main")
+	mgr := gitpkg.NewManager(zerolog.Nop())
+	opts := gitpkg.CreateOpts{RepoPath: repo, RepoName: "repo", WorktreeBaseDir: base, BaseBranch: "main", Title: "collision"}
+	peer, err := mgr.Create(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := newMockSessionStore()
+	sessions.sessions["s"] = &models.Session{ID: "s", RepoID: "r", BaseBranch: "main"}
+	repos := newMockRepoStore()
+	repos.repos["r"] = &models.Repo{ID: "r", LocalPath: repo, DisplayName: "repo", WorktreeBaseDir: base}
+	lifecycle := &Lifecycle{sessions: sessions, logger: zerolog.Nop()}
+	opts.OnWorktreeAdded = lifecycle.recordAddedWorktree(ctx, "s")
+	opts.OnWorktreeReady = lifecycle.recordCreatedWorktree("s")
+	owned, err := mgr.Create(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned.WorktreePath == peer.WorktreePath {
+		t.Fatal("collision was not exercised")
+	}
+	CleanUpBootstrapArtifacts(ctx, zerolog.Nop(), sessions, repos, mgr, "s")
+	if _, err = os.Stat(peer.WorktreePath); err != nil {
+		t.Fatalf("peer worktree purged: %v", err)
+	}
+	if _, err = os.Stat(owned.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("owned worktree survives: %v", err)
+	}
 }

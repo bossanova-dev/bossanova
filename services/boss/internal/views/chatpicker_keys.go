@@ -23,7 +23,7 @@ func (m ChatPickerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// can't invisibly enter another confirm state before the async result
 	// routes the picker. Esc is the exception: it navigates away while
 	// allowing the RPC to finish in the background.
-	if m.merging || m.archiving || m.switching {
+	if m.merging || m.approving || m.archiving || m.switching {
 		if msg.String() == "esc" {
 			m.cancel = true
 		}
@@ -46,6 +46,7 @@ func (m ChatPickerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.statusMsg = ""
+	m.statusNote = ""
 
 	return m.handleListKey(msg)
 }
@@ -181,19 +182,21 @@ func (m ChatPickerModel) keyOpenTracker() (tea.Model, tea.Cmd) {
 	}
 }
 
-// keyMerge handles [m]erge: raise the merge confirmation when the action is
-// available.
+// keyMerge handles [m]: on a verify-parked PR it raises the approve
+// confirmation, otherwise the merge confirmation when merge is available.
 func (m ChatPickerModel) keyMerge() (tea.Model, tea.Cmd) {
-	if !m.canMerge() {
-		return m, nil
+	switch {
+	case m.canApprove():
+		m.confirm = confirmApprove
+	case m.canMerge():
+		m.confirm = confirmMerge
 	}
-	m.confirm = confirmMerge
 	return m, nil
 }
 
 // keyArchive handles [a]rchive: raise the archive confirmation.
 func (m ChatPickerModel) keyArchive() (tea.Model, tea.Cmd) {
-	if m.sessionID != "" && !m.loading && m.confirm == confirmNone && !m.merging && !m.archiving {
+	if m.sessionID != "" && !m.loading && m.confirm == confirmNone && !m.merging && !m.approving && !m.archiving {
 		m.confirm = confirmArchive
 	}
 	return m, nil
@@ -358,6 +361,9 @@ func (m ChatPickerModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case confirmMerge:
 			m.merging = true
 			return m, m.mergeCmd()
+		case confirmApprove:
+			m.approving = true
+			return m, m.approveCmd()
 		case confirmArchive:
 			m.archiving = true
 			return m, m.archiveCmd()

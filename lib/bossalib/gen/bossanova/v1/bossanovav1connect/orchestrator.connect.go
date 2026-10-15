@@ -700,13 +700,31 @@ type OrchestratorServiceClient interface {
 	// webhook's existence is not disclosed. The signing secret is returned ONLY
 	// by CreateSessionWebhook and RotateSessionWebhookSecret.
 	//
+	// Member session sharing (BOS-1593,
+	// Organization.is_member_session_sharing_enabled, false by default) narrows
+	// this further. While it is off an endpoint delivers only its creator's
+	// sessions, so only its creator may act on it: another owner's endpoint is
+	// not listed, and every id-addressed RPC answers NOT_FOUND for it --
+	// GetSessionWebhookDelivery too, even for a delivery about the caller's own
+	// session. The exception is an orphaned endpoint, whose creator is no
+	// longer an owner of the organization: it is listed to every owner with
+	// SessionWebhook.is_retire_only set and an empty url (the URL is often a
+	// bearer credential), and any owner may delete it or disable it with an
+	// UpdateSessionWebhook that sets nothing but is_enabled=false (whose
+	// response is marked and withholds the url the same way). Every other RPC
+	// on an orphaned endpoint answers FAILED_PRECONDITION. While sharing is on,
+	// every owner may act on every endpoint.
+	//
 	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
 	// subscribe to, in canonical order.
 	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
 	// ListSessionWebhookFormats returns the built-in payload formats an endpoint
 	// can pick (SessionWebhook.format), in canonical order.
 	ListSessionWebhookFormats(context.Context, *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error)
-	// ListSessionWebhooks returns the organization's endpoints, oldest first.
+	// ListSessionWebhooks returns the organization's endpoints the caller may
+	// act on, oldest first: every one while member session sharing is on,
+	// otherwise the caller's own plus any orphaned one, marked is_retire_only
+	// with its url empty.
 	// Never returns a secret.
 	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
 	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
@@ -715,17 +733,23 @@ type OrchestratorServiceClient interface {
 	// address), an empty or unknown event type set, an unknown format, a
 	// description over 200 characters, or a caller-supplied secret that is not
 	// 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
-	// has 20 endpoints.
+	// has 20 endpoints, counting other owners' endpoints the caller cannot see.
 	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
 	// UpdateSessionWebhook changes only the fields that are present and returns
 	// the endpoint without its secret. Disabling an endpoint or changing its URL
 	// cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+	// While member session sharing is off: NOT_FOUND for another owner's
+	// endpoint, and FAILED_PRECONDITION for an orphaned one unless the update
+	// sets nothing but is_enabled=false.
 	UpdateSessionWebhook(context.Context, *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error)
 	// RotateSessionWebhookSecret replaces the signing secret; undelivered events
 	// are signed with the new one. The new secret is returned ONLY here.
+	// While member session sharing is off: NOT_FOUND for another owner's
+	// endpoint, FAILED_PRECONDITION for an orphaned one.
 	RotateSessionWebhookSecret(context.Context, *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error)
 	// DeleteSessionWebhook permanently deletes an endpoint with its delivery
-	// history.
+	// history. While member session sharing is off: NOT_FOUND for another
+	// owner's endpoint; an orphaned one may be deleted.
 	DeleteSessionWebhook(context.Context, *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error)
 	// SendSessionWebhookTestEvent sends one test delivery of event_type to the
 	// endpoint synchronously and returns it with its single attempt, or
@@ -738,15 +762,23 @@ type OrchestratorServiceClient interface {
 	// created_at and forces is_test to true. The body is then rendered through
 	// the endpoint's format, exactly as a live delivery is; a payload the format
 	// cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
-	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization. While
+	// member session sharing is off: NOT_FOUND for another owner's endpoint,
+	// FAILED_PRECONDITION for an orphaned one.
 	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
 	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
 	// first. INVALID_ARGUMENT for a page_token that does not decode, an
-	// unknown status, or a negative page_size.
+	// unknown status, or a negative page_size. While member session sharing is
+	// off it lists only test deliveries and deliveries about the caller's own
+	// sessions, and answers NOT_FOUND for another owner's endpoint and
+	// FAILED_PRECONDITION for an orphaned one.
 	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
 	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
 	// the request body rendered through the endpoint's current format and the
-	// request headers. Never returns a secret.
+	// request headers. Never returns a secret. While member session sharing is
+	// off: NOT_FOUND for a delivery about another member's session or on
+	// another owner's endpoint, FAILED_PRECONDITION for one on an orphaned
+	// endpoint.
 	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
 	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
 	// when bosso receives an authenticated HTTP request or a GitHub App event.
@@ -755,9 +787,14 @@ type OrchestratorServiceClient interface {
 	// prefix. Every RPC below requires user authentication (daemon tokens are
 	// refused) and passes the cloud access policy for the trigger's organization
 	// (PERMISSION_DENIED when it refuses). A trigger is visible only to its
-	// creator: any id-addressed call on a trigger the caller did not create, or
-	// in an organization the caller is not a member of, returns NOT_FOUND so the
-	// trigger's existence is not disclosed.
+	// creator and to the owners of its organization: any id-addressed call on a
+	// trigger by anyone else -- another member, or a caller outside the
+	// organization -- returns NOT_FOUND so the trigger's existence is not
+	// disclosed. An owner may get, disable, delete, rotate the secret of and
+	// list the invocations of a member's trigger, each recorded in the audit
+	// log; enabling, editing and testing a trigger stay with its creator, and an
+	// owner attempting them gets PERMISSION_DENIED, because a trigger launches
+	// sessions on its creator's machines.
 	//
 	// GetTriggerCatalog returns the trigger types, event types, and filter
 	// fields bosso accepts. Needs user authentication only; it is static
@@ -765,9 +802,13 @@ type OrchestratorServiceClient interface {
 	GetTriggerCatalog(context.Context, *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error)
 	// ListTriggers returns the caller's own triggers, in organization_id when
 	// set (the caller must be a member) or across every organization the caller
-	// belongs to. Never returns a secret.
+	// belongs to. With should_include_member_triggers it returns every member's
+	// triggers in that organization instead (organization_id, or the caller's
+	// active organization when absent), which needs the owner role there
+	// (PERMISSION_DENIED otherwise). Never returns a secret.
 	ListTriggers(context.Context, *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error)
-	// GetTrigger returns one trigger the caller created. Never returns a secret.
+	// GetTrigger returns one trigger the caller created, or, for an owner of its
+	// organization, a member's trigger. Never returns a secret.
 	GetTrigger(context.Context, *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error)
 	// CreateTrigger creates a trigger owned by the caller in organization_id,
 	// which the caller must be a member of. For an HTTP trigger the response
@@ -776,14 +817,17 @@ type OrchestratorServiceClient interface {
 	CreateTrigger(context.Context, *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error)
 	// UpdateTrigger changes fields of a trigger the caller created; absent
 	// fields are left unchanged. trigger_type is immutable. Never returns or
-	// changes the secret.
+	// changes the secret. An owner of the trigger's organization may disable a
+	// member's trigger (is_enabled false and nothing else); enabling it or any
+	// other change is PERMISSION_DENIED for anyone but the creator.
 	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error)
-	// DeleteTrigger permanently deletes a trigger the caller created, together
-	// with its secret and invocation history. Its endpoint stops accepting
-	// requests immediately.
+	// DeleteTrigger permanently deletes a trigger the caller created, or, for an
+	// owner of its organization, a member's trigger, together with its secret
+	// and invocation history. Its endpoint stops accepting requests immediately.
 	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error)
 	// RotateTriggerSecret replaces the signing secret of an HTTP trigger the
-	// caller created; the old secret stops validating immediately. The new
+	// caller created, or, for an owner of its organization, a member's HTTP
+	// trigger; the old secret stops validating immediately. The new
 	// secret is returned ONLY in this response. FAILED_PRECONDITION for a
 	// trigger type with no secret.
 	RotateTriggerSecret(context.Context, *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error)
@@ -791,10 +835,12 @@ type OrchestratorServiceClient interface {
 	// applying the same filters and policies as a real invocation, and records
 	// the result as a TriggerInvocation with source "test". It launches a
 	// session only when should_launch is set; otherwise the invocation stops at
-	// its decision.
+	// its decision. Only the creator may test a trigger; an owner of its
+	// organization gets PERMISSION_DENIED.
 	TestTrigger(context.Context, *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error)
 	// ListTriggerInvocations returns the invocation history of a trigger the
-	// caller created, newest first.
+	// caller created, or, for an owner of its organization, a member's trigger,
+	// newest first.
 	ListTriggerInvocations(context.Context, *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
@@ -2604,13 +2650,31 @@ type OrchestratorServiceHandler interface {
 	// webhook's existence is not disclosed. The signing secret is returned ONLY
 	// by CreateSessionWebhook and RotateSessionWebhookSecret.
 	//
+	// Member session sharing (BOS-1593,
+	// Organization.is_member_session_sharing_enabled, false by default) narrows
+	// this further. While it is off an endpoint delivers only its creator's
+	// sessions, so only its creator may act on it: another owner's endpoint is
+	// not listed, and every id-addressed RPC answers NOT_FOUND for it --
+	// GetSessionWebhookDelivery too, even for a delivery about the caller's own
+	// session. The exception is an orphaned endpoint, whose creator is no
+	// longer an owner of the organization: it is listed to every owner with
+	// SessionWebhook.is_retire_only set and an empty url (the URL is often a
+	// bearer credential), and any owner may delete it or disable it with an
+	// UpdateSessionWebhook that sets nothing but is_enabled=false (whose
+	// response is marked and withholds the url the same way). Every other RPC
+	// on an orphaned endpoint answers FAILED_PRECONDITION. While sharing is on,
+	// every owner may act on every endpoint.
+	//
 	// ListSessionWebhookEventTypes returns the event catalog an endpoint can
 	// subscribe to, in canonical order.
 	ListSessionWebhookEventTypes(context.Context, *connect.Request[v1.ListSessionWebhookEventTypesRequest]) (*connect.Response[v1.ListSessionWebhookEventTypesResponse], error)
 	// ListSessionWebhookFormats returns the built-in payload formats an endpoint
 	// can pick (SessionWebhook.format), in canonical order.
 	ListSessionWebhookFormats(context.Context, *connect.Request[v1.ListSessionWebhookFormatsRequest]) (*connect.Response[v1.ListSessionWebhookFormatsResponse], error)
-	// ListSessionWebhooks returns the organization's endpoints, oldest first.
+	// ListSessionWebhooks returns the organization's endpoints the caller may
+	// act on, oldest first: every one while member session sharing is on,
+	// otherwise the caller's own plus any orphaned one, marked is_retire_only
+	// with its url empty.
 	// Never returns a secret.
 	ListSessionWebhooks(context.Context, *connect.Request[v1.ListSessionWebhooksRequest]) (*connect.Response[v1.ListSessionWebhooksResponse], error)
 	// CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
@@ -2619,17 +2683,23 @@ type OrchestratorServiceHandler interface {
 	// address), an empty or unknown event type set, an unknown format, a
 	// description over 200 characters, or a caller-supplied secret that is not
 	// 16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
-	// has 20 endpoints.
+	// has 20 endpoints, counting other owners' endpoints the caller cannot see.
 	CreateSessionWebhook(context.Context, *connect.Request[v1.CreateSessionWebhookRequest]) (*connect.Response[v1.CreateSessionWebhookResponse], error)
 	// UpdateSessionWebhook changes only the fields that are present and returns
 	// the endpoint without its secret. Disabling an endpoint or changing its URL
 	// cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+	// While member session sharing is off: NOT_FOUND for another owner's
+	// endpoint, and FAILED_PRECONDITION for an orphaned one unless the update
+	// sets nothing but is_enabled=false.
 	UpdateSessionWebhook(context.Context, *connect.Request[v1.UpdateSessionWebhookRequest]) (*connect.Response[v1.UpdateSessionWebhookResponse], error)
 	// RotateSessionWebhookSecret replaces the signing secret; undelivered events
 	// are signed with the new one. The new secret is returned ONLY here.
+	// While member session sharing is off: NOT_FOUND for another owner's
+	// endpoint, FAILED_PRECONDITION for an orphaned one.
 	RotateSessionWebhookSecret(context.Context, *connect.Request[v1.RotateSessionWebhookSecretRequest]) (*connect.Response[v1.RotateSessionWebhookSecretResponse], error)
 	// DeleteSessionWebhook permanently deletes an endpoint with its delivery
-	// history.
+	// history. While member session sharing is off: NOT_FOUND for another
+	// owner's endpoint; an orphaned one may be deleted.
 	DeleteSessionWebhook(context.Context, *connect.Request[v1.DeleteSessionWebhookRequest]) (*connect.Response[v1.DeleteSessionWebhookResponse], error)
 	// SendSessionWebhookTestEvent sends one test delivery of event_type to the
 	// endpoint synchronously and returns it with its single attempt, or
@@ -2642,15 +2712,23 @@ type OrchestratorServiceHandler interface {
 	// created_at and forces is_test to true. The body is then rendered through
 	// the endpoint's format, exactly as a live delivery is; a payload the format
 	// cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
-	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+	// RESOURCE_EXHAUSTED past 10 test sends per minute per organization. While
+	// member session sharing is off: NOT_FOUND for another owner's endpoint,
+	// FAILED_PRECONDITION for an orphaned one.
 	SendSessionWebhookTestEvent(context.Context, *connect.Request[v1.SendSessionWebhookTestEventRequest]) (*connect.Response[v1.SendSessionWebhookTestEventResponse], error)
 	// ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
 	// first. INVALID_ARGUMENT for a page_token that does not decode, an
-	// unknown status, or a negative page_size.
+	// unknown status, or a negative page_size. While member session sharing is
+	// off it lists only test deliveries and deliveries about the caller's own
+	// sessions, and answers NOT_FOUND for another owner's endpoint and
+	// FAILED_PRECONDITION for an orphaned one.
 	ListSessionWebhookDeliveries(context.Context, *connect.Request[v1.ListSessionWebhookDeliveriesRequest]) (*connect.Response[v1.ListSessionWebhookDeliveriesResponse], error)
 	// GetSessionWebhookDelivery returns one delivery with its attempts in order,
 	// the request body rendered through the endpoint's current format and the
-	// request headers. Never returns a secret.
+	// request headers. Never returns a secret. While member session sharing is
+	// off: NOT_FOUND for a delivery about another member's session or on
+	// another owner's endpoint, FAILED_PRECONDITION for one on an orphaned
+	// endpoint.
 	GetSessionWebhookDelivery(context.Context, *connect.Request[v1.GetSessionWebhookDeliveryRequest]) (*connect.Response[v1.GetSessionWebhookDeliveryResponse], error)
 	// Inbound triggers (BOS-1348). A trigger launches a configured Boss session
 	// when bosso receives an authenticated HTTP request or a GitHub App event.
@@ -2659,9 +2737,14 @@ type OrchestratorServiceHandler interface {
 	// prefix. Every RPC below requires user authentication (daemon tokens are
 	// refused) and passes the cloud access policy for the trigger's organization
 	// (PERMISSION_DENIED when it refuses). A trigger is visible only to its
-	// creator: any id-addressed call on a trigger the caller did not create, or
-	// in an organization the caller is not a member of, returns NOT_FOUND so the
-	// trigger's existence is not disclosed.
+	// creator and to the owners of its organization: any id-addressed call on a
+	// trigger by anyone else -- another member, or a caller outside the
+	// organization -- returns NOT_FOUND so the trigger's existence is not
+	// disclosed. An owner may get, disable, delete, rotate the secret of and
+	// list the invocations of a member's trigger, each recorded in the audit
+	// log; enabling, editing and testing a trigger stay with its creator, and an
+	// owner attempting them gets PERMISSION_DENIED, because a trigger launches
+	// sessions on its creator's machines.
 	//
 	// GetTriggerCatalog returns the trigger types, event types, and filter
 	// fields bosso accepts. Needs user authentication only; it is static
@@ -2669,9 +2752,13 @@ type OrchestratorServiceHandler interface {
 	GetTriggerCatalog(context.Context, *connect.Request[v1.GetTriggerCatalogRequest]) (*connect.Response[v1.GetTriggerCatalogResponse], error)
 	// ListTriggers returns the caller's own triggers, in organization_id when
 	// set (the caller must be a member) or across every organization the caller
-	// belongs to. Never returns a secret.
+	// belongs to. With should_include_member_triggers it returns every member's
+	// triggers in that organization instead (organization_id, or the caller's
+	// active organization when absent), which needs the owner role there
+	// (PERMISSION_DENIED otherwise). Never returns a secret.
 	ListTriggers(context.Context, *connect.Request[v1.ListTriggersRequest]) (*connect.Response[v1.ListTriggersResponse], error)
-	// GetTrigger returns one trigger the caller created. Never returns a secret.
+	// GetTrigger returns one trigger the caller created, or, for an owner of its
+	// organization, a member's trigger. Never returns a secret.
 	GetTrigger(context.Context, *connect.Request[v1.GetTriggerRequest]) (*connect.Response[v1.GetTriggerResponse], error)
 	// CreateTrigger creates a trigger owned by the caller in organization_id,
 	// which the caller must be a member of. For an HTTP trigger the response
@@ -2680,14 +2767,17 @@ type OrchestratorServiceHandler interface {
 	CreateTrigger(context.Context, *connect.Request[v1.CreateTriggerRequest]) (*connect.Response[v1.CreateTriggerResponse], error)
 	// UpdateTrigger changes fields of a trigger the caller created; absent
 	// fields are left unchanged. trigger_type is immutable. Never returns or
-	// changes the secret.
+	// changes the secret. An owner of the trigger's organization may disable a
+	// member's trigger (is_enabled false and nothing else); enabling it or any
+	// other change is PERMISSION_DENIED for anyone but the creator.
 	UpdateTrigger(context.Context, *connect.Request[v1.UpdateTriggerRequest]) (*connect.Response[v1.UpdateTriggerResponse], error)
-	// DeleteTrigger permanently deletes a trigger the caller created, together
-	// with its secret and invocation history. Its endpoint stops accepting
-	// requests immediately.
+	// DeleteTrigger permanently deletes a trigger the caller created, or, for an
+	// owner of its organization, a member's trigger, together with its secret
+	// and invocation history. Its endpoint stops accepting requests immediately.
 	DeleteTrigger(context.Context, *connect.Request[v1.DeleteTriggerRequest]) (*connect.Response[v1.DeleteTriggerResponse], error)
 	// RotateTriggerSecret replaces the signing secret of an HTTP trigger the
-	// caller created; the old secret stops validating immediately. The new
+	// caller created, or, for an owner of its organization, a member's HTTP
+	// trigger; the old secret stops validating immediately. The new
 	// secret is returned ONLY in this response. FAILED_PRECONDITION for a
 	// trigger type with no secret.
 	RotateTriggerSecret(context.Context, *connect.Request[v1.RotateTriggerSecretRequest]) (*connect.Response[v1.RotateTriggerSecretResponse], error)
@@ -2695,10 +2785,12 @@ type OrchestratorServiceHandler interface {
 	// applying the same filters and policies as a real invocation, and records
 	// the result as a TriggerInvocation with source "test". It launches a
 	// session only when should_launch is set; otherwise the invocation stops at
-	// its decision.
+	// its decision. Only the creator may test a trigger; an owner of its
+	// organization gets PERMISSION_DENIED.
 	TestTrigger(context.Context, *connect.Request[v1.TestTriggerRequest]) (*connect.Response[v1.TestTriggerResponse], error)
 	// ListTriggerInvocations returns the invocation history of a trigger the
-	// caller created, newest first.
+	// caller created, or, for an owner of its organization, a member's trigger,
+	// newest first.
 	ListTriggerInvocations(context.Context, *connect.Request[v1.ListTriggerInvocationsRequest]) (*connect.Response[v1.ListTriggerInvocationsResponse], error)
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.

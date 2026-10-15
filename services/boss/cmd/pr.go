@@ -7,11 +7,12 @@ import (
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
-	"github.com/recurser/boss/internal/verifybridge"
+	"github.com/recurser/boss/internal/prverdict"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
 )
@@ -33,11 +34,14 @@ func prCmd() *cobra.Command {
 			"stands on the PR's current head, it posts a head-bound approval record on the PR, and\n" +
 			"the next verify run waives exactly those codes on exactly that head; then it removes the\n" +
 			"tracker's needs-human label. A head pushed meanwhile is not approved. On a head verify\n" +
-			"passed outright, it lifts an earlier send-back of that head. It refuses otherwise.",
+			"passed outright, it lifts an earlier send-back of that head. It refuses otherwise.\n\n" +
+			"The daemon runs it on its own host, in the PR session's worktree, with the repo's stored\n" +
+			"tracker credentials, so it works from any machine that reaches the daemon. It refuses to\n" +
+			"run inside an agent chat: approving a park is the operator's call.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrVerb(cmd, args[0], func(ctx context.Context, c client.BossClient, opts prOptions) error {
-				return prApprove(ctx, cmd, c, &verifybridge.Bridge{}, opts)
+				return prApprove(ctx, cmd, c, opts)
 			})
 		},
 	}
@@ -48,11 +52,12 @@ func prCmd() *cobra.Command {
 		Long: "Send-back posts the note as a PR comment headed \"Sent back by the operator\", then\n" +
 			"starts a `send back` chat in the PR's session that runs /boss-repair with the note as\n" +
 			"the feedback to address. It revokes any approval of the head it rejects, so verify\n" +
-			"neither waives nor merges that head; the next head is judged afresh.",
+			"neither waives nor merges that head; the next head is judged afresh. The daemon posts\n" +
+			"the note from its own host; like approve, it refuses to run inside an agent chat.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrVerb(cmd, args[0], func(ctx context.Context, c client.BossClient, opts prOptions) error {
-				return prSendBack(ctx, cmd, c, &verifybridge.Bridge{}, opts, args[1])
+				return prSendBack(ctx, cmd, c, opts, args[1])
 			})
 		},
 	}
@@ -78,25 +83,31 @@ type prSessionLister interface {
 	ListSessions(context.Context, *pb.ListSessionsRequest, client.SessionReadOptions) ([]*pb.Session, error)
 }
 
-// prChatClient is what send-back needs beyond the session read: start a chat
-// and deliver into it.
-type prChatClient interface {
+// prApproveClient is what approve needs: the session read and the daemon's
+// approve verb.
+type prApproveClient interface {
 	prSessionLister
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
-	SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
+	ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error)
 }
 
-// verifyVerbs is the verify-gate operator surface; *verifybridge.Bridge is the
-// real one.
-type verifyVerbs interface {
-	Approve(context.Context, verifybridge.Target) (verifybridge.ApproveResult, error)
-	SendBack(context.Context, verifybridge.Target, string) (verifybridge.SendBackResult, error)
+// prChatClient is what send-back needs: the session read, the daemon's
+// send-back verb, and starting a chat and delivering into it.
+type prChatClient interface {
+	prSessionLister
+	SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
+	SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
 }
 
 func runPrVerb(cmd *cobra.Command, prArg string, run func(context.Context, client.BossClient, prOptions) error) error {
 	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	repo, _ := cmd.Flags().GetString("repo")
+	if chat := strings.TrimSpace(osGetenv("BOSS_AGENT_SESSION_ID")); chat != "" {
+		// An agent must not approve or send back the park it may itself be under.
+		return emitJSONFailure(cmd, asJSON, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("`boss pr %s` refuses to run inside agent chat %s: approving or sending back a verify park is the operator's call; run it from your own terminal or press [m] on the session in the TUI", cmd.Name(), chat)))
+	}
 	pr, err := parsePRNumber(prArg)
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, err)
@@ -118,7 +129,7 @@ func parsePRNumber(arg string) (int, error) {
 
 // resolvePRSession finds the one live session whose PR is pr, narrowed to repo
 // (owner/repo, case-insensitive) when given. It returns the session and its
-// repo slug, which the verify-gate verbs use as --repo.
+// repo slug, which the `--json` envelope reports.
 func resolvePRSession(ctx context.Context, c prSessionLister, pr int, repo string) (*pb.Session, string, error) {
 	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{})
 	if err != nil {
@@ -160,34 +171,70 @@ func resolvePRSession(ctx context.Context, c prSessionLister, pr int, repo strin
 	return nil, "", codedError(codeAmbiguousPR, fmt.Errorf("PR #%d%s matches %d sessions: %s%s", pr, where, len(matches), strings.Join(described, ", "), hint))
 }
 
-func prTarget(s *pb.Session, slug string, opts prOptions) verifybridge.Target {
-	return verifybridge.Target{PR: opts.pr, Repo: slug, Dir: s.GetWorktreePath(), DryRun: opts.dryRun}
+// prApproveResultJSON is the approve outcome in the `--json` envelope; its tags
+// are verify-gate's own field names.
+type prApproveResultJSON struct {
+	Approved      bool   `json:"approved"`
+	Planned       bool   `json:"planned,omitempty"`
+	DryRun        bool   `json:"dryRun,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Waives        string `json:"waives,omitempty"`
+	Lifted        string `json:"lifted,omitempty"`
+	HeadSHA       string `json:"headSha,omitempty"`
+	TrackerWrites string `json:"trackerWrites,omitempty"`
+	ApprovalURL   string `json:"approvalUrl,omitempty"`
+	Why           string `json:"why,omitempty"`
+	Park          string `json:"park,omitempty"`
+	State         string `json:"state,omitempty"`
+}
+
+func approveResultJSON(r *pb.VerifyApproveResult) prApproveResultJSON {
+	return prApproveResultJSON{
+		Approved:      r.GetIsApproved(),
+		Planned:       r.GetIsPlanned(),
+		DryRun:        r.GetIsDryRun(),
+		Reason:        r.GetReason(),
+		Waives:        r.GetWaives(),
+		Lifted:        r.GetLifted(),
+		HeadSHA:       r.GetHeadSha(),
+		TrackerWrites: r.GetTrackerWrites(),
+		ApprovalURL:   r.GetApprovalUrl(),
+		Why:           r.GetWhy(),
+		Park:          r.GetPark(),
+		State:         r.GetState(),
+	}
 }
 
 // prApproveJSON is the `boss pr approve --json` envelope.
 type prApproveJSON struct {
-	PR        int                        `json:"pr"`
-	Repo      string                     `json:"repo"`
-	SessionID string                     `json:"session_id"`
-	Result    verifybridge.ApproveResult `json:"result"`
+	PR        int                 `json:"pr"`
+	Repo      string              `json:"repo"`
+	SessionID string              `json:"session_id"`
+	Result    prApproveResultJSON `json:"result"`
 }
 
-func prApprove(ctx context.Context, cmd *cobra.Command, c prSessionLister, verbs verifyVerbs, opts prOptions) error {
+// verbTimedOut reports whether the daemon's verify verb ran out of time, in
+// which case its write may already be on the PR.
+func verbTimedOut(err error, opts prOptions) bool {
+	return !opts.dryRun && connect.CodeOf(err) == connect.CodeDeadlineExceeded
+}
+
+func prApprove(ctx context.Context, cmd *cobra.Command, c prApproveClient, opts prOptions) error {
 	s, slug, err := resolvePRSession(ctx, c, opts.pr, opts.repo)
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, err)
 	}
-	r, err := verbs.Approve(ctx, prTarget(s, slug, opts))
-	if errors.Is(err, verifybridge.ErrNodeTimeout) && !opts.dryRun {
+	r, err := c.ApproveSessionPR(ctx, s.GetId(), opts.dryRun)
+	if verbTimedOut(err, opts) {
 		// The record may already be on the PR, so its effect is unknown, not refused.
 		err = fmt.Errorf("%w; an approval record may already be posted, so re-run approve to confirm", err)
 	}
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("approve PR #%d: %w", opts.pr, err))
 	}
-	env := prApproveJSON{PR: opts.pr, Repo: slug, SessionID: s.GetId(), Result: r}
-	if !r.Approved && !r.Planned {
-		refusal := fmt.Errorf("PR #%d not approved: %s%s", opts.pr, refusalDetail(r.Reason, r.Why, r.Park), postedRecordDetail(r))
+	env := prApproveJSON{PR: opts.pr, Repo: slug, SessionID: s.GetId(), Result: approveResultJSON(r)}
+	if !r.GetIsApproved() && !r.GetIsPlanned() {
+		refusal := errors.New(prverdict.ApproveRefusal(opts.pr, r))
 		if opts.asJSON {
 			return emitJSONReportedFailure(cmd, env, refusal)
 		}
@@ -196,62 +243,48 @@ func prApprove(ctx context.Context, cmd *cobra.Command, c prSessionLister, verbs
 	if opts.asJSON {
 		return emitJSON(cmd, env)
 	}
-	w := cmd.OutOrStdout()
-	if r.Planned {
-		if r.Lifted == "sent-back" {
-			_, err = fmt.Fprintf(w, "Would approve #%d: record an approval lifting the send-back of head %s (dry run; nothing written).\n", opts.pr, shortSHA(r.HeadSHA))
+	for _, line := range prverdict.ApproveLines(opts.pr, r) {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), line); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(w, "Would approve #%d: record an approval waiving %s on head %s, then remove the needs-human label (dry run; nothing written).\n", opts.pr, r.Waives, shortSHA(r.HeadSHA))
-		return err
 	}
-	if r.Lifted == "sent-back" {
-		_, err = fmt.Fprintf(w, "Approved #%d: lifted the send-back of head %s (record: %s). Run /boss-verify %d to merge it.\n", opts.pr, shortSHA(r.HeadSHA), r.ApprovalURL, opts.pr)
-		return err
+	return nil
+}
+
+// prSendBackResultJSON is the send-back outcome in the `--json` envelope; its
+// tags are verify-gate's own field names.
+type prSendBackResultJSON struct {
+	Posted     bool   `json:"posted"`
+	Planned    bool   `json:"planned,omitempty"`
+	DryRun     bool   `json:"dryRun,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	CommentURL string `json:"commentUrl,omitempty"`
+	HeadSHA    string `json:"headSha,omitempty"`
+	State      string `json:"state,omitempty"`
+}
+
+func sendBackResultJSON(r *pb.SendBackSessionPRResponse) prSendBackResultJSON {
+	return prSendBackResultJSON{
+		Posted:     r.GetIsPosted(),
+		Planned:    r.GetIsPlanned(),
+		DryRun:     r.GetIsDryRun(),
+		Reason:     r.GetReason(),
+		CommentURL: r.GetCommentUrl(),
+		HeadSHA:    r.GetHeadSha(),
+		State:      r.GetState(),
 	}
-	if _, err = fmt.Fprintf(w, "Approved #%d: waived %s on head %s (record: %s). Verify will re-check and merge.\n", opts.pr, r.Waives, shortSHA(r.HeadSHA), r.ApprovalURL); err != nil {
-		return err
-	}
-	switch r.TrackerWrites {
-	case "ok", "":
-	case "skipped":
-		// verify-gate left the label on deliberately: what was approved no longer stands.
-		switch r.Why {
-		case "pr-not-open":
-			_, err = fmt.Fprintf(w, "The PR is no longer open, so the needs-human label was left on; remove it on the ticket by hand if the work is done.\n")
-		case "head-moved":
-			_, err = fmt.Fprintf(w, "The PR's head or its park changed after the approval, so the needs-human label was left on.\n")
-		default:
-			// An older toolbox reported a failed re-read as skipped too.
-			_, err = fmt.Fprintf(w, "The needs-human label was left on (%s); remove it on the ticket by hand if this head still stands.\n", r.Why)
-		}
-	default:
-		why := r.TrackerWrites
-		if r.Why != "" {
-			why += ": " + r.Why
-		}
-		// The head may have moved and parked meanwhile, so the removal is conditional.
-		_, err = fmt.Fprintf(w, "The needs-human label could not be removed (%s); remove it on the ticket by hand if this head still stands.\n", why)
-	}
-	return err
 }
 
 // prSendBackJSON is the `boss pr send-back --json` envelope. Chat and Delivery
 // are absent on a dry run.
 type prSendBackJSON struct {
-	PR        int                         `json:"pr"`
-	Repo      string                      `json:"repo"`
-	SessionID string                      `json:"session_id"`
-	Result    verifybridge.SendBackResult `json:"result"`
-	Message   string                      `json:"message"`
-	Chat      *chatNewChatJSON            `json:"chat,omitempty"`
-	Delivery  *prDeliveryJSON             `json:"delivery,omitempty"`
-}
-
-type prDeliveryJSON struct {
-	Delivered     bool   `json:"delivered"`
-	DeliveryState string `json:"delivery_state"`
-	Notice        string `json:"notice,omitempty"`
+	PR        int                  `json:"pr"`
+	Repo      string               `json:"repo"`
+	SessionID string               `json:"session_id"`
+	Result    prSendBackResultJSON `json:"result"`
+	Message   string               `json:"message"`
+	Chat      *chatNewChatJSON     `json:"chat,omitempty"`
+	Delivery  *chatDeliveryJSON    `json:"delivery,omitempty"`
 }
 
 // sendBackMessage is what the send-back chat receives: the repair skill, then
@@ -260,7 +293,7 @@ func sendBackMessage(pr int, note string) string {
 	return fmt.Sprintf("/boss-repair %d\n\nThe operator sent PR #%d back. Address this feedback before anything else:\n\n%s", pr, pr, strings.TrimSpace(note))
 }
 
-func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, verbs verifyVerbs, opts prOptions, note string) error {
+func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, opts prOptions, note string) error {
 	if strings.TrimSpace(note) == "" {
 		return emitJSONFailure(cmd, opts.asJSON, codedError(codeInvalidArgument, fmt.Errorf("send-back needs a non-empty note")))
 	}
@@ -268,8 +301,8 @@ func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, verbs v
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, err)
 	}
-	r, err := verbs.SendBack(ctx, prTarget(s, slug, opts), note)
-	if errors.Is(err, verifybridge.ErrNodeTimeout) && !opts.dryRun {
+	r, err := c.SendBackSessionPR(ctx, s.GetId(), note, opts.dryRun)
+	if verbTimedOut(err, opts) {
 		// The note is posted last, so it may already be on the PR: check before re-running.
 		err = fmt.Errorf("%w; the note may already be posted, so check the PR before sending it back again", err)
 	}
@@ -277,15 +310,15 @@ func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, verbs v
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("send back PR #%d: %w", opts.pr, err))
 	}
 	message := sendBackMessage(opts.pr, note)
-	env := prSendBackJSON{PR: opts.pr, Repo: slug, SessionID: s.GetId(), Result: r, Message: message}
-	if !r.Posted && !r.Planned {
-		refusal := fmt.Errorf("PR #%d not sent back: %s", opts.pr, refusalDetail(r.Reason, "", ""))
+	env := prSendBackJSON{PR: opts.pr, Repo: slug, SessionID: s.GetId(), Result: sendBackResultJSON(r), Message: message}
+	if !r.GetIsPosted() && !r.GetIsPlanned() {
+		refusal := errors.New(prverdict.SendBackRefusal(opts.pr, r))
 		if opts.asJSON {
 			return emitJSONReportedFailure(cmd, env, refusal)
 		}
 		return refusal
 	}
-	if r.Planned {
+	if r.GetIsPlanned() {
 		if opts.asJSON {
 			return emitJSON(cmd, env)
 		}
@@ -295,7 +328,7 @@ func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, verbs v
 
 	// The comment is on the PR from here on, so every later failure names it:
 	// the operator must not re-run and post the note twice.
-	posted := fmt.Sprintf("the note is posted at %s", r.CommentURL)
+	posted := fmt.Sprintf("the note is posted at %s", r.GetCommentUrl())
 	chat, err := c.RecordChat(ctx, s.GetId(), uuid.NewString(), sendBackChatTitle, "", false)
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("start the %q chat for PR #%d (%s): %w", sendBackChatTitle, opts.pr, posted, err))
@@ -315,80 +348,14 @@ func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, verbs v
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("deliver the repair to chat %s (%s): %w; retry with `boss chat send %s \"/boss-repair %d\"`", chat.GetAgentSessionId(), posted, err, chat.GetAgentSessionId(), opts.pr))
 	}
-	env.Delivery = &prDeliveryJSON{
-		Delivered:     resp.GetDelivered(),
-		DeliveryState: resp.GetDeliveryState().String(),
-		Notice:        resp.GetNoticeText(),
-	}
+	delivery := newChatDeliveryJSON(resp)
+	env.Delivery = &delivery
 	if opts.asJSON {
 		return emitJSON(cmd, env)
 	}
 	w := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(w, "Sent #%d back: %s\n", opts.pr, r.CommentURL)
+	_, _ = fmt.Fprintf(w, "Sent #%d back: %s\n", opts.pr, r.GetCommentUrl())
 	_, _ = fmt.Fprintf(w, "Repair chat: %s (session %s)\n", chat.GetAgentSessionId(), s.GetId())
 	reportChatSendOutcome(w, resp)
 	return nil
-}
-
-// postedRecordDetail adds what a refused approve's record still does: a posted
-// record is inert for a moved head or a superseding operator decision; for an
-// unconfirmed approval it may stand (or may not have been posted), so the
-// operator re-runs approve to confirm.
-func postedRecordDetail(r verifybridge.ApproveResult) string {
-	switch {
-	case r.Reason == "approval-unconfirmed" && r.ApprovalURL != "":
-		return fmt.Sprintf("; the record at %s may still stand for head %s, so re-run approve to confirm", r.ApprovalURL, shortSHA(r.HeadSHA))
-	case r.Reason == "approval-unconfirmed":
-		return "; re-run approve to confirm"
-	case r.ApprovalURL != "":
-		return fmt.Sprintf("; the record at %s names head %s only and waives nothing that stands now", r.ApprovalURL, shortSHA(r.HeadSHA))
-	}
-	return ""
-}
-
-// refusalDetail renders a verify-gate refusal reason for a person.
-func refusalDetail(reason, why, park string) string {
-	var detail string
-	switch reason {
-	case "no-standing-park":
-		detail = "no `needs human:` park stands on the PR's current head"
-	case "head-moved":
-		detail = "the PR's head or its park changed while approving, so what stands now is not approved; re-check and approve again"
-	case "approval-record-failed":
-		detail = "the approval record could not be posted on the PR, so nothing is approved and the needs-human label was left alone"
-	case "approval-superseded":
-		detail = "a later operator decision on the head (a send-back or another approval) landed while approving and replaces this one"
-	case "approval-unconfirmed":
-		detail = "whether the approval record was posted and took effect could not be read back"
-	case "approver-not-writer":
-		detail = "the account boss runs gh as cannot write to the repository, so its record on the PR would not count"
-	case "approver-unreadable":
-		detail = "the repository permission of the account boss runs gh as could not be read"
-	case "sent-back-approved-head":
-		detail = "the head verify passed under an approval was sent back; run /boss-verify on the PR to re-raise its park, then approve that"
-	case "comments-unreadable":
-		detail = "the PR's comments could not be read, so an earlier send-back cannot be ruled out"
-	case "park-codes-unknown":
-		detail = "the park names a code this toolbox does not know"
-		if park != "" {
-			detail += " (" + park + ")"
-		}
-	case "pr-not-open":
-		detail = "the PR is not open"
-	case "pr-unreadable":
-		detail = "the PR could not be read"
-	case "status-unreadable":
-		detail = "the PR's verify status could not be read"
-	case "head-unreadable":
-		detail = "the PR's head commit could not be read"
-	case "pr-comment-failed":
-		detail = "the PR comment could not be posted"
-	default:
-		detail = "refused"
-	}
-	detail += " [" + reason + "]"
-	if why != "" {
-		detail += ": " + why
-	}
-	return detail
 }

@@ -1213,6 +1213,11 @@ type sendPlanOpts struct {
 	// retried into a second copy. Nil leaves the pane verifier as the only
 	// signal.
 	submitted func() bool
+
+	// receiptRequired says submitted records every turn the agent takes, so
+	// the pane's "payload left the composer" reading cannot confirm a send
+	// without it (SendHooks.ReceiptRequired).
+	receiptRequired bool
 }
 
 // pasteSettleWait is the production bound on awaitComposerSettled. A paste
@@ -1539,6 +1544,12 @@ type SendHooks struct {
 	// pane further and never runs its clear-and-redeliver retry. Nil leaves the
 	// pane verifier as the only signal.
 	Submitted func() bool
+	// ReceiptRequired says Submitted reads the agent's own record of every
+	// turn it takes (Codex's rollout), so its absence is evidence too: a
+	// composer that reads empty without a receipt is unconfirmed rather than
+	// submitted, and one still holding the payload gets the clear-and-redeliver
+	// retry. Claude's hook can fail to fire, so its receipt leaves this false.
+	ReceiptRequired bool
 }
 
 // SendMessageWithHooks is SendMessageWithModal with the caller's SendHooks
@@ -1547,6 +1558,7 @@ func (c *Client) SendMessageWithHooks(ctx context.Context, sessionName, text str
 	opts := c.sendDeliveryOpts(readyMarker, WillSubmit(submit, text), detector)
 	opts.beforeSubmit = hooks.BeforeSubmit
 	opts.submitted = hooks.Submitted
+	opts.receiptRequired = hooks.ReceiptRequired && hooks.Submitted != nil
 	return c.sendPlan(ctx, sessionName, text, opts)
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -115,7 +116,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		Id:                              protoString(r.ID),
 		DisplayName:                     protoString(r.DisplayName),
 		LocalPath:                       protoString(r.LocalPath),
-		OriginUrl:                       protoString(r.OriginURL),
+		OriginUrl:                       protoString(gitpkg.CloneURLWithoutCredentials(r.OriginURL)),
 		DefaultBaseBranch:               protoString(r.DefaultBaseBranch),
 		WorktreeBaseDir:                 protoString(r.WorktreeBaseDir),
 		CanAutoMerge:                    r.CanAutoMerge,

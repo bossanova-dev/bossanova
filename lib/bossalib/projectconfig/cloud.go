@@ -33,7 +33,8 @@ const (
 	// ReasonOwnerRequired: webhooks need an active organization owner.
 	ReasonOwnerRequired = "owner-required"
 	// ReasonManagedByOtherMember: another member already has a trigger with
-	// this project's marker and name. Nothing else about it is known.
+	// this project's marker and name, or a webhook with its marker and URL
+	// that bosso does not list to this caller. Nothing else about it is known.
 	ReasonManagedByOtherMember = "managed-by-other-member"
 	// ReasonServerTooOld: bosso accepted the write but did not store the
 	// project marker.
@@ -41,8 +42,9 @@ const (
 	// ReasonTypeChange: a trigger's type cannot change in place.
 	ReasonTypeChange = "type-change"
 	// ReasonRefused: bosso refused the write for a reason the plan could not
-	// foresee (the organization's webhook cap, a validation rule); the detail
-	// is bosso's message.
+	// foresee (the organization's webhook cap, a validation rule, an endpoint
+	// whose creator left and which may only be disabled or deleted); the
+	// detail is bosso's message.
 	ReasonRefused = "refused"
 )
 
@@ -814,8 +816,21 @@ func (p *cloudPlanner) planWebhooks() {
 		}
 		return
 	}
-	var all []ObservedRow
+	// A webhook the caller may only retire comes without its URL, so it has
+	// no identity to match: it is never this file's row to update, disable or
+	// prune -- even one carrying this project's marker (see WebhookRetireOnly).
+	var listed []*pb.SessionWebhook
 	for _, w := range p.st.Webhooks {
+		if WebhookRetireOnly(w) {
+			if w.GetManagedBy() == p.marker {
+				p.warn(retireOnlyWebhookNote("cloud.webhooks: left as is", w))
+			}
+			continue
+		}
+		listed = append(listed, w)
+	}
+	var all []ObservedRow
+	for _, w := range listed {
 		all = append(all, ObservedRow{Key: webhookKey(w.GetUrl()), Marker: w.GetManagedBy(), Enabled: w.GetIsEnabled()})
 	}
 	keep := preferOwn(all, p.marker)
@@ -823,7 +838,7 @@ func (p *cloudPlanner) planWebhooks() {
 	rows := make([]*pb.SessionWebhook, 0, len(keep))
 	for _, i := range keep {
 		in.Observed = append(in.Observed, all[i])
-		rows = append(rows, p.st.Webhooks[i])
+		rows = append(rows, listed[i])
 	}
 	for _, w := range desired {
 		in.Desired = append(in.Desired, DesiredRow{Key: webhookKey(w.URL)})

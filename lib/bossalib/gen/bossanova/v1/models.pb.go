@@ -5589,7 +5589,9 @@ type Trigger struct {
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Organization the trigger belongs to; sessions it launches are filed there.
 	OrganizationId string `protobuf:"bytes,2,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	// bosso users.id of the creator. Only the creator can read or change it.
+	// bosso users.id of the creator. The creator and the owners of the
+	// trigger's organization can read, disable, delete and rotate it; only the
+	// creator can enable or change it.
 	CreatorUserId string `protobuf:"bytes,3,opt,name=creator_user_id,json=creatorUserId,proto3" json:"creator_user_id,omitempty"`
 	Name          string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	// A disabled trigger records invocations as SKIPPED and launches nothing.

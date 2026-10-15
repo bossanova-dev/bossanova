@@ -14,6 +14,14 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 	repo := createTestRepo(t, NewRepoStore(database))
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewResumeAttemptStore(database)
+	var changes []string
+	store.SetOnChange(func(sessionID string) {
+		// Read the ledger in the callback: the write's row must be closed first.
+		if _, err := store.ListForRun(ctx, sessionID, "run-a"); err != nil {
+			t.Fatalf("read ledger from change callback: %v", err)
+		}
+		changes = append(changes, sessionID)
+	})
 
 	t0 := time.Date(2026, 10, 13, 23, 17, 0, 0, time.UTC)
 	first, err := store.Record(ctx, RecordResumeAttemptParams{
@@ -68,6 +76,19 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 	if n, err := store.DeleteForRun(ctx, sess.ID, "run-a"); err != nil || n != 0 {
 		t.Fatalf("delete empty run = %d, %v; want 0, nil", n, err)
 	}
+	if len(changes) != 4 {
+		t.Fatalf("change callbacks = %v, want three records and one deletion", changes)
+	}
+	for _, sessionID := range changes {
+		if sessionID != sess.ID {
+			t.Fatalf("change session ID = %q, want %q", sessionID, sess.ID)
+		}
+	}
+	// Replacing the callback from inside it must not hold the hook mutex.
+	store.SetOnChange(func(sessionID string) {
+		changes = append(changes, sessionID)
+		store.SetOnChange(nil)
+	})
 
 	// After the budget reset the next attempt is numbered 1 again.
 	again, err := store.Record(ctx, RecordResumeAttemptParams{
@@ -75,6 +96,9 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 	})
 	if err != nil || again.AttemptNumber != 1 {
 		t.Fatalf("record after reset = %+v, %v; want attempt 1", again, err)
+	}
+	if len(changes) != 5 {
+		t.Fatalf("change callbacks after reset = %v, want five", changes)
 	}
 }
 
@@ -84,6 +108,9 @@ func TestResumeAttemptStore_RecordRejectsInvalidInput(t *testing.T) {
 	repo := createTestRepo(t, NewRepoStore(database))
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewResumeAttemptStore(database)
+	store.SetOnChange(func(sessionID string) {
+		t.Errorf("failed Record notified change for %q", sessionID)
+	})
 	now := time.Now()
 
 	cases := map[string]RecordResumeAttemptParams{

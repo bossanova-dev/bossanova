@@ -38,6 +38,12 @@ const SNAPSHOT_SKILL_LABELS = {
 const EXPECTED_EXTENSIONS = [
   {
     core: 'boss-plan',
+    role: 'plan-reviewer',
+    skill: 'boss-plan',
+    names: ['boss-plan-feature-map'],
+  },
+  {
+    core: 'boss-plan',
     role: 'draft',
     skill: 'boss-plan',
     names: ['boss-plan-compound-engineering'],

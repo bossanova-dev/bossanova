@@ -332,6 +332,9 @@ Read the findings, then approve the PR one of three ways:
    commit, so verification waives exactly the parked reasons on that commit and
    judges any later push afresh. Removing `needs-human` from the ticket alone no
    longer hands a park back; on a parked defect it still asks for a fresh verdict.
+   The daemon runs the approval on its own host with the repo's stored Linear key,
+   so it works from any machine connected to that daemon. In the TUI, open the
+   parked session and press `m`, which reads `[m]approve` there.
 2. Have a teammate approve the PR on GitHub. Verification accepts the review
    approval and still checks the required gates.
 3. Merge the PR yourself after your own review.

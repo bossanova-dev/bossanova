@@ -31,6 +31,7 @@ go_test(
         "merge_test.go",
         "new_test.go",
         "notes_test.go",
+        "pr_test.go",
         "rename_test.go",
         "repo_test.go",
         "session_link_pr_test.go",

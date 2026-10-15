@@ -245,19 +245,19 @@ func TestFinishUnattendedRun_SettledConsultedOnlyWhenNoChatBusy(t *testing.T) {
 // TestCancelPendingFinish_ViaNewChat: a new chat row means the run is not
 // done, so it cancels a pending finish; re-recording an existing chat does not.
 func TestCancelPendingFinish_ViaNewChat(t *testing.T) {
-	h := newFinishHarness(t, "chat-a")
-	if resp, err := h.rpc(&pb.FinishUnattendedRunRequest{SessionId: deferralSessionID, RequesterAgentSessionId: "chat-a"}); err != nil || !resp.GetIsDeferred() {
+	h := newFinishHarness(t, "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60")
+	if resp, err := h.rpc(&pb.FinishUnattendedRunRequest{SessionId: deferralSessionID, RequesterAgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60"}); err != nil || !resp.GetIsDeferred() {
 		t.Fatalf("response = %+v err = %v, want deferred", resp, err)
 	}
 
-	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "chat-a"})); err != nil {
+	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60"})); err != nil {
 		t.Fatalf("RecordChat(existing): %v", err)
 	}
 	if !h.d.has(deferralSessionID) {
 		t.Fatal("resuming an existing chat cancelled the pending finish")
 	}
 
-	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "chat-new"})); err != nil {
+	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e61"})); err != nil {
 		t.Fatalf("RecordChat(new): %v", err)
 	}
 	if h.d.has(deferralSessionID) {

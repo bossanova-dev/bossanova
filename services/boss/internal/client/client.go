@@ -85,6 +85,13 @@ type BossClient interface {
 	// exactly that commit. RemoteClient refuses a non-empty matchHead with
 	// Unimplemented rather than merge unpinned.
 	MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error)
+	// ApproveSessionPR hands the session PR's `needs human:` verify park back to
+	// verify (the boss-verify toolbox's approve verb, run by the daemon in the
+	// session worktree). A refusal is a result with a reason, not an error.
+	ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error)
+	// SendBackSessionPR posts note on the session's PR as the operator's
+	// rejection of its current head (the toolbox's send-back verb).
+	SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	// MoveSession moves one session up or down relative to its neighbours in

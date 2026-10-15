@@ -79,6 +79,7 @@ go_library(
         "20261013000000_fix_row_state.sql",
         "20261014000000_repos_is_trusted.sql",
         "20261014100000_repo_keyring_secrets.sql",
+        "20261015000000_session_worktree_created_at.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

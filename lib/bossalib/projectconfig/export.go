@@ -105,11 +105,9 @@ func Export(in ExportInput) (*Config, []string, error) {
 			cloud.Triggers = append(cloud.Triggers, tr)
 			warnings = append(warnings, w...)
 		}
-		for _, wh := range in.Cloud.Webhooks {
-			out, w := ExportWebhook(wh)
-			cloud.Webhooks = append(cloud.Webhooks, out)
-			warnings = append(warnings, w...)
-		}
+		webhooks, w := ExportWebhooks(in.Cloud.Webhooks)
+		cloud.Webhooks = append(cloud.Webhooks, webhooks...)
+		warnings = append(warnings, w...)
 		cfg.Cloud = cloud
 	}
 
@@ -321,6 +319,44 @@ func ExportTrigger(t *pb.Trigger, daemons []Daemon) (Trigger, []string) {
 	return out, warnings
 }
 
+// ExportWebhooks converts the live session webhooks with ExportWebhook,
+// leaving out, with a warning, each one the caller may only retire.
+func ExportWebhooks(webhooks []*pb.SessionWebhook) ([]Webhook, []string) {
+	out := []Webhook{}
+	var warnings []string
+	for _, wh := range webhooks {
+		if WebhookRetireOnly(wh) {
+			warnings = append(warnings, retireOnlyWebhookNote("cloud.webhooks: not exported", wh))
+			continue
+		}
+		exported, w := ExportWebhook(wh)
+		out = append(out, exported)
+		warnings = append(warnings, w...)
+	}
+	return out, warnings
+}
+
+// WebhookRetireOnly reports whether bosso marked w is_retire_only: the
+// caller may only disable or delete it, because its creator is no longer an
+// owner of the organization while member sessions are not shared
+// (BOS-1593). bosso withholds such a webhook's URL -- often a bearer
+// credential -- and a webhook's URL is its identity in the file, so it can be
+// neither exported nor matched.
+func WebhookRetireOnly(w *pb.SessionWebhook) bool {
+	return w.GetIsRetireOnly()
+}
+
+// retireOnlyWebhookNote names a retire-only webhook by id and description,
+// the only identity the listing gives it.
+func retireOnlyWebhookNote(prefix string, w *pb.SessionWebhook) string {
+	name := w.GetId()
+	if d := w.GetDescription(); d != "" {
+		name += fmt.Sprintf(" (%q)", d)
+	}
+	return fmt.Sprintf("%s: session webhook %s is listed without its URL because its creator is no longer an owner of the organization; "+
+		"it can only be disabled or deleted, by id", prefix, name)
+}
+
 // ExportWebhook converts one live session webhook. Its signing secret is
 // never exported: bosso cannot reveal it, and apply uses one only on create.
 func ExportWebhook(w *pb.SessionWebhook) (Webhook, []string) {
@@ -336,7 +372,7 @@ func ExportWebhook(w *pb.SessionWebhook) (Webhook, []string) {
 		warnings = append(warnings, fmt.Sprintf("cloud.webhooks[%s].url: carries userinfo or a query string, which may embed a credential; review the file before committing it", webhookHost(w.GetUrl())))
 	}
 	if f := w.GetFormat(); f != "" && f != "raw" {
-		warnings = append(warnings, fmt.Sprintf("cloud.webhooks[%s].format: %q is not part of the v1 file and was not exported", w.GetUrl(), f))
+		warnings = append(warnings, fmt.Sprintf("cloud.webhooks[%s].format: %q is not part of the v1 file and was not exported", webhookHost(w.GetUrl()), f))
 	}
 	return out, warnings
 }

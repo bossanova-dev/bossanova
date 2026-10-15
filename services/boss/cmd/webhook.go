@@ -203,13 +203,28 @@ func runWebhookList(cmd *cobra.Command, c sessionWebhookClient) error {
 	rows := make([][]string, len(hooks))
 	for i, w := range hooks {
 		rows[i] = []string{
-			w.GetId(), w.GetUrl(), fmt.Sprintf("%t", w.GetIsEnabled()), orDash(w.GetFormat()),
+			w.GetId(), webhookURLCell(w), fmt.Sprintf("%t", w.GetIsEnabled()), orDash(w.GetFormat()),
 			orDash(strings.Join(w.GetEventTypes(), ",")), orDash(w.GetDescription()),
 			orDash(rfc3339OrEmpty(w.GetCreatedAt())),
 		}
 	}
 	renderCLITable(cmd, []string{"ID", "URL", "ENABLED", "FORMAT", "EVENTS", "DESCRIPTION", "CREATED"}, rows)
 	return nil
+}
+
+// webhookRetireOnlyLabel stands in for the URL bosso withholds from a
+// retire-only webhook -- one whose creator is no longer an owner of the
+// organization while member sessions are not shared -- and names the only
+// two commands bosso accepts for it.
+const webhookRetireOnlyLabel = "(hidden: creator is no longer an owner; only 'edit --disable' or 'rm')"
+
+// webhookURLCell is the ls URL column: the URL, or webhookRetireOnlyLabel for
+// a webhook SessionWebhook.is_retire_only marks.
+func webhookURLCell(w *pb.SessionWebhook) string {
+	if w.GetIsRetireOnly() {
+		return webhookRetireOnlyLabel
+	}
+	return w.GetUrl()
 }
 
 func buildCreateSessionWebhookRequest(cmd *cobra.Command, url string) (*pb.CreateSessionWebhookRequest, error) {

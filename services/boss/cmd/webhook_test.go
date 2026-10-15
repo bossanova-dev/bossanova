@@ -218,7 +218,7 @@ func runWebhookCLI(t *testing.T, fake *fakeWebhookServer, stdin string, args ...
 
 var webhookJSONKeys = []string{
 	"created_at", "created_by_user_id", "description", "enabled", "event_types", "format", "id", "organization_id",
-	"secret_rotated_at", "updated_at", "url",
+	"retire_only", "secret_rotated_at", "updated_at", "url",
 }
 
 var webhookDeliveryJSONKeys = []string{
@@ -350,6 +350,31 @@ func TestWebhookCommands(t *testing.T) {
 		}
 		if string(hooks[0]["secret_rotated_at"]) != `""` {
 			t.Errorf("unset secret_rotated_at = %s, want empty string", hooks[0]["secret_rotated_at"])
+		}
+		if string(hooks[0]["retire_only"]) != "false" {
+			t.Errorf("ls --json retire_only = %s for the caller's own webhook, want false", hooks[0]["retire_only"])
+		}
+
+		// A retire-only webhook (BOS-1593) comes back without its URL; ls
+		// names the commands it still accepts rather than an empty column, and
+		// --json carries the flag.
+		withheld := sampleWebhook()
+		withheld.Id, withheld.Url, withheld.IsRetireOnly = "wh-orphan", "", true
+		fake.webhooks = []*pb.SessionWebhook{withheld}
+		out, err = runWebhookCLI(t, fake, "", "ls")
+		if err != nil {
+			t.Fatalf("ls with a retire-only webhook: %v", err)
+		}
+		if !strings.Contains(out, webhookRetireOnlyLabel) {
+			t.Errorf("ls with a retire-only webhook does not say so:\n%s", out)
+		}
+		out, err = runWebhookCLI(t, fake, "", "ls", "--json")
+		if err != nil {
+			t.Fatalf("ls --json with a retire-only webhook: %v", err)
+		}
+		hooks = decodeJSONArray(t, decodeJSONObject(t, out)["webhooks"])
+		if len(hooks) != 1 || string(hooks[0]["retire_only"]) != "true" || string(hooks[0]["url"]) != `""` {
+			t.Errorf("ls --json retire-only webhook = %v, want retire_only true and an empty url", hooks)
 		}
 
 		fake.webhooks = nil

@@ -141,7 +141,7 @@ func (l *Lifecycle) awaitDeliveryReceipt(ctx context.Context, w deliveryWait) de
 				}
 			}
 		}
-		if transcriptID != "" && l.transcriptHasUserMessageSince(waitCtx, w, transcriptID) {
+		if transcriptID != "" && TranscriptHasUserMessageSince(waitCtx, w.client, w.worktreePath, transcriptID, w.launchedAt) {
 			result.outcome = DeliveryConfirmed
 			return result
 		}
@@ -210,19 +210,23 @@ func knownProviderSessionID(chat *models.AgentChat) string {
 	return *chat.ProviderSessionID
 }
 
-// transcriptHasUserMessageSince reports whether the agent's transcript holds a
-// user message timestamped at or after launch. A resumed transcript already
-// holds older user turns; those never count. A read error is "not yet".
-func (l *Lifecycle) transcriptHasUserMessageSince(ctx context.Context, w deliveryWait, transcriptID string) bool {
-	resp, err := w.client.ReadTranscript(ctx, &bossanovav1.ReadTranscriptRequest{
-		WorkDir:        w.worktreePath,
+// TranscriptHasUserMessageSince reports whether the agent's transcript holds a
+// user message timestamped at or after since: the agent's own record that it
+// took an input. A resumed transcript already holds older user turns; those
+// never count. A read error or a missing transcript is "not yet".
+//
+// It confirms both a launch's first input (awaitDeliveryReceipt) and a
+// live-pane Codex send (the server's SendChatMessage receipt).
+func TranscriptHasUserMessageSince(ctx context.Context, client agent.AgentRunnerClient, workDir, transcriptID string, since time.Time) bool {
+	resp, err := client.ReadTranscript(ctx, &bossanovav1.ReadTranscriptRequest{
+		WorkDir:        workDir,
 		AgentSessionId: transcriptID,
 		MaxMessages:    deliveryReceiptTranscriptTail,
 	})
 	if err != nil || !resp.GetExists() {
 		return false
 	}
-	return userMessageSince(resp.GetMessages(), w.launchedAt)
+	return userMessageSince(resp.GetMessages(), since)
 }
 
 // userMessageSince reports whether msgs holds a user message whose timestamp is

@@ -99,6 +99,12 @@ const (
 	// DaemonServiceMergeSessionProcedure is the fully-qualified name of the DaemonService's
 	// MergeSession RPC.
 	DaemonServiceMergeSessionProcedure = "/bossanova.v1.DaemonService/MergeSession"
+	// DaemonServiceApproveSessionPRProcedure is the fully-qualified name of the DaemonService's
+	// ApproveSessionPR RPC.
+	DaemonServiceApproveSessionPRProcedure = "/bossanova.v1.DaemonService/ApproveSessionPR"
+	// DaemonServiceSendBackSessionPRProcedure is the fully-qualified name of the DaemonService's
+	// SendBackSessionPR RPC.
+	DaemonServiceSendBackSessionPRProcedure = "/bossanova.v1.DaemonService/SendBackSessionPR"
 	// DaemonServiceRemoveSessionProcedure is the fully-qualified name of the DaemonService's
 	// RemoveSession RPC.
 	DaemonServiceRemoveSessionProcedure = "/bossanova.v1.DaemonService/RemoveSession"
@@ -275,6 +281,9 @@ const (
 	// DaemonServiceListPluginsProcedure is the fully-qualified name of the DaemonService's ListPlugins
 	// RPC.
 	DaemonServiceListPluginsProcedure = "/bossanova.v1.DaemonService/ListPlugins"
+	// DaemonServiceGetDaemonCapabilitiesProcedure is the fully-qualified name of the DaemonService's
+	// GetDaemonCapabilities RPC.
+	DaemonServiceGetDaemonCapabilitiesProcedure = "/bossanova.v1.DaemonService/GetDaemonCapabilities"
 	// DaemonServiceGetSettingsProcedure is the fully-qualified name of the DaemonService's GetSettings
 	// RPC.
 	DaemonServiceGetSettingsProcedure = "/bossanova.v1.DaemonService/GetSettings"
@@ -323,6 +332,15 @@ type DaemonServiceClient interface {
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error)
+	// ApproveSessionPR runs the boss-verify toolbox's `approve` verb for the
+	// session's PR on the daemon host, in the session worktree, with the repo's
+	// stored tracker credentials. It hands a `needs human:` verify park on the
+	// PR's current head back to verify.
+	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
+	// SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
+	// session's PR: it posts the operator's note on the PR as a rejection of its
+	// current head. Starting the repair chat stays with the caller.
+	SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -564,6 +582,9 @@ type DaemonServiceClient interface {
 	// `boss plugin list` so operators can debug "did my plugin actually
 	// load?" without grepping daemon logs.
 	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
+	// GetDaemonCapabilities lists optional request features the daemon honours,
+	// so clients can refuse features an older daemon would silently drop.
+	GetDaemonCapabilities(context.Context, *connect.Request[v1.GetDaemonCapabilitiesRequest]) (*connect.Response[v1.GetDaemonCapabilitiesResponse], error)
 	// GetSettings returns the TUI-editable subset of global settings
 	// (settings.json): the top-level worktree/poll/tracing knobs plus each
 	// configured agent's enabled flag and dynamic config map.
@@ -716,6 +737,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceMergeSessionProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("MergeSession")),
+			connect.WithClientOptions(opts...),
+		),
+		approveSessionPR: connect.NewClient[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse](
+			httpClient,
+			baseURL+DaemonServiceApproveSessionPRProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
+			connect.WithClientOptions(opts...),
+		),
+		sendBackSessionPR: connect.NewClient[v1.SendBackSessionPRRequest, v1.SendBackSessionPRResponse](
+			httpClient,
+			baseURL+DaemonServiceSendBackSessionPRProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SendBackSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
 		removeSession: connect.NewClient[v1.RemoveSessionRequest, v1.RemoveSessionResponse](
@@ -1078,6 +1111,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
 			connect.WithClientOptions(opts...),
 		),
+		getDaemonCapabilities: connect.NewClient[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse](
+			httpClient,
+			baseURL+DaemonServiceGetDaemonCapabilitiesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetDaemonCapabilities")),
+			connect.WithClientOptions(opts...),
+		),
 		getSettings: connect.NewClient[v1.GetSettingsRequest, v1.GetSettingsResponse](
 			httpClient,
 			baseURL+DaemonServiceGetSettingsProcedure,
@@ -1117,6 +1156,8 @@ type daemonServiceClient struct {
 	retrySession                *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
 	closeSession                *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
 	mergeSession                *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
+	approveSessionPR            *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
+	sendBackSessionPR           *connect.Client[v1.SendBackSessionPRRequest, v1.SendBackSessionPRResponse]
 	removeSession               *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession               *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR               *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
@@ -1177,6 +1218,7 @@ type daemonServiceClient struct {
 	getRunCost                  *connect.Client[v1.GetRunCostRequest, v1.GetRunCostResponse]
 	listAgents                  *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
 	listPlugins                 *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
+	getDaemonCapabilities       *connect.Client[v1.GetDaemonCapabilitiesRequest, v1.GetDaemonCapabilitiesResponse]
 	getSettings                 *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
 	updateSettings              *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 }
@@ -1289,6 +1331,16 @@ func (c *daemonServiceClient) CloseSession(ctx context.Context, req *connect.Req
 // MergeSession calls bossanova.v1.DaemonService.MergeSession.
 func (c *daemonServiceClient) MergeSession(ctx context.Context, req *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error) {
 	return c.mergeSession.CallUnary(ctx, req)
+}
+
+// ApproveSessionPR calls bossanova.v1.DaemonService.ApproveSessionPR.
+func (c *daemonServiceClient) ApproveSessionPR(ctx context.Context, req *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error) {
+	return c.approveSessionPR.CallUnary(ctx, req)
+}
+
+// SendBackSessionPR calls bossanova.v1.DaemonService.SendBackSessionPR.
+func (c *daemonServiceClient) SendBackSessionPR(ctx context.Context, req *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error) {
+	return c.sendBackSessionPR.CallUnary(ctx, req)
 }
 
 // RemoveSession calls bossanova.v1.DaemonService.RemoveSession.
@@ -1591,6 +1643,11 @@ func (c *daemonServiceClient) ListPlugins(ctx context.Context, req *connect.Requ
 	return c.listPlugins.CallUnary(ctx, req)
 }
 
+// GetDaemonCapabilities calls bossanova.v1.DaemonService.GetDaemonCapabilities.
+func (c *daemonServiceClient) GetDaemonCapabilities(ctx context.Context, req *connect.Request[v1.GetDaemonCapabilitiesRequest]) (*connect.Response[v1.GetDaemonCapabilitiesResponse], error) {
+	return c.getDaemonCapabilities.CallUnary(ctx, req)
+}
+
 // GetSettings calls bossanova.v1.DaemonService.GetSettings.
 func (c *daemonServiceClient) GetSettings(ctx context.Context, req *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
 	return c.getSettings.CallUnary(ctx, req)
@@ -1641,6 +1698,15 @@ type DaemonServiceHandler interface {
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error)
+	// ApproveSessionPR runs the boss-verify toolbox's `approve` verb for the
+	// session's PR on the daemon host, in the session worktree, with the repo's
+	// stored tracker credentials. It hands a `needs human:` verify park on the
+	// PR's current head back to verify.
+	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
+	// SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
+	// session's PR: it posts the operator's note on the PR as a rejection of its
+	// current head. Starting the repair chat stays with the caller.
+	SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -1882,6 +1948,9 @@ type DaemonServiceHandler interface {
 	// `boss plugin list` so operators can debug "did my plugin actually
 	// load?" without grepping daemon logs.
 	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
+	// GetDaemonCapabilities lists optional request features the daemon honours,
+	// so clients can refuse features an older daemon would silently drop.
+	GetDaemonCapabilities(context.Context, *connect.Request[v1.GetDaemonCapabilitiesRequest]) (*connect.Response[v1.GetDaemonCapabilitiesResponse], error)
 	// GetSettings returns the TUI-editable subset of global settings
 	// (settings.json): the top-level worktree/poll/tracing knobs plus each
 	// configured agent's enabled flag and dynamic config map.
@@ -2030,6 +2099,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceMergeSessionProcedure,
 		svc.MergeSession,
 		connect.WithSchema(daemonServiceMethods.ByName("MergeSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceApproveSessionPRHandler := connect.NewUnaryHandler(
+		DaemonServiceApproveSessionPRProcedure,
+		svc.ApproveSessionPR,
+		connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSendBackSessionPRHandler := connect.NewUnaryHandler(
+		DaemonServiceSendBackSessionPRProcedure,
+		svc.SendBackSessionPR,
+		connect.WithSchema(daemonServiceMethods.ByName("SendBackSessionPR")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRemoveSessionHandler := connect.NewUnaryHandler(
@@ -2392,6 +2473,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetDaemonCapabilitiesHandler := connect.NewUnaryHandler(
+		DaemonServiceGetDaemonCapabilitiesProcedure,
+		svc.GetDaemonCapabilities,
+		connect.WithSchema(daemonServiceMethods.ByName("GetDaemonCapabilities")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceGetSettingsHandler := connect.NewUnaryHandler(
 		DaemonServiceGetSettingsProcedure,
 		svc.GetSettings,
@@ -2450,6 +2537,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceCloseSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceMergeSessionProcedure:
 			daemonServiceMergeSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceApproveSessionPRProcedure:
+			daemonServiceApproveSessionPRHandler.ServeHTTP(w, r)
+		case DaemonServiceSendBackSessionPRProcedure:
+			daemonServiceSendBackSessionPRHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveSessionProcedure:
 			daemonServiceRemoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSessionProcedure:
@@ -2570,6 +2661,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListAgentsHandler.ServeHTTP(w, r)
 		case DaemonServiceListPluginsProcedure:
 			daemonServiceListPluginsHandler.ServeHTTP(w, r)
+		case DaemonServiceGetDaemonCapabilitiesProcedure:
+			daemonServiceGetDaemonCapabilitiesHandler.ServeHTTP(w, r)
 		case DaemonServiceGetSettingsProcedure:
 			daemonServiceGetSettingsHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSettingsProcedure:
@@ -2669,6 +2762,14 @@ func (UnimplementedDaemonServiceHandler) CloseSession(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) MergeSession(context.Context, *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.MergeSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ApproveSessionPR is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SendBackSessionPR is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error) {
@@ -2909,6 +3010,10 @@ func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListPlugins is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetDaemonCapabilities(context.Context, *connect.Request[v1.GetDaemonCapabilitiesRequest]) (*connect.Response[v1.GetDaemonCapabilitiesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetDaemonCapabilities is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {

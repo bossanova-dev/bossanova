@@ -99,115 +99,89 @@
       "ui": [
         "services/boss/internal/views/**",
         "services/web/index.html",
-        "services/web/src/*",
-        "services/web/src/analytics/**",
-        "services/web/src/billing/**",
-        "services/web/src/components/**",
-        "services/web/src/hooks/**",
-        "services/web/src/lib/**",
-        "services/web/src/machines/**",
-        "services/web/src/pages/**"
+        "services/web/src/**/*.tsx",
+        "services/web/src/**/*.css",
+        "lib/ui-tokens/*.css",
+        "services/web/public/*.png",
+        "services/web/public/*.svg",
+        "services/marketing/src/components/**/*.astro",
+        "services/marketing/src/layouts/**",
+        "services/marketing/src/pages/**/*.astro",
+        "services/marketing/src/styles/**",
+        "services/marketing/src/content/**",
+        "services/marketing/public/*/**",
+        "services/marketing/public/*.png",
+        "services/docs/docs/**",
+        "services/docs/src/**/*.tsx",
+        "services/docs/src/**/*.css",
+        "services/docs/static/img/**",
+        "services/docs/sidebars.ts",
+        "services/docs/docusaurus.config.ts"
       ],
-      "database": ["services/bossd/migrations/**", "services/bosso/migrations_postgres/**"],
-      "security": [
-        ".boss-project.json",
-        {
-          "glob": ".boss-skills.json",
-          "label": "verify gate rules (how PRs get merged)"
-        },
-        ".claude/settings.json",
-        {
-          "glob": ".claude/skills/boss-verify-*/**",
-          "label": "verify gate rules (how PRs get merged)"
-        },
-        {
-          "glob": ".codex/skills/boss-verify-*/**",
-          "label": "verify gate rules (how PRs get merged)"
-        },
-        {
-          "glob": ".github/workflows/**",
-          "label": "CI workflows"
-        },
-        "lib/bossalib/authlock/**",
-        "lib/bossalib/authtoken/**",
-        "lib/bossalib/gatecmd/**",
-        "lib/bossalib/keyringutil/**",
-        "lib/bossalib/socketauth/**",
-        "scripts/verify-security-surface.mjs",
-        "services/boss/internal/auth/**",
-        "services/bossd/internal/proofenv/**",
-        "services/bossd/internal/proofenvkeyring/**",
-        "services/bossd/internal/upstream/trigger_gate.go",
-        "services/bosso/internal/auth/**",
-        "services/bosso/internal/githubapp/**",
-        "services/bosso/internal/server/attach_token.go",
-        "services/bosso/internal/server/session_webhook_deliveries.go",
-        "services/bosso/internal/server/session_webhooks.go",
-        "services/bosso/internal/server/trigger_http.go",
-        "services/bosso/internal/server/triggers.go",
-        "services/bosso/internal/sessionwebhook/**",
-        "services/bosso/internal/trigger/**",
-        "services/bosso/internal/triggeringest/**",
-        "services/bosso/internal/triggerlaunch/**",
-        "services/bosso/internal/webhook/**",
-        "services/mcp-gateway/internal/auth/**"
-      ]
+      "database": [],
+      "security": []
     },
-    "alwaysHumanPaths": [
-      ".boss-project.json",
-      {
-        "glob": ".boss-skills.json",
-        "label": "verify gate rules (how PRs get merged)"
-      },
-      ".claude/settings.json",
-      {
-        "glob": ".claude/skills/boss-verify-*/**",
-        "label": "verify gate rules (how PRs get merged)"
-      },
-      {
-        "glob": ".codex/skills/boss-verify-*/**",
-        "label": "verify gate rules (how PRs get merged)"
-      },
-      {
-        "glob": ".github/workflows/**",
-        "label": "CI workflows"
-      },
-      "lib/bossalib/authlock/**",
-      "lib/bossalib/authtoken/**",
-      "lib/bossalib/gatecmd/**",
-      "lib/bossalib/keyringutil/**",
-      "lib/bossalib/socketauth/**",
-      "scripts/verify-security-surface.mjs",
-      "services/boss/internal/auth/**",
-      "services/boss/internal/views/**",
-      "services/bossd/internal/proofenv/**",
-      "services/bossd/internal/proofenvkeyring/**",
-      "services/bossd/internal/upstream/trigger_gate.go",
-      "services/bossd/migrations/**",
-      "services/bosso/internal/auth/**",
-      "services/bosso/internal/githubapp/**",
-      "services/bosso/internal/server/attach_token.go",
-      "services/bosso/internal/server/session_webhook_deliveries.go",
-      "services/bosso/internal/server/session_webhooks.go",
-      "services/bosso/internal/server/trigger_http.go",
-      "services/bosso/internal/server/triggers.go",
-      "services/bosso/internal/sessionwebhook/**",
-      "services/bosso/internal/trigger/**",
-      "services/bosso/internal/triggeringest/**",
-      "services/bosso/internal/triggerlaunch/**",
-      "services/bosso/internal/webhook/**",
-      "services/bosso/migrations_postgres/**",
-      "services/mcp-gateway/internal/auth/**",
-      "services/web/index.html",
-      "services/web/src/*",
-      "services/web/src/analytics/**",
-      "services/web/src/billing/**",
-      "services/web/src/components/**",
-      "services/web/src/hooks/**",
-      "services/web/src/lib/**",
-      "services/web/src/machines/**",
-      "services/web/src/pages/**"
-    ],
+    "alwaysHumanPaths": [],
     "evidence": true
+  },
+  "planContract": {
+    "sections": [
+      {
+        "heading": "## Summary",
+        "required": "always"
+      },
+      {
+        "heading": "## Approach",
+        "required": "optional"
+      },
+      {
+        "heading": "## Key changes",
+        "required": "optional"
+      },
+      {
+        "heading": "## Testing",
+        "required": "optional"
+      },
+      {
+        "heading": "## Risks / unknowns",
+        "required": "optional"
+      },
+      {
+        "heading": "## Premises",
+        "required": "optional"
+      },
+      {
+        "heading": "## Acceptance criteria",
+        "required": "optional"
+      },
+      {
+        "heading": "## Required proof",
+        "required": "optional"
+      },
+      {
+        "heading": "## Proof harness analysis",
+        "required": "optional"
+      },
+      {
+        "heading": "## Feature map changes",
+        "required": "optional"
+      },
+      {
+        "heading": "## Why this needs a human",
+        "required": "needs-human"
+      },
+      {
+        "heading": "## Open Questions",
+        "required": "open-questions"
+      },
+      {
+        "heading": "## Planning",
+        "required": "optional"
+      },
+      {
+        "heading": "## Original notes",
+        "required": "always"
+      }
+    ]
   }
 }

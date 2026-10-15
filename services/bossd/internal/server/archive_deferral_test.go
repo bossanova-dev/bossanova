@@ -503,21 +503,21 @@ func TestCancelPendingArchive_ViaResurrect(t *testing.T) {
 }
 
 func TestCancelPendingArchive_ViaNewChat(t *testing.T) {
-	h := newDeferralHarness(t, "chat-a")
-	h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	h := newDeferralHarness(t, "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60")
+	h.tracker.Update("0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
 	if out, _ := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{}); !out.Pending {
 		t.Fatalf("outcome = %+v, want pending", out)
 	}
 
 	// Re-recording an EXISTING chat (a resume) does not cancel.
-	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "chat-a"})); err != nil {
+	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e60"})); err != nil {
 		t.Fatalf("RecordChat(existing): %v", err)
 	}
 	if !h.d.has(deferralSessionID) {
 		t.Fatal("resuming an existing chat cancelled the pending archive")
 	}
 
-	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "chat-new"})); err != nil {
+	if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e61"})); err != nil {
 		t.Fatalf("RecordChat(new): %v", err)
 	}
 	if h.d.has(deferralSessionID) {

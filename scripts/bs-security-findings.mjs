@@ -175,7 +175,7 @@ const STOPWORDS = new Set(
 
 // Lowercased alphanumeric tokens minus stopwords (keeping `no`/`not`) and pure
 // numbers, so a renumbered heading keeps its stem; first eight tokens.
-function titleStem(title) {
+export function titleStem(title) {
   return (
     String(title ?? '')
       .toLowerCase()

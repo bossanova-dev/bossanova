@@ -18,6 +18,7 @@ go_library(
     deps = [
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agenttelemetry",
+        "//lib/bossalib/childenv",
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/log",
@@ -58,6 +59,7 @@ go_test(
         "export_test.go",
         "grpc_plugins_test.go",
         "host_displace_test.go",
+        "host_env_policy_test.go",
         "host_orphan_integration_test.go",
         "host_restart_integration_test.go",
         "host_restart_test.go",
@@ -74,11 +76,21 @@ go_test(
         "plugin_binary_test.go",
         "repair_chat_role_test.go",
         "repair_chat_visibility_test.go",
+        "repair_conflict_base_move_integration_test.go",
         "repair_workflow_integration_test.go",
         "shared_test.go",
         "test_helpers_test.go",
     ],
     data = glob(["testdata/**"]) + [
+        "//plugins/bossd-plugin-stub-runner:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-linear:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-dependabot:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-claude:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-codex:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-sentry:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-repair:env_policy_sources",  # keep
+        "//plugins/bossd-plugin-opencode:env_policy_sources",  # keep
+
         # keep: prebuilt plugin binaries + migrations staged into runfiles; the
         # harness resolves them via the BOSS_PLUGIN_BIN_* env vars below
         # (rundir="." makes the runfiles-relative $(rootpath) values absolute).
@@ -86,6 +98,7 @@ go_test(
         "//plugins/bossd-plugin-dependabot",  # keep
         "//plugins/bossd-plugin-linear",  # keep
         "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",  # keep
+        "//plugins/bossd-plugin-opencode",  # keep
         "//plugins/bossd-plugin-repair",  # keep
         "//plugins/bossd-plugin-stub-runner",  # keep
         "//services/bossd/migrations:sql",  # keep
@@ -99,12 +112,14 @@ go_test(
         "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_DEPENDABOT": "$(rootpath //plugins/bossd-plugin-dependabot)",  # keep
         "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_LINEAR": "$(rootpath //plugins/bossd-plugin-linear)",  # keep
         "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_LINEAR_E2E": "$(rootpath //plugins/bossd-plugin-linear:bossd-plugin-linear-e2e)",  # keep
+        "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_OPENCODE": "$(rootpath //plugins/bossd-plugin-opencode)",  # keep
         "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_REPAIR": "$(rootpath //plugins/bossd-plugin-repair)",  # keep
         "BOSS_PLUGIN_BIN_BOSSD_PLUGIN_STUB_RUNNER": "$(rootpath //plugins/bossd-plugin-stub-runner)",  # keep
     },
     rundir = ".",  # keep: run from runfiles root so $(rootpath) plugin paths resolve via filepath.Abs
     deps = [
         "//lib/bossalib/agenttelemetry",
+        "//lib/bossalib/childenv",
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/log",

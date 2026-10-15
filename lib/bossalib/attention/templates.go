@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // humanReviewPrefix is the prefix every verify-stage human-review park code
@@ -23,6 +25,8 @@ var humanReasonsOrder = []string{
 	ParkCodeLedgerOpen,
 	"extension-failed",
 	"no-session",
+	"worktree-diverged",
+	"worktree-unsynced",
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
@@ -45,10 +49,11 @@ var waitingLabels = map[string]string{
 
 // Fixed sentences.
 const (
-	genericReviewSentence = "Review the PR, then approve or send back"
-	genericFixSentence    = "Something needs fixing · open the chat, then resume"
-	genericQuestion       = "Answer the agent's question in its chat"
-	mergeSentence         = "Ready to merge"
+	genericReviewSentence  = "Review the PR, then approve or send back"
+	genericBlockedSentence = "Verify is blocked · send it back or fix the PR"
+	genericFixSentence     = "Something needs fixing · open the chat, then resume"
+	genericQuestion        = "Answer the agent's question in its chat"
+	mergeSentence          = "Ready to merge"
 )
 
 // slot names the one optional fact a sentence template interpolates.
@@ -64,7 +69,7 @@ const (
 	slotParkLabel
 )
 
-// sentenceTemplate is one review sentence: a format with a single %s verb
+// sentenceTemplate is one park sentence: a format with a single %s verb
 // when slot is non-zero.
 type sentenceTemplate struct {
 	format string
@@ -77,8 +82,8 @@ const ParkCodeLedgerOpen = "ledger-open"
 
 // parkCodeInfo is what one known park code renders.
 type parkCodeInfo struct {
-	// sentence is the code's specific review sentence; nil means the code
-	// uses genericReviewSentence.
+	// sentence is the code's specific park sentence; nil means the code uses
+	// genericReviewSentence (a sign-off code) or genericBlockedSentence.
 	sentence *sentenceTemplate
 	// category names what the code asks the operator to look at, for a
 	// one-line summary such as a timeline step.
@@ -92,10 +97,11 @@ type parkCodeInfo struct {
 	plain string
 }
 
-// knownParkCodes is the one table of known operator park codes. The review
-// sentence and the park category both read it, through decidingParkCode, so
-// they always describe the same code. A code absent here (an unknown code) uses
-// genericReviewSentence and is named as-is.
+// knownParkCodes is the one table of known operator park codes. The park's
+// attention kind, its sentence and its category all read it, through
+// decidingParkCode, so they always describe the same code. A code absent here
+// (an unknown code) is not a sign-off: it uses genericBlockedSentence and is
+// named as-is.
 var knownParkCodes = map[string]parkCodeInfo{
 	"human-review:ui": {
 		sentence: &sentenceTemplate{format: "Watch the evidence video%s, then approve · UI change", slot: slotVideoDuration},
@@ -122,23 +128,25 @@ var knownParkCodes = map[string]parkCodeInfo{
 		plain:    "a database migration for a person to review",
 	},
 	"human-review:unproven": {
-		sentence: &sentenceTemplate{format: "Some checks have no evidence · watch the video, then approve"},
+		sentence: &sentenceTemplate{format: "Some checks have no evidence · send it back to prove them"},
 		category: "unproven checks",
 		plain:    "some checks have no evidence that they pass",
 	},
 	ParkCodeLedgerOpen: {
-		sentence: &sentenceTemplate{format: "Read the open must-fix from review, then approve or send back"},
+		sentence: &sentenceTemplate{format: "Review left must-fix findings open · send it back to fix them"},
 		category: "open findings",
 		plain:    "review left must-fix findings open",
 	},
 	"no-receipt": {
-		sentence: &sentenceTemplate{format: "Built by hand, no factory review · review the diff, then approve"},
+		sentence: &sentenceTemplate{format: "Built by hand, no factory review · send it back through the factory"},
 		category: "built by hand",
 		plain:    "no build receipt: built by hand, without the factory's build and review",
 	},
-	"repair-exhausted": {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
-	"extension-failed": {category: "verify extension failed", plain: "a verify extension failed to run"},
-	"no-session":       {category: "no session", plain: "verify found no session behind this PR"},
+	"repair-exhausted":  {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
+	"extension-failed":  {category: "verify extension failed", plain: "a verify extension failed to run"},
+	"no-session":        {category: "no session", plain: "verify found no session behind this PR"},
+	"worktree-diverged": {category: "worktree diverged", plain: "the session worktree is off the PR head and holds work the PR lacks"},
+	"worktree-unsynced": {category: "worktree unsynced", plain: "verify could not move the session worktree to the PR head"},
 }
 
 // unknownParkCodePlain describes a code outside knownParkCodes.
@@ -180,21 +188,29 @@ func ParkCodePlainWords(code string) string {
 	return unknownParkCodePlain
 }
 
-// decidingParkCode picks the one park code a review describes, from a
-// report-ordered code set (normalizeParkCodes). Only operator codes count. A
-// human-review:* code with a sentence decides first — it names what the human
-// is looking at — then any other code with a sentence, then the first operator
-// code (whose sentence is the generic one). ok is false when no code is the
-// operator's to act on (none, or only waiting codes).
+// decidingParkCode picks the one park code a park's attention describes, from
+// a report-ordered code set (normalizeParkCodes). Only operator codes count,
+// and a failure code (not a sign-off, IsSignOffPark) beats every sign-off
+// code, so a park with anything broken is never answered as a sign-off. Among
+// the candidates a human-review:* code with a sentence decides first — it
+// names what the human is looking at — then any other code with a sentence,
+// then the first candidate (whose sentence is the generic one). ok is false
+// when no code is the operator's to act on (none, or only waiting codes).
 func decidingParkCode(codes []string) (string, bool) {
-	var operator []string
+	var operator, failures []string
 	for _, code := range codes {
 		if isOperatorCode(code) {
 			operator = append(operator, code)
+			if !knownParkCodes[code].signOff {
+				failures = append(failures, code)
+			}
 		}
 	}
 	if len(operator) == 0 {
 		return "", false
+	}
+	if len(failures) > 0 {
+		operator = failures
 	}
 	for _, code := range operator {
 		if knownParkCodes[code].sentence != nil && strings.HasPrefix(code, humanReviewPrefix) {
@@ -210,18 +226,31 @@ func decidingParkCode(codes []string) (string, bool) {
 }
 
 // ParkCategory names what a verify park asks the operator to look at ("UI
-// change", "security", ...): the category of the code the review sentence
-// describes (decidingParkCode). An unknown operator code is named as-is. ok is
-// false when no code is the operator's to act on (none, or only waiting codes).
-func ParkCategory(raw []string) (string, bool) {
+// change", "security", ...) and the attention kind Compute answers it with:
+// the category of the code the park's sentence describes (decidingParkCode),
+// with ATTENTION_KIND_REVIEW for a sign-off and ATTENTION_KIND_FIX for a
+// blocked park. An unknown operator code is named as-is and is blocked. When
+// no code is the operator's to act on (none, or only waiting codes) the
+// category is empty and the kind is ATTENTION_KIND_IN_PROGRESS.
+func ParkCategory(raw []string) (string, pb.AttentionKind) {
 	code, ok := decidingParkCode(normalizeParkCodes(raw))
 	if !ok {
-		return "", false
+		return "", pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
 	}
-	if label := knownParkCodes[code].category; label != "" {
-		return label, true
+	info := knownParkCodes[code]
+	if info.category != "" {
+		return info.category, info.kind()
 	}
-	return code, true
+	return code, info.kind()
+}
+
+// kind is the attention kind a park decided by this code is answered with: a
+// REVIEW for a sign-off code, a blocked FIX for any other.
+func (p parkCodeInfo) kind() pb.AttentionKind {
+	if p.signOff {
+		return pb.AttentionKind_ATTENTION_KIND_REVIEW
+	}
+	return pb.AttentionKind_ATTENTION_KIND_FIX
 }
 
 // render fills the template's slot from in.

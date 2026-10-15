@@ -3170,6 +3170,9 @@ func run(opts runOpts) error {
 	}
 
 	var streamClient *upstream.StreamClient
+	// webhookEvidence stays a nil interface without an upstream, so ListRepos
+	// never flags a repo on a local-only daemon.
+	var webhookEvidence server.WebhookEvidence
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var snapshotPublisher func(context.Context)
 	// noteSyncWorker drains the note sync outbox to Bosso (BOS-1435). Built
@@ -3605,6 +3608,7 @@ func run(opts runOpts) error {
 		poller.SetWebhookHealth(webhookHealth)
 		displayPoller.SetWebhookHealth(webhookHealth)
 		callbackEvaluator.SetWebhookHealth(webhookHealth)
+		webhookEvidence = webhookHealth
 		streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			Client:       client,
 			AuthToken:    authToken,          // WorkOS JWT → Authorization header
@@ -3796,6 +3800,7 @@ func run(opts runOpts) error {
 		// re-derived.
 		BroadcastEgress: broadcastEgress,
 		DaemonID:        persistedDaemonID,
+		WebhookEvidence: webhookEvidence,
 		// The RPC surface gets create/read/cancel only; firing stays with the
 		// evaluator wired into the session store above.
 		BroadcastSubscriptions:  broadcastSubscriptions,

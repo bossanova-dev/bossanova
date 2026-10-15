@@ -151,9 +151,10 @@ type HomeModel struct {
 	// re-login state (BOS-659): credentials are still stored but cannot be
 	// used. Both are cleared by the next clean poll, so a successful login
 	// removes the warning without any extra bookkeeping.
-	needsRelogin  bool
-	reloginReason string
-	confirm       confirmPrompt
+	needsRelogin    bool
+	reloginReason   string
+	attentionAction attentionActionState
+	confirm         confirmPrompt
 	// rename is the inline title editor opened by the hidden [r] shortcut
 	// (BOS-837). Like confirm it stands in for the action bar while active and
 	// swallows the keys the board would otherwise act on.
@@ -331,6 +332,16 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleSpinnerTick(msg)
 	case tickMsg:
 		return h.handleTick()
+	case attentionActionResultMsg:
+		if h.attentionAction.sessionID == msg.sessionID && h.attentionAction.action == msg.action {
+			h.attentionAction = attentionActionState{}
+		}
+		h.status, h.statusErr = msg.text, msg.err != nil
+		if msg.err != nil {
+			h.status = rpcStatusDetail(msg.err)
+		}
+		h.table.SetHeight(h.tableHeight())
+		return h, nil
 	case sessionRenamedMsg:
 		return h.handleSessionRenamed(msg)
 	case sessionMovedMsg:
@@ -340,6 +351,11 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// arm because a tea.PasteMsg would otherwise fall through to the default
 	// return and be dropped. Inert unless the rename prompt is open.
 	case tea.PasteMsg:
+		if h.attentionAction.note.Active() {
+			var cmd tea.Cmd
+			h.attentionAction, cmd = h.attentionAction.update(msg)
+			return h, cmd
+		}
 		if !h.rename.Active() {
 			return h, nil
 		}
@@ -480,7 +496,7 @@ func (h HomeModel) View() tea.View {
 // aliasing ctrl+x to the back action while a title is being typed
 // (app.go's backKeyAliasEligible). Mirrors ChatPickerModel.textEntryActive.
 func (h HomeModel) textEntryActive() bool {
-	return h.rename.Active()
+	return h.rename.Active() || h.attentionAction.note.Active()
 }
 
 func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {

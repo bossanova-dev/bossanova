@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
-import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
+import { DEFAULT_CONFIG, mergeConfig, validateConfig, loadSkillConfig } from '../skill-config.mjs'
 import { validateDependencyScanInput } from '../plan-deps-lib.mjs'
 import { evaluateBossBuildGate } from '../cron-gates/boss-build.mjs'
 import { evaluateBossPlanGate } from '../cron-gates/boss-plan.mjs'
@@ -2176,4 +2176,27 @@ test('retro selection resolution never resolves ignored shared exclusions', asyn
     (await resolveSelectionCli(['--stage', 'retro', '--exclude-label', 'infra'], { config })).code,
     2,
   )
+})
+
+test('resolve-selection rejects a fault deferred by the real config loader before resolving refs', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-selection-deferred-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.mock.method(console, 'warn', () => {})
+  fs.writeFileSync(
+    path.join(dir, '.boss-skills.json'),
+    JSON.stringify({
+      trackerConfig: { linear: { mcpServer: 'linear', selection: { futureKey: true } } },
+    }),
+  )
+  const config = loadSkillConfig({ cwd: dir })
+  for (const stage of ['build', 'retro']) {
+    const result = await resolveSelectionCli(['--stage', stage], { config })
+    assert.equal(result.code, 2)
+    assert.equal(result.out, '')
+    assert.deepEqual(result.calls, [])
+    assert.match(
+      result.err,
+      /skill-config: invalid config from .*trackerConfig.linear.selection has unknown key "futureKey"/,
+    )
+  }
 })

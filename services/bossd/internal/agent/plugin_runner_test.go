@@ -748,3 +748,18 @@ func TestPluginRunner_Start_PropagatesError(t *testing.T) {
 		t.Errorf("expected wrapped err, got %v", err)
 	}
 }
+
+func TestPluginRunnerForwardsProjectConfigurationTrust(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
+		pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
+		_, err := pr.StartWithHeadlessLaunchOptions(context.Background(), "/work", "plan", nil, "", "", "", nil, HeadlessLaunchOptions{ShouldTrustProjectConfig: trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = pr.Stop("sid")
+		if got := fc.startReq.Load().GetShouldTrustProjectConfig(); got != trusted {
+			t.Fatalf("plugin trust = %v, want %v", got, trusted)
+		}
+	}
+}

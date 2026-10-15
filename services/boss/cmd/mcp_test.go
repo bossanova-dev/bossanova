@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -450,16 +451,16 @@ func TestMcpBuildDriftLine(t *testing.T) {
 	}
 }
 
-func saveSocketPathSeam(t *testing.T, socketPath string) {
+func saveMcpSocketPathSeam(t *testing.T, socketPath string) {
 	t.Helper()
-	old := defaultSocketPath
-	defaultSocketPath = func() (string, error) { return socketPath, nil }
-	t.Cleanup(func() { defaultSocketPath = old })
+	old := mcpSocketPath
+	mcpSocketPath = func() (string, error) { return socketPath, nil }
+	t.Cleanup(func() { mcpSocketPath = old })
 }
 
 func TestRunMcpToken_PrintsHTTPTokenNotSocketToken(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
-	saveSocketPathSeam(t, socketPath)
+	saveMcpSocketPathSeam(t, socketPath)
 	sockTok, err := socketauth.LoadOrCreateToken(socketPath)
 	if err != nil {
 		t.Fatalf("LoadOrCreateToken: %v", err)
@@ -487,7 +488,7 @@ func TestRunMcpToken_PrintsHTTPTokenNotSocketToken(t *testing.T) {
 
 func TestRunMcpToken_JSON(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
-	saveSocketPathSeam(t, socketPath)
+	saveMcpSocketPathSeam(t, socketPath)
 
 	cmd := mcpCmd()
 	var out bytes.Buffer
@@ -515,7 +516,7 @@ func TestRunMcpToken_Rotate(t *testing.T) {
 		t.Run(fmt.Sprint(running), func(t *testing.T) {
 			saveMcpSeams(t)
 			socket := filepath.Join(t.TempDir(), "bossd.sock")
-			saveSocketPathSeam(t, socket)
+			saveMcpSocketPathSeam(t, socket)
 			old, err := socketauth.LoadOrCreateHTTPToken(socket)
 			if err != nil {
 				t.Fatal(err)
@@ -555,7 +556,7 @@ func TestRunMcpToken_Rotate(t *testing.T) {
 
 func TestRunMcpToken_RotateUnmanaged(t *testing.T) {
 	saveMcpSeams(t)
-	saveSocketPathSeam(t, filepath.Join(t.TempDir(), "bossd.sock"))
+	saveMcpSocketPathSeam(t, filepath.Join(t.TempDir(), "bossd.sock"))
 	mcpGetStatus = func() (*daemon.Status, error) { return &daemon.Status{}, nil }
 	mcpStop = func() error { t.Fatal("unmanaged server stopped"); return nil }
 	cmd := mcpCmd()
@@ -578,7 +579,7 @@ func TestRunMcpToken_RotateUnmanaged(t *testing.T) {
 func TestRunMcpToken_RotateRestartFailure(t *testing.T) {
 	saveMcpSeams(t)
 	socket := filepath.Join(t.TempDir(), "bossd.sock")
-	saveSocketPathSeam(t, socket)
+	saveMcpSocketPathSeam(t, socket)
 	old, err := socketauth.LoadOrCreateHTTPToken(socket)
 	if err != nil {
 		t.Fatal(err)
@@ -596,5 +597,58 @@ func TestRunMcpToken_RotateRestartFailure(t *testing.T) {
 	current, err := socketauth.ReadHTTPToken(socket)
 	if err != nil || current == old {
 		t.Fatal("rotation did not persist", err)
+	}
+}
+
+func TestRunMcpToken_UsesSettingsProfile(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "bossd.sock")
+	decoy := filepath.Join(t.TempDir(), "bossd.sock")
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	settings, err := json.Marshal(map[string]string{"socket_path": socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	var firstToken string
+	for _, override := range []string{decoy, ""} {
+		name := "BOSS_SOCKET_set"
+		if override == "" {
+			name = "BOSS_SOCKET_unset"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("BOSS_SOCKET", override)
+			cmd := mcpCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{"token", "--json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var got mcpTokenJSON
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.TokenPath != socketauth.HTTPTokenPath(socket) {
+				t.Fatalf("token_path = %q, want %q", got.TokenPath, socketauth.HTTPTokenPath(socket))
+			}
+			want, err := socketauth.ReadHTTPToken(socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Token != want {
+				t.Fatal("printed token does not match settings profile token")
+			}
+			if firstToken == "" {
+				firstToken = got.Token
+			} else if got.Token != firstToken {
+				t.Fatal("BOSS_SOCKET changed the token")
+			}
+			if _, err := os.Stat(socketauth.HTTPTokenPath(decoy)); !os.IsNotExist(err) {
+				t.Fatalf("decoy token stat = %v, want not exist", err)
+			}
+		})
 	}
 }

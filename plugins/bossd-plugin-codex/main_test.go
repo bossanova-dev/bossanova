@@ -118,7 +118,6 @@ func TestRunnerResumePropagatesArgvAndStdin(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	argvLog := filepath.Join(dir, "argv.txt")
-	t.Setenv("FAKE_CODEX_ARGV_LOG", argvLog)
 
 	// agentruntime calls cmdFactory(ctx, argv[0], argv[1:]...) — `name` is
 	// the binary name ("codex"), `args` is everything after. Forward args
@@ -129,7 +128,11 @@ func TestRunnerResumePropagatesArgvAndStdin(t *testing.T) {
 
 	resumeID := "uuid-resume-target"
 	followUp := "now do step two"
-	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "", "", nil)
+	// The fixture's control variable is explicit launch data; arbitrary parent
+	// environment variables are intentionally excluded from agent processes.
+	sid, err := r.Start(context.Background(), dir, followUp, &resumeID, "ignored-hint", logPath, "", "", map[string]string{
+		"FAKE_CODEX_ARGV_LOG": argvLog,
+	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

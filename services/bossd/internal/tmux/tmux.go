@@ -97,6 +97,7 @@ const (
 	tmuxCommandWaitDelay        = 2 * time.Second
 	sendPlanDefaultPollInterval = 100 * time.Millisecond
 	sendPlanReadyMarker         = "❯"
+	codexReadyMarker            = "›"
 
 	// sendPlanDefaultReadyAttempts is the floor a delivery falls back to when
 	// its options name no attempt count — one attempt, i.e. exactly today's
@@ -1140,6 +1141,17 @@ func (c *Client) CapturePane(ctx context.Context, sessionName string) (string, e
 	return string(out), nil
 }
 
+// captureVisibleStyled captures the visible pane with its SGR escape sequences
+// kept (-e), for the one question plain text cannot answer: whether composer
+// text is a dim placeholder or real input (refuseOccupiedComposer).
+func (c *Client) captureVisibleStyled(ctx context.Context, sessionName string) (string, error) {
+	out, err := c.cmdFunc(ctx, "tmux", "capture-pane", "-p", "-e", "-t", sessionName).Output()
+	if err != nil {
+		return "", fmt.Errorf("capture styled pane %q: %w", sessionName, err)
+	}
+	return string(out), nil
+}
+
 // sendPlanOpts customizes SendPlan timing. Production callers never build one
 // by hand: they go through startDeliveryOpts or sendDeliveryOpts, which stamp
 // the readiness budget belonging to their delivery path. Tests inject
@@ -1631,6 +1643,16 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 			c.awaitComposerSettled(ctx, sessionName, before, opts.pasteSettleWait, opts.submitVerifyTick)
 		}
 		return nil
+	}
+	// A Codex composer that already holds a draft would take the payload as an
+	// append, and its marker row would keep showing the draft's first line, so
+	// the submit is refused before anything is typed. The draft reading keys on
+	// Codex's dim placeholder, so it runs only for the Codex marker: OpenCode
+	// draws its placeholder and status rail in plain colour, not dim.
+	if !opts.prefillOnly && opts.readyMarker == codexReadyMarker {
+		if err := c.refuseOccupiedComposer(ctx, sessionName); err != nil {
+			return err
+		}
 	}
 	if err := deliver(ctx); err != nil {
 		return err

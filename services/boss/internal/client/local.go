@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -27,29 +26,7 @@ func DefaultSocketPath() (string, error) {
 		return p, nil
 	}
 
-	settings, err := loadSettingsForSocketPath()
-	if err != nil {
-		return "", fmt.Errorf("load settings: %w", err)
-	}
-	if p, ok, err := config.ConfiguredSocketPath(settings); err != nil {
-		return "", err
-	} else if ok {
-		return p, nil
-	}
-
-	dir, err := config.DefaultAppDataDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve app data dir: %w", err)
-	}
-	return filepath.Join(dir, "bossd.sock"), nil
-}
-
-func loadSettingsForSocketPath() (config.Settings, error) {
-	p, err := config.Path()
-	if err != nil {
-		return config.DefaultSettings(), err
-	}
-	return config.LoadFrom(p)
+	return config.ResolveSocketPath()
 }
 
 // LocalClient communicates with the daemon via Unix socket.

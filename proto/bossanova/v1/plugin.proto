@@ -630,6 +630,8 @@ message StartAgentRunRequest {
   // UNSPECIFIED (no decision) changes nothing; bossd sets a decision on every
   // headless run it launches.
   ProjectTrustDecision project_trust = 12;
+  // Whether this run may load repository MCP servers and project settings.
+  bool should_trust_project_config = 13;
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -896,6 +898,8 @@ message SuggestPRTitleRequest {
   // SENTRY_* or proof credential in the daemon environment reaches an
   // untrusted repo's agent (BOS-1562). Secret-bearing: NEVER logged.
   map<string, string> extra_env = 6;
+  // Whether the title-suggestion subprocess may load repository configuration.
+  bool should_trust_project_config = 7;
 }
 message SuggestPRTitleResponse {
   // false = the agent has no suggestion (unimplemented / failed); the daemon

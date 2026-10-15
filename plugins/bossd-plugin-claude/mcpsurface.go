@@ -16,6 +16,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/bossalib/childenv"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/loginshell"
 )
@@ -84,7 +85,7 @@ type claudeInitEvent struct {
 // startup. Extracted as an interface so the RPC can be tested without a claude
 // binary on PATH.
 type claudeInitProber interface {
-	ProbeInit(ctx context.Context, workDir, model string, env map[string]string) (claudeInitEvent, error)
+	ProbeInit(ctx context.Context, workDir, model string, env map[string]string, projectTrust bossanovav1.ProjectTrustDecision) (claudeInitEvent, error)
 }
 
 // DescribeMCPSurface reports the MCP servers a claude session in work_dir
@@ -128,7 +129,7 @@ func (s *Server) DescribeMCPSurface(
 
 	// probe_env is secret-bearing: it reaches the probed process's environment
 	// and is deliberately never logged here and never copied into the response.
-	event, err := prober.ProbeInit(ctx, req.GetWorkDir(), req.GetModel(), req.GetProbeEnv())
+	event, err := prober.ProbeInit(ctx, req.GetWorkDir(), req.GetModel(), req.GetProbeEnv(), req.GetProjectTrust())
 	if err != nil {
 		resp.ProbeError = err.Error()
 		return resp, nil
@@ -214,6 +215,7 @@ func (p liveClaudeInitProber) ProbeInit(
 	ctx context.Context,
 	workDir, model string,
 	env map[string]string,
+	projectTrust bossanovav1.ProjectTrustDecision,
 ) (claudeInitEvent, error) {
 	timeout := p.timeout
 	if timeout <= 0 {
@@ -228,9 +230,16 @@ func (p liveClaudeInitProber) ProbeInit(
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	// No MCP flags, deliberately: this observes what claude resolves natively.
-	// Passing --mcp-config or --strict-mcp-config here would make the probe
-	// describe a world the real session never sees.
+	// A diagnostic startup must apply the same repository policy as the run:
+	// initialization itself starts configured MCP servers and project hooks.
+	trusted := projectConfigTrusted(projectTrust)
+	if !trusted {
+		runner := &Runner{loginShell: p.loginShell, cmdFactory: p.commandFactory}
+		if err := runner.checkProjectIsolationSupport(ctx, env); err != nil {
+			return claudeInitEvent{}, err
+		}
+	}
+	args = append(args, projectIsolationArgs(trusted)...)
 	args = loginshell.Wrap(p.loginShell, loginshell.Flags(p.loginShell), args)
 
 	commandFactory := p.commandFactory
@@ -407,15 +416,10 @@ func decodeClaudeInitEvent(r io.Reader) (claudeInitEvent, error) {
 	return claudeInitEvent{}, fmt.Errorf("claude emitted no system/init event")
 }
 
-// probeEnviron applies a daemon-resolved environment overlay (the chat's own
-// for a probe, the session's repo-pinned one for a one-shot) on top of the
-// daemon's, last value winning. A nil overlay inherits the daemon environment
-// unchanged, which is exec's own behaviour for a nil Env.
+// probeEnviron applies the approved child baseline and the daemon-resolved
+// overlay, last value winning. It always supplies an explicit environment.
 func probeEnviron(extraEnv map[string]string) []string {
-	if len(extraEnv) == 0 {
-		return nil
-	}
-	env := os.Environ()
+	env := childenv.Build(os.Environ(), childenv.ForPlugin("claude", strings.Split(os.Getenv(childenv.PassthroughEnvVar), ",")))
 	keys := make([]string, 0, len(extraEnv))
 	for key := range extraEnv {
 		keys = append(keys, key)

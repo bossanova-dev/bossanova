@@ -99,6 +99,26 @@ Re-running the install script pulls the latest release binaries:
 curl -fsSL https://bossanova.dev/install.sh | sh
 ```
 
+## Child environment and repository trust
+
+After this security update, plugins and headless agents inherit an approved
+baseline of environment variables instead of the daemon's entire environment.
+If an agent depended on a custom variable exported only when starting `bossd`,
+add its exact name or a `PREFIX_*` entry to
+[`child_env_passthrough`](./reference/settings.md#child-process-environment)
+in `settings.json`, then restart the daemon. The default list is empty.
+
+Claude sessions in untrusted repositories also stop loading project MCP servers
+and project/local settings, including hooks. Trust a repository you control with
+`boss repo update <id> --trusted` to restore its project configuration. Trusted
+repositories retain their existing behavior. Untrusted launches require a Claude
+CLI that lists `--strict-mcp-config` and `--setting-sources` in `claude --help`;
+upgrade Claude if either flag is missing.
+
+The environment baseline governs what the daemon passes to child processes.
+Login-shell startup files still control additional exports after the daemon
+applies the baseline.
+
 ## Verify the upgrade
 
 Print the running version:

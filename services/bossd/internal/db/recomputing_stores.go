@@ -526,6 +526,7 @@ func isComputerSelfWrite(p UpdateSessionParams) bool {
 		p.IsAutomationEnabled == nil &&
 		p.AttemptCount == nil &&
 		p.BlockedReason == nil &&
+		p.LastRepairAttemptCount == nil &&
 		p.ArchivedAt == nil
 }
 

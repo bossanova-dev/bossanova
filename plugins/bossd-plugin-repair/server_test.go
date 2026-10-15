@@ -69,6 +69,10 @@ type mockHostClient struct {
 	reviewCommentsResp  *bossanovav1.GetReviewCommentsResponse
 	reviewCommentsCalls int
 	reviewCommentsErr   error
+
+	branchHeadSHA  string
+	branchHeadErr  error
+	branchHeadReqs []*bossanovav1.GetBranchHeadRequest
 }
 
 var _ hostClient = (*mockHostClient)(nil)
@@ -120,6 +124,22 @@ func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.Get
 		return m.reviewCommentsResp, nil
 	}
 	return &bossanovav1.GetReviewCommentsResponse{}, nil
+}
+
+func (m *mockHostClient) GetBranchHead(_ context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.branchHeadReqs = append(m.branchHeadReqs, req)
+	if m.branchHeadErr != nil {
+		return nil, m.branchHeadErr
+	}
+	return &bossanovav1.GetBranchHeadResponse{Sha: m.branchHeadSHA}, nil
+}
+
+func (m *mockHostClient) setBranchHead(sha string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.branchHeadSHA = sha
 }
 
 func (m *mockHostClient) FireSessionEvent(_ context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
@@ -213,6 +233,18 @@ func (m *mockHostClient) startRequestsSnapshot() []*bossanovav1.StartChatRunHost
 	return out
 }
 
+func (m *mockHostClient) recordOutcomeSnapshot() []*bossanovav1.RecordRepairOutcomeRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*bossanovav1.RecordRepairOutcomeRequest(nil), m.recordOutcomeReqs...)
+}
+
+func (m *mockHostClient) branchHeadSnapshot() []*bossanovav1.GetBranchHeadRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*bossanovav1.GetBranchHeadRequest(nil), m.branchHeadReqs...)
+}
+
 func newTestMonitor(mock *mockHostClient) *repairMonitor {
 	rm := newRepairMonitor(mock, zerolog.Nop())
 	rm.stopped = false
@@ -244,7 +276,7 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls, "StartChatRun called once")
@@ -260,12 +292,12 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	assert.True(t, setRepair[0].GetIsRepairing())
 	assert.False(t, setRepair[1].GetIsRepairing())
 
-	// Cooldown + lastAttemptCommit recorded; repairing cleared.
+	// Cooldown + lastAttempt recorded; repairing cleared.
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.False(t, rm.repairing["s1"], "repairing flag cleared")
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "cooldown set")
-	assert.Equal(t, "abc123", rm.lastAttemptCommit["s1"])
+	assert.Equal(t, "abc123", rm.lastAttempt["s1"].headSHA)
 }
 
 func TestRepairSession_WaitsForChecksAndStopsWhenClean(t *testing.T) {
@@ -278,7 +310,7 @@ func TestRepairSession_WaitsForChecksAndStopsWhenClean(t *testing.T) {
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false, "")
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls)
@@ -303,7 +335,7 @@ func TestRepairSession_StartsSecondFreshRunWhenChecksFailAfterPush(t *testing.T)
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -342,7 +374,7 @@ func TestRepairSession_ResumeStartErrorStopsCleanly(t *testing.T) {
 	rm.repairing["s1"] = true
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, _, _ := mock.snapshot()
 	// Attempt 1 started + the failed attempt 2 start; the loop stopped after the
@@ -398,7 +430,7 @@ func TestRepairSession_SecondAttemptResumesFirstSession(t *testing.T) {
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	reqs := mock.startRequestsSnapshot()
 	if len(reqs) != 2 {
@@ -448,7 +480,7 @@ func TestRepairSession_DoesNotStartSecondFreshRunWhenChecksFailOnSameInput(t *te
 	// unavailable — exactly what maybeRepair computes for an origin-less session.
 	// The baseline availability must match what the wait loop recomputes, or the
 	// duplicate-input guard would see availability flip and re-run.
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false, "")
 
 	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
 	require.Equal(t, 1, startCalls)
@@ -469,7 +501,7 @@ func TestRepairSession_WaitsThroughStaleSameInputBeforeRetryingNewHead(t *testin
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false, "")
 
 	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -489,7 +521,7 @@ func TestRepairSession_StartsSecondFreshRunWhenConflictAppearsAfterPush(t *testi
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false, "abc123", "", time.Time{}, "", true)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -542,7 +574,7 @@ func TestRepairSession_StartsSecondFreshRunWhenReviewFingerprintChangesAfterPush
 	rm := newTestMonitor(mock)
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
-	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "old-review-fingerprint", true)
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "old-review-fingerprint", true, "")
 
 	startCalls, waitCalls, _, _ := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -591,7 +623,7 @@ func TestRepairSession_StartsSecondFreshRunWhenNewReviewCommentOnGreenPR(t *test
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
 	rm.repairSession(context.Background(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true, "")
 
 	startCalls, waitCalls, _, _ := mock.snapshot()
 	require.Equal(t, 2, startCalls, "new review comment on a green PR must start a second repair run")
@@ -638,7 +670,7 @@ func TestRepairSession_StopsBeforeSecondRunWhenPaused(t *testing.T) {
 	}
 
 	rm.repairSession(context.Background(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true, "")
 
 	startCalls, waitCalls, _, _ := mock.snapshot()
 	require.Equal(t, 1, startCalls, "paused workflow must not start a second repair run")
@@ -669,7 +701,7 @@ func TestRepairSession_StopsAtMaxRepairLoopAttempts(t *testing.T) {
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
 
 	rm.repairSession(context.Background(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "sha-init", "", time.Time{}, "", false)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "sha-init", "", time.Time{}, "", false, "")
 
 	startCalls, _, _, _ := mock.snapshot()
 	require.Equal(t, maxRepairLoopAttempts, startCalls, "loop must stop at the max-attempts cap")
@@ -690,7 +722,7 @@ func TestRepairSession_StopsWhenChecksNeverSettle(t *testing.T) {
 	rm.config = &repairConfig{PostRepairPollMilliseconds: 5, PostRepairWaitMilliseconds: 25}
 
 	rm.repairSession(context.Background(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false, "")
 
 	startCalls, _, _, _ := mock.snapshot()
 	require.Equal(t, 1, startCalls, "a perpetually-pending PR must not spawn a second repair run")
@@ -703,7 +735,7 @@ func TestRepairSession_AlreadyExists(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	_, waitCalls, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, waitCalls, "WaitChatRun must not be called when StartChatRun returned AlreadyExists")
@@ -714,7 +746,7 @@ func TestRepairSession_AlreadyExists(t *testing.T) {
 	defer rm.mu.Unlock()
 	assert.False(t, rm.repairing["s1"])
 	assert.True(t, rm.cooldowns["s1"].IsZero(), "cooldown must NOT be recorded when we lost the race")
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "lastAttemptCommit unset because attempt did not run")
+	assert.Equal(t, "", rm.lastAttempt["s1"].headSHA, "lastAttempt unset because attempt did not run")
 	// AlreadyExists is a soft skip: the loser must not bump the
 	// session's attempt count, otherwise two plugins racing on the same
 	// session would double-count and the TUI hint would lie.
@@ -731,7 +763,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T)
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls)
@@ -751,7 +783,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T)
 	defer rm.mu.Unlock()
 	assert.False(t, rm.repairing["s1"])
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "base cooldown stamped so reclaim-refusal retries are floored")
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "blocked reclaim did not run an agent attempt")
+	assert.Equal(t, "", rm.lastAttempt["s1"].headSHA, "blocked reclaim did not run an agent attempt")
 }
 
 func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.T) {
@@ -772,7 +804,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true, "")
 
 	startCalls, waitCalls, _, setRepair := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -799,7 +831,7 @@ func TestRepairSession_RecordsOutcomeOnRunnerFailure(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "runner failure must be recorded once")
 	got := mock.recordOutcomeReqs[0]
@@ -828,7 +860,7 @@ func TestRepairSession_RecordsOutcomeOnAgentExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "exit-error path must be recorded")
 	got := mock.recordOutcomeReqs[0]
@@ -853,7 +885,7 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	_, _, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE on failed run")
@@ -863,8 +895,8 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "cooldown set when run owned even on failure")
-	assert.Equal(t, "abc123", rm.lastAttemptCommit["s1"], "agent exit failures count as an attempted repair for this head")
-	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, rm.lastAttemptDisplayStatus["s1"])
+	assert.Equal(t, "abc123", rm.lastAttempt["s1"].headSHA, "agent exit failures count as an attempted repair for this head")
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, rm.lastAttempt["s1"].displayStatus)
 }
 
 func TestRepairSession_WaitChatRunTimeoutDoesNotRecordAttemptedHead(t *testing.T) {
@@ -878,11 +910,11 @@ func TestRepairSession_WaitChatRunTimeoutDoesNotRecordAttemptedHead(t *testing.T
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	rm.mu.Lock()
-	lastAttemptCommit := rm.lastAttemptCommit["s1"]
-	lastAttemptStatus := rm.lastAttemptDisplayStatus["s1"]
+	lastAttemptCommit := rm.lastAttempt["s1"].headSHA
+	lastAttemptStatus := rm.lastAttempt["s1"].displayStatus
 	rm.mu.Unlock()
 
 	assert.Equal(t, "", lastAttemptCommit, "timeout must not mark commit as attempted")
@@ -900,7 +932,7 @@ func TestRepairSession_NotInFixingChecks(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "FIX_COMPLETE only fires in FIXING_CHECKS")
@@ -913,7 +945,7 @@ func TestRepairSession_WaitErrorSkipsFireEvent(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE when WaitChatRun errored")
@@ -924,7 +956,7 @@ func TestRepairSession_WaitErrorSkipsFireEvent(t *testing.T) {
 	// permanently disables repair on this commit until a new push.
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "lastAttemptCommit must NOT be set when WaitChatRun errored")
+	assert.Equal(t, "", rm.lastAttempt["s1"].headSHA, "lastAttempt must NOT be set when WaitChatRun errored")
 }
 
 func TestRepairSession_DoesNotPersistUnavailableReviewFingerprint(t *testing.T) {
@@ -933,7 +965,7 @@ func TestRepairSession_DoesNotPersistUnavailableReviewFingerprint(t *testing.T) 
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", false)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", false, "")
 
 	require.Len(t, mock.recordOutcomeReqs, 1)
 	assert.Nil(t, mock.recordOutcomeReqs[0].ReviewFingerprint, "unavailable fingerprint must not be persisted as an empty fingerprint")
@@ -951,7 +983,7 @@ func TestRepairSession_RefusalRecordsBlockedNotFailure(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "a start-refusal must be recorded exactly once")
 	got := mock.recordOutcomeReqs[0]
@@ -967,7 +999,7 @@ func TestRepairSession_RefusalRecordsBlockedNotFailure(t *testing.T) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "base cooldown stamped so refusal retries are floored at the base cadence")
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "a refusal did not run an agent attempt against this head")
+	assert.Equal(t, "", rm.lastAttempt["s1"].headSHA, "a refusal did not run an agent attempt against this head")
 }
 
 // TestRepairSession_WatchdogExitErrorAllowsSameHeadRetry locks in that a
@@ -986,15 +1018,15 @@ func TestRepairSession_WatchdogExitErrorAllowsSameHeadRetry(t *testing.T) {
 		"the watchdog marker must classify as an incomplete interactive chat")
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	require.Len(t, mock.recordOutcomeReqs, 1)
 	assert.Contains(t, mock.recordOutcomeReqs[0].GetExitError(), "agent went idle without completing")
 
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "a watchdog-killed run must not mark the head as attempted")
-	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED, rm.lastAttemptDisplayStatus["s1"],
+	assert.Equal(t, "", rm.lastAttempt["s1"].headSHA, "a watchdog-killed run must not mark the head as attempted")
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED, rm.lastAttempt["s1"].displayStatus,
 		"a watchdog-killed run must not mark the status as attempted")
 }
 
@@ -1010,7 +1042,7 @@ func TestRepairSession_WaitRequestCarriesIdleFailField(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true, "")
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -1437,8 +1469,7 @@ func TestMaybeRepair_SkipsSameCommit(t *testing.T) {
 		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "abc123"},
 	}
 	rm := newTestMonitor(mock)
-	rm.lastAttemptCommit["s1"] = "abc123"
-	rm.lastAttemptDisplayStatus["s1"] = bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING
+	rm.lastAttempt["s1"] = repairInput{headSHA: "abc123", displayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING}
 
 	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
 
@@ -1455,8 +1486,7 @@ func TestMaybeRepair_AllowsSameCommitDifferentStatus(t *testing.T) {
 		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, PrDisplayHeadSha: "abc123"},
 	}
 	rm := newTestMonitor(mock)
-	rm.lastAttemptCommit["s1"] = "abc123"
-	rm.lastAttemptDisplayStatus["s1"] = bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING
+	rm.lastAttempt["s1"] = repairInput{headSHA: "abc123", displayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING}
 
 	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, true)
 
@@ -1485,6 +1515,122 @@ func TestMaybeRepair_SkipsPersistedSameHeadStatusAfterAgentRun(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	startCalls, _, _, _ := mock.snapshot()
 	assert.Equal(t, 0, startCalls, "persisted same-head/status agent exit must not retry forever")
+}
+
+// conflictSessionAfterFailedRepair is a conflicted PR whose one repair attempt
+// on head "abc123" ran against base tip "base-1" and exited non-zero, with the
+// backoff for that failure already elapsed.
+func conflictSessionAfterFailedRepair(attempts int32) *bossanovav1.Session {
+	return &bossanovav1.Session{
+		Id:                      "s1",
+		State:                   bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		PrDisplayHeadSha:        "abc123",
+		RepoOriginUrl:           "git@github.com:recurser/bossanova.git",
+		BaseBranch:              "main",
+		LastRepairHeadSha:       "abc123",
+		LastRepairDisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		LastRepairBaseSha:       "base-1",
+		LastRepairExitError:     "exit status 1",
+		LastRepairAttemptCount:  attempts,
+		LastRepairStartedAt:     timestamppb.New(time.Now().Add(-24 * time.Hour)),
+	}
+}
+
+func TestMaybeRepair_ConflictRetriesSameHeadOnlyWhenBaseMoves(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{conflictSessionAfterFailedRepair(1)}
+	mock.setBranchHead("base-1")
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	require.Equal(t, 0, startCalls, "same head and same base tip is the input already attempted")
+
+	mock.setBranchHead("base-2")
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called once the base branch moved under the conflicted head")
+	waitFor(t, func() bool {
+		return len(mock.recordOutcomeSnapshot()) > 0
+	}, "repair outcome recorded")
+	assert.Equal(t, "base-2", mock.recordOutcomeSnapshot()[0].GetBaseSha(), "the attempt records the base tip it ran against")
+	reads := mock.branchHeadSnapshot()
+	require.NotEmpty(t, reads)
+	assert.Equal(t, "git@github.com:recurser/bossanova.git", reads[0].GetRepoOriginUrl())
+	assert.Equal(t, "main", reads[0].GetBranch(), "the base tip is read for the session's own base branch")
+}
+
+func TestMaybeRepair_ConflictSkipsSameHeadWhenBaseTipUnavailable(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{conflictSessionAfterFailedRepair(1)}
+	mock.branchHeadErr = errors.New("github unavailable")
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "an unreadable base tip cannot show the conflict input moved")
+}
+
+func TestMaybeRepair_ConflictBaseMoveStillBlockedByFailureBudget(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{conflictSessionAfterFailedRepair(maxRepairLoopAttempts)}
+	mock.setBranchHead("base-2")
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "a moved base does not buy attempts past the failure budget")
+	require.Len(t, mock.fireEventReqs, 1, "the exhausted session is blocked for a person")
+	assert.Equal(t, bossanovav1.SessionEvent_SESSION_EVENT_BLOCK, mock.fireEventReqs[0].GetEvent())
+}
+
+// TestMaybeRepair_ConflictBaseMoveRetriesAreBoundedPerHead covers the agent
+// that exits cleanly without resolving the conflict. A clean exit resets the
+// persisted failure count, so neither the backoff nor the failure budget ever
+// engages; the head still gets only maxRepairLoopAttempts base-move retries
+// before it is blocked for a person.
+func TestMaybeRepair_ConflictBaseMoveRetriesAreBoundedPerHead(t *testing.T) {
+	sess := conflictSessionAfterFailedRepair(0)
+	sess.LastRepairExitError = ""
+	sess.State = bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS
+	sess.DisplayStatus = bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{sess}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 20}
+
+	for i := 1; i <= maxRepairLoopAttempts; i++ {
+		mock.setBranchHead(fmt.Sprintf("base-%d", i+1))
+		rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+		waitFor(t, func() bool {
+			c, _, _, _ := mock.snapshot()
+			rm.mu.Lock()
+			defer rm.mu.Unlock()
+			return c == i && !rm.repairing["s1"]
+		}, fmt.Sprintf("base move %d starts one repair that exits cleanly", i))
+		rm.mu.Lock()
+		delete(rm.cooldowns, "s1")
+		rm.mu.Unlock()
+	}
+
+	mock.setBranchHead("base-final")
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, maxRepairLoopAttempts, startCalls, "a head that used its base-move retries starts no further repair")
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	require.Len(t, mock.fireEventReqs, 1, "the still-conflicted head is blocked for a person")
+	assert.Equal(t, bossanovav1.SessionEvent_SESSION_EVENT_BLOCK, mock.fireEventReqs[0].GetEvent())
+	assert.Contains(t, mock.fireEventReqs[0].GetBlockedReason(), "conflicted on abc123")
 }
 
 func TestMaybeRepair_RejectedAllowsSameHeadWhenReviewFingerprintChanges(t *testing.T) {

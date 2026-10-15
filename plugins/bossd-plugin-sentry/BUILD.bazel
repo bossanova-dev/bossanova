@@ -41,3 +41,13 @@ go_test(
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
+
+# Production sources consumed by the host environment-policy guard.
+filegroup(
+    name = "env_policy_sources",
+    srcs = glob(
+        ["**/*.go"],
+        exclude = ["**/*_test.go"],
+    ),
+    visibility = ["//services/bossd/internal/plugin:__pkg__"],
+)

@@ -15,3 +15,11 @@ const webhookSafetyNetInterval = 10 * time.Minute
 type WebhookHealth interface {
 	WebhookDeliveryHealthy(repo string) bool
 }
+
+// DisplayWebhookHealth is WebhookHealth plus the display poller's report of a
+// PR change it found by polling (NotePolledChange), the evidence behind
+// Repo.is_missing_webhooks. upstream.WebhookHealth implements it.
+type DisplayWebhookHealth interface {
+	WebhookHealth
+	NotePolledChange(repo string, since time.Time)
+}

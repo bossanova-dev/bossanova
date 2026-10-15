@@ -206,6 +206,7 @@ type Session struct {
 	LastRepairHeadSHA           string
 	LastRepairDisplayStatus     int32
 	LastRepairReviewFingerprint string
+	LastRepairBaseSHA           string
 
 	// Blocked-refusal lane: set when the daemon refused to START a repair
 	// chat (a FailedPrecondition displace/reclaim refusal) rather than

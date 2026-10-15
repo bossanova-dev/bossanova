@@ -201,10 +201,10 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 		since := trailingRunStart(snaps)
 		switch vcs.DisplayStatus(latest.ComputedStatus) {
 		case vcs.DisplayStatusNeedsHuman:
-			category, operator := attention.ParkCategory(parkCodes)
-			if operator {
+			category, kind := attention.ParkCategory(parkCodes)
+			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
 				st := add(&tlStep{at: since, rank: rankParked, title: "Parked for you · " + category})
-				candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, steps: []*tlStep{st}})
+				candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 			} else {
 				// Only waiting codes, or none: verify still holds the PR,
 				// but nothing is the operator's to review.
@@ -269,7 +269,8 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 		candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, steps: []*tlStep{st}})
 	}
 
-	kind := attention.Compute(ans.Input).GetKind()
+	att := attention.Compute(ans.Input)
+	kind := att.GetKind()
 	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && latest != nil && !hasCandidate(candidates, kind) {
 		// Mergeable with no "CI passed" or "Ready for review" step (every
 		// ordinary check skipped, never a draft): the merge wait still gets a
@@ -279,7 +280,9 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	}
 	sortSteps(steps)
 	var fix []*tlStep
-	if ans.Fix != nil {
+	// A blocked verify park is a FIX that carries its park codes, and no fix
+	// row answers it, though ans.Fix may still name a dismissed one.
+	if ans.Fix != nil && len(att.GetParkCodes()) == 0 {
 		fix = fixGroups[ans.Fix.Source]
 	}
 	inFix := make(map[*tlStep]bool)
@@ -333,6 +336,9 @@ func waitSteps(kind pb.AttentionKind, fix []*tlStep, inFix map[*tlStep]bool, can
 		if len(fix) > 0 {
 			return fix
 		}
+		// No fix row answers a blocked verify park: it waits on its park
+		// candidate.
+		fallthrough
 	case pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, pb.AttentionKind_ATTENTION_KIND_QUESTION,
 		pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_MERGE,
 		pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS:

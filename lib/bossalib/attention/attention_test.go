@@ -48,6 +48,12 @@ func reviewActions(video bool) []pb.AttentionAction {
 	return acts
 }
 
+// blockedActions is reviewActions without APPROVE: a blocked park is sent
+// back, never approved.
+func blockedActions(video bool) []pb.AttentionAction {
+	return reviewActions(video)[1:]
+}
+
 func TestCompute_Cases(t *testing.T) {
 	factory := readyPR()
 	factory.IsFactoryRepo = true
@@ -64,13 +70,25 @@ func TestCompute_Cases(t *testing.T) {
 		{
 			name: "#2979 UI park with evidence video renders the UI sentence",
 			in: func() attention.Input {
-				in := withParks(factory, "always-human-path", "human-review:ui", "ledger-open")
+				in := withParks(factory, "always-human-path", "human-review:ui")
 				in.Evidence = &attention.Evidence{URL: "https://evidence.example/2979.mp4", VideoDuration: 2*time.Minute + 40*time.Second, Proven: 3, Total: 3}
 				return in
 			}(),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
 			sentence:  "Watch the evidence video (2:40), then approve · UI change",
 			actions:   reviewActions(true),
+			parkCodes: []string{"always-human-path", "human-review:ui"},
+		},
+		{
+			name: "sign-off codes beside a failure code are blocked and never offer approve",
+			in: func() attention.Input {
+				in := withParks(factory, "always-human-path", "human-review:ui", "ledger-open")
+				in.Evidence = &attention.Evidence{URL: "https://evidence.example/2979.mp4", VideoDuration: 2*time.Minute + 40*time.Second, Proven: 3, Total: 3}
+				return in
+			}(),
+			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence:  "Review left must-fix findings open · send it back to fix them",
+			actions:   blockedActions(true),
 			parkCodes: []string{"always-human-path", "ledger-open", "human-review:ui"},
 		},
 		{
@@ -106,63 +124,71 @@ func TestCompute_Cases(t *testing.T) {
 			actions:  reviewActions(false),
 		},
 		{
-			name:     "#2967 unproven park",
+			name:     "#2967 unproven park is blocked",
 			in:       withParks(factory, "human-review:unproven"),
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Some checks have no evidence · watch the video, then approve",
-			actions:  reviewActions(false),
+			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence: "Some checks have no evidence · send it back to prove them",
+			actions:  blockedActions(false),
 		},
 		{
-			name:     "#2965 no-receipt park",
+			name:     "#2965 no-receipt park is blocked",
 			in:       withParks(factory, "no-receipt"),
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Built by hand, no factory review · review the diff, then approve",
-			actions:  reviewActions(false),
+			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence: "Built by hand, no factory review · send it back through the factory",
+			actions:  blockedActions(false),
 		},
 		{
 			name:      "#2987 database park beats always-human-path",
-			in:        withParks(factory, "always-human-path", "human-review:database", "ledger-open"),
+			in:        withParks(factory, "always-human-path", "human-review:database"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
 			sentence:  "Review the migration, then approve",
 			actions:   reviewActions(false),
-			parkCodes: []string{"always-human-path", "ledger-open", "human-review:database"},
+			parkCodes: []string{"always-human-path", "human-review:database"},
 		},
 		{
-			name:     "ledger-open park",
+			name:     "ledger-open park is blocked",
 			in:       withParks(factory, "ledger-open"),
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Read the open must-fix from review, then approve or send back",
-			actions:  reviewActions(false),
+			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence: "Review left must-fix findings open · send it back to fix them",
+			actions:  blockedActions(false),
 		},
 		{
-			name:     "repair-exhausted falls back to the generic sentence",
+			name:     "repair-exhausted is blocked with the generic blocked sentence",
 			in:       withParks(factory, "repair-exhausted"),
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Review the PR, then approve or send back",
-			actions:  reviewActions(false),
+			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence: "Verify is blocked · send it back or fix the PR",
+			actions:  blockedActions(false),
 		},
 		{
 			name:     "a templated code beats an earlier generic one",
 			in:       withParks(factory, "repair-exhausted", "ledger-open"),
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Read the open must-fix from review, then approve or send back",
-			actions:  reviewActions(false),
+			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence: "Review left must-fix findings open · send it back to fix them",
+			actions:  blockedActions(false),
 		},
 		{
-			name:      "unknown code still reviews with the generic sentence",
+			name:      "unknown code is blocked with the generic blocked sentence",
 			in:        withParks(factory, "some-future-code"),
-			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Review the PR, then approve or send back",
-			actions:   reviewActions(false),
+			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence:  "Verify is blocked · send it back or fix the PR",
+			actions:   blockedActions(false),
 			parkCodes: []string{"some-future-code"},
 		},
 		{
+			name:      "an unknown code beside a sign-off code is blocked",
+			in:        withParks(factory, "human-review:security", "some-future-code"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
+			sentence:  "Verify is blocked · send it back or fix the PR",
+			actions:   blockedActions(false),
+			parkCodes: []string{"human-review:security", "some-future-code"},
+		},
+		{
 			name:      "comma-joined park codes are split, trimmed and deduped",
-			in:        withParks(factory, "human-review:ui, no-receipt", "no-receipt"),
+			in:        withParks(factory, "human-review:ui, always-human-path", "always-human-path"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
 			sentence:  "Watch the evidence video, then approve · UI change",
 			actions:   reviewActions(false),
-			parkCodes: []string{"no-receipt", "human-review:ui"},
+			parkCodes: []string{"always-human-path", "human-review:ui"},
 		},
 		{
 			name:     "fresh-claim ready PR in a non-factory repo is merge",
@@ -368,7 +394,7 @@ func TestCompute_Cases(t *testing.T) {
 	}
 }
 
-func TestCompute_EvidenceURLRidesOnReview(t *testing.T) {
+func TestCompute_EvidenceURLRidesOnPark(t *testing.T) {
 	in := withParks(readyPR(), "human-review:unproven")
 	in.Evidence = &attention.Evidence{URL: "https://evidence.example/v.mp4"}
 	got := attention.Compute(in)
@@ -553,6 +579,7 @@ func TestCompute_TrackerActionAppendedLastWhenLinked(t *testing.T) {
 		{name: "fix", in: attention.Input{Fix: &attention.FixFact{AlertKey: "k", Sentence: "s", ChatID: "c"}}, kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "question", in: attention.Input{QuestionChatID: "c", QuestionText: "q?"}, kind: pb.AttentionKind_ATTENTION_KIND_QUESTION},
 		{name: "review", in: withParks(readyPR(), "human-review:ui"), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "blocked park", in: withParks(readyPR(), "ledger-open"), kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "merge", in: readyPR(), kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
 		{name: "done", in: attention.Input{HasPR: true, PRState: attention.PRStateMerged}, kind: pb.AttentionKind_ATTENTION_KIND_DONE},
 		{name: "in progress", in: attention.Input{ProgressPhase: "building"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
@@ -586,34 +613,37 @@ func TestParkCategory(t *testing.T) {
 		name  string
 		codes []string
 		want  string
-		ok    bool
+		kind  pb.AttentionKind
 	}{
-		{name: "#2979 UI park names the UI change", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "UI change", ok: true},
-		{name: "a human-review code beats an earlier report-order code", codes: []string{"ledger-open", "human-review:database"}, want: "database migration", ok: true},
-		{name: "security", codes: []string{"always-human-path"}, want: "security", ok: true},
-		{name: "open findings", codes: []string{"ledger-open"}, want: "open findings", ok: true},
-		{name: "unknown operator code is named as-is", codes: []string{"brand-new-code"}, want: "brand-new-code", ok: true},
-		{name: "only waiting codes are not the operator's", codes: []string{"base-ci-red", "waiting: stack"}, ok: false},
-		{name: "no codes", codes: nil, ok: false},
+		{name: "#2979 UI park names the UI change", codes: []string{"always-human-path,human-review:ui"}, want: "UI change", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "a failure code beats every sign-off code", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "open findings", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "a human-review code beats an earlier report-order code", codes: []string{"always-human-path", "human-review:database"}, want: "database migration", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "security", codes: []string{"always-human-path"}, want: "security", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "open findings", codes: []string{"ledger-open"}, want: "open findings", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "unknown operator code is named as-is and blocked", codes: []string{"brand-new-code"}, want: "brand-new-code", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "only waiting codes are not the operator's", codes: []string{"base-ci-red", "waiting: stack"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{name: "no codes", codes: nil, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := attention.ParkCategory(tt.codes)
-			if got != tt.want || ok != tt.ok {
-				t.Fatalf("ParkCategory(%q) = (%q, %v), want (%q, %v)", tt.codes, got, ok, tt.want, tt.ok)
+			got, kind := attention.ParkCategory(tt.codes)
+			if got != tt.want || kind != tt.kind {
+				t.Fatalf("ParkCategory(%q) = (%q, %v), want (%q, %v)", tt.codes, got, kind, tt.want, tt.kind)
 			}
 		})
 	}
 }
 
 // TestParkCategoryNamesTheSentencesCode checks, over every subset of the park
-// vocabulary (plus an unknown and a waiting code), that the review sentence and
-// the park category name the same code: some single code in the set renders
-// both, on its own, exactly as the set renders them.
+// vocabulary (plus an unknown and a waiting code), that Compute and
+// ParkCategory agree on the kind, and that the park sentence and the park
+// category name the same code: some single code in the set renders both, on its
+// own, exactly as the set renders them.
 func TestParkCategoryNamesTheSentencesCode(t *testing.T) {
 	vocab := []string{
 		"no-receipt", "repair-exhausted", "always-human-path", attention.ParkCodeLedgerOpen,
-		"extension-failed", "no-session", "human-review:database", "human-review:security",
+		"extension-failed", "no-session", "worktree-diverged", "worktree-unsynced",
+		"human-review:database", "human-review:security",
 		"human-review:ui", "human-review:unproven", "brand-new-code", "base-ci-red",
 	}
 	alone := func(code string) (string, string) {
@@ -628,16 +658,13 @@ func TestParkCategoryNamesTheSentencesCode(t *testing.T) {
 				codes = append(codes, code)
 			}
 		}
-		category, ok := attention.ParkCategory(codes)
+		category, kind := attention.ParkCategory(codes)
 		got := attention.Compute(attention.Input{ParkCodes: codes})
-		if !ok {
-			if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
-				t.Fatalf("codes %q: Compute reviews but ParkCategory names no code", codes)
-			}
-			continue
+		if got.GetKind() != kind {
+			t.Fatalf("codes %q: ParkCategory answers %v (%q) but Compute answers %v", codes, kind, category, got.GetKind())
 		}
-		if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
-			t.Fatalf("codes %q: ParkCategory names %q but Compute answers %v", codes, category, got.GetKind())
+		if kind == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+			continue
 		}
 		named := slices.ContainsFunc(codes, func(code string) bool {
 			s, c := alone(code)

@@ -433,6 +433,9 @@ export const VENDOR_MAP = {
     // worktree-state.mjs (BOS-1330) — the shape-validated cleanliness verdict; see boss-build's
     // entry. boss-repair decides cleanliness by path from its own installed toolbox.
     'worktree-state.mjs',
+    // worktree-sync.mjs: hard rule 8 puts the session worktree back on the pushed head after a
+    // push and removes side checkouts. It imports worktree-state.mjs and main-module.mjs.
+    'worktree-sync.mjs',
     // BOS-1359: the Conflicts section runs post-rebase-audit.mjs after every base sync, in a
     // consuming repo with no repo-root skills-toolbox/ and no guarantee boss-build is installed.
     'post-rebase-audit.mjs',
@@ -544,6 +547,10 @@ export const VENDOR_MAP = {
     // bossd-present.mjs, which boss-verify did not ship before.
     'stage-chain.mjs',
     'bossd-present.mjs',
+    // worktree-sync.mjs: the extension path's "same tree" step recovers a worktree a repair left
+    // on a previous PR head. It imports worktree-state.mjs.
+    'worktree-sync.mjs',
+    'worktree-state.mjs',
   ],
   'bs-sweep-debt': ['main-module.mjs', 'bs-run-sentinel.mjs'],
   'bs-sweep-dependabot': ['main-module.mjs', 'bs-run-sentinel.mjs'],

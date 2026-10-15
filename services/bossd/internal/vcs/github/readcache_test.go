@@ -209,3 +209,44 @@ func TestCachedReadsReturnIndependentCopies(t *testing.T) {
 		t.Fatalf("second read title = %q, want v1", second.Title)
 	}
 }
+
+// TestCachedBranchHeadReadsShareOneFetchPerBranch pins the repair sweep's cost:
+// every conflicted session on one base branch shares one tip read per TTL, and
+// a different branch or an expired entry reads again.
+func TestCachedBranchHeadReadsShareOneFetchPerBranch(t *testing.T) {
+	clock := newFakeClock()
+	var mu sync.Mutex
+	reads := 0
+	gh := &scriptedGH{reply: func(args []string) (string, error) {
+		if !isRESTCall(args) {
+			return "", fmt.Errorf("unexpected gh call %v", args)
+		}
+		mu.Lock()
+		reads++
+		n := reads
+		mu.Unlock()
+		return fmt.Sprintf(`{"object":{"sha":"tip-%d"}}`, n), nil
+	}}
+	p := New(zerolog.Nop(), WithRunGH(gh.run), WithNowFunc(clock.Now))
+	bg := vcs.WithCachedReads(context.Background())
+
+	for i := 0; i < 3; i++ {
+		sha, err := p.GetBranchHeadSHA(bg, "o/r", "main")
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if sha != "tip-1" {
+			t.Fatalf("read %d sha = %q, want the cached tip-1", i, sha)
+		}
+	}
+	if got := gh.count(isRESTCall); got != 1 {
+		t.Fatalf("branch head REST reads = %d, want 1", got)
+	}
+	if sha, _ := p.GetBranchHeadSHA(bg, "o/r", "Main"); sha != "tip-2" {
+		t.Fatalf("other-case branch sha = %q, want its own read tip-2", sha)
+	}
+	clock.Advance(defaultReadCacheTTL)
+	if sha, _ := p.GetBranchHeadSHA(bg, "o/r", "main"); sha != "tip-3" {
+		t.Fatalf("sha after TTL = %q, want a fresh tip-3", sha)
+	}
+}

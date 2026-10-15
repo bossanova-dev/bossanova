@@ -1602,6 +1602,11 @@ type sendPlanRecordingFactory struct {
 	capturePaneOutputs []string
 	captureCallIdx     atomic.Int32
 
+	// styledCapture answers every styled capture (capture-pane -e) without
+	// consuming a capturePaneOutputs entry. Empty → empty stdout, which shows no
+	// composer, so the occupied-composer check lets the send proceed.
+	styledCapture string
+
 	// failOnSubcommand maps a subcommand (e.g. "send-keys") to the call
 	// index at which it should exit non-zero. Default: never fail.
 	failOnSubcommand map[string]int
@@ -1698,6 +1703,9 @@ func (f *sendPlanRecordingFactory) factory(ctx context.Context, name string, arg
 
 	switch subcommand {
 	case "capture-pane":
+		if slices.Contains(args, "-e") {
+			return exec.CommandContext(ctx, "printf", "%s", f.styledCapture)
+		}
 		idx := int(f.captureCallIdx.Add(1)) - 1
 		if f.failCapturePaneFrom != nil && idx >= *f.failCapturePaneFrom {
 			return failingCaptureCmd(ctx, f.captureFailStderr)

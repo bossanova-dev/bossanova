@@ -472,6 +472,8 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'ledger-open',
     'extension-failed',
     'no-session',
+    'worktree-diverged',
+    'worktree-unsynced',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
@@ -1267,7 +1269,10 @@ test('the worst-case judged set description fits the commit-status limit', () =>
   assert.ok(description.length <= DESCRIPTION_LIMIT)
   // The widest set an extension run can park: a malfunction plus every path code and category.
   const withExtensions = HUMAN_REASONS.filter((c) => !['no-receipt', 'ledger-open'].includes(c))
-    .filter((c) => !['repair-exhausted', 'no-session'].includes(c))
+    .filter(
+      (c) =>
+        !['repair-exhausted', 'no-session', 'worktree-diverged', 'worktree-unsynced'].includes(c),
+    )
     .join(',')
   assert.ok(needsHumanDescription(withExtensions).length <= DESCRIPTION_LIMIT)
 })
@@ -3655,7 +3660,14 @@ test('needsHumanDescription appends the label after the separator and never trun
   // The widest judged set leaves room for a single label character plus the ellipsis at most.
   const worst = parseHumanReasonList(
     HUMAN_REASONS.filter(
-      (c) => c !== 'repair-exhausted' && c !== 'no-session' && c !== 'extension-failed',
+      (c) =>
+        ![
+          'repair-exhausted',
+          'no-session',
+          'extension-failed',
+          'worktree-diverged',
+          'worktree-unsynced',
+        ].includes(c),
     ),
   ).join(',')
   const crowded = needsHumanDescription(worst, 'verify gate rules')
@@ -5907,6 +5919,8 @@ test('parkStillRaised attributes each code to the zero-token judge, a recorded e
       true,
     ],
     ['repair gave up', ['repair-exhausted'], { extensionsRan: false }, true],
+    ['worktree stuck off the head', ['worktree-diverged'], { extensionsRan: false }, true],
+    ['worktree sync failed', ['worktree-unsynced'], { extensionsRan: false }, true],
     [
       'one stale code releases',
       [ui, 'ledger-open'],
@@ -6421,4 +6435,30 @@ test('post --carry-record refuses a carry the comments no longer support and pos
       UsageError,
       JSON.stringify(options),
     )
+})
+
+test('policy CLI exits non-zero for a real deferred verifyDefaults fault', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-policy-deferred-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(
+    join(dir, '.boss-skills.json'),
+    JSON.stringify({
+      verifyDefaults: { alwaysHumanPaths: [{ glob: 'src/**', unexpected: true }] },
+    }),
+  )
+  const result = spawnSync(
+    process.execPath,
+    [new URL('./verify-gate.mjs', import.meta.url).pathname, 'policy'],
+    {
+      cwd: dir,
+      encoding: 'utf8',
+    },
+  )
+  assert.equal(result.status, 1)
+  assert.equal(result.stdout, '')
+  assert.match(result.stderr, /deferred verifyDefaults/)
+  assert.match(
+    result.stderr,
+    /skill-config: invalid config from .*verifyDefaults.alwaysHumanPaths must be/,
+  )
 })

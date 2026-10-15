@@ -198,6 +198,10 @@ type UpdateSessionParams struct {
 	// nil = don't touch, *nil = clear to NULL (reset on green / auto-unblock),
 	// *val = set the SHA at which an attempt was just counted (BOS-235).
 	LastAttemptHeadSHA **string
+	// LastRepairAttemptCount overwrites the repair plugin's consecutive-failure
+	// counter. An operator clearing a block sets it to 0, so the next sweep on
+	// the same head starts a fresh repair budget instead of re-blocking.
+	LastRepairAttemptCount *int
 
 	// RotationAttemptCount and RotationResumeAt track account-rotation state
 	// for the headless auto-rotation feature (BOS-174).
@@ -384,6 +388,7 @@ type UpdateRepairDiagnosticsParams struct {
 	HeadSHA           string
 	DisplayStatus     int32
 	ReviewFingerprint *string
+	BaseSHA           string
 }
 
 // CreateAgentChatParams holds the parameters for creating a new agent chat record.

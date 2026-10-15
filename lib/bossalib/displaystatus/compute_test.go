@@ -1884,6 +1884,8 @@ func TestCompute_VerifyStatuses(t *testing.T) {
 		{"extension failed", []string{"extension-failed"}, blocked},
 		{"repair exhausted", []string{"repair-exhausted"}, blocked},
 		{"no session", []string{"no-session"}, blocked},
+		{"worktree diverged", []string{"worktree-diverged"}, blocked},
+		{"worktree unsynced", []string{"worktree-unsynced"}, blocked},
 		{"unproven checks", []string{"human-review:unproven"}, blocked},
 		{"one failure among policy codes", []string{"human-review:ui,ledger-open"}, blocked},
 		{"unknown code", []string{"brand-new"}, blocked},

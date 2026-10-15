@@ -12,12 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/childenv"
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -212,27 +214,12 @@ func pluginEnvFromConfig(cfg config.PluginConfig) []string {
 	return env
 }
 
-// pluginSubprocessEnv builds the full environment for a plugin subprocess:
-// the host's own environment, the per-plugin BOSS_PLUGIN_* projection, and the
-// parent-identity stamp the plugin's parent-death watchdog needs (BOS-1221).
-//
-// It is set unconditionally — the previous code only assigned cmd.Env when
-// pluginEnvFromConfig returned entries, so a plugin carrying no config (most
-// of them) would never have been stamped.
-//
-// The Unsetenv is load-bearing, not hygiene. go-plugin appends os.Environ() to
-// cmd.Env *after* we build it (SkipHostEnv is false, client.go:655) and
-// os/exec keeps the LAST occurrence of a duplicate key, so a same-named
-// variable already in bossd's own environment would land after our stamp and
-// win. The host owns this variable name outright, so clearing it from our own
-// environment first is what makes the stamp survive that second append. The
-// plugin-side arm-time guard is the second line of defence, not the first:
-// a shadowed stamp there means the watchdog refuses to arm and the orphan
-// leak silently returns.
-func pluginSubprocessEnv(cfg config.PluginConfig, hostPID int) []string {
-	_ = os.Unsetenv(sharedplugin.ParentPIDEnvVar)
-
-	env := append(os.Environ(), pluginEnvFromConfig(cfg)...)
+// pluginSubprocessEnv keeps only the approved baseline and operator passthrough.
+// The parent identity is stamped last without changing the host environment.
+func pluginSubprocessEnv(cfg config.PluginConfig, hostPID int, passthrough []string) []string {
+	env := childenv.Build(os.Environ(), childenv.ForPlugin(cfg.Name, passthrough))
+	env = append(env, pluginEnvFromConfig(cfg)...)
+	env = append(env, childenv.PassthroughEnvVar+"="+strings.Join(passthrough, ","))
 	return append(env, sharedplugin.ParentPIDEnvVar+"="+strconv.Itoa(hostPID))
 }
 
@@ -523,9 +510,10 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 	// #nosec G204 -- runs an operator-configured plugin binary path (cfg.Path); local-trust, not attacker-controlled
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(cfg.Path)
-	cmd.Env = pluginSubprocessEnv(cfg, os.Getpid())
+	cmd.Env = pluginSubprocessEnv(cfg, os.Getpid(), h.settings.ChildEnvPassthrough)
 
 	client := goplugin.NewClient(&goplugin.ClientConfig{
+		SkipHostEnv:      true,
 		HandshakeConfig:  NewHandshake(h.cookieValue),
 		VersionedPlugins: NewVersionedPluginMap(h.hostService),
 		Cmd:              cmd,

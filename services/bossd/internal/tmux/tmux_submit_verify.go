@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // This file holds the submission-verification and pane-scraping heuristics used
@@ -779,7 +780,7 @@ func composerEmptyOf(pane, payload string) bool {
 	if markerIdx == -1 {
 		return false
 	}
-	if composerHoldsPayload(strings.TrimSpace(lines[markerIdx]), payload) {
+	if composerBlockHoldsPayload(lines, markerIdx, payload) {
 		return false
 	}
 	// A composer that renders the glyph on its own row ABOVE the pasted
@@ -1089,7 +1090,45 @@ func multiLineSubmitted(pane, payload string) bool {
 	if payloadStillBelowMarker {
 		return false
 	}
-	return !composerHoldsPayload(strings.TrimSpace(lines[markerIdx]), payload)
+	return !composerBlockHoldsPayload(lines, markerIdx, payload)
+}
+
+// composerBlockHoldsPayload reports whether the live composer holds the payload
+// anywhere in its block: the marker row plus the continuation rows below it, up
+// to the first blank row or horizontal rule.
+//
+// The marker row alone is not enough once the composer already held text.
+// Codex draws only the FIRST line of a multi-line draft after its "›" glyph and
+// every later line as an indented continuation row, and typed text lands at the
+// cursor, at the end of the draft. A payload typed into a composer still holding
+// earlier unsent lines therefore sits at the bottom of the block — on a row of
+// its own, or appended to the last row — while the marker row shows the oldest
+// line, which never prefix-matches it (testdata/panes/
+// codex_stuck_composer_appended_real.txt). Reading only that row reported the
+// send submitted, and a verify chat collected ten unsent commands that way.
+//
+// A block with continuation rows is never a placeholder, which is always one
+// row, so its text is matched as a suffix of the whole block with whitespace
+// removed — the wrap column and indent are pane geometry, not content. A
+// single-row composer keeps composerHoldsPayload's prefix rule alone: a rotating
+// placeholder such as "Ask Codex to do anything" ends in ordinary words, so a
+// suffix match there would read a short payload as held after a real submit.
+func composerBlockHoldsPayload(lines []string, markerIdx int, payload string) bool {
+	markerRow := strings.TrimSpace(lines[markerIdx])
+	if composerHoldsPayload(markerRow, payload) {
+		return true
+	}
+	content, _ := composerContent(markerRow)
+	block := []string{content}
+	for _, l := range lines[markerIdx+1:] {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || isHorizontalRule(trimmed) {
+			break
+		}
+		block = append(block, trimmed)
+	}
+	want := withoutSpace(payload)
+	return len(block) > 1 && want != "" && strings.HasSuffix(withoutSpace(strings.Join(block, "")), want)
 }
 
 // queuedMessagesHintRe matches the placeholder an agent renders IN its live
@@ -1377,4 +1416,163 @@ func isAgentActivity(text string) bool {
 		}
 	}
 	return false
+}
+
+// errComposerOccupied is the sentinel for a send refused because the live
+// composer already held text the send did not type. Nothing was typed and no
+// Enter was sent, so the payload is not in the pane at all.
+var errComposerOccupied = errors.New("the live composer already holds unsubmitted text")
+
+// refuseOccupiedComposer refuses a send into a Codex composer that already
+// holds a draft, before a single key is typed.
+//
+// Typing into it appends: the payload lands after the draft, and an Enter
+// either submits both as one message or, when the draft is a pile of earlier
+// sends Codex never took, leaves the payload stuck behind them where only the
+// draft's oldest line shows on the marker row. That is how a verify chat
+// collected ten unsent "$boss-verify" lines while every send read submitted.
+//
+// It refuses rather than clears. The pane cannot say who wrote the draft: it may
+// be earlier automation that never ran, or an operator's half-typed message,
+// and C-u would destroy the second as readily as the first. A refusal costs one
+// loud OutcomeNotSubmitted naming the draft; a clear could silently erase a
+// person's work. The operator clears the composer and the next send goes
+// through.
+//
+// It reads a styled capture because the plain text cannot tell a draft from
+// Codex's empty-composer placeholder ("Ask Codex to do anything", which
+// rotates): only the SGR dim attribute separates them
+// (testdata/panes/codex_placeholder_styled_real.txt). A capture that fails, or
+// carries no styling on the marker row, holds no evidence either way, so the
+// send proceeds and the submit verifier remains the check.
+func (c *Client) refuseOccupiedComposer(ctx context.Context, sessionName string) error {
+	styled, err := c.captureVisibleStyled(ctx, sessionName)
+	if err != nil || !composerHoldsDraft(styled) {
+		return nil
+	}
+	return classifySubmit(OutcomeNotSubmitted, fmt.Errorf(
+		"refused to type into tmux session %q: the live composer already holds text this send did not type, so the payload would be appended to it; nothing was typed and no Enter was sent; clear the composer and resend: %w",
+		sessionName, errComposerOccupied))
+}
+
+// composerHoldsDraft reports whether a styled capture (capture-pane -e) shows
+// the live composer holding text rather than an empty box or a placeholder.
+// The composer is the bottom-most prompt-marker row and the rows below it up to
+// the first blank row or horizontal rule; any visible character in it that is
+// not rendered dim, other than the marker glyph itself, is draft text. A marker
+// row with no escape sequence at all is an unstyled capture, which cannot
+// separate a placeholder from text, so it reports false.
+func composerHoldsDraft(styled string) bool {
+	rows := strings.Split(styled, "\n")
+	plain := make([]string, len(rows))
+	for i, row := range rows {
+		plain[i] = plainText(row)
+	}
+	markerIdx := bottomMostPromptMarkerIdx(plain)
+	if markerIdx == -1 || !strings.Contains(rows[markerIdx], "\x1b[") {
+		return false
+	}
+	for i := markerIdx; i < len(rows); i++ {
+		if trimmed := strings.TrimSpace(plain[i]); i > markerIdx && (trimmed == "" || isHorizontalRule(trimmed)) {
+			break
+		}
+		glyphPending := i == markerIdx
+		for _, cell := range styledCells(rows[i]) {
+			if unicode.IsSpace(cell.r) {
+				continue
+			}
+			if glyphPending {
+				glyphPending = false
+				continue
+			}
+			if !cell.dim {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// styledCell is one visible character of a styled row and whether the SGR
+// state in force when it was drawn had the dim attribute set.
+type styledCell struct {
+	r   rune
+	dim bool
+}
+
+// styledCells walks a row captured with escape sequences, tracking the dim
+// attribute through SGR sequences and dropping every escape sequence (CSI and
+// OSC) from the output.
+func styledCells(row string) []styledCell {
+	var cells []styledCell
+	dim := false
+	runes := []rune(row)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '\x1b' {
+			cells = append(cells, styledCell{r: runes[i], dim: dim})
+			continue
+		}
+		if i+1 >= len(runes) {
+			break
+		}
+		switch runes[i+1] {
+		case '[':
+			end := i + 2
+			for end < len(runes) && (runes[end] < 0x40 || runes[end] > 0x7e) {
+				end++
+			}
+			if end < len(runes) && runes[end] == 'm' {
+				dim = applySGRDim(string(runes[i+2:end]), dim)
+			}
+			i = end
+		case ']':
+			end := i + 2
+			for end < len(runes) && runes[end] != '\a' && (runes[end] != '\x1b' || end+1 >= len(runes) || runes[end+1] != '\\') {
+				end++
+			}
+			if end < len(runes) && runes[end] == '\x1b' {
+				end++
+			}
+			i = end
+		default:
+			i++
+		}
+	}
+	return cells
+}
+
+// applySGRDim returns the dim attribute after one SGR parameter list: 2 sets
+// it, 0 / 22 / an empty list clear it, and the arguments of an extended colour
+// (38/48/58 followed by 5;n or 2;r;g;b) are skipped so a "2" among them is not
+// read as dim.
+func applySGRDim(params string, dim bool) bool {
+	fields := strings.Split(params, ";")
+	for i := 0; i < len(fields); i++ {
+		switch fields[i] {
+		case "", "0", "22":
+			dim = false
+		case "2":
+			dim = true
+		case "38", "48", "58":
+			if i+1 < len(fields) {
+				switch fields[i+1] {
+				case "5":
+					i += 2
+				case "2":
+					i += 4
+				}
+			}
+		}
+	}
+	return dim
+}
+
+// plainText is a styled row with its escape sequences removed.
+func plainText(row string) string {
+	cells := styledCells(row)
+	out := make([]rune, len(cells))
+	for i, cell := range cells {
+		out[i] = cell.r
+	}
+	return string(out)
 }

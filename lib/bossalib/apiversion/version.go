@@ -572,6 +572,14 @@ const V20260917 Version = "2026-09-17"
 // read "waiting" or "✓ ready"; older pins get WAITING and that composite back.
 const V20260918 Version = "2026-09-18"
 
+// V20260919 ships BlockedParkAttentionChange: Session.attention answers a
+// verify park with any failure, incomplete or unknown code as
+// ATTENTION_KIND_FIX (park_codes kept, no APPROVE action) where it answered
+// ATTENTION_KIND_REVIEW offering APPROVE. A park of only policy sign-off codes
+// is still a REVIEW. Older pins get the REVIEW kind and the leading APPROVE
+// back.
+const V20260919 Version = "2026-09-19"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -725,8 +733,9 @@ func DefaultRegistry() *Registry {
 			V20260916,
 			V20260917,
 			V20260918,
+			V20260919,
 		},
-		V20260918,
+		V20260919,
 		Baseline,
 	)
 	if err != nil {

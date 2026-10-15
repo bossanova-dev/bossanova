@@ -49,7 +49,7 @@ type Server struct {
 	// extraEnv is the daemon-resolved overlay applied on top of the inherited
 	// environment. Defaults to runClaudeOneShot; overridable in tests so they
 	// never exec claude.
-	oneShot func(ctx context.Context, workDir, prompt string, extraEnv map[string]string) (string, error)
+	oneShot func(ctx context.Context, workDir, prompt string, extraEnv map[string]string, trusted bool) (string, error)
 
 	// httpClient and usage URLs back ProbeRateLimit; all are overridable in tests.
 	httpClient  *http.Client
@@ -124,7 +124,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	sid, err := s.runner.StartWithModelAndEffort(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), req.GetExtraEnv())
+	sid, err := s.runner.StartWithProjectConfigTrust(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel(), req.GetEffort(), req.GetExtraEnv(), req.GetShouldTrustProjectConfig())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -186,6 +186,12 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
 }
 
+// UNSPECIFIED is the existing no-decision preview contract; it leaves native
+// discovery unchanged. Bossd supplies GRANT, REVOKE or DENY on actual launches.
+func projectConfigTrusted(decision bossanovav1.ProjectTrustDecision) bool {
+	return decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT || decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED
+}
+
 // BuildInteractiveCommand returns the bare claude argv for tmux-hosted
 // runs. It must NOT wrap the argv in a `bash -c "claude … | tee log"`
 // pipeline (the shape this RPC used pre-#350): piping claude's stdout
@@ -209,7 +215,16 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 // launch argument read from req.InitialInputPath (see claudeLaunchPrompt), so a
 // long prompt is never typed into the composer. The only error is a failure to
 // write that file.
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+
+func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	if !projectConfigTrusted(req.GetProjectTrust()) {
+		if s.runner == nil {
+			return nil, status.Error(codes.FailedPrecondition, "cannot verify Claude isolation flags; upgrade Claude or use boss repo update <id> --trusted")
+		}
+		if err := s.runner.checkProjectIsolationSupport(ctx, req.GetConfigHomeEnv()); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	args := []string{"claude"}
 	if req.Resume {
 		args = append(args, "--resume", req.SessionId)
@@ -240,12 +255,8 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if effort := resolveClaudeEffort(req.GetEffort(), pluginEffort); effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
-	// Code discovers servers its own native way (project .mcp.json gated by
-	// enabledMcpjsonServers, plus the user and local scopes) and the repo is
-	// responsible for declaring them. --strict-mcp-config would suppress exactly
-	// that — it is the coupling this removes, not an isolation guarantee worth
-	// keeping. See docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md.
+	// Repository-controlled MCP and settings load only for trusted repos.
+	args = append(args, projectIsolationArgs(projectConfigTrusted(req.GetProjectTrust()))...)
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell
@@ -284,7 +295,7 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 // their first input, so later sends into the chat can be confirmed too. A
 // failed install is not fatal: the launch proceeds unconfirmed, as before.
 func (s *Server) installPromptSubmitHook(req *bossanovav1.BuildInteractiveCommandRequest) bool {
-	if req.GetHookPort() <= 0 || req.GetWorktreePath() == "" || req.GetSessionId() == "" {
+	if !projectConfigTrusted(req.GetProjectTrust()) || req.GetHookPort() <= 0 || req.GetWorktreePath() == "" || req.GetSessionId() == "" {
 		return false
 	}
 	if err := WritePromptSubmitHookConfig(req.GetWorktreePath(), req.GetSessionId(), int(req.GetHookPort()), req.GetHookReceiptToken()); err != nil {
@@ -358,7 +369,7 @@ func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 	runCtx, cancel := context.WithTimeout(ctx, suggestPRTitleTimeout)
 	defer cancel()
 
-	out, err := s.oneShot(runCtx, req.WorkDir, buildPRTitlePrompt(req), req.GetExtraEnv())
+	out, err := s.oneShot(runCtx, req.WorkDir, buildPRTitlePrompt(req), req.GetExtraEnv(), req.GetShouldTrustProjectConfig())
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("claude SuggestPRTitle failed; daemon will fall back to its deterministic title")
 		return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
@@ -372,7 +383,8 @@ func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 
 // runClaudeOneShot runs `claude -p --permission-mode plan` (read-only headless)
 // with the prompt piped on stdin and returns stdout. The plan permission mode
-// forbids edits/executes; piping on stdin avoids ARG_MAX limits for large
+// restricts model tool use; repository trust separately gates startup hooks
+// and MCP commands. Piping on stdin avoids ARG_MAX limits for large
 // prompts. The caller-supplied ctx bounds the run (exec.CommandContext kills the
 // process when ctx is done).
 //
@@ -380,16 +392,23 @@ func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRT
 // last-wins layering a session spawn gets. The run happens in the session
 // worktree, so the daemon's repo pins (an untrusted repo's emptied proof,
 // Linear and Sentry keys) must override the ambient values here too (BOS-1562).
-func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string, extraEnv map[string]string) (string, error) {
-	loginShell := ""
-	if s.runner != nil {
-		loginShell = s.runner.loginShell
+func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string, extraEnv map[string]string, trusted bool) (string, error) {
+	runner := s.runner
+	if runner == nil {
+		runner = &Runner{}
 	}
-	argv := loginshell.Wrap(loginShell, loginshell.Flags(loginShell),
-		[]string{"claude", "-p", "--permission-mode", "plan"})
-	// #nosec G204 -- claude -p --permission-mode plan invoked via the operator-configured login shell (argv[0]); inner argv constant; local-trust
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if !trusted {
+		if err := runner.checkProjectIsolationSupport(ctx, extraEnv); err != nil {
+			return "", err
+		}
+	}
+	args := append([]string{"claude", "-p", "--permission-mode", "plan"}, projectIsolationArgs(trusted)...)
+	argv := loginshell.Wrap(runner.loginShell, loginshell.Flags(runner.loginShell), args)
+	factory := runner.cmdFactory
+	if factory == nil {
+		factory = exec.CommandContext
+	}
+	cmd := factory(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = probeEnviron(extraEnv)
 	cmd.Stdin = strings.NewReader(prompt)

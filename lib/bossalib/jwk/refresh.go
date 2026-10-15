@@ -2,7 +2,9 @@ package jwk
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -82,59 +84,85 @@ func NewRefreshGate(cfg RefreshGateConfig) *RefreshGate {
 	return g
 }
 
-// Refresh runs a TTL-driven refetch of a cache whose keys have expired. It is
-// not spaced by the unknown-kid interval — known-key rotation is unchanged —
-// but concurrent callers share one fetch, and a fetch within the failure
-// backoff of a failed one returns ErrRefreshThrottled.
-func (g *RefreshGate) Refresh(ctx context.Context, fetch func(context.Context) error) error {
-	g.mu.Lock()
-	if call := g.inflight; call != nil {
-		g.mu.Unlock()
-		return wait(ctx, call)
-	}
-	if g.inFailureBackoff() {
-		g.mu.Unlock()
-		return ErrRefreshThrottled
-	}
-	call := g.begin()
-	g.mu.Unlock()
-	return g.run(ctx, call, fetch)
+// KeyLookup is a cache's view of one kid at one instant.
+type KeyLookup struct {
+	Key      *rsa.PublicKey // nil when the cache does not hold kid
+	Expired  bool           // the cache's TTL has lapsed
+	Rejected string         // reason a published key failed validation
 }
 
-// RefreshUnknown runs a refetch triggered by a token naming kid, a key id the
-// unexpired cache does not hold. It joins an in-flight fetch when there is
-// one; otherwise it fetches only when kid is not negatively cached and no
-// unknown-kid fetch ran within the interval. When it declines it returns
-// ErrRefreshThrottled. A caller that still cannot resolve kid after a nil
-// return should call MarkUnknown.
-func (g *RefreshGate) RefreshUnknown(ctx context.Context, kid string, fetch func(context.Context) error) error {
+// ResolveKey returns the signing key for kid, refreshing missing or expired keys.
+// lookup is called under g.mu and must be cheap and never call back into the gate.
+// Lock order is
+// g.mu followed by the caller's cache lock; fetch runs without g.mu and must
+// commit its cache updates before returning.
+func (g *RefreshGate) ResolveKey(ctx context.Context, kid string,
+	lookup func(string) KeyLookup, fetch func(context.Context) error) (*rsa.PublicKey, error) {
+	snapshot := lookup(kid)
+	if snapshot.Key != nil && !snapshot.Expired {
+		return snapshot.Key, nil
+	}
+	stale := snapshot.Key
 	g.mu.Lock()
+	snapshot = lookup(kid)
+	if snapshot.Key != nil {
+		stale = snapshot.Key
+	}
+	if snapshot.Key != nil && !snapshot.Expired {
+		g.mu.Unlock()
+		return snapshot.Key, nil
+	}
+	expired := snapshot.Expired
+	err := g.refreshLocked(ctx, kid, expired, fetch)
+	throttledUnknown := !expired && errors.Is(err, ErrRefreshThrottled)
+	if err != nil && !throttledUnknown {
+		if stale != nil {
+			return stale, nil
+		}
+		return nil, fmt.Errorf("fetch jwks: %w", err)
+	}
+	snapshot = lookup(kid)
+	if snapshot.Key != nil {
+		return snapshot.Key, nil
+	}
+	if !throttledUnknown {
+		g.markUnknown(kid)
+	}
+	if snapshot.Rejected != "" {
+		return nil, fmt.Errorf("signing key %q was published but rejected: %s", kid, snapshot.Rejected)
+	}
+	return nil, fmt.Errorf("unknown kid %q", kid)
+}
+
+// refreshLocked chooses a fetch from the cache view read while holding g.mu.
+// It releases g.mu before fetching or waiting, including on throttled paths.
+func (g *RefreshGate) refreshLocked(ctx context.Context, kid string, expired bool, fetch func(context.Context) error) error {
 	now := g.now()
-	if exp, ok := g.unknown[kid]; ok && now.Before(exp) {
-		g.mu.Unlock()
-		return ErrRefreshThrottled
+	if !expired {
+		if exp, ok := g.unknown[kid]; ok && now.Before(exp) {
+			g.mu.Unlock()
+			return ErrRefreshThrottled
+		}
 	}
 	if call := g.inflight; call != nil {
 		g.mu.Unlock()
 		return wait(ctx, call)
 	}
-	if g.inFailureBackoff() ||
-		(!g.lastUnknownFetch.IsZero() && now.Sub(g.lastUnknownFetch) < g.unknownInterval) {
-		// Do not negatively cache kids that were never fetched: the interval
-		// already throttles them, and caching each forged kid would grow the
-		// map per request.
+	if g.inFailureBackoff() || (!expired && !g.lastUnknownFetch.IsZero() && now.Sub(g.lastUnknownFetch) < g.unknownInterval) {
+		// Interval-throttled kids were never fetched and must not grow the map.
 		g.mu.Unlock()
 		return ErrRefreshThrottled
 	}
-	g.lastUnknownFetch = now
+	if !expired {
+		g.lastUnknownFetch = now
+	}
 	call := g.begin()
 	g.mu.Unlock()
 	return g.run(ctx, call, fetch)
 }
 
-// MarkUnknown negatively caches kid for the unknown-kid interval, so repeated
-// tokens naming it do not trigger a refetch.
-func (g *RefreshGate) MarkUnknown(kid string) {
+// markUnknown negatively caches kid for the unknown-kid interval.
+func (g *RefreshGate) markUnknown(kid string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.markUnknownLocked(kid, g.now())

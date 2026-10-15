@@ -539,6 +539,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "blocked_reason = ?")
 		args = append(args, *params.BlockedReason)
 	}
+	if params.LastRepairAttemptCount != nil {
+		sets = append(sets, "last_repair_attempt_count = ?")
+		args = append(args, *params.LastRepairAttemptCount)
+	}
 	if params.RunBlockedReason != nil {
 		sets = append(sets, "run_blocked_reason = ?")
 		args = append(args, *params.RunBlockedReason)
@@ -688,11 +692,12 @@ func (s *SQLiteSessionStore) UpdateRepairDiagnostics(ctx context.Context, params
 		     last_repair_head_sha       = ?,
 		     last_repair_display_status = ?,
 		     last_repair_review_fingerprint = COALESCE(?, last_repair_review_fingerprint),
+		     last_repair_base_sha       = ?,
 		     last_repair_blocked_reason = '',
 		     last_repair_blocked_at     = NULL
 		 WHERE id = ?`,
 		startedAt, params.RunnerError, params.ExitError, params.HeadSHA,
-		params.DisplayStatus, params.ReviewFingerprint, params.SessionID)
+		params.DisplayStatus, params.ReviewFingerprint, params.BaseSHA, params.SessionID)
 	if err != nil {
 		return fmt.Errorf("update repair diagnostics: %w", err)
 	}
@@ -860,7 +865,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model, s.effective_model, s.effective_effort,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
-	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
+	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.last_repair_base_sha, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
 	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
 	s.dismissed_alert_key, s.dismissed_alert_at, s.run_blocked_reason
@@ -876,7 +881,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_observed_review_state, s.is_automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.is_tmux_unattended, s.is_quick_chat, s.is_detached, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.has_display_spinner, s.agent_name, s.model, s.effective_model, s.effective_effort,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
-	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.setup_error,
+	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint, s.last_repair_base_sha, s.setup_error,
 	s.last_repair_blocked_reason, s.last_repair_blocked_at, s.last_attempt_head_sha,
 	s.rotation_attempt_count, s.rotation_resume_at, s.account_id, s.list_rank,
 	s.dismissed_alert_key, s.dismissed_alert_at, s.run_blocked_reason,
@@ -919,7 +924,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &detach, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model, &sess.EffectiveModel, &sess.EffectiveEffort,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.LastRepairBaseSHA, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
 		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
 		&sess.DismissedAlertKey, &dismissedAlertAt, &sess.RunBlockedReason, &repoDisplayName, &repoOriginURL)
@@ -975,7 +980,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &tmuxUnattended, &quickChat, &detach, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model, &sess.EffectiveModel, &sess.EffectiveEffort,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.SetupError,
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &sess.LastRepairBaseSHA, &sess.SetupError,
 		&sess.LastRepairBlockedReason, &lastRepairBlockedAt, &sess.LastAttemptHeadSHA,
 		&sess.RotationAttemptCount, &rotationResumeAt, &sess.AccountID, &sess.ListRank,
 		&sess.DismissedAlertKey, &dismissedAlertAt, &sess.RunBlockedReason)

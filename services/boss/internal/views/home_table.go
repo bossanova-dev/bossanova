@@ -260,6 +260,8 @@ func StateLabel(state pb.SessionState) string {
 func (h HomeModel) tableHeight() int {
 	footerLines := 1
 	switch {
+	case h.attentionAction.active():
+		footerLines = h.attentionAction.lineCount(h.width)
 	case h.rename.Active():
 		// The rename editor is two content lines (input + key hints) where the
 		// action bar it replaces is one at a wide terminal, so reserving the

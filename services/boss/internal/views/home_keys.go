@@ -96,6 +96,12 @@ func notifyAuthChange(ctx context.Context, c client.BossClient, action string, t
 // one. A declining handler that ever needs to schedule work must batch it here
 // rather than rely on this.
 func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if h.attentionAction.active() {
+		var cmd tea.Cmd
+		h.attentionAction, cmd = h.attentionAction.update(msg)
+		h.table.SetHeight(h.tableHeight())
+		return h, cmd
+	}
 	if h.confirm.active {
 		return h.handleConfirmKey(msg)
 	}
@@ -137,6 +143,14 @@ func (h HomeModel) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleActionKey routes the top-level action keys. handled=false means the key
 // is navigation and belongs to the table, and leaves the model untouched.
 func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
+	var cmd tea.Cmd
+	var handled bool
+	h.attentionAction, cmd, handled = h.attentionAction.start(h.ctx, h.client, h.selectedSession(), msg.String(), false)
+	if handled {
+		h.status, h.statusErr = "", false
+		h.table.SetHeight(h.tableHeight())
+		return h, cmd, true
+	}
 	switch msg.String() {
 	case "n":
 		model, cmd := h.handleNewSessionKey()

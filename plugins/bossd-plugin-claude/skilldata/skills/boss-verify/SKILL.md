@@ -69,9 +69,12 @@ otherwise report. Once `merge` reports the PR merged, hand off to the next stage
 
 1. **Claim.** Adopt `--claim`, or `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" post --pr <n> --head <sha> --verdict claim`.
    `won: false` → stop quietly.
-2. **Same tree.** The worktree `HEAD` must equal the judged `headSha`. If it does not, `git fetch`
-   and fast-forward to it; if it still differs, treat the PR as `wait`. Never verify a different
-   tree.
+2. **Same tree.** The worktree `HEAD` must equal the judged `headSha`:
+   `node "$BOSS_VERIFY_TOOLBOX/worktree-sync.mjs" sync --head <sha>`. It moves the worktree to the
+   head only when no unpushed commit or non-incidental change would be lost. `synced: true` →
+   continue. Otherwise, `escalate: true` → `post --verdict human --reason <parkReason>`, then
+   stop; else `post --verdict wait --reason worktree-head-mismatch`, then rearm as for `wait`, and
+   stop. Never verify a different tree.
 3. **Discover from the base revision.** Extensions are read from the judge's trusted tree — a
    snapshot of the base revision — never from this worktree, so a PR cannot change how its own
    verdict is decided:

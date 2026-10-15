@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +20,9 @@ import (
 // established in handlers.go: route runMcpStop and runMcpStatus through
 // package vars so tests can stub daemon/process interactions without
 // touching the real service manager or spawning real processes.
+// mcpSocketPath deliberately bypasses client.DefaultSocketPath: MCP never reads BOSS_SOCKET.
+var mcpSocketPath = config.ResolveSocketPath
+
 var (
 	mcpGetStatus     = daemon.McpGetStatus
 	mcpStop          = daemon.McpStop
@@ -59,7 +63,7 @@ func mcpCmd() *cobra.Command {
 		Short: "Print the bearer token MCP hosts must send to the HTTP server",
 		Long: "Print the bearer token that the MCP HTTP server (`boss mcp install`) requires on every /mcp request.\n" +
 			"Configure your MCP host to send it as the header `Authorization: Bearer <token>`.\n" +
-			"The token lives next to the daemon socket and is created on first use.",
+			"The token lives next to the daemon socket resolved from the settings profile (BOSS_SETTINGS_PATH), not BOSS_SOCKET, and is created on first use.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMcpToken(cmd)
 		},
@@ -114,7 +118,7 @@ type mcpTokenJSON struct {
 // loadMcpHTTPToken resolves the daemon socket path the MCP server also resolves
 // and returns the MCP HTTP bearer token beside it, creating it when absent.
 func loadMcpHTTPToken() (token, tokenPath string, err error) {
-	socketPath, err := defaultSocketPath()
+	socketPath, err := mcpSocketPath()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve socket path: %w", err)
 	}
@@ -130,7 +134,7 @@ func runMcpToken(cmd *cobra.Command) error {
 	var restarted bool
 	rotate, _ := cmd.Flags().GetBool("rotate")
 	if rotate {
-		socketPath, err := defaultSocketPath()
+		socketPath, err := mcpSocketPath()
 		if err != nil {
 			return fmt.Errorf("resolve socket path: %w", err)
 		}

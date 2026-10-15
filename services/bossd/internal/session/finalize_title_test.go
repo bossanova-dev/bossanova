@@ -201,6 +201,10 @@ func TestAgentSuggestedTitleSendsRepoPinnedEnv(t *testing.T) {
 			if got := lc.finalizeTitle(ctx, s, "Old"); got != "T" {
 				t.Fatalf("got %q", got)
 			}
+			wantTrusted := tc.repo != nil && tc.repo.IsTrusted
+			if got := gotReq.GetShouldTrustProjectConfig(); got != wantTrusted {
+				t.Fatalf("one-shot trust = %v, want %v", got, wantTrusted)
+			}
 			env := gotReq.GetExtraEnv()
 			if v, ok := env["LINEAR_API_KEY"]; !ok || v != tc.wantLinear {
 				t.Errorf("LINEAR_API_KEY = %q (present=%v), want %q", v, ok, tc.wantLinear)

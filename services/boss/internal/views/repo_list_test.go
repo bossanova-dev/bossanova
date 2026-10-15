@@ -162,6 +162,32 @@ func TestRepoListUpdate_DeleteKeyGatesOnReposAndNotDeleting(t *testing.T) {
 	}
 }
 
+// TestRepoList_MarksReposMissingWebhooks pins the list marker that points the
+// operator at the repo whose settings explain the missing webhooks.
+func TestRepoList_MarksReposMissingWebhooks(t *testing.T) {
+	m := newRepoListModelForTest(nil)
+	m, _ = updateRepoList(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+	m, _ = updateRepoList(t, m, repoListLoadedMsg{repos: []*pb.Repo{
+		{Id: "repo-1", DisplayName: "bossanova", LocalPath: "/src/bossanova"},
+		{Id: "repo-2", DisplayName: "gigantic", LocalPath: "/src/gigantic", IsMissingWebhooks: true},
+	}})
+
+	rows := map[string]string{}
+	for _, l := range strings.Split(stripANSI(m.View().Content), "\n") {
+		for _, name := range []string{"bossanova", "gigantic"} {
+			if strings.Contains(l, "/src/"+name) {
+				rows[name] = l
+			}
+		}
+	}
+	if !strings.Contains(rows["gigantic"], missingWebhooksLabel) {
+		t.Errorf("flagged repo row = %q, want the %q marker", rows["gigantic"], missingWebhooksLabel)
+	}
+	if strings.Contains(rows["bossanova"], missingWebhooksLabel) {
+		t.Errorf("unflagged repo row = %q, carries the %q marker", rows["bossanova"], missingWebhooksLabel)
+	}
+}
+
 // TestRepoListUpdate_EnterRequiresRepos pins repo_list.go:188 (`if len(m.repos)
 // > 0`): enter opens repo settings for the highlighted repo when one exists and
 // is a no-op on an empty list.

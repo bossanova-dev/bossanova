@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func blockRequests(mock *mockHostClient) []*bossanovav1.FireSessionEventRequest {
@@ -102,4 +103,102 @@ func TestRunRepairAttempt_PersistentStartRefusalBlocksTheSession(t *testing.T) {
 	reason := blockRequests(mock)[0].GetBlockedReason()
 	require.True(t, strings.HasPrefix(reason, "automatic repair could not start 5 times in a row"), reason)
 	assert.Contains(t, reason, "is at a question")
+}
+
+// seedWarmUpRefusals records the refusals a cold chat tracker produces after a
+// daemon restart (one a minute for about five minutes), started long enough ago
+// that one more refusal on the same head would complete an escalating streak.
+func seedWarmUpRefusals(t *testing.T, rm *repairMonitor, head string) {
+	t.Helper()
+	start := time.Now().Add(-repairRefusalEscalateAfter - 10*time.Minute)
+	for i := range maxRepairLoopAttempts {
+		_, escalate := rm.noteRefusal("s1", head, start.Add(time.Duration(i)*time.Minute))
+		require.False(t, escalate, "warm-up refusal %d must not block", i+1)
+	}
+}
+
+func setSessions(mock *mockHostClient, sessions ...*bossanovav1.Session) {
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	mock.sessions = sessions
+}
+
+func waitRepairDone(t *testing.T, rm *repairMonitor) {
+	t.Helper()
+	waitFor(t, func() bool {
+		rm.mu.Lock()
+		defer rm.mu.Unlock()
+		return !rm.repairing["s1"]
+	}, "repair attempt finished")
+}
+
+const snapshotRaceRefusal = "chat agent-op produced output after idle snapshot"
+
+func TestMaybeRepair_AttendedSessionDoesNotInheritWarmUpRefusals(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	seedWarmUpRefusals(t, rm, "head-a")
+
+	setSessions(mock, &bossanovav1.Session{
+		Id:                 "s1",
+		State:              bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		PrDisplayHeadSha:   "head-a",
+		HasActiveChat:      true,
+		LastChatActivityAt: timestamppb.New(time.Now().Add(-time.Minute)),
+	})
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+	startCalls, _, _, _ := mock.snapshot()
+	require.Zero(t, startCalls, "repair defers while the operator is working in the chat")
+
+	setSessions(mock, &bossanovav1.Session{
+		Id:                 "s1",
+		State:              bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		PrDisplayHeadSha:   "head-a",
+		HasActiveChat:      true,
+		LastChatActivityAt: timestamppb.New(time.Now().Add(-6 * time.Minute)),
+	})
+	mock.startErr = grpcstatus.Error(codes.FailedPrecondition, snapshotRaceRefusal)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+	waitFor(t, func() bool { c, _, _, _ := mock.snapshot(); return c == 1 }, "repair start attempted once the chat went quiet")
+	waitRepairDone(t, rm)
+
+	assert.Empty(t, blockRequests(mock), "one snapshot-race refusal on an attended session must not block it")
+	rm.mu.Lock()
+	streak := rm.refusals["s1"]
+	rm.mu.Unlock()
+	assert.Equal(t, 1, streak.count, "the attended deferral ended the warm-up streak")
+}
+
+func TestMaybeRepair_UnblockedSessionGetsAFreshBudgetOnTheSameHead(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	seedWarmUpRefusals(t, rm, "head-a")
+
+	setSessions(mock, &bossanovav1.Session{
+		Id:                     "s1",
+		State:                  bossanovav1.SessionState_SESSION_STATE_BLOCKED,
+		PrDisplayHeadSha:       "head-a",
+		LastRepairHeadSha:      "head-a",
+		LastRepairAttemptCount: maxRepairLoopAttempts,
+		LastRepairRunnerError:  "start agent: boom",
+	})
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+	startCalls, _, _, _ := mock.snapshot()
+	require.Zero(t, startCalls, "a Blocked session is left to the operator")
+
+	// The operator moves the session out of Blocked without pushing, and the
+	// host resets the persisted failure count as it does so.
+	setSessions(mock, &bossanovav1.Session{
+		Id:                    "s1",
+		State:                 bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS,
+		PrDisplayHeadSha:      "head-a",
+		LastRepairHeadSha:     "head-a",
+		LastRepairRunnerError: "start agent: boom",
+	})
+	mock.startErr = grpcstatus.Error(codes.FailedPrecondition, snapshotRaceRefusal)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+	waitFor(t, func() bool { c, _, _, _ := mock.snapshot(); return c == 1 }, "repair tried again on the same head")
+	waitRepairDone(t, rm)
+
+	assert.Empty(t, blockRequests(mock), "neither the old failure count nor the old refusal streak re-blocks an unblocked session")
 }

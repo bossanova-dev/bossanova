@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "appdatadir_test.go",
         "binaries_test.go",
+        "childenv_test.go",
         "config_guard_test.go",
         "config_test.go",
         "displayhostname_test.go",

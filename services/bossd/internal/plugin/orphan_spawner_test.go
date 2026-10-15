@@ -86,9 +86,7 @@ func TestHelperOrphanSpawner(t *testing.T) {
 	cmd := exec.Command(binPath)
 	cfg := config.PluginConfig{Name: "stub-runner"}
 	if os.Getenv(orphanStampEnv) == "1" {
-		// Exactly what launchPlugin does, including clearing the variable from
-		// this process's own environment so go-plugin's second os.Environ()
-		// append cannot shadow the stamp.
+		// Use the production approved baseline and parent identity.
 		cmd.Env = pluginpkg.PluginSubprocessEnv(cfg, os.Getpid())
 	} else {
 		// The fail-open control: no parent identity reaches the plugin at all.
@@ -99,6 +97,7 @@ func TestHelperOrphanSpawner(t *testing.T) {
 	watcher := &armedWatcher{}
 	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
 	client := goplugin.NewClient(&goplugin.ClientConfig{
+		SkipHostEnv:     true,
 		HandshakeConfig: pluginpkg.NewHandshake("orphan-test-cookie"),
 		Plugins: goplugin.PluginSet{
 			sharedplugin.PluginTypeAgentRunner: pluginpkg.NewAgentRunnerGRPCPlugin(hostService),

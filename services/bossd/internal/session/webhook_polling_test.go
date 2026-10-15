@@ -18,6 +18,8 @@ type stubWebhookHealth map[string]bool
 
 func (s stubWebhookHealth) WebhookDeliveryHealthy(repo string) bool { return s[repo] }
 
+func (stubWebhookHealth) NotePolledChange(string, time.Time) {}
+
 func pendingPollerFixture() (*mockSessionStore, *mockRepoStore, *mockVCSProvider) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
@@ -127,4 +129,61 @@ func TestDisplayPollerIntervalOnlyLengthens(t *testing.T) {
 	if got := healthy.intervalFor("owner/other", "sess-2", now); got != 2*time.Minute {
 		t.Fatalf("repo without webhook evidence polls every %s, want 2m", got)
 	}
+}
+
+type polledChange struct {
+	repo  string
+	since time.Time
+}
+
+// recordingMissHealth records every PR change the display poller reports.
+type recordingMissHealth struct{ changes []polledChange }
+
+func (*recordingMissHealth) WebhookDeliveryHealthy(string) bool { return false }
+
+func (r *recordingMissHealth) NotePolledChange(repo string, since time.Time) {
+	r.changes = append(r.changes, polledChange{repo, since})
+}
+
+// TestDisplayPollerReportsWebhookAnnouncedChanges pins the evidence behind
+// Repo.is_missing_webhooks: the display poller reports a new head or a PR
+// ending between two of its own reads, dated by the earlier read, and nothing
+// else (the first read after a restart, an unchanged PR, a checks-only change).
+func TestDisplayPollerReportsWebhookAnnouncedChanges(t *testing.T) {
+	poller, _ := newEvidencePoller(t, &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1"}, parkedChecks())
+	health := &recordingMissHealth{}
+	poller.SetWebhookHealth(health)
+	vp := poller.provider.(*mockVCSProvider)
+	ctx := context.Background()
+	read := func() time.Time {
+		t.Helper()
+		at := time.Now()
+		if err := poller.RefreshPRWithoutWebhookCredit(ctx, "owner/repo", 2979); err != nil {
+			t.Fatalf("RefreshPRWithoutWebhookCredit: %v", err)
+		}
+		return at
+	}
+	wantChanges := func(n int, step string) {
+		t.Helper()
+		if len(health.changes) != n {
+			t.Fatalf("%s: reported changes = %+v, want %d", step, health.changes, n)
+		}
+	}
+
+	firstRead := read()
+	wantChanges(0, "first read since start")
+	vp.nextCheckResults = nil
+	read()
+	wantChanges(0, "checks-only change")
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-2"}
+	headRead := read()
+	wantChanges(1, "new head")
+	if got := health.changes[0]; got.repo != "owner/repo" || got.since.Before(firstRead) || !got.since.Before(headRead) {
+		t.Fatalf("new head reported as %+v, want repo owner/repo dated by an earlier read (in [%v, %v))", got, firstRead, headRead)
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "head-2"}
+	read()
+	wantChanges(2, "PR merged")
 }

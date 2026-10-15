@@ -537,6 +537,11 @@ type RefMsg struct {
 // read "working" and carry no is_waiting_demoted mark, so the other V20260918
 // changes never touch them; the older chain then sees the WAITING it was
 // written against.
+//
+// BlockedParkAttentionChange (introduced at V20260919), which restores the
+// REVIEW kind and its leading APPROVE on a blocked verify park's attention.
+// It runs before ResumeAttentionActionsChange, so that change never mistakes
+// the park for a fix row and prepends RESUME.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -596,6 +601,7 @@ func ProductionChanges() *Changes {
 		ResumeAttentionActionsChange{},
 		VerifyParkSplitChange{},
 		WorkingOverWaitingChange{},
+		BlockedParkAttentionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3194,4 +3200,49 @@ func (ResumeAttentionActionsChange) TransformResponse(method string, msg any) {
 		cloned.Attention.Actions = append([]pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME}, cloned.Attention.Actions...)
 		return cloned
 	})
+}
+
+// BlockedParkAttentionChange is the production VersionChange introduced at
+// V20260919.
+//
+// At V20260919 Session.attention answers a verify park by what it asks of the
+// operator, the same split VerifyParkSplitChange made for the display label. A
+// park whose codes are all policy sign-off codes is still
+// ATTENTION_KIND_REVIEW offering APPROVE. A park with any failure, incomplete
+// or unknown code is ATTENTION_KIND_FIX: it keeps its park_codes and
+// evidence_url, offers SEND_BACK and GITHUB (and VIDEO) but never APPROVE, and
+// carries no alert_key or target_chat_id. Older pins get the REVIEW kind and
+// the leading APPROVE back. Its sentence is display copy and stays the new one:
+// the old sentence could interpolate the evidence video's length, which the
+// response does not carry, so no transform can rebuild it.
+//
+// Running before ResumeAttentionActionsChange matters: that change prepends
+// RESUME to every FIX without one, and a blocked park it no longer sees as a
+// FIX keeps the action list it had before V20260919.
+type BlockedParkAttentionChange struct{}
+
+// Version implements VersionChange.
+func (BlockedParkAttentionChange) Version() Version { return V20260919 }
+
+// downconvertBlockedParkAttentionSession clones before writing because bosso's
+// registry path caches these pointers. Only a blocked-park row allocates; a FIX
+// answered from a fault never carries park codes.
+func downconvertBlockedParkAttentionSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || len(a.GetParkCodes()) == 0 {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_REVIEW
+	cloned.Attention.Actions = append([]pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE}, cloned.Attention.Actions...)
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the REVIEW answer on
+// every session-bearing unary response and is a no-op elsewhere.
+func (BlockedParkAttentionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertBlockedParkAttentionSession)
 }

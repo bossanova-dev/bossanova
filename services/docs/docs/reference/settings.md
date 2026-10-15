@@ -409,6 +409,28 @@ If `BOSS_SOCKET` is set in your shell, it overrides the socket selected by
 `socket_path`. Unset `BOSS_SOCKET` when using profile files unless you are
 intentionally debugging a single socket path.
 
+## Child process environment
+
+`child_env_passthrough` is an array of environment variable names;
+it defaults to `[]`. Plugins and headless agents inherit only the approved
+baseline: normal shell/locale/proxy/certificate variables, GitHub credentials,
+Boss variables, and provider variables for their agent plugin.
+Unknown variables from the daemon environment are omitted.
+
+Use this setting when a custom agent setup needs additional daemon environment
+variables. Entries grant exact names or a prefix ending in `_*`:
+
+```json
+{
+  "child_env_passthrough": ["CUSTOM_API_KEY", "MY_PROVIDER_*"]
+}
+```
+
+Edit the field in `settings.json` and restart the daemon. The setting carries
+names, not secret values; set the values in the environment that starts the
+daemon. Login-shell startup files still control additional exports after the daemon
+applies the baseline.
+
 ## Environment overrides
 
 Cloud-sync settings (orchestrator URL, WorkOS client ID, daemon ID)

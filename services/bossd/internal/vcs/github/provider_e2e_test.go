@@ -535,3 +535,30 @@ func TestE2E_GitHub_ListWorkflowRuns_FailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestE2E_GitHub_GetBranchHeadSHA(t *testing.T) {
+	f := newFakeGH(t)
+	f.expect(ghResponder{
+		match:  argsStartWith("api", "repos/owner/repo/git/ref/heads/release/v1%231"),
+		stdout: `{"ref":"refs/heads/release/v1#1","object":{"sha":"0123abcd","type":"commit"}}`,
+	})
+	p := newProvider(f)
+
+	sha, err := p.GetBranchHeadSHA(context.Background(), "git@github.com:owner/repo.git", "release/v1#1")
+	if err != nil {
+		t.Fatalf("GetBranchHeadSHA: %v", err)
+	}
+	if sha != "0123abcd" {
+		t.Fatalf("sha = %q, want 0123abcd", sha)
+	}
+}
+
+func TestE2E_GitHub_GetBranchHeadSHA_RejectsEmptySHA(t *testing.T) {
+	f := newFakeGH(t)
+	f.expect(ghResponder{match: argsStartWith("api"), stdout: `{"object":{}}`})
+	p := newProvider(f)
+
+	if _, err := p.GetBranchHeadSHA(context.Background(), testRepo, "main"); err == nil {
+		t.Fatal("GetBranchHeadSHA with no sha in the response: want error, got nil")
+	}
+}

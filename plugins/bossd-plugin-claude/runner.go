@@ -3,6 +3,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -27,15 +32,49 @@ type Runner struct {
 
 const defaultClaudeEffort = "high"
 
-// StartWithModel starts a headless Claude run, pinning the model for this run.
-// It carries no MCP wiring: boss does not own MCP configuration, so a headless
-// run discovers servers exactly as an interactive one does — through Claude
-// Code's own scopes, from what the repo declared.
-func (r *Runner) StartWithModelAndEffort(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string) (string, error) {
+// StartWithProjectConfigTrust enforces the repository's configuration policy.
+func (r *Runner) StartWithProjectConfigTrust(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model, effort string, extraEnv map[string]string, trusted bool) (string, error) {
+	if !trusted {
+		if err := r.checkProjectIsolationSupport(ctx, extraEnv); err != nil {
+			return "", err
+		}
+	}
 	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{
-		"model":  model,
-		"effort": effort,
-	})
+		"model": model, "effort": effort,
+	}, agentruntime.StartOptions{ShouldTrustProjectConfig: trusted})
+}
+
+// checkProjectIsolationSupport fails closed when this installation cannot
+// suppress repository-controlled configuration. Probe outside the worktree.
+func (r *Runner) checkProjectIsolationSupport(ctx context.Context, extraEnv map[string]string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	argv := loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), []string{"claude", "--help"})
+	factory := r.cmdFactory
+	if factory == nil {
+		factory = exec.CommandContext
+	}
+	cmd := factory(ctx, argv[0], argv[1:]...)
+	cmd.Dir = os.TempDir()
+	cmd.Env = probeEnviron(extraEnv)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cannot verify Claude --strict-mcp-config and --setting-sources support: %w; upgrade Claude or use boss repo update <id> --trusted", err)
+	}
+	fields := strings.Fields(string(output))
+	for _, flag := range []string{"--strict-mcp-config", "--setting-sources"} {
+		if !slices.Contains(fields, flag) {
+			return fmt.Errorf("claude is missing %s; upgrade Claude or use boss repo update <id> --trusted", flag)
+		}
+	}
+	return nil
+}
+
+func projectIsolationArgs(trusted bool) []string {
+	if trusted {
+		return nil
+	}
+	return []string{"--strict-mcp-config", "--setting-sources", "user"}
 }
 
 // RunnerOption configures a Runner. Kept as RunnerOption (rather than the
@@ -158,10 +197,8 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if effort := resolveClaudeEffort(in.Options["effort"], r.effort); effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	// No MCP flags, deliberately. Boss does not own MCP configuration: Claude
-	// Code discovers servers its own native way (project .mcp.json gated by
-	// enabledMcpjsonServers, plus the user and local scopes) and the repo is
-	// responsible for declaring them. --strict-mcp-config would suppress exactly
-	// that. See docs/solutions/workflow-issues/repo-owns-its-mcp-servers.md.
+	// Trusted repos retain native Claude configuration discovery. Untrusted
+	// repos disable MCP configuration and project/local settings together.
+	args = append(args, projectIsolationArgs(in.ShouldTrustProjectConfig)...)
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

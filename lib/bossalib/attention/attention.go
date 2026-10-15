@@ -108,7 +108,9 @@ func NeedsYou(kind pb.AttentionKind) bool {
 }
 
 // Compute returns the session's attention. Precedence:
-// fix > question > review > merge > done > in_progress. A session with a
+// fix > question > verify park > merge > done > in_progress. A verify park
+// whose codes all ask for a sign-off is a REVIEW; one with any failure or
+// unknown code is blocked, a FIX that never offers APPROVE. A session with a
 // tracker link offers ATTENTION_ACTION_TRACKER last, whatever its kind.
 func Compute(in Input) *pb.SessionAttention {
 	att := computeKind(in)
@@ -126,8 +128,8 @@ func computeKind(in Input) *pb.SessionAttention {
 		return computeQuestion(in)
 	}
 	codes := normalizeParkCodes(in.ParkCodes)
-	if slices.ContainsFunc(codes, isOperatorCode) {
-		return computeReview(in, codes)
+	if code, ok := decidingParkCode(codes); ok {
+		return computePark(in, codes, code)
 	}
 	// Every code left here is a waiting code; a parked PR is not the
 	// operator's to merge, however green it looks.
@@ -185,37 +187,34 @@ func computeQuestion(in Input) *pb.SessionAttention {
 	}
 }
 
-func computeReview(in Input, codes []string) *pb.SessionAttention {
-	actions := []pb.AttentionAction{
-		pb.AttentionAction_ATTENTION_ACTION_APPROVE,
-		pb.AttentionAction_ATTENTION_ACTION_SEND_BACK,
-		pb.AttentionAction_ATTENTION_ACTION_GITHUB,
+// computePark answers a verify park from the code that decides it
+// (decidingParkCode): a sign-off code makes it a REVIEW the operator may
+// approve, any other code makes it a blocked FIX they send back.
+func computePark(in Input, codes []string, code string) *pb.SessionAttention {
+	info := knownParkCodes[code]
+	sentence := genericBlockedSentence
+	var actions []pb.AttentionAction
+	if info.signOff {
+		sentence = genericReviewSentence
+		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_APPROVE)
 	}
+	if info.sentence != nil {
+		sentence = info.sentence.render(in)
+	}
+	actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_SEND_BACK, pb.AttentionAction_ATTENTION_ACTION_GITHUB)
 	evidenceURL := ""
 	if in.Evidence != nil && in.Evidence.URL != "" {
 		evidenceURL = in.Evidence.URL
 		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_VIDEO)
 	}
 	return &pb.SessionAttention{
-		Kind:        pb.AttentionKind_ATTENTION_KIND_REVIEW,
-		Sentence:    reviewSentence(in, codes),
+		Kind:        info.kind(),
+		Sentence:    sentence,
 		Actions:     actions,
 		Since:       timestamp(in.StateSince),
 		ParkCodes:   codes,
 		EvidenceUrl: evidenceURL,
 	}
-}
-
-// reviewSentence renders the sentence of the code a (report-ordered) park set
-// is decided by (decidingParkCode), or the generic sentence when that code has
-// none of its own.
-func reviewSentence(in Input, codes []string) string {
-	if code, ok := decidingParkCode(codes); ok {
-		if t := knownParkCodes[code].sentence; t != nil {
-			return t.render(in)
-		}
-	}
-	return genericReviewSentence
 }
 
 func isMergeReady(in Input) bool {
@@ -267,7 +266,7 @@ func waitingLabel(code string) (string, bool) {
 }
 
 // isOperatorCode reports whether a park code is the operator's to act on.
-// Unknown codes are, so an unrecognised park is reviewed rather than dropped.
+// Unknown codes are, so an unrecognised park is surfaced rather than dropped.
 func isOperatorCode(code string) bool {
 	_, waiting := waitingLabel(code)
 	return !waiting

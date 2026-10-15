@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { settings, filing, augment, finalize, prunePlan, recordRun, preview } from './retro-run.mjs'
 import { clusterNotes, selectClusters } from './retro-notes.mjs'
+import { loadSkillConfig } from './skill-config.mjs'
 
 test('settings writes by default, dry-run wins and legacy no-dry-run is a no-op', () => {
   assert.equal(settings().mode, 'write')
@@ -217,4 +218,28 @@ test('preview signals preserve collector run tokens from normal five-line notes'
     signals: { planned: [{ body: 'Signal\nRun: retro-signals / ci / headless / run:pr:9' }] },
   })
   assert.equal(result[0].chat_id, 'pr:9')
+})
+
+test('settings rejects a selection fault deferred by the real config loader', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-selection-deferred-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.mock.method(console, 'warn', () => {})
+  fs.writeFileSync(
+    path.join(dir, '.boss-skills.json'),
+    JSON.stringify({
+      trackerConfig: { linear: { mcpServer: 'linear', selection: { futureKey: true } } },
+    }),
+  )
+  const config = loadSkillConfig({ cwd: dir })
+  assert.throws(
+    () => settings([], { config }),
+    (error) => {
+      assert.equal(error.exitCode, 64)
+      assert.match(
+        error.message,
+        /skill-config: invalid config from .*trackerConfig.linear.selection has unknown key "futureKey"/,
+      )
+      return true
+    },
+  )
 })

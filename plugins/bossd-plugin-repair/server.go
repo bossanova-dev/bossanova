@@ -247,7 +247,7 @@ func parseRepairConfig(configJSON string) (*repairConfig, error) {
 //
 // Locking discipline: every read or write of the mutable fields below
 // (ctx, cancel, stopped, paused, config, repairing, cooldowns,
-// lastAttemptCommit, lastAttemptDisplayStatus, and the test* overrides) MUST happen with mu held.
+// lastAttempt, refusals, baseMoves, and the test* overrides) MUST happen with mu held.
 // In particular, anything derived from config (cooldownDuration,
 // pollInterval, sweepInterval, stuckTimeout, forceAdvanceTimeout, skillName)
 // must be re-read under the lock — values cached across an unlock are
@@ -269,21 +269,20 @@ type repairMonitor struct {
 	// chat or a boss-epic driver), which is refused while this lease is held.
 	dispatcherID string
 
-	mu                           sync.Mutex
-	ctx                          context.Context      // Workflow context
-	cancel                       context.CancelFunc   // Cancel function for the workflow
-	stopped                      bool                 // True after CancelWorkflow until next StartWorkflow
-	paused                       bool                 // True after PauseWorkflow until ResumeWorkflow
-	config                       *repairConfig        // Parsed config from StartWorkflowRequest
-	repairing                    map[string]bool      // Sessions currently being repaired
-	cooldowns                    map[string]time.Time // Last repair attempt time per session
-	lastAttemptCommit            map[string]string    // Head SHA of last repair attempt per session
-	lastAttemptDisplayStatus     map[string]bossanovav1.DisplayStatus
-	lastAttemptReviewFingerprint map[string]string
-	refusals                     map[string]refusalStreak
-	testSweepInterval            time.Duration // Override sweep interval for tests
-	testStuckTimeout             time.Duration // Override stuck timeout for tests
-	testForceAdvanceTimeout      time.Duration // Override force-advance timeout for tests
+	mu                      sync.Mutex
+	ctx                     context.Context        // Workflow context
+	cancel                  context.CancelFunc     // Cancel function for the workflow
+	stopped                 bool                   // True after CancelWorkflow until next StartWorkflow
+	paused                  bool                   // True after PauseWorkflow until ResumeWorkflow
+	config                  *repairConfig          // Parsed config from StartWorkflowRequest
+	repairing               map[string]bool        // Sessions currently being repaired
+	cooldowns               map[string]time.Time   // Last repair attempt time per session
+	lastAttempt             map[string]repairInput // Input of the last repair attempt that ran, per session
+	refusals                map[string]refusalStreak
+	baseMoves               map[string]baseMoveStreak
+	testSweepInterval       time.Duration // Override sweep interval for tests
+	testStuckTimeout        time.Duration // Override stuck timeout for tests
+	testForceAdvanceTimeout time.Duration // Override force-advance timeout for tests
 
 	// wg tracks every goroutine the monitor launches (repair sessions and
 	// the two sweep loops). Shutdown cancels ctx and Waits on wg with a
@@ -307,18 +306,17 @@ func newDispatcherID() string {
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &repairMonitor{
-		host:                         host,
-		logger:                       logger,
-		dispatcherID:                 newDispatcherID(),
-		ctx:                          ctx,
-		cancel:                       cancel,
-		stopped:                      true, // Reject notifications until StartWorkflow sets config.
-		repairing:                    make(map[string]bool),
-		cooldowns:                    make(map[string]time.Time),
-		lastAttemptCommit:            make(map[string]string),
-		lastAttemptDisplayStatus:     make(map[string]bossanovav1.DisplayStatus),
-		lastAttemptReviewFingerprint: make(map[string]string),
-		refusals:                     make(map[string]refusalStreak),
+		host:         host,
+		logger:       logger,
+		dispatcherID: newDispatcherID(),
+		ctx:          ctx,
+		cancel:       cancel,
+		stopped:      true, // Reject notifications until StartWorkflow sets config.
+		repairing:    make(map[string]bool),
+		cooldowns:    make(map[string]time.Time),
+		lastAttempt:  make(map[string]repairInput),
+		refusals:     make(map[string]refusalStreak),
+		baseMoves:    make(map[string]baseMoveStreak),
 	}
 }
 
@@ -569,6 +567,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// terminal state.
 	info := m.lookupSession(repairCtx, sessionID, displayStatus)
 	if !info.Repairable {
+		m.clearRefusals(sessionID)
 		return
 	}
 
@@ -601,6 +600,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		}
 		silentFor := time.Since(info.LastChatActivityAt)
 		if silentFor < idleThreshold {
+			m.clearRefusals(sessionID)
 			m.logger.Info().
 				Str("session_id", sessionID).
 				Str("repo", info.RepoName).
@@ -660,29 +660,47 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	}
 
 	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info)
-	if headSHA != "" &&
-		info.LastRepairHeadSHA == headSHA &&
-		info.LastRepairDisplayStatus == displayStatus &&
-		info.LastRepairRunnerError == "" &&
-		!isInteractiveChatIncomplete(info.LastRepairExitError) {
-		if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED ||
-			!reviewFPOk ||
-			info.LastRepairReviewFingerprint == reviewFP {
+	baseSHA, baseOk := m.currentBaseSHA(repairCtx, info, displayStatus)
+	input := repairInput{
+		headSHA:       headSHA,
+		displayStatus: displayStatus,
+		reviewFP:      reviewFP,
+		reviewFPOk:    reviewFPOk,
+		baseSHA:       baseSHA,
+		baseOk:        baseOk,
+	}
+	persisted := repairInput{
+		headSHA:       info.LastRepairHeadSHA,
+		displayStatus: info.LastRepairDisplayStatus,
+		reviewFP:      info.LastRepairReviewFingerprint,
+		baseSHA:       info.LastRepairBaseSHA,
+	}
+	baseMoveRetry := false
+	if info.LastRepairRunnerError == "" && !isInteractiveChatIncomplete(info.LastRepairExitError) {
+		if input.repeats(persisted) {
 			m.logger.Info().
 				Str("session_id", sessionID).
 				Str("head_sha", headSHA).
 				Int32("display_status", int32(displayStatus)).
 				Str("review_fingerprint", reviewFP).
 				Bool("review_fingerprint_available", reviewFPOk).
+				Str("base_sha", baseSHA).
+				Bool("base_sha_available", baseOk).
 				Msg("already attempted repair on this input according to persisted diagnostics, skipping")
 			return
 		}
-		m.logger.Info().
-			Str("session_id", sessionID).
-			Str("head_sha", headSHA).
-			Str("old_review_fingerprint", info.LastRepairReviewFingerprint).
-			Str("new_review_fingerprint", reviewFP).
-			Msg("new review feedback on same rejected head; allowing repair")
+		if input.sameHeadAndStatus(persisted) {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Str("head_sha", headSHA).
+				Int32("display_status", int32(displayStatus)).
+				Str("old_review_fingerprint", persisted.reviewFP).
+				Str("new_review_fingerprint", reviewFP).
+				Str("old_base_sha", persisted.baseSHA).
+				Str("new_base_sha", baseSHA).
+				Msg("repair input moved on the same head; allowing repair")
+			baseMoveRetry = displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT
+		}
 	}
 
 	// Re-acquire lock to mark as repairing and re-check every guard. The
@@ -690,8 +708,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// StartWorkflow could have swapped m.config (so the capped base cooldown
 	// must be re-read, not reused), Cancel/Pause could have flipped stopped/paused,
 	// another goroutine could have started repairing this session, and a
-	// previous repair could have written lastAttemptCommit. Folding the
-	// commit check into this same critical section keeps the
+	// previous repair could have written lastAttempt. Folding the
+	// input check into this same critical section keeps the
 	// "decide → mark repairing" transition atomic.
 	m.mu.Lock()
 	if m.stopped || m.paused || m.repairing[sessionID] {
@@ -702,18 +720,25 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		m.mu.Unlock()
 		return
 	}
-	if headSHA != "" && m.lastAttemptCommit[sessionID] == headSHA && m.lastAttemptDisplayStatus[sessionID] == displayStatus {
-		if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED ||
-			!reviewFPOk ||
-			m.lastAttemptReviewFingerprint[sessionID] == reviewFP {
+	if input.repeats(m.lastAttempt[sessionID]) {
+		m.mu.Unlock()
+		m.logger.Info().
+			Str("session_id", sessionID).
+			Str("head_sha", headSHA).
+			Int32("display_status", int32(displayStatus)).
+			Str("review_fingerprint", reviewFP).
+			Bool("review_fingerprint_available", reviewFPOk).
+			Str("base_sha", baseSHA).
+			Bool("base_sha_available", baseOk).
+			Msg("already attempted repair on this input, skipping")
+		return
+	}
+	if baseMoveRetry {
+		streak, exhausted := m.noteBaseMoveLocked(sessionID, headSHA)
+		if exhausted {
 			m.mu.Unlock()
-			m.logger.Info().
-				Str("session_id", sessionID).
-				Str("head_sha", headSHA).
-				Int32("display_status", int32(displayStatus)).
-				Str("review_fingerprint", reviewFP).
-				Bool("review_fingerprint_available", reviewFPOk).
-				Msg("already attempted repair on this input, skipping")
+			m.blockSession(repairCtx, sessionID, fmt.Sprintf("automatic repair left the PR conflicted on %s through %d base branch moves; resolve the conflict by hand",
+				shortSHA(headSHA), streak.count))
 			return
 		}
 	}
@@ -727,8 +752,44 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// context so Shutdown can wait for it without aborting writes.
 	go func() {
 		defer m.wg.Done()
-		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk)
+		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk, baseSHA)
 	}()
+}
+
+// repairInput is what one repair attempt acted on. A second attempt on an
+// input already attempted would redo the same work, so the duplicate guards
+// skip it. Review feedback is part of a rejected PR's input, and the base
+// branch tip part of a conflicted PR's: a merge conflict depends on both sides,
+// and the base keeps moving while the head sits still.
+type repairInput struct {
+	headSHA       string
+	displayStatus bossanovav1.DisplayStatus
+	reviewFP      string
+	reviewFPOk    bool
+	baseSHA       string
+	baseOk        bool
+}
+
+func (cur repairInput) sameHeadAndStatus(prev repairInput) bool {
+	return cur.headSHA != "" && prev.headSHA == cur.headSHA && prev.displayStatus == cur.displayStatus
+}
+
+// repeats reports whether cur is an input prev already attempted. A field cur
+// could not read cannot show that the input moved, so it never lets a repeat
+// through; a prior attempt that recorded no base (made before bases were
+// recorded, or whose read failed) cannot show the base stayed put.
+func (cur repairInput) repeats(prev repairInput) bool {
+	if !cur.sameHeadAndStatus(prev) {
+		return false
+	}
+	switch cur.displayStatus {
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
+		return !cur.reviewFPOk || prev.reviewFP == cur.reviewFP
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT:
+		return !cur.baseOk || prev.baseSHA == cur.baseSHA
+	default:
+		return true
+	}
 }
 
 // repairExhaustedReason reports whether automatic repair has failed
@@ -750,7 +811,11 @@ func repairExhaustedReason(info sessionInfo) (string, bool) {
 
 // refusalStreak counts consecutive start refusals (the daemon would not start
 // the repair chat) on one head. It is in memory: a plugin restart starts a
-// fresh streak, which only delays escalation.
+// fresh streak, which only delays escalation. A started run, a head move, a
+// sweep that finds the session attended (its chat active inside the idle
+// threshold) or outside the repairable states (Blocked included) ends it, so
+// refusals from a tracker warming after a restart cannot combine with a lone
+// refusal half an hour later into a block on a session someone is working in.
 type refusalStreak struct {
 	headSHA string
 	first   time.Time
@@ -784,6 +849,33 @@ func (m *repairMonitor) clearRefusals(sessionID string) {
 	m.mu.Unlock()
 }
 
+// baseMoveStreak counts conflict repairs retried on one head because the base
+// branch moved. A clean exit resets the persisted failure count, so an agent
+// that exits cleanly without resolving the conflict would otherwise start a
+// new chat on every base move with nothing ever escalating. Like
+// refusalStreak it is in memory: a plugin restart only delays the block.
+type baseMoveStreak struct {
+	headSHA string
+	count   int
+}
+
+// noteBaseMoveLocked records one base-move retry on headSHA and reports whether
+// the head has already used its maxRepairLoopAttempts retries, in which case
+// the caller blocks instead of retrying. A head move starts a fresh streak.
+// Callers hold mu.
+func (m *repairMonitor) noteBaseMoveLocked(sessionID, headSHA string) (baseMoveStreak, bool) {
+	streak := m.baseMoves[sessionID]
+	if streak.headSHA != headSHA {
+		streak = baseMoveStreak{headSHA: headSHA}
+	}
+	if streak.count >= maxRepairLoopAttempts {
+		return streak, true
+	}
+	streak.count++
+	m.baseMoves[sessionID] = streak
+	return streak, false
+}
+
 // blockSession stops retrying a session repair cannot fix and hands it to a
 // person: the session moves to Blocked with the concrete reason, which takes
 // it out of the repairable set. A failed block floors the next retry at the
@@ -802,6 +894,9 @@ func (m *repairMonitor) blockSession(ctx context.Context, sessionID, reason stri
 		return
 	}
 	m.clearRefusals(sessionID)
+	m.mu.Lock()
+	delete(m.baseMoves, sessionID)
+	m.mu.Unlock()
 	log.Info().Msg("repair gave up; session blocked for a person")
 }
 
@@ -834,7 +929,9 @@ type sessionInfo struct {
 	LastRepairRunnerError       string
 	LastRepairExitError         string
 	LastRepairReviewFingerprint string
+	LastRepairBaseSHA           string
 	RepoOriginURL               string
+	BaseBranch                  string
 	PRNumber                    int32
 	// LastRepairStartedAt and LastRepairAttemptCount are sourced from
 	// the daemon-persisted last_repair_* columns so the cooldown gate
@@ -938,7 +1035,9 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			LastRepairRunnerError:       sess.GetLastRepairRunnerError(),
 			LastRepairExitError:         sess.GetLastRepairExitError(),
 			LastRepairReviewFingerprint: sess.GetLastRepairReviewFingerprint(),
+			LastRepairBaseSHA:           sess.GetLastRepairBaseSha(),
 			RepoOriginURL:               sess.GetRepoOriginUrl(),
+			BaseBranch:                  sess.GetBaseBranch(),
 			PRNumber:                    sess.GetPrNumber(),
 			LastRepairAttemptCount:      sess.GetLastRepairAttemptCount(),
 		}
@@ -1026,6 +1125,35 @@ func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessi
 		return "", false
 	}
 	return fingerprint, true
+}
+
+// currentBaseSHA reads the live tip of a conflicted PR's base branch, the half
+// of a merge conflict's input the head SHA does not carry. Other statuses do
+// not depend on the base and skip the read. false means the tip is unknown, and
+// the duplicate guards fall back to head SHA + display status.
+func (m *repairMonitor) currentBaseSHA(ctx context.Context, info sessionInfo, displayStatus bossanovav1.DisplayStatus) (string, bool) {
+	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+		return "", false
+	}
+	if info.RepoOriginURL == "" || info.BaseBranch == "" {
+		m.logger.Warn().
+			Str("repo", info.RepoName).
+			Str("session_name", info.SessionTitle).
+			Msg("session missing repo origin or base branch; using legacy duplicate-repair guard")
+		return "", false
+	}
+	resp, err := m.host.GetBranchHead(ctx, &bossanovav1.GetBranchHeadRequest{
+		RepoOriginUrl: info.RepoOriginURL,
+		Branch:        info.BaseBranch,
+	})
+	if err != nil || resp.GetSha() == "" {
+		m.logger.Warn().Err(err).
+			Str("repo", info.RepoName).
+			Str("base_branch", info.BaseBranch).
+			Msg("failed to read base branch tip; using legacy duplicate-repair guard")
+		return "", false
+	}
+	return resp.GetSha(), true
 }
 
 // isRepairableState answers "is it safe and meaningful to run /boss-repair
@@ -1485,6 +1613,7 @@ func (m *repairMonitor) repairSession(
 	replaceExistingObservedLastChatActivityAt time.Time,
 	reviewFingerprint string,
 	reviewFingerprintAvailable bool,
+	baseSHA string,
 ) {
 	log := m.logger.With().
 		Str("session_id", sessionID).
@@ -1562,6 +1691,7 @@ func (m *repairMonitor) repairSession(
 			replaceExistingObservedLastChatActivityAt,
 			currentReviewFingerprint,
 			currentReviewFingerprintAvailable,
+			conflictBaseSHA(currentDisplayStatus, baseSHA),
 			resumeAgentSessionID,
 			&repairFlagSet,
 		)
@@ -1649,6 +1779,16 @@ func (m *repairMonitor) repairSession(
 	}
 }
 
+// conflictBaseSHA is the base tip an attempt records: only a conflict depends
+// on the base, so a loop iteration that moved on to another status records
+// none.
+func conflictBaseSHA(displayStatus bossanovav1.DisplayStatus, baseSHA string) string {
+	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+		return ""
+	}
+	return baseSHA
+}
+
 // runRepairAttempt drives a single Claude repair run for a failing/conflicted/
 // rejected session. It asks the daemon to spawn a Claude process in the
 // session's worktree (StartClaudeRun), waits for it to exit (WaitClaudeRun),
@@ -1659,7 +1799,7 @@ func (m *repairMonitor) repairSession(
 // daemon also enforces one-active-Claude-per-session via StartClaudeRun.
 // Losing that race surfaces as AlreadyExists and is treated as a soft skip:
 // no cooldown recorded, no IsRepairing flag set, so the winner's cleanup
-// owns both. attemptRan controls whether lastAttemptCommit is updated:
+// owns both. attemptRan controls whether lastAttempt is updated:
 // a completed agent run, even with a non-zero exit, blocks same-head/status
 // retries; StartChatRun and WaitChatRun infrastructure failures stay retryable.
 func (m *repairMonitor) runRepairAttempt(
@@ -1672,6 +1812,7 @@ func (m *repairMonitor) runRepairAttempt(
 	replaceExistingObservedLastChatActivityAt time.Time,
 	reviewFingerprint string,
 	reviewFingerprintAvailable bool,
+	baseSHA string,
 	resumeAgentSessionID string,
 	repairFlagSet *bool,
 ) (string, bool) {
@@ -1698,11 +1839,16 @@ func (m *repairMonitor) runRepairAttempt(
 			m.cooldowns[sessionID] = time.Now()
 		}
 		if attemptRan && headSHA != "" {
-			m.lastAttemptCommit[sessionID] = headSHA
-			m.lastAttemptDisplayStatus[sessionID] = displayStatus
-			if reviewFingerprintAvailable {
-				m.lastAttemptReviewFingerprint[sessionID] = reviewFingerprint
+			attempted := repairInput{
+				headSHA:       headSHA,
+				displayStatus: displayStatus,
+				reviewFP:      m.lastAttempt[sessionID].reviewFP,
+				baseSHA:       baseSHA,
 			}
+			if reviewFingerprintAvailable {
+				attempted.reviewFP = reviewFingerprint
+			}
+			m.lastAttempt[sessionID] = attempted
 		}
 		m.mu.Unlock()
 
@@ -1724,6 +1870,7 @@ func (m *repairMonitor) runRepairAttempt(
 					AgentSessionId: outcomeAgentSessionID,
 					HeadSha:        headSHA,
 					DisplayStatus:  displayStatus,
+					BaseSha:        baseSHA,
 				}
 				// The blocked lane is mutually exclusive with a real
 				// runner/exit outcome: a start-refusal never ran an agent, so

@@ -498,6 +498,44 @@ func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID 
 	return &raw, nil
 }
 
+// GetBranchHeadSHA reads the commit branch points at on GitHub, from REST
+// `git/ref` so it stays off the GraphQL quota. Background callers
+// (vcs.WithCachedReads) may be served from the read cache.
+func (p *Provider) GetBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error) {
+	return cachedRead(ctx, p.cache, branchReadKey(readKindBranchHead, repoPath, branch), func(sha string) string { return sha },
+		func(ctx context.Context) (string, error) { return p.fetchBranchHeadSHA(ctx, repoPath, branch) })
+}
+
+func (p *Provider) fetchBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error) {
+	nwo := repoFlag(repoPath)
+	if _, _, ok := splitNWO(nwo); !ok {
+		return "", fmt.Errorf("invalid GitHub repo: %s", nwo)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("branch is required")
+	}
+	segments := strings.Split(branch, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	out, err := p.gh(ctx, "api", fmt.Sprintf("repos/%s/git/ref/heads/%s", nwo, strings.Join(segments, "/")))
+	if err != nil {
+		return "", fmt.Errorf("get branch head: %w", err)
+	}
+	var raw struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return "", fmt.Errorf("parse branch head: %w", err)
+	}
+	if raw.Object.SHA == "" {
+		return "", fmt.Errorf("branch head for %s:%s has no sha", nwo, branch)
+	}
+	return raw.Object.SHA, nil
+}
+
 // workflowRunsPageSize is the single page ListWorkflowRuns requests. A page
 // that comes back full may have been cut short, so it is refused rather than
 // trusted as the complete run set.

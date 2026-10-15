@@ -9,6 +9,7 @@ import (
 	"github.com/recurser/boss/internal/fixtures"
 
 	"github.com/recurser/boss/internal/tuitest"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 func TestTUI_HomeView_ShowsSessions(t *testing.T) {
@@ -504,5 +505,38 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 			}
 			t.Logf("PTY Needs you board at %d columns, selected review:\n%s", width, screen)
 		})
+	}
+}
+
+func TestTUI_Home_AttentionActionApprove(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].Attention = &pb.SessionAttention{
+		Kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+		Actions:   []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE},
+		ParkCodes: []string{"ledger-open"},
+	}
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...))
+	h.Daemon.SetApproveResult(&pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"})
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Approve #597? Waives: ledger-open."); err != nil {
+		t.Fatalf("confirmation missing: %v\n%s", err, h.Driver.Screen())
+	}
+	if calls := h.Daemon.ApproveSessionPRCalls(); len(calls) != 0 {
+		t.Fatalf("request before confirmation: %v", calls)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Approved #597"); err != nil {
+		t.Fatalf("result missing: %v\n%s", err, h.Driver.Screen())
+	}
+	calls := h.Daemon.ApproveSessionPRCalls()
+	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetIsDryRun() {
+		t.Fatalf("approve calls=%v", calls)
 	}
 }

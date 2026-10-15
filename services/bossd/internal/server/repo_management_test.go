@@ -40,6 +40,7 @@ type repoMgmtRepoStore struct {
 	updateParams db.UpdateRepoParams
 	updateCalls  int
 	updateErr    error
+	updated      *models.Repo
 }
 
 func (f *repoMgmtRepoStore) Create(_ context.Context, params db.CreateRepoParams) (*models.Repo, error) {
@@ -75,6 +76,9 @@ func (f *repoMgmtRepoStore) Update(_ context.Context, id string, params db.Updat
 	f.updateParams = params
 	if f.updateErr != nil {
 		return nil, f.updateErr
+	}
+	if f.updated != nil {
+		return f.updated, nil
 	}
 	return &models.Repo{ID: id}, nil
 }
@@ -536,6 +540,60 @@ func TestListRepos(t *testing.T) {
 			t.Fatalf("ListRepos() returned %d repos, want 2", len(resp.Msg.Repos))
 		}
 	})
+}
+
+type missingWebhooksEvidence map[string]bool
+
+func (m missingWebhooksEvidence) WebhooksMissing(repo string) bool { return m[repo] }
+
+func TestListReposMissingWebhooks(t *testing.T) {
+	repos := &repoMgmtRepoStore{listRepos: []*models.Repo{
+		{ID: "no-app", OriginURL: "https://github.com/acme/no-app.git"},
+		{ID: "has-app", OriginURL: "https://github.com/acme/has-app.git"},
+	}}
+	evidence := missingWebhooksEvidence{"https://github.com/acme/no-app.git": true}
+
+	list := func(cfg Config) map[string]bool {
+		t.Helper()
+		resp, err := New(cfg).ListRepos(context.Background(), connect.NewRequest(&pb.ListReposRequest{}))
+		if err != nil {
+			t.Fatalf("ListRepos() error = %v", err)
+		}
+		got := map[string]bool{}
+		for _, r := range resp.Msg.GetRepos() {
+			got[r.GetId()] = r.GetIsMissingWebhooks()
+		}
+		return got
+	}
+
+	got := list(Config{Repos: repos, WebhookEvidence: evidence})
+	want := map[string]bool{"no-app": true, "has-app": false}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("repo %s IsMissingWebhooks = %v, want %v", id, got[id], w)
+		}
+	}
+
+	for id, flagged := range list(Config{Repos: repos}) {
+		if flagged {
+			t.Errorf("repo %s flagged with no webhook evidence wired (local-only daemon)", id)
+		}
+	}
+}
+
+// TestUpdateRepoKeepsMissingWebhooks pins that toggling a setting does not
+// clear the hint: the settings view adopts UpdateRepo's repo as its own.
+func TestUpdateRepoKeepsMissingWebhooks(t *testing.T) {
+	repos := &repoMgmtRepoStore{updated: &models.Repo{ID: "no-app", OriginURL: "https://github.com/acme/no-app.git"}}
+	s := New(Config{Repos: repos, WebhookEvidence: missingWebhooksEvidence{"https://github.com/acme/no-app.git": true}})
+	off := false
+	resp, err := s.UpdateRepo(context.Background(), connect.NewRequest(&pb.UpdateRepoRequest{Id: "no-app", ShouldArchiveSessionsAfterMerge: &off}))
+	if err != nil {
+		t.Fatalf("UpdateRepo() error = %v", err)
+	}
+	if !resp.Msg.GetRepo().GetIsMissingWebhooks() {
+		t.Fatal("UpdateRepo dropped IsMissingWebhooks, so a settings toggle hides the hint")
+	}
 }
 
 func TestRemoveRepo(t *testing.T) {

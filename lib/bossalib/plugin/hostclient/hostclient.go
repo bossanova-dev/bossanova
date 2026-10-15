@@ -126,6 +126,7 @@ type Client interface {
 	// Session management
 	ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
+	GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error)
 	FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 
 	// Repair status
@@ -283,6 +284,14 @@ func (c *EagerClient) GetReviewComments(ctx context.Context, req *bossanovav1.Ge
 	return client.GetReviewComments(ctx, req)
 }
 
+func (c *EagerClient) GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.GetBranchHead(ctx, req)
+}
+
 func (c *EagerClient) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
 	client, err := c.connect()
 	if err != nil {
@@ -398,6 +407,14 @@ func (c *DirectClient) ListSessions(ctx context.Context) (*bossanovav1.HostServi
 func (c *DirectClient) GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
 	resp := &bossanovav1.GetReviewCommentsResponse{}
 	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetReviewComments", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
+	resp := &bossanovav1.GetBranchHeadResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetBranchHead", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

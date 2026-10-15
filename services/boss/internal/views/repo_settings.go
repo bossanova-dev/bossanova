@@ -1354,6 +1354,10 @@ func (m RepoSettingsModel) View() tea.View {
 		{"Delete branches after archiving", m.repo.CanAutoDeleteBranches, repoSettingsRowCanAutoDeleteBranches},
 	} {
 		renderCheckbox(cb)
+		if cb.row == repoSettingsRowShouldArchiveSessionsAfterMerge && m.repo.GetIsMissingWebhooks() {
+			b.WriteString(lipgloss.NewStyle().Faint(true).Padding(0, 4).Width(m.width).Render(missingWebhooksHint))
+			b.WriteString("\n")
+		}
 	}
 
 	b.WriteString("\n")

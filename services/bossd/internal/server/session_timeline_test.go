@@ -586,6 +586,31 @@ func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 	})
 }
 
+// A blocked park (any failure code) is a FIX with no fix row; it still waits on
+// its park step, even with the repair failure dismissed.
+func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
+	facts := timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui,ledger-open")),
+		},
+		Repair:            &repairFact{FailedAt: at(35), Attempts: 3, Current: true},
+		DismissedAlertKey: attention.RepairFailedAlertKey,
+	}
+	steps, kind := assembleTimeline(facts)
+	if kind != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("kind = %s, want FIX", kind)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(20), "Built and reviewed", "open findings", done},
+		{at(35), "Automatic repair failed", "3 attempts", failed},
+		{at(40), "CI passed, 3 checks", "", done},
+		{at(40), "Parked for you · open findings", "", current},
+	})
+}
+
 func TestBuildTimeline_MergedPRWaitsOnNothing(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
 		HasPR: true,

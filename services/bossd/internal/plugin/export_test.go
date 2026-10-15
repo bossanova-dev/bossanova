@@ -33,12 +33,7 @@ func (h *Host) PluginPIDs() map[string]int {
 	return out
 }
 
-// PluginSubprocessEnv exposes the host's real plugin-subprocess environment
-// construction to package plugin_test. The orphan integration test's re-exec
-// spawner uses it so its intermediate parent stamps its identity exactly the
-// way launchPlugin does — including clearing the variable from its own
-// environment, without which go-plugin's second os.Environ() append would
-// shadow the stamp and the watchdog would refuse to arm.
+// PluginSubprocessEnv exposes the approved environment and parent stamp to the re-exec harness.
 func PluginSubprocessEnv(cfg config.PluginConfig, hostPID int) []string {
-	return pluginSubprocessEnv(cfg, hostPID)
+	return pluginSubprocessEnv(cfg, hostPID, nil)
 }

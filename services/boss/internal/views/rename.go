@@ -119,13 +119,17 @@ func (r renamePrompt) withEmptyTitleError() renamePrompt {
 // is not known yet, so nothing is clamped): a wrapped line would silently cost a
 // third row, which is exactly what tableHeight's reservation cannot absorb.
 func (r renamePrompt) footer(width int) string {
+	return r.footerFor(width, "rename")
+}
+
+func (r renamePrompt) footerFor(width int, submit string) string {
 	inputStyle := lipgloss.NewStyle().Padding(actionBarPadY, 2, 0, 2)
 	hintStyle := styleActionBar.Padding(0, 2, actionBarPadY, 2)
 	if width > 0 {
 		inputStyle = inputStyle.MaxWidth(width)
 		hintStyle = hintStyle.MaxWidth(width)
 	}
-	hints := "[enter] rename  [esc] cancel"
+	hints := "[enter] " + submit + "  [esc] cancel"
 	if r.err != "" {
 		hints += "  " + lipgloss.NewStyle().Foreground(colorDanger).Render(r.err)
 	}

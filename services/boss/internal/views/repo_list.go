@@ -17,6 +17,13 @@ import (
 
 // --- Repo List View ---
 
+// missingWebhooksHint explains Repo.is_missing_webhooks in repo settings; the
+// list marks the same repos with missingWebhooksLabel.
+const (
+	missingWebhooksHint  = "Polling only — no GitHub webhooks received (is the Bossanova app installed on this repo?)"
+	missingWebhooksLabel = "no webhooks"
+)
+
 // repoListLoadedMsg carries repos for the list view.
 type repoListLoadedMsg struct {
 	repos []*pb.Repo
@@ -91,8 +98,11 @@ func (m *RepoListModel) buildTable() {
 			p = strings.Replace(p, home, "~", 1)
 		}
 		paths[i] = p
-		if repo.Id != "" && repo.Id == m.deletingRepoID {
+		switch {
+		case repo.Id != "" && repo.Id == m.deletingRepoID:
 			statuses[i] = renderRowPendingStatus(m.spinner, "deleting")
+		case repo.GetIsMissingWebhooks():
+			statuses[i] = styleSubtle.Render(missingWebhooksLabel)
 		}
 	}
 
@@ -100,11 +110,12 @@ func (m *RepoListModel) buildTable() {
 		{col: cursorColumn, priority: 0, minWidth: 1},
 		{col: table.Column{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep}, priority: 0, minWidth: 1},
 		{col: table.Column{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep}, priority: 2, minWidth: 1},
-		// The status column is unlabelled: it only ever holds the transient
-		// "deleting" spinner, so a permanent STATUS heading advertises a column
-		// that is blank in the steady state. Width still sizes against the
-		// header text so the reserved space (and the fit priority) is unchanged.
-		{col: table.Column{Title: "", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep}, priority: 1, minWidth: 1},
+		// The status column is unlabelled: it holds only the transient
+		// "deleting" spinner and the rare "no webhooks" marker, so a permanent
+		// STATUS heading advertises a column that is blank in the steady state.
+		// Width still sizes against the header text so the reserved space (and
+		// the fit priority) is unchanged.
+		{col: table.Column{Title: "", Width: maxColWidth("STATUS", statuses, len(missingWebhooksLabel)) + tableColumnSep}, priority: 1, minWidth: 1},
 	}
 	fitted := fitColumnsIndexed(cols, fitAvailWidth(m.width, 1))
 	fittedCols := fittedColumns(fitted)

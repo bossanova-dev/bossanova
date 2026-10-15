@@ -17,6 +17,8 @@ import {
   globToRegExp,
   DEFAULT_CONFIG,
   verifyAlwaysHumanPaths,
+  verifyHumanReviewPaths,
+  retroConfig,
   verifyPathLabels,
   verifyPolicyFromConfigText,
   DEFAULT_TRACKER_STATES,
@@ -4717,4 +4719,96 @@ test('parseAcceptanceCriteria keeps same-indent checkbox siblings as separate cr
     nested.map((c) => c.text),
     ['first [x] detail', 'second'],
   )
+})
+
+const deferredStageCases = [
+  {
+    block: 'verifyDefaults',
+    patch: { verifyDefaults: { alwaysHumanPaths: [{ glob: 'src/**', unexpected: true }] } },
+    readers: [verifyAlwaysHumanPaths, verifyHumanReviewPaths, verifyPathLabels],
+    error: /verifyDefaults.alwaysHumanPaths must be/,
+  },
+  {
+    block: 'retro',
+    patch: { retro: { futureKey: true } },
+    readers: [retroConfig],
+    error: /retro.futureKey is unknown/,
+  },
+  {
+    block: 'planDependencies',
+    patch: { planDependencies: { futureKey: true } },
+    readers: [planDependencyDefaults],
+    error: /planDependencies.futureKey is not a known key/,
+  },
+  {
+    block: 'trackerConfig.linear.selection',
+    patch: { trackerConfig: { linear: { mcpServer: 'linear', selection: { futureKey: true } } } },
+    readers: [selectionBlockFor, (config) => stageSelectionQuery(config, 'build')],
+    error: /trackerConfig.linear.selection has unknown key "futureKey"/,
+  },
+]
+
+for (const { block, patch, readers, error } of deferredStageCases) {
+  test(`loadSkillConfig defers ${block} faults and its readers fail closed`, (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    const warnings = []
+    t.mock.method(console, 'warn', (line) => warnings.push(line))
+    writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(patch))
+    const config = loadSkillConfig({ cwd: dir })
+    assert.equal(warnings.length, 1)
+    assert.ok(warnings[0].includes(block))
+    assert.match(warnings[0], error)
+    assert.match(warnings[0], /boss skills install/)
+    assert.deepEqual(reviewSkillFor(config), reviewSkillFor(DEFAULT_CONFIG))
+    assert.deepEqual(reviewSecondModel(config), reviewSecondModel(DEFAULT_CONFIG))
+    assert.deepEqual(reviewTimeDefaults(config), reviewTimeDefaults(DEFAULT_CONFIG))
+    for (const reader of readers) {
+      assert.throws(
+        () => reader(config),
+        (err) => {
+          assert.ok(
+            err.message.includes(
+              `skill-config: invalid config from ${join(dir, CONFIG_FILENAME)}:`,
+            ),
+          )
+          assert.match(err.message, error)
+          return true
+        },
+      )
+    }
+    for (const other of deferredStageCases.filter((entry) => entry.block !== block)) {
+      // stageSelectionQuery needs configured states; its raw-block reader suffices here.
+      assert.doesNotThrow(() => other.readers[0](config))
+    }
+    assert.throws(() => validateConfig(mergeConfig(DEFAULT_CONFIG, patch), 'direct'), error)
+  })
+}
+
+test('loadSkillConfig warns once for each faulted stage block in one config', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const warnings = []
+  t.mock.method(console, 'warn', (line) => warnings.push(line))
+  const patch = Object.assign({}, ...deferredStageCases.map((entry) => entry.patch))
+  writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(patch))
+  const config = loadSkillConfig({ cwd: dir })
+  assert.equal(warnings.length, deferredStageCases.length)
+  for (const { block, readers, error } of deferredStageCases) {
+    assert.equal(warnings.filter((line) => line.includes(`deferred ${block}:`)).length, 1)
+    for (const reader of readers) assert.throws(() => reader(config), error)
+  }
+})
+
+test('loadSkillConfig keeps global faults fatal even alongside a deferred fault', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'skill-config-deferred-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.mock.method(console, 'warn', () => {})
+  for (const patch of [{ planStorage: { kind: 'future' } }, { adapters: [] }]) {
+    writeFileSync(
+      join(dir, CONFIG_FILENAME),
+      JSON.stringify({ ...deferredStageCases[0].patch, ...patch }),
+    )
+    assert.throws(() => loadSkillConfig({ cwd: dir }), /skill-config: invalid config/)
+  }
 })

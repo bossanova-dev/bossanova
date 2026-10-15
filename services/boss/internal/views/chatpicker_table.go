@@ -215,6 +215,9 @@ func (m ChatPickerModel) tableHeight() int {
 	if len(left) > 0 {
 		footerLines = actionBarLineCount(m.width, left, middle, back)
 	}
+	if m.attentionAction.active() {
+		footerLines = m.attentionAction.lineCount(m.width)
+	}
 	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.waitingLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight() + m.confirmExtraLines()
 	return clampedTableHeight(len(m.chats), m.height, overhead)
 }

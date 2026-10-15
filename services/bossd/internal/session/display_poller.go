@@ -33,7 +33,7 @@ type DisplayPoller struct {
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
 	completionNotifier SessionCompletionNotifier
-	health             WebhookHealth          // optional; nil polls every repo at interval
+	health             DisplayWebhookHealth   // optional; nil polls every repo at interval
 	archiver           SessionArchiver        // optional; nil disables archive-after-merge
 	archiveTracker     ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
 	receiptPoster      vcs.CommitStatusPoster // optional; nil (or nil receiptProbe) disables receipt carrying
@@ -50,6 +50,29 @@ type DisplayPoller struct {
 	latestWebhookRefresh map[string]time.Time
 	lastPollMu           sync.Mutex
 	lastPoll             map[string]time.Time
+	// observed is this poller's own last read of each session's PR, guarded by
+	// lastPollMu. Other tracker writers never touch it, so a difference between
+	// two reads is a change on GitHub, not another writer's update.
+	observed map[string]prObservation
+}
+
+// prObservation is one GitHub read of a session's PR, reduced to the changes
+// GitHub always announces with a pull_request webhook.
+type prObservation struct {
+	prNumber int
+	headSHA  string
+	ended    bool
+	at       time.Time
+}
+
+// announcedBy reports whether going from o to next is a change GitHub sends a
+// pull_request webhook for: a new head (synchronize) or the PR ending (closed).
+func (o prObservation) announcedBy(next prObservation) bool {
+	if o.prNumber != next.prNumber {
+		return false
+	}
+	newHead := o.headSHA != "" && next.headSHA != "" && o.headSHA != next.headSHA
+	return newHead || (!o.ended && next.ended)
 }
 
 // NewDisplayPoller creates a new display status poller.
@@ -152,8 +175,9 @@ func (p *DisplayPoller) SetReceiptCarrier(poster vcs.CommitStatusPoster, probe R
 
 // SetWebhookHealth wires the webhook-delivery tracker. Sessions in a repo whose
 // webhooks reach the daemon are polled at webhookSafetyNetInterval instead of
-// interval. nil-safe: leaving it unset polls every repo at interval.
-func (p *DisplayPoller) SetWebhookHealth(h WebhookHealth) {
+// interval, and every PR change a read finds is reported to it as a candidate
+// missed webhook. nil-safe: leaving it unset polls every repo at interval.
+func (p *DisplayPoller) SetWebhookHealth(h DisplayWebhookHealth) {
 	p.health = h
 }
 
@@ -291,6 +315,33 @@ func (p *DisplayPoller) pruneLastPoll(active map[string]struct{}) {
 		if _, ok := active[sessionID]; !ok {
 			delete(p.lastPoll, sessionID)
 		}
+	}
+	for sessionID := range p.observed {
+		if _, ok := active[sessionID]; !ok {
+			delete(p.observed, sessionID)
+		}
+	}
+}
+
+// observePR records this read of a session's PR. When the poller read the same
+// PR before and it has since changed in a way a webhook announces, it reports
+// the change to the webhook tracker, which decides whether a webhook was missed.
+func (p *DisplayPoller) observePR(repoOriginURL, sessionID string, prNumber int, pr *vcs.PRStatus) {
+	next := prObservation{
+		prNumber: prNumber,
+		headSHA:  pr.HeadSHA,
+		ended:    pr.State == vcs.PRStateMerged || pr.State == vcs.PRStateClosed,
+		at:       time.Now(),
+	}
+	p.lastPollMu.Lock()
+	if p.observed == nil {
+		p.observed = make(map[string]prObservation)
+	}
+	prev, seen := p.observed[sessionID]
+	p.observed[sessionID] = next
+	p.lastPollMu.Unlock()
+	if seen && p.health != nil && prev.announcedBy(next) {
+		p.health.NotePolledChange(repoOriginURL, prev.at)
 	}
 }
 
@@ -434,6 +485,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get PR status")
 		return false
 	}
+	p.observePR(repoPath, sessionID, prNumber, prStatus)
 
 	p.logger.Info().
 		Str("session_id", sessionID).

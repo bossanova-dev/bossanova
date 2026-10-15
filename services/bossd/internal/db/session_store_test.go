@@ -1794,3 +1794,47 @@ func TestRunBlockedReason_SurvivesBlockedReasonWrites(t *testing.T) {
 		t.Fatalf("after clear RunBlockedReason = %v err = %v, want nil", got.RunBlockedReason, err)
 	}
 }
+
+func TestUpdateRepairDiagnosticsPersistsBaseSHA(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair base sha test",
+		WorktreePath: "/tmp/wt/repair-base-sha",
+		BranchName:   "feat/repair-base-sha",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	write := func(baseSHA string) *models.Session {
+		t.Helper()
+		if err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+			SessionID:     sess.ID,
+			StartedAt:     time.Unix(1779238800, 0),
+			HeadSHA:       "abc123",
+			DisplayStatus: 4,
+			BaseSHA:       baseSHA,
+		}); err != nil {
+			t.Fatalf("UpdateRepairDiagnostics: %v", err)
+		}
+		got, err := sessionStore.Get(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		return got
+	}
+
+	if got := write("base-1"); got.LastRepairBaseSHA != "base-1" {
+		t.Fatalf("LastRepairBaseSHA=%q, want base-1", got.LastRepairBaseSHA)
+	}
+	if got := write(""); got.LastRepairBaseSHA != "" {
+		t.Fatalf("LastRepairBaseSHA=%q, want it cleared by a repair that read no base", got.LastRepairBaseSHA)
+	}
+}

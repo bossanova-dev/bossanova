@@ -2,6 +2,7 @@ package apiversion
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -300,6 +301,11 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				return downconverted(body.Created)
 			},
 		}}, sessionProbes(verifySession, downconverted)...)
+	case BlockedParkAttentionChange:
+		return sessionProbes(blockedParkSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW &&
+				slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE)
+		})
 	case ResumeAttentionActionsChange:
 		return sessionProbes(func() *pb.Session {
 			return &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX}}

@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/childenv"
 	"github.com/recurser/bossalib/safego"
 )
 
@@ -46,13 +48,14 @@ type CommandFactory func(ctx context.Context, name string, args ...string) *exec
 // builder needs to construct a full agent CLI invocation. Callers see
 // only this struct and decide which fields apply to their agent.
 type BuildArgvInput struct {
-	WorkDir           string
-	Plan              string
-	Resume            *string
-	SessionID         string
-	ProvidedSessionID bool
-	LogPath           string
-	Options           map[string]string
+	ShouldTrustProjectConfig bool
+	WorkDir                  string
+	Plan                     string
+	Resume                   *string
+	SessionID                string
+	ProvidedSessionID        bool
+	LogPath                  string
+	Options                  map[string]string
 }
 
 // Options configures a Runner. BuildArgv is required; everything else is
@@ -191,6 +194,11 @@ func defaultBinName(s string) string {
 	return s
 }
 
+// StartOptions carries typed per-run launch policy.
+type StartOptions struct {
+	ShouldTrustProjectConfig bool
+}
+
 // Start spawns an agent CLI process. The argv is constructed by the
 // Options.BuildArgv closure; the runner pipes `plan` to the subprocess's
 // stdin, captures stdout+stderr line-by-line into the NDJSON log at
@@ -208,19 +216,19 @@ func defaultBinName(s string) string {
 // when the subprocess died before producing output, leaving no on-disk
 // record of why a run failed.
 // extraEnv, when non-empty, is an allowlisted, daemon-resolved KEY=VALUE
-// overlay applied on top of the inherited os.Environ() for the spawned
+// overlay applied on top of the approved inherited baseline for the spawned
 // process. It carries proof credentials/constants and, for account
 // rotation, the selected account's env (e.g. CLAUDE_CODE_OAUTH_TOKEN /
 // CODEX_HOME). Its VALUES are never logged — the spawn preamble records
 // argv/cwd/PATH only.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string) (string, error) {
-	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{"model": model})
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string, extraEnv map[string]string, launchOptions ...StartOptions) (string, error) {
+	return r.StartWithOptions(ctx, workDir, plan, resume, sessionID, logPath, extraEnv, map[string]string{"model": model}, launchOptions...)
 }
 
 // StartWithOptions starts an agent with caller-defined non-secret argv-builder
 // options. extraEnv remains the only process-environment overlay and is kept
 // separate so option values cannot accidentally be inherited by the child.
-func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath string, extraEnv, options map[string]string) (string, error) {
+func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath string, extraEnv, options map[string]string, launchOptions ...StartOptions) (string, error) {
 	// Determine whether the caller provided a session ID.
 	providedSessionID := sessionID != ""
 
@@ -285,14 +293,19 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 		cancel()
 		return "", fmt.Errorf("agentruntime: BuildArgv is required")
 	}
+	shouldTrustProjectConfig := false
+	if len(launchOptions) > 0 {
+		shouldTrustProjectConfig = launchOptions[0].ShouldTrustProjectConfig
+	}
 	argv := r.buildArgv(BuildArgvInput{
-		WorkDir:           workDir,
-		Plan:              plan,
-		Resume:            resume,
-		SessionID:         sessionID,
-		ProvidedSessionID: providedSessionID,
-		LogPath:           logPath,
-		Options:           options,
+		ShouldTrustProjectConfig: shouldTrustProjectConfig,
+		WorkDir:                  workDir,
+		Plan:                     plan,
+		Resume:                   resume,
+		SessionID:                sessionID,
+		ProvidedSessionID:        providedSessionID,
+		LogPath:                  logPath,
+		Options:                  options,
 	})
 	if len(argv) == 0 {
 		cancel()
@@ -301,21 +314,17 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 
 	cmd := r.cmdFunc(procCtx, argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	// Apply the allowlisted env overlay on top of the inherited environment,
-	// only when there is something to add. Leaving cmd.Env nil (the common
-	// case) means the child inherits os.Environ() unchanged. Keys are sorted
-	// for a deterministic argv; values are never logged.
-	if len(extraEnv) > 0 {
-		env := os.Environ()
-		keys := make([]string, 0, len(extraEnv))
-		for k := range extraEnv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			env = append(env, k+"="+extraEnv[k])
-		}
-		cmd.Env = env
+	// Always filter the inherited environment, even without an overlay. Keep the
+	// operator passthrough carried by bossd before applying daemon-resolved values.
+	cmd.Env = childenv.Build(os.Environ(), childenv.ForPlugin(r.binName,
+		strings.Split(os.Getenv(childenv.PassthroughEnvVar), ",")))
+	keys := make([]string, 0, len(extraEnv))
+	for k := range extraEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		cmd.Env = append(cmd.Env, k+"="+extraEnv[k])
 	}
 	// On context cancellation, send SIGTERM for graceful shutdown. If the
 	// process doesn't exit within WaitDelay, Go's os/exec sends SIGKILL

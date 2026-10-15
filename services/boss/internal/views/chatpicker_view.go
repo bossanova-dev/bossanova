@@ -197,6 +197,9 @@ func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
 // through to the action bar" — which would put the action bar back on screen
 // mid-confirm and change behaviour.
 func (m ChatPickerModel) renderConfirm() (string, bool) {
+	if m.attentionAction.active() {
+		return m.attentionAction.footer(m.width), true
+	}
 	var b strings.Builder
 	if m.merging {
 		label := "Merging PR…"
@@ -301,16 +304,17 @@ func (m ChatPickerModel) renderActionBar() string {
 
 func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	middle = []string{"[n]ew chat", "[s]ettings"}
+	middle = append(middle, attentionFooter(m.session, true)...)
 	if m.newTabSupported {
 		middle = append(middle, "[t]erminal")
 	}
-	if m.canOpenGitHub() {
+	if _, ok := attentionBinding(m.session, "g"); !ok && m.canOpenGitHub() {
 		middle = append(middle, "[g]ithub")
 	}
-	if m.canOpenTracker() {
+	if _, ok := attentionBinding(m.session, "l"); !ok && m.canOpenTracker() {
 		middle = append(middle, "[l]inear")
 	}
-	if m.canApprove() || m.canMerge() {
+	if _, ok := attentionBinding(m.session, "m"); !ok && (m.canApprove() || m.canMerge()) {
 		middle = append(middle, "[m]erge")
 	}
 	if m.sessionID != "" {

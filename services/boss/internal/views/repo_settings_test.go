@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -545,6 +546,65 @@ func TestRepoSettings_ArchiveSessionsAfterMergeToggle(t *testing.T) {
 	}
 	if *stub.updateReq.ShouldArchiveSessionsAfterMerge {
 		t.Errorf("toggled request ShouldArchiveSessionsAfterMerge = true, want false (negation of the prior true)")
+	}
+}
+
+// TestRepoSettings_MissingWebhooksHint pins where an operator wondering why a
+// merge did not archive finds the answer: directly under the archive toggle,
+// and only for a repo the daemon flags.
+func TestRepoSettings_MissingWebhooksHint(t *testing.T) {
+	render := func(missing bool) []string {
+		t.Helper()
+		stub := &stubRepoClient{repos: []*pb.Repo{{
+			Id:                              "repo-1",
+			DisplayName:                     "gigantic",
+			ShouldArchiveSessionsAfterMerge: true,
+			IsMissingWebhooks:               missing,
+		}}}
+		m := initSettings(t, stub)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+		return strings.Split(stripANSI(updated.(RepoSettingsModel).View().Content), "\n")
+	}
+
+	lines := render(true)
+	archive := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "Archive sessions after merging PRs") })
+	if archive < 0 || archive+1 >= len(lines) {
+		t.Fatalf("archive toggle not rendered:\n%s", strings.Join(lines, "\n"))
+	}
+	if got := strings.TrimSpace(lines[archive+1]); got != missingWebhooksHint {
+		t.Fatalf("line under the archive toggle = %q, want the missing-webhooks hint:\n%s", got, strings.Join(lines, "\n"))
+	}
+
+	for _, l := range render(false) {
+		if strings.Contains(l, "webhooks") {
+			t.Fatalf("hint rendered for a repo the daemon did not flag: %q", l)
+		}
+	}
+}
+
+// TestRepoSettings_MissingWebhooksHintSurvivesAToggle pins that flipping the
+// archive toggle, the first thing an operator tries, keeps the hint: the view
+// adopts the saved repo the daemon returns, which carries the live flag.
+func TestRepoSettings_MissingWebhooksHintSurvivesAToggle(t *testing.T) {
+	flagged := func(archive bool) *pb.Repo {
+		return &pb.Repo{Id: "repo-1", DisplayName: "gigantic", ShouldArchiveSessionsAfterMerge: archive, IsMissingWebhooks: true}
+	}
+	stub := &stubRepoClient{repos: []*pb.Repo{flagged(true)}, updated: flagged(false)}
+	m := initSettings(t, stub)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(RepoSettingsModel)
+
+	cursorToRow(t, &m, repoSettingsRowShouldArchiveSessionsAfterMerge)
+	updated, cmd := m.activateRow()
+	m = updated.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("activateRow returned a nil cmd; expected an UpdateRepo save")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(RepoSettingsModel)
+
+	if out := stripANSI(m.View().Content); !strings.Contains(out, missingWebhooksHint) {
+		t.Fatalf("hint gone after toggling archive-after-merge:\n%s", out)
 	}
 }
 

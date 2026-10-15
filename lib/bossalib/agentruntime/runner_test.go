@@ -180,7 +180,7 @@ func runnerLogTexts(t *testing.T, r *agentruntime.Runner, dir, logPath, sid stri
 }
 
 func TestRunnerStart_AppliesExtraEnvAndInherits(t *testing.T) {
-	t.Setenv("PROOF_TEST_INHERITED", "inherited-value")
+	t.Setenv("BOSS_TEST_INHERITED", "inherited-value")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 
@@ -188,7 +188,7 @@ func TestRunnerStart_AppliesExtraEnvAndInherits(t *testing.T) {
 	r := agentruntime.NewRunner(zerolog.Nop(),
 		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
 		agentruntime.WithCommandFactory(fakeCmd(t,
-			`printf 'EXTRA=%s INHERITED=%s\n' "$PROOF_TEST_KEY" "$PROOF_TEST_INHERITED"`)),
+			`printf 'EXTRA=%s INHERITED=%s\n' "$PROOF_TEST_KEY" "$BOSS_TEST_INHERITED"`)),
 	)
 
 	texts := runnerLogTexts(t, r, dir, logPath, "env-on", map[string]string{"PROOF_TEST_KEY": secret})
@@ -261,20 +261,16 @@ func TestRunnerStart_EmptyOverlayValueShadowsInheritedKey(t *testing.T) {
 	}
 }
 
-func TestRunnerStart_NoExtraEnvStillInherits(t *testing.T) {
-	t.Setenv("PROOF_TEST_INHERITED", "still-here")
+func TestRunnerStart_NoExtraEnvFiltersParentSecrets(t *testing.T) {
+	t.Setenv("SOME_SECRET", "must-not-leak")
+	t.Setenv("BOSS_TEST_INHERITED", "approved")
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
-
-	r := agentruntime.NewRunner(zerolog.Nop(),
-		agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
-		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'INHERITED=%s\n' "$PROOF_TEST_INHERITED"`)),
-	)
-
-	// nil extraEnv leaves cmd.Env nil → child inherits the full environment.
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'SECRET=[%s] APPROVED=[%s]\n' "$SOME_SECRET" "$BOSS_TEST_INHERITED"`)))
 	texts := runnerLogTexts(t, r, dir, logPath, "env-off", nil)
-	if !strings.Contains(strings.Join(texts, "\n"), "INHERITED=still-here") {
-		t.Errorf("child did not inherit environment with nil extraEnv; log=%v", texts)
+	if !strings.Contains(strings.Join(texts, "\n"), "SECRET=[] APPROVED=[approved]") {
+		t.Errorf("unsafe child environment: %v", texts)
 	}
 }
 
@@ -935,4 +931,18 @@ func formatInt(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+func TestRunnerStart_OperatorPassthroughSurvivesSecondFilter(t *testing.T) {
+	t.Setenv("BOSS_CHILD_ENV_PASSTHROUGH", "CUSTOM_TOKEN,CUSTOM_*")
+	t.Setenv("CUSTOM_TOKEN", "approved")
+	t.Setenv("CUSTOM_OTHER", "prefix")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{BuildArgv: argvNoop(), BinaryName: "fake"},
+		agentruntime.WithCommandFactory(fakeCmd(t, `printf 'CUSTOM=%s PREFIX=%s\n' "$CUSTOM_TOKEN" "$CUSTOM_OTHER"`)))
+	texts := runnerLogTexts(t, r, dir, logPath, "env-custom", nil)
+	if !strings.Contains(strings.Join(texts, "\n"), "CUSTOM=approved PREFIX=prefix") {
+		t.Errorf("passthrough lost: %v", texts)
+	}
 }

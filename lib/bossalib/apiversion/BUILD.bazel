@@ -27,6 +27,7 @@ go_library(
 go_test(
     name = "apiversion_test",
     srcs = [
+        "blocked_park_attention_test.go",
         "changelogversion_test.go",
         "export_test.go",
         "interceptor_test.go",

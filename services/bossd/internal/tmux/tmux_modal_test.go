@@ -633,12 +633,14 @@ func TestSendMessageWithModalNilDetectorMatchesSendMessage(t *testing.T) {
 	// Check each run against a spelled-out sequence rather than only against the
 	// other run: two runs of the same regressed code agree with each other
 	// perfectly. This is the pre-BOS-600 delivery shape — poll until the
-	// composer row appears, type, press Enter, read back to verify the submit —
-	// and a nil detector must not add, drop, or reorder any of it.
+	// composer row appears, check the codex composer holds no draft, type, press
+	// Enter, read back to verify the submit — and a nil detector must not add,
+	// drop, or reorder any of it.
 	capture := sendPlanCall{subcommand: "capture-pane", args: []string{"-p", "-S", "-1000", "-t", "boss-test-sess"}}
 	want := []sendPlanCall{
 		capture,
 		capture,
+		{subcommand: "capture-pane", args: []string{"-p", "-e", "-t", "boss-test-sess"}},
 		{subcommand: "send-keys", args: []string{"-t", "boss-test-sess", "-l", "--", "hi"}},
 		{subcommand: "send-keys", args: []string{"-t", "boss-test-sess", "Enter"}},
 		capture,

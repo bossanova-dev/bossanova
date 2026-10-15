@@ -174,29 +174,7 @@ func (b *Backend) CheckoutBranch(ctx context.Context, dir string) (string, bool)
 // DefaultSocketPath resolves the configured daemon socket path from settings,
 // falling back to the default app-data location when none is configured.
 func DefaultSocketPath() (string, error) {
-	settings, err := loadSettings()
-	if err != nil {
-		return "", err
-	}
-	if p, ok, err := config.ConfiguredSocketPath(settings); err != nil {
-		return "", err
-	} else if ok {
-		return p, nil
-	}
-
-	dir, err := config.DefaultAppDataDir()
-	if err != nil {
-		return "", err
-	}
-	return dir + "/bossd.sock", nil
-}
-
-func loadSettings() (config.Settings, error) {
-	p, err := config.Path()
-	if err != nil {
-		return config.DefaultSettings(), err
-	}
-	return config.LoadFrom(p)
+	return config.ResolveSocketPath()
 }
 
 // SocketPath returns the path this backend dials.

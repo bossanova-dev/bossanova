@@ -952,11 +952,15 @@ type AttentionKind int32
 
 const (
 	AttentionKind_ATTENTION_KIND_UNSPECIFIED AttentionKind = 0
-	// A fault the operator must resolve (or dismiss) before work continues.
+	// A fault the operator must resolve (or dismiss) before work continues. From
+	// API version 2026-09-19 it also answers a blocked verify park (any failure,
+	// incomplete or unknown park code), which carries park_codes and never
+	// offers ATTENTION_ACTION_APPROVE; older pins receive ATTENTION_KIND_REVIEW.
 	AttentionKind_ATTENTION_KIND_FIX AttentionKind = 1
 	// The agent asked a question and is waiting for an answer.
 	AttentionKind_ATTENTION_KIND_QUESTION AttentionKind = 2
-	// The verify stage parked the PR for a human decision.
+	// The verify stage parked the PR for a person to sign off: every park code
+	// is a policy sign-off code.
 	AttentionKind_ATTENTION_KIND_REVIEW AttentionKind = 3
 	// The PR is open, green and mergeable, and nothing else will merge it.
 	AttentionKind_ATTENTION_KIND_MERGE AttentionKind = 4
@@ -2044,9 +2048,19 @@ type Repo struct {
 	// proof secrets. Local-only: set through the daemon's RegisterRepo /
 	// UpdateRepo, never through the orchestrator stream. Existing repos were
 	// backfilled trusted; newly registered repos default untrusted.
-	IsTrusted     bool `protobuf:"varint,25,opt,name=is_trusted,json=isTrusted,proto3" json:"is_trusted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsTrusted bool `protobuf:"varint,25,opt,name=is_trusted,json=isTrusted,proto3" json:"is_trusted,omitempty"`
+	// Whether GitHub webhooks are evidently not reaching this daemon for the
+	// repo, so its PR state arrives only by polling (typically the GitHub App is
+	// not installed on it). Set only by the daemon's ListRepos and UpdateRepo,
+	// and only when its poller saw a PR in this repo change (a new head, or the
+	// PR ending) with no webhook announcing it, no webhook for the repo has
+	// arrived since the daemon started, and webhooks do reach the daemon for
+	// other repos. False for an origin that is not a github.com owner/name. Live
+	// state, never persisted; false everywhere else, including without an
+	// upstream.
+	IsMissingWebhooks bool `protobuf:"varint,26,opt,name=is_missing_webhooks,json=isMissingWebhooks,proto3" json:"is_missing_webhooks,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Repo) Reset() {
@@ -2215,6 +2229,13 @@ func (x *Repo) GetSentryOrg() string {
 func (x *Repo) GetIsTrusted() bool {
 	if x != nil {
 		return x.IsTrusted
+	}
+	return false
+}
+
+func (x *Repo) GetIsMissingWebhooks() bool {
+	if x != nil {
+		return x.IsMissingWebhooks
 	}
 	return false
 }
@@ -2730,8 +2751,11 @@ type Session struct {
 	// where versions before 2026-09-18 served the waiting composite. Computed
 	// with the served label, never persisted; the down-convert keys on it.
 	IsWorkingOverWaiting bool `protobuf:"varint,79,opt,name=is_working_over_waiting,json=isWorkingOverWaiting,proto3" json:"is_working_over_waiting,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Base branch tip the last conflict repair ran against (see
+	// RecordRepairOutcomeRequest.base_sha). Empty for other repairs.
+	LastRepairBaseSha string `protobuf:"bytes,80,opt,name=last_repair_base_sha,json=lastRepairBaseSha,proto3" json:"last_repair_base_sha,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -3315,6 +3339,13 @@ func (x *Session) GetIsWorkingOverWaiting() bool {
 		return x.IsWorkingOverWaiting
 	}
 	return false
+}
+
+func (x *Session) GetLastRepairBaseSha() string {
+	if x != nil {
+		return x.LastRepairBaseSha
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -4459,13 +4490,14 @@ type SessionAttention struct {
 	// Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
 	// main CI", "working", "idle").
 	ProgressLabel string `protobuf:"bytes,5,opt,name=progress_label,json=progressLabel,proto3" json:"progress_label,omitempty"`
-	// The verify-stage park codes behind a REVIEW, in report order.
+	// The verify-stage park codes behind a REVIEW or a blocked-park FIX, in
+	// report order.
 	ParkCodes []string `protobuf:"bytes,6,rep,name=park_codes,json=parkCodes,proto3" json:"park_codes,omitempty"`
 	// Identifies the FIX alert so a dismissal can be matched to it.
 	AlertKey string `protobuf:"bytes,7,opt,name=alert_key,json=alertKey,proto3" json:"alert_key,omitempty"`
 	// The chat a FIX or QUESTION action should open.
 	TargetChatId string `protobuf:"bytes,8,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
-	// Evidence (video) URL behind a REVIEW, when one exists.
+	// Evidence (video) URL behind a verify park, when one exists.
 	EvidenceUrl   string `protobuf:"bytes,9,opt,name=evidence_url,json=evidenceUrl,proto3" json:"evidence_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6895,7 +6927,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\v\n" +
-	"\t_reset_at\"\xa2\a\n" +
+	"\t_reset_at\"\xd2\a\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -6923,7 +6955,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrg\x12\x1d\n" +
 	"\n" +
-	"is_trusted\x18\x19 \x01(\bR\tisTrustedB\x0f\n" +
+	"is_trusted\x18\x19 \x01(\bR\tisTrusted\x12.\n" +
+	"\x13is_missing_webhooks\x18\x1a \x01(\bR\x11isMissingWebhooksB\x0f\n" +
 	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"g\n" +
 	"\fSecretUpdate\x122\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1a.bossanova.v1.SecretActionR\x06action\x12\x19\n" +
@@ -6948,7 +6981,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHttpEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xbd#\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\xee#\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -7041,7 +7074,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x11has_build_receipt\x18L \x01(\bR\x0fhasBuildReceipt\x121\n" +
 	"\x15is_ready_over_waiting\x18M \x01(\bR\x12isReadyOverWaiting\x12<\n" +
 	"\tattention\x18N \x01(\v2\x1e.bossanova.v1.SessionAttentionR\tattention\x125\n" +
-	"\x17is_working_over_waiting\x18O \x01(\bR\x14isWorkingOverWaitingB\x13\n" +
+	"\x17is_working_over_waiting\x18O \x01(\bR\x14isWorkingOverWaiting\x12/\n" +
+	"\x14last_repair_base_sha\x18P \x01(\tR\x11lastRepairBaseShaB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

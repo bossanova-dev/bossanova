@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-18'
+  version: '2026-09-19'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -9218,6 +9218,27 @@ components:
          It never carries an access token, a refresh token, an Authorization header
          value, or a raw upstream response body — the CLI renders these fields
          verbatim to an operator's terminal.
+    bossanova.v1.GetBranchHeadRequest:
+      type: object
+      properties:
+        repoOriginUrl:
+          type: string
+          title: repo_origin_url
+          description: Repository origin URL.
+        branch:
+          type: string
+          title: branch
+          description: Branch name, without the refs/heads/ prefix.
+      title: GetBranchHeadRequest
+      additionalProperties: false
+    bossanova.v1.GetBranchHeadResponse:
+      type: object
+      properties:
+        sha:
+          type: string
+          title: sha
+      title: GetBranchHeadResponse
+      additionalProperties: false
     bossanova.v1.GetChatStatusesCommand:
       type: object
       properties:
@@ -16074,6 +16095,14 @@ components:
              visibility, but last_repair_attempt_count and the runner/exit error
              fields are left untouched, so a start-refusal never counts as a repair
              failure or feeds the exponential backoff.
+        baseSha:
+          type: string
+          title: base_sha
+          description: |-
+            Tip SHA of the PR's base branch when a conflict repair started. A merge
+             conflict depends on the base as well as the head, so a moved base makes
+             the same head a new repair input. Empty for non-conflict repairs and when
+             the tip could not be read.
       title: RecordRepairOutcomeRequest
       additionalProperties: false
     bossanova.v1.RecordRepairOutcomeResponse:
@@ -16631,6 +16660,19 @@ components:
              proof secrets. Local-only: set through the daemon's RegisterRepo /
              UpdateRepo, never through the orchestrator stream. Existing repos were
              backfilled trusted; newly registered repos default untrusted.
+        isMissingWebhooks:
+          type: boolean
+          title: is_missing_webhooks
+          description: |-
+            Whether GitHub webhooks are evidently not reaching this daemon for the
+             repo, so its PR state arrives only by polling (typically the GitHub App is
+             not installed on it). Set only by the daemon's ListRepos and UpdateRepo,
+             and only when its poller saw a PR in this repo change (a new head, or the
+             PR ending) with no webhook announcing it, no webhook for the repo has
+             arrived since the daemon started, and webhooks do reach the daemon for
+             other repos. False for an origin that is not a github.com owner/name. Live
+             state, never persisted; false everywhere else, including without an
+             upstream.
       title: Repo
       additionalProperties: false
       description: Repo represents a registered Git repository.
@@ -18339,6 +18381,12 @@ components:
              armed callback no longer hides live work (every working chat carries one),
              where versions before 2026-09-18 served the waiting composite. Computed
              with the served label, never persisted; the down-convert keys on it.
+        lastRepairBaseSha:
+          type: string
+          title: last_repair_base_sha
+          description: |-
+            Base branch tip the last conflict repair ran against (see
+             RecordRepairOutcomeRequest.base_sha). Empty for other repairs.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -18418,7 +18466,9 @@ components:
           items:
             type: string
           title: park_codes
-          description: The verify-stage park codes behind a REVIEW, in report order.
+          description: |-
+            The verify-stage park codes behind a REVIEW or a blocked-park FIX, in
+             report order.
         alertKey:
           type: string
           title: alert_key
@@ -18430,7 +18480,7 @@ components:
         evidenceUrl:
           type: string
           title: evidence_url
-          description: Evidence (video) URL behind a REVIEW, when one exists.
+          description: Evidence (video) URL behind a verify park, when one exists.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.
@@ -19093,6 +19143,10 @@ components:
              UNSPECIFIED (no decision) changes nothing; bossd sets a decision on every
              headless run it launches.
           $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
+        shouldTrustProjectConfig:
+          type: boolean
+          title: should_trust_project_config
+          description: Whether this run may load repository MCP servers and project settings.
       title: StartAgentRunRequest
       additionalProperties: false
     bossanova.v1.StartAgentRunRequest.ExtraEnvEntry:
@@ -19387,6 +19441,10 @@ components:
              gets (dotenv.OverlayWithRepo): without them an ambient LINEAR_API_KEY,
              SENTRY_* or proof credential in the daemon environment reaches an
              untrusted repo's agent (BOS-1562). Secret-bearing: NEVER logged.
+        shouldTrustProjectConfig:
+          type: boolean
+          title: should_trust_project_config
+          description: Whether the title-suggestion subprocess may load repository configuration.
       title: SuggestPRTitleRequest
       additionalProperties: false
     bossanova.v1.SuggestPRTitleRequest.ExtraEnvEntry:

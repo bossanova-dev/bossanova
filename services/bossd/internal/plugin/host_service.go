@@ -753,6 +753,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			Handler:    hostServiceGetReviewCommentsHandler,
 		},
 		{
+			MethodName: "GetBranchHead",
+			Handler:    hostServiceGetBranchHeadHandler,
+		},
+		{
 			MethodName: "FireSessionEvent",
 			Handler:    hostServiceFireSessionEventHandler,
 		},
@@ -812,6 +816,7 @@ type hostServiceHandler interface {
 	ListClosedPRs(context.Context, *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error)
 	ListSessions(context.Context, *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
+	GetBranchHead(context.Context, *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error)
 	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
 	StartAgentRun(context.Context, *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
@@ -972,10 +977,12 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			var displayStatus vcs.DisplayStatus
 			var hasFailures bool
 			var isRepairing bool
+			var hasChangesRequested bool
 			var headSHA string
 			if entry != nil {
 				displayStatus = entry.Status
 				hasFailures = entry.HasFailures
+				hasChangesRequested = entry.HasChangesRequested
 				isRepairing = entry.IsRepairing
 				headSHA = entry.HeadSHA
 			}
@@ -1047,9 +1054,11 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				RepoCanAutoRepair:           repo.CanAutoRepair,
 				Title:                       sess.Title,
 				BranchName:                  sess.BranchName,
+				BaseBranch:                  sess.BaseBranch,
 				State:                       sessionStateToProto(sess.State),
 				DisplayStatus:               vcsDisplayStatusToProto(displayStatus),
 				DisplayHasFailures:          hasFailures,
+				DisplayHasChangesRequested:  hasChangesRequested,
 				DisplayIsRepairing:          isRepairing,
 				HasActiveChat:               hasActiveChat,
 				PrDisplayHeadSha:            headSHA,
@@ -1059,6 +1068,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				LastRepairHeadSha:           sess.LastRepairHeadSHA,
 				LastRepairDisplayStatus:     bossanovav1.DisplayStatus(sess.LastRepairDisplayStatus),
 				LastRepairReviewFingerprint: sess.LastRepairReviewFingerprint,
+				LastRepairBaseSha:           sess.LastRepairBaseSHA,
 				LastRepairBlockedReason:     sess.LastRepairBlockedReason,
 			}
 			if sess.PRNumber != nil {
@@ -1117,6 +1127,24 @@ func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanov
 	}
 
 	return &bossanovav1.GetReviewCommentsResponse{Comments: pbComments}, nil
+}
+
+func (s *HostServiceServer) GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
+	reader, ok := s.provider.(vcs.BranchHeadReader)
+	if !ok {
+		return nil, grpcstatus.Error(codes.Unimplemented, "VCS provider cannot read branch heads")
+	}
+	if req.GetRepoOriginUrl() == "" || req.GetBranch() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "repo_origin_url and branch are required")
+	}
+	// The repair plugin reads a conflicted PR's base tip on every sweep; cached
+	// reads make that one GitHub call per (repo, branch) per cache TTL however
+	// many sessions share the base.
+	sha, err := reader.GetBranchHeadSHA(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), req.GetBranch())
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.Unavailable, "read branch head: %v", err)
+	}
+	return &bossanovav1.GetBranchHeadResponse{Sha: sha}, nil
 }
 
 func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
@@ -1294,6 +1322,24 @@ func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func hostServiceGetBranchHeadHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(bossanovav1.GetBranchHeadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(hostServiceHandler).GetBranchHead(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bossanova.v1.HostService/GetBranchHead",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(hostServiceHandler).GetBranchHead(ctx, req.(*bossanovav1.GetBranchHeadRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
 	if s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
@@ -1432,7 +1478,8 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		ExtraEnv: dotenv.OverlayWithRepo(mergeAccountOverProof(s.resolveProofEnvFor(repo), accountEnv), sess.WorktreePath, repo),
 		// The repair run is headless: an untrusted (or unresolved) repo revokes
 		// any pre-trust of the worktree's own agent configuration (BOS-1562).
-		ProjectTrust: repotrust.ProjectTrustFor(repo, sess.WorktreePath),
+		ProjectTrust:             repotrust.ProjectTrustFor(repo, sess.WorktreePath),
+		ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
 	}
 	startedAt := time.Now()
 	startResp, err := client.StartRun(context.Background(), startReq)
@@ -1749,6 +1796,7 @@ func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossan
 		HeadSHA:           req.GetHeadSha(),
 		DisplayStatus:     int32(req.GetDisplayStatus()),
 		ReviewFingerprint: req.ReviewFingerprint,
+		BaseSHA:           req.GetBaseSha(),
 	}); err != nil {
 		return nil, grpcstatus.Errorf(codes.Internal, "update repair diagnostics: %v", err)
 	}

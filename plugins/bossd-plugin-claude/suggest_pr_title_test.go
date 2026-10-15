@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,7 +71,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("success returns sanitized title", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string, bool) (string, error) {
 			return "  \"Better title\"\nignored second line\n", nil
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -82,7 +85,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("exec error -> not supported (no error returned)", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string, bool) (string, error) {
 			return "", errors.New("claude failed")
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -96,7 +99,7 @@ func TestSuggestPRTitle(t *testing.T) {
 
 	t.Run("empty output -> not supported", func(t *testing.T) {
 		s := &Server{logger: zerolog.Nop()}
-		s.oneShot = func(context.Context, string, string, map[string]string) (string, error) {
+		s.oneShot = func(context.Context, string, string, map[string]string, bool) (string, error) {
 			return "  \n ", nil
 		}
 		resp, err := s.SuggestPRTitle(ctx, req)
@@ -115,25 +118,25 @@ func TestSuggestPRTitle(t *testing.T) {
 // plugin's ambient values in the child, exactly as a session spawn does.
 func TestRunClaudeOneShotAppliesExtraEnvOverAmbient(t *testing.T) {
 	bin := t.TempDir()
-	script := "#!/bin/sh\ncat >/dev/null\nprintf 'linear=[%s] proof=[%s] keep=[%s]\\n' \"$LINEAR_API_KEY\" \"$PROOF_ANTHROPIC_API_KEY\" \"$ONESHOT_AMBIENT_KEEP\"\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf 'linear=[%s] proof=[%s] keep=[%s]\\n' \"$LINEAR_API_KEY\" \"$PROOF_ANTHROPIC_API_KEY\" \"$BOSS_TEST_KEEP\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("LINEAR_API_KEY", "ambient-linear")
 	t.Setenv("PROOF_ANTHROPIC_API_KEY", "ambient-proof")
-	t.Setenv("ONESHOT_AMBIENT_KEEP", "inherited")
+	t.Setenv("BOSS_TEST_KEEP", "inherited")
 
 	s := &Server{logger: zerolog.Nop()}
 	out, err := s.runClaudeOneShot(context.Background(), t.TempDir(), "prompt", map[string]string{
 		"LINEAR_API_KEY":          "",
 		"PROOF_ANTHROPIC_API_KEY": "",
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("runClaudeOneShot: %v", err)
 	}
 	if want := "linear=[] proof=[] keep=[inherited]"; strings.TrimSpace(out) != want {
-		t.Fatalf("child env = %q, want %q (pins must override ambient; unpinned keys still inherited)", strings.TrimSpace(out), want)
+		t.Fatalf("child env = %q, want %q (pins must override ambient; approved parent variables survive)", strings.TrimSpace(out), want)
 	}
 }
 
@@ -142,7 +145,7 @@ func TestRunClaudeOneShotAppliesExtraEnvOverAmbient(t *testing.T) {
 func TestSuggestPRTitleForwardsExtraEnv(t *testing.T) {
 	var got map[string]string
 	s := &Server{logger: zerolog.Nop()}
-	s.oneShot = func(_ context.Context, _, _ string, env map[string]string) (string, error) {
+	s.oneShot = func(_ context.Context, _, _ string, env map[string]string, _ bool) (string, error) {
 		got = env
 		return "Title", nil
 	}
@@ -154,5 +157,81 @@ func TestSuggestPRTitleForwardsExtraEnv(t *testing.T) {
 	}
 	if v, ok := got["LINEAR_API_KEY"]; !ok || v != "" {
 		t.Fatalf("one-shot env = %v, want LINEAR_API_KEY pinned empty", got)
+	}
+}
+
+func TestRunClaudeOneShotUntrustedDisablesProjectConfiguration(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = --help ]; then printf '%s' '--strict-mcp-config --setting-sources'; exit; fi\ncat >/dev/null\nprintf '%s' \"$*\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	s := newServer(nil, zerolog.Nop())
+	got, err := s.runClaudeOneShot(context.Background(), t.TempDir(), "prompt", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--strict-mcp-config", "--setting-sources user"} {
+		if !strings.Contains(got, flag) {
+			t.Errorf("one-shot argv %q missing %q", got, flag)
+		}
+	}
+}
+
+func TestSuggestPRTitleProjectConfigurationTrust(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			var launchArgs []string
+			helpCalls := 0
+			factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				if slices.Contains(args, "--help") {
+					helpCalls++
+					return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' '--strict-mcp-config --setting-sources'")
+				}
+				launchArgs = slices.Clone(args)
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "cat >/dev/null; printf '%s' 'Title'")
+			}
+			srv := newServer(nil, zerolog.Nop(), WithCommandFactory(factory))
+			resp, err := srv.SuggestPRTitle(context.Background(), &bossanovav1.SuggestPRTitleRequest{WorkDir: t.TempDir(), ShouldTrustProjectConfig: trusted})
+			if err != nil || !resp.GetSupported() {
+				t.Fatalf("suggestion: %+v %v", resp, err)
+			}
+			want := []string{"-p", "--permission-mode", "plan"}
+			wantHelpCalls := 0
+			if !trusted {
+				want = append(want, "--strict-mcp-config", "--setting-sources", "user")
+				wantHelpCalls = 1
+			}
+			if !slices.Equal(launchArgs, want) || helpCalls != wantHelpCalls {
+				t.Fatalf("args %v (help %d), want %v (help %d)", launchArgs, helpCalls, want, wantHelpCalls)
+			}
+		})
+	}
+}
+
+func TestRunClaudeOneShotMissingFlagNeverLaunches(t *testing.T) {
+	for _, missing := range []string{"--strict-mcp-config", "--setting-sources"} {
+		t.Run(missing, func(t *testing.T) {
+			launches := 0
+			supported := "--strict-mcp-config"
+			if supported == missing {
+				supported = "--setting-sources"
+			}
+			factory := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				if !slices.Contains(args, "--help") {
+					launches++
+				}
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' "+supported)
+			}
+			srv := newServer(nil, zerolog.Nop(), WithCommandFactory(factory))
+			_, err := srv.runClaudeOneShot(context.Background(), t.TempDir(), "prompt", nil, false)
+			if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "boss repo update <id> --trusted") {
+				t.Fatalf("error: %v", err)
+			}
+			if launches != 0 {
+				t.Fatalf("unsafe launches = %d", launches)
+			}
+		})
 	}
 }

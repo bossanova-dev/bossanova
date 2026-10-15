@@ -83,6 +83,11 @@ service HostService {
   // parsed by the agent-runner plugin. Row creation belongs to the daemon's
   // runner boundary, so this RPC never inserts.
   rpc RecordRunTelemetry(RecordRunTelemetryRequest) returns (RecordRunTelemetryResponse);
+
+  // GetBranchHead returns the commit SHA a repository branch points at on the
+  // remote right now. A PR's own base SHA is not this: GitHub refreshes it only
+  // when the head is pushed, so it stays put while the base branch advances.
+  rpc GetBranchHead(GetBranchHeadRequest) returns (GetBranchHeadResponse);
 }
 
 // --- ListOpenPRs ---
@@ -337,9 +342,27 @@ message RecordRepairOutcomeRequest {
   // fields are left untouched, so a start-refusal never counts as a repair
   // failure or feeds the exponential backoff.
   string blocked_reason = 9;
+  // Tip SHA of the PR's base branch when a conflict repair started. A merge
+  // conflict depends on the base as well as the head, so a moved base makes
+  // the same head a new repair input. Empty for non-conflict repairs and when
+  // the tip could not be read.
+  string base_sha = 10;
 }
 
 message RecordRepairOutcomeResponse {}
+
+// --- GetBranchHead ---
+
+message GetBranchHeadRequest {
+  // Repository origin URL.
+  string repo_origin_url = 1;
+  // Branch name, without the refs/heads/ prefix.
+  string branch = 2;
+}
+
+message GetBranchHeadResponse {
+  string sha = 1;
+}
 
 // --- RecordRunTelemetry ---
 

@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/rs/zerolog"
@@ -378,6 +379,98 @@ func TestE2E_Resilience_RetryAfterBlocked(t *testing.T) {
 	if len(h.VCS.MergePRCalls) != 0 {
 		t.Errorf("retry must not merge, got %v", h.VCS.MergePRCalls)
 	}
+}
+
+// TestE2E_Resilience_OperatorUnblockGivesRepairAFreshBudget drives the repair
+// plugin's escalation through the real host: five failed repairs on one head,
+// the plugin's Block event, then an operator clearing the block without
+// pushing. The plugin decides whether to block again from the failure count
+// it reads off HostService.ListSessions, so that is where the reset must show.
+func TestE2E_Resilience_OperatorUnblockGivesRepairAFreshBudget(t *testing.T) {
+	const head = "0123456789abcdef0123"
+	unblocks := []struct {
+		name      string
+		unblock   func(t *testing.T, h *testharness.Harness, ctx context.Context, sessionID string)
+		wantState pb.SessionState
+	}{
+		{
+			name: "link the PR",
+			unblock: func(t *testing.T, h *testharness.Harness, ctx context.Context, sessionID string) {
+				if _, err := h.Client.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: sessionID, Pr: "42"})); err != nil {
+					t.Fatalf("link session PR: %v", err)
+				}
+			},
+			wantState: pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
+		},
+		{
+			name: "retry",
+			unblock: func(t *testing.T, h *testharness.Harness, ctx context.Context, sessionID string) {
+				if _, err := h.Client.RetrySession(ctx, connect.NewRequest(&pb.RetrySessionRequest{Id: sessionID})); err != nil {
+					t.Fatalf("retry session: %v", err)
+				}
+			},
+			wantState: pb.SessionState_SESSION_STATE_BLOCKED,
+		},
+	}
+	for _, tc := range unblocks {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testharness.New(t)
+			ctx := context.Background()
+			repoID := h.SeedRepo(t, "https://github.com/test/repo")
+			sessionID := h.SeedSession(t, repoID, 42, pb.SessionState_SESSION_STATE_AWAITING_CHECKS)
+
+			for range 5 {
+				if err := h.Sessions.UpdateRepairDiagnostics(ctx, db.UpdateRepairDiagnosticsParams{
+					SessionID:     sessionID,
+					StartedAt:     time.Now(),
+					RunnerError:   "start agent: boom",
+					HeadSHA:       head,
+					DisplayStatus: int32(pb.DisplayStatus_DISPLAY_STATUS_FAILING),
+				}); err != nil {
+					t.Fatalf("record failed repair: %v", err)
+				}
+			}
+			if _, err := h.HostService.FireSessionEvent(ctx, &pb.FireSessionEventRequest{
+				SessionId:     sessionID,
+				Event:         pb.SessionEvent_SESSION_EVENT_BLOCK,
+				BlockedReason: "automatic repair failed 5 times in a row",
+			}); err != nil {
+				t.Fatalf("plugin block: %v", err)
+			}
+			if got := hostViewOf(t, h, ctx, sessionID); got.GetLastRepairAttemptCount() != 5 {
+				t.Fatalf("precondition: failure count = %d, want 5", got.GetLastRepairAttemptCount())
+			}
+
+			tc.unblock(t, h, ctx, sessionID)
+
+			got := hostViewOf(t, h, ctx, sessionID)
+			if got.GetState() != tc.wantState {
+				t.Errorf("state = %v, want %v", got.GetState(), tc.wantState)
+			}
+			if got.GetLastRepairAttemptCount() != 0 {
+				t.Errorf("failure count = %d after the operator cleared the block, want 0 so repair re-runs instead of re-blocking", got.GetLastRepairAttemptCount())
+			}
+			if got.GetLastRepairHeadSha() != head || got.GetLastRepairRunnerError() != "start agent: boom" {
+				t.Errorf("repair history = (%q, %q), want the failed head and its error kept", got.GetLastRepairHeadSha(), got.GetLastRepairRunnerError())
+			}
+		})
+	}
+}
+
+// hostViewOf returns a session as the repair plugin sees it.
+func hostViewOf(t *testing.T, h *testharness.Harness, ctx context.Context, sessionID string) *pb.Session {
+	t.Helper()
+	resp, err := h.HostService.ListSessions(ctx, &pb.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("host list sessions: %v", err)
+	}
+	for _, s := range resp.GetSessions() {
+		if s.GetId() == sessionID {
+			return s
+		}
+	}
+	t.Fatalf("session %s not in the host's session list", sessionID)
+	return nil
 }
 
 // --- Restart-recovery tests ---

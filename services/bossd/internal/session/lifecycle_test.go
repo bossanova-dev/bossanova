@@ -1567,16 +1567,17 @@ type mockPreflightCall struct {
 }
 
 type mockStartCall struct {
-	workDir        string
-	plan           string
-	resume         *string
-	model          string
-	effort         string
-	env            map[string]string
-	profile        pb.HeadlessCapabilityProfile
-	bossSessionID  string
-	effectiveModel string
-	projectTrust   pb.ProjectTrustDecision
+	shouldTrustProjectConfig bool
+	workDir                  string
+	plan                     string
+	resume                   *string
+	model                    string
+	effort                   string
+	env                      map[string]string
+	profile                  pb.HeadlessCapabilityProfile
+	bossSessionID            string
+	effectiveModel           string
+	projectTrust             pb.ProjectTrustDecision
 }
 
 func newMockAgentRunner() *mockAgentRunner {
@@ -1650,16 +1651,17 @@ func (m *mockAgentRunner) StartByAgentWithHeadlessCapabilityProfile(ctx context.
 
 func (m *mockAgentRunner) StartByAgentWithHeadlessLaunchOptions(_ context.Context, _ string, workDir, plan string, resume *string, _ string, model, effort string, env map[string]string, options agent.HeadlessLaunchOptions) (string, error) {
 	m.started = append(m.started, mockStartCall{
-		workDir:        workDir,
-		plan:           plan,
-		resume:         resume,
-		model:          model,
-		effort:         effort,
-		env:            env,
-		profile:        options.HeadlessCapabilityProfile,
-		bossSessionID:  options.BossSessionID,
-		effectiveModel: options.EffectiveModel,
-		projectTrust:   options.ProjectTrust,
+		workDir:                  workDir,
+		plan:                     plan,
+		resume:                   resume,
+		model:                    model,
+		effort:                   effort,
+		env:                      env,
+		profile:                  options.HeadlessCapabilityProfile,
+		bossSessionID:            options.BossSessionID,
+		effectiveModel:           options.EffectiveModel,
+		projectTrust:             options.ProjectTrust,
+		shouldTrustProjectConfig: options.ShouldTrustProjectConfig,
 	})
 	if m.startErr != nil {
 		return "", m.startErr
@@ -2263,6 +2265,9 @@ func TestStartSession_ProfilePreflightCarriesProjectTrust(t *testing.T) {
 			if len(runner.preflights) != 1 || len(runner.started) != 1 {
 				t.Fatalf("preflights = %d, starts = %d; want 1 each", len(runner.preflights), len(runner.started))
 			}
+			if got := runner.started[0].shouldTrustProjectConfig; got != tc.trusted {
+				t.Fatalf("headless configuration trust = %v, want %v", got, tc.trusted)
+			}
 			if got := runner.preflights[0].projectTrust; got != tc.want {
 				t.Fatalf("preflight projectTrust = %s, want %s", got, tc.want)
 			}
@@ -2338,6 +2343,9 @@ func TestStartSession_ZeroOutputNeverRevokesTheCheckout(t *testing.T) {
 			} else {
 				if len(runner.started) != 1 {
 					t.Fatalf("headless starts = %d, want 1", len(runner.started))
+				}
+				if got := runner.started[0].shouldTrustProjectConfig; got != tc.trusted {
+					t.Fatalf("headless configuration trust = %v, want %v", got, tc.trusted)
 				}
 				if got := runner.started[0].projectTrust; got != tc.want {
 					t.Fatalf("run projectTrust = %s, want %s", got, tc.want)
@@ -3101,6 +3109,9 @@ func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 			}
 			// The same trust is the headless run's project-trust decision: an
 			// untrusted repo's run revokes any earlier pre-trust (BOS-1562).
+			if got := runner.started[0].shouldTrustProjectConfig; got != trusted {
+				t.Fatalf("headless configuration trust = %v, want %v", got, trusted)
+			}
 			wantTrust := pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE
 			if trusted {
 				wantTrust = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT

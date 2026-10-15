@@ -168,6 +168,7 @@ func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan s
 		ExtraEnv:                  extraEnv,
 		HeadlessCapabilityProfile: options.HeadlessCapabilityProfile,
 		ProjectTrust:              options.ProjectTrust,
+		ShouldTrustProjectConfig:  options.ShouldTrustProjectConfig,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

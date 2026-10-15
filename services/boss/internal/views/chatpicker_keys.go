@@ -16,6 +16,12 @@ import (
 
 // handleKey dispatches a key press to whichever mode currently owns input.
 func (m ChatPickerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.attentionAction.active() {
+		var cmd tea.Cmd
+		m.attentionAction, cmd = m.attentionAction.update(msg)
+		m.table.SetHeight(m.tableHeight())
+		return m, cmd
+	}
 	if m.err != nil {
 		return m.handleErrModeKey(msg)
 	}
@@ -83,6 +89,13 @@ func (m ChatPickerModel) handleErrModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // every key reachable once no overlay is up and no RPC is in flight. Unhandled
 // keys fall through to the table's own navigation bindings.
 func (m ChatPickerModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var handled bool
+	m.attentionAction, cmd, handled = m.attentionAction.start(m.ctx, m.client, m.session, msg.String(), true)
+	if handled {
+		m.table.SetHeight(m.tableHeight())
+		return m, cmd
+	}
 	switch msg.String() {
 	case "esc":
 		m.cancel = true
@@ -119,7 +132,6 @@ func (m ChatPickerModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward navigation keys to the table.
-	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	updateCursorColumn(&m.table)
 	return m, cmd

@@ -3299,9 +3299,11 @@ type StartAgentRunRequest struct {
 	// own checkout) runs this agent untrusted without persisting anything.
 	// UNSPECIFIED (no decision) changes nothing; bossd sets a decision on every
 	// headless run it launches.
-	ProjectTrust  ProjectTrustDecision `protobuf:"varint,12,opt,name=project_trust,json=projectTrust,proto3,enum=bossanova.v1.ProjectTrustDecision" json:"project_trust,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ProjectTrust ProjectTrustDecision `protobuf:"varint,12,opt,name=project_trust,json=projectTrust,proto3,enum=bossanova.v1.ProjectTrustDecision" json:"project_trust,omitempty"`
+	// Whether this run may load repository MCP servers and project settings.
+	ShouldTrustProjectConfig bool `protobuf:"varint,13,opt,name=should_trust_project_config,json=shouldTrustProjectConfig,proto3" json:"should_trust_project_config,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *StartAgentRunRequest) Reset() {
@@ -3402,6 +3404,13 @@ func (x *StartAgentRunRequest) GetProjectTrust() ProjectTrustDecision {
 		return x.ProjectTrust
 	}
 	return ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED
+}
+
+func (x *StartAgentRunRequest) GetShouldTrustProjectConfig() bool {
+	if x != nil {
+		return x.ShouldTrustProjectConfig
+	}
+	return false
 }
 
 type StartAgentRunResponse struct {
@@ -4641,9 +4650,11 @@ type SuggestPRTitleRequest struct {
 	// gets (dotenv.OverlayWithRepo): without them an ambient LINEAR_API_KEY,
 	// SENTRY_* or proof credential in the daemon environment reaches an
 	// untrusted repo's agent (BOS-1562). Secret-bearing: NEVER logged.
-	ExtraEnv      map[string]string `protobuf:"bytes,6,rep,name=extra_env,json=extraEnv,proto3" json:"extra_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExtraEnv map[string]string `protobuf:"bytes,6,rep,name=extra_env,json=extraEnv,proto3" json:"extra_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Whether the title-suggestion subprocess may load repository configuration.
+	ShouldTrustProjectConfig bool `protobuf:"varint,7,opt,name=should_trust_project_config,json=shouldTrustProjectConfig,proto3" json:"should_trust_project_config,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *SuggestPRTitleRequest) Reset() {
@@ -4716,6 +4727,13 @@ func (x *SuggestPRTitleRequest) GetExtraEnv() map[string]string {
 		return x.ExtraEnv
 	}
 	return nil
+}
+
+func (x *SuggestPRTitleRequest) GetShouldTrustProjectConfig() bool {
+	if x != nil {
+		return x.ShouldTrustProjectConfig
+	}
+	return false
 }
 
 type SuggestPRTitleResponse struct {
@@ -6500,7 +6518,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"R\n" +
 	"\x1cPreflightHeadlessRunResponse\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
-	"\bprovided\x18\x02 \x03(\tR\bprovided\"\xde\x04\n" +
+	"\bprovided\x18\x02 \x03(\tR\bprovided\"\x9d\x05\n" +
 	"\x14StartAgentRunRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x12\n" +
 	"\x04plan\x18\x02 \x01(\tR\x04plan\x12 \n" +
@@ -6512,7 +6530,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\textra_env\x18\a \x03(\v20.bossanova.v1.StartAgentRunRequest.ExtraEnvEntryR\bextraEnv\x12g\n" +
 	"\x1bheadless_capability_profile\x18\b \x01(\x0e2'.bossanova.v1.HeadlessCapabilityProfileR\x19headlessCapabilityProfile\x12\x16\n" +
 	"\x06effort\x18\v \x01(\tR\x06effort\x12G\n" +
-	"\rproject_trust\x18\f \x01(\x0e2\".bossanova.v1.ProjectTrustDecisionR\fprojectTrust\x1a;\n" +
+	"\rproject_trust\x18\f \x01(\x0e2\".bossanova.v1.ProjectTrustDecisionR\fprojectTrust\x12=\n" +
+	"\x1bshould_trust_project_config\x18\r \x01(\bR\x18shouldTrustProjectConfig\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n" +
@@ -6612,7 +6631,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x14GetChatTitleResponse\x12\x1c\n" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1a\n" +
-	"\bexplicit\x18\x03 \x01(\bR\bexplicit\"\xb7\x02\n" +
+	"\bexplicit\x18\x03 \x01(\bR\bexplicit\"\xf6\x02\n" +
 	"\x15SuggestPRTitleRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12#\n" +
 	"\rcurrent_title\x18\x02 \x01(\tR\fcurrentTitle\x12\x17\n" +
@@ -6620,7 +6639,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\agit_log\x18\x04 \x01(\tR\x06gitLog\x12\x1f\n" +
 	"\vbase_branch\x18\x05 \x01(\tR\n" +
 	"baseBranch\x12N\n" +
-	"\textra_env\x18\x06 \x03(\v21.bossanova.v1.SuggestPRTitleRequest.ExtraEnvEntryR\bextraEnv\x1a;\n" +
+	"\textra_env\x18\x06 \x03(\v21.bossanova.v1.SuggestPRTitleRequest.ExtraEnvEntryR\bextraEnv\x12=\n" +
+	"\x1bshould_trust_project_config\x18\a \x01(\bR\x18shouldTrustProjectConfig\x1a;\n" +
 	"\rExtraEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"L\n" +

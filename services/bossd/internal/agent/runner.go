@@ -91,6 +91,7 @@ type HeadlessCapabilityProfileRunner interface {
 // HeadlessLaunchOptions carries daemon-owned policy that every panel-less
 // launch must forward to its plugin as one atomic request.
 type HeadlessLaunchOptions struct {
+	ShouldTrustProjectConfig  bool
 	HeadlessCapabilityProfile bossanovav1.HeadlessCapabilityProfile
 	BossSessionID             string
 	EffectiveModel            string

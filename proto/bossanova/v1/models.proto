@@ -195,6 +195,16 @@ message Repo {
   // UpdateRepo, never through the orchestrator stream. Existing repos were
   // backfilled trusted; newly registered repos default untrusted.
   bool is_trusted = 25;
+  // Whether GitHub webhooks are evidently not reaching this daemon for the
+  // repo, so its PR state arrives only by polling (typically the GitHub App is
+  // not installed on it). Set only by the daemon's ListRepos and UpdateRepo,
+  // and only when its poller saw a PR in this repo change (a new head, or the
+  // PR ending) with no webhook announcing it, no webhook for the repo has
+  // arrived since the daemon started, and webhooks do reach the daemon for
+  // other repos. False for an origin that is not a github.com owner/name. Live
+  // state, never persisted; false everywhere else, including without an
+  // upstream.
+  bool is_missing_webhooks = 26;
 }
 
 // MergeStrategy is the merge method used when auto-merging PRs. Mirrors the
@@ -553,6 +563,10 @@ message Session {
   // where versions before 2026-09-18 served the waiting composite. Computed
   // with the served label, never persisted; the down-convert keys on it.
   bool is_working_over_waiting = 79;
+
+  // Base branch tip the last conflict repair ran against (see
+  // RecordRepairOutcomeRequest.base_sha). Empty for other repairs.
+  string last_repair_base_sha = 80;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -712,11 +726,15 @@ message AttentionStatus {
 // not.
 enum AttentionKind {
   ATTENTION_KIND_UNSPECIFIED = 0;
-  // A fault the operator must resolve (or dismiss) before work continues.
+  // A fault the operator must resolve (or dismiss) before work continues. From
+  // API version 2026-09-19 it also answers a blocked verify park (any failure,
+  // incomplete or unknown park code), which carries park_codes and never
+  // offers ATTENTION_ACTION_APPROVE; older pins receive ATTENTION_KIND_REVIEW.
   ATTENTION_KIND_FIX = 1;
   // The agent asked a question and is waiting for an answer.
   ATTENTION_KIND_QUESTION = 2;
-  // The verify stage parked the PR for a human decision.
+  // The verify stage parked the PR for a person to sign off: every park code
+  // is a policy sign-off code.
   ATTENTION_KIND_REVIEW = 3;
   // The PR is open, green and mergeable, and nothing else will merge it.
   ATTENTION_KIND_MERGE = 4;
@@ -756,13 +774,14 @@ message SessionAttention {
   // Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
   // main CI", "working", "idle").
   string progress_label = 5;
-  // The verify-stage park codes behind a REVIEW, in report order.
+  // The verify-stage park codes behind a REVIEW or a blocked-park FIX, in
+  // report order.
   repeated string park_codes = 6;
   // Identifies the FIX alert so a dismissal can be matched to it.
   string alert_key = 7;
   // The chat a FIX or QUESTION action should open.
   string target_chat_id = 8;
-  // Evidence (video) URL behind a REVIEW, when one exists.
+  // Evidence (video) URL behind a verify park, when one exists.
   string evidence_url = 9;
 }
 

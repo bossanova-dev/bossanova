@@ -1,11 +1,14 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The codex pane fixtures under testdata/panes are copies of the canonical
@@ -184,5 +187,143 @@ func TestRealCodexPastedContentPaneReadsAsNotSubmitted(t *testing.T) {
 		if outcome != OutcomeSubmitted || err != nil {
 			t.Fatalf("%s: outcome = %v, err = %v; want submitted", submitted.fixture, outcome, err)
 		}
+	}
+}
+
+// stuckComposerPayload is the send capture_codex_stuck_composer.sh types after
+// the nine stuck lines, the tenth "$boss-verify" of the PR #3105 verify chat.
+const stuckComposerPayload = "$boss-verify 3105 --claim a414c806"
+
+// TestRealCodexStuckComposerReadsAsNotSubmitted replays the PR #3105 verify
+// chat against real codex captures (capture_codex_stuck_composer.sh): nine
+// earlier sends sit unsubmitted in the composer, so the "›" row shows the
+// oldest of them, and the payload lands at the bottom of the block. Whether it
+// sits on its own row or is appended to the last one, the composer holds it and
+// the send is not submitted.
+func TestRealCodexStuckComposerReadsAsNotSubmitted(t *testing.T) {
+	for _, fixture := range []string{"codex_stuck_composer_real.txt", "codex_stuck_composer_appended_real.txt"} {
+		t.Run(fixture, func(t *testing.T) {
+			pane := readPaneFixture(t, fixture)
+			if hint := composerHintOf(t, pane); hint != "$boss-verify 3105 --claim 308f9f37" {
+				t.Fatalf("invalid fixture: the marker row shows %q, not the oldest stuck line", hint)
+			}
+
+			outcome, err := waitOnPane(t, pane, stuckComposerPayload)
+			if outcome != OutcomeNotSubmitted || !errors.Is(err, errSubmissionPending) {
+				t.Fatalf("outcome = %v, err = %v; want %v carrying errSubmissionPending", outcome, err, OutcomeNotSubmitted)
+			}
+			if composerEmptyOf(pane, stuckComposerPayload) {
+				t.Fatal("composerEmptyOf reads a composer holding the payload as empty, which licenses a second copy")
+			}
+		})
+	}
+}
+
+// TestComposerHoldsDraft separates a codex draft from the empty-composer
+// placeholder on real styled captures, and pins the SGR reading that does it.
+func TestComposerHoldsDraft(t *testing.T) {
+	cases := []struct {
+		name   string
+		styled string
+		want   bool
+	}{
+		{"real empty composer showing the dim placeholder", readPaneFixture(t, "codex_placeholder_styled_real.txt"), false},
+		{"real composer holding nine stuck lines", readPaneFixture(t, "codex_stuck_composer_stale_styled_real.txt"), true},
+		{"unstyled capture of the same draft carries no evidence", readPaneFixture(t, "codex_stuck_composer_stale_real.txt"), false},
+		{"bare glyph", "\x1b[1m›\x1b[0m\n", false},
+		{"draft on a continuation row only", "\x1b[1m›\x1b[0m \x1b[2mhint\x1b[0m\n  typed\n\n  footer\n", true},
+		{"truecolor arguments are not read as dim", "\x1b[1m›\x1b[0m \x1b[2;38;2;2;2;2mhint\x1b[0m \x1b[38;2;2;2;2mtyped\x1b[39m\n", true},
+		{"dim truecolor placeholder", "\x1b[1m›\x1b[0m \x1b[2;38;2;2;2;2mhint\x1b[0m\n", false},
+		{"normal intensity clears dim", "\x1b[1m›\x1b[0m \x1b[2mhint\x1b[22m typed\n", true},
+		{"no composer at all", "\x1b[1m• Working\x1b[0m\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composerHoldsDraft(tc.styled); got != tc.want {
+				t.Fatalf("composerHoldsDraft = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// codexSendOpts is a submit into a codex composer on test budgets.
+func codexSendOpts() sendPlanOpts {
+	return sendPlanOpts{
+		deadline:         time.Second,
+		pollInterval:     5 * time.Millisecond,
+		readyMarker:      composerMarkerCodex,
+		submitVerifyWait: 40 * time.Millisecond,
+		submitVerifyTick: 5 * time.Millisecond,
+	}
+}
+
+// TestSendRefusesCodexComposerHoldingDraft: a send into a codex composer that
+// already holds a draft types nothing and comes back not submitted. Without the
+// check, the frame captured before codex draws the payload shows only the stuck
+// lines, whose oldest line does not match the payload, and the send read
+// submitted — the PR #3105 incident.
+func TestSendRefusesCodexComposerHoldingDraft(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{readPaneFixture(t, "codex_stuck_composer_stale_real.txt")},
+		styledCapture:      readPaneFixture(t, "codex_stuck_composer_stale_styled_real.txt"),
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	err := c.sendPlan(context.Background(), "boss-test-sess", stuckComposerPayload, codexSendOpts())
+	if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, errComposerOccupied) {
+		t.Fatalf("err = %v (outcome %v); want %v carrying errComposerOccupied", err, OutcomeOf(err), OutcomeNotSubmitted)
+	}
+	for _, call := range fake.callsCopy() {
+		if call.subcommand == "send-keys" {
+			t.Fatalf("a key reached a composer holding a draft: %v", call)
+		}
+	}
+}
+
+// TestSendTypesIntoCodexComposerShowingPlaceholder: the dim placeholder of an
+// empty codex composer is not a draft, so the send types and submits.
+func TestSendTypesIntoCodexComposerShowingPlaceholder(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"› Ask Codex to do anything\n"},
+		styledCapture:      readPaneFixture(t, "codex_placeholder_styled_real.txt"),
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendPlan(context.Background(), "boss-test-sess", stuckComposerPayload, codexSendOpts()); err != nil {
+		t.Fatalf("a send into an empty composer must submit: %v", err)
+	}
+	typed := false
+	for _, call := range fake.callsCopy() {
+		typed = typed || (call.subcommand == "send-keys" && slices.Contains(call.args, stuckComposerPayload))
+	}
+	if !typed {
+		t.Fatal("the payload was never typed into an empty composer")
+	}
+}
+
+// TestSendTypesIntoEmptyOpenCodeComposer: OpenCode draws its placeholder and
+// its "┃  Build · <model>" status rail in plain colour rather than dim
+// (opencode_empty_composer_styled_real.txt, opencode 1.18.21, capture-pane -e),
+// so the codex draft reading would refuse every OpenCode send. An empty
+// OpenCode composer takes the payload.
+func TestSendTypesIntoEmptyOpenCodeComposer(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"┃\n┃  Ask anything...\n"},
+		styledCapture:      readPaneFixture(t, "opencode_empty_composer_styled_real.txt"),
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+	opts := codexSendOpts()
+	opts.readyMarker = "┃"
+	opts.submitVerifyWait = 0
+
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "summarise the repo", opts); err != nil {
+		t.Fatalf("a send into an empty OpenCode composer must not be refused: %v", err)
+	}
+	typed := false
+	for _, call := range fake.callsCopy() {
+		typed = typed || (call.subcommand == "send-keys" && slices.Contains(call.args, "summarise the repo"))
+	}
+	if !typed {
+		t.Fatal("the payload was never typed into an empty OpenCode composer")
 	}
 }

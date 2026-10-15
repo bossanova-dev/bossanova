@@ -264,6 +264,7 @@ type Server struct {
 	endpointReader        SessionEndpointReader
 	endpointNamespaceGate func(clientNS string) bool
 	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
+	webhookEvidence       WebhookEvidence
 	listener              net.Listener
 	srv                   *http.Server
 	agentLogsDir          string
@@ -421,6 +422,11 @@ type Config struct {
 	// RotationEvents is the rotation audit store hydrated onto
 	// Session.rotation_events for TUI/web history (BOS-176). Nil-safe.
 	RotationEvents db.RotationEventStore
+	// WebhookEvidence flags repos whose GitHub webhooks never reach the daemon
+	// (upstream.WebhookHealth), surfaced as Repo.is_missing_webhooks by
+	// ListRepos. Nil on a daemon with no upstream; pass a nil interface, never
+	// a typed nil pointer.
+	WebhookEvidence WebhookEvidence
 	// Evidence serves each session's current-head verify evidence summary for
 	// GetSessionTimeline (*evidence.Reader). Optional, may be nil; the
 	// timeline then omits the evidence step.
@@ -730,6 +736,7 @@ func New(cfg Config) *Server {
 		agentRuns:        cfg.AgentRuns,
 		rotationEvents:   cfg.RotationEvents,
 		evidence:         cfg.Evidence,
+		webhookEvidence:  cfg.WebhookEvidence,
 		wedgeCache:       cfg.WedgeActivityCache,
 		cronScheduler:    cfg.CronScheduler,
 		cronActivity:     cfg.CronActivity,
@@ -1145,10 +1152,25 @@ func (s *Server) ListRepos(ctx context.Context, req *connect.Request[pb.ListRepo
 
 	pbRepos := make([]*pb.Repo, len(repos))
 	for i, r := range repos {
-		pbRepos[i] = repoToProto(r)
+		pbRepos[i] = s.liveRepoToProto(r)
 	}
 
 	return connect.NewResponse(&pb.ListReposResponse{Repos: pbRepos}), nil
+}
+
+// WebhookEvidence reports repos GitHub webhooks evidently never reach this
+// daemon for. upstream.WebhookHealth implements it.
+type WebhookEvidence interface {
+	WebhooksMissing(repo string) bool
+}
+
+// liveRepoToProto is repoToProto plus the daemon's live, never-persisted repo
+// state. Every response the repo settings view adopts as its repo goes through
+// it, so a save never drops what the list showed.
+func (s *Server) liveRepoToProto(r *models.Repo) *pb.Repo {
+	p := repoToProto(r)
+	p.IsMissingWebhooks = s.webhookEvidence != nil && s.webhookEvidence.WebhooksMissing(r.OriginURL)
+	return p
 }
 
 func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error) {
@@ -1245,7 +1267,7 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 		}
 	}
 
-	return connect.NewResponse(&pb.UpdateRepoResponse{Repo: repoToProto(repo)}), nil
+	return connect.NewResponse(&pb.UpdateRepoResponse{Repo: s.liveRepoToProto(repo)}), nil
 }
 
 // secretUpdateToParam translates a tri-state SecretUpdate into an
@@ -2839,13 +2861,16 @@ func (s *Server) RetrySession(ctx context.Context, req *connect.Request[pb.Retry
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// Retry clears blocked reason and re-enables automation. Full state machine in Leg 6.
+	// Retry clears blocked reason, re-enables automation and gives repair a
+	// fresh failure budget. Full state machine in Leg 6.
 	var nilStr *string
 	blockedReason := &nilStr // double pointer: set to NULL
 	automationEnabled := true
+	freshRepairBudget := 0
 	if _, err := s.sessions.Update(ctx, req.Msg.Id, db.UpdateSessionParams{
-		BlockedReason:       blockedReason,
-		IsAutomationEnabled: &automationEnabled,
+		BlockedReason:          blockedReason,
+		IsAutomationEnabled:    &automationEnabled,
+		LastRepairAttemptCount: &freshRepairBudget,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("retry session: %w", err))
 	}

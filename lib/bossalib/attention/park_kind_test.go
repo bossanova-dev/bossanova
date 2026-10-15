@@ -2,9 +2,11 @@ package attention_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/recurser/bossalib/attention"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // verifyGateHumanReasons is skills-toolbox/verify-gate.mjs HUMAN_REASONS, split
@@ -12,7 +14,7 @@ import (
 // work verify passed, the rest report a failure or a gap.
 var (
 	signOffCodes = []string{"always-human-path", "human-review:database", "human-review:security", "human-review:ui"}
-	failureCodes = []string{"no-receipt", "repair-exhausted", "ledger-open", "extension-failed", "no-session", "human-review:unproven"}
+	failureCodes = []string{"no-receipt", "repair-exhausted", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced", "human-review:unproven"}
 )
 
 func TestIsSignOffPark(t *testing.T) {
@@ -55,5 +57,38 @@ func TestEveryKnownParkCodeHasPlainWords(t *testing.T) {
 	}
 	if unknown == "" {
 		t.Error("an unknown code renders no words")
+	}
+}
+
+// TestComputeAnswersAParkByWhatItAsks checks that a park asking only for a
+// sign-off is a REVIEW offering APPROVE, and that a park with any failure code,
+// alone or beside every sign-off code, is a blocked FIX that never offers
+// APPROVE.
+func TestComputeAnswersAParkByWhatItAsks(t *testing.T) {
+	approves := func(a *pb.SessionAttention) bool {
+		return slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE)
+	}
+	for _, code := range signOffCodes {
+		got := attention.Compute(attention.Input{ParkCodes: []string{code}})
+		if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || !approves(got) {
+			t.Errorf("sign-off park %q = %v %v, want REVIEW offering APPROVE", code, got.GetKind(), got.GetActions())
+		}
+	}
+	for _, failure := range append(slices.Clone(failureCodes), "brand-new") {
+		for _, park := range [][]string{{failure}, append(slices.Clone(signOffCodes), failure)} {
+			got := attention.Compute(attention.Input{ParkCodes: park})
+			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || approves(got) {
+				t.Errorf("blocked park %q = %v %v, want FIX without APPROVE", park, got.GetKind(), got.GetActions())
+			}
+			if !slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_SEND_BACK) {
+				t.Errorf("blocked park %q actions %v lack SEND_BACK", park, got.GetActions())
+			}
+			if strings.Contains(got.GetSentence(), "approve") {
+				t.Errorf("blocked park %q sentence %q asks for approval", park, got.GetSentence())
+			}
+			if got.GetAlertKey() != "" || got.GetTargetChatId() != "" {
+				t.Errorf("blocked park %q carries fix alert fields (%q, %q)", park, got.GetAlertKey(), got.GetTargetChatId())
+			}
+		}
 	}
 }

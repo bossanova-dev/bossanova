@@ -14,6 +14,16 @@ import (
 // costs little to poll at the normal interval again.
 const webhookDeliveryWindow = 6 * time.Hour
 
+// polledReadStaleness bounds how old a poll's view of a PR can be: pollers
+// read through the GitHub read cache, so a change a poll reports may have
+// happened up to a cache TTL before the poll ran.
+const polledReadStaleness = 2 * time.Minute
+
+// missedDeliveryGrace is how long a poll-observed change must go unannounced
+// before it counts as a missed webhook, so a poll that merely beat a slow
+// delivery is never reported.
+const missedDeliveryGrace = 5 * time.Minute
+
 // WebhookHealth answers "are GitHub webhooks reaching this daemon for this
 // repo right now?", so GitHub pollers can drop to a slow safety-net interval
 // for repos where webhooks already deliver every change.
@@ -32,6 +42,9 @@ type WebhookHealth struct {
 
 	mu       sync.Mutex
 	lastSeen map[string]time.Time
+	// missedAt maps a repo key to when a poll first found a PR change in it
+	// that no webhook announced (NotePolledChange). A delivery clears it.
+	missedAt map[string]time.Time
 }
 
 // NewWebhookHealth builds a tracker over link, typically
@@ -42,6 +55,7 @@ func NewWebhookHealth(link func() (time.Time, bool)) *WebhookHealth {
 		now:      time.Now,
 		window:   webhookDeliveryWindow,
 		lastSeen: make(map[string]time.Time),
+		missedAt: make(map[string]time.Time),
 	}
 }
 
@@ -54,6 +68,15 @@ func webhookRepoKey(repo string) string {
 	return strings.ToLower(strings.TrimSpace(repo))
 }
 
+// githubRepoKey is webhookRepoKey restricted to origins it can name as a
+// GitHub owner/name. Bosso keys deliveries by the https origin, so a repo whose
+// origin does not normalise (an SSH host alias such as git@github-work:o/r.git)
+// can never be matched against them, and reports nothing about missed webhooks.
+func githubRepoKey(repo string) (string, bool) {
+	nwo := vcs.GitHubNWO(repo)
+	return strings.ToLower(nwo), nwo != ""
+}
+
 // RecordDelivery notes that a webhook for repo just arrived.
 func (h *WebhookHealth) RecordDelivery(repo string) {
 	if h == nil || repo == "" {
@@ -61,7 +84,9 @@ func (h *WebhookHealth) RecordDelivery(repo string) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.lastSeen[webhookRepoKey(repo)] = h.now()
+	key := webhookRepoKey(repo)
+	h.lastSeen[key] = h.now()
+	delete(h.missedAt, key)
 }
 
 // WebhookDeliveryHealthy reports whether webhooks are currently reaching this
@@ -79,4 +104,59 @@ func (h *WebhookHealth) WebhookDeliveryHealthy(repo string) bool {
 	seen, ok := h.lastSeen[webhookRepoKey(repo)]
 	h.mu.Unlock()
 	return ok && !seen.Before(openedAt) && h.now().Sub(seen) < h.window
+}
+
+// NotePolledChange records that a poll found a PR in repo changed (a new head,
+// or the PR ending) since it last read that PR at since: a change GitHub
+// announces by webhook. It counts as a missed webhook only when the stream was
+// open across that whole window, so no delivery could have been lost to a
+// disconnect, and no webhook for repo has reached this daemon since it started.
+// The first such change is kept; a later delivery for repo clears it.
+func (h *WebhookHealth) NotePolledChange(repo string, since time.Time) {
+	if h == nil || h.link == nil {
+		return
+	}
+	key, ok := githubRepoKey(repo)
+	if !ok {
+		return
+	}
+	openedAt, open := h.link()
+	if !open || since.Before(openedAt.Add(polledReadStaleness)) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, delivered := h.lastSeen[key]; delivered {
+		return
+	}
+	// A miss from before the current stream opened no longer counts
+	// (WebhooksMissing), so a fresh one replaces it.
+	if prior, noted := h.missedAt[key]; !noted || prior.Before(openedAt) {
+		h.missedAt[key] = h.now()
+	}
+}
+
+// WebhooksMissing reports that GitHub webhooks are evidently not reaching this
+// daemon for repo: a poll found a change in it that no webhook announced within
+// missedDeliveryGrace (NotePolledChange) and none has arrived for it since,
+// the stream is open, and some repo has had a delivery, so the pipe itself
+// works. Nil-safe: a nil tracker (no upstream) never reports missing.
+func (h *WebhookHealth) WebhooksMissing(repo string) bool {
+	if h == nil || h.link == nil {
+		return false
+	}
+	key, ok := githubRepoKey(repo)
+	if !ok {
+		return false
+	}
+	openedAt, open := h.link()
+	if !open {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	missed, ok := h.missedAt[key]
+	// A miss noted before the current stream opened proves nothing: the
+	// delivery that would have cleared it may have been lost in the disconnect.
+	return ok && !missed.Before(openedAt) && len(h.lastSeen) > 0 && h.now().Sub(missed) >= missedDeliveryGrace
 }

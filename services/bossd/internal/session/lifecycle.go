@@ -1418,9 +1418,10 @@ func (l *Lifecycle) startHeadlessReplacementRun(ctx context.Context, session *mo
 	}
 	if runner, ok := l.agentRunner.(agent.HeadlessLaunchOptionsDispatcher); ok {
 		return runner.StartByAgentWithHeadlessLaunchOptions(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv, agent.HeadlessLaunchOptions{
-			BossSessionID:  session.ID,
-			EffectiveModel: session.EffectiveModel,
-			ProjectTrust:   repotrust.ProjectTrustFor(repo, worktreePath),
+			BossSessionID:            session.ID,
+			EffectiveModel:           session.EffectiveModel,
+			ProjectTrust:             repotrust.ProjectTrustFor(repo, worktreePath),
+			ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
 		})
 	}
 	return l.agentRunner.StartByAgent(ctx, session.AgentName, worktreePath, plan, resume, "", session.Model, session.EffectiveEffort, extraEnv)
@@ -2626,6 +2627,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			BossSessionID:             session.ID,
 			EffectiveModel:            session.EffectiveModel,
 			ProjectTrust:              repotrust.ProjectTrustFor(repo, result.WorktreePath),
+			ShouldTrustProjectConfig:  repo.IsTrusted,
 		})
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -3495,11 +3497,12 @@ func (l *Lifecycle) agentSuggestedTitle(ctx context.Context, session *models.Ses
 	// credentials beyond the agent CLI's own login.
 	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "suggest PR title", l.logger)
 	resp, err := client.SuggestPRTitle(ctx, &bossanovav1.SuggestPRTitleRequest{
-		WorkDir:      session.WorktreePath,
-		CurrentTitle: currentPRTitle,
-		GitLog:       strings.Join(subjects, "\n"),
-		BaseBranch:   session.BaseBranch,
-		ExtraEnv:     dotenv.OverlayWithRepo(nil, session.WorktreePath, repo),
+		WorkDir:                  session.WorktreePath,
+		CurrentTitle:             currentPRTitle,
+		GitLog:                   strings.Join(subjects, "\n"),
+		BaseBranch:               session.BaseBranch,
+		ExtraEnv:                 dotenv.OverlayWithRepo(nil, session.WorktreePath, repo),
+		ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
 	})
 	if err != nil {
 		l.logger.Warn().Err(err).
@@ -3743,6 +3746,8 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 	if sess.State == machine.Blocked {
 		var cleared *string
 		updateParams.BlockedReason = &cleared
+		freshRepairBudget := 0
+		updateParams.LastRepairAttemptCount = &freshRepairBudget
 	}
 	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,8 +32,11 @@ type fakeRollout struct {
 	mu     sync.Mutex
 	exists bool
 	wedged bool
-	msgs   []*pb.ChatMessage
-	reqs   []*pb.ReadTranscriptRequest
+	// keyedBy, when set, is the one id the rollout is found under; a read keyed
+	// by any other id misses, as the codex plugin's filename match does.
+	keyedBy string
+	msgs    []*pb.ChatMessage
+	reqs    []*pb.ReadTranscriptRequest
 }
 
 func (f *fakeRollout) ReadTranscript(ctx context.Context, req *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
@@ -43,6 +47,9 @@ func (f *fakeRollout) ReadTranscript(ctx context.Context, req *pb.ReadTranscript
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reqs = append(f.reqs, req)
+	if f.keyedBy != "" && req.GetAgentSessionId() != f.keyedBy {
+		return &pb.ReadTranscriptResponse{}, nil
+	}
 	return &pb.ReadTranscriptResponse{Exists: f.exists, Messages: append([]*pb.ChatMessage(nil), f.msgs...)}, nil
 }
 
@@ -80,6 +87,9 @@ func (f *codexPaneFactory) factory(ctx context.Context, _ string, args ...string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(args) > 0 && args[0] == "capture-pane" {
+		if slices.Contains(args, "-e") {
+			return exec.CommandContext(ctx, "true")
+		}
 		f.captures++
 		out := "› \n"
 		if f.captures > 1 {
@@ -206,6 +216,79 @@ func TestSendChatMessage_CodexBurstFlushedIntoComposerRetries(t *testing.T) {
 	}
 }
 
+// agentKeyedCodexChat is a long-lived codex chat whose rollout is keyed by its
+// agent_session_id, so no provider session id was ever bound: the shape of the
+// PR #3105 verify chat, whose transcript `boss chat show` read by
+// agent_session_id while every send logged receipt_required=false.
+func agentKeyedCodexChat() *models.AgentChat {
+	chat := boundCodexChat()
+	chat.ProviderSessionID = nil
+	return chat
+}
+
+// TestSendChatMessage_CodexAgentKeyedRolloutGatesSend: with no provider id
+// bound, the rollout under the agent_session_id still confirms the send, and a
+// composer that reads empty with no recorded turn is unconfirmed rather than
+// submitted on the pane alone.
+func TestSendChatMessage_CodexAgentKeyedRolloutGatesSend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the production verifier budgets; skipped in -short")
+	}
+	t.Run("turn recorded", func(t *testing.T) {
+		rollout := &fakeRollout{exists: true, keyedBy: "agent-1"}
+		panes := &codexPaneFactory{pane: func(int) string { return "› \n" }, onEnter: rollout.recordUserTurn}
+		s, _ := newCodexReceiptServer(t, agentKeyedCodexChat(), rollout, panes.factory)
+		var buf bytes.Buffer
+		s.logger = zerolog.New(&buf)
+
+		resp, err := sendCodex(t, s)
+		if err != nil || resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED {
+			t.Fatalf("resp = %v, err = %v; want SUBMITTED", resp, err)
+		}
+		line := deliveryLogLine(t, buf.String())
+		if line["confirmed_by"] != "receipt" || line["receipt_required"] != true {
+			t.Fatalf("delivery log = %v; want confirmed_by=receipt receipt_required=true", line)
+		}
+	})
+	t.Run("no turn recorded", func(t *testing.T) {
+		rollout := &fakeRollout{exists: true, keyedBy: "agent-1"}
+		panes := &codexPaneFactory{pane: func(int) string { return "› \n" }}
+		s, _ := newCodexReceiptServer(t, agentKeyedCodexChat(), rollout, panes.factory)
+
+		resp, err := sendCodex(t, s)
+		if err != nil {
+			t.Fatalf("expected an unconfirmed response, got error: %v", err)
+		}
+		if resp.Msg.GetDelivered() || resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED {
+			t.Fatalf("delivered = %v, state = %v; want undelivered UNCONFIRMED", resp.Msg.GetDelivered(), resp.Msg.GetDeliveryState())
+		}
+	})
+}
+
+// TestSendChatMessage_CodexPaneOnlyFallbackIsLogged: a codex submit with no
+// readable rollout under either id falls back to the pane and says so at warn.
+func TestSendChatMessage_CodexPaneOnlyFallbackIsLogged(t *testing.T) {
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	s := newSendMessageTestServer(t, agentKeyedCodexChat(), sess, &fakeTmuxClient{available: true, hasSession: true})
+	s.agentClients = map[string]agent.AgentRunnerClient{"codex": &fakeRollout{exists: true, keyedBy: codexReceiptRolloutID}}
+	var buf bytes.Buffer
+	s.logger = zerolog.New(&buf)
+
+	if _, err := sendCodex(t, s); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, raw := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var entry map[string]any
+		if json.Unmarshal([]byte(raw), &entry) == nil && entry["message"] == "codex submit has no rollout receipt; verifying from the pane alone" {
+			if entry["level"] != "warn" || entry["chat_id"] != "c1" {
+				t.Fatalf("fallback log = %v; want a warn naming chat c1", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("no pane-only fallback warning in %q", buf.String())
+}
+
 // TestSendChatMessage_CodexReceiptNeedsAReadableRollout: the rollout receipt is
 // wired only when there is a rollout to read and a turn to expect. Every other
 // codex send keeps the pane verifier as its only signal.
@@ -217,23 +300,26 @@ func TestSendChatMessage_CodexReceiptNeedsAReadableRollout(t *testing.T) {
 		chat    *models.AgentChat
 		exists  bool
 		wedged  bool
+		keyedBy string
 		message string
 		submit  bool
 		want    bool
 	}{
-		{"bound readable rollout", boundCodexChat(), true, false, "$boss-verify 3068", true, true},
-		{"no rollout bound", unbound, true, false, "$boss-verify 3068", true, false},
-		{"rollout not readable", boundCodexChat(), false, false, "$boss-verify 3068", true, false},
-		{"rollout plugin never answers", boundCodexChat(), true, true, "$boss-verify 3068", true, false},
-		{"codex built-in slash command", boundCodexChat(), true, false, "/status", true, false},
-		{"prefill", boundCodexChat(), true, false, "$boss-verify 3068", false, false},
+		{"bound readable rollout", boundCodexChat(), true, false, "", "$boss-verify 3068", true, true},
+		{"no rollout bound and none under the agent_session_id", unbound, true, false, codexReceiptRolloutID, "$boss-verify 3068", true, false},
+		{"unbound chat whose rollout is keyed by its agent_session_id", unbound, true, false, "agent-1", "$boss-verify 3068", true, true},
+		{"bound id without a rollout falls back to the agent_session_id", boundCodexChat(), true, false, "agent-1", "$boss-verify 3068", true, true},
+		{"rollout not readable", boundCodexChat(), false, false, "", "$boss-verify 3068", true, false},
+		{"rollout plugin never answers", boundCodexChat(), true, true, "", "$boss-verify 3068", true, false},
+		{"codex built-in slash command", boundCodexChat(), true, false, "", "/status", true, false},
+		{"prefill", boundCodexChat(), true, false, "", "$boss-verify 3068", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
 			tmuxer := &fakeTmuxClient{available: true, hasSession: true}
 			s := newSendMessageTestServer(t, tc.chat, sess, tmuxer)
-			s.agentClients = map[string]agent.AgentRunnerClient{"codex": &fakeRollout{exists: tc.exists, wedged: tc.wedged}}
+			s.agentClients = map[string]agent.AgentRunnerClient{"codex": &fakeRollout{exists: tc.exists, wedged: tc.wedged, keyedBy: tc.keyedBy}}
 
 			sent := make(chan error, 1)
 			go func() {

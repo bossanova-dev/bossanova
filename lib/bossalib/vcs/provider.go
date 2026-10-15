@@ -103,6 +103,14 @@ func ReadCheckSet(ctx context.Context, p Provider, repoPath string, prID int) (C
 	return CheckSet{Checks: checks}, err
 }
 
+// BranchHeadReader is an OPTIONAL Provider capability, type-asserted rather
+// than required, that reads the commit a branch points at on the remote. A PR's
+// own base SHA is not a substitute: GitHub refreshes it only when the head is
+// pushed, so it stays put while the base branch advances underneath the PR.
+type BranchHeadReader interface {
+	GetBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error)
+}
+
 // ErrHeadMismatch is returned (wrapped) when a head-pinned merge is refused
 // because the PR head is not the expected commit. The error text is the wire
 // token callers match on, the same idiom as

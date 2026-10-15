@@ -38,6 +38,7 @@ if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/bo
 | What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …` |
 | Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`      |
 | Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/receipt-carry.mjs" …` (step 4)  |
+| Put the session worktree on the pushed head      | `node "$BOSS_REPAIR_TOOLBOX/worktree-sync.mjs" sync …`      |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
@@ -67,7 +68,8 @@ judgement.
    `git stash`, `git reset --hard`, or `git checkout --` someone else's uncommitted changes. If the
    tree has uncommitted work when you arrive, read it: if it already fixes what you are repairing,
    validate and commit **that** (say so in the summary); otherwise leave it exactly where it is and
-   report it.
+   report it. Leaving it in place never means leaving this worktree behind: after any push, rule 8
+   holds.
 
 3. **Force-push only with a lease, and only over your own rebase.** After a rebase, push with
    `git push --force-with-lease`. Never force-push over commits someone else pushed.
@@ -97,6 +99,15 @@ judgement.
    hook's signing or memory failure, and a failure in an untouched file are infrastructure; a cause
    reproducible on the base (prefer the base's own CI result; otherwise reproduce in a throwaway
    worktree, never by checking out the base here) is inherited. Report both as residuals.
+
+8. **The session worktree ends on the pushed head, and no side checkout survives.** Later stages
+   verify the PR in this worktree and wait while its `HEAD` differs from the PR head. After every
+   push, from this worktree run
+   `node "$BOSS_REPAIR_TOOLBOX/worktree-sync.mjs" sync --head <pushed sha>`, adding
+   `--remove-worktree <dir>` for each checkout you created with `git worktree add --detach` (one
+   with a branch checked out is never removed). It carries
+   incidental dirt such as `go.work.sum` across and refuses to drop unpushed commits or other
+   changes. `synced: false`, or a side checkout listed in `keptWorktrees`, is a residual.
 
 ## A repair pass
 

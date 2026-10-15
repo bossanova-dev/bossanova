@@ -22,7 +22,7 @@ type fixtureInitProber struct {
 	err   error
 }
 
-func (p fixtureInitProber) ProbeInit(context.Context, string, string, map[string]string) (claudeInitEvent, error) {
+func (p fixtureInitProber) ProbeInit(context.Context, string, string, map[string]string, bossanovav1.ProjectTrustDecision) (claudeInitEvent, error) {
 	return p.event, p.err
 }
 
@@ -302,7 +302,7 @@ func TestClaudeInitProberTerminatesAndReapsProbe(t *testing.T) {
 			var err error
 			go func() {
 				defer close(done)
-				event, err = prober.ProbeInit(context.Background(), t.TempDir(), "", nil)
+				event, err = prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
 				waited.Store(true)
 			}()
 			select {
@@ -347,7 +347,7 @@ func TestClaudeInitProberPassesWorkDirAndEnv(t *testing.T) {
 			return launched
 		},
 	}
-	if _, err := prober.ProbeInit(context.Background(), workDir, "claude-opus-5", map[string]string{"LINEAR_API_KEY": "shh"}); err != nil {
+	if _, err := prober.ProbeInit(context.Background(), workDir, "claude-opus-5", map[string]string{"LINEAR_API_KEY": "shh"}, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT); err != nil {
 		t.Fatalf("ProbeInit: %v", err)
 	}
 	if launched.Dir != workDir {
@@ -362,8 +362,7 @@ func TestClaudeInitProberPassesWorkDirAndEnv(t *testing.T) {
 			t.Fatalf("argv %q missing %q", joined, want)
 		}
 	}
-	// Boss does not own MCP configuration: a probe that passed these would
-	// describe a world the real session never sees.
+	// Trusted probes preserve native MCP discovery.
 	for _, forbidden := range []string{"--mcp-config", "--strict-mcp-config"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("argv %q must not carry %q", joined, forbidden)
@@ -573,7 +572,7 @@ func TestClaudeInitProberSurfacesStderrInProbeError(t *testing.T) {
 			return exec.CommandContext(ctx, "/bin/sh", "-c", `/bin/echo "`+message+`" >&2; exit 1`)
 		},
 	}
-	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil)
+	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
 	if err == nil {
 		t.Fatal("ProbeInit succeeded, want the no-init-event failure")
 	}
@@ -599,7 +598,7 @@ func TestClaudeInitProberCapsCapturedStderr(t *testing.T) {
 				`i=0; while [ $i -lt 400 ]; do /bin/echo "0123456789012345678901234567890123456789" >&2; i=$((i+1)); done; /bin/echo "LAST-LINE-MARKER" >&2`)
 		},
 	}
-	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil)
+	_, err := prober.ProbeInit(context.Background(), t.TempDir(), "", nil, bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED)
 	if err == nil {
 		t.Fatal("ProbeInit succeeded, want the no-init-event failure")
 	}
@@ -670,4 +669,80 @@ func TestProbeStderrBufferKeepsTail(t *testing.T) {
 			t.Fatalf("tail is %d bytes, want at most %d", len(tail), probeStderrCap+len("…"))
 		}
 	})
+}
+
+func TestDescribeMCPSurfaceAppliesProjectTrust(t *testing.T) {
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			var argv []string
+			prober := liveClaudeInitProber{commandFactory: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				if slices.Contains(args, "--help") {
+					return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' '--strict-mcp-config --setting-sources'")
+				}
+				argv = slices.Clone(args)
+				return exec.CommandContext(ctx, "/bin/sh", "-c", `/bin/echo '{"type":"system","subtype":"init","tools":[],"mcp_servers":[]}'`)
+			}}
+			srv := newMCPSurfaceServer(t, prober)
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{WorkDir: t.TempDir(), ProjectTrust: decision})
+			if err != nil || resp.GetProbeError() != "" {
+				t.Fatalf("probe failed: %v %+v", err, resp)
+			}
+			denied := decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE || decision == bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY
+			got := strings.Join(argv, "\x00")
+			for _, flag := range []string{"--strict-mcp-config", "--setting-sources\x00user"} {
+				if strings.Contains(got, flag) != denied {
+					t.Errorf("trust %v argv %q: expected isolation %v", decision, got, denied)
+				}
+			}
+		})
+	}
+}
+
+func TestProbeEnvironUsesApprovedBaselineWithoutOverlay(t *testing.T) {
+	t.Setenv("SOME_SECRET", "private")
+	t.Setenv("ANTHROPIC_API_KEY", "provider")
+	env := probeEnviron(nil)
+	if env == nil {
+		t.Fatal("nil environment inherits all parent variables")
+	}
+	if slices.Contains(env, "SOME_SECRET=private") {
+		t.Fatal("unapproved parent secret reached probe")
+	}
+	if !slices.Contains(env, "ANTHROPIC_API_KEY=provider") {
+		t.Fatal("provider authentication missing")
+	}
+}
+
+func TestDescribeMCPSurfaceMissingIsolationFlagNeverStartsProbe(t *testing.T) {
+	for _, missing := range []string{"--strict-mcp-config", "--setting-sources"} {
+		t.Run(missing, func(t *testing.T) {
+			launches := 0
+			supported := "--strict-mcp-config"
+			if supported == missing {
+				supported = "--setting-sources"
+			}
+			prober := liveClaudeInitProber{commandFactory: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+				if !slices.Contains(args, "--help") {
+					launches++
+				}
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '%s' "+supported)
+			}}
+			srv := newMCPSurfaceServer(t, prober)
+			resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{WorkDir: t.TempDir(), ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(resp.GetProbeError(), missing) || !strings.Contains(resp.GetProbeError(), "boss repo update <id> --trusted") {
+				t.Fatalf("probe error: %q", resp.GetProbeError())
+			}
+			if launches != 0 {
+				t.Fatalf("unsafe diagnostic launches = %d", launches)
+			}
+		})
+	}
 }

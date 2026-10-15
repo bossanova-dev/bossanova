@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 
+	"github.com/recurser/bossalib/childenv"
 	"github.com/recurser/bossalib/config"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
@@ -594,7 +595,7 @@ func effectiveEnv(entries []string) map[string]string {
 // config, so cmd.Env was left unset and nothing was ever stamped. Most plugins
 // carry no config, so this was the majority path.
 func TestLaunchPluginEnvStampsHostPIDWithoutConfig(t *testing.T) {
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil))
 
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
 		t.Fatalf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
@@ -608,7 +609,7 @@ func TestLaunchPluginEnvStampsHostPIDWithConfig(t *testing.T) {
 		Name:   "claude",
 		Config: map[string]string{"dangerously_skip_permissions": "true"},
 	}
-	env := effectiveEnv(pluginSubprocessEnv(cfg, 4242))
+	env := effectiveEnv(pluginSubprocessEnv(cfg, 4242, nil))
 
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
 		t.Errorf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
@@ -622,7 +623,7 @@ func TestLaunchPluginEnvStampsHostPIDWithConfig(t *testing.T) {
 // daemon's own PID — the value the plugin-side watchdog compares its
 // os.Getppid against — rather than some other identifier.
 func TestLaunchPluginEnvUsesHostProcessPID(t *testing.T) {
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, os.Getpid()))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, os.Getpid(), nil))
 
 	want := strconv.Itoa(os.Getpid())
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != want {
@@ -635,7 +636,7 @@ func TestLaunchPluginEnvUsesHostProcessPID(t *testing.T) {
 func TestLaunchPluginEnvPreservesHostInheritance(t *testing.T) {
 	t.Setenv("BOSS_TEST_INHERITED_MARKER", "inherited-value")
 
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil))
 
 	if got := env["BOSS_TEST_INHERITED_MARKER"]; got != "inherited-value" {
 		t.Fatalf("BOSS_TEST_INHERITED_MARKER = %q, want %q — host environment inheritance regressed",
@@ -643,39 +644,28 @@ func TestLaunchPluginEnvPreservesHostInheritance(t *testing.T) {
 	}
 }
 
-// TestLaunchPluginEnvSurvivesGoPluginSecondEnvironAppend is the catastrophic
-// case in env form. go-plugin appends os.Environ() to cmd.Env AFTER we build
-// it (SkipHostEnv is false) and os/exec keeps the last duplicate, so a
-// same-named variable already in bossd's own environment would otherwise win
-// and hand every plugin a foreign parent identity. Simulate that second append
-// exactly and assert our stamp is still what the child sees.
-func TestLaunchPluginEnvSurvivesGoPluginSecondEnvironAppend(t *testing.T) {
+func TestLaunchPluginEnvFiltersSecretsAndDoesNotMutateHost(t *testing.T) {
+	t.Setenv("SOME_SECRET", "must-not-leak")
 	t.Setenv(sharedplugin.ParentPIDEnvVar, "999999")
-
-	built := pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242)
-
-	// The host must no longer carry the variable, or go-plugin's append would
-	// reintroduce the stale value.
-	if v, ok := os.LookupEnv(sharedplugin.ParentPIDEnvVar); ok {
-		t.Fatalf("host environment still carries %s=%q; go-plugin's os.Environ() append would shadow the stamp",
-			sharedplugin.ParentPIDEnvVar, v)
+	built := pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil)
+	if _, ok := effectiveEnv(built)["SOME_SECRET"]; ok {
+		t.Error("unknown host secret reached plugin environment")
 	}
-
-	// Replay go-plugin client.go's `cmd.Env = append(cmd.Env, os.Environ()...)`.
-	asGoPluginSeesIt := append(append([]string(nil), built...), os.Environ()...)
-	if got := effectiveEnv(asGoPluginSeesIt)[sharedplugin.ParentPIDEnvVar]; got != "4242" {
-		t.Fatalf("%s = %q after go-plugin's second os.Environ() append, want %q",
-			sharedplugin.ParentPIDEnvVar, got, "4242")
+	if got := effectiveEnv(built)[sharedplugin.ParentPIDEnvVar]; got != "4242" {
+		t.Errorf("parent stamp = %q", got)
 	}
-
-	// And exactly one entry survives dedup ambiguity in the raw slice we own.
-	count := 0
-	for _, kv := range built {
-		if strings.HasPrefix(kv, sharedplugin.ParentPIDEnvVar+"=") {
-			count++
-		}
+	if got := os.Getenv(sharedplugin.ParentPIDEnvVar); got != "999999" {
+		t.Errorf("host stamp mutated: %q", got)
 	}
-	if count != 1 {
-		t.Fatalf("built env carries %d %s entries, want exactly 1", count, sharedplugin.ParentPIDEnvVar)
+}
+
+func TestLaunchPluginEnvOperatorPassthrough(t *testing.T) {
+	t.Setenv("CUSTOM_TOKEN", "approved")
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "claude"}, 4242, []string{"CUSTOM_TOKEN"}))
+	if env["CUSTOM_TOKEN"] != "approved" {
+		t.Fatal("operator passthrough lost")
+	}
+	if env[childenv.PassthroughEnvVar] != "CUSTOM_TOKEN" {
+		t.Fatal("operator policy not carried to agent runtime")
 	}
 }

@@ -121,6 +121,8 @@ export const HUMAN_REASONS = Object.freeze([
   'ledger-open',
   'extension-failed',
   'no-session',
+  'worktree-diverged',
+  'worktree-unsynced',
   ...HUMAN_REVIEW_CATEGORIES.map((category) => `${HUMAN_REVIEW_REASON_PREFIX}${category}`),
   `${HUMAN_REVIEW_REASON_PREFIX}unproven`,
 ])
@@ -687,7 +689,12 @@ export function extensionsConsulted(facts) {
 
 // Park codes no verify policy raises: they record what repair or the merge path ran into, so a
 // policy change never releases them.
-const NON_POLICY_CODES = new Set(['repair-exhausted', 'no-session'])
+const NON_POLICY_CODES = new Set([
+  'repair-exhausted',
+  'no-session',
+  'worktree-diverged',
+  'worktree-unsynced',
+])
 
 /**
  * Does the base, as it stands now, still raise every code of a standing park? `fresh` is the codes a

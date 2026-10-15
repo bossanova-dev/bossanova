@@ -351,6 +351,7 @@ func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, params db.
 		if params.ReviewFingerprint != nil {
 			s.LastRepairReviewFingerprint = *params.ReviewFingerprint
 		}
+		s.LastRepairBaseSHA = params.BaseSHA
 	}
 	return nil
 }
@@ -385,11 +386,12 @@ type fakeAgentClient struct {
 	startResp string
 	startErr  error
 	startCall struct {
-		workDir      string
-		plan         string
-		logPath      string
-		extraEnv     map[string]string
-		projectTrust bossanovav1.ProjectTrustDecision
+		workDir                  string
+		plan                     string
+		logPath                  string
+		extraEnv                 map[string]string
+		projectTrust             bossanovav1.ProjectTrustDecision
+		shouldTrustProjectConfig bool
 	}
 	running        map[string]bool
 	exitErrors     map[string]string
@@ -430,6 +432,7 @@ func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgen
 	f.startCall.logPath = req.GetLogPath()
 	f.startCall.extraEnv = req.GetExtraEnv()
 	f.startCall.projectTrust = req.GetProjectTrust()
+	f.startCall.shouldTrustProjectConfig = req.GetShouldTrustProjectConfig()
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -854,6 +857,9 @@ func TestStartAgentRun_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 			if got := client.startCall.projectTrust; got != wantTrust {
 				t.Errorf("repair run project trust = %v, want %v", got, wantTrust)
 			}
+			if got := client.startCall.shouldTrustProjectConfig; got != trusted {
+				t.Errorf("repair run project config trust = %v, want %v", got, trusted)
+			}
 			env := client.startCall.extraEnv
 			if trusted {
 				for key, want := range map[string]string{
@@ -954,6 +960,59 @@ func TestListSessions_PopulatesPRMetadata(t *testing.T) {
 	}
 	if got := s.GetPrNumber(); got != int32(prNumber) {
 		t.Fatalf("PrNumber=%d, want %d", got, prNumber)
+	}
+}
+
+// TestListSessions_CarriesRepairGuardInputs pins the fields the repair plugin
+// reads from this hand-built session: without BaseBranch it cannot read the
+// base tip, so a conflicted head never retries after the base moves; without
+// DisplayHasChangesRequested a verify hold with open review feedback reads as
+// settled after a repair.
+func TestListSessions_CarriesRepairGuardInputs(t *testing.T) {
+	repoID := "repo-1"
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo", OriginURL: "https://github.com/owner/repo"}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{
+				ID:                "sess-1",
+				RepoID:            repoID,
+				BranchName:        "feature",
+				BaseBranch:        "release/v2",
+				LastRepairHeadSHA: "head-1",
+				LastRepairBaseSHA: "base-1",
+			}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.displayTracker.Set("sess-1", vcs.DisplayInfo{
+		Status:              vcs.DisplayStatusVerifying,
+		HasChangesRequested: true,
+		HeadSHA:             "head-1",
+	})
+	srv.agentChats = &fakeAgentChatStore{}
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(resp.GetSessions()) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(resp.GetSessions()))
+	}
+	s := resp.GetSessions()[0]
+	if got := s.GetBaseBranch(); got != "release/v2" {
+		t.Errorf("BaseBranch=%q, want release/v2", got)
+	}
+	if got := s.GetLastRepairBaseSha(); got != "base-1" {
+		t.Errorf("LastRepairBaseSha=%q, want base-1", got)
+	}
+	if !s.GetDisplayHasChangesRequested() {
+		t.Error("DisplayHasChangesRequested=false, want true from the display tracker")
+	}
+	if got := s.GetPrDisplayHeadSha(); got != "head-1" {
+		t.Errorf("PrDisplayHeadSha=%q, want head-1", got)
 	}
 }
 
@@ -4765,4 +4824,108 @@ func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time
 
 func (m *mockVCSProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
 	return nil, nil
+}
+
+type branchHeadVCSProvider struct {
+	mockVCSProvider
+	sha    string
+	err    error
+	repo   string
+	branch string
+	cached bool
+}
+
+func (p *branchHeadVCSProvider) GetBranchHeadSHA(ctx context.Context, repoPath, branch string) (string, error) {
+	p.repo, p.branch, p.cached = repoPath, branch, vcs.CachedReadsAllowed(ctx)
+	return p.sha, p.err
+}
+
+func TestGetBranchHeadReadsTheLiveBranchTip(t *testing.T) {
+	provider := &branchHeadVCSProvider{sha: "base-2"}
+	srv := NewHostServiceServer(provider)
+
+	resp, err := srv.GetBranchHead(t.Context(), &bossanovav1.GetBranchHeadRequest{
+		RepoOriginUrl: "https://github.com/owner/repo",
+		Branch:        "main",
+	})
+	if err != nil {
+		t.Fatalf("GetBranchHead: %v", err)
+	}
+	if resp.GetSha() != "base-2" {
+		t.Fatalf("sha = %q, want base-2", resp.GetSha())
+	}
+	if provider.repo != "https://github.com/owner/repo" || provider.branch != "main" {
+		t.Fatalf("provider read %q %q, want the requested repo and branch", provider.repo, provider.branch)
+	}
+	if !provider.cached {
+		t.Fatal("branch head read without vcs.WithCachedReads; every sweep would pay a GitHub call per session")
+	}
+}
+
+func TestGetBranchHeadProviderFailureIsUnavailable(t *testing.T) {
+	srv := NewHostServiceServer(&branchHeadVCSProvider{err: errors.New("gh: HTTP 502")})
+
+	_, err := srv.GetBranchHead(t.Context(), &bossanovav1.GetBranchHeadRequest{
+		RepoOriginUrl: "https://github.com/owner/repo",
+		Branch:        "main",
+	})
+	if grpcstatus.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v (%v), want Unavailable", grpcstatus.Code(err), err)
+	}
+}
+
+func TestGetBranchHeadUnimplementedWithoutReader(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+
+	_, err := srv.GetBranchHead(t.Context(), &bossanovav1.GetBranchHeadRequest{
+		RepoOriginUrl: "https://github.com/owner/repo",
+		Branch:        "main",
+	})
+	if grpcstatus.Code(err) != codes.Unimplemented {
+		t.Fatalf("code = %v, want Unimplemented", grpcstatus.Code(err))
+	}
+}
+
+func TestRecordRepairOutcomePersistsConflictBaseSHA(t *testing.T) {
+	repoID := "repo-1"
+	store := &fakeSessionStore{sessions: map[string]*models.Session{
+		"sess-1": {ID: "sess-1", RepoID: repoID},
+	}}
+	sessionStore := &fakeSessionStoreWithListActive{
+		fakeSessionStore: *store,
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {store.sessions["sess-1"]},
+		},
+	}
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = sessionStore
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{}
+
+	_, err := srv.RecordRepairOutcome(t.Context(), &bossanovav1.RecordRepairOutcomeRequest{
+		SessionId:     "sess-1",
+		StartedAtUnix: 1779238800,
+		ExitError:     "exit status 1",
+		HeadSha:       "abc123",
+		DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		BaseSha:       "base-1",
+	})
+	if err != nil {
+		t.Fatalf("RecordRepairOutcome: %v", err)
+	}
+	if sessionStore.updateRepairDiagnostics == nil || sessionStore.updateRepairDiagnostics.BaseSHA != "base-1" {
+		t.Fatalf("UpdateRepairDiagnostics params = %+v, want BaseSHA base-1", sessionStore.updateRepairDiagnostics)
+	}
+
+	listResp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if got := listResp.GetSessions()[0].GetLastRepairBaseSha(); got != "base-1" {
+		t.Fatalf("LastRepairBaseSha=%q, want base-1", got)
+	}
 }

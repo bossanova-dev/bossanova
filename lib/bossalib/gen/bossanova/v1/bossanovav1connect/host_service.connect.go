@@ -76,6 +76,9 @@ const (
 	// HostServiceRecordRunTelemetryProcedure is the fully-qualified name of the HostService's
 	// RecordRunTelemetry RPC.
 	HostServiceRecordRunTelemetryProcedure = "/bossanova.v1.HostService/RecordRunTelemetry"
+	// HostServiceGetBranchHeadProcedure is the fully-qualified name of the HostService's GetBranchHead
+	// RPC.
+	HostServiceGetBranchHeadProcedure = "/bossanova.v1.HostService/GetBranchHead"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -134,6 +137,10 @@ type HostServiceClient interface {
 	// parsed by the agent-runner plugin. Row creation belongs to the daemon's
 	// runner boundary, so this RPC never inserts.
 	RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error)
+	// GetBranchHead returns the commit SHA a repository branch points at on the
+	// remote right now. A PR's own base SHA is not this: GitHub refreshes it only
+	// when the head is pushed, so it stays put while the base branch advances.
+	GetBranchHead(context.Context, *connect.Request[v1.GetBranchHeadRequest]) (*connect.Response[v1.GetBranchHeadResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -237,6 +244,12 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("RecordRunTelemetry")),
 			connect.WithClientOptions(opts...),
 		),
+		getBranchHead: connect.NewClient[v1.GetBranchHeadRequest, v1.GetBranchHeadResponse](
+			httpClient,
+			baseURL+HostServiceGetBranchHeadProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("GetBranchHead")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -257,6 +270,7 @@ type hostServiceClient struct {
 	reclaimRepairChat   *connect.Client[v1.ReclaimRepairChatHostRequest, v1.ReclaimRepairChatHostResponse]
 	recordRepairOutcome *connect.Client[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse]
 	recordRunTelemetry  *connect.Client[v1.RecordRunTelemetryRequest, v1.RecordRunTelemetryResponse]
+	getBranchHead       *connect.Client[v1.GetBranchHeadRequest, v1.GetBranchHeadResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -334,6 +348,11 @@ func (c *hostServiceClient) RecordRunTelemetry(ctx context.Context, req *connect
 	return c.recordRunTelemetry.CallUnary(ctx, req)
 }
 
+// GetBranchHead calls bossanova.v1.HostService.GetBranchHead.
+func (c *hostServiceClient) GetBranchHead(ctx context.Context, req *connect.Request[v1.GetBranchHeadRequest]) (*connect.Response[v1.GetBranchHeadResponse], error) {
+	return c.getBranchHead.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -390,6 +409,10 @@ type HostServiceHandler interface {
 	// parsed by the agent-runner plugin. Row creation belongs to the daemon's
 	// runner boundary, so this RPC never inserts.
 	RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error)
+	// GetBranchHead returns the commit SHA a repository branch points at on the
+	// remote right now. A PR's own base SHA is not this: GitHub refreshes it only
+	// when the head is pushed, so it stays put while the base branch advances.
+	GetBranchHead(context.Context, *connect.Request[v1.GetBranchHeadRequest]) (*connect.Response[v1.GetBranchHeadResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -489,6 +512,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("RecordRunTelemetry")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceGetBranchHeadHandler := connect.NewUnaryHandler(
+		HostServiceGetBranchHeadProcedure,
+		svc.GetBranchHead,
+		connect.WithSchema(hostServiceMethods.ByName("GetBranchHead")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -521,6 +550,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceRecordRepairOutcomeHandler.ServeHTTP(w, r)
 		case HostServiceRecordRunTelemetryProcedure:
 			hostServiceRecordRunTelemetryHandler.ServeHTTP(w, r)
+		case HostServiceGetBranchHeadProcedure:
+			hostServiceGetBranchHeadHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -588,4 +619,8 @@ func (UnimplementedHostServiceHandler) RecordRepairOutcome(context.Context, *con
 
 func (UnimplementedHostServiceHandler) RecordRunTelemetry(context.Context, *connect.Request[v1.RecordRunTelemetryRequest]) (*connect.Response[v1.RecordRunTelemetryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.RecordRunTelemetry is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) GetBranchHead(context.Context, *connect.Request[v1.GetBranchHeadRequest]) (*connect.Response[v1.GetBranchHeadResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.GetBranchHead is not implemented"))
 }

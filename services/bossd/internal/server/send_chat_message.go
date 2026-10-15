@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -87,12 +88,19 @@ const rolloutReceiptReadTimeout = time.Second
 // every turn Codex takes, so the verifier treats its absence as evidence too
 // (tmux.SendHooks.ReceiptRequired).
 //
+// The rollout is looked up by the chat's provider session id when one is bound
+// and by its agent_session_id otherwise. A codex chat whose rollout is keyed by
+// its agent_session_id never gets a provider id bound — the launch receipt binds
+// one only when the ids differ (session.awaitDeliveryReceipt) — so reading the
+// provider id alone left such a chat on the pane verifier for its whole life.
+//
 // It returns nil, leaving the pane verifier as the only signal, when there is no
-// rollout to read: no provider session id bound, no codex runner, or a rollout
-// that cannot be read within rolloutReceiptReadTimeout. A slash command (a Codex built-in such as
-// /status) starts no turn, so it gets no receipt either.
+// rollout to read: no codex runner, or no candidate id whose rollout can be read
+// within rolloutReceiptReadTimeout. That fallback is logged at warn, since the
+// pane alone cannot see a burst Codex holds undrawn. A slash command (a Codex
+// built-in such as /status) starts no turn, so it gets no receipt and no warning.
 func (s *Server) expectRolloutReceipt(ctx context.Context, chat *models.AgentChat, workDir, message string, willSubmit bool) func() bool {
-	if !willSubmit || chat.AgentName != "codex" || chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" {
+	if !willSubmit || chat.AgentName != "codex" {
 		return nil
 	}
 	if strings.HasPrefix(strings.TrimSpace(message), "/") {
@@ -100,14 +108,13 @@ func (s *Server) expectRolloutReceipt(ctx context.Context, chat *models.AgentCha
 	}
 	client, ok := s.agentClients[chat.AgentName]
 	if !ok || client == nil {
+		s.warnPaneOnlyCodexSubmit(chat, "no codex agent runner is loaded", nil)
 		return nil
 	}
-	rolloutID := *chat.ProviderSessionID
 	since := time.Now()
-	probeCtx, cancel := context.WithTimeout(ctx, rolloutReceiptReadTimeout)
-	defer cancel()
-	probe, err := client.ReadTranscript(probeCtx, &pb.ReadTranscriptRequest{WorkDir: workDir, AgentSessionId: rolloutID, MaxMessages: 1})
-	if err != nil || !probe.GetExists() {
+	rolloutID, err := findCodexRollout(ctx, client, workDir, chat)
+	if rolloutID == "" {
+		s.warnPaneOnlyCodexSubmit(chat, "no readable rollout for the chat's provider session id or agent_session_id", err)
 		return nil
 	}
 	return func() bool {
@@ -115,6 +122,50 @@ func (s *Server) expectRolloutReceipt(ctx context.Context, chat *models.AgentCha
 		defer cancel()
 		return session.TranscriptHasUserMessageSince(readCtx, client, workDir, rolloutID, since)
 	}
+}
+
+// findCodexRollout returns the first of the chat's candidate rollout ids
+// (provider session id, then agent_session_id) whose rollout the runner can
+// read, or "" with the last read error. All probes share one
+// rolloutReceiptReadTimeout, so a second candidate cannot lengthen the send.
+func findCodexRollout(ctx context.Context, client agent.AgentRunnerClient, workDir string, chat *models.AgentChat) (string, error) {
+	var candidates []string
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		candidates = append(candidates, *chat.ProviderSessionID)
+	}
+	if chat.AgentSessionID != "" && !slices.Contains(candidates, chat.AgentSessionID) {
+		candidates = append(candidates, chat.AgentSessionID)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, rolloutReceiptReadTimeout)
+	defer cancel()
+	var lastErr error
+	for _, id := range candidates {
+		probe, err := client.ReadTranscript(probeCtx, &pb.ReadTranscriptRequest{WorkDir: workDir, AgentSessionId: id, MaxMessages: 1})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if probe.GetExists() {
+			return id, nil
+		}
+	}
+	return "", lastErr
+}
+
+// warnPaneOnlyCodexSubmit records a codex submit that falls back to the pane
+// verifier with no rollout receipt. The pane cannot see a burst Codex holds
+// undrawn, so a send settled this way can read submitted without having run.
+func (s *Server) warnPaneOnlyCodexSubmit(chat *models.AgentChat, reason string, err error) {
+	event := s.logger.Warn().
+		Str("chat_id", chat.ID).
+		Str("agent_session_id", chat.AgentSessionID).
+		Str("session_id", chat.SessionID).
+		Bool("has_provider_session_id", chat.ProviderSessionID != nil && *chat.ProviderSessionID != "").
+		Str("reason", reason)
+	if err != nil {
+		event = event.Err(err)
+	}
+	event.Msg("codex submit has no rollout receipt; verifying from the pane alone")
 }
 
 // deliveryConfirmation names the signal that settled a send, for the delivery

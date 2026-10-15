@@ -1539,7 +1539,9 @@ type Settings struct {
 	ErrorTrackingEnabled           bool              `json:"error_tracking_enabled,omitempty"`
 	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`
 	PostHogHost                    string            `json:"posthog_host,omitempty"`
-	Plugins                        []PluginConfig    `json:"plugins,omitempty"`
+	// ChildEnvPassthrough extends the child environment baseline with exact names or PREFIX_* entries.
+	ChildEnvPassthrough []string       `json:"child_env_passthrough,omitempty"`
+	Plugins             []PluginConfig `json:"plugins,omitempty"`
 	// ExperimentalPlugins opts into plugins that ship installed but stay off
 	// by default (see experimentalPlugins / ApplyExperimentalPluginGate).
 	// Entries are un-prefixed plugin names, e.g. "opencode". For a plugin in
@@ -1978,6 +1980,36 @@ func ConfiguredSocketPath(s Settings) (string, bool, error) {
 		return "", ok, err
 	}
 	return filepath.Join(dir, "bossd.sock"), true, nil
+}
+
+// SocketPathForSettings resolves the configured socket or the platform default.
+func SocketPathForSettings(s Settings) (string, error) {
+	if p, ok, err := ConfiguredSocketPath(s); err != nil {
+		return "", err
+	} else if ok {
+		return p, nil
+	}
+	dir, err := DefaultAppDataDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve app data dir: %w", err)
+	}
+	return filepath.Join(dir, "bossd.sock"), nil
+}
+
+// ResolveSocketPath loads the settings file (Path, which honours
+// BOSS_SETTINGS_PATH) and returns SocketPathForSettings for it.
+// It does not read BOSS_SOCKET: the installed MCP HTTP service uses settings,
+// while BOSS_SOCKET is a per-process CLI override the service never sees.
+func ResolveSocketPath() (string, error) {
+	p, err := Path()
+	if err != nil {
+		return "", fmt.Errorf("resolve settings path: %w", err)
+	}
+	settings, err := LoadFrom(p)
+	if err != nil {
+		return "", fmt.Errorf("load settings: %w", err)
+	}
+	return SocketPathForSettings(settings)
 }
 
 // Load reads settings from the default path, returning defaults if the file is missing.

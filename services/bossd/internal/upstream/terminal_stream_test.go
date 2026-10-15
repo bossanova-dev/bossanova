@@ -1602,8 +1602,7 @@ func TestTerminalOpenStream_BlockingConnCloseDoesNotBlockTeardown(t *testing.T) 
 
 // TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose: after both
 // stages the reader is abandoned — counted, logged with its attempt, never
-// joined — and outbound is left open, because the abandoned reader may still
-// write pongs to it.
+// joined — and drops its first late frame without dispatching it.
 func TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose(t *testing.T) {
 	t.Parallel()
 	wedged := newWedgedTerminalStream()
@@ -1629,24 +1628,18 @@ func TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose(t *testing.T) {
 		t.Fatalf("abandon log does not name the reader and attempt:\n%s", out)
 	}
 
-	// The abandoned reader progresses late: each ping makes it send a pong to
-	// outbound. Had teardown closed outbound, a pong send would panic (the
-	// select picks the closed-channel send on roughly every other try) and
-	// unwind the reader before its next Receive. Reaching the Receive after
-	// the last ping proves every send hit an open channel.
+	// The first late frame releases Receive, but cancellation keeps every
+	// frame out of dispatch and ends the reader without another Receive.
 	const pings = 32
 	before := wedged.receives.Load()
 	for i := range pings {
 		wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ping{Ping: &pb.TerminalPing{Seq: uint64(i)}}}
 	}
-	waitForN(t, "abandoned reader handles every ping", 2*time.Second, func() bool {
-		return wedged.receives.Load() >= before+pings
+	waitForN(t, "abandoned reader consumes one late frame", 2*time.Second, func() bool {
+		return len(wedged.recv) == pings-1
 	})
-	wedged.release()
-	select {
-	case <-wedged.released:
-	case <-time.After(2 * time.Second):
-		t.Fatal("abandoned reader did not return after release")
+	if got := wedged.receives.Load(); got != before {
+		t.Fatalf("Receive calls = %d, want %d", got, before)
 	}
 	if strings.Contains(logs.String(), "recovered from panic") {
 		t.Fatalf("abandoned reader panicked:\n%s", logs.String())
@@ -1675,5 +1668,171 @@ func TestTerminalOpenStream_BoundWithoutConnCloseCapability(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "has no connection to close") {
 		t.Fatalf("missing no-capability warning in logs:\n%s", logs.String())
+	}
+}
+
+// oneFrameTerminalStream ignores cancellation and reports any extra Receive.
+type oneFrameTerminalStream struct {
+	terminalBidiStream
+	frame *pb.TerminalClientMessage
+	calls int
+}
+
+func (s *oneFrameTerminalStream) Receive() (*pb.TerminalClientMessage, error) {
+	s.calls++
+	if s.calls == 1 {
+		return s.frame, nil
+	}
+	return nil, io.EOF
+}
+
+func TestTerminalReader_DropsFrameReceivedAfterCancel(t *testing.T) {
+	t.Parallel()
+	frames := map[string]*pb.TerminalClientMessage{
+		"input":         {Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{AttachId: "att-1", Data: []byte("stale")}}},
+		"resize":        {Msg: &pb.TerminalClientMessage_Resize{Resize: &pb.TerminalResizeCommand{AttachId: "att-1", Cols: 99, Rows: 33}}},
+		"close":         {Msg: &pb.TerminalClientMessage_Close{Close: &pb.TerminalCloseCommand{AttachId: "att-1"}}},
+		"upload-start":  {Msg: &pb.TerminalClientMessage_UploadStart{UploadStart: &pb.TerminalUploadStart{AttachId: "att-1", UploadId: "up-1"}}},
+		"upload-chunk":  {Msg: &pb.TerminalClientMessage_UploadChunk{UploadChunk: &pb.TerminalUploadChunk{AttachId: "att-1", UploadId: "up-1", Data: []byte("stale")}}},
+		"upload-finish": {Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}},
+		"upload-cancel": {Msg: &pb.TerminalClientMessage_UploadCancel{UploadCancel: &pb.TerminalUploadCancel{AttachId: "att-1", UploadId: "up-1"}}},
+		"ping":          {Msg: &pb.TerminalClientMessage_Ping{Ping: &pb.TerminalPing{Seq: 1}}},
+	}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			stub := &stubUploadManager{}
+			h := newUploadHarness(t, stub)
+			a := newFakeAttach("att-1")
+			h.client.attaches["att-1"] = &activeAttach{id: "att-1", chatID: "chat-1", attach: a, cancel: func() {}}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			stream := &oneFrameTerminalStream{frame: frame}
+			outbound := make(chan *pb.TerminalServerMessage, 16)
+			sess := newTerminalStreamSession()
+			if err := h.client.runReader(ctx, stream, outbound, sess); err != nil {
+				t.Fatal(err)
+			}
+			if stream.calls != 1 {
+				t.Errorf("Receive calls = %d, want 1", stream.calls)
+			}
+			a.mu.Lock()
+			inputs, resizes := len(a.inputs), len(a.resizes)
+			a.mu.Unlock()
+			if inputs != 0 || resizes != 0 || a.closed.Load() {
+				t.Errorf("cancelled reader dispatched to attach: inputs=%d resizes=%d closed=%v", inputs, resizes, a.closed.Load())
+			}
+			stub.mu.Lock()
+			starts, chunks, claims, cancels := len(stub.startedChatIDs), stub.received, stub.claimCalls, len(stub.cancelled)
+			stub.mu.Unlock()
+			if starts != 0 || chunks != 0 || claims != 0 || cancels != 0 {
+				t.Errorf("cancelled reader dispatched upload: starts=%d bytes=%d claims=%d cancels=%d", starts, chunks, claims, cancels)
+			}
+			if len(outbound) != 0 || len(sess.pingCh) != 0 {
+				t.Error("cancelled reader emitted a response or heartbeat")
+			}
+		})
+	}
+}
+
+func abandonTerminalAttempt(t *testing.T, clock *fakeClock, errCh <-chan error) {
+	t.Helper()
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+	if err := receiveOpenStreamErr(t, errCh, "abandon first attempt"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first attempt: %v", err)
+	}
+}
+
+// startNextTerminalAttempt reuses the same client with a cooperative reader.
+func startNextTerminalAttempt(t *testing.T, client *TerminalStreamClient) (*fakeTerminalStream, <-chan error, context.CancelFunc) {
+	t.Helper()
+	stream := newFakeTerminalStream()
+	client.opener = &fakeTerminalOpener{nextStream: func() *fakeTerminalStream { return stream }}
+	stream.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() { defer close(done); errs <- client.openStream(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("next attempt not joined")
+		}
+	})
+	waitForN(t, "next attempt healthy", 2*time.Second, client.health.Healthy)
+	return stream, errs, cancel
+}
+
+func TestTerminalOpenStream_AbandonedReaderCannotReachNextAttempt(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged, closeConn: func() error { return nil }}
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	stub := &stubUploadManager{}
+	client.uploads = stub
+	factory := newFakeAttachFactory()
+	client.attachFactory = factory.build
+	tmuxName := "boss-rep-chat-1"
+	client.chats = &fakeChatLookup{rows: map[string]chatRow{"claude-1": {TmuxSessionName: &tmuxName}}}
+	first := startWedgedOpenStream(t, client, clock, health, wedged)
+	abandonTerminalAttempt(t, clock, first)
+	next, _, _ := startNextTerminalAttempt(t, client)
+	h := &testHarness{client: client, factory: factory}
+	attachOne(t, h, next)
+	next.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadStart{UploadStart: &pb.TerminalUploadStart{AttachId: "att-1", UploadId: "up-1"}}}
+	waitForN(t, "next upload started", 2*time.Second, func() bool {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return len(stub.startedChatIDs) == 1
+	})
+	before := wedged.receives.Load()
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{AttachId: "att-1", Data: []byte("stale")}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadChunk{UploadChunk: &pb.TerminalUploadChunk{AttachId: "att-1", UploadId: "up-1", Data: []byte("stale")}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Close{Close: &pb.TerminalCloseCommand{AttachId: "att-1"}}}
+	waitForN(t, "late reader consumes first frame", 2*time.Second, func() bool { return len(wedged.recv) < 4 })
+	settle := time.Now()
+	waitForN(t, "late reader stops or dispatches", 2*time.Second, func() bool {
+		return wedged.receives.Load() > before || time.Since(settle) >= 50*time.Millisecond
+	})
+	if got := wedged.receives.Load(); got != before {
+		t.Errorf("abandoned reader called Receive again: %d, want %d", got, before)
+	}
+	if got := len(wedged.recv); got != 3 {
+		t.Errorf("queued stale frames = %d, want 3", got)
+	}
+	a := factory.get("att-1")
+	if a.inputCount() != 0 || a.closed.Load() {
+		t.Errorf("abandoned reader reached next attach: inputs=%d closed=%v", a.inputCount(), a.closed.Load())
+	}
+	stub.mu.Lock()
+	bytes, claims := stub.received, stub.claimCalls
+	stub.mu.Unlock()
+	if bytes != 0 || claims != 0 {
+		t.Errorf("abandoned reader reached next upload: bytes=%d claims=%d", bytes, claims)
+	}
+}
+
+func TestTerminalUpload_TeardownWaitsOnlyForItsOwnAttemptsDeliveries(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged, closeConn: func() error { return nil }}
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	gate := make(chan struct{})
+	stub := &stubUploadManager{finishGate: gate}
+	client.uploads = stub
+	// Release delivery before cleanup joins the second attempt on a red run.
+	defer close(gate)
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}}
+	first := startWedgedOpenStream(t, client, clock, health, wedged)
+	waitForN(t, "first delivery parked", 2*time.Second, func() bool { return stub.finishCount() == 1 })
+	abandonTerminalAttempt(t, clock, first)
+	_, second, cancel := startNextTerminalAttempt(t, client)
+	cancel()
+	if err := receiveOpenStreamErr(t, second, "while first delivery is still parked"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second attempt: %v", err)
 	}
 }

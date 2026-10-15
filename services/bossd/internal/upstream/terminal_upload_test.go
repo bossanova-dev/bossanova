@@ -70,7 +70,8 @@ type stubUploadManager struct {
 	claimed     map[string]bool
 
 	// chunkGate, when non-nil, blocks Chunk until the test closes it.
-	chunkGate chan struct{}
+	chunkGate  chan struct{}
+	finishGate chan struct{}
 
 	// finishAwaitsAttachCancel makes Finish park until the stream teardown
 	// has cancelled the attach — which openStream does immediately AFTER
@@ -134,7 +135,11 @@ func (s *stubUploadManager) Finish(ctx context.Context, _, _ string) (string, er
 	s.mu.Lock()
 	s.finishCalls++
 	await := s.finishAwaitsAttachCancel
+	gate := s.finishGate
 	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	if await {
 		start := time.Now()
 		for !s.attachCancelSeen() && ctx.Err() == nil && time.Since(start) < 3*time.Second {

@@ -36,6 +36,9 @@ const (
 	readKindChecks  = "checks"
 	readKindReviews = "reviews"
 	readKindOpenPRs = "open-prs"
+	// readKindBranchHead is keyed per branch, not per PR, so no PR webhook
+	// invalidates it: a cached base branch tip is at most one TTL stale.
+	readKindBranchHead = "branch-head"
 )
 
 type readCacheEntry struct {
@@ -73,6 +76,11 @@ func prReadKey(kind, repoPath string, prID int) string {
 
 func repoReadKey(kind, repoPath string) string {
 	return kind + "|" + strings.ToLower(repoFlag(repoPath))
+}
+
+// branchReadKey keeps the branch name's case: branch names are case-sensitive.
+func branchReadKey(kind, repoPath, branch string) string {
+	return repoReadKey(kind, repoPath) + "@" + branch
 }
 
 func (c *readCache) get(key string) (any, bool) {

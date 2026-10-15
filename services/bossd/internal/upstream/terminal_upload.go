@@ -119,9 +119,8 @@ func (c *TerminalStreamClient) handleUploadChunk(ctx context.Context, cmd *pb.Te
 // BOS-376 ping/pong heartbeat for the whole window, so a large upload
 // could tear down the very stream carrying it.
 //
-// The goroutine is joined, not fire-and-forget: uploadWG is what
-// openStream's teardown waits on before closing `outbound`, so a finish in
-// flight can never send on a closed channel.
+// This attempt's uploadWG joins the goroutine before closing outbound.
+// An abandoned reader skips that join and leaves outbound open instead.
 //
 // The spawn is GATED by a synchronous ClaimFinish on this reader goroutine.
 // Without that gate the spawn rate is the client's frame rate: repeating
@@ -130,7 +129,7 @@ func (c *TerminalStreamClient) handleUploadChunk(ctx context.Context, cmd *pb.Te
 // Claiming first means at most one delivery goroutine ever exists per live
 // upload, and live uploads are already bounded by the manager's admission
 // limits.
-func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.TerminalUploadFinish, outbound chan<- *pb.TerminalServerMessage) {
+func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.TerminalUploadFinish, outbound chan<- *pb.TerminalServerMessage, sess *terminalStreamSession) {
 	attachID, uploadID := cmd.GetAttachId(), cmd.GetUploadId()
 	if c.uploads == nil {
 		c.failUpload(ctx, outbound, attachID, uploadID, "upload: not supported by this daemon", false)
@@ -140,9 +139,9 @@ func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.T
 		c.sendUploadError(ctx, outbound, attachID, uploadID, err)
 		return
 	}
-	c.uploadWG.Add(1)
+	sess.uploadWG.Add(1)
 	_ = safego.Go(c.logger, func() {
-		defer c.uploadWG.Done()
+		defer sess.uploadWG.Done()
 		// The submission gets its OWN bounded context rather than the
 		// reader's stream context.
 		//
@@ -261,7 +260,7 @@ func (c *TerminalStreamClient) cancelAllUploads() {
 	c.uploads.CancelAll()
 }
 
-// waitUploads blocks until every in-flight finish goroutine has returned.
+// waitUploads blocks until this attempt's in-flight finish goroutines return.
 // MUST be called after the reader has exited (the reader is the only
 // spawner) and before `outbound` is closed.
-func (c *TerminalStreamClient) waitUploads() { c.uploadWG.Wait() }
+func (c *TerminalStreamClient) waitUploads(sess *terminalStreamSession) { sess.uploadWG.Wait() }

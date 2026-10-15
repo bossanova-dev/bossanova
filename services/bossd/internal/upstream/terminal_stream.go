@@ -412,11 +412,8 @@ type TerminalStreamClient struct {
 	// uploads owns BOS-661 chat file uploads. Nil in the legacy tests and
 	// in any daemon whose upload directory could not be created; every
 	// upload frame is then answered with a permanent "not supported"
-	// result rather than being silently dropped. uploadWG tracks the
-	// finish goroutines so teardown can join them before closing the
-	// outbound channel they write to.
-	uploads  uploadManager
-	uploadWG sync.WaitGroup
+	// result rather than being silently dropped.
+	uploads uploadManager
 
 	// cycleCancel cancels the Run loop's current stream attempt.
 	// CycleStream fires it; Run installs it before each openStream and
@@ -852,17 +849,17 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 	// the single writer. MarkUnhealthy on every exit so the watchdog never
 	// sees a stale healthy signal after teardown.
 	//
-	// The reader join is bounded (BOS-1375, awaitReaderAfterCancel). When the
-	// reader is abandoned the teardown skips the upload join and
-	// close(outbound): the reader is the only spawner of upload-finish
-	// goroutines and may still be running, and it writes pongs to outbound, so
-	// closing it would hand a late-progressing reader a send on a closed
-	// channel. outbound is simply dropped. The writer still exits via
-	// streamCtx, which is already cancelled, and is joined as usual. A reader
-	// that progresses late shares client-scoped state (c.uploads,
-	// streamClosing) with the next attempt; attach registration is guarded by
-	// attachCtx.Err(), and the upload overlap is accepted on a path the cancel
-	// hook should make unreachable.
+	// The reader join is bounded (BOS-1375, awaitReaderAfterCancel). A
+	// reader that receives a frame after cancel drops it and returns. Upload
+	// finishes belong to this attempt, so later attempts never join them.
+	// An abandoned reader may still be inside a handler that started before
+	// cancel: skip its upload join because that handler could still Add, and
+	// leave outbound open because it could still send. The writer exits via
+	// streamCtx and is joined as usual.
+	// A handler already running at cancel that outlives the bounded join can
+	// still reach client-scoped state. Attach registration checks attachCtx;
+	// a stalled upload chunk can leave a partial upload for the next teardown's
+	// CancelAll or the manager's janitor to remove.
 	teardown := func() {
 		if c.health != nil {
 			c.health.MarkUnhealthy()
@@ -877,7 +874,7 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 			// calls MUST precede close(outbound) — a finish still in flight
 			// writes its result there, and CancelAll then drops any upload
 			// whose attach vanished without a pump exit.
-			c.waitUploads()
+			c.waitUploads(sess)
 			c.cancelAllUploads()
 		}
 		<-hbDone
@@ -1011,6 +1008,9 @@ func (c *TerminalStreamClient) runReader(ctx context.Context, stream terminalBid
 			}
 			return fmt.Errorf("terminal stream receive: %w", err)
 		}
+		if ctx.Err() != nil {
+			return nil
+		}
 		c.handleClientMessage(ctx, msg, outbound, sess)
 	}
 }
@@ -1037,7 +1037,7 @@ func (c *TerminalStreamClient) handleClientMessage(ctx context.Context, msg *pb.
 	case *pb.TerminalClientMessage_UploadChunk:
 		c.handleUploadChunk(ctx, m.UploadChunk, outbound)
 	case *pb.TerminalClientMessage_UploadFinish:
-		c.handleUploadFinish(ctx, m.UploadFinish, outbound)
+		c.handleUploadFinish(ctx, m.UploadFinish, outbound, sess)
 	case *pb.TerminalClientMessage_UploadCancel:
 		c.handleUploadCancel(m.UploadCancel)
 	case *pb.TerminalClientMessage_Ready:

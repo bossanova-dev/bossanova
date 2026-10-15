@@ -96,6 +96,7 @@ type ChatPickerModel struct {
 	repoWebLink repoWebLink
 
 	// Active y/n confirmation (confirmNone when no prompt is showing).
+	attentionAction        attentionActionState
 	confirm                confirmKind
 	deletingAgentSessionID string
 
@@ -310,7 +311,9 @@ func (m ChatPickerModel) canRename() bool {
 // textEntryActive reports whether the inline rename prompt is focused and on
 // screen, so App leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660):
 // inside a text field Esc cancels the edit, and ctrl+x is a line-editing key.
-func (m ChatPickerModel) textEntryActive() bool { return m.err == nil && m.renaming }
+func (m ChatPickerModel) textEntryActive() bool {
+	return m.err == nil && (m.renaming || m.attentionAction.note.Active())
+}
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
 func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
@@ -366,6 +369,19 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case webOpenResultMsg:
 		return m.handleWebOpenResult(msg)
 
+	case attentionActionResultMsg:
+		if msg.sessionID != m.sessionID {
+			return m, nil
+		}
+		if m.attentionAction.action == msg.action {
+			m.attentionAction = attentionActionState{}
+		}
+		m.table.SetHeight(m.tableHeight())
+		m.statusMsg, m.statusNote = "", msg.text
+		if msg.err != nil {
+			m.statusMsg, m.statusNote = rpcStatusDetail(msg.err), ""
+		}
+		return m, nil
 	case mergeResultMsg:
 		return m.handleMergeResult(msg)
 
@@ -437,6 +453,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the same reason the trash view does it: so paste can never be mistaken for
 	// a list shortcut. Inert unless the rename prompt is open.
 	case tea.PasteMsg:
+		if m.attentionAction.note.Active() {
+			var cmd tea.Cmd
+			m.attentionAction, cmd = m.attentionAction.update(msg)
+			return m, cmd
+		}
 		if !m.renaming {
 			return m, nil
 		}

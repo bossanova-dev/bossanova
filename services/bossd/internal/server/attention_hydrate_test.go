@@ -20,13 +20,20 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestAttentionListReviewCases(t *testing.T) {
-	for _, tc := range []struct{ id, code, label, sentence string }{
-		{"2979", "human-review:ui", "", "Watch the evidence video (2:40), then approve · UI change"},
-		{"2983", "human-review:security", "outbound requests", "Review the diff · security: outbound requests"},
-		{"2987", "human-review:database", "", "Review the migration, then approve"},
-		{"2967", "human-review:unproven", "", "Some checks have no evidence · watch the video, then approve"},
-		{"2965", "no-receipt", "", "Built by hand, no factory review · review the diff, then approve"},
+// TestAttentionListParkCases serves a sign-off park as a REVIEW offering
+// APPROVE and a blocked park as a FIX that never offers it.
+func TestAttentionListParkCases(t *testing.T) {
+	review, fix := pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_FIX
+	for _, tc := range []struct {
+		id, code, label, sentence string
+		kind                      pb.AttentionKind
+	}{
+		{"2979", "human-review:ui", "", "Watch the evidence video (2:40), then approve · UI change", review},
+		{"2983", "human-review:security", "outbound requests", "Review the diff · security: outbound requests", review},
+		{"2987", "human-review:database", "", "Review the migration, then approve", review},
+		{"2967", "human-review:unproven", "", "Some checks have no evidence · send it back to prove them", fix},
+		{"2965", "no-receipt", "", "Built by hand, no factory review · send it back through the factory", fix},
+		{"mixed", "human-review:ui,ledger-open", "", "Review left must-fix findings open · send it back to fix them", fix},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			n := 1
@@ -40,8 +47,11 @@ func TestAttentionListReviewCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := onlySession(t, resp.Msg.Sessions).GetAttention()
-			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || got.GetSentence() != tc.sentence {
+			if got.GetKind() != tc.kind || got.GetSentence() != tc.sentence {
 				t.Fatalf("attention = %v", got)
+			}
+			if approves := slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE); approves != (tc.kind == review) {
+				t.Fatalf("actions = %v; APPROVE offered = %v on a %v", got.GetActions(), approves, tc.kind)
 			}
 		})
 	}

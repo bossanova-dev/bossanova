@@ -469,7 +469,9 @@ func (h HomeModel) renderSessionTable() string {
 	// styleActionBar's own top padding is the gap. Adding one here would make
 	// the editor two lines taller than the bar it replaces where tableHeight
 	// only gives a row back for one.
-	if h.rename.Active() {
+	if h.attentionAction.active() {
+		b.WriteString(h.attentionAction.footer(h.width))
+	} else if h.rename.Active() {
 		b.WriteString(h.rename.footer(h.width))
 	} else if h.confirm.active {
 		b.WriteString("\n")
@@ -533,10 +535,13 @@ func (h HomeModel) renderSessionTableFooter() string {
 }
 
 func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
-	left = []string{"[n]ew session", "[enter] select"}
-	if s := h.selectedSession(); s.GetAttention() != nil {
-		left = append([]string{"[n]ew session"}, attentionActionLabels(s.GetAttention())...)
+	actions := attentionFooter(h.selectedSession(), false)
+	left = make([]string, 0, len(actions)+2)
+	left = append(left, "[n]ew session")
+	if h.selectedSession().GetAttention() == nil {
+		left = append(left, "[enter] select")
 	}
+	left = append(left, actions...)
 	nav = []string{"[s]ettings"}
 	if la := h.loginAction(); la != "" {
 		nav = append(nav, la)

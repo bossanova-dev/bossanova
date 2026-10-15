@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-18**. The engineering procedure for adding a new
+The current version is **2026-09-19**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -634,7 +634,7 @@ Clients pinned to 2026-09-16 or older receive no `attention` on every
 session-bearing response, including the streamed `ProxyCreateSession` created
 message.
 
-### 2026-09-18 — Needs human outranks an idle wait (Current)
+### 2026-09-18 — Needs human outranks an idle wait
 
 A session whose head the verify stage parked for a person
 (`DISPLAY_STATUS_NEEDS_HUMAN`), and whose waiting chats are all idle on an armed
@@ -679,6 +679,26 @@ Fix rows offer resume when the session meets restart requirements: archived and 
 sessions, sessions without an original prompt, and sessions with an active human
 chat cannot restart. Clients pinned to 2026-09-17 retain the original fix action
 list; earlier clients continue receiving no attention field.
+
+### 2026-09-19 — A blocked verify park needs a fix, not a review (Current)
+
+`Session.attention` answers a verify park by what it asks of the operator, the
+same split 2026-09-18 made for the display label. A park whose codes are all
+policy sign-off codes is still `ATTENTION_KIND_REVIEW`, offering
+`ATTENTION_ACTION_APPROVE`. A park with any failure or incomplete code
+(`no-receipt`, `ledger-open`, `extension-failed`, `repair-exhausted`,
+`no-session`, `human-review:unproven`) or an unknown code, alone or beside
+sign-off codes, is now `ATTENTION_KIND_FIX`. It keeps `park_codes` and
+`evidence_url`, offers `ATTENTION_ACTION_SEND_BACK` and
+`ATTENTION_ACTION_GITHUB` (and `ATTENTION_ACTION_VIDEO` with evidence), never
+`ATTENTION_ACTION_APPROVE`, and carries no `alert_key` or `target_chat_id`. Its
+sentence names the failure instead of asking for approval.
+
+Clients pinned to 2026-09-18 or older (that receive attention at all) get
+`ATTENTION_KIND_REVIEW` with `ATTENTION_ACTION_APPROVE` first on
+session-bearing unary responses. The sentence stays the new one: the earlier
+sentence could include the evidence video's length, which the response does not
+carry.
 
 ## Additive changes
 

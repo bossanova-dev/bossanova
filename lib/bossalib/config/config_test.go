@@ -3188,3 +3188,72 @@ func TestPluginEnabledForSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestSocketPathForSettings(t *testing.T) {
+	appData := t.TempDir()
+	defaultDir, err := DefaultAppDataDir()
+	if err != nil {
+		t.Skipf("no default app data dir: %v", err)
+	}
+	tests := []struct {
+		name    string
+		in      Settings
+		want    string
+		wantErr bool
+	}{
+		{name: "socket_path wins over app_data_dir", in: Settings{SocketPath: "/run/x/../bossd.sock", AppDataDir: appData}, want: "/run/bossd.sock"},
+		{name: "app_data_dir", in: Settings{AppDataDir: appData}, want: filepath.Join(appData, "bossd.sock")},
+		{name: "platform default", in: Settings{}, want: filepath.Join(defaultDir, "bossd.sock")},
+		{name: "relative socket_path", in: Settings{SocketPath: "rel/bossd.sock"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SocketPathForSettings(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("SocketPathForSettings() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("SocketPathForSettings() = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveSocketPathReadsTheSelectedSettingsFile(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	sock := filepath.Join(dir, "custom", "bossd.sock")
+	if err := os.WriteFile(settingsPath, []byte(`{"socket_path":"`+sock+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(settingsPathEnv, settingsPath)
+	t.Setenv("BOSS_SOCKET", filepath.Join(t.TempDir(), "decoy.sock"))
+
+	got, err := ResolveSocketPath()
+	if err != nil || got != sock {
+		t.Fatalf("ResolveSocketPath() = %q, %v; want %q", got, err, sock)
+	}
+}
+
+func TestResolveSocketPathFallsBackToTheDefaultAppDataDir(t *testing.T) {
+	t.Setenv(settingsPathEnv, filepath.Join(t.TempDir(), "missing.json"))
+	defaultDir, err := DefaultAppDataDir()
+	if err != nil {
+		t.Skipf("no default app data dir: %v", err)
+	}
+
+	got, err := ResolveSocketPath()
+	if want := filepath.Join(defaultDir, "bossd.sock"); err != nil || got != want {
+		t.Fatalf("ResolveSocketPath() = %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestResolveSocketPathRejectsARelativeSettingsPath(t *testing.T) {
+	t.Setenv(settingsPathEnv, "relative/settings.json")
+	if got, err := ResolveSocketPath(); err == nil {
+		t.Fatalf("ResolveSocketPath() = %q, want error for a relative %s", got, settingsPathEnv)
+	}
+}

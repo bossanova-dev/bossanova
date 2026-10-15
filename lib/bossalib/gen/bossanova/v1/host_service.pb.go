@@ -1431,6 +1431,11 @@ type RecordRepairOutcomeRequest struct {
 	// fields are left untouched, so a start-refusal never counts as a repair
 	// failure or feeds the exponential backoff.
 	BlockedReason string `protobuf:"bytes,9,opt,name=blocked_reason,json=blockedReason,proto3" json:"blocked_reason,omitempty"`
+	// Tip SHA of the PR's base branch when a conflict repair started. A merge
+	// conflict depends on the base as well as the head, so a moved base makes
+	// the same head a new repair input. Empty for non-conflict repairs and when
+	// the tip could not be read.
+	BaseSha       string `protobuf:"bytes,10,opt,name=base_sha,json=baseSha,proto3" json:"base_sha,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1528,6 +1533,13 @@ func (x *RecordRepairOutcomeRequest) GetBlockedReason() string {
 	return ""
 }
 
+func (x *RecordRepairOutcomeRequest) GetBaseSha() string {
+	if x != nil {
+		return x.BaseSha
+	}
+	return ""
+}
+
 type RecordRepairOutcomeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1564,6 +1576,104 @@ func (*RecordRepairOutcomeResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{27}
 }
 
+type GetBranchHeadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Repository origin URL.
+	RepoOriginUrl string `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
+	// Branch name, without the refs/heads/ prefix.
+	Branch        string `protobuf:"bytes,2,opt,name=branch,proto3" json:"branch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetBranchHeadRequest) Reset() {
+	*x = GetBranchHeadRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetBranchHeadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetBranchHeadRequest) ProtoMessage() {}
+
+func (x *GetBranchHeadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetBranchHeadRequest.ProtoReflect.Descriptor instead.
+func (*GetBranchHeadRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *GetBranchHeadRequest) GetRepoOriginUrl() string {
+	if x != nil {
+		return x.RepoOriginUrl
+	}
+	return ""
+}
+
+func (x *GetBranchHeadRequest) GetBranch() string {
+	if x != nil {
+		return x.Branch
+	}
+	return ""
+}
+
+type GetBranchHeadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Sha           string                 `protobuf:"bytes,1,opt,name=sha,proto3" json:"sha,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetBranchHeadResponse) Reset() {
+	*x = GetBranchHeadResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetBranchHeadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetBranchHeadResponse) ProtoMessage() {}
+
+func (x *GetBranchHeadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetBranchHeadResponse.ProtoReflect.Descriptor instead.
+func (*GetBranchHeadResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GetBranchHeadResponse) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
 type RecordRunTelemetryRequest struct {
 	state                protoimpl.MessageState    `protogen:"open.v1"`
 	AgentRunId           string                    `protobuf:"bytes,1,opt,name=agent_run_id,json=agentRunId,proto3" json:"agent_run_id,omitempty"`
@@ -1581,7 +1691,7 @@ type RecordRunTelemetryRequest struct {
 
 func (x *RecordRunTelemetryRequest) Reset() {
 	*x = RecordRunTelemetryRequest{}
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1593,7 +1703,7 @@ func (x *RecordRunTelemetryRequest) String() string {
 func (*RecordRunTelemetryRequest) ProtoMessage() {}
 
 func (x *RecordRunTelemetryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1606,7 +1716,7 @@ func (x *RecordRunTelemetryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordRunTelemetryRequest.ProtoReflect.Descriptor instead.
 func (*RecordRunTelemetryRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{28}
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *RecordRunTelemetryRequest) GetAgentRunId() string {
@@ -1689,7 +1799,7 @@ type AgentRunChildTelemetry struct {
 
 func (x *AgentRunChildTelemetry) Reset() {
 	*x = AgentRunChildTelemetry{}
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1701,7 +1811,7 @@ func (x *AgentRunChildTelemetry) String() string {
 func (*AgentRunChildTelemetry) ProtoMessage() {}
 
 func (x *AgentRunChildTelemetry) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[29]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1714,7 +1824,7 @@ func (x *AgentRunChildTelemetry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentRunChildTelemetry.ProtoReflect.Descriptor instead.
 func (*AgentRunChildTelemetry) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{29}
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *AgentRunChildTelemetry) GetAgentSessionId() string {
@@ -1788,7 +1898,7 @@ type RecordRunTelemetryResponse struct {
 
 func (x *RecordRunTelemetryResponse) Reset() {
 	*x = RecordRunTelemetryResponse{}
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1800,7 +1910,7 @@ func (x *RecordRunTelemetryResponse) String() string {
 func (*RecordRunTelemetryResponse) ProtoMessage() {}
 
 func (x *RecordRunTelemetryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_host_service_proto_msgTypes[30]
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1813,7 +1923,7 @@ func (x *RecordRunTelemetryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordRunTelemetryResponse.ProtoReflect.Descriptor instead.
 func (*RecordRunTelemetryResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{30}
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{32}
 }
 
 var File_bossanova_v1_host_service_proto protoreflect.FileDescriptor
@@ -1902,7 +2012,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"i\n" +
 	"\x1dReclaimRepairChatHostResponse\x12\x1c\n" +
 	"\treclaimed\x18\x01 \x01(\bR\treclaimed\x12*\n" +
-	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xa0\x03\n" +
+	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xbb\x03\n" +
 	"\x1aRecordRepairOutcomeRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
@@ -1914,9 +2024,16 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\bhead_sha\x18\x06 \x01(\tR\aheadSha\x12B\n" +
 	"\x0edisplay_status\x18\a \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\x122\n" +
 	"\x12review_fingerprint\x18\b \x01(\tH\x00R\x11reviewFingerprint\x88\x01\x01\x12%\n" +
-	"\x0eblocked_reason\x18\t \x01(\tR\rblockedReasonB\x15\n" +
+	"\x0eblocked_reason\x18\t \x01(\tR\rblockedReason\x12\x19\n" +
+	"\bbase_sha\x18\n" +
+	" \x01(\tR\abaseShaB\x15\n" +
 	"\x13_review_fingerprint\"\x1d\n" +
-	"\x1bRecordRepairOutcomeResponse\"\x8b\x04\n" +
+	"\x1bRecordRepairOutcomeResponse\"V\n" +
+	"\x14GetBranchHeadRequest\x12&\n" +
+	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x16\n" +
+	"\x06branch\x18\x02 \x01(\tR\x06branch\")\n" +
+	"\x15GetBranchHeadResponse\x12\x10\n" +
+	"\x03sha\x18\x01 \x01(\tR\x03sha\"\x8b\x04\n" +
 	"\x19RecordRunTelemetryRequest\x12 \n" +
 	"\fagent_run_id\x18\x01 \x01(\tR\n" +
 	"agentRunId\x125\n" +
@@ -1945,7 +2062,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x15reasoning_token_count\x18\t \x01(\x03H\x01R\x13reasoningTokenCount\x88\x01\x01B\x15\n" +
 	"\x13_output_token_countB\x18\n" +
 	"\x16_reasoning_token_count\"\x1c\n" +
-	"\x1aRecordRunTelemetryResponse2\xc4\v\n" +
+	"\x1aRecordRunTelemetryResponse2\x9e\f\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
@@ -1961,7 +2078,8 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\vWaitChatRun\x12$.bossanova.v1.WaitChatRunHostRequest\x1a%.bossanova.v1.WaitChatRunHostResponse\x12l\n" +
 	"\x11ReclaimRepairChat\x12*.bossanova.v1.ReclaimRepairChatHostRequest\x1a+.bossanova.v1.ReclaimRepairChatHostResponse\x12j\n" +
 	"\x13RecordRepairOutcome\x12(.bossanova.v1.RecordRepairOutcomeRequest\x1a).bossanova.v1.RecordRepairOutcomeResponse\x12g\n" +
-	"\x12RecordRunTelemetry\x12'.bossanova.v1.RecordRunTelemetryRequest\x1a(.bossanova.v1.RecordRunTelemetryResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x12RecordRunTelemetry\x12'.bossanova.v1.RecordRunTelemetryRequest\x1a(.bossanova.v1.RecordRunTelemetryResponse\x12X\n" +
+	"\rGetBranchHead\x12\".bossanova.v1.GetBranchHeadRequest\x1a#.bossanova.v1.GetBranchHeadResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -1975,7 +2093,7 @@ func file_bossanova_v1_host_service_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_host_service_proto_rawDescData
 }
 
-var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ListOpenPRsRequest)(nil),              // 0: bossanova.v1.ListOpenPRsRequest
 	(*ListOpenPRsResponse)(nil),             // 1: bossanova.v1.ListOpenPRsResponse
@@ -2005,33 +2123,35 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ReclaimRepairChatHostResponse)(nil),   // 25: bossanova.v1.ReclaimRepairChatHostResponse
 	(*RecordRepairOutcomeRequest)(nil),      // 26: bossanova.v1.RecordRepairOutcomeRequest
 	(*RecordRepairOutcomeResponse)(nil),     // 27: bossanova.v1.RecordRepairOutcomeResponse
-	(*RecordRunTelemetryRequest)(nil),       // 28: bossanova.v1.RecordRunTelemetryRequest
-	(*AgentRunChildTelemetry)(nil),          // 29: bossanova.v1.AgentRunChildTelemetry
-	(*RecordRunTelemetryResponse)(nil),      // 30: bossanova.v1.RecordRunTelemetryResponse
-	(*PRSummary)(nil),                       // 31: bossanova.v1.PRSummary
-	(*CheckResult)(nil),                     // 32: bossanova.v1.CheckResult
-	(*PRStatus)(nil),                        // 33: bossanova.v1.PRStatus
-	(*Session)(nil),                         // 34: bossanova.v1.Session
-	(*ReviewComment)(nil),                   // 35: bossanova.v1.ReviewComment
-	(SessionEvent)(0),                       // 36: bossanova.v1.SessionEvent
-	(*timestamppb.Timestamp)(nil),           // 37: google.protobuf.Timestamp
-	(ChatRole)(0),                           // 38: bossanova.v1.ChatRole
-	(DisplayStatus)(0),                      // 39: bossanova.v1.DisplayStatus
+	(*GetBranchHeadRequest)(nil),            // 28: bossanova.v1.GetBranchHeadRequest
+	(*GetBranchHeadResponse)(nil),           // 29: bossanova.v1.GetBranchHeadResponse
+	(*RecordRunTelemetryRequest)(nil),       // 30: bossanova.v1.RecordRunTelemetryRequest
+	(*AgentRunChildTelemetry)(nil),          // 31: bossanova.v1.AgentRunChildTelemetry
+	(*RecordRunTelemetryResponse)(nil),      // 32: bossanova.v1.RecordRunTelemetryResponse
+	(*PRSummary)(nil),                       // 33: bossanova.v1.PRSummary
+	(*CheckResult)(nil),                     // 34: bossanova.v1.CheckResult
+	(*PRStatus)(nil),                        // 35: bossanova.v1.PRStatus
+	(*Session)(nil),                         // 36: bossanova.v1.Session
+	(*ReviewComment)(nil),                   // 37: bossanova.v1.ReviewComment
+	(SessionEvent)(0),                       // 38: bossanova.v1.SessionEvent
+	(*timestamppb.Timestamp)(nil),           // 39: google.protobuf.Timestamp
+	(ChatRole)(0),                           // 40: bossanova.v1.ChatRole
+	(DisplayStatus)(0),                      // 41: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
-	31, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	32, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
-	33, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
-	31, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	34, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
-	35, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
-	36, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
-	37, // 7: bossanova.v1.StartChatRunHostRequest.replace_existing_observed_last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	38, // 8: bossanova.v1.StartChatRunHostRequest.role:type_name -> bossanova.v1.ChatRole
-	39, // 9: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
-	29, // 10: bossanova.v1.RecordRunTelemetryRequest.children:type_name -> bossanova.v1.AgentRunChildTelemetry
-	37, // 11: bossanova.v1.AgentRunChildTelemetry.started_at:type_name -> google.protobuf.Timestamp
-	37, // 12: bossanova.v1.AgentRunChildTelemetry.stopped_at:type_name -> google.protobuf.Timestamp
+	33, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	34, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
+	35, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
+	33, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	36, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	37, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
+	38, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
+	39, // 7: bossanova.v1.StartChatRunHostRequest.replace_existing_observed_last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	40, // 8: bossanova.v1.StartChatRunHostRequest.role:type_name -> bossanova.v1.ChatRole
+	41, // 9: bossanova.v1.RecordRepairOutcomeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	31, // 10: bossanova.v1.RecordRunTelemetryRequest.children:type_name -> bossanova.v1.AgentRunChildTelemetry
+	39, // 11: bossanova.v1.AgentRunChildTelemetry.started_at:type_name -> google.protobuf.Timestamp
+	39, // 12: bossanova.v1.AgentRunChildTelemetry.stopped_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
 	2,  // 14: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
 	4,  // 15: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
@@ -2046,24 +2166,26 @@ var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	22, // 24: bossanova.v1.HostService.WaitChatRun:input_type -> bossanova.v1.WaitChatRunHostRequest
 	24, // 25: bossanova.v1.HostService.ReclaimRepairChat:input_type -> bossanova.v1.ReclaimRepairChatHostRequest
 	26, // 26: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
-	28, // 27: bossanova.v1.HostService.RecordRunTelemetry:input_type -> bossanova.v1.RecordRunTelemetryRequest
-	1,  // 28: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	3,  // 29: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	5,  // 30: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	7,  // 31: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
-	9,  // 32: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
-	11, // 33: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
-	13, // 34: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
-	15, // 35: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
-	17, // 36: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
-	19, // 37: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
-	21, // 38: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
-	23, // 39: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
-	25, // 40: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
-	27, // 41: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
-	30, // 42: bossanova.v1.HostService.RecordRunTelemetry:output_type -> bossanova.v1.RecordRunTelemetryResponse
-	28, // [28:43] is the sub-list for method output_type
-	13, // [13:28] is the sub-list for method input_type
+	30, // 27: bossanova.v1.HostService.RecordRunTelemetry:input_type -> bossanova.v1.RecordRunTelemetryRequest
+	28, // 28: bossanova.v1.HostService.GetBranchHead:input_type -> bossanova.v1.GetBranchHeadRequest
+	1,  // 29: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	3,  // 30: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	5,  // 31: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	7,  // 32: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	9,  // 33: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
+	11, // 34: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
+	13, // 35: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
+	15, // 36: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
+	17, // 37: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
+	19, // 38: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
+	21, // 39: bossanova.v1.HostService.StartChatRun:output_type -> bossanova.v1.StartChatRunHostResponse
+	23, // 40: bossanova.v1.HostService.WaitChatRun:output_type -> bossanova.v1.WaitChatRunHostResponse
+	25, // 41: bossanova.v1.HostService.ReclaimRepairChat:output_type -> bossanova.v1.ReclaimRepairChatHostResponse
+	27, // 42: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
+	32, // 43: bossanova.v1.HostService.RecordRunTelemetry:output_type -> bossanova.v1.RecordRunTelemetryResponse
+	29, // 44: bossanova.v1.HostService.GetBranchHead:output_type -> bossanova.v1.GetBranchHeadResponse
+	29, // [29:45] is the sub-list for method output_type
+	13, // [13:29] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -2076,15 +2198,15 @@ func file_bossanova_v1_host_service_proto_init() {
 	}
 	file_bossanova_v1_models_proto_init()
 	file_bossanova_v1_host_service_proto_msgTypes[26].OneofWrappers = []any{}
-	file_bossanova_v1_host_service_proto_msgTypes[28].OneofWrappers = []any{}
-	file_bossanova_v1_host_service_proto_msgTypes[29].OneofWrappers = []any{}
+	file_bossanova_v1_host_service_proto_msgTypes[30].OneofWrappers = []any{}
+	file_bossanova_v1_host_service_proto_msgTypes[31].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_host_service_proto_rawDesc), len(file_bossanova_v1_host_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

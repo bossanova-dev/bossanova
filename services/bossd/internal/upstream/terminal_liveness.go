@@ -67,6 +67,8 @@ var errTerminalNotConfirmed = errors.New("terminal stream: readiness not confirm
 // and openStream's ready-gate + heartbeat watchdog. A fresh one is built on
 // every openStream so signals never leak across reconnects.
 type terminalStreamSession struct {
+	// uploadWG joins only this attempt's upload-finish deliveries.
+	uploadWG  sync.WaitGroup
 	readyOnce sync.Once
 	readyCh   chan struct{} // closed once when TerminalReady is first seen
 	pingCh    chan struct{} // pulsed (coalesced) on every TerminalPing

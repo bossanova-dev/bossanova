@@ -43,7 +43,7 @@ func TestGetInfo(t *testing.T) {
 
 func TestBuildInteractiveCommandReturnsSlashCommandPrefix(t *testing.T) {
 	srv := &Server{}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId:      "agent-1",
 		LogPath:        filepath.Join(t.TempDir(), "claude.log"),
 		InitialCommand: "boss-finalize",
@@ -60,7 +60,7 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	srv := &Server{}
 
 	// With the field set, the claude argv must carry --append-system-prompt.
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId:          "agent-1",
 		LogPath:            filepath.Join(t.TempDir(), "claude.log"),
 		AppendSystemPrompt: "autonomous cron run",
@@ -78,7 +78,7 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	assertDeclarationMatchesArgv(t, resp)
 
 	// Without it, the flag must be absent (non-cron chats are unaffected).
-	respNone, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	respNone, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "agent-2",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
@@ -108,7 +108,7 @@ func assertDeclarationMatchesArgv(t *testing.T, resp *bossanovav1.BuildInteracti
 
 func TestBuildInteractiveCommand_AppendsModel(t *testing.T) {
 	srv := &Server{}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 		Model:     "sonnet",
@@ -124,7 +124,7 @@ func TestBuildInteractiveCommand_AppendsModel(t *testing.T) {
 
 func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	srv := &Server{}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
@@ -138,18 +138,10 @@ func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
 	}
 }
 
-// Boss does not own MCP configuration. Claude Code discovers servers its own
-// native way — project .mcp.json gated by enabledMcpjsonServers, plus the user
-// and local scopes — and the repo is responsible for declaring them.
-// --strict-mcp-config would suppress precisely that, so neither flag may reach
-// argv. The request carries every field the interactive path still populates,
-// so this fails if any of them reintroduces MCP wiring. It was confirmed
-// failing against the pre-change argv builder before that branch was deleted;
-// the fields it read are now retired from the proto, so this stands as a
-// reintroduction guard.
-func TestBuildInteractiveCommand_NeverEmitsMcpFlags(t *testing.T) {
+// Trusted launches retain Claude's native configuration discovery.
+func TestBuildInteractiveCommand_TrustedNeverEmitsMcpFlags(t *testing.T) {
 	srv := &Server{}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId:          "sid",
 		LogPath:            filepath.Join(t.TempDir(), "claude.log"),
 		WorktreePath:       t.TempDir(),
@@ -203,7 +195,7 @@ func TestServer_StartRun_SubprocessSurvivesHandlerContextCancel(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
 	handlerCtx, cancelHandler := context.WithCancel(context.Background())
-	startResp, err := srv.StartRun(handlerCtx, &bossanovav1.StartAgentRunRequest{
+	startResp, err := srv.StartRun(handlerCtx, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-survive", LogPath: logPath,
 	})
 	if err != nil {
@@ -239,7 +231,7 @@ func TestServer_StopRun_RoundTrip(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "sleep 5")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	startResp, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	startResp, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-stop", LogPath: logPath,
 	})
 	if err != nil {
@@ -270,7 +262,7 @@ func TestServer_ExitStatus(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "exit 7")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	startResp, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	startResp, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-exit", LogPath: logPath,
 	})
 	if startResp.SessionId != "sid-exit" {
@@ -426,7 +418,7 @@ func TestServer_RemoveAgentRunHook_ValidationError(t *testing.T) {
 func TestServer_BuildInteractiveCommand(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "abc-123", Resume: false, LogPath: "/data/logs/abc-123.log",
 	})
 	if err != nil {
@@ -452,7 +444,7 @@ func TestServer_BuildInteractiveCommand(t *testing.T) {
 func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "rid", Resume: true, LogPath: filepath.Join(t.TempDir(), "x.log"),
 	})
 	if err != nil {
@@ -474,7 +466,7 @@ func TestServer_BuildInteractiveCommand_WrapsInLoginShellWhenConfigured(t *testi
 	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/bash")
 	srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
 
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "abc-123", Resume: false,
 	})
 	if err != nil {
@@ -506,7 +498,7 @@ func TestServer_BuildInteractiveCommand_FreshStartConsumesPromptFromFile(t *test
 	path := filepath.Join(t.TempDir(), "abc-123.initial-input")
 	prompt := "implement the plan\nwith a second line"
 
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "abc-123", InitialPrompt: prompt, InitialInputPath: path,
 	})
 	if err != nil {
@@ -551,7 +543,7 @@ func TestServer_BuildInteractiveCommand_KeepsPanePathWithoutFileReadingShell(t *
 			t.Setenv("BOSS_PLUGIN_login_shell", shell)
 			srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
 			path := filepath.Join(t.TempDir(), "x.initial-input")
-			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 				SessionId: "abc", InitialPrompt: "-leading dash prompt", InitialInputPath: path,
 			})
 			if err != nil {
@@ -616,7 +608,7 @@ func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T)
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 	srv.runner.dangerouslySkipPermissions = true
 
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "xyz", Resume: false,
 	})
 	if err != nil {
@@ -884,7 +876,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{
+	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-grpc-survive", LogPath: logPath,
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -938,7 +930,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer startWG.Done()
-			startErrs[i] = grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{
+			startErrs[i] = grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 				WorkDir:   dir,
 				SessionId: sessionIDs[i],
 				LogPath:   filepath.Join(dir, sessionIDs[i]+".log"),
@@ -989,7 +981,7 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{
+	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-stop-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -1040,7 +1032,7 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{
+	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-exit-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -1069,7 +1061,7 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 
 func TestBuildInteractiveCommand_FallsBackToPluginModel(t *testing.T) {
 	srv := &Server{runner: NewRunner(zerolog.Nop(), WithModel("opus[1m]"))}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
@@ -1084,7 +1076,7 @@ func TestBuildInteractiveCommand_FallsBackToPluginModel(t *testing.T) {
 
 func TestBuildInteractiveCommand_RequestModelBeatsPluginModel(t *testing.T) {
 	srv := &Server{runner: NewRunner(zerolog.Nop(), WithModel("opus[1m]"))}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		Model:     "sonnet",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
@@ -1103,7 +1095,7 @@ func TestBuildInteractiveCommand_RequestModelBeatsPluginModel(t *testing.T) {
 
 func TestBuildInteractiveCommand_EffortPrecedence(t *testing.T) {
 	srv := &Server{runner: NewRunner(zerolog.Nop(), WithEffort("high"))}
-	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		Effort:    "medium",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
@@ -1119,7 +1111,7 @@ func TestBuildInteractiveCommand_EffortPrecedence(t *testing.T) {
 		t.Fatalf("argv %v plugin default must not also appear", resp.GetArgv())
 	}
 
-	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
@@ -1132,7 +1124,7 @@ func TestBuildInteractiveCommand_EffortPrecedence(t *testing.T) {
 	}
 
 	srv = &Server{runner: NewRunner(zerolog.Nop())}
-	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+	resp, err = srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 		SessionId: "sid",
 		LogPath:   filepath.Join(t.TempDir(), "claude.log"),
 	})
@@ -1249,7 +1241,7 @@ func TestServer_BuildInteractiveCommand_ReceiptHookAndCapability(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
 			wt := t.TempDir()
-			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{ProjectTrust: bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_GRANT,
 				SessionId: "abc-123", InitialPrompt: tc.prompt, WorktreePath: wt, HookPort: tc.port,
 				HookReceiptToken: "feedface",
 				InitialInputPath: filepath.Join(t.TempDir(), "abc-123.initial-input"),
@@ -1272,6 +1264,30 @@ func TestServer_BuildInteractiveCommand_ReceiptHookAndCapability(t *testing.T) {
 				t.Fatalf("prompt-submitted entries = %d, want 1", len(bossd))
 			}
 			assertCommandContains(t, bossd[0], "/hooks/prompt-submitted/abc-123", ":4242", "Authorization: Bearer feedface")
+		})
+	}
+}
+
+func TestBuildInteractiveCommandUntrustedDisablesProjectConfiguration(t *testing.T) {
+	for _, decision := range []bossanovav1.ProjectTrustDecision{
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_REVOKE,
+		bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY,
+	} {
+		t.Run(decision.String(), func(t *testing.T) {
+			srv := newServer(nil, zerolog.Nop(), WithCommandFactory(fakeClaude(t, "exit 0")))
+			resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{SessionId: "sid", ProjectTrust: decision, WorktreePath: t.TempDir(), HookPort: 1234})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Join(resp.Argv, "\x00")
+			for _, want := range []string{"--strict-mcp-config", "--setting-sources\x00user"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("argv %q missing %q", got, want)
+				}
+			}
+			if resp.GetCanConfirmDelivery() {
+				t.Fatal("cannot claim delivery receipts from disabled project hooks")
+			}
 		})
 	}
 }

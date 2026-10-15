@@ -380,11 +380,30 @@ function validatePlanDependencies(block, fail) {
   }
 }
 
-export function validateConfig(config, source) {
+const STAGE_BLOCK_FAULTS = Symbol('stageBlockFaults')
+
+function assertStageBlockReadable(config, block) {
+  const message = config?.[STAGE_BLOCK_FAULTS]?.get(block)
+  if (message) throw new Error(message)
+}
+
+export function validateConfig(config, source, { deferStageBlocks = false } = {}) {
   const fail = (msg) => {
     throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
   }
-  if (config.retro !== undefined) validateRetro(config.retro, fail)
+  const faults = new Map()
+  if (deferStageBlocks)
+    Object.defineProperty(config, STAGE_BLOCK_FAULTS, { value: faults, configurable: true })
+  const stageBlock = (block, validate) => {
+    if (!deferStageBlocks) return validate()
+    try {
+      validate()
+    } catch (error) {
+      faults.set(block, error.message)
+      console.warn(`skill-config: deferred ${block}: ${error.message}; run boss skills install`)
+    }
+  }
+  if (config.retro !== undefined) stageBlock('retro', () => validateRetro(config.retro, fail))
   // Retired review keys (the lens map, default review rounds, delta-depth tuning and the dispatch
   // ledger) are tolerated so an older .boss-skills.json keeps loading; each is ignored with a warning.
   for (const key of RETIRED_REVIEW_KEYS) {
@@ -499,15 +518,16 @@ export function validateConfig(config, source) {
       config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
-  if (config.verifyDefaults !== undefined) {
-    validateVerifyDefaults(config.verifyDefaults, fail)
-    // Verify refuses this carry at runtime; the warning says why an approval never carries.
-    const { generatedPaths, generatedChecks } = config.verifyDefaults
-    if (generatedPaths?.length > 0 && !(generatedChecks?.length > 0))
-      console.warn(
-        `skill-config: ${source}: verifyDefaults.generatedPaths has no generatedChecks to prove it regenerated, so no approval carries across a rebase`,
-      )
-  }
+  if (config.verifyDefaults !== undefined)
+    stageBlock('verifyDefaults', () => {
+      validateVerifyDefaults(config.verifyDefaults, fail)
+      // Verify refuses this carry at runtime; the warning says why an approval never carries.
+      const { generatedPaths, generatedChecks } = config.verifyDefaults
+      if (generatedPaths?.length > 0 && !(generatedChecks?.length > 0))
+        console.warn(
+          `skill-config: ${source}: verifyDefaults.generatedPaths has no generatedChecks to prove it regenerated, so no approval carries across a rebase`,
+        )
+    })
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
   // declare no recognised target legitimately resolves with no `commands` key at all (absent,
   // not {}), and a test-command manifest is a project artifact rather than a portable concept.
@@ -719,16 +739,17 @@ export function validateConfig(config, source) {
     // assignees, creators and projects, each with include/exclude slots, a shared block and
     // per-stage overrides (schema and rules: selection.mjs `validateSelectionBlock`, and
     // docs/skills/skill-config.md). Every fault THROWS, unknown and legacy keys included: an
-    // ignored filter key silently WIDENS the scan, and under this schema an older installed copy
-    // already rejects the object-valued `labels`, so warn-and-ignore protects nobody.
-    if ('selection' in tc) {
-      for (const error of validateSelectionBlock(
-        tc.selection,
-        `trackerConfig.${adapter}.selection`,
-      )) {
-        fail(error)
-      }
-    }
+    // ignored filter key silently WIDENS the scan. Loads may defer the fault, but every selection
+    // reader must still reject it before deriving a query.
+    if ('selection' in tc)
+      stageBlock(`trackerConfig.${adapter}.selection`, () => {
+        for (const error of validateSelectionBlock(
+          tc.selection,
+          `trackerConfig.${adapter}.selection`,
+        )) {
+          fail(error)
+        }
+      })
   }
   if (
     config.publishConfig == null ||
@@ -762,7 +783,7 @@ export function validateConfig(config, source) {
   } else if (config.planStorage.kind !== 'tracker-attachment') {
     fail('planStorage.kind must be "tracker-attachment"')
   }
-  validatePlanDependencies(config.planDependencies, fail)
+  stageBlock('planDependencies', () => validatePlanDependencies(config.planDependencies, fail))
   // planContract is the extension point this feature exists for (a consuming repo overrides
   // the section set), so a malformed override must fail here with a skill-config: error rather
   // than a raw TypeError deep in planSections()/requiredPlanSections()/validatePlanDescription().
@@ -1038,7 +1059,7 @@ export function loadSkillConfig({ cwd = process.cwd() } = {}) {
     keys: DETECTED_COMMAND_KEYS.filter((key) => !(key in declared)),
   })
   const merged = withTrackerDefaults(mergeConfig(mergeConfig(DEFAULT_CONFIG, detected), user))
-  validateConfig(merged, file || '(defaults)')
+  validateConfig(merged, file || '(defaults)', { deferStageBlocks: true })
   return merged
 }
 
@@ -1165,6 +1186,7 @@ export function notesSampleRate(config) {
  * @returns {{moduleRoots: string[], repoWideTokens: string[], areaAliases: Record<string, string|string[]>}}
  */
 export function planDependencyDefaults(config) {
+  assertStageBlockReadable(config, 'planDependencies')
   const block = config?.planDependencies
   const list = (value) => (Array.isArray(value) ? [...value] : [])
   const aliases = block?.areaAliases
@@ -1309,13 +1331,14 @@ export function unattributedDriftSeverity(config, adapter = adapterFor(config, '
 
 /**
  * The raw `trackerConfig.<adapter>.selection` block this repo declares, or `null` when it declares
- * none. NEVER throws, even on a hand-built config that never went through `validateConfig`: a
- * throw here would take down every core that merely LOADS the config. The adapter default is read
+ * none. A deferred validation fault throws; hand-built configs that never went through
+ * `loadSkillConfig` remain tolerant. The adapter default is read
  * straight off `config` (not through `adapterFor`, which indexes `config.adapters` unguarded) for
  * the same reason. Callers build queries through `stageSelectionQuery`, which validates.
  * @returns {object|null}
  */
 export function selectionBlockFor(config, adapter = config?.adapters?.tracker) {
+  assertStageBlockReadable(config, `trackerConfig.${adapter}.selection`)
   // Checked before `trackerConfigFor` is reached: an explicitly `undefined` adapter re-triggers
   // that function's own `adapterFor` default and its TypeError.
   const tc =
@@ -3679,6 +3702,7 @@ export function commandFindingRemedy(code) {
  * @returns {string[]}
  */
 export function verifyAlwaysHumanPaths(config) {
+  assertStageBlockReadable(config, 'verifyDefaults')
   return globList(config?.verifyDefaults?.alwaysHumanPaths)
 }
 
@@ -3755,6 +3779,7 @@ function validateVerifyDefaults(block, fail) {
  * @returns {{database: string[], security: string[], ui: string[]}}
  */
 export function verifyHumanReviewPaths(config) {
+  assertStageBlockReadable(config, 'verifyDefaults')
   const review = config?.verifyDefaults?.humanReview
   return Object.fromEntries(
     VERIFY_HUMAN_REVIEW_CATEGORIES.map((category) => [
@@ -3771,6 +3796,7 @@ export function verifyHumanReviewPaths(config) {
  * @returns {{list: string, glob: string, label: string}[]}
  */
 export function verifyPathLabels(config) {
+  assertStageBlockReadable(config, 'verifyDefaults')
   const block = config?.verifyDefaults
   const review =
     block?.humanReview && typeof block.humanReview === 'object' ? block.humanReview : {}
@@ -3883,6 +3909,7 @@ function validateRetro(block, fail) {
 }
 
 export function retroConfig(config) {
+  assertStageBlockReadable(config, 'retro')
   const block = config?.retro
   const out = {}
   for (const key of ['maxIssues', 'staleDays', 'minRuns', 'gateThreshold'])

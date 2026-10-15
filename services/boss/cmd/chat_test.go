@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -79,6 +80,9 @@ func TestResolveChatTarget(t *testing.T) {
 // response says nothing about them, and neither does stdout.
 type chatSendRecorder struct {
 	req *pb.SendChatMessageRequest
+	// resp, when set, replaces the default delivered response; err fails the send.
+	resp *pb.SendChatMessageResponse
+	err  error
 }
 
 func (c *chatSendRecorder) GetSession(context.Context, string, client.SessionReadOptions) (*pb.Session, error) {
@@ -87,6 +91,12 @@ func (c *chatSendRecorder) GetSession(context.Context, string, client.SessionRea
 
 func (c *chatSendRecorder) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	c.req = req
+	if c.err != nil {
+		return nil, c.err
+	}
+	if c.resp != nil {
+		return c.resp, nil
+	}
 	return &pb.SendChatMessageResponse{Delivered: true, TmuxSessionName: "boss-chat-agent-123"}, nil
 }
 
@@ -114,6 +124,75 @@ func runChatSendArgs(t *testing.T, c *chatSendRecorder, args ...string) {
 	}
 	if c.req == nil {
 		t.Fatal("no SendChatMessage request reached the daemon")
+	}
+}
+
+// chatSendJSONOutput runs `chat send --json` against c and returns stdout and
+// the command's error.
+func chatSendJSONOutput(t *testing.T, c *chatSendRecorder) (string, error) {
+	t.Helper()
+	var send *cobra.Command
+	for _, sub := range chatCmd().Commands() {
+		if sub.Name() == "send" {
+			send = sub
+		}
+	}
+	var out bytes.Buffer
+	send.SetOut(&out)
+	if err := send.Flags().Parse([]string{"--json"}); err != nil {
+		t.Fatalf("parse --json: %v", err)
+	}
+	err := chatSend(context.Background(), c, send, "agent-123", "hello")
+	return out.String(), err
+}
+
+// TestChatSendJSONCarriesTheDeliveryState: every delivery state exits 0, so the
+// envelope's delivery_state is what tells a driver whether the agent has the
+// message.
+func TestChatSendJSONCarriesTheDeliveryState(t *testing.T) {
+	cases := []struct {
+		name      string
+		resp      *pb.SendChatMessageResponse
+		delivered bool
+		state     string
+	}{
+		{"submitted", &pb.SendChatMessageResponse{Delivered: true, DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED}, true, "DELIVERY_STATE_SUBMITTED"},
+		{"queued", &pb.SendChatMessageResponse{Delivered: true, DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED, NoticeText: "q"}, true, "DELIVERY_STATE_QUEUED"},
+		{"unconfirmed", &pb.SendChatMessageResponse{Delivered: false, DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_UNCONFIRMED, NoticeText: "u"}, false, "DELIVERY_STATE_UNCONFIRMED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.resp.TmuxSessionName = "boss-chat-agent-123"
+			out, err := chatSendJSONOutput(t, &chatSendRecorder{resp: tc.resp})
+			if err != nil {
+				t.Fatalf("chatSend: %v", err)
+			}
+			var env chatSendJSON
+			if err := json.Unmarshal([]byte(out), &env); err != nil {
+				t.Fatalf("stdout is not one JSON envelope: %v\n%s", err, out)
+			}
+			want := chatSendJSON{
+				AgentSessionID:  "agent-123",
+				TmuxSessionName: "boss-chat-agent-123",
+				Delivery:        chatDeliveryJSON{Delivered: tc.delivered, DeliveryState: tc.state, Notice: tc.resp.GetNoticeText()},
+			}
+			if env != want {
+				t.Fatalf("envelope = %+v, want %+v", env, want)
+			}
+		})
+	}
+}
+
+// TestChatSendJSONFailureIsAnErrorEnvelope: a send the daemon refused writes
+// the error envelope to stdout and still fails the command.
+func TestChatSendJSONFailureIsAnErrorEnvelope(t *testing.T) {
+	out, err := chatSendJSONOutput(t, &chatSendRecorder{err: connect.NewError(connect.CodeInternal, errors.New("send message (delivery state: not submitted): pending"))})
+	if err == nil {
+		t.Fatal("a refused send must fail the command")
+	}
+	var env jsonErrorEnvelope
+	if jsonErr := json.Unmarshal([]byte(out), &env); jsonErr != nil || env.Error.Code == "" {
+		t.Fatalf("stdout = %q, want a JSON error envelope with a code", out)
 	}
 }
 

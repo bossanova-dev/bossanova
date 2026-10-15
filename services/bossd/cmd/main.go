@@ -606,6 +606,7 @@ type streamSessionHydrator struct {
 	// GetSession/ListSessions RPCs do.
 	wedgeActivity  server.WedgeActivity
 	accountLabeler streamAccountLabeler
+	attention      func(context.Context, *bossanovav1.Session)
 	logger         zerolog.Logger
 }
 
@@ -613,6 +614,13 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 	if h == nil || pbSess == nil {
 		return
 	}
+	// Re-run the shared attention resolver after every legacy hydration path.
+	// Register first so the deferred verify overlay below runs before it.
+	defer func() {
+		if h.attention != nil {
+			h.attention(ctx, pbSess)
+		}
+	}()
 	// The verify-park attention (BOS-1382) is the lowest-ranked attention, so it
 	// is applied last — after the base attention and the agent-observability
 	// overlay — on EVERY return path, including the no-chats early returns
@@ -1538,6 +1546,7 @@ func run(opts runOpts) error {
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	accountCreds := accountcred.New()
+	resumeAttempts := db.NewResumeAttemptStore(database)
 	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which
 	// every rotation decision path writes through), the gRPC server (which
 	// hydrates Session.rotation_events for local reads), and the reverse stream
@@ -1607,6 +1616,7 @@ func run(opts runOpts) error {
 	// so the stream overlay never hard-fails.
 	accountLabeler := account.NewResolver(accountwiring.NewRegistry(accounts), nil, log.Logger)
 
+	var streamAttentionServer atomic.Pointer[server.Server]
 	streamHydrator := &streamSessionHydrator{
 		agentChats:        agentChats,
 		rawSessions:       rawSessions,
@@ -1616,7 +1626,12 @@ func run(opts runOpts) error {
 		rotationEvents:    rotationEvents,
 		wedgeActivity:     server.WedgeActivity{Runs: server.AgentRunsForWedge(agentRuns), Cache: wedgeActivityCache, Logger: log.Logger},
 		accountLabeler:    accountLabeler,
-		logger:            log.Logger,
+		attention: func(ctx context.Context, p *bossanovav1.Session) {
+			if srv := streamAttentionServer.Load(); srv != nil {
+				srv.HydrateAttentionForStream(ctx, p)
+			}
+		},
+		logger: log.Logger,
 	}
 
 	// hydrateSessionForStream applies the same last_agent_activity_at +
@@ -3028,6 +3043,17 @@ func run(opts runOpts) error {
 	}
 	displayComputer.SetOnUpdate(publishSessionUpdated)
 
+	// Evidence and resume ledgers can change attention without changing the
+	// display trio. Publish explicitly even when Recompute has no row to write.
+	refreshAttention := func(ctx context.Context, sessionID string) {
+		_ = displayComputer.Recompute(ctx, sessionID)
+		publishSessionUpdated(ctx, sessionID)
+	}
+	evidenceReader.SetOnChange(refreshAttention)
+	resumeAttempts.SetOnChange(func(sessionID string) {
+		refreshAttention(context.Background(), sessionID)
+	})
+
 	// BOS-1535: the resolved-alert sweep clears a latched repair alert (and its
 	// stall record) once the head moved, CI went green, or the PR left the
 	// repair-eligible states. A cleared row rarely changes the display trio, so
@@ -3772,6 +3798,7 @@ func run(opts runOpts) error {
 		AgentRuns:               agentRuns,
 		RotationEvents:          rotationEvents,
 		Evidence:                evidenceReader,
+		ResumeAttempts:          resumeAttempts,
 		WedgeActivityCache:      wedgeActivityCache,
 		CronScheduler:           cronScheduler,
 		CronActivity:            cronActivity,
@@ -3827,6 +3854,8 @@ func run(opts runOpts) error {
 		EndpointReader: sessionPortsTracker,
 		ProtectedRoots: startupProtectedRoots,
 	})
+
+	streamAttentionServer.Store(srv)
 
 	archiveSeam.Store(srv)
 

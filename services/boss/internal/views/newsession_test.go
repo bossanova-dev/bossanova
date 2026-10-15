@@ -175,6 +175,14 @@ func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error) 
 func (s *stubClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
+
+func (s *stubClient) ApproveSessionPR(context.Context, string, bool) (*pb.VerifyApproveResult, error) {
+	return nil, nil
+}
+
+func (s *stubClient) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
+	return nil, nil
+}
 func (s *stubClient) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")

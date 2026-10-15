@@ -294,10 +294,11 @@ type mcpPlistData struct {
 // could see it, and every `node`-based cron gate exited 127 (BOS-880).
 //
 // The baseline includes the agent-runner shim directories (~/.nodenv/shims and
-// ~/.local/bin), which the Homebrew launchd PATH omits. daemon_path_extra
-// prepends to it; it can never remove a baseline entry.
+// ~/.local/bin), which the Homebrew launchd PATH omits, and /usr/sbin and
+// /sbin, where macOS keeps lsof. daemon_path_extra prepends to it; it can
+// never remove a baseline entry.
 func serviceEnvPath() string {
-	entries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"}
+	entries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin"}
 	if home, err := userHomeDir(); err == nil {
 		entries = append([]string{
 			filepath.Join(home, ".nodenv", "shims"),

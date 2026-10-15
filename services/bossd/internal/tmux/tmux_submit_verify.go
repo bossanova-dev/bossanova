@@ -163,7 +163,7 @@ func classifySubmit(outcome SubmitOutcome, err error) error {
 // this branch. waitForSubmission classifies that case as OutcomeUnconfirmed
 // instead, which never reaches the clear.
 func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload string, opts sendPlanOpts, redeliver func(context.Context) error) error {
-	outcome, err := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted)
+	outcome, err := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted, opts.receiptRequired)
 	if err == nil {
 		return nil
 	}
@@ -364,7 +364,7 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 	if enterErr := c.sendEnter(ctx, sessionName); enterErr != nil {
 		return classifySubmit(OutcomeNotSubmitted, enterErr)
 	}
-	retryOutcome, retryErr := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted)
+	retryOutcome, retryErr := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted, opts.receiptRequired)
 	if retryOutcome == OutcomeQueued {
 		// The re-delivered payload landed in the agent's queue rather than being
 		// consumed — the agent was mid-turn when the retry's Enter took. Keep the
@@ -491,7 +491,7 @@ func composerVanishedErr(sessionName string) error {
 // cannot see — precisely the double-submit BOS-598 exists to prevent — so it is
 // classified as unconfirmed and errSubmissionPending is NOT attached.
 func (c *Client) waitForSubmission(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (SubmitOutcome, error) {
-	return c.waitForSubmissionOrReceipt(ctx, sessionName, payload, waitFor, tickEvery, nil)
+	return c.waitForSubmissionOrReceipt(ctx, sessionName, payload, waitFor, tickEvery, nil, false)
 }
 
 // receiptConfirms reports whether the caller's submission receipt has arrived.
@@ -504,7 +504,15 @@ func receiptConfirms(submitted func() bool) bool {
 // submission (Claude's UserPromptSubmit hook), so it decides before the pane is
 // read, and the pane classification below is the fallback for an agent or a
 // pane without one. A nil receipt is exactly waitForSubmission.
-func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration, submitted func() bool) (SubmitOutcome, error) {
+//
+// receiptRequired marks a receipt that records every turn the agent takes
+// (Codex's rollout), so a composer that merely reads empty does not confirm a
+// send on its own: Codex can hold a typed burst undrawn, which reads as an empty
+// composer while the payload is still unsubmitted. The wait keeps polling for
+// the receipt instead, and a budget that ends on an empty composer with no
+// receipt is unconfirmed. The queued signal still decides, because a message
+// queued behind a running turn is recorded only when that turn ends.
+func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration, submitted func() bool, receiptRequired bool) (SubmitOutcome, error) {
 	if tickEvery <= 0 {
 		tickEvery = 100 * time.Millisecond
 	}
@@ -522,6 +530,9 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 	// the retry would act on, so the deadline branch reads the LAST observation
 	// rather than "any observation".
 	composerDrawn := false
+	// Whether the most recent capture read the payload as gone from the
+	// composer while receiptRequired withheld that from confirming the send.
+	clearedWithoutReceipt := false
 
 	for {
 		if receiptConfirms(submitted) {
@@ -535,13 +546,14 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 			return OutcomeUnconfirmed, fmt.Errorf("verify command submission: %w", err)
 		}
 		composerDrawn = bottomMostPromptMarkerIdx(strings.Split(pane, "\n")) != -1
-		submitted := false
+		left := false
 		if multiLine {
-			submitted = multiLineSubmitted(pane, payload)
+			left = multiLineSubmitted(pane, payload)
 		} else {
-			submitted = !lineStillAtPrompt(pane, trimmed)
+			left = !lineStillAtPrompt(pane, trimmed)
 		}
-		if submitted {
+		clearedWithoutReceipt = false
+		if left {
 			// The payload has left the composer, so it IS delivered. The only
 			// question left is which kind of delivered, and the agent answers it
 			// on the pane: a message consumed by an idle agent leaves no queue
@@ -554,11 +566,17 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 			// verdict, never turn a negative into "delivered". A queued marker
 			// that rots (the hint text is a placeholder, and placeholders rotate
 			// — BOS-597) degrades to plain OutcomeSubmitted, which is still
-			// "delivered, do not resend". Nothing is lost but the label.
+			// "delivered, do not resend". Nothing is lost but the label. With
+			// receiptRequired it is more than a label: a queued payload has no
+			// receipt until the running turn ends, so this check is what keeps
+			// it from reading unconfirmed.
 			if paneShowsPayloadQueued(pane, payload) {
 				return OutcomeQueued, fmt.Errorf("a payload left the composer on tmux session %q into the agent's queued-message list, so it was accepted behind the running turn: %w", sessionName, errSubmissionQueued)
 			}
-			return OutcomeSubmitted, nil
+			if !receiptRequired {
+				return OutcomeSubmitted, nil
+			}
+			clearedWithoutReceipt = true
 		}
 
 		select {
@@ -568,6 +586,9 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 			if !composerDrawn {
 				// The observation, not the verdict: see composerVanishedErr.
 				return OutcomeUnconfirmed, fmt.Errorf("no live composer was drawn on tmux session %q within the verify budget, so the payload's state is unknown", sessionName)
+			}
+			if clearedWithoutReceipt {
+				return OutcomeUnconfirmed, fmt.Errorf("the composer on tmux session %q reads empty but the agent recorded no new turn within the verify budget, so the payload's state is unknown", sessionName)
 			}
 			// A live composer still rendering the payload is NOT delivered, and
 			// this branch says so unconditionally. That is a correction: an
@@ -1107,10 +1128,16 @@ var queuedMessagesHintRe = regexp.MustCompile(`(?i)queued messages?\b`)
 // to THIS payload rather than to some other message the agent had already
 // queued.
 //
+// Codex marks its queue differently: a header row and "↳" items above a
+// composer cleared to a placeholder (codexQueueHoldsPayload).
+//
 // Every failure of either half degrades to plain OutcomeSubmitted — still
 // "delivered, do not resend" — because the caller consults this only after the
 // payload has been positively observed leaving the composer. It can refine a
-// delivered verdict; it can never manufacture one.
+// delivered verdict; it can never manufacture one. The exception is a send whose
+// receipt is required (Codex): a queued message reaches the rollout only when
+// the running turn ends, so a queue this misses reads UNCONFIRMED, and the
+// codex shape must be recaptured when the codex TUI changes it.
 //
 // That bound is what makes the echo half's imprecision affordable. It inherits
 // composerHoldsPayload's prefix matching, which a very short queued line can
@@ -1125,11 +1152,50 @@ func paneShowsPayloadQueued(pane, payload string) bool {
 	if markerIdx == -1 {
 		return false
 	}
-	hint, ok := composerContent(strings.TrimSpace(lines[markerIdx]))
-	if !ok || !queuedMessagesHintRe.MatchString(hint) {
+	composer := strings.TrimSpace(lines[markerIdx])
+	hint, ok := composerContent(composer)
+	if !ok {
 		return false
 	}
-	return payloadEchoedAbove(lines[:markerIdx], payload)
+	if queuedMessagesHintRe.MatchString(hint) {
+		return payloadEchoedAbove(lines[:markerIdx], payload)
+	}
+	return !composerHoldsPayload(composer, payload) && codexQueueHoldsPayload(lines[:markerIdx], payload)
+}
+
+// codexQueueHeaderRe matches the header codex draws over the messages it holds
+// behind a running turn. On codex-cli 0.161.0 the header reads "• Messages to be
+// submitted after next tool call (press esc to interrupt and send immediately)",
+// each held message follows on an indented "↳ <message>" row, and the composer
+// below is cleared to a placeholder such as "› Ask Codex to do anything"
+// (testdata/panes/codex_queued_midturn_real.txt, from capture_codex_queued.sh).
+var codexQueueHeaderRe = regexp.MustCompile(`(?i)^•\s+messages? to be submitted\b`)
+
+// codexQueuedItemGlyph leads each message in codex's queue block.
+const codexQueuedItemGlyph = "↳"
+
+// codexQueueHoldsPayload reports whether the rows directly above codex's live
+// composer are its queue block with the payload as one of its items. Walking up
+// from the composer, only blank rows, "↳" items and their indented wrap rows may
+// sit between it and the header, so the header phrase quoted anywhere else in
+// the transcript cannot produce a queued verdict.
+func codexQueueHoldsPayload(above []string, payload string) bool {
+	held := false
+	for i := len(above) - 1; i >= 0; i-- {
+		row := strings.TrimSpace(above[i])
+		switch {
+		case codexQueueHeaderRe.MatchString(row):
+			return held
+		case row == "":
+		case strings.HasPrefix(row, codexQueuedItemGlyph):
+			item := strings.TrimSpace(strings.TrimPrefix(row, codexQueuedItemGlyph))
+			held = held || contentHoldsPayload(item, payload)
+		case row != above[i]:
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // payloadEchoedAbove reports whether any row above the live composer carries the
@@ -1259,6 +1325,12 @@ func composerHoldsPayload(trimmedMarkerRow, payload string) bool {
 	if collapsedPastePlaceholderRe.MatchString(content) {
 		return true
 	}
+	return contentHoldsPayload(content, payload)
+}
+
+// contentHoldsPayload reports whether a row's text, with its glyph already
+// stripped, is the payload's first line or a wrapped prefix of it.
+func contentHoldsPayload(content, payload string) bool {
 	first := ""
 	for _, l := range strings.Split(payload, "\n") {
 		if t := strings.TrimSpace(l); t != "" {
@@ -1266,7 +1338,7 @@ func composerHoldsPayload(trimmedMarkerRow, payload string) bool {
 			break
 		}
 	}
-	if first == "" {
+	if content == "" || first == "" {
 		return false
 	}
 	return strings.HasPrefix(first, content) || strings.HasPrefix(content, first)

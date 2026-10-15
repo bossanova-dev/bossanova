@@ -44,7 +44,7 @@ func redactURLCredentials(s string) string {
 // RedactURLCredentials is redactURLCredentials for callers outside package
 // git that log a URL bossd did not build itself — a repo's origin as read back
 // from `git remote get-url origin`, which keeps any userinfo the clone URL
-// carried. Logging only: never pass its result to git or store it.
+// carried. For logging or error text — never pass its result to git or store it.
 func RedactURLCredentials(s string) string {
 	return redactURLCredentials(s)
 }

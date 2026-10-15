@@ -224,7 +224,7 @@ func (l *Lifecycle) bootstrapStrandIsDead(sess *models.Session, phase reapPhase,
 // artifacts are being abandoned and name them, not to promise a retry that
 // cannot happen.
 func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess *models.Session) {
-	if sess.RepoID == "" || sess.BranchName == "" || l.worktrees == nil || l.repos == nil {
+	if sess.RepoID == "" || l.worktrees == nil || l.repos == nil {
 		return
 	}
 	repo, err := l.repos.Get(ctx, sess.RepoID)
@@ -237,8 +237,12 @@ func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess 
 	// `git branch -D` refuses a branch still checked out in a registered
 	// worktree, and `worktree prune` only unregisters worktrees whose directory
 	// is already gone — which a stranded bootstrap's is not.
+	if sess.WorktreeCreatedAt == nil || sess.WorktreePath == "" {
+		l.logger.Warn().Str("worktree", sess.WorktreePath).Msg("worktree ownership unknown; not purged")
+		return
+	}
 	ours := l.strandedBranchIsOurs(ctx, sess, repo)
-	if err := l.worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.BranchName); err != nil {
+	if err := l.worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.WorktreePath); err != nil {
 		// A purge that did not run leaves the worktree registered, and
 		// `git branch -D` refuses a branch checked out in one, so reaping anyway
 		// would log a generic delete failure and leak the branch behind it.
@@ -280,55 +284,14 @@ func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess 
 	}
 }
 
-// strandedBranchIsOurs reports whether the reaper may force-delete this
-// session's branch. ReapLocalBranches is `git branch -D`, which does not ask,
-// so every "probably" here has to resolve to "no".
-//
-// A PR number means the branch is the PR's head (dependabot), never ours.
-//
-// The first real test is the same one the server's failure cleanup applies: a
-// RECORDED worktree path. A row's branch_name is written at INSERT time from the
-// request, BEFORE Create has checked whether that branch already exists — so a
-// create naming a pre-existing branch, killed by a daemon restart before Create
-// could refuse it with ErrBranchExists, leaves a row pointing at a branch this
-// session never created. worktree_path is only ever written by
-// recordCreatedWorktree, from the OnWorktreeReady hook that fires once
-// `git worktree add -b` has landed — an add that either MADE the branch or
-// failed with ErrBranchExists. So a recorded path is proof this attempt created
-// the branch, where the name alone is only a request.
-//
-// Ancestry alone was not that proof, which is why this test is here. It proves
-// no unique commits are lost, not ownership of the ref: a user's own branch,
-// fully merged into the base, passes BranchSafeToDelete just as a freshly
-// created one does. The daemon dying between the INSERT and `git worktree add`
-// leaves exactly that row — an explicit branch name, no worktree path — and
-// reaping on ancestry there force-deletes a branch this bootstrap never made.
-// Requiring the recorded proof costs nothing real: with no successful add there
-// is no worktree to purge and no branch of ours to reap.
-//
-// The ancestry check below is kept BEHIND that proof rather than replaced by it.
-// It answers a different question — whether the branch we created has since
-// acquired work worth keeping (a setup script that commits, a fallback create) —
-// and dropping it would trade one over-broad delete for another.
-//
-// A branch a bootstrap created carries no commits of its own, so it is an
-// ancestor of the base; one carrying work is an ancestor of neither ref below.
-//
-// Both refs are checked because either can be the fresher one. Create branches
-// from origin/<base> and FetchBase writes only the REMOTE-tracking ref, so a
-// freshly created branch is routinely AHEAD of the local base — checking
-// refs/heads/<base> alone reports "not an ancestor" for exactly the branches
-// this reaper exists to clean up. The local base can equally be ahead after a
-// merge, so neither ref alone is sufficient.
-//
-// Fail-safe: an unresolvable base, or an ancestry check that errors on both
-// refs, leaves the branch alone. An orphaned branch is recoverable; a deleted
-// one is not.
+// strandedBranchIsOurs requires recorded fresh-branch ownership and no PR.
+// Ancestry is checked against both local and remote base refs so a stale local
+// base cannot strand a branch, while a branch with unique work is preserved.
 func (l *Lifecycle) strandedBranchIsOurs(ctx context.Context, sess *models.Session, repo *models.Repo) bool {
 	if sess.PRNumber != nil {
 		return false
 	}
-	if sess.WorktreePath == "" {
+	if sess.WorktreePath == "" || !sess.IsBranchCreated {
 		// No `git worktree add` ever landed for this row, so the branch it names
 		// is a request, not something this bootstrap made. Debug, not Warn: for
 		// the row shape this fires on there is nothing on disk to leak, so it is

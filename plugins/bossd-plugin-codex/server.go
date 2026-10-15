@@ -391,6 +391,12 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 			args = append(args, "-c", "model_reasoning_effort="+effort)
 		}
 	}
+	// bossd types a live-pane send with one `send-keys -l` and presses Enter
+	// straight after. Codex reads 3+ chars inside 8ms as a paste burst and turns
+	// an Enter in the burst's suppress window into a literal newline, leaving the
+	// message unsubmitted. The `tui.` key outranks a top-level
+	// `disable_paste_burst` in codex's config resolution.
+	args = append(args, "-c", "tui.disable_paste_burst=true")
 	// Pre-trust the worktree only when bossd says the local user trusts the
 	// repo (BOS-1562). Codex project trust is the only gate on a repo's
 	// .codex/config.toml (MCP server commands, model provider), so a launch

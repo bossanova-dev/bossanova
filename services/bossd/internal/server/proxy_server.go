@@ -401,7 +401,8 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 // Before that bind it probes the fixed port (fixedPortHeldByLiveListener): if a
 // live listener already accepts there, it never co-binds — SO_REUSEPORT would
 // otherwise let a second bossd share the port on Darwin — and takes the same
-// ephemeral fallback (BOS-1530).
+// ephemeral fallback (BOS-1530). The probe and bind run under a per-port
+// cross-process lock (BOS-1617).
 //
 // p.port == 0 keeps today's OS-assigned ephemeral bind as an explicit opt-out.
 func (p *ProxyServer) Listen() error {
@@ -410,27 +411,8 @@ func (p *ProxyServer) Listen() error {
 	var ln net.Listener
 	var err error
 	if p.port > 0 {
-		addr := fmt.Sprintf("127.0.0.1:%d", p.port)
-		if fixedPortHeldByLiveListener(addr, fixedPortProbeTimeout) {
-			// Another process is actively serving the fixed port — most
-			// likely a second bossd (a verify stack or a dev daemon) with its
-			// own data dir. Co-binding it would let SO_REUSEPORT (Darwin)
-			// route the live daemon's panes to this later-bound process's
-			// empty registry, which 401s them as unknown tokens (BOS-1530).
-			// Take the ephemeral fallback instead. Logged at ERROR: whatever
-			// holds the port receives every pane still baked to it (BOS-1563).
-			p.fixedPortLost = true
-			p.logger.Error().Int("configured_port", p.port).
-				Msg("failover proxy: another listener already holds the fixed port (likely a second bossd, such as a verify stack or dev daemon, or a foreign process); refusing to co-bind, falling back to an ephemeral port")
-			ln, err = lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-		} else if ln, err = lc.Listen(context.Background(), "tcp", addr); err != nil {
-			// Non-fatal: the fixed port is held (EADDRINUSE) or otherwise
-			// unbindable. Fall back to an ephemeral port so bossd still starts;
-			// the startup sweep kills any panes baked to the now-stale port
-			// (BOS-1563). Port() reports whatever actually bound.
-			p.fixedPortLost = true
-			p.logger.Error().Err(err).Int("configured_port", p.port).
-				Msg("failover proxy: fixed port unavailable, falling back to an ephemeral port")
+		ln, p.fixedPortLost, err = p.listenFixed(&lc)
+		if p.fixedPortLost {
 			ln, err = lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 		}
 	} else {
@@ -451,6 +433,34 @@ func (p *ProxyServer) Listen() error {
 	return nil
 }
 
+// listenFixed releases the port lock before the caller's ephemeral fallback.
+func (p *ProxyServer) listenFixed(lc *net.ListenConfig) (net.Listener, bool, error) {
+	release, err := acquireFixedPortLock(p.port, fixedPortLockWait)
+	if err != nil {
+		p.logger.Warn().Err(err).Int("configured_port", p.port).
+			Msg("failover proxy: fixed port lock unavailable; probing and binding without serialization")
+	} else {
+		defer release()
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", p.port)
+	held := fixedPortHeldByLiveListener(addr, fixedPortProbeTimeout)
+	if afterFixedPortProbe != nil {
+		afterFixedPortProbe(addr)
+	}
+	if held {
+		p.logger.Error().Int("configured_port", p.port).
+			Msg("failover proxy: another listener already holds the fixed port (likely a second bossd, such as a verify stack or dev daemon, or a foreign process); refusing to co-bind, falling back to an ephemeral port")
+		return nil, true, nil
+	}
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		p.logger.Error().Err(err).Int("configured_port", p.port).
+			Msg("failover proxy: fixed port unavailable, falling back to an ephemeral port")
+		return nil, true, err
+	}
+	return ln, false, nil
+}
+
 // FixedPortLost reports whether Listen was configured with a fixed port but
 // had to fall back to an ephemeral one because another listener held the
 // port or it was otherwise unbindable (BOS-1563). Panes launched before the
@@ -460,6 +470,9 @@ func (p *ProxyServer) Listen() error {
 func (p *ProxyServer) FixedPortLost() bool {
 	return p.fixedPortLost
 }
+
+// afterFixedPortProbe is a test seam for the probe-to-bind window.
+var afterFixedPortProbe func(addr string)
 
 // fixedPortProbeTimeout bounds the live-listener probe Listen runs before
 // binding a fixed port. Loopback accepts are sub-millisecond; the budget only
@@ -479,10 +492,11 @@ const fixedPortProbeTimeout = 250 * time.Millisecond
 // holds its data dir's flock, which the old daemon releases at exit, by which
 // time the old listener is closed and the dial is refused.
 //
-// TOCTOU: a sub-millisecond window separates the dial from the bind. If two
-// daemons configured with the same fixed port both probe inside it, both bind
-// and the later binder receives every connection; closing that needs a
-// cross-process lock on the port, which is accepted as out of scope here.
+// The probe-to-bind window is serialized by an exclusive per-port flock at
+// /tmp/bossd-failover-proxy-<port>.lock, shared across HOME and TMPDIR values.
+// It is released after bind: the kernel completes handshakes into the backlog
+// before Serve starts, so later probes see the bound listener. Lock failures
+// warn and degrade to the unlocked probe and bind to preserve startup.
 func fixedPortHeldByLiveListener(addr string, timeout time.Duration) bool {
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {

@@ -116,6 +116,23 @@ func WithReadTimeout(d time.Duration) Option {
 	}
 }
 
+// WithOnChange notifies consumers after the current summary changes or a new
+// head invalidates it. The callback runs synchronously outside the reader lock,
+// so it may read the cache and publish a newly hydrated session.
+func WithOnChange(onChange func(context.Context, string)) Option {
+	return func(r *Reader) { r.onChange = onChange }
+}
+
+// SetOnChange wires a consumer after its dependencies have been constructed.
+func (r *Reader) SetOnChange(onChange func(context.Context, string)) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.onChange = onChange
+	r.mu.Unlock()
+}
+
 // headState is what the reader knows about one session's current head.
 type headState struct {
 	head      string
@@ -178,6 +195,7 @@ type Reader struct {
 	interval time.Duration
 	// readTimeout bounds each comment read.
 	readTimeout time.Duration
+	onChange    func(context.Context, string)
 
 	mu       sync.Mutex
 	sessions map[string]*headState
@@ -229,6 +247,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		r.mu.Unlock()
 		return
 	}
+	invalidated := st != nil && !sameHead(st.head, head) && st.entry != nil
 	if st == nil || !sameHead(st.head, head) {
 		st = &headState{head: head}
 		r.sessions[obs.SessionID] = st
@@ -249,13 +268,17 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 			st.endedRead = true
 		}
 	}
+	onChange := r.onChange
 	r.mu.Unlock()
+	if invalidated && onChange != nil {
+		onChange(ctx, obs.SessionID)
+	}
 	if !due {
 		return
 	}
 
 	entry, err := r.read(ctx, obs, head)
-	r.store(obs.SessionID, st, seq, entry, err)
+	r.store(ctx, obs.SessionID, st, seq, entry, err)
 }
 
 // schedule marks a read of st's head as started at now and returns its
@@ -274,16 +297,26 @@ func (st *headState) schedule(now time.Time) uint64 {
 // overwrite the newer result, for good on a head that is not read again. A
 // failed read says nothing about the comments, so it keeps the head's
 // known-good entry; a successful read that finds no usable comment clears it.
-func (r *Reader) store(sessionID string, st *headState, seq uint64, entry *Entry, err error) {
+func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq uint64, entry *Entry, err error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	cur := r.sessions[sessionID]
 	if cur != st || cur.seq != seq {
+		r.mu.Unlock()
 		return
 	}
 	cur.failed = err != nil
+	changed := false
 	if err == nil {
+		changed = (cur.entry == nil) != (entry == nil)
+		if cur.entry != nil && entry != nil {
+			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
+		}
 		cur.entry = entry
+	}
+	onChange := r.onChange
+	r.mu.Unlock()
+	if changed && onChange != nil {
+		onChange(ctx, sessionID)
 	}
 }
 

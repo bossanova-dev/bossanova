@@ -27,18 +27,22 @@ import (
 )
 
 // recordChatStoreFake satisfies db.AgentChatStore for RecordChat's needs.
-// GetByAgentSessionID always returns sql.ErrNoRows so the handler takes
+// GetByAgentSessionID returns sql.ErrNoRows unless an existing row is set, so the handler takes
 // the Create branch (the path under test). Create stashes the params and
 // synthesizes an AgentChat row that mirrors what SQLite would persist —
 // crucially preserving the AgentName the handler passed through, since
 // that's exactly what we're asserting on.
 type recordChatStoreFake struct {
 	db.AgentChatStore
-	mu      sync.Mutex
-	created *db.CreateAgentChatParams
+	mu       sync.Mutex
+	created  *db.CreateAgentChatParams
+	existing *models.AgentChat
 }
 
 func (f *recordChatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
+	if f.existing != nil {
+		return f.existing, nil
+	}
 	return nil, sql.ErrNoRows
 }
 
@@ -112,7 +116,7 @@ func TestRecordChat_InheritsSessionAgentWhenUnset(t *testing.T) {
 
 	resp, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      "s1",
-		AgentSessionId: "agent-2",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e62",
 		Title:          "hello",
 		// AgentName intentionally unset.
 	}))
@@ -136,7 +140,7 @@ func TestRecordChat_OverrideWinsEvenWhenSessionDiffers(t *testing.T) {
 
 	resp, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      "s1",
-		AgentSessionId: "agent-3",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e63",
 		Title:          "hello",
 		AgentName:      strPtr("claude"),
 	}))
@@ -166,7 +170,7 @@ func TestRecordChat_TmuxSpawnFailureReturnsInternal(t *testing.T) {
 
 	_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      "s1",
-		AgentSessionId: "agent-4",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e64",
 		Title:          "hello",
 	}))
 	if err == nil {
@@ -786,10 +790,10 @@ func TestRecordChat_RejectsGlobShapedAgentSessionID(t *testing.T) {
 	}
 }
 
-// TestRecordChat_CodexRequiresCanonicalUUID: the Codex plugin resolves the
+// TestRecordChat_FileTranscriptAgentsRequireCanonicalUUID: the Codex plugin resolves the
 // transcript from this id, so a Codex chat only accepts a canonical lowercase
 // UUID — whether Codex comes from the override or the session's agent.
-func TestRecordChat_CodexRequiresCanonicalUUID(t *testing.T) {
+func TestRecordChat_FileTranscriptAgentsRequireCanonicalUUID(t *testing.T) {
 	const valid = "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f"
 	for _, tc := range []struct {
 		name     string
@@ -798,6 +802,9 @@ func TestRecordChat_CodexRequiresCanonicalUUID(t *testing.T) {
 	}{
 		{"override", strPtr("codex"), "claude"},
 		{"inherited", nil, "codex"},
+		{"claude override", strPtr("claude"), "codex"},
+		{"claude inherited", nil, "claude"},
+		{"claude default", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, id := range []string{"*", "agent-1", "0199A3C1-7B2E-7D40-9C55-1A2B3C4D5E6F", "{" + valid + "}", valid + "x"} {
@@ -827,5 +834,32 @@ func TestRecordChat_CodexRequiresCanonicalUUID(t *testing.T) {
 				t.Fatalf("canonical UUID not recorded: %+v", chats.created)
 			}
 		})
+	}
+}
+
+func TestRecordChat_ExistingFileTranscriptChatRejectsInvalidUUID(t *testing.T) {
+	for _, agentName := range []string{"claude", "codex", ""} {
+		t.Run(agentName, func(t *testing.T) {
+			srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: agentName})
+			chats.existing = &models.AgentChat{SessionID: "s1", AgentSessionID: "x", AgentName: agentName}
+			_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "x"}))
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("RecordChat legacy id code = %v, err %v", connect.CodeOf(err), err)
+			}
+			if chats.created != nil {
+				t.Fatal("invalid legacy id created a row")
+			}
+		})
+	}
+}
+
+func TestRecordChat_OpenCodeDoesNotRequireUUID(t *testing.T) {
+	srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: "opencode"})
+	_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: "s1", AgentSessionId: "ses_example"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chats.created == nil || chats.created.AgentSessionID != "ses_example" {
+		t.Fatalf("OpenCode id not recorded: %+v", chats.created)
 	}
 }

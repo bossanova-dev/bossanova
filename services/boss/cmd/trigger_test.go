@@ -301,6 +301,12 @@ func TestTriggerCommands(t *testing.T) {
 		if fake.listReq.GetOrganizationId() != "org-9" {
 			t.Errorf("ls request = %v, want org-9", fake.listReq)
 		}
+		if _, err := runTriggerCLI(t, fake, "", "ls", "--all-members", "--org", "org-9"); err != nil {
+			t.Fatalf("ls --all-members: %v", err)
+		}
+		if !fake.listReq.GetShouldIncludeMemberTriggers() || fake.listReq.GetOrganizationId() != "org-9" {
+			t.Errorf("ls --all-members request = %v, want should_include_member_triggers in org-9", fake.listReq)
+		}
 		for _, want := range []string{"tr-1", "deploy hook", "http", "first-available", "launched"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("ls output missing %q:\n%s", want, out)
@@ -313,6 +319,9 @@ func TestTriggerCommands(t *testing.T) {
 		}
 		if fake.listReq.OrganizationId != nil {
 			t.Errorf("ls without --org sent organization_id %q", fake.listReq.GetOrganizationId())
+		}
+		if fake.listReq.ShouldIncludeMemberTriggers != nil {
+			t.Errorf("ls without --all-members sent should_include_member_triggers=%v", fake.listReq.GetShouldIncludeMemberTriggers())
 		}
 		obj := decodeJSONObject(t, out)
 		var triggers []map[string]json.RawMessage

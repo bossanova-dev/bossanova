@@ -462,7 +462,7 @@ func TestHostedToolSurfaceSizeRatchet(t *testing.T) {
 
 	const (
 		maxHostedToolCount   = 13
-		maxHostedSchemaBytes = 10484
+		maxHostedSchemaBytes = 10483
 	)
 
 	hosted := map[string]bool{}

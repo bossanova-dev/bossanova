@@ -31,7 +31,12 @@ var ScriptRelPath = filepath.Join("boss-verify", "toolbox", "verify-gate.mjs")
 // its read-back and the label write); anything slower is a hang. A timeout after
 // the record was posted leaves its effect unknown, so the operator re-runs
 // approve to confirm.
-const DefaultTimeout = 120 * time.Second
+//
+// bossd runs the verbs inside a unary RPC, so this stays below the daemon's
+// 120s http.Server WriteTimeout: a verb that outlived it would have its
+// response dropped, and the client would see a transport error instead of the
+// timeout that tells the operator to re-run approve.
+const DefaultTimeout = 100 * time.Second
 
 const waitDelay = 5 * time.Second
 
@@ -89,21 +94,15 @@ type SendBackResult struct {
 }
 
 // Bridge runs verify-gate.mjs. The zero value uses `node` from PATH, locates the
-// script under the installed skill trees and applies DefaultTimeout.
+// script under the installed skill trees, applies DefaultTimeout and lets the
+// child inherit this process's environment.
 type Bridge struct {
 	Node    string        // node executable; empty looks `node` up on PATH
 	Script  string        // verify-gate.mjs; empty locates the installed copy
 	Timeout time.Duration // zero means DefaultTimeout
-}
-
-// Approve runs `approve` through a default Bridge.
-func Approve(ctx context.Context, t Target) (ApproveResult, error) {
-	return (&Bridge{}).Approve(ctx, t)
-}
-
-// SendBack runs `send-back` through a default Bridge.
-func SendBack(ctx context.Context, t Target, note string) (SendBackResult, error) {
-	return (&Bridge{}).SendBack(ctx, t, note)
+	// Env is the child's whole environment, as exec.Cmd.Env takes it; nil
+	// inherits this process's. Values are secret-bearing and never logged.
+	Env []string
 }
 
 // Locate finds the installed verify-gate.mjs the way the skills find their
@@ -259,6 +258,7 @@ func (b *Bridge) run(ctx context.Context, dir string, args []string) ([]byte, er
 	defer cancel()
 	cmd := exec.CommandContext(ctx, nodePath, append([]string{script}, args...)...)
 	cmd.Dir = dir
+	cmd.Env = b.Env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

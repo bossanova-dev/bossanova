@@ -41,7 +41,8 @@ const darwinReusePortAllowsCrossUserCoBind = false
 // verify stack or a dev daemon with its own data dir is a second, fully live
 // bossd (BOS-1530). The invariant that keeps this safe is that no second
 // LISTENER is ever co-bound to the fixed port: ProxyServer.Listen probes the
-// port first (fixedPortHeldByLiveListener) and, when a live listener answers,
+// port first (fixedPortHeldByLiveListener) under a per-port cross-process
+// lock covering probe and bind, and, when a live listener answers,
 // falls back to an ephemeral port instead of binding. A same-data-dir restart
 // still re-binds immediately, because the replacement only reaches Listen after
 // taking the flock the old daemon releases at exit. Returned as

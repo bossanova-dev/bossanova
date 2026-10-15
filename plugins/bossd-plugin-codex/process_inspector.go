@@ -71,6 +71,28 @@ var defaultProcessInspector processInspector = osProcessInspector{}
 // must never wedge it.
 const processInspectTimeout = 2 * time.Second
 
+// inspectToolDirs are the system directories `ps` and `lsof` live in. bossd
+// runs under launchd or systemd with a minimal PATH that need not include
+// them: macOS ships lsof only as /usr/sbin/lsof, and a launchd PATH without
+// /usr/sbin made every launch probe fail, so the daemon killed every codex
+// session it started.
+var inspectToolDirs = []string{"/usr/sbin", "/sbin", "/usr/bin", "/bin"}
+
+// inspectTool returns name as found on PATH, else at its first executable
+// location in inspectToolDirs, else name unchanged so exec reports the miss.
+func inspectTool(name string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	for _, dir := range inspectToolDirs {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return path
+		}
+	}
+	return name
+}
+
 // rolloutUUIDRe matches the trailing canonical UUID of a codex rollout
 // filename. Both the ISO-8601 timestamp segment and the UUID contain dashes,
 // so we anchor on the `.jsonl` suffix and pull the final 36-char UUID rather
@@ -278,7 +300,9 @@ func descendantPIDs(pid int) []int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), processInspectTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-Ao", "pid=,ppid=").Output()
+	// #nosec G204 -- ps -Ao pid=,ppid=; system ps resolved by inspectTool, constant args, no shell
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	out, err := exec.CommandContext(ctx, inspectTool("ps"), "-Ao", "pid=,ppid=").Output()
 	if err != nil {
 		return nil
 	}
@@ -355,9 +379,9 @@ func openFilesFromLsof(pid int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), processInspectTimeout)
 	defer cancel()
 	// -Fn emits one field per line; name lines are prefixed with 'n'.
-	// #nosec G204 -- lsof -p <pid> -Fn; const cmd + int pid; no shell; not attacker-controllable
+	// #nosec G204 -- lsof -p <pid> -Fn; system lsof resolved by inspectTool + int pid; no shell; not attacker-controllable
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	out, err := exec.CommandContext(ctx, "lsof", "-p", strconv.Itoa(pid), "-Fn").Output()
+	out, err := exec.CommandContext(ctx, inspectTool("lsof"), "-p", strconv.Itoa(pid), "-Fn").Output()
 	if err != nil {
 		// lsof exits non-zero when some fds are unreachable even though it
 		// printed usable name lines to stdout; parse whatever we got. With no

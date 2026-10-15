@@ -7,9 +7,13 @@ package views
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"connectrpc.com/connect"
+
+	"github.com/recurser/boss/internal/prverdict"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -192,6 +196,28 @@ func (m ChatPickerModel) handleMergeResult(msg mergeResultMsg) (tea.Model, tea.C
 		// Optimistic latch: the daemon will archive on the merge webhook.
 		// Show "Archiving…" immediately, before archive_pending round-trips.
 		m.optimisticArchiveLatch = true
+	}
+	return m, nil
+}
+
+// handleApproveResult lands the approval outcome as the status line, worded as
+// `boss pr approve` words it.
+func (m ChatPickerModel) handleApproveResult(msg approveResultMsg) (tea.Model, tea.Cmd) {
+	if msg.sessionID != m.sessionID {
+		return m, nil // orphan completion from a session the user navigated away from
+	}
+	m.approving = false
+	r := msg.result
+	switch {
+	case connect.CodeOf(msg.err) == connect.CodeDeadlineExceeded:
+		m.statusMsg = rpcStatusMessage("Couldn't confirm the approval", msg.err) + "; an approval record may already be posted, so approve again to confirm"
+	case msg.err != nil:
+		m.statusMsg = rpcStatusMessage("Couldn't approve", msg.err)
+	case !r.GetIsApproved():
+		m.statusMsg = prverdict.ApproveRefusal(msg.pr, r)
+	default:
+		m.approved = true
+		m.statusNote = strings.Join(prverdict.ApproveLines(msg.pr, r), " ")
 	}
 	return m, nil
 }

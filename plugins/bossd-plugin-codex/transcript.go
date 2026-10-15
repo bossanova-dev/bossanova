@@ -17,6 +17,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agentsession"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/jsonlscan"
 )
@@ -65,12 +66,6 @@ func codexSessionsRoot() (string, error) {
 	return filepath.Join(dir, "sessions"), nil
 }
 
-// canonicalSessionUUID is the only agent session id shape a rollout lookup
-// accepts. The id is matched against rollout filenames, so anything looser —
-// glob metacharacters, case variants, braces — would widen the match to other
-// sessions' transcripts.
-var canonicalSessionUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
 // transcriptPath resolves the on-disk codex rollout JSONL file for the given
 // agent session UUID under the codex sessions root (honoring CODEX_HOME; see
 // codexSessionsRoot). Codex shards rollouts by date, not by working directory,
@@ -104,7 +99,7 @@ func transcriptPath(workDir, agentSessionID string) (string, error) {
 // rather than failing — the freshest transcript is the one the daemon's status
 // path should read.
 func findRolloutPathInWorkDir(root, workDir, agentSessionID string) (string, error) {
-	if !canonicalSessionUUID.MatchString(agentSessionID) {
+	if !agentsession.IsCanonicalUUID(agentSessionID) {
 		return "", fmt.Errorf("invalid codex session id %q: want a canonical lowercase UUID", agentSessionID)
 	}
 	suffix := "-" + agentSessionID + ".jsonl"
@@ -695,6 +690,41 @@ func resolveLegacyInteractiveSessionIDAt(root, workDir string, chatCreatedAt, no
 type codexEventMsgPayload struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Item is the turn on codex builds that record it as an item_completed
+	// event instead of user_message/agent_message (0.160 onward).
+	Item *codexCompletedItem `json:"item"`
+}
+
+type codexCompletedItem struct {
+	Type    string `json:"type"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// turn returns the payload in the legacy user_message/agent_message shape, so
+// every reader handles both rollout formats. An item_completed event that is
+// not a UserMessage or AgentMessage keeps its own type and no text.
+func (p codexEventMsgPayload) turn() (typ, message string) {
+	if p.Type != "item_completed" || p.Item == nil {
+		return p.Type, p.Message
+	}
+	switch p.Item.Type {
+	case "UserMessage":
+		typ = "user_message"
+	case "AgentMessage":
+		typ = "agent_message"
+	default:
+		return p.Type, ""
+	}
+	var parts []string
+	for _, c := range p.Item.Content {
+		if strings.EqualFold(c.Type, "text") && c.Text != "" {
+			parts = append(parts, c.Text)
+		}
+	}
+	return typ, strings.Join(parts, "\n")
 }
 
 // codexResponseItemPayload is the payload shape for type:"response_item".
@@ -769,9 +799,10 @@ func lastTurnIsUser(path string) bool {
 			if err := json.Unmarshal(env.Payload, &p); err != nil {
 				continue
 			}
-			switch p.Type {
+			typ, msg := p.turn()
+			switch typ {
 			case "user_message":
-				if strings.TrimSpace(p.Message) != "" {
+				if strings.TrimSpace(msg) != "" {
 					return true
 				}
 			case "agent_message":
@@ -920,8 +951,8 @@ func chatTitleAtPathWithLimits(path string, chunkBytes, maxLineBytes int) string
 			if err := json.Unmarshal(env.Payload, &p); err != nil {
 				continue
 			}
-			if p.Type == "user_message" {
-				if t := truncate(firstLine(stripXMLTags(p.Message))); t != "" {
+			if typ, msg := p.turn(); typ == "user_message" {
+				if t := truncate(firstLine(stripXMLTags(msg))); t != "" {
 					return t
 				}
 			}
@@ -1039,7 +1070,8 @@ func truncate(s string) string {
 
 // parseRolloutMessages reads all chat turns from the codex rollout JSONL at
 // path and returns them as ordered []*bossanovav1.ChatMessage. Only
-// event_msg/user_message and event_msg/agent_message envelopes are converted;
+// event_msg/user_message and event_msg/agent_message envelopes, or on newer
+// codex their item_completed UserMessage/AgentMessage form, are converted;
 // protocol noise (session_meta, turn_context, token_count, response_item,
 // task_complete, function_call*, etc.) is skipped.
 //
@@ -1057,8 +1089,11 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 	}
 	defer func() { _ = f.Close() }()
 
-	var msgs []*bossanovav1.ChatMessage
-	var lastAssistant string
+	// A rollout's turns are legacy events or item_completed items. Both are
+	// collected so a file carrying the two never lists a turn twice: the legacy
+	// events win when present.
+	var legacy, items []*bossanovav1.ChatMessage
+	var lastLegacy, lastItem string
 
 	scanner := jsonlscan.New(f)
 	for scanner.Scan() {
@@ -1073,8 +1108,9 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			continue
 		}
+		typ, message := p.turn()
 		var role string
-		switch p.Type {
+		switch typ {
 		case "user_message":
 			role = "user"
 		case "agent_message":
@@ -1082,21 +1118,32 @@ func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int,
 		default:
 			continue
 		}
-		text := strings.TrimSpace(p.Message)
-		msgs = append(msgs, &bossanovav1.ChatMessage{
+		text := strings.TrimSpace(message)
+		msg := &bossanovav1.ChatMessage{
 			Role:      role,
 			Text:      text,
 			Timestamp: env.Timestamp,
 			Kind:      "text",
-		})
+		}
+		if p.Type == "item_completed" {
+			items = append(items, msg)
+			if role == "assistant" {
+				lastItem = text
+			}
+			continue
+		}
+		legacy = append(legacy, msg)
 		if role == "assistant" {
-			lastAssistant = text
+			lastLegacy = text
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, "", scanner.Skipped(), err
 	}
-	return msgs, lastAssistant, scanner.Skipped(), nil
+	if len(legacy) > 0 {
+		return legacy, lastLegacy, scanner.Skipped(), nil
+	}
+	return items, lastItem, scanner.Skipped(), nil
 }
 
 // readTranscriptAt resolves the rollout JSONL for agentSessionID under root

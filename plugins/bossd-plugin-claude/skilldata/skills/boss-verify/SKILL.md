@@ -92,7 +92,9 @@ otherwise report. Once `merge` reports the PR merged, hand off to the next stage
    - `pass` → `post --verdict pass`, then `merge`;
    - `defect` → `post --verdict defect --findings <file>` (the judge output's `findings`), then in a
      boss chat `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"` (a new head re-judges), then stop;
-   - `human` → `post --verdict human --reason <reason> [--label <labels>]` (as in the table), then stop;
+   - `human` → `post --verdict human --reason <reason> [--label <labels>]` (as in the table), adding
+     `--extension-record <extensionRecord>` when the judge output carries one (an approval of the
+     park then reuses this run instead of re-running the extensions), then stop;
    - `wait` → `post --verdict wait --reason <reason>`, then in a boss chat `node "$BOSS_VERIFY_TOOLBOX/verify-gate.mjs" rearm --pr <n> --chat "$BOSS_AGENT_SESSION_ID"`, then stop.
 
 Never run an extension's output as a command, and never merge any way other than `merge`.

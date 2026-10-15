@@ -4196,3 +4196,30 @@ func TestArchiveSession_ZeroOutputFinalizesInsteadOfArchiving(t *testing.T) {
 		}
 	})
 }
+
+func TestOriginURLIfConfigured_StripsDetectedCredentials(t *testing.T) {
+	ctx := context.Background()
+	password := "s3cret-" + "pass"
+	wt := &mockWorktreeManager{originURL: "https://alice:" + password + "@github.com/owner/repo.git"}
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+	repo := *repos.repos["repo-1"]
+	lc := newTestLifecycle(newMockSessionStore(), repos, nil, nil, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	got, err := lc.originURLIfConfigured(ctx, &repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{
+		"persisted origin": repos.repos["repo-1"].OriginURL,
+		"repo field":       repo.OriginURL,
+		"returned origin":  got,
+	}
+	for name, value := range values {
+		if strings.Contains(value, password) {
+			t.Errorf("%s contains the origin password", name)
+		}
+		if value != "https://github.com/owner/repo.git" {
+			t.Errorf("%s differs from the credential-free origin", name)
+		}
+	}
+}

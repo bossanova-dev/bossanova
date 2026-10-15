@@ -710,6 +710,13 @@ a claim. The prose printed on stderr is human-only and free to change.
 defaults to `true`, so behaviour is unchanged unless you pass
 `--wake-if-asleep=false` to leave a deliberately stopped chat stopped.
 
+`boss chat send` exits 0 whether the message was submitted, queued behind a
+running turn, or left unconfirmed. With `--json` it prints
+`{agent_session_id, tmux_session_name, delivery: {delivered, delivery_state, notice}}`,
+and a driver branches on `delivery.delivery_state`: only
+`DELIVERY_STATE_SUBMITTED` and `DELIVERY_STATE_QUEUED` mean the agent has the
+message.
+
 #### Starting a second chat in a live session
 
 <CommandTabs

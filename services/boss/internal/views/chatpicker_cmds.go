@@ -199,6 +199,19 @@ func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	}
 }
 
+// approveCmd runs ApproveSessionPR off the update loop. Captures everything by
+// value.
+func (m ChatPickerModel) approveCmd() tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	id := m.sessionID
+	pr := int(m.session.GetPrNumber())
+	return func() tea.Msg {
+		result, err := client.ApproveSessionPR(ctx, id, false)
+		return approveResultMsg{sessionID: id, pr: pr, result: result, err: err}
+	}
+}
+
 func (m ChatPickerModel) archiveCmd() tea.Cmd {
 	client := m.client
 	ctx := m.ctx

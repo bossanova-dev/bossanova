@@ -95,6 +95,8 @@ type Session struct {
 	Title                   string
 	Plan                    string
 	WorktreePath            string
+	WorktreeCreatedAt       *time.Time
+	IsBranchCreated         bool
 	BranchName              string
 	BaseBranch              string
 	State                   machine.State

@@ -190,7 +190,7 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-fresh-001",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000067",
 		Title:          "fresh chat",
 	}))
 	if err != nil {
@@ -208,8 +208,8 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 		t.Fatalf("expected `tmux new-session` to fire; calls=%v", fake.calls)
 	}
 	joined := strings.Join(newSession, " ")
-	if !strings.Contains(joined, "claude --session-id claude-fresh-001") {
-		t.Errorf("expected new-session to invoke `claude --session-id claude-fresh-001`, got %q", joined)
+	if !strings.Contains(joined, "claude --session-id 0199a3c1-7b2e-7d40-9c55-000000000067") {
+		t.Errorf("expected new-session to invoke `claude --session-id 0199a3c1-7b2e-7d40-9c55-000000000067`, got %q", joined)
 	}
 	if strings.Contains(joined, "--resume") {
 		t.Errorf("fresh attach should NOT pass --resume; got %q", joined)
@@ -217,7 +217,7 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 
 	// The persisted name on the chat row must match the name returned in
 	// the response — otherwise lifecycle GC paths can't find the session.
-	chat, err := h.AgentChats.GetByAgentSessionID(ctx, "claude-fresh-001")
+	chat, err := h.AgentChats.GetByAgentSessionID(ctx, "0199a3c1-7b2e-7d40-9c55-000000000067")
 	if err != nil {
 		t.Fatalf("GetByAgentSessionID: %v", err)
 	}
@@ -238,11 +238,11 @@ func TestE2E_RecordChat_ResumePassesResumeFlag(t *testing.T) {
 	}
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
-	writeFakeTranscript(t, "/tmp/worktrees/tmux-app/tmux-recordchat", "claude-resume-007")
+	writeFakeTranscript(t, "/tmp/worktrees/tmux-app/tmux-recordchat", "0199a3c1-7b2e-7d40-9c55-000000000068")
 
 	_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-resume-007",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000068",
 		Title:          "resumed",
 		Resume:         true,
 	}))
@@ -255,7 +255,7 @@ func TestE2E_RecordChat_ResumePassesResumeFlag(t *testing.T) {
 		t.Fatalf("expected `tmux new-session` to fire; calls=%v", fake.calls)
 	}
 	joined := strings.Join(newSession, " ")
-	if !strings.Contains(joined, "claude --resume claude-resume-007") {
+	if !strings.Contains(joined, "claude --resume 0199a3c1-7b2e-7d40-9c55-000000000068") {
 		t.Errorf("expected --resume in new-session command, got %q", joined)
 	}
 	if strings.Contains(joined, "--session-id") {
@@ -277,7 +277,7 @@ func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
 
 	first, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-idem-042",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000069",
 		Title:          "first",
 	}))
 	if err != nil {
@@ -293,7 +293,7 @@ func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
 
 	second, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-idem-042",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-000000000069",
 		Title:          "ignored second title",
 	}))
 	if err != nil {
@@ -354,7 +354,7 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 	})
 	preResp, err := h1.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sess.Id,
-		AgentSessionId: "claude-restart-1",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-00000000006a",
 		Title:          "first attach",
 	}))
 	if err != nil {
@@ -379,7 +379,7 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 
 	postResp, err := h2.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sess.Id,
-		AgentSessionId: "claude-restart-1",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-00000000006a",
 		Title:          "ignored on second call",
 		Resume:         true,
 	}))
@@ -561,7 +561,7 @@ func TestE2E_RecordChat_TmuxUnavailableSkipsCreate(t *testing.T) {
 
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 		SessionId:      sessionID,
-		AgentSessionId: "claude-no-tmux",
+		AgentSessionId: "0199a3c1-7b2e-7d40-9c55-00000000006b",
 		Title:          "headless",
 	}))
 	if err != nil {

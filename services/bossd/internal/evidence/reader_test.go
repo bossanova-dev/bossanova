@@ -673,7 +673,10 @@ func (g *gatedFinder) FindPRCommentsWithMarker(ctx context.Context, _ string, _ 
 func TestReader_AnOlderReadFinishingLastDoesNotOverwriteANewerOne(t *testing.T) {
 	posted := []vcs.PRComment{{Body: lineFor(headA), AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: recordedAt}}
 	g := newGatedFinder(nil, posted)
-	r := NewReader(g, zerolog.Nop())
+	notifications := 0
+	r := NewReader(g, zerolog.Nop(), WithOnChange(func(_ context.Context, _ string) {
+		notifications++
+	}))
 
 	olderDone := make(chan struct{})
 	go func() {
@@ -702,6 +705,9 @@ func TestReader_AnOlderReadFinishingLastDoesNotOverwriteANewerOne(t *testing.T) 
 		t.Fatalf("Get = %+v, %v; want the newer read's summary kept over the older read's empty result", got, ok)
 	}
 
+	if notifications != 1 {
+		t.Fatalf("change notifications = %d, want only the newest read's publication", notifications)
+	}
 	r.Observe(context.Background(), idle())
 	g.mu.Lock()
 	calls := g.calls
@@ -922,5 +928,64 @@ func TestReader_AReopenedPRIsReadWhenItEndsAgain(t *testing.T) {
 	r.Observe(context.Background(), ended(idle()))
 	if f.count() != 2 {
 		t.Fatalf("reads = %d, want 2 (a successful ended read is not repeated)", f.count())
+	}
+}
+
+func TestReader_OnChangePublishesUpdatedCacheWithoutHoldingLock(t *testing.T) {
+	f := &fakeFinder{body: lineFor(headA), found: true}
+	clock := &clock{t: recordedAt.Add(time.Minute)}
+	var reader *Reader
+	var states []bool
+	reader = NewReader(f, zerolog.Nop(), WithClock(clock.now), WithOnChange(func(ctx context.Context, sessionID string) {
+		if ctx != t.Context() || sessionID != "s1" {
+			t.Fatalf("callback context/session = %v/%q", ctx, sessionID)
+		}
+		// Taking the cache lock here would deadlock if publication ran under it.
+		_, ok := reader.Entry(sessionID)
+		states = append(states, ok)
+	}))
+	reader.Observe(t.Context(), parked(headA))
+	clock.t = clock.t.Add(DefaultRefreshInterval)
+	reader.Observe(t.Context(), parked(headA)) // identical refresh is silent
+	f.err = errors.New("temporary read failure")
+	clock.t = clock.t.Add(DefaultRefreshInterval)
+	reader.Observe(t.Context(), parked(headA)) // failed refresh keeps known evidence
+	f.err = nil
+	reader.Observe(t.Context(), parked(headB)) // invalidate before reading stale evidence
+	if len(states) != 2 || !states[0] || states[1] {
+		t.Fatalf("published cache presence = %v, want [true false]", states)
+	}
+	f.body = lineFor(headB)
+	clock.t = clock.t.Add(DefaultRefreshInterval)
+	reader.Observe(t.Context(), parked(headB))
+	if len(states) != 3 || !states[2] {
+		t.Fatalf("replacement publication = %v, want [true false true]", states)
+	}
+	f.body = libevidence.Format(libevidence.Summary{Head: headB, Proven: 3, Total: 5})
+	clock.t = clock.t.Add(DefaultRefreshInterval)
+	reader.Observe(t.Context(), parked(headB))
+	if got, _ := reader.Get("s1"); len(states) != 4 || got.Proven != 3 {
+		t.Fatalf("updated summary = %+v, notifications = %v", got, states)
+	}
+}
+
+func TestReader_OnChangeNotifiesWhenEvidenceRemoved(t *testing.T) {
+	f := &fakeFinder{body: lineFor(headA), found: true}
+	r, clock := newTestReader(f)
+	calls := 0
+	r.SetOnChange(func(_ context.Context, sessionID string) {
+		calls++
+		if calls == 2 {
+			if _, ok := r.Get(sessionID); ok {
+				t.Fatal("removed evidence still visible during publication")
+			}
+		}
+	})
+	r.Observe(t.Context(), parked(headA))
+	f.found = false
+	clock.t = clock.t.Add(DefaultRefreshInterval)
+	r.Observe(t.Context(), parked(headA))
+	if calls != 2 {
+		t.Fatalf("change notifications = %d, want 2", calls)
 	}
 }

@@ -3,8 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "verifybridge",
     srcs = ["verifybridge.go"],
-    importpath = "github.com/recurser/boss/internal/verifybridge",
-    visibility = ["//services/boss:__subpackages__"],
+    importpath = "github.com/recurser/bossd/internal/verifybridge",
+    visibility = ["//services/bossd:__subpackages__"],
 )
 
 go_test(

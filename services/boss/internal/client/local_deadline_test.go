@@ -515,6 +515,8 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 	allowed := map[string]bool{
 		bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: true,
 		bossanovav1connect.DaemonServiceMergeSessionProcedure:         true,
+		bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     true,
+		bossanovav1connect.DaemonServiceSendBackSessionPRProcedure:    true,
 		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     true,
 		bossanovav1connect.DaemonServiceGetRunCostProcedure:           true,
 		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    true,

@@ -1113,6 +1113,8 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 		return "", nil
 	}
 
+	url = gitpkg.CloneURLWithoutCredentials(url)
+
 	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
 		OriginURL: &url,
 	}); err != nil {

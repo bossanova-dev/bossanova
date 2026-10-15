@@ -1577,10 +1577,41 @@ test('validatePlanDescription ignores headings and stamps echoed in ## Original 
   assert.equal(r.ok, false)
 })
 
-test('the committed .boss-skills.json planContract matches the default section set', () => {
+function assertCompatiblePlanSections(committed, defaults) {
+  const defaultHeadings = new Set(defaults.map(({ heading }) => heading))
+  assert.deepEqual(
+    committed.filter(({ heading }) => defaultHeadings.has(heading)),
+    defaults,
+  )
+  for (const section of committed) {
+    if (!defaultHeadings.has(section.heading)) assert.equal(section.required, 'optional')
+  }
+}
+
+test('the committed planContract preserves default sections and permits optional repo additions', () => {
   const cfg = loadSkillConfig({ cwd: REPO_ROOT })
   assert.equal(planContractVersion(cfg), planContractVersion(DEFAULT_CONFIG))
-  assert.deepEqual(planSections(cfg), planSections(DEFAULT_CONFIG))
+  assertCompatiblePlanSections(planSections(cfg), planSections(DEFAULT_CONFIG))
+})
+
+test('planContract compatibility rejects dropped, reordered or reclassified default sections', () => {
+  const defaults = [
+    { heading: '## First', required: 'always' },
+    { heading: '## Second', required: 'optional' },
+    { heading: '## Third', required: 'needs-human' },
+  ]
+  const extra = { heading: '## Extension', required: 'optional' }
+  assertCompatiblePlanSections([defaults[0], extra, ...defaults.slice(1)], defaults)
+  assertCompatiblePlanSections(defaults, defaults)
+  for (const incompatible of [
+    defaults.slice(1),
+    [defaults[1], defaults[0], defaults[2]],
+    [{ ...defaults[0], required: 'optional' }, ...defaults.slice(1)],
+    [...defaults, { ...extra, required: 'always' }],
+    [...defaults, defaults[0]],
+  ]) {
+    assert.throws(() => assertCompatiblePlanSections(incompatible, defaults), assert.AssertionError)
+  }
 })
 
 test('validateConfig rejects a malformed planContract override', () => {

@@ -47,6 +47,8 @@ type fakeTmuxClient struct {
 	// lastSubmitted is the receipt check the most recent SendMessage carried
 	// (SendHooks.Submitted); nil means the send had no receipt to consult.
 	lastSubmitted func() bool
+	// lastReceiptRequired is SendHooks.ReceiptRequired from that send.
+	lastReceiptRequired bool
 	// panePID / panePIDByName / panePIDErr model tmux list-panes for the
 	// codex provider-session fd resolver (BOS-290).
 	panePID       int
@@ -110,6 +112,7 @@ func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastSubmitted = hooks.Submitted
+	f.lastReceiptRequired = hooks.ReceiptRequired
 	if f.duringSend != nil {
 		f.duringSend()
 	}

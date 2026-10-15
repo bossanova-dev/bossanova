@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/dbtest"
 )
 
 // TestClaimUnarchivedOrphan_RequiresMatchingReason ensures a candidate from a
@@ -1626,4 +1628,83 @@ func TestLinkTrackerIfUnlinked_IsACompareAndSet(t *testing.T) {
 			t.Fatalf("LinkTrackerIfUnlinked = (%v, %v), want (false, nil)", applied, err)
 		}
 	})
+}
+
+func TestSessionWorktreeOwnershipRoundTrips(t *testing.T) {
+	database := setupTestDB(t)
+	store := NewSessionStore(database)
+	repo := createTestRepo(t, NewRepoStore(database))
+	ctx := context.Background()
+	sess, err := store.Create(ctx, CreateSessionParams{RepoID: repo.ID, Title: "ownership", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.WorktreeCreatedAt != nil || sess.IsBranchCreated {
+		t.Fatal("legacy/default row claims ownership")
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	stamp := at.Format(time.RFC3339Nano)
+	stampPtr := &stamp
+	path := "/owned/worktree-2"
+	owned := true
+	if _, err = store.Update(ctx, sess.ID, UpdateSessionParams{WorktreePath: &path, WorktreeCreatedAt: &stampPtr, IsBranchCreated: &owned}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(got *models.Session) {
+		t.Helper()
+		if got.WorktreePath != path || got.WorktreeCreatedAt == nil || !got.WorktreeCreatedAt.Equal(at) || !got.IsBranchCreated {
+			t.Fatalf("ownership did not round-trip: %+v", got)
+		}
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(got)
+	joined, err := store.ListActiveWithRepo(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(joined) != 1 {
+		t.Fatal(joined)
+	}
+	check(joined[0].Session)
+	var empty *string
+	if _, err = store.Update(ctx, sess.ID, UpdateSessionParams{WorktreeCreatedAt: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorktreeCreatedAt != nil {
+		t.Fatal("ownership timestamp did not clear")
+	}
+}
+
+func TestSessionWorktreeOwnershipMigrationLeavesLegacyUnknown(t *testing.T) {
+	database, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	migrations := os.DirFS(migrationsDir())
+	if err = dbtest.RunUpTo(database, migrations, 20261014100000); err != nil {
+		t.Fatal(err)
+	}
+	repo := insertPreMigrationRepo(t, database)
+	if _, err = database.Exec(`INSERT INTO sessions(id,repo_id,title,worktree_path,branch_name,base_branch) VALUES ('legacy-owned',?,'legacy','/worktrees/old','old','main')`, repo.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = dbtest.RunUpTo(database, migrations, 20261015000000); err != nil {
+		t.Fatal(err)
+	}
+	var at *string
+	var owned bool
+	if err = database.QueryRow(`SELECT worktree_created_at,is_branch_created FROM sessions WHERE id='legacy-owned'`).Scan(&at, &owned); err != nil {
+		t.Fatal(err)
+	}
+	if at != nil || owned {
+		t.Fatal("migration claimed legacy ownership")
+	}
 }

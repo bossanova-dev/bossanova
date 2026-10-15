@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1384,6 +1385,7 @@ func freeLoopbackPort(t *testing.T) int {
 // TestProxyListen_FixedPortBindsExactly asserts that a configured Port > 0 binds
 // that exact loopback port and Port() reports it (BOS-409 core fix).
 func TestProxyListen_FixedPortBindsExactly(t *testing.T) {
+	isolateFixedPortLocks(t)
 	port := freeLoopbackPort(t)
 	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
 	if err != nil {
@@ -1403,6 +1405,7 @@ func TestProxyListen_FixedPortBindsExactly(t *testing.T) {
 // assert success. Without SO_REUSEADDR a lingering socket could refuse the
 // re-bind, which is exactly the daemon-restart failure BOS-409 fixes.
 func TestProxyListen_ImmediateRebindSamePort(t *testing.T) {
+	isolateFixedPortLocks(t)
 	port := freeLoopbackPort(t)
 
 	ps1, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
@@ -1436,6 +1439,7 @@ func TestProxyListen_ImmediateRebindSamePort(t *testing.T) {
 // TestProxyListen_ZeroPortEphemeral asserts Port: 0 preserves today's ephemeral
 // bind (the explicit opt-out): a non-zero OS-assigned port.
 func TestProxyListen_ZeroPortEphemeral(t *testing.T) {
+	isolateFixedPortLocks(t)
 	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: 0})
 	if err != nil {
 		t.Fatalf("NewProxyServer: %v", err)
@@ -1453,6 +1457,7 @@ func TestProxyListen_ZeroPortEphemeral(t *testing.T) {
 // already held by a live listener, Listen does not error but falls back to an
 // ephemeral bind so bossd never fails to start over a port collision.
 func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
+	isolateFixedPortLocks(t)
 	port := freeLoopbackPort(t)
 
 	// Hold the fixed port with a plain, live listener for the whole test.
@@ -1488,6 +1493,7 @@ func TestProxyListen_InUseFallsBackToEphemeral(t *testing.T) {
 // so whoever holds the fixed port receives their traffic — the operator must
 // see it.
 func TestProxyListen_FixedPortLostReported(t *testing.T) {
+	isolateFixedPortLocks(t)
 	port := freeLoopbackPort(t)
 	held, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -1522,6 +1528,7 @@ func TestProxyListen_FixedPortLostReported(t *testing.T) {
 // TestProxyListen_FixedPortNotLostOnNormalBind asserts FixedPortLost stays false
 // when the fixed port binds normally, and for the explicit ephemeral opt-out.
 func TestProxyListen_FixedPortNotLostOnNormalBind(t *testing.T) {
+	isolateFixedPortLocks(t)
 	for _, tc := range []struct {
 		name string
 		port int
@@ -1553,6 +1560,7 @@ func TestProxyListen_FixedPortNotLostOnNormalBind(t *testing.T) {
 // and 401 them as "unknown session token". The second server must fall back to an
 // ephemeral port, and every request to the fixed port must reach the first.
 func TestProxyListen_RefusesToCoBindALiveFixedPort(t *testing.T) {
+	isolateFixedPortLocks(t)
 	port := freeLoopbackPort(t)
 	_, srv := newFakeUpstream(t)
 
@@ -2048,5 +2056,109 @@ func TestPassthroughStatsCheck_alwaysOk(t *testing.T) {
 	}
 	if !strings.Contains(c.Detail, "500=5") {
 		t.Fatalf("detail must summarize the classes: %q", c.Detail)
+	}
+}
+
+// TestProxyListen_FixedPortRace holds the first listener in the probe-to-bind
+// window while a second daemon attempts the same fixed port.
+func TestProxyListen_FixedPortRace(t *testing.T) {
+	isolateFixedPortLocks(t)
+	port := freeLoopbackPort(t)
+	_, upstream := newFakeUpstream(t)
+	firstProbe := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondProbe := make(chan bool, 1)
+	var calls atomic.Int32
+	oldHook := afterFixedPortProbe
+	afterFixedPortProbe = func(addr string) {
+		if calls.Add(1) == 1 {
+			close(firstProbe)
+			select {
+			case <-releaseFirst:
+			case <-time.After(5 * time.Second):
+				t.Error("timed out waiting to release first probe")
+			}
+		} else {
+			// A successful dial proves the first bind has returned, even if its
+			// caller has not scheduled Serve yet. This catches the race on Linux,
+			// where EADDRINUSE alone would otherwise hide the missing lock.
+			secondProbe <- fixedPortHeldByLiveListener(addr, fixedPortProbeTimeout)
+		}
+	}
+	t.Cleanup(func() { afterFixedPortProbe = oldHook })
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	defer release()
+	start := func() <-chan *ProxyServer {
+		result := make(chan *ProxyServer, 1)
+		go func() {
+			defer close(result)
+			ps, _ := startProxyConfigured(t, &fakeFailover{currentBearer: "second-token"}, upstream.URL, zerolog.Nop(), func(ps *ProxyServer) { ps.port = port })
+			result <- ps
+		}()
+		return result
+	}
+	first := start()
+	select {
+	case <-firstProbe:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first listener never probed")
+	}
+	second := start()
+	// Keep the window open long enough for the unprotected second probe to
+	// expose itself. Correct code waits on flock instead of entering the hook.
+	select {
+	case bound := <-secondProbe:
+		t.Errorf("second probe ran before first bind (listener already bound: %v)", bound)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	await := func(ch <-chan *ProxyServer) *ProxyServer {
+		t.Helper()
+		select {
+		case ps := <-ch:
+			if ps == nil {
+				t.Fatal("proxy startup failed")
+			}
+			return ps
+		case <-time.After(5 * time.Second):
+			t.Fatal("proxy startup timed out")
+			return nil
+		}
+	}
+	ps1, ps2 := await(first), await(second)
+	if ps1.Port() != port || ps1.FixedPortLost() {
+		t.Fatalf("first server lost fixed port: port=%d lost=%v", ps1.Port(), ps1.FixedPortLost())
+	}
+	if ps2.Port() == 0 || ps2.Port() == port || !ps2.FixedPortLost() {
+		t.Fatalf("second server did not fall back: port=%d lost=%v", ps2.Port(), ps2.FixedPortLost())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("probe calls=%d, want 2", calls.Load())
+	}
+	select {
+	case bound := <-secondProbe:
+		if !bound {
+			t.Error("second probe ran before first bind completed")
+		}
+	default:
+		// The early-probe assertion already consumed the evidence on failure.
+		if !t.Failed() {
+			t.Fatal("second probe did not report ordering")
+		}
+	}
+	tok := ps1.TokenForSession("sess-live")
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 2 * time.Second}
+	for i := range 50 {
+		resp, err := client.Do(newSentinelReq(t, base, tok))
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d got %d; fixed port lost its token registry", i, resp.StatusCode)
+		}
 	}
 }

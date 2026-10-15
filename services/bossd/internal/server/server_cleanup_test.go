@@ -39,13 +39,8 @@ func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.
 	if worktrees.reapLocalBranchesCalls != 0 {
 		t.Fatalf("ReapLocalBranches calls = %d, want 0", worktrees.reapLocalBranchesCalls)
 	}
-	// The leftover worktree directory must still be purged (without deleting the
-	// branch) so a stale dir can't wedge the branch on the next attempt.
-	if worktrees.purgeCalls != 1 {
-		t.Fatalf("PurgeWorktree calls = %d, want 1", worktrees.purgeCalls)
-	}
-	if got, want := worktrees.purgeBranch, "user-branch"; got != want {
-		t.Fatalf("PurgeWorktree branch = %q, want %q", got, want)
+	if worktrees.purgeCalls != 0 {
+		t.Fatalf("PurgeWorktree calls = %d, want 0 without directory ownership", worktrees.purgeCalls)
 	}
 	if !sessions.deleted["sess-1"] {
 		t.Fatal("session was not deleted")
@@ -54,13 +49,16 @@ func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.
 
 func TestCleanupFailedCreateSessionTrashesBranchWithWorktree(t *testing.T) {
 	ctx := context.Background()
+	created := time.Now().UTC()
 	sessions := &cleanupSessionStore{
 		sessions: map[string]*models.Session{
 			"sess-1": {
-				ID:           "sess-1",
-				RepoID:       "repo-1",
-				BranchName:   "owned-branch",
-				WorktreePath: "/worktrees/repo/owned-branch",
+				ID:                "sess-1",
+				RepoID:            "repo-1",
+				BranchName:        "owned-branch",
+				WorktreePath:      "/worktrees/repo/owned-branch",
+				WorktreeCreatedAt: &created,
+				IsBranchCreated:   true,
 			},
 		},
 	}

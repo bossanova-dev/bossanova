@@ -39,6 +39,7 @@ go_library(
     deps = [
         "//lib/bossalib/agenterr",
         "//lib/bossalib/agentruntime",
+        "//lib/bossalib/agentsession",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/jsonlscan",
         "//lib/bossalib/loginshell",
@@ -83,6 +84,7 @@ go_test(
         "rotation_test.go",
         "runner_test.go",
         "server_test.go",
+        "transcript_items_test.go",
         "transcript_lookup_test.go",
         "transcript_scan_test.go",
         "transcript_test.go",

@@ -222,9 +222,13 @@ func TestTunnelHardenAuthBatchesLaterConnects(t *testing.T) {
 
 	tun.HardenAuth()
 	before := fake.count()
-	waitFor(t, "a restart after HardenAuth", func() bool { return fake.count() > before })
+	// The supervisor builds argv before the fake records the call, so call
+	// `before` may carry an argv built just ahead of HardenAuth. Call
+	// before+1 is built only after that one ran, so it is the first that must
+	// be hardened.
+	waitFor(t, "a restart after HardenAuth", func() bool { return fake.count() > before+1 })
 
-	_, later := fake.argv(fake.count() - 1)
+	_, later := fake.argv(before + 1)
 	if !containsArg(later, "BatchMode=yes") {
 		t.Fatalf("a reconnect after HardenAuth must pass BatchMode=yes, got %q", later)
 	}

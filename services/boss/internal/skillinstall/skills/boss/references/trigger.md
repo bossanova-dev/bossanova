@@ -98,6 +98,7 @@ List your triggers
 
 **Flags:**
 
+- `--all-members` — List every member's triggers in the organization (--org, or your active one); needs the owner role
 - `--json` — Emit a stable JSON schema ({triggers}) instead of a table
 - `--org` — Restrict to one organization id (default: every organization you belong to)
 

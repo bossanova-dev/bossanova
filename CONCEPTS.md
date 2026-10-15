@@ -1959,8 +1959,8 @@ stack (`out-of-stack`), dropping an ownership pattern (`remove-owns`), adding on
 takes paths out of the broad sweep), narrowing the index's roots (`narrow-roots`), or dropping a
 surface (`narrow-surfaces`). New criteria, new surfaces, recipe prose and removed out-of-stack marks
 are free. A rewording is both a weakening and a **Change criterion**. A weakening the ticket's
-`## Feature map changes` section declares is planned and passes; an undeclared one parks the PR for
-human review.
+`## Feature map changes` section declares is planned and passes; an undeclared one also passes, with
+a note on the evidence result naming it.
 
 ### Byte ratchet
 

@@ -448,7 +448,7 @@ triggers today.
 | Tool                               | Description                                                                                  |
 | ---------------------------------- | -------------------------------------------------------------------------------------------- |
 | `list_session_webhook_event_types` | List the event types a webhook subscribes to, each with a sample payload                     |
-| `list_session_webhooks`            | List the organization's session webhooks; secrets are never returned                         |
+| `list_session_webhooks`            | List the session webhooks visible to you (see below); secrets are never returned             |
 | `list_session_webhook_deliveries`  | Page a webhook's delivery history, newest first, filtered by status, event type or test flag |
 | `get_session_webhook_delivery`     | Get one delivery with its attempts, the exact request body and the request headers           |
 | `save_session_webhook`             | Create (no `id`), update (`id`; only the fields you pass change), or rotate the secret       |
@@ -470,3 +470,10 @@ organization, and the tools add no permission check of their own: a refusal
 comes back exactly as the API reports it. Every tool accepts an
 `organization_id`; leave it out to act on your active organization, which is the
 only one the API accepts.
+
+Unless the organization shares member sessions, only a webhook's creator acts on
+it. `list_session_webhooks` shows your own webhooks plus any whose creator is no
+longer an owner, marked `is_retire_only` with an empty `url`: those accept only a disable
+(`is_enabled: false` alone) or a delete, and any other tool answers
+`FAILED_PRECONDITION`. Another owner's webhook is not listed, and its id
+answers `NOT_FOUND`.

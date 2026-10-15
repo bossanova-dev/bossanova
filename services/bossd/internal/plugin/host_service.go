@@ -281,7 +281,13 @@ const (
 	chatRunCompletionExplicit chatRunCompletionMode = "explicit"
 )
 
+type chatRunFinalization struct {
+	once    sync.Once
+	started chan struct{}
+}
+
 type activeChatRun struct {
+	finalization   *chatRunFinalization
 	done           chan completionResult
 	completionMode chatRunCompletionMode
 	agentRunID     string
@@ -437,7 +443,7 @@ func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessio
 	}
 	ch := make(chan completionResult, 1)
 	s.runMu.Lock()
-	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode, agentRunID: agentRunID, startedAt: startedAt}
+	s.runCompletion[agentSessionID] = activeChatRun{finalization: &chatRunFinalization{started: make(chan struct{})}, done: ch, completionMode: mode, agentRunID: agentRunID, startedAt: startedAt}
 	s.runHookTokens[agentSessionID] = token
 	s.runSessionByID[agentSessionID] = sessionID
 	s.drainEarlyCompletionLocked(sessionID, ch)
@@ -461,24 +467,73 @@ func (s *HostServiceServer) drainEarlyCompletionLocked(sessionID string, ch chan
 	delete(s.pendingChatRuns, sessionID)
 }
 
-// preRegisterChatRun records a StartChatRun's hook token under key before the
-// agent is launched, so CompleteAgentRun accepts a completion POST that
-// arrives while StartTmuxChat is still running. Unlike
-// registerRunWithCompletionMode it leaves the session's pending marker and any
-// parked early completion alone: those still belong to promoteChatRun, which
-// learns the run's final id. Guarded by runMu.
-func (s *HostServiceServer) preRegisterChatRun(sessionID, key, token string, startedAt time.Time) {
-	s.runMu.Lock()
-	defer s.runMu.Unlock()
-	s.runCompletion[key] = activeChatRun{done: make(chan completionResult, 1), completionMode: chatRunCompletionExplicit, startedAt: startedAt}
-	s.runHookTokens[key] = token
-	s.runSessionByID[key] = sessionID
+// chatRunPreRegistration preserves the state displaced by a pending start.
+type chatRunPreRegistration struct {
+	key, token        string
+	done              chan completionResult
+	previousRun       activeChatRun
+	hadRun            bool
+	previousToken     string
+	hadToken          bool
+	previousSessionID string
+	hadSession        bool
 }
 
-// unregisterChatRun drops a pre-registration after a failed start, so the
-// failed run leaves nothing registered. It only removes entries that still
-// carry this call's token: a different token means another registration owns
-// the id now.
+// preRegisterChatRun records a StartChatRun's hook token under key before the
+// agent is launched, so CompleteAgentRun accepts a completion POST that
+// arrives while StartTmuxChat is still running. A failed start restores the
+// displaced registration. Unlike registerRunWithCompletionMode it leaves the
+// session's pending marker and parked early completion alone: those belong to
+// promoteChatRun, which learns the run's final id. Guarded by runMu.
+func (s *HostServiceServer) preRegisterChatRun(sessionID, key, token string, startedAt time.Time) chatRunPreRegistration {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	reg := chatRunPreRegistration{key: key, token: token, done: make(chan completionResult, 1)}
+	reg.previousRun, reg.hadRun = s.runCompletion[key]
+	reg.previousToken, reg.hadToken = s.runHookTokens[key]
+	reg.previousSessionID, reg.hadSession = s.runSessionByID[key]
+	s.runCompletion[key] = activeChatRun{finalization: &chatRunFinalization{started: make(chan struct{})}, done: reg.done, completionMode: chatRunCompletionExplicit, startedAt: startedAt}
+	s.runHookTokens[key] = token
+	s.runSessionByID[key] = sessionID
+	return reg
+}
+
+// restoreChatRun undoes a failed start's pre-registration only while its token
+// still owns the id. A hookless completion during the start belongs to the
+// displaced live pane, so forward it to that run's original waiter.
+func (s *HostServiceServer) restoreChatRun(reg chatRunPreRegistration) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runHookTokens[reg.key] != reg.token {
+		return
+	}
+	delete(s.runCompletion, reg.key)
+	if reg.hadRun {
+		select {
+		case res := <-reg.done:
+			select {
+			case reg.previousRun.done <- res:
+			default:
+			}
+		default:
+			s.runCompletion[reg.key] = reg.previousRun
+		}
+	}
+	if reg.hadToken {
+		s.runHookTokens[reg.key] = reg.previousToken
+	} else {
+		delete(s.runHookTokens, reg.key)
+	}
+	if reg.hadSession {
+		s.runSessionByID[reg.key] = reg.previousSessionID
+	} else {
+		delete(s.runSessionByID, reg.key)
+	}
+}
+
+// unregisterChatRun drops a pre-registration when a successful resume resolves
+// a different durable id. A different token means another registration owns
+// the id now, so only entries that still carry this call's token are removed.
 func (s *HostServiceServer) unregisterChatRun(key, token string) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
@@ -2089,7 +2144,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// run. A fresh launch uses an id minted here (passed through HookOpts); a
 	// resume pre-registers under the requested id, and promoteChatRun moves the
 	// registration if the lifecycle resolved a different durable id. A failed
-	// start unregisters it.
+	// start restores whatever the pre-registration displaced.
 	//
 	// The hookless completion poll, by contrast, IS armed inside
 	// StartTmuxChat (before this call returns) for agents without a finalize
@@ -2122,7 +2177,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 		hookOpts.AgentSessionID = registeredID
 	}
 	startedAt := time.Now()
-	s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
+	registration := s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID
@@ -2130,20 +2185,20 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 			blockingAgentSessionID = parseAlreadyExistsAgentSessionID(grpcstatus.Convert(err).Message())
 		}
 		if blockingAgentSessionID != "" {
+			s.restoreChatRun(registration)
 			if replaceErr := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); replaceErr != nil {
 				return nil, replaceErr
 			}
 			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
 			startedAt = time.Now()
-			// The cleanup above wipes the pre-registration when the blocking
-			// chat is the one being resumed (same id), so register again
-			// before the retry or its completion POST would be rejected.
-			s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
+			// Restore above let cleanup signal the original waiter. Register
+			// again before the retry so its completion POST is accepted.
+			registration = s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
 			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
 		}
 	}
 	if err != nil {
-		s.unregisterChatRun(registeredID, token)
+		s.restoreChatRun(registration)
 		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
 		// Internal) through unchanged. Wrap untyped errors as Internal
 		// so callers always get a status code they can switch on.
@@ -2432,6 +2487,17 @@ func (s *HostServiceServer) waitForChatRunFinalizer(ctx context.Context, agentSe
 
 func (s *HostServiceServer) finalizeChatRunWhenDone(agentSessionID string, run activeChatRun) {
 	s.runMu.Lock()
+	// Once finalization starts, it owns cleanup for this registration. A
+	// cancelled waiter must not install another finalizer, including while
+	// cleanup has deleted registry entries but is still clearing display state.
+	if run.finalization != nil {
+		select {
+		case <-run.finalization.started:
+			s.runMu.Unlock()
+			return
+		default:
+		}
+	}
 	if _, ok := s.chatRunFinalizers[agentSessionID]; ok {
 		s.runMu.Unlock()
 		return
@@ -2450,6 +2516,17 @@ func (s *HostServiceServer) finalizeChatRunWhenDone(agentSessionID string, run a
 }
 
 func (s *HostServiceServer) finalizeCompletedChatRun(agentSessionID string, run activeChatRun, res completionResult) {
+	if run.finalization != nil {
+		run.finalization.once.Do(func() {
+			close(run.finalization.started)
+			s.finalizeChatRun(agentSessionID, run, res)
+		})
+		return
+	}
+	s.finalizeChatRun(agentSessionID, run, res)
+}
+
+func (s *HostServiceServer) finalizeChatRun(agentSessionID string, run activeChatRun, res completionResult) {
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	s.recordAgentRunStop(stopCtx, agentSessionID, stopReasonFromExitError(res.exitError))
 	stopCancel()
@@ -2740,15 +2817,21 @@ func (s *HostServiceServer) cleanupRun(agentSessionID string) {
 
 func (s *HostServiceServer) signalAndCleanupReplacedRun(agentSessionID string) {
 	s.runMu.Lock()
-	if run, ok := s.runCompletion[agentSessionID]; ok {
-		select {
-		case run.done <- completionResult{exitError: "chat run replaced by newer repair attempt"}:
-		default:
-		}
-	}
+	run, ok := s.runCompletion[agentSessionID]
 	s.runMu.Unlock()
-
-	s.cleanupRun(agentSessionID)
+	if !ok {
+		s.cleanupRun(agentSessionID)
+		return
+	}
+	res := completionResult{exitError: "chat run replaced by newer repair attempt"}
+	// Finish ID-keyed stop, hook and registration cleanup before another run
+	// can reuse the ID. The shared once also waits for an in-flight finalizer
+	// and makes a displaced waiter's delayed finalization harmless.
+	s.finalizeCompletedChatRun(agentSessionID, run, res)
+	select {
+	case run.done <- res:
+	default:
+	}
 }
 
 func hostServiceStartChatRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

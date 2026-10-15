@@ -317,6 +317,8 @@ func TestVerifyQueuedSkipsEnterRetry(t *testing.T) {
 func TestPaneShowsPayloadQueued(t *testing.T) {
 	const payload = "also update the changelog"
 	const hint = "❯ Press up to edit queued messages"
+	const codexQueueHeader = "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)"
+	const codexPlaceholder = "› Ask Codex to do anything"
 
 	cases := []struct {
 		name string
@@ -365,6 +367,43 @@ func TestPaneShowsPayloadQueued(t *testing.T) {
 		{
 			name: "no live composer at all",
 			pane: "⏺ Working full-screen with no input box drawn.\n",
+			want: false,
+		},
+		{
+			name: "codex queue header with the payload as an item",
+			pane: "• Working (2s • esc to interrupt)\n\n" + codexQueueHeader + "\n  ↳ " + payload + "\n\n\n" + codexPlaceholder + "\n",
+			want: true,
+		},
+		{
+			name: "codex queue holding the payload among other items",
+			pane: codexQueueHeader + "\n  ↳ run the tests again\n  ↳ " + payload + "\n\n" + codexPlaceholder + "\n",
+			want: true,
+		},
+		{
+			name: "codex queue item wider than the pane wraps",
+			pane: codexQueueHeader + "\n  ↳ also update\n    the changelog\n\n" + codexPlaceholder + "\n",
+			want: true,
+		},
+		{
+			name: "codex queue holding a different message",
+			pane: codexQueueHeader + "\n  ↳ run the tests again\n\n" + codexPlaceholder + "\n",
+			want: false,
+		},
+		{
+			name: "codex queue holds an earlier message while this payload is still unsent",
+			pane: codexQueueHeader + "\n  ↳ run the tests again\n\n› " + payload + "\n",
+			want: false,
+		},
+		{
+			name: "codex item row with no queue header",
+			pane: "• Working (2s • esc to interrupt)\n\n  ↳ " + payload + "\n\n" + codexPlaceholder + "\n",
+			want: false,
+		},
+		{
+			// Transcript rows between the header and the composer mean the header
+			// is not the queue block's, whatever the rows above it say.
+			name: "codex queue header quoted in the transcript above other output",
+			pane: codexQueueHeader + "\n  ↳ " + payload + "\n\n› " + payload + "\n\n• Done.\n\n" + codexPlaceholder + "\n",
 			want: false,
 		},
 	}

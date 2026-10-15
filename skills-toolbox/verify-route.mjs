@@ -268,6 +268,26 @@ export function newSessionArgv({ pr, repoDir, ticket, token, waive, trackerSourc
   ]
 }
 
+// `boss chat send` exits 0 whether the daemon confirmed the send, queued it behind a running turn,
+// or could not confirm it at all, so the route reads `--json`'s delivery state. A queued send is
+// held by the agent and runs when its turn ends; anything else leaves the claim to go stale.
+export const CONFIRMED_DELIVERY_STATES = new Set([
+  'DELIVERY_STATE_SUBMITTED',
+  'DELIVERY_STATE_QUEUED',
+])
+
+function sendVerify(run, boss, chatId, message, timeoutMs) {
+  const sent = run(boss, ['chat', 'send', chatId, message, '--json'], { json: true, timeoutMs })
+  if (!sent.ok) return { ok: false, why: sent.error }
+  const delivery = sent.payload?.delivery
+  if (delivery?.delivered === true && CONFIRMED_DELIVERY_STATES.has(delivery.delivery_state))
+    return { ok: true }
+  return {
+    ok: false,
+    why: text(delivery?.delivery_state) ? delivery.delivery_state : 'unreadable-delivery',
+  }
+}
+
 // The live rows bound to a PR URL, newest first.
 export function liveSessionsFor(sessions, url) {
   return (Array.isArray(sessions) ? sessions : [])
@@ -292,10 +312,8 @@ export function routeCandidate({ pr, url, ticket, token, waive }, ctx) {
     const verify = pickVerifyChat(chats.payload.chats)
     if (verify) {
       if (dryRun) return { route: 'existing-verify-chat', ok: true, note }
-      const sent = run(boss, ['chat', 'send', verify.agent_session_id, message], {
-        timeoutMs: timeout(),
-      })
-      return { route: 'existing-verify-chat', ok: sent.ok, why: sent.error, note }
+      const sent = sendVerify(run, boss, verify.agent_session_id, message, timeout())
+      return { route: 'existing-verify-chat', ok: sent.ok, why: sent.why, note }
     }
     if (dryRun) return { route: 'new-verify-chat', ok: true, note }
     const created = run(boss, ['chat', 'new', session.id, '--title', VERIFY_CHAT_TITLE, '--json'], {
@@ -305,8 +323,8 @@ export function routeCandidate({ pr, url, ticket, token, waive }, ctx) {
     const chatId = created.payload?.chat?.agent_session_id
     if (!created.ok || !text(chatId))
       return { route: 'new-verify-chat', ok: false, why: created.error ?? 'no-chat-id', note }
-    const sent = run(boss, ['chat', 'send', chatId, message], { timeoutMs: timeout() })
-    return { route: 'new-verify-chat', ok: sent.ok, why: sent.error, note }
+    const sent = sendVerify(run, boss, chatId, message, timeout())
+    return { route: 'new-verify-chat', ok: sent.ok, why: sent.why, note }
   }
   const argv = newSessionArgv({
     pr,

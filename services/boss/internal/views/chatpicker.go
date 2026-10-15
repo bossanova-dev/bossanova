@@ -87,8 +87,10 @@ type ChatPickerModel struct {
 	newTabSupported bool
 
 	// Transient status line (e.g. "couldn't open new tab in <term>"),
-	// cleared on the next keypress.
+	// cleared on the next keypress. statusMsg renders as a failure; statusNote
+	// is the muted line for an outcome that succeeded (an approval).
 	statusMsg   string
+	statusNote  string
 	repoWebLink repoWebLink
 
 	// Active y/n confirmation (confirmNone when no prompt is showing).
@@ -97,8 +99,13 @@ type ChatPickerModel struct {
 
 	// In-flight spinners for the async RPCs.
 	merging   bool
+	approving bool
 	archiving bool
 	archived  bool
+	// approved latches once an approval of this session's park succeeds, so
+	// [m]approve is not offered again while the session still reads parked
+	// until verify re-checks it.
+	approved bool
 
 	// Agents loaded once at picker construction. Drives the per-chat
 	// agent-select sub-phase shown when the user presses [n] (new chat)
@@ -242,7 +249,7 @@ func (m ChatPickerModel) canMerge() bool {
 	// A merge already in flight hides the [m]erge affordance: m.merging is set
 	// when the user confirms a merge and cleared when the mergeResultMsg lands,
 	// so the "Merging PR #N…" feedback line stands in until the RPC resolves.
-	if m.merging {
+	if m.merging || m.approving {
 		return false
 	}
 	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
@@ -253,6 +260,18 @@ func (m ChatPickerModel) canMerge() bool {
 		status == pb.DisplayStatus_DISPLAY_STATUS_APPROVED
 }
 
+// canApprove reports whether [m] approves the session's verify park instead of
+// merging: the PR is parked `needs human:` by verify and no approval is in
+// flight or already done here. Approve hands the park back to verify, which
+// re-checks and merges, so it takes the merge key. Both the action bar and the
+// `m` key read this predicate.
+func (m ChatPickerModel) canApprove() bool {
+	if m.merging || m.approving || m.approved || m.merged {
+		return false
+	}
+	return m.session != nil && m.session.GetPrNumber() != 0 && isVerifyParkAttention(m.session)
+}
+
 // canRename reports whether the [r]ename action should be available — a chat is
 // selected and no other flow already owns the keyboard or is mutating that row.
 // Both the action bar and the `r` key read this single predicate, so the key can
@@ -261,7 +280,7 @@ func (m ChatPickerModel) canRename() bool {
 	if m.loading || m.confirm != confirmNone {
 		return false
 	}
-	if m.merging || m.archiving || m.switching || m.deletingAgentSessionID != "" {
+	if m.merging || m.approving || m.archiving || m.switching || m.deletingAgentSessionID != "" {
 		return false
 	}
 	return m.selectedChat() != nil
@@ -328,6 +347,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case mergeResultMsg:
 		return m.handleMergeResult(msg)
+
+	case approveResultMsg:
+		return m.handleApproveResult(msg)
 
 	case archiveResultMsg:
 		return m.handleArchiveResult(msg)

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "agentsession",
+    srcs = ["agentsession.go"],
+    importpath = "github.com/recurser/bossalib/agentsession",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "agentsession_test",
+    srcs = ["agentsession_test.go"],
+    embed = [":agentsession"],
+)

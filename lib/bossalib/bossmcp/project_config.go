@@ -484,12 +484,9 @@ func exportCloudProjectConfig(ctx context.Context, backend ProjectCloudBackend, 
 	case err != nil:
 		return nil, warnings, fmt.Errorf("list session webhooks: %w", err)
 	default:
-		cloud.Webhooks = []projectconfig.Webhook{}
-		for _, wh := range webhooks {
-			out, w := projectconfig.ExportWebhook(wh)
-			cloud.Webhooks = append(cloud.Webhooks, out)
-			warnings = append(warnings, w...)
-		}
+		exported, w := projectconfig.ExportWebhooks(webhooks)
+		cloud.Webhooks = exported
+		warnings = append(warnings, w...)
 	}
 	cfg := &projectconfig.Config{
 		Version: projectconfig.SchemaVersion,

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
@@ -307,7 +308,10 @@ type MockDaemon struct {
 	// mergeSessionCalls records the id of every MergeSession request. This is
 	// what lets a test prove a declined confirmation issued NO merge RPC —
 	// asserting only on stdout would pass even if the merge had gone through.
-	mergeSessionCalls []string
+	mergeSessionCalls     []string
+	legacyNoHeadPin       bool
+	omitHeadPinCapability bool
+	capabilityProbeCalls  int
 	// mergeExpectedHeads records each MergeSession request's
 	// expected_head_sha, parallel to mergeSessionCalls ("" when unpinned).
 	mergeExpectedHeads []string
@@ -328,6 +332,19 @@ type MockDaemon struct {
 	// the CLI passes state through verbatim would only ever be agreeing with the
 	// mock. Setting this drives the lagging shape.
 	mergeResponseState pb.SessionState
+
+	// approveSessionPRCalls / sendBackSessionPRCalls record every verify verb
+	// request, so a test can prove a declined confirmation ran no verb.
+	approveSessionPRCalls  []*pb.ApproveSessionPRRequest
+	sendBackSessionPRCalls []*pb.SendBackSessionPRRequest
+	// approveResult / sendBackResult are what the verbs answer; nil keeps the
+	// RPC answering Unimplemented, as an older daemon would.
+	approveResult  *pb.VerifyApproveResult
+	sendBackResult *pb.SendBackSessionPRResponse
+	// verifyErrorCode/verifyErrorMsg, when verifyErrorMsg is non-empty, make
+	// both verbs fail with that connect error.
+	verifyErrorCode connect.Code
+	verifyErrorMsg  string
 
 	// recordChatCalls records every RecordChat request. `boss chat new` mints the
 	// agent_session_id itself, so the request is the only place a test can see
@@ -2096,6 +2113,28 @@ func (m *MockDaemon) CloseSession(context.Context, *connect.Request[pb.CloseSess
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+// SetLegacyNoHeadPin simulates a daemon predating head-pin support: it has no
+// capability probe and silently ignores the unknown expected_head_sha field.
+func (m *MockDaemon) SetLegacyNoHeadPin(legacy bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.legacyNoHeadPin = legacy
+}
+
+// SetOmitHeadPinCapability simulates a daemon that no longer advertises the pin.
+func (m *MockDaemon) SetOmitHeadPinCapability(omit bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.omitHeadPinCapability = omit
+}
+
+// GetDaemonCapabilitiesCalls returns the number of capability probes received.
+func (m *MockDaemon) GetDaemonCapabilitiesCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.capabilityProbeCalls
+}
+
 // SetMergeDetail sets the human-readable note echoed as
 // MergeSessionResponse.detail (e.g. a merge-strategy substitution). Empty — the
 // default — means the merge ran exactly as configured and no note is returned.
@@ -2150,7 +2189,11 @@ func (m *MockDaemon) MergeSession(_ context.Context, req *connect.Request[pb.Mer
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mergeSessionCalls = append(m.mergeSessionCalls, req.Msg.GetId())
-	m.mergeExpectedHeads = append(m.mergeExpectedHeads, req.Msg.GetExpectedHeadSha())
+	head := req.Msg.GetExpectedHeadSha()
+	if m.legacyNoHeadPin {
+		head = ""
+	}
+	m.mergeExpectedHeads = append(m.mergeExpectedHeads, head)
 	if m.mergeErrorMsg != "" {
 		return nil, connect.NewError(m.mergeErrorCode, fmt.Errorf("%s", m.mergeErrorMsg))
 	}
@@ -2168,6 +2211,73 @@ func (m *MockDaemon) MergeSession(_ context.Context, req *connect.Request[pb.Mer
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetId()))
+}
+
+// SetApproveResult makes ApproveSessionPR answer with r (nil restores
+// Unimplemented).
+func (m *MockDaemon) SetApproveResult(r *pb.VerifyApproveResult) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.approveResult = r
+}
+
+// SetSendBackResult makes SendBackSessionPR answer with r (nil restores
+// Unimplemented).
+func (m *MockDaemon) SetSendBackResult(r *pb.SendBackSessionPRResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendBackResult = r
+}
+
+// SetVerifyError makes both verify verbs fail with the given connect code and
+// message. Pass an empty message to clear it.
+func (m *MockDaemon) SetVerifyError(code connect.Code, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.verifyErrorCode, m.verifyErrorMsg = code, msg
+}
+
+// ApproveSessionPRCalls returns every ApproveSessionPR request in order.
+func (m *MockDaemon) ApproveSessionPRCalls() []*pb.ApproveSessionPRRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.approveSessionPRCalls)
+}
+
+// SendBackSessionPRCalls returns every SendBackSessionPR request in order.
+func (m *MockDaemon) SendBackSessionPRCalls() []*pb.SendBackSessionPRRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.sendBackSessionPRCalls)
+}
+
+// ApproveSessionPR answers with the configured result. The real daemon runs the
+// boss-verify toolbox; nothing here models the park or the approval record.
+func (m *MockDaemon) ApproveSessionPR(_ context.Context, req *connect.Request[pb.ApproveSessionPRRequest]) (*connect.Response[pb.ApproveSessionPRResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.approveSessionPRCalls = append(m.approveSessionPRCalls, cloneMsg(req.Msg))
+	if m.verifyErrorMsg != "" {
+		return nil, connect.NewError(m.verifyErrorCode, fmt.Errorf("%s", m.verifyErrorMsg))
+	}
+	if m.approveResult == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ApproveSessionPR not configured"))
+	}
+	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: cloneMsg(m.approveResult)}), nil
+}
+
+// SendBackSessionPR answers with the configured result.
+func (m *MockDaemon) SendBackSessionPR(_ context.Context, req *connect.Request[pb.SendBackSessionPRRequest]) (*connect.Response[pb.SendBackSessionPRResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendBackSessionPRCalls = append(m.sendBackSessionPRCalls, cloneMsg(req.Msg))
+	if m.verifyErrorMsg != "" {
+		return nil, connect.NewError(m.verifyErrorCode, fmt.Errorf("%s", m.verifyErrorMsg))
+	}
+	if m.sendBackResult == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SendBackSessionPR not configured"))
+	}
+	return connect.NewResponse(cloneMsg(m.sendBackResult)), nil
 }
 
 // SetRecordChatResponse makes RecordChat answer with chat verbatim instead of
@@ -3126,4 +3236,19 @@ func (m *MockDaemon) UpdateRepoCalls() []*pb.UpdateRepoRequest {
 		out[i] = cloneMsg(req)
 	}
 	return out
+}
+
+// GetDaemonCapabilities advertises head-pin support unless an older daemon is simulated.
+func (m *MockDaemon) GetDaemonCapabilities(context.Context, *connect.Request[pb.GetDaemonCapabilitiesRequest]) (*connect.Response[pb.GetDaemonCapabilitiesResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.capabilityProbeCalls++
+	if m.legacyNoHeadPin {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("unknown method GetDaemonCapabilities"))
+	}
+	capabilities := []string{daemoncaps.MergeExpectedHeadSHA}
+	if m.omitHeadPinCapability {
+		capabilities = nil
+	}
+	return connect.NewResponse(&pb.GetDaemonCapabilitiesResponse{Capabilities: capabilities}), nil
 }

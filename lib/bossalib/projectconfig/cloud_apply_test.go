@@ -96,6 +96,21 @@ func TestApplyCloud(t *testing.T) {
 		}
 	})
 
+	t.Run("ALREADY_EXISTS on a webhook create is managed-by-other-member", func(t *testing.T) {
+		// While the organization does not share sessions bosso hides another
+		// owner's endpoints, so the plan cannot see the row that conflicts.
+		f := &fakeCloud{failOn: map[string]error{
+			"create-webhook https://hooks.example.com/a": connect.NewError(connect.CodeAlreadyExists, errors.New("a session webhook for this URL managed by this project already exists in the organization")),
+		}}
+		_, res, err := applyCloud(t, cloudConfig(t, `{"webhooks": [{"url": "https://hooks.example.com/a", "eventTypes": ["session.merged"]}]}`), f, mint)
+		if err == nil {
+			t.Fatal("a conflicting create must fail the apply")
+		}
+		if action, reason, _ := failedReason(res, "https://hooks.example.com/a"); action != ActionConflict || reason != ReasonManagedByOtherMember {
+			t.Fatalf("failure = %s %s", action, reason)
+		}
+	})
+
 	t.Run("FAILED_PRECONDITION on a webhook create is a conflict carrying bosso's message", func(t *testing.T) {
 		f := &fakeCloud{failOn: map[string]error{
 			"create-webhook https://hooks.example.com/a": connect.NewError(connect.CodeFailedPrecondition, errors.New("an organization can have at most 20 session webhooks")),
@@ -113,6 +128,40 @@ func TestApplyCloud(t *testing.T) {
 		}
 		if len(res.NotReached) != 1 || slices.Contains(f.log, "create-webhook https://hooks.example.com/b") {
 			t.Fatalf("the webhook class did not stop: %v / %+v", f.log, res.NotReached)
+		}
+	})
+
+	t.Run("FAILED_PRECONDITION on a webhook update or rotate is a conflict carrying bosso's message", func(t *testing.T) {
+		// bosso lists an endpoint whose creator is no longer an owner to every
+		// owner, but refuses anything beyond disabling or deleting it.
+		const refusal = "this session webhook's creator is no longer an owner of the organization, so it can only be disabled or deleted"
+		for _, tc := range []struct {
+			name, entry, file string
+			opts              CloudOptions
+		}{
+			{"update", "update-webhook https://hooks.example.com/a",
+				`{"webhooks": [{"url": "https://hooks.example.com/a", "eventTypes": ["session.working"]}]}`, mint},
+			{"rotate", "rotate-webhook https://hooks.example.com/a",
+				`{"webhooks": [{"url": "https://hooks.example.com/a", "eventTypes": ["session.merged"]}]}`,
+				CloudOptions{CanMintSecrets: true, RotateSecrets: true}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &fakeCloud{
+					webhooks: []*pb.SessionWebhook{liveWebhook("https://hooks.example.com/a", cloudMarker)},
+					failOn:   map[string]error{tc.entry: connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))},
+				}
+				_, res, err := applyCloud(t, cloudConfig(t, tc.file), f, tc.opts)
+				if err == nil {
+					t.Fatal("a refused write must fail the apply")
+				}
+				if !slices.Contains(f.log, tc.entry) {
+					t.Fatalf("the %s was never sent: %v", tc.name, f.log)
+				}
+				action, reason, detail := failedReason(res, "https://hooks.example.com/a")
+				if action != ActionConflict || reason != ReasonRefused || detail != refusal {
+					t.Fatalf("failure = %s %s %q", action, reason, detail)
+				}
+			})
 		}
 	})
 

@@ -108,13 +108,15 @@ func newBootstrapReapLifecycle(t *testing.T) (*Lifecycle, *mockSessionStore, *re
 // that shape explicitly.
 func bootstrapStrand(id string, state machine.State, createdAt time.Time) *models.Session {
 	return &models.Session{
-		ID:           id,
-		RepoID:       "repo-1",
-		State:        state,
-		BranchName:   "branch-" + id,
-		WorktreePath: "/tmp/worktrees/repo/branch-" + id,
-		AgentName:    "claude",
-		CreatedAt:    createdAt,
+		ID:                id,
+		RepoID:            "repo-1",
+		State:             state,
+		BranchName:        "branch-" + id,
+		WorktreePath:      "/tmp/worktrees/repo/branch-" + id,
+		WorktreeCreatedAt: &createdAt,
+		IsBranchCreated:   true,
+		AgentName:         "claude",
+		CreatedAt:         createdAt,
 	}
 }
 
@@ -141,7 +143,7 @@ func TestReapStrandedBootstrap_OldPreAgentSessionIsReclaimed(t *testing.T) {
 		t.Fatal("BlockedReason not persisted; the failure would be invisible")
 	}
 	purged, reaped := worktrees.records()
-	if len(purged) != 1 || purged[0] != "branch-s1" {
+	if len(purged) != 1 || purged[0] != "/tmp/worktrees/repo/branch-s1" {
 		t.Fatalf("purged = %v, want [branch-s1]", purged)
 	}
 	if len(reaped) != 1 || reaped[0] != "branch-s1" {

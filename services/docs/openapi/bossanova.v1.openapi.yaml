@@ -248,7 +248,7 @@ paths:
          address), an empty or unknown event type set, an unknown format, a
          description over 200 characters, or a caller-supplied secret that is not
          16-256 visible ASCII characters. FAILED_PRECONDITION once the organization
-         has 20 endpoints.
+         has 20 endpoints, counting other owners' endpoints the caller cannot see.
       operationId: bossanova.v1.OrchestratorService.CreateSessionWebhook
       parameters:
         - name: Connect-Protocol-Version
@@ -437,7 +437,8 @@ paths:
       summary: DeleteSessionWebhook
       description: |-
         DeleteSessionWebhook permanently deletes an endpoint with its delivery
-         history.
+         history. While member session sharing is off: NOT_FOUND for another
+         owner's endpoint; an orphaned one may be deleted.
       operationId: bossanova.v1.OrchestratorService.DeleteSessionWebhook
       parameters:
         - name: Connect-Protocol-Version
@@ -474,9 +475,9 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: DeleteTrigger
       description: |-
-        DeleteTrigger permanently deletes a trigger the caller created, together
-         with its secret and invocation history. Its endpoint stops accepting
-         requests immediately.
+        DeleteTrigger permanently deletes a trigger the caller created, or, for an
+         owner of its organization, a member's trigger, together with its secret
+         and invocation history. Its endpoint stops accepting requests immediately.
       operationId: bossanova.v1.OrchestratorService.DeleteTrigger
       parameters:
         - name: Connect-Protocol-Version
@@ -840,7 +841,10 @@ paths:
       description: |-
         GetSessionWebhookDelivery returns one delivery with its attempts in order,
          the request body rendered through the endpoint's current format and the
-         request headers. Never returns a secret.
+         request headers. Never returns a secret. While member session sharing is
+         off: NOT_FOUND for a delivery about another member's session or on
+         another owner's endpoint, FAILED_PRECONDITION for one on an orphaned
+         endpoint.
       operationId: bossanova.v1.OrchestratorService.GetSessionWebhookDelivery
       parameters:
         - name: Connect-Protocol-Version
@@ -876,7 +880,9 @@ paths:
       tags:
         - bossanova.v1.OrchestratorService
       summary: GetTrigger
-      description: GetTrigger returns one trigger the caller created. Never returns a secret.
+      description: |-
+        GetTrigger returns one trigger the caller created, or, for an owner of its
+         organization, a member's trigger. Never returns a secret.
       operationId: bossanova.v1.OrchestratorService.GetTrigger
       parameters:
         - name: Connect-Protocol-Version
@@ -919,9 +925,14 @@ paths:
          prefix. Every RPC below requires user authentication (daemon tokens are
          refused) and passes the cloud access policy for the trigger's organization
          (PERMISSION_DENIED when it refuses). A trigger is visible only to its
-         creator: any id-addressed call on a trigger the caller did not create, or
-         in an organization the caller is not a member of, returns NOT_FOUND so the
-         trigger's existence is not disclosed.
+         creator and to the owners of its organization: any id-addressed call on a
+         trigger by anyone else -- another member, or a caller outside the
+         organization -- returns NOT_FOUND so the trigger's existence is not
+         disclosed. An owner may get, disable, delete, rotate the secret of and
+         list the invocations of a member's trigger, each recorded in the audit
+         log; enabling, editing and testing a trigger stay with its creator, and an
+         owner attempting them gets PERMISSION_DENIED, because a trigger launches
+         sessions on its creator's machines.
       description: |-
         GetTriggerCatalog returns the trigger types, event types, and filter
          fields bosso accepts. Needs user authentication only; it is static
@@ -1288,7 +1299,10 @@ paths:
       description: |-
         ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
          first. INVALID_ARGUMENT for a page_token that does not decode, an
-         unknown status, or a negative page_size.
+         unknown status, or a negative page_size. While member session sharing is
+         off it lists only test deliveries and deliveries about the caller's own
+         sessions, and answers NOT_FOUND for another owner's endpoint and
+         FAILED_PRECONDITION for an orphaned one.
       operationId: bossanova.v1.OrchestratorService.ListSessionWebhookDeliveries
       parameters:
         - name: Connect-Protocol-Version
@@ -1336,7 +1350,22 @@ paths:
          webhook's existence is not disclosed. The signing secret is returned ONLY
          by CreateSessionWebhook and RotateSessionWebhookSecret.
       description: |-
-        ListSessionWebhookEventTypes returns the event catalog an endpoint can
+        Member session sharing (BOS-1593,
+         Organization.is_member_session_sharing_enabled, false by default) narrows
+         this further. While it is off an endpoint delivers only its creator's
+         sessions, so only its creator may act on it: another owner's endpoint is
+         not listed, and every id-addressed RPC answers NOT_FOUND for it --
+         GetSessionWebhookDelivery too, even for a delivery about the caller's own
+         session. The exception is an orphaned endpoint, whose creator is no
+         longer an owner of the organization: it is listed to every owner with
+         SessionWebhook.is_retire_only set and an empty url (the URL is often a
+         bearer credential), and any owner may delete it or disable it with an
+         UpdateSessionWebhook that sets nothing but is_enabled=false (whose
+         response is marked and withholds the url the same way). Every other RPC
+         on an orphaned endpoint answers FAILED_PRECONDITION. While sharing is on,
+         every owner may act on every endpoint.
+
+         ListSessionWebhookEventTypes returns the event catalog an endpoint can
          subscribe to, in canonical order.
       operationId: bossanova.v1.OrchestratorService.ListSessionWebhookEventTypes
       parameters:
@@ -1412,7 +1441,10 @@ paths:
         - bossanova.v1.OrchestratorService
       summary: ListSessionWebhooks
       description: |-
-        ListSessionWebhooks returns the organization's endpoints, oldest first.
+        ListSessionWebhooks returns the organization's endpoints the caller may
+         act on, oldest first: every one while member session sharing is on,
+         otherwise the caller's own plus any orphaned one, marked is_retire_only
+         with its url empty.
          Never returns a secret.
       operationId: bossanova.v1.OrchestratorService.ListSessionWebhooks
       parameters:
@@ -1451,7 +1483,8 @@ paths:
       summary: ListTriggerInvocations
       description: |-
         ListTriggerInvocations returns the invocation history of a trigger the
-         caller created, newest first.
+         caller created, or, for an owner of its organization, a member's trigger,
+         newest first.
       operationId: bossanova.v1.OrchestratorService.ListTriggerInvocations
       parameters:
         - name: Connect-Protocol-Version
@@ -1490,7 +1523,10 @@ paths:
       description: |-
         ListTriggers returns the caller's own triggers, in organization_id when
          set (the caller must be a member) or across every organization the caller
-         belongs to. Never returns a secret.
+         belongs to. With should_include_member_triggers it returns every member's
+         triggers in that organization instead (organization_id, or the caller's
+         active organization when absent), which needs the owner role there
+         (PERMISSION_DENIED otherwise). Never returns a secret.
       operationId: bossanova.v1.OrchestratorService.ListTriggers
       parameters:
         - name: Connect-Protocol-Version
@@ -3961,6 +3997,8 @@ paths:
       description: |-
         RotateSessionWebhookSecret replaces the signing secret; undelivered events
          are signed with the new one. The new secret is returned ONLY here.
+         While member session sharing is off: NOT_FOUND for another owner's
+         endpoint, FAILED_PRECONDITION for an orphaned one.
       operationId: bossanova.v1.OrchestratorService.RotateSessionWebhookSecret
       parameters:
         - name: Connect-Protocol-Version
@@ -3998,7 +4036,8 @@ paths:
       summary: RotateTriggerSecret
       description: |-
         RotateTriggerSecret replaces the signing secret of an HTTP trigger the
-         caller created; the old secret stops validating immediately. The new
+         caller created, or, for an owner of its organization, a member's HTTP
+         trigger; the old secret stops validating immediately. The new
          secret is returned ONLY in this response. FAILED_PRECONDITION for a
          trigger type with no secret.
       operationId: bossanova.v1.OrchestratorService.RotateTriggerSecret
@@ -4048,7 +4087,9 @@ paths:
          created_at and forces is_test to true. The body is then rendered through
          the endpoint's format, exactly as a live delivery is; a payload the format
          cannot render is INVALID_ARGUMENT. Test deliveries are never retried.
-         RESOURCE_EXHAUSTED past 10 test sends per minute per organization.
+         RESOURCE_EXHAUSTED past 10 test sends per minute per organization. While
+         member session sharing is off: NOT_FOUND for another owner's endpoint,
+         FAILED_PRECONDITION for an orphaned one.
       operationId: bossanova.v1.OrchestratorService.SendSessionWebhookTestEvent
       parameters:
         - name: Connect-Protocol-Version
@@ -4283,7 +4324,8 @@ paths:
          applying the same filters and policies as a real invocation, and records
          the result as a TriggerInvocation with source "test". It launches a
          session only when should_launch is set; otherwise the invocation stops at
-         its decision.
+         its decision. Only the creator may test a trigger; an owner of its
+         organization gets PERMISSION_DENIED.
       operationId: bossanova.v1.OrchestratorService.TestTrigger
       parameters:
         - name: Connect-Protocol-Version
@@ -4394,6 +4436,9 @@ paths:
         UpdateSessionWebhook changes only the fields that are present and returns
          the endpoint without its secret. Disabling an endpoint or changing its URL
          cancels its undelivered deliveries. Validation matches CreateSessionWebhook.
+         While member session sharing is off: NOT_FOUND for another owner's
+         endpoint, and FAILED_PRECONDITION for an orphaned one unless the update
+         sets nothing but is_enabled=false.
       operationId: bossanova.v1.OrchestratorService.UpdateSessionWebhook
       parameters:
         - name: Connect-Protocol-Version
@@ -4432,7 +4477,9 @@ paths:
       description: |-
         UpdateTrigger changes fields of a trigger the caller created; absent
          fields are left unchanged. trigger_type is immutable. Never returns or
-         changes the secret.
+         changes the secret. An owner of the trigger's organization may disable a
+         member's trigger (is_enabled false and nothing else); enabling it or any
+         other change is PERMISSION_DENIED for anyone but the creator.
       operationId: bossanova.v1.OrchestratorService.UpdateTrigger
       parameters:
         - name: Connect-Protocol-Version
@@ -4960,6 +5007,25 @@ components:
          BuildInteractiveCommandRequest.append_system_prompt. It describes the ARGV
          the runner just returned — it is NOT a receipt that the launched binary
          accepted, retained or applied the instructions.
+    bossanova.v1.ApproveSessionPRRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+      title: ApproveSessionPRRequest
+      additionalProperties: false
+    bossanova.v1.ApproveSessionPRResponse:
+      type: object
+      properties:
+        result:
+          title: result
+          $ref: '#/components/schemas/bossanova.v1.VerifyApproveResult'
+      title: ApproveSessionPRResponse
+      additionalProperties: false
     bossanova.v1.ArchiveSessionCommand:
       type: object
       properties:
@@ -9282,6 +9348,21 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: GetCronJobResponse
       additionalProperties: false
+    bossanova.v1.GetDaemonCapabilitiesRequest:
+      type: object
+      title: GetDaemonCapabilitiesRequest
+      additionalProperties: false
+      description: GetDaemonCapabilitiesRequest probes the running daemon, independent of version.
+    bossanova.v1.GetDaemonCapabilitiesResponse:
+      type: object
+      properties:
+        capabilities:
+          type: array
+          items:
+            type: string
+          title: capabilities
+      title: GetDaemonCapabilitiesResponse
+      additionalProperties: false
     bossanova.v1.GetGitHubAppInstallURLRequest:
       type: object
       properties:
@@ -11429,6 +11510,16 @@ components:
           description: |-
             Restrict to one organization the caller belongs to. Absent lists the
              caller's triggers across every organization they belong to.
+        shouldIncludeMemberTriggers:
+          type:
+            - boolean
+            - "null"
+          title: should_include_member_triggers
+          description: |-
+            List every member's triggers in the organization rather than only the
+             caller's: organization_id when set, otherwise the caller's active
+             organization. Requires the owner role there; PERMISSION_DENIED otherwise.
+             Absent or false lists only the caller's own triggers.
       title: ListTriggersRequest
       additionalProperties: false
     bossanova.v1.ListTriggersResponse:
@@ -12756,6 +12847,16 @@ components:
         createdAt:
           title: created_at
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        isMemberSessionSharingEnabled:
+          type: boolean
+          title: is_member_session_sharing_enabled
+          description: |-
+            Whether members may see and reach each other's sessions, chats and
+             machines. False (the default for every organization) means only the
+             machine owner -- the user whose daemon runs a session -- can reach it;
+             organization owners are restricted too. True applies the teammate model:
+             any member may see the organization's sessions and run the teammate
+             allow-list on them. Read-only: no RPC sets it yet (BOS-1593).
       title: Organization
       additionalProperties: false
     bossanova.v1.OrganizationCronJobReadFailure:
@@ -17383,6 +17484,49 @@ components:
       description: |-
         SecretUpdate carries a secret mutation. value is required iff action == SET
          and is ignored otherwise. Never populated on read/aggregate responses.
+    bossanova.v1.SendBackSessionPRRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        note:
+          type: string
+          title: note
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+      title: SendBackSessionPRRequest
+      additionalProperties: false
+    bossanova.v1.SendBackSessionPRResponse:
+      type: object
+      properties:
+        isPosted:
+          type: boolean
+          title: is_posted
+        isPlanned:
+          type: boolean
+          title: is_planned
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+        reason:
+          type: string
+          title: reason
+        commentUrl:
+          type: string
+          title: comment_url
+        headSha:
+          type: string
+          title: head_sha
+        state:
+          type: string
+          title: state
+      title: SendBackSessionPRResponse
+      additionalProperties: false
+      description: |-
+        SendBackSessionPRResponse is `verify-gate.mjs send-back`'s outcome. is_posted
+         is true only when the PR comment was created; a refusal carries reason.
     bossanova.v1.SendBroadcastRequest:
       type: object
       properties:
@@ -18446,7 +18590,9 @@ components:
         url:
           type: string
           title: url
-          description: The https URL deliveries are POSTed to.
+          description: |-
+            The https URL deliveries are POSTed to. Empty whenever is_retire_only is
+             true: the URL is withheld from a caller who may only retire the endpoint.
         description:
           type: string
           title: description
@@ -18486,6 +18632,18 @@ components:
           description: |-
             Config-ownership marker: "boss-project:<project>" for an endpoint a
              project config created or adopted; empty for a hand-made endpoint.
+        isRetireOnly:
+          type: boolean
+          title: is_retire_only
+          description: |-
+            Output only. True when the caller may only retire this endpoint: member
+             session sharing is off and its creator is no longer an owner of the
+             organization (an orphaned endpoint). Such an endpoint may only be deleted
+             or disabled (an UpdateSessionWebhook that sets nothing but
+             is_enabled=false); every other RPC on it answers FAILED_PRECONDITION, and
+             its url is withheld (empty). Decide what to offer from this field, not
+             from an empty url. False for the caller's own endpoint and for every
+             endpoint while sharing is on.
       title: SessionWebhook
       additionalProperties: false
       description: |-
@@ -20155,7 +20313,10 @@ components:
             creatorUserId:
               type: string
               title: creator_user_id
-              description: bosso users.id of the creator. Only the creator can read or change it.
+              description: |-
+                bosso users.id of the creator. The creator and the owners of the
+                 trigger's organization can read, disable, delete and rotate it; only the
+                 creator can enable or change it.
             name:
               type: string
               title: name
@@ -21627,6 +21788,54 @@ components:
           description: detected default branch (HEAD ref)
       title: ValidateRepoPathResponse
       additionalProperties: false
+    bossanova.v1.VerifyApproveResult:
+      type: object
+      properties:
+        isApproved:
+          type: boolean
+          title: is_approved
+        isPlanned:
+          type: boolean
+          title: is_planned
+        isDryRun:
+          type: boolean
+          title: is_dry_run
+        reason:
+          type: string
+          title: reason
+        waives:
+          type: string
+          title: waives
+        lifted:
+          type: string
+          title: lifted
+        headSha:
+          type: string
+          title: head_sha
+        trackerWrites:
+          type: string
+          title: tracker_writes
+        approvalUrl:
+          type: string
+          title: approval_url
+        why:
+          type: string
+          title: why
+        park:
+          type: string
+          title: park
+        state:
+          type: string
+          title: state
+      title: VerifyApproveResult
+      additionalProperties: false
+      description: |-
+        VerifyApproveResult is `verify-gate.mjs approve`'s outcome. is_approved is
+         true only when the head-bound approval record (approval_url) took effect on
+         head_sha: it waives `waives` there, or, with lifted "sent-back", it lifts a
+         send-back of a head verify already passed. tracker_writes reports the
+         needs-human label removal that follows. A refusal carries reason, plus
+         approval_url when a posted record waives nothing.
     bossanova.v1.WaitAgentRunHostRequest:
       type: object
       properties:

@@ -1933,42 +1933,7 @@ func (l *Lifecycle) bootstrapDeadline() time.Duration {
 	return BootstrapTimeout
 }
 
-// recordCreatedWorktree returns the gitpkg.CreateOpts.OnWorktreeReady hook that
-// persists what a fresh-branch create just made, as soon as `git worktree add`
-// has landed and BEFORE the setup script runs (BOS-717).
-//
-// Two things go wrong without it, both on the shape the 2026-08-06 incident took
-// (a plain `boss new` / TUI new session, killed while the setup script hung):
-//
-//   - The row has no branch to clean up. A title-only create's branch is derived
-//     inside Create (sanitized title, plus a uniquifying suffix), so branch_name
-//     stays empty until StartSession returns. Neither StreamCreateSession's
-//     failure cleanup nor the stranded-bootstrap reaper could name the worktree
-//     and branch left on disk — both key on branch_name.
-//   - The row has no PROOF the branch is ours to delete. branch_name alone is not
-//     that proof: it is written at insert time from the request, before Create
-//     has checked whether such a branch already exists. worktree_path is, because
-//     it is only ever written after the add succeeded — which is exactly the
-//     rule cleanupFailedCreateSession applies.
-//
-// Wired on every StartSession arm that *creates* a branch rather than checking
-// one out: the fresh-branch arm chosen by `existingBranch == ""`, and the
-// fallback Create the PR/existing-branch arm runs when its checkout fails. Both
-// go through gitpkg.Create, whose `worktree add -b` either makes the branch or
-// fails with ErrBranchExists, so the hook only ever fires for a branch this
-// attempt made — which is what makes it ownership proof rather than a name.
-//
-// CreateFromExistingBranch itself is never handed the hook: it keeps the head
-// branch it was given, so a dependabot head branch can never be made to look
-// like something this attempt created. Leaving the fallback unhooked was not
-// part of that protection but a gap in it — the fallback's branch *is* ours,
-// and without the recording a failed bootstrap purges the worktree, refuses to
-// reap the branch for want of proof, deletes the row, and strands the branch
-// where the next retry collides with it (ErrBranchExists).
-//
-// The write runs on a detached, short-deadline context: the caller's bootstrap
-// context may be a moment from expiring, and recording what to clean up must not
-// be the thing that expires with it.
+// recordCreatedWorktree records fresh branch ownership after git worktree add -b.
 func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context, string, string) {
 	return func(ctx context.Context, branch, worktreePath string) {
 		if branch == "" || worktreePath == "" {
@@ -1976,9 +1941,11 @@ func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context
 		}
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
 		defer cancel()
+		owned := true
 		if _, err := l.sessions.Update(writeCtx, sessionID, db.UpdateSessionParams{
-			BranchName:   &branch,
-			WorktreePath: &worktreePath,
+			BranchName:      &branch,
+			WorktreePath:    &worktreePath,
+			IsBranchCreated: &owned,
 		}); err != nil {
 			// Non-fatal: the bootstrap continues and StartSession's own update
 			// records both on the success path. What is lost is only the early
@@ -1988,6 +1955,18 @@ func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context
 				Str("branch", branch).
 				Msg("could not record the created worktree early; a failed bootstrap may leave it orphaned")
 		}
+	}
+}
+
+// recordAddedWorktree durably records directory ownership on both creation paths.
+func (l *Lifecycle) recordAddedWorktree(ctx context.Context, sessionID string) func(string) error {
+	return func(path string) error {
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
+		defer cancel()
+		at := time.Now().UTC().Format(time.RFC3339Nano)
+		atPtr := &at
+		_, err := l.sessions.Update(writeCtx, sessionID, db.UpdateSessionParams{WorktreePath: &path, WorktreeCreatedAt: &atPtr})
+		return err
 	}
 }
 
@@ -2150,7 +2129,7 @@ func CleanUpBootstrapArtifacts(
 			Msg("failed-bootstrap cleanup: get session failed; any worktree or branch it left is orphaned")
 		return
 	}
-	if sess == nil || sess.RepoID == "" || sess.BranchName == "" {
+	if sess == nil || sess.RepoID == "" {
 		return
 	}
 	repo, err := repos.Get(ctx, sess.RepoID)
@@ -2159,7 +2138,11 @@ func CleanUpBootstrapArtifacts(
 			Msg("failed-bootstrap cleanup: get repo failed")
 		return
 	}
-	if err := worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.BranchName); err != nil {
+	if sess.WorktreeCreatedAt == nil || sess.WorktreePath == "" {
+		logger.Warn().Str("worktree", sess.WorktreePath).Msg("worktree ownership unknown; not purged")
+		return
+	}
+	if err := worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.WorktreePath); err != nil {
 		// The purge did not run, so the worktree is still registered and
 		// `git branch -D` would refuse the branch. Skip both halves, and say
 		// they are abandoned rather than deferred (see the ordering note above).
@@ -2182,7 +2165,7 @@ func CleanUpBootstrapArtifacts(
 		}
 		return
 	}
-	if sess.WorktreePath != "" {
+	if sess.IsBranchCreated && sess.BranchName != "" {
 		if err := worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); err != nil {
 			// Logged rather than discarded: a silently refused delete is how an
 			// orphaned branch goes unnoticed.
@@ -2323,6 +2306,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			RepoName:          repo.DisplayName,
 			SetupScript:       setupScript,
 			SetupScriptOutput: setupOutput,
+			OnWorktreeAdded:   l.recordAddedWorktree(ctx, sessionID),
 		})
 		if err != nil {
 			// Preserve the existing fallback for any checkout failure. The
@@ -2345,6 +2329,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				BranchName:        existingBranch,
 				SetupScript:       setupScript,
 				SetupScriptOutput: setupOutput,
+				OnWorktreeAdded:   l.recordAddedWorktree(ctx, sessionID),
 				Force:             forceBranch,
 				OnWorktreeReady:   l.recordCreatedWorktree(sessionID),
 			})
@@ -2359,6 +2344,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			BranchName:        opts.BranchName,
 			SetupScript:       setupScript,
 			SetupScriptOutput: setupOutput,
+			OnWorktreeAdded:   l.recordAddedWorktree(ctx, sessionID),
 			Force:             forceBranch,
 			OnWorktreeReady:   l.recordCreatedWorktree(sessionID),
 		})
@@ -4302,6 +4288,8 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) err
 	if url == "" {
 		return fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
 	}
+
+	url = gitpkg.CloneURLWithoutCredentials(url)
 
 	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
 		OriginURL: &url,

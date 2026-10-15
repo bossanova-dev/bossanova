@@ -10964,10 +10964,17 @@ type Organization struct {
 	// True for the auto-created single-person organization from signup.
 	IsPersonal bool `protobuf:"varint,5,opt,name=is_personal,json=isPersonal,proto3" json:"is_personal,omitempty"`
 	// Active membership count; per-seat Stripe quantity tracks this value.
-	MemberCount   int32                  `protobuf:"varint,6,opt,name=member_count,json=memberCount,proto3" json:"member_count,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MemberCount int32                  `protobuf:"varint,6,opt,name=member_count,json=memberCount,proto3" json:"member_count,omitempty"`
+	CreatedAt   *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// Whether members may see and reach each other's sessions, chats and
+	// machines. False (the default for every organization) means only the
+	// machine owner -- the user whose daemon runs a session -- can reach it;
+	// organization owners are restricted too. True applies the teammate model:
+	// any member may see the organization's sessions and run the teammate
+	// allow-list on them. Read-only: no RPC sets it yet (BOS-1593).
+	IsMemberSessionSharingEnabled bool `protobuf:"varint,8,opt,name=is_member_session_sharing_enabled,json=isMemberSessionSharingEnabled,proto3" json:"is_member_session_sharing_enabled,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *Organization) Reset() {
@@ -11047,6 +11054,13 @@ func (x *Organization) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *Organization) GetIsMemberSessionSharingEnabled() bool {
+	if x != nil {
+		return x.IsMemberSessionSharingEnabled
+	}
+	return false
 }
 
 type OrganizationMember struct {
@@ -12655,7 +12669,8 @@ type SessionWebhook struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	OrganizationId string                 `protobuf:"bytes,2,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	// The https URL deliveries are POSTed to.
+	// The https URL deliveries are POSTed to. Empty whenever is_retire_only is
+	// true: the URL is withheld from a caller who may only retire the endpoint.
 	Url         string `protobuf:"bytes,3,opt,name=url,proto3" json:"url,omitempty"`
 	Description string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	// Subscribed event types (SessionWebhookEventType.type), sorted.
@@ -12673,7 +12688,16 @@ type SessionWebhook struct {
 	Format string `protobuf:"bytes,11,opt,name=format,proto3" json:"format,omitempty"`
 	// Config-ownership marker: "boss-project:<project>" for an endpoint a
 	// project config created or adopted; empty for a hand-made endpoint.
-	ManagedBy     string `protobuf:"bytes,12,opt,name=managed_by,json=managedBy,proto3" json:"managed_by,omitempty"`
+	ManagedBy string `protobuf:"bytes,12,opt,name=managed_by,json=managedBy,proto3" json:"managed_by,omitempty"`
+	// Output only. True when the caller may only retire this endpoint: member
+	// session sharing is off and its creator is no longer an owner of the
+	// organization (an orphaned endpoint). Such an endpoint may only be deleted
+	// or disabled (an UpdateSessionWebhook that sets nothing but
+	// is_enabled=false); every other RPC on it answers FAILED_PRECONDITION, and
+	// its url is withheld (empty). Decide what to offer from this field, not
+	// from an empty url. False for the caller's own endpoint and for every
+	// endpoint while sharing is on.
+	IsRetireOnly  bool `protobuf:"varint,13,opt,name=is_retire_only,json=isRetireOnly,proto3" json:"is_retire_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12790,6 +12814,13 @@ func (x *SessionWebhook) GetManagedBy() string {
 		return x.ManagedBy
 	}
 	return ""
+}
+
+func (x *SessionWebhook) GetIsRetireOnly() bool {
+	if x != nil {
+		return x.IsRetireOnly
+	}
+	return false
 }
 
 // SessionWebhookEventType is one entry of the event catalog.
@@ -14502,8 +14533,13 @@ type ListTriggersRequest struct {
 	// Restrict to one organization the caller belongs to. Absent lists the
 	// caller's triggers across every organization they belong to.
 	OrganizationId *string `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3,oneof" json:"organization_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// List every member's triggers in the organization rather than only the
+	// caller's: organization_id when set, otherwise the caller's active
+	// organization. Requires the owner role there; PERMISSION_DENIED otherwise.
+	// Absent or false lists only the caller's own triggers.
+	ShouldIncludeMemberTriggers *bool `protobuf:"varint,2,opt,name=should_include_member_triggers,json=shouldIncludeMemberTriggers,proto3,oneof" json:"should_include_member_triggers,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *ListTriggersRequest) Reset() {
@@ -14541,6 +14577,13 @@ func (x *ListTriggersRequest) GetOrganizationId() string {
 		return *x.OrganizationId
 	}
 	return ""
+}
+
+func (x *ListTriggersRequest) GetShouldIncludeMemberTriggers() bool {
+	if x != nil && x.ShouldIncludeMemberTriggers != nil {
+		return *x.ShouldIncludeMemberTriggers
+	}
+	return false
 }
 
 type ListTriggersResponse struct {
@@ -18037,7 +18080,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\vsource_page\x18\x02 \x01(\tR\n" +
 	"sourcePage\"Z\n" +
 	"\x1dSubscribeToNewsletterResponse\x129\n" +
-	"\aconsent\x18\x01 \x01(\v2\x1f.bossanova.v1.NewsletterConsentR\aconsent\"\x90\x02\n" +
+	"\aconsent\x18\x01 \x01(\v2\x1f.bossanova.v1.NewsletterConsentR\aconsent\"\xda\x02\n" +
 	"\fOrganization\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\"\n" +
 	"\rworkos_org_id\x18\x02 \x01(\tR\vworkosOrgId\x12\x12\n" +
@@ -18048,7 +18091,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"isPersonal\x12!\n" +
 	"\fmember_count\x18\x06 \x01(\x05R\vmemberCount\x129\n" +
 	"\n" +
-	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xfe\x02\n" +
+	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12H\n" +
+	"!is_member_session_sharing_enabled\x18\b \x01(\bR\x1disMemberSessionSharingEnabled\"\xfe\x02\n" +
 	"\x12OrganizationMember\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x120\n" +
 	"\x14workos_membership_id\x18\x02 \x01(\tR\x12workosMembershipId\x12\x14\n" +
@@ -18136,7 +18180,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x1cListRepoOrganizationsRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\tR\x0eorganizationId\"b\n" +
 	"\x1dListRepoOrganizationsResponse\x12A\n" +
-	"\bmappings\x18\x01 \x03(\v2%.bossanova.v1.RepoOrganizationMappingR\bmappings\"\xdf\x03\n" +
+	"\bmappings\x18\x01 \x03(\v2%.bossanova.v1.RepoOrganizationMappingR\bmappings\"\x85\x04\n" +
 	"\x0eSessionWebhook\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\tR\x0eorganizationId\x12\x10\n" +
@@ -18155,7 +18199,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\x0fsecretRotatedAt\x12\x16\n" +
 	"\x06format\x18\v \x01(\tR\x06format\x12\x1d\n" +
 	"\n" +
-	"managed_by\x18\f \x01(\tR\tmanagedBy\"\xa4\x01\n" +
+	"managed_by\x18\f \x01(\tR\tmanagedBy\x12$\n" +
+	"\x0eis_retire_only\x18\r \x01(\bR\fisRetireOnly\"\xa4\x01\n" +
 	"\x17SessionWebhookEventType\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12#\n" +
 	"\rdisplay_label\x18\x02 \x01(\tR\fdisplayLabel\x12 \n" +
@@ -18302,10 +18347,12 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x0frequest_headers\x18\x04 \x03(\v2).bossanova.v1.SessionWebhookRequestHeaderR\x0erequestHeaders\"\x1a\n" +
 	"\x18GetTriggerCatalogRequest\"S\n" +
 	"\x19GetTriggerCatalogResponse\x126\n" +
-	"\acatalog\x18\x01 \x01(\v2\x1c.bossanova.v1.TriggerCatalogR\acatalog\"W\n" +
+	"\acatalog\x18\x01 \x01(\v2\x1c.bossanova.v1.TriggerCatalogR\acatalog\"\xc4\x01\n" +
 	"\x13ListTriggersRequest\x12,\n" +
-	"\x0forganization_id\x18\x01 \x01(\tH\x00R\x0eorganizationId\x88\x01\x01B\x12\n" +
-	"\x10_organization_id\"I\n" +
+	"\x0forganization_id\x18\x01 \x01(\tH\x00R\x0eorganizationId\x88\x01\x01\x12H\n" +
+	"\x1eshould_include_member_triggers\x18\x02 \x01(\bH\x01R\x1bshouldIncludeMemberTriggers\x88\x01\x01B\x12\n" +
+	"\x10_organization_idB!\n" +
+	"\x1f_should_include_member_triggers\"I\n" +
 	"\x14ListTriggersResponse\x121\n" +
 	"\btriggers\x18\x01 \x03(\v2\x15.bossanova.v1.TriggerR\btriggers\"#\n" +
 	"\x11GetTriggerRequest\x12\x0e\n" +

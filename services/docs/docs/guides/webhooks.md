@@ -27,10 +27,18 @@ Session webhooks are a paid Bossanova Cloud feature, and each endpoint
 belongs to an organization. Only organization owners can manage endpoints. An
 organization can register up to 20 webhooks.
 
+Unless your organization shares member sessions, an endpoint fires only for
+sessions on its creator's machine, and only its creator manages it or reads its
+delivery history. Another owner's endpoint is not listed. An endpoint whose
+creator is no longer an owner is listed as retire-only, with its URL hidden:
+disabling or deleting it is the only action it accepts. When the organization
+shares member sessions, every owner manages every endpoint and each one fires
+for all of the organization's sessions.
+
 ## Managing endpoints
 
 Manage webhooks in the web app under **Settings → Webhooks**. The page lists
-your organization's webhooks with their endpoint and the events each one
+the webhooks visible to you with their endpoint and the events each one
 subscribes to. A disabled webhook is shown faded. Each step below also shows
 the agent chat request, the `boss webhook` command and the MCP tool that do the
 same thing. The `boss webhook` commands need `boss login`, and each takes
@@ -182,7 +190,7 @@ organization.
 | ------------------------------ | ----------------------------------------------------------------------------- |
 | `ListSessionWebhookEventTypes` | Lists the event catalog, with a sample payload for each event.                |
 | `ListSessionWebhookFormats`    | Lists the payload formats available to an endpoint.                           |
-| `ListSessionWebhooks`          | Lists the organization's endpoints, oldest first, without secrets.            |
+| `ListSessionWebhooks`          | Lists the endpoints visible to you, oldest first, without secrets.            |
 | `CreateSessionWebhook`         | Registers an endpoint and returns its signing secret.                         |
 | `UpdateSessionWebhook`         | Changes the URL, description, event types, enabled flag or format.            |
 | `RotateSessionWebhookSecret`   | Replaces the signing secret and returns the new one.                          |

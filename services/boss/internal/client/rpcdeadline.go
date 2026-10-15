@@ -138,6 +138,8 @@ const slowDeadlineRatio = 4
 var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: {},
 	bossanovav1connect.DaemonServiceMergeSessionProcedure:         {},
+	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     {},
+	bossanovav1connect.DaemonServiceSendBackSessionPRProcedure:    {},
 	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     {},
 	bossanovav1connect.DaemonServiceGetRunCostProcedure:           {},
 	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    {},

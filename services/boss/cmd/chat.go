@@ -46,6 +46,7 @@ func chatCmd() *cobra.Command {
 	// (--wake-if-asleep=false) — e.g. to leave a deliberately stopped chat
 	// stopped — not to change the default for everyone else.
 	send.Flags().Bool("wake-if-asleep", true, "Wake a sleeping chat before delivering; false leaves a stopped chat stopped")
+	send.Flags().Bool(jsonFlagName, false, "Emit the delivery outcome as a machine-readable JSON envelope")
 
 	// new subcommand
 	newChat := &cobra.Command{
@@ -122,9 +123,10 @@ type chatSendClient interface {
 }
 
 func chatSend(ctx context.Context, c chatSendClient, cmd *cobra.Command, chatID, message string) error {
+	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
 	target, err := resolveChatTarget(ctx, c, chatID)
 	if err != nil {
-		return err
+		return emitJSONFailure(cmd, asJSON, err)
 	}
 
 	submit, _ := cmd.Flags().GetBool("submit")
@@ -139,11 +141,45 @@ func chatSend(ctx context.Context, c chatSendClient, cmd *cobra.Command, chatID,
 		Submit:         submit,
 	})
 	if err != nil {
-		return fmt.Errorf("send message: %w", err)
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("send message: %w", err))
 	}
 
+	if asJSON {
+		return emitJSON(cmd, chatSendJSON{
+			AgentSessionID:  target.AgentSessionID,
+			TmuxSessionName: resp.GetTmuxSessionName(),
+			Delivery:        newChatDeliveryJSON(resp),
+		})
+	}
 	reportChatSendOutcome(cmd.OutOrStdout(), resp)
 	return nil
+}
+
+// chatSendJSON is the `boss chat send --json` envelope. The exit status is 0
+// for every delivery state, as on the human path, so a driver reads
+// delivery.delivery_state: only SUBMITTED and QUEUED mean the agent has the
+// message.
+type chatSendJSON struct {
+	AgentSessionID  string           `json:"agent_session_id"`
+	TmuxSessionName string           `json:"tmux_session_name,omitempty"`
+	Delivery        chatDeliveryJSON `json:"delivery"`
+}
+
+// chatDeliveryJSON is a SendChatMessageResponse's outcome, shared by every
+// `--json` command that sends into a chat. delivery_state is the proto enum
+// name (DELIVERY_STATE_SUBMITTED, _QUEUED, _UNCONFIRMED, _UNSPECIFIED).
+type chatDeliveryJSON struct {
+	Delivered     bool   `json:"delivered"`
+	DeliveryState string `json:"delivery_state"`
+	Notice        string `json:"notice,omitempty"`
+}
+
+func newChatDeliveryJSON(resp *pb.SendChatMessageResponse) chatDeliveryJSON {
+	return chatDeliveryJSON{
+		Delivered:     resp.GetDelivered(),
+		DeliveryState: resp.GetDeliveryState().String(),
+		Notice:        resp.GetNoticeText(),
+	}
 }
 
 // chatRenameArgs splits `rename <target> <title...>` into the target and a

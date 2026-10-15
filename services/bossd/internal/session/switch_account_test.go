@@ -605,6 +605,7 @@ func TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile(t *testing.T
 	}
 	h := newSwitchHarness(t)
 	h.chats.chatsBySession["sess-1"][0].Title = "Repair: interactive session"
+	h.chats.chatsBySession["sess-1"][0].Role = models.AgentChatRoleRepair
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{

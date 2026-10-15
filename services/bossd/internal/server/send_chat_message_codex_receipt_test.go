@@ -51,6 +51,12 @@ func (*fakeRollout) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequ
 	return &pb.HasQuestionPromptResponse{}, nil
 }
 
+// ResolveInteractiveSessionID answers the post-send rollout discovery an
+// unbound codex chat starts: nothing to bind yet.
+func (*fakeRollout) ResolveInteractiveSessionID(context.Context, *pb.ResolveInteractiveSessionIDRequest) (*pb.ResolveInteractiveSessionIDResponse, error) {
+	return &pb.ResolveInteractiveSessionIDResponse{}, nil
+}
+
 // recordUserTurn appends the user turn Codex writes when it takes a message.
 func (f *fakeRollout) recordUserTurn() {
 	f.mu.Lock()

@@ -117,10 +117,11 @@ type HostServiceClient interface {
 	// clean exit). On deadline, returns a synthetic exit error and cleans up
 	// the run state so a future call doesn't deadlock.
 	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
-	// ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
-	// is blocking a fresh StartChatRun attempt after daemon restart. The daemon
-	// only reclaims rows whose title starts with "Repair:" and whose session_id
-	// matches the request.
+	// ReclaimRepairChat kills and detaches one daemon-validated chat that is
+	// blocking a fresh StartChatRun attempt after daemon restart. The daemon only
+	// reclaims an idle chat whose role is agent-owned (build, repair or verify)
+	// and whose session_id matches the request; operator and legacy chats are
+	// refused.
 	ReclaimRepairChat(context.Context, *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
@@ -372,10 +373,11 @@ type HostServiceHandler interface {
 	// clean exit). On deadline, returns a synthetic exit error and cleans up
 	// the run state so a future call doesn't deadlock.
 	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
-	// ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
-	// is blocking a fresh StartChatRun attempt after daemon restart. The daemon
-	// only reclaims rows whose title starts with "Repair:" and whose session_id
-	// matches the request.
+	// ReclaimRepairChat kills and detaches one daemon-validated chat that is
+	// blocking a fresh StartChatRun attempt after daemon restart. The daemon only
+	// reclaims an idle chat whose role is agent-owned (build, repair or verify)
+	// and whose session_id matches the request; operator and legacy chats are
+	// refused.
 	ReclaimRepairChat(context.Context, *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"

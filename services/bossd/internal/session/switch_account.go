@@ -419,6 +419,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// sessions.account_id and come back up on the account we just switched away
 	// from, persisting that stale binding onto the new chat row (BOS-1135).
 	respawn.AccountID = &p.TargetAccountID
+	respawn.Role = chat.Role
 	// Carry the chat's OWN provider and model alongside it. The resumable path
 	// reads both off the row StartTmuxChat loads; the fresh path has no row, so
 	// without them the respawn dispatches under the parent SESSION's agent and
@@ -489,7 +490,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// the gate keyed on the account.
 	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
-		IsRepairChatTitle(chat.Title) {
+		chat.Role == models.AgentChatRoleRepair {
 		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider)
 	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency

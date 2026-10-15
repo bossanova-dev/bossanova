@@ -148,7 +148,7 @@ func (c *defaultLivenessChecker) SessionLiveness(ctx context.Context, sessionID 
 					continue
 				}
 				if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
-					if headlessRun || (chat.StartError != nil && *chat.StartError != "") {
+					if headlessRun || chat.IsRetired() {
 						continue
 					}
 					parked = true

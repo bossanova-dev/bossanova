@@ -42,14 +42,15 @@ func TestReadyHandoffProviderToListSessions(t *testing.T) {
 	ci := vcs.CheckResult{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &success}
 	for _, tc := range []struct {
 		name, head, verifyDescription, wantLabel string
-		receipt, verify, waiting                 bool
+		receipt, verify, waiting, working        bool
 		wantStatus                               pb.DisplayStatus
 	}{
 		{name: "build handoff", waiting: true, head: "head-a", receipt: true, wantLabel: "✓ ready", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
-		{name: "human push clears receipt", waiting: true, head: "head-b", wantLabel: "waiting", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+		{name: "human push clears receipt", waiting: true, head: "head-b", wantLabel: "✓ passing", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
 		{name: "repair repost restores ready", waiting: true, head: "head-c", receipt: true, wantLabel: "✓ ready", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
+		{name: "a working agent never reads ready", waiting: true, working: true, head: "head-c", receipt: true, wantLabel: "working", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING},
 		{name: "verify claim outranks ready", head: "head-c", receipt: true, verify: true, verifyDescription: "claimed", wantLabel: "verifying", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
-		{name: "verify park outranks ready", head: "head-c", receipt: true, verify: true, verifyDescription: "needs human: always-human-path", wantLabel: "needs human", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
+		{name: "verify park outranks ready", head: "head-c", receipt: true, verify: true, verifyDescription: "needs human: always-human-path", wantLabel: "needs sign-off", wantStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h.Provider.SetPRStatus(pr, &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: tc.head, Mergeable: &mergeable, MergeStateStatus: vcs.MergeStateStatusClean})
@@ -60,7 +61,11 @@ func TestReadyHandoffProviderToListSessions(t *testing.T) {
 			h.Provider.SetCheckResults(pr, checks)
 			h.Provider.SetHasBuildReceipt(pr, tc.receipt)
 			if tc.waiting {
-				h.SeedChatStatus(agentID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+				reported := pb.ChatStatus_CHAT_STATUS_IDLE
+				if tc.working {
+					reported = pb.ChatStatus_CHAT_STATUS_WORKING
+				}
+				h.SeedChatStatus(agentID, reported, time.Now())
 				h.ChatTracker.SetWaiting(agentID, "awaiting checks_failed on recurser/bossanova#345")
 			} else {
 				h.ChatTracker.SetWaiting(agentID, "")
@@ -88,8 +93,10 @@ func TestReadyHandoffProviderToListSessions(t *testing.T) {
 			if got.GetDisplayLabel() != tc.wantLabel || got.GetDisplayStatus() != tc.wantStatus || got.GetHasBuildReceipt() != tc.receipt {
 				t.Fatalf("label/status/receipt = %q/%v/%v, want %q/%v/%v", got.GetDisplayLabel(), got.GetDisplayStatus(), got.GetHasBuildReceipt(), tc.wantLabel, tc.wantStatus, tc.receipt)
 			}
-			if got.GetIsReadyOverWaiting() != (tc.waiting && tc.receipt) {
-				t.Fatalf("Ready over waiting mark = %v, want %v", got.GetIsReadyOverWaiting(), tc.waiting && tc.receipt)
+			// An idle wait on a green PR is demoted, so Ready never replaced a
+			// "waiting" here; the working agent's row carries its own mark.
+			if got.GetIsReadyOverWaiting() || got.GetIsWorkingOverWaiting() != tc.working {
+				t.Fatalf("ready-over-waiting/working-over-waiting = %v/%v, want false/%v", got.GetIsReadyOverWaiting(), got.GetIsWorkingOverWaiting(), tc.working)
 			}
 		})
 	}

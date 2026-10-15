@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/createframe"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -108,8 +109,8 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 	// repo or the creator.
 	if row, err := l.Launches.Get(ctx, invocationID); err != nil {
 		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
-	} else if row != nil && row.SessionID != "" {
-		return &pb.LaunchTriggerSessionResult{SessionId: row.SessionID, IsReplay: true}, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
+	} else if sessionID := l.replaySession(ctx, row); sessionID != "" {
+		return &pb.LaunchTriggerSessionResult{SessionId: sessionID, IsReplay: true}, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 	}
 
 	repo, code, err := resolveTriggerRepo(ctx, l.Repos, originURL)
@@ -117,12 +118,12 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 		return nil, code, fmt.Errorf("launch_trigger_session: %w", err)
 	}
 
-	replay, code, err := l.claim(ctx, invocationID, cmd.GetTriggerId())
+	token, replay, code, err := l.claim(ctx, invocationID, cmd.GetTriggerId())
 	if err != nil || replay != nil {
 		return replay, code, err
 	}
 
-	sessionID, runningID, err := l.create(ctx, repo.ID, cmd)
+	sessionID, runningID, err := l.create(ctx, repo.ID, token, cmd)
 	// From here on the command context may already be gone; the bookkeeping
 	// must still land or a retry would wedge on (or relaunch past) the claim.
 	bookkeeping := context.WithoutCancel(ctx)
@@ -131,7 +132,7 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 		// its bootstrap keeps running in the background (BOS-720), so releasing
 		// the claim would let bosso's retry launch a duplicate. Record the
 		// accepted id instead, so the retry replays it.
-		if setErr := l.Launches.SetSession(bookkeeping, invocationID, runningID); setErr != nil {
+		if setErr := l.setSession(bookkeeping, invocationID, token, runningID); setErr != nil {
 			l.Logger.Error().Err(setErr).Str("invocation_id", invocationID).Str("session", runningID).
 				Msg("launch_trigger_session: record still-bootstrapping session on claim")
 		}
@@ -139,16 +140,15 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 			fmt.Errorf("launch_trigger_session: session %s did not settle within the launch budget: %w", runningID, err)
 	}
 	if err != nil {
-		if relErr := l.Launches.Release(bookkeeping, invocationID); relErr != nil {
+		if relErr := l.Launches.Release(bookkeeping, invocationID, token); relErr != nil {
 			l.Logger.Error().Err(relErr).Str("invocation_id", invocationID).
 				Msg("launch_trigger_session: release claim after failed create")
 		}
 		return nil, pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION, fmt.Errorf("launch_trigger_session: %w", err)
 	}
-	if err := l.Launches.SetSession(bookkeeping, invocationID, sessionID); err != nil {
-		// The session exists, so report it; a replay will not find it, which is
-		// logged loudly rather than turned into a failure that invites a retry
-		// to launch on top of a live session.
+	if err := l.setSession(bookkeeping, invocationID, token, sessionID); err != nil {
+		// The session exists, so report it rather than invite a duplicate.
+		// Its accepted record lets a later stale replay recover the id.
 		l.Logger.Error().Err(err).Str("invocation_id", invocationID).Str("session", sessionID).
 			Msg("launch_trigger_session: record session id on claim")
 	}
@@ -158,16 +158,16 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 // claim wins the invocation's claim row, or — when a concurrent launch already
 // holds it — waits for that launch's session id and returns it as a replay. A
 // nil result with a nil error means this caller won and must create.
-func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, triggerID string) (*pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error) {
+func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, triggerID string) (string, *pb.LaunchTriggerSessionResult, pb.CommandResult_ErrorCode, error) {
 	ticker := time.NewTicker(l.pollInterval())
 	defer ticker.Stop()
 	for {
-		won, err := l.Launches.Claim(ctx, invocationID, triggerID, time.Now().Add(-(l.budget() + triggerLaunchStaleMargin)))
+		token, won, err := l.Launches.Claim(ctx, invocationID, triggerID, l.staleBefore())
 		if err != nil {
-			return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
+			return "", nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
 		}
 		if won {
-			return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
+			return token, nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 		}
 		// Lost the race: poll the winner's row. It either records a session
 		// (replay), vanishes because the winner's create failed and released it
@@ -175,20 +175,20 @@ func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, trigge
 		for {
 			row, err := l.Launches.Get(ctx, invocationID)
 			if err != nil {
-				return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
+				return "", nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
 			}
 			if row == nil {
 				break
 			}
-			if row.SessionID != "" {
-				return &pb.LaunchTriggerSessionResult{SessionId: row.SessionID, IsReplay: true}, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
+			if sessionID := l.replaySession(ctx, row); sessionID != "" {
+				return "", &pb.LaunchTriggerSessionResult{SessionId: sessionID, IsReplay: true}, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 			}
 			select {
 			case <-ctx.Done():
 				// UNSPECIFIED (bosso: Aborted) on purpose: the launch is
 				// idempotent, so a retry is exactly what should happen — it
 				// will replay the winner's session once it settles.
-				return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED,
+				return "", nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED,
 					fmt.Errorf("launch_trigger_session: invocation %s is still launching: %w", invocationID, ctx.Err())
 			case <-ticker.C:
 			}
@@ -212,7 +212,7 @@ func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, trigge
 // On error, runningID is the accepted session's id when the create ran out of
 // budget after the accepted frame — the daemon keeps bootstrapping that session
 // in the background — and empty otherwise.
-func (l *TriggerSessionLauncher) create(ctx context.Context, repoID string, cmd *pb.LaunchTriggerSessionCommand) (settledID, runningID string, err error) {
+func (l *TriggerSessionLauncher) create(ctx context.Context, repoID, token string, cmd *pb.LaunchTriggerSessionCommand) (settledID, runningID string, err error) {
 	title := strings.TrimSpace(cmd.GetTitle())
 	if title == "" {
 		// bosso sends the trigger's name; without one the daemon only knows
@@ -261,10 +261,17 @@ func (l *TriggerSessionLauncher) create(ctx context.Context, repoID string, cmd 
 		if created == nil {
 			return nil
 		}
-		if !sawAccepted && !created.GetAttachedExisting() && !req.GetIsQuickChat() &&
-			created.GetSession().GetWorktreePath() == "" {
+		if !sawAccepted && createframe.IsAccepted(created.GetAttachedExisting(), req.GetIsQuickChat(), created.GetSession().GetWorktreePath()) {
 			sawAccepted = true
 			acceptedID = created.GetSession().GetId()
+			if err := l.Launches.MarkAccepted(context.WithoutCancel(ctx), strings.TrimSpace(cmd.GetInvocationId()), token, acceptedID); err != nil {
+				message := "launch_trigger_session: record accepted session on claim"
+				if errors.Is(err, db.ErrTriggerLaunchClaimLost) {
+					message = "launch_trigger_session: claim taken over mid-create"
+				}
+				// Never abort emit: the bootstrap keeps running even if this stream stops.
+				l.Logger.Error().Err(err).Str("invocation_id", cmd.GetInvocationId()).Str("session", acceptedID).Msg(message)
+			}
 			return nil
 		}
 		settledID = created.GetSession().GetId()
@@ -280,4 +287,43 @@ func (l *TriggerSessionLauncher) create(ctx context.Context, repoID string, cmd 
 		return "", "", errors.New("create ended without a settled session")
 	}
 	return settledID, "", nil
+}
+
+// staleBefore is shared by takeover and recovery of an accepted claim.
+func (l *TriggerSessionLauncher) staleBefore() time.Time {
+	return time.Now().Add(-(l.budget() + triggerLaunchStaleMargin))
+}
+
+// replaySession recovers a silent owner's durable accepted id after the stale
+// threshold. Before then, bootstrap may still fail and release the claim.
+func (l *TriggerSessionLauncher) replaySession(ctx context.Context, row *db.TriggerLaunch) string {
+	if row == nil {
+		return ""
+	}
+	if row.SessionID != "" {
+		return row.SessionID
+	}
+	staleBefore := l.staleBefore()
+	if row.AcceptedSessionID == "" || !row.CreatedAt.Before(staleBefore) {
+		return ""
+	}
+	if _, err := l.Launches.PromoteAccepted(ctx, row.InvocationID, staleBefore); err != nil {
+		l.Logger.Error().Err(err).Str("invocation_id", row.InvocationID).Msg("launch_trigger_session: promote accepted session")
+	}
+	return row.AcceptedSessionID
+}
+
+// setSession retries transient bookkeeping errors without repeating creation.
+func (l *TriggerSessionLauncher) setSession(ctx context.Context, invocationID, token, sessionID string) error {
+	var err error
+	for attempt := range 3 {
+		err = l.Launches.SetSession(ctx, invocationID, token, sessionID)
+		if err == nil || errors.Is(err, db.ErrTriggerLaunchClaimLost) {
+			return err
+		}
+		if attempt < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return err
 }

@@ -509,3 +509,92 @@ func TestRunMcpToken_JSON(t *testing.T) {
 		t.Fatalf("unexpected --json fields: token match=%v header match=%v path=%q", got.Token == want, got.Header == "Authorization: Bearer "+want, got.TokenPath)
 	}
 }
+
+func TestRunMcpToken_Rotate(t *testing.T) {
+	for _, running := range []bool{true, false} {
+		t.Run(fmt.Sprint(running), func(t *testing.T) {
+			saveMcpSeams(t)
+			socket := filepath.Join(t.TempDir(), "bossd.sock")
+			saveSocketPathSeam(t, socket)
+			old, err := socketauth.LoadOrCreateHTTPToken(socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mcpGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true, Running: running}, nil }
+			var calls []string
+			mcpStop = func() error { calls = append(calls, "stop"); return nil }
+			previousStart := mcpStart
+			t.Cleanup(func() { mcpStart = previousStart })
+			mcpStart = func() error { calls = append(calls, "start"); return nil }
+			cmd := mcpCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{"token", "--rotate", "--json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Token     string `json:"token"`
+				Restarted bool   `json:"restarted"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Token == old || result.Token == "" || result.Restarted != running {
+				t.Fatal("invalid rotation result")
+			}
+			if running && strings.Join(calls, ",") != "stop,start" {
+				t.Fatalf("calls = %v", calls)
+			}
+			if !running && len(calls) != 0 {
+				t.Fatalf("stopped service restarted: %v", calls)
+			}
+		})
+	}
+}
+
+func TestRunMcpToken_RotateUnmanaged(t *testing.T) {
+	saveMcpSeams(t)
+	saveSocketPathSeam(t, filepath.Join(t.TempDir(), "bossd.sock"))
+	mcpGetStatus = func() (*daemon.Status, error) { return &daemon.Status{}, nil }
+	mcpStop = func() error { t.Fatal("unmanaged server stopped"); return nil }
+	cmd := mcpCmd()
+	var out, warnings bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&warnings)
+	cmd.SetArgs([]string{"token", "--rotate"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 || lines[1] != "Authorization: Bearer "+lines[0] {
+		t.Fatal("missing token/header output")
+	}
+	if !strings.Contains(warnings.String(), "manually started") {
+		t.Fatal("missing manual restart warning")
+	}
+}
+
+func TestRunMcpToken_RotateRestartFailure(t *testing.T) {
+	saveMcpSeams(t)
+	socket := filepath.Join(t.TempDir(), "bossd.sock")
+	saveSocketPathSeam(t, socket)
+	old, err := socketauth.LoadOrCreateHTTPToken(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpGetStatus = func() (*daemon.Status, error) { return &daemon.Status{Installed: true, Running: true}, nil }
+	mcpStop = func() error { return errors.New("stop failed") }
+	cmd := mcpCmd()
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"token", "--rotate"})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "token rotated") || !strings.Contains(err.Error(), "restart it manually") {
+		t.Fatalf("restart failure not disclosed: %v", err)
+	}
+	current, err := socketauth.ReadHTTPToken(socket)
+	if err != nil || current == old {
+		t.Fatal("rotation did not persist", err)
+	}
+}

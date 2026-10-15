@@ -534,6 +534,9 @@ func (h HomeModel) renderSessionTableFooter() string {
 
 func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
 	left = []string{"[n]ew session", "[enter] select"}
+	if s := h.selectedSession(); s.GetAttention() != nil {
+		left = append([]string{"[n]ew session"}, attentionActionLabels(s.GetAttention())...)
+	}
 	nav = []string{"[s]ettings"}
 	if la := h.loginAction(); la != "" {
 		nav = append(nav, la)

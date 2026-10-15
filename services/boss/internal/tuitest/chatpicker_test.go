@@ -188,10 +188,10 @@ func TestTUI_ChatPicker_MergeConfirm_CancelKeepsPicker(t *testing.T) {
 	}
 }
 
-func TestTUI_ChatPicker_ApproveParkedPR(t *testing.T) {
+func TestTUI_ChatPicker_MergeParkedPR(t *testing.T) {
 	sessions := testSessions()
 	sessions[0].DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
-	sessions[0].AttentionStatus = &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT}
+	sessions[0].AttentionStatus = &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT, Summary: "needs human: human-review:ui"}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(sessions...),
@@ -205,20 +205,23 @@ func TestTUI_ChatPicker_ApproveParkedPR(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "[m]approve"); err != nil {
-		t.Fatalf("parked PR does not offer [m]approve; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "[m]erge"); err != nil {
+		t.Fatalf("parked PR does not offer [m]erge; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendKey('m'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Approve PR #597?"); err != nil {
-		t.Fatalf("approve confirm not shown; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "Merge PR #597?"); err != nil {
+		t.Fatalf("parked merge confirm not shown; screen:\n%s", h.Driver.Screen())
+	}
+	if !h.Driver.ScreenContains("human-review:ui: a UI change; watch the evidence before it merges") {
+		t.Fatalf("parked merge confirm does not name the park code in plain words; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendKey('y'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Approved #597"); err != nil {
-		t.Fatalf("approval outcome not shown; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "Merge requested for #597"); err != nil {
+		t.Fatalf("merge request outcome not shown; screen:\n%s", h.Driver.Screen())
 	}
 	calls := h.Daemon.ApproveSessionPRCalls()
 	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetIsDryRun() {

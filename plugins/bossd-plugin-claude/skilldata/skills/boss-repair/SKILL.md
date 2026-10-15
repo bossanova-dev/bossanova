@@ -29,14 +29,15 @@ BOSS_REPAIR_PROBE="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/scripts
 if [ ! -f "$BOSS_REPAIR_PROBE" ]; then BOSS_REPAIR_PROBE="$HOME/.codex/skills/boss-repair/scripts/review-feedback-probe.js"; fi
 ```
 
-| Question                                         | Ask                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------ |
-| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`             |
-| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …`  |
-| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                  |
-| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`       |
-| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …`  |
-| Post or read the `boss/build` receipt            | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" post\|read …` |
+| Question                                         | Ask                                                         |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| Is the worktree clean?                           | `node "$BOSS_REPAIR_TOOLBOX/worktree-state.mjs"`            |
+| Are the checks green, failing, pending, unknown? | `node "$BOSS_REPAIR_TOOLBOX/pr-check-state.mjs" classify …` |
+| What review feedback is open?                    | `node "$BOSS_REPAIR_PROBE"`                                 |
+| Wait for CI without guessing a sleep             | `node "$BOSS_REPAIR_TOOLBOX/ci-wait.mjs" run --pr <n>`      |
+| What did the rebase silently change?             | `node "$BOSS_REPAIR_TOOLBOX/post-rebase-audit.mjs" check …` |
+| Read the `boss/build` receipt                    | `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read …`      |
+| Carry the receipt to the pushed head             | `node "$BOSS_REPAIR_TOOLBOX/receipt-carry.mjs" …` (step 4)  |
 
 `worktree-state.mjs` exists because a command-rewriting shell hook can make `git status` print a
 fabricated clean result. Its `unknown` verdict is never clean; confirm with `/usr/bin/git status
@@ -126,20 +127,26 @@ judgement.
 4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions. When the
    pass carries the receipt, rule 5 confirmed the push landed, and `HEAD` equals `origin/<branch>`,
    carry it to the new head — in default mode and on every pushing Watch-mode pass, whose next start
-   head is then the receipted one. The helper runs its sibling `ready-gate.mjs` first and refuses
-   (exit 3, `refused`, nothing posted) a head the gate does not call ready, such as a repair commit
-   no review saw. A non-zero exit only warns; it never changes the pass outcome or its exit code:
+   head is then the receipted one (substitute step 1's `START_SHA`). `receipt-carry.mjs` prints a
+   `decision`. `carry` or `post` (exit 0) posted the receipt through `commit-status.mjs`. `refused`
+   (exit 3) posted nothing; `reasons` says why. `re-review` (exit 4) means the push changed the
+   reviewed tree: run each skill in `review.skills`, report-only (no `--fix`), as a fresh awaited
+   subagent whose prompt's first line is `[bs-reviewer-dispatch]` and states `BASE=<review.base>`,
+   `HEAD=<review.head>` and `OUT_DIR=` its `review.outDirs` entry (inline once if dispatch fails;
+   wait up to `review.hangGuardMs`), then re-run the command once with `--review-verdict <file>`
+   for each `review.verdictFiles` entry.
+   `blocked` (exit 3) posted nothing: upsert its `reportFile` as a PR comment and report each of
+   its `findings` as a residual (Watch mode ends `blocked`). No exit changes the pass's own exit
+   code:
 
    ```bash
    BOSS_REPAIR_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-repair/toolbox"
    if [ ! -d "$BOSS_REPAIR_TOOLBOX" ]; then BOSS_REPAIR_TOOLBOX="$HOME/.codex/skills/boss-repair/toolbox"; fi
-   PR_URL="$(gh pr view --json url -q .url 2>/dev/null)"
    BRANCH="$(git branch --show-current)"
    if git fetch -q origin "$BRANCH" &&
      [ "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$BRANCH")" ]; then
-     node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" post --context boss/build --state success \
-       --sha "$(git rev-parse HEAD)" --description "boss-repair pass pushed $(git rev-parse --short HEAD)" \
-       --target-url "$PR_URL" || echo "warning: boss/build receipt not posted — pass outcome unaffected" >&2
+     node "$BOSS_REPAIR_TOOLBOX/receipt-carry.mjs" --start-sha "$START_SHA" --head "$(git rev-parse HEAD)" \
+       --target-url "$(gh pr view --json url -q .url 2>/dev/null)"
    else
      echo "warning: boss/build receipt not posted — fetch failed or HEAD is not origin/$BRANCH" >&2
    fi
@@ -309,7 +316,8 @@ Report concisely:
 - **Gate results** — each gate's own quoted summary line, or "not run".
 - **Root causes** — the cause → checks table, when checks failed.
 - **Push state** — whether everything you committed is on `origin/<branch>`, or why not, and the
-  receipt: `boss/build` posted, not carried (the start head had none), or failed.
+  receipt: `boss/build` posted (carried, or after a clean re-review), not carried (the start head
+  had none), withheld by a blocking or unusable re-review, or failed.
 - **Status** — checks green / failing / pending / unknown; review feedback clean / parked / open.
   At the terminal report, for classifier `unknown` or `pending` with reason `absent-gate`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger gate-unknown --where "<check name>"` (never fatal).
 - **Residuals** — each with why this pass stopped short, or "none".

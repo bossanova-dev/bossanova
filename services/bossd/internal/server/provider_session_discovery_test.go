@@ -113,12 +113,12 @@ func TestBackgroundProviderSessionIDDiscoveryPersistsDelayedCodexID(t *testing.T
 	}
 
 	launchedAt := time.Now()
-	// Empty tmuxName + nil s.tmux ⇒ background discovery resolves with pane pid
+	// Empty tmuxName + nil tmuxer ⇒ background discovery resolves with pane pid
 	// 0 (time-window fallback), the exact behavior this test pins.
 	s.discoverProviderSessionIDInBackground(&models.AgentChat{
 		AgentSessionID: "boss-session-id",
 		AgentName:      "codex",
-	}, "/tmp/worktree", "", launchedAt, resolver)
+	}, "/tmp/worktree", "", launchedAt, resolver, nil)
 
 	select {
 	case got := <-store.updated:
@@ -171,7 +171,7 @@ func TestBackgroundProviderSessionIDDiscoverySkipsWriteWhenAlreadyBound(t *testi
 	s.discoverProviderSessionIDInBackground(&models.AgentChat{
 		AgentSessionID: "boss-session-id",
 		AgentName:      "codex",
-	}, "/tmp/worktree", "", time.Now(), resolver)
+	}, "/tmp/worktree", "", time.Now(), resolver, nil)
 
 	select {
 	case got := <-store.updated:
@@ -292,7 +292,7 @@ func TestBackgroundProviderSessionIDDiscoveryLogsResolverReasonOnTimeout(t *test
 	s.discoverProviderSessionIDInBackground(&models.AgentChat{
 		AgentSessionID: "boss-session-id",
 		AgentName:      "codex",
-	}, "/tmp/worktree", "", time.Now(), reasonOnlyInteractiveSessionResolver{reason: reason})
+	}, "/tmp/worktree", "", time.Now(), reasonOnlyInteractiveSessionResolver{reason: reason}, nil)
 
 	select {
 	case <-sink.done:
@@ -522,5 +522,66 @@ func TestWakeChat_AlreadyBoundChatIsNotRewritten(t *testing.T) {
 	}
 	if store.chat.ProviderSessionID == nil || *store.chat.ProviderSessionID != bound {
 		t.Fatalf("provider id = %v, want it untouched at %q", store.chat.ProviderSessionID, bound)
+	}
+}
+
+// TestSendChatMessage_FirstLivePaneSendBindsCodexRollout reproduces a codex chat
+// opened with `boss chat new` and first prompted later by `boss chat send` (or a
+// callback). Codex creates its rollout on the thread's first turn, so the
+// launch-time discovery window had long expired and nothing re-ran discovery:
+// the chat stayed unbound and `boss chat show` reported "codex rollout not yet
+// discovered" for a chat that had completed a turn. The send must start a
+// discovery that binds through the pane's own process (fd resolution), never
+// the time-window scan that can bind a sibling's rollout (BOS-290).
+func TestSendChatMessage_FirstLivePaneSendBindsCodexRollout(t *testing.T) {
+	oldTimeout := providerSessionIDBackgroundDiscoveryTimeout
+	oldInterval := providerSessionIDBackgroundDiscoveryPollInterval
+	providerSessionIDBackgroundDiscoveryTimeout = 5 * time.Second
+	providerSessionIDBackgroundDiscoveryPollInterval = 5 * time.Millisecond
+	defer func() {
+		providerSessionIDBackgroundDiscoveryTimeout = oldTimeout
+		providerSessionIDBackgroundDiscoveryPollInterval = oldInterval
+	}()
+
+	const panePID = 4242
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex", CreatedAt: time.Now().Add(-time.Hour)}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true, panePID: panePID}
+	resolver := &fakeInteractiveSessionResolver{byPanePID: map[int]string{panePID: "codex-rollout-1"}}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+	s.logger = zerolog.Nop()
+	s.wakeHook.resolver = resolver
+	store := s.agentChats.(*chatStoreFake)
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "verify PR 3069",
+		Submit:         true,
+	}))
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	if !resp.Msg.GetDelivered() {
+		t.Fatal("Delivered = false, want true")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var bound *string
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		bound = store.updateProvider
+		store.mu.Unlock()
+		if bound != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if bound == nil || *bound != "codex-rollout-1" {
+		t.Fatalf("provider session id = %v, want codex-rollout-1 bound after the first send", bound)
+	}
+	for _, call := range resolver.snapshotResolverCalls() {
+		if call.allowLegacyBackfill || call.panePID != panePID || call.workDir != sess.WorktreePath {
+			t.Fatalf("resolver called with %+v, want fd resolution on pane %d in %s only", call, panePID, sess.WorktreePath)
+		}
 	}
 }

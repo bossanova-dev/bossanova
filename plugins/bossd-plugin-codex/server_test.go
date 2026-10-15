@@ -1390,11 +1390,12 @@ func TestGetChatTitleSupportedEvenWithoutTranscript(t *testing.T) {
 	}
 }
 
-// TestGetChatTitle_FromSessionIndexThreadNameIsExplicit locks the authority
-// of a non-empty session index thread_name: it is the only representation
-// codex gives a native `/rename`, so bossd must be allowed to apply it over an
-// already-populated chat title (BOS-611).
-func TestGetChatTitle_FromSessionIndexThreadNameIsExplicit(t *testing.T) {
+// TestGetChatTitle_SessionIndexThreadNameIsNotExplicit pins that a session
+// index thread_name only backfills a placeholder title. Codex writes its
+// auto-generated thread name there exactly as it writes a native `/rename`, so
+// an explicit claim let the auto-name ("Verify PR 3069") replace the title the
+// chat was created with ("verify").
+func TestGetChatTitle_SessionIndexThreadNameIsNotExplicit(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
@@ -1418,8 +1419,8 @@ func TestGetChatTitle_FromSessionIndexThreadNameIsExplicit(t *testing.T) {
 	if resp.Title != "Rename Test" {
 		t.Errorf("Title = %q, want session index thread name", resp.Title)
 	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for a non-empty session index thread name")
+	if resp.Explicit {
+		t.Error("Explicit = true, want false: a codex auto-name lands in session_index.jsonl the same way a /rename does")
 	}
 }
 
@@ -1450,15 +1451,10 @@ func TestGetChatTitle_SessionIndexLatestSameIDWins(t *testing.T) {
 	if resp.Title != "Latest Name" {
 		t.Errorf("Title = %q, want latest thread name", resp.Title)
 	}
-	if !resp.Explicit {
-		t.Error("Explicit = false, want true for latest thread name")
-	}
 }
 
-// TestGetChatTitle_EmptyThreadNameFallsBackToRollout verifies that an
-// explicit-but-empty thread_name does not produce an explicit title: it must
-// fall back to the non-explicit rollout first-message so bossd never treats a
-// cleared name as a curated one.
+// TestGetChatTitle_EmptyThreadNameFallsBackToRollout verifies that an empty
+// thread_name falls back to the rollout first-message.
 func TestGetChatTitle_EmptyThreadNameFallsBackToRollout(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

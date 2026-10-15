@@ -71,6 +71,9 @@ type BossClient interface {
 	StopSession(ctx context.Context, id string) (*pb.Session, error)
 	PauseSession(ctx context.Context, id string) (*pb.Session, error)
 	ResumeSession(ctx context.Context, id string) (*pb.Session, error)
+	// ResumeSessionRun restarts a stopped run in place. RemoteClient returns
+	// CodeUnimplemented because no orchestrator proxy exists.
+	ResumeSessionRun(ctx context.Context, sessionID string) (*pb.Session, error)
 	RetrySession(ctx context.Context, id string) (*pb.Session, error)
 	CloseSession(ctx context.Context, id string) (*pb.Session, error)
 	// MergeSession merges the session's PR (or its local-only branch) through
@@ -140,7 +143,7 @@ type BossClient interface {
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
 
 	// Claude chat tracking
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error)
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
 	// DeleteChat removes a chat by agent_session_id. reason states why, because

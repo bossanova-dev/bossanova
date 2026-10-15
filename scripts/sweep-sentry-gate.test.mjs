@@ -422,6 +422,31 @@ test('fetchMarkedLinearIssues passes a custom query through', async () => {
   assert.deepEqual(queries, [customQuery, MARKED_ISSUES_QUERY])
 })
 
+test('fetchMarkedLinearIssues: rejects a malformed connection instead of reading it as complete', async () => {
+  // A custom query that drops pageInfo (or nodes) must not pass for a finished scan:
+  // a partial ledger would classify already-filed findings as new.
+  const node = { identifier: 'BOS-1', description: 'Sentry: X' }
+  const malformed = [
+    ['no pageInfo', { nodes: [node] }, /pageInfo/],
+    ['no nodes', { pageInfo: { hasNextPage: false, endCursor: null } }, /nodes/],
+    ['non-array nodes', { nodes: {}, pageInfo: { hasNextPage: false, endCursor: null } }, /nodes/],
+    ['non-boolean hasNextPage', { nodes: [node], pageInfo: { endCursor: null } }, /hasNextPage/],
+    ['next page without cursor', { nodes: [node], pageInfo: { hasNextPage: true } }, /endCursor/],
+  ]
+  for (const [label, conn, re] of malformed) {
+    const linearRequest = async () => ({ issues: conn })
+    await assert.rejects(
+      fetchMarkedLinearIssues({
+        apiKey: 'lk',
+        linearRequest,
+        query: 'query Custom { issues { nodes { identifier } } }',
+      }),
+      re,
+      label,
+    )
+  }
+})
+
 test('fetchMarkedLinearIssues: requires an injected linearRequest', async () => {
   await assert.rejects(fetchMarkedLinearIssues({ apiKey: 'lk' }), /requires a linearRequest/)
 })

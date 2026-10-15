@@ -91,7 +91,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 			in.ChecksFailing = 1
 		}
 		if e.Status == vcs.DisplayStatusNeedsHuman {
-			in.ParkCodes = strings.Split(e.VerifyReason, ",")
+			in.ParkCodes = e.ParkCodes()
 			in.ParkLabel = e.VerifyLabel
 		}
 		if s.evidence != nil && e.HeadSHA != "" {
@@ -126,6 +126,15 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	}
 	in.Fix = s.attentionFix(ctx, p, d, in.StateSince)
 	p.Attention = attention.Compute(in)
+	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
+		actions := p.Attention.Actions[:0]
+		for _, action := range p.Attention.Actions {
+			if action != pb.AttentionAction_ATTENTION_ACTION_RESUME {
+				actions = append(actions, action)
+			}
+		}
+		p.Attention.Actions = actions
+	}
 }
 
 func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
@@ -188,7 +197,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	// The ledger's documented run key is the original prompt chat. A new chat
 	// starts a fresh budget; old attempts cannot poison a later run.
 	if s.resumeAttempts != nil && chatID != "" {
-		rows, err := s.resumeAttempts.ListForRun(ctx, row.ID, chatID)
+		rows, err := s.resumeAttempts.ListForRun(ctx, row.ID, session.RunResumeKey(row, d.chats))
 		if err == nil && len(rows) > 0 {
 			attempts := make([]resumepolicy.Attempt, 0, len(rows))
 			for _, a := range rows {
@@ -197,7 +206,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 					attempts = append(attempts, resumepolicy.Attempt{At: a.AttemptedAt, Class: class})
 				}
 			}
-			if len(attempts) > 0 && resumepolicy.Next(since, attempts, time.Now()).Action == resumepolicy.ActionGiveUp && !protoTime(p.LastAgentActivityAt).After(attempts[len(attempts)-1].At) {
+			if row.State == machine.Blocked && len(attempts) > 0 && resumepolicy.Next(since, attempts, time.Now()).Action == resumepolicy.ActionGiveUp {
 				host, _ := os.Hostname()
 				return fix(resumepolicy.AlertKey(attempts[len(attempts)-1].Class), resumepolicy.Sentence(attempts, host, time.Local), attempts[0].At)
 			}

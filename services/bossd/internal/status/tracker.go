@@ -147,6 +147,15 @@ type Tracker struct {
 	// phases are skill-reported working stages, cleared on the first resting heartbeat.
 	phases map[string]string // agent_session_id -> phase
 
+	// backgroundAgents records, per agent session ID, how many background
+	// subagents the chat's last finished turn left running, as Claude's Stop
+	// hook reported them, and when. The tmux poller reads it to keep a chat
+	// idle at its prompt over a running subagent WORKING. A new prompt clears
+	// it (the next turn's Stop reports afresh), and a report older than
+	// BackgroundAgentsMaxAge reads as none, so a subagent whose end was never
+	// reported cannot pin a chat WORKING for good.
+	backgroundAgents map[string]backgroundAgentsReport // agent_session_id -> last report
+
 	// capturedOutput holds, per agent session ID, the bounded final tail the
 	// tmux poller grabbed from a chat pane at process death before reaping it
 	// (BOS-477). It is an ephemeral diagnostic — not durable state — read by the
@@ -247,7 +256,43 @@ func NewTracker() *Tracker {
 		waiting:           make(map[string]string),
 		phases:            make(map[string]string),
 		capturedOutput:    make(map[string]string),
+		backgroundAgents:  make(map[string]backgroundAgentsReport),
 	}
+}
+
+// BackgroundAgentsMaxAge bounds how long a turn-ended report of running
+// background subagents keeps a chat WORKING without a fresh report. Background
+// agents legitimately run for hours, so it is generous; it exists only so a
+// subagent whose end never reached bossd stops claiming live work eventually.
+const BackgroundAgentsMaxAge = 4 * time.Hour
+
+// backgroundAgentsReport is one turn-ended report for a chat.
+type backgroundAgentsReport struct {
+	count int
+	at    time.Time
+}
+
+// SetBackgroundAgents records how many background subagents the chat's last
+// finished turn left running (zero clears the record). Written by the hook
+// server from Claude's Stop and UserPromptSubmit hooks.
+func (t *Tracker) SetBackgroundAgents(agentSessionID string, count int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if count <= 0 {
+		delete(t.backgroundAgents, agentSessionID)
+		return
+	}
+	t.backgroundAgents[agentSessionID] = backgroundAgentsReport{count: count, at: time.Now()}
+}
+
+// BackgroundAgentsRunning reports whether the chat's last finished turn left a
+// background subagent running, per a report younger than
+// BackgroundAgentsMaxAge.
+func (t *Tracker) BackgroundAgentsRunning(agentSessionID string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	r, ok := t.backgroundAgents[agentSessionID]
+	return ok && r.count > 0 && time.Since(r.at) < BackgroundAgentsMaxAge
 }
 
 // SetLiveness records the spinner-aware liveness signals the tmux poller derived
@@ -604,25 +649,34 @@ func (t *Tracker) Waiting(agentSessionID string) string {
 // read surface — the chat/session status RPCs, the stream deltas and the
 // snapshot reader — routes through it so the rule cannot drift between them.
 //
-// Waiting refines WORKING or IDLE: a callback can be armed after the agent has
-// become idle. A reason on any status that demands human action is discarded,
-// so a stale marker can never mask a question or usage limit.
+// Waiting refines only IDLE: a chat at rest with an armed callback is parked on
+// that external event. An armed callback never hides live work, so a WORKING
+// chat stays WORKING and keeps its reason, which the session fold and the
+// apiversion down-convert (pins before 2026-09-18 served it as WAITING) read. A
+// reason on any status that demands human action is discarded, so a stale
+// marker can never mask a question or usage limit.
 func PromoteWaiting(reported pb.ChatStatus, reason string) (pb.ChatStatus, string) {
 	if reason == "" {
 		return reported, ""
 	}
 	switch reported {
-	case pb.ChatStatus_CHAT_STATUS_WORKING, pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING:
+	case pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WAITING:
 		return pb.ChatStatus_CHAT_STATUS_WAITING, reason
+	case pb.ChatStatus_CHAT_STATUS_WORKING:
+		return pb.ChatStatus_CHAT_STATUS_WORKING, reason
 	default:
 		return reported, ""
 	}
 }
 
 // IdleWaitingAggregate accumulates, across one session's chats, the
-// order-independent fact BOS-1269's display rule consumes: whether EVERY chat
-// that PromoteWaiting resolved to CHAT_STATUS_WAITING had reported
-// CHAT_STATUS_IDLE rather than CHAT_STATUS_WORKING.
+// order-independent facts the display rules consume. BOS-1269's: whether EVERY
+// chat that PromoteWaiting resolved to CHAT_STATUS_WAITING had reported
+// CHAT_STATUS_IDLE. Since an armed callback stopped hiding live work, only a
+// chat that reported WAITING itself can fail that conjunction. And the
+// down-convert's: whether every chat that resolved to CHAT_STATUS_WORKING
+// carried an armed callback, which is exactly when the fold used to land on
+// WAITING (WorkingOverWaiting).
 //
 // It lives beside PromoteWaiting because that function is "the single
 // definition" every read surface routes through, and this aggregate is derived
@@ -633,27 +687,47 @@ func PromoteWaiting(reported pb.ChatStatus, reason string) (pb.ChatStatus, strin
 // The zero value is ready to use and reports false — the fail-safe direction,
 // "do not demote".
 type IdleWaitingAggregate struct {
-	sawWaiting bool
-	sawNonIdle bool
+	sawWaiting        bool
+	sawNonIdle        bool
+	sawArmedWorking   bool
+	sawUnarmedWorking bool
 }
 
-// Observe records one chat, given the status it reported and the status
-// PromoteWaiting resolved that report to. Chats that did not resolve to WAITING
-// are ignored: the rule is a conjunction over the waiting-resolved chats only.
+// Observe records one chat, given the status it reported and the status and
+// reason PromoteWaiting resolved that report to. Only waiting-resolved and
+// working-resolved chats count: each rule is a conjunction over one of them.
 //
-// Observe is order-independent by construction — it accumulates an existence
-// flag and a conjunction, neither of which can depend on the order chats are
+// Observe is order-independent by construction — it accumulates existence
+// flags and conjunctions, none of which can depend on the order chats are
 // visited in. That is what keeps the resulting label immune to the lexicographic
 // tie-break on agent session id that the session-level fold uses to pick a
 // winning chat.
-func (a *IdleWaitingAggregate) Observe(reported, resolved pb.ChatStatus) {
-	if resolved != pb.ChatStatus_CHAT_STATUS_WAITING {
-		return
+func (a *IdleWaitingAggregate) Observe(reported, resolved pb.ChatStatus, reason string) {
+	switch resolved {
+	case pb.ChatStatus_CHAT_STATUS_WAITING:
+		a.sawWaiting = true
+		if reported != pb.ChatStatus_CHAT_STATUS_IDLE {
+			a.sawNonIdle = true
+		}
+	case pb.ChatStatus_CHAT_STATUS_WORKING:
+		if reason != "" {
+			a.sawArmedWorking = true
+		} else {
+			a.sawUnarmedWorking = true
+		}
+	default:
+		// Idle, stopped, question and limited chats take part in neither rule.
 	}
-	a.sawWaiting = true
-	if reported != pb.ChatStatus_CHAT_STATUS_IDLE {
-		a.sawNonIdle = true
-	}
+}
+
+// WorkingOverWaiting reports whether a session that folded to sessionStatus
+// reads WORKING only because an armed callback stopped hiding live work: it
+// folded to WORKING and every working chat carries an armed callback. Before
+// 2026-09-18 each of those chats resolved to WAITING, so the session folded to
+// WAITING; the Session.is_working_over_waiting mark and the session-level
+// waiting reason are both keyed on it.
+func (a *IdleWaitingAggregate) WorkingOverWaiting(sessionStatus pb.ChatStatus) bool {
+	return sessionStatus == pb.ChatStatus_CHAT_STATUS_WORKING && a.sawArmedWorking && !a.sawUnarmedWorking
 }
 
 // AllIdle reports the aggregate for a session whose folded status is
@@ -840,6 +914,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	delete(t.waiting, agentSessionID)
 	delete(t.capturedOutput, agentSessionID)
 	delete(t.phases, agentSessionID)
+	delete(t.backgroundAgents, agentSessionID)
 	hook := t.onAuthChange
 	transientHook := t.onTransientAPIErrorChange
 	stalledHook := t.onStalledChange

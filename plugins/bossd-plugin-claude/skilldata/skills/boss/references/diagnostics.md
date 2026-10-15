@@ -97,17 +97,22 @@ Tell the daemon an unattended run is done, so it is finalized now rather than af
 
 The daemon records the request and runs the run's normal finalize (outcome recorded, session cleaned up) once every chat is idle, the requesting chat has settled, and every agent log of the session has been quiet for a minute. The quiet-log window is what protects background agents, which keep writing after the chat reads idle. The caller's own request is therefore always pending: the text form prints `finish pending (waiting on <chat>)` (or `finished`), and `--json` emits `{"outcome": "pending"|"finished", "blocking_agent_session_id": ...}`.
 
+`--blocked` reports that the run ended blocked on a person, with an optional one-line `--reason`. The daemon writes it to the session before deferring, so whichever finalize reaches the run (this finish, the Stop-hook gate, or the idle sweep, across a daemon restart) leaves the PR draft and moves the session to Blocked with that reason instead of marking the PR ready. A blocked report after finalize has already run is refused.
+
 Only unattended runs can be finished. A pending finish lives in daemon memory: a new chat in the session cancels it, and a daemon restart drops it, in which case the idle sweep still reaps the run. This command requires a local daemon and returns a non-zero exit status on errors.
 
 **Flags:**
 
+- `--blocked` — The run ended blocked on a person: finalize leaves its PR draft and blocks the session
 - `--chat` — Requesting chat id (default BOSS_AGENT_SESSION_ID)
 - `--json` — Emit {"outcome","blocking_agent_session_id"} as JSON on stdout
+- `--reason` — Why the run is blocked (with --blocked)
 - `--session` — Session id (default BOSS_SESSION_ID)
 
 ```bash
 boss session finish
 boss session finish --json
+boss session finish --blocked --reason "review left an unresolved P1" --json
 ```
 
 ### `boss session link-pr <session-id> <pr-number-or-url>`

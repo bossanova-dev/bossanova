@@ -233,6 +233,7 @@ type CheckResult struct {
 // whose status is anything other than "completed" means the commit's check set
 // may still be growing.
 type WorkflowRun struct {
+	Event      string
 	Name       string
 	Status     string
 	Conclusion string

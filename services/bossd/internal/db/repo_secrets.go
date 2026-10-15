@@ -135,8 +135,9 @@ func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, para
 // keyClauses are the repos-row SET clauses (and their args) for an update's
 // LinearAPIKey / SentryAPIKey, resolved by writeKeysForUpdate.
 type keyClauses struct {
-	sets []string
-	args []any
+	sets          []string
+	args          []any
+	requestsScrub bool
 }
 
 // writeKeysForUpdate is Update's key phase. It is not a pure clause builder: it
@@ -184,7 +185,10 @@ func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, par
 	err := s.secrets.Set(ctx, id, merged)
 	switch {
 	case err == nil:
-		return keyClauses{sets: []string{"linear_api_key = ''", "sentry_api_key = ''", "has_keyring_secrets = 1"}},
+		return keyClauses{
+				sets:          []string{"linear_api_key = ''", "sentry_api_key = ''", "has_keyring_secrets = 1"},
+				requestsScrub: hasKeyringSecrets == 0 && !current.IsEmpty(),
+			},
 			s.keyringUndo(ctx, id, current, hasKeyringSecrets != 0), nil
 	case errors.Is(err, reposecrets.ErrUnavailable) && hasKeyringSecrets == 0:
 		// No keyring on this host (e.g. headless Linux without a secret
@@ -376,6 +380,9 @@ func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.St
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return false, nil
+	}
+	if _, err := conn.ExecContext(ctx, requestSecretScrubSQL); err != nil {
+		return false, fmt.Errorf("request secret scrub: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return false, fmt.Errorf("commit: %w", err)

@@ -547,6 +547,12 @@ message Session {
   // attention_status (22), which is unchanged. Served from API version
   // 2026-09-17; older pins receive it cleared.
   SessionAttention attention = 78;
+
+  // Transport-only inverse mark: the composite reads "working" only because an
+  // armed callback no longer hides live work (every working chat carries one),
+  // where versions before 2026-09-18 served the waiting composite. Computed
+  // with the served label, never persisted; the down-convert keys on it.
+  bool is_working_over_waiting = 79;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -861,6 +867,26 @@ message ClaudeChat {
   // attempt.
   string start_error = 10;
   string owner_user_id = 11;
+  // The purpose the chat was created for. UNSPECIFIED is a legacy chat created
+  // before roles existed. Unlike title, which agents and operators rename, the
+  // role is set once at creation and is what automation keys on.
+  ChatRole role = 12;
+  // Set when automation replaced this chat (repair reclaiming an idle build,
+  // repair or verify chat). A replaced chat did run, so start_error stays
+  // empty; reclaim_reason says why it was replaced.
+  google.protobuf.Timestamp reclaimed_at = 13;
+  string reclaim_reason = 14;
+}
+
+// ChatRole is the purpose a chat was created for. Automation may replace an
+// idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR chat or a
+// legacy UNSPECIFIED one.
+enum ChatRole {
+  CHAT_ROLE_UNSPECIFIED = 0;
+  CHAT_ROLE_BUILD       = 1; // an unattended run's own chat (cron, detached, epic child)
+  CHAT_ROLE_REPAIR      = 2; // the repair plugin's chat
+  CHAT_ROLE_VERIFY      = 3; // the verify stage's chat
+  CHAT_ROLE_OPERATOR    = 4; // a chat a person opened, or one started on their behalf
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from

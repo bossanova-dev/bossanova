@@ -26,6 +26,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/config",
+        "//lib/bossalib/socketauth",
     ] + select({
         "@rules_go//go/platform:darwin": [
             "//lib/bossalib/daemonbin",

@@ -961,6 +961,12 @@ func newRegistry() map[string]Prose {
 				"caller's own request is therefore always pending: the text form prints " +
 				"`finish pending (waiting on <chat>)` (or `finished`), and `--json` emits " +
 				"`{\"outcome\": \"pending\"|\"finished\", \"blocking_agent_session_id\": ...}`.\n\n" +
+				"`--blocked` reports that the run ended blocked on a person, with an optional " +
+				"one-line `--reason`. The daemon writes it to the session before deferring, so " +
+				"whichever finalize reaches the run (this finish, the Stop-hook gate, or the idle " +
+				"sweep, across a daemon restart) leaves the PR draft and moves the session to " +
+				"Blocked with that reason instead of marking the PR ready. A blocked report after " +
+				"finalize has already run is refused.\n\n" +
 				"Only unattended runs can be finished. A pending finish lives in daemon memory: a new " +
 				"chat in the session cancels it, and a daemon restart drops it, in which case the idle " +
 				"sweep still reaps the run. This command requires a local daemon and returns a " +
@@ -968,6 +974,7 @@ func newRegistry() map[string]Prose {
 			Examples: []Example{
 				{Command: "boss session finish"},
 				{Command: "boss session finish --json"},
+				{Command: `boss session finish --blocked --reason "review left an unresolved P1" --json`},
 			},
 		},
 		"boss session checks": {

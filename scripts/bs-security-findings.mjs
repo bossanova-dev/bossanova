@@ -28,7 +28,9 @@ export const RECORD_SCHEMA_VERSION = 1
  *
  * @typedef {object} FindingLocation
  * @property {string} path         repo-relative, or absolute when outside the root
- * @property {number|null} line
+ * @property {number|null|unknown} line  integer, or null when absent; a JSON value that
+ *                                  is neither (nor a decimal-digit string) is kept
+ *                                  verbatim and fails verification as line-out-of-range
  * @property {string} note         free text after the path; backticked tokens are checked
  * @property {string} raw          the location text as written
  * @property {true} [outsideRoot]  set when an absolute path lies outside the root
@@ -300,16 +302,19 @@ function parsePathToken(token, { root, isTopLevelFile }) {
 
 // Repo-relative and normalised; an absolute path outside `root` stays absolute and
 // is flagged. Markdown and JSON records both go through here so a path's spelling
-// (`./x`, `x`, `<root>/x`) never changes its fingerprint.
+// (`./x`, `x`, `<root>/x`) never changes its fingerprint. The root's physical
+// spelling counts too, since a reviewer may print a symlinked root's realpath (on
+// macOS /var and /tmp are links into /private); it is resolved only when the lexical
+// prefix misses, and a root that does not resolve has the lexical prefix alone.
 function repoRelativePath(p, root) {
-  if (p.startsWith('/')) {
-    const absRoot = root ? path.resolve(root) : null
-    if (absRoot && p.startsWith(`${absRoot}/`)) {
-      return { path: path.posix.normalize(p.slice(absRoot.length + 1)) }
-    }
-    return { path: p, outsideRoot: true }
+  if (!p.startsWith('/')) return { path: path.posix.normalize(p) }
+  if (root) {
+    const absRoot = path.resolve(root)
+    const under = (prefix) => prefix !== null && p.startsWith(`${prefix}/`)
+    const prefix = under(absRoot) ? absRoot : realOrNull(fs.realpathSync, absRoot)
+    if (under(prefix)) return { path: path.posix.normalize(p.slice(prefix.length + 1)) }
   }
-  return { path: path.posix.normalize(p) }
+  return { path: p, outsideRoot: true }
 }
 
 function parseLocation(piece, opts) {
@@ -335,6 +340,31 @@ function parseLocation(piece, opts) {
   return loc
 }
 
+// Only closed samples without report severity fields suppress structural parsing.
+// Unclosed fences remain transparent so a stray opener cannot hide later findings.
+function fencedLineMask(lines) {
+  const masked = new Set()
+  for (let i = 0; i < lines.length; i += 1) {
+    const opener = lines[i].match(/^\s*(`{3,}|~{3,})(.*)$/)
+    if (!opener || (opener[1][0] === '`' && opener[2].includes('`'))) continue
+    let end = i + 1
+    for (; end < lines.length; end += 1) {
+      const closer = lines[end].match(/^\s*(`{3,}|~{3,})\s*$/)
+      if (closer && closer[1][0] === opener[1][0] && closer[1].length >= opener[1].length) break
+    }
+    if (end === lines.length) continue
+    const hasSeverity = lines.slice(i + 1, end).some((line) => {
+      const field = !/^\s/.test(line) && line.match(FIELD_RE)
+      return field && FIELD_ALIASES[field[1].trim().toLowerCase()] === 'severity'
+    })
+    if (!hasSeverity) {
+      for (let j = i; j <= end; j += 1) masked.add(j)
+    }
+    i = end
+  }
+  return masked
+}
+
 /**
  * Parse one reviewer report. A block starts at any `##`–`####` heading and is a
  * finding only when it carries both a Severity and a Location; every other block is
@@ -353,8 +383,10 @@ export function parseFindingsMarkdown(text, opts = {}) {
   const blocks = []
   let block = null
   let field = null
-  for (const line of String(text ?? '').split(/\r?\n/)) {
-    const heading = line.match(HEADING_RE)
+  const lines = String(text ?? '').split(/\r?\n/)
+  const fenced = fencedLineMask(lines)
+  for (const [i, line] of lines.entries()) {
+    const heading = !fenced.has(i) && line.match(HEADING_RE)
     if (heading) {
       const level = heading[1].length
       block = level >= 2 && level <= 4 ? { heading: heading[2], fields: {} } : null
@@ -368,7 +400,7 @@ export function parseFindingsMarkdown(text, opts = {}) {
       continue
     }
     const unindented = !/^\s/.test(line)
-    const fm = unindented ? line.match(FIELD_RE) : null
+    const fm = !fenced.has(i) && unindented ? line.match(FIELD_RE) : null
     if (fm) {
       const key = FIELD_ALIASES[fm[1].trim().toLowerCase()]
       // `- Dockerfile:12` inside a Location field is a location, not a label.
@@ -402,65 +434,87 @@ export function parseFindingsMarkdown(text, opts = {}) {
     const locations = splitLocations(locationRaw)
       .map((piece) => parseLocation(piece, pathOpts))
       .filter(Boolean)
-    const { severity, severityUnparsed } = normaliseSeverity(severityRaw)
-    const confidenceRaw = get('confidence')
-    const rec = {
-      source,
-      lens,
-      lensFamily,
-      title,
-      severity,
-      severityRaw,
-      ...(severityUnparsed ? { severityUnparsed: true } : {}),
-      locations,
-      primaryPath: locations[0]?.path ?? null,
-      defect: get('defect'),
-      impact: get('impact'),
-      fix: get('fix'),
-      confidence: normaliseConfidence(confidenceRaw),
-      confidenceRaw,
-    }
-    rec.fingerprint = fingerprint(rec)
-    records.push(rec)
+    // One builder owns record construction, so the two input shapes cannot drift.
+    records.push(
+      normaliseRecord(
+        {
+          title,
+          severityRaw,
+          locations,
+          defect: get('defect'),
+          impact: get('impact'),
+          fix: get('fix'),
+          confidenceRaw: get('confidence'),
+        },
+        { source, lens, lensFamily, root },
+      ),
+    )
   }
   return { records, skipped }
 }
 
+// Caller-owned provenance: a caller that names the source decides lens and family
+// too, because lensFamily feeds the fingerprint and a record that picked its own
+// would move into another lens's ledger namespace. Input provenance is read only
+// when the caller supplied none.
+function provenance(input, defaults) {
+  const claim = defaults.source ? {} : input
+  const source = defaults.source ?? claim.source ?? 'codex'
+  const lens = defaults.lens ?? claim.lens ?? DEFAULT_LENS[source] ?? source
+  const lensFamily = defaults.lensFamily ?? claim.lensFamily ?? DEFAULT_LENS_FAMILY[source] ?? lens
+  return { source, lens, lensFamily }
+}
+
+// An integer line stays and a decimal-digit string becomes its number; an absent
+// line is null. Anything else is kept verbatim so verification reports it as
+// line-out-of-range instead of reading it as "no line" and checking the whole file.
+function normaliseLine(line) {
+  if (line === undefined || line === null || line === '') return null
+  if (typeof line === 'string' && /^\d+$/.test(line)) return Number(line)
+  return line
+}
+
+// Only the fields a location is made of; verification verdicts and outsideRoot are
+// derived downstream and from the path, never taken from input.
+function normaliseLocation(l, root) {
+  const { path: p, outsideRoot } = repoRelativePath(l.path, root)
+  const line = normaliseLine(l.line)
+  const loc = {
+    path: p,
+    line,
+    note: String(l.note ?? ''),
+    raw: String(l.raw ?? `${l.path}${line !== null ? `:${line}` : ''}`),
+  }
+  if (outsideRoot) loc.outsideRoot = true
+  return loc
+}
+
 /**
- * Normalise a record that arrived as JSON (the Codex runner, the history scan) into
- * the schema. Severity and confidence are re-normalised from their raw values, the
- * primary path is derived from the first location, and the fingerprint is always
- * recomputed here so it has exactly one definition. `defaults.root` makes location
- * paths repo-relative exactly as the markdown parser does.
+ * Build a schema record from raw fields — the single constructor for markdown blocks
+ * and JSON records (the Codex runner, the history scan). The record is built from an
+ * allowlist: provenance comes from `defaults` (see provenance()), severity and
+ * confidence are re-normalised from their raw values, the primary path is the first
+ * location's, and the fingerprint is always recomputed here so it has exactly one
+ * definition. `defaults.root` makes location paths repo-relative. A preset
+ * locationStatus is kept only when the caller passes `trustLocationStatus` (collect
+ * does so for the history scan's file alone, which reads the blob directly).
  */
 export function normaliseRecord(input, defaults = {}) {
-  // Verification and ledger results are computed downstream, never taken from input.
-  // Only the history scan may preset locationStatus (it reads the blob directly),
-  // judged by the file it came from rather than the record's own claim.
-  const { locationStatus, ledger, reporters, ...fields } = input
-  const source = input.source ?? defaults.source ?? 'codex'
-  const lens = input.lens ?? defaults.lens ?? DEFAULT_LENS[source] ?? source
-  const lensFamily = input.lensFamily ?? defaults.lensFamily ?? DEFAULT_LENS_FAMILY[source] ?? lens
+  const { source, lens, lensFamily } = provenance(input, defaults)
   const severityRaw = String(input.severityRaw ?? input.severity ?? '')
   const { severity, severityUnparsed } = normaliseSeverity(severityRaw)
   const confidenceRaw = String(input.confidenceRaw ?? input.confidence ?? '')
   const locations = (Array.isArray(input.locations) ? input.locations : [])
     .filter((l) => l && typeof l.path === 'string' && l.path)
-    .map((l) => ({
-      ...l,
-      ...repoRelativePath(l.path, defaults.root),
-      line: Number.isInteger(l.line) ? l.line : null,
-      note: String(l.note ?? ''),
-      raw: String(l.raw ?? `${l.path}${Number.isInteger(l.line) ? `:${l.line}` : ''}`),
-    }))
+    .map((l) => normaliseLocation(l, defaults.root))
   const rec = {
-    ...fields,
     source,
     lens,
     lensFamily,
     title: String(input.title ?? ''),
     severity,
     severityRaw,
+    ...(severityUnparsed ? { severityUnparsed: true } : {}),
     locations,
     primaryPath: locations[0]?.path ?? null,
     defect: String(input.defect ?? ''),
@@ -469,12 +523,11 @@ export function normaliseRecord(input, defaults = {}) {
     confidence: normaliseConfidence(confidenceRaw),
     confidenceRaw,
   }
-  if (severityUnparsed) rec.severityUnparsed = true
-  else delete rec.severityUnparsed
-  if ((defaults.source ?? source) === 'history-scan' && LOCATION_STATUSES.has(locationStatus)) {
-    rec.locationStatus = locationStatus
-  }
   rec.fingerprint = fingerprint(rec)
+  if (defaults.trustLocationStatus === true && LOCATION_STATUSES.has(input.locationStatus)) {
+    rec.locationStatus = input.locationStatus
+  }
+  if (input.evidence !== undefined) rec.evidence = input.evidence
   return rec
 }
 
@@ -504,15 +557,16 @@ function checkLocation(loc, { root, readFile, realpath }) {
   const abs = path.resolve(absRoot, loc.path)
   if (loc.outsideRoot || escapesRoot(path.relative(absRoot, abs))) return 'outside-root'
   // readFile follows symlinks, so containment is judged on the resolved target too.
-  // A target that does not resolve falls through to readFile (missing-file).
+  // Never read an unresolved target: readFile could follow an unchecked link.
   const realAbs = realOrNull(realpath, abs)
-  if (realAbs !== null) {
-    const realRoot = realOrNull(realpath, absRoot) ?? absRoot
-    if (escapesRoot(path.relative(realRoot, realAbs))) return 'outside-root'
-  }
+  if (realAbs === null) return 'missing-file'
+  const realRoot = realOrNull(realpath, absRoot) ?? absRoot
+  if (escapesRoot(path.relative(realRoot, realAbs))) return 'outside-root'
+  // A directory component could still change before the read; closing that race
+  // requires a portable openat/O_NOFOLLOW walk, outside this verifier's scope.
   let text
   try {
-    text = String(readFile(abs))
+    text = String(readFile(realAbs))
   } catch {
     return 'missing-file'
   }
@@ -534,8 +588,8 @@ function checkLocation(loc, { root, readFile, realpath }) {
 }
 
 /**
- * Mark each location verified only when its file resolves inside `root` (symlinks
- * followed), the line is within the file, and (when its note has backticked tokens
+ * Mark each location verified only when its file resolves inside `root` and that
+ * exact resolved path can be read (symlinks followed), the line is within the file, and (when its note has backticked tokens
  * of three or more characters) one token appears within ±20 lines. The record's locationStatus
  * follows its primary location. A record arriving with locationStatus keeps it.
  * Returns new records; nothing is dropped and inputs are not mutated.
@@ -832,7 +886,7 @@ function lensFamilies(doc) {
 
 // A JSON source holds records (an array, or {records}) or a markdown report
 // ({markdown} or a bare string); both are accepted.
-function recordsFromJsonSource(doc, defaults, root) {
+function recordsFromJsonSource(doc, defaults, root, trustLocationStatus) {
   if (typeof doc === 'string' || typeof doc?.markdown === 'string') {
     return parseFindingsMarkdown(typeof doc === 'string' ? doc : doc.markdown, {
       ...defaults,
@@ -841,7 +895,10 @@ function recordsFromJsonSource(doc, defaults, root) {
   }
   const list = Array.isArray(doc) ? doc : Array.isArray(doc?.records) ? doc.records : null
   if (!list) throw new Error(`unrecognised findings JSON for source ${defaults.source}`)
-  return { records: list.map((r) => normaliseRecord(r, { ...defaults, root })), skipped: [] }
+  return {
+    records: list.map((r) => normaliseRecord(r, { ...defaults, root, trustLocationStatus })),
+    skipped: [],
+  }
 }
 
 /**
@@ -879,14 +936,21 @@ export function collectRun({ runDir, root, lenses, ledger, readFile, readDir, ex
     skipped.push(...out.skipped.map((s) => ({ lens, ...s })))
   }
 
-  for (const [rel, source] of [
-    [RUN_LAYOUT.codexFindings, 'codex'],
-    [RUN_LAYOUT.secretScanFindings, 'history-scan'],
+  // Only the history scan's file may preset locationStatus: it reads the blob
+  // directly. Trust is decided here by the file, never by a record's own claim.
+  for (const [rel, source, trustLocationStatus] of [
+    [RUN_LAYOUT.codexFindings, 'codex', false],
+    [RUN_LAYOUT.secretScanFindings, 'history-scan', true],
   ]) {
     const file = path.join(runDir, rel)
     if (!exists(file)) continue
     const defaults = { source, lens: DEFAULT_LENS[source], lensFamily: DEFAULT_LENS_FAMILY[source] }
-    const out = recordsFromJsonSource(JSON.parse(readFile(file)), defaults, root)
+    const out = recordsFromJsonSource(
+      JSON.parse(readFile(file)),
+      defaults,
+      root,
+      trustLocationStatus,
+    )
     parsed.push(...out.records)
     skipped.push(...out.skipped.map((s) => ({ lens: defaults.lens, ...s })))
   }

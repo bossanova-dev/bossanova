@@ -83,15 +83,6 @@ type ReclaimRepairChatResult struct {
 	TmuxSessionName string
 }
 
-const repairChatTitlePrefix = "Repair:"
-
-// IsRepairChatTitle reports whether a chat row belongs to the unattended
-// repair workflow. Repair chats have their own displacement policy and should
-// not be counted as user activity for repair idle gating.
-func IsRepairChatTitle(title string) bool {
-	return strings.HasPrefix(title, repairChatTitlePrefix)
-}
-
 // DeliveryIntent is how a ChatInput's payload is delivered to the tmux composer.
 type DeliveryIntent int
 
@@ -169,6 +160,9 @@ type ChatInput struct {
 	// session id, StartTmuxChat keeps this logical id for bossd bookkeeping and
 	// passes the provider id to the agent CLI's resume flag.
 	ResumeAgentSessionID string
+	// Role is the purpose of the chat a fresh launch creates. A resume keeps
+	// the resumed row's own role: a chat's role never changes.
+	Role models.AgentChatRole
 }
 
 func (i ChatInput) render(commandPrefix string) string {
@@ -485,7 +479,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// sibling chat next to an existing primary chat; they opt out via
 	// HookOpts.AllowSiblingChat.
 	if !hookOpts.AllowSiblingChat {
-		if existing, found, idemErr := l.findLiveTmuxChat(ctx, sessionID); idemErr != nil {
+		if existing, found, idemErr := l.findLiveTmuxChat(ctx, sessionID, resumeTargetID); idemErr != nil {
 			return "", idemErr
 		} else if found {
 			if resuming && liveChatMatchesResumeTarget(existing, resumeTargetID) {
@@ -808,7 +802,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// (Step 7) does not exist yet, so create-and-stamp a "(failed to start)"
 		// row here best-effort — that surfaces the real reason to boss show, the
 		// TUI badge, and external clients instead of only logging it.
-		l.recordFailedStartChat(ctx, sessionID, agentSessionID, spawnAgentName, title,
+		l.recordFailedStartChat(ctx, sessionID, agentSessionID, spawnAgentName, title, input.Role,
 			fmt.Sprintf("tmux launch failed: %v", err))
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -879,9 +873,12 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Title:          title,
 		AccountID:      spawnAccountID,
 		Model:          spawnModel,
+		Role:           input.Role,
 	}); err != nil {
 		l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
 		return "", fmt.Errorf("create agent_chats row for session %s: %w", sessionID, err)
+	} else {
+		l.NotifyChatCreated(sessionID)
 	}
 
 	// Step 8: stamp the tmux session name onto the row.
@@ -1559,18 +1556,20 @@ func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSes
 // function takes its `default` arm and returns having written nothing at all —
 // the row keeps pointing at a pane that never came up, which is precisely the
 // invisible failure this helper exists to prevent (BOS-897).
-func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title, reason string) {
+func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title string, role models.AgentChatRole, reason string) {
 	detach.Cleanup(ctx, detach.CleanupBudget, func(recordCtx context.Context) {
 		existing, err := l.agentChats.GetByAgentSessionID(recordCtx, agentSessionID)
 		switch {
 		case err == nil && existing != nil:
 			// Row already exists (resume path); stamp it in place below.
 		case errors.Is(err, db.ErrAgentChatNotFound):
+			// A failed launch is not new work, so pending finish/archive requests stand.
 			if _, createErr := l.agentChats.Create(recordCtx, db.CreateAgentChatParams{
 				SessionID:      sessionID,
 				AgentSessionID: agentSessionID,
 				AgentName:      agentName,
 				Title:          title,
+				Role:           role,
 			}); createErr != nil {
 				l.logger.Warn().Err(createErr).
 					Str("session", sessionID).
@@ -1607,20 +1606,32 @@ func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentS
 //     able to see).
 //   - (nil, false, err) when ListBySession itself fails.
 //
+// When resumeTargetID is set and that chat is live, it is returned even if a
+// newer chat is live too: a resume must land in its own pane rather than be
+// reported as blocked by a sibling, which would let a caller that then starts
+// beside the sibling relaunch a pane that is still running.
+//
 // Best-effort: if clearing a stale row's tmux_session_name fails, we log
 // and continue — the caller will create a new agent_chats row anyway,
 // and the next sweep can retry the unlink.
-func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (*models.AgentChat, bool, error) {
+func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID, resumeTargetID string) (*models.AgentChat, bool, error) {
 	chats, err := l.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
 		return nil, false, fmt.Errorf("list chats for session %s: %w", sessionID, err)
 	}
+	var firstLive *models.AgentChat
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			continue
 		}
 		if l.tmux.HasSession(ctx, *chat.TmuxSessionName) {
-			return chat, true, nil
+			if resumeTargetID == "" || liveChatMatchesResumeTarget(chat, resumeTargetID) {
+				return chat, true, nil
+			}
+			if firstLive == nil {
+				firstLive = chat
+			}
+			continue
 		}
 		// Stale tmux name — clear it so a retry can mint a fresh
 		// agent_session_id and tmux session. The row itself is preserved
@@ -1633,25 +1644,42 @@ func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (*mo
 				Msg("failed to clear stale tmux_session_name during idempotency cleanup")
 		}
 	}
+	if firstLive != nil {
+		return firstLive, true, nil
+	}
 	return nil, false, nil
 }
 
-// ReclaimRepairChat kills the tmux pane backing a repair chat and marks its
-// row start-failed so the next repair sweep can respawn. It enforces the
-// arg/session/title guards and verifies tmux liveness before killing, but no
-// longer decides displaceability itself: whether the chat is idle enough to
-// reclaim is evaluated by the host layer from the chat tracker (BOS-153); the
-// old pipe-pane log-mtime staleness gate is gone. When tmux reports the pane
-// alive the caller has already judged it displaceable, so we kill.
+// ReclaimRepairChat kills the tmux pane backing an idle agent-owned chat and
+// marks its row so the next repair sweep can respawn. It is the reclaim RPC's
+// and the run watchdog's path; see reclaimAgentChat for the guards.
 func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
+	if reason == "" {
+		reason = "reclaimed stale repair chat"
+	}
+	return l.reclaimAgentChat(ctx, sessionID, agentSessionID, reason)
+}
+
+// ReplaceBlockingChatForRepair kills the idle agent-owned chat blocking a
+// repair launch (a build, repair or verify chat) and marks its row; see
+// reclaimAgentChat for the guards.
+func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
+	return l.reclaimAgentChat(ctx, sessionID, agentSessionID, reason)
+}
+
+// reclaimAgentChat enforces the arg, session and role guards and verifies tmux
+// liveness before killing. Only an agent-owned chat (build, repair, verify) may
+// be killed: an operator chat, or a legacy chat whose role is unknown, is
+// refused with ErrRepairChatNotReclaimable whatever its title says. It does not
+// decide displaceability itself: whether the chat is idle enough is evaluated
+// by the host layer from the chat tracker (BOS-153). When tmux reports the pane
+// alive the caller has already judged it displaceable, so we kill.
+func (l *Lifecycle) reclaimAgentChat(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
 	if sessionID == "" {
 		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
 	}
 	if agentSessionID == "" {
 		return ReclaimRepairChatResult{}, fmt.Errorf("agent_session_id is required")
-	}
-	if reason == "" {
-		reason = "reclaimed stale repair chat"
 	}
 	if l.agentChats == nil {
 		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat store not configured")
@@ -1667,15 +1695,15 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 	if chat.SessionID != sessionID {
 		return ReclaimRepairChatResult{}, fmt.Errorf("%w: chat session %s requested session %s", ErrRepairChatSessionMismatch, chat.SessionID, sessionID)
 	}
-	if !strings.HasPrefix(chat.Title, repairChatTitlePrefix) {
-		return ReclaimRepairChatResult{}, fmt.Errorf("%w: title %q", ErrRepairChatNotReclaimable, chat.Title)
+	if !chat.Role.IsAgentOwned() {
+		return ReclaimRepairChatResult{}, fmt.Errorf("%w: chat %s has role %s (title %q); only build, repair and verify chats are reclaimed", ErrRepairChatNotReclaimable, agentSessionID, roleLabel(chat.Role), chat.Title)
 	}
 
 	result := ReclaimRepairChatResult{Reclaimed: true}
 	if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
 		result.TmuxSessionName = *chat.TmuxSessionName
 		if l.tmux == nil {
-			return ReclaimRepairChatResult{}, fmt.Errorf("%w: tmux client not configured; cannot verify repair chat %s is dead", ErrRepairChatActive, result.TmuxSessionName)
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: tmux client not configured; cannot verify chat %s is dead", ErrRepairChatActive, result.TmuxSessionName)
 		}
 		tmuxAlive, tmuxErr := l.tmux.HasSessionStatus(ctx, result.TmuxSessionName)
 		if tmuxErr != nil {
@@ -1685,76 +1713,26 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 			l.logger.Info().
 				Str("session", sessionID).
 				Str("agentSessionID", agentSessionID).
+				Str("role", string(chat.Role)).
 				Str("tmuxSession", result.TmuxSessionName).
 				Str("reason", reason).
-				Msg("reclaiming repair chat: killing live tmux pane")
+				Msg("reclaiming idle agent chat: killing live tmux pane")
 			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
-				return ReclaimRepairChatResult{}, fmt.Errorf("kill repair tmux session %s: %w", result.TmuxSessionName, err)
+				return ReclaimRepairChatResult{}, fmt.Errorf("kill chat tmux session %s: %w", result.TmuxSessionName, err)
 			}
 		}
 	}
-	if err := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
+	if err := l.agentChats.MarkReclaimed(ctx, agentSessionID, reason); err != nil {
 		return ReclaimRepairChatResult{}, err
 	}
 	return result, nil
 }
 
-// ReplaceBlockingChatForRepair kills whatever chat pane is blocking a repair
-// launch (repair-titled or any other, e.g. a finalize chat) and marks its row
-// start-failed. It enforces the arg/session guards and verifies tmux liveness
-// before killing, but no longer decides displaceability itself: whether the
-// blocking chat is idle enough to displace is evaluated by the host layer from
-// the chat tracker (BOS-153); the old pipe-pane log-mtime staleness gate is
-// gone. When tmux reports the pane alive the caller has already judged it
-// displaceable, so we kill.
-func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
-	if sessionID == "" {
-		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
+func roleLabel(r models.AgentChatRole) string {
+	if r == models.AgentChatRoleUnknown {
+		return "unknown"
 	}
-	if agentSessionID == "" {
-		return ReclaimRepairChatResult{}, fmt.Errorf("agent_session_id is required")
-	}
-	if l.agentChats == nil {
-		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat store not configured")
-	}
-
-	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
-	if err != nil {
-		return ReclaimRepairChatResult{}, err
-	}
-	if chat == nil {
-		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
-	}
-	if chat.SessionID != sessionID {
-		return ReclaimRepairChatResult{}, fmt.Errorf("%w: chat session %s requested session %s", ErrRepairChatSessionMismatch, chat.SessionID, sessionID)
-	}
-
-	result := ReclaimRepairChatResult{Reclaimed: true}
-	if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
-		result.TmuxSessionName = *chat.TmuxSessionName
-		if l.tmux == nil {
-			return ReclaimRepairChatResult{}, fmt.Errorf("%w: tmux client not configured; cannot verify blocking chat %s is dead", ErrRepairChatActive, result.TmuxSessionName)
-		}
-		tmuxAlive, tmuxErr := l.tmux.HasSessionStatus(ctx, result.TmuxSessionName)
-		if tmuxErr != nil {
-			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %w", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
-		}
-		if tmuxAlive {
-			l.logger.Info().
-				Str("session", sessionID).
-				Str("agentSessionID", agentSessionID).
-				Str("tmuxSession", result.TmuxSessionName).
-				Str("reason", reason).
-				Msg("replacing idle blocking chat for repair")
-			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
-				return ReclaimRepairChatResult{}, fmt.Errorf("kill blocking tmux session %s: %w", result.TmuxSessionName, err)
-			}
-		}
-	}
-	if err := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
-		return ReclaimRepairChatResult{}, err
-	}
-	return result, nil
+	return string(r)
 }
 
 // KillChatTmuxSession tears down the tmux-backed chat identified by
@@ -1999,6 +1977,7 @@ func (l *Lifecycle) startTmuxChat(
 	// predicate is kept as a fallback for any future caller that funnels a
 	// fully-populated session through with empty opts.
 	input := chatInputMechanicsFromPrompt(session.Plan)
+	input.Role = models.AgentChatRoleBuild
 	if opts.CronJobID != "" || opts.IsTmuxUnattended || opts.Detach || isUnattendedSession(session) {
 		input.Delivery = DeliverySubmit
 	}

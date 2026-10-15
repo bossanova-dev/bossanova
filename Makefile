@@ -461,6 +461,9 @@ ifneq ($(shell command -v buf 2>/dev/null),)
 	# preserve committed Gazelle BUILD.bazel package files, which buf does not own —
 	# `rm -rf lib/bossalib/gen` would delete them and trip the generate drift gate.
 	find lib/bossalib/gen -type f ! -name 'BUILD.bazel' -delete 2>/dev/null || true
+	# Same for the web stubs, so the drift gate also catches a committed *_pb.ts no proto produces
+	# (verify's approval carry leaves these paths out of the patch-id on that proof).
+	find services/web/src/gen -type f -name '*_pb.ts' -delete 2>/dev/null || true
 	buf generate
 	@changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
 	if [ -n "$$changed_go" ]; then \

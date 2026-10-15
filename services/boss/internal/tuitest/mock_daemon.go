@@ -2105,6 +2105,10 @@ func (m *MockDaemon) ResumeSession(context.Context, *connect.Request[pb.ResumeSe
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+func (m *MockDaemon) ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 func (m *MockDaemon) RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }

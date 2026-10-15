@@ -2140,8 +2140,10 @@ type ChatStatusDelta struct {
 	// Per-chat key. Empty for legacy daemons; new daemons MUST set this.
 	AgentSessionId string `protobuf:"bytes,4,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
 	// Short human-readable reason the chat is waiting, e.g.
-	// "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-	// CHAT_STATUS_WAITING.
+	// "awaiting checks_passed_ready on owner/repo#123": the callback the chat
+	// has armed. Set on CHAT_STATUS_WAITING and, from API version 2026-09-18, on
+	// a CHAT_STATUS_WORKING chat whose armed callback no longer hides its work
+	// (older pins receive WAITING). Empty otherwise.
 	WaitingReason string `protobuf:"bytes,5,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

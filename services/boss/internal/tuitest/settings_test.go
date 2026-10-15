@@ -369,12 +369,8 @@ func TestTUI_Settings_RepoAddFirstRepoReturnsToSettings(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
 		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
 	}
-	// Accept the details form (5 fields) with all defaults.
-	for range 5 {
-		if err := h.Driver.SendEnter(); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Accept every details field with its default, including untrusted.
+	completeRepoAddDetails(t, h)
 
 	// Completing the add returns to the settings hub it was launched from; the
 	// repo's options were configured inline on the add wizard.

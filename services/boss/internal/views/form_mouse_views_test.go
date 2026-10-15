@@ -537,11 +537,12 @@ func TestFormResizeResyncsTheScrollOffset(t *testing.T) {
 	// stops compensating altogether, so a viewport still parked at the old
 	// offset mis-maps every line on the screen.
 	for _, tt := range []struct {
-		name string
-		to   int
+		name          string
+		to            int
+		wantScrolling bool
 	}{
-		{name: "repo add details still scrolling", to: 26},
-		{name: "repo add details grown past scrolling", to: 28},
+		{name: "repo add details still scrolling", to: 34, wantScrolling: true},
+		{name: "repo add details grown past scrolling", to: 40},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewRepoAddModel(&repoAddStubClient{}, context.Background())
@@ -564,6 +565,9 @@ func TestFormResizeResyncsTheScrollOffset(t *testing.T) {
 
 			updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: tt.to})
 			m = updated.(RepoAddModel)
+			if scrolling := ff.contentHeight() > visibleHeight(m.form, ff); scrolling != tt.wantScrolling {
+				t.Fatalf("scrolling = %v at height %d, want %v", scrolling, tt.to, tt.wantScrolling)
+			}
 			now := 0
 			if v := visibleHeight(m.form, ff); ff.contentHeight() > v {
 				now = ff.scrollOffset(1, v)

@@ -84,6 +84,8 @@ func (m *ChatPickerModel) buildTableRows() {
 		// row look like a fresh "stopped" chat.
 		if chat.GetStartError() != "" {
 			statusStr = renderChatStartFailed()
+		} else if chat.GetReclaimedAt() != nil {
+			statusStr = renderChatReplaced()
 		}
 		if chat.AgentSessionId != "" && chat.AgentSessionId == m.deletingAgentSessionID {
 			statusStr = renderRowPendingStatus(m.spinner, "deleting")
@@ -113,6 +115,14 @@ func (m *ChatPickerModel) buildTableRows() {
 // skill-reported phase of a working chat, or the armed trigger of a waiting
 // chat (BOS-1517). "" keeps the plain renderClaudeStatus badge. A standby wait
 // has no detail: buildTableRows renders it as renderStandbyStatus (BOS-1531).
+// renderChatReplaced is the STATUS badge for a chat automation deliberately
+// replaced (repair reclaiming an idle agent-owned chat). It ran and ended on
+// purpose, so it reads as a neutral terminal state, not the danger-styled
+// "× failed" reserved for a chat whose agent never came up.
+func renderChatReplaced() string {
+	return styleSubtle.Render("↺ replaced")
+}
+
 func (m ChatPickerModel) statusDetail(chat *pb.ClaudeChat) string {
 	switch m.daemonStatuses[chat.GetAgentSessionId()] {
 	case statusWorking:
@@ -205,7 +215,7 @@ func (m ChatPickerModel) tableHeight() int {
 	if len(left) > 0 {
 		footerLines = actionBarLineCount(m.width, left, middle, back)
 	}
-	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.waitingLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
+	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.waitingLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight() + m.confirmExtraLines()
 	return clampedTableHeight(len(m.chats), m.height, overhead)
 }
 

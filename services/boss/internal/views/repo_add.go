@@ -155,6 +155,8 @@ var sourceOptions = []struct {
 	{"Clone from URL", "Clone a repo and register it", sourceModeClone},
 }
 
+const repoTrustExplanation = "The repository’s committed configuration will be able to run commands on this machine (project MCP servers, agent project settings, proof secrets)."
+
 // repoAddFormData holds huh form-bound values on the heap so that Value()
 // pointers remain valid across bubbletea value-receiver copies of RepoAddModel.
 type repoAddFormData struct {
@@ -163,6 +165,7 @@ type repoAddFormData struct {
 	localPath string
 	name      string
 	setup     string
+	isTrusted bool
 
 	// Core repo-behavior config collected at add time. Seeded to the bossd
 	// creation defaults; persisted via a follow-up UpdateRepo only when changed.
@@ -394,6 +397,10 @@ func (m *RepoAddModel) buildDetailsForm() {
 			Title("Setup command").
 			Placeholder("Optional, e.g. make setup").
 			Value(&m.fd.setup),
+		bossConfirm().
+			Title("Trust this repository?").
+			Description(repoTrustExplanation).
+			Value(&m.fd.isTrusted),
 		bossSelect[string](len(mergeStrategyOptions), 1).
 			Title("Merge strategy").
 			Options(mergeStrategyOptions...).
@@ -835,10 +842,12 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 	// submitted; the closures below run after the create RPC, by which time fd may
 	// have been mutated by in-flight key handling.
 	cfgSnap := fd.configSnapshot()
+	isTrusted := fd.isTrusted
 
 	if m.sourceMode == sourceModeClone {
 		m.cloning = true
 		req := &pb.CloneAndRegisterRepoRequest{
+			IsTrusted:         &isTrusted,
 			CloneUrl:          fd.gitURL,
 			LocalPath:         fd.clonePath,
 			DisplayName:       fd.name,
@@ -859,6 +868,7 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 	}
 
 	req := &pb.RegisterRepoRequest{
+		IsTrusted:         &isTrusted,
 		LocalPath:         fd.localPath,
 		DisplayName:       fd.name,
 		DefaultBaseBranch: m.detectedBaseBranch,

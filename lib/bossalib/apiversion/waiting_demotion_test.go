@@ -6,6 +6,7 @@ import (
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
 )
 
 // demotedSession builds the row BOS-1269 introduced: a session whose PR-derived
@@ -226,5 +227,74 @@ func TestWaitingDemotion_RegisteredAfterSessionListRankOrderChange(t *testing.T)
 	}
 	if demotionIdx <= waitingIdx {
 		t.Fatalf("WaitingDemotionLabelChange at %d must be registered after WaitingChatStatusChange at %d", demotionIdx, waitingIdx)
+	}
+}
+
+// demotedNeedsHumanSession is the row V20260918 introduced: a verify-parked
+// session whose idle-derived wait the cascade demoted beneath "needs human".
+func demotedNeedsHumanSession() *pb.Session {
+	return &pb.Session{
+		Id:               "sess-parked",
+		State:            pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		DisplayStatus:    pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		DisplayLabel:     displaystatus.NeedsHumanLabel,
+		DisplayIntent:    pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+		IsWaitingDemoted: true,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
+			Summary:        "needs human: human-review:security",
+		},
+	}
+}
+
+// TestNeedsHumanWaitDemotion_ChainMatchesThePreChangeRowAtEveryOlderVersion is
+// the exact-inverse property across the whole production chain: at every
+// version older than V20260918 the demoted row down-converts to what the same
+// session served before the change (the undemoted "waiting" row) down-converts
+// to. Comparing whole chains, not one transform, is what catches an ordering
+// slip against VerifyDisplayStatusChange or WaitingDemotionLabelChange.
+func TestNeedsHumanWaitDemotion_ChainMatchesThePreChangeRowAtEveryOlderVersion(t *testing.T) {
+	if got := applyToSession(t, demotedNeedsHumanSession(), DefaultRegistry().Current()); !proto.Equal(got, demotedNeedsHumanSession()) {
+		t.Fatalf("Current rewrote the row: %v", got)
+	}
+	preChange := func() *pb.Session {
+		s := demotedNeedsHumanSession()
+		s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = displaystatus.WaitingLabel, pb.DisplayIntent_DISPLAY_INTENT_INFO, true
+		s.IsWaitingDemoted = false
+		return s
+	}
+	older := 0
+	for _, v := range DefaultRegistry().All() {
+		if v >= V20260918 {
+			continue
+		}
+		older++
+		got := applyToSession(t, demotedNeedsHumanSession(), v)
+		want := applyToSession(t, preChange(), v)
+		got.IsWaitingDemoted = false
+		if !proto.Equal(got, want) {
+			t.Errorf("at %s: demoted row down-converts to\n%v\nwant the pre-change row's\n%v", v, got, want)
+		}
+	}
+	if older == 0 {
+		t.Fatal("no registry version older than V20260918")
+	}
+	if got := applyToSession(t, demotedNeedsHumanSession(), V20260917); got.GetDisplayLabel() != displaystatus.WaitingLabel ||
+		got.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		t.Fatalf("one version back = %q / %v, want waiting / NEEDS_HUMAN", got.GetDisplayLabel(), got.GetDisplayStatus())
+	}
+}
+
+// TestNeedsHumanWaitDemotion_LeavesOtherRowsAlone keeps the change off the rows
+// it did not move: a V20260915 demoted green row and an unmarked parked row.
+func TestNeedsHumanWaitDemotion_LeavesOtherRowsAlone(t *testing.T) {
+	unmarked := demotedNeedsHumanSession()
+	unmarked.IsWaitingDemoted = false
+	for _, s := range []*pb.Session{demotedSession(), unmarked, nil} {
+		before := proto.Clone(s)
+		if got := downconvertNeedsHumanWaitSession(s); got != s || !proto.Equal(s, before) {
+			t.Errorf("downconvertNeedsHumanWaitSession(%v) changed the row", s)
+		}
 	}
 }

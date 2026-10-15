@@ -153,7 +153,7 @@ func (r *Resolver) Resolve(ctx context.Context, sel bcast.Selector, originChatID
 	// unchanged.
 	sessionCache := make(map[string]*models.Session, len(chats))
 	for _, c := range chats {
-		if c.StartError != nil && *c.StartError != "" {
+		if c.IsRetired() {
 			// Preserved as an "attempted but never came up" row; unreachable.
 			skippedStartError++
 			continue

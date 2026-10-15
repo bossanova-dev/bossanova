@@ -382,6 +382,14 @@ func (c *LocalClient) ResumeSession(ctx context.Context, id string) (*pb.Session
 	return resp.Msg.Session, nil
 }
 
+func (c *LocalClient) ResumeSessionRun(ctx context.Context, sessionID string) (*pb.Session, error) {
+	resp, err := c.rpc.ResumeSessionRun(ctx, connect.NewRequest(&pb.ResumeSessionRunRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
+}
+
 func (c *LocalClient) RetrySession(ctx context.Context, id string) (*pb.Session, error) {
 	resp, err := c.rpc.RetrySession(ctx, connect.NewRequest(&pb.RetrySessionRequest{Id: id}))
 	if err != nil {
@@ -531,12 +539,13 @@ func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 
 // --- Claude Chat Tracking ---
 
-func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error) {
+func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error) {
 	req := &pb.RecordChatRequest{
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
 		Title:          title,
 		Resume:         resume,
+		Role:           role,
 	}
 	if agentName != "" {
 		req.AgentName = &agentName

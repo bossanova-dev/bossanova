@@ -82,6 +82,7 @@ func (s *parkedChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ s
 	return nil
 }
 func (s *parkedChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
+func (s *parkedChatStore) MarkReclaimed(_ context.Context, _, _ string) error   { return nil }
 func (s *parkedChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
 	return nil
 }

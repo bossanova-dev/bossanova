@@ -493,9 +493,9 @@ func TestE2E_GitHub_ListWorkflowRuns(t *testing.T) {
 		t.Fatalf("ListWorkflowRuns: %v", err)
 	}
 	want := []vcs.WorkflowRun{
-		{Name: "test-go", Status: "completed", Conclusion: "success", HeadSHA: sha},
-		{Name: "bazel", Status: "in_progress", Conclusion: "", HeadSHA: sha},
-		{Name: "test-warehouse", Status: "queued", Conclusion: "", HeadSHA: sha},
+		{Name: "test-go", Status: "completed", Conclusion: "success", HeadSHA: sha, Event: "pull_request"},
+		{Name: "bazel", Status: "in_progress", Conclusion: "", HeadSHA: sha, Event: "pull_request"},
+		{Name: "test-warehouse", Status: "queued", Conclusion: "", HeadSHA: sha, Event: "push"},
 	}
 	if len(runs) != len(want) {
 		t.Fatalf("got %d runs, want %d: %+v", len(runs), len(want), runs)

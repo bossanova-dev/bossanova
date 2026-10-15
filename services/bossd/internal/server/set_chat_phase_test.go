@@ -56,7 +56,7 @@ func TestSetChatPhase(t *testing.T) {
 	tracker.Update("agent-b", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
 	assertRead("reviewing")
 	tracker.SetWaiting("agent-b", waitingTestReason)
-	assertRead("")
+	assertRead("reviewing") // An armed callback no longer hides live work.
 	tracker.SetWaiting("agent-b", "")
 	assertRead("reviewing")
 	tracker.Update("agent-b", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())

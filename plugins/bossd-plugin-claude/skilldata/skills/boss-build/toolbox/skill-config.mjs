@@ -499,7 +499,15 @@ export function validateConfig(config, source) {
       config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
-  if (config.verifyDefaults !== undefined) validateVerifyDefaults(config.verifyDefaults, fail)
+  if (config.verifyDefaults !== undefined) {
+    validateVerifyDefaults(config.verifyDefaults, fail)
+    // Verify refuses this carry at runtime; the warning says why an approval never carries.
+    const { generatedPaths, generatedChecks } = config.verifyDefaults
+    if (generatedPaths?.length > 0 && !(generatedChecks?.length > 0))
+      console.warn(
+        `skill-config: ${source}: verifyDefaults.generatedPaths has no generatedChecks to prove it regenerated, so no approval carries across a rebase`,
+      )
+  }
   // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
   // declare no recognised target legitimately resolves with no `commands` key at all (absent,
   // not {}), and a test-command manifest is a project artifact rather than a portable concept.
@@ -3706,6 +3714,9 @@ const isGlobEntry = (entry) => {
   return entry.label === undefined || isPathLabel(entry.label)
 }
 const isGlobList = (paths) => Array.isArray(paths) && paths.every(isGlobEntry)
+const isCheckNameList = (names) =>
+  Array.isArray(names) &&
+  names.every((name) => typeof name === 'string' && name.trim() !== '' && !/[\r\n]/.test(name))
 const GLOB_LIST_SHAPE = `an array of non-empty glob strings or {glob, label} objects (label: one line, at most ${VERIFY_PATH_LABEL_MAX} chars)`
 
 // verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
@@ -3721,6 +3732,10 @@ function validateVerifyDefaults(block, fail) {
     fail(`verifyDefaults.alwaysHumanPaths must be ${GLOB_LIST_SHAPE}`)
   if (block.requireGreenBase !== undefined && typeof block.requireGreenBase !== 'boolean')
     fail('verifyDefaults.requireGreenBase must be a boolean when present')
+  if (block.generatedPaths !== undefined && !isGlobList(block.generatedPaths))
+    fail(`verifyDefaults.generatedPaths must be ${GLOB_LIST_SHAPE}`)
+  if (block.generatedChecks !== undefined && !isCheckNameList(block.generatedChecks))
+    fail('verifyDefaults.generatedChecks must be an array of non-empty, single-line check names')
   const review = block.humanReview
   if (review === undefined) return
   if (!review || typeof review !== 'object' || Array.isArray(review))
@@ -3775,7 +3790,9 @@ export function verifyPathLabels(config) {
  * The verify policy from a config file's raw text, validating only its `verifyDefaults` block: the
  * verify stage reads policy from the base branch, where the rest of the config is irrelevant.
  * Throws on invalid JSON, a non-object document, or an invalid `verifyDefaults`.
- * @returns {{requireGreenBase: boolean, alwaysHumanPaths: string[], humanReview: {database: string[], security: string[], ui: string[]}, pathLabels: {list: string, glob: string, label: string}[]}}
+ * `generatedPaths` globs the generated trees an approval may carry across (see verify-gate's
+ * approval carry), and `generatedChecks` names the checks that prove them regenerated from source.
+ * @returns {{requireGreenBase: boolean, alwaysHumanPaths: string[], humanReview: {database: string[], security: string[], ui: string[]}, pathLabels: {list: string, glob: string, label: string}[], generatedPaths: string[], generatedChecks: string[]}}
  */
 export function verifyPolicyFromConfigText(text, source) {
   let parsed
@@ -3795,6 +3812,8 @@ export function verifyPolicyFromConfigText(text, source) {
     alwaysHumanPaths: verifyAlwaysHumanPaths(parsed),
     humanReview: verifyHumanReviewPaths(parsed),
     pathLabels: verifyPathLabels(parsed),
+    generatedPaths: globList(parsed.verifyDefaults?.generatedPaths),
+    generatedChecks: [...(parsed.verifyDefaults?.generatedChecks ?? [])],
   }
 }
 

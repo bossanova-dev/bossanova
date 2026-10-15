@@ -101,7 +101,7 @@ export function toFindingRecords(groups) {
         impact: 'If live, the credential must be treated as exposed.',
         fix: 'Rotate live credentials; allowlist the hash only when the value is a justified fixture.',
       },
-      { source: 'history-scan' },
+      { source: 'history-scan', trustLocationStatus: true },
     ),
   )
 }

@@ -48,6 +48,7 @@ go_library(
         "github_app_install_url.go",
         "heartbeat.go",
         "home.go",
+        "home_attention.go",
         "home_cloud.go",
         "home_daemon.go",
         "home_keys.go",
@@ -97,6 +98,7 @@ go_library(
     deps = [
         "//lib/bossalib/agenterr",
         "//lib/bossalib/alertstate",
+        "//lib/bossalib/attention",
         "//lib/bossalib/buildinfo",
         "//lib/bossalib/config",
         "//lib/bossalib/cronutil",
@@ -106,6 +108,7 @@ go_library(
         "//lib/bossalib/models",
         "//lib/bossalib/safego",
         "//lib/bossalib/sessionreason",
+        "//lib/bossalib/socketauth",
         "//lib/bossalib/telemetry",
         "//lib/bossalib/termnorm",
         "//lib/bossalib/trackerprompt",
@@ -167,6 +170,7 @@ go_test(
         "chatpicker_host_test.go",
         "chatpicker_inflight_test.go",
         "chatpicker_messages_test.go",
+        "chatpicker_replaced_test.go",
         "chatpicker_standby_test.go",
         "chatpicker_switch_test.go",
         "chatpicker_test.go",
@@ -185,6 +189,7 @@ go_test(
         "general_settings_test.go",
         "github_app_install_url_test.go",
         "heartbeat_test.go",
+        "home_attention_test.go",
         "home_daemon_host_test.go",
         "home_focus_test.go",
         "home_keys_test.go",
@@ -237,6 +242,10 @@ go_test(
         exclude = ["*_test.go"],
     ),  # keep: form_nav_hints_test parses the package's own sources for newBossForm calls
     embed = [":views"],
+    embedsrcs = [
+        "testdata/home-attention-120.golden",
+        "testdata/home-attention-80.golden",
+    ],
     deps = [
         "//lib/bossalib/agentcred",
         "//lib/bossalib/buildinfo",
@@ -264,6 +273,7 @@ go_test(
         "@land_charm_bubbletea_v2//:bubbletea",
         "@land_charm_huh_v2//:huh",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

@@ -456,6 +456,11 @@ func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, para
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, false, sql.ErrNoRows
 	}
+	if keys.requestsScrub {
+		if _, err := q.ExecContext(ctx, requestSecretScrubSQL); err != nil {
+			return nil, false, fmt.Errorf("request secret scrub: %w", err)
+		}
+	}
 	return getRow(ctx, q, id)
 }
 

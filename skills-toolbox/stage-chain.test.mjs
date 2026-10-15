@@ -185,6 +185,43 @@ describe('pickVerifyChat', () => {
     assert.equal(VERIFY_CHAT_TITLE, 'verify')
   })
 
+  it('finds the verify chat by role after an agent renamed it', () => {
+    const chats = [
+      {
+        agent_session_id: 'legacy',
+        title: 'verify',
+        status: 'IDLE',
+        created_at: '2026-03-01T00:00:00Z',
+      },
+      {
+        agent_session_id: 'renamed',
+        title: '再確認する PR #3100 とセッション状態',
+        role: 'verify',
+        status: 'IDLE',
+        created_at: '2026-02-01T00:00:00Z',
+      },
+    ]
+    assert.equal(pickVerifyChat(chats).agent_session_id, 'renamed')
+  })
+
+  it('never takes a chat with another role, whatever its title', () => {
+    assert.equal(
+      pickVerifyChat([
+        { agent_session_id: 'op', title: 'verify', role: 'operator', status: 'IDLE' },
+        { agent_session_id: 'b', title: 'verify', role: 'build', status: 'IDLE' },
+      ]),
+      null,
+    )
+  })
+
+  it('falls back to the title for a chat with no role', () => {
+    assert.equal(
+      pickVerifyChat([{ agent_session_id: 'v', title: 'verify', role: '', status: 'IDLE' }])
+        .agent_session_id,
+      'v',
+    )
+  })
+
   it('non-arrays yield null', () => {
     assert.equal(pickVerifyChat(null), null)
     assert.equal(pickVerifyChat({ chats: [] }), null)
@@ -420,7 +457,7 @@ describe('arm-verify', () => {
     assert.deepEqual(boss.argvs(), [
       ['cron', 'ls', '--repo', 'repo-1', '--json'],
       ['chats', 'sess-1', '--json'],
-      ['chat', 'new', 'sess-1', '--title', 'verify', '--json'],
+      ['chat', 'new', 'sess-1', '--title', 'verify', '--role', 'verify', '--json'],
       [
         'callback',
         'add',
@@ -515,7 +552,16 @@ describe('arm-verify', () => {
         'callback add': json({ id: 'cb-4' }),
       },
     })
-    assert.deepEqual(boss.argvs()[2], ['chat', 'new', 'sess-1', '--title', 'verify', '--json'])
+    assert.deepEqual(boss.argvs()[2], [
+      'chat',
+      'new',
+      'sess-1',
+      '--title',
+      'verify',
+      '--role',
+      'verify',
+      '--json',
+    ])
   })
 
   it('an active row for that chat and PR ⇒ already-armed, no callback add', async () => {

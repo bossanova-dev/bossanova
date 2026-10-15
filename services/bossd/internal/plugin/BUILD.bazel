@@ -72,6 +72,7 @@ go_test(
         "opencode_integration_test.go",
         "orphan_spawner_test.go",
         "plugin_binary_test.go",
+        "repair_chat_role_test.go",
         "repair_chat_visibility_test.go",
         "repair_workflow_integration_test.go",
         "shared_test.go",

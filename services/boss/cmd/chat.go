@@ -58,6 +58,7 @@ func chatCmd() *cobra.Command {
 		},
 	}
 	newChat.Flags().String("title", "", "Title for the new chat")
+	newChat.Flags().String("role", "operator", "Purpose of the new chat: operator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator one")
 	newChat.Flags().String("agent", "", "Agent plugin to run (empty inherits the session's agent)")
 	newChat.Flags().Bool(jsonFlagName, false, "Emit the new chat as a machine-readable JSON envelope")
 
@@ -254,6 +255,11 @@ func runChatNew(cmd *cobra.Command, sessionID string) error {
 	}
 
 	title, _ := cmd.Flags().GetString("title")
+	roleName, _ := cmd.Flags().GetString("role")
+	role, err := parseChatRole(roleName)
+	if err != nil {
+		return emitJSONFailure(cmd, asJSON, err)
+	}
 	// An empty --agent is forwarded as an empty string on purpose: the daemon
 	// then inherits the session's own agent. Defaulting it CLI-side would pin a
 	// chat to whatever the CLI guessed rather than what the session runs.
@@ -262,7 +268,7 @@ func runChatNew(cmd *cobra.Command, sessionID string) error {
 	// The caller does not get to supply the id — registering a pre-existing
 	// agent_session_id is `record_chat`'s job, not this command's.
 	id := uuid.NewString()
-	chat, err := c.RecordChat(ctx, sessionID, id, title, agentName, false)
+	chat, err := c.RecordChat(ctx, sessionID, id, title, agentName, role, false)
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, fmt.Errorf("start chat: %w", err))
 	}
@@ -284,6 +290,29 @@ func runChatNew(cmd *cobra.Command, sessionID string) error {
 	return nil
 }
 
+// parseChatRole maps a --role spelling onto the wire enum. An unknown spelling
+// is refused rather than recorded as a legacy chat, because a typo there would
+// silently make a verify chat invisible to the stage that looks for it.
+func parseChatRole(name string) (pb.ChatRole, error) {
+	role, ok := pb.ChatRole_value["CHAT_ROLE_"+strings.ToUpper(strings.TrimSpace(name))]
+	if !ok || pb.ChatRole(role) == pb.ChatRole_CHAT_ROLE_UNSPECIFIED {
+		return pb.ChatRole_CHAT_ROLE_UNSPECIFIED, fmt.Errorf("unknown --role %q: want operator, build, repair or verify", name)
+	}
+	return pb.ChatRole(role), nil
+}
+
+// chatRoleName is the lower-case role a driver compares against ("verify");
+// a legacy chat with no role is "".
+func chatRoleName(r pb.ChatRole) string {
+	if r == pb.ChatRole_CHAT_ROLE_UNSPECIFIED {
+		return ""
+	}
+	if _, known := pb.ChatRole_name[int32(r)]; !known {
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(r.String(), "CHAT_ROLE_"))
+}
+
 // chatNewJSON is the `boss chat new --json` success envelope. It is nested under
 // a `chat` key so the envelope can gain siblings later without a caller having
 // to re-root its parsing.
@@ -295,6 +324,7 @@ type chatNewChatJSON struct {
 	AgentSessionID string `json:"agent_session_id"`
 	SessionID      string `json:"session_id"`
 	Title          string `json:"title"`
+	Role           string `json:"role"`
 	// TmuxSessionName is the live pane behind the chat. It is always non-empty
 	// on a success envelope — an empty one is rejected as AGENT_NOT_SPAWNED
 	// before we get here — but it is emitted so a driver can name the pane.
@@ -306,6 +336,7 @@ func newChatJSON(chat *pb.ClaudeChat) chatNewJSON {
 		AgentSessionID:  chat.GetAgentSessionId(),
 		SessionID:       chat.GetSessionId(),
 		Title:           chat.GetTitle(),
+		Role:            chatRoleName(chat.GetRole()),
 		TmuxSessionName: chat.GetTmuxSessionName(),
 	}}
 }

@@ -363,7 +363,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.launchID = attachLaunchSeq.Add(1)
 		launchID := m.launchID
 		return m, func() tea.Msg {
-			chat, err := m.client.RecordChat(m.ctx, m.sessionID, agentSessionID, "New chat", m.overrideAgent, resume)
+			chat, err := m.client.RecordChat(m.ctx, m.sessionID, agentSessionID, "New chat", m.overrideAgent, pb.ChatRole_CHAT_ROLE_OPERATOR, resume)
 			return chatRecordedMsg{
 				session:     msg.session,
 				chat:        chat,

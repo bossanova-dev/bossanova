@@ -144,3 +144,20 @@ func scanResumeAttempt(s sqlutil.Scanner) (*models.ResumeAttempt, error) {
 	a.CreatedAt = sqlutil.ParseTime(createdAt)
 	return &a, nil
 }
+
+// SetFailure updates a recorded launch after its replacement has actually
+// failed. The launch is persisted before spawn with an unknown outcome.
+func (s *SQLiteResumeAttemptStore) SetFailure(ctx context.Context, id, failureClass string) error {
+	if _, ok := resumepolicy.ParseFailureClass(failureClass); !ok {
+		return fmt.Errorf("unknown resume failure class %q", failureClass)
+	}
+	var sessionID string
+	if err := s.db.QueryRowContext(ctx, `SELECT session_id FROM session_resume_attempts WHERE id = ?`, id).Scan(&sessionID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE session_resume_attempts SET failure_class = ? WHERE id = ? AND failure_class != ?`, failureClass, id, failureClass); err != nil {
+		return err
+	}
+	s.notifyChange(sessionID)
+	return nil
+}

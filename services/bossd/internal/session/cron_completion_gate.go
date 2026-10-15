@@ -55,7 +55,8 @@ type CronCompletionGateDeps struct {
 	// (login required) — Lifecycle.SessionChatAuthFailed in production. Such a
 	// run reads as over (idle, no pending turn) but is wedged, so the gate
 	// defers it and the stranded sweep blocks it (BOS-1530). nil never defers.
-	ChatAuthFailed func(*models.Session) bool
+	ChatAuthFailed  func(*models.Session) bool
+	DeferDroppedRun func(*models.Session) bool
 }
 
 // CronCompletionGate debounces cron completion signals before finalization and
@@ -74,6 +75,7 @@ type CronCompletionGate struct {
 	runIsOver             func(*models.Session) bool
 	runCompletionEvidence func(*models.Session) (bool, string)
 	chatAuthFailed        func(*models.Session) bool
+	deferDroppedRun       func(*models.Session) bool
 
 	mu      sync.Mutex
 	pending map[string]*cronCompletionGatePending
@@ -114,6 +116,7 @@ func NewCronCompletionGate(deps CronCompletionGateDeps) *CronCompletionGate {
 		runIsOver:             deps.RunIsOver,
 		runCompletionEvidence: deps.RunCompletionEvidence,
 		chatAuthFailed:        deps.ChatAuthFailed,
+		deferDroppedRun:       deps.DeferDroppedRun,
 		pending:               map[string]*cronCompletionGatePending{},
 	}
 }
@@ -242,5 +245,8 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 		return cronCompletionGateCheckDone
 	}
 
+	if g.deferDroppedRun != nil && g.deferDroppedRun(session) {
+		return cronCompletionGateCheckDone
+	}
 	return cronCompletionGateCheckFinalize
 }

@@ -44,7 +44,7 @@ import { fileURLToPath } from 'node:url'
 
 import { resolveBossBinary } from './boss-binary.mjs'
 import { isMainModule } from './main-module.mjs'
-import { VERIFY_CHAT_TITLE, pickVerifyChat } from './stage-chain.mjs'
+import { VERIFY_CHAT_TITLE, pickVerifyChat, verifyChatArgv } from './stage-chain.mjs'
 import { SELECTION_FLAGS, parseSelectionFlags } from './selection.mjs'
 
 export const DEFAULT_BUDGET_MS = 45_000
@@ -316,10 +316,7 @@ export function routeCandidate({ pr, url, ticket, token, waive }, ctx) {
       return { route: 'existing-verify-chat', ok: sent.ok, why: sent.why, note }
     }
     if (dryRun) return { route: 'new-verify-chat', ok: true, note }
-    const created = run(boss, ['chat', 'new', session.id, '--title', VERIFY_CHAT_TITLE, '--json'], {
-      json: true,
-      timeoutMs: timeout(),
-    })
+    const created = run(boss, verifyChatArgv(session.id), { json: true, timeoutMs: timeout() })
     const chatId = created.payload?.chat?.agent_session_id
     if (!created.ok || !text(chatId))
       return { route: 'new-verify-chat', ok: false, why: created.error ?? 'no-chat-id', note }
@@ -461,6 +458,7 @@ export function sweep(options = {}, deps = {}) {
         'human',
         '--reason',
         j.reason,
+        ...(text(j.policyFingerprint) ? ['--policy', j.policyFingerprint] : []),
         ...repoArgs,
         ...dry,
       ])

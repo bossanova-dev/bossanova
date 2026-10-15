@@ -196,7 +196,7 @@ type attachTelemetryStub struct {
 	stubClient
 }
 
-func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
 }
 
@@ -217,7 +217,7 @@ func newBlockingRecordChatStub(t *testing.T) *blockingRecordChatStub {
 	return s
 }
 
-func (s *blockingRecordChatStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *blockingRecordChatStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	<-s.release
 	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
 }

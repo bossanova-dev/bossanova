@@ -814,7 +814,15 @@ func ArmedVerifyWorld() World {
 		CreatedAt:    ts(-4 * time.Hour),
 		WorktreePath: "/Users/demo/worktrees/my-app/ledger-reconcile",
 	}
-	in := displaystatus.Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}
+	// The verify chat ended its turn after parking, so its wait is idle-derived
+	// and the park outranks it. ledger-open reports a failure, so Home reads
+	// "blocked", not "waiting".
+	in := displaystatus.Input{
+		Session:             sess,
+		ChatStatus:          pb.ChatStatus_CHAT_STATUS_WAITING,
+		AllWaitingChatsIdle: true,
+		ParkCodes:           displaystatus.VerifyParkSummaryCodes(ArmedVerifyPark),
+	}
 	out := displaystatus.Compute(in)
 	sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner = out.Label, out.Intent, out.Spinner
 	sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
@@ -1876,4 +1884,47 @@ func ReadyHandoffWorld() World {
 		w.SessionStatuses = append(w.SessionStatuses, &pb.SessionStatusEntry{SessionId: id, Status: chatStatus, WaitingReason: reason})
 	}
 	return w
+}
+
+// AttentionSessions is the Needs you board's deterministic visual fixture.
+func AttentionSessions() []*pb.Session {
+	kinds := []pb.AttentionKind{
+		pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+		pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_QUESTION,
+		pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_REVIEW,
+		pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_MERGE,
+		pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, pb.AttentionKind_ATTENTION_KIND_DONE,
+	}
+	sentences := []string{
+		"Review the diff · security: verify gate rules (how PRs get merged)", "",
+		"Resumed 3 times since 23:16; each attempt lost its Claude login. Run claude /login on delta, then press r.",
+		"Which deployment should receive the update?",
+		"Review the diff · the session changes billing settings and needs an operator to approve them before merging.",
+		"Review the diff · confirm the migration preserves existing data.",
+		"Review the diff · approve the permission change.", "Merge this pull request when ready.", "", "",
+	}
+	out := make([]*pb.Session, 0, len(kinds))
+	for i, kind := range kinds {
+		a := &pb.SessionAttention{Kind: kind, Sentence: sentences[i], Since: ts(time.Duration(i) * time.Minute)}
+		switch kind {
+		case pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, pb.AttentionKind_ATTENTION_KIND_DONE:
+		case pb.AttentionKind_ATTENTION_KIND_FIX:
+			a.AlertKey = "login-delta"
+			a.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT}
+		case pb.AttentionKind_ATTENTION_KIND_QUESTION:
+			a.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_ANSWER}
+		case pb.AttentionKind_ATTENTION_KIND_REVIEW:
+			a.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE, pb.AttentionAction_ATTENTION_ACTION_SEND_BACK, pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_VIDEO}
+			a.EvidenceUrl = "https://example.com/proof.mp4"
+		case pb.AttentionKind_ATTENTION_KIND_MERGE:
+			a.Actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB}
+		case pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS:
+			a.ProgressLabel = "building"
+			if i == 8 {
+				a.ProgressLabel = "CI 4/9"
+			}
+		}
+		out = append(out, &pb.Session{Id: fmt.Sprintf("attention-%d", i), RepoId: "repo-1", RepoDisplayName: "my-app", Title: fmt.Sprintf("[BOS-%d] Improve the unattended session workflow", 1500+i), BranchName: fmt.Sprintf("attention-%d", i), PrNumber: i32(int32(2980 + i)), Attention: a, DisplayLabel: "ready", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS})
+	}
+	return out
 }

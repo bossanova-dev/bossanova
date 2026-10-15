@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossalib/socketauth"
 )
 
 const (
@@ -420,4 +422,39 @@ func waitForSocket(socketPath string, timeout time.Duration) bool {
 			}
 		}
 	}
+}
+
+// MCPTokenRotation describes the new credential and whether its managed server
+// has loaded it. The token is transient; callers must not persist or log it.
+type MCPTokenRotation struct {
+	Token                 string
+	Restarted             bool
+	ManualRestartRequired bool
+}
+
+// RotateMCPHTTPToken is the shared CLI and TUI rotation path. A stopped managed
+// service stays stopped; an unmanaged HTTP process must be restarted by its owner.
+func RotateMCPHTTPToken(socketPath string, status func() (*Status, error), stop, start func() error) (MCPTokenRotation, error) {
+	st, err := status()
+	if err != nil {
+		return MCPTokenRotation{}, fmt.Errorf("MCP status before token rotation: %w", err)
+	}
+	if st == nil {
+		return MCPTokenRotation{}, fmt.Errorf("MCP status unavailable")
+	}
+	token, err := socketauth.RotateHTTPToken(socketPath)
+	if err != nil {
+		return MCPTokenRotation{}, err
+	}
+	result := MCPTokenRotation{Token: token, ManualRestartRequired: !st.Installed}
+	if st.Installed && st.Running {
+		if err := stop(); err != nil {
+			return result, fmt.Errorf("MCP HTTP token rotated, but stopping the service failed; restart it manually: %w", err)
+		}
+		if err := start(); err != nil {
+			return result, fmt.Errorf("MCP HTTP token rotated, but starting the service failed; restart it manually: %w", err)
+		}
+		result.Restarted = true
+	}
+	return result, nil
 }

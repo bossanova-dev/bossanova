@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -76,27 +77,30 @@ func cloneSessionIDSet(ids map[string]struct{}) map[string]struct{} {
 }
 
 func sessionNeedsAttention(sess *pb.Session) bool {
+	if sess.GetAttention() != nil {
+		return attention.NeedsYou(sess.GetAttention().GetKind())
+	}
 	return sess != nil && displaystatus.IsQuestionLabel(sess.GetDisplayLabel())
 }
 
-// newlyQuestionSessions identifies question-state rising edges between two
-// successful session polls. An empty prior slice deliberately makes the first
-// successful poll notify for already-waiting questions.
-func newlyQuestionSessions(previous, incoming []*pb.Session) []*pb.Session {
-	previousQuestions := make(map[string]bool, len(previous))
+// newlyNeedsYouSessions identifies Needs you rising edges and changed fix alerts
+// between successful polls. The first poll includes existing Needs you sessions.
+func newlyNeedsYouSessions(previous, incoming []*pb.Session) []*pb.Session {
+	previousNeedsYou := make(map[string]*pb.Session, len(previous))
 	for _, sess := range previous {
 		if sessionNeedsAttention(sess) {
-			previousQuestions[sess.GetId()] = true
+			previousNeedsYou[sess.GetId()] = sess
 		}
 	}
 
-	newlyQuestion := make([]*pb.Session, 0)
+	newlyNeedsYou := make([]*pb.Session, 0)
 	for _, sess := range incoming {
-		if sessionNeedsAttention(sess) && !previousQuestions[sess.GetId()] {
-			newlyQuestion = append(newlyQuestion, sess)
+		old := previousNeedsYou[sess.GetId()]
+		if sessionNeedsAttention(sess) && (old == nil || (sess.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && sess.GetAttention().GetAlertKey() != old.GetAttention().GetAlertKey())) {
+			newlyNeedsYou = append(newlyNeedsYou, sess)
 		}
 	}
-	return newlyQuestion
+	return newlyNeedsYou
 }
 
 // valueDelivered reports whether the user has received real value: a repo,
@@ -525,11 +529,15 @@ func (h HomeModel) selectedSession() *pb.Session {
 }
 
 func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
+	grouped := h.hasAttentionBoard()
 	if cursor < 0 {
 		return 0, false
 	}
 	row := 0
 	for i, sess := range h.sessions {
+		if h.sectionStarts(i, grouped) {
+			row++
+		}
 		next := row + 1 + h.subRowCount(sess)
 		if cursor >= row && cursor < next {
 			return i, true
@@ -540,9 +548,13 @@ func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
 }
 
 func (h HomeModel) primarySessionRows() []int {
+	grouped := h.hasAttentionBoard()
 	rows := make([]int, 0, len(h.sessions))
 	row := 0
-	for _, sess := range h.sessions {
+	for i, sess := range h.sessions {
+		if h.sectionStarts(i, grouped) {
+			row++
+		}
 		rows = append(rows, row)
 		row += 1 + h.subRowCount(sess)
 	}
@@ -550,8 +562,12 @@ func (h HomeModel) primarySessionRows() []int {
 }
 
 func (h HomeModel) tableDataRowCount() int {
+	grouped := h.hasAttentionBoard()
 	rows := len(h.sessions)
-	for _, sess := range h.sessions {
+	for i, sess := range h.sessions {
+		if h.sectionStarts(i, grouped) {
+			rows++
+		}
 		rows += h.subRowCount(sess)
 	}
 	return rows
@@ -584,8 +600,12 @@ func (h HomeModel) neighborSessionID(removedID string) string {
 }
 
 func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
+	grouped := h.hasAttentionBoard()
 	row := 0
 	for i, sess := range h.sessions {
+		if h.sectionStarts(i, grouped) {
+			row++
+		}
 		if i == sessionIndex {
 			return row
 		}
@@ -692,7 +712,7 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	// (e.g. a sibling session finished archiving). Empty when nothing is
 	// selected. See BOS-367.
 	selectedID := h.selectedSessionID()
-	notifyCmd := h.notifyNewQuestions(msg.sessions)
+	notifyCmd := h.notifyNewNeedsYou(msg.sessions)
 	// Re-impose any order the reorder chords chose locally, before the rows are
 	// built from it. applyMoveOverride returns the override it wants retained,
 	// which is nil once the daemon's own order has caught up (BOS-1231).
@@ -713,21 +733,21 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	return h, notifyCmd
 }
 
-// notifyNewQuestions returns the OS-notification command for sessions that just
-// entered the question state, and records the most recent one when boss is in
+// notifyNewNeedsYou returns the OS-notification command for sessions that just
+// entered Needs you, and records the most recent one when boss is in
 // the background. Called before h.sessions is replaced, so it compares the
 // previous poll against the incoming one.
-func (h *HomeModel) notifyNewQuestions(incoming []*pb.Session) tea.Cmd {
+func (h *HomeModel) notifyNewNeedsYou(incoming []*pb.Session) tea.Cmd {
 	var notifyCmd tea.Cmd
 	if config.NotificationsEnabled(h.settings) {
-		if newlyQuestion := newlyQuestionSessions(h.sessions, incoming); len(newlyQuestion) > 0 {
-			notifyCmd = notifyForSessions(newlyQuestion)
-			// Remember the most recent question only when boss is in the
+		if newlyNeedsYou := newlyNeedsYouSessions(h.sessions, incoming); len(newlyNeedsYou) > 0 {
+			notifyCmd = notifyForSessions(newlyNeedsYou)
+			// Remember the most recent Needs you session only when boss is in the
 			// background, so a subsequent focus (e.g. the user clicking the OS
 			// notification) can jump straight into it. If boss is focused the
 			// user is already here — don't hijack their view.
 			if !h.focused {
-				h.pendingAttentionSessionID = newlyQuestion[len(newlyQuestion)-1].GetId()
+				h.pendingAttentionSessionID = newlyNeedsYou[len(newlyNeedsYou)-1].GetId()
 			}
 		}
 	}

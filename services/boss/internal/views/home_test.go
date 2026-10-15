@@ -242,66 +242,6 @@ func (f *fakeHomeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*
 	return f.status, nil
 }
 
-func TestRenderAttentionIndicator(t *testing.T) {
-	tests := []struct {
-		name    string
-		session *pb.Session
-		want    string
-	}{
-		{
-			name:    "nil attention status",
-			session: &pb.Session{},
-			want:    "",
-		},
-		{
-			name: "no attention needed",
-			session: &pb.Session{
-				AttentionStatus: &pb.AttentionStatus{NeedsAttention: false},
-			},
-			want: "",
-		},
-		{
-			name: "blocked max attempts renders red",
-			session: &pb.Session{
-				AttentionStatus: &pb.AttentionStatus{
-					NeedsAttention: true,
-					Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
-				},
-			},
-			want: styleStatusDanger.Render("!"),
-		},
-		{
-			name: "merge conflict renders orange",
-			session: &pb.Session{
-				AttentionStatus: &pb.AttentionStatus{
-					NeedsAttention: true,
-					Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
-				},
-			},
-			want: "",
-		},
-		{
-			name: "review requested does not render indicator",
-			session: &pb.Session{
-				AttentionStatus: &pb.AttentionStatus{
-					NeedsAttention: false,
-					Reason:         pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED,
-				},
-			},
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := renderAttentionIndicator(tt.session)
-			if got != tt.want {
-				t.Errorf("renderAttentionIndicator() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestHomeCloudGateRendersNeedsSubscription(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
@@ -951,13 +891,13 @@ func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("table rows = %d, want 2: session row plus repair warning row", len(rows))
 	}
-	if got := rows[0][5]; strings.Contains(got, "repair") {
+	if got := rows[0][4]; strings.Contains(got, "repair") {
 		t.Fatalf("STATUS column contains repair warning %q; warning belongs under NAME", got)
 	}
-	if got := rows[1][3]; !strings.Contains(got, "repair failed (2") {
+	if got := rows[1][2]; !strings.Contains(got, "repair failed (2") {
 		t.Fatalf("warning row NAME column = %q, want repair warning", got)
 	}
-	if got := rows[1][5]; got != "" {
+	if got := rows[1][4]; got != "" {
 		t.Fatalf("warning row STATUS column = %q, want empty", got)
 	}
 }
@@ -986,16 +926,14 @@ func TestHomeBuildTableRows_RendersAttentionWarningUnderName(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("table rows = %d, want 2: session row plus attention warning row", len(rows))
 	}
-	if got := rows[0][1]; got != "" {
-		t.Fatalf("session attention column = %q, want empty when warning row is rendered", got)
-	}
-	if got := rows[0][5]; strings.Contains(got, "auto-resolve") {
+
+	if got := rows[0][4]; strings.Contains(got, "auto-resolve") {
 		t.Fatalf("STATUS column contains attention warning %q; warning belongs under NAME", got)
 	}
-	if got := rows[1][3]; !strings.Contains(got, "auto-resolve conflicts disabled") {
+	if got := rows[1][2]; !strings.Contains(got, "auto-resolve conflicts disabled") {
 		t.Fatalf("warning row NAME column = %q, want attention warning", got)
 	}
-	if got := rows[1][5]; got != "" {
+	if got := rows[1][4]; got != "" {
 		t.Fatalf("warning row STATUS column = %q, want empty", got)
 	}
 }
@@ -1034,13 +972,13 @@ func TestHomeBuildTableRows_PreservesSessionOrderWhenSessionNeedsAttention(t *te
 	}
 	// The cursor row (row 0) now carries selection-blue SGR; strip ANSI so this
 	// order assertion compares visible text regardless of selection styling.
-	if got := stripANSI(rows[0][3]); got != "Normal newer" {
+	if got := stripANSI(rows[0][2]); got != "Normal newer" {
 		t.Fatalf("first session row NAME = %q, want Normal newer", got)
 	}
-	if got := stripANSI(rows[1][3]); got != "Attention older" {
+	if got := stripANSI(rows[1][2]); got != "Attention older" {
 		t.Fatalf("second session row NAME = %q, want Attention older", got)
 	}
-	if got := stripANSI(rows[3][3]); got != "Normal oldest" {
+	if got := stripANSI(rows[3][2]); got != "Normal oldest" {
 		t.Fatalf("third session row NAME = %q, want Normal oldest", got)
 	}
 }
@@ -1074,10 +1012,10 @@ func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsPresent(t *testing
 	rows := h.table.Rows()
 	// Row 0 is the cursor row and now carries selection-blue SGR around the "-"
 	// PR placeholder; strip ANSI to assert the placeholder regardless of styling.
-	if got := stripANSI(rows[0][4]); got != "-" {
+	if got := stripANSI(rows[0][3]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
-	if got := stripANSI(rows[1][4]); got != "-" {
+	if got := stripANSI(rows[1][3]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
@@ -1105,7 +1043,7 @@ func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsAvailable(t *testi
 	rows := h.table.Rows()
 	// Row 0 is the cursor row and now carries selection-blue SGR around the "-"
 	// PR placeholder; strip ANSI to assert the placeholder regardless of styling.
-	if got := stripANSI(rows[0][4]); got != "-" {
+	if got := stripANSI(rows[0][3]); got != "-" {
 		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
@@ -3031,10 +2969,10 @@ func TestBuildTableRows_SelectedAttentionRowIsBlue(t *testing.T) {
 	rows := h.table.Rows()
 	// Locate the attention session row by its repo display name (col 2 carries
 	// the selection-blue open code; visible text is still present).
-	var selAttn, selRepo, selName string
+	var selRepo, selName string
 	for _, r := range rows {
-		if strings.Contains(r[2], "repo-attn") {
-			selAttn, selRepo, selName = r[1], r[2], r[3]
+		if strings.Contains(r[1], "repo-attn") {
+			selRepo, selName = r[1], r[2]
 		}
 	}
 	if selRepo == "" {
@@ -3046,19 +2984,11 @@ func TestBuildTableRows_SelectedAttentionRowIsBlue(t *testing.T) {
 	if !strings.Contains(selName, blueSelectedSGR) {
 		t.Errorf("selected attention name cell not blue: %q", selName)
 	}
-	// The attention "!" indicator (col 1) keeps its own semantic warning/danger
-	// color even when its row is selected — it must not be re-styled blue.
-	if !strings.Contains(selAttn, "!") {
-		t.Errorf("selected attention row should keep its ! indicator, got %q", selAttn)
-	}
-	if strings.Contains(selAttn, blueSelectedSGR) {
-		t.Errorf("attention ! indicator should not be re-styled selection blue: %q", selAttn)
-	}
 
 	// The non-selected plain row must NOT be pre-styled blue.
 	for _, r := range rows {
-		if strings.Contains(r[2], "repo-plain") && strings.Contains(r[2], blueSelectedSGR) {
-			t.Errorf("non-selected plain repo cell should not be pre-styled blue: %q", r[2])
+		if strings.Contains(r[1], "repo-plain") && strings.Contains(r[1], blueSelectedSGR) {
+			t.Errorf("non-selected plain repo cell should not be pre-styled blue: %q", r[1])
 		}
 	}
 }
@@ -3084,11 +3014,11 @@ func TestNavigation_RestylesSelectedRow(t *testing.T) {
 
 	var repo0, repo1 string
 	for _, r := range hm.table.Rows() {
-		if strings.Contains(r[2], "repo0") {
-			repo0 = r[2]
+		if strings.Contains(r[1], "repo0") {
+			repo0 = r[1]
 		}
-		if strings.Contains(r[2], "repo1") {
-			repo1 = r[2]
+		if strings.Contains(r[1], "repo1") {
+			repo1 = r[1]
 		}
 	}
 	if !strings.Contains(repo1, blueSelectedSGR) {
@@ -3323,24 +3253,24 @@ func TestHomeEndpointRowRendersBeforeWarnings(t *testing.T) {
 		t.Fatalf("rows = %d, want 3 (primary + endpoint + warning)", len(rows))
 	}
 	endpointRow := rows[1]
-	if got := visibleRowText(endpointRow[3]); got != ":3000 :5173" {
+	if got := visibleRowText(endpointRow[2]); got != ":3000 :5173" {
 		t.Errorf("endpoint row NAME = %q, want %q", got, ":3000 :5173")
 	}
 	for i, cell := range endpointRow {
-		if i == 3 {
+		if i == 2 {
 			continue
 		}
 		if cell != "" {
 			t.Errorf("endpoint row cell %d = %q, want empty", i, cell)
 		}
 	}
-	if !strings.Contains(endpointRow[3], "\x1b]8;;http://localhost:3000\x1b\\") {
-		t.Errorf("endpoint row lost the :3000 OSC 8 hyperlink: %q", endpointRow[3])
+	if !strings.Contains(endpointRow[2], "\x1b]8;;http://localhost:3000\x1b\\") {
+		t.Errorf("endpoint row lost the :3000 OSC 8 hyperlink: %q", endpointRow[2])
 	}
-	if !strings.Contains(endpointRow[3], "\x1b]8;;http://localhost:5173\x1b\\") {
-		t.Errorf("endpoint row lost the :5173 OSC 8 hyperlink: %q", endpointRow[3])
+	if !strings.Contains(endpointRow[2], "\x1b]8;;http://localhost:5173\x1b\\") {
+		t.Errorf("endpoint row lost the :5173 OSC 8 hyperlink: %q", endpointRow[2])
 	}
-	if got := visibleRowText(rows[2][3]); !strings.Contains(got, "setup script blew up") {
+	if got := visibleRowText(rows[2][2]); !strings.Contains(got, "setup script blew up") {
 		t.Errorf("warning row NAME = %q, want the setup-error hint below the endpoint row", got)
 	}
 }
@@ -3396,8 +3326,8 @@ func TestHomeNoEndpointsRowsUnchanged(t *testing.T) {
 		t.Fatalf("rows = %d, want 4 (3 primary + 1 warning)", len(rows))
 	}
 	for _, row := range rows {
-		if strings.Contains(row[3], "\x1b]8;;http") {
-			t.Errorf("unexpected endpoint hyperlink in a no-endpoint board: %q", row[3])
+		if strings.Contains(row[2], "\x1b]8;;http") {
+			t.Errorf("unexpected endpoint hyperlink in a no-endpoint board: %q", row[2])
 		}
 	}
 	if got := h.tableDataRowCount(); got != 4 {
@@ -3411,13 +3341,13 @@ func TestHomeEndpointLabelsCountTowardNameWidth(t *testing.T) {
 	narrow := NewHomeModel(nil, context.Background(), nil)
 	narrow.sessions = []*pb.Session{{Id: "a", Title: "ab"}}
 	narrow.buildTableRows()
-	narrowWidth := narrow.table.Columns()[3].Width
+	narrowWidth := narrow.table.Columns()[2].Width
 
 	wide := NewHomeModel(nil, context.Background(), nil)
 	wide.sessions = []*pb.Session{endpointSession("a", 3000, 5173, 8080, 9229)}
 	wide.sessions[0].Title = "ab"
 	wide.buildTableRows()
-	wideWidth := wide.table.Columns()[3].Width
+	wideWidth := wide.table.Columns()[2].Width
 
 	if wideWidth <= narrowWidth {
 		t.Fatalf("NAME width did not account for endpoint labels: %d <= %d", wideWidth, narrowWidth)
@@ -4113,7 +4043,7 @@ func TestHomeColumnsUnchangedAtFullWidth(t *testing.T) {
 	full := homeResponsiveModel(140)
 	unfitted := homeResponsiveModel(0)
 
-	wantTitles := []string{" ", " ", "REPO", "NAME", "PR", "STATUS"}
+	wantTitles := []string{" ", "REPO", "NAME", "PR", "STATUS"}
 	if got := homeColumnTitles(full.table.Columns()); !reflect.DeepEqual(got, wantTitles) {
 		t.Fatalf("column titles at 140 columns = %v, want %v", got, wantTitles)
 	}
@@ -4458,15 +4388,15 @@ func TestHomeNameMinWidthTiers(t *testing.T) {
 // where homeNameMinWidth actually clamps the squeeze, so the floor is proven to
 // be wired into the fit rather than merely declared.
 func TestHomeNameFloorBindsOnANarrowBoard(t *testing.T) {
-	const width = 22 // narrow tier: NAME floors at 16
+	const width = 18 // narrow tier: NAME floors at 16
 	h := homeResponsiveModel(width)
 
 	cols := h.table.Columns()
 	titles := homeColumnTitles(cols)
-	if len(cols) != 3 {
-		t.Fatalf("columns at a %d-column terminal = %v, want only the two indicators and NAME", width, titles)
+	if len(cols) != 2 {
+		t.Fatalf("columns at a %d-column terminal = %v, want only cursor and NAME", width, titles)
 	}
-	name := cols[2]
+	name := cols[1]
 	if name.Title != "NAME" {
 		t.Fatalf("last surviving column = %q, want NAME", name.Title)
 	}
@@ -5502,16 +5432,16 @@ func TestDeferredArchive_RowRendersFromArchivePendingAndStopsWhenCleared(t *test
 	if got.home.isArchiving("s1") || got.home.archiveInFlight("s1") {
 		t.Fatal("a deferred archive must drop the local archiving override")
 	}
-	if !strings.Contains(got.home.table.Rows()[0][5], "archiving") {
-		t.Fatalf("row status = %q, want archiving from archive_pending", got.home.table.Rows()[0][5])
+	if !strings.Contains(got.home.table.Rows()[0][4], "archiving") {
+		t.Fatalf("row status = %q, want archiving from archive_pending", got.home.table.Rows()[0][4])
 	}
 
 	model, _ = got.Update(sessionListMsg{sessions: []*pb.Session{archivePendingSession("s1", false)}})
 	got = model.(App)
-	if row := got.home.table.Rows()[0][5]; strings.Contains(row, "archiving") {
+	if row := got.home.table.Rows()[0][4]; strings.Contains(row, "archiving") {
 		t.Fatalf("row status = %q after archive_pending cleared, want the normal status", row)
 	}
-	if !strings.Contains(got.home.table.Rows()[0][5], "working") {
-		t.Fatalf("row status = %q, want working", got.home.table.Rows()[0][5])
+	if !strings.Contains(got.home.table.Rows()[0][4], "working") {
+		t.Fatalf("row status = %q, want working", got.home.table.Rows()[0][4])
 	}
 }

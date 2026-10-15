@@ -30,18 +30,16 @@ func TestSessionAttentionChange_Version(t *testing.T) {
 }
 
 // TestSessionAttentionChange_ProductionChainByVersion pushes a session with
-// attention through the full production chain: Current serves it untouched,
-// one version back and older clears attention and leaves attention_status.
+// attention through the full production chain: V20260917 and Current serve it
+// untouched, one version back and older clears attention and leaves
+// attention_status.
 func TestSessionAttentionChange_ProductionChainByVersion(t *testing.T) {
-	reg := DefaultRegistry()
-	if got := reg.Current(); got != V20260917 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, V20260917)
-	}
-
-	current := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{attentionSession()}}
-	ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, current, reg.Current())
-	if got := current.GetSessions()[0].GetAttention(); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
-		t.Fatalf("attention at Current = %v, want the REVIEW answer untouched", got)
+	for _, v := range []Version{V20260917, DefaultRegistry().Current()} {
+		current := &pb.ProxyListSessionsResponse{Sessions: []*pb.Session{attentionSession()}}
+		ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, current, v)
+		if got := current.GetSessions()[0].GetAttention(); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+			t.Fatalf("attention at %s = %v, want the REVIEW answer untouched", v, got)
+		}
 	}
 
 	for _, v := range []Version{V20260916, V20260812, Baseline} {

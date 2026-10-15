@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/detach"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
@@ -116,7 +117,7 @@ func TestRecordFailedStartChatWritesOnADetachedBudgetedContext(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	l := &Lifecycle{agentChats: chats, logger: zerolog.Nop()}
 
-	l.recordFailedStartChat(deadCallerCtx(t), "sess-1", "chat-1", "claude", "Title", "tmux launch failed")
+	l.recordFailedStartChat(deadCallerCtx(t), "sess-1", "chat-1", "claude", "Title", models.AgentChatRoleBuild, "tmux launch failed")
 
 	calls := chats.markStartFailedCalls
 	if len(calls) != 1 {

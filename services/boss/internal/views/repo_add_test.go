@@ -736,6 +736,7 @@ func TestRepoAdd_DetailsForm_SeedsCreationDefaults(t *testing.T) {
 func TestRepoAdd_DetailsForm_RendersConfigFields(t *testing.T) {
 	sc := &repoAddStubClient{}
 	m := NewRepoAddModel(sc, context.Background())
+	m.height = 40
 	m.phase = repoAddPhaseDetails
 	m.sourceMode = sourceModeOpen
 	m.buildDetailsForm()
@@ -743,7 +744,7 @@ func TestRepoAdd_DetailsForm_RendersConfigFields(t *testing.T) {
 
 	view := m.View().Content
 	for _, want := range []string{
-		"Name", "Setup command", "Merge strategy", "Automation",
+		"Name", "Setup command", "Merge strategy", "Automation", "Trust this repository?",
 		"Add Repository", "Cancel",
 	} {
 		if !strings.Contains(view, want) {
@@ -1075,5 +1076,33 @@ func TestRepoAdd_DetailsPhase_EscReturnsToInput(t *testing.T) {
 	}
 	if m.form == nil {
 		t.Error("expected form to be rebuilt for input phase")
+	}
+}
+
+func TestRepoAdd_TrustRequest(t *testing.T) {
+	for _, mode := range []int{sourceModeOpen, sourceModeClone} {
+		for _, trusted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("mode=%v/trusted=%v", mode, trusted), func(t *testing.T) {
+				sc := &repoAddStubClient{registered: &pb.Repo{Id: "repo-1"}, cloned: &pb.Repo{Id: "repo-1"}}
+				m := NewRepoAddModel(sc, context.Background())
+				if m.fd.isTrusted {
+					t.Fatal("wizard defaults to trusted")
+				}
+				m.sourceMode = mode
+				m.fd.isTrusted = trusted
+				cmd := m.submitRepo()
+				m.fd.isTrusted = !trusted // submitted answer must survive later form changes
+				cmd()
+				var got *bool
+				if mode == sourceModeClone {
+					got = sc.cloneReq.IsTrusted
+				} else {
+					got = sc.registerReq.IsTrusted
+				}
+				if got == nil || *got != trusted {
+					t.Fatalf("request trust = %v, want explicit %v", got, trusted)
+				}
+			})
+		}
 	}
 }

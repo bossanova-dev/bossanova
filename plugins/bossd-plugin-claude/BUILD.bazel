@@ -69,6 +69,7 @@ go_test(
         "server_test.go",
         "suggest_pr_title_test.go",
         "transcript_test.go",
+        "turn_ended_hook_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":bossd-plugin-claude_lib"],

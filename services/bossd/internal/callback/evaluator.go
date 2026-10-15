@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -174,7 +175,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	// skipped otherwise to spare the API quota.
 	runsSettled := false
 	if vcs.EvaluateChecks("", checks, nil).IsGreen() {
-		runsSettled = e.runsSettled(ctx, rp, prNumber, status)
+		runsSettled, _ = e.runsSettled(ctx, rp, prNumber, status)
 	}
 	satisfied := satisfiedTriggers(status, checks, runsSettled)
 	checkState := vcs.EvaluateChecks("", checks, nil).State
@@ -291,33 +292,68 @@ func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+type heldWorkflowRun struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Event  string `json:"event"`
+	Class  string `json:"class"`
+}
+
 // runsSettled reports whether every GitHub Actions workflow run for the PR's
 // head SHA has completed. A check set read before the head's workflows have
 // attached their jobs is green on the jobs it has so far, so checks_passed is
 // only decidable once nothing is still queued or running. An empty head SHA or
 // a failed runs read is not settled: it is logged and suppresses only the
 // checks-passed pair, never the other triggers on the same evaluation.
-func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, status *vcs.PRStatus) bool {
+func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, status *vcs.PRStatus) (bool, []heldWorkflowRun) {
 	if status == nil || status.HeadSHA == "" {
 		e.logger.Warn().Str("repo", rp).Int("pr", prNumber).
 			Msg("callback evaluator: no head SHA; checks_passed held until workflow runs are readable")
-		return false
+		return false, nil
 	}
 	runs, err := e.provider.ListWorkflowRuns(ctx, rp, status.HeadSHA)
 	if err != nil {
 		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).Str("head_sha", status.HeadSHA).
 			Msg("callback evaluator: list workflow runs failed; checks_passed held")
-		return false
+		return false, nil
 	}
+	var held []heldWorkflowRun
+	awaitingApproval := false
 	for _, run := range runs {
 		if run.HeadSHA != "" && run.HeadSHA != status.HeadSHA {
 			continue
 		}
-		if !strings.EqualFold(run.Status, "completed") {
-			return false
+		if strings.EqualFold(run.Status, "completed") {
+			continue
 		}
+		class := "in-flight"
+		if strings.EqualFold(run.Status, "waiting") || strings.EqualFold(run.Status, "action_required") {
+			class = "awaiting-approval"
+			awaitingApproval = true
+		}
+		held = append(held, heldWorkflowRun{Name: run.Name, Status: run.Status, Event: run.Event, Class: class})
 	}
-	return true
+	if len(held) == 0 {
+		return true, nil
+	}
+	sort.Slice(held, func(i, j int) bool {
+		if held[i].Name != held[j].Name {
+			return held[i].Name < held[j].Name
+		}
+		if held[i].Status != held[j].Status {
+			return held[i].Status < held[j].Status
+		}
+		return held[i].Event < held[j].Event
+	})
+	level := zerolog.DebugLevel
+	message := "callback evaluator: checks_passed held; head workflow runs in flight"
+	if awaitingApproval {
+		level = zerolog.WarnLevel
+		message = "callback evaluator: checks_passed held; head workflow run awaits approval"
+	}
+	e.logger.WithLevel(level).Str("repo", rp).Int("pr", prNumber).Str("head_sha", status.HeadSHA).
+		Interface("held_runs", held).Msg(message)
+	return false, held
 }
 
 // unreachableAfterMerge reports whether an unsatisfied trigger can never fire

@@ -24,6 +24,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/prverdict"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -103,7 +105,7 @@ type ChatPickerModel struct {
 	archiving bool
 	archived  bool
 	// approved latches once an approval of this session's park succeeds, so
-	// [m]approve is not offered again while the session still reads parked
+	// [m]erge is not offered again while the session still reads parked
 	// until verify re-checks it.
 	approved bool
 
@@ -270,6 +272,25 @@ func (m ChatPickerModel) canApprove() bool {
 		return false
 	}
 	return m.session != nil && m.session.GetPrNumber() != 0 && isVerifyParkAttention(m.session)
+}
+
+// approveConfirm is the [m]erge confirmation on a verify-parked PR, worded by
+// prverdict from the park codes in the session's verify-park attention.
+// overridesFailure means a code reports a failure, so merging is not the
+// default choice.
+func (m ChatPickerModel) approveConfirm() (lines []string, overridesFailure bool) {
+	codes := displaystatus.VerifyParkSummaryCodes(m.session.GetAttentionStatus().GetSummary())
+	return prverdict.MergeConfirm(int(m.session.GetPrNumber()), codes)
+}
+
+// confirmExtraLines is how many lines the open confirmation renders beyond the
+// single prompt line every confirm shares, so tableHeight reserves them.
+func (m ChatPickerModel) confirmExtraLines() int {
+	if m.confirm != confirmApprove {
+		return 0
+	}
+	lines, _ := m.approveConfirm()
+	return max(len(lines)-1, 0)
 }
 
 // canRename reports whether the [r]ename action should be available — a chat is

@@ -167,11 +167,13 @@ func (s *stubClient) ListSessions(context.Context, *pb.ListSessionsRequest, clie
 func (s *stubClient) AttachSession(context.Context, string) (client.AttachStream, error) {
 	panic("unused")
 }
-func (s *stubClient) StopSession(context.Context, string) (*pb.Session, error)   { panic("unused") }
-func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
-func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *stubClient) StopSession(context.Context, string) (*pb.Session, error)      { panic("unused") }
+func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error)     { panic("unused") }
+func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error)    { panic("unused") }
+func (s *stubClient) ResumeSessionRun(context.Context, string) (*pb.Session, error) { panic("unused") }
+
+func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error) { panic("unused") }
+func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *stubClient) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
@@ -205,7 +207,7 @@ func (s *stubClient) ResurrectSession(context.Context, string) (client.Resurrect
 func (s *stubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubClient) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *stubClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {

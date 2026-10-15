@@ -16,6 +16,7 @@ Starts a brand-new live chat inside an existing session, reusing that session's 
 
 - `--agent` — Agent plugin to run (empty inherits the session's agent)
 - `--json` — Emit the new chat as a machine-readable JSON envelope
+- `--role` — Purpose of the new chat: operator, build, repair or verify. Automation may replace an idle build, repair or verify chat, never an operator one (default: operator)
 - `--title` — Title for the new chat
 
 ```bash

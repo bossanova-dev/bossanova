@@ -1,9 +1,12 @@
 package tuitest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/boss/internal/fixtures"
 
 	"github.com/recurser/boss/internal/tuitest"
 )
@@ -461,5 +464,45 @@ func assertHomeNavigationKeepsSessions(t *testing.T, h *tuitest.Harness, navigat
 	}
 	if !strings.Contains(screen, "Fix login bug") {
 		t.Fatalf("expected 'Fix login bug' on screen:\n%s", screen)
+	}
+}
+
+// TestTUI_HomeView_AttentionBoard drives the real executable through a PTY.
+func TestTUI_HomeView_AttentionBoard(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(fixtures.AttentionSessions()...), tuitest.WithTerminalSize(width, 60))
+			for _, text := range []string{"NEEDS YOU · 7", "IN PROGRESS · 2", "[r] resume", "[x] dismiss", "? question", "CI 4/9"} {
+				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := h.Driver.Screen()
+			if strings.Contains(before, "◌") || strings.Contains(before, "[BOS-1509]") {
+				t.Fatalf("unexpected progress glyph or finished session:\n%s", before)
+			}
+			// One down skips every wrapped sentence and lands on the oldest review.
+			if err := h.Driver.SendKey('j'); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.WaitForText(waitTimeout, "[y] approve"); err != nil {
+				t.Fatal(err)
+			}
+			screen := h.Driver.Screen()
+			for _, text := range []string{"[b] send back", "[g] github", "[v] video"} {
+				if !strings.Contains(screen, text) {
+					t.Fatalf("missing %s:\n%s", text, screen)
+				}
+			}
+			if strings.Contains(screen, "[r] resume") || strings.Contains(screen, "[x] dismiss") {
+				t.Fatalf("review footer retained fix actions:\n%s", screen)
+			}
+			for _, line := range strings.Split(screen, "\n") {
+				if len([]rune(line)) > width {
+					t.Fatalf("line overflows %d: %q", width, line)
+				}
+			}
+			t.Logf("PTY Needs you board at %d columns, selected review:\n%s", width, screen)
+		})
 	}
 }

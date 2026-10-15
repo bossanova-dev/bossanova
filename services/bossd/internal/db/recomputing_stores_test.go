@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,97 @@ type spyRecomputer struct {
 func (s *spyRecomputer) Recompute(_ context.Context, _ string) error {
 	s.calls.Add(1)
 	return nil
+}
+
+func TestRecomputingSessionStore_RunResumeTransitions(t *testing.T) {
+	for _, giveUp := range []bool{false, true} {
+		for _, initial := range []machine.State{machine.Blocked, machine.ImplementingPlan} {
+			t.Run(fmt.Sprintf("giveUp=%v/from=%v", giveUp, initial), func(t *testing.T) {
+				ctx := context.Background()
+				store, observer, id := newObservedSessionStore(t, initial)
+				spy := store.recomputer.(*spyRecomputer)
+				var prior *string
+				want := machine.ImplementingPlan
+				if giveUp {
+					giver, ok := any(store).(RunResumeGiveUpper)
+					if !ok {
+						t.Fatal("production decorator lacks RunResumeGiveUpper")
+					}
+					if err := giver.GiveUpRunResume(ctx, id, int(initial), prior, "attempts exhausted"); err != nil {
+						t.Fatal(err)
+					}
+					want = machine.Blocked
+					other := "other"
+					if err := giver.GiveUpRunResume(ctx, id, int(initial), &other, "stale"); !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("stale give-up: %v", err)
+					}
+				} else {
+					committer, ok := any(store).(RunResumeCommitter)
+					if !ok {
+						t.Fatal("production decorator lacks RunResumeCommitter")
+					}
+					row, err := committer.CommitRunResume(ctx, id, int(initial), prior, "replacement")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if row.AgentSessionID == nil || *row.AgentSessionID != "replacement" {
+						t.Fatalf("replacement=%v", row.AgentSessionID)
+					}
+					if _, err := committer.CommitRunResume(ctx, id, int(initial), prior, "stale"); !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("stale commit: %v", err)
+					}
+				}
+				row, err := store.Get(ctx, id)
+				if err != nil || row.State != want {
+					t.Fatalf("row=%v err=%v", row, err)
+				}
+				if spy.calls.Load() != 1 {
+					t.Fatalf("recompute calls=%d", spy.calls.Load())
+				}
+				states := observer.seen()
+				if initial == want {
+					if len(states) != 0 {
+						t.Fatalf("same-state notifications=%v", states)
+					}
+				} else if len(states) != 1 || states[0] != want {
+					t.Fatalf("transitions=%v, want [%v]", states, want)
+				}
+			})
+		}
+	}
+}
+
+func TestRecomputingSessionStore_RunDeathObservation(t *testing.T) {
+	ctx := context.Background()
+	store, observer, id := newObservedSessionStore(t, machine.ImplementingPlan)
+	prior := "original"
+	priorPtr := &prior
+	before, err := store.SessionStore.Update(ctx, id, UpdateSessionParams{AgentSessionID: &priorPtr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := store.recomputer.(*spyRecomputer)
+	deathObserver, ok := any(store).(RunDeathObserver)
+	if !ok {
+		t.Fatal("production decorator lacks RunDeathObserver")
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	for _, observedAt := range []time.Time{at, at.Add(time.Minute)} {
+		got, err := deathObserver.ObserveRunDeath(ctx, id, prior, int(before.State), observedAt)
+		if err != nil || !got.Equal(at) {
+			t.Fatalf("observed=%v err=%v", got, err)
+		}
+	}
+	if _, err := deathObserver.ObserveRunDeath(ctx, id, "stale", int(before.State), at); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale observation: %v", err)
+	}
+	after, err := store.Get(ctx, id)
+	if err != nil || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("observation changed activity: before=%v after=%v err=%v", before, after, err)
+	}
+	if spy.calls.Load() != 0 || observer.count() != 0 {
+		t.Fatalf("observation emitted side effects: recomputes=%d transitions=%d", spy.calls.Load(), observer.count())
+	}
 }
 
 // TestRecomputingSessionStore_TriggersOnClaudeSessionIDOnlyUpdate verifies

@@ -255,3 +255,30 @@ func TestUnattendedRunQuiet_NoLogsDirIsQuiet(t *testing.T) {
 		t.Fatalf("UnattendedRunQuiet = %q, %v; want quiet with no logs dir", got, err)
 	}
 }
+
+// TestReportRunBlocked_RefusesWhatItCannotAffect: only an unattended run that
+// finalize has not reached yet can report BLOCKED; anything else is refused
+// and leaves run_blocked_reason untouched.
+func TestReportRunBlocked_RefusesWhatItCannotAffect(t *testing.T) {
+	cronJobID := "cron-1"
+	for name, tc := range map[string]struct {
+		sess *models.Session
+		want error
+	}{
+		"attended session":   {&models.Session{ID: "s", State: machine.ImplementingPlan}, ErrNotUnattendedRun},
+		"already finalizing": {&models.Session{ID: "s", State: machine.Finalizing, CronJobID: &cronJobID}, ErrRunAlreadyFinalized},
+		"already ready":      {&models.Session{ID: "s", State: machine.ReadyForReview, CronJobID: &cronJobID}, ErrRunAlreadyFinalized},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			sessions.sessions["s"] = tc.sess
+			lc := newTestLifecycle(sessions, nil, nil, nil, nil, newMockAgentRunner(), nil, nil, zerolog.Nop())
+			if err := lc.ReportRunBlocked(context.Background(), "s", "why"); !errors.Is(err, tc.want) {
+				t.Fatalf("ReportRunBlocked = %v, want %v", err, tc.want)
+			}
+			if got := sessions.sessions["s"].RunBlockedReason; got != nil {
+				t.Fatalf("run_blocked_reason = %q, want untouched", *got)
+			}
+		})
+	}
+}

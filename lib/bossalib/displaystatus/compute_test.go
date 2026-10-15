@@ -1010,14 +1010,15 @@ func everyDisplayStatus() []pb.DisplayStatus {
 // loops rather than as literal cases: the pre-promotion aggregate {all-idle,
 // any-working/unknown} × every DisplayStatus × the waiting-versus-not chat
 // status. The rule is a conjunction, so the loops are what prove it fires for
-// exactly two of the twelve PR states and for exactly one chat status.
+// exactly three of the PR states and for exactly one chat status.
 func TestBaseStatus_WaitingDemotionMatrix(t *testing.T) {
 	positive := map[pb.DisplayStatus]Output{
-		pb.DisplayStatus_DISPLAY_STATUS_PASSING:  {Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
-		pb.DisplayStatus_DISPLAY_STATUS_APPROVED: {Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		pb.DisplayStatus_DISPLAY_STATUS_PASSING:     {Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		pb.DisplayStatus_DISPLAY_STATUS_APPROVED:    {Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN: {Label: BlockedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
 	}
 
-	t.Run("all idle demotes only the two verified-positive states", func(t *testing.T) {
+	t.Run("all idle demotes only the verified-positive and parked states", func(t *testing.T) {
 		for _, ds := range everyDisplayStatus() {
 			in := Input{
 				Session:             &pb.Session{DisplayStatus: ds},
@@ -1499,6 +1500,8 @@ func TestIsLiveActivityLabel_Classification(t *testing.T) {
 		"checking",
 		VerifyingLabel,
 		NeedsHumanLabel,
+		NeedsSignOffLabel,
+		BlockedLabel,
 		"idle",
 		"stopped",
 		"",
@@ -1560,7 +1563,8 @@ func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
 		"draft":                         false,
 		"checking":                      false,
 		VerifyingLabel:                  false,
-		NeedsHumanLabel:                 false,
+		NeedsSignOffLabel:               false,
+		BlockedLabel:                    false,
 		"idle":                          false,
 		"stopped":                       false,
 	}
@@ -1596,7 +1600,7 @@ func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
 		add(out)
 	}
 	for name, value := range pb.DisplayStatus_value {
-		out, ok := prOutput(&pb.Session{DisplayStatus: pb.DisplayStatus(value)})
+		out, ok := prOutput(&pb.Session{DisplayStatus: pb.DisplayStatus(value)}, nil)
 		if !ok {
 			continue // UNSPECIFIED and any future non-label value
 		}
@@ -1605,6 +1609,8 @@ func TestIsLiveActivityLabel_CoversEveryCascadeLabel(t *testing.T) {
 		}
 		add(out)
 	}
+
+	add(baseStatus(Input{Session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN}, ParkCodes: []string{"human-review:ui"}}))
 
 	for label := range emitted {
 		want, ok := classified[label]
@@ -1857,10 +1863,44 @@ func TestPreErroredBlockedIntent_DemotedGreenRestoresSuccess(t *testing.T) {
 	}
 }
 
-// TestCompute_VerifyStatuses pins BOS-1382's two PR-derived composites:
+// TestCompute_VerifyStatuses pins BOS-1382's PR-derived composites:
 // "verifying" spins with INFO (DANGER when changes are requested or checks
-// failed, mirroring checking) and "needs human" is a static WARNING.
+// failed, mirroring checking); a park whose codes are all policy codes is a
+// static WARNING "needs sign-off", and a park with any failure code, an unknown
+// code or no code at all is a static DANGER "blocked".
 func TestCompute_VerifyStatuses(t *testing.T) {
+	parked := func() *pb.Session { return &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN} }
+	signOff := Output{Label: NeedsSignOffLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	blocked := Output{Label: BlockedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}
+	for _, tc := range []struct {
+		name  string
+		codes []string
+		want  Output
+	}{
+		{"ui sign-off", []string{"human-review:ui"}, signOff},
+		{"every policy code", []string{"human-review:ui,always-human-path", "human-review:security", "human-review:database"}, signOff},
+		{"ledger open", []string{"ledger-open"}, blocked},
+		{"no receipt", []string{"no-receipt"}, blocked},
+		{"extension failed", []string{"extension-failed"}, blocked},
+		{"repair exhausted", []string{"repair-exhausted"}, blocked},
+		{"no session", []string{"no-session"}, blocked},
+		{"unproven checks", []string{"human-review:unproven"}, blocked},
+		{"one failure among policy codes", []string{"human-review:ui,ledger-open"}, blocked},
+		{"unknown code", []string{"brand-new"}, blocked},
+		{"no codes", nil, blocked},
+	} {
+		t.Run("park "+tc.name, func(t *testing.T) {
+			if got := Compute(Input{Session: parked(), ParkCodes: tc.codes}); got != tc.want {
+				t.Fatalf("Compute(park %v) = %+v, want %+v", tc.codes, got, tc.want)
+			}
+		})
+	}
+	erroredSignOff := parked()
+	erroredSignOff.State = pb.SessionState_SESSION_STATE_BLOCKED
+	if got := Compute(Input{Session: erroredSignOff, ParkCodes: []string{"human-review:ui"}}); got != (Output{Label: NeedsSignOffLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}) {
+		t.Fatalf("sign-off park on a blocked session = %+v, want the errored recolor", got)
+	}
+
 	tests := []struct {
 		name string
 		sess *pb.Session
@@ -1875,21 +1915,6 @@ func TestCompute_VerifyStatuses(t *testing.T) {
 			name: "verifying with changes requested is danger",
 			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, DisplayHasChangesRequested: true},
 			want: Output{Label: VerifyingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
-		},
-		{
-			name: "needs human",
-			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN},
-			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
-		},
-		{
-			name: "needs human with changes requested stays warning",
-			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayHasChangesRequested: true},
-			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
-		},
-		{
-			name: "needs human on a blocked session is recolored danger",
-			sess: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, State: pb.SessionState_SESSION_STATE_BLOCKED},
-			want: Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
 		},
 	}
 	for _, tt := range tests {
@@ -2002,5 +2027,52 @@ func TestWorkingLabel(t *testing.T) {
 	}
 	if !IsLiveActivityLabel(WorkingLabel) {
 		t.Fatalf("IsLiveActivityLabel(%q) = false, want true", WorkingLabel)
+	}
+}
+
+// TestPreNeedsHumanWaitDemotionOutput_RestoresThePreChangeComposite proves the
+// V20260918 inverse is exact: for every input whose composite the change moved,
+// the inverse of the new served row equals what the old cascade served, which
+// is the same input with the demotion gate closed. Rows the change did not move
+// come back unchanged, including a demoted green row owned by V20260915.
+func TestPreNeedsHumanWaitDemotionOutput_RestoresThePreChangeComposite(t *testing.T) {
+	stamp := func(newSession func() *pb.Session, chat pb.ChatStatus, allIdle bool) *pb.Session {
+		in := Input{Session: newSession(), ChatStatus: chat, AllWaitingChatsIdle: allIdle}
+		out := Compute(in)
+		s := in.Session
+		s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = out.Label, out.Intent, out.Spinner
+		s.IsWaitingDemoted = WasWaitingDemoted(in, out)
+		return s
+	}
+	for _, state := range []pb.SessionState{pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN, pb.SessionState_SESSION_STATE_BLOCKED} {
+		for _, repairing := range []bool{false, true} {
+			newSession := func() *pb.Session {
+				return &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, State: state, DisplayIsRepairing: repairing}
+			}
+			served := stamp(newSession, pb.ChatStatus_CHAT_STATUS_WAITING, true)
+			if !served.GetIsWaitingDemoted() {
+				t.Fatalf("precondition: %v repairing=%v not demoted (label %q)", state, repairing, served.GetDisplayLabel())
+			}
+			old := Compute(Input{Session: newSession(), ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING})
+			if got := PreNeedsHumanWaitDemotionOutput(served); got != old {
+				t.Errorf("%v repairing=%v: inverse = %+v, want the old cascade's %+v", state, repairing, got, old)
+			}
+		}
+	}
+
+	needsHuman := func() *pb.Session { return &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN} }
+	passing := func() *pb.Session { return &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING} }
+	unchanged := []*pb.Session{
+		stamp(passing, pb.ChatStatus_CHAT_STATUS_WAITING, true),
+		stamp(needsHuman, pb.ChatStatus_CHAT_STATUS_IDLE, false),
+		stamp(needsHuman, pb.ChatStatus_CHAT_STATUS_WAITING, false),
+		{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, IsWaitingDemoted: true},
+		nil,
+	}
+	for _, s := range unchanged {
+		want := Output{Label: s.GetDisplayLabel(), Intent: s.GetDisplayIntent(), Spinner: s.GetDisplaySpinner()}
+		if got := PreNeedsHumanWaitDemotionOutput(s); got != want {
+			t.Errorf("PreNeedsHumanWaitDemotionOutput(%v %q) = %+v, want it unchanged", s.GetDisplayStatus(), s.GetDisplayLabel(), got)
+		}
 	}
 }

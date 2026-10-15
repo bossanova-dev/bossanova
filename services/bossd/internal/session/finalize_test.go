@@ -17,6 +17,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -4221,5 +4222,238 @@ func TestOriginURLIfConfigured_StripsDetectedCredentials(t *testing.T) {
 		if value != "https://github.com/owner/repo.git" {
 			t.Errorf("%s differs from the credential-free origin", name)
 		}
+	}
+}
+
+// runBlockedFixture is a cron run on a clean branch whose open PR #77 finalize
+// would normally attach and mark ready.
+type runBlockedFixture struct {
+	sessions *mockSessionStore
+	repos    *mockRepoStore
+	wt       *mockWorktreeManager
+	vp       *mockVCSProvider
+	cron     *recordingCronJobStore
+	chats    *recordingAgentChatStore
+}
+
+func newRunBlockedFixture() *runBlockedFixture {
+	f := &runBlockedFixture{
+		sessions: newMockSessionStore(),
+		repos:    newMockRepoStore(),
+		wt:       &mockWorktreeManager{statusOut: ""},
+		vp:       newMockVCSProvider(),
+		cron:     &recordingCronJobStore{},
+		chats:    &recordingAgentChatStore{},
+	}
+	f.vp.nextOpenPRs = []vcs.PRSummary{{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen}}
+	f.repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+	cronJobID := "cron-1"
+	agentSessionID := "agent-1"
+	f.sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		WorktreePath:   "/tmp/wt-sess1",
+		BranchName:     "cron-br-1",
+		BaseBranch:     "main",
+		State:          machine.ImplementingPlan,
+		CronJobID:      &cronJobID,
+		AgentSessionID: &agentSessionID,
+		UpdatedAt:      time.Now().Add(-time.Hour),
+	}
+	return f
+}
+
+func (f *runBlockedFixture) assertBlockedDraft(t *testing.T, wantReason string) {
+	t.Helper()
+	if len(f.vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, a blocked run's PR must stay draft", f.vp.markReadyCalls)
+	}
+	sess := f.sessions.sessions["sess-1"]
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason != wantReason {
+		t.Fatalf("blocked_reason = %v, want %q", sess.BlockedReason, wantReason)
+	}
+	if sess.RunBlockedReason != nil {
+		t.Fatalf("run_blocked_reason = %q after finalize, want it consumed", *sess.RunBlockedReason)
+	}
+	if len(f.cron.lastRunCalls) != 1 || f.cron.lastRunCalls[0].outcome != models.CronJobOutcomeRunBlocked {
+		t.Fatalf("UpdateLastRun calls = %+v, want one run_blocked", f.cron.lastRunCalls)
+	}
+}
+
+// TestFinalizeSession_RunReportedBlocked_LeavesPRDraftAndBlocks is the BOS-1618
+// incident through the Stop-hook gate's entry: the run reported BLOCKED, so
+// finalize still attaches the PR and injects its tag but leaves it draft and
+// Blocks the session with the run's reason. A duplicate Stop changes nothing.
+func TestFinalizeSession_RunReportedBlocked_LeavesPRDraftAndBlocks(t *testing.T) {
+	enableFinalizeTelemetry(t)
+	ctx := context.Background()
+	f := newRunBlockedFixture()
+	lc := newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+	recorder := &finalizeTelemetryRecorder{}
+	lc.SetTelemetry(recorder)
+
+	if err := lc.ReportRunBlocked(ctx, "sess-1", "unresolved P1 in review\nsecond line dropped"); err != nil {
+		t.Fatalf("ReportRunBlocked: %v", err)
+	}
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeRunBlocked {
+		t.Fatalf("outcome = %q, want run_blocked", res.Outcome)
+	}
+	assertFinalizeTelemetry(t, recorder, "blocked")
+	if len(f.wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1 (the branch still gets its PR tags)", len(f.wt.injectPRNumbersCalls))
+	}
+	f.assertBlockedDraft(t, "run blocked: unresolved P1 in review")
+
+	again, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil || !again.NoOp {
+		t.Fatalf("duplicate Stop = %+v err = %v, want NoOp", again, err)
+	}
+	f.assertBlockedDraft(t, "run blocked: unresolved P1 in review")
+}
+
+// TestFinalizeSession_RunReportedBlocked_SurvivesBlockedReasonWriters: other
+// writers of the shared blocked_reason column land between the report and
+// finalize. The usage-limit park overwrote the report before it had its own
+// column, so finalize readied the PR; now each interleaving still leaves the PR
+// draft and Blocks with the run's reason.
+func TestFinalizeSession_RunReportedBlocked_SurvivesBlockedReasonWriters(t *testing.T) {
+	cases := []struct {
+		name  string
+		write func(t *testing.T, ctx context.Context, lc *Lifecycle, sessions *mockSessionStore)
+	}{
+		{
+			// The resume is the parked-rotation sweep's CAS back to
+			// ImplementingPlan, which rewrites no reason.
+			name: "usage-limit park then resume",
+			write: func(t *testing.T, ctx context.Context, lc *Lifecycle, sessions *mockSessionStore) {
+				lc.parkAllCooling(ctx, "sess-1", time.Now().Add(time.Hour))
+				if parked := sessions.sessions["sess-1"]; parked.State != machine.Blocked {
+					t.Fatalf("park left state %s, want blocked", parked.State)
+				}
+				resumed, err := sessions.UpdateStateConditional(ctx, "sess-1", int(machine.ImplementingPlan), int(machine.Blocked))
+				if err != nil || !resumed {
+					t.Fatalf("resume CAS = %v, %v; want true", resumed, err)
+				}
+			},
+		},
+		{
+			name: "draft PR in-flight marker set then cleared",
+			write: func(t *testing.T, ctx context.Context, lc *Lifecycle, sessions *mockSessionStore) {
+				lc.setDraftPRInFlightReason(ctx, "sess-1")
+				snapshot := *sessions.sessions["sess-1"]
+				if err := lc.clearDraftPRBlockedReason(ctx, "sess-1", &snapshot); err != nil {
+					t.Fatalf("clearDraftPRBlockedReason: %v", err)
+				}
+			},
+		},
+		{
+			name: "draft PR failure recorded",
+			write: func(_ *testing.T, ctx context.Context, lc *Lifecycle, _ *mockSessionStore) {
+				lc.setDraftPRBlockedReason(ctx, "sess-1", errors.New("gh pr create: 502"))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newRunBlockedFixture()
+			lc := newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+			if err := lc.ReportRunBlocked(ctx, "sess-1", "waiting on a schema decision"); err != nil {
+				t.Fatalf("ReportRunBlocked: %v", err)
+			}
+			tc.write(t, ctx, lc, f.sessions)
+
+			res, err := lc.FinalizeSession(ctx, "sess-1")
+			if err != nil {
+				t.Fatalf("FinalizeSession: %v", err)
+			}
+			if res.Outcome != models.CronJobOutcomeRunBlocked {
+				t.Fatalf("outcome = %q, want run_blocked", res.Outcome)
+			}
+			f.assertBlockedDraft(t, "run blocked: waiting on a schema decision")
+		})
+	}
+}
+
+// TestRecoverStrandedCronSessions_RunReportedBlocked_SurvivesRestart: the
+// report is on the session row, so the stranded sweep of a freshly started
+// daemon (a new Lifecycle over the same store, no in-memory finish pending)
+// still leaves the PR draft and Blocks the session.
+func TestRecoverStrandedCronSessions_RunReportedBlocked_SurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	f := newRunBlockedFixture()
+	before := newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+	if err := before.ReportRunBlocked(ctx, "sess-1", "unresolved P1 in review"); err != nil {
+		t.Fatalf("ReportRunBlocked: %v", err)
+	}
+
+	after := newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+	logs := t.TempDir()
+	after.SetAgentLogsDir(logs)
+	after.SetCronCompletionNotifier(&recordingCronCompletionNotifier{})
+	seedLog(t, logs, "agent-1", cronAgentIdleThreshold+time.Minute)
+
+	n, err := after.RecoverStrandedCronSessionsPeriodic(ctx)
+	if err != nil {
+		t.Fatalf("RecoverStrandedCronSessionsPeriodic: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("routed = %d, want 1", n)
+	}
+	f.assertBlockedDraft(t, "run blocked: unresolved P1 in review")
+}
+
+// TestFinalizeSession_RunReportedBlocked_FinalizeFailureKeepsBoth: when
+// finalize itself also fails, the outcome stays the failure and the reason
+// carries the run's report first.
+func TestFinalizeSession_RunReportedBlocked_FinalizeFailureKeepsBoth(t *testing.T) {
+	ctx := context.Background()
+	f := newRunBlockedFixture()
+	f.wt.injectPRNumbersErr = errors.New("push rejected")
+	lc := newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+	if err := lc.ReportRunBlocked(ctx, "sess-1", "needs a product call"); err != nil {
+		t.Fatalf("ReportRunBlocked: %v", err)
+	}
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	}
+	sess := f.sessions.sessions["sess-1"]
+	if sess.State != machine.Blocked || sess.BlockedReason == nil ||
+		!strings.HasPrefix(*sess.BlockedReason, "run blocked: needs a product call; finalize failed (pr_failed): ") {
+		t.Fatalf("state = %s reason = %v, want Blocked with the run's report then the failure", sess.State, sess.BlockedReason)
+	}
+	if len(f.vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", f.vp.markReadyCalls)
+	}
+}
+
+// TestRecoverFinalizingSessions_KeepsRunBlockedReason: a blocked run whose
+// finalize a restart interrupted keeps its own reason ahead of the recovery note.
+func TestRecoverFinalizingSessions_KeepsRunBlockedReason(t *testing.T) {
+	sessions := newMockSessionStore()
+	report := "needs a product call"
+	sessions.sessions["sess-stuck"] = &models.Session{ID: "sess-stuck", State: machine.Finalizing, RunBlockedReason: &report}
+	lc := newTestLifecycle(sessions, newMockRepoStore(), nil, nil, &mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	if _, err := lc.RecoverFinalizingSessions(context.Background()); err != nil {
+		t.Fatalf("RecoverFinalizingSessions: %v", err)
+	}
+	got := sessions.sessions["sess-stuck"]
+	want := "run blocked: needs a product call; " + sessionreason.FinalizeRecovered()
+	if got.State != machine.Blocked || got.BlockedReason == nil || *got.BlockedReason != want {
+		t.Fatalf("state = %s reason = %v, want Blocked with %q", got.State, got.BlockedReason, want)
+	}
+	if got.RunBlockedReason != nil {
+		t.Fatalf("run_blocked_reason = %q after recovery, want it consumed", *got.RunBlockedReason)
 	}
 }

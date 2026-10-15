@@ -409,6 +409,9 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		if phase == reapPeriodic && !preAgentReapAllowed(sess.State, sess.CreatedAt, now) {
 			continue
 		}
+		if l.DeferDroppedRunFinalization(sess) {
+			continue
+		}
 		over, evidence := l.strandedRunCompletionEvidence(sess)
 		if !over {
 			l.logger.Debug().

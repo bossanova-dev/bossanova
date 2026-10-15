@@ -103,9 +103,9 @@ func TestTUI_RepoSettingsView_ToggleCheckbox(t *testing.T) {
 
 	navigateToRepoSettings(t, h)
 
-	// Navigate to the "Mark ready for review when checks pass" checkbox (row 3,
+	// Navigate to the "Mark ready for review when checks pass" checkbox (row 4,
 	// the CanAutoMerge flag).
-	for range 3 {
+	for range 4 {
 		if err := h.Driver.SendKey('j'); err != nil {
 			t.Fatal(err)
 		}

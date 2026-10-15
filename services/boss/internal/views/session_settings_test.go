@@ -84,6 +84,10 @@ func (s *stubSessionSettingsClient) PauseSession(context.Context, string) (*pb.S
 func (s *stubSessionSettingsClient) ResumeSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubSessionSettingsClient) ResumeSessionRun(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
+
 func (s *stubSessionSettingsClient) RetrySession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
@@ -120,7 +124,7 @@ func (s *stubSessionSettingsClient) ResurrectSession(context.Context, string) (c
 func (s *stubSessionSettingsClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *stubSessionSettingsClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
@@ -52,6 +53,11 @@ type Input struct {
 	// cascade gates on `== true`, never on `!= working`, so an unknown
 	// aggregate can never be mistaken for an idle one.
 	AllWaitingChatsIdle bool
+	// ParkCodes are the verify stage's park codes for a DISPLAY_STATUS_NEEDS_HUMAN
+	// session (comma-joined entries are split). They decide whether the park
+	// reads "needs sign-off" or "blocked"; none at all reads "blocked", because
+	// a park that names no cause is not a sign-off anyone can give.
+	ParkCodes []string
 }
 
 // Output is the rendered result clients consume.
@@ -99,9 +105,9 @@ func IsWaitingLabel(label string) bool {
 // IsVerifiedPositivePR reports whether status is one of the two PR display
 // statuses that assert a VERIFIED-POSITIVE outcome: the checks ran and passed
 // (DISPLAY_STATUS_PASSING), or a human approved the result
-// (DISPLAY_STATUS_APPROVED). It is the second half of BOS-1269's demotion
-// conjunction, and it lives here so the set has one home when a third positive
-// status is added.
+// (DISPLAY_STATUS_APPROVED). With NEEDS_HUMAN it forms the second half of
+// BOS-1269's demotion conjunction (prSupersedesWait), and it lives here so the
+// set has one home when a third positive status is added.
 //
 // It is keyed on the ENUM, not on the label prOutput derives from it, for two
 // reasons the decision matrix names:
@@ -128,6 +134,15 @@ func IsVerifiedPositivePR(status pb.DisplayStatus) bool {
 	}
 }
 
+// prSupersedesWait reports whether the PR status, rather than an idle chat's
+// armed callback, is what the row should show: a verified-positive PR, or a
+// head the verify stage parked for a human (DISPLAY_STATUS_NEEDS_HUMAN). A park
+// leaves the chat's callback armed, but nothing is running any more; the row
+// waits on a person, and a "waiting" spinner would read as CI still in flight.
+func prSupersedesWait(status pb.DisplayStatus) bool {
+	return IsVerifiedPositivePR(status) || status == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
+}
+
 // waitingDemoted reports whether BOS-1269's demotion gate fires for in — i.e.
 // whether the CHAT_STATUS_WAITING branch falls through the rest of the cascade
 // instead of returning "waiting".
@@ -138,7 +153,7 @@ func IsVerifiedPositivePR(status pb.DisplayStatus) bool {
 func waitingDemoted(in Input) bool {
 	return in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WAITING &&
 		in.AllWaitingChatsIdle &&
-		IsVerifiedPositivePR(in.Session.GetDisplayStatus())
+		prSupersedesWait(in.Session.GetDisplayStatus())
 }
 
 // WasWaitingDemoted reports whether out is a composite this Input produced by
@@ -245,10 +260,67 @@ const (
 // carries a spinner because verification is in progress.
 const VerifyingLabel = "verifying"
 
-// NeedsHumanLabel is the PR-derived label for DISPLAY_STATUS_NEEDS_HUMAN: the
-// verify stage parked the head for a human (BOS-1382). No spinner — nothing is
-// running; the row waits on a person.
+// NeedsHumanLabel is the label DISPLAY_STATUS_NEEDS_HUMAN carried before a
+// verify park split into NeedsSignOffLabel and BlockedLabel. Only the
+// apiversion down-convert for older pins still emits it.
 const NeedsHumanLabel = "needs human"
+
+// NeedsSignOffLabel is the PR-derived label for a verify park whose codes are
+// all policy codes (attention.IsSignOffPark): verify passed the work and policy
+// asks a person to sign it off. WARNING, no spinner: nothing is running.
+const NeedsSignOffLabel = "needs sign-off"
+
+// BlockedLabel is the PR-derived label for a verify park with any failure or
+// incomplete code (or none at all): something went wrong and a person must
+// decide. DANGER, no spinner. It is the word a Blocked session's state reads.
+const BlockedLabel = "blocked"
+
+// verifyParkSummaryPrefix opens the attention summary bossd writes for a verify
+// park (server.HydrateVerifyAttention), followed by the park's raw codes.
+const verifyParkSummaryPrefix = "needs human: "
+
+// VerifyParkSummary is the attention summary for a verify park naming reason
+// (its raw, comma-joined codes): "needs human: <reason>". It is THE definition
+// of that wording; VerifyParkSummaryCodes is its inverse.
+func VerifyParkSummary(reason string) string {
+	return verifyParkSummaryPrefix + reason
+}
+
+// VerifyParkSummaryCodes returns the park codes a VerifyParkSummary names, in
+// the verify gate's report order, or nil for any other text.
+func VerifyParkSummaryCodes(summary string) []string {
+	reason, ok := strings.CutPrefix(summary, verifyParkSummaryPrefix)
+	if !ok {
+		return nil
+	}
+	return attention.ParkCodes([]string{reason})
+}
+
+// verifyParkNoReason ends the hint for a park whose summary names no codes.
+const verifyParkNoReason = "the verify stage named no reason"
+
+// VerifyParkHint renders a verify park's attention summary as the hint line a
+// client shows under the row: the park's label, then its codes, e.g.
+// "blocked: ledger-open" or "needs sign-off: human-review:ui". signOff reports
+// whether the park only asks for a sign-off, so a client can pick the warning
+// tier for it and the danger tier for "blocked".
+func VerifyParkHint(summary string) (text string, signOff bool) {
+	codes := VerifyParkSummaryCodes(summary)
+	label := VerifyParkOutput(codes).Label
+	if len(codes) == 0 {
+		return label + ": " + verifyParkNoReason, false
+	}
+	return label + ": " + strings.Join(codes, ","), attention.IsSignOffPark(codes)
+}
+
+// VerifyParkOutput is the composite for a DISPLAY_STATUS_NEEDS_HUMAN PR with
+// parkCodes: "needs sign-off" / WARNING or "blocked" / DANGER, no spinner.
+func VerifyParkOutput(parkCodes []string) Output {
+	if attention.IsSignOffPark(parkCodes) {
+		return Output{Label: NeedsSignOffLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	}
+	return Output{Label: BlockedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}
+}
 
 // draftPRFailedLabel is the composite emitted when a session's blocked reason
 // records a failed draft-PR creation. Shared by the cascade branch, the
@@ -274,7 +346,8 @@ const draftPRFailedLabel = "? PR failed"
 // False for every other label the cascade can emit — "? PR failed", "paused
 // L/M", "failed L/M", "cancelled", the PR-derived labels ("✓ merged", "closed",
 // "✓ approved", "✓ passing", "✓ review", "⨯ failing", "⨯ conflict",
-// "⨯ rejected", "draft", "checking", "verifying", "needs human"), "idle",
+// "⨯ rejected", "draft", "checking", "verifying", "needs sign-off",
+// "blocked"), "idle",
 // "stopped" — and for the empty
 // string and any label this package does not recognise. Unknown labels are NOT
 // live on purpose: the failure mode of this predicate must always be "the hint
@@ -449,7 +522,7 @@ func PreErroredOutput(sess *pb.Session) Output {
 // prNeedsFix "working", a failing "checking") falls through to servedIntent —
 // the recolor was a no-op there, so the served DANGER is already correct.
 func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent pb.DisplayIntent) pb.DisplayIntent {
-	if out, ok := prOutput(sess); ok && out.Label == servedLabel {
+	if out, ok := prOutput(sess, nil); ok && out.Label == servedLabel {
 		return out.Intent
 	}
 	if out, ok := workflowOutput(sess); ok && out.Label == servedLabel {
@@ -589,6 +662,49 @@ func PreWaitingDemotionOutput(sess *pb.Session) Output {
 	return out
 }
 
+// PreNeedsHumanWaitDemotionOutput reproduces the display Output Compute
+// produced for a DISPLAY_STATUS_NEEDS_HUMAN session BEFORE an idle-derived wait
+// could be demoted beneath the verify park. It exists for the apiversion
+// down-convert (NeedsHumanWaitDemotionChange, V20260918).
+//
+// Before that change only a verified-positive PR could demote the waiting
+// branch, so every demoted row now carrying NEEDS_HUMAN read "waiting" before;
+// PreWaitingDemotionOutput already returns exactly that frozen tuple. Every
+// other row, including a demoted passing or approved row, comes back unchanged.
+func PreNeedsHumanWaitDemotionOutput(sess *pb.Session) Output {
+	if sess.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		return Output{Label: sess.GetDisplayLabel(), Intent: sess.GetDisplayIntent(), Spinner: sess.GetDisplaySpinner()}
+	}
+	return PreWaitingDemotionOutput(sess)
+}
+
+// isVerifyParkLabel reports whether label is a composite the NEEDS_HUMAN PR
+// branch has emitted at any version, so the BOS-1382 inverse does not depend
+// on running after the park-split inverse.
+func isVerifyParkLabel(label string) bool {
+	return label == NeedsHumanLabel || label == NeedsSignOffLabel || label == BlockedLabel
+}
+
+// PreVerifyParkSplitOutput reproduces the composite a verify park served before
+// it split into NeedsSignOffLabel and BlockedLabel: "needs human" / WARNING /
+// no spinner, recolored DANGER on an errored session exactly as the BOS-430
+// overlay did then. It exists for the apiversion down-convert
+// (VerifyParkSplitChange). Only a NEEDS_HUMAN row showing one of the two new
+// labels changes; every other row, including a park outranked by a live chat,
+// comes back unchanged.
+func PreVerifyParkSplitOutput(sess *pb.Session) Output {
+	served := Output{Label: sess.GetDisplayLabel(), Intent: sess.GetDisplayIntent(), Spinner: sess.GetDisplaySpinner()}
+	if sess.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN ||
+		served.Label == NeedsHumanLabel || !isVerifyParkLabel(served.Label) {
+		return served
+	}
+	out := Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	if erroredSession(sess) {
+		out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	}
+	return out
+}
+
 // PreVerifyStatusOutput reproduces the display Output Compute produced BEFORE
 // BOS-1382 split DISPLAY_STATUS_VERIFYING and DISPLAY_STATUS_NEEDS_HUMAN out of
 // DISPLAY_STATUS_CHECKING. It is the hand-written inverse of that split and
@@ -618,7 +734,7 @@ func PreVerifyStatusOutput(sess *pb.Session) Output {
 	}
 	switch {
 	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_VERIFYING && served.Label == VerifyingLabel,
-		sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN && served.Label == NeedsHumanLabel:
+		sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN && isVerifyParkLabel(served.Label):
 	default:
 		return served
 	}
@@ -652,11 +768,15 @@ func PreVerifyStatusOutput(sess *pb.Session) Output {
 //     shows "archiving" until the archive completes or errors)
 //     2d. Successful build receipt on a settled green PR → "✓ ready" / SUCCESS.
 //     Ready wins over waiting, green PR labels, idle and stopped only.
+//     A WORKING chat never reaches this branch through an armed callback: the
+//     daemon resolves only an idle chat to WAITING, so Ready never covers live
+//     work.
 //  3. ChatStatus WAITING  → "waiting"    / INFO    / spinner, EXCEPT when
 //     BOS-1269's demotion conjunction holds (every waiting-resolved chat was
-//     idle-derived AND the PR is verified-positive), in which case this branch
-//     falls through to the rest of the cascade — it is gated in place, never
-//     relocated, so every branch above AND below it keeps its position.
+//     idle-derived AND the PR is verified-positive or parked for a human), in
+//     which case this branch falls through to the rest of the cascade — it is
+//     gated in place, never relocated, so every branch above AND below it
+//     keeps its position.
 //  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
 //  5. Draft PR failure    → "? PR failed" / WARNING / no spinner (BOS-855: a
 //     PAST outcome, so it sits below every live-activity branch above and above
@@ -667,7 +787,8 @@ func PreVerifyStatusOutput(sess *pb.Session) Output {
 //  8. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
 //     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking",
 //     "verifying" (INFO, spinner; DANGER like checking when changes are
-//     requested), "needs human" (WARNING, no spinner)
+//     requested), "needs sign-off" (WARNING, no spinner) or "blocked"
+//     (DANGER, no spinner) by Input.ParkCodes
 //  9. ChatStatus IDLE     → "idle" / WARNING
 //  10. default            → "stopped" / MUTED
 func baseStatus(in Input) Output { return cascade(in, true) }
@@ -719,6 +840,29 @@ func PreReadyOutput(sess *pb.Session) Output {
 	default:
 		return served
 	}
+}
+
+// PreWorkingOverWaitingOutput reproduces the composite a session marked
+// is_working_over_waiting served before an armed callback stopped hiding live
+// work. Each of its working chats then resolved to WAITING, so the session
+// folded to WAITING over chats that had reported WORKING (never demoted), and
+// the cascade ran from there: "✓ ready" on a receipted settled green PR, else
+// "waiting". readyOverWaiting is the is_ready_over_waiting mark that run would
+// have stamped, so the older Ready inverse composes on the result.
+//
+// It recomputes rather than freezing a tuple because both outcomes hang on
+// Session facts the served row still carries (the receipt, the PR status, the
+// errored state), and it emits the full Current-shape composite with the
+// BOS-430 recolor, like every display inverse that runs first. Only a marked
+// row still showing "working" changes; anything else comes back as served.
+func PreWorkingOverWaitingOutput(sess *pb.Session) (out Output, readyOverWaiting bool) {
+	served := Output{Label: sess.GetDisplayLabel(), Intent: sess.GetDisplayIntent(), Spinner: sess.GetDisplaySpinner()}
+	if !sess.GetIsWorkingOverWaiting() || served.Label != WorkingLabel {
+		return served, sess.GetIsReadyOverWaiting()
+	}
+	in := Input{Session: sess, ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING}
+	out = Compute(in)
+	return out, WasReadyOverWaiting(in, out)
 }
 
 func cascade(in Input, withReady bool) Output {
@@ -818,7 +962,7 @@ func cascade(in Input, withReady bool) Output {
 	if in.Session != nil && in.Session.DisplayIsRepairing {
 		return Output{Label: "repairing", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
 	}
-	if out, ok := prOutput(in.Session); ok {
+	if out, ok := prOutput(in.Session, in.ParkCodes); ok {
 		return out
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_IDLE {
@@ -886,7 +1030,7 @@ func workflowOutput(sess *pb.Session) (Output, bool) {
 	}
 }
 
-func prOutput(sess *pb.Session) (Output, bool) {
+func prOutput(sess *pb.Session, parkCodes []string) (Output, bool) {
 	if sess == nil {
 		return Output{}, false
 	}
@@ -922,7 +1066,7 @@ func prOutput(sess *pb.Session) (Output, bool) {
 		}
 		return Output{Label: VerifyingLabel, Intent: intent, Spinner: true}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
-		return Output{Label: NeedsHumanLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}, true
+		return VerifyParkOutput(parkCodes), true
 	default:
 		return Output{}, false
 	}

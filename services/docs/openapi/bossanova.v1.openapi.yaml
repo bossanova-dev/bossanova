@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-17'
+  version: '2026-09-18'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -5913,6 +5913,19 @@ components:
          flattened from the agent's on-disk JSONL by the owning plugin. It carries
          enough to render a conversation and to derive the "final result" without the
          daemon needing to understand any agent-specific transcript format.
+    bossanova.v1.ChatRole:
+      type: string
+      title: ChatRole
+      enum:
+        - CHAT_ROLE_UNSPECIFIED
+        - CHAT_ROLE_BUILD
+        - CHAT_ROLE_REPAIR
+        - CHAT_ROLE_VERIFY
+        - CHAT_ROLE_OPERATOR
+      description: |-
+        ChatRole is the purpose a chat was created for. Automation may replace an
+         idle BUILD, REPAIR or VERIFY chat; it never replaces an OPERATOR chat or a
+         legacy UNSPECIFIED one.
     bossanova.v1.ChatStatus:
       type: string
       title: ChatStatus
@@ -5946,8 +5959,10 @@ components:
           title: waiting_reason
           description: |-
             Short human-readable reason the chat is waiting, e.g.
-             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-             CHAT_STATUS_WAITING.
+             "awaiting checks_passed_ready on owner/repo#123": the callback the chat
+             has armed. Set on CHAT_STATUS_WAITING and, from API version 2026-09-18, on
+             a CHAT_STATUS_WORKING chat whose armed callback no longer hides its work
+             (older pins receive WAITING). Empty otherwise.
       title: ChatStatusDelta
       additionalProperties: false
       description: |-
@@ -5971,8 +5986,10 @@ components:
           title: waiting_reason
           description: |-
             Short human-readable reason the chat is waiting, e.g.
-             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-             CHAT_STATUS_WAITING.
+             "awaiting checks_passed_ready on owner/repo#123": the callback the chat
+             has armed. Set on CHAT_STATUS_WAITING and, from API version 2026-09-18, on
+             a CHAT_STATUS_WORKING chat whose armed callback no longer hides its work
+             (older pins receive WAITING). Empty otherwise.
         spinnerPresent:
           type: boolean
           title: spinner_present
@@ -6177,6 +6194,23 @@ components:
         ownerUserId:
           type: string
           title: owner_user_id
+        role:
+          title: role
+          description: |-
+            The purpose the chat was created for. UNSPECIFIED is a legacy chat created
+             before roles existed. Unlike title, which agents and operators rename, the
+             role is set once at creation and is what automation keys on.
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
+        reclaimedAt:
+          title: reclaimed_at
+          description: |-
+            Set when automation replaced this chat (repair reclaiming an idle build,
+             repair or verify chat). A replaced chat did run, so start_error stays
+             empty; reclaim_reason says why it was replaced.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        reclaimReason:
+          type: string
+          title: reclaim_reason
       title: ClaudeChat
       additionalProperties: false
       description: ClaudeChat represents a Claude Code conversation associated with a session.
@@ -6275,6 +6309,11 @@ components:
             - string
             - "null"
           title: setup_script
+        isTrusted:
+          type:
+            - boolean
+            - "null"
+          title: is_trusted
       title: CloneAndRegisterRepoRequest
       additionalProperties: false
     bossanova.v1.CloneAndRegisterRepoResponse:
@@ -7731,6 +7770,7 @@ components:
              branch, setup script, or PR, and no worktree base dir or base branch is
              required. Set by trigger launches and honoured for every caller. Cannot be
              combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
+             Requires is_tmux_unattended; bare detach is insufficient (InvalidArgument).
              Mirrors StartSessionOpts.ZeroOutput.
       title: CreateSessionRequest
       additionalProperties: false
@@ -9057,6 +9097,17 @@ components:
             The agent session id of the chat making the request ($BOSS_AGENT_SESSION_ID).
              It must be one of the session's chats, and it counts as busy until the
              tracker observes it settle.
+        isBlocked:
+          type: boolean
+          title: is_blocked
+          description: |-
+            True when the run ended BLOCKED on a person. bossd persists blocked_reason
+             on the session before deferring the finish, so whichever finalize reaches
+             the run leaves its PR draft and moves the session to Blocked.
+        blockedReason:
+          type: string
+          title: blocked_reason
+          description: Why the run is blocked; used only with is_blocked. Blank gets a default.
       title: FinishUnattendedRunRequest
       additionalProperties: false
     bossanova.v1.FinishUnattendedRunResponse:
@@ -9087,6 +9138,12 @@ components:
           title: event
           description: Event to fire.
           $ref: '#/components/schemas/bossanova.v1.SessionEvent'
+        blockedReason:
+          type: string
+          title: blocked_reason
+          description: |-
+            Why the session is blocked, recorded as its blocked_reason. Honoured only
+             for SESSION_EVENT_BLOCK; empty keeps the state machine's default reason.
       title: FireSessionEventRequest
       additionalProperties: false
     bossanova.v1.FireSessionEventResponse:
@@ -15946,6 +16003,12 @@ components:
              the parent session's agent_name. Honored only when the named agent
              plugin is loaded — otherwise dispatch falls back per AgentDispatcher
              resolution rules.
+        role:
+          title: role
+          description: |-
+            role is the purpose of a NEW chat. UNSPECIFIED records an operator chat.
+             Ignored when the chat already exists: a chat's role never changes.
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
       title: RecordChatRequest
       additionalProperties: false
     bossanova.v1.RecordChatResponse:
@@ -16864,6 +16927,22 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ResumeSessionResponse
+      additionalProperties: false
+    bossanova.v1.ResumeSessionRunRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ResumeSessionRunRequest
+      additionalProperties: false
+    bossanova.v1.ResumeSessionRunResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ResumeSessionRunResponse
       additionalProperties: false
     bossanova.v1.ResumeWorkflowRequest:
       type: object
@@ -18252,6 +18331,14 @@ components:
              attention_status (22), which is unchanged. Served from API version
              2026-09-17; older pins receive it cleared.
           $ref: '#/components/schemas/bossanova.v1.SessionAttention'
+        isWorkingOverWaiting:
+          type: boolean
+          title: is_working_over_waiting
+          description: |-
+            Transport-only inverse mark: the composite reads "working" only because an
+             armed callback no longer hides live work (every working chat carries one),
+             where versions before 2026-09-18 served the waiting composite. Computed
+             with the served label, never persisted; the down-convert keys on it.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -18535,8 +18622,10 @@ components:
           title: waiting_reason
           description: |-
             Short human-readable reason the session's chats are waiting, e.g.
-             "awaiting checks_passed_ready on owner/repo#123". Empty unless status is
-             CHAT_STATUS_WAITING.
+             "awaiting checks_passed_ready on owner/repo#123". Set on
+             CHAT_STATUS_WAITING and, from API version 2026-09-18, on CHAT_STATUS_WORKING
+             when every working chat has an armed callback (older pins receive
+             WAITING). Empty otherwise.
         phase:
           type: string
           title: phase
@@ -19078,6 +19167,14 @@ components:
              of starting a fresh one, so the agent retains the history of earlier
              attempts. Used by auto-repair to make each loop iteration continue the
              previous iteration's conversation. Empty = fresh start.
+        role:
+          title: role
+          description: |-
+            The purpose of the chat this run creates. A REPAIR run that finds an
+             operator or legacy chat in the session starts beside it instead of
+             replacing it. UNSPECIFIED with the boss-repair command is read as REPAIR so
+             an older repair plugin keeps working.
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
       title: StartChatRunHostRequest
       additionalProperties: false
     bossanova.v1.StartChatRunHostResponse:

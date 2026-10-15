@@ -132,7 +132,8 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 		}
 		return s.Render(sp.View() + displaystatus.VerifyingLabel)
 	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
-		return styleStatusWarning.Render(displaystatus.NeedsHumanLabel)
+		out := displaystatus.VerifyParkOutput(displaystatus.VerifyParkSummaryCodes(sess.GetAttentionStatus().GetSummary()))
+		return styleForIntent(out.Intent).Render(out.Label)
 	default:
 		return ""
 	}
@@ -169,12 +170,13 @@ type sessionHint struct {
 	Text string
 	// Demotable is true when the recessive treatment may apply to this hint.
 	Demotable bool
-	// NeedsHuman marks the verify-park attention hint (BOS-1522; see
-	// isVerifyParkAttention). It selects the warning tone tier in
-	// warningHintStyle so the "needs human: …" line matches the row's warning
-	// STATUS label and "!" instead of reading as an error. The zero value is the
-	// danger tier, so every other producer keeps its red without opting out.
-	NeedsHuman bool
+	// SignOff marks a verify-park hint whose park only asks for a sign-off
+	// (BOS-1522; see isVerifyParkAttention and displaystatus.VerifyParkHint). It
+	// selects the warning tone tier in warningHintStyle so the
+	// "needs sign-off: …" line matches the row's warning STATUS label.
+	// A "blocked: …" park keeps the zero value, the danger tier, like every
+	// other producer.
+	SignOff bool
 }
 
 func sessionWarningHints(sess *pb.Session) []sessionHint {
@@ -196,10 +198,14 @@ func sessionWarningHints(sess *pb.Session) []sessionHint {
 	if hint := attentionWarningHint(sess); hint != "" {
 		duplicatesDraftPR := draftPRFailure != "" && sessionreason.IsDraftPRCreationFailure(&hint)
 		if !duplicatesDraftPR {
+			signOff := false
+			if isVerifyParkAttention(sess) {
+				hint, signOff = displaystatus.VerifyParkHint(hint)
+			}
 			hints = append(hints, sessionHint{
-				Text:       hint,
-				Demotable:  attentionHintDemotable(sess.GetAttentionStatus().GetReason()),
-				NeedsHuman: isVerifyParkAttention(sess),
+				Text:      hint,
+				Demotable: attentionHintDemotable(sess.GetAttentionStatus().GetReason()),
+				SignOff:   signOff,
 			})
 		}
 	}
@@ -414,12 +420,12 @@ func hintDemoted(sess *pb.Session, hint sessionHint) bool {
 //
 // Two independent axes decide the style. hintDemoted is the sole demotion
 // predicate (full vs faded). The tone tier comes from the hint itself: the
-// verify-park "needs human" hint (BOS-1522) renders on the warning tier, so it
-// agrees with the row's warning STATUS label and "!"; every other hint renders
-// on the danger tier.
+// verify-park "needs sign-off" hint (BOS-1522) renders on the warning tier, so
+// it agrees with the row's warning STATUS label; every other hint,
+// including a "blocked" verify park, renders on the danger tier.
 func warningHintStyle(sess *pb.Session, hint sessionHint) lipgloss.Style {
 	demoted := hintDemoted(sess, hint)
-	if hint.NeedsHuman {
+	if hint.SignOff {
 		if demoted {
 			return styleStatusWarningFaded
 		}
@@ -441,25 +447,6 @@ func isVerifyParkAttention(sess *pb.Session) bool {
 	return sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
 		sess.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
 		sess.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
-}
-
-// attentionIndicatorDemoted reports whether the row's "!" should render
-// recessively: only when the row carries at least one hint and EVERY one of them
-// is demoted. renderAttentionIndicator reads only AttentionStatus.Reason and so
-// cannot see the rotation, setup, start-error or draft-PR hints at all — without
-// this rule an implementer can ship a faded "!" above a bright exempt hint,
-// which is the same self-contradiction the recessive treatment exists to remove.
-func attentionIndicatorDemoted(sess *pb.Session) bool {
-	hints := sessionWarningHints(sess)
-	if len(hints) == 0 {
-		return false
-	}
-	for _, h := range hints {
-		if !hintDemoted(sess, h) {
-			return false
-		}
-	}
-	return true
 }
 
 // setupErrorHint returns a short "setup script failed: <reason>" hint when
@@ -855,6 +842,9 @@ func shortDuration(d time.Duration) string {
 // Returns "" when the session has no hints, so callers can skip rendering
 // entirely (no empty block, no layout shift).
 func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.ClaudeChat, width int) string {
+	if a := sess.GetAttention(); a != nil {
+		return styleSubtle.Width(width).Render(a.GetSentence())
+	}
 	hints := sessionWarningHints(sess)
 	// A tmux launch failure is the row's only carrier of that state, so it is
 	// exempt from the recessive treatment.
@@ -1261,7 +1251,8 @@ func isHTTPEndpointURL(raw string) bool {
 // sessionSubRowCount returns how many NON-SELECTABLE auxiliary rows the Home
 // session list renders directly beneath a session's primary row: the endpoint
 // row (0 or 1), then the waiting-reason row (0 or 1), then one row per warning
-// hint.
+// hint. Attention rows replace legacy hints with their sentence wrapped to
+// nameWidth, capped at four lines.
 //
 // waitingReason is the daemon-supplied reason for the session's aggregate
 // waiting state (SessionStatusEntry.waiting_reason), passed in rather than read
@@ -1272,7 +1263,14 @@ func isHTTPEndpointURL(raw string) bool {
 // construction, table height, cursor↔session mapping, and cursor normalization
 // all route through it — if any of them counted independently they could
 // disagree and strand the cursor on an unselectable row (BOS-474).
-func sessionSubRowCount(sess *pb.Session, waitingReason string) int {
+func sessionSubRowCount(sess *pb.Session, waitingReason string, nameWidth int) int {
+	if sess.GetAttention() != nil {
+		n := len(attentionSentenceLines(sess, nameWidth))
+		if sessionHasEndpointRow(sess) {
+			n++
+		}
+		return n
+	}
 	n := len(sessionWarningHints(sess))
 	if sessionHasEndpointRow(sess) {
 		n++

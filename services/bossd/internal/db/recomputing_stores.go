@@ -444,6 +444,51 @@ func (s *RecomputingSessionStore) ReparkOrphanResume(ctx context.Context, id, re
 	return advanced, err
 }
 
+var (
+	_ RunDeathObserver   = (*RecomputingSessionStore)(nil)
+	_ RunResumeCommitter = (*RecomputingSessionStore)(nil)
+	_ RunResumeGiveUpper = (*RecomputingSessionStore)(nil)
+)
+
+// ObserveRunDeath records retry timing without changing activity or display state.
+func (s *RecomputingSessionStore) ObserveRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error) {
+	inner, ok := s.SessionStore.(RunDeathObserver)
+	if !ok {
+		return time.Time{}, fmt.Errorf("session store does not support run death observation")
+	}
+	return inner.ObserveRunDeath(ctx, id, agentID, expectedState, at)
+}
+
+func (s *RecomputingSessionStore) CommitRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error) {
+	inner, ok := s.SessionStore.(RunResumeCommitter)
+	if !ok {
+		return nil, fmt.Errorf("session store does not support run resume commit")
+	}
+	row, err := inner.CommitRunResume(ctx, id, expectedState, priorAgentID, newAgentID)
+	if err == nil {
+		_ = s.recomputer.Recompute(ctx, id)
+		if row != nil && int(row.State) != expectedState {
+			s.notifyTransition(ctx, id, row.State)
+		}
+	}
+	return row, err
+}
+
+func (s *RecomputingSessionStore) GiveUpRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error {
+	inner, ok := s.SessionStore.(RunResumeGiveUpper)
+	if !ok {
+		return fmt.Errorf("session store does not support run resume give-up")
+	}
+	if err := inner.GiveUpRunResume(ctx, id, expectedState, priorAgentID, reason); err != nil {
+		return err
+	}
+	_ = s.recomputer.Recompute(ctx, id)
+	if machine.State(expectedState) != machine.Blocked {
+		s.notifyPersistedState(ctx, id)
+	}
+	return nil
+}
+
 // isComputerSelfWrite reports whether the only non-nil fields in params are
 // the display-trio (DisplayLabel/DisplayIntent/DisplaySpinner). When that
 // holds, the write originated from DisplayStatusComputer.Recompute writing

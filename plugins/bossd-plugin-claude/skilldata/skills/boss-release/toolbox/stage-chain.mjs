@@ -42,7 +42,10 @@ export const NEXT_STAGE = Object.freeze({
   verify: 'release',
   release: null,
 })
-// The one title both this helper and the verify router use for a PR session's verify chat.
+// The role bossd stores on a PR session's verify chat, and the title it was created with. The
+// title is only the fallback for a chat created before chats carried roles: agents and operators
+// rename titles, so a current chat is found by role.
+export const VERIFY_CHAT_ROLE = 'verify'
 export const VERIFY_CHAT_TITLE = 'verify'
 export const VERIFY_TRIGGER = 'checks_passed_ready'
 // If the callback lapses, the verify cron gate still covers the PR.
@@ -119,20 +122,30 @@ const createdMs = (chat) => {
 }
 
 /**
- * The PR session's verify chat: the newest chat titled `verify` (trimmed, case-insensitive) that
- * has an id and is not STOPPED, or null. Ties keep the listing's order.
+ * The PR session's verify chat, or null: the newest chat whose role is `verify`; failing that, the
+ * newest chat with no role titled `verify` (trimmed, case-insensitive). A chat with any other role
+ * is never the verify chat, whatever its title. Candidates need an id and must not be STOPPED. Ties
+ * keep the listing's order.
  */
 export function pickVerifyChat(chats) {
   if (!Array.isArray(chats)) return null
-  let best = null
+  let byRole = null
+  let byTitle = null
   for (const chat of chats) {
     if (!chat || typeof chat !== 'object') continue
-    if (typeof chat.title !== 'string' || chat.title.trim().toLowerCase() !== VERIFY_CHAT_TITLE)
-      continue
     if (!text(chat.agent_session_id) || normalizeStatus(chat.status) === STOPPED) continue
-    if (!best || createdMs(chat) > createdMs(best)) best = chat
+    const role = typeof chat.role === 'string' ? chat.role.trim().toLowerCase() : ''
+    if (role === VERIFY_CHAT_ROLE) {
+      if (!byRole || createdMs(chat) > createdMs(byRole)) byRole = chat
+    } else if (
+      !role &&
+      typeof chat.title === 'string' &&
+      chat.title.trim().toLowerCase() === VERIFY_CHAT_TITLE
+    ) {
+      if (!byTitle || createdMs(chat) > createdMs(byTitle)) byTitle = chat
+    }
   }
-  return best
+  return byRole ?? byTitle
 }
 
 /**
@@ -170,7 +183,16 @@ export function cronListArgv(repoId) {
 }
 
 export function verifyChatArgv(sessionId) {
-  return ['chat', 'new', sessionId, '--title', VERIFY_CHAT_TITLE, '--json']
+  return [
+    'chat',
+    'new',
+    sessionId,
+    '--title',
+    VERIFY_CHAT_TITLE,
+    '--role',
+    VERIFY_CHAT_ROLE,
+    '--json',
+  ]
 }
 
 export function armedListArgv({ pr, chatId }) {

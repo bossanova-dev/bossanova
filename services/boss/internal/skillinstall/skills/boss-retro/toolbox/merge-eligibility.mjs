@@ -267,6 +267,8 @@ export function judgeCiOnHead({
   checkRuns,
   priorContexts,
   workflowRuns,
+  readError,
+  structurallyAbsentContexts,
 } = {}) {
   const excluded = new Set()
   const verdict = classifyChecks({
@@ -276,6 +278,8 @@ export function judgeCiOnHead({
     checkRuns: dropBossContexts(checkRuns, excluded),
     priorContexts: dropBossContexts(priorContexts, excluded),
     workflowRuns,
+    readError,
+    structurallyAbsentContexts,
   })
   return {
     verdict,

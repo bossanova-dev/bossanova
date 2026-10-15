@@ -1486,6 +1486,17 @@ func run(opts runOpts) error {
 		}
 	}
 
+	{
+		started := time.Now()
+		log.Info().Msg("scrubbing freed database pages after the repo key move; one-time")
+		ran, err := db.ScrubFreedSecretPages(context.Background(), database)
+		if err != nil {
+			log.Warn().Err(err).Msg("scrubbing freed database pages failed; retrying on next start")
+		} else if ran {
+			log.Info().Dur("elapsed", time.Since(started)).Msg("scrubbed freed database pages after the repo key move")
+		}
+	}
+
 	// --- Stores ---
 
 	repos := db.NewRepoStore(database, db.WithRepoSecrets(repoSecrets))
@@ -2579,7 +2590,8 @@ func run(opts runOpts) error {
 		RunCompletionEvidence: lifecycle.CronRunCompletionEvidence,
 		// Defer an auth-failed chat instead of finalizing it; the stranded sweep
 		// blocks it (BOS-1530).
-		ChatAuthFailed: lifecycle.SessionChatAuthFailed,
+		ChatAuthFailed:  lifecycle.SessionChatAuthFailed,
+		DeferDroppedRun: lifecycle.DeferDroppedRunFinalization,
 	})
 	lifecycle.SetCronCompletionNotifier(cronGate)
 	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun
@@ -3855,6 +3867,7 @@ func run(opts runOpts) error {
 		ProtectedRoots: startupProtectedRoots,
 	})
 
+	lifecycle.SetRunResumeStore(resumeAttempts)
 	streamAttentionServer.Store(srv)
 
 	archiveSeam.Store(srv)
@@ -4213,7 +4226,10 @@ func run(opts runOpts) error {
 		Finalizer:       lifecycle,
 		QuestionSignals: questionSignals,
 		PromptReceipts:  lifecycle,
-		Logger:          log.Logger,
+		// The turn-ended hook's background-agent count feeds the tmux poller
+		// through the same tracker it reports into.
+		BackgroundAgents: chatStatusTracker,
+		Logger:           log.Logger,
 	}
 	// HostService is non-nil whenever any plugin is configured (it's
 	// constructed alongside the plugin host). When no plugins are loaded
@@ -4506,6 +4522,21 @@ func run(opts runOpts) error {
 			case <-ticker.C:
 				chatStatusTracker.Cleanup()
 				sweepWaitingChats(pollerCtx, chatStatusTracker, agentChats, displayComputer)
+			}
+		}
+	})
+
+	// Relaunches may wait for agent readiness; keep them off the chat-status
+	// cleanup lane while retaining the 30-second due-attempt cadence.
+	trackedGo("dropped-run-resume-sweep", func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				lifecycle.ResumeDroppedRuns(pollerCtx)
 			}
 		}
 	})

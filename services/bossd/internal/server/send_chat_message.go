@@ -137,6 +137,21 @@ func deliveryConfirmation(sendErr error, willSubmit, receiptSeen bool) string {
 	}
 }
 
+// bindCodexRolloutAfterSend starts provider session discovery for a codex chat
+// that is still unbound once a message reaches its pane. Codex creates its
+// rollout on a thread's first turn, not at launch, so a chat opened with
+// `boss chat new` and prompted later outlives the launch-time discovery window
+// and stays unbound until its next wake. sentAt as the launch floor confines
+// binding to the pane's own open rollout: the time-window fallback rejects every
+// thread started before the send, this one included, so it can never bind a
+// sibling's older rollout in the same worktree (BOS-290).
+func (s *Server) bindCodexRolloutAfterSend(chat *models.AgentChat, worktreePath, tmuxName string, sentAt time.Time, tmuxer tmuxSpawner) {
+	if chat.AgentName != "codex" || (chat.ProviderSessionID != nil && *chat.ProviderSessionID != "") {
+		return
+	}
+	s.discoverProviderSessionIDInBackground(chat, worktreePath, tmuxName, sentAt, s.chatSpawnDeps().Resolver, tmuxer)
+}
+
 // isClaudeChat reports whether a chat runs Claude; an empty agent name is the
 // legacy Claude default, as chatReadyMarker resolves it.
 func isClaudeChat(agentName string) bool {
@@ -375,6 +390,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			return false
 		}
 	}
+	sentAt := time.Now()
 	sendErr := spawner.SendMessage(ctx, tmuxName, message, req.Msg.GetSubmit(), chatReadyMarker(chat.AgentName), s.modalDetectorFor(chat.AgentName),
 		tmux.SendHooks{BeforeSubmit: beforeSubmit, Submitted: submitted, ReceiptRequired: receiptRequired})
 	if receiptOverridesOutcome(sendErr, submitted) {
@@ -393,6 +409,14 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 		Str("confirmed_by", deliveryConfirmation(sendErr, willSubmit, receiptSeen.Load())).
 		Bool("receipt_required", receiptRequired).
 		Msg("chat message delivery")
+	if willSubmit {
+		switch tmux.OutcomeOf(sendErr) {
+		case tmux.OutcomeSubmitted, tmux.OutcomeQueued, tmux.OutcomeUnconfirmed:
+			s.bindCodexRolloutAfterSend(chat, sess.WorktreePath, tmuxName, sentAt, spawner)
+		case tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal, tmux.OutcomeUnclassified:
+			// Nothing reached the agent, so it started no turn to write a rollout for.
+		}
+	}
 	if err := sendErr; err != nil {
 		// Three outcomes, three answers (BOS-598). Only the verifier classifies an
 		// error; everything else (ready-marker timeout, a tmux command that failed

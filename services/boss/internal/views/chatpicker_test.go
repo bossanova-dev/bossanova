@@ -166,8 +166,12 @@ func (s *chatPickerStub) CreateSession(context.Context, *pb.CreateSessionRequest
 func (s *chatPickerStub) StopSession(context.Context, string) (*pb.Session, error)   { panic("unused") }
 func (s *chatPickerStub) PauseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *chatPickerStub) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
-func (s *chatPickerStub) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
-func (s *chatPickerStub) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *chatPickerStub) ResumeSessionRun(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
+
+func (s *chatPickerStub) RetrySession(context.Context, string) (*pb.Session, error) { panic("unused") }
+func (s *chatPickerStub) CloseSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *chatPickerStub) MergeSession(context.Context, string, string) (*pb.Session, string, error) {
 	panic("unused")
 }
@@ -210,7 +214,7 @@ func (s *chatPickerStub) ResurrectSession(context.Context, string) (client.Resur
 func (s *chatPickerStub) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *chatPickerStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {

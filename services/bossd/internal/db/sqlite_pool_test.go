@@ -51,6 +51,14 @@ func TestPragmasAcrossPool(t *testing.T) {
 			t.Errorf("conn %d foreign_keys = %d, want 1", i, fk)
 		}
 
+		var secureDelete int
+		if err := c.QueryRowContext(ctx, "PRAGMA secure_delete").Scan(&secureDelete); err != nil {
+			t.Fatalf("conn %d secure_delete: %v", i, err)
+		}
+		if secureDelete != 2 {
+			t.Errorf("conn %d secure_delete = %d, want 2 (FAST)", i, secureDelete)
+		}
+
 		var bt int
 		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&bt); err != nil {
 			t.Fatalf("conn %d busy_timeout: %v", i, err)

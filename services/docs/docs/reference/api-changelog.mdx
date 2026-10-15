@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-17**. The engineering procedure for adding a new
+The current version is **2026-09-18**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -605,7 +605,7 @@ The additive transport facts `Session.has_build_receipt` and
 responses. The waiting inverse mark is stamped by list recomputation; a
 single-session read without that mark restores the underlying green PR label.
 
-### 2026-09-17 — Session attention (Current)
+### 2026-09-17 — Session attention
 
 `Session` carries a new `attention` field, a `SessionAttention` that answers
 "what does this session need from you" in one place:
@@ -633,6 +633,52 @@ needed".
 Clients pinned to 2026-09-16 or older receive no `attention` on every
 session-bearing response, including the streamed `ProxyCreateSession` created
 message.
+
+### 2026-09-18 — Needs human outranks an idle wait (Current)
+
+A session whose head the verify stage parked for a person
+(`DISPLAY_STATUS_NEEDS_HUMAN`), and whose waiting chats are all idle on an armed
+callback, serves the `needs human` composite (warning, no spinner) with
+`Session.is_waiting_demoted` set. Before this version such a session served
+`waiting` (info, spinner), which read as checks still running while nothing was.
+A live verification (`verifying`), still-running CI and failing CI are
+unchanged.
+
+Clients pinned to 2026-09-17 or older receive `waiting` on session-bearing unary
+responses. As for the 2026-09-15 waiting demotion, only list recomputation
+stamps the mark, so a single-session read serves the new composite.
+
+The same version splits the verify park's composite by what it asks of the
+operator. A park whose codes are all policy sign-off codes (`human-review:ui`,
+`human-review:security`, `human-review:database`, `always-human-path`) serves
+`needs sign-off` (warning, no spinner). A park with any failure or incomplete
+code (`no-receipt`, `ledger-open`, `extension-failed`, `repair-exhausted`,
+`no-session`, `human-review:unproven`), an unknown code, or no code serves
+`blocked` (danger, no spinner). `display_status` stays
+`DISPLAY_STATUS_NEEDS_HUMAN`, and `merge_block` and `attention_status` are
+unchanged. Clients pinned to 2026-09-17 or older receive `needs human`
+(warning) on session-bearing unary responses.
+
+The same version stops an armed callback from hiding live work. Only a chat
+idle at its prompt with an armed callback is `CHAT_STATUS_WAITING`; a chat that
+reports `CHAT_STATUS_WORKING` stays `WORKING` and keeps its `waiting_reason` on
+`ChatStatusEntry`, `ChatStatusDelta` and, when every working chat has one,
+`SessionStatusEntry`. Such a session's composite reads `working` where it read
+`waiting`, or `✓ ready` over a receipted green PR, and carries the new
+transport-only `Session.is_working_over_waiting` (field 79). A Claude chat whose
+main loop is idle while a background subagent runs now also reports `WORKING`.
+Clients pinned to 2026-09-17 or older receive `WAITING` for a working chat that
+carries a `waiting_reason` (from `GetChatStatuses`, `ProxyGetSessionStatuses`
+and `ProxyStreamChats`) and the `waiting` or `✓ ready` composite on marked
+session-bearing unary responses; as for the other marks, only list
+recomputation stamps it.
+
+#### Available run resume actions
+
+Fix rows offer resume when the session meets restart requirements: archived and completed
+sessions, sessions without an original prompt, and sessions with an active human
+chat cannot restart. Clients pinned to 2026-09-17 retain the original fix action
+list; earlier clients continue receiving no attention field.
 
 ## Additive changes
 
@@ -680,3 +726,8 @@ quota.
   OrchestratorService.
 - `docs/api-versioning.md` in the repository — the engineering procedure for
   adding a new API version and down-convert transform.
+
+### Daemon run resume
+
+The daemon also adds `ResumeSessionRun`, which starts a fresh chat in the same
+session and clears its persisted automatic retry budget.

@@ -11,7 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/telemetry"
 )
 
@@ -36,6 +38,7 @@ const (
 	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
 	settingsRowKindNotifications                        // built-in desktop notifications toggle
 	settingsRowKindDaemonName                           // built-in daemon display name override
+	settingsRowKindMCPToken                             // transient MCP HTTP credential
 )
 
 // daemonRestartHint is appended to the daemon name row so the delayed effect
@@ -83,7 +86,12 @@ type GeneralSettingsModel struct {
 	// tests pin the field directly for deterministic rendering.
 	hostname string
 
-	width int
+	width            int
+	mcpToken         string
+	mcpTokenRevealed bool
+	confirmMCPRotate bool
+	rotatingMCPToken bool
+	mcpTokenNotice   string
 }
 
 // unknownHostname stands in for a name we cannot render. It is PURELY a render
@@ -376,6 +384,7 @@ func (m *GeneralSettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindDaemonName, Label: "Daemon name"},
 		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
 		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
+		settingsRow{Kind: settingsRowKindMCPToken, Label: "MCP HTTP token"},
 	)
 
 	// Default agent picker — only meaningful when >1 agent is enabled.
@@ -443,9 +452,75 @@ func (m *GeneralSettingsModel) rebuildRows() {
 	}
 }
 
-func (m GeneralSettingsModel) Init() tea.Cmd { return nil }
+var generalSettingsLoadMCPToken = func() (string, error) {
+	socketPath, err := client.DefaultSocketPath()
+	if err != nil {
+		return "", err
+	}
+	return socketauth.LoadOrCreateHTTPToken(socketPath)
+}
+
+var generalSettingsRotateMCPToken = func() (daemon.MCPTokenRotation, error) {
+	socketPath, err := client.DefaultSocketPath()
+	if err != nil {
+		return daemon.MCPTokenRotation{}, err
+	}
+	return daemon.RotateMCPHTTPToken(socketPath, daemon.McpGetStatus, daemon.McpStop, daemon.McpStart)
+}
+
+type generalSettingsMCPTokenMsg struct {
+	result daemon.MCPTokenRotation
+	err    error
+}
+
+func (m GeneralSettingsModel) Init() tea.Cmd {
+	return func() tea.Msg {
+		token, err := generalSettingsLoadMCPToken()
+		return generalSettingsMCPTokenMsg{result: daemon.MCPTokenRotation{Token: token}, err: err}
+	}
+}
 
 func (m GeneralSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if result, ok := msg.(generalSettingsMCPTokenMsg); ok {
+		m.rotatingMCPToken = false
+		m.err = result.err
+		if result.result.Token != "" {
+			m.mcpToken = result.result.Token
+			m.mcpTokenRevealed = false
+		}
+		if result.result.Restarted {
+			m.mcpTokenNotice = "MCP token rotated; managed service restarted. Update your MCP host configs."
+		}
+		if result.result.ManualRestartRequired {
+			m.mcpTokenNotice = "MCP token rotated. Restart any manually started mcp --http server and update your MCP host configs."
+		}
+		return m, nil
+	}
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = size.Width
+	}
+	if m.rotatingMCPToken {
+		return m, nil
+	}
+	if m.confirmMCPRotate {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "y", "Y", "enter":
+				m.confirmMCPRotate = false
+				m.rotatingMCPToken = true
+				return m, func() tea.Msg {
+					result, err := generalSettingsRotateMCPToken()
+					return generalSettingsMCPTokenMsg{result: result, err: err}
+				}
+			case "n", "N", "esc":
+				m.confirmMCPRotate = false
+			}
+		}
+		if size, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width = size.Width
+		}
+		return m, nil
+	}
 	if m.editingRow >= 0 {
 		return m.updateEditing(msg)
 	}
@@ -458,11 +533,16 @@ func (m GeneralSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
+			m.mcpTokenRevealed = false
 			return m, nil
 		case "up", "k":
 			m.moveCursor(-1)
 		case "down", "j":
 			m.moveCursor(+1)
+		case "r":
+			if m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == settingsRowKindMCPToken {
+				m.confirmMCPRotate = true
+			}
 		case "enter", "space", " ":
 			return m.activateRow()
 		}
@@ -545,6 +625,8 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 	}
 	row := m.rows[m.cursor]
 	switch row.Kind {
+	case settingsRowKindMCPToken:
+		m.mcpTokenRevealed = !m.mcpTokenRevealed
 	case settingsRowKindAgentHeader, settingsRowKindTracingHeader:
 		// Header rows are non-interactive and the cursor never lands on
 		// one (moveCursor skips them); nothing to do.
@@ -836,6 +918,14 @@ func (m GeneralSettingsModel) textEntryActive() bool { return m.editingRow >= 0 
 
 func (m GeneralSettingsModel) View() tea.View {
 	var b strings.Builder
+	if m.confirmMCPRotate {
+		b.WriteString(styleTitle.Render("Rotate MCP HTTP token?"))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render("Every MCP host using the old token must be updated. A running managed MCP service will restart."))
+		b.WriteString("\n")
+		b.WriteString(actionBarWidth(m.width, []string{"[y/enter] confirm", "[n/esc] cancel"}))
+		return tea.NewView(b.String())
+	}
 
 	if m.err != nil {
 		b.WriteString(renderError(rpcErrorMessage(m.err), m.width))
@@ -854,7 +944,16 @@ func (m GeneralSettingsModel) View() tea.View {
 		m.renderRow(&b, i, row, editing)
 	}
 
-	if editing {
+	if m.mcpTokenNotice != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleSubtle.Render(m.mcpTokenNotice)))
+		b.WriteString("\n")
+	}
+	if m.rotatingMCPToken {
+		b.WriteString(styleSubtle.Render("  Rotating MCP token…\n"))
+	}
+	if !editing && m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == settingsRowKindMCPToken {
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] reveal/hide", "[r] rotate", "[esc] back"}))
+	} else if editing {
 		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {
 		b.WriteString(actionBarWidth(m.width,
@@ -914,6 +1013,19 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 
 	var line string
 	switch row.Kind { //nolint:exhaustive // header rows take an early return path in View
+	case settingsRowKindMCPToken:
+		value := "(loading)"
+		if m.mcpToken != "" {
+			value = m.mcpToken
+			if !m.mcpTokenRevealed {
+				suffix := value
+				if len(suffix) > 4 {
+					suffix = suffix[len(suffix)-4:]
+				}
+				value = "••••" + suffix
+			}
+		}
+		line = fmt.Sprintf("%s: %s", row.Label, value)
 	case settingsRowKindBool:
 		line = renderCheckboxLabel(config.PluginConfigBool(&m.settings, row.Plugin, row.Key), row.Label)
 	case settingsRowKindAgentEnabled:

@@ -59,6 +59,11 @@ const (
 	CronJobOutcomeWorktreeGone CronJobOutcome = "worktree_gone"
 	// CronJobOutcomeZeroOutput records a successful no-worktree cron run.
 	CronJobOutcomeZeroOutput CronJobOutcome = "zero_output"
+	// CronJobOutcomeRunBlocked records a run that reported it ended BLOCKED on
+	// a person (`boss session finish --blocked`). Finalize left its PR draft and
+	// Blocked the session with the run's reason. It is an attention outcome, not
+	// a cron failure: the agent ran.
+	CronJobOutcomeRunBlocked CronJobOutcome = "run_blocked"
 )
 
 // CronJobConcurrencyPolicy decides what a fire does while the same job's

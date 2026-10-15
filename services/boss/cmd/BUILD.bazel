@@ -145,6 +145,7 @@ go_test(
         "auth_test.go",
         "broadcast_test.go",
         "callback_test.go",
+        "chat_role_test.go",
         "chat_test.go",
         "clijson_test.go",
         "cloud_gate_test.go",

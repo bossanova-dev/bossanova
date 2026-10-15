@@ -123,6 +123,15 @@
       "agent": "claude",
       "enabled": true,
       "daemons": ["delta"]
+    },
+    {
+      "name": "bs-security",
+      "agent": "claude",
+      "prompt": "/bs-security --no-dry-run",
+      "schedule": "0 22 * * 0",
+      "timezone": "America/Toronto",
+      "zeroOutput": true,
+      "daemons": ["delta"]
     }
   ]
 }

@@ -186,6 +186,21 @@ func TestProjectDiffExitCode(t *testing.T) {
 }
 
 func TestProjectApplyTrust(t *testing.T) {
+	t.Run("registered default develop governs both branches", func(t *testing.T) {
+		f := newApplyFixture(t)
+		f.daemon.AddRepo(&pb.Repo{Id: "repo-1", LocalPath: f.main, OriginUrl: "https://github.com/acme/widget", DefaultBaseBranch: "develop"})
+		f.write(t, f.projectFile(twoCrons, ""))
+		out, err := f.run(t, "apply", "--yes")
+		if err == nil || !strings.Contains(err.Error(), `"develop"`) || !strings.Contains(err.Error(), "--allow-branch") || f.writes() != 0 {
+			t.Fatalf("writes %d err %v\n%s", f.writes(), err, out)
+		}
+		if out, err := exec.Command("git", "-C", f.dir, "checkout", "-q", "-b", "develop").CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		if out, err := f.run(t, "apply", "--yes"); err != nil || len(f.daemon.CreateCronJobCalls()) != 2 {
+			t.Fatalf("creates %d err %v\n%s", len(f.daemon.CreateCronJobCalls()), err, out)
+		}
+	})
 	t.Run("non-TTY cron create without --yes writes nothing", func(t *testing.T) {
 		f := newApplyFixture(t)
 		f.write(t, f.projectFile(twoCrons, ""))
@@ -441,4 +456,35 @@ func TestProjectApplyFactoryRetro(t *testing.T) {
 			t.Fatalf("adopted job %+v", job)
 		}
 	})
+}
+
+func TestProjectDefaultBranch(t *testing.T) {
+	registration := &projectconfig.LocalState{
+		Repos:          []*pb.Repo{{Id: "repo-1", DefaultBaseBranch: "develop"}},
+		RepoCheckouts:  map[string]string{"repo-1": "/repo"},
+		TargetCheckout: "/repo",
+		Validation:     &pb.ValidateRepoPathResponse{DefaultBranch: "detected"},
+	}
+	for _, tt := range []struct {
+		name, fileBranch, want string
+		state                  *projectconfig.LocalState
+	}{
+		{name: "file without daemon", fileBranch: "release", want: "release"},
+		{name: "origin HEAD without daemon", want: "main"},
+		{name: "registration before detection and origin HEAD", state: registration, want: "develop"},
+		{name: "file before registration", fileBranch: "release", state: registration, want: "release"},
+		{name: "daemon detection before origin HEAD", state: &projectconfig.LocalState{Validation: &pb.ValidateRepoPathResponse{DefaultBranch: "detected"}}, want: "detected"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &projectconfig.Config{}
+			if tt.fileBranch != "" {
+				cfg.Repo.DefaultBaseBranch = &tt.fileBranch
+			}
+			proj := &loadedProject{cfg: cfg, checkout: "/repo"}
+			env := projectApplyEnv{originHead: func(context.Context, string) string { return "main" }}
+			if got := projectDefaultBranch(context.Background(), env, proj, tt.state); got != tt.want {
+				t.Fatalf("default branch = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

@@ -151,6 +151,20 @@ func (s *Server) FinishUnattendedRun(ctx context.Context, req *connect.Request[p
 	if !owned {
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("chat %q is not a chat of session %q", requester, id))
 	}
+	// Persist a blocked report before deferring: whichever finalize reaches
+	// the run next (this finish, the Stop-hook gate, the stranded sweep) reads
+	// it from the session row.
+	if req.Msg.GetIsBlocked() {
+		if s.lifecycle == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("lifecycle unavailable"))
+		}
+		if err := s.lifecycle.ReportRunBlocked(ctx, id, req.Msg.GetBlockedReason()); err != nil {
+			if errors.Is(err, session.ErrRunAlreadyFinalized) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
 
 	// Detach from the caller like ArchiveSession: a finish that has started
 	// must complete even if the requesting chat goes away.
@@ -189,4 +203,11 @@ func (s *Server) CancelPendingFinish(sessionID string) bool {
 func (s *Server) RunFinishDeferrer(ctx context.Context, track session.ArchiveWorkerTracker) <-chan struct{} {
 	d := s.finishDeferral()
 	return safego.Go(s.logger, func() { d.run(ctx, track) })
+}
+
+// cancelPendingForNewChat cancels a pending archive (BOS-1380) and unattended-run
+// finish (BOS-1508): a new chat means there is new work and the run is not done.
+func (s *Server) cancelPendingForNewChat(sessionID string) {
+	s.CancelPendingArchive(sessionID)
+	s.CancelPendingFinish(sessionID)
 }

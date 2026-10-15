@@ -367,6 +367,10 @@ func (c *RemoteClient) ResumeSession(ctx context.Context, id string) (*pb.Sessio
 	return resp.Msg.Session, nil
 }
 
+func (c *RemoteClient) ResumeSessionRun(context.Context, string) (*pb.Session, error) {
+	return nil, errLocalOnly("ResumeSessionRun")
+}
+
 func (c *RemoteClient) RetrySession(ctx context.Context, id string) (*pb.Session, error) {
 	resp, err := c.rpc.ProxyRetrySession(ctx, connect.NewRequest(&pb.ProxyRetrySessionRequest{Id: id}))
 	if err != nil {
@@ -542,7 +546,7 @@ func (c *RemoteClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest
 
 // --- Claude Chat Tracking (local only) ---
 
-func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ bool) (*pb.ClaudeChat, error) {
+func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ pb.ChatRole, _ bool) (*pb.ClaudeChat, error) {
 	return nil, errLocalOnly("RecordChat")
 }
 

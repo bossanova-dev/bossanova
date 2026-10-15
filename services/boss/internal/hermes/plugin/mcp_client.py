@@ -3,8 +3,8 @@
 It spawns ``<mcp_bin> --socket <socket>`` with an explicit environment, speaks
 newline-delimited JSON-RPC 2.0 (``initialize`` -> ``notifications/initialized``
 -> ``tools/call``), serialises calls behind one lock, bounds every call with a
-timeout, restarts the process once when it has died or its pipe is broken, and
-terminates it at interpreter exit.
+timeout covering both the write and reply, restarts the process once when it
+has died or its pipe is broken, and terminates it at interpreter exit.
 
 Standard library only.
 """
@@ -43,6 +43,10 @@ class McpServerExited(McpError):
 
 class _PipeBroken(Exception):
     """Writing a request to the server failed."""
+
+
+class _WriteTimeout(Exception):
+    """The server did not accept a frame before its deadline."""
 
 
 class LaunchSpec(object):
@@ -96,6 +100,7 @@ class _Process(object):
         self.spec = spec
         self.responses = queue.Queue()
         self.stderr_tail = collections.deque(maxlen=_STDERR_TAIL)
+        self._writer = None
         try:
             self.popen = subprocess.Popen(
                 spec.argv(),
@@ -144,13 +149,25 @@ class _Process(object):
     def alive(self):
         return self.popen.poll() is None
 
-    def send(self, message):
+    def send(self, message, deadline):
         data = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
-        try:
-            self.popen.stdin.write(data)
-            self.popen.stdin.flush()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            raise _PipeBroken(str(exc))
+        errors = []
+
+        def write():
+            try:
+                self.popen.stdin.write(data)
+                self.popen.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                errors.append(exc)
+
+        self._writer = threading.Thread(target=write, name="bossanova-mcp-stdin", daemon=True)
+        self._writer.start()
+        self._writer.join(max(0.0, deadline - time.monotonic()))
+        if self._writer.is_alive():
+            raise _WriteTimeout()
+        self._writer = None
+        if errors:
+            raise _PipeBroken(str(errors[0]))
 
     def describe_exit(self):
         code = self.popen.poll()
@@ -163,10 +180,19 @@ class _Process(object):
         return msg
 
     def stop(self):
-        try:
-            self.popen.stdin.close()
-        except (OSError, ValueError):
-            pass
+        if self._writer is not None and self._writer.is_alive():
+            # BufferedWriter.close() takes the blocked writer's lock. Kill
+            # first so its write can fail without holding up the caller.
+            try:
+                self.popen.kill()
+            except OSError:
+                pass
+            self._writer.join(timeout=_STOP_GRACE_SECONDS)
+        if self._writer is None or not self._writer.is_alive():
+            try:
+                self.popen.stdin.close()
+            except (OSError, ValueError):
+                pass
         if self.popen.poll() is None:
             try:
                 self.popen.terminate()
@@ -249,7 +275,14 @@ class McpClient(object):
                 },
                 timeout,
             )
-            self._proc.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            self._proc.send(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}, time.monotonic() + timeout
+            )
+        except _WriteTimeout:
+            self._stop_locked()
+            raise McpTimeout(
+                "bossanova MCP server did not accept notifications/initialized within %gs" % timeout
+            )
         except _PipeBroken:
             message = self._exit_message()
             self._stop_locked()
@@ -272,8 +305,12 @@ class McpClient(object):
         proc = self._proc
         self._next_id += 1
         request_id = self._next_id
-        proc.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         deadline = time.monotonic() + timeout
+        try:
+            proc.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}, deadline)
+        except _WriteTimeout:
+            self._stop_locked()
+            raise McpTimeout("bossanova MCP server did not accept %s within %gs" % (method, timeout))
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -296,8 +333,12 @@ class McpClient(object):
                                 "jsonrpc": "2.0",
                                 "id": message["id"],
                                 "error": {"code": -32601, "message": "method not supported by client"},
-                            }
+                            },
+                            deadline,
                         )
+                    except _WriteTimeout:
+                        self._stop_locked()
+                        raise McpTimeout("bossanova MCP server did not accept %s within %gs" % (method, timeout))
                     except _PipeBroken:
                         pass
                 continue  # notifications are ignored

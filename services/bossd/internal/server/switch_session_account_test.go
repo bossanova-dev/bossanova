@@ -65,6 +65,7 @@ func (f *switchChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, s
 }
 
 func (f *switchChatStoreFake) MarkStartFailed(context.Context, string, string) error { return nil }
+func (f *switchChatStoreFake) MarkReclaimed(context.Context, string, string) error   { return nil }
 
 func (f *switchChatStoreFake) RebindResumedChat(context.Context, string, db.RebindResumedChatParams) error {
 	return nil

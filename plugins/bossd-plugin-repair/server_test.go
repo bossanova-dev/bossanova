@@ -375,6 +375,9 @@ func TestRepairStartChatRunRequest_SetsResumeTarget(t *testing.T) {
 	if fresh.GetResumeAgentSessionId() != "" {
 		t.Errorf("fresh ResumeAgentSessionId = %q, want empty", fresh.GetResumeAgentSessionId())
 	}
+	if fresh.GetRole() != bossanovav1.ChatRole_CHAT_ROLE_REPAIR {
+		t.Errorf("Role = %v, want CHAT_ROLE_REPAIR", fresh.GetRole())
+	}
 }
 
 func TestRepairSession_SecondAttemptResumesFirstSession(t *testing.T) {

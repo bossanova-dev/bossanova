@@ -366,6 +366,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.BlockedReason != nil {
 		s.BlockedReason = *params.BlockedReason
 	}
+	if params.RunBlockedReason != nil {
+		s.RunBlockedReason = *params.RunBlockedReason
+	}
 	if params.LastAttemptHeadSHA != nil {
 		s.LastAttemptHeadSHA = *params.LastAttemptHeadSHA
 	}
@@ -471,6 +474,7 @@ func (m *mockSessionStore) ResurrectToState(_ context.Context, id string, newSta
 		return false, nil
 	}
 	s.ArchivedAt = nil
+	s.RunBlockedReason = nil
 	s.State = machine.State(newState)
 	if m.afterResurrectToState != nil {
 		m.afterResurrectToState(s)
@@ -1071,6 +1075,34 @@ func (m *mockAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID
 		if chat.AgentSessionID == agentSessionID {
 			chat.TmuxSessionName = nil
 			chat.StartError = &reason
+		}
+	}
+	return nil
+}
+
+func (m *mockAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	mark := func(chat *models.AgentChat) {
+		chat.TmuxSessionName = nil
+		chat.StartError = nil
+		chat.ReclaimedAt = &now
+		chat.ReclaimReason = &reason
+	}
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				mark(chat)
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			mark(chat)
 		}
 	}
 	return nil
@@ -2243,7 +2275,7 @@ func TestStartSession_ProfilePreflightCarriesProjectTrust(t *testing.T) {
 
 // TestStartSession_ZeroOutputNeverRevokesTheCheckout pins that a zero-output
 // session — which runs in the repo's own checkout, not a bossd worktree —
-// sends DENY on its preflight and its headless run for an untrusted repo: the
+// sends DENY on its preflight and its agent launch for an untrusted repo: the
 // run is untrusted, but nothing is persisted, because a REVOKE there would
 // rewrite the user's own checkout's Codex trust (and, through Codex's
 // main-checkout fallback, that of their linked worktrees). A trusted repo's
@@ -2267,7 +2299,14 @@ func TestStartSession_ZeroOutputNeverRevokesTheCheckout(t *testing.T) {
 			runner := newMockAgentRunner()
 			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: t.TempDir(), DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees", IsTrusted: tc.trusted}
 			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Zero output", Plan: "p", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
-			lc := newTestLifecycle(sessions, repos, nil, nil, &mockWorktreeManager{}, runner, nil, newMockVCSProvider(), zerolog.Nop())
+			var tx *tmux.Client
+			fakeAgent := newFakeAgent()
+			if tc.zeroOutput {
+				tx = tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
+			}
+			lc := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, &mockWorktreeManager{}, runner, tx, newMockVCSProvider(), zerolog.Nop())
+			lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fakeAgent})
+			lc.SetAgentLogsDir(t.TempDir())
 
 			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 				Detach:                    true,
@@ -2277,14 +2316,32 @@ func TestStartSession_ZeroOutputNeverRevokesTheCheckout(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			if len(runner.preflights) != 1 || len(runner.started) != 1 {
-				t.Fatalf("preflights = %d, starts = %d; want 1 each", len(runner.preflights), len(runner.started))
+			wantPreflights := 1
+			if tc.zeroOutput {
+				wantPreflights = 2
 			}
-			if got := runner.preflights[0].projectTrust; got != tc.want {
-				t.Fatalf("preflight projectTrust = %s, want %s", got, tc.want)
+			if len(runner.preflights) != wantPreflights {
+				t.Fatalf("preflights = %d, want %d", len(runner.preflights), wantPreflights)
 			}
-			if got := runner.started[0].projectTrust; got != tc.want {
-				t.Fatalf("run projectTrust = %s, want %s", got, tc.want)
+			for _, call := range runner.preflights {
+				if call.projectTrust != tc.want {
+					t.Fatalf("preflight projectTrust = %s, want %s", call.projectTrust, tc.want)
+				}
+			}
+			if tc.zeroOutput {
+				if len(runner.started) != 0 || fakeAgent.LastBuildInteractiveCommand == nil {
+					t.Fatal("zero-output launch must use tmux")
+				}
+				if got := fakeAgent.LastBuildInteractiveCommand.GetProjectTrust(); got != tc.want {
+					t.Fatalf("tmux run projectTrust = %s, want %s", got, tc.want)
+				}
+			} else {
+				if len(runner.started) != 1 {
+					t.Fatalf("headless starts = %d, want 1", len(runner.started))
+				}
+				if got := runner.started[0].projectTrust; got != tc.want {
+					t.Fatalf("run projectTrust = %s, want %s", got, tc.want)
+				}
 			}
 		})
 	}
@@ -6705,6 +6762,70 @@ func TestStartSession_ZeroOutputUsesRepoCheckoutWithoutHookOrSetup(t *testing.T)
 	}
 	if sess.State != machine.ImplementingPlan || sess.AgentSessionID == nil {
 		t.Fatalf("session did not start tmux agent: state=%s agent=%v", sess.State, sess.AgentSessionID)
+	}
+}
+
+func TestStartSession_ZeroOutputDetachRequiresTmux(t *testing.T) {
+	for _, mode := range []string{"nil", "unavailable", "available"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			chats := &mockAgentChatStore{}
+			wt := &mockWorktreeManager{statusOut: " M user-file"}
+			runner := newMockAgentRunner()
+			fake := newFakeTmux()
+			fake.available = mode == "available"
+			var tx *tmux.Client
+			if mode != "nil" {
+				tx = tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(fake.factory))
+			}
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo"}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", Title: "Zero output detach", Plan: "inspect status",
+				State: machine.CreatingWorktree, AgentName: "claude",
+			}
+			lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, runner, tx, newMockVCSProvider(), zerolog.Nop())
+			lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			lc.SetAgentLogsDir(t.TempDir())
+			err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, ZeroOutput: true})
+			if mode != "available" {
+				if !errors.Is(err, ErrZeroOutputRequiresUnattended) {
+					t.Fatalf("StartSession error = %v, want ErrZeroOutputRequiresUnattended", err)
+				}
+				if len(sessions.updates) != 0 {
+					t.Fatalf("rejected launch persisted %d updates", len(sessions.updates))
+				}
+				row := sessions.sessions["sess-1"]
+				if row.IsQuickChat || row.Detach || row.State != machine.CreatingWorktree || row.WorktreePath != "" || row.AgentSessionID != nil {
+					t.Fatalf("rejected launch changed session: %+v", row)
+				}
+				if len(runner.started) != 0 || len(chats.createCalls) != 0 || fake.hasSubcommand("new-session") {
+					t.Fatal("rejected launch started an agent or tmux chat")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			row := sessions.sessions["sess-1"]
+			if !row.Detach || !row.IsQuickChat || !isZeroOutputSession(row) || row.State != machine.ImplementingPlan {
+				t.Fatalf("started session is not zero-output unattended: %+v", row)
+			}
+			result, err := lc.FinalizeSession(ctx, "sess-1")
+			if err != nil {
+				t.Fatalf("FinalizeSession: %v", err)
+			}
+			if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+				t.Fatalf("finalize = %+v, want deleted zero_output", result)
+			}
+			if wt.statusCalls != 0 {
+				t.Fatalf("Status calls = %d, want 0", wt.statusCalls)
+			}
+			if _, exists := sessions.sessions["sess-1"]; exists {
+				t.Fatal("zero-output session row survived finalize")
+			}
+		})
 	}
 }
 

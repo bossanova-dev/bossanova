@@ -83,6 +83,13 @@ type parkCodeInfo struct {
 	// category names what the code asks the operator to look at, for a
 	// one-line summary such as a timeline step.
 	category string
+	// signOff marks a policy code: verify passed the work and policy asks a
+	// person to sign it off. Every other code reports that something went
+	// wrong or is incomplete.
+	signOff bool
+	// plain says what the code means in plain words, for an operator deciding
+	// whether to merge over it.
+	plain string
 }
 
 // knownParkCodes is the one table of known operator park codes. The review
@@ -93,34 +100,84 @@ var knownParkCodes = map[string]parkCodeInfo{
 	"human-review:ui": {
 		sentence: &sentenceTemplate{format: "Watch the evidence video%s, then approve · UI change", slot: slotVideoDuration},
 		category: "UI change",
+		signOff:  true,
+		plain:    "a UI change; watch the evidence before it merges",
 	},
 	"human-review:security": {
 		sentence: &sentenceTemplate{format: "Review the diff · security%s", slot: slotParkLabel},
 		category: "security",
+		signOff:  true,
+		plain:    "a security-sensitive change for a person to review",
 	},
 	"always-human-path": {
 		sentence: &sentenceTemplate{format: "Review the diff · security%s", slot: slotParkLabel},
 		category: "security",
+		signOff:  true,
+		plain:    "touches a path that always needs a person's sign-off",
 	},
 	"human-review:database": {
 		sentence: &sentenceTemplate{format: "Review the migration, then approve"},
 		category: "database migration",
+		signOff:  true,
+		plain:    "a database migration for a person to review",
 	},
 	"human-review:unproven": {
 		sentence: &sentenceTemplate{format: "Some checks have no evidence · watch the video, then approve"},
 		category: "unproven checks",
+		plain:    "some checks have no evidence that they pass",
 	},
 	ParkCodeLedgerOpen: {
 		sentence: &sentenceTemplate{format: "Read the open must-fix from review, then approve or send back"},
 		category: "open findings",
+		plain:    "review left must-fix findings open",
 	},
 	"no-receipt": {
 		sentence: &sentenceTemplate{format: "Built by hand, no factory review · review the diff, then approve"},
 		category: "built by hand",
+		plain:    "no build receipt: built by hand, without the factory's build and review",
 	},
-	"repair-exhausted": {category: "repair exhausted"},
-	"extension-failed": {category: "verify extension failed"},
-	"no-session":       {category: "no session"},
+	"repair-exhausted": {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
+	"extension-failed": {category: "verify extension failed", plain: "a verify extension failed to run"},
+	"no-session":       {category: "no session", plain: "verify found no session behind this PR"},
+}
+
+// unknownParkCodePlain describes a code outside knownParkCodes.
+const unknownParkCodePlain = "a park code this version of boss does not know"
+
+// ParkCodes splits comma-joined park-code entries, trims and dedupes them, and
+// returns them in the verify gate's report order.
+func ParkCodes(raw []string) []string {
+	return normalizeParkCodes(raw)
+}
+
+// IsSignOffPark reports whether a verify park only asks a person to sign off
+// work verify passed: it has at least one code and every code is a policy
+// code. A park with any other code, an unknown code, or no code at all reports
+// that something went wrong, so it is not a sign-off.
+func IsSignOffPark(raw []string) bool {
+	codes := normalizeParkCodes(raw)
+	return len(codes) > 0 && len(ParkFailureCodes(codes)) == 0
+}
+
+// ParkFailureCodes returns, in report order, the codes of a verify park that
+// are not policy sign-off codes: the failures or gaps an operator would merge
+// over.
+func ParkFailureCodes(raw []string) []string {
+	var out []string
+	for _, code := range normalizeParkCodes(raw) {
+		if !knownParkCodes[code].signOff {
+			out = append(out, code)
+		}
+	}
+	return out
+}
+
+// ParkCodePlainWords says what one park code means in plain words.
+func ParkCodePlainWords(code string) string {
+	if plain := knownParkCodes[code].plain; plain != "" {
+		return plain
+	}
+	return unknownParkCodePlain
 }
 
 // decidingParkCode picks the one park code a review describes, from a

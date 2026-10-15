@@ -379,12 +379,17 @@ func TestMigrateRepoSecretsFromSQLite(t *testing.T) {
 		t.Fatal("repo B keys not readable after the move")
 	}
 
+	assertScrubRequests(t, dbConn, 1)
+	if _, err := dbConn.Exec(`DELETE FROM pending_secret_scrubs`); err != nil {
+		t.Fatal(err)
+	}
 	// Idempotent: a second run moves nothing and writes nothing.
 	setsBefore := ring.Sets
 	moved, err = MigrateRepoSecretsFromSQLite(ctx, dbConn, secrets)
 	if err != nil || moved != 0 {
 		t.Fatalf("second migrate = (%d, %v), want (0, nil)", moved, err)
 	}
+	assertScrubRequests(t, dbConn, 0)
 	if ring.Sets != setsBefore {
 		t.Fatal("second migrate wrote to the keyring")
 	}

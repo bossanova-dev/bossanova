@@ -29,7 +29,7 @@ argv and runs nothing.
 
 - Completion record `merged` ⇒ `run-next --stage verify`: the fast path _was_ the verify stage, run
   inline, so the hand-off goes to the stage after it.
-- Otherwise on `REVIEW_READY` ⇒ `arm-verify`. It reuses the session's live chat titled `verify` (the
+- Otherwise on `REVIEW_READY` ⇒ `arm-verify`. It reuses the session's live verify chat (role `verify`; the
   same chat the verify router sends to) or creates one, and never sends `/boss-verify` now: the
   callback is the deferred send, so verify judges a settled head.
 - `armed` / `already-armed` ends the build's own CI observation: Step 12 classifies with

@@ -90,6 +90,9 @@ const (
 	// DaemonServiceResumeSessionProcedure is the fully-qualified name of the DaemonService's
 	// ResumeSession RPC.
 	DaemonServiceResumeSessionProcedure = "/bossanova.v1.DaemonService/ResumeSession"
+	// DaemonServiceResumeSessionRunProcedure is the fully-qualified name of the DaemonService's
+	// ResumeSessionRun RPC.
+	DaemonServiceResumeSessionRunProcedure = "/bossanova.v1.DaemonService/ResumeSessionRun"
 	// DaemonServiceRetrySessionProcedure is the fully-qualified name of the DaemonService's
 	// RetrySession RPC.
 	DaemonServiceRetrySessionProcedure = "/bossanova.v1.DaemonService/RetrySession"
@@ -329,6 +332,9 @@ type DaemonServiceClient interface {
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
 	ResumeSession(context.Context, *connect.Request[v1.ResumeSessionRequest]) (*connect.Response[v1.ResumeSessionResponse], error)
+	// ResumeSessionRun restarts a stopped agent in the existing session.
+	// Daemon-local; ResumeSession separately controls automation.
+	ResumeSessionRun(context.Context, *connect.Request[v1.ResumeSessionRunRequest]) (*connect.Response[v1.ResumeSessionRunResponse], error)
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error)
@@ -719,6 +725,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceResumeSessionProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ResumeSession")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeSessionRun: connect.NewClient[v1.ResumeSessionRunRequest, v1.ResumeSessionRunResponse](
+			httpClient,
+			baseURL+DaemonServiceResumeSessionRunProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ResumeSessionRun")),
 			connect.WithClientOptions(opts...),
 		),
 		retrySession: connect.NewClient[v1.RetrySessionRequest, v1.RetrySessionResponse](
@@ -1153,6 +1165,7 @@ type daemonServiceClient struct {
 	stopSession                 *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
 	pauseSession                *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
 	resumeSession               *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
+	resumeSessionRun            *connect.Client[v1.ResumeSessionRunRequest, v1.ResumeSessionRunResponse]
 	retrySession                *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
 	closeSession                *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
 	mergeSession                *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
@@ -1316,6 +1329,11 @@ func (c *daemonServiceClient) PauseSession(ctx context.Context, req *connect.Req
 // ResumeSession calls bossanova.v1.DaemonService.ResumeSession.
 func (c *daemonServiceClient) ResumeSession(ctx context.Context, req *connect.Request[v1.ResumeSessionRequest]) (*connect.Response[v1.ResumeSessionResponse], error) {
 	return c.resumeSession.CallUnary(ctx, req)
+}
+
+// ResumeSessionRun calls bossanova.v1.DaemonService.ResumeSessionRun.
+func (c *daemonServiceClient) ResumeSessionRun(ctx context.Context, req *connect.Request[v1.ResumeSessionRunRequest]) (*connect.Response[v1.ResumeSessionRunResponse], error) {
+	return c.resumeSessionRun.CallUnary(ctx, req)
 }
 
 // RetrySession calls bossanova.v1.DaemonService.RetrySession.
@@ -1695,6 +1713,9 @@ type DaemonServiceHandler interface {
 	StopSession(context.Context, *connect.Request[v1.StopSessionRequest]) (*connect.Response[v1.StopSessionResponse], error)
 	PauseSession(context.Context, *connect.Request[v1.PauseSessionRequest]) (*connect.Response[v1.PauseSessionResponse], error)
 	ResumeSession(context.Context, *connect.Request[v1.ResumeSessionRequest]) (*connect.Response[v1.ResumeSessionResponse], error)
+	// ResumeSessionRun restarts a stopped agent in the existing session.
+	// Daemon-local; ResumeSession separately controls automation.
+	ResumeSessionRun(context.Context, *connect.Request[v1.ResumeSessionRunRequest]) (*connect.Response[v1.ResumeSessionRunResponse], error)
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[v1.MergeSessionRequest]) (*connect.Response[v1.MergeSessionResponse], error)
@@ -2081,6 +2102,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceResumeSessionProcedure,
 		svc.ResumeSession,
 		connect.WithSchema(daemonServiceMethods.ByName("ResumeSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceResumeSessionRunHandler := connect.NewUnaryHandler(
+		DaemonServiceResumeSessionRunProcedure,
+		svc.ResumeSessionRun,
+		connect.WithSchema(daemonServiceMethods.ByName("ResumeSessionRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRetrySessionHandler := connect.NewUnaryHandler(
@@ -2531,6 +2558,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServicePauseSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceResumeSessionProcedure:
 			daemonServiceResumeSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceResumeSessionRunProcedure:
+			daemonServiceResumeSessionRunHandler.ServeHTTP(w, r)
 		case DaemonServiceRetrySessionProcedure:
 			daemonServiceRetrySessionHandler.ServeHTTP(w, r)
 		case DaemonServiceCloseSessionProcedure:
@@ -2750,6 +2779,10 @@ func (UnimplementedDaemonServiceHandler) PauseSession(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) ResumeSession(context.Context, *connect.Request[v1.ResumeSessionRequest]) (*connect.Response[v1.ResumeSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResumeSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ResumeSessionRun(context.Context, *connect.Request[v1.ResumeSessionRunRequest]) (*connect.Response[v1.ResumeSessionRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResumeSessionRun is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error) {

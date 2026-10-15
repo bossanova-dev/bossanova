@@ -122,6 +122,13 @@
       "security": []
     },
     "alwaysHumanPaths": [],
+    "generatedPaths": [
+      "lib/bossalib/gen/**/*.pb.go",
+      "lib/bossalib/gen/**/*.connect.go",
+      "services/web/src/gen/**/*_pb.ts",
+      "services/docs/openapi/bossanova.v1.openapi.yaml"
+    ],
+    "generatedChecks": ["drift"],
     "evidence": true
   },
   "planContract": {

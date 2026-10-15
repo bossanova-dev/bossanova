@@ -430,3 +430,63 @@ func TestLoadOrCreateHTTPToken_LockTimeoutIsNamed(t *testing.T) {
 		t.Fatalf("no token may be created without the lock; stat err=%v", statErr)
 	}
 }
+
+func TestRotateHTTPToken(t *testing.T) {
+	socket := sock(t)
+	socketToken, err := LoadOrCreateToken(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := LoadOrCreateHTTPToken(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := RotateHTTPToken(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == old {
+		t.Fatal("rotation retained old token")
+	}
+	if _, err := ValidateToken(token); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ReadHTTPToken(socket)
+	if err != nil || stored != token {
+		t.Fatal("rotated token not stored", err)
+	}
+	info, err := os.Stat(HTTPTokenPath(socket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+	unchanged, err := ReadToken(socket)
+	if err != nil || unchanged != socketToken {
+		t.Fatal("socket token changed", err)
+	}
+}
+
+func TestRotateHTTPToken_LockFailurePreservesToken(t *testing.T) {
+	socket := sock(t)
+	old, err := LoadOrCreateHTTPToken(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := lockTokenFile
+	t.Cleanup(func() { lockTokenFile = previous })
+	lockTokenFile = func(path string) (func(), error) {
+		if path != HTTPTokenPath(socket) {
+			t.Fatal("wrong token lock")
+		}
+		return nil, errors.New("lock failed")
+	}
+	if _, err := RotateHTTPToken(socket); err == nil {
+		t.Fatal("rotation ignored lock failure")
+	}
+	current, err := ReadHTTPToken(socket)
+	if err != nil || current != old {
+		t.Fatal("lock failure changed token", err)
+	}
+}

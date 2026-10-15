@@ -436,8 +436,21 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// IDLE (RPC held outside p.mu, and skipped entirely for active chats).
 		// Preserves QUESTION > WORKING > IDLE: this branch is only reached when
 		// the pane is neither a live question nor freshly changed.
-		if wouldBeIdle && p.paneShowsWorking(ctx, chat, content) {
-			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		//
+		// A background subagent the last turn left running (Claude's Stop hook
+		// reported it) is live work too, though the main loop sits idle at its
+		// prompt. The pane is no evidence either way: Claude's "← N agent"
+		// statusline counts a subagent that already failed (see the BOS-889
+		// captures in statusdetect/testdata), so it is never matched.
+		backgroundOnly := false
+		if wouldBeIdle {
+			switch {
+			case p.paneShowsWorking(ctx, chat, content):
+				status = pb.ChatStatus_CHAT_STATUS_WORKING
+			case p.tracker.BackgroundAgentsRunning(agentSessionID):
+				status = pb.ChatStatus_CHAT_STATUS_WORKING
+				backgroundOnly = true
+			}
 		}
 
 		// Progress liveness (BOS-667). Gated on the chat CLAIMING to be working:
@@ -445,8 +458,10 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		// request in flight and for a user turn the agent has not answered yet,
 		// so an idle chat someone typed into would otherwise raise a false
 		// "session dead" banner forever. A LIMITED pane is a known, surfaced
-		// wait — not a stall — so it clears too.
-		if status == pb.ChatStatus_CHAT_STATUS_WORKING && !paneLimited {
+		// wait — not a stall — so it clears too. A chat working only through a
+		// background subagent has a finished main transcript by design, so it
+		// is not judged by it.
+		if status == pb.ChatStatus_CHAT_STATUS_WORKING && !paneLimited && !backgroundOnly {
 			p.tracker.SetStalled(agentSessionID, p.progressStalled(ctx, chat, now))
 		} else {
 			p.tracker.SetStalled(agentSessionID, false)

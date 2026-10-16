@@ -3699,7 +3699,15 @@ func prURLForRepo(originURL string, prNumber int) (string, error) {
 
 // LinkPR attaches an existing pull request to a session. It is intended as a
 // manual repair path for cron sessions whose agent already created a PR before
-// the Stop-hook finalize path ran.
+// the Stop-hook finalize path ran, and for sessions whose work moved to a
+// replacement PR after the original closed: linking an open PR moves the
+// session back to a live state (see linkedPRState).
+//
+// It never un-archives. Archiving removed the worktree and killed the chat
+// panes, and only ResurrectSession rebuilds them; the row has no record of
+// whether the operator or an automation archived it. An archived session is
+// still relinked and its state revived, so resurrecting it later brings back
+// a live session on the linked PR.
 //
 // It assumes the session row still exists and does not guard against a
 // concurrent finalize that deletes a no-changes session: the two are not
@@ -3733,13 +3741,14 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 		return nil, err
 	}
 	var prTitle string
+	var prStatus *vcs.PRStatus
 	if l.provider != nil {
-		status, err := l.provider.GetPRStatus(ctx, repo.OriginURL, prNumber)
+		prStatus, err = l.provider.GetPRStatus(ctx, repo.OriginURL, prNumber)
 		if err != nil {
 			return nil, fmt.Errorf("get PR status: %w", err)
 		}
-		if status != nil {
-			prTitle = strings.TrimSpace(status.Title)
+		if prStatus != nil {
+			prTitle = strings.TrimSpace(prStatus.Title)
 		}
 	}
 
@@ -3755,9 +3764,26 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 	if prTitle != "" && sess.PRNumber == nil {
 		updateParams.Title = &prTitle
 	}
-	if sess.State == machine.Finalizing || sess.State == machine.Blocked {
-		awaitingState := int(machine.AwaitingChecks)
-		updateParams.State = &awaitingState
+	if head := linkedPRBranch(sess, prStatus); head != "" {
+		updateParams.BranchName = &head
+	}
+	// No dated API bump: the version-skewed web client reaches this through
+	// bosso's ProxyLinkSessionPR, and the local CLI is co-deployed. The change is
+	// a persisted state transition that every later GetSession/ListSessions
+	// read returns too, so a transform on this one response could not restore
+	// the old answer; and the new state is what the field promises, because a
+	// session whose work moved to an open PR is live again.
+	// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if next, ok := linkedPRState(sess, prNumber, prStatus); ok {
+		nextState := int(next)
+		updateParams.State = &nextState
+		if sess.State == machine.Closed || sess.State == machine.Merged {
+			// The replacement PR starts with fresh fix-loop and repair budgets;
+			// the resolved PR's attempts must not block it early.
+			zero, freshRepairBudget := 0, 0
+			updateParams.AttemptCount = &zero
+			updateParams.LastRepairAttemptCount = &freshRepairBudget
+		}
 	}
 	if sess.State == machine.Blocked {
 		var cleared *string
@@ -3765,9 +3791,10 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 		freshRepairBudget := 0
 		updateParams.LastRepairAttemptCount = &freshRepairBudget
 	}
-	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
+	fromBranch := sess.BranchName
+	updated, err := l.claimLinkedPR(ctx, sess, prNumber, updateParams)
 	if err != nil {
-		return nil, fmt.Errorf("update PR info: %w", err)
+		return nil, err
 	}
 	if err := l.clearDraftPRBlockedReason(ctx, sessionID, updated); err != nil {
 		return nil, err
@@ -3784,12 +3811,154 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 		}
 	}
 
-	l.logger.Info().
+	if updateParams.BranchName == nil || fromBranch == "" {
+		l.logger.Info().Str("session", sessionID).Int("pr", prNumber).Msg("linked existing PR to session")
+		return updated, nil
+	}
+	// Remove and archive act on the session's branch, which is now the PR's,
+	// so nothing will ever delete the old local branch. It is not reaped here:
+	// the worktree may still have it checked out, with unpushed work.
+	l.logger.Warn().
 		Str("session", sessionID).
 		Int("pr", prNumber).
-		Msg("linked existing PR to session")
-
+		Str("repo", repo.LocalPath).
+		Str("from_branch", fromBranch).
+		Str("branch", updated.BranchName).
+		Msg("linked existing PR to session on its head branch; the old local branch is left for the operator to delete")
 	return updated, nil
+}
+
+// claimLinkedPR writes the link unless another unarchived, unfinished session
+// already owns the PR or the branch the link moves onto, a Blocked or Orphaned
+// one included (see EnsureNoOtherPROrBranchClaim). Two live sessions on one
+// branch would both drive it, and removing either one deletes the other's local
+// branch. The check and the write share the per-repo start-path lock, so a
+// racing create or link cannot claim the target in between.
+//
+// There is no override: linking the PR here instead is one reversible archive
+// of the other session away.
+//
+// No dated API bump for the new refusal: the version-skewed web client reaches
+// this through bosso's ProxyLinkSessionPR and the local CLI is co-deployed. A
+// transform could restore the old answer only by creating the duplicate the
+// refusal exists to prevent. A busy lock now answers Unavailable rather than
+// InvalidArgument; both are failures that wrote nothing, and the new code only
+// tells a caller that retrying can succeed.
+// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+func (l *Lifecycle) claimLinkedPR(ctx context.Context, sess *models.Session, prNumber int, params db.UpdateSessionParams) (*models.Session, error) {
+	release, _, err := AcquireStartPath(ctx, sess.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStartPathBusy, err)
+	}
+	defer release()
+	movedTo := ""
+	if params.BranchName != nil {
+		movedTo = *params.BranchName
+	}
+	if err := EnsureNoOtherPROrBranchClaim(ctx, l.sessions, sess.ID, sess.RepoID, &prNumber, movedTo); err != nil {
+		return nil, linkTargetOwned(prNumber, err)
+	}
+	updated, err := l.sessions.Update(ctx, sess.ID, params)
+	if err != nil {
+		return nil, fmt.Errorf("update PR info: %w", err)
+	}
+	return updated, nil
+}
+
+// linkTargetOwnedError is LinkPR's refusal of a PR or branch another session
+// owns. It unwraps to the duplicate-session error it reports.
+type linkTargetOwnedError struct {
+	msg string
+	err error
+}
+
+func (e *linkTargetOwnedError) Error() string { return e.msg }
+func (e *linkTargetOwnedError) Unwrap() error { return e.err }
+
+func linkTargetOwned(prNumber int, err error) error {
+	const next = "archive that session first"
+	var pr *DuplicateActivePRSessionError
+	if errors.As(err, &pr) {
+		return &linkTargetOwnedError{
+			msg: fmt.Sprintf("PR #%d is already linked to session %s; %s", prNumber, describeSession(pr.ExistingSessionID, pr.ExistingTitle), next),
+			err: err,
+		}
+	}
+	var branch *DuplicateActiveBranchSessionError
+	if errors.As(err, &branch) {
+		return &linkTargetOwnedError{
+			msg: fmt.Sprintf("PR #%d's branch %q belongs to session %s; %s", prNumber, branch.BranchName, describeSession(branch.ExistingSessionID, branch.ExistingTitle), next),
+			err: err,
+		}
+	}
+	return err
+}
+
+func describeSession(id, title string) string {
+	if title = strings.TrimSpace(title); title != "" {
+		return fmt.Sprintf("%s (%q)", id, title)
+	}
+	return id
+}
+
+// linkedPRBranch returns the head branch of the linked PR when the session must
+// move to it, and "" when the session keeps its branch. Repair, finalize and
+// push all act on the session's branch, so they must follow the PR. A fork's
+// head branch is not on the session repo's origin, so the session keeps its own.
+func linkedPRBranch(sess *models.Session, pr *vcs.PRStatus) string {
+	if pr == nil || pr.IsCrossRepository {
+		return ""
+	}
+	head := strings.TrimSpace(pr.HeadBranch)
+	if head == sess.BranchName {
+		return ""
+	}
+	return head
+}
+
+// WorktreeBranchMismatch returns the branch checked out in the session's
+// worktree when it is not the session's branch, so a push from that worktree
+// would not reach the session's PR. It returns "" when they match, when the
+// session has no worktree, or when the worktree branch cannot be read. It never
+// changes the checkout: an operator or agent may have work there.
+func (l *Lifecycle) WorktreeBranchMismatch(ctx context.Context, sess *models.Session) string {
+	if l.branchResolver == nil || sess.WorktreePath == "" {
+		return ""
+	}
+	live, err := l.branchResolver.CurrentBranch(ctx, sess.WorktreePath)
+	if err != nil {
+		l.logger.Debug().Err(err).Str("session", sess.ID).Msg("read session worktree branch")
+		return ""
+	}
+	live = strings.TrimSpace(live)
+	if live == "" || live == sess.BranchName {
+		return ""
+	}
+	l.logger.Warn().
+		Str("session", sess.ID).
+		Str("worktree_branch", live).
+		Str("branch", sess.BranchName).
+		Msg("session worktree is not on the session branch")
+	return live
+}
+
+// linkedPRState returns the state a session moves to when the operator links
+// PR prNumber to it, and false when the link leaves the state alone. Finalizing
+// and Blocked always move: the operator is attaching the PR their run made.
+// Closed and Merged move only for an open PR, and Merged only for a PR other
+// than the one that merged, so relinking a resolved PR never reopens a
+// finished session.
+func linkedPRState(sess *models.Session, prNumber int, pr *vcs.PRStatus) (machine.State, bool) {
+	open := pr != nil && pr.State == vcs.PRStateOpen
+	samePR := sess.PRNumber != nil && *sess.PRNumber == prNumber
+	if (sess.State == machine.Closed && !open) || (sess.State == machine.Merged && (!open || samePR)) {
+		return 0, false
+	}
+	sm := machine.New(sess.State)
+	if err := sm.Fire(machine.PRLinked); err != nil {
+		return 0, false
+	}
+	return sm.State(), true
 }
 
 func resolvePRReference(originURL, prRef string) (int, string, error) {

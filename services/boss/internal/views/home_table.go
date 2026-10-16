@@ -50,7 +50,9 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
-	if a := sess.GetAttention(); a != nil && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !fixShowsDisplayLabel(sess)) {
+	// A finished row reads its PR's end ("✓ merged", "closed") like the rest of
+	// its struck-through cells.
+	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !fixShowsDisplayLabel(sess)) {
 		return h.renderAttentionStatus(a)
 	}
 	if sess != nil && sess.GetDisplayLabel() == statusWorking {
@@ -78,7 +80,7 @@ func fixShowsDisplayLabel(sess *pb.Session) bool {
 func (h *HomeModel) buildTableRows() {
 	h.sessions = attentionBoard(h.sessions)
 	if len(h.sessions) == 0 {
-		// DONE-only polls also hide the board after projection.
+		// Archived-only polls also hide the board after projection.
 		h.filter.Reset()
 	}
 	sessions := h.boardSessions()
@@ -128,7 +130,7 @@ func (h *HomeModel) buildTableRows() {
 	// Keep the attention board's STATUS visible at ordinary terminal widths;
 	// legacy boards retain the existing drop-before-squeeze fit.
 	if grouped {
-		nameWidthLabels = append(nameWidthLabels, "IN PROGRESS · 999")
+		nameWidthLabels = append(nameWidthLabels, "IN PROGRESS")
 	}
 	nameWidth := maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep
 	if grouped && h.tableAvailWidth() > 0 {

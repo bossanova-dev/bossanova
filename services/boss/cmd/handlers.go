@@ -19,6 +19,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 	"golang.org/x/term"
@@ -2810,20 +2811,64 @@ func runSessionLinkPR(cmd *cobra.Command, sessionID, prRef string) error {
 	if err != nil {
 		return err
 	}
-	sess, err := c.LinkSessionPR(ctx, sessionID, prRef)
+	return linkSessionPR(cmd, c, sessionID, prRef)
+}
+
+type sessionPRLinker interface {
+	LinkSessionPR(ctx context.Context, id, pr string) (*pb.LinkSessionPRResponse, error)
+}
+
+func linkSessionPR(cmd *cobra.Command, c sessionPRLinker, sessionID, prRef string) error {
+	resp, err := c.LinkSessionPR(context.Background(), sessionID, prRef)
+	if connect.CodeOf(err) == connect.CodeAlreadyExists {
+		return fmt.Errorf("link PR: %s", envelopeMessage(err))
+	}
 	if err != nil {
 		return fmt.Errorf("link PR: %w", err)
 	}
-	if sess.PrUrl != nil && *sess.PrUrl != "" {
-		fmt.Printf("Session %s linked to PR %s.\n", sess.Id, *sess.PrUrl)
-		return nil
+	sess := resp.GetSession()
+	out := cmd.OutOrStdout()
+	switch {
+	case sess.GetPrUrl() != "":
+		_, _ = fmt.Fprintf(out, "Session %s linked to PR %s.\n", sess.GetId(), sess.GetPrUrl())
+	case sess.PrNumber != nil:
+		_, _ = fmt.Fprintf(out, "Session %s linked to PR #%d.\n", sess.GetId(), sess.GetPrNumber())
+	default:
+		_, _ = fmt.Fprintf(out, "Session %s linked to PR.\n", sess.GetId())
 	}
-	if sess.PrNumber != nil {
-		fmt.Printf("Session %s linked to PR #%d.\n", sess.Id, *sess.PrNumber)
-		return nil
+	if note := finishedSessionNote(sess, false); note != "" {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), note)
 	}
-	fmt.Printf("Session %s linked to PR.\n", sess.Id)
+	if wt := resp.GetWorktreeBranch(); wt != "" {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Session worktree is on %s; check out %s to push to this PR.\n", wt, sess.GetBranchName())
+	}
 	return nil
+}
+
+// finishedSessionNote explains why a PR command left a closed or merged
+// session as it was, and how to bring it back; it is empty for a live session.
+// Only linking an open PR reopens one. refreshed marks refresh-pr, which never
+// changes the session state.
+func finishedSessionNote(sess *pb.Session, refreshed bool) string {
+	var state string
+	switch sess.GetState() {
+	case pb.SessionState_SESSION_STATE_CLOSED:
+		state = "closed"
+	case pb.SessionState_SESSION_STATE_MERGED:
+		state = "merged"
+	default:
+		return ""
+	}
+	id, pr := sess.GetId(), sess.GetPrNumber()
+	if !refreshed {
+		return fmt.Sprintf("Session %s stays %s: only linking an open PR reopens it.", id, state)
+	}
+	switch sess.GetDisplayStatus() {
+	case pb.DisplayStatus_DISPLAY_STATUS_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_MERGED:
+		return fmt.Sprintf("Session %s stays %s: refresh-pr re-reads the PR but never reopens a session. If the work moved to an open PR, run `boss session link-pr %s <pr-url>` to reopen it.", id, state, id)
+	default:
+		return fmt.Sprintf("Session %s stays %s although PR #%d is open again: refresh-pr never reopens a session. Run `boss session link-pr %s %d` to reopen it.", id, state, pr, id, pr)
+	}
 }
 
 type sessionPRRefresher interface {
@@ -2859,6 +2904,9 @@ func refreshSessionPR(cmd *cobra.Command, c sessionPRRefresher, sessionID string
 		return fmt.Errorf("refresh PR: %w", err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Session %s refreshed PR #%d (%s).\n", sess.GetId(), sess.GetPrNumber(), displayStatusName(sess.GetDisplayStatus()))
+	if note := finishedSessionNote(sess, true); note != "" {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), note)
+	}
 	return nil
 }
 

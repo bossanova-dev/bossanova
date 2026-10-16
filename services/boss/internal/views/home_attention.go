@@ -1,20 +1,23 @@
 package views
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// attentionBoard preserves the daemon's manual order within In progress.
+// attentionBoard preserves the daemon's manual order within In progress. A
+// session whose PR merged or closed stays there, struck through, until it is
+// archived: hiding it lost sessions whose chat was still in use after the PR
+// closed.
 func attentionBoard(sessions []*pb.Session) []*pb.Session {
 	out := make([]*pb.Session, 0, len(sessions))
 	for _, s := range sessions {
-		if s.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE {
+		if s.GetArchivedAt() == nil {
 			out = append(out, s)
 		}
 	}
@@ -89,45 +92,51 @@ func (h HomeModel) sectionTitleCell(sessions []*pb.Session, i int) string {
 	return styleStatusInfo.Render(h.sectionTitle(sessions, i))
 }
 
-// boardView is the table with each group title slid left from the NAME column
-// onto the REPO column. bubbles truncates every cell to its column and REPO is
-// too narrow for a title, so buildTableRows lays the title out in NAME over a
-// blank REPO cell, and this moves it across that blank.
+// boardView is the table with each group's title row redrawn as a rule from
+// the REPO column's left edge to the table's right edge, the title centred in
+// it. bubbles truncates every cell to its column, so buildTableRows lays the
+// bare title out in NAME, which never narrows below it, and this finds the row
+// by that cell.
 func (h HomeModel) boardView() string {
 	view := h.table.View()
+	if !h.showsSections() {
+		return view
+	}
 	shift := 0
 	for _, c := range h.table.Columns() {
 		if c.Title == "REPO" {
 			shift = c.Width + tableColumnGap
 		}
 	}
-	if shift == 0 || !h.showsSections() {
-		return view
-	}
-	blank := strings.Repeat(" ", shift)
-	sessions := h.boardSessions()
-	for i := range sessions {
-		if h.sectionRows(sessions, i, true) > 0 {
-			title := h.sectionTitleCell(sessions, i)
-			view = strings.Replace(view, blank+title, title+blank, 1)
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		for _, title := range []string{"NEEDS YOU", "IN PROGRESS"} {
+			if !strings.Contains(line, styleStatusInfo.Render(title)) {
+				continue
+			}
+			plain := ansi.Strip(line)
+			left := max(0, strings.Index(plain, title)-shift)
+			lines[i] = plain[:left] + sectionRule(title, ansi.StringWidth(plain)-left)
 		}
 	}
-	return view
+	return strings.Join(lines, "\n")
+}
+
+// sectionRule centres title in a muted light rule width cells wide. Without
+// room for a rule on both sides it shows the title alone, cut to width.
+func sectionRule(title string, width int) string {
+	side := width - lipgloss.Width(title) - 2
+	if side < 2 {
+		return styleStatusInfo.Render(ansi.Truncate(title, max(0, width), "…"))
+	}
+	return styleStatusMuted.Render(strings.Repeat("─", side/2)) + " " + styleStatusInfo.Render(title) + " " + styleStatusMuted.Render(strings.Repeat("─", side-side/2))
 }
 
 func (h HomeModel) sectionTitle(sessions []*pb.Session, i int) string {
-	needs := attention.NeedsYou(sessions[i].GetAttention().GetKind())
-	n := 0
-	for _, s := range sessions {
-		if attention.NeedsYou(s.GetAttention().GetKind()) == needs {
-			n++
-		}
+	if attention.NeedsYou(sessions[i].GetAttention().GetKind()) {
+		return "NEEDS YOU"
 	}
-	title := "IN PROGRESS"
-	if needs {
-		title = "NEEDS YOU"
-	}
-	return fmt.Sprintf("%s · %d", title, n)
+	return "IN PROGRESS"
 }
 
 func (h HomeModel) renderAttentionStatus(a *pb.SessionAttention) string {
@@ -139,6 +148,9 @@ func (h HomeModel) renderAttentionStatus(a *pb.SessionAttention) string {
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
 		return styleStatusWarning.Render("review")
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
+		if a.GetIsUnverified() {
+			return styleStatusSuccess.Render("✓ ready")
+		}
 		return styleStatusSuccess.Render("✓ merge")
 	default:
 		return h.renderProgressStatus(a.GetProgressLabel())

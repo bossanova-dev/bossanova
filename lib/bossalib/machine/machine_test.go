@@ -1081,6 +1081,36 @@ func TestCountedLoopStillBlocks(t *testing.T) {
 	assertState(t, m, Blocked)
 }
 
+// TestPRLinked pins which states an operator's link-pr moves back to
+// AwaitingChecks: the two PR-resolved terminals (a session whose work moved to
+// a replacement PR) and the two states LinkPR already repaired (Finalizing,
+// Blocked). Every other state either already follows its PR or, for Orphaned,
+// waits for a deliberate fresh run.
+func TestPRLinked(t *testing.T) {
+	revivable := map[State]bool{Closed: true, Merged: true, Finalizing: true, Blocked: true}
+	for _, st := range AllStates() {
+		t.Run(st.String(), func(t *testing.T) {
+			m := NewWithContext(st, &SessionContext{CheckState: CheckStatePassed, BlockedReason: "stale"})
+			if got := m.CanFire(PRLinked); got != revivable[st] {
+				t.Fatalf("CanFire(PRLinked) from %s = %v, want %v", st, got, revivable[st])
+			}
+			if !revivable[st] {
+				return
+			}
+			if err := m.Fire(PRLinked); err != nil {
+				t.Fatalf("Fire(PRLinked): %v", err)
+			}
+			assertState(t, m, AwaitingChecks)
+			if m.Context().CheckState != CheckStatePending {
+				t.Fatalf("CheckState = %v, want pending on entering AwaitingChecks", m.Context().CheckState)
+			}
+		})
+	}
+	if PRLinked.String() != "pr_linked" {
+		t.Fatalf("PRLinked.String() = %q", PRLinked.String())
+	}
+}
+
 func assertState(t *testing.T, m *Machine, want State) {
 	t.Helper()
 	if got := m.State(); got != want {

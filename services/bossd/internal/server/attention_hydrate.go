@@ -141,6 +141,10 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	}
 }
 
+// attentionFactory reports whether the repo has an enabled verify job on this
+// daemon: a cron job that invokes boss-verify by prompt or runs its cron gate.
+// A disabled one does not count; it will not reach a head. It costs one
+// cron-job read per repo a minute; a failed read is false, uncached.
 func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
 	if s.cronJobs == nil {
 		return false
@@ -158,7 +162,7 @@ func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
 	verify, _ := projectconfig.DefaultFactoryStages().Lookup("verify")
 	value := false
 	for _, job := range jobs {
-		if job != nil && job.IsEnabled && verify.MatchesPrompt(job.Prompt) {
+		if job != nil && job.IsEnabled && (verify.MatchesPrompt(job.Prompt) || verify.MatchesGate(job.GateCommand)) {
 			value = true
 			break
 		}

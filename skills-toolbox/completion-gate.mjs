@@ -1,12 +1,17 @@
 // boss-build's Step 12 helper: the session-side merge envelope and the verify fast path that judges,
 // posts and merges through the sibling verify-gate.mjs — the one head-pinned merge path. The review
 // and tree-drift reasons it shares with the ready gate live in ready-gate.mjs.
-import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './main-module.mjs'
-import { driftReasons, reviewFiles, reviewReasons, reviewedTreeDrift } from './ready-gate.mjs'
+import {
+  commandReader,
+  driftReasons,
+  reviewFiles,
+  reviewReasons,
+  reviewedTreeDrift,
+} from './ready-gate.mjs'
 import { classifyChecks, isGreen } from './pr-check-state.mjs'
 import { STAGE_SKILL, invokedSkill } from './stage-chain.mjs'
 import {
@@ -177,45 +182,6 @@ export function computeEligibility(inputs = {}) {
   }
 }
 
-// The only subprocess seam. A failed read is unknown (`{ok: false, status}`, `status` the exit code
-// or null), never an empty successful payload.
-export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
-  return (command, args, { json = false, timeout = 30000 } = {}) => {
-    let response
-    try {
-      response = spawn(command === 'boss' ? bossBin : command, args, {
-        cwd,
-        encoding: 'utf8',
-        timeout,
-        maxBuffer: 16 * 1024 * 1024,
-        killSignal: 'SIGKILL',
-      })
-    } catch (error) {
-      return { ok: false, status: null, error: error.code ?? 'spawn-error' }
-    }
-    let payload
-    if (json) {
-      try {
-        payload = JSON.parse(response.stdout)
-      } catch {
-        /* Failure remains unknown. */
-      }
-    }
-    if (response.error || response.status !== 0)
-      return {
-        ok: false,
-        status: response.status ?? null,
-        error:
-          payload?.error?.code ??
-          payload?.code ??
-          response.error?.code ??
-          `exit-${response.status}`,
-        payload,
-      }
-    if (json && payload === undefined) return { ok: false, status: 0, error: 'unreadable-json' }
-    return { ok: true, payload, output: String(response.stdout ?? '').trim() }
-  }
-}
 function readText(path) {
   try {
     return readFileSync(path, 'utf8').trim()

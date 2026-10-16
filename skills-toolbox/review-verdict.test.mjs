@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { followUpReasons, parseFollowUps, sections } from './merge-eligibility.mjs'
 import { renderFollowUpSections, routeFollowUps } from './followup-route.mjs'
+import * as reviewVerdict from './review-verdict.mjs'
 import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -39,7 +40,7 @@ const verdict = (findings = [], over = {}) => ({
   ...over,
 })
 
-function run(argv, files = {}) {
+function run(argv, files = {}, overrides = {}) {
   const out = []
   const err = []
   const memFs = {
@@ -51,7 +52,11 @@ function run(argv, files = {}) {
       return files[p]
     },
   }
-  const code = main(argv, { fs: memFs, stdout: (s) => out.push(s), stderr: (s) => err.push(s) })
+  const code = main(argv, {
+    fs: { ...memFs, ...overrides },
+    stdout: (s) => out.push(s),
+    stderr: (s) => err.push(s),
+  })
   return { code, out: out.join(''), err: err.join('') }
 }
 
@@ -235,4 +240,155 @@ test('the CLI runs as an entry point', () => {
   fs.rmSync(dir, { recursive: true, force: true })
   assert.equal(r.status, 0)
   assert.equal(r.stdout, 'blocked\n')
+})
+
+const directory = (name, isDirectory = true) => ({ name, isDirectory: () => isDirectory })
+const poolArgs = ['pool', '--root', '/reviews', '--out', '/pooled.json', '--note', '/note']
+function poolRun(entries, files = {}, overrides = {}) {
+  return run(poolArgs, files, {
+    readdirSync: (dir, options) => {
+      assert.deepEqual(options, { withFileTypes: true })
+      if (!(dir in entries)) throw new Error(`unreadable directory ${dir}`)
+      return entries[dir]
+    },
+    ...overrides,
+  })
+}
+
+test('pool orders passes and members numerically and ignores other entries', () => {
+  const entries = [
+    { pass: '10', member: '1' },
+    { pass: '2', member: '10' },
+    { pass: '1', member: '1' },
+    { pass: '2', member: '2' },
+    { pass: 'notes', member: '1' },
+    { pass: '2', member: 'notes' },
+  ]
+  assert.deepEqual(reviewVerdict.poolVerdictFiles(entries), [
+    '1/1/review-verdict.json',
+    '2/2/review-verdict.json',
+    '2/10/review-verdict.json',
+    '10/1/review-verdict.json',
+  ])
+  const files = {}
+  for (const [pass, head] of [
+    ['1', BASE],
+    ['2', 'c'.repeat(40)],
+    ['10', HEAD],
+  ])
+    files[`/reviews/${pass}/1/review-verdict.json`] = JSON.stringify(
+      verdict([], { base: pass === '1' ? BASE : 'd'.repeat(40), head }),
+    )
+  const result = poolRun(
+    {
+      '/reviews': [
+        directory('10'),
+        directory('skills.txt', false),
+        directory('notes'),
+        directory('2'),
+        directory('1'),
+      ],
+      '/reviews/1': [directory('1'), directory('notes'), directory('2', false)],
+      '/reviews/2': [directory('1')],
+      '/reviews/10': [directory('1')],
+    },
+    files,
+  )
+  assert.equal(result.code, 0)
+  assert.equal(result.out, 'clean\n')
+  assert.equal(files['/note'], 'REVIEW_VERDICT=clean\n')
+  const pooled = JSON.parse(files['/pooled.json'])
+  assert.equal(pooled.base, BASE)
+  assert.equal(pooled.head, HEAD)
+})
+
+test('pool writes error/none for a missing member verdict, an empty root or an unreadable directory', () => {
+  for (const entries of [
+    { '/reviews': [directory('1')], '/reviews/1': [directory('1')] },
+    { '/reviews': [] },
+    {},
+  ]) {
+    const files = {}
+    const result = poolRun(entries, files)
+    assert.equal(result.code, 0)
+    assert.equal(result.out, 'none\n')
+    assert.equal(files['/note'], 'REVIEW_VERDICT=none\n')
+    assert.equal(JSON.parse(files['/pooled.json']).status, 'error')
+  }
+})
+
+test('pool rejects bad arguments and failed writes with exit 2 and stderr only', () => {
+  for (const args of [
+    ['pool'],
+    [...poolArgs, 'extra'],
+    poolArgs.slice(0, -2),
+    [...poolArgs, '--report'],
+    ['status', '/v.json', '--root', '/reviews'],
+    ['merge', '--out', '/m.json', '/v.json', '--note', '/note'],
+  ]) {
+    const result = run(args)
+    assert.equal(result.code, 2)
+    assert.equal(result.out, '')
+    assert.ok(result.err)
+  }
+  for (const failingPath of ['/pooled.json', '/note']) {
+    const result = poolRun(
+      { '/reviews': [] },
+      {},
+      {
+        writeFileSync: (file) => {
+          if (file === failingPath) throw new Error('write denied')
+        },
+      },
+    )
+    assert.equal(result.code, 2)
+    assert.equal(result.out, '')
+    assert.match(result.err, /write denied/)
+  }
+})
+
+test('appending a passing review never improves the pooled note for sequences up to three passes', () => {
+  const ranks = { clean: 0, capped: 1, none: 2 }
+  const outcomes = {
+    pass: verdictStatus(verdict()),
+    blocked: verdictStatus(verdict([finding()])),
+    error: verdictStatus({ version: 1, status: 'error', error: 'dispatch failed' }),
+  }
+  let sequences = [[]]
+  for (let length = 1; length <= 3; length++) {
+    sequences = sequences.flatMap((sequence) =>
+      Object.values(outcomes).map((result) => [...sequence, result]),
+    )
+    for (const sequence of sequences) {
+      const before = reviewVerdict.noteVerdict(reviewVerdict.mergeVerdicts(sequence).status)
+      const after = reviewVerdict.noteVerdict(
+        reviewVerdict.mergeVerdicts([...sequence, outcomes.pass]).status,
+      )
+      assert.ok(ranks[after] >= ranks[before])
+    }
+  }
+  assert.equal(reviewVerdict.noteVerdict('unexpected'), 'none')
+})
+
+test('pool CLI discovers real directories and writes the capped note for a blocking review', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-verdict-pool-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const root = path.join(dir, 'reviews')
+  const member = path.join(root, '1', '1')
+  fs.mkdirSync(member, { recursive: true })
+  fs.writeFileSync(path.join(member, 'review-verdict.json'), JSON.stringify(verdict([finding()])))
+  const out = path.join(dir, 'verdict.json')
+  const note = path.join(dir, 'note')
+  const result = spawnSync(
+    process.execPath,
+    [path.join(HERE, 'review-verdict.mjs'), 'pool', '--root', root, '--out', out, '--note', note],
+    { encoding: 'utf8' },
+  )
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout, 'capped\n')
+  assert.equal(fs.readFileSync(note, 'utf8'), 'REVIEW_VERDICT=capped\n')
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).status, 'blocked')
+  assert.equal(reviewVerdict.noteVerdict('pass'), 'clean')
+  assert.equal(reviewVerdict.noteVerdict('blocked'), 'capped')
+  assert.equal(reviewVerdict.noteVerdict('error'), 'none')
 })

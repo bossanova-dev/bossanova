@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,9 +166,7 @@ func loadOrCreateTokenFile(path string) (string, error) {
 	case err == nil:
 		defer unlock()
 	case errors.Is(err, errLockUnsupported):
-		// The filesystem has no advisory locks. Fall back to the unlocked
-		// write: readers still see the old or the new token, never a torn one,
-		// but racing creators are no longer serialized.
+		return loadOrCreateTokenFileUnlocked(path)
 	default:
 		return "", err
 	}
@@ -178,6 +177,83 @@ func loadOrCreateTokenFile(path string) (string, error) {
 		return "", err
 	}
 	return generateTokenFile(path)
+}
+
+// Without advisory locks, missing-file creation converges via link/O_EXCL.
+// Regeneration of a genuinely malformed file remains best-effort: concurrent
+// regenerators can still replace each other's tokens.
+func loadOrCreateTokenFileUnlocked(path string) (string, error) {
+	const attempts = 5
+	for range attempts {
+		tok, err := readTokenFile(path)
+		if errors.Is(err, ErrTokenInvalid) {
+			deadline := time.Now().Add(tokenSettleTimeout)
+			for errors.Is(err, ErrTokenInvalid) && time.Now().Before(deadline) {
+				time.Sleep(min(10*time.Millisecond, time.Until(deadline)))
+				tok, err = readTokenFile(path)
+			}
+		}
+		switch {
+		case err == nil:
+			return tok, nil
+		case errors.Is(err, ErrTokenInvalid):
+			return generateTokenFile(path)
+		case errors.Is(err, ErrTokenMissing):
+			buf := make([]byte, tokenBytes)
+			if _, err := rand.Read(buf); err != nil {
+				return "", fmt.Errorf("socketauth: generate token: %w", err)
+			}
+			tok = hex.EncodeToString(buf)
+			if err := createTokenFileExclusive(path, tok); err == nil {
+				return tok, nil
+			} else if !errors.Is(err, fs.ErrExist) {
+				return "", err
+			}
+		default:
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("socketauth: create %s: exhausted %d attempts", filepath.Base(path), attempts)
+}
+
+// tokenSettleTimeout lets an O_EXCL writer finish before a reader regenerates.
+var tokenSettleTimeout = 250 * time.Millisecond
+
+// linkTokenFile is replaceable so tests can exercise filesystems without links.
+var linkTokenFile = os.Link
+
+func createTokenFileExclusive(path, tok string) error {
+	tmpName, err := writeTokenTemp(path, tok)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := linkTokenFile(tmpName, path); err == nil {
+		return nil
+	} else if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("socketauth: publish token: %w", err)
+	}
+	// Some filesystems support neither locks nor links. Exclusive open still
+	// chooses one creator; readers settle while it writes the new inode.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("socketauth: create token: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("socketauth: chmod token: %w", err)
+	}
+	if _, err := file.WriteString(tok); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("socketauth: write token: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("socketauth: close token: %w", err)
+	}
+	return nil
 }
 
 func generateTokenFile(path string) (string, error) {
@@ -231,37 +307,48 @@ func isLockUnsupported(err error) bool {
 	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.ENOLCK)
 }
 
-// writeTokenAtomic writes the token to a temp file in the same directory with
-// mode 0600, then renames it over the destination path. Same-dir rename is atomic on
-// POSIX, so a reader never observes a half-written token, and there is no
-// create-then-chmod window (perm is set at open time). It needs no hard-link
-// support from the filesystem.
+// writeTokenAtomic publishes a complete 0600 token by same-directory rename.
+// Rotation and malformed-file regeneration deliberately replace the destination.
 func writeTokenAtomic(path, tok string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("socketauth: create token dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	tmpName, err := writeTokenTemp(path, tok)
 	if err != nil {
-		return fmt.Errorf("socketauth: temp token: %w", err)
+		return err
 	}
-	tmpName := tmp.Name()
-	// Removes the temp file on every error return; after a successful rename
-	// the name no longer exists, so this is a no-op.
 	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("socketauth: chmod temp token: %w", err)
-	}
-	if _, err := tmp.WriteString(tok); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("socketauth: write temp token: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("socketauth: close temp token: %w", err)
-	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("socketauth: rename token: %w", err)
 	}
 	return nil
+}
+
+// writeTokenTemp returns a closed, fully written 0600 temporary file. The
+// caller owns its removal on success; errors always remove it here. CreateTemp
+// sets 0600 at open time, avoiding a create-then-chmod exposure window.
+func writeTokenTemp(path, tok string) (name string, err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("socketauth: create token dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return "", fmt.Errorf("socketauth: temp token: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("socketauth: chmod temp token: %w", err)
+	}
+	if _, err := tmp.WriteString(tok); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("socketauth: write temp token: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("socketauth: close temp token: %w", err)
+	}
+	return tmpName, nil
 }

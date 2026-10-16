@@ -1907,8 +1907,12 @@ func AttentionSessions() []*pb.Session {
 	for i, kind := range kinds {
 		a := &pb.SessionAttention{Kind: kind, Sentence: sentences[i], Since: ts(time.Duration(i) * time.Minute)}
 		label, intent := "ready", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS
+		var displayStatus pb.DisplayStatus
 		switch kind {
-		case pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, pb.AttentionKind_ATTENTION_KIND_DONE:
+		case pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED:
+		case pb.AttentionKind_ATTENTION_KIND_DONE:
+			displayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
+			label, intent = "✓ merged", pb.DisplayIntent_DISPLAY_INTENT_MUTED
 		case pb.AttentionKind_ATTENTION_KIND_FIX:
 			a.AlertKey = "login-delta"
 			label, intent = "⨯ failing", pb.DisplayIntent_DISPLAY_INTENT_DANGER
@@ -1926,7 +1930,7 @@ func AttentionSessions() []*pb.Session {
 				a.ProgressLabel = "checking 4/9"
 			}
 		}
-		out = append(out, &pb.Session{Id: fmt.Sprintf("attention-%d", i), RepoId: "repo-1", RepoDisplayName: "my-app", Title: fmt.Sprintf("[BOS-%d] Improve the unattended session workflow", 1500+i), BranchName: fmt.Sprintf("attention-%d", i), PrNumber: i32(int32(2980 + i)), Attention: a, DisplayLabel: label, DisplayIntent: intent})
+		out = append(out, &pb.Session{Id: fmt.Sprintf("attention-%d", i), RepoId: "repo-1", RepoDisplayName: "my-app", Title: fmt.Sprintf("[BOS-%d] Improve the unattended session workflow", 1500+i), BranchName: fmt.Sprintf("attention-%d", i), PrNumber: i32(int32(2980 + i)), Attention: a, DisplayLabel: label, DisplayIntent: intent, DisplayStatus: displayStatus})
 	}
 	return out
 }

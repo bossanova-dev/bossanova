@@ -106,7 +106,7 @@ func (s *stubSessionSettingsClient) OperatorMergeSession(context.Context, string
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RemoveSession(context.Context, string) error { panic("unused") }
-func (s *stubSessionSettingsClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
+func (s *stubSessionSettingsClient) LinkSessionPR(context.Context, string, string) (*pb.LinkSessionPRResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) SetSessionTracker(context.Context, string, string) (*pb.Session, error) {

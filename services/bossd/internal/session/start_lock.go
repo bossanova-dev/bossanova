@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -96,6 +97,11 @@ var TargetReapLockTimeout = 5 * time.Second
 // would make one path's contention invisible. A var so tests can exercise the
 // warning without sleeping for seconds.
 var SlowStartLockWaitThreshold = 5 * time.Second
+
+// ErrStartPathBusy wraps a failure to take a repo's start-path lock outside
+// the create path, so an RPC answers it as Unavailable, a retry once the holder
+// lets go, rather than as a bad request.
+var ErrStartPathBusy = errors.New("start-path lock unavailable")
 
 var (
 	startPathGates = &keyedgate.Registry{Name: "start-path"}

@@ -207,7 +207,10 @@ func TestLocalClientSessionWrappers(t *testing.T) {
 		{"UpdateSession", func(c *LocalClient) (*pb.Session, error) {
 			return c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: "id"})
 		}},
-		{"LinkSessionPR", func(c *LocalClient) (*pb.Session, error) { return c.LinkSessionPR(ctx, "id", "1") }},
+		{"LinkSessionPR", func(c *LocalClient) (*pb.Session, error) {
+			resp, err := c.LinkSessionPR(ctx, "id", "1")
+			return resp.GetSession(), err
+		}},
 		{"SetSessionTracker", func(c *LocalClient) (*pb.Session, error) { return c.SetSessionTracker(ctx, "id", "BOS-1") }},
 		{"RefreshSessionPR", func(c *LocalClient) (*pb.Session, error) {
 			id := "id"

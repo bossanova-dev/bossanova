@@ -450,12 +450,12 @@ func (c *LocalClient) DismissSessionAlert(ctx context.Context, sessionID, alertK
 	return resp.Msg.GetSession(), nil
 }
 
-func (c *LocalClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
+func (c *LocalClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.LinkSessionPRResponse, error) {
 	resp, err := c.rpc.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: id, Pr: pr}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.Session, nil
+	return resp.Msg, nil
 }
 
 func (c *LocalClient) SetSessionTracker(ctx context.Context, id, trackerID string) (*pb.Session, error) {

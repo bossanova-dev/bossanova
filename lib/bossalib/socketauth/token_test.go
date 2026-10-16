@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -318,6 +319,7 @@ func injectTokenLock(t *testing.T, fn func(string) (func(), error)) {
 // Creation must not depend on hard links or on advisory locks: when the
 // filesystem cannot lock, the token is still written atomically and persisted.
 func TestLoadOrCreateHTTPToken_LockUnsupportedFallsBackToAtomicWrite(t *testing.T) {
+	injectTokenSettleTimeout(t, 20*time.Millisecond)
 	injectTokenLock(t, func(string) (func(), error) {
 		return nil, fmt.Errorf("%w: %w", errLockUnsupported, syscall.ENOTSUP)
 	})
@@ -488,5 +490,144 @@ func TestRotateHTTPToken_LockFailurePreservesToken(t *testing.T) {
 	current, err := ReadHTTPToken(socket)
 	if err != nil || current != old {
 		t.Fatal("lock failure changed token", err)
+	}
+}
+
+func TestLoadOrCreateHTTPToken_LockUnsupportedConcurrentFirstUseConverges(t *testing.T) {
+	injectTokenLock(t, func(string) (func(), error) { return nil, errLockUnsupported })
+	for range 50 {
+		assertConcurrentCallersConverge(t, sock(t))
+	}
+}
+
+func TestLoadOrCreateHTTPToken_LockAndLinkUnsupportedConcurrentFirstUseConverges(t *testing.T) {
+	injectTokenLock(t, func(string) (func(), error) { return nil, errLockUnsupported })
+	injectTokenLinkUnsupported(t)
+	for range 50 {
+		assertConcurrentCallersConverge(t, sock(t))
+	}
+}
+
+func injectTokenLinkUnsupported(t *testing.T) {
+	t.Helper()
+	original := linkTokenFile
+	linkTokenFile = func(oldname, newname string) error {
+		return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: syscall.ENOTSUP}
+	}
+	t.Cleanup(func() { linkTokenFile = original })
+}
+
+func injectTokenSettleTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	original := tokenSettleTimeout
+	tokenSettleTimeout = timeout
+	t.Cleanup(func() { tokenSettleTimeout = original })
+}
+
+func TestLoadOrCreateHTTPToken_LockUnsupportedWaitsForInFlightWriter(t *testing.T) {
+	injectTokenLock(t, func(string) (func(), error) { return nil, errLockUnsupported })
+	injectTokenSettleTimeout(t, 2*time.Second)
+	sp := sock(t)
+	if err := os.WriteFile(HTTPTokenPath(sp), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		token string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		token, err := LoadOrCreateHTTPToken(sp)
+		done <- result{token, err}
+	}()
+	time.Sleep(30 * time.Millisecond)
+	// Complete the simulated winner even if publication fails, and join its reader.
+	writeErr := writeTokenAtomic(HTTPTokenPath(sp), validHexToken)
+	got := <-done
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if got.err != nil || got.token != validHexToken {
+		t.Fatalf("reader did not retain winner: %v", got.err)
+	}
+	stored, err := ReadHTTPToken(sp)
+	if err != nil || stored != validHexToken {
+		t.Fatalf("winner was overwritten: %v", err)
+	}
+}
+
+func TestLoadOrCreateHTTPToken_LockUnsupportedMalformedStillRegenerates(t *testing.T) {
+	injectTokenLock(t, func(string) (func(), error) { return nil, errLockUnsupported })
+	injectTokenSettleTimeout(t, 20*time.Millisecond)
+	sp := sock(t)
+	if err := os.WriteFile(HTTPTokenPath(sp), []byte("not-a-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := LoadOrCreateHTTPToken(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateToken(token); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ReadHTTPToken(sp)
+	if err != nil || stored != token {
+		t.Fatalf("regenerated token not stored: %v", err)
+	}
+	assertTokenFile0600(t, HTTPTokenPath(sp))
+}
+
+func TestCreateTokenFileExclusive_ExistingFileIsNotOverwritten(t *testing.T) {
+	for _, noLinks := range []bool{false, true} {
+		t.Run(fmt.Sprintf("noLinks=%t", noLinks), func(t *testing.T) {
+			if noLinks {
+				injectTokenLinkUnsupported(t)
+			}
+			path := HTTPTokenPath(sock(t))
+			if err := os.WriteFile(path, []byte(validHexToken), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := createTokenFileExclusive(path, strings.Repeat("a", 64)); !errors.Is(err, fs.ErrExist) {
+				t.Fatalf("expected exists, got %v", err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil || string(raw) != validHexToken {
+				t.Fatalf("existing token changed: %v", err)
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				t.Fatal("exclusive create left temporary files")
+			}
+		})
+	}
+}
+
+func TestLoadOrCreateHTTPToken_LockUnsupportedFilesAre0600(t *testing.T) {
+	injectTokenLock(t, func(string) (func(), error) { return nil, errLockUnsupported })
+	for _, noLinks := range []bool{false, true} {
+		t.Run(fmt.Sprintf("noLinks=%t", noLinks), func(t *testing.T) {
+			if noLinks {
+				injectTokenLinkUnsupported(t)
+			}
+			sp := sock(t)
+			if _, err := LoadOrCreateHTTPToken(sp); err != nil {
+				t.Fatal(err)
+			}
+			assertTokenFile0600(t, HTTPTokenPath(sp))
+		})
+	}
+}
+
+func assertTokenFile0600(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("token mode = %o, want 0600", info.Mode().Perm())
 	}
 }

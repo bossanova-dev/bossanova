@@ -70,6 +70,18 @@ func TestFactoryStageTable(t *testing.T) {
 		if !(FactoryStage{Skill: "boss-build"}).MatchesPrompt("$boss-build extra") {
 			t.Error("MatchesPrompt must accept either spelling as the leading token")
 		}
+		verify := FactoryStage{Skill: "boss-verify"}
+		for gate, want := range map[string]bool{
+			`node "$HOME/.claude/skills/boss-verify/toolbox/cron-gates/boss-verify.mjs"`: true,
+			"node skills-toolbox/cron-gates/boss-verify.mjs --dry-run":                   true,
+			"node skills-toolbox/cron-gates/boss-build.mjs":                              false,
+			"node .claude/skills/boss-verify/toolbox/verify-gate.mjs policy":             false,
+			"": false,
+		} {
+			if got := verify.MatchesGate(gate); got != want {
+				t.Errorf("MatchesGate(%q) = %v, want %v", gate, got, want)
+			}
+		}
 	})
 
 	t.Run("unknown stage", func(t *testing.T) {

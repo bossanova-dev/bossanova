@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 
 	"github.com/recurser/bossd/internal/reposecrets"
 )
@@ -85,7 +86,11 @@ func (s *SQLiteRepoStore) deleteKeyLockWait() time.Duration {
 // repo's key lock takes the write lock's place for what the key phase needs:
 // the read-merge-write of the two keys and the UPDATE recording it are one
 // step per repo, and an update that does not commit queues its undo (see
-// keyringUndo) before the next key update of that repo can start.
+// keyringUndo) before the next key update of that repo can start. A COMMIT
+// error is not taken at its word: it is resolved from a fresh read of the row
+// (resolveKeyCommit), and only a commit shown not to have landed is undone. A
+// commit that landed despite the error returns the committed row and a nil
+// error, with a warning logged by repo id.
 //
 // The wait for the key lock is bounded by keyringTimeout, as the key phase is:
 // a holder releases after at most its own key phase and one write
@@ -113,7 +118,9 @@ func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, para
 	committed := false
 	// undo puts back a keyring write the UPDATE did not keep, on every path
 	// that does not commit: a failed key phase, guard, UPDATE, zero rows
-	// affected, or the COMMIT itself. Deferred last, it runs before unlock,
+	// affected, or a COMMIT error that a fresh read shows did not land (one
+	// that landed, or whose outcome is unknown, is not undone; see
+	// resolveKeyCommit). Deferred last, it runs before unlock,
 	// and it waits on keyCtx at most, so it returns at once when ctx has
 	// ended; endKeys releases keyCtx only after it.
 	defer func() {
@@ -125,6 +132,27 @@ func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, para
 		return nil, false, err
 	}
 	repo, hasKeyringSecrets, err := s.updateInTx(ctx, id, params, keys)
+	var uncertain *uncertainCommitError
+	if errors.As(err, &uncertain) {
+		// updateInTx has released its connection, so the fresh read can run.
+		switch resolveKeyCommit(ctx, s.db, id, uncertain) {
+		case commitLanded:
+			committed = true
+			log.Warn().Err(uncertain.err).Str("repo_id", id).
+				Msg("repo key update reported a commit error but landed; keeping its keyring item")
+			return uncertain.repo, uncertain.hasKeyringSecrets, nil
+		case commitNotLanded:
+			return nil, false, err
+		default:
+			// Never undo on a guess: undoing a write that landed loses the
+			// keys, while keeping one that did not is overwritten by the next
+			// key write (or, for an unflagged row, the next startup move).
+			committed = true
+			log.Warn().Err(uncertain.err).Str("repo_id", id).
+				Msg("repo key update reported a commit error and its outcome is unknown; keyring item left as written")
+			return nil, false, fmt.Errorf("repo key update outcome unknown: %w", err)
+		}
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -138,13 +166,133 @@ type keyClauses struct {
 	sets          []string
 	args          []any
 	requestsScrub bool
+	// updatedAfter, when set, is the row's updated_at before the UPDATE;
+	// update moves updated_at strictly past it (see nextUpdatedAt). updateInTx
+	// sets it so a keyed commit's outcome can be read back from the row.
+	updatedAfter string
+}
+
+// nextUpdatedAt is the updated_at an UPDATE writes: now, or 1ms past
+// updatedAfter when now would not be later than it (two writes in one
+// millisecond, or a clock that stepped back). Moving updated_at on every keyed
+// update is what lets classifyKeyCommit tell whether a flagged row's commit
+// landed. An updatedAfter that is empty or not in sqlutil.TimeLayout is ignored.
+func nextUpdatedAt(now, updatedAfter string) string {
+	if updatedAfter == "" || now > updatedAfter {
+		return now
+	}
+	prev, err := time.Parse(sqlutil.TimeLayout, updatedAfter)
+	if err != nil {
+		return now
+	}
+	return sqlutil.FormatTime(prev.Add(time.Millisecond))
+}
+
+// repoKeyState is the part of a repo row that records where its keys live:
+// the flag, and updated_at, which every keyed update moves.
+type repoKeyState struct {
+	updatedAt string
+	flagged   bool
+}
+
+// readRepoKeyState reads id's repoKeyState from q. A missing row is
+// sql.ErrNoRows, unwrapped.
+func readRepoKeyState(ctx context.Context, q repoSQL, id string) (repoKeyState, error) {
+	var st repoKeyState
+	var flag int
+	if err := q.QueryRowContext(ctx,
+		`SELECT updated_at, has_keyring_secrets FROM repos WHERE id = ?`, id,
+	).Scan(&st.updatedAt, &flag); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return repoKeyState{}, sql.ErrNoRows
+		}
+		return repoKeyState{}, fmt.Errorf("read repo key state: %w", err)
+	}
+	st.flagged = flag != 0
+	return st, nil
+}
+
+// commitOutcome is what a fresh read says about a COMMIT that reported an
+// error.
+type commitOutcome int
+
+const (
+	// commitUnknown: the read cannot tell. Nothing is compensated.
+	commitUnknown commitOutcome = iota
+	// commitLanded: the transaction is durable despite the error.
+	commitLanded
+	// commitNotLanded: the transaction was discarded.
+	commitNotLanded
+)
+
+// classifyKeyCommit decides a keyed write's COMMIT error from the row's key
+// state before and after the write (as seen inside the transaction) and a
+// fresh read made after the transaction's connection was released:
+//
+//   - a failed fresh read (including sql.ErrNoRows: a concurrent Delete owns
+//     the keyring item's removal) is unknown;
+//   - when the write changed the flag, the flag decides. The flag and key
+//     columns change only under the repo's key lock, or before any store
+//     exists for the startup move, so no other writer can forge it;
+//   - otherwise updated_at decides: the write's value means landed, the
+//     previous one means not landed, and anything else (a concurrent non-key
+//     update moved it), or a write that did not move it, is unknown.
+func classifyKeyCommit(before, after, fresh repoKeyState, freshErr error) commitOutcome {
+	switch {
+	case freshErr != nil:
+		return commitUnknown
+	case before.flagged != after.flagged:
+		if fresh.flagged == after.flagged {
+			return commitLanded
+		}
+		return commitNotLanded
+	case before.updatedAt == after.updatedAt:
+		return commitUnknown
+	case fresh.updatedAt == after.updatedAt:
+		return commitLanded
+	case fresh.updatedAt == before.updatedAt:
+		return commitNotLanded
+	default:
+		return commitUnknown
+	}
+}
+
+// uncertainCommitError is a keyed write's COMMIT error, with what
+// resolveKeyCommit needs to decide whether the write landed anyway. Its
+// message is the wrapped COMMIT error's.
+type uncertainCommitError struct {
+	err           error
+	before, after repoKeyState
+	// repo and hasKeyringSecrets are the row the write read back inside its
+	// transaction (unhydrated), returned when the commit turns out to have
+	// landed.
+	repo              *models.Repo
+	hasKeyringSecrets bool
+}
+
+func (e *uncertainCommitError) Error() string { return e.err.Error() }
+func (e *uncertainCommitError) Unwrap() error { return e.err }
+
+// commitOutcomeReadTimeout bounds resolveKeyCommit's fresh read.
+const commitOutcomeReadTimeout = 5 * time.Second
+
+// resolveKeyCommit decides e from a fresh read of id through sqlDB. The caller
+// must already have released the write transaction's connection. The read
+// ignores ctx's cancellation, which is one of the ways a COMMIT fails, and is
+// bounded by commitOutcomeReadTimeout instead.
+func resolveKeyCommit(ctx context.Context, sqlDB *sql.DB, id string, e *uncertainCommitError) commitOutcome {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitOutcomeReadTimeout)
+	defer cancel()
+	fresh, err := readRepoKeyState(readCtx, sqlDB, id)
+	return classifyKeyCommit(e.before, e.after, fresh, err)
 }
 
 // writeKeysForUpdate is Update's key phase. It is not a pure clause builder: it
 // WRITES the merged keys to the keyring item before the caller's UPDATE runs,
 // and returns clauses that clear both columns and set the flag. The keyring is
 // outside the SQLite transaction, so it also returns an undo func the caller
-// must run whenever the update does not commit, including when this returns
+// must run whenever the update does not commit (for a COMMIT error, only once a
+// fresh read shows it did not land), including when this returns
 // an error (a keyring write abandoned on ctx may still land); undo puts the
 // keyring item back as it was (the previous item for a flagged row, no item for
 // an unflagged one). undo is never nil. With no keyring available it returns
@@ -213,7 +361,8 @@ func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, par
 }
 
 // keyringUndo returns the compensation for a keyring write whose SQLite
-// UPDATE did not commit. A row already flagged has_keyring_secrets gets its
+// UPDATE did not commit (never one whose COMMIT error might have landed; see
+// updateRowWithKeys). A row already flagged has_keyring_secrets gets its
 // previous item back; an unflagged row's columns are still authoritative, so
 // the item is removed.
 //
@@ -281,12 +430,19 @@ func (s *SQLiteRepoStore) deleteKeyringSecrets(ctx context.Context, id string) {
 // write transaction: write the keyring item, read it back from the keyring and
 // compare, then clear the columns and set the flag with an UPDATE guarded on
 // the values it moved, so a concurrent edit is never clobbered. A row that
-// fails at any step is left exactly as it was and retried on the next start.
+// fails at any step is left exactly as it was and retried on the next start,
+// except that a COMMIT error the row shows landed counts as moved.
 //
 // It returns how many rows moved. The error joins every per-row failure; an
 // unavailable keyring stops the move at the first row and is returned wrapping
 // reposecrets.ErrUnavailable. Values are never logged.
 func MigrateRepoSecretsFromSQLite(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store) (int, error) {
+	return migrateRepoSecrets(ctx, sqlDB, secrets, execCommit)
+}
+
+// migrateRepoSecrets is MigrateRepoSecretsFromSQLite with each move's COMMIT
+// made by commit, so tests can make it fail.
+func migrateRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, commit commitFunc) (int, error) {
 	ids, err := plaintextRepoKeyIDs(ctx, sqlDB)
 	if err != nil {
 		return 0, err
@@ -294,7 +450,7 @@ func MigrateRepoSecretsFromSQLite(ctx context.Context, sqlDB *sql.DB, secrets *r
 	moved := 0
 	var errs []error
 	for _, id := range ids {
-		ok, err := moveRepoSecrets(ctx, sqlDB, secrets, id)
+		ok, err := moveRepoSecrets(ctx, sqlDB, secrets, id, commit)
 		if err != nil {
 			if errors.Is(err, reposecrets.ErrUnavailable) {
 				return moved, err
@@ -330,12 +486,36 @@ func plaintextRepoKeyIDs(ctx context.Context, sqlDB *sql.DB) ([]string, error) {
 // moveRepoSecrets moves one row's keys. It reports false with a nil error when
 // the row no longer needs moving (deleted, cleared or moved since listing).
 //
+// A COMMIT error is resolved from a fresh read of the row, made once the move's
+// connection is released: a move that landed anyway reports true with a nil
+// error (and logs a warning by repo id); otherwise the COMMIT error is
+// returned. No failure path compensates the keyring: until the row is flagged
+// its columns stay authoritative, and the item the move wrote mirrors them and
+// is overwritten by the next start's retry.
+func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, id string, commit commitFunc) (bool, error) {
+	moved, err := moveRepoSecretsInTx(ctx, sqlDB, secrets, id, commit)
+	var uncertain *uncertainCommitError
+	if !errors.As(err, &uncertain) {
+		return moved, err
+	}
+	if resolveKeyCommit(ctx, sqlDB, id, uncertain) == commitLanded {
+		log.Warn().Err(uncertain.err).Str("repo_id", id).
+			Msg("repo key move reported a commit error but landed; counting it as moved")
+		return true, nil
+	}
+	return false, err
+}
+
+// moveRepoSecretsInTx is moveRepoSecrets' write transaction. A COMMIT error is
+// returned as an *uncertainCommitError for moveRepoSecrets to resolve after
+// this has released the connection.
+//
 // Unlike Update, it holds the write transaction across its keyring write and
 // read-back. That starves no writer: it runs at daemon startup under bossd's
 // exclusive daemon lock, after migrations and before any store, server or
 // worker is built, and no other process opens the database, so there is no
 // other writer to wait on it; its ctx bounds the whole move.
-func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, id string) (bool, error) {
+func moveRepoSecretsInTx(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, id string, commit commitFunc) (bool, error) {
 	conn, err := beginImmediate(ctx, sqlDB, "repo secrets move")
 	if err != nil {
 		return false, err
@@ -384,8 +564,14 @@ func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.St
 	if _, err := conn.ExecContext(ctx, requestSecretScrubSQL); err != nil {
 		return false, fmt.Errorf("request secret scrub: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return false, fmt.Errorf("commit: %w", err)
+	if err := commit(ctx, conn); err != nil {
+		// The move's UPDATE sets the flag and leaves updated_at alone, so the
+		// flag alone decides the outcome.
+		return false, &uncertainCommitError{
+			err:    fmt.Errorf("commit: %w", err),
+			before: repoKeyState{flagged: false},
+			after:  repoKeyState{flagged: true},
+		}
 	}
 	committed = true
 	return true, nil

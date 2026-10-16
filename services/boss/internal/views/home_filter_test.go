@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestHomeFilterSlashOpensInput(t *testing.T) {
@@ -77,7 +78,7 @@ func TestHomeFilterFieldsAndBoardMapping(t *testing.T) {
 			t.Fatalf("cursor %d selects %v", row, got)
 		}
 	}
-	for _, want := range []string{"NEEDS YOU · 1", "IN PROGRESS · 1", "(2 of 3)"} {
+	for _, want := range []string{"NEEDS YOU", "IN PROGRESS", "(2 of 3)"} {
 		if !strings.Contains(h.renderSessionTable(), want) {
 			t.Errorf("missing %q", want)
 		}
@@ -261,13 +262,13 @@ func TestHomeFilterAuxiliaryRowsStayWithSession(t *testing.T) {
 	}
 }
 
-func TestHomeFilterDonePollDismissesInvisibleInput(t *testing.T) {
+func TestHomeFilterArchivedPollDismissesInvisibleInput(t *testing.T) {
 	h := filteredHome(t)
 	h.filter.Activate()
-	model, _ := h.applySessionList(sessionListMsg{sessions: []*pb.Session{{Id: "done", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_DONE}}}})
+	model, _ := h.applySessionList(sessionListMsg{sessions: []*pb.Session{{Id: "archived", ArchivedAt: timestamppb.Now(), Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_DONE}}}})
 	h = model.(HomeModel)
 	if h.filter.Engaged() {
-		t.Fatal("DONE-only poll stranded filter behind empty state")
+		t.Fatal("archived-only poll stranded filter behind empty state")
 	}
 }
 

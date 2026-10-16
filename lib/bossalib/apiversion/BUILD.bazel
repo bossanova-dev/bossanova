@@ -33,6 +33,7 @@ go_test(
         "dead_bootstrap_attention_test.go",
         "export_test.go",
         "interceptor_test.go",
+        "no_verify_stage_merge_attention_test.go",
         "park_merge_attention_test.go",
         "park_split_test.go",
         "procedureset_test.go",

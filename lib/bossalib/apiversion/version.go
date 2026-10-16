@@ -602,6 +602,14 @@ const V20260919 Version = "2026-09-19"
 // sentences back.
 const V20260920 Version = "2026-09-20"
 
+// V20260921 ships NoVerifyStageMergeAttentionChange: Session.attention answers
+// a merge-ready PR nothing verified as ATTENTION_KIND_MERGE ("Ready to merge",
+// MERGE then GITHUB) with the new is_unverified set, where it answered the
+// unverified REVIEW ("Not verified", GITHUB then MERGE). Such a PR only exists
+// where no enabled verify job will reach its head, so the warning named a step
+// that was never going to run. 2026-09-20 pins get the REVIEW back.
+const V20260921 Version = "2026-09-21"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -757,8 +765,9 @@ func DefaultRegistry() *Registry {
 			V20260918,
 			V20260919,
 			V20260920,
+			V20260921,
 		},
-		V20260920,
+		V20260921,
 		Baseline,
 	)
 	if err != nil {

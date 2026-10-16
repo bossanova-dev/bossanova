@@ -115,7 +115,7 @@ type BossClient interface {
 	// different one shows again. RemoteClient refuses: the orchestrator has no
 	// proxy for this RPC.
 	DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error)
-	LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error)
+	LinkSessionPR(ctx context.Context, id, pr string) (*pb.LinkSessionPRResponse, error)
 	// SetSessionTracker links a session to a tracker issue the repo's own
 	// tracker confirms, overwriting any existing link. Local-daemon only:
 	// RemoteClient returns CodeUnimplemented.

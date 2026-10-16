@@ -7927,6 +7927,277 @@ func TestLinkPR_FinalizingSessionMovesToAwaitingChecks(t *testing.T) {
 	}
 }
 
+// TestLinkPR_TerminalSessionRevivesOnlyForAnOpenReplacementPR pins the
+// incident where an agent consolidated a session's work into a new PR and
+// closed the original: the session went Closed and relinking the open
+// replacement left it Closed, with no way back. Linking an open PR must revive
+// a Closed session (and a Merged one for a different PR) through the FSM;
+// linking a resolved PR, or relinking the PR that merged, must not.
+func TestLinkPR_TerminalSessionRevivesOnlyForAnOpenReplacementPR(t *testing.T) {
+	ctx := context.Background()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+
+	tests := []struct {
+		name      string
+		state     machine.State
+		linked    int
+		prState   vcs.PRState
+		wantState machine.State
+	}{
+		{"closed session, open replacement PR", machine.Closed, 6606, vcs.PRStateOpen, machine.AwaitingChecks},
+		{"closed session, its own PR reopened", machine.Closed, 6395, vcs.PRStateOpen, machine.AwaitingChecks},
+		{"closed session, closed PR", machine.Closed, 6606, vcs.PRStateClosed, machine.Closed},
+		{"closed session, merged PR", machine.Closed, 6606, vcs.PRStateMerged, machine.Closed},
+		{"merged session, open different PR", machine.Merged, 6606, vcs.PRStateOpen, machine.AwaitingChecks},
+		{"merged session, its own merged PR", machine.Merged, 6395, vcs.PRStateMerged, machine.Merged},
+		{"merged session, merged different PR", machine.Merged, 6606, vcs.PRStateMerged, machine.Merged},
+		{"orphaned session stays for a human", machine.Orphaned, 6606, vcs.PRStateOpen, machine.Orphaned},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldPR := 6395
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", BranchName: "feature", State: tt.state,
+				PRNumber: &oldPR, AttemptCount: 4, LastRepairAttemptCount: 5,
+			}
+			vp := newMockVCSProvider()
+			vp.nextPRStatus = &vcs.PRStatus{State: tt.prState}
+			lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+			updated, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(tt.linked))
+			if err != nil {
+				t.Fatalf("LinkPR: %v", err)
+			}
+			if updated.State != tt.wantState {
+				t.Fatalf("state = %s, want %s", updated.State, tt.wantState)
+			}
+			if updated.PRNumber == nil || *updated.PRNumber != tt.linked {
+				t.Fatalf("PRNumber = %v, want %d", updated.PRNumber, tt.linked)
+			}
+			revived := tt.wantState != tt.state
+			if revived != (updated.AttemptCount == 0) {
+				t.Fatalf("AttemptCount = %d (revived=%v), want the fix-loop budget reset only on revive", updated.AttemptCount, revived)
+			}
+			last := sessions.updates[len(sessions.updates)-1].params
+			repairReset := last.LastRepairAttemptCount != nil && *last.LastRepairAttemptCount == 0
+			if revived != repairReset {
+				t.Fatalf("LastRepairAttemptCount reset = %v, want %v", repairReset, revived)
+			}
+		})
+	}
+}
+
+// TestLinkPR_FollowsTheLinkedPRHeadBranch pins the incident where a session on
+// dave-madverts/mad-1594 was linked to a PR whose head branch was
+// fix/source-led-planner-structured-output: the session kept the old branch, so
+// repair, finalize and push would act on the wrong one. A PR from a fork keeps
+// the session's branch, because the fork's head is not on the repo's origin.
+func TestLinkPR_FollowsTheLinkedPRHeadBranch(t *testing.T) {
+	ctx := context.Background()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+
+	const oldBranch = "dave-madverts/mad-1594-consolidate"
+	const prBranch = "fix/source-led-planner-structured-output"
+	tests := []struct {
+		name       string
+		pr         vcs.PRStatus
+		wantBranch string
+	}{
+		{"different head branch", vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}, prBranch},
+		{"same head branch", vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: oldBranch}, oldBranch},
+		{"fork head branch", vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch, IsCrossRepository: true}, oldBranch},
+		{"no head branch reported", vcs.PRStatus{State: vcs.PRStateOpen}, oldBranch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldPR := 6395
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", BranchName: oldBranch, State: machine.Closed, PRNumber: &oldPR,
+			}
+			vp := newMockVCSProvider()
+			pr := tt.pr
+			vp.nextPRStatus = &pr
+			lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+			updated, err := lifecycle.LinkPR(ctx, "sess-1", "6606")
+			if err != nil {
+				t.Fatalf("LinkPR: %v", err)
+			}
+			if updated.BranchName != tt.wantBranch {
+				t.Fatalf("BranchName = %q, want %q", updated.BranchName, tt.wantBranch)
+			}
+			if got := sessions.sessions["sess-1"].BranchName; got != tt.wantBranch {
+				t.Fatalf("stored BranchName = %q, want %q", got, tt.wantBranch)
+			}
+		})
+	}
+}
+
+// TestLinkPR_RefusesATargetAnotherSessionOwns pins the #3178 follow-up:
+// linking (and the branch move it makes) must not leave two live sessions on
+// one PR or one branch, because removing either session deletes the shared
+// local branch. A Blocked or Orphaned session still owns its target, because
+// the fix-loop auto-unblock and the orphan resume revive it unasked. A session
+// that is archived, merged or closed no longer owns it, so the link goes
+// through.
+func TestLinkPR_RefusesATargetAnotherSessionOwns(t *testing.T) {
+	ctx := context.Background()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+
+	const prBranch = "fix/pr-head"
+	linked := 6606
+	archived := time.Now()
+	tests := []struct {
+		name    string
+		other   models.Session
+		wantErr string
+	}{
+		{
+			name:    "live session on the PR",
+			other:   models.Session{State: machine.AwaitingChecks, PRNumber: &linked, BranchName: "other/branch"},
+			wantErr: `PR #6606 is already linked to session sess-other ("Other work"); archive that session first`,
+		},
+		{
+			name:    "live session on the PR head branch",
+			other:   models.Session{State: machine.ImplementingPlan, BranchName: prBranch},
+			wantErr: `PR #6606's branch "fix/pr-head" belongs to session sess-other ("Other work"); archive that session first`,
+		},
+		{
+			name:    "blocked session on the PR",
+			other:   models.Session{State: machine.Blocked, PRNumber: &linked, BranchName: "other/branch"},
+			wantErr: `PR #6606 is already linked to session sess-other ("Other work"); archive that session first`,
+		},
+		{
+			name:    "orphaned session on the PR head branch",
+			other:   models.Session{State: machine.Orphaned, BranchName: prBranch},
+			wantErr: `PR #6606's branch "fix/pr-head" belongs to session sess-other ("Other work"); archive that session first`,
+		},
+		{name: "archived blocked session on the PR", other: models.Session{State: machine.Blocked, PRNumber: &linked, BranchName: prBranch, ArchivedAt: &archived}},
+		{name: "archived session on the PR", other: models.Session{State: machine.AwaitingChecks, PRNumber: &linked, BranchName: prBranch, ArchivedAt: &archived}},
+		{name: "closed session on the PR", other: models.Session{State: machine.Closed, PRNumber: &linked, BranchName: prBranch}},
+		{name: "merged session on the PR", other: models.Session{State: machine.Merged, PRNumber: &linked, BranchName: prBranch}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldPR := 6395
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", BranchName: "dave/old", State: machine.Closed, PRNumber: &oldPR,
+			}
+			other := tt.other
+			other.ID, other.RepoID, other.Title = "sess-other", "repo-1", "Other work"
+			sessions.sessions["sess-other"] = &other
+			vp := newMockVCSProvider()
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}
+			lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+			updated, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked))
+			stored := sessions.sessions["sess-1"]
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("LinkPR: %v", err)
+				}
+				if updated.PRNumber == nil || *updated.PRNumber != linked || updated.BranchName != prBranch {
+					t.Fatalf("linked session = PR %v on %q, want PR %d on %q", updated.PRNumber, updated.BranchName, linked, prBranch)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("LinkPR error = %v, want %q", err, tt.wantErr)
+			}
+			if !IsDuplicateActiveSessionError(err) {
+				t.Fatalf("LinkPR error %T is not a duplicate-session error", err)
+			}
+			if *stored.PRNumber != oldPR || stored.BranchName != "dave/old" || stored.State != machine.Closed {
+				t.Fatalf("refused link changed the session: PR %d, branch %q, state %s", *stored.PRNumber, stored.BranchName, stored.State)
+			}
+		})
+	}
+
+	t.Run("live session relinks its own PR", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{
+			ID: "sess-1", RepoID: "repo-1", BranchName: prBranch, State: machine.AwaitingChecks, PRNumber: &linked,
+		}
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+		if _, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked)); err != nil {
+			t.Fatalf("LinkPR: %v", err)
+		}
+	})
+}
+
+// TestLinkPR_LeavesTheOldLocalBranchAndLogsIt pins the decision for the branch
+// a link moves the session off: nothing names it afterwards, and deleting it at
+// link time could take unpushed work from a worktree still on it, so it stays
+// and the log names it for the operator.
+func TestLinkPR_LeavesTheOldLocalBranchAndLogsIt(t *testing.T) {
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+	sessions := newMockSessionStore()
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: "dave/old", State: machine.AwaitingChecks}
+	vp := newMockVCSProvider()
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: "fix/pr-head"}
+	wt := &mockWorktreeManager{}
+	var logs bytes.Buffer
+	lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, wt, newMockAgentRunner(), nil, vp, zerolog.New(&logs))
+
+	if _, err := lifecycle.LinkPR(context.Background(), "sess-1", "6606"); err != nil {
+		t.Fatalf("LinkPR: %v", err)
+	}
+	if len(wt.deletedLocalBranches) != 0 {
+		t.Fatalf("deleted local branches = %q, want none", wt.deletedLocalBranches)
+	}
+	type logEntry struct {
+		Level      string `json:"level"`
+		FromBranch string `json:"from_branch"`
+		Branch     string `json:"branch"`
+		Repo       string `json:"repo"`
+	}
+	want := logEntry{Level: "warn", FromBranch: "dave/old", Branch: "fix/pr-head", Repo: "/tmp/repo-main"}
+	for line := range strings.Lines(logs.String()) {
+		var entry logEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if entry == want {
+			return
+		}
+	}
+	t.Fatalf("logs = %q, want a warning naming dave/old in /tmp/repo-main", logs.String())
+}
+
+// TestWorktreeBranchMismatch pins that the link-pr report names the worktree's
+// branch only when it is not the session's branch.
+func TestWorktreeBranchMismatch(t *testing.T) {
+	lifecycle := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+	lifecycle.SetBranchResolver(&reconcileMockBranchResolver{
+		branches: map[string]string{"/wt/on": "fix/pr-branch", "/wt/off": "dave/old-branch"},
+		errs:     map[string]error{"/wt/detached": errors.New("detached HEAD")},
+	})
+	tests := []struct {
+		worktree string
+		want     string
+	}{
+		{"/wt/on", ""},
+		{"/wt/off", "dave/old-branch"},
+		{"/wt/detached", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		sess := &models.Session{ID: "sess-1", BranchName: "fix/pr-branch", WorktreePath: tt.worktree}
+		if got := lifecycle.WorktreeBranchMismatch(context.Background(), sess); got != tt.want {
+			t.Fatalf("WorktreeBranchMismatch(%q) = %q, want %q", tt.worktree, got, tt.want)
+		}
+	}
+}
+
 func TestLinkPR_URLRejectsWrongRepo(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()

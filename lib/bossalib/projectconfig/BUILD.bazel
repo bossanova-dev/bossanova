@@ -6,6 +6,8 @@ go_library(
         "cloud.go",
         "cloud_apply.go",
         "cloud_crons.go",
+        "cloud_triggers.go",
+        "cloud_webhooks.go",
         "config.go",
         "decode.go",
         "encode.go",
@@ -66,6 +68,7 @@ go_test(
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/vcs",
         "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],
 )

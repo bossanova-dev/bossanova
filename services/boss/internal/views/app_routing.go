@@ -329,6 +329,8 @@ func (a *App) newHomeModel() HomeModel {
 	// Home until the rebuilt model's own probe lands.
 	home.SetDaemonSupervisionProbe(a.supervisionProbe)
 	home.supervision = a.home.supervision
+	home.supervisionSince = a.home.supervisionSince
+	home.supervisionSincePID = a.home.supervisionSincePID
 	return home
 }
 

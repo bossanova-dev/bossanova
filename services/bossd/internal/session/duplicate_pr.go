@@ -8,7 +8,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rs/zerolog"
+
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -19,6 +22,7 @@ import (
 // non-terminal session for the same repo and PR.
 type DuplicateActivePRSessionError struct {
 	ExistingSessionID string
+	ExistingTitle     string
 	RepoID            string
 	PRNumber          int
 }
@@ -31,6 +35,7 @@ func (e *DuplicateActivePRSessionError) Error() string {
 // non-terminal session for the same repo and branch.
 type DuplicateActiveBranchSessionError struct {
 	ExistingSessionID string
+	ExistingTitle     string
 	RepoID            string
 	BranchName        string
 }
@@ -62,24 +67,7 @@ func EnsureNoActivePRSession(ctx context.Context, sessions db.SessionStore, repo
 // states, liveness can distinguish a running session from a stale row left
 // behind by task recovery.
 func EnsureNoActivePRSessionWithLiveness(ctx context.Context, sessions db.SessionStore, repoID string, prNumber *int, isAlive func(context.Context, string) bool) error {
-	if prNumber == nil {
-		return nil
-	}
-	existing, err := sessions.ListByRepoAndPR(ctx, repoID, *prNumber)
-	if err != nil {
-		return fmt.Errorf("list sessions by repo and PR: %w", err)
-	}
-	for _, row := range existing {
-		if !duplicateSessionIsActive(ctx, row, isAlive) {
-			continue
-		}
-		return &DuplicateActivePRSessionError{
-			ExistingSessionID: row.ID,
-			RepoID:            repoID,
-			PRNumber:          *prNumber,
-		}
-	}
-	return nil
+	return EnsureNoActivePROrBranchSessionWithLiveness(ctx, sessions, repoID, prNumber, "", isAlive)
 }
 
 // EnsureNoActivePROrBranchSession returns a typed error when repoID already
@@ -92,8 +80,52 @@ func EnsureNoActivePROrBranchSession(ctx context.Context, sessions db.SessionSto
 // already has a non-archived, non-terminal session for prNumber or headBranch.
 // The optional liveness check is used only for early in-progress states.
 func EnsureNoActivePROrBranchSessionWithLiveness(ctx context.Context, sessions db.SessionStore, repoID string, prNumber *int, headBranch string, isAlive func(context.Context, string) bool) error {
-	if err := EnsureNoActivePRSessionWithLiveness(ctx, sessions, repoID, prNumber, isAlive); err != nil {
-		return err
+	return ensureNoTargetOwner(ctx, sessions, repoID, prNumber, headBranch, func(row *db.SessionWithRepo) bool {
+		return duplicateSessionIsActive(ctx, row, isAlive)
+	})
+}
+
+// EnsureNoOtherActivePROrBranchSession is EnsureNoActivePROrBranchSession for a
+// session that already exists: its own row, selfID, never conflicts with it.
+func EnsureNoOtherActivePROrBranchSession(ctx context.Context, sessions db.SessionStore, selfID, repoID string, prNumber *int, headBranch string) error {
+	return ensureNoTargetOwner(ctx, sessions, repoID, prNumber, headBranch, func(row *db.SessionWithRepo) bool {
+		return row.ID != selfID && duplicateSessionIsActive(ctx, row, nil)
+	})
+}
+
+// EnsureNoOtherPROrBranchClaim is the stricter check link-pr runs before
+// moving selfID onto a PR or branch. A Blocked or Orphaned row that is not
+// archived also owns its target here: the fix-loop auto-unblock and the orphan
+// resume bring such a row back to life without asking, so linking past it
+// would leave two live sessions on one target. Only archiving, a merge or a
+// close releases it.
+func EnsureNoOtherPROrBranchClaim(ctx context.Context, sessions db.SessionStore, selfID, repoID string, prNumber *int, headBranch string) error {
+	return ensureNoTargetOwner(ctx, sessions, repoID, prNumber, headBranch, func(row *db.SessionWithRepo) bool {
+		return row.ID != selfID && row.ArchivedAt == nil &&
+			row.State != machine.Merged && row.State != machine.Closed
+	})
+}
+
+func ensureNoTargetOwner(ctx context.Context, sessions db.SessionStore, repoID string, prNumber *int, headBranch string, owns func(*db.SessionWithRepo) bool) error {
+	rival := func(row *db.SessionWithRepo) bool {
+		return row != nil && row.Session != nil && owns(row)
+	}
+	if prNumber != nil {
+		existing, err := sessions.ListByRepoAndPR(ctx, repoID, *prNumber)
+		if err != nil {
+			return fmt.Errorf("list sessions by repo and PR: %w", err)
+		}
+		for _, row := range existing {
+			if !rival(row) {
+				continue
+			}
+			return &DuplicateActivePRSessionError{
+				ExistingSessionID: row.ID,
+				ExistingTitle:     row.Title,
+				RepoID:            repoID,
+				PRNumber:          *prNumber,
+			}
+		}
 	}
 	branch := strings.TrimSpace(headBranch)
 	if branch == "" {
@@ -104,19 +136,42 @@ func EnsureNoActivePROrBranchSessionWithLiveness(ctx context.Context, sessions d
 		return fmt.Errorf("list active sessions by repo: %w", err)
 	}
 	for _, row := range existing {
-		if !duplicateSessionIsActive(ctx, row, isAlive) {
-			continue
-		}
-		if row.BranchName != branch {
+		if !rival(row) || row.BranchName != branch {
 			continue
 		}
 		return &DuplicateActiveBranchSessionError{
 			ExistingSessionID: row.ID,
+			ExistingTitle:     row.Title,
 			RepoID:            repoID,
 			BranchName:        branch,
 		}
 	}
 	return nil
+}
+
+// lockRevival takes the repo's start-path lock for sess, a Blocked or Orphaned
+// row about to come back to life, and keeps it only when no other live session
+// now holds the row's PR or branch. The caller writes the revival before
+// calling release, so a racing create or link cannot claim the target in
+// between, the same check-then-write session creation does. A refusal is
+// logged under who and leaves the row down for the next pass.
+func lockRevival(ctx context.Context, sessions db.SessionStore, sess *models.Session, logger zerolog.Logger, who string) (release func(), ok bool) {
+	release, _, err := AcquireStartPath(ctx, sess.RepoID)
+	if err != nil {
+		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": start-path lock busy; leaving the session down for the next pass")
+		return nil, false
+	}
+	err = EnsureNoOtherActivePROrBranchSession(ctx, sessions, sess.ID, sess.RepoID, sess.PRNumber, sess.BranchName)
+	if err == nil {
+		return release, true
+	}
+	release()
+	if IsDuplicateActiveSessionError(err) {
+		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": not reviving; another live session now holds its PR or branch")
+	} else {
+		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": could not check who holds its PR or branch; leaving the session down")
+	}
+	return nil, false
 }
 
 func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAlive func(context.Context, string) bool) bool {
@@ -140,6 +195,9 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 // a fresh session can reuse it — Orphaned belongs with Blocked/Merged/Closed
 // here: a headless run killed by a daemon restart is over, and the plan lets a
 // human re-dispatch the same ticket, which must not be refused as a duplicate.
+// Because a Blocked or Orphaned row can still come back to life, its revival
+// paths re-check the target first (lockRevival), and link-pr uses the
+// stricter EnsureNoOtherPROrBranchClaim.
 func StateBlocksDuplicateTarget(state machine.State) bool {
 	return state != machine.Blocked && state != machine.Merged &&
 		state != machine.Closed && state != machine.Orphaned

@@ -565,6 +565,26 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	}
 }
 
+// TestGetPRStatus_ReportsAForkHead pins that a PR opened from a fork says so,
+// because its head branch does not exist on the base repository's origin.
+func TestGetPRStatus_ReportsAForkHead(t *testing.T) {
+	for _, cross := range []bool{true, false} {
+		fakeGH := func(_ context.Context, args ...string) (string, error) {
+			if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+				return fmt.Sprintf(`{"state":"OPEN","mergeable":"CONFLICTING","isDraft":false,"title":"t","headRefName":"fix/x","baseRefName":"main","headRefOid":"abc","isCrossRepository":%t,"reviews":[]}`, cross), nil
+			}
+			return "", fmt.Errorf("unexpected gh args: %v", args)
+		}
+		status, err := New(zerolog.Nop(), WithRunGH(fakeGH)).GetPRStatus(context.Background(), "owner/repo", 42)
+		if err != nil {
+			t.Fatalf("GetPRStatus: %v", err)
+		}
+		if status.IsCrossRepository != cross || status.HeadBranch != "fix/x" {
+			t.Fatalf("IsCrossRepository = %v, HeadBranch = %q, want %v and fix/x", status.IsCrossRepository, status.HeadBranch, cross)
+		}
+	}
+}
+
 // TestGetPRStatus_ReviewStateResolution pins how GetPRStatus reconciles the
 // per-review states in the "reviews" array against the overall reviewDecision.
 // The existing coverage only exercises an empty reviews array; this locks in the

@@ -310,6 +310,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE) &&
 				!slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE)
 		})
+	case NoVerifyStageMergeAttentionChange:
+		return sessionProbes(noVerifyStageMergeSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
+		})
 	case UnverifiedMergeAttentionChange:
 		return sessionProbes(unverifiedMergeSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE

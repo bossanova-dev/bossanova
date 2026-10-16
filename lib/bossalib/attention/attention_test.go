@@ -33,15 +33,15 @@ func readyPR() attention.Input {
 }
 
 // unverifiedPR is readyPR before anything verified its head: a fresh-claim
-// cron's PR in a repo with no verify stage.
+// cron's PR in a repo with no enabled verify job.
 func unverifiedPR() attention.Input {
 	in := readyPR()
 	in.Verified = false
 	return in
 }
 
-// unverifiedActions are the actions of a merge-ready PR nothing verified.
-var unverifiedActions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE}
+// mergeActions are the actions of a merge-ready MERGE.
+var mergeActions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB}
 
 func withParks(in attention.Input, codes ...string) attention.Input {
 	in.ParkCodes = codes
@@ -230,11 +230,11 @@ func TestCompute_Cases(t *testing.T) {
 			actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
 		},
 		{
-			name:      "fresh-claim ready PR nothing verified is a review without a park",
+			name:      "fresh-claim ready PR nothing verified is a plain merge",
 			in:        unverifiedPR(),
-			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Not verified",
-			actions:   unverifiedActions,
+			kind:      pb.AttentionKind_ATTENTION_KIND_MERGE,
+			sentence:  "Ready to merge",
+			actions:   mergeActions,
 			parkCodes: []string{},
 		},
 		{
@@ -653,7 +653,7 @@ func TestCompute_TrackerActionAppendedLastWhenLinked(t *testing.T) {
 		{name: "review", in: withParks(readyPR(), "human-review:ui"), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "blocked park", in: withParks(readyPR(), "ledger-open"), kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "merge", in: readyPR(), kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
-		{name: "unverified review", in: unverifiedPR(), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "unverified merge", in: unverifiedPR(), kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
 		{name: "done", in: attention.Input{HasPR: true, PRState: attention.PRStateMerged}, kind: pb.AttentionKind_ATTENTION_KIND_DONE},
 		{name: "in progress", in: attention.Input{ProgressPhase: "building"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	}
@@ -756,12 +756,12 @@ func TestParkCategoryRepairExhaustedWithLedgerOpen(t *testing.T) {
 	}
 }
 
-// TestCompute_MergeOnlyWhenVerified checks every merge-ready input across the
-// facts that outrank it: with no fix, question or operator park, a verified PR
-// is MERGE, and an unverified one is a REVIEW that carries no park codes,
-// offers GITHUB then MERGE. MERGE never answers an unverified PR, whatever else
-// holds, and no answer ever offers the retired APPROVE or SEND_BACK.
-func TestCompute_MergeOnlyWhenVerified(t *testing.T) {
+// TestCompute_MergeReadyAnswer checks the merge-ready answer under every set
+// of facts that outrank it. With no fix, question or operator park, a ready PR
+// is MERGE (MERGE then GITHUB, no park codes) whether or not verify passed its
+// head; only an unverified one carries is_unverified, and no answer ever
+// offers the retired APPROVE or SEND_BACK.
+func TestCompute_MergeReadyAnswer(t *testing.T) {
 	fixes := []*attention.FixFact{nil, fixFact("k")}
 	questions := []string{"", "chat-1"}
 	parks := [][]string{nil, {"stack-busy"}, {"human-review:ui"}, {"ledger-open"}}
@@ -776,28 +776,24 @@ func TestCompute_MergeOnlyWhenVerified(t *testing.T) {
 						if slices.ContainsFunc(got.GetActions(), isRetiredAction) {
 							t.Fatalf("%+v offers a retired action: %v", in, got.GetActions())
 						}
-						if !verified && got.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
-							t.Fatalf("unverified %+v computed MERGE", in)
-						}
 						if fix != nil || q != "" || len(park) > 0 {
-							if len(got.GetParkCodes()) == 0 && slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
-								t.Fatalf("%+v answered merge-ready %v over an outranking fact", in, got)
+							if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
+								t.Fatalf("%+v answered MERGE over an outranking fact", in)
+							}
+							if got.GetIsUnverified() {
+								t.Fatalf("%+v marked unverified over an outranking fact", in)
 							}
 							continue
 						}
-						want := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB}
-						kind := pb.AttentionKind_ATTENTION_KIND_MERGE
-						if !verified {
-							want, kind = slices.Clone(unverifiedActions), pb.AttentionKind_ATTENTION_KIND_REVIEW
-						}
+						want := slices.Clone(mergeActions)
 						if linked {
 							want = append(want, pb.AttentionAction_ATTENTION_ACTION_TRACKER)
 						}
-						if got.GetKind() != kind || !slices.Equal(got.GetActions(), want) || len(got.GetParkCodes()) != 0 {
-							t.Fatalf("verified=%v linked=%v = %v %v %v, want %v %v", verified, linked, got.GetKind(), got.GetActions(), got.GetParkCodes(), kind, want)
+						if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_MERGE || !slices.Equal(got.GetActions(), want) || len(got.GetParkCodes()) != 0 {
+							t.Fatalf("verified=%v linked=%v = %v %v %v, want MERGE %v", verified, linked, got.GetKind(), got.GetActions(), got.GetParkCodes(), want)
 						}
-						if kind != attention.MergeReadyKind(in) {
-							t.Fatalf("MergeReadyKind(%+v) = %v, want %v", in, attention.MergeReadyKind(in), kind)
+						if got.GetIsUnverified() != !verified {
+							t.Fatalf("verified=%v: is_unverified = %v", verified, got.GetIsUnverified())
 						}
 					}
 				}
@@ -811,29 +807,8 @@ func TestCompute_MergeOnlyWhenVerified(t *testing.T) {
 func TestCompute_MergeReadyActionsAreNotShared(t *testing.T) {
 	first := attention.Compute(unverifiedPR())
 	first.Actions[0] = pb.AttentionAction_ATTENTION_ACTION_RESUME
-	if got := attention.Compute(unverifiedPR()).GetActions(); !slices.Equal(got, unverifiedActions) {
-		t.Fatalf("actions = %v after an in-place edit, want %v", got, unverifiedActions)
-	}
-}
-
-// TestIsUnverifiedReview tells the unverified merge-ready REVIEW from every
-// other answer, a park's REVIEW included.
-func TestIsUnverifiedReview(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   attention.Input
-		want bool
-	}{
-		{"unverified merge-ready", unverifiedPR(), true},
-		{"verified merge", readyPR(), false},
-		{"sign-off park", withParks(unverifiedPR(), "human-review:ui"), false},
-		{"blocked park", withParks(unverifiedPR(), "ledger-open"), false},
-		{"fix", attention.Input{Fix: fixFact("k")}, false},
-		{"in progress", attention.Input{ProgressPhase: "building"}, false},
-	} {
-		if got := attention.IsUnverifiedReview(attention.Compute(tc.in)); got != tc.want {
-			t.Errorf("%s: IsUnverifiedReview = %v, want %v", tc.name, got, tc.want)
-		}
+	if got := attention.Compute(unverifiedPR()).GetActions(); !slices.Equal(got, mergeActions) {
+		t.Fatalf("actions = %v after an in-place edit, want %v", got, mergeActions)
 	}
 }
 

@@ -175,10 +175,10 @@ func TestAttentionSentencesStateOnlyTheIssue(t *testing.T) {
 	verified := ready
 	verified.Verified = true
 	inputs := map[string]attention.Input{
-		"generic fix":       {Fix: &attention.FixFact{AlertKey: "k"}},
-		"generic question":  {QuestionChatID: "chat"},
-		"unverified review": ready,
-		"verified merge":    verified,
+		"generic fix":      {Fix: &attention.FixFact{AlertKey: "k"}},
+		"generic question": {QuestionChatID: "chat"},
+		"unverified merge": ready,
+		"verified merge":   verified,
 	}
 	for _, code := range append(append(slices.Clone(signOffCodes), failureCodes...), "brand-new") {
 		inputs[code] = attention.Input{ParkCodes: []string{code}}

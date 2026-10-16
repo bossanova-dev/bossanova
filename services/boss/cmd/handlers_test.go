@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
@@ -1964,6 +1965,100 @@ func TestRefreshSessionPRForwardsSelectors(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), "refreshed PR") || !strings.Contains(out.String(), "passing") {
 				t.Fatalf("output = %q, want refreshed PR passing line", out.String())
+			}
+		})
+	}
+}
+
+// TestRefreshSessionPRExplainsAFinishedSession pins that refresh-pr says when
+// it could not change a closed or merged session, and names the link-pr call
+// that reopens it, instead of reporting a bare refresh.
+func TestRefreshSessionPRExplainsAFinishedSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		state   pb.SessionState
+		display pb.DisplayStatus
+		want    string
+	}{
+		{"closed PR", pb.SessionState_SESSION_STATE_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_CLOSED, "Session sess-1 stays closed: refresh-pr re-reads the PR but never reopens a session. If the work moved to an open PR, run `boss session link-pr sess-1 <pr-url>` to reopen it.\n"},
+		{"reopened PR", pb.SessionState_SESSION_STATE_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_CHECKING, "Session sess-1 stays closed although PR #42 is open again: refresh-pr never reopens a session. Run `boss session link-pr sess-1 42` to reopen it.\n"},
+		{"merged PR", pb.SessionState_SESSION_STATE_MERGED, pb.DisplayStatus_DISPLAY_STATUS_MERGED, "Session sess-1 stays merged: refresh-pr re-reads the PR but never reopens a session. If the work moved to an open PR, run `boss session link-pr sess-1 <pr-url>` to reopen it.\n"},
+		{"live session", pb.SessionState_SESSION_STATE_AWAITING_CHECKS, pb.DisplayStatus_DISPLAY_STATUS_CHECKING, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := int32(42)
+			stub := &refreshPRStub{session: &pb.Session{Id: "sess-1", PrNumber: &pr, State: tc.state, DisplayStatus: tc.display}}
+			cmd := &cobra.Command{}
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			if err := refreshSessionPR(cmd, stub, "sess-1", 0); err != nil {
+				t.Fatalf("refreshSessionPR: %v", err)
+			}
+			if errOut.String() != tc.want {
+				t.Fatalf("stderr = %q, want %q", errOut.String(), tc.want)
+			}
+			if !strings.Contains(out.String(), "refreshed PR #42") {
+				t.Fatalf("stdout = %q, want the refresh line", out.String())
+			}
+		})
+	}
+	if got := finishedSessionNote(&pb.Session{Id: "sess-1", State: pb.SessionState_SESSION_STATE_CLOSED}, false); got != "Session sess-1 stays closed: only linking an open PR reopens it." {
+		t.Fatalf("link-pr note = %q", got)
+	}
+}
+
+type linkPRStub struct {
+	resp *pb.LinkSessionPRResponse
+	err  error
+}
+
+func (s *linkPRStub) LinkSessionPR(context.Context, string, string) (*pb.LinkSessionPRResponse, error) {
+	return s.resp, s.err
+}
+
+// TestLinkSessionPRPrintsTheDaemonRefusalPlainly pins that link-pr shows the
+// daemon's refusal of a PR another session owns as the daemon wrote it,
+// without the transport code or a doubled prefix.
+func TestLinkSessionPRPrintsTheDaemonRefusalPlainly(t *testing.T) {
+	refusal := `PR #6606 is already linked to session s2 ("Consolidated work"); archive that session first`
+	stub := &linkPRStub{err: connect.NewError(connect.CodeAlreadyExists, errors.New(refusal))}
+	err := linkSessionPR(&cobra.Command{}, stub, "s1", "6606")
+	if err == nil || err.Error() != "link PR: "+refusal {
+		t.Fatalf("error = %v, want %q", err, "link PR: "+refusal)
+	}
+}
+
+// TestLinkSessionPRNamesTheWorktreeBranchToCheckOut pins that link-pr says
+// when the session worktree is not on the linked PR's branch, because a push
+// from that checkout would miss the PR, and stays quiet when it is.
+func TestLinkSessionPRNamesTheWorktreeBranchToCheckOut(t *testing.T) {
+	url := "https://github.com/owner/repo/pull/6606"
+	sess := &pb.Session{Id: "sess-1", PrUrl: &url, BranchName: "fix/source-led-planner-structured-output", State: pb.SessionState_SESSION_STATE_AWAITING_CHECKS}
+	cases := []struct {
+		name     string
+		worktree string
+		want     string
+	}{
+		{"worktree on another branch", "dave-madverts/mad-1594", "Session worktree is on dave-madverts/mad-1594; check out fix/source-led-planner-structured-output to push to this PR.\n"},
+		{"worktree on the PR branch", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			stub := &linkPRStub{resp: &pb.LinkSessionPRResponse{Session: sess, WorktreeBranch: tc.worktree}}
+			if err := linkSessionPR(cmd, stub, "sess-1", "6606"); err != nil {
+				t.Fatalf("linkSessionPR: %v", err)
+			}
+			if out.String() != "Session sess-1 linked to PR "+url+".\n" {
+				t.Fatalf("stdout = %q", out.String())
+			}
+			if errOut.String() != tc.want {
+				t.Fatalf("stderr = %q, want %q", errOut.String(), tc.want)
 			}
 		})
 	}

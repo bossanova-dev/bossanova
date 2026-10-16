@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -148,6 +149,105 @@ func TestRemoveSessionDispatchesReapLocalBranches(t *testing.T) {
 	}
 }
 
+// TestRemovingASessionKeepsABranchAnotherSessionNames pins the guard behind
+// the #3178 follow-up: two session rows can name one branch (a PR linked across
+// sessions before link-pr refused it), and removing either must not delete the
+// local ref the other still has, unpushed commits included. Archived rows count:
+// they can be restored onto the branch.
+func TestRemovingASessionKeepsABranchAnotherSessionNames(t *testing.T) {
+	ctx := context.Background()
+	newServer := func(sessions map[string]*models.Session) (*Server, *cleanupSessionStore, *cleanupWorktreeManager) {
+		store := &cleanupSessionStore{sessions: sessions}
+		worktrees := &cleanupWorktreeManager{}
+		return &Server{
+			repos:     &cleanupRepoStore{repos: map[string]*models.Repo{"repo-1": {ID: "repo-1", LocalPath: "/repo"}}},
+			sessions:  store,
+			worktrees: worktrees,
+		}, store, worktrees
+	}
+
+	t.Run("remove session", func(t *testing.T) {
+		s, store, worktrees := newServer(map[string]*models.Session{
+			"sess-1": {ID: "sess-1", RepoID: "repo-1", BranchName: "shared"},
+			"sess-2": {ID: "sess-2", RepoID: "repo-1", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+		})
+		if _, err := s.RemoveSession(ctx, connect.NewRequest(&pb.RemoveSessionRequest{Id: "sess-1"})); err != nil {
+			t.Fatalf("RemoveSession: %v", err)
+		}
+		if worktrees.reapLocalBranchesCalls != 0 {
+			t.Fatalf("reaped %q, want the shared branch kept", worktrees.branches)
+		}
+		if !store.deleted["sess-1"] {
+			t.Fatal("session row was not deleted")
+		}
+	})
+
+	t.Run("empty trash", func(t *testing.T) {
+		s, store, worktrees := newServer(map[string]*models.Session{
+			"trashed": {ID: "trashed", RepoID: "repo-1", BranchName: "shared", ArchivedAt: cleanupPtr(time.Now())},
+			"alone":   {ID: "alone", RepoID: "repo-1", BranchName: "only-mine", ArchivedAt: cleanupPtr(time.Now())},
+			"live":    {ID: "live", RepoID: "repo-1", BranchName: "shared"},
+		})
+		if _, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{})); err != nil {
+			t.Fatalf("EmptyTrash: %v", err)
+		}
+		if got, want := worktrees.branches, []string{"only-mine"}; !sameStrings(got, want) {
+			t.Fatalf("reaped %q, want %q", got, want)
+		}
+		if !store.deleted["trashed"] || !store.deleted["alone"] || store.deleted["live"] {
+			t.Fatalf("deleted rows = %v, want trashed and alone only", store.deleted)
+		}
+	})
+}
+
+// TestRemovingASessionKeepsEveryBranchWhenTheOwnerCheckFails pins the
+// fail-safe in unsharedBranches: when the store cannot say which sessions still
+// name a branch, no branch is deleted, because a skipped delete only leaves a
+// branch behind while a wrong one takes another session's unpushed commits.
+func TestRemovingASessionKeepsEveryBranchWhenTheOwnerCheckFails(t *testing.T) {
+	ctx := context.Background()
+	newServer := func(sessions map[string]*models.Session) (*Server, *cleanupSessionStore, *cleanupWorktreeManager) {
+		store := &cleanupSessionStore{sessions: sessions, listErr: errors.New("database is locked")}
+		worktrees := &cleanupWorktreeManager{}
+		return &Server{
+			repos:     &cleanupRepoStore{repos: map[string]*models.Repo{"repo-1": {ID: "repo-1", LocalPath: "/repo"}}},
+			sessions:  store,
+			worktrees: worktrees,
+		}, store, worktrees
+	}
+
+	t.Run("remove session", func(t *testing.T) {
+		s, store, worktrees := newServer(map[string]*models.Session{
+			"sess-1": {ID: "sess-1", RepoID: "repo-1", BranchName: "mine"},
+		})
+		if _, err := s.RemoveSession(ctx, connect.NewRequest(&pb.RemoveSessionRequest{Id: "sess-1"})); err != nil {
+			t.Fatalf("RemoveSession: %v", err)
+		}
+		if worktrees.reapLocalBranchesCalls != 0 {
+			t.Fatalf("reaped %q, want every branch kept when the owner check fails", worktrees.branches)
+		}
+		if !store.deleted["sess-1"] {
+			t.Fatal("session row was not deleted")
+		}
+	})
+
+	t.Run("empty trash", func(t *testing.T) {
+		s, store, worktrees := newServer(map[string]*models.Session{
+			"a": {ID: "a", RepoID: "repo-1", BranchName: "branch-a", ArchivedAt: cleanupPtr(time.Now())},
+			"b": {ID: "b", RepoID: "repo-1", BranchName: "branch-b", ArchivedAt: cleanupPtr(time.Now())},
+		})
+		if _, err := s.EmptyTrash(ctx, connect.NewRequest(&pb.EmptyTrashRequest{})); err != nil {
+			t.Fatalf("EmptyTrash: %v", err)
+		}
+		if worktrees.reapLocalBranchesCalls != 0 {
+			t.Fatalf("reaped %q, want every branch kept when the owner check fails", worktrees.branches)
+		}
+		if !store.deleted["a"] || !store.deleted["b"] {
+			t.Fatalf("deleted rows = %v, want both trashed rows", store.deleted)
+		}
+	})
+}
+
 func cleanupPtr[T any](value T) *T { return &value }
 
 func sameStrings(got, want []string) bool {
@@ -191,6 +291,7 @@ func (s *cleanupRepoStore) Delete(context.Context, string) error {
 type cleanupSessionStore struct {
 	sessions map[string]*models.Session
 	deleted  map[string]bool
+	listErr  error
 }
 
 func (s *cleanupSessionStore) Create(context.Context, db.CreateSessionParams) (*models.Session, error) {
@@ -199,8 +300,17 @@ func (s *cleanupSessionStore) Create(context.Context, db.CreateSessionParams) (*
 func (s *cleanupSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
 	return s.sessions[id], nil
 }
-func (s *cleanupSessionStore) List(context.Context, string) ([]*models.Session, error) {
-	panic("not used")
+func (s *cleanupSessionStore) List(_ context.Context, repoID string) ([]*models.Session, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var rows []*models.Session
+	for _, sess := range s.sessions {
+		if sess.RepoID == repoID && !s.deleted[sess.ID] {
+			rows = append(rows, sess)
+		}
+	}
+	return rows, nil
 }
 func (s *cleanupSessionStore) ListByState(context.Context, int) ([]*models.Session, error) {
 	panic("not used")

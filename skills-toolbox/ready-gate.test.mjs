@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 import {
   READY_GATE_REASONS,
+  READY_GATE_WAIVERS,
+  commandReader,
   UsageError,
   driftReasons,
   main,
@@ -16,7 +18,6 @@ import {
   reviewReasons,
   reviewedTreeDrift,
 } from './ready-gate.mjs'
-import { commandReader as completionReader } from './completion-gate.mjs'
 
 const HEAD = 'a'.repeat(40),
   MERGED = 'b'.repeat(40),
@@ -81,7 +82,7 @@ for (const [label, changes, expected] of [
   [
     'disabled by the operator, nothing else known',
     { reviewVerdict: 'disabled', reviewedHead: '', pushedHead: '', treeDrift: 'unknown' },
-    { ready: true, reasons: [] },
+    { ready: false, reasons: ['reviewed-head-unknown'], admittedFor: 'disabled' },
   ],
   ['capped review', { reviewVerdict: 'capped' }, { ready: false, reasons: ['review-not-clean'] }],
   [
@@ -375,7 +376,7 @@ test('readyGateReport: capped, partial and disabled verdicts; override files win
   )
   assert.deepEqual(
     [disabled.ready, disabled.reasons, disabled.reviewVerdict],
-    [true, [], 'disabled'],
+    [false, ['reviewed-head-unknown'], 'disabled'],
   )
 })
 
@@ -613,7 +614,7 @@ test('real git: a rebase whose replay conflicts is tree-changed-since-review', (
   // Through completion-gate.mjs's reader too: its failed read carries the exit status.
   assert.equal(
     reviewedTreeDrift(
-      completionReader({ cwd: r.dir }),
+      commandReader({ cwd: r.dir }),
       'main',
       r.reviewed,
       r.git('rev-parse', 'HEAD'),
@@ -639,10 +640,90 @@ test('real git: trailing whitespace on the last line is seen through either read
   writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${last}\n`)
   const shipped = r.commit('zz-last', 'tail \n', 'trailing space')
   // completion-gate.mjs's reader (buildEnvelope) and this gate's own (readyGateReport).
-  assert.equal(
-    reviewedTreeDrift(completionReader({ cwd: r.dir }), 'main', last, shipped),
-    'changed',
-  )
+  assert.equal(reviewedTreeDrift(commandReader({ cwd: r.dir }), 'main', last, shipped), 'changed')
   const viaGate = r.gate()
   assert.deepEqual([viaGate.head, viaGate.treeDrift], [shipped, 'changed'])
+})
+
+for (const [label, changes, expected] of [
+  ['unchanged', {}, { ready: true, reasons: [], admittedFor: 'disabled' }],
+  [
+    'changed',
+    { pushedHead: OTHER, treeDrift: 'changed' },
+    { ready: false, reasons: ['tree-changed-since-review'], admittedFor: 'disabled' },
+  ],
+  [
+    'unknown drift',
+    { treeDrift: 'unknown' },
+    { ready: false, reasons: ['tree-drift-unknown'], admittedFor: 'disabled' },
+  ],
+  ['partial precedence', { partial: true }, { ready: true, reasons: [], admittedFor: 'disabled' }],
+])
+  test(`disabled waiver: ${label}`, () =>
+    assert.deepEqual(readyGate({ ...cleanGate, reviewVerdict: 'disabled', ...changes }), expected))
+
+test('waivers are frozen and admit review quality only', () => {
+  assert.ok(Object.isFrozen(READY_GATE_WAIVERS))
+  for (const [waiver, reasons] of Object.entries(READY_GATE_WAIVERS)) {
+    assert.ok(Object.isFrozen(reasons))
+    assert.deepEqual(reasons, ['review-not-clean'])
+    for (const [changes, expected] of [
+      [{}, []],
+      [{ reviewedHead: '' }, ['reviewed-head-unknown']],
+      [{ treeDrift: 'changed' }, ['tree-changed-since-review']],
+      [{ treeDrift: 'unknown' }, ['tree-drift-unknown']],
+    ]) {
+      const actual = readyGate({
+        ...cleanGate,
+        reviewVerdict: waiver === 'disabled' ? 'disabled' : 'capped',
+        partial: waiver === 'partial',
+        ...changes,
+      })
+      assert.deepEqual(actual.reasons, expected)
+      assert.equal(actual.admittedFor, waiver)
+    }
+  }
+})
+test('commandReader maps boss and preserves failed JSON payload error precedence', () => {
+  const payload = { error: { code: 'api-error' }, code: 'other' }
+  const calls = []
+  const read = commandReader({
+    bossBin: '/custom/boss',
+    spawn: (...args) => {
+      calls.push(args)
+      return { status: 1, stdout: JSON.stringify(payload), error: { code: 'spawn-error' } }
+    },
+  })
+  assert.deepEqual(read('boss', [], { json: true }), {
+    ok: false,
+    status: 1,
+    error: 'api-error',
+    payload,
+  })
+  assert.equal(calls[0][0], '/custom/boss')
+  assert.equal(calls[0][2].maxBuffer, 64 * 1024 * 1024)
+  const plain = commandReader({ spawn: () => ({ status: 1, stdout: '{"code":"plain-error"}' }) })
+  assert.equal(plain('git', [], { json: true }).error, 'plain-error')
+})
+test('commandReader refuses unreadable JSON and thrown spawns', () => {
+  assert.deepEqual(
+    commandReader({ spawn: () => ({ status: 0, stdout: 'oops' }) })('gh', [], { json: true }),
+    { ok: false, status: 0, error: 'unreadable-json' },
+  )
+  assert.deepEqual(
+    commandReader({
+      spawn: () => {
+        throw new Error('failed')
+      },
+    })('git', []),
+    { ok: false, status: null, error: 'spawn-error' },
+  )
+})
+test('real git: disabled note requires a reviewed head matching the tree', (t) => {
+  const r = gitRepo(t)
+  writeFileSync(join(r.gitDir, 'boss-build-review-verdict'), 'REVIEW_VERDICT=disabled\n')
+  rmSync(join(r.gitDir, 'boss-build-reviewed-head'))
+  assert.deepEqual(r.gate().reasons, ['reviewed-head-unknown'])
+  writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), r.reviewed)
+  assert.equal(r.gate().ready, true)
 })

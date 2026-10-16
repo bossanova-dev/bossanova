@@ -56,7 +56,6 @@ const (
 	genericFixSentence     = "Something needs fixing"
 	genericQuestion        = "The agent asked a question"
 	mergeSentence          = "Ready to merge"
-	unverifiedSentence     = "Not verified"
 )
 
 // slot names the one optional fact a sentence template interpolates.

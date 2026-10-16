@@ -68,13 +68,14 @@ type Input struct {
 	ChecksFailing int
 	// Mergeable is nil when unknown.
 	Mergeable *bool
-	// IsFactoryRepo marks a repo whose PRs the factory merges itself, so a
-	// green PR there is never the operator's to merge.
+	// IsFactoryRepo marks a repo with an enabled verify job on this daemon.
+	// Verify reaches a green PR's head and merges it, so a green PR there is
+	// never the operator's to merge.
 	IsFactoryRepo bool
 	// Verified marks a head the verify stage passed (vcs.VerifyPassed): a
 	// completed, successful boss/verify status on the current head, posted
 	// when verify passes it or the operator approves its park. A merge-ready
-	// PR nothing verified is a review, not a merge.
+	// PR nothing verified is still a MERGE, marked is_unverified.
 	Verified bool
 
 	// ParkCodes are the verify stage's park codes; comma-joined entries are
@@ -127,10 +128,10 @@ func NeedsYou(kind pb.AttentionKind) bool {
 // fix > question > verify park > merge-ready > done > in_progress. A verify
 // park whose codes all ask for a sign-off is a REVIEW whose MERGE records the
 // operator's approval and merges; one with any failure or unknown code is
-// blocked, a FIX that never offers MERGE. A merge-ready PR is a MERGE only when
-// verified; otherwise it is a REVIEW with no park codes that offers GITHUB then
-// MERGE. A session with a tracker link offers ATTENTION_ACTION_TRACKER last,
-// whatever its kind.
+// blocked, a FIX that never offers MERGE. A merge-ready PR outside a factory
+// repo is a MERGE, marked is_unverified when nothing verified its head. A
+// session with a tracker link offers ATTENTION_ACTION_TRACKER last, whatever
+// its kind.
 func Compute(in Input) *pb.SessionAttention {
 	att := computeKind(in)
 	if in.HasTrackerLink {
@@ -153,12 +154,12 @@ func computeKind(in Input) *pb.SessionAttention {
 	// Every code left here is a waiting code; a parked PR is not the
 	// operator's to merge, however green it looks.
 	if len(codes) == 0 && isMergeReady(in) {
-		answer := mergeReadyAnswers[in.Verified]
 		return &pb.SessionAttention{
-			Kind:     answer.kind,
-			Sentence: answer.sentence,
-			Actions:  slices.Clone(answer.actions),
-			Since:    timestamp(in.StateSince),
+			Kind:         pb.AttentionKind_ATTENTION_KIND_MERGE,
+			Sentence:     mergeSentence,
+			Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
+			Since:        timestamp(in.StateSince),
+			IsUnverified: !in.Verified,
 		}
 	}
 	if in.HasPR && (in.PRState == PRStateMerged || in.PRState == PRStateClosed) {
@@ -247,43 +248,6 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 		EvidenceUrl: evidenceURL,
 		OpenItems:   openItems,
 	}
-}
-
-// mergeReadyAnswer is what a merge-ready PR answers.
-type mergeReadyAnswer struct {
-	kind     pb.AttentionKind
-	sentence string
-	actions  []pb.AttentionAction
-}
-
-// mergeReadyAnswers holds the merge-ready answer by Input.Verified. Callers
-// clone actions: a producer may filter the answer's actions in place.
-var mergeReadyAnswers = map[bool]mergeReadyAnswer{
-	true: {
-		kind:     pb.AttentionKind_ATTENTION_KIND_MERGE,
-		sentence: mergeSentence,
-		actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
-	},
-	false: {
-		kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-		sentence: unverifiedSentence,
-		actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE},
-	},
-}
-
-// MergeReadyKind is the kind Compute answers a merge-ready PR with when no
-// fix, question or park outranks it: MERGE when verified, REVIEW otherwise.
-// Only a park's REVIEW carries park codes.
-func MergeReadyKind(in Input) pb.AttentionKind {
-	return mergeReadyAnswers[in.Verified].kind
-}
-
-// IsUnverifiedReview reports whether a is the REVIEW Compute answers for a
-// merge-ready PR nothing verified: unlike a park's REVIEW it carries no park
-// codes, and it offers MERGE.
-func IsUnverifiedReview(a *pb.SessionAttention) bool {
-	return a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW && len(a.GetParkCodes()) == 0 &&
-		slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE)
 }
 
 func isMergeReady(in Input) bool {

@@ -185,6 +185,57 @@ func TestResumeOrphanedHeadlessRuns_MissingPrimaryChatRefusesWithoutSpawning(t *
 	}
 }
 
+// TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget pins
+// the #3183 follow-up: Orphaned releases a session's PR and branch, so another
+// session can take them over (link-pr, or a human re-dispatch). Resuming the
+// orphan then would put two live sessions on one PR, so the sweep declines
+// without claiming, and the row stays a candidate for once the holder is gone.
+func TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget(t *testing.T) {
+	tests := []struct {
+		name  string
+		other models.Session
+	}{
+		{name: "live session on the PR", other: models.Session{State: machine.AwaitingChecks, PRNumber: intPtr(42), BranchName: "other/branch"}},
+		{name: "live session on the branch", other: models.Session{State: machine.ImplementingPlan, BranchName: "fix/pr-head"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newOrphanResumeFixture(t)
+			f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+				f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+			}}
+			orphan := f.sessions.sessions[f.sessionID]
+			orphan.PRNumber = intPtr(42)
+			orphan.BranchName = "fix/pr-head"
+			other := tt.other
+			other.ID, other.RepoID = "sess-2", orphan.RepoID
+			f.sessions.sessions["sess-2"] = &other
+
+			if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 0 {
+				t.Fatalf("resumed = %d, want 0 while sess-2 holds the target", n)
+			}
+			if len(f.runner.started) != 0 {
+				t.Errorf("StartByAgent calls = %d, want 0", len(f.runner.started))
+			}
+			if f.sessions.claimOrphanCalls != 0 {
+				t.Errorf("ClaimUnarchivedOrphan calls = %d, want 0: a held target must be declined before the claim", f.sessions.claimOrphanCalls)
+			}
+			if orphan.State != machine.Orphaned {
+				t.Errorf("state = %v, want Orphaned", orphan.State)
+			}
+			if orphan.BlockedReason == nil || *orphan.BlockedReason != OrphanedHeadlessRunReason {
+				t.Errorf("orphan marker = %v, want it left in place", orphan.BlockedReason)
+			}
+
+			delete(f.sessions.sessions, "sess-2")
+			if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
+				t.Fatalf("resumed = %d after sess-2 went away, want 1", n)
+			}
+		})
+	}
+}
+
 // TestRequireResumablePrimaryChat_TypedRefusalNamesTheID pins that the refusal
 // is attributable: it carries the agent_session_id an operator has to go
 // looking for, and it does NOT wrap db.ErrAgentChatNotFound, which several

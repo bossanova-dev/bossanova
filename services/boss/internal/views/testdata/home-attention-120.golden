@@ -1,6 +1,6 @@
    REPO    NAME                                                          PR     STATUS           
                                                                                                  
-   NEEDS YOU · 7                                                                                 
+   ───────────────────────────────────────── NEEDS YOU ──────────────────────────────────────────
    my-app  [BOS-1502] Improve the unattended session workflow            #2982  ⨯ failing        
            Resumed 3 times since 23:16; each attempt lost its Claude                             
            login                                                                                 
@@ -16,7 +16,8 @@
            Security change: permission rules                                                     
    my-app  [BOS-1507] Improve the unattended session workflow            #2987  ✓ merge          
                                                                                                  
-   IN PROGRESS · 2                                                                               
+   ──────────────────────────────────────── IN PROGRESS ─────────────────────────────────────────
    my-app  [BOS-1501] Improve the unattended session workflow            #2981  ⣾ building       
    my-app  [BOS-1508] Improve the unattended session workflow            #2988  ⣾ checking 4/9   
+   my-app  [BOS-1509] Improve the unattended session workflow            #2989  ✓ merged         
 [n]ew session  [v]ideo  [m]erge  [/] filter · [s]ettings · [q]uit

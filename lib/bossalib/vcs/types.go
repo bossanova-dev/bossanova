@@ -137,6 +137,9 @@ type PRStatus struct {
 	HeadSHA             string
 	LatestReviewState   ReviewState
 	ReviewDecisionState ReviewState
+	// IsCrossRepository marks a PR whose head branch lives in a fork, so
+	// HeadBranch names a branch the base repository's origin does not have.
+	IsCrossRepository bool
 }
 
 // IsReviewRequiredBlock reports GitHub's "blocked only because approval is

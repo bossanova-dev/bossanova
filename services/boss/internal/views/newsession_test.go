@@ -189,7 +189,7 @@ func (s *stubClient) RemoveSession(context.Context, string) error { panic("unuse
 func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
 }
-func (s *stubClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
+func (s *stubClient) LinkSessionPR(context.Context, string, string) (*pb.LinkSessionPRResponse, error) {
 	panic("unused")
 }
 func (s *stubClient) SetSessionTracker(context.Context, string, string) (*pb.Session, error) {

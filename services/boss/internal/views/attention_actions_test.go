@@ -321,45 +321,6 @@ func TestAttentionActionMissingMergeHeadRefuses(t *testing.T) {
 	}
 }
 
-// TestAttentionActionMergesAnUnverifiedReview drives the row attention.Compute
-// answers for a merge-ready PR nothing verified: a REVIEW whose footer offers
-// merge (and github too on the details view, where g is advertised), whose [m]
-// asks a plain confirm, then records the sign-off and merges the rendered head,
-// and whose [y] does nothing.
-func TestAttentionActionMergesAnUnverifiedReview(t *testing.T) {
-	mergeable := true
-	n := int32(42)
-	s := &pb.Session{Id: "session-1", PrNumber: &n, PrDisplayHeadSha: "rendered-head", Attention: attention.Compute(attention.Input{
-		HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 2, ChecksDone: 2, Mergeable: &mergeable,
-	})}
-	if s.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
-		t.Fatalf("kind = %v, want the unverified REVIEW", s.GetAttention().GetKind())
-	}
-	if got, want := attentionFooter(s, false), []string{"[m] merge"}; !slices.Equal(got, want) {
-		t.Fatalf("home footer = %q, want %q", got, want)
-	}
-	if got, want := attentionFooter(s, true), []string{"[g] github", "[m] merge"}; !slices.Equal(got, want) {
-		t.Fatalf("details footer = %q, want %q", got, want)
-	}
-	c := &attentionStub{}
-	h := attentionHome(c, s)
-	if _, cmd := h.Update(keyPress('y')); cmd != nil || len(c.calls) != 0 {
-		t.Fatalf("[y] dispatched on an unverified review: %v", c.calls)
-	}
-	model, _ := h.Update(keyPress('m'))
-	h = model.(HomeModel)
-	assertMergeConfirm(t, h.attentionAction)
-	model, cmd := h.Update(keyPress('y'))
-	h = model.(HomeModel)
-	if cmd == nil {
-		t.Fatal("merge confirmation did not send a request")
-	}
-	h.Update(cmd())
-	if len(c.merges) != 1 || c.merges[0].head != "rendered-head" || !c.merges[0].approve || len(c.merges[0].waives) != 0 {
-		t.Fatalf("merges=%+v, want one approving merge of the rendered head waiving nothing", c.merges)
-	}
-}
-
 func TestAttentionActionNavigationResultDoesNotUnlockResume(t *testing.T) {
 	original := openURLFunc
 	openURLFunc = func(string) error { return nil }
@@ -387,41 +348,6 @@ func TestAttentionActionFooterShowsOneEnterDestination(t *testing.T) {
 	labels := strings.Join(left, "  ")
 	if strings.Count(labels, "[enter]") != 1 || !strings.Contains(labels, "open the failed chat") {
 		t.Fatalf("ambiguous enter footer: %s", labels)
-	}
-}
-
-// TestChatPickerUnverifiedReviewChatsKeepTheirStatus opens the details view on a
-// fresh-claim PR: merge-ready, nothing verified, so attention answers a REVIEW
-// with no park and no target chat. Its waiting build chat keeps its own
-// status; only a real park labels a chat "parked for you".
-func TestChatPickerUnverifiedReviewChatsKeepTheirStatus(t *testing.T) {
-	mergeable := true
-	for _, tc := range []struct {
-		name   string
-		in     attention.Input
-		parked bool
-	}{
-		{"unverified merge-ready review", attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 2, ChecksDone: 2, Mergeable: &mergeable}, false},
-		{"control: verify parked it for a human", attention.Input{ParkCodes: []string{"human-review:ui"}}, true},
-	} {
-		for _, status := range []string{statusWaiting, statusIdle} {
-			t.Run(tc.name+"/"+status, func(t *testing.T) {
-				m := seedChatPicker(&chatPickerStub{}, status)
-				m.session = &pb.Session{Id: "session-1", PrNumber: proto.Int32(42), Attention: attention.Compute(tc.in)}
-				if m.session.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || m.session.GetAttention().GetTargetChatId() != "" {
-					t.Fatalf("attention = %v, want a REVIEW with no target chat", m.session.GetAttention())
-				}
-				m.buildTableRows()
-				screen := ansi.Strip(m.table.View())
-				wantParked := tc.parked && status == statusWaiting
-				if got := strings.Contains(screen, "parked for you"); got != wantParked {
-					t.Fatalf("parked for you shown = %v, want %v:\n%s", got, wantParked, screen)
-				}
-				if !wantParked && !strings.Contains(screen, status) {
-					t.Fatalf("the %s chat lost its own status:\n%s", status, screen)
-				}
-			})
-		}
 	}
 }
 
@@ -539,21 +465,30 @@ func TestAttentionMergeRefusesAMovedHead(t *testing.T) {
 	}
 }
 
-// TestAttentionMergeRowMergesWithoutApproving checks a verified MERGE row asks
-// plainly and records no approval.
+// TestAttentionMergeRowMergesWithoutApproving checks a MERGE row asks plainly
+// and records no approval, whether or not verify passed its head: an
+// unverified MERGE is a repo with no running verify stage, where nothing asked
+// for an approval record.
 func TestAttentionMergeRowMergesWithoutApproving(t *testing.T) {
 	mergeable := true
 	n := int32(42)
-	s := &pb.Session{Id: "session-1", PrNumber: &n, PrDisplayHeadSha: renderedHead, Attention: attention.Compute(attention.Input{
-		HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable, Verified: true,
-	})}
-	c := &attentionStub{}
-	model, _ := attentionHome(c, s).Update(keyPress('m'))
-	assertMergeConfirm(t, model.(HomeModel).attentionAction)
-	model, cmd := model.Update(keyPress('y'))
-	model.Update(cmd())
-	if len(c.merges) != 1 || c.merges[0].approve || len(c.merges[0].waives) != 0 || c.merges[0].head != renderedHead {
-		t.Fatalf("merges = %+v, want one plain merge of the rendered head", c.merges)
+	for name, verified := range map[string]bool{"verified": true, "unverified": false} {
+		t.Run(name, func(t *testing.T) {
+			s := &pb.Session{Id: "session-1", PrNumber: &n, PrDisplayHeadSha: renderedHead, Attention: attention.Compute(attention.Input{
+				HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable, Verified: verified,
+			})}
+			if s.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_MERGE {
+				t.Fatalf("kind = %v, want MERGE", s.GetAttention().GetKind())
+			}
+			c := &attentionStub{}
+			model, _ := attentionHome(c, s).Update(keyPress('m'))
+			assertMergeConfirm(t, model.(HomeModel).attentionAction)
+			model, cmd := model.Update(keyPress('y'))
+			model.Update(cmd())
+			if len(c.merges) != 1 || c.merges[0].approve || len(c.merges[0].waives) != 0 || c.merges[0].head != renderedHead {
+				t.Fatalf("merges = %+v, want one plain merge of the rendered head", c.merges)
+			}
+		})
 	}
 }
 

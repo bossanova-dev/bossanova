@@ -81,6 +81,8 @@ type Facts struct {
 	Blocked           *Blocked
 	Repair            *Repair
 	DismissedAlertKey string
+	// IsFactoryRepo marks a repo with an enabled verify job on the daemon.
+	IsFactoryRepo bool
 }
 
 // FixSource names which kind of fact a fix row comes from.
@@ -142,8 +144,6 @@ func PRDone(st vcs.DisplayStatus) bool {
 }
 
 // Derive derives the session's attention.Input and fix rows from f.
-// Input.IsFactoryRepo is left false: bossd records no "factory repo" fact
-// (repo settings carry none), so no bossd reader can set it either.
 func Derive(f Facts) Answer {
 	rec := f.Recovery
 	if f.PR != nil && PRDone(f.PR.Status) {
@@ -172,6 +172,7 @@ func Derive(f Facts) Answer {
 		HasPR:             f.HasPR,
 		PRState:           attention.PRStateOpen,
 		DismissedAlertKey: f.DismissedAlertKey,
+		IsFactoryRepo:     f.IsFactoryRepo,
 	}
 	if a.Fix != nil {
 		in.Fix = &attention.FixFact{AlertKey: a.Fix.AlertKey, Since: a.Fix.Since}

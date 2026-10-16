@@ -465,7 +465,7 @@ func (a *App) backKeyAliasEligible() bool {
 		return !a.chatPicker.textEntryActive()
 	case ViewHome:
 		// The session board is likewise a pure list screen except while the
-		// hidden [r]ename prompt is open (BOS-837).
+		// hidden rename prompt, attention note, or slash filter is accepting text.
 		return !a.home.textEntryActive()
 	case ViewRepoList, ViewSettings, ViewLogin,
 		ViewCron, ViewAccounts:

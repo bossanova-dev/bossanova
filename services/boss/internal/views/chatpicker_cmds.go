@@ -20,10 +20,18 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 	return func() tea.Msg {
 		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
 		if err != nil {
-			return chatPickerErrMsg{err: err}
+			return m.reply(chatPickerErrMsg{err: err})
 		}
-		return chatPickerSessionMsg{session: sess}
+		return m.reply(chatPickerSessionMsg{session: sess})
 	}
+}
+
+// reply tags a fetch result with the session it was fetched for. A picker is
+// rebuilt on every navigation, so a reply still in flight from the previous
+// picker reaches the next one; Update drops it there instead of painting one
+// session's title, attention and chats onto another's picker.
+func (m ChatPickerModel) reply(msg tea.Msg) chatPickerReply {
+	return chatPickerReply{sessionID: m.sessionID, msg: msg}
 }
 
 // parseChatStatuses fetches daemon-side heartbeat statuses and converts them
@@ -59,10 +67,10 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
 		chats, err := m.client.ListChats(m.ctx, m.sessionID)
 		if err != nil {
-			return chatsListedMsg{err: err}
+			return m.reply(chatsListedMsg{err: err})
 		}
 		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
-		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput, daemonWaitingReasons: waitingReasons, daemonPhases: phases}
+		return m.reply(chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput, daemonWaitingReasons: waitingReasons, daemonPhases: phases})
 	}
 }
 
@@ -103,16 +111,16 @@ func (m ChatPickerModel) refreshStatuses() tea.Cmd {
 	return func() tea.Msg {
 		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
 		if err != nil {
-			return chatPickerRefreshMsg{}
+			return m.reply(chatPickerRefreshMsg{})
 		}
 		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
-		return chatPickerRefreshMsg{
+		return m.reply(chatPickerRefreshMsg{
 			session:              sess,
 			daemonStatuses:       statuses,
 			daemonLastOutput:     lastOutput,
 			daemonWaitingReasons: waitingReasons,
 			daemonPhases:         phases,
-		}
+		})
 	}
 }
 
@@ -196,19 +204,6 @@ func (m ChatPickerModel) mergeCmd() tea.Cmd {
 	return func() tea.Msg {
 		_, _, err := client.MergeSession(ctx, id, "")
 		return mergeResultMsg{sessionID: id, err: err}
-	}
-}
-
-// approveCmd runs ApproveSessionPR off the update loop. Captures everything by
-// value.
-func (m ChatPickerModel) approveCmd() tea.Cmd {
-	client := m.client
-	ctx := m.ctx
-	id := m.sessionID
-	pr := int(m.session.GetPrNumber())
-	return func() tea.Msg {
-		result, err := client.ApproveSessionPR(ctx, id, false)
-		return approveResultMsg{sessionID: id, pr: pr, result: result, err: err}
 	}
 }
 

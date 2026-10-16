@@ -133,7 +133,9 @@ func newFileStore(t *testing.T) *db.SQLiteGithubCallbackStore {
 
 // fakeProvider is a fake vcs provider returning canned PR status + checks +
 // head workflow runs. Zero runs and no runsErr means every head run completed.
+// mu serialises calls, since concurrent tests share one fake across goroutines.
 type fakeProvider struct {
+	mu        sync.Mutex
 	status    *vcs.PRStatus
 	statusErr error
 	checks    []vcs.CheckResult
@@ -147,15 +149,21 @@ type fakeProvider struct {
 }
 
 func (f *fakeProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.statusCalls++
 	return f.status, f.statusErr
 }
 
 func (f *fakeProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.checks, f.checksErr
 }
 
 func (f *fakeProvider) ListWorkflowRuns(_ context.Context, _, headSHA string) ([]vcs.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.runsCalls++
 	f.runsSHA = headSHA
 	return f.runs, f.runsErr

@@ -50,6 +50,14 @@ func (id Identity) Equal(other Identity) bool {
 	return id.Present && other.Present && id.StartTime == other.StartTime
 }
 
+// Process is one row of a process-table snapshot: the parent PID and the
+// executable name as `ps -o comm` reports it (the full path on macOS, the
+// kernel's name truncated to 15 bytes on Linux).
+type Process struct {
+	PPID int
+	Name string
+}
+
 // Root is a session's tmux-pane process root together with the birth identity
 // captured by the caller (BOS-472) at the same instant it read the pane PID.
 // The Detector revalidates PID against Identity so a recycled root PID cannot

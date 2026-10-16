@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -41,11 +42,19 @@ func (m *ChatPickerModel) buildTableRows() {
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // preserve the default width for unphased chats
 	for _, chat := range m.chats {
-		if label := m.statusDetail(chat); label != "" {
-			statusWidth = max(statusWidth, lipgloss.Width(m.spinner.View()+label))
+		label := m.detailChatStatus(chat)
+		if label == "" {
+			label = m.statusDetail(chat)
 		}
+		if label == "" {
+			continue
+		}
+		w := lipgloss.Width(m.spinner.View() + label)
+		if m.session.GetAttention() == nil && m.daemonStatuses[chat.GetAgentSessionId()] == statusWorking {
+			w = min(w, 2+displaystatus.MaxPhaseRunes)
+		}
+		statusWidth = max(statusWidth, w)
 	}
-	statusWidth = min(statusWidth, 2+displaystatus.MaxPhaseRunes)
 
 	rcols := []responsiveColumn{
 		{col: cursorColumn, priority: 0, minWidth: 1},
@@ -67,7 +76,12 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
-		if m.isStandbyWait(chat.GetAgentSessionId()) {
+		wait := m.chatWait(chat.GetAgentSessionId())
+		if label := m.detailChatStatus(chat); m.session.GetAttention() != nil && label != "" {
+			statusStr = styleStatusMuted.Render(ansi.Truncate(label, statusWidth, "…"))
+		} else if wait == waitDone {
+			statusStr = styleStatusMuted.Render(chatDoneLabel)
+		} else if wait == waitStandby {
 			statusStr = renderStandbyStatus()
 		} else if label := m.statusDetail(chat); label != "" {
 			style := styleStatusSuccess
@@ -111,10 +125,11 @@ func (m *ChatPickerModel) buildTableRows() {
 	m.table.SetCursor(cursor)
 }
 
-// statusDetail is the label that replaces a chat's bare STATUS word: the
-// skill-reported phase of a working chat, or the armed trigger of a waiting
-// chat (BOS-1517). "" keeps the plain renderClaudeStatus badge. A standby wait
-// has no detail: buildTableRows renders it as renderStandbyStatus (BOS-1531).
+// chatDoneLabel is the STATUS of a chat whose every wait left is the session's
+// own PR merging or closing (waitDone): muted and without a spinner, because
+// the chat has nothing left to do until then.
+const chatDoneLabel = "done"
+
 // renderChatReplaced is the STATUS badge for a chat automation deliberately
 // replaced (repair reclaiming an idle agent-owned chat). It ran and ended on
 // purpose, so it reads as a neutral terminal state, not the danger-styled
@@ -123,15 +138,29 @@ func renderChatReplaced() string {
 	return styleSubtle.Render("↺ replaced")
 }
 
+// statusDetail is the label that replaces a chat's bare STATUS word: the
+// skill-reported phase of a working chat, or the armed trigger of a chat
+// waiting on the PR's progress (BOS-1517). "" keeps the plain
+// renderClaudeStatus badge. Standby and done waits have no detail:
+// buildTableRows renders their own muted badges.
+//
+// A wait on a PR other than the session's own names that PR, because nothing
+// else on the screen says which PR the chat is parked on.
 func (m ChatPickerModel) statusDetail(chat *pb.ClaudeChat) string {
-	switch m.daemonStatuses[chat.GetAgentSessionId()] {
+	id := chat.GetAgentSessionId()
+	switch m.daemonStatuses[id] {
 	case statusWorking:
-		return m.daemonPhases[chat.GetAgentSessionId()]
+		return m.daemonPhases[id]
 	case statusWaiting:
-		if m.isStandbyWait(chat.GetAgentSessionId()) {
+		if m.chatWait(id) != waitProgress {
 			return ""
 		}
-		return m.armedCallback(chat).GetTrigger()
+		cb := m.statusCallback(chat)
+		label := callbackWaitLabel(cb.GetTrigger())
+		if label != "" && !m.isOwnPRReason(callbackReason(cb)) {
+			label += " " + m.prRef(cb)
+		}
+		return label
 	}
 	return ""
 }
@@ -181,10 +210,9 @@ func (m ChatPickerModel) chatPickerProseAvailWidth() int {
 }
 
 // fitProseLine truncates a single-line prose hint to that budget. It is the
-// one-row half of the reservation contract tableHeight documents: these two
-// hints claim a fixed row count while carrying unbounded text (a waiting reason
-// embeds a daemon-supplied "owner/repo#N"), and httpEndpointLine already guards
-// its own line the same way for the same reason.
+// one-row half of the reservation contract tableHeight documents: a hint
+// claims a fixed row count while carrying unbounded text, and httpEndpointLine
+// already guards its own line the same way for the same reason.
 //
 // Truncates against the terminal rather than blockWrapWidth: these are hints,
 // not blocks, and clamping them to the table's content width would shorten them
@@ -197,16 +225,16 @@ func (m ChatPickerModel) fitProseLine(s string) string {
 	return ansi.Truncate(s, avail, "…")
 }
 
-// tableHeight returns the height to pass to table.SetHeight.
+// chatListOverhead reserves all chrome outside the attention details and table.
 //
 // It owns the reservation sum, and with it the invariant every *Height function
 // below depends on: each block must actually occupy the rows it claims here. A
 // line wider than the terminal soft-wraps onto a row nobody reserved and pushes
 // the last chat row or the action bar off screen, so every block is width-bounded
 // at its source — the wrapped blocks by blockWrapWidth, the HTTP line by its own
-// ansi.Truncate, the two single-line hints by fitProseLine. Those three sites
-// cite this one rather than restating the reasoning.
-func (m ChatPickerModel) tableHeight() int {
+// ansi.Truncate, the single-line hints by fitProseLine. Those sites cite this
+// one rather than restating the reasoning.
+func (m ChatPickerModel) chatListOverhead() int {
 	// gap + actionbar padding + actionbar, plus the session warning block
 	// (below the header, above the chat list). Reserving its lines shrinks the
 	// chat table rather than letting the block push the table off-screen.
@@ -218,8 +246,11 @@ func (m ChatPickerModel) tableHeight() int {
 	if m.attentionAction.active() {
 		footerLines = m.attentionAction.lineCount(m.width)
 	}
-	overhead := bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.waitingLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight() + m.confirmExtraLines()
-	return clampedTableHeight(len(m.chats), m.height, overhead)
+	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.archiveLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
+}
+
+func (m ChatPickerModel) tableHeight() int {
+	return clampedTableHeight(len(m.chats), m.height, m.chatListOverhead()+m.attentionDetailsHeight())
 }
 
 // httpEndpointLine returns the muted "HTTP  :3000 :5173" line for the
@@ -227,43 +258,46 @@ func (m ChatPickerModel) tableHeight() int {
 // session has none. Each ":port" is independently clickable; see
 // renderSessionEndpoints for the OSC 8 / URL-validation rules.
 //
+// It sits one blank line above the chat table, indented to the table's CHAT
+// column (chatPickerFirstColumnInset), so the ports read as part of the table
+// block rather than as another prose line.
+//
 // Styled with raw ANSI rather than lipgloss: Render on a string containing an
 // OSC 8 envelope mangles the escape sequence (the same constraint the PR and
-// tracker link renderers document). Only the *styling* needs the raw path
-// though, so the inset is still built from chatPickerProsePadding rather than
-// hand-synced to it — chatPickerProseBlock's rule reaches this line too, just
-// spelled as spaces. It is the one site a change to the prose column can leave
-// behind, which is what TestChatPicker_StatusLinesAlignWithActionBar's HTTP
-// subtest exists to catch (BOS-718).
+// tracker link renderers document), so the inset is written as spaces.
 //
 // The result is capped at the terminal width. Nothing upstream bounds how many
 // listeners a worktree exposes (sessionports emits one endpoint per listening
-// port), so an unbounded line would soft-wrap onto a second terminal row while
-// httpLineHeight reserved only one — pushing the last chat row or the action bar
-// off screen, the exact regression the reservation exists to prevent. ansi.Truncate
-// is OSC 8-aware, so a cut line still closes every hyperlink envelope it opened.
+// port), so an unbounded line would soft-wrap onto a terminal row
+// httpLineHeight did not reserve, pushing the last chat row or the action bar
+// off screen. ansi.Truncate is OSC 8-aware, so a cut line still closes every
+// hyperlink envelope it opened.
 func (m ChatPickerModel) httpEndpointLine() string {
 	links := renderSessionEndpoints(m.session)
 	if links == "" {
 		return ""
 	}
-	line := strings.Repeat(" ", chatPickerProsePadding) + mutedTextOpen + "HTTP" + mutedTextClose + "  " + links
+	line := strings.Repeat(" ", chatPickerFirstColumnInset) + mutedTextOpen + "HTTP" + mutedTextClose + "  " + links
 	if m.width > 0 && ansi.StringWidth(line) > m.width {
 		line = ansi.Truncate(line, m.width, "…")
 	}
 	return line
 }
 
-// httpLineHeight returns the vertical lines the HTTP endpoint line occupies
-// above the chat list — exactly one, with no blank line below it, so the links
-// read as attached to the table — or 0 when the session has no endpoints.
-// Reserving it in tableHeight keeps the last chat row on screen. httpEndpointLine
-// truncates to the terminal width, so "exactly one" holds for any endpoint count.
+// chatPickerFirstColumnInset is the screen column the chat table's first data
+// column (CHAT) starts at: the table block's inset, then the cursor column,
+// each cell carrying bossTableStyles' one-column left pad.
+var chatPickerFirstColumnInset = chatPickerBlockPadding + 1 + cursorColumn.Width + 1
+
+// httpLineHeight returns the rows the HTTP endpoint line occupies above the
+// chat table (the line plus the blank line below it), or 0 when the session
+// has no endpoints. httpEndpointLine truncates to the terminal width, so the
+// line is one row for any endpoint count.
 func (m ChatPickerModel) httpLineHeight() int {
 	if m.httpEndpointLine() == "" {
 		return 0
 	}
-	return 1
+	return 2
 }
 
 // chatPickerBlockPadding is the horizontal inset on the chat picker's *tables*
@@ -294,9 +328,9 @@ const chatPickerBlockPadding = 1
 
 // chatPickerProsePadding is the horizontal inset on every prose/status line the
 // chat picker draws around its tables: the finalize/repair warning block, the
-// usage-limited hint, the waiting-reason line, the HTTP endpoint line and the
-// rotation-history block. Apply it through chatPickerProseBlock — except in
-// httpEndpointLine, which cannot (see its doc comment).
+// usage-limited hint and the rotation-history block. Apply it through
+// chatPickerProseBlock. The HTTP endpoint line is not prose: it sits in the
+// table's CHAT column (chatPickerFirstColumnInset).
 //
 // Defined as statusLinePadding rather than a bare 2 because column 2 is one
 // global chrome rule, not a chat-picker fact: Home's status lines
@@ -328,11 +362,10 @@ func chatPickerContentBlock(s string) string {
 
 // chatPickerProseBlock insets a rendered prose block by chatPickerProsePadding,
 // the chat picker's counterpart to Home's Padding(0, statusLinePadding) status
-// style. Four of the view's five prose sites go through it — the warning block,
-// the usage-limited hint, the waiting-reason line and the rotation-history block
-// — so it is the single place their inset is applied and a fifth inherits the
-// rule rather than needing a follow-up commit. The HTTP endpoint line is the
-// exception, for the reason given below.
+// style. The view's prose sites go through it (the warning block, the
+// usage-limited hint and the rotation-history block), so it is the single
+// place their inset is applied and a new one inherits the rule rather than
+// needing a follow-up commit.
 //
 // It is not the view's only route to column 2, and does not claim to be: the
 // confirm prompts, the transient statusMsg line, the switch-account notice, the
@@ -346,10 +379,6 @@ func chatPickerContentBlock(s string) string {
 // Name-prefixed for the same reason chatPickerContentBlock is: package views is
 // shared by every view, and an unprefixed proseBlock would be reachable from
 // home, trash and repo_list, which own their own status styling.
-//
-// httpEndpointLine is the one prose site that cannot use this: it emits OSC 8
-// hyperlink escapes, which lipgloss mangles, so it inlines the same inset as
-// spaces. See its doc comment.
 func chatPickerProseBlock(s string) string {
 	return lipgloss.NewStyle().Padding(0, chatPickerProsePadding).Render(s)
 }
@@ -435,7 +464,7 @@ func (m ChatPickerModel) rotationHistoryHeight() int {
 // renders. There is no blank line above: the header banner already renders
 // one below the worktree-path line.
 func (m ChatPickerModel) warningBlockHeight() int {
-	block := selectedSessionWarningBlock(m.session, m.chats, m.blockWrapWidth())
+	block := m.legacyWarningBlock()
 	if block == "" {
 		return 0
 	}
@@ -453,27 +482,12 @@ func (m ChatPickerModel) limitedLineHeight() int {
 	return 2
 }
 
-// waitingReasonLine returns the armed line (chatpicker_armed.go) for the cursor
-// chat when it is waiting, otherwise for the first waiting chat. Unlike Home it
-// does not hide routine checks-passed and merged waits (BOS-1517): in the chat
-// view that wait is the only thing the parked chat is doing. An empty result
-// reserves no space beneath the chat table.
-func (m ChatPickerModel) waitingReasonLine() string {
-	if chat := m.waitingLineChat(); chat != nil {
-		return m.fitProseLine(m.armedLine(chat))
+// archiveLineHeight reserves the daemon archive status above the live actions.
+func (m ChatPickerModel) archiveLineHeight() int {
+	if m.archiveAwaited() && !m.archiving {
+		return 1
 	}
-	return ""
-}
-
-// waitingLineHeight reserves the rows waitingReasonLine occupies (the line plus
-// its trailing blank), mirroring limitedLineHeight. Reserved in tableHeight so
-// the hint shrinks the chat table rather than pushing it off-screen. The line is
-// one row whichever chat it describes, so moving the cursor never changes this.
-func (m ChatPickerModel) waitingLineHeight() int {
-	if m.waitingReasonLine() == "" {
-		return 0
-	}
-	return 2
+	return 0
 }
 
 // chatLastActive returns the most recent activity time for a chat.
@@ -505,4 +519,31 @@ func RelativeTime(t time.Time) string {
 		weeks := int(d.Hours() / 24 / 7)
 		return fmt.Sprintf("%dw ago", weeks)
 	}
+}
+
+func (m ChatPickerModel) legacyWarningBlock() string {
+	if m.session.GetAttention() != nil {
+		return ""
+	}
+	return selectedSessionWarningBlock(m.session, m.chats, m.blockWrapWidth())
+}
+
+func (m ChatPickerModel) detailChatStatus(chat *pb.ClaudeChat) string {
+	a := m.session.GetAttention()
+	if a == nil {
+		return ""
+	}
+	id := chat.GetAgentSessionId()
+	// An unverified merge-ready REVIEW is not a park: no chat is waiting on
+	// the operator, so its chats keep their own status.
+	parked := a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW && !attention.IsUnverifiedReview(a) && (id == a.GetTargetChatId() || (a.GetTargetChatId() == "" && m.daemonStatuses[id] == statusWaiting))
+	switch wait := m.chatWait(id); {
+	case wait == waitStandby:
+		return "done · standby: wakes if CI turns red"
+	case parked:
+		return "parked for you"
+	case wait == waitDone:
+		return chatDoneLabel
+	}
+	return ""
 }

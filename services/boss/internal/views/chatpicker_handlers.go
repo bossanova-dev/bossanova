@@ -7,20 +7,18 @@ package views
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"connectrpc.com/connect"
 
-	"github.com/recurser/boss/internal/prverdict"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
 
 func (m ChatPickerModel) handleSession(msg chatPickerSessionMsg) (tea.Model, tea.Cmd) {
 	m.session = msg.session
-	return m, tea.Batch(m.listChats(), m.fetchRepoWebLink())
+	timeline := m.syncTimeline()
+	return m, tea.Batch(m.listChats(), m.fetchRepoWebLink(), timeline)
 }
 
 func (m ChatPickerModel) handleRepoWebLink(msg repoWebLinkMsg) (tea.Model, tea.Cmd) {
@@ -200,28 +198,6 @@ func (m ChatPickerModel) handleMergeResult(msg mergeResultMsg) (tea.Model, tea.C
 	return m, nil
 }
 
-// handleApproveResult lands the approval outcome as the status line, worded as
-// the merge that [m]erge presents it as.
-func (m ChatPickerModel) handleApproveResult(msg approveResultMsg) (tea.Model, tea.Cmd) {
-	if msg.sessionID != m.sessionID {
-		return m, nil // orphan completion from a session the user navigated away from
-	}
-	m.approving = false
-	r := msg.result
-	switch {
-	case connect.CodeOf(msg.err) == connect.CodeDeadlineExceeded:
-		m.statusMsg = rpcStatusMessage("Couldn't confirm the merge request", msg.err) + "; verify may already have recorded it, so merge again to confirm"
-	case msg.err != nil:
-		m.statusMsg = rpcStatusMessage("Couldn't request the merge", msg.err)
-	case !r.GetIsApproved():
-		m.statusMsg = prverdict.MergeRefusal(msg.pr, r)
-	default:
-		m.approved = true
-		m.statusNote = strings.Join(prverdict.MergeLines(msg.pr, r), " ")
-	}
-	return m, nil
-}
-
 func (m ChatPickerModel) handleArchiveResult(msg archiveResultMsg) (tea.Model, tea.Cmd) {
 	if msg.sessionID != m.sessionID {
 		return m, nil // orphan completion from a session the user navigated away from
@@ -360,7 +336,9 @@ func (m ChatPickerModel) handleRefresh(msg chatPickerRefreshMsg) (tea.Model, tea
 	if len(m.chats) > 0 {
 		m.buildTableRows()
 	}
-	return m, tea.Batch(refreshWebLink, armedFetch)
+	timeline := m.syncTimeline()
+	m.table.SetHeight(m.tableHeight())
+	return m, tea.Batch(refreshWebLink, armedFetch, timeline)
 }
 
 func (m ChatPickerModel) handleErr(msg chatPickerErrMsg) (tea.Model, tea.Cmd) {

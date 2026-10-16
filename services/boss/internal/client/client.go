@@ -92,9 +92,12 @@ type BossClient interface {
 	// verify (the boss-verify toolbox's approve verb, run by the daemon in the
 	// session worktree). A refusal is a result with a reason, not an error.
 	ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error)
-	// SendBackSessionPR posts note on the session's PR as the operator's
-	// rejection of its current head (the toolbox's send-back verb).
-	SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error)
+	// OperatorMergeSession is the operator's [m]erge: it merges the session's
+	// PR at exactly head (a validated 40-hex SHA). With approve it first records
+	// the head-bound approval `boss pr approve` writes, waiving exactly waives,
+	// and a refused approval is a response with is_merged false, not an error.
+	// The daemon then runs the post-merge tracker bookkeeping.
+	OperatorMergeSession(ctx context.Context, id, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	// MoveSession moves one session up or down relative to its neighbours in

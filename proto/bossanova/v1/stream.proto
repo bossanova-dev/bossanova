@@ -296,6 +296,12 @@ message SessionDelta {
   // Session.transferring_to / transferring_from (models.proto) hide the
   // session from ListForUser during the coordinated transfer protocol.
   Session session = 2;
+  // Daemon-assigned delta identity, strictly increasing across all session
+  // deltas sent by one daemon process, including across reconnects. Seeded at
+  // process start from wall-clock Unix nanoseconds to avoid reuse on restart.
+  // Zero means an older daemon that does not stamp deltas. This identifies
+  // the delta, not session state: do not order state across daemons by seq.
+  uint64 seq = 3;
 }
 
 // ChatDelta is a single ClaudeChatMetadata lifecycle change.
@@ -744,6 +750,19 @@ message MoveSessionCommand {
 //   - A daemon that predates this command drops the unknown oneof arm and sends
 //     no reply, so bosso bounds its own wait and records the invocation as
 //     FAILED with decision_reason "daemon_unsupported".
+//
+// Differs from CreateSessionCommand on purpose:
+//   - Addresses the repo by repo_origin_url, not repo_id: bosso does not know
+//     daemon repo ids for triggers. prompt becomes CreateSessionRequest.plan.
+//   - invocation_id and trigger_id identify the invocation for idempotency.
+//   - Replies with one asynchronous CommandResult, not a SessionCreateChunk stream.
+//   - The daemon always sets detach, is_tmux_unattended, defer_pr and force.
+//   - Carries no quick-chat, PR, branch-name, tracker, force_branch or account_id
+//     fields; base_branch still selects the worktree's starting branch.
+//   - Carries should_run_setup_command and is_zero_output, which
+//     CreateSessionCommand does not.
+// TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField guards these
+// choices against drift in both this command and CreateSessionRequest.
 message LaunchTriggerSessionCommand {
   // TriggerInvocation.id; the idempotency key.
   string invocation_id = 1;

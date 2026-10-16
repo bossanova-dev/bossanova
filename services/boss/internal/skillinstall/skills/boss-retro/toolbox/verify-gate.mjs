@@ -9,14 +9,15 @@
 //                                                                                   never writes
 //   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>[,…]]
 //            [--findings <file>] [--extension-record <record>] [--policy <fingerprint>]
-//            [--carry-record <record>] [--token <t>] [--repo o/r] [--dry-run]
+//            [--extension-results <file>] [--ledger <fingerprint>] [--carry-record <record>]
+//            [--token <t>] [--repo o/r] [--dry-run]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
 //   observe-merge --pr <n> [--repo o/r]                                              never writes
 //   approval --pr <n> [--repo o/r]                                                   never writes
 //   rearm    --pr <n> --chat <id> [--repo o/r] [--dry-run]
-//   approve  --pr <n> [--repo o/r] [--dry-run] [--json]       operator: hand a standing park back
-//   send-back --pr <n> --note <text> [--repo o/r] [--dry-run] [--json]
-//                                                             operator: reject with a PR comment
+//   approve  --pr <n> [--head <sha>] [--waives <code>[,…]] [--for-merge] [--repo o/r] [--dry-run]
+//            [--json]                                         operator: hand a standing park back
+//   mark-merged --pr <n> [--repo o/r] [--dry-run] [--json]    tracker bookkeeping after a merge
 //   candidates [--ticket <id>] [--limit N] [--repo o/r] [selection flags]           never writes
 //   policy                                                                           never writes
 //
@@ -78,6 +79,7 @@ import {
   stageSelectionQuery,
   stateName,
   unmatchedPolicyGlobs,
+  policyMirrorGaps,
   verifyAlwaysHumanPaths,
   verifyHumanReviewPaths,
   verifyPolicyFromConfigText,
@@ -89,6 +91,13 @@ import {
   validateVerifyContext,
 } from './skill-extensions.mjs'
 import { resolveTrackerAdapter } from './tracker/adapter.mjs'
+import {
+  AFTER_MERGE_MARKER,
+  PARK_NOTE_MARKER,
+  afterMergeNote,
+  ledgerFingerprint,
+  parkNote,
+} from './verify-park-note.mjs'
 
 export const VERIFY_CONTEXT = 'boss/verify'
 export const VERIFY_CORE = 'boss-verify'
@@ -161,6 +170,7 @@ export const REPAIR_EXHAUSTED_AFTER = 5
 
 // A claim older than this is presumed abandoned and may be taken over.
 export const CLAIM_STALE_AFTER_MS = 30 * 60 * 1000
+export const MERGE_RETRY_AFTER_MS = 10 * 60 * 1000
 
 export const NOTE_TRIGGERS = Object.freeze([
   'evidence-unknown',
@@ -191,7 +201,7 @@ const SHA = /^[0-9a-f]{40}$/i
 const isSha = (value) => typeof value === 'string' && SHA.test(value)
 const text = (value) => typeof value === 'string' && value.trim() !== ''
 const PR_FIELDS =
-  'state,mergeCommit,number,url,title,body,isDraft,headRefOid,baseRefName,mergeStateStatus,statusCheckRollup,reviewDecision,createdAt'
+  'state,mergeCommit,number,url,title,body,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,reviewDecision,createdAt'
 
 export class UsageError extends Error {}
 
@@ -488,7 +498,7 @@ function reuseExtensionRecord(judged, applicable, notApplicable = []) {
  *
  * A `needs human:` park is waived only by a head-bound approval record whose codes equal the park's,
  * or by a review approval; removing the needs-human label alone is not bound to a head, so it only
- * ever re-judges a parked defect. A send-back of the head revokes every approval of it.
+ * ever re-judges a parked defect. A legacy send-back marker on the head revokes every approval of it.
  */
 export function classifyApproval({
   prState,
@@ -1135,8 +1145,8 @@ export function readApprovalAnchor(
     { json: true },
   )
   if (!r.ok) return { sha: null, why: 'anchor-unreadable' }
-  // A send-back revokes every approval of its head, so a sent-back head never anchors; when the
-  // send-backs cannot be read, no head does (the full range is judged).
+  // A legacy send-back marker revokes every approval of its head, so a sent-back head never
+  // anchors; when the markers cannot be read, no head does (the full range is judged).
   const markers = readMarkers()
   if (!markers.readable) return { sha: null, why: 'comments-unreadable' }
   const revoked = (sha) => operatorDecision(markers.markers, sha).decision === 'sent-back'
@@ -1629,6 +1639,7 @@ const canonicalJson = (value) =>
       : JSON.stringify(value ?? null)
 
 export const POLICY_FINGERPRINT = /^[0-9a-f]{16}$/
+const LEDGER_FINGERPRINT = /^[0-9a-f]{16}$/
 
 /**
  * A digest of what a verdict on a head was judged under: the base's raw `verifyDefaults` block and
@@ -1720,8 +1731,8 @@ const later = (a, b) => a.at > b.at || (a.at === b.at && a.id > b.id)
 /**
  * The approval `headSha` could inherit from the trusted `markers`: `{from, waives, url}` for the
  * newest approval record on another head, or `{why}`. Nothing carries to a head the operator
- * already decided on, from an approval that waives nothing, or past a send-back of any head made
- * after that approval (which revokes it, or says the PR as a whole was sent back).
+ * already decided on, from an approval that waives nothing, or past a legacy send-back marker on
+ * any head made after that approval (which revokes it, or says the PR as a whole was sent back).
  */
 export function carryCandidate(markers, headSha) {
   const head = String(headSha ?? '').toLowerCase()
@@ -2053,6 +2064,8 @@ export async function judge(options, deps = {}) {
   const out = {
     ...verdict,
     ...(fingerprint ? { policyFingerprint: fingerprint } : {}),
+    // The ledger this verdict was judged on, for `post --ledger`: a ledger-open park records it.
+    ledgerFingerprint: ledgerFingerprint({ title: p.title, body: p.body }),
     // A pass the carry made rides with its record, for `post --carry-record`.
     ...(carry?.carry && verdict.verdict === 'pass'
       ? { carryRecord: `${carry.carry.from}:${carry.carry.patchId}` }
@@ -2186,13 +2199,16 @@ function findingsComment(findings, headSha) {
   return lines.join('\n')
 }
 
-function readSessionRow(read, prUrl) {
+// The `boss ls --json` session rows, or null when the list cannot be read.
+function readSessionRows(read) {
   const ls = read('boss', ['ls', '--json'], { json: true })
-  if (!ls.ok || !Array.isArray(ls.payload?.sessions)) return { readable: false, row: null }
-  return {
-    readable: true,
-    row: ls.payload.sessions.find((row) => text(prUrl) && row?.pr_url === prUrl) ?? null,
-  }
+  return ls.ok && Array.isArray(ls.payload?.sessions) ? ls.payload.sessions : null
+}
+
+function readSessionRow(read, prUrl) {
+  const rows = readSessionRows(read)
+  if (!rows) return { readable: false, row: null }
+  return { readable: true, row: rows.find((row) => text(prUrl) && row?.pr_url === prUrl) ?? null }
 }
 
 // `{autoRepair: true|false|null, attempts: number|null}`; null means unreadable.
@@ -2256,6 +2272,23 @@ export async function post(options, deps = {}) {
     throw new UsageError(
       'verify-gate: post --policy takes the judge output policyFingerprint, with --verdict human only',
     )
+  if (
+    options.ledger !== undefined &&
+    (verdict !== 'human' || !LEDGER_FINGERPRINT.test(String(options.ledger)))
+  )
+    throw new UsageError(
+      'verify-gate: post --ledger takes the judge output ledgerFingerprint, with --verdict human only',
+    )
+  if (options.extensionResults !== undefined && verdict !== 'human')
+    throw new UsageError(
+      'verify-gate: post --extension-results takes the file judge read, with --verdict human only',
+    )
+  // The results the park was judged on, for the park note's extension-failed evidence only; an
+  // unreadable file is reported in the note as results it was not given.
+  const extensionResults =
+    options.extensionResults === undefined
+      ? undefined
+      : (readJsonFile(options.extensionResults) ?? null)
   let findings = []
   if (verdict === 'defect') {
     const parsed = readJsonFile(options.findings ?? '')
@@ -2369,11 +2402,25 @@ export async function post(options, deps = {}) {
       options.reason === 'approved'
         ? VERIFY_DESCRIPTIONS.verifiedApproved
         : VERIFY_DESCRIPTIONS.verified
+    // The PR's `## After merge` items, listed for a person. Cosmetic, so it never holds the verdict.
+    const recordAfterMerge = () => {
+      const note = afterMergeNote({ headSha, body: p.body })
+      if (!note) return {}
+      const markers = readOperatorMarkers(read, repo, pr)
+      const args = { kind: 'after-merge', repo, pr, headSha, note, markers, dryRun, writes }
+      return { afterMerge: recordHeadNote(read, args) }
+    }
     if (current.status?.state === 'success' && current.status.description === description)
-      return finish({ verdict, posted: false, skipped: 'already-posted', ...carried })
+      return finish({
+        verdict,
+        posted: false,
+        skipped: 'already-posted',
+        ...carried,
+        ...recordAfterMerge(),
+      })
     const posted = runStatus(status('success', description)).ok
     flushNotes()
-    return clearStaleLabel({ verdict, posted, ...carried })
+    return clearStaleLabel({ verdict, posted, ...carried, ...(posted ? recordAfterMerge() : {}) })
   }
 
   let effective = verdict
@@ -2397,16 +2444,21 @@ export async function post(options, deps = {}) {
 
   const parked = effective === 'human' || repair?.autoRepair !== true
   const adapter = resolveAdapter(deps)
-  const probe = parked ? await trackerProbe(adapter, ticket) : { available: true }
-  const trackerWrite = parked
-    ? {
-        issueId: ticket?.id ?? '',
-        addLabels: [names.needsHuman],
-        comment: '',
-        mentionCreator: true,
-        marker,
-      }
-    : null
+  // A PR no ticket stands behind has no tracker state to write: its park or defect stands on the
+  // status and the PR comments alone.
+  const ticketless = parked && !ticket && (await standsTicketless(read, deps, repo, p))
+  const noTicket = ticketless ? { trackerWrites: 'none', why: 'no-ticket' } : {}
+  const probe = parked && !ticketless ? await trackerProbe(adapter, ticket) : { available: true }
+  const trackerWrite =
+    parked && !ticketless
+      ? {
+          issueId: ticket?.id ?? '',
+          addLabels: [names.needsHuman],
+          comment: '',
+          mentionCreator: true,
+          marker,
+        }
+      : null
 
   if (effective === 'human') {
     // The label names the paths the person is asked about; it rides only on a judged park, never on
@@ -2423,14 +2475,14 @@ export async function post(options, deps = {}) {
         : { label: '' }
     const label = parkLabelText(derived.label)
     const labelResult = { label, ...(derived.why ? { labelUnread: derived.why } : {}) }
-    trackerWrite.comment = humanComment({ code: reason, pr, url: p.url, label })
     const description = needsHumanDescription(reason, label)
+    let markers = null
+    const readMarkers = () => (markers ??= readOperatorMarkers(read, repo, pr))
     // The policy a park was judged under rides beside it, so a sweep re-judges it only once the
     // base's policy changes. Only a park that stands carries one.
     const recordPolicy = () => {
       if (options.policy === undefined) return {}
-      const markers = readOperatorMarkers(read, repo, pr)
-      if (!markers.readable) return { policyRecord: 'unknown' }
+      if (!readMarkers().readable) return { policyRecord: 'unknown' }
       if (recordedPolicy(markers.markers, headSha) === options.policy)
         return { policyRecord: 'current' }
       const body = policyComment(headSha, options.policy)
@@ -2438,37 +2490,72 @@ export async function post(options, deps = {}) {
       if (dryRun) return {}
       return { policyRecord: postPrComment(read, repo, pr, body) ? 'posted' : 'failed' }
     }
+    // What the park means and what verify saw, for the operator: one note per head, rewritten in
+    // place only when it changes. Cosmetic, so it never holds the verdict.
+    const recordNote = () => ({
+      parkNote: recordHeadNote(read, {
+        kind: 'park-note',
+        repo,
+        pr,
+        headSha,
+        note: parkNote({
+          codes: reason.split(','),
+          headSha,
+          pr,
+          facts: { title: p.title, body: p.body, label, extensionResults, ticketless },
+          ledger: options.ledger ?? null,
+        }),
+        markers: readMarkers(),
+        dryRun,
+        writes,
+      }),
+    })
     // A matching description already carries this code set and its derived label.
-    if (current.status?.state === 'pending' && current.status.description === description)
+    if (current.status?.state === 'pending' && current.status.description === description) {
+      const policyRecord = recordPolicy()
+      const noted = recordNote()
+      // A sweep that could not record the ledger re-posts the park, which counts the attempt on the
+      // head (ledgerRecordDue).
+      const counted =
+        options.ledger !== undefined &&
+        noted.parkNote === 'failed' &&
+        runStatus(status('pending', description)).ok
       return finish({
         verdict: effective,
         ...labelResult,
         reason,
         posted: false,
         skipped: 'already-posted',
-        ...recordPolicy(),
-      })
-    writes.push({ kind: 'tracker', ...trackerWrite })
-    if (!probe.available) {
-      return finish({
-        verdict: effective,
-        ...labelResult,
-        reason,
-        posted: false,
-        trackerWrites: 'unavailable',
-        why: probe.why,
+        ...noTicket,
+        ...policyRecord,
+        ...noted,
+        ...(counted ? { ledgerAttempt: 'counted' } : {}),
       })
     }
-    if (!dryRun) {
-      const applied = await adapter.applyIssueWrites(trackerWrite)
-      if (applied?.outcome !== 'ok')
+    if (trackerWrite) {
+      trackerWrite.comment = humanComment({ code: reason, pr, url: p.url, label })
+      writes.push({ kind: 'tracker', ...trackerWrite })
+      if (!probe.available) {
         return finish({
           verdict: effective,
           ...labelResult,
           reason,
           posted: false,
-          trackerWrites: applied?.outcome ?? 'failed',
+          trackerWrites: 'unavailable',
+          why: probe.why,
         })
+      }
+      if (!dryRun) {
+        const applied = await adapter.applyIssueWrites(trackerWrite)
+        if (applied?.outcome !== 'ok')
+          return finish({
+            verdict: effective,
+            ...labelResult,
+            reason,
+            posted: false,
+            trackerWrites: applied?.outcome ?? 'failed',
+          })
+      }
     }
     // The record rides with the park it led to; without it an approval re-runs the extensions.
     let extensionRecord
@@ -2484,14 +2571,15 @@ export async function post(options, deps = {}) {
       ...labelResult,
       reason,
       posted,
+      ...noTicket,
       ...(extensionRecord ? { extensionRecord } : {}),
-      ...(posted ? recordPolicy() : {}),
+      ...(posted ? { ...recordPolicy(), ...recordNote() } : {}),
     })
   }
 
   // Defect: the PR findings comment first (its URL is the status target), then the tracker writes
   // when auto-repair will not pick it up, then the `failure` status.
-  if (parked && !probe.available) {
+  if (trackerWrite && !probe.available) {
     writes.push({ kind: 'pr-comment', body: findingsComment(findings, headSha) })
     writes.push({
       kind: 'tracker',
@@ -2513,7 +2601,7 @@ export async function post(options, deps = {}) {
     if (!commentUrl)
       return finish({ verdict: effective, posted: false, reason: 'pr-comment-failed' })
   }
-  if (parked) {
+  if (trackerWrite) {
     trackerWrite.comment = defectTrackerComment({
       count: findings.length,
       pr,
@@ -2536,7 +2624,13 @@ export async function post(options, deps = {}) {
     status('failure', defectDescription(findings.length, parked), commentUrl || undefined),
   ).ok
   flushNotes()
-  const result = { verdict: effective, posted, commentUrl, autoRepair: repair?.autoRepair ?? null }
+  const result = {
+    verdict: effective,
+    posted,
+    commentUrl,
+    autoRepair: repair?.autoRepair ?? null,
+    ...noTicket,
+  }
   return parked ? finish(result) : clearStaleLabel(result)
 }
 
@@ -2552,22 +2646,8 @@ export async function merge(options, deps = {}) {
   const view = readPr(read, options.pr, repo)
   if (!view.ok) return finish({ merged: false, verdict: 'wait', reason: 'pr-unreadable' })
   const p = view.payload ?? {}
-  const names = trackerNames(deps)
-  const ticket = parseLinearIssueLine(p.body)
-  const done = async (result) => {
-    const write = {
-      issueId: ticket?.id ?? '',
-      stateName: names.done,
-      removeLabels: [names.needsHuman],
-    }
-    writes.push({ kind: 'tracker', ...write })
-    const adapter = resolveAdapter(deps)
-    const probe = await trackerProbe(adapter, ticket)
-    if (!probe.available) return finish({ ...result, trackerWrites: 'unavailable', why: probe.why })
-    if (dryRun) return finish(result)
-    const applied = await adapter.applyIssueWrites(write)
-    return finish({ ...result, trackerWrites: applied?.outcome ?? 'failed' })
-  }
+  const done = async (result) =>
+    finish({ ...result, ...(await markTrackerMerged(read, deps, { repo, p, dryRun, writes })) })
   if (p.state === 'MERGED' && isSha(p.mergeCommit?.oid))
     return done({ merged: true, mergeSha: p.mergeCommit.oid, observed: 'already-merged' })
   if (String(p.headRefOid ?? '').toLowerCase() !== headSha)
@@ -2609,7 +2689,8 @@ export async function merge(options, deps = {}) {
     return finish({ merged: false, verdict: 'wait', reason: 'sessions-unreadable' })
   if (!session.row || !text(session.row.id))
     return finish({ merged: false, verdict: 'human', reason: 'no-session' })
-  // A send-back of this head revokes whatever verdict it carries, until a later approve record.
+  // A legacy send-back marker on this head revokes whatever verdict it carries, until a later
+  // approve record.
   const operator = readOperatorDecision(read, repo, options.pr, headSha)
   if (!operator.readable)
     return finish({ merged: false, verdict: 'wait', reason: 'comments-unreadable' })
@@ -2651,6 +2732,61 @@ export function observeMerge(options, deps = {}) {
   if (p.state === 'MERGED' && isSha(p.mergeCommit?.oid))
     return { merged: true, mergeSha: p.mergeCommit.oid, observed: 'merged' }
   return { merged: false, state: text(p.state) ? p.state : 'unknown' }
+}
+
+/**
+ * The tracker bookkeeping a merged PR needs, for a merge verify did not make (an operator merge
+ * through the daemon): `{merged: true, mergeSha, trackerWrites, why?}` once the PR reads MERGED with
+ * a merge commit, `{merged: false, reason: 'not-merged', state}` otherwise, `{merged: false, reason:
+ * 'pr-unreadable'}` on a failed read. A PR not yet MERGED is read once more, as GitHub can lag the
+ * merge. It never merges and never posts statuses.
+ */
+export async function markMerged(options, deps = {}) {
+  const read = deps.read ?? commandReader(deps)
+  const dryRun = options.dryRun === true
+  const repo = repoFor(read, options.repo)
+  const writes = []
+  const finish = (result) => (dryRun ? { dryRun: true, ...result, writes } : { ...result, writes })
+  const isMerged = (view) =>
+    view.ok && view.payload?.state === 'MERGED' && isSha(view.payload?.mergeCommit?.oid)
+  let view = readPr(read, options.pr, repo)
+  if (!isMerged(view)) view = readPr(read, options.pr, repo)
+  if (!view.ok) return finish({ merged: false, reason: 'pr-unreadable' })
+  const p = view.payload ?? {}
+  if (!isMerged(view))
+    return finish({
+      merged: false,
+      reason: 'not-merged',
+      state: text(p.state) ? p.state : 'unknown',
+    })
+  const tracker = await markTrackerMerged(read, deps, { repo, p, dryRun, writes })
+  return finish({ merged: true, mergeSha: p.mergeCommit.oid, ...tracker })
+}
+
+/**
+ * Moves a merged PR's ticket to the done state and drops its needs-human label: `{trackerWrites,
+ * why?}`, which is `none` (why `no-ticket`) for a PR no ticket stands behind, `unavailable` (why the
+ * probe's reason) when the write path is not there, and the applied outcome otherwise. A dry run
+ * lists the write in `writes` and returns `{}` without applying it.
+ */
+async function markTrackerMerged(read, deps, { repo, p, dryRun, writes }) {
+  const ticket = parseLinearIssueLine(p.body)
+  // A PR no ticket stands behind has no done state to move to.
+  if (!ticket && (await standsTicketless(read, deps, repo, p)))
+    return { trackerWrites: 'none', why: 'no-ticket' }
+  const names = trackerNames(deps)
+  const write = {
+    issueId: ticket?.id ?? '',
+    stateName: names.done,
+    removeLabels: [names.needsHuman],
+  }
+  writes.push({ kind: 'tracker', ...write })
+  const adapter = resolveAdapter(deps)
+  const probe = await trackerProbe(adapter, ticket)
+  if (!probe.available) return { trackerWrites: 'unavailable', why: probe.why }
+  if (dryRun) return {}
+  const applied = await adapter.applyIssueWrites(write)
+  return { trackerWrites: applied?.outcome ?? 'failed' }
 }
 
 /**
@@ -2785,36 +2921,70 @@ function postPrComment(read, repo, pr, body) {
   return c.ok && /^https?:\/\//.test(c.payload?.html_url ?? '') ? c.payload.html_url : ''
 }
 
+// Rewrites one PR comment in place; like postPrComment, its URL is the only evidence it landed.
+function patchPrComment(read, repo, id, body) {
+  const c = read(
+    'gh',
+    ['api', '--method', 'PATCH', `${apiRepo(repo)}/issues/comments/${id}`, '-f', `body=${body}`],
+    { json: true },
+  )
+  return c.ok && /^https?:\/\//.test(c.payload?.html_url ?? '') ? c.payload.html_url : ''
+}
+
+/**
+ * Leaves `note` (a parkNote or afterMergeNote, whose marker is `kind`) on the PR: rewritten in place
+ * when the head's newest note of that kind is one verify's own account wrote and it carries another
+ * digest, left alone when that note matches, and posted fresh otherwise, so another author's
+ * comment is never rewritten and verify's note becomes the newest. `markers` is one
+ * readOperatorMarkers read. 'posted'|'updated'|'current'|'planned'|'failed'|'unknown'.
+ */
+function recordHeadNote(read, { kind, repo, pr, headSha, note, markers, dryRun, writes }) {
+  if (!markers.readable) return 'unknown'
+  const newest = newestFor(markers.markers, headSha, (k) => k === kind)
+  const standing = newest && newest.login === viewerLogin(read) ? newest : null
+  if (standing?.digest === note.digest) return 'current'
+  writes.push({
+    kind: 'pr-comment',
+    body: note.body,
+    ...(standing ? { replaces: standing.id } : {}),
+  })
+  if (dryRun) return 'planned'
+  const url = standing
+    ? patchPrComment(read, repo, standing.id, note.body)
+    : postPrComment(read, repo, pr, note.body)
+  return url ? (standing ? 'updated' : 'posted') : 'failed'
+}
+
 // ---------------------------------------------------------------------------
 // Operator verbs. `approve` hands a park back by posting a head-bound approval record on the PR:
 // its marker names the head and the exact codes it waives, so the next verify run's approval read
 // waives that set on that head only (one waiver path, `judge --waive`). Removing the needs-human
-// label afterwards is tracker housekeeping; the record is what verify trusts. `send-back` records a
-// rejection whose marker revokes every approval of the head it names. The newest marker for a head,
-// by an author with write access, is the operator's decision on it.
+// label afterwards is tracker housekeeping; the record is what verify trusts. Older toolboxes also
+// wrote send-back records; nothing writes them now, but a legacy send-back marker still revokes
+// every approval of the head it names, because open PRs may carry one. The newest marker for a
+// head, by an author with write access, is the operator's decision on it.
 
 /**
  * The hidden last line of an approval record: the head approved and the codes it waives. A record
- * with no codes waives nothing; it only lifts a send-back of a head verify already passed.
+ * with no codes waives nothing: it signs off an operator merge of an unparked head, or lifts a
+ * legacy send-back of a head verify already passed.
  */
 export function approveMarker(headSha, codes) {
   return `<!-- boss-approve head=${headSha}${codes.length > 0 ? ` waives=${codes.join(',')}` : ''} -->`
 }
 
-/** The hidden last line every send-back comment carries, naming the head it rejected. */
+/** The hidden last line a legacy send-back comment carries, naming the head it rejected. */
 export function sendBackMarker(headSha) {
   return `<!-- boss-send-back head=${headSha} -->`
 }
 
-function sendBackComment(note, headSha) {
-  return ['**Sent back by the operator**', note.trim(), sendBackMarker(headSha)].join('\n\n')
-}
-
-function approveComment(headSha, codes) {
+function approveComment(headSha, codes, signOff = null) {
   const scope =
     codes.length > 0
       ? `Verify may waive \`${codes.join(',')}\` on \`${headSha}\` only; a new head is judged afresh.`
-      : `This lifts the send-back of \`${headSha}\`; it waives nothing.`
+      : signOff === 'merge'
+        ? `Signed off for an operator merge of \`${headSha}\` with nothing parked; it waives nothing.`
+        : `This lifts the send-back of \`${headSha}\`; it waives nothing.`
   return ['**Approved by the operator**', scope, approveMarker(headSha, codes)].join('\n\n')
 }
 
@@ -2900,11 +3070,11 @@ function policyComment(headSha, fingerprint) {
 
 /**
  * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions'|
- * 'policy'|'carry', head, waives?, judged?, policy?, from?, patch?, at, id, login, url}]`. Only a
- * comment by an owner, member or collaborator is a candidate (readOperatorMarkers then keeps only
- * authors with write access), and only when its last non-blank line is a well-formed marker: an
- * approve marker names a known code set or none at all (`waives` is then ''), a send-back marker
- * names no codes, and an extension record parses.
+ * 'policy'|'carry'|'park-note'|'after-merge', head, waives?, judged?, policy?, from?, patch?,
+ * digest?, ledger?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
+ * (readOperatorMarkers then keeps only authors with write access), and only when its last
+ * non-blank line is a well-formed marker: an approve marker names a known code set or none at all
+ * (`waives` is then ''), a legacy send-back marker names no codes, and an extension record parses.
  */
 export function operatorMarkers(comments) {
   const out = []
@@ -2927,6 +3097,16 @@ export function operatorMarkers(comments) {
       login,
       url: text(comment.html_url) ? comment.html_url : '',
     })
+    const note = last.match(PARK_NOTE_MARKER)
+    if (note) {
+      out.push({ ...stamp('park-note', note[1]), digest: note[2], ledger: note[3] ?? null })
+      continue
+    }
+    const listed = last.match(AFTER_MERGE_MARKER)
+    if (listed) {
+      out.push({ ...stamp('after-merge', listed[1]), digest: listed[2] })
+      continue
+    }
     const carried = last.match(CARRY_MARKER)
     if (carried) {
       out.push({ ...stamp('carry', carried[1]), from: carried[2].toLowerCase(), patch: carried[3] })
@@ -2960,8 +3140,8 @@ export function operatorMarkers(comments) {
 /**
  * The operator's decision on `headSha`: the newest marker for that head (latest `at`, the larger id
  * breaking a tie) — `{decision: 'approved', waives, url}`, `{decision: 'sent-back', url}`, or
- * `{decision: null}` when no marker names it. An approve after a send-back of the same head
- * re-approves it.
+ * `{decision: null}` when no marker names it. An approve after a legacy send-back of the same
+ * head re-approves it.
  */
 export function operatorDecision(markers, headSha) {
   const newest = newestFor(markers, headSha, (kind) => kind === 'approve' || kind === 'send-back')
@@ -3085,6 +3265,21 @@ function stillStands(read, pr, repo, headSha, holds) {
 // The stillStands reasons that mean what was approved is gone, rather than unknown.
 const GONE = new Set(['head-moved', 'pr-not-open'])
 
+// The `needs human:` park a standing status carries, or null.
+const parkOf = (status) =>
+  status?.state === 'pending' ? parseParkDescription(status.description ?? '') : null
+
+// approve's pins: the head and park codes the operator saw (null when not given), and forMerge.
+function approvePins({ head, waives, forMerge }) {
+  const pinnedHead = head === undefined ? null : String(head).toLowerCase()
+  if (pinnedHead !== null && !isSha(pinnedHead))
+    throw new UsageError('verify-gate: approve --head needs a 40-hex sha')
+  const pinnedWaives = waives === undefined ? null : String(waives).trim()
+  if (forMerge === true && (pinnedHead === null || pinnedWaives === null))
+    throw new UsageError('verify-gate: approve --for-merge needs --head <sha> and --waives <codes>')
+  return { head: pinnedHead, waives: pinnedWaives, forMerge: forMerge === true }
+}
+
 /**
  * Did the approval of `headSha` for `waives` take effect? Re-reads the PR's head, the status
  * standing on it and the operator markers: `effective` (with the record's `url`) when the head did
@@ -3104,7 +3299,7 @@ function settleApproval(read, pr, repo, { headSha, waives, holds }) {
   return { state: decision.decision ? 'superseded' : 'absent' }
 }
 
-// A success status: what a send-back of a head verify already passed stands on.
+// A success status: what a legacy send-back of a head verify already passed stands on.
 const isVerified = (status) =>
   status?.state === 'success' &&
   (status.description === VERIFY_DESCRIPTIONS.verified ||
@@ -3118,9 +3313,14 @@ const isPlainVerified = (status) =>
 // Can the account approve runs as write to the repository? Its record would not count otherwise.
 // true or false, or null when the account or its permission could not be read.
 function approverCanWrite(read, repo) {
+  const login = viewerLogin(read)
+  return login ? canWrite(read, repo, login) : null
+}
+
+// The login of the account gh runs as, or '' when it cannot be read.
+function viewerLogin(read) {
   const me = read('gh', ['api', 'user'], { json: true })
-  if (!me.ok || !text(me.payload?.login)) return null
-  return canWrite(read, repo, me.payload.login)
+  return me.ok && text(me.payload?.login) ? me.payload.login : ''
 }
 
 // The refusal an operator verb returns when its account's marker would not count, or null.
@@ -3158,14 +3358,21 @@ function postApproval(read, { pr, repo, headSha, codes, holds, body }) {
  * known, approve posts a head-bound approval record waiving exactly those codes and confirms it
  * took effect; removing the needs-human label afterwards is housekeeping (`trackerWrites`, with
  * `why` when it did not happen), never a refusal. On a head verify passed outright whose newest
- * operator decision is a send-back, it posts a record that waives nothing and only lifts that
- * send-back (`lifted: 'sent-back'`). Refuses (`approved: false` plus `reason`) otherwise, including
- * when the account it runs as cannot write to the repository (its record would never count).
- * `approved: true` means verify honours the record on this head; a refusal after the record was
- * posted names it (`approvalUrl`) and says why it waives nothing (`head-moved`, `pr-not-open`,
+ * operator decision is a legacy send-back, it posts a record that waives nothing and only lifts
+ * that send-back (`lifted: 'sent-back'`). Refuses (`approved: false` plus `reason`) otherwise,
+ * including when the account it runs as cannot write to the repository (its record would never
+ * count). `approved: true` means verify honours the record on this head; a refusal after the record
+ * was posted names it (`approvalUrl`) and says why it waives nothing (`head-moved`, `pr-not-open`,
  * `approval-superseded`) or that its effect is unknown (`approval-unconfirmed`).
+ *
+ * `head` and `waives` pin what the operator saw: before any write it refuses `head-moved` when the
+ * live head is another, and `park-changed` unless the standing park's codes are exactly `waives`
+ * ('' meaning no park stands). `forMerge` approves on behalf of an operator merge and needs both
+ * pins; on a head with no park it records an approval that waives nothing (`signOff: 'merge'`)
+ * instead of refusing `no-standing-park`.
  */
 export async function approve(options, deps = {}) {
+  const pin = approvePins(options)
   const read = deps.read ?? commandReader(deps)
   const dryRun = options.dryRun === true
   const repo = repoFor(read, options.repo)
@@ -3173,11 +3380,22 @@ export async function approve(options, deps = {}) {
   const finish = (result) => (dryRun ? { dryRun: true, ...result, writes } : { ...result, writes })
   const { p, headSha, refusal } = operatorPr(read, options.pr, repo)
   if (refusal) return finish({ approved: false, ...refusal })
+  if (pin.head !== null && headSha !== pin.head)
+    return finish({ approved: false, reason: 'head-moved', headSha })
   const standing = readStandingStatus(read, headSha, repo)
   if (!standing.readable) return finish({ approved: false, reason: 'status-unreadable', headSha })
   const status = standing.status
   const description = typeof status?.description === 'string' ? status.description : ''
-  const park = status?.state === 'pending' ? parseParkDescription(description) : null
+  const park = parkOf(status)
+  const standingWaives = park ? (park.codes?.join(',') ?? null) : ''
+  if (pin.waives !== null && standingWaives !== pin.waives)
+    return finish({
+      approved: false,
+      reason: 'park-changed',
+      waives: pin.waives,
+      park: park ? description : '',
+      headSha,
+    })
 
   let codes
   let holds
@@ -3185,9 +3403,10 @@ export async function approve(options, deps = {}) {
     if (!park.codes)
       return finish({ approved: false, reason: 'park-codes-unknown', park: description, headSha })
     codes = park.codes
-    holds = (s) =>
-      s?.state === 'pending' &&
-      parseParkDescription(s.description ?? '')?.codes?.join(',') === codes.join(',')
+    holds = (s) => parkOf(s)?.codes?.join(',') === codes.join(',')
+  } else if (pin.forMerge) {
+    codes = []
+    holds = (s) => !parkOf(s)
   } else {
     const operator = isVerified(status)
       ? readOperatorDecision(read, repo, options.pr, headSha)
@@ -3202,7 +3421,8 @@ export async function approve(options, deps = {}) {
     holds = isPlainVerified
   }
   const waives = codes.join(',')
-  const lift = park ? {} : { lifted: 'sent-back' }
+  const signOff = !park && pin.forMerge ? 'merge' : null
+  const lift = park ? {} : signOff ? { signOff } : { lifted: 'sent-back' }
   const refusedApprover = approverRefusal(read, repo)
   if (refusedApprover) return finish({ approved: false, reason: refusedApprover, waives, headSha })
 
@@ -3210,7 +3430,7 @@ export async function approve(options, deps = {}) {
   const names = trackerNames(deps)
   const labelRemoval = { issueId: ticket?.id ?? '', removeLabels: [names.needsHuman] }
   const labelWrite = { kind: 'tracker', ...labelRemoval }
-  const record = { kind: 'pr-comment', body: approveComment(headSha, codes) }
+  const record = { kind: 'pr-comment', body: approveComment(headSha, codes, signOff) }
   // A dry run lists the plan; a live run lists each write as it is made.
   if (dryRun) {
     writes.push(record, ...(park ? [labelWrite] : []))
@@ -3285,32 +3505,6 @@ async function removeNeedsHumanLabel(
   }
 }
 
-/**
- * Send the PR back: post the operator's note as a PR comment headed `**Sent back by the operator**`
- * with a hidden head marker. The marker revokes every approval of that head — `approval` and
- * `merge` both honour it — until a later approve record for the same head. Touches no status and no
- * tracker state.
- */
-export async function sendBack(options, deps = {}) {
-  if (!text(options.note)) throw new UsageError('verify-gate: send-back needs --note <text>')
-  const read = deps.read ?? commandReader(deps)
-  const dryRun = options.dryRun === true
-  const repo = repoFor(read, options.repo)
-  const writes = []
-  const finish = (result) => (dryRun ? { dryRun: true, ...result, writes } : { ...result, writes })
-  const { headSha, refusal } = operatorPr(read, options.pr, repo)
-  if (refusal) return finish({ posted: false, ...refusal })
-  // A send-back by an account that cannot write is ignored by every reader, so it is refused.
-  const refusedApprover = approverRefusal(read, repo)
-  if (refusedApprover) return finish({ posted: false, reason: refusedApprover, headSha })
-  const body = sendBackComment(options.note, headSha)
-  writes.push({ kind: 'pr-comment', body })
-  if (dryRun) return finish({ posted: false, planned: true, headSha })
-  const commentUrl = postPrComment(read, repo, options.pr, body)
-  if (!commentUrl) return finish({ posted: false, reason: 'pr-comment-failed', headSha })
-  return finish({ posted: true, commentUrl, headSha })
-}
-
 export function rearmArgv({ pr, chat, repo }) {
   return [
     'callback',
@@ -3358,7 +3552,11 @@ export async function policy(options = {}, deps = {}) {
   const files = read('git', ['ls-files', '-z'])
   if (!files.ok) throw new Error(`verify-gate policy: git ls-files failed (${files.error})`)
   const tracked = files.output.split('\0').filter(Boolean)
-  return { policy: current, warnings: unmatchedPolicyGlobs(current, tracked) }
+  return {
+    policy: current,
+    warnings: unmatchedPolicyGlobs(current, tracked),
+    mirrorGaps: policyMirrorGaps(current),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3367,7 +3565,7 @@ export async function policy(options = {}, deps = {}) {
 // One open-PR page is the whole universe a sweep considers; more open PRs than this is a repo the
 // verify stage does not scale to yet, and the oldest-first walk below still makes progress.
 export const CANDIDATE_PR_LIST_LIMIT = 200
-const PR_LIST_FIELDS = 'number,url,body,headRefOid,isDraft,baseRefName'
+const PR_LIST_FIELDS = 'number,url,title,body,headRefOid,headRefName,isDraft,baseRefName'
 
 // The PR numbers a ticket's attachments name in this repository (`…/<owner>/<repo>/pull/<n>`).
 export function attachedPrNumbers(ticket, repo) {
@@ -3419,12 +3617,147 @@ export function linkTicketsToPrs(tickets, prs, repo) {
   return { linked, skipped }
 }
 
+/**
+ * Whether a ledger-open park on `headSha` is re-judged for its ledger: `ledger-changed` when the
+ * ledger the PR body holds now differs from the one its park note recorded, `ledger-unrecorded`
+ * when the note recorded none (it is recorded on the re-judge), null when they match or the
+ * comments cannot be read (the policy check still decides then). A re-judge only ever releases
+ * the codes its fresh judge no longer raises (judge's held park), so a forged note costs a judge.
+ */
+export function ledgerRejudge(markers, headSha, pr) {
+  if (!markers?.readable) return null
+  const note = newestFor(markers.markers, headSha, (kind) => kind === 'park-note')
+  if (!note?.ledger) return 'ledger-unrecorded'
+  return note.ledger === ledgerFingerprint({ title: pr?.title, body: pr?.body })
+    ? null
+    : 'ledger-changed'
+}
+
+// A sweep's re-judge that could not record its ledger re-posts the park unchanged (post), so the
+// run of identical statuses heading the head's history is the park plus one per failed attempt.
+// After LEDGER_RECORD_ATTEMPTS failures, or with the history unreadable, a `ledger-unrecorded`
+// park is no longer re-judged for its ledger; a policy change, an operator or a new head still is.
+export const LEDGER_RECORD_ATTEMPTS = 3
+export function ledgerRecordDue(nodes) {
+  if (!Array.isArray(nodes)) return false
+  const [newest, ...older] = newestVerifyFirst(nodes)
+  if (!newest) return false
+  const differs = older.findIndex(
+    (n) => n.state !== newest.state || n.description !== newest.description,
+  )
+  const failed = differs < 0 ? older.length : differs
+  return failed < LEDGER_RECORD_ATTEMPTS
+}
+
+// bossd names every cron fire's branch `cron-<slug>-<unix seconds>` (cronBranchName in
+// services/bossd/internal/cron/scheduler.go), so a PR on one was opened by an unattended cron run.
+const CRON_FIRE_BRANCH = /^cron-[a-z0-9]+(?:-[a-z0-9]+)*-\d+$/
+export function isCronFireBranch(name) {
+  return typeof name === 'string' && CRON_FIRE_BRANCH.test(name)
+}
+
+// A selection admits a PR with no ticket only when it has no include slot: an include filters on
+// ticket fields such a PR lacks, and an exclude can never match it.
+export function selectionAdmitsTicketless(selection) {
+  return !Object.values(selection ?? {}).some(
+    (slots) => Array.isArray(slots?.include) && slots.include.length > 0,
+  )
+}
+
+// Calls `read` once, on first use, and hands back that first answer every time.
+const once = (read) => {
+  let called = false
+  let value
+  return () => (called ? value : ((called = true), (value = read())))
+}
+
+/**
+ * Does no tracker ticket stand behind PR `p`? The one answer candidates, post and merge share:
+ * 'ticketless' when it is on a bossd cron fire branch, its body has no ticket line, no in-review
+ * ticket's attachment names it (`claimed()`, the claimedPrNumbers set or null when unreadable) and
+ * its live session row, matched by exact `pr_url`, carries no tracker id (`sessions()`, the
+ * `boss ls --json` rows or null when unreadable). Otherwise the reason it is not: 'not-factory' (no
+ * cron fire branch, or a ticket line), 'claimed', 'no-session', 'session-has-ticket',
+ * 'unknown:claims' or 'unknown:sessions'. Each read runs only when the answer turns on it.
+ */
+export async function ticketlessReason(p, { claimed, sessions }) {
+  if (!isCronFireBranch(p?.headRefName) || parseLinearIssueLine(p?.body) !== null)
+    return 'not-factory'
+  const claims = await claimed()
+  if (!(claims instanceof Set)) return 'unknown:claims'
+  if (claims.has(p.number)) return 'claimed'
+  const rows = sessions()
+  if (!Array.isArray(rows)) return 'unknown:sessions'
+  const live = rows.filter((row) => text(p.url) && row?.pr_url === p.url && text(row?.id))
+  if (live.length === 0) return 'no-session'
+  return live.some((row) => text(row.tracker_id)) ? 'session-has-ticket' : 'ticketless'
+}
+
+/**
+ * The ticketless factory PRs among the open `prs` (ticketlessReason), each read made at most once.
+ * `{prs, skipped}`: a PR some ticket owns, or that is no factory PR, is left out silently; any
+ * other skip (`ticket: null`) is `draft` or ticketlessReason's reason.
+ */
+export async function ticketlessFactoryPrs(
+  prs,
+  { claimed = async () => null, sessions = () => null } = {},
+) {
+  const facts = { claimed: once(claimed), sessions: once(sessions) }
+  const out = { prs: [], skipped: [] }
+  for (const p of Array.isArray(prs) ? prs : []) {
+    const reason = await ticketlessReason(p, facts)
+    if (reason === 'not-factory' || reason === 'claimed') continue
+    const skip = p.isDraft === true ? 'draft' : reason === 'ticketless' ? null : reason
+    if (skip) out.skipped.push({ ticket: null, pr: p.number, reason: skip })
+    else out.prs.push(p)
+  }
+  return out
+}
+
+// What an attachment claim is read under: every in-review ticket, with no stage selection or label
+// rule, so a ticket the scan's selection hides still owns its PR.
+function claimQuery(config) {
+  return {
+    state: roleName(stateName, config, 'inReview', DEFAULT_TRACKER_STATES.inReview),
+    selection: effectiveSelection(null, 'verify'),
+    requireLabels: [],
+    excludeLabels: [],
+    limit: 250,
+  }
+}
+
+/** The PR numbers in-review tickets' attachments name in `repo`, or null when unreadable. */
+async function claimedPrNumbers(adapter, config, repo) {
+  if (typeof adapter?.selectPlanned !== 'function') return null
+  try {
+    const tickets = await adapter.selectPlanned(claimQuery(config))
+    if (!Array.isArray(tickets)) return null
+    return new Set(tickets.flatMap((ticket) => [...attachedPrNumbers(ticket, repo)]))
+  } catch {
+    return null
+  }
+}
+
+// ticketlessReason for one PR outside a candidates scan.
+async function standsTicketless(read, deps, repo, p) {
+  const reason = await ticketlessReason(p, {
+    claimed: () => claimedPrNumbers(resolveAdapter(deps), loadConfig(deps), repo),
+    sessions: () => readSessionRows(read),
+  })
+  return reason === 'ticketless'
+}
+
 // The status half of the per-head read: `{skip}` or `{claim, parked?}` where `parked` names a head
 // whose status needs the approval read before it can be admitted.
 export function classifyHeadStatus(status, now) {
   if (!status) return { claim: 'none' }
   const description = typeof status.description === 'string' ? status.description : ''
-  if (status.state === 'success') return { skip: 'verified' }
+  if (status.state === 'success') {
+    const at = Date.parse(status.updatedAt ?? '')
+    return !Number.isFinite(at) || now - at > MERGE_RETRY_AFTER_MS
+      ? { skip: 'verified', mergeRetry: true }
+      : { skip: 'verified' }
+  }
   if (status.state === 'failure' && description.startsWith(VERIFY_DESCRIPTIONS.defect))
     return { claim: 'none', parked: 'defect-parked' }
   if (status.state === 'pending' && parseParkDescription(description))
@@ -3466,13 +3799,15 @@ function candidateQuery(config, flags, ticket) {
 
 /**
  * `{candidates: [{ticket, pr, url, headSha, repo, approval?, waive?, rejudge?, claim}], skipped:
- * [{ticket, pr?, reason}]}`. Unknown per-head evidence is a `unknown:<what>` skip; a failed tracker
- * read, an unloadable config or an unreadable `gh pr list` throws, so the CLI exits non-zero rather
+ * [{ticket, pr?, reason}], mergeRetries: [{ticket, pr, url, headSha, repo}]}`. Unknown per-head
+ * evidence is a `unknown:<what>` skip; a failed tracker read, an unloadable config or an unreadable `gh pr list` throws, so the CLI exits non-zero rather
  * than printing an empty list. A park nobody approved or sent back comes back as `rejudge`
  * (`policy-changed`, or `unrecorded` for a park with no recorded fingerprint) when the policy its
  * base would judge under now differs from the one recorded beside it. A needs-human ticket is
  * skipped only while a park stands on its PR's current head (`headStandsUnparked`): the label
- * outlives the head it parked, and a later head is judged afresh.
+ * outlives the head it parked, and a later head is judged afresh. An unscoped scan also admits the
+ * ticketless factory PRs (ticketlessFactoryPrs) with `ticket: null`; an unreadable session list
+ * skips only those, never the ticketed ones.
  */
 export async function candidates(options = {}, deps = {}) {
   const read = deps.read ?? commandReader(deps)
@@ -3497,6 +3832,7 @@ export async function candidates(options = {}, deps = {}) {
       return {
         candidates: [],
         skipped: [{ ticket: ticketRef, reason: 'not-in-review' }],
+        mergeRetries: [],
       }
     }
   }
@@ -3522,6 +3858,19 @@ export async function candidates(options = {}, deps = {}) {
     throw new Error(`verify-gate candidates: gh pr list failed (${list.error ?? 'unreadable'})`)
   const linkedSet = linkTicketsToPrs(tickets, list.payload, repo)
   skipped.push(...linkedSet.skipped)
+  // A factory PR no ticket names is judged too, but only by an unscoped scan: a named ticket or an
+  // include filter asks about tickets, which such a PR is not.
+  const ticketless =
+    ticketRef || !selectionAdmitsTicketless(query.selection)
+      ? { prs: [], skipped: [] }
+      : await ticketlessFactoryPrs(list.payload, {
+          claimed: () => claimedPrNumbers(adapter, config, repo),
+          sessions: () => readSessionRows(read),
+        })
+  skipped.push(...ticketless.skipped)
+  const work = [...linkedSet.linked, ...ticketless.prs.map((pr) => ({ ticket: null, pr }))].sort(
+    (a, b) => a.pr.number - b.pr.number,
+  )
   const needsHuman = roleName(labelName, config, 'needsHuman', DEFAULT_PIPELINE_LABELS.needsHuman)
   // One fingerprint read per base branch serves every park on it.
   const fingerprints = new Map()
@@ -3531,9 +3880,9 @@ export async function candidates(options = {}, deps = {}) {
     return fingerprints.get(baseRefName)
   }
   const out = []
-  for (const { ticket, pr } of linkedSet.linked) {
-    if (out.length >= limit) break
-    const id = String(ticket.identifier).toUpperCase()
+  const mergeRetries = []
+  for (const { ticket, pr } of work) {
+    const id = ticket ? String(ticket.identifier).toUpperCase() : null
     const skip = (reason) => skipped.push({ ticket: id, pr: pr.number, reason })
     const headSha = isSha(pr.headRefOid) ? pr.headRefOid.toLowerCase() : ''
     if (!headSha) {
@@ -3547,9 +3896,13 @@ export async function candidates(options = {}, deps = {}) {
     }
     const head = classifyHeadStatus(read1.contexts?.[VERIFY_CONTEXT] ?? null, now)
     if (head.skip) {
+      if (head.mergeRetry)
+        mergeRetries.push({ ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo })
       skip(head.skip)
       continue
     }
+    // Keep scanning statuses for retries after the judge list fills; avoid further CI/approval reads.
+    if (out.length >= limit) continue
     const entry = { ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo, claim: head.claim }
     if (head.parked) {
       let markers = null
@@ -3565,19 +3918,28 @@ export async function candidates(options = {}, deps = {}) {
       } else if (appr.approval === 'reverify') {
         entry.approval = appr.approval
       } else {
-        const fingerprint =
-          head.parked === 'parked' && appr.park && appr.reason !== 'sent-back'
-            ? fingerprintFor(pr.baseRefName)
+        const standing = head.parked === 'parked' && appr.park && appr.reason !== 'sent-back'
+        // The PR body is the PR's own input to a ledger-open park, as the base policy is to the
+        // rest: a ledger changed since the park re-judges it.
+        let ledger =
+          standing && appr.park.split(',').includes('ledger-open')
+            ? ledgerRejudge(readMarkers(), headSha, pr)
             : null
+        if (
+          ledger === 'ledger-unrecorded' &&
+          !ledgerRecordDue(readStatusNodes(read, headSha, repo))
+        )
+          ledger = null
+        const fingerprint = standing && !ledger ? fingerprintFor(pr.baseRefName) : null
         const recorded = fingerprint ? recordedPolicy(readMarkers().markers, headSha) : null
-        if (!fingerprint || recorded === fingerprint) {
+        if (!ledger && (!fingerprint || recorded === fingerprint)) {
           skip(head.parked)
           continue
         }
-        entry.rejudge = recorded ? 'policy-changed' : 'unrecorded'
+        entry.rejudge = ledger ?? (recorded ? 'policy-changed' : 'unrecorded')
       }
     }
-    const labels = Array.isArray(ticket.labels) ? ticket.labels : []
+    const labels = Array.isArray(ticket?.labels) ? ticket.labels : []
     if (labels.includes(needsHuman) && !entry.approval && !entry.rejudge) {
       // Only a park on this head holds it; a head with no verify status has no park to read.
       const nodes = head.claim === 'none' ? [] : readStatusNodes(read, headSha, repo)
@@ -3606,7 +3968,7 @@ export async function candidates(options = {}, deps = {}) {
     }
     out.push(entry)
   }
-  return { candidates: out, skipped }
+  return { candidates: out, skipped, mergeRetries }
 }
 
 const CANDIDATE_FLAGS = new Set(['ticket', 'limit', 'repo'])
@@ -3653,6 +4015,8 @@ const FLAGS = Object.freeze({
       'extension-record',
       'policy',
       'carry-record',
+      'extension-results',
+      'ledger',
     ],
     bools: ['dry-run'],
   },
@@ -3661,8 +4025,8 @@ const FLAGS = Object.freeze({
   approval: { values: ['pr', 'repo'], bools: [] },
   rearm: { values: ['pr', 'chat', 'repo'], bools: ['dry-run'] },
   // The output is always one JSON line; `--json` is accepted so callers can state it.
-  approve: { values: ['pr', 'repo'], bools: ['dry-run', 'json'] },
-  'send-back': { values: ['pr', 'note', 'repo'], bools: ['dry-run', 'json'] },
+  approve: { values: ['pr', 'repo', 'head', 'waives'], bools: ['dry-run', 'json', 'for-merge'] },
+  'mark-merged': { values: ['pr', 'repo'], bools: ['dry-run', 'json'] },
 })
 
 function parseFlags(verb, argv) {
@@ -3672,7 +4036,7 @@ function parseFlags(verb, argv) {
     const key = argv[i]
     if (typeof key !== 'string' || !key.startsWith('--'))
       throw new UsageError(`verify-gate: ${verb}: unexpected argument ${JSON.stringify(key)}`)
-    // `--name=value` carries a value that may itself start with `--` (an operator's note).
+    // `--name=value` carries a value that may itself start with `--`, or be empty (`--waives=`).
     const eq = key.indexOf('=')
     const name = eq === -1 ? key.slice(2) : key.slice(2, eq)
     if (spec.bools.includes(name)) {
@@ -3728,6 +4092,8 @@ export async function main(argv, deps = {}) {
         extensionRecord: f['extension-record'],
         policy: f.policy,
         carryRecord: f['carry-record'],
+        extensionResults: f['extension-results'],
+        ledger: f.ledger,
         token: f.token,
         repo: f.repo,
         dryRun: f['dry-run'] === true,
@@ -3756,14 +4122,24 @@ export async function main(argv, deps = {}) {
   }
   if (cmd === 'approve') {
     const f = parseFlags('approve', rest)
-    return approve({ pr: f.pr, repo: f.repo, dryRun: f['dry-run'] === true }, deps)
+    return approve(
+      {
+        pr: f.pr,
+        repo: f.repo,
+        head: f.head,
+        waives: f.waives,
+        forMerge: f['for-merge'] === true,
+        dryRun: f['dry-run'] === true,
+      },
+      deps,
+    )
   }
-  if (cmd === 'send-back') {
-    const f = parseFlags('send-back', rest)
-    return sendBack({ pr: f.pr, note: f.note, repo: f.repo, dryRun: f['dry-run'] === true }, deps)
+  if (cmd === 'mark-merged') {
+    const f = parseFlags('mark-merged', rest)
+    return markMerged({ pr: f.pr, repo: f.repo, dryRun: f['dry-run'] === true }, deps)
   }
   throw new UsageError(
-    `verify-gate: unknown command ${cmd ?? '(none)'} (expected candidates|judge|post|merge|observe-merge|approval|rearm|approve|send-back|policy)`,
+    `verify-gate: unknown command ${cmd ?? '(none)'} (expected candidates|judge|post|merge|observe-merge|mark-merged|approval|rearm|approve|policy)`,
   )
 }
 

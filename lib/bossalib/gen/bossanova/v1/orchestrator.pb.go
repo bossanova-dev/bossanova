@@ -14727,9 +14727,11 @@ type CreateTriggerRequest struct {
 	OrganizationId string `protobuf:"bytes,1,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
 	Name           string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	IsEnabled      bool   `protobuf:"varint,3,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
-	// Required catalog type name, e.g. "http" or "github".
+	// Required authoritative type name and catalog key, e.g. "http" or "github".
+	// A string lets older clients show a new type even without recognizing its arm.
 	TriggerType string `protobuf:"bytes,4,opt,name=trigger_type,json=triggerType,proto3" json:"trigger_type,omitempty"`
-	// Required; the arm must match trigger_type.
+	// Required; exactly one arm is set and must match trigger_type, otherwise
+	// INVALID_ARGUMENT names type_config. Adding a type adds a wire-safe arm.
 	//
 	// Types that are valid to be assigned to TypeConfig:
 	//
@@ -14977,6 +14979,9 @@ func (x *CreateTriggerResponse) GetSecret() string {
 // fields cannot express "absent", so a non-empty list replaces the stored
 // list, an empty list leaves it unchanged, and the matching should_clear_*
 // flag clears it; a non-empty list together with its flag is INVALID_ARGUMENT.
+// These flags deliberately follow UpdateSessionWebhookRequest. Replacing the
+// repeated fields with wrapper messages would break their wire types without
+// adding expressiveness to this partial-update contract.
 type UpdateTriggerRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`

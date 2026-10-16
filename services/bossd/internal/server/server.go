@@ -154,16 +154,11 @@ type Server struct {
 	chatStatus       *status.Tracker
 	statusRecomputer status.Recomputer
 	displayTracker   *status.DisplayTracker
-	// archiveDeferrer holds archives deferred until every chat of their
-	// session is idle (BOS-1380). Built lazily by archiveDeferral so a Server
-	// assembled as a struct literal still has one.
-	archiveDeferrerOnce sync.Once
-	archiveDeferrer     *archiveDeferrer
-	// finishDeferrer holds explicit unattended-run finishes deferred until the
-	// session settles (BOS-1508). A second archiveDeferrer instance with the
-	// finalize executor; built lazily by finishDeferral.
-	finishDeferrerOnce sync.Once
-	finishDeferrer     *archiveDeferrer
+	// archiveDeferrer holds archives deferred until every chat is idle.
+	// Both deferrers are wired by New before the server handles requests.
+	archiveDeferrer *archiveDeferrer
+	// finishDeferrer defers explicit unattended-run finishes until the session settles.
+	finishDeferrer *archiveDeferrer
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
 	// the SetMerging block there). Optional, may be nil in tests / older wiring.
@@ -264,6 +259,7 @@ type Server struct {
 	endpointReader        SessionEndpointReader
 	endpointNamespaceGate func(clientNS string) bool
 	passthroughStats      passthroughStatsProvider // nil until SetPassthroughStatsProvider; BOS-483
+	fixedPortStatus       fixedPortStatusProvider  // nil until SetFixedPortStatusProvider; BOS-1632
 	webhookEvidence       WebhookEvidence
 	listener              net.Listener
 	srv                   *http.Server
@@ -279,8 +275,12 @@ type Server struct {
 	trackerResolver session.TrackerIssueResolver
 
 	// newVerifyVerbs builds the boss-verify toolbox runner ApproveSessionPR and
-	// SendBackSessionPR use; nil means verifybridge.Bridge (see verify_pr.go).
+	// OperatorMergeSession use; nil means verifybridge.Bridge (see verify_pr.go).
 	newVerifyVerbs func(env []string) verifyVerbs
+
+	// operatorMergeBudget bounds OperatorMergeSession; the zero value means
+	// defaultOperatorMergeBudget. Tests shrink it.
+	operatorMergeBudget operatorMergeBudget
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
@@ -790,6 +790,7 @@ func New(cfg Config) *Server {
 		// first non-quick-chat create.
 		srv.bootstrapRunner = session.NewBootstrapRunner(context.Background(), cfg.Lifecycle, cfg.Logger)
 	}
+	srv.initDeferrers()
 	return srv
 }
 
@@ -799,6 +800,21 @@ func New(cfg Config) *Server {
 // server.New (main.go), so it cannot arrive through server.Config (BOS-483).
 type passthroughStatsProvider interface {
 	PassthroughStatsSnapshot() []passthroughSessionSnapshot
+}
+
+// fixedPortStatusProvider exposes the failover proxy's configured and live ports
+// to RepairDoctor. *ProxyServer satisfies it; it is wired after server.New.
+type fixedPortStatusProvider interface {
+	FixedPortLost() bool
+	ConfiguredPort() int
+	Port() int
+}
+
+// SetFixedPortStatusProvider wires the failover proxy's port status into the
+// daemon so RepairDoctor can surface a lost fixed port. Nil-safe on the read
+// side; a daemon with no proxy has no fixed port to report.
+func (s *Server) SetFixedPortStatusProvider(p fixedPortStatusProvider) {
+	s.fixedPortStatus = p
 }
 
 // SetPassthroughStatsProvider wires the failover proxy's pass-through counters
@@ -3101,7 +3117,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 					Msg("merge: pre-gate PR refresh failed; live gate will re-read")
 			}
 			cancel()
-			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber, pin)
+			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber, pin, mergeSessionBlocks)
 			if err != nil {
 				// A known head mismatch is a terminal refusal, not a dead
 				// context: test it first so it maps to FailedPrecondition.
@@ -3465,7 +3481,7 @@ func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch s
 // to retry once the provider is reachable — losing the Canceled /
 // DeadlineExceeded semantics MergeSession preserves everywhere else. The caller
 // maps the error back to the matching Connect code.
-func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int, expectedHead string) (*vcs.MergeBlockReason, error) {
+func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int, expectedHead string, blocks blockingStatuses) (*vcs.MergeBlockReason, error) {
 	if s.provider == nil || originURL == "" {
 		return nil, nil
 	}
@@ -3510,16 +3526,36 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 		return nil, ctxErr
 	}
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
-	switch info.Status {
-	case vcs.DisplayStatusFailing, vcs.DisplayStatusConflict, vcs.DisplayStatusRejected:
-		mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy, info.VerifyReason)
-		if prStatus.HeadSHA != "" {
-			mb.Detail += fmt.Sprintf("; gated at head %s", prStatus.HeadSHA)
-		}
-		return &mb, nil
-	default:
+	if !blocks[info.Status] {
 		return nil, nil
 	}
+	mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy, info.VerifyReason)
+	if prStatus.HeadSHA != "" {
+		mb.Detail += fmt.Sprintf("; gated at head %s", prStatus.HeadSHA)
+	}
+	return &mb, nil
+}
+
+// blockingStatuses is the set of live display statuses a merge gate refuses.
+type blockingStatuses map[vcs.DisplayStatus]bool
+
+// mergeSessionBlocks is what MergeSession refuses. A settling Checking, a
+// Verifying and a NeedsHuman stay mergeable by design (see liveMergeBlock).
+var mergeSessionBlocks = blockingStatuses{
+	vcs.DisplayStatusFailing:  true,
+	vcs.DisplayStatusConflict: true,
+	vcs.DisplayStatusRejected: true,
+}
+
+// operatorApprovalBlocks is what the operator merge refuses before it records
+// an approval: everything MergeSession refuses, a draft, which GitHub will not
+// merge, and checks still running, which must pass before anyone signs off.
+var operatorApprovalBlocks = blockingStatuses{
+	vcs.DisplayStatusFailing:  true,
+	vcs.DisplayStatusConflict: true,
+	vcs.DisplayStatusRejected: true,
+	vcs.DisplayStatusDraft:    true,
+	vcs.DisplayStatusChecking: true,
 }
 
 // remoteHeadMismatch maps a remote refusal of a head-pinned merge (an error

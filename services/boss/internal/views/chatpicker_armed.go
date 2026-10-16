@@ -2,16 +2,19 @@ package views
 
 // The armed-callback context for a waiting chat (BOS-1517). A chat parked on a
 // GitHub callback has no prompt until the callback fires, so the picker names
-// what it is waiting for: the trigger in the STATUS cell, and one line under the
-// table carrying the chat title, the daemon's reason verbatim, the session's
-// verify park when there is one, and the callback's expiry.
+// what it is waiting for in the STATUS cell: a phrase for the trigger, or a
+// muted "done" when every wait left is the session's own PR merging or
+// closing. Opening the chat carries the armed line (the chat title, the
+// daemon's reason verbatim, the session's verify park when there is one, and
+// the callback's expiry) to the launch screen.
 //
 // The daemon stays the only producer of the reason (CONCEPTS.md "Waiting
-// reason"). The expiry is the one fact not on the wire, so it is read from
-// ListGithubCallbacks — once per change in the waiting set, never per poll —
-// and matched back to the daemon's reason rather than re-derived, so the TUI
-// can never name a different callback than the daemon did. The callback's
-// message body is secret (models.proto) and is never read here.
+// reason"). Two facts are not on the wire: the expiry, and whether the chat
+// holds callbacks besides the one the reason names. Both are read from
+// ListGithubCallbacks — once per change in the waiting set, never per poll.
+// The expiry is matched back to the daemon's reason rather than re-derived, so
+// the TUI can never name a different callback than the daemon did. The
+// callback's message body is secret (models.proto) and is never read here.
 
 import (
 	"context"
@@ -21,9 +24,12 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // liveCallbackStates mirrors the daemon's nonTerminalCallbackStates
@@ -34,6 +40,29 @@ var liveCallbackStates = map[string]bool{"active": true, "leased": true, "trigge
 // callbackReason recomposes the daemon's waiting reason for cb.
 func callbackReason(cb *pb.GithubCallback) string {
 	return displaystatus.CallbackWaitingReason(cb.GetTrigger(), cb.GetRepoOwner(), cb.GetRepoName(), int(cb.GetPrNumber()))
+}
+
+// callbackWaitLabels phrase what a chat armed on each trigger is waiting for.
+// The bare trigger misleads in a STATUS cell: "merged" reads as a merged PR.
+var callbackWaitLabels = map[models.GithubCallbackTrigger]string{
+	models.GithubCallbackTriggerMerged:            "awaiting merge",
+	models.GithubCallbackTriggerClosed:            "awaiting close",
+	models.GithubCallbackTriggerChecksPassed:      "awaiting checks",
+	models.GithubCallbackTriggerChecksFailed:      "awaiting failure",
+	models.GithubCallbackTriggerReadyForReview:    "awaiting ready",
+	models.GithubCallbackTriggerChecksPassedReady: "awaiting green",
+}
+
+// callbackWaitLabel is the STATUS label for a chat waiting on trigger, or ""
+// when there is no trigger. An unknown trigger still reads as a wait.
+func callbackWaitLabel(trigger string) string {
+	if trigger == "" {
+		return ""
+	}
+	if label, ok := callbackWaitLabels[models.GithubCallbackTrigger(trigger)]; ok {
+		return label
+	}
+	return "awaiting " + strings.ReplaceAll(trigger, "_", " ")
 }
 
 // armedCallbackFor returns the callback the daemon's reason describes: live,
@@ -110,47 +139,202 @@ func (m ChatPickerModel) isWaitingWithReason(chatID string) bool {
 	return m.daemonStatuses[chatID] == statusWaiting && m.daemonWaitingReasons[chatID] != ""
 }
 
-// isStandbyWait reports whether chatID is waiting only on a standby
-// (contingency) callback — checks_failed or closed (BOS-1531). Such a chat is
-// not what the PR is waiting on: it renders muted, and the waiting line
-// describes a blocking chat ahead of it. The daemon's reason decides, so the
-// answer never waits on the callback fetch.
-func (m ChatPickerModel) isStandbyWait(chatID string) bool {
-	return m.isWaitingWithReason(chatID) && displaystatus.IsStandbyWaitingReason(m.daemonWaitingReasons[chatID])
+// chatWait classifies what a waiting chat is parked on.
+type chatWait int
+
+const (
+	// waitNone: the chat is not waiting with a reason.
+	waitNone chatWait = iota
+	// waitProgress: the chat wakes to act on the PR's progress.
+	waitProgress
+	// waitStandby: a contingency watch (checks_failed, or closed on a PR other
+	// than the session's own). Not what the PR is waiting on (BOS-1531).
+	waitStandby
+	// waitDone: every wait left is the session's own PR merging or closing.
+	// The chat's work is finished; it is parked for post-merge cleanup.
+	waitDone
+)
+
+// chatWait classifies chatID's wait. A reason that reads as done is confirmed
+// against every callback the chat holds: boss-build arms checks_passed,
+// checks_failed and merged independently and re-arms only the missing ones, so
+// after a push the daemon names the older merged while a newer checks_passed
+// still holds the chat. Until the callbacks are listed such a chat is a
+// progress wait, so a done is never shown and then taken back.
+func (m ChatPickerModel) chatWait(chatID string) chatWait {
+	if !m.isWaitingWithReason(chatID) {
+		return waitNone
+	}
+	wait := m.reasonWait(m.daemonWaitingReasons[chatID])
+	if wait != waitDone {
+		return wait
+	}
+	if listed, ok := m.listedFor(chatID); !ok || m.progressCallback(listed) != nil {
+		return waitProgress
+	}
+	return waitDone
+}
+
+// reasonWait classifies one canonical waiting reason on its own. A merged or
+// closed wait on another PR is progress: an orchestrating chat waiting for a
+// child PR to merge still has work to do when it fires.
+func (m ChatPickerModel) reasonWait(reason string) chatWait {
+	trigger := models.GithubCallbackTrigger(displaystatus.CallbackWaitingTrigger(reason))
+	switch {
+	case (trigger == models.GithubCallbackTriggerMerged || trigger == models.GithubCallbackTriggerClosed) && m.isOwnPRReason(reason):
+		return waitDone
+	case trigger.IsStandby():
+		return waitStandby
+	default:
+		return waitProgress
+	}
+}
+
+// isOwnPRReason reports whether a canonical waiting reason ("awaiting <trigger>
+// on owner/repo#N") names the session's own PR: the same owner/repo and number.
+// GitHub names are case-insensitive. A session that names no repo is matched
+// on its PR number alone. A session without a PR owns no PR.
+func (m ChatPickerModel) isOwnPRReason(reason string) bool {
+	n := int(m.session.GetPrNumber())
+	trigger := displaystatus.CallbackWaitingTrigger(reason)
+	owner, repo := m.sessionRepo()
+	if owner == "" {
+		return n > 0 && trigger != "" && strings.HasSuffix(reason, fmt.Sprintf("#%d", n))
+	}
+	own := displaystatus.CallbackWaitingReason(trigger, owner, repo, n)
+	return own != "" && strings.EqualFold(reason, own)
+}
+
+// sessionRepo is the GitHub owner and repo of the session's PR, read from its
+// pr_url or, failing that, its repo_origin_url. Both are "" when neither names
+// one.
+func (m ChatPickerModel) sessionRepo() (owner, repo string) {
+	nwo := vcs.GitHubNWO(m.session.GetPrUrl())
+	if nwo == "" {
+		nwo = vcs.GitHubNWO(m.session.GetRepoOriginUrl())
+	}
+	owner, repo, _ = strings.Cut(nwo, "/")
+	return owner, repo
+}
+
+// maxPRRefRepoCells bounds the owner/repo part of a cross-repo PR reference in
+// the STATUS cell, so a long repo name cannot crowd out the PR number.
+const maxPRRefRepoCells = 24
+
+// prRef names the PR a wait on another PR is parked on: "#N" in the session's
+// repo (or when the session names no repo), otherwise "owner/repo#N" with the
+// repo cut from the left so the number always shows.
+func (m ChatPickerModel) prRef(cb *pb.GithubCallback) string {
+	number := fmt.Sprintf("#%d", cb.GetPrNumber())
+	owner, repo := m.sessionRepo()
+	if owner == "" || (strings.EqualFold(cb.GetRepoOwner(), owner) && strings.EqualFold(cb.GetRepoName(), repo)) {
+		return number
+	}
+	nwo := cb.GetRepoOwner() + "/" + cb.GetRepoName()
+	if w := ansi.StringWidth(nwo); w > maxPRRefRepoCells {
+		nwo = ansi.TruncateLeft(nwo, w-maxPRRefRepoCells+1, "…")
+	}
+	return nwo + number
+}
+
+// listedCallbacks is one waiting chat's live callbacks as ListGithubCallbacks
+// last returned them, with the daemon reason they were listed under.
+type listedCallbacks struct {
+	reason string
+	live   []*pb.GithubCallback
+}
+
+// listedFor returns chatID's listed callbacks, provided they were listed under
+// the daemon's current reason.
+func (m ChatPickerModel) listedFor(chatID string) (listedCallbacks, bool) {
+	listed, ok := m.armedCallbacks[chatID]
+	return listed, ok && listed.reason == m.daemonWaitingReasons[chatID]
+}
+
+// progressCallback returns the oldest unexpired callback in listed that is a
+// progress wait on its own, or nil. Oldest first mirrors the daemon's reason
+// selection.
+func (m ChatPickerModel) progressCallback(listed listedCallbacks) *pb.GithubCallback {
+	now := time.Now()
+	var best *pb.GithubCallback
+	for _, cb := range listed.live {
+		reason := callbackReason(cb)
+		if reason == "" || !callbackUnexpired(cb, now) || m.reasonWait(reason) != waitProgress {
+			continue
+		}
+		if best == nil || callbackSortsBefore(cb, best) {
+			best = cb
+		}
+	}
+	return best
+}
+
+// statusCallback is the callback a progress wait's STATUS cell names: the one
+// the daemon's reason describes, or, when that reason is the session's own PR
+// merging or closing, the progress callback that keeps the chat waiting.
+func (m ChatPickerModel) statusCallback(chat *pb.ClaudeChat) *pb.GithubCallback {
+	id := chat.GetAgentSessionId()
+	if m.reasonWait(m.daemonWaitingReasons[id]) != waitDone {
+		return m.armedCallback(chat)
+	}
+	if listed, ok := m.listedFor(id); ok {
+		return m.progressCallback(listed)
+	}
+	return nil
+}
+
+// armedDoneRelist is how often a steady waiting set is re-listed while any of
+// its chats reads "done". A newer checks_passed armed under an unchanged reason
+// (the daemon still names the older merged wait) changes no waiting key, so
+// without this the chat would keep showing a stale done.
+const armedDoneRelist = 30 * time.Second
+
+func (m ChatPickerModel) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// showsDone reports whether any waiting chat currently reads "done".
+func (m ChatPickerModel) showsDone(keys []waitKey) bool {
+	return slices.ContainsFunc(keys, func(k waitKey) bool { return m.chatWait(k.chatID) == waitDone })
 }
 
 // syncArmedCallbacks drops armed entries whose chat stopped waiting on that
 // reason (the same rule daemonWaitingReasons follows, BOS-668) and returns a
-// fetch only when the waiting set differs from the one last fetched for.
+// fetch when the waiting set differs from the one last fetched for, or when a
+// chat of a steady set has read "done" for armedDoneRelist.
 func (m *ChatPickerModel) syncArmedCallbacks() tea.Cmd {
 	keys := m.waitingKeys()
 	if len(m.armedCallbacks) > 0 {
-		kept := make(map[string]*pb.GithubCallback, len(keys))
+		kept := make(map[string]listedCallbacks, len(keys))
 		for _, k := range keys {
-			if cb := m.armedCallbacks[k.chatID]; cb != nil && callbackReason(cb) == k.reason {
-				kept[k.chatID] = cb
+			if listed, ok := m.armedCallbacks[k.chatID]; ok && listed.reason == k.reason {
+				kept[k.chatID] = listed
 			}
 		}
 		m.armedCallbacks = kept
 	}
-	if slices.Equal(keys, m.armedKeys) {
+	now := m.clock()
+	if slices.Equal(keys, m.armedKeys) && (now.Sub(m.armedFetchedAt) < armedDoneRelist || !m.showsDone(keys)) {
 		return nil
 	}
 	m.armedKeys = keys
 	if len(keys) == 0 || m.client == nil {
 		return nil
 	}
+	m.armedFetchedAt = now
 	return fetchArmedCallbacks(m.client, m.ctx, keys)
 }
 
-// fetchArmedCallbacks lists each waiting chat's callbacks by target chat id off
-// the UI loop. Best effort: a failed list leaves that chat out of the result, so
-// both surfaces fall back to the plain waiting text.
+// fetchArmedCallbacks lists each waiting chat's live callbacks by target chat
+// id off the UI loop. Best effort: a failed list leaves that chat out of the
+// result, so both surfaces fall back to the plain waiting text.
 func fetchArmedCallbacks(c client.BossClient, ctx context.Context, keys []waitKey) tea.Cmd {
 	keys = slices.Clone(keys)
 	return func() tea.Msg {
-		now := time.Now()
-		byChat := make(map[string]*pb.GithubCallback, len(keys))
+		byChat := make(map[string]listedCallbacks, len(keys))
 		failed := false
 		for _, k := range keys {
 			chatID := k.chatID
@@ -159,9 +343,13 @@ func fetchArmedCallbacks(c client.BossClient, ctx context.Context, keys []waitKe
 				failed = true
 				continue
 			}
-			if cb := armedCallbackFor(k.reason, cbs, now); cb != nil {
-				byChat[chatID] = cb
+			listed := listedCallbacks{reason: k.reason}
+			for _, cb := range cbs {
+				if cb != nil && liveCallbackStates[cb.GetState()] {
+					listed.live = append(listed.live, cb)
+				}
 			}
+			byChat[chatID] = listed
 		}
 		return armedCallbacksMsg{byChat: byChat, keys: keys, failed: failed}
 	}
@@ -195,11 +383,11 @@ func (m ChatPickerModel) armedCallback(chat *pb.ClaudeChat) *pb.GithubCallback {
 	if !m.isWaitingWithReason(id) {
 		return nil
 	}
-	cb := m.armedCallbacks[id]
-	if cb == nil || callbackReason(cb) != m.daemonWaitingReasons[id] || !callbackUnexpired(cb, time.Now()) {
+	listed, ok := m.listedFor(id)
+	if !ok {
 		return nil
 	}
-	return cb
+	return armedCallbackFor(listed.reason, listed.live, time.Now())
 }
 
 // armedParkSummary is the verify park the daemon already hydrates onto the
@@ -211,11 +399,11 @@ func armedParkSummary(sess *pb.Session) string {
 	return attentionWarningHint(sess)
 }
 
-// armedLine composes the full, untruncated waiting line for chat, or "" when
-// the chat is not waiting with a reason. The park precedes the expiry so a
-// truncated line drops the expiry first. A standby reason is prefixed
-// "standby: " (never "waiting: "), so the line never presents a contingency
-// watch as what the chat is waiting on (BOS-1531).
+// armedLine composes the full, untruncated armed line the launch screen shows
+// for chat, or "" when the chat is not waiting with a reason. The park precedes
+// the expiry so a truncated line drops the expiry first. A standby reason is
+// prefixed "standby: " (never "waiting: "), so the line never presents a
+// contingency watch as what the chat is waiting on (BOS-1531).
 func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 	id := chat.GetAgentSessionId()
 	if !m.isWaitingWithReason(id) {
@@ -223,7 +411,7 @@ func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 	}
 	reason := m.daemonWaitingReasons[id]
 	switch {
-	case m.isStandbyWait(id):
+	case m.chatWait(id) == waitStandby:
 		reason = displaystatus.StandbyLabel + ": " + reason
 	case waitingBadgeSuperseded(m.session):
 		reason = statusWaiting + ": " + reason
@@ -236,29 +424,6 @@ func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 		parts = append(parts, "expires "+expiresInLabel(time.Until(cb.GetExpiresAt().AsTime())))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// waitingLineChat picks the chat the waiting line describes, blocking waits
-// first (BOS-1531): the cursor chat when it is a blocking wait, then the first
-// blocking wait in table order, then the cursor chat when it is a standby wait,
-// then the first standby wait.
-func (m ChatPickerModel) waitingLineChat() *pb.ClaudeChat {
-	selected := m.selectedChat()
-	for _, standby := range []bool{false, true} {
-		matches := func(chat *pb.ClaudeChat) bool {
-			id := chat.GetAgentSessionId()
-			return m.isWaitingWithReason(id) && m.isStandbyWait(id) == standby
-		}
-		if selected != nil && matches(selected) {
-			return selected
-		}
-		for _, chat := range m.chats {
-			if matches(chat) {
-				return chat
-			}
-		}
-	}
-	return nil
 }
 
 // chatDisplayTitle is the title a chat row shows.

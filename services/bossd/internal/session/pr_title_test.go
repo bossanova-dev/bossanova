@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeCronPRTitle(t *testing.T) {
 	t.Parallel()
@@ -187,6 +190,72 @@ func TestDraftPRBody(t *testing.T) {
 			plan:      "```\ncurl https://linear.app/t/issue/XYZ-865\ngrep XYZ-866 log\n```",
 			trackerID: &own,
 			want:      "```\ncurl https://linear.app/t/issue/XYZ-865\ngrep XYZ-866 log\n```",
+		},
+		{
+			name:      "UTF-8 code literal is preserved",
+			plan:      "Use `UTF-8` encoding.",
+			trackerID: &own,
+			want:      "Use `UTF-8` encoding.",
+		},
+		{
+			name:      "SHA-256 code literal is preserved",
+			plan:      "Hash it with `SHA-256`.",
+			trackerID: &own,
+			want:      "Hash it with `SHA-256`.",
+		},
+		{
+			name:      "magic-word substring is not a magic word",
+			plan:      "Add a suffix `UTF-8` and prefix `SHA-256`.",
+			trackerID: &own,
+			want:      "Add a suffix `UTF-8` and prefix `SHA-256`.",
+		},
+		{
+			name:      "lowercase magic word with colon defuses",
+			plan:      "fixes: `XYZ-12`",
+			trackerID: &own,
+			want:      "fixes: `XYZ‑12`",
+		},
+		{
+			name:      "emphasised magic word defuses",
+			plan:      "**Fixes** `XYZ-12`",
+			trackerID: &own,
+			want:      "**Fixes** `XYZ‑12`",
+		},
+		{
+			name:      "backticked key continuing a list defuses",
+			plan:      "Fixes XYZ-1, `XYZ-2` and `XYZ-3`",
+			trackerID: &own,
+			want:      "Fixes XYZ‑1, `XYZ‑2` and `XYZ‑3`",
+		},
+		{
+			name:      "own key after a magic word stays linkable",
+			plan:      "Fixes `ABC-1`",
+			trackerID: &own,
+			want:      "Fixes `ABC-1`",
+		},
+		{
+			name:      "double backtick key continuing ampersand list defuses",
+			plan:      "REFS: ``XYZ-1`` & `XYZ-2`",
+			trackerID: &own,
+			want:      "REFS: ``XYZ‑1`` & `XYZ‑2`",
+		},
+		{
+			name:      "intervening prose ends linking context",
+			plan:      "Fixes XYZ-1 using `UTF-8`",
+			trackerID: &own,
+			want:      "Fixes XYZ‑1 using `UTF-8`",
+		},
+		{
+			name:      "multiword magic word permits whitespace",
+			plan:      "contributes\tto `XYZ-12`",
+			trackerID: &own,
+			want:      "contributes\tto `XYZ‑12`",
+		},
+		{
+			name:      "linking context after a long multibyte prefix defuses",
+			plan:      strings.Repeat("界", 200) + " Fixes `XYZ-12`",
+			trackerID: &own,
+			want:      strings.Repeat("界", 200) + " Fixes `XYZ" + nbh + "12`",
 		},
 		{
 			name:      "empty plan",

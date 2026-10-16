@@ -90,6 +90,14 @@ func (f *listFilter) Commit() bool {
 	return true
 }
 
+// SeedApplied restores a query without focusing the input or scheduling a blink.
+func (f *listFilter) SeedApplied(query string) {
+	f.input.SetValue(query)
+	f.input.Blur()
+	f.active = false
+	f.applied = f.Query() != ""
+}
+
 // Reset clears the query and exits filter mode entirely.
 func (f *listFilter) Reset() {
 	f.active = false

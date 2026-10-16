@@ -88,6 +88,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
 | Where does a follow-up go?                          | `node followup-route.mjs route --candidates <file> --notes-out <file>`      |
 | Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
+| Update a published PR body without duplicating it   | `node pr-body.mjs merge --body-file <live> --update-file <sections>`        |
 | Is the local-verification record well-formed?       | `validateLocalVerification(config, body)` in `skill-config.mjs`             |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
 | What is left before this terminal state is honest?  | `node finalize/route-contract.mjs assert --outcome <state> …`               |
@@ -103,7 +104,9 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    Where a premise no longer holds, build what the plan is for against the code as it is and record
    the departure. Where a criterion cannot be checked from a worktree (production access, a deployed
    environment), implement the change and pass what a human must verify to Step 7.3 as an
-   `outside-worktree` follow-up candidate, never as a hand-written ledger line. Never print
+   `outside-worktree` follow-up candidate, never as a hand-written ledger line. An observation only
+   possible after merge (the plan's `## After merge`, a scheduled run, a rollout) is a `post-merge`
+   candidate: it is published under `## After merge`, which never parks the PR. Never print
    or commit secret values.
 3. **Commit per task, never leave work behind.** Tagless conventional commits with a scope
    (`feat(scope): …`), path-scoped (`git commit --only -m "…" -- <files>`), never `git add -A`. Leave
@@ -615,7 +618,8 @@ Every route from Step 6 comes through here.
 3. **PR.** Compose the body in a temp file outside the worktree
    ([`references/publish.md`](references/publish.md) has the template), then create a **draft**
    (`gh pr create --draft --title "[<ISSUE-ID>] <issue title>" --body-file …`)
-   when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one. Its review
+   when Step 2.5 said fresh with no PR, else `gh pr edit "$PR_NUMBER"` the existing one with the body
+   `pr-body.mjs merge` builds from its live body. Its review
    sections come from `node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" render <verdict> --pr-section`
    (`$(git rev-parse --git-dir)/boss-build/review-verdict.json`), pasted verbatim — except under
    `BOSS_BS_REVIEW=0`, where there is no verdict and Step 6's disabled sections are published. Run
@@ -623,11 +627,11 @@ Every route from Step 6 comes through here.
    body before publishing it. Fix local-verification findings in the body and validate again; they
    never change the route or yield BLOCKED. Write every candidate follow-up as `{text, source}` (plus
    the optional fields `FOLLOWUP_SOURCES` in the helper names per source: `outside-worktree`, `host`,
-   `stage-evidence`, `plan-question`, `review-finding`) to a JSON file — including every candidate
+   `stage-evidence`, `plan-question`, `review-finding`, `post-merge`) to a JSON file — including every candidate
    `review-verdict.mjs followups <verdict>` prints — and run
    `node "$BOSS_BUILD_TOOLBOX/followup-route.mjs" route --candidates <file> --notes-out <notes-file>`.
-   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## Host notes` /
-   `## Review follow-ups` when present)
+   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## After merge` /
+   `## Host notes` / `## Review follow-ups` when present)
    into the body and append its `decisions` to `## Autonomous decisions`; each `warnings` entry names
    an item it parked or dropped for being unclassified or incomplete. When the notes file holds any
    entry, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger host-environment --from <notes-file>`
@@ -879,7 +883,7 @@ rm -f "$RC_ERR"
 - On every route with a PR, first `boss callback remove --all --pr "$PR_NUMBER" --repo <owner/name> --json`; a non-zero
   exit is a failed cleanup to report (callback-watches.md step 6). Nothing is re-armed except below,
   and `$WATCH_LIST_JSON` must be listed after this cleanup, never reused from before it.
-- **Hand-off** ([`references/stage-chaining.md`](references/stage-chaining.md)), after that cleanup: a `merged` completion record ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" run-next --stage verify`; otherwise on `REVIEW_READY` ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" arm-verify --pr "$PR_NUMBER" --completion "$(git rev-parse --git-dir)/boss-build-completion.json" --run-id "$BLI_RUNID"`. Print its line; never fatal; `OUTCOME` never changes. Set `HANDED_OFF=1` when its `action` is
+- **Hand-off** ([`references/stage-chaining.md`](references/stage-chaining.md)), after that cleanup: on `REVIEW_READY` with no `merged` completion record ⇒ `node "$BOSS_BUILD_TOOLBOX/stage-chain.mjs" arm-verify --pr "$PR_NUMBER" --completion "$(git rev-parse --git-dir)/boss-build-completion.json" --run-id "$BLI_RUNID"`. Print its line; never fatal; `OUTCOME` never changes. Set `HANDED_OFF=1` when its `action` is
   `armed` or `already-armed`: verify now holds the PR's forward-progress watch.
 
 - When the completion record is `merged`, skip CI-watch classification; there is no open PR to

@@ -277,6 +277,7 @@ func (a *App) switchToReturn(v View) tea.Cmd {
 
 func (a *App) newHomeModel() HomeModel {
 	home := NewHomeModel(a.client, a.ctx, a.auth)
+	home.filter.SeedApplied(a.home.filter.Query())
 	home.authChanges = a.authChanges
 	home.startedAt = a.startedAt
 	home.SetSettings(a.userSettings)
@@ -287,6 +288,10 @@ func (a *App) newHomeModel() HomeModel {
 	// acknowledged after Home is rebuilt. Copy the slice because the replacement
 	// model owns future poll updates.
 	home.sessions = append([]*pb.Session(nil), a.home.sessions...)
+	// The parks the board already showed travel with that snapshot, or a park
+	// revealed by dismissing an alert would notify again. Sharing the map is
+	// safe: rememberShownParks builds a fresh one on every poll.
+	home.shownParks = a.home.shownParks
 	// Preserve all optimistic archive state across rebuilds without sharing map
 	// storage with the prior model. Both lingering success overrides and active
 	// RPCs must survive until the next poll or result reconciles each session.

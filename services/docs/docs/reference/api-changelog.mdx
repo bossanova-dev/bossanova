@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-19**. The engineering procedure for adding a new
+The current version is **2026-09-20**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -619,7 +619,9 @@ single-session read without that mark restores the underlying green PR label.
   linked to a tracker issue also offers `ATTENTION_ACTION_TRACKER` (open its
   `tracker_url`) last, whatever the kind.
 - `progress_label` describes work that does not need you (`building`,
-  `CI 3/7`, `waiting for main CI`).
+  `checking 3/7`, `waiting for main CI`). Running checks first read `CI 3/7`;
+  the label is free text, and the service now writes `checking 3/7` at every
+  version.
 - `since`, `park_codes`, `alert_key`, `target_chat_id` and `evidence_url`
   carry the facts behind the answer.
 
@@ -680,7 +682,7 @@ sessions, sessions without an original prompt, and sessions with an active human
 chat cannot restart. Clients pinned to 2026-09-17 retain the original fix action
 list; earlier clients continue receiving no attention field.
 
-### 2026-09-19 — A blocked verify park needs a fix, not a review (Current)
+### 2026-09-19 — A blocked verify park needs a fix, not a review
 
 `Session.attention` answers a verify park by what it asks of the operator, the
 same split 2026-09-18 made for the display label. A park whose codes are all
@@ -700,11 +702,67 @@ session-bearing unary responses. The sentence stays the new one: the earlier
 sentence could include the evidence video's length, which the response does not
 carry.
 
+### 2026-09-20 — An unverified PR needs a review, not a merge (Current)
+
+`Session.attention` answers `ATTENTION_KIND_MERGE` only for a PR the verify
+stage has passed: open, ready, green, mergeable, and carrying a successful
+`boss/verify` commit status on its head (verify passed it, or the operator
+approved its park). A PR that is otherwise ready to merge but that nothing has
+verified (its repository runs no verify stage, or verify has not reached its
+head) is now `ATTENTION_KIND_REVIEW`. That review carries no `park_codes`, reads
+"Not verified", and offers `ATTENTION_ACTION_GITHUB` then
+`ATTENTION_ACTION_MERGE`: there is no verify park, so merging is the review's
+outcome.
+
+Clients pinned to 2026-09-19 or older (that receive attention at all) get
+`ATTENTION_KIND_MERGE` with the sentence "Ready to merge" and
+`ATTENTION_ACTION_MERGE` first on session-bearing unary responses.
+
+The same version changes the `ATTENTION_KIND_FIX` answer for a session whose
+`blocked_reason` is "session bootstrap never completed; worktree and branch
+were cleaned up". Such a session died before setup finished, so it has no
+worktree or chat to open or resume. Its attention now offers
+`ATTENTION_ACTION_DISMISS` alone and its sentence says only that it died before
+setup finished, where it offered `ATTENTION_ACTION_DISMISS` and `ATTENTION_ACTION_OPEN_CHAT` and said to
+open the chat and resume. Clients pinned to 2026-09-19 or older get
+`ATTENTION_ACTION_OPEN_CHAT` after `ATTENTION_ACTION_DISMISS` and the sentence
+"Run blocked: session bootstrap never completed; worktree and branch were
+cleaned up · open the chat, then resume" back.
+
+The same version retires the approve and send-back actions on a verify park.
+A sign-off park's `ATTENTION_KIND_REVIEW` offers `ATTENTION_ACTION_GITHUB`
+(and `ATTENTION_ACTION_VIDEO` when there is evidence) then
+`ATTENTION_ACTION_MERGE`. That merge records the operator's head-bound approval
+and merges at once. A blocked park's `ATTENTION_KIND_FIX` offers
+`ATTENTION_ACTION_GITHUB` (and `ATTENTION_ACTION_VIDEO`) and nothing that
+merges. Neither offers `ATTENTION_ACTION_APPROVE` or
+`ATTENTION_ACTION_SEND_BACK` any more. Park sentences state only the issue, for
+example "Database migration" and "The PR checklist has 1 open item". Clients
+pinned to 2026-09-19 or older get
+`ATTENTION_ACTION_APPROVE` and `ATTENTION_ACTION_SEND_BACK` ahead of the other
+actions on the review (with `ATTENTION_ACTION_MERGE` dropped),
+`ATTENTION_ACTION_SEND_BACK` ahead of them on the blocked park, and the
+sentences they were served before.
+
+Other attention sentences now state only the issue too: a fault reads, for
+example, "Run stopped" or "Merge conflict" without the "open the chat, then
+resume" advice, and a question with no text reads "The agent asked a question".
+These are display copy and every version receives the new wording.
+
 ## Additive changes
 
 An additive change adds procedures, messages or fields and leaves every
 existing procedure behaving as before, so it ships without a new version and
 every version sees it.
+
+### Open checklist items on a verify park
+
+`SessionAttention.open_items` lists what keeps a verify park's PR checklist
+open, one plain line each (an unticked item, a missing section, a do-not-merge
+marker), as the park's own note recorded them for the current head. It is set
+only on a park whose checklist is open, and is empty until the daemon has read
+the note. The park's sentence counts the items, for example "The PR checklist
+has 2 open items".
 
 ### Organization notes procedures
 

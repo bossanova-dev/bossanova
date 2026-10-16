@@ -182,8 +182,8 @@ func (s *stubClient) ApproveSessionPR(context.Context, string, bool) (*pb.Verify
 	return nil, nil
 }
 
-func (s *stubClient) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
-	return nil, nil
+func (s *stubClient) OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error) {
+	panic("unused")
 }
 func (s *stubClient) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {

@@ -301,6 +301,19 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 				return downconverted(body.Created)
 			},
 		}}, sessionProbes(verifySession, downconverted)...)
+	case DeadBootstrapAttentionChange:
+		return sessionProbes(deadBootstrapSession, func(s *pb.Session) bool {
+			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
+		})
+	case ParkMergeAttentionChange:
+		return sessionProbes(signOffParkSession, func(s *pb.Session) bool {
+			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE) &&
+				!slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE)
+		})
+	case UnverifiedMergeAttentionChange:
+		return sessionProbes(unverifiedMergeSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE
+		})
 	case BlockedParkAttentionChange:
 		return sessionProbes(blockedParkSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW &&

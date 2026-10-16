@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -275,20 +276,29 @@ func hasSkillFile(dir string) bool {
 
 // RenderBossCommandPrefix rewrites an installed custom skill command's leading
 // prefix to the given agent command prefix, leaving everything else untouched:
-// native agent built-ins ("/model", "/status"), free text, and multi-line input
-// all pass through verbatim. It is the live-send analogue of the plan-launch
-// rendering (chatInputMechanicsFromPrompt + ChatInput.render), scoped to the
-// custom skill names installed for the target agent so a caller hands an
-// agent-neutral "/boss-repair watch" or "/api-review" to a codex chat (prefix
-// "$") and the chat receives "$boss-repair watch" or "$api-review", while a
-// codex user's "/status" reaches codex unchanged. An empty prefix defaults to
-// claude's "/".
+// native agent built-ins ("/model", "/status") and free text pass through
+// verbatim. It is the live-send analogue of the plan-launch rendering
+// (chatInputMechanicsFromPrompt + ChatInput.render), scoped to the custom skill
+// names installed for the target agent so a caller hands an agent-neutral
+// "/boss-repair watch" or "/api-review" to a codex chat (prefix "$") and the
+// chat receives "$boss-repair watch" or "$api-review", while a codex user's
+// "/status" reaches codex unchanged. An empty prefix defaults to claude's "/".
+//
+// Only the first line is read as a command. A multi-line message that opens
+// with a skill command ("/boss-repair 12\n\n<operator note>") has that command
+// rewritten and every later line kept
+// byte for byte; left alone, codex rejects the whole message as an
+// unrecognized command.
 func RenderBossCommandPrefix(message, commandPrefix, worktreePath string) string {
-	input := chatInputMechanicsFromPrompt(message)
+	firstLine, rest, multiLine := strings.Cut(strings.TrimLeftFunc(message, unicode.IsSpace), "\n")
+	input := chatInputMechanicsFromPrompt(firstLine)
 	if input.Command == "" || !isInstalledSkillCommand(input.Command, commandPrefix, worktreePath) {
 		return message
 	}
-	return input.render(commandPrefix)
+	if !multiLine {
+		return input.render(commandPrefix)
+	}
+	return input.render(commandPrefix) + "\n" + rest
 }
 
 // StartTmuxChat boots a Claude (or other agent) run inside a detached tmux
@@ -1010,8 +1020,9 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// probe above did not prove the pane gone, so there is still a composer
 		// worth clearing.
 		//
-		// Only that outcome. Queued and blocked-by-modal leave nothing at the
-		// prompt (the payload is in the agent's queue; nothing was typed at all),
+		// Only that outcome. Queued, blocked-by-modal and composer-occupied leave
+		// none of this send at the prompt (the payload is in the agent's queue, or
+		// nothing was typed at all and any draft there is someone else's),
 		// and unconfirmed means the pane state is UNKNOWN — the payload may
 		// already be running, and C-u into that is a stray keystroke into a pane
 		// this code cannot see.

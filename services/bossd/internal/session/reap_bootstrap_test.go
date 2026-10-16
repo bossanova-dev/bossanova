@@ -13,6 +13,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/rs/zerolog"
 )
 
@@ -567,5 +568,45 @@ func TestPreAgentReapStatesDerivedFromStrandedSet(t *testing.T) {
 		if !found {
 			t.Fatalf("pre-agent state %v missing from preAgentReapStates", s)
 		}
+	}
+}
+
+// TestReapStrandedBootstrap_ArchivesACronRunItReclaimed pins the 2026-10-16
+// madverts strand: `boss daemon restart` landed mid setup script, the startup
+// pass reclaimed the cron run, and the row then sat Blocked on the board asking
+// to "open the chat, then resume" though it had no worktree or chat. A cron run
+// is rerun by its schedule, so a cleanly reclaimed one is archived. An
+// interactive one stays Blocked for its owner, and so does a cron run whose
+// worktree purge never ran, because its artifacts need reclaiming by hand.
+func TestReapStrandedBootstrap_ArchivesACronRunItReclaimed(t *testing.T) {
+	cronJob := "cron-mv-sweep-build"
+	for name, tc := range map[string]struct {
+		cron        *string
+		purgeErr    error
+		wantArchive bool
+	}{
+		"cron":                 {cron: &cronJob, wantArchive: true},
+		"cron purge never ran": {cron: &cronJob, purgeErr: errors.New("acquire repo-clone lock: context deadline exceeded")},
+		"interactive boss new": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lc, sessions, worktrees := newBootstrapReapLifecycle(t)
+			worktrees.purgeErr = tc.purgeErr
+			strand := bootstrapStrand("s1", machine.CreatingWorktree, lc.startedAt.Add(-19*time.Second))
+			strand.CronJobID = tc.cron
+			sessions.sessions["s1"] = strand
+
+			n, err := lc.ReapStrandedBootstrapSessionsAtStartup(context.Background())
+			if err != nil || n != 1 {
+				t.Fatalf("reap = %d, %v; want 1 reclaimed", n, err)
+			}
+			if got := sessions.sessions["s1"]; got.State != machine.Blocked || !sessionreason.IsBootstrapStranded(got.BlockedReason) {
+				t.Fatalf("state %v reason %v, want Blocked with the stranded-bootstrap reason", got.State, got.BlockedReason)
+			}
+			archived := slices.Contains(sessions.archived(), "s1")
+			if archived != tc.wantArchive {
+				t.Fatalf("archived = %v, want %v", archived, tc.wantArchive)
+			}
+		})
 	}
 }

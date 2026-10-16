@@ -179,6 +179,9 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	// daemon restart.
 	resp.Checks = append(resp.Checks, s.protectedRootsReadableCheck(ctx))
 
+	// Check 16: failover proxy lost its configured fixed port? (BOS-1632)
+	resp.Checks = append(resp.Checks, fixedPortCheck(s.fixedPortStatus))
+
 	// Recent repair logs (seeded into the response so the CLI
 	// can render the file list independent of the pass/fail check).
 	if logsDir != "" {
@@ -1062,4 +1065,22 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+func fixedPortCheck(provider fixedPortStatusProvider) *bossanovav1.RepairDoctorCheck {
+	check := &bossanovav1.RepairDoctorCheck{Name: "failover proxy fixed port", Ok: true}
+	if provider == nil {
+		check.Detail = "proxy not wired — no fixed port to report"
+		return check
+	}
+	configured := provider.ConfiguredPort()
+	if configured == 0 {
+		check.Detail = "proxy configured ephemeral — panes bake an ephemeral port that changes on restart"
+	} else if !provider.FixedPortLost() {
+		check.Detail = fmt.Sprintf("bound fixed port %d", configured)
+	} else {
+		check.Ok = false
+		check.Detail = fmt.Sprintf("lost configured fixed port %d; using ephemeral port %d. another listener holds the configured port (likely a second bossd, such as a verify stack or dev daemon, or a foreign process), or it was otherwise unbindable. Panes baked to the configured port were or will be killed by the startup sweep; panes launched now bake the ephemeral port and will be killed on the next restart that regains the fixed port. Find the holder with lsof -nP -iTCP:%d -sTCP:LISTEN, stop it, then restart bossd", configured, provider.Port(), configured)
+	}
+	return check
 }

@@ -177,9 +177,9 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	if built := newestReviewReady(runs); built != nil {
 		detail := ""
 		if parked {
-			detail = "no open findings"
+			detail = "ledger closed"
 			if slices.Contains(parkCodes, attention.ParkCodeLedgerOpen) {
-				detail = "open findings"
+				detail = "ledger open"
 			}
 		}
 		add(&tlStep{at: *built.StoppedAt, rank: rankBuiltReviewed, title: "Built and reviewed", detail: detail})
@@ -222,7 +222,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 				}
 			}
 			if len(group) > 0 {
-				candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_MERGE, steps: group})
+				candidates = append(candidates, waitCandidate{kind: attention.MergeReadyKind(ans.Input), steps: group})
 			}
 		case vcs.DisplayStatusMerged:
 			add(&tlStep{at: since, rank: rankResolved, title: "Merged"})
@@ -271,11 +271,16 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 	att := attention.Compute(ans.Input)
 	kind := att.GetKind()
-	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && latest != nil && !hasCandidate(candidates, kind) {
+	mergeReady := kind == attention.MergeReadyKind(ans.Input) && len(att.GetParkCodes()) == 0
+	if mergeReady && latest != nil && !hasCandidate(candidates, kind) {
 		// Mergeable with no "CI passed" or "Ready for review" step (every
 		// ordinary check skipped, never a draft): the merge wait still gets a
 		// step of its own, where the head turned green.
-		st := add(&tlStep{at: trailingRunStart(snaps), rank: rankReadyToMerge, title: "Ready to merge"})
+		title := "Ready to merge"
+		if !ans.Input.Verified {
+			title = "Ready to merge · not verified"
+		}
+		st := add(&tlStep{at: trailingRunStart(snaps), rank: rankReadyToMerge, title: title})
 		candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 	}
 	sortSteps(steps)

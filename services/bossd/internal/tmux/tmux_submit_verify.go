@@ -60,9 +60,11 @@ const (
 	OutcomeUnclassified SubmitOutcome = iota
 	// OutcomeSubmitted: a positive signal confirmed the payload left the composer.
 	OutcomeSubmitted
-	// OutcomeNotSubmitted: the wait budget elapsed with the payload still held by
-	// the live composer (errSubmissionPending). A genuine failure — but a safely
-	// retryable one, because the pane state is known.
+	// OutcomeNotSubmitted: the payload was typed and the wait budget elapsed with
+	// it still held by the live composer (errSubmissionPending), or a tmux call in
+	// the clear-and-redeliver retry failed. A genuine failure, but a safely
+	// retryable one, because the pane state is known. A send refused before
+	// typing is OutcomeComposerOccupied, not this.
 	OutcomeNotSubmitted
 	// OutcomeUnconfirmed: verification itself failed (capture-pane error or a
 	// cancelled context), so the pane state is unknown and the payload may or may
@@ -82,6 +84,12 @@ const (
 	// caller must surface the modal for a human rather than re-send into it
 	// (BOS-600).
 	OutcomeBlockedByModal
+	// OutcomeComposerOccupied: the live Codex composer already held a draft this
+	// send did not type, so the send was refused before any key or Enter
+	// (refuseOccupiedComposer). Like OutcomeBlockedByModal, nothing was
+	// delivered: a prompt receipt seen afterwards belongs to someone else's
+	// message, and the draft must not be cleared, since it may be an operator's.
+	OutcomeComposerOccupied
 )
 
 // String renders the outcome for an error message or a log line.
@@ -97,6 +105,8 @@ func (o SubmitOutcome) String() string {
 		return "queued"
 	case OutcomeBlockedByModal:
 		return "blocked by modal"
+	case OutcomeComposerOccupied:
+		return "composer occupied"
 	default:
 		return "unclassified"
 	}
@@ -1418,9 +1428,8 @@ func isAgentActivity(text string) bool {
 	return false
 }
 
-// errComposerOccupied is the sentinel for a send refused because the live
-// composer already held text the send did not type. Nothing was typed and no
-// Enter was sent, so the payload is not in the pane at all.
+// errComposerOccupied is the cause carried by an OutcomeComposerOccupied
+// refusal.
 var errComposerOccupied = errors.New("the live composer already holds unsubmitted text")
 
 // refuseOccupiedComposer refuses a send into a Codex composer that already
@@ -1435,7 +1444,7 @@ var errComposerOccupied = errors.New("the live composer already holds unsubmitte
 // It refuses rather than clears. The pane cannot say who wrote the draft: it may
 // be earlier automation that never ran, or an operator's half-typed message,
 // and C-u would destroy the second as readily as the first. A refusal costs one
-// loud OutcomeNotSubmitted naming the draft; a clear could silently erase a
+// loud OutcomeComposerOccupied naming the draft; a clear could silently erase a
 // person's work. The operator clears the composer and the next send goes
 // through.
 //
@@ -1450,7 +1459,7 @@ func (c *Client) refuseOccupiedComposer(ctx context.Context, sessionName string)
 	if err != nil || !composerHoldsDraft(styled) {
 		return nil
 	}
-	return classifySubmit(OutcomeNotSubmitted, fmt.Errorf(
+	return classifySubmit(OutcomeComposerOccupied, fmt.Errorf(
 		"refused to type into tmux session %q: the live composer already holds text this send did not type, so the payload would be appended to it; nothing was typed and no Enter was sent; clear the composer and resend: %w",
 		sessionName, errComposerOccupied))
 }

@@ -1266,3 +1266,70 @@ func TestAppSettingsRestoresSelectedSectionAfterReturn(t *testing.T) {
 		})
 	}
 }
+
+// TestAppHomeRebuildKeepsShownParks drives the App through a Home rebuild
+// between a parked PR's repair alert and its dismissal. A dismiss reaches Home
+// only as a later poll, so each scenario ends with the park the board showed
+// before the alert hid it.
+func TestAppHomeRebuildKeepsShownParks(t *testing.T) {
+	session := func(att *pb.SessionAttention) []*pb.Session {
+		n := int32(42)
+		return []*pb.Session{{Id: "one", PrNumber: &n, Attention: att}}
+	}
+	parks := map[string][]*pb.Session{
+		"fix park":      session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Review left must-fix findings open", ParkCodes: []string{"ledger-open"}}),
+		"sign-off park": session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Watch the evidence video, then approve", ParkCodes: []string{"human-review:ui"}}),
+	}
+	repairFailed := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Automatic repair failed", AlertKey: "repair:failed"})
+
+	type step func(t *testing.T, a App, park []*pb.Session) App
+	poll := func(alert bool, wantNotify bool) step {
+		return func(t *testing.T, a App, park []*pb.Session) App {
+			t.Helper()
+			sessions := park
+			if alert {
+				sessions = repairFailed
+			}
+			notified := 0
+			original := runNotify
+			defer func() { runNotify = original }()
+			runNotify = func(notifyRequest) error { notified++; return nil }
+			model, cmd := a.Update(sessionListMsg{homeGeneration: a.home.generation, sessions: sessions})
+			drainCmd(cmd)
+			if got := notified > 0; got != wantNotify {
+				t.Fatalf("poll of %s (alert=%v): notified=%v, want %v", sessions[0].GetAttention().GetKind(), alert, got, wantNotify)
+			}
+			return model.(App)
+		}
+	}
+	visit := func(view View) step {
+		return func(t *testing.T, a App, _ []*pb.Session) App {
+			t.Helper()
+			generation := a.home.generation
+			model, _ := a.Update(switchViewMsg{view: view, sessionID: "one"})
+			model, _ = model.(App).Update(switchViewMsg{view: ViewHome})
+			got := model.(App)
+			if got.activeView != ViewHome || got.home.generation == generation {
+				t.Fatalf("visiting %v did not rebuild Home (view %v, generation %d)", view, got.activeView, got.home.generation)
+			}
+			return got
+		}
+	}
+
+	for _, sc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"dismissed in the chat picker", []step{poll(false, true), poll(true, true), visit(ViewChatPicker), poll(false, false)}},
+		{"dismissed on Home after a sub-view", []step{poll(false, true), poll(true, true), visit(ViewRepoList), poll(true, false), poll(false, false)}},
+	} {
+		for name, park := range parks {
+			t.Run(sc.name+"/"+name, func(t *testing.T) {
+				a := NewApp(nil, nil)
+				for _, s := range sc.steps {
+					a = s(t, a, park)
+				}
+			})
+		}
+	}
+}

@@ -9,7 +9,7 @@ import (
 	"github.com/recurser/boss/internal/fixtures"
 
 	"github.com/recurser/boss/internal/tuitest"
-	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/attention"
 )
 
 func TestTUI_HomeView_ShowsSessions(t *testing.T) {
@@ -473,7 +473,7 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(fixtures.AttentionSessions()...), tuitest.WithTerminalSize(width, 60))
-			for _, text := range []string{"NEEDS YOU · 7", "IN PROGRESS · 2", "[r] resume", "[x] dismiss", "? question", "CI 4/9"} {
+			for _, text := range []string{"NEEDS YOU · 7", "IN PROGRESS · 2", "[r]esume", "[x] dismiss", "? question", "checking 4/9"} {
 				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
 					t.Fatal(err)
 				}
@@ -486,16 +486,20 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 			if err := h.Driver.SendKey('j'); err != nil {
 				t.Fatal(err)
 			}
-			if err := h.Driver.WaitForText(waitTimeout, "[y] approve"); err != nil {
+			if err := h.Driver.WaitForText(waitTimeout, "[m]erge"); err != nil {
 				t.Fatal(err)
 			}
 			screen := h.Driver.Screen()
-			for _, text := range []string{"[b] send back", "[g] github", "[v] video"} {
-				if !strings.Contains(screen, text) {
-					t.Fatalf("missing %s:\n%s", text, screen)
-				}
+			if !strings.Contains(screen, "[v]ideo") {
+				t.Fatalf("missing [v]ideo:\n%s", screen)
 			}
-			if strings.Contains(screen, "[r] resume") || strings.Contains(screen, "[x] dismiss") {
+			if strings.Contains(screen, "[y]") || strings.Contains(screen, "[b]") {
+				t.Fatalf("review footer still offers approve or send back:\n%s", screen)
+			}
+			if strings.Contains(screen, "[g]") {
+				t.Fatalf("home footer advertises the hidden [g]:\n%s", screen)
+			}
+			if strings.Contains(screen, "[r]esume") || strings.Contains(screen, "[x] dismiss") {
 				t.Fatalf("review footer retained fix actions:\n%s", screen)
 			}
 			for _, line := range strings.Split(screen, "\n") {
@@ -508,35 +512,63 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 	}
 }
 
-func TestTUI_Home_AttentionActionApprove(t *testing.T) {
+// TestTUI_Home_AttentionReviewMerge drives [m] on a sign-off park's review
+// row through the real executable: a plain confirm, then one approving merge
+// pinned to the head the row showed.
+func TestTUI_Home_AttentionReviewMerge(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
 	sessions := testSessions()
-	sessions[0].Attention = &pb.SessionAttention{
-		Kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-		Actions:   []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE},
-		ParkCodes: []string{"ledger-open"},
-	}
+	sessions[0].PrDisplayHeadSha = head
+	sessions[0].Attention = attention.Compute(attention.Input{ParkCodes: []string{"human-review:ui"}})
 	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...))
-	h.Daemon.SetApproveResult(&pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"})
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('y'); err != nil {
+	if err := h.Driver.SendKey('m'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Approve #597? Waives: ledger-open."); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merge PR #597?"); err != nil {
 		t.Fatalf("confirmation missing: %v\n%s", err, h.Driver.Screen())
 	}
-	if calls := h.Daemon.ApproveSessionPRCalls(); len(calls) != 0 {
+	if calls := h.Daemon.OperatorMergeCalls(); len(calls) != 0 {
 		t.Fatalf("request before confirmation: %v", calls)
 	}
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Approved #597"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merged PR #597"); err != nil {
 		t.Fatalf("result missing: %v\n%s", err, h.Driver.Screen())
 	}
-	calls := h.Daemon.ApproveSessionPRCalls()
-	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetIsDryRun() {
-		t.Fatalf("approve calls=%v", calls)
+	calls := h.Daemon.OperatorMergeCalls()
+	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetExpectedHeadSha() != head || !calls[0].GetShouldApprove() || len(calls[0].GetWaives()) != 1 || calls[0].GetWaives()[0] != "human-review:ui" {
+		t.Fatalf("operator merge calls=%v", calls)
+	}
+	if calls := h.Daemon.ApproveSessionPRCalls(); len(calls) != 0 {
+		t.Fatalf("the TUI ran the CLI approve verb: %v", calls)
+	}
+}
+
+func TestTUI_HomeView_SlashFilter(t *testing.T) {
+	h := newHomeWithSessions(t)
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('/'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendString("dark"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, fmt.Sprintf("(1 of %d)", len(testSessions()))); err != nil {
+		t.Fatal(err)
+	}
+	if screen := h.Driver.Screen(); strings.Contains(screen, "Fix login bug") || !strings.Contains(screen, "Add dark mode") {
+		t.Fatalf("filter did not narrow board:\n%s", screen)
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
+		t.Fatal(err)
 	}
 }

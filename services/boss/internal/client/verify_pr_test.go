@@ -13,8 +13,8 @@ import (
 // verifyRPC is a daemon client that records the verify verb requests.
 type verifyRPC struct {
 	bossanovav1connect.DaemonServiceClient
-	approveReq  *pb.ApproveSessionPRRequest
-	sendBackReq *pb.SendBackSessionPRRequest
+	approveReq *pb.ApproveSessionPRRequest
+	mergeReq   *pb.OperatorMergeSessionRequest
 }
 
 func (f *verifyRPC) ApproveSessionPR(_ context.Context, req *connect.Request[pb.ApproveSessionPRRequest]) (*connect.Response[pb.ApproveSessionPRResponse], error) {
@@ -22,9 +22,9 @@ func (f *verifyRPC) ApproveSessionPR(_ context.Context, req *connect.Request[pb.
 	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open"}}), nil
 }
 
-func (f *verifyRPC) SendBackSessionPR(_ context.Context, req *connect.Request[pb.SendBackSessionPRRequest]) (*connect.Response[pb.SendBackSessionPRResponse], error) {
-	f.sendBackReq = req.Msg
-	return connect.NewResponse(&pb.SendBackSessionPRResponse{IsPosted: true, CommentUrl: "https://x/1"}), nil
+func (f *verifyRPC) OperatorMergeSession(_ context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
+	f.mergeReq = req.Msg
+	return connect.NewResponse(&pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "ok"}), nil
 }
 
 func TestLocalClient_VerifyVerbsCallTheDaemon(t *testing.T) {
@@ -39,12 +39,13 @@ func TestLocalClient_VerifyVerbsCallTheDaemon(t *testing.T) {
 		t.Fatalf("approve request = %+v", rpc.approveReq)
 	}
 
-	resp, err := c.SendBackSessionPR(context.Background(), "s1", "fix it", false)
-	if err != nil || !resp.GetIsPosted() || resp.GetCommentUrl() != "https://x/1" {
-		t.Fatalf("SendBackSessionPR = %+v, %v", resp, err)
+	head := "0123456789abcdef0123456789abcdef01234567"
+	resp, err := c.OperatorMergeSession(context.Background(), "s1", head, true, []string{"human-review:ui"})
+	if err != nil || !resp.GetIsMerged() || resp.GetTrackerWrites() != "ok" {
+		t.Fatalf("OperatorMergeSession = %+v, %v", resp, err)
 	}
-	if rpc.sendBackReq.GetId() != "s1" || rpc.sendBackReq.GetNote() != "fix it" || rpc.sendBackReq.GetIsDryRun() {
-		t.Fatalf("send-back request = %+v", rpc.sendBackReq)
+	if m := rpc.mergeReq; m.GetId() != "s1" || m.GetExpectedHeadSha() != head || !m.GetShouldApprove() || len(m.GetWaives()) != 1 || m.GetWaives()[0] != "human-review:ui" {
+		t.Fatalf("operator merge request = %+v", m)
 	}
 }
 
@@ -54,7 +55,7 @@ func TestRemoteClient_VerifyVerbsAreLocalOnly(t *testing.T) {
 	if _, err := c.ApproveSessionPR(context.Background(), "s1", false); connect.CodeOf(err) != connect.CodeUnimplemented {
 		t.Fatalf("ApproveSessionPR err = %v, want Unimplemented", err)
 	}
-	if _, err := c.SendBackSessionPR(context.Background(), "s1", "x", false); connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("SendBackSessionPR err = %v, want Unimplemented", err)
+	if _, err := c.OperatorMergeSession(context.Background(), "s1", "h", false, nil); connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("OperatorMergeSession err = %v, want Unimplemented", err)
 	}
 }

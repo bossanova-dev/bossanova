@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "evidence",
-    srcs = ["evidence.go"],
+    srcs = [
+        "evidence.go",
+        "open_items.go",
+    ],
     importpath = "github.com/recurser/bossalib/evidence",
     visibility = ["//visibility:public"],
 )
@@ -12,7 +15,8 @@ go_test(
     srcs = [
         "evidence_test.go",
         "golden_test.go",
+        "open_items_test.go",
     ],
     data = glob(["testdata/**"]),
-    deps = [":evidence"],
+    embed = [":evidence"],
 )

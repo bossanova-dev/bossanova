@@ -3,21 +3,17 @@ import { spawnSync } from 'node:child_process'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import * as stageChain from './stage-chain.mjs'
+
 import {
-  CALL_TIMEOUT_MS,
   EXIT_USAGE,
-  NEXT_STAGE,
-  RUN_NOW_TIMEOUT_MS,
-  STAGE_SKILL,
   VERIFY_CHAT_TITLE,
   armDecision,
   hasStageJob,
   invokedSkill,
   isEpicChild,
   main,
-  parseRunNow,
   pickVerifyChat,
-  resolveNext,
 } from './stage-chain.mjs'
 
 const SCRIPT = fileURLToPath(new URL('./stage-chain.mjs', import.meta.url))
@@ -58,73 +54,6 @@ describe('invokedSkill — first /name or $name token, exact and prefix-safe', (
 
   it('non-strings and empty prompts yield null', () => {
     for (const prompt of [undefined, null, 42, '', '   ']) assert.equal(invokedSkill(prompt), null)
-  })
-})
-
-describe('resolveNext', () => {
-  it('one enabled match ⇒ run-now with its id', () => {
-    assert.deepEqual(resolveNext({ stage: 'plan', jobs: [job({ id: 'b1' })] }), {
-      action: 'run-now',
-      jobId: 'b1',
-      nextStage: 'build',
-      reason: '',
-      matches: ['b1'],
-    })
-  })
-
-  it('no jobs ⇒ none/no-job', () => {
-    const r = resolveNext({ stage: 'plan', jobs: [] })
-    assert.equal(`${r.action}/${r.reason}`, 'none/no-job')
-  })
-
-  it('only disabled matches ⇒ none/disabled', () => {
-    const r = resolveNext({ stage: 'plan', jobs: [job({ enabled: false })] })
-    assert.equal(`${r.action}/${r.reason}`, 'none/disabled')
-  })
-
-  it('two enabled matches ⇒ ambiguous with both ids', () => {
-    const r = resolveNext({ stage: 'plan', jobs: [job({ id: 'a' }), job({ id: 'b' })] })
-    assert.equal(r.action, 'ambiguous')
-    assert.deepEqual(r.matches, ['a', 'b'])
-    assert.equal(r.jobId, '')
-  })
-
-  it('release is terminal', () => {
-    const r = resolveNext({ stage: 'release', jobs: [job()] })
-    assert.equal(`${r.action}/${r.reason}`, 'none/terminal-stage')
-    assert.equal(r.nextStage, null)
-  })
-
-  it('a non-array listing ⇒ none/unreadable-jobs', () => {
-    for (const jobs of [null, undefined, { jobs: [] }, 'x']) {
-      const r = resolveNext({ stage: 'plan', jobs })
-      assert.equal(`${r.action}/${r.reason}`, 'none/unreadable-jobs')
-    }
-  })
-
-  it('each stage matches exactly the next stage skill', () => {
-    const jobs = [
-      job({ id: 'p', prompt: '/boss-plan' }),
-      job({ id: 'b', prompt: '/boss-build' }),
-      job({ id: 'v', prompt: '$boss-verify' }),
-      job({ id: 'r', prompt: '/boss-release' }),
-      job({ id: 'ce', prompt: '/boss-build-ce' }),
-    ]
-    assert.equal(resolveNext({ stage: 'plan', jobs }).jobId, 'b')
-    assert.equal(resolveNext({ stage: 'build', jobs }).jobId, 'v')
-    assert.equal(resolveNext({ stage: 'verify', jobs }).jobId, 'r')
-    assert.deepEqual(NEXT_STAGE, {
-      plan: 'build',
-      build: 'verify',
-      verify: 'release',
-      release: null,
-    })
-    assert.equal(STAGE_SKILL.verify, 'boss-verify')
-  })
-
-  it('prefix-named jobs never match', () => {
-    for (const prompt of ['/boss-build-ce', '/boss-builder', 'https://x/boss-build', 'boss-build'])
-      assert.equal(resolveNext({ stage: 'plan', jobs: [job({ prompt })] }).reason, 'no-job', prompt)
   })
 })
 
@@ -279,24 +208,12 @@ describe('armDecision', () => {
   })
 })
 
-describe('isEpicChild and parseRunNow', () => {
+describe('isEpicChild', () => {
   it('unattended without a cron job id is an epic child', () => {
     assert.equal(isEpicChild({ BOSS_UNATTENDED: 'true' }), true)
     assert.equal(isEpicChild({ BOSS_CRON: 'true' }), true)
     assert.equal(isEpicChild({ BOSS_UNATTENDED: 'true', BOSS_CRON_JOB_ID: 'j' }), false)
     assert.equal(isEpicChild({}), false)
-  })
-
-  it('reads both run-now lines', () => {
-    assert.deepEqual(parseRunNow('Started session s-9 for cron job j-1\n'), {
-      action: 'started',
-      sessionId: 's-9',
-    })
-    assert.deepEqual(parseRunNow('Fire skipped for cron job j-1: overlap_prev_active\n'), {
-      action: 'skipped',
-      reason: 'overlap_prev_active',
-    })
-    assert.deepEqual(parseRunNow('???'), { action: 'error', reason: 'unrecognized-output' })
   })
 })
 
@@ -368,73 +285,73 @@ const fakeFs = (files) => ({
   },
 })
 
-describe('next / run-next', () => {
-  it('run-next issues exactly cron ls then cron run-now <id> and reports started', async () => {
-    const { exitCode, result, boss } = await run(['run-next', '--stage', 'plan'], {
-      routes: {
-        'cron ls': json([job({ id: 'job-b' })]),
-        'cron run-now job-b': { stdout: 'Started session s-42 for cron job job-b\n' },
-      },
-    })
-    assert.equal(exitCode, 0)
-    assert.deepEqual(boss.argvs(), [
-      ['cron', 'ls', '--repo', 'repo-1', '--json'],
-      ['cron', 'run-now', 'job-b'],
+describe('scheduled stages stay independent', () => {
+  it('next/run-next are usage errors', async () => {
+    for (const verb of ['next', 'run-next']) {
+      const { exitCode, line, boss } = await run([verb, '--stage', 'plan'])
+      assert.equal(exitCode, EXIT_USAGE)
+      assert.equal(line, '')
+      assert.deepEqual(boss.argvs(), [])
+      const cli = spawnSync(process.execPath, [SCRIPT, verb, '--stage', 'plan'], {
+        encoding: 'utf8',
+      })
+      assert.equal(cli.status, EXIT_USAGE)
+      assert.equal(cli.stdout, '')
+    }
+  })
+
+  it('removes cron-starting exports and retains callback helpers', () => {
+    for (const name of [
+      'NEXT_STAGE',
+      'resolveNext',
+      'runNowArgv',
+      'parseRunNow',
+      'RUN_NOW_TIMEOUT_MS',
     ])
-    assert.equal(boss.calls[0].file, BOSS)
-    assert.equal(boss.calls[0].timeout, CALL_TIMEOUT_MS)
-    assert.equal(boss.calls[1].timeout, RUN_NOW_TIMEOUT_MS)
-    assert.equal(result.action, 'started')
-    assert.equal(result.sessionId, 's-42')
-    assert.equal(result.jobId, 'job-b')
+      assert.equal(Object.hasOwn(stageChain, name), false, name)
+    for (const name of ['STAGE_SKILL', 'invokedSkill', 'hasStageJob', 'pickVerifyChat'])
+      assert.equal(Object.hasOwn(stageChain, name), true, name)
   })
 
-  it('run-next reports a scheduler skip (overlap) as skipped', async () => {
-    const { result } = await run(['run-next', '--stage', 'build'], {
-      routes: {
-        'cron ls': json(verifyJobs),
-        'cron run-now job-verify': {
-          stdout: 'Fire skipped for cron job job-verify: overlap_prev_active\n',
-        },
-      },
-    })
-    assert.equal(result.action, 'skipped')
-    assert.equal(result.reason, 'overlap_prev_active')
-  })
-
-  it('run-next with no matching job runs nothing after the listing', async () => {
-    const { result, boss } = await run(['run-next', '--stage', 'plan'], {
-      routes: { 'cron ls': json([]) },
-    })
-    assert.equal(`${result.action}/${result.reason}`, 'none/no-job')
-    assert.equal(boss.calls.length, 1)
-  })
-
-  it('run-next on two matching jobs is ambiguous, warns and fires nothing', async () => {
-    const { result, boss, warnings } = await run(['run-next', '--stage', 'plan'], {
-      routes: { 'cron ls': json([job({ id: 'a' }), job({ id: 'b' })]) },
-    })
-    assert.equal(result.action, 'ambiguous')
-    assert.deepEqual(result.matches, ['a', 'b'])
-    assert.equal(boss.calls.length, 1)
-    assert.match(warnings, /2 enabled cron jobs run \/boss-build/)
-  })
-
-  it('next only reads and never fires', async () => {
-    const { result, boss } = await run(['next', '--stage', 'plan'], {
-      routes: { 'cron ls': json([job({ id: 'b1' })]) },
-    })
-    assert.equal(result.verb, 'next')
-    assert.equal(result.action, 'run-now')
-    assert.equal(result.jobId, 'b1')
-    assert.equal(boss.calls.length, 1)
-  })
-
-  it('release is terminal even with jobs listed', async () => {
-    const { result } = await run(['run-next', '--stage', 'release'], {
-      routes: { 'cron ls': json([job()]) },
-    })
-    assert.equal(`${result.action}/${result.reason}`, 'none/terminal-stage')
+  it('no verb issues cron run-now', async () => {
+    const completion = '/git/completion.json'
+    const records = [
+      null,
+      { action: 'merged' },
+      { action: 'skipped', reason: 'human:policy' },
+      { action: 'skipped', reason: 'epic-child' },
+      { action: 'skipped', reason: 'defect:findings' },
+      { action: 'skipped', reason: 'wait:checks-pending' },
+      { action: 'skipped', reason: 'unrecognized' },
+    ]
+    for (const record of records) {
+      for (const argv of [
+        ['arm-verify', '--pr', '12', '--completion', completion],
+        ['phase', 'building'],
+      ]) {
+        const { exitCode, result, boss } = await run(argv, {
+          fs: fakeFs({ [completion]: JSON.stringify(record) }),
+          routes: {
+            'cron ls': json(
+              ['build', 'verify', 'release'].map((stage) =>
+                job({ id: stage, prompt: `/boss-${stage}` }),
+              ),
+            ),
+            'chats sess-1': json({ chats: [] }),
+            'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
+            'callback add': json({ id: 'cb' }),
+            'session phase building': { stdout: 'phase set: building' },
+          },
+        })
+        assert.equal(exitCode, 0)
+        assert.notEqual(result.action, 'error')
+        assert.ok(boss.calls.length > 0)
+        assert.equal(
+          boss.argvs().some((args) => args[0] === 'cron' && args[1] === 'run-now'),
+          false,
+        )
+      }
+    }
   })
 })
 
@@ -673,11 +590,7 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
 
   for (const [name, response] of Object.entries(failures)) {
     it(`a ${name} on cron ls ⇒ error`, async () => {
-      for (const argv of [
-        ['next', '--stage', 'plan'],
-        ['run-next', '--stage', 'plan'],
-        ['arm-verify', '--pr', '3'],
-      ]) {
+      for (const argv of [['arm-verify', '--pr', '3']]) {
         const { exitCode, result } = await run(argv, { routes: { 'cron ls': response } })
         assert.equal(exitCode, 0, argv.join(' '))
         assert.equal(result.action, 'error', argv.join(' '))
@@ -686,12 +599,17 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
     })
   }
 
-  it('a timeout on cron run-now ⇒ error with reason timeout', async () => {
-    const { exitCode, result } = await run(['run-next', '--stage', 'plan'], {
-      routes: { 'cron ls': json([job({ id: 'b' })]), 'cron run-now b': { timeout: true } },
+  it('a timeout on callback add ⇒ error with reason timeout', async () => {
+    const { exitCode, result } = await run(['arm-verify', '--pr', '12'], {
+      routes: {
+        'cron ls': json(verifyJobs),
+        'chats sess-1': json({ chats: [] }),
+        'chat new sess-1': json({ chat: { agent_session_id: 'chat-v' } }),
+        'callback add': { timeout: true },
+      },
     })
     assert.equal(exitCode, 0)
-    assert.equal(`${result.action}/${result.reason}`, 'error/timeout')
+    assert.equal(`${result.action}/${result.reason}`, 'error/callback-add-timeout')
   })
 
   it('a failed phase call ⇒ error', async () => {
@@ -734,8 +652,6 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
 
   it('unmanaged, missing binary and missing repo id are skips that call nothing', async () => {
     for (const argv of [
-      ['next', '--stage', 'plan'],
-      ['run-next', '--stage', 'build'],
       ['arm-verify', '--pr', '1'],
       ['phase', 'x'],
     ]) {
@@ -751,11 +667,7 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
       assert.equal(`${noBinary.result.action}/${noBinary.result.reason}`, 'skipped/no-boss-binary')
       assert.equal(noBinary.boss.calls.length, 0)
     }
-    for (const argv of [
-      ['next', '--stage', 'plan'],
-      ['run-next', '--stage', 'build'],
-      ['arm-verify', '--pr', '1'],
-    ]) {
+    for (const argv of [['arm-verify', '--pr', '1']]) {
       const noRepo = await run(argv, { env: managedEnv({ BOSS_REPO_ID: '' }) })
       assert.equal(noRepo.exitCode, 0)
       assert.equal(`${noRepo.result.action}/${noRepo.result.reason}`, 'skipped/no-repo-id')
@@ -765,8 +677,6 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
 
   it('--dry-run prints the argv and issues no boss call', async () => {
     for (const argv of [
-      ['next', '--stage', 'plan', '--dry-run'],
-      ['run-next', '--stage', 'plan', '--dry-run'],
       ['arm-verify', '--pr', '7', '--dry-run'],
       ['phase', 'building', '--dry-run'],
     ]) {
@@ -782,16 +692,12 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
     for (const argv of [
       [],
       ['bogus'],
-      ['next'],
-      ['next', '--stage', 'deploy'],
-      ['run-next', '--stage'],
       ['arm-verify'],
       ['arm-verify', '--pr', 'abc'],
       ['arm-verify', '--pr', '0'],
       ['phase'],
       ['phase', 'a', 'b'],
       ['phase', 'x', '--stage', 'plan'],
-      ['next', '--stage', 'plan', '--pr', '1'],
     ]) {
       const { exitCode, line } = await run(argv)
       assert.equal(exitCode, EXIT_USAGE, JSON.stringify(argv))

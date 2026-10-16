@@ -4362,6 +4362,7 @@ func run(opts runOpts) error {
 		// an informational check (BOS-483). server.New ran above before the proxy
 		// existed, so wire the provider now via a setter.
 		srv.SetPassthroughStatsProvider(ps)
+		srv.SetFixedPortStatusProvider(ps)
 		log.Info().Int("port", ps.Port()).Int("configured_port", settings.ManagedAccounts.FailoverProxyPort()).
 			Msg("failover proxy listening on 127.0.0.1 fixed port (survives daemon restart; falls back to ephemeral on collision; injection gated on managed_accounts.enabled + managed_accounts.failover_proxy_enabled, both default true)")
 	}

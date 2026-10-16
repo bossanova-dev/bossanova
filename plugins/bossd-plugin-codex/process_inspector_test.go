@@ -311,3 +311,74 @@ func TestOSProcessInspectorWorksWithoutSystemDirsOnPATH(t *testing.T) {
 	}
 	t.Fatalf("OpenFiles(%d) = %v, want it to include the held file %s", pid, files, want)
 }
+
+// TestOSProcessInspectorExitedPIDHoldsNothing pins the race behind delta's
+// "codex process open-file probe failed; rollout fd unreadable": the
+// descendant tree is a `ps` snapshot, and a short-lived child that exits
+// before its own probe made lsof exit 1 with no output (measured on delta:
+// `lsof -p <dead pid> -Fn` prints nothing, rc=1). One such child turned a
+// whole tree with no rollout open yet into fdOutcomeProbeFailed. A process
+// that no longer exists holds no files, so the probe answers empty, not error.
+func TestOSProcessInspectorExitedPIDHoldsNothing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		if _, err := exec.LookPath(inspectTool("lsof")); err != nil {
+			t.Skip("lsof not installed on this host")
+		}
+	}
+	child := exec.Command("true")
+	if err := child.Run(); err != nil {
+		t.Fatal(err)
+	}
+	pid := child.Process.Pid
+	files, err := osProcessInspector{}.OpenFiles(pid)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("OpenFiles(exited %d) = %v, %v; want no files and no error", pid, files, err)
+	}
+
+	root := t.TempDir()
+	insp := &fakeProcessInspector{
+		descendants: map[int][]int{100: {100, pid}},
+		openFiles:   map[int][]string{100: {"/var/log/system.log"}},
+	}
+	wrapped := exitedChildInspector{fake: insp, exited: pid}
+	if _, _, outcome := resolveInteractiveSessionIDByPIDAt(wrapped, root, t.TempDir(), 100); outcome != fdOutcomeNoRolloutFDOpen {
+		t.Fatalf("outcome = %v, want fdOutcomeNoRolloutFDOpen: a vanished child is not a probe failure", outcome)
+	}
+}
+
+// exitedChildInspector serves the fake tree but probes the exited pid with the
+// real osProcessInspector, so the classification under test is production's.
+type exitedChildInspector struct {
+	fake   *fakeProcessInspector
+	exited int
+}
+
+func (e exitedChildInspector) Descendants(pid int) []int { return e.fake.Descendants(pid) }
+func (e exitedChildInspector) OpenFiles(pid int) ([]string, error) {
+	if pid == e.exited {
+		return osProcessInspector{}.OpenFiles(pid)
+	}
+	return e.fake.OpenFiles(pid)
+}
+
+// TestResolveByPIDNeverBindsAnotherWorktreesRollout pins the cross-repo
+// hardening: a pane's process tree holding only a rollout recorded for another
+// worktree (another repo's chat) used to bind it as the newest candidate, and
+// the chat would then read that repo's transcript. Process ownership does not
+// make a foreign conversation this chat's, so the tree reports no rollout of
+// its own and a recovery caller falls through to the cwd-filtered scan.
+func TestResolveByPIDNeverBindsAnotherWorktreesRollout(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	madverts := filepath.Join(t.TempDir(), "madverts-core", "cron-mv-sweep-build-1792103581")
+	freshClaim := t.TempDir()
+	foreign := writeSessionMetaRollout(t, root, uuidB, freshClaim, "codex-tui", time.Now())
+
+	insp := fakeProcessInspector{
+		descendants: map[int][]int{100: {100, 200}},
+		openFiles:   map[int][]string{200: {foreign}},
+	}
+	id, _, outcome := resolveInteractiveSessionIDByPIDAt(insp, root, madverts, 100)
+	if outcome != fdOutcomeNoRolloutFDOpen || id != "" {
+		t.Fatalf("resolve = %q, %v; want no binding (fdOutcomeNoRolloutFDOpen) for a rollout recorded in %s", id, outcome, freshClaim)
+	}
+}

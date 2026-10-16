@@ -24,8 +24,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
-	"github.com/recurser/boss/internal/prverdict"
-	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -41,21 +39,32 @@ type ChatPickerModel struct {
 	daemonStatuses   map[string]string    // agent_session_id → status string from daemon heartbeats
 	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time from daemon
 	// daemonWaitingReasons maps agent_session_id → why that chat is parked on an
-	// external event (BOS-668). Rendered as the session-detail waiting line so an
-	// operator can see WHY a chat is idle-looking without opening it.
+	// external event (BOS-668). It decides each waiting chat's STATUS cell and
+	// the armed line [enter] carries to the launch screen.
 	daemonWaitingReasons map[string]string
 	// daemonPhases carries the skill-reported working phase from status polling.
 	daemonPhases map[string]string
-	// armedCallbacks maps agent_session_id → the GitHub callback that waiting
-	// chat is parked on (BOS-1517), matched to the daemon's waiting reason.
+	// armedCallbacks maps agent_session_id → that waiting chat's live GitHub
+	// callbacks (BOS-1517), listed under the daemon's waiting reason.
 	// armedKeys is the waiting (chat, reason) set last fetched for, so a steady
 	// poll issues no ListGithubCallbacks. See chatpicker_armed.go.
-	armedCallbacks map[string]*pb.GithubCallback
+	armedCallbacks map[string]listedCallbacks
 	armedKeys      []waitKey
 	// armedRetriedKeys is the waiting set whose failed fetch was already
 	// retried once, so a transient error recovers on the next poll while a
 	// persistent one (an older daemon) costs at most one extra fetch per set.
 	armedRetriedKeys []waitKey
+	// armedFetchedAt is when the last ListGithubCallbacks fetch was issued, so a
+	// steady set showing "done" is re-listed every armedDoneRelist.
+	armedFetchedAt time.Time
+	// now is the picker's clock; nil means time.Now (tests substitute it).
+	now func() time.Time
+
+	timeline          []*pb.TimelineStep
+	timelineKey       timelineKey
+	timelineRequested bool
+	fullQuestion      string
+	neededOffset      int
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
@@ -70,14 +79,14 @@ type ChatPickerModel struct {
 
 	// optimisticArchiveLatch is a short-lived local latch set the moment a
 	// TUI-initiated merge succeeds (mergeResultMsg) on an archive-after-merge
-	// repo, so the detail view shows "Archiving…" with no flicker before the
+	// repo, so the detail view shows the pending status above its actions before the
 	// daemon's authoritative archive_pending signal round-trips. The steady-state
 	// signal is m.session.GetArchivePending() (daemon-driven); the two are OR'd
 	// where archiving is rendered. Kept distinct from the daemon signal so a
 	// steady-state poll can't overwrite the optimism. Cleared on
 	// archived/navigation, when the repo disables archive-after-merge, and — the
 	// handoff that bounds it — the moment a poll first reports archive_pending
-	// true (the daemon signal then drives the spinner), so a daemon-side archive
+	// true (the daemon signal then drives the status line), so a daemon-side archive
 	// that sets then clears archive_pending without archiving cannot leave it
 	// stuck. Replaces the old inferred autoArchiving heuristic that showed a
 	// permanent false spinner for resurrected merged sessions (BOS-425).
@@ -102,13 +111,8 @@ type ChatPickerModel struct {
 
 	// In-flight spinners for the async RPCs.
 	merging   bool
-	approving bool
 	archiving bool
 	archived  bool
-	// approved latches once an approval of this session's park succeeds, so
-	// [m]erge is not offered again while the session still reads parked
-	// until verify re-checks it.
-	approved bool
 
 	// Agents loaded once at picker construction. Drives the per-chat
 	// agent-select sub-phase shown when the user presses [n] (new chat)
@@ -248,50 +252,25 @@ func (m ChatPickerModel) canOpenTracker() bool {
 // offering [m]erge in that state only leads the user into a confirm dialog
 // that errors. There is no auto-merge/merge-when-ready queue today, so the
 // affordance stays gated on the green states the backend will actually accept.
+//
+// A fix row never offers it: what needs fixing is fixed in a chat, not merged
+// over. Rows whose attention offers MERGE bind [m] there instead.
 func (m ChatPickerModel) canMerge() bool {
 	// A merge already in flight hides the [m]erge affordance: m.merging is set
 	// when the user confirms a merge and cleared when the mergeResultMsg lands,
 	// so the "Merging PR #N…" feedback line stands in until the RPC resolves.
-	if m.merging || m.approving {
+	if m.merging {
 		return false
 	}
 	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
 		return false
 	}
+	if m.session.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX {
+		return false
+	}
 	status := m.session.GetDisplayStatus()
 	return status == pb.DisplayStatus_DISPLAY_STATUS_PASSING ||
 		status == pb.DisplayStatus_DISPLAY_STATUS_APPROVED
-}
-
-// canApprove reports whether [m] approves the session's verify park instead of
-// merging: the PR is parked `needs human:` by verify and no approval is in
-// flight or already done here. Approve hands the park back to verify, which
-// re-checks and merges, so it takes the merge key. Both the action bar and the
-// `m` key read this predicate.
-func (m ChatPickerModel) canApprove() bool {
-	if m.merging || m.approving || m.approved || m.merged {
-		return false
-	}
-	return m.session != nil && m.session.GetPrNumber() != 0 && isVerifyParkAttention(m.session)
-}
-
-// approveConfirm is the [m]erge confirmation on a verify-parked PR, worded by
-// prverdict from the park codes in the session's verify-park attention.
-// overridesFailure means a code reports a failure, so merging is not the
-// default choice.
-func (m ChatPickerModel) approveConfirm() (lines []string, overridesFailure bool) {
-	codes := displaystatus.VerifyParkSummaryCodes(m.session.GetAttentionStatus().GetSummary())
-	return prverdict.MergeConfirm(int(m.session.GetPrNumber()), codes)
-}
-
-// confirmExtraLines is how many lines the open confirmation renders beyond the
-// single prompt line every confirm shares, so tableHeight reserves them.
-func (m ChatPickerModel) confirmExtraLines() int {
-	if m.confirm != confirmApprove {
-		return 0
-	}
-	lines, _ := m.approveConfirm()
-	return max(len(lines)-1, 0)
 }
 
 // canRename reports whether the [r]ename action should be available — a chat is
@@ -302,7 +281,7 @@ func (m ChatPickerModel) canRename() bool {
 	if m.loading || m.confirm != confirmNone {
 		return false
 	}
-	if m.merging || m.approving || m.archiving || m.switching || m.deletingAgentSessionID != "" {
+	if m.merging || m.archiving || m.switching || m.deletingAgentSessionID != "" {
 		return false
 	}
 	return m.selectedChat() != nil
@@ -312,7 +291,7 @@ func (m ChatPickerModel) canRename() bool {
 // screen, so App leaves ctrl+x alone rather than aliasing it onto Esc (BOS-660):
 // inside a text field Esc cancels the edit, and ctrl+x is a line-editing key.
 func (m ChatPickerModel) textEntryActive() bool {
-	return m.err == nil && (m.renaming || m.attentionAction.note.Active())
+	return m.err == nil && m.renaming
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
@@ -338,6 +317,19 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.buildTableRows()
 		}
 		return m, cmd
+
+	case sessionTimelineMsg:
+		if msg.key == m.timelineKey {
+			m.timeline, m.fullQuestion = msg.steps, msg.question
+			m.table.SetHeight(m.tableHeight())
+		}
+		return m, nil
+
+	case chatPickerReply:
+		if msg.sessionID != m.sessionID {
+			return m, nil
+		}
+		return m.Update(msg.msg)
 
 	case chatPickerSessionMsg:
 		return m.handleSession(msg)
@@ -384,9 +376,6 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case mergeResultMsg:
 		return m.handleMergeResult(msg)
-
-	case approveResultMsg:
-		return m.handleApproveResult(msg)
 
 	case archiveResultMsg:
 		return m.handleArchiveResult(msg)
@@ -453,11 +442,6 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the same reason the trash view does it: so paste can never be mistaken for
 	// a list shortcut. Inert unless the rename prompt is open.
 	case tea.PasteMsg:
-		if m.attentionAction.note.Active() {
-			var cmd tea.Cmd
-			m.attentionAction, cmd = m.attentionAction.update(msg)
-			return m, cmd
-		}
 		if !m.renaming {
 			return m, nil
 		}

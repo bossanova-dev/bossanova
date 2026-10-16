@@ -189,6 +189,19 @@ func IsPendingVerify(c CheckResult) bool {
 	return c.Name == VerifyStatusContext && c.Status != CheckStatusCompleted
 }
 
+// VerifyPassed reports whether checks carry a completed, successful
+// boss/verify status: the verify stage passed the head the checks were read
+// on, itself or through an operator's approval of its park.
+func VerifyPassed(checks []CheckResult) bool {
+	for _, c := range checks {
+		if c.Name == VerifyStatusContext && c.Status == CheckStatusCompleted &&
+			c.Conclusion != nil && *c.Conclusion == CheckConclusionSuccess {
+			return true
+		}
+	}
+	return false
+}
+
 // ClassifyVerify derives the verify phase from a check set. A pending
 // boss/verify whose description starts "needs human" (case-insensitive,
 // leading whitespace ignored, colon optional) is NeedsHuman with the trimmed

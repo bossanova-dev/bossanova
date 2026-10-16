@@ -824,19 +824,19 @@ func skillDriftEntriesWithDirection(repoRoot, dir string, entries []libskillinst
 
 const skillRemedyUnverifiedNote = "reinstall direction unverified: no checkout history to compare the installed copy against"
 
-const skillRemedyWithheldLead = "reinstall withheld — it would overwrite installed content this checkout cannot restore:"
+const skillRemedyWithheldLead = "reinstall withheld [lost] — it would overwrite installed content this checkout cannot restore:"
 
 // skillRemedyDowngradeLead is the withheld lead when every withheld path is
 // newer than this checkout rather than lost to it: the content is restorable
 // from origin/HEAD, but a reinstall from here would replace it with an older
 // revision. It keeps the "reinstall withheld" prefix consumers key on.
-const skillRemedyDowngradeLead = "reinstall withheld — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:"
+const skillRemedyDowngradeLead = "reinstall withheld [downgrade] — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:"
 
 // skillRemedyUndecidedLead is the withheld lead for a safety decision that
 // could not be computed at all. Failing to read the installed tree while
 // deciding whether a reinstall destroys it is not evidence that it does not,
 // so it withholds in the same direction as a known loss.
-const skillRemedyUndecidedLead = "reinstall withheld — the installed-vs-checkout comparison failed, so whether a reinstall would overwrite unrecoverable content is undecided"
+const skillRemedyUndecidedLead = "reinstall withheld [undecided] — the installed-vs-checkout comparison failed, so whether a reinstall would overwrite unrecoverable content is undecided"
 
 // skillRemedyNextActionDestroys and skillRemedyNextActionUndecided are the
 // operator's way out of a refusal. Every other outcome in this command family
@@ -853,34 +853,83 @@ const skillRemedyNextActionDowngrade = "next: update this checkout to origin/HEA
 // skillRemedyAdvice is a composed reinstall prescription: either a runnable
 // command or an explicit refusal naming what the command would have destroyed.
 type skillRemedyAdvice struct {
-	command    string
-	withheld   bool
-	unverified bool
-	// lead overrides the withheld headline when nothing could be enumerated.
-	lead     string
-	destroys []skillDriftEntry
-	// downgrade marks a refusal whose every withheld path is newer than this
-	// checkout, so the way out is updating the checkout, not moving files.
-	downgrade bool
+	command       string
+	unverified    bool
+	refusal       skillRemedyRefusal
+	withheldPaths []skillDriftEntry
+}
+
+type skillRemedyRefusal int
+
+const (
+	skillRefusalNone skillRemedyRefusal = iota
+	skillRefusalLost
+	skillRefusalDowngrade
+	skillRefusalUndecided
+)
+
+func (r skillRemedyRefusal) String() string {
+	switch r {
+	case skillRefusalNone:
+		return "none"
+	case skillRefusalLost:
+		return "lost"
+	case skillRefusalDowngrade:
+		return "downgrade"
+	case skillRefusalUndecided:
+		return "undecided"
+	default:
+		return "undecided"
+	}
+}
+
+func (d skillDriftDirection) refusal() skillRemedyRefusal {
+	switch d {
+	case skillDriftLossless, skillDriftBehind:
+		return skillRefusalNone
+	case skillDriftAhead:
+		return skillRefusalDowngrade
+	case skillDriftUnrecoverable, skillDriftUnknown:
+		return skillRefusalLost
+	default:
+		return skillRefusalLost
+	}
+}
+
+func (a skillRemedyAdvice) withheld() bool {
+	return a.refusal != skillRefusalNone
 }
 
 // withheldLead is the headline for a refusal, naming why it refused.
 func (a skillRemedyAdvice) withheldLead() string {
-	if a.lead != "" {
-		return a.lead
+	switch a.refusal {
+	case skillRefusalNone:
+		return ""
+	case skillRefusalLost:
+		return skillRemedyWithheldLead
+	case skillRefusalDowngrade:
+		return skillRemedyDowngradeLead
+	case skillRefusalUndecided:
+		return skillRemedyUndecidedLead
+	default:
+		return skillRemedyUndecidedLead
 	}
-	return skillRemedyWithheldLead
 }
 
 // nextAction is what the operator does about a refusal.
 func (a skillRemedyAdvice) nextAction() string {
-	if len(a.destroys) == 0 {
+	switch a.refusal {
+	case skillRefusalNone:
+		return ""
+	case skillRefusalLost:
+		return skillRemedyNextActionDestroys
+	case skillRefusalDowngrade:
+		return skillRemedyNextActionDowngrade
+	case skillRefusalUndecided:
+		return skillRemedyNextActionUndecided
+	default:
 		return skillRemedyNextActionUndecided
 	}
-	if a.downgrade {
-		return skillRemedyNextActionDowngrade
-	}
-	return skillRemedyNextActionDestroys
 }
 
 // composeSkillInstallRemedy is the single decision point every drift surface
@@ -899,30 +948,19 @@ func composeSkillInstallRemedy(payload selectedSkillPayload, entries []skillDrif
 	if !ancestry {
 		return skillRemedyAdvice{command: command, unverified: true}
 	}
-	var destroys []skillDriftEntry
-	lost := false
+	advice := skillRemedyAdvice{command: command}
 	for _, entry := range entries {
-		switch entry.direction {
-		case skillDriftLossless, skillDriftBehind:
-			// A reinstall here adds or moves forward; nothing is lost.
-		case skillDriftAhead:
-			// Restorable from origin/HEAD, but a reinstall from here moves it
-			// backwards, so the command is withheld all the same.
-			destroys = append(destroys, entry)
-		case skillDriftUnrecoverable, skillDriftUnknown:
-			destroys = append(destroys, entry)
-			lost = true
+		refusal := entry.direction.refusal()
+		if refusal == skillRefusalNone {
+			continue
+		}
+		advice.withheldPaths = append(advice.withheldPaths, entry)
+		// A genuine loss anywhere keeps the destructive refusal, regardless of order.
+		if advice.refusal == skillRefusalNone || refusal == skillRefusalLost {
+			advice.refusal = refusal
 		}
 	}
-	if len(destroys) == 0 {
-		return skillRemedyAdvice{command: command}
-	}
-	if !lost {
-		// Every withheld path is merely newer. Any genuine loss alongside it
-		// keeps the stricter destructive lead and next action instead.
-		return skillRemedyAdvice{withheld: true, destroys: destroys, lead: skillRemedyDowngradeLead, downgrade: true}
-	}
-	return skillRemedyAdvice{withheld: true, destroys: destroys}
+	return advice
 }
 
 func (a skillRemedyAdvice) runLine() string {
@@ -935,14 +973,14 @@ func (a skillRemedyAdvice) runLine() string {
 
 // inline renders the advice as a clause appended to a one-line drift warning.
 func (a skillRemedyAdvice) inline() string {
-	if !a.withheld {
+	if !a.withheld() {
 		return a.runLine()
 	}
-	if len(a.destroys) == 0 {
+	if len(a.withheldPaths) == 0 {
 		return a.withheldLead() + "; " + a.nextAction()
 	}
-	paths := make([]string, 0, len(a.destroys))
-	for _, entry := range a.destroys {
+	paths := make([]string, 0, len(a.withheldPaths))
+	for _, entry := range a.withheldPaths {
 		paths = append(paths, entry.label())
 	}
 	return a.withheldLead() + " " + strings.Join(paths, ", ") + "; " + a.nextAction()
@@ -950,12 +988,12 @@ func (a skillRemedyAdvice) inline() string {
 
 // lines renders the advice as indented report lines under a drift verdict.
 func (a skillRemedyAdvice) lines(indent string) []string {
-	if !a.withheld {
+	if !a.withheld() {
 		return []string{indent + a.runLine()}
 	}
-	out := make([]string, 0, len(a.destroys)+2)
+	out := make([]string, 0, len(a.withheldPaths)+2)
 	out = append(out, indent+a.withheldLead())
-	for _, entry := range a.destroys {
+	for _, entry := range a.withheldPaths {
 		out = append(out, indent+"  "+entry.label())
 	}
 	return append(out, indent+a.nextAction())
@@ -980,13 +1018,13 @@ func skillCheckRemedyAdvice(payload selectedSkillPayload, dir string, installed 
 	if err != nil {
 		// The failure happened while computing the safety decision, so it is
 		// neither the no-ancestry case nor a clean one: surface it and refuse.
-		return skillRemedyAdvice{withheld: true, lead: skillRemedyUndecidedLead}, fmt.Errorf("resolve reinstall safety: %w", err)
+		return skillRemedyAdvice{refusal: skillRefusalUndecided}, fmt.Errorf("resolve reinstall safety: %w", err)
 	}
 	if len(report.Entries) == 0 {
 		// The installed tree is stale against the payload yet matches the
 		// checkout source, so it moved under us. Nothing enumerable means
 		// nothing decided, not that the reinstall is safe.
-		return skillRemedyAdvice{withheld: true, lead: skillRemedyUndecidedLead}, nil
+		return skillRemedyAdvice{refusal: skillRefusalUndecided}, nil
 	}
 	return composeSkillInstallRemedy(payload, skillDriftEntriesWithDirection(repoRoot, dir, report.Entries), true, true), nil
 }

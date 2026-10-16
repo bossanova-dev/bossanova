@@ -18,10 +18,12 @@ import (
 	"github.com/recurser/bossd/internal/status"
 )
 
-// EvidenceSource serves a session's current-head verify evidence summary.
+// EvidenceSource serves a session's current-head verify evidence summary and
+// the open checklist items its verify park note recorded on head.
 // *evidence.Reader satisfies it.
 type EvidenceSource interface {
 	Entry(sessionID string) (evidence.Entry, bool)
+	OpenItems(sessionID, head string) []string
 }
 
 // timelineRotationEventLimit bounds the rotation audit read. A session that

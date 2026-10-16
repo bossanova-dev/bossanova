@@ -133,7 +133,7 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 		return s.Render(sp.View() + displaystatus.VerifyingLabel)
 	case pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
 		out := displaystatus.VerifyParkOutput(displaystatus.VerifyParkSummaryCodes(sess.GetAttentionStatus().GetSummary()))
-		return styleForIntent(out.Intent).Render(out.Label)
+		return styleForIntent(out.Intent).Render(tuiStatusLabel(out.Label))
 	default:
 		return ""
 	}
@@ -143,14 +143,24 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 // composite display fields (DisplayLabel/DisplayIntent/DisplaySpinner) computed
 // by bossd. Clients no longer recompose — they just style.
 func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
-	if sess == nil {
+	if sess == nil || sess.GetDisplayLabel() == "" {
 		return ""
 	}
-	label := sess.GetDisplayLabel()
+	label := tuiStatusLabel(sess.GetDisplayLabel())
 	if sess.GetDisplaySpinner() {
 		label = sp.View() + label
 	}
 	return styleForIntent(sess.GetDisplayIntent()).Render(label)
+}
+
+// tuiStatusLabel is the text the TUI shows for a served status label. A
+// sign-off park reads "review", like the attention board's REVIEW cell. The API
+// keeps "needs sign-off": web filters and the version transforms key on it.
+func tuiStatusLabel(label string) string {
+	if rest, ok := strings.CutPrefix(label, displaystatus.NeedsSignOffLabel); ok {
+		return "review" + rest
+	}
+	return label
 }
 
 // sessionHint is one warning sub-row plus its BOS-855 demotability.
@@ -201,6 +211,7 @@ func sessionWarningHints(sess *pb.Session) []sessionHint {
 			signOff := false
 			if isVerifyParkAttention(sess) {
 				hint, signOff = displaystatus.VerifyParkHint(hint)
+				hint = tuiStatusLabel(hint)
 			}
 			hints = append(hints, sessionHint{
 				Text:      hint,
@@ -842,9 +853,6 @@ func shortDuration(d time.Duration) string {
 // Returns "" when the session has no hints, so callers can skip rendering
 // entirely (no empty block, no layout shift).
 func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.ClaudeChat, width int) string {
-	if a := sess.GetAttention(); a != nil {
-		return styleSubtle.Width(width).Render(a.GetSentence())
-	}
 	hints := sessionWarningHints(sess)
 	// A tmux launch failure is the row's only carrier of that state, so it is
 	// exempt from the recessive treatment.

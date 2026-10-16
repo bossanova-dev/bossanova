@@ -7,11 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/displaystatus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -28,13 +33,13 @@ func TestHomeAttentionBoard(t *testing.T) {
 	h.width, h.height = 120, 50
 	h.sessions = []*pb.Session{
 		{Id: "progress", Title: "Building feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "building"}},
-		{Id: "review", Title: "Review feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Review the diff carefully", Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE}}},
+		{Id: "review", Title: "Review feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Database migration", Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE}}},
 		{Id: "fix", Title: "Repair feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Log in again"}},
 		{Id: "done", Title: "Finished feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_DONE}},
 	}
 	h.buildTableRows()
 	screen := ansi.Strip(h.table.View())
-	for _, want := range []string{"NEEDS YOU · 2", "IN PROGRESS · 1", "Review the diff", "building"} {
+	for _, want := range []string{"NEEDS YOU · 2", "IN PROGRESS · 1", "Database migration", "building"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("missing %q in:\n%s", want, screen)
 		}
@@ -59,7 +64,7 @@ func TestHomeAttentionGolden(t *testing.T) {
 			h.table.SetCursor(row)
 			h.buildTableRows()
 			left, nav, quit := h.sessionTableFooterActions()
-			screen := ansi.Strip(h.table.View()) + "\n" + strings.Join(append(append(left, nav...), quit...), "  ") + "\n"
+			screen := ansi.Strip(h.boardView()) + "\n" + actionBarText(left, nav, quit) + "\n"
 			path := filepath.Join("testdata", fmt.Sprintf("home-attention-%d.golden", width))
 			if os.Getenv("UPDATE_GOLDEN") == "1" {
 				if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
@@ -121,8 +126,8 @@ func TestHomeAttentionOrderingAndSections(t *testing.T) {
 		h.sessions = []*pb.Session{{Id: "one", Attention: &pb.SessionAttention{Kind: kind, Sentence: "Read this", ProgressLabel: "building"}}}
 		h.buildTableRows()
 		screen := ansi.Strip(h.table.View())
-		if strings.Contains(screen, "NEEDS YOU") == strings.Contains(screen, "IN PROGRESS") {
-			t.Fatalf("expected exactly one section: %s", screen)
+		if strings.Contains(screen, "NEEDS YOU") || strings.Contains(screen, "IN PROGRESS") {
+			t.Fatalf("a one-group board must not title its group: %s", screen)
 		}
 	}
 }
@@ -140,9 +145,8 @@ func TestHomeAttentionSentenceAndLegacyHints(t *testing.T) {
 			}
 		}
 	}
-	block := ansi.Strip(selectedSessionWarningBlock(s, nil, 30))
-	if !strings.Contains(block, "word") || strings.Contains(block, "stale warning") {
-		t.Fatalf("details=%s", block)
+	if block := (ChatPickerModel{session: s}).legacyWarningBlock(); block != "" {
+		t.Fatalf("details view rendered legacy hints beside attention: %q", ansi.Strip(block))
 	}
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 120
@@ -176,7 +180,7 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	h.table.SetCursor(row)
 	h.buildTableRows()
 	left, _, _ = h.sessionTableFooterActions()
-	if want := []string{"[n]ew session", "[y] approve", "[b] send back", "[g] github", "[v] video"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[v] video", "[m] merge", "[/] filter"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("review footer=%v", left)
 	}
 
@@ -214,7 +218,7 @@ func TestHomeAttentionNotificationEdges(t *testing.T) {
 		{"CI progress", progress, progress, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := len(newlyNeedsYouSessions([]*pb.Session{tc.before}, []*pb.Session{tc.after})); got != tc.want {
+			if got := len(newlyNeedsYouSessions([]*pb.Session{tc.before}, []*pb.Session{tc.after}, nil)); got != tc.want {
 				t.Fatalf("got %d want %d", got, tc.want)
 			}
 		})
@@ -223,7 +227,7 @@ func TestHomeAttentionNotificationEdges(t *testing.T) {
 		kind pb.AttentionKind
 		want string
 	}{
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "#42 needs you · review · Please approve this change"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "#42 needs you · Please approve this change"},
 		{pb.AttentionKind_ATTENTION_KIND_FIX, "#42 needs a fix · Please approve this change"},
 		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "Please approve this change"},
 		{pb.AttentionKind_ATTENTION_KIND_MERGE, "#42 is ready to merge"},
@@ -234,17 +238,58 @@ func TestHomeAttentionNotificationEdges(t *testing.T) {
 	}
 }
 
+func TestHomeAttentionNotifiesAParkOnlyIfTheBoardHasNotShownIt(t *testing.T) {
+	session := func(att *pb.SessionAttention) []*pb.Session {
+		n := int32(42)
+		return []*pb.Session{{Id: "one", PrNumber: &n, Attention: att}}
+	}
+	park := func(codes ...string) []*pb.Session {
+		return session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Review left must-fix findings open · send it back to fix them", ParkCodes: codes})
+	}
+	signOff := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Watch the evidence video, then approve", ParkCodes: []string{"human-review:ui"}})
+	repairFailed := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Automatic repair failed", AlertKey: "repair:failed"})
+	progress := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS})
+	question := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "Which port?"})
+
+	type poll struct {
+		sessions   []*pb.Session
+		wantNotify bool
+	}
+	for _, tc := range []struct {
+		name  string
+		polls []poll
+	}{
+		{"dismissing a repair failure on a parked PR", []poll{{park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open"), false}}},
+		{"a question cleared over a parked PR", []poll{{park("ledger-open"), true}, {question, false}, {repairFailed, true}, {park("ledger-open"), false}}},
+		{"a park that arose under the alert", []poll{{progress, false}, {repairFailed, true}, {park("ledger-open"), true}}},
+		{"a sign-off that arose under the alert", []poll{{progress, false}, {repairFailed, true}, {signOff, true}}},
+		{"the park cleared and returned under the alert", []poll{{park("ledger-open"), true}, {progress, false}, {repairFailed, true}, {park("ledger-open"), true}}},
+		{"a different park under the alert", []poll{{park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open", "no-receipt"), true}}},
+		{"the park changing while it stays shown", []poll{{park("ledger-open"), true}, {park("ledger-open", "no-receipt"), false}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			for i, p := range tc.polls {
+				notified := h.notifyNewNeedsYou(p.sessions) != nil
+				h.sessions = p.sessions
+				if notified != p.wantNotify {
+					t.Fatalf("poll %d (%s): notified=%v, want %v", i, p.sessions[0].GetAttention().GetKind(), notified, p.wantNotify)
+				}
+			}
+		})
+	}
+}
+
 func TestHomeAttentionStatus(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	for _, tc := range []struct {
 		kind pb.AttentionKind
 		want string
 	}{
-		{pb.AttentionKind_ATTENTION_KIND_FIX, "fix"},
 		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question"},
 		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "review"},
-		{pb.AttentionKind_ATTENTION_KIND_MERGE, "merge"},
-		{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "building"},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, "✓ merge"},
+		{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ansi.Strip(h.spinner.View()) + "building"},
 	} {
 		s := &pb.Session{DisplayLabel: "passing", DisplaySpinner: true, Attention: &pb.SessionAttention{Kind: tc.kind, ProgressLabel: "building"}}
 		if got := ansi.Strip(h.renderSessionStatus(s)); got != tc.want {
@@ -273,5 +318,325 @@ func TestHomeAttentionMixedDaemon(t *testing.T) {
 	h.buildTableRows()
 	if h.selectedSessionID() != "legacy" {
 		t.Fatal("legacy selection lost after grouping")
+	}
+}
+
+func TestHomeMergeRowDropsSentenceThatRestatesItsStatus(t *testing.T) {
+	merge := &pb.Session{Id: "merge", Title: "Merge feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, Sentence: "Ready to merge"}}
+	review := &pb.Session{Id: "review", Title: "Review feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Database migration"}}
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width, h.height = 120, 30
+	h.sessions = []*pb.Session{merge, review}
+	h.buildTableRows()
+
+	screen := ansi.Strip(h.table.View())
+	if strings.Contains(screen, "Ready to merge") {
+		t.Fatalf("merge row repeats its status as a subline:\n%s", screen)
+	}
+	if !strings.Contains(screen, "Database migration") || !strings.Contains(screen, "✓ merge") {
+		t.Fatalf("review sentence or merge status missing:\n%s", screen)
+	}
+	if got := len(h.table.Rows()); got != 3 {
+		t.Fatalf("rows = %d, want 3: two primary rows and the review subline", got)
+	}
+	if h.tableDataRowCount() != len(h.table.Rows()) {
+		t.Fatalf("height accounting %d differs from rendered rows %d", h.tableDataRowCount(), len(h.table.Rows()))
+	}
+	if got := h.selectedSessionID(); got != "merge" {
+		t.Fatalf("selected %q, want the merge row first", got)
+	}
+	next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	h = next.(HomeModel)
+	if got := h.selectedSessionID(); got != "review" || h.table.Cursor() != 1 {
+		t.Fatalf("down from the one-row merge entry selected %q at row %d, want review at row 1", got, h.table.Cursor())
+	}
+	details := ChatPickerModel{session: merge, timeline: []*pb.TimelineStep{{Title: "CI passed", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE}}}
+	if block := ansi.Strip(details.timelineBlock()); !strings.Contains(block, "Ready to merge") {
+		t.Fatalf("details view lost the merge sentence: %q", block)
+	}
+}
+
+func TestHomeFixRowShowsTheStateThatNeedsFixing(t *testing.T) {
+	const (
+		danger  = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		blocked = pb.SessionState_SESSION_STATE_BLOCKED
+	)
+	fix := styleStatusDanger.Render("fix")
+	for _, tc := range []struct {
+		name   string
+		label  string
+		intent pb.DisplayIntent
+		state  pb.SessionState
+		pr     pb.DisplayStatus
+		want   string
+	}{
+		{"failing checks", "⨯ failing", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_FAILING, styleStatusDanger.Render("⨯ failing")},
+		{"blocked verify park", displaystatus.BlockedLabel, danger, 0, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, styleStatusDanger.Render("blocked")},
+		{"merge conflict", "⨯ conflict", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, styleStatusDanger.Render("⨯ conflict")},
+		{"changes requested", "⨯ rejected", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, styleStatusDanger.Render("⨯ rejected")},
+		{"failing checks on a blocked run", "⨯ failing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_FAILING, styleStatusDanger.Render("⨯ failing")},
+		{"daemon without a display label", "", pb.DisplayIntent_DISPLAY_INTENT_UNSPECIFIED, 0, 0, fix},
+		{"idle", "idle", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, fix},
+		{"waiting", displaystatus.WaitingLabel, pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, fix},
+		{"repairing", "repairing", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, fix},
+		{"merging", "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, fix},
+		// A rotation-incident FIX on a green PR: the label is not the problem.
+		{"passing checks", "✓ passing", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, 0, pb.DisplayStatus_DISPLAY_STATUS_PASSING, fix},
+		{"muted draft", "draft", pb.DisplayIntent_DISPLAY_INTENT_MUTED, 0, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, fix},
+		// The errored recolor serves a blocked run's every state as DANGER.
+		{"idle blocked run", "idle", danger, blocked, 0, fix},
+		{"passing checks on a blocked run", "✓ passing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_PASSING, fix},
+		{"waiting orphaned run", displaystatus.WaitingLabel, danger, pb.SessionState_SESSION_STATE_ORPHANED, 0, fix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.width, h.height = 120, 30
+			s := &pb.Session{Id: "fix", Title: "Repair feature", DisplayLabel: tc.label, DisplayIntent: tc.intent, State: tc.state, DisplayStatus: tc.pr, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Run stopped"}}
+			if got := h.renderSessionStatus(s); got != tc.want {
+				t.Fatalf("status = %q, want %q", got, tc.want)
+			}
+			h.sessions = []*pb.Session{s}
+			h.buildTableRows()
+			if screen := ansi.Strip(h.table.View()); !strings.Contains(screen, "Run stopped") {
+				t.Fatalf("fix row lost the sentence that says what to do:\n%s", screen)
+			}
+		})
+	}
+}
+
+func TestHomeSignOffParkReadsReview(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	s := &pb.Session{DisplayLabel: displaystatus.NeedsSignOffLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	if got, want := h.renderSessionStatus(s), styleStatusWarning.Render("review"); got != want {
+		t.Fatalf("sign-off park = %q, want the review cell %q", got, want)
+	}
+	review := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW}}
+	if got, want := h.renderSessionStatus(s), h.renderSessionStatus(review); got != want {
+		t.Fatalf("sign-off park %q differs from the attention review cell %q", got, want)
+	}
+}
+
+func TestHomeProgressStatusKeepsDisplayStyleAndSpinner(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	for _, tc := range []struct {
+		label  string
+		legacy *pb.Session
+	}{
+		{"working", &pb.Session{DisplayLabel: "working", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, DisplaySpinner: true}},
+		{"building", &pb.Session{DisplayLabel: "building", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, DisplaySpinner: true}},
+		{"checking 13/15", &pb.Session{DisplayLabel: "checking 13/15", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, DisplaySpinner: true}},
+		{"waiting", &pb.Session{DisplayLabel: "waiting", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO, DisplaySpinner: true}},
+		{"idle", &pb.Session{DisplayLabel: "idle", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}},
+	} {
+		s := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: tc.label}}
+		got := h.renderSessionStatus(s)
+		if want := renderDisplayStatus(tc.legacy, h.spinner); got != want {
+			t.Errorf("%s renders %q, want the display status styling %q", tc.label, got, want)
+		}
+		if strings.Contains(got, "\x1b[2m") {
+			t.Errorf("%s renders faint: %q", tc.label, got)
+		}
+	}
+
+	// The style is chosen from the label text, so build the labels where the
+	// daemon builds them: a reword in attention.progressLabel must fail here,
+	// not silently recolour the row.
+	for _, tc := range []struct {
+		name   string
+		in     attention.Input
+		intent pb.DisplayIntent
+		spin   bool
+	}{
+		{"running checks", attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 7, ChecksDone: 3}, pb.DisplayIntent_DISPLAY_INTENT_WARNING, true},
+		{"waiting on main CI", attention.Input{ParkCodes: []string{"base-ci-red"}}, pb.DisplayIntent_DISPLAY_INTENT_INFO, true},
+		{"waiting on the test stack", attention.Input{ParkCodes: []string{"waiting: stack-busy"}}, pb.DisplayIntent_DISPLAY_INTENT_INFO, true},
+		{"stopped", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED}, pb.DisplayIntent_DISPLAY_INTENT_MUTED, false},
+		{"idle", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE}, pb.DisplayIntent_DISPLAY_INTENT_WARNING, false},
+		{"working", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING}, pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, true},
+	} {
+		att := attention.Compute(tc.in)
+		if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
+			t.Fatalf("%s: Compute answered %v, want IN_PROGRESS", tc.name, att.GetKind())
+		}
+		got := h.renderSessionStatus(&pb.Session{Attention: att})
+		label := att.GetProgressLabel()
+		if tc.spin {
+			label = h.spinner.View() + label
+		}
+		if want := styleForIntent(tc.intent).Render(ansi.Truncate(label, homeStatusWidth, "…")); got != want {
+			t.Errorf("%s: Compute's label %q renders %q, want %v styling %q", tc.name, att.GetProgressLabel(), got, tc.intent, want)
+		}
+	}
+
+	h.width, h.height = 120, 30
+	labels := []string{"working", "checking 13/15"}
+	h.sessions = nil
+	for _, label := range labels {
+		h.sessions = append(h.sessions, &pb.Session{Id: label, Title: label, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: label}})
+	}
+	h.buildTableRows()
+	cells := func() []string {
+		var out []string
+		for _, row := range h.primarySessionRows() {
+			out = append(out, ansi.Strip(h.table.Rows()[row][4]))
+		}
+		return out
+	}
+	before := cells()
+	next, _ := h.Update(h.spinner.Tick())
+	h = next.(HomeModel)
+	after := cells()
+	for i, label := range labels {
+		if before[i] == after[i] || !strings.HasSuffix(before[i], label) || !strings.HasSuffix(after[i], label) {
+			t.Errorf("%s spinner did not advance on tick: before %q, after %q", label, before[i], after[i])
+		}
+	}
+}
+
+func TestHomeSectionTitlesOnlySeparateTwoGroups(t *testing.T) {
+	needs := func(id string) *pb.Session {
+		return &pb.Session{Id: id, Title: id, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Check it"}}
+	}
+	progress := func(id string) *pb.Session {
+		return &pb.Session{Id: id, Title: id, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "idle"}}
+	}
+	for _, tc := range []struct {
+		name     string
+		sessions []*pb.Session
+		titled   bool
+	}{
+		{"none", nil, false},
+		{"only needs you", []*pb.Session{needs("n1"), needs("n2")}, false},
+		{"only in progress", []*pb.Session{progress("p1"), progress("p2")}, false},
+		{"both", []*pb.Session{progress("p1"), needs("n1"), progress("p2"), needs("n2")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.width, h.height = 120, 40
+			h.sessions = tc.sessions
+			h.buildTableRows()
+
+			rows := h.table.Rows()
+			if h.tableDataRowCount() != len(rows) {
+				t.Fatalf("height accounting %d differs from rendered rows %d", h.tableDataRowCount(), len(rows))
+			}
+			titles := 0
+			for i, r := range rows {
+				title := ansi.Strip(r[2])
+				if !strings.HasPrefix(title, "NEEDS YOU · ") && !strings.HasPrefix(title, "IN PROGRESS · ") {
+					continue
+				}
+				titles++
+				if r[2] != styleStatusInfo.Render(title) {
+					t.Errorf("title %q is not in the info blue: %q", title, r[2])
+				}
+				if i == 0 || strings.Join(rows[i-1], "") != "" {
+					t.Errorf("title %q has no blank row above it", title)
+				}
+			}
+			if want := map[bool]int{true: 2, false: 0}[tc.titled]; titles != want {
+				t.Fatalf("titles = %d, want %d:\n%s", titles, want, ansi.Strip(h.table.View()))
+			}
+			if tc.titled {
+				board := strings.Split(ansi.Strip(h.boardView()), "\n")
+				repoAt := strings.Index(board[0], "REPO")
+				for _, line := range board {
+					for _, title := range []string{"NEEDS YOU · ", "IN PROGRESS · "} {
+						if at := strings.Index(line, title); at >= 0 && at != repoAt {
+							t.Errorf("%q starts at column %d, want the REPO column %d:\n%s", title, at, repoAt, strings.Join(board, "\n"))
+						}
+					}
+				}
+			}
+
+			var visited []string
+			for range h.sessions {
+				id := h.selectedSessionID()
+				if cursor, ok := h.tableCursorForSessionID(id); !ok || cursor != h.table.Cursor() {
+					t.Fatalf("cursor %d is not on a session's primary row (selected %q)", h.table.Cursor(), id)
+				}
+				visited = append(visited, id)
+				next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+				h = next.(HomeModel)
+			}
+			var want []string
+			for _, s := range h.sessions {
+				want = append(want, s.Id)
+			}
+			if !reflect.DeepEqual(visited, want) {
+				t.Fatalf("down visited %v, want every session once in board order %v", visited, want)
+			}
+		})
+	}
+}
+
+// TestHomeFooterActionsNeverShareAKey renders the action bar for every
+// attention shape the daemon computes, each linked to a tracker, under every
+// auth state, and fails when two actions claim one key.
+func TestHomeFooterActionsNeverShareAKey(t *testing.T) {
+	mergeable := true
+	inputs := map[string]*attention.Input{
+		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
+		"question":    {QuestionText: "which one?"},
+		"review":      {ParkCodes: []string{"human-review:ui"}, Evidence: &attention.Evidence{URL: "https://example.com/proof.mp4"}},
+		"blocked":     {ParkCodes: []string{"human-review:unproven"}},
+		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
+		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+		"legacy":      nil,
+	}
+	auths := []struct {
+		name     string
+		mgr      *auth.Manager
+		loggedIn bool
+	}{{"no auth", nil, false}, {"logged out", &auth.Manager{}, false}, {"logged in", &auth.Manager{}, true}}
+	offered := map[pb.AttentionAction]bool{}
+	keyOf := regexp.MustCompile(`\[([^\]]+)\]`)
+	for kind, in := range inputs {
+		var att *pb.SessionAttention
+		if in != nil {
+			in.HasTrackerLink = true
+			att = attention.Compute(*in)
+		}
+		for _, a := range att.GetActions() {
+			offered[a] = true
+		}
+		for _, a := range auths {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.width, h.height = 120, 30
+			h.authMgr, h.loggedIn = a.mgr, a.loggedIn
+			h.sessions = []*pb.Session{{Id: "s", Title: "session", Attention: att}}
+			h.buildTableRows()
+			left, nav, quit := h.sessionTableFooterActions()
+			claimed := map[string]string{}
+			for _, label := range slices.Concat(left, nav, quit) {
+				m := keyOf.FindStringSubmatch(label)
+				if m == nil {
+					t.Fatalf("%s/%s: action %q names no key", kind, a.name, label)
+				}
+				if prev, dup := claimed[m[1]]; dup {
+					t.Errorf("%s/%s: %q and %q both claim [%s]", kind, a.name, prev, label, m[1])
+				}
+				claimed[m[1]] = label
+			}
+		}
+
+		trackerURL := "https://linear.app/team/issue/BOS-1"
+		m := seedChatPicker(&chatPickerStub{}, statusWorking)
+		m.newTabSupported = true
+		m.session = &pb.Session{Id: "session-1", PrNumber: proto.Int32(42), TrackerUrl: &trackerURL, Attention: att}
+		left, middle, back := m.chatListActionGroups()
+		claimed := map[string]string{}
+		for _, label := range slices.Concat(left, middle, back) {
+			key := keyOf.FindStringSubmatch(label)[1]
+			if prev, dup := claimed[key]; dup {
+				t.Errorf("%s/details: %q and %q both claim [%s]", kind, prev, label, key)
+			}
+			claimed[key] = label
+		}
+	}
+	for _, b := range attentionActionBindings {
+		if !offered[b.action] {
+			t.Errorf("no state offers %v, so the matrix no longer covers every footer action", b.action)
+		}
 	}
 }

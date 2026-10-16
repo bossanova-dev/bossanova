@@ -79,12 +79,13 @@ func newFinishHarness(t *testing.T, chatIDs ...string) *finishHarness {
 		displayTracker: status.NewDisplayTracker(),
 		logger:         zerolog.Nop(),
 	}
+	h.srv.initDeferrers()
 	h.d = newArchiveDeferrer(h.chats, h.tracker, nil, h.sessions, h.exec.archive, zerolog.Nop())
 	h.d.settled = h.quiet.settled
 	h.d.fireBudget = finishRunBudget
 	h.d.now = h.clock.Now
 	h.d.interval = time.Hour
-	h.srv.finishDeferrerOnce.Do(func() { h.srv.finishDeferrer = h.d })
+	h.srv.finishDeferrer = h.d
 	return h
 }
 
@@ -316,12 +317,12 @@ func TestFinishRunNow_DeletedRowIsDone(t *testing.T) {
 // deferrer gets the lifecycle's quiet-log predicate and the finalize budget.
 func TestFinishDeferral_Wiring(t *testing.T) {
 	sessions := &deferralSessionStore{rows: map[string]*models.Session{}}
-	srv := &Server{
-		sessions:   sessions,
-		agentChats: newDeferralChatStore(),
-		lifecycle:  session.NewLifecycle(sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop()),
-		logger:     zerolog.Nop(),
-	}
+	srv := New(Config{
+		Sessions:   sessions,
+		AgentChats: newDeferralChatStore(),
+		Lifecycle:  session.NewLifecycle(sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop()),
+		Logger:     zerolog.Nop(),
+	})
 	a, f := srv.archiveDeferral(), srv.finishDeferral()
 	if a == f {
 		t.Fatal("finish and archive share one deferrer")
@@ -429,9 +430,9 @@ func TestNew_RegistersChatCreatedCancel(t *testing.T) {
 	h := newDeferralHarness(t, "chat-a")
 	lc := session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 	srv := New(Config{Lifecycle: lc, Sessions: h.sessions, AgentChats: h.chats, ChatStatus: h.tracker, DisplayTracker: h.display, Logger: zerolog.Nop()})
-	srv.archiveDeferrerOnce.Do(func() { srv.archiveDeferrer = h.d })
+	srv.archiveDeferrer = h.d
 	finish := newArchiveDeferrer(h.chats, h.tracker, nil, h.sessions, h.exec.archive, zerolog.Nop())
-	srv.finishDeferrerOnce.Do(func() { srv.finishDeferrer = finish })
+	srv.finishDeferrer = finish
 	h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
 	if out, err := srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{}); err != nil || !out.Pending {
 		t.Fatalf("archive = %+v, err = %v", out, err)

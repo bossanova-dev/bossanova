@@ -17,8 +17,7 @@ import (
 )
 
 // prFake is the daemon client behind `boss pr`. Every call lands in one ordered
-// log, so a test can assert the comment is posted before the chat is created
-// and the chat before the message is delivered.
+// log, so a test can assert the session is resolved before the verb runs.
 type prFake struct {
 	sessions []*pb.Session
 	listErr  error
@@ -26,48 +25,12 @@ type prFake struct {
 
 	approve    *pb.VerifyApproveResult
 	approveErr error
-	sendBack   *pb.SendBackSessionPRResponse
-	sendErr    error
 	verbs      []prVerbCall
-	notes      []string
-
-	chatTmux   string
-	recordErr  error
-	chatTitle  string
-	chatSessID string
-	sent       *pb.SendChatMessageRequest
-	sendResp   *pb.SendChatMessageResponse
-	deliverErr error
 }
 
 func (f *prFake) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ client.SessionReadOptions) ([]*pb.Session, error) {
 	f.log = append(f.log, "list")
 	return f.sessions, f.listErr
-}
-
-func (f *prFake) RecordChat(_ context.Context, sessionID, agentSessionID, title, _ string, _ pb.ChatRole, resume bool) (*pb.ClaudeChat, error) {
-	f.log = append(f.log, "record-chat")
-	f.chatTitle, f.chatSessID = title, sessionID
-	if resume {
-		return nil, errors.New("send-back must start a new chat, not resume one")
-	}
-	if f.recordErr != nil {
-		return nil, f.recordErr
-	}
-	tmux := f.chatTmux
-	return &pb.ClaudeChat{SessionId: sessionID, AgentSessionId: agentSessionID, Title: title, TmuxSessionName: tmux}, nil
-}
-
-func (f *prFake) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
-	f.log = append(f.log, "send-message")
-	f.sent = req
-	if f.deliverErr != nil {
-		return nil, f.deliverErr
-	}
-	if f.sendResp != nil {
-		return f.sendResp, nil
-	}
-	return &pb.SendChatMessageResponse{Delivered: true, TmuxSessionName: "tmux-1"}, nil
 }
 
 // prVerbCall is one daemon verify verb request.
@@ -83,16 +46,6 @@ func (f *prFake) ApproveSessionPR(_ context.Context, id string, dryRun bool) (*p
 		return nil, f.approveErr
 	}
 	return f.approve, nil
-}
-
-func (f *prFake) SendBackSessionPR(_ context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error) {
-	f.log = append(f.log, "send-back")
-	f.verbs = append(f.verbs, prVerbCall{id, dryRun})
-	f.notes = append(f.notes, note)
-	if f.sendErr != nil {
-		return nil, f.sendErr
-	}
-	return f.sendBack, nil
 }
 
 func prSession(id string, pr int32, origin, worktree string) *pb.Session {
@@ -187,8 +140,8 @@ func TestPrApprove(t *testing.T) {
 			t.Fatalf("verbs = %+v, want one approve of s-a", f.verbs)
 		}
 		want := "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-			"  ledger-open: review left must-fix findings open\n" +
-			"Approving overrode ledger-open (review left must-fix findings open); if that was not intended, boss pr send-back 7 \"<note>\" revokes the approval and sends the head back.\n" +
+			"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+			"Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh.\n" +
 			"The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
@@ -237,8 +190,8 @@ func TestPrApprove(t *testing.T) {
 			t.Fatal("--dry-run did not reach the daemon")
 		}
 		want := "Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" +
-			"  ledger-open: review left must-fix findings open\n" +
-			"Approving would override ledger-open (review left must-fix findings open); boss pr send-back 7 \"<note>\" sends the head back instead.\n"
+			"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+			"Approving would override ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section).\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
@@ -286,127 +239,6 @@ func TestPrApprove(t *testing.T) {
 	})
 }
 
-func TestPrSendBack(t *testing.T) {
-	sessions := []*pb.Session{prSession("s-a", 7, originA, "/wt/a")}
-
-	t.Run("a daemon timeout warns the note may already be posted, except on a dry run", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendErr: connect.NewError(connect.CodeDeadlineExceeded, errors.New("verify-gate timed out"))}
-		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "fix it")
-		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || !strings.Contains(err.Error(), "the note may already be posted") {
-			t.Fatalf("err = %v", err)
-		}
-		cmd, _ = prTestCmd(false)
-		err = prSendBack(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true}, "fix it")
-		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || strings.Contains(err.Error(), "may already be posted") {
-			t.Fatalf("dry run: err = %v", err)
-		}
-	})
-	posted := &pb.SendBackSessionPRResponse{IsPosted: true, CommentUrl: "https://github.com/acme/app/pull/7#issuecomment-1", HeadSha: "abc"}
-
-	t.Run("posts the comment, then starts a send back chat delivering the repair", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1"}
-		cmd, out := prTestCmd(false)
-		note := "The empty state copy is wrong."
-		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, note); err != nil {
-			t.Fatalf("prSendBack: %v", err)
-		}
-		if got := strings.Join(f.log, ","); got != "list,send-back,record-chat,send-message" {
-			t.Fatalf("call order = %s", got)
-		}
-		if f.notes[0] != note || f.verbs[0] != (prVerbCall{"s-a", false}) {
-			t.Fatalf("verb got %+v %q", f.verbs[0], f.notes[0])
-		}
-		if f.chatTitle != "send back" || f.chatSessID != "s-a" {
-			t.Fatalf("chat = %q in %q", f.chatTitle, f.chatSessID)
-		}
-		msg := f.sent.GetMessage()
-		if !strings.HasPrefix(msg, "/boss-repair 7\n") || !strings.Contains(msg, note) {
-			t.Fatalf("message = %q", msg)
-		}
-		if f.sent.GetAgentSessionId() == "" || !f.sent.GetSubmit() || !f.sent.GetWakeIfAsleep() {
-			t.Fatalf("send request = %+v", f.sent)
-		}
-		got := out.String()
-		if !strings.Contains(got, posted.GetCommentUrl()) || !strings.Contains(got, f.sent.GetAgentSessionId()) {
-			t.Fatalf("output %q must name the comment URL and the chat id", got)
-		}
-	})
-
-	t.Run("a refused comment starts no chat", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: &pb.SendBackSessionPRResponse{Reason: "pr-not-open"}}
-		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
-		if err == nil || !strings.Contains(err.Error(), "pr-not-open") {
-			t.Fatalf("err = %v", err)
-		}
-		if strings.Contains(strings.Join(f.log, ","), "record-chat") {
-			t.Fatal("a chat was started for a send-back that posted nothing")
-		}
-	})
-
-	t.Run("a chat with no live agent is an error naming the posted comment", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: ""}
-		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
-		if errorCodeFor(err) != codeAgentNotSpawned || !strings.Contains(err.Error(), posted.GetCommentUrl()) {
-			t.Fatalf("err = %v", err)
-		}
-		if strings.Contains(strings.Join(f.log, ","), "send-message") {
-			t.Fatal("delivered into a chat with nothing listening")
-		}
-	})
-
-	t.Run("a failed delivery is an error naming the chat to retry", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1", deliverErr: errors.New("pane gone")}
-		cmd, _ := prTestCmd(false)
-		err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "x")
-		if err == nil || !strings.Contains(err.Error(), "pane gone") || !strings.Contains(err.Error(), "boss chat send") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("--dry-run plans the comment and starts no chat", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: &pb.SendBackSessionPRResponse{IsPlanned: true, IsDryRun: true, HeadSha: "abc"}}
-		cmd, out := prTestCmd(false)
-		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7, dryRun: true}, "x"); err != nil {
-			t.Fatalf("prSendBack: %v", err)
-		}
-		if got := strings.Join(f.log, ","); got != "list,send-back" {
-			t.Fatalf("call order = %s", got)
-		}
-		if !strings.Contains(out.String(), "/boss-repair 7") {
-			t.Fatalf("dry-run output %q should show the repair it would deliver", out.String())
-		}
-	})
-
-	t.Run("an empty note is refused before any daemon call", func(t *testing.T) {
-		f := &prFake{sessions: sessions}
-		cmd, _ := prTestCmd(false)
-		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7}, "  "); errorCodeFor(err) != codeInvalidArgument {
-			t.Fatalf("err = %v", err)
-		}
-		if len(f.log) != 0 {
-			t.Fatalf("calls = %v", f.log)
-		}
-	})
-
-	t.Run("--json carries the comment, the chat and the delivery", func(t *testing.T) {
-		f := &prFake{sessions: sessions, sendBack: posted, chatTmux: "tmux-1"}
-		cmd, out := prTestCmd(true)
-		if err := prSendBack(context.Background(), cmd, f, prOptions{pr: 7, asJSON: true}, "x"); err != nil {
-			t.Fatalf("prSendBack: %v", err)
-		}
-		var env prSendBackJSON
-		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-			t.Fatalf("decode %q: %v", out.String(), err)
-		}
-		if env.Result.CommentURL != posted.GetCommentUrl() || env.Chat == nil || env.Chat.Title != "send back" || env.Chat.AgentSessionID == "" || env.Delivery == nil || !env.Delivery.Delivered {
-			t.Fatalf("envelope = %+v", env)
-		}
-	})
-}
-
 func TestPrVerbsRefuseInsideAnAgentChat(t *testing.T) {
 	orig := osGetenv
 	t.Cleanup(func() { osGetenv = orig })
@@ -416,7 +248,7 @@ func TestPrVerbsRefuseInsideAnAgentChat(t *testing.T) {
 		}
 		return ""
 	}
-	for _, verb := range []string{"approve", "send-back"} {
+	for _, verb := range []string{"approve"} {
 		cmd, _ := prTestCmd(false)
 		cmd.Use = verb
 		cmd.Flags().Bool("dry-run", false, "")
@@ -437,7 +269,10 @@ func TestPrVerbsRefuseInsideAnAgentChat(t *testing.T) {
 
 func TestPrCmdIsRegistered(t *testing.T) {
 	root := rootCmd()
-	for _, path := range [][]string{{"pr", "approve"}, {"pr", "send-back"}} {
+	if c, _, err := root.Find([]string{"pr", "send-back"}); err == nil && c.Name() == "send-back" {
+		t.Fatal("boss pr send-back is still registered; the operator removed send-back")
+	}
+	for _, path := range [][]string{{"pr", "approve"}} {
 		c, _, err := root.Find(path)
 		if err != nil || c.Name() != path[1] {
 			t.Fatalf("boss %s not registered: %v", strings.Join(path, " "), err)

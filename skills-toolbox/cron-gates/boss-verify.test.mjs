@@ -189,7 +189,7 @@ test('selection flags reach the candidates read verbatim; discovery reads past t
   // `--batch` bounds the actions, not discovery: the read always looks past the batch.
   assert.deepEqual(cand.args.slice(2), [
     '--limit',
-    '6',
+    '25',
     '--exclude-label',
     'infra',
     '--assignee=me',

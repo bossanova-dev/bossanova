@@ -921,20 +921,16 @@ older clients.
 
 ### Stage chaining
 
-A finished pipeline stage (plan, build, verify) handing its work straight to the next stage instead
-of leaving it for that stage's next scheduled tick. Chaining only **accelerates** work that still
-fires on schedule, so it is never fatal: a failed or skipped hand-off changes nothing about the
-finished stage's own outcome.
+The deferred verify callback from build to the same PR's `verify` chat. No stage starts another
+stage's scheduled job; each stage runs on the operator's schedule. Plan and verify end without
+starting another job.
 
-**Consent is the schedule itself.** A stage is chained into only when the repo has an enabled
-scheduled job for it, identified by the first skill named in the job's prompt matching that stage's
-skill exactly — a name that merely starts with it is a different skill. Starting the next job now
-also requires that exactly one job matches, otherwise the hand-off is ambiguous and nothing fires.
-The hand-off into verify is deferred rather than immediate: it arms a **Callback** on the session's
-chat titled `verify` that sends the verify request once checks pass, so verify judges a settled
-head. Everything that might pick that chat — the hand-off and the verify router — must agree on
-which chat it is, so they share one selection rule rather than each finding their own. Duplicate
-hand-offs are harmless because each downstream stage claims its own work.
+Build arms the **Callback** only when the repo has an enabled verify job, identified by the first
+skill named in the job's prompt matching the verify skill exactly. The callback sends the verify
+request once checks pass, so verify judges a settled head. The hand-off and the verify router share
+one chat selection rule. Duplicate callbacks are harmless because verify claims the head it judges;
+arming skips an active callback for the same chat and PR. A failed or skipped hand-off leaves
+build's outcome unchanged.
 
 ## Epic runs (boss-epic)
 

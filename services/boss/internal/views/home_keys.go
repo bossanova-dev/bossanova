@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // authChangeQueue preserves the order in which local auth transitions finish
@@ -111,6 +112,9 @@ func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if h.rename.Active() {
 		return h.handleRenameKey(msg)
 	}
+	if h.filter.Active() {
+		return h.handleFilterKey(msg)
+	}
 	if msg.String() == "q" {
 		return h, tea.Quit
 	}
@@ -152,6 +156,15 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 		return h, cmd, true
 	}
 	switch msg.String() {
+	case "/":
+		return h.startFilter()
+	case "esc":
+		if h.filter.Applied() {
+			h.filter.Reset()
+			h.rebuildFilteredBoard()
+			return h, nil, true
+		}
+		return h, nil, false
 	case "n":
 		model, cmd := h.handleNewSessionKey()
 		return model, cmd, true
@@ -170,6 +183,14 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 		// table, where a user rebinding could turn it into navigation.
 		model, cmd := h.handleRenameStartKey()
 		return model, cmd, true
+	case "g":
+		// Hidden shortcut, following [r]: open the selected row's PR. A row
+		// whose attention offers GITHUB never gets here, because start above
+		// already opened the same URL. handled is true on every path: the
+		// table's default keymap binds g to go-to-top, and a key that opens
+		// a PR on one row must not jump the cursor on the next. home still
+		// goes to the top.
+		return h, h.openSelectedPRCmd(), true
 	case "alt+up":
 		// Hidden shortcut (BOS-1231), following the [r] precedent above: a real
 		// binding deliberately absent from the action bar. handled is true on
@@ -184,6 +205,17 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 		return model, cmd, true
 	}
 	return h, nil, false
+}
+
+// openSelectedPRCmd opens the selected session's PR on GitHub, through the
+// same command as the GITHUB attention action. It is nil when the row has no
+// PR.
+func (h HomeModel) openSelectedPRCmd() tea.Cmd {
+	sess := h.selectedSession()
+	if sess.GetPrUrl() == "" {
+		return nil
+	}
+	return attentionActionCmd(h.ctx, h.client, proto.CloneOf(sess), pb.AttentionAction_ATTENTION_ACTION_GITHUB)
 }
 
 // handleRenameStartKey opens the inline title editor on the selected session.
@@ -242,7 +274,7 @@ func (h HomeModel) cancelRename() (tea.Model, tea.Cmd) {
 	return h, nil
 }
 
-// cancelRenameIfHidden closes the editor when a poll has moved Home onto a
+// dismissInputsIfHidden closes the editor when a poll has moved Home onto a
 // screen that does not draw it. handleKey routes every key into an active
 // prompt regardless of which View branch is rendering, but only
 // renderSessionTable draws the footer — so an editor left open behind the
@@ -250,14 +282,12 @@ func (h HomeModel) cancelRename() (tea.Model, tea.Cmd) {
 // [q] those screens advertise, with nothing on screen to explain why. The
 // conditions below mirror View's branch order exactly; they must be kept in
 // step with it.
-func (h HomeModel) cancelRenameIfHidden() HomeModel {
-	if !h.rename.Active() {
-		return h
-	}
+func (h HomeModel) dismissInputsIfHidden() HomeModel {
 	if h.err == nil && !h.loading && len(h.sessions) > 0 {
 		return h
 	}
 	h.rename = renamePrompt{}
+	h.filter.Reset()
 	h.table.SetHeight(h.tableHeight())
 	return h
 }

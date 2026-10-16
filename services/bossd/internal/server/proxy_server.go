@@ -461,12 +461,16 @@ func (p *ProxyServer) listenFixed(lc *net.ListenConfig) (net.Listener, bool, err
 	return ln, false, nil
 }
 
+// ConfiguredPort returns the requested port, or zero for explicit ephemeral binding.
+func (p *ProxyServer) ConfiguredPort() int { return p.port }
+
 // FixedPortLost reports whether Listen was configured with a fixed port but
 // had to fall back to an ephemeral one because another listener held the
 // port or it was otherwise unbindable (BOS-1563). Panes launched before the
 // loss keep an ANTHROPIC_BASE_URL naming the fixed port, so whatever holds it
 // receives their traffic until the startup sweep kills them. False for the
-// normal fixed bind and for the explicit ephemeral opt-out (port 0).
+// normal fixed bind and for the explicit ephemeral opt-out (port 0). The
+// RepairDoctor "failover proxy fixed port" check surfaces this state.
 func (p *ProxyServer) FixedPortLost() bool {
 	return p.fixedPortLost
 }

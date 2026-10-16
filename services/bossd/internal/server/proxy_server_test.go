@@ -2162,3 +2162,66 @@ func TestProxyListen_FixedPortRace(t *testing.T) {
 		}
 	}
 }
+
+type fakeFixedPortProvider struct {
+	lost             bool
+	configured, live int
+}
+
+func (f fakeFixedPortProvider) FixedPortLost() bool { return f.lost }
+func (f fakeFixedPortProvider) ConfiguredPort() int { return f.configured }
+func (f fakeFixedPortProvider) Port() int           { return f.live }
+
+func TestFixedPortCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider fixedPortStatusProvider
+		ok       bool
+		details  []string
+	}{
+		{"unwired", nil, true, []string{"not wired"}},
+		{"ephemeral", fakeFixedPortProvider{live: 51234}, true, []string{"configured ephemeral", "changes on restart"}},
+		{"fixed", fakeFixedPortProvider{configured: 44127, live: 44127}, true, []string{"bound fixed port 44127"}},
+		{"lost", fakeFixedPortProvider{lost: true, configured: 44127, live: 51234}, false,
+			[]string{"44127", "51234", "another listener", "startup sweep", "next restart", "lsof -nP -iTCP:44127 -sTCP:LISTEN", "restart bossd"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := fixedPortCheck(tc.provider)
+			if check.Name != "failover proxy fixed port" || check.Ok != tc.ok {
+				t.Fatalf("check = %+v, want name and Ok=%v", check, tc.ok)
+			}
+			for _, detail := range tc.details {
+				if !strings.Contains(check.Detail, detail) {
+					t.Errorf("detail %q must contain %q", check.Detail, detail)
+				}
+			}
+		})
+	}
+}
+
+func TestFixedPortCheck_RealLostPort(t *testing.T) {
+	isolateFixedPortLocks(t)
+	port := freeLoopbackPort(t)
+	held, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Skipf("could not hold port %d for the lost-port case: %v", port, err)
+	}
+	defer func() { _ = held.Close() }()
+	ps, err := NewProxyServer(ProxyServerConfig{Logger: zerolog.Nop(), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ps.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = ps.Shutdown(context.Background()) }()
+	check := fixedPortCheck(ps)
+	if check.Ok {
+		t.Fatalf("lost-port check = %+v, want Ok=false", check)
+	}
+	for _, port := range []int{port, ps.Port()} {
+		if !strings.Contains(check.Detail, fmt.Sprint(port)) {
+			t.Fatalf("detail %q missing port %d", check.Detail, port)
+		}
+	}
+}

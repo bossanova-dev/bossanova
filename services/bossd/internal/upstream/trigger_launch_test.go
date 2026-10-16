@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const triggerTestOrigin = "https://github.com/acme/widgets.git"
@@ -176,6 +177,142 @@ func triggerCmd(invocationID string) *pb.LaunchTriggerSessionCommand {
 		AgentName:     "codex",
 		Model:         &model,
 		BaseBranch:    "develop",
+	}
+}
+
+// TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField makes new
+// session-create fields require an explicit decision for the trigger path.
+func TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField(t *testing.T) {
+	requestPolicy := map[protoreflect.Name]string{
+		"repo_id":                  "mapped",
+		"title":                    "mapped",
+		"plan":                     "mapped",
+		"base_branch":              "mapped",
+		"agent_name":               "mapped",
+		"model":                    "mapped",
+		"effort":                   "mapped",
+		"should_run_setup_command": "mapped",
+		"is_zero_output":           "mapped",
+		"detach":                   "fixed",
+		"is_tmux_unattended":       "fixed",
+		"defer_pr":                 "fixed",
+		"force":                    "fixed",
+		"pr_number":                "unused",
+		"force_branch":             "unused",
+		"is_quick_chat":            "unused",
+		"branch_name":              "unused",
+		"tracker_id":               "unused",
+		"tracker_url":              "unused",
+		"tracker_issue":            "unused",
+		"tracker_source":           "unused",
+		"account_id":               "unused",
+	}
+	requestFields := (&pb.CreateSessionRequest{}).ProtoReflect().Descriptor().Fields()
+	for i := 0; i < requestFields.Len(); i++ {
+		field := requestFields.Get(i)
+		switch requestPolicy[field.Name()] {
+		case "mapped", "fixed", "unused":
+		default:
+			t.Fatalf("classify the new CreateSessionRequest field %s for trigger launches: mapped, fixed or unused", field.Name())
+		}
+	}
+	for name := range requestPolicy {
+		if requestFields.ByName(name) == nil {
+			t.Fatalf("remove stale CreateSessionRequest field %s from the trigger launch classification", name)
+		}
+	}
+
+	commandPolicy := map[protoreflect.Name]string{
+		"invocation_id":            "idempotency",
+		"trigger_id":               "idempotency",
+		"repo_origin_url":          "mapped",
+		"title":                    "mapped",
+		"prompt":                   "mapped",
+		"agent_name":               "mapped",
+		"model":                    "mapped",
+		"effort":                   "mapped",
+		"base_branch":              "mapped",
+		"should_run_setup_command": "mapped",
+		"is_zero_output":           "mapped",
+	}
+	cmd := &pb.LaunchTriggerSessionCommand{}
+	command := cmd.ProtoReflect()
+	commandFields := command.Descriptor().Fields()
+	for i := 0; i < commandFields.Len(); i++ {
+		field := commandFields.Get(i)
+		switch commandPolicy[field.Name()] {
+		case "idempotency", "mapped":
+		default:
+			t.Fatalf("classify the new LaunchTriggerSessionCommand field %s: idempotency or mapped", field.Name())
+		}
+		switch field.Kind() {
+		case protoreflect.StringKind:
+			value := "value-" + string(field.Name())
+			if field.Name() == "repo_origin_url" {
+				value = triggerTestOrigin
+			}
+			command.Set(field, protoreflect.ValueOfString(value))
+		case protoreflect.BoolKind:
+			// A zero-output launch clears base_branch; exercise its mapping
+			// with an explicitly present false instead.
+			command.Set(field, protoreflect.ValueOfBool(field.Name() != "is_zero_output"))
+		default:
+			t.Fatalf("trigger command field %s has unsupported test kind %s", field.FullName(), field.Kind())
+		}
+		if !command.Has(field) {
+			t.Fatalf("test must populate command field %s, including optional presence", field.Name())
+		}
+	}
+	for name := range commandPolicy {
+		if commandFields.ByName(name) == nil {
+			t.Fatalf("remove stale LaunchTriggerSessionCommand field %s from the trigger launch classification", name)
+		}
+	}
+
+	fx := newTriggerFixture(t, &fakeTriggerCreator{sessionID: "sess-field-guard"})
+	if _, _, err := fx.launcher.Launch(context.Background(), cmd); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	req := fx.creator.lastRequest()
+	if req == nil {
+		t.Fatal("Launch did not reach StreamCreateSession")
+	}
+	got := req.ProtoReflect()
+	for i := 0; i < requestFields.Len(); i++ {
+		field := requestFields.Get(i)
+		t.Run(string(field.Name()), func(t *testing.T) {
+			switch requestPolicy[field.Name()] {
+			case "mapped":
+				var want protoreflect.Value
+				switch field.Name() {
+				case "repo_id":
+					want = protoreflect.ValueOfString(fx.repoID)
+				case "plan":
+					want = command.Get(commandFields.ByName("prompt"))
+				default:
+					source := commandFields.ByName(field.Name())
+					if source == nil {
+						t.Fatalf("mapped request field %s needs a command source", field.Name())
+					}
+					want = command.Get(source)
+				}
+				if got.Get(field).Interface() != want.Interface() {
+					t.Errorf("mapped value = %v, want %v", got.Get(field), want)
+				}
+				// Non-optional false is the proto default and has no presence.
+				if field.Name() != "is_zero_output" && !got.Has(field) {
+					t.Error("mapped request field is unset")
+				}
+			case "fixed":
+				if !got.Has(field) || !got.Get(field).Bool() {
+					t.Error("fixed request field must be true")
+				}
+			case "unused":
+				if got.Has(field) {
+					t.Errorf("unused request field is set to %v", got.Get(field))
+				}
+			}
+		})
 	}
 }
 

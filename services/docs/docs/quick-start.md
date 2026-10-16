@@ -122,6 +122,16 @@ one place.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-open-dashboard.cast" />
 
+The footer lists the main keys. A few more work on the selected session
+without being listed, to keep the footer short:
+
+| Key               | Action                                                       |
+| ----------------- | ------------------------------------------------------------ |
+| `r`               | Rename the session (on a fix row it resumes the run instead) |
+| `g`               | Open its pull request on GitHub, if it has one               |
+| `t`               | Open its linked tracker issue                                |
+| `alt+↑` / `alt+↓` | Move it up or down the list                                  |
+
 On a fresh install, the repo list starts empty.
 
 ## 3. Add a repo

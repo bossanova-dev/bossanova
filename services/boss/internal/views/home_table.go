@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -49,8 +50,8 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
-	if sess.GetAttention() != nil {
-		return renderAttentionStatus(sess.GetAttention())
+	if a := sess.GetAttention(); a != nil && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !fixShowsDisplayLabel(sess)) {
+		return h.renderAttentionStatus(a)
 	}
 	if sess != nil && sess.GetDisplayLabel() == statusWorking {
 		if phase := h.daemonPhases[sess.GetId()]; phase != "" {
@@ -64,22 +65,38 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	return renderDisplayStatus(sess, h.spinner)
 }
 
+// fixShowsDisplayLabel reports whether a FIX row shows the session's display
+// label rather than "fix". Only a state that is itself a failure (⨯ failing,
+// ⨯ conflict, blocked) is what needs fixing; any other state reads "fix" and
+// the sentence below says what to do. The errored recolor paints every blocked
+// or orphaned session DANGER, so this reads the underlying intent.
+func fixShowsDisplayLabel(sess *pb.Session) bool {
+	return sess.GetDisplayLabel() != "" && displaystatus.UnderlyingIntent(sess) == pb.DisplayIntent_DISPLAY_INTENT_DANGER
+}
+
 // buildTableRows rebuilds the table columns and rows from h.sessions.
 func (h *HomeModel) buildTableRows() {
 	h.sessions = attentionBoard(h.sessions)
-	grouped := h.hasAttentionBoard()
 	if len(h.sessions) == 0 {
+		// DONE-only polls also hide the board after projection.
+		h.filter.Reset()
+	}
+	sessions := h.boardSessions()
+	h.filter.SetCounts(len(sessions), len(h.sessions))
+	grouped, sectioned := h.hasAttentionBoard(), h.showsSections()
+	if len(sessions) == 0 {
 		h.table.SetRows(nil)
+		h.table.SetHeight(h.tableHeight())
 		return
 	}
 
-	repos := make([]string, len(h.sessions))
-	names := make([]string, len(h.sessions))       // plain text for width calc
-	linkedNames := make([]string, len(h.sessions)) // may contain OSC 8 hyperlinks
-	nameWidthLabels := make([]string, 0, len(h.sessions)*2)
-	prLabels := make([]string, len(h.sessions)) // visible text for width calc
-	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
-	for i, sess := range h.sessions {
+	repos := make([]string, len(sessions))
+	names := make([]string, len(sessions))       // plain text for width calc
+	linkedNames := make([]string, len(sessions)) // may contain OSC 8 hyperlinks
+	nameWidthLabels := make([]string, 0, len(sessions)*2)
+	prLabels := make([]string, len(sessions)) // visible text for width calc
+	prs := make([]string, len(sessions))      // may contain OSC 8 hyperlinks
+	for i, sess := range sessions {
 		repos[i] = sess.RepoDisplayName
 		if sess.Title != "" {
 			names[i] = sess.Title
@@ -95,8 +112,8 @@ func (h *HomeModel) buildTableRows() {
 		}
 		if sess.GetAttention() == nil {
 			nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
-		} else if sess.GetAttention().GetSentence() != "" {
-			nameWidthLabels = append(nameWidthLabels, sess.GetAttention().GetSentence())
+		} else if sentence := homeAttentionSentence(sess.GetAttention()); sentence != "" {
+			nameWidthLabels = append(nameWidthLabels, sentence)
 		}
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
@@ -141,10 +158,12 @@ func (h *HomeModel) buildTableRows() {
 
 	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)
 
-	rows := make([]table.Row, 0, len(h.sessions)*2)
-	for i, sess := range h.sessions {
-		if h.sectionStarts(i, grouped) {
-			rows = append(rows, project(table.Row{"", "", styleSubtle.Render(h.sectionTitle(i)), "", ""}))
+	rows := make([]table.Row, 0, len(sessions)*2)
+	for i, sess := range sessions {
+		if h.sectionRows(sessions, i, sectioned) > 0 {
+			rows = append(rows,
+				project(table.Row{"", "", "", "", ""}),
+				project(table.Row{"", "", h.sectionTitleCell(sessions, i), "", ""}))
 		}
 		rowIndex := len(rows)
 		statusStyled := h.renderSessionStatus(sess)
@@ -271,6 +290,6 @@ func (h HomeModel) tableHeight() int {
 		footerLines = h.sessionTableFooterLineCount()
 	}
 	// banner+newline + gap + actionbar padding + status + actionbar
-	overhead := bannerOverhead + 1 + actionBarPadY + h.statusHeight() + footerLines
+	overhead := bannerOverhead + 1 + actionBarPadY + h.statusHeight() + footerLines + h.filter.Height()
 	return clampedTableHeight(h.tableDataRowCount(), h.height, overhead)
 }

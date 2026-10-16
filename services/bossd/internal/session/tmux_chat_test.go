@@ -112,7 +112,11 @@ func TestRenderBossCommandPrefix(t *testing.T) {
 		{"claude native slash command passes through", "/status", "/", worktree, "/status"},
 		{"non-custom dollar token passes through", "$HOME/path", "$", worktree, "$HOME/path"},
 		{"free text passes through unchanged", "please fix the flaky test", "$", worktree, "please fix the flaky test"},
-		{"multi-line passes through unchanged", "/boss-repair watch\nsecond line", "$", worktree, "/boss-repair watch\nsecond line"},
+		{"multi-line codex send-back gets dollar prefix on its first line", "/boss-repair 12\n\nThe operator sent PR #12 back.\n\n/status is not a command here", "$", worktree, "$boss-repair 12\n\nThe operator sent PR #12 back.\n\n/status is not a command here"},
+		{"multi-line claude send-back passes through unchanged", "/boss-repair 12\n\nnote", "/", worktree, "/boss-repair 12\n\nnote"},
+		{"multi-line with leading blank lines gets dollar prefix", "\n  /boss-repair 12\nnote", "$", worktree, "$boss-repair 12\nnote"},
+		{"multi-line codex native command passes through", "/status\nsecond line", "$", worktree, "/status\nsecond line"},
+		{"multi-line free text passes through", "please run\n/boss-repair 12", "$", worktree, "please run\n/boss-repair 12"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -187,14 +187,15 @@ func Derive(f Facts) Answer {
 	return a
 }
 
-// applyPR fills the input's check counts, PR state and mergeability from the
-// latest poll. Mergeability is read from the display status, which is Passing
-// or Approved only for a PR with no conflict.
+// applyPR fills the input's check counts, verify verdict, PR state and
+// mergeability from the latest poll. Mergeability is read from the display
+// status, which is Passing or Approved only for a PR with no conflict.
 func applyPR(in *attention.Input, pr *PR) {
 	verdict := vcs.EvaluateChecks(pr.HeadSHA, pr.Checks, nil)
 	in.ChecksTotal = verdict.Total
 	in.ChecksDone = verdict.Total - verdict.Pending - verdict.Unclassified
 	in.ChecksFailing = verdict.Failed
+	in.Verified = vcs.VerifyPassed(pr.Checks)
 	mergeable := true
 	switch pr.Status {
 	case vcs.DisplayStatusMerged:

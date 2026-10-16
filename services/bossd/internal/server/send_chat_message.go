@@ -181,7 +181,7 @@ func deliveryConfirmation(sendErr error, willSubmit, receiptSeen bool) string {
 		return "none"
 	}
 	switch tmux.OutcomeOf(sendErr) {
-	case tmux.OutcomeQueued, tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal:
+	case tmux.OutcomeQueued, tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal, tmux.OutcomeComposerOccupied:
 		return "pane"
 	default:
 		return "none"
@@ -211,8 +211,9 @@ func isClaudeChat(agentName string) bool {
 
 // receiptOverridesOutcome reports whether a receipt turns a failed send into a
 // delivered one. Only the two verifier outcomes that leave the payload in the
-// pane qualify: a modal refusal or a readiness timeout typed nothing, so a
-// receipt then cannot be this send's, and a queued send is already delivered.
+// pane qualify: a modal refusal, an occupied-composer refusal or a readiness
+// timeout typed nothing, so a receipt then cannot be this send's, and a queued
+// send is already delivered.
 func receiptOverridesOutcome(err error, submitted func() bool) bool {
 	switch tmux.OutcomeOf(err) {
 	case tmux.OutcomeNotSubmitted, tmux.OutcomeUnconfirmed:
@@ -390,9 +391,9 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 	// "/api-review") to the chat agent's command prefix before delivery,
 	// mirroring the plan-launch render path: a raw "/boss-repair" reaches codex
 	// verbatim and its CLI rejects it as unrecognized (codex custom commands use
-	// "$"). The rewrite is scoped to installed skill names, so a codex user's
-	// native built-in ("/model", "/status"), free text, and multi-line input all
-	// pass through unchanged.
+	// "$"). The rewrite is scoped to installed skill names on the first line, so
+	// a multi-line message's leading "/boss-repair N" is rewritten while a codex user's
+	// native built-in ("/model", "/status") and free text pass through unchanged.
 	message := session.RenderBossCommandPrefix(req.Msg.GetMessage(), chatCommandPrefix(chat.AgentName), sess.WorktreePath)
 
 	// submit routes the delivery: true submits the message (Enter + BOS-228
@@ -464,7 +465,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 		switch tmux.OutcomeOf(sendErr) {
 		case tmux.OutcomeSubmitted, tmux.OutcomeQueued, tmux.OutcomeUnconfirmed:
 			s.bindCodexRolloutAfterSend(chat, sess.WorktreePath, tmuxName, sentAt, spawner)
-		case tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal, tmux.OutcomeUnclassified:
+		case tmux.OutcomeNotSubmitted, tmux.OutcomeBlockedByModal, tmux.OutcomeComposerOccupied, tmux.OutcomeUnclassified:
 			// Nothing reached the agent, so it started no turn to write a rollout for.
 		}
 	}
@@ -535,6 +536,11 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			// proxied surface that drops delivery_state (BOS-600).
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("send message (delivery state: %s): %w", tmux.OutcomeBlockedByModal, err))
+		case tmux.OutcomeComposerOccupied:
+			// Refused before typing, for the modal's reason: the pane holds a draft
+			// only a human may clear, and a resend is refused again until then.
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("send message (delivery state: %s): %w", tmux.OutcomeComposerOccupied, err))
 		case tmux.OutcomeNotSubmitted:
 			// The payload is confirmed still sitting in the composer: a genuine
 			// failure, and one a caller can safely retry. Keep it loud, and name the

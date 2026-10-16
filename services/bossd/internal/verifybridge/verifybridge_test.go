@@ -87,13 +87,13 @@ func (f *fixture) cwd(t *testing.T) string {
 }
 
 func TestBridgeEnvIsTheChildsWholeEnvironment(t *testing.T) {
-	const out = `{"posted":true,"commentUrl":"https://x/1"}`
+	const out = `{"merged":true,"mergeSha":"m","trackerWrites":"ok"}`
 	t.Setenv("BRIDGE_PROBE", "inherited")
 
 	t.Run("nil inherits this process's environment", func(t *testing.T) {
 		f := newFixture(t, out, "", 0)
-		if _, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Dir: f.worktree}, "x"); err != nil {
-			t.Fatalf("SendBack: %v", err)
+		if _, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree}); err != nil {
+			t.Fatalf("MarkMerged: %v", err)
 		}
 		if got := readFile(t, f.envFile); got != "inherited" {
 			t.Fatalf("BRIDGE_PROBE = %q, want the inherited value", got)
@@ -103,8 +103,8 @@ func TestBridgeEnvIsTheChildsWholeEnvironment(t *testing.T) {
 	t.Run("a set Env replaces it, the later of two entries winning", func(t *testing.T) {
 		f := newFixture(t, out, "", 0)
 		f.bridge.Env = []string{"PATH=" + os.Getenv("PATH"), "BRIDGE_PROBE=first", "BRIDGE_PROBE=repo"}
-		if _, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Dir: f.worktree}, "x"); err != nil {
-			t.Fatalf("SendBack: %v", err)
+		if _, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree}); err != nil {
+			t.Fatalf("MarkMerged: %v", err)
 		}
 		if got := readFile(t, f.envFile); got != "repo" {
 			t.Fatalf("BRIDGE_PROBE = %q, want the last Env entry", got)
@@ -132,7 +132,7 @@ func resolved(t *testing.T, path string) string {
 
 func TestApproveSuccessRunsTheVerbInTheWorktree(t *testing.T) {
 	f := newFixture(t, `{"approved":true,"waives":"ledger-open","headSha":"`+strings.Repeat("a", 40)+`","trackerWrites":"ok","approvalUrl":"https://github.com/o/r/pull/7#issuecomment-9","writes":[]}`+"\n", "", 0)
-	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Repo: "o/r", Dir: f.worktree})
+	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Repo: "o/r", Dir: f.worktree}, nil)
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestApproveReportsAFailedLabelWriteAndALiftedSendBack(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, stdout, "", 0)
-			got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree})
+			got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, nil)
 			if err != nil || !got.Approved || got.ApprovalURL != "https://x" {
 				t.Fatalf("Approve = %+v, %v", got, err)
 			}
@@ -165,7 +165,7 @@ func TestApproveReportsAFailedLabelWriteAndALiftedSendBack(t *testing.T) {
 
 func TestApproveRefusalIsAResultNotAnError(t *testing.T) {
 	f := newFixture(t, `{"approved":false,"reason":"no-standing-park","headSha":"abc","writes":[]}`, "", 0)
-	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree, DryRun: true})
+	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree, DryRun: true}, nil)
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -178,20 +178,75 @@ func TestApproveRefusalIsAResultNotAnError(t *testing.T) {
 	}
 }
 
-func TestSendBackSuccessPassesTheNote(t *testing.T) {
-	f := newFixture(t, `{"posted":true,"commentUrl":"https://github.com/o/r/pull/7#issuecomment-1","headSha":"abc","writes":[]}`, "", 0)
-	note := "line one\nline two"
-	got, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Repo: "o/r", Dir: f.worktree}, note)
-	if err != nil {
-		t.Fatalf("SendBack: %v", err)
+const pinnedHead = "0123456789abcdef0123456789abcdef01234567"
+
+func TestApproveForMergePinsTheHeadAndTheWaivedCodes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stdout string
+		waives []string
+		flag   string
+	}{
+		"a park":         {`{"approved":true,"waives":"human-review:ui,human-review:database","headSha":"` + pinnedHead + `","approvalUrl":"https://x/1","trackerWrites":"ok"}`, []string{"human-review:ui", "human-review:database"}, "--waives=human-review:ui,human-review:database"},
+		"nothing parked": {`{"approved":true,"waives":"","signOff":"merge","headSha":"` + pinnedHead + `","approvalUrl":"https://x/1"}`, nil, "--waives="},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, tc.stdout, "", 0)
+			got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Repo: "o/r", Dir: f.worktree}, &MergeApproval{Head: pinnedHead, Waives: tc.waives})
+			if err != nil {
+				t.Fatalf("Approve: %v", err)
+			}
+			if !got.Approved || got.ApprovalURL != "https://x/1" {
+				t.Fatalf("result = %+v", got)
+			}
+			want := []string{f.bridge.Script, "approve", "--pr=7", "--repo=o/r", "--for-merge", "--head=" + pinnedHead, tc.flag, "--json"}
+			if g := f.argv(t); strings.Join(g, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("argv = %q, want %q", g, want)
+			}
+		})
 	}
-	if !got.Posted || got.CommentURL != "https://github.com/o/r/pull/7#issuecomment-1" {
+}
+
+func TestApproveForMergeRejectsAnApprovalOfAnotherHead(t *testing.T) {
+	f := newFixture(t, `{"approved":true,"waives":"human-review:ui","headSha":"ffffffffffffffffffffffffffffffffffffffff","approvalUrl":"https://x/1"}`, "", 0)
+	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, &MergeApproval{Head: pinnedHead, Waives: []string{"human-review:ui"}})
+	if !errors.Is(err, ErrShape) || got.Approved {
+		t.Fatalf("Approve = %+v, %v; want ErrShape", got, err)
+	}
+}
+
+func TestApproveForMergeRefusesAMalformedHeadWithoutRunning(t *testing.T) {
+	f := newFixture(t, `{"approved":false,"reason":"x"}`, "", 0)
+	if _, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, &MergeApproval{Head: "abc"}); !errors.Is(err, ErrInvalidTarget) {
+		t.Fatalf("err = %v, want ErrInvalidTarget", err)
+	}
+	if _, err := os.Stat(f.argvFile); err == nil {
+		t.Fatal("node ran for a malformed head")
+	}
+}
+
+func TestMarkMergedRunsTheVerbInTheWorktree(t *testing.T) {
+	f := newFixture(t, `{"merged":true,"mergeSha":"m1","trackerWrites":"unavailable","why":"no-adapter","writes":[]}`, "", 0)
+	got, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Repo: "o/r", Dir: f.worktree})
+	if err != nil {
+		t.Fatalf("MarkMerged: %v", err)
+	}
+	if !got.Merged || got.MergeSHA != "m1" || got.TrackerWrites != "unavailable" || got.Why != "no-adapter" {
 		t.Fatalf("result = %+v", got)
 	}
-	// argv is recorded one per line, so the two-line note reads back as two entries.
-	want := []string{f.bridge.Script, "send-back", "--pr=7", "--repo=o/r", "--note=line one", "line two", "--json"}
+	want := []string{f.bridge.Script, "mark-merged", "--pr=7", "--repo=o/r", "--json"}
 	if g := f.argv(t); strings.Join(g, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv = %q, want %q", g, want)
+	}
+	if got := f.cwd(t); got != resolved(t, f.worktree) {
+		t.Fatalf("cwd = %q, want the worktree", got)
+	}
+}
+
+func TestMarkMergedNotMergedIsAResultWithAReason(t *testing.T) {
+	f := newFixture(t, `{"merged":false,"reason":"not-merged","state":"OPEN"}`, "", 0)
+	got, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree})
+	if err != nil || got.Merged || got.Reason != "not-merged" || got.State != "OPEN" {
+		t.Fatalf("MarkMerged = %+v, %v", got, err)
 	}
 }
 
@@ -211,7 +266,8 @@ func TestBridgeFailureModesAreDistinctErrors(t *testing.T) {
 		{"trailing output", `{"approved":false,"reason":"x"} extra`, "", 0, ErrBadJSON},
 		{"missing approved field", `{"reason":"x"}`, "", 0, ErrShape},
 		{"approved without the head-bound approval record", `{"approved":true,"waives":"x","headSha":"y","trackerWrites":"ok"}`, "", 0, ErrShape},
-		{"approved with neither waived codes nor a lifted send-back", `{"approved":true,"waives":"","headSha":"y","approvalUrl":"https://x"}`, "", 0, ErrShape},
+		{"approved with neither waived codes, a lifted send-back nor a merge sign-off", `{"approved":true,"waives":"","headSha":"y","approvalUrl":"https://x"}`, "", 0, ErrShape},
+		{"approved signing off something other than a merge", `{"approved":true,"signOff":"other","headSha":"y","approvalUrl":"https://x"}`, "", 0, ErrShape},
 		{"approved lifting something other than a send-back", `{"approved":true,"lifted":"other","headSha":"y","approvalUrl":"https://x"}`, "", 0, ErrShape},
 		{"refusal without a reason", `{"approved":false}`, "", 0, ErrShape},
 		{"JSON array", `[]`, "", 0, ErrBadJSON},
@@ -219,7 +275,7 @@ func TestBridgeFailureModesAreDistinctErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, tc.stdout, tc.stderr, tc.code)
-			got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree})
+			got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, nil)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -233,18 +289,18 @@ func TestBridgeFailureModesAreDistinctErrors(t *testing.T) {
 	}
 }
 
-func TestSendBackShapeIsChecked(t *testing.T) {
+func TestMarkMergedShapeIsChecked(t *testing.T) {
 	for name, stdout := range map[string]string{
-		"missing posted":          `{"commentUrl":"https://x"}`,
-		"posted without a url":    `{"posted":true}`,
-		"refusal without reason":  `{"posted":false}`,
-		"empty stdout is failure": "",
+		"missing merged":                   `{"trackerWrites":"ok"}`,
+		"merged without a tracker outcome": `{"merged":true,"mergeSha":"m"}`,
+		"not merged without a reason":      `{"merged":false}`,
+		"empty stdout is failure":          "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, stdout, "", 0)
-			got, err := f.bridge.SendBack(context.Background(), Target{PR: 7, Dir: f.worktree}, "n")
-			if err == nil || got.Posted {
-				t.Fatalf("SendBack = %+v, %v; want an error and no post", got, err)
+			got, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree})
+			if err == nil || got.Merged {
+				t.Fatalf("MarkMerged = %+v, %v; want an error", got, err)
 			}
 		})
 	}
@@ -256,7 +312,7 @@ func TestTimeoutIsItsOwnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.bridge.Timeout = 200 * time.Millisecond
-	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree})
+	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, nil)
 	if !errors.Is(err, ErrNodeTimeout) {
 		t.Fatalf("err = %v, want ErrNodeTimeout", err)
 	}
@@ -264,18 +320,14 @@ func TestTimeoutIsItsOwnError(t *testing.T) {
 
 func TestTargetIsValidatedBeforeAnyRun(t *testing.T) {
 	f := newFixture(t, `{"approved":false,"reason":"x"}`, "", 0)
-	for name, tc := range map[string]struct {
-		target Target
-		note   string
-	}{
-		"no PR":          {Target{Dir: f.worktree}, "n"},
-		"no worktree":    {Target{PR: 7}, "n"},
-		"missing dir":    {Target{PR: 7, Dir: filepath.Join(f.worktree, "gone")}, "n"},
-		"empty note":     {Target{PR: 7, Dir: f.worktree}, "  "},
-		"malformed repo": {Target{PR: 7, Dir: f.worktree, Repo: "o/r --json"}, "n"},
+	for name, target := range map[string]Target{
+		"no PR":          {Dir: f.worktree},
+		"no worktree":    {PR: 7},
+		"missing dir":    {PR: 7, Dir: filepath.Join(f.worktree, "gone")},
+		"malformed repo": {PR: 7, Dir: f.worktree, Repo: "o/r --json"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := f.bridge.SendBack(context.Background(), tc.target, tc.note); err == nil {
+			if _, err := f.bridge.MarkMerged(context.Background(), target); err == nil {
 				t.Fatal("want a validation error")
 			}
 			if _, err := os.Stat(f.argvFile); err == nil {
@@ -289,7 +341,7 @@ func TestNodeMissing(t *testing.T) {
 	f := newFixture(t, "", "", 0)
 	f.bridge.Node = ""
 	t.Setenv("PATH", t.TempDir())
-	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree})
+	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, nil)
 	if !errors.Is(err, ErrNodeMissing) {
 		t.Fatalf("err = %v, want ErrNodeMissing", err)
 	}
@@ -369,7 +421,7 @@ func TestMissingToolboxIsAnError(t *testing.T) {
 	t.Setenv("BOSS_SKILLS_HOME", "")
 	t.Setenv("BOSS_VERIFY_TOOLBOX", "")
 	t.Setenv("HOME", t.TempDir())
-	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree})
+	_, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree}, nil)
 	if !errors.Is(err, ErrToolboxMissing) {
 		t.Fatalf("err = %v, want ErrToolboxMissing", err)
 	}
@@ -388,21 +440,18 @@ func TestRealNodeRunsAStubVerifyGate(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "verify-gate.mjs")
 	stub := `const [verb, ...rest] = process.argv.slice(2)
-const note = rest.find((a) => a.startsWith('--note='))?.slice('--note='.length)
-process.stdout.write(JSON.stringify({ posted: true, commentUrl: 'https://x/' + verb + '#' + note, headSha: process.cwd() }) + '\n')
+const head = rest.find((a) => a.startsWith('--head='))?.slice('--head='.length)
+process.stdout.write(JSON.stringify({ approved: true, waives: '', signOff: 'merge', headSha: head, approvalUrl: 'https://x/' + verb + '#' + process.cwd() }) + '\n')
 `
 	if err := os.WriteFile(script, []byte(stub), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	b := &Bridge{Node: node, Script: script, Timeout: 30 * time.Second}
-	got, err := b.SendBack(context.Background(), Target{PR: 7, Dir: dir}, "--fix it")
+	got, err := b.Approve(context.Background(), Target{PR: 7, Dir: dir}, &MergeApproval{Head: pinnedHead})
 	if err != nil {
-		t.Fatalf("SendBack: %v", err)
+		t.Fatalf("Approve: %v", err)
 	}
-	if got.CommentURL != "https://x/send-back#--fix it" {
-		t.Fatalf("a flag-like note must reach the verb verbatim, got %q", got.CommentURL)
-	}
-	if got.HeadSHA != resolved(t, dir) {
+	if got.HeadSHA != pinnedHead || got.ApprovalURL != "https://x/approve#"+resolved(t, dir) {
 		t.Fatalf("result = %+v", got)
 	}
 }

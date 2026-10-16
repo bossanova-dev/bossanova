@@ -405,8 +405,8 @@ func (c *LocalClient) ApproveSessionPR(ctx context.Context, id string, dryRun bo
 	return resp.Msg.GetResult(), nil
 }
 
-func (c *LocalClient) SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error) {
-	resp, err := c.rpc.SendBackSessionPR(ctx, connect.NewRequest(&pb.SendBackSessionPRRequest{Id: id, Note: note, IsDryRun: dryRun}))
+func (c *LocalClient) OperatorMergeSession(ctx context.Context, id, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error) {
+	resp, err := c.rpc.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: id, ExpectedHeadSha: head, ShouldApprove: approve, Waives: waives}))
 	if err != nil {
 		return nil, err
 	}

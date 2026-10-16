@@ -8,6 +8,7 @@ import {
   criteriaReasons,
   followUpReasons,
   headReasons,
+  isPostMergeItem,
   judgeCiOnHead,
   mergeArgv,
   mergeStateReasons,
@@ -216,6 +217,68 @@ test('parseFollowUps and the raw parsers keep their completion-gate behaviour', 
   assert.deepEqual(checklist(['- [ ] a', '- [x] b']), { status: 'ok', open: 1, done: 1, total: 2 })
   assert.equal(checklist(['- none']).status, 'malformed')
   assert.equal(checklist(['- none'], true).status, 'ok')
+})
+
+test('a follow-up is post-merge only when it says so and says it is not a merge gate', () => {
+  const exempt = [
+    'Observe the scheduled run. This is the plan’s post-merge observation, not a merge gate.',
+    'After merge, watch the nightly job (not a merge gate)',
+    'Post merge: check the dashboard; NOT A MERGE GATE',
+    'After the merge lands, confirm the rollout; this is not a merge gate',
+  ]
+  const parks = [
+    'After merge, rotate the production key',
+    'Post-merge observation of scheduled build cadence',
+    'Rotate the key; this is not a merge gate',
+    'Merge the docs PR first; not a merge gate for this one',
+    'Confirm the dashboard loads against production data',
+  ]
+  for (const text of exempt) assert.equal(isPostMergeItem(text), true, text)
+  for (const text of parks) assert.equal(isPostMergeItem(text), false, text)
+
+  const followUp = (...items) =>
+    parseFollowUps(`## Human follow-up\n${items.join('\n')}\n## Open questions\n- none\n`)
+  const marked = `- [ ] ${exempt[0]}`
+  assert.deepEqual(followUp(marked).humanFollowUp, { status: 'ok', open: 0, done: 0, total: 0 })
+  assert.deepEqual(followUp(marked, '- [ ] rotate the key').humanFollowUp, {
+    status: 'ok',
+    open: 1,
+    done: 0,
+    total: 1,
+  })
+  assert.equal(followUp(marked, 'prose').humanFollowUp.status, 'malformed')
+  assert.equal(followUp(`- [x] ${exempt[0]}`).humanFollowUp.done, 1)
+  assert.deepEqual(followUpReasons(followUp(marked)), [])
+  assert.deepEqual(followUpReasons(followUp(`- [ ] ${parks[0]}`)), ['human-follow-up-open'])
+  // Only the Human follow-up section honours the marker, and `## After merge` is never read.
+  assert.equal(
+    parseFollowUps(`## Human follow-up\n- none\n## Open questions\n${marked}\n`).openQuestions.open,
+    1,
+  )
+  assert.equal(parseLedger(`${body}\n## After merge\n- [ ] watch it\n`).humanFollowUp.open, 0)
+})
+
+test('a post-merge follow-up that also asks for something before merge still parks', () => {
+  const preMerge = [
+    'Rotate the production key before merging (the post-merge dashboard check is not a merge gate)',
+    'Post-merge cleanup needed before merge — not a merge gate',
+    'Confirm the migration ran before merge; post-merge, nothing else. This is not a merge gate.',
+    'Run the pre-merge smoke test; the post-merge dashboard is not a merge gate',
+    'Prior to merge, back up the table; post-merge checks are not a merge gate',
+    'BEFORE THE MERGE, warn support; after merge watch errors (not a merge gate)',
+  ]
+  for (const text of preMerge) assert.equal(isPostMergeItem(text), false, text)
+  assert.equal(
+    isPostMergeItem(
+      'After merge and a trusted skills install, observe a planning run starting no build session. This is the plan’s post-merge observation, not a merge gate. (criterion: Post-merge observation of scheduled build cadence)',
+    ),
+    true,
+    'the #3157 item stays exempt',
+  )
+  const followUp = parseFollowUps(
+    `## Human follow-up\n- [ ] ${preMerge[0]}\n## Open questions\n- none\n`,
+  )
+  assert.deepEqual(followUpReasons(followUp), ['human-follow-up-open'])
 })
 
 test('sectionToken returns the first non-blank line, or empty', () => {

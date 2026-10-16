@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
@@ -17,14 +16,10 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
-// sendBackChatTitle names the chat `boss pr send-back` starts in the PR's
-// session to carry the operator's note into a repair run.
-const sendBackChatTitle = "send back"
-
 func prCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pr",
-		Short: "Act on a pull request by number: approve a verify park or send it back",
+		Short: "Act on a pull request by number: approve a verify park",
 	}
 
 	approve := &cobra.Command{
@@ -34,7 +29,9 @@ func prCmd() *cobra.Command {
 			"stands on the PR's current head, it posts a head-bound approval record on the PR, and\n" +
 			"the next verify run waives exactly those codes on exactly that head; then it removes the\n" +
 			"tracker's needs-human label. A head pushed meanwhile is not approved. On a head verify\n" +
-			"passed outright, it lifts an earlier send-back of that head. It refuses otherwise.\n\n" +
+			"passed outright, it lifts an older send-back of that head. It refuses otherwise.\n\n" +
+			"In the TUI, [m]erge on a review row records this same approval and merges at once; this\n" +
+			"command is the escape hatch for a park the TUI offers no merge for.\n\n" +
 			"The daemon runs it on its own host, in the PR session's worktree, with the repo's stored\n" +
 			"tracker credentials, so it works from any machine that reaches the daemon. It refuses to\n" +
 			"run inside an agent chat: approving a park is the operator's call.",
@@ -46,28 +43,10 @@ func prCmd() *cobra.Command {
 		},
 	}
 
-	sendBack := &cobra.Command{
-		Use:   "send-back <pr-number> <note>",
-		Short: "Reject the PR: post the note on it and start a repair chat in its session",
-		Long: "Send-back posts the note as a PR comment headed \"Sent back by the operator\", then\n" +
-			"starts a `send back` chat in the PR's session that runs /boss-repair with the note as\n" +
-			"the feedback to address. It revokes any approval of the head it rejects, so verify\n" +
-			"neither waives nor merges that head; the next head is judged afresh. The daemon posts\n" +
-			"the note from its own host; like approve, it refuses to run inside an agent chat.",
-		Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPrVerb(cmd, args[0], func(ctx context.Context, c client.BossClient, opts prOptions) error {
-				return prSendBack(ctx, cmd, c, opts, args[1])
-			})
-		},
-	}
-
-	for _, c := range []*cobra.Command{approve, sendBack} {
-		c.Flags().String("repo", "", "Repository as owner/repo, when sessions in two repos share the PR number")
-		c.Flags().Bool("dry-run", false, "Show what would be written without writing anything")
-		c.Flags().Bool(jsonFlagName, false, "Emit a stable JSON envelope instead of human-readable text")
-	}
-	cmd.AddCommand(approve, sendBack)
+	approve.Flags().String("repo", "", "Repository as owner/repo, when sessions in two repos share the PR number")
+	approve.Flags().Bool("dry-run", false, "Show what would be written without writing anything")
+	approve.Flags().Bool(jsonFlagName, false, "Emit a stable JSON envelope instead of human-readable text")
+	cmd.AddCommand(approve)
 	return cmd
 }
 
@@ -90,23 +69,14 @@ type prApproveClient interface {
 	ApproveSessionPR(ctx context.Context, id string, dryRun bool) (*pb.VerifyApproveResult, error)
 }
 
-// prChatClient is what send-back needs: the session read, the daemon's
-// send-back verb, and starting a chat and delivering into it.
-type prChatClient interface {
-	prSessionLister
-	SendBackSessionPR(ctx context.Context, id, note string, dryRun bool) (*pb.SendBackSessionPRResponse, error)
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error)
-	SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
-}
-
 func runPrVerb(cmd *cobra.Command, prArg string, run func(context.Context, client.BossClient, prOptions) error) error {
 	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	repo, _ := cmd.Flags().GetString("repo")
 	if chat := strings.TrimSpace(osGetenv("BOSS_AGENT_SESSION_ID")); chat != "" {
-		// An agent must not approve or send back the park it may itself be under.
+		// An agent must not approve the park it may itself be under.
 		return emitJSONFailure(cmd, asJSON, connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("`boss pr %s` refuses to run inside agent chat %s: approving or sending back a verify park is the operator's call; run it from your own terminal or press [m] on the session in the TUI", cmd.Name(), chat)))
+			fmt.Errorf("`boss pr %s` refuses to run inside agent chat %s: approving a verify park is the operator's call; run it from your own terminal or press [m] on the session in the TUI", cmd.Name(), chat)))
 	}
 	pr, err := parsePRNumber(prArg)
 	if err != nil {
@@ -248,114 +218,5 @@ func prApprove(ctx context.Context, cmd *cobra.Command, c prApproveClient, opts 
 			return err
 		}
 	}
-	return nil
-}
-
-// prSendBackResultJSON is the send-back outcome in the `--json` envelope; its
-// tags are verify-gate's own field names.
-type prSendBackResultJSON struct {
-	Posted     bool   `json:"posted"`
-	Planned    bool   `json:"planned,omitempty"`
-	DryRun     bool   `json:"dryRun,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	CommentURL string `json:"commentUrl,omitempty"`
-	HeadSHA    string `json:"headSha,omitempty"`
-	State      string `json:"state,omitempty"`
-}
-
-func sendBackResultJSON(r *pb.SendBackSessionPRResponse) prSendBackResultJSON {
-	return prSendBackResultJSON{
-		Posted:     r.GetIsPosted(),
-		Planned:    r.GetIsPlanned(),
-		DryRun:     r.GetIsDryRun(),
-		Reason:     r.GetReason(),
-		CommentURL: r.GetCommentUrl(),
-		HeadSHA:    r.GetHeadSha(),
-		State:      r.GetState(),
-	}
-}
-
-// prSendBackJSON is the `boss pr send-back --json` envelope. Chat and Delivery
-// are absent on a dry run.
-type prSendBackJSON struct {
-	PR        int                  `json:"pr"`
-	Repo      string               `json:"repo"`
-	SessionID string               `json:"session_id"`
-	Result    prSendBackResultJSON `json:"result"`
-	Message   string               `json:"message"`
-	Chat      *chatNewChatJSON     `json:"chat,omitempty"`
-	Delivery  *chatDeliveryJSON    `json:"delivery,omitempty"`
-}
-
-// sendBackMessage is what the send-back chat receives: the repair skill, then
-// the operator's note as the feedback it must address.
-func sendBackMessage(pr int, note string) string {
-	return fmt.Sprintf("/boss-repair %d\n\nThe operator sent PR #%d back. Address this feedback before anything else:\n\n%s", pr, pr, strings.TrimSpace(note))
-}
-
-func prSendBack(ctx context.Context, cmd *cobra.Command, c prChatClient, opts prOptions, note string) error {
-	if strings.TrimSpace(note) == "" {
-		return emitJSONFailure(cmd, opts.asJSON, codedError(codeInvalidArgument, fmt.Errorf("send-back needs a non-empty note")))
-	}
-	s, slug, err := resolvePRSession(ctx, c, opts.pr, opts.repo)
-	if err != nil {
-		return emitJSONFailure(cmd, opts.asJSON, err)
-	}
-	r, err := c.SendBackSessionPR(ctx, s.GetId(), note, opts.dryRun)
-	if verbTimedOut(err, opts) {
-		// The note is posted last, so it may already be on the PR: check before re-running.
-		err = fmt.Errorf("%w; the note may already be posted, so check the PR before sending it back again", err)
-	}
-	if err != nil {
-		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("send back PR #%d: %w", opts.pr, err))
-	}
-	message := sendBackMessage(opts.pr, note)
-	env := prSendBackJSON{PR: opts.pr, Repo: slug, SessionID: s.GetId(), Result: sendBackResultJSON(r), Message: message}
-	if !r.GetIsPosted() && !r.GetIsPlanned() {
-		refusal := errors.New(prverdict.SendBackRefusal(opts.pr, r))
-		if opts.asJSON {
-			return emitJSONReportedFailure(cmd, env, refusal)
-		}
-		return refusal
-	}
-	if r.GetIsPlanned() {
-		if opts.asJSON {
-			return emitJSON(cmd, env)
-		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Would post the note on #%d, then start a %q chat in session %s delivering:\n\n%s\n\n(dry run; nothing written)\n", opts.pr, sendBackChatTitle, s.GetId(), message)
-		return err
-	}
-
-	// The comment is on the PR from here on, so every later failure names it:
-	// the operator must not re-run and post the note twice.
-	posted := fmt.Sprintf("the note is posted at %s", r.GetCommentUrl())
-	chat, err := c.RecordChat(ctx, s.GetId(), uuid.NewString(), sendBackChatTitle, "", pb.ChatRole_CHAT_ROLE_OPERATOR, false)
-	if err != nil {
-		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("start the %q chat for PR #%d (%s): %w", sendBackChatTitle, opts.pr, posted, err))
-	}
-	if chat.GetTmuxSessionName() == "" {
-		return emitJSONFailure(cmd, opts.asJSON, codedError(codeAgentNotSpawned,
-			fmt.Errorf("could not spawn a live agent for the %q chat %s in session %s (%s); start a repair with `boss chat new %s`", sendBackChatTitle, chat.GetAgentSessionId(), s.GetId(), posted, s.GetId())))
-	}
-	chatJSON := newChatJSON(chat).Chat
-	env.Chat = &chatJSON
-	resp, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{
-		AgentSessionId: chat.GetAgentSessionId(),
-		Message:        message,
-		WakeIfAsleep:   true,
-		Submit:         true,
-	})
-	if err != nil {
-		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("deliver the repair to chat %s (%s): %w; retry with `boss chat send %s \"/boss-repair %d\"`", chat.GetAgentSessionId(), posted, err, chat.GetAgentSessionId(), opts.pr))
-	}
-	delivery := newChatDeliveryJSON(resp)
-	env.Delivery = &delivery
-	if opts.asJSON {
-		return emitJSON(cmd, env)
-	}
-	w := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(w, "Sent #%d back: %s\n", opts.pr, r.GetCommentUrl())
-	_, _ = fmt.Fprintf(w, "Repair chat: %s (session %s)\n", chat.GetAgentSessionId(), s.GetId())
-	reportChatSendOutcome(w, resp)
 	return nil
 }

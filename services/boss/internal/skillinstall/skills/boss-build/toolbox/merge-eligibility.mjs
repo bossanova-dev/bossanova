@@ -75,7 +75,17 @@ export function sections(body) {
   return result
 }
 
-export function checklist(lines, allowNone = false) {
+// A `## Human follow-up` item written before `## After merge` existed that marks itself as a
+// post-merge observation. Both phrases are required, so an item only mentioning merge still parks,
+// and an item that also asks for something before merge parks whatever else it says.
+const POST_MERGE = /\b(?:post[- ]?merge|after (?:the )?merg(?:e|ing))\b/i
+const NOT_A_GATE = /\bnot a merge gate\b/i
+const PRE_MERGE = /\b(?:pre[- ]?merge|(?:before|prior to) (?:the )?merg(?:e|ing))\b/i
+export const isPostMergeItem = (text) =>
+  POST_MERGE.test(text) && NOT_A_GATE.test(text) && !PRE_MERGE.test(text)
+
+// `exempt(text)` marks an unchecked item that counts as neither open nor done.
+export function checklist(lines, allowNone = false, exempt = null) {
   if (!Array.isArray(lines)) return { status: 'missing', open: null, done: null, total: null }
   const items = lines.map((line) => line.trim()).filter(Boolean)
   if (allowNone && items.length === 1 && /^- none$/i.test(items[0]))
@@ -83,8 +93,9 @@ export function checklist(lines, allowNone = false) {
   let open = 0,
     done = 0
   for (const line of items) {
-    const item = line.match(/^- \[([ xX])\]\s+\S.*$/)
+    const item = line.match(/^- \[([ xX])\]\s+(\S.*)$/)
     if (!item) return { status: 'malformed', open: null, done: null, total: null }
+    if (item[1] === ' ' && exempt?.(item[2])) continue
     if (item[1] === ' ') open++
     else done++
   }
@@ -94,7 +105,7 @@ export function checklist(lines, allowNone = false) {
 
 export function parseFollowUps(body) {
   const parsed = sections(body)
-  const humanFollowUp = checklist(parsed.get('human follow-up'), true)
+  const humanFollowUp = checklist(parsed.get('human follow-up'), true, isPostMergeItem)
   const openQuestions = checklist(parsed.get('open questions'), true)
   return {
     humanFollowUp,
@@ -104,7 +115,7 @@ export function parseFollowUps(body) {
 }
 
 // The PR body ledger: acceptance criteria as `{met, total}` (or null when the section is missing,
-// duplicated or malformed) plus the two follow-up checklists.
+// duplicated or malformed) plus the two follow-up checklists. `## After merge` is never read.
 export function parseLedger(body) {
   const criteria = checklist(sections(body).get('acceptance criteria'))
   const { humanFollowUp, openQuestions } = parseFollowUps(body)

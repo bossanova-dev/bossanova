@@ -6,6 +6,7 @@ package views
 
 import (
 	"context"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
@@ -85,7 +86,8 @@ func sessionNeedsAttention(sess *pb.Session) bool {
 
 // newlyNeedsYouSessions identifies Needs you rising edges and changed fix alerts
 // between successful polls. The first poll includes existing Needs you sessions.
-func newlyNeedsYouSessions(previous, incoming []*pb.Session) []*pb.Session {
+// shownParks is rememberShownParks over the polls before incoming.
+func newlyNeedsYouSessions(previous, incoming []*pb.Session, shownParks map[string]string) []*pb.Session {
 	previousNeedsYou := make(map[string]*pb.Session, len(previous))
 	for _, sess := range previous {
 		if sessionNeedsAttention(sess) {
@@ -95,12 +97,61 @@ func newlyNeedsYouSessions(previous, incoming []*pb.Session) []*pb.Session {
 
 	newlyNeedsYou := make([]*pb.Session, 0)
 	for _, sess := range incoming {
-		old := previousNeedsYou[sess.GetId()]
-		if sessionNeedsAttention(sess) && (old == nil || (sess.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && sess.GetAttention().GetAlertKey() != old.GetAttention().GetAlertKey())) {
+		if sessionNeedsAttention(sess) && raisesNewNeed(previousNeedsYou[sess.GetId()], sess, shownParks[sess.GetId()]) {
 			newlyNeedsYou = append(newlyNeedsYou, sess)
 		}
 	}
 	return newlyNeedsYou
+}
+
+// raisesNewNeed reports whether sess, which needs you, asks for something the
+// operator has not been told about. old is the session as the previous poll had
+// it, nil when it did not need you then; shownPark is the park its row last
+// showed.
+//
+// When a fix alert clears, by dismissal or on its own, the session falls
+// through to whatever lay under it, usually a verify park. That park is news
+// only if the board has not already shown it: a dismissed repair failure on a
+// parked PR reveals the same park the operator saw before the failure, and
+// must not raise a fresh notification right after they acted on the session.
+func raisesNewNeed(old, sess *pb.Session, shownPark string) bool {
+	if old == nil {
+		return true
+	}
+	att := sess.GetAttention()
+	if att.GetAlertKey() == old.GetAttention().GetAlertKey() {
+		return false
+	}
+	if att.GetAlertKey() == "" && len(att.GetParkCodes()) > 0 {
+		return parkKey(att) != shownPark
+	}
+	return att.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX
+}
+
+// parkKey identifies the verify park an attention shows; empty when none.
+func parkKey(att *pb.SessionAttention) string {
+	return strings.Join(att.GetParkCodes(), ",")
+}
+
+// rememberShownParks returns, by session id, the verify park each row last
+// showed. A fix alert or a question outranks a park and hides it, so while one
+// is up the session keeps the park shown before it; any other attention shows
+// the park it carries, or none.
+func rememberShownParks(shownParks map[string]string, incoming []*pb.Session) map[string]string {
+	next := make(map[string]string, len(shownParks))
+	for _, sess := range incoming {
+		att := sess.GetAttention()
+		id := sess.GetId()
+		switch {
+		case att.GetAlertKey() != "" || att.GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION:
+			if park, ok := shownParks[id]; ok {
+				next[id] = park
+			}
+		case len(att.GetParkCodes()) > 0:
+			next[id] = parkKey(att)
+		}
+	}
+	return next
 }
 
 // valueDelivered reports whether the user has received real value: a repo,
@@ -257,6 +308,12 @@ func moveSessionCmd(c client.BossClient, ctx context.Context, sessionID string, 
 // is sent — the daemon would answer is_moved=false to the same effect, and not
 // asking keeps a held-down key from issuing a round trip per repeat.
 func (h HomeModel) moveSelectedSession(direction pb.MoveDirection) (HomeModel, tea.Cmd) {
+	if h.filter.Engaged() {
+		h.status, h.statusErr = "Clear the filter to reorder sessions", true
+		h.table.SetHeight(h.tableHeight())
+		return h, nil
+	}
+
 	if !sessionReorderAvailable(h.client) {
 		// Refuse BEFORE painting. Against the hosted orchestrator MoveSession is
 		// a hard Unimplemented, so swapping the slice first would reorder the
@@ -521,23 +578,23 @@ func (h HomeModel) selectedSessionID() string {
 }
 
 func (h HomeModel) selectedSession() *pb.Session {
+	sessions := h.boardSessions()
 	idx, ok := h.sessionIndexForTableCursor(h.table.Cursor())
 	if !ok {
 		return nil
 	}
-	return h.sessions[idx]
+	return sessions[idx]
 }
 
 func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
-	grouped := h.hasAttentionBoard()
+	sessions := h.boardSessions()
+	sectioned := h.showsSections()
 	if cursor < 0 {
 		return 0, false
 	}
 	row := 0
-	for i, sess := range h.sessions {
-		if h.sectionStarts(i, grouped) {
-			row++
-		}
+	for i, sess := range sessions {
+		row += h.sectionRows(sessions, i, sectioned)
 		next := row + 1 + h.subRowCount(sess)
 		if cursor >= row && cursor < next {
 			return i, true
@@ -548,13 +605,12 @@ func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
 }
 
 func (h HomeModel) primarySessionRows() []int {
-	grouped := h.hasAttentionBoard()
-	rows := make([]int, 0, len(h.sessions))
+	sessions := h.boardSessions()
+	sectioned := h.showsSections()
+	rows := make([]int, 0, len(sessions))
 	row := 0
-	for i, sess := range h.sessions {
-		if h.sectionStarts(i, grouped) {
-			row++
-		}
+	for i, sess := range sessions {
+		row += h.sectionRows(sessions, i, sectioned)
 		rows = append(rows, row)
 		row += 1 + h.subRowCount(sess)
 	}
@@ -562,12 +618,11 @@ func (h HomeModel) primarySessionRows() []int {
 }
 
 func (h HomeModel) tableDataRowCount() int {
-	grouped := h.hasAttentionBoard()
-	rows := len(h.sessions)
-	for i, sess := range h.sessions {
-		if h.sectionStarts(i, grouped) {
-			rows++
-		}
+	sessions := h.boardSessions()
+	sectioned := h.showsSections()
+	rows := len(sessions)
+	for i, sess := range sessions {
+		rows += h.sectionRows(sessions, i, sectioned)
 		rows += h.subRowCount(sess)
 	}
 	return rows
@@ -580,8 +635,9 @@ func (h HomeModel) tableDataRowCount() int {
 // to the previous session. Returns "" when there is no suitable neighbor (the
 // removed session was the only one, or is not in the current list).
 func (h HomeModel) neighborSessionID(removedID string) string {
+	sessions := h.boardSessions()
 	idx := -1
-	for i, sess := range h.sessions {
+	for i, sess := range sessions {
 		if sess.Id == removedID {
 			idx = i
 			break
@@ -590,22 +646,21 @@ func (h HomeModel) neighborSessionID(removedID string) string {
 	if idx == -1 {
 		return ""
 	}
-	if idx+1 < len(h.sessions) {
-		return h.sessions[idx+1].Id
+	if idx+1 < len(sessions) {
+		return sessions[idx+1].Id
 	}
 	if idx-1 >= 0 {
-		return h.sessions[idx-1].Id
+		return sessions[idx-1].Id
 	}
 	return ""
 }
 
 func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
-	grouped := h.hasAttentionBoard()
+	sessions := h.boardSessions()
+	sectioned := h.showsSections()
 	row := 0
-	for i, sess := range h.sessions {
-		if h.sectionStarts(i, grouped) {
-			row++
-		}
+	for i, sess := range sessions {
+		row += h.sectionRows(sessions, i, sectioned)
 		if i == sessionIndex {
 			return row
 		}
@@ -617,10 +672,11 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 // tableCursorForSessionID returns the table cursor row for the session with the
 // given id, or (-1, false) when no session matches (including the empty id).
 func (h HomeModel) tableCursorForSessionID(id string) (int, bool) {
+	sessions := h.boardSessions()
 	if id == "" {
 		return -1, false
 	}
-	for i, sess := range h.sessions {
+	for i, sess := range sessions {
 		if sess.Id == id {
 			return h.tableCursorForSessionIndex(i), true
 		}
@@ -696,7 +752,7 @@ func (h HomeModel) handleSessionListError(err error) (tea.Model, tea.Cmd) {
 		h.err = err
 		h.daemonRemediation = daemonDownRemediation()
 	}
-	h = h.cancelRenameIfHidden()
+	h = h.dismissInputsIfHidden()
 	h.buildTableRows()
 	return h, nil
 }
@@ -727,7 +783,7 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.sessionReadFailures = msg.sessionReadFailures
 	h.applyMergedOptimisticOverride()
 	h.reconcileArchivingSessions()
-	h = h.cancelRenameIfHidden()
+	h = h.dismissInputsIfHidden()
 	h.buildTableRows()
 	h.restoreTableCursor(selectedID)
 	return h, notifyCmd
@@ -739,8 +795,10 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 // previous poll against the incoming one.
 func (h *HomeModel) notifyNewNeedsYou(incoming []*pb.Session) tea.Cmd {
 	var notifyCmd tea.Cmd
+	shownParks := h.shownParks
+	h.shownParks = rememberShownParks(shownParks, incoming)
 	if config.NotificationsEnabled(h.settings) {
-		if newlyNeedsYou := newlyNeedsYouSessions(h.sessions, incoming); len(newlyNeedsYou) > 0 {
+		if newlyNeedsYou := newlyNeedsYouSessions(h.sessions, incoming, shownParks); len(newlyNeedsYou) > 0 {
 			notifyCmd = notifyForSessions(newlyNeedsYou)
 			// Remember the most recent Needs you session only when boss is in the
 			// background, so a subsequent focus (e.g. the user clicking the OS

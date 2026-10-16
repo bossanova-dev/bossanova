@@ -35,7 +35,7 @@ func (f *fakeFinder) FindPRCommentsWithMarker(_ context.Context, _ string, _ int
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	if marker != libevidence.Marker {
+	if marker != libevidence.CommentMarker {
 		return nil, errors.New("unexpected marker " + marker)
 	}
 	if f.err != nil {

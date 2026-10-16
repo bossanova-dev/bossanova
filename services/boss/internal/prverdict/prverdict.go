@@ -1,7 +1,7 @@
-// Package prverdict renders the boss-verify toolbox's approve and send-back
-// outcomes for a person, so `boss pr` and the TUI explain them the same way.
-// The TUI presents an approve as the merge it leads to, so it takes the Merge*
-// sentences, which share every detail with the Approve* ones.
+// Package prverdict renders the boss-verify toolbox's approve outcomes for a
+// person, so `boss pr approve` and the TUI's [m]erge explain them the same way.
+// The TUI records an approval as the first step of a merge, so it takes the
+// Merge* sentences, which share every detail with the Approve* ones.
 package prverdict
 
 import (
@@ -17,13 +17,14 @@ import (
 var refusals = map[string]string{
 	"no-standing-park":        "no `needs human:` park stands on the PR's current head",
 	"head-moved":              "the PR's head or its park changed while approving, so what stands now is not approved; re-check and approve again",
+	"park-changed":            "the PR's park changed since it was read, so what stands now is not approved; re-check and approve again",
 	"approval-record-failed":  "the approval record could not be posted on the PR, so nothing is approved and the needs-human label was left alone",
-	"approval-superseded":     "a later operator decision on the head (a send-back or another approval) landed while approving and replaces this one",
+	"approval-superseded":     "a later operator decision on the head landed while approving and replaces this one",
 	"approval-unconfirmed":    "whether the approval record was posted and took effect could not be read back",
 	"approver-not-writer":     "the account boss runs gh as cannot write to the repository, so its record on the PR would not count",
 	"approver-unreadable":     "the repository permission of the account boss runs gh as could not be read",
-	"sent-back-approved-head": "the head verify passed under an approval was sent back; run /boss-verify on the PR to re-raise its park, then approve that",
-	"comments-unreadable":     "the PR's comments could not be read, so an earlier send-back cannot be ruled out",
+	"sent-back-approved-head": "the head verify passed under an approval carries an older send-back; run /boss-verify on the PR to re-raise its park, then approve that",
+	"comments-unreadable":     "the PR's comments could not be read, so an earlier operator decision cannot be ruled out",
 	"park-codes-unknown":      "the park names a code this toolbox does not know",
 	"pr-not-open":             "the PR is not open",
 	"pr-unreadable":           "the PR could not be read",
@@ -33,41 +34,42 @@ var refusals = map[string]string{
 }
 
 // mergeRefusals overrides the refusal details whose CLI wording names an
-// approval, for the TUI, which presents an approve as the merge it leads to.
-// Every other reason reads the same in both.
+// approval, for the TUI's [m]erge, which records the approval and merges.
+// Every other reason reads the same in both. Nothing was merged in any case.
 var mergeRefusals = map[string]string{
-	"head-moved":              "the PR's head or its park changed while requesting the merge, so what stands now is not cleared to merge; re-check and merge again",
-	"approval-record-failed":  "the merge request could not be recorded on the PR, so nothing is cleared to merge and the needs-human label was left alone",
-	"approval-superseded":     "a later operator decision on the head (a send-back or another merge request) landed meanwhile and replaces this one",
-	"approval-unconfirmed":    "whether the merge request was recorded and took effect could not be read back",
-	"sent-back-approved-head": "this head was sent back after verify passed it; run /boss-verify on the PR to re-raise its park, then merge again",
+	"head-moved":             "the PR changed since you opened it; refresh and try again",
+	"park-changed":           "what verify asks you to sign off changed since you looked; review it again, then merge",
+	"approval-record-failed": "your approval could not be recorded on the PR, so nothing was merged",
+	"approval-superseded":    "a later operator decision on the head landed meanwhile and replaces this one",
+	"approval-unconfirmed":   "whether your approval was recorded could not be read back, so nothing was merged",
 }
 
-// RefusalDetail renders a verify-gate refusal reason, with the park it names
-// and the toolbox's why when present.
+// RefusalDetail renders a verify-gate refusal reason for the CLI, with the
+// park it names, the reason code, and the toolbox's why when present.
 func RefusalDetail(reason, why, park string) string {
-	return refusalDetail(refusals, reason, why, park)
-}
-
-// MergeRefusalDetail is RefusalDetail in the TUI's merge wording.
-func MergeRefusalDetail(reason, why, park string) string {
-	if _, ok := mergeRefusals[reason]; ok {
-		return refusalDetail(mergeRefusals, reason, why, park)
+	detail := refusalText(refusals, reason, park, "refused") + " [" + reason + "]"
+	if why != "" {
+		detail += ": " + why
 	}
-	return RefusalDetail(reason, why, park)
+	return detail
 }
 
-func refusalDetail(details map[string]string, reason, why, park string) string {
+// MergeRefusalDetail renders a refusal for the TUI's [m]erge in plain words
+// only: no reason code, park code or toolbox why, which are machine text.
+func MergeRefusalDetail(reason string) string {
+	if detail, ok := mergeRefusals[reason]; ok {
+		return detail
+	}
+	return refusalText(refusals, reason, "", "verify refused the approval, so nothing was merged")
+}
+
+func refusalText(details map[string]string, reason, park, unknown string) string {
 	detail, ok := details[reason]
 	if !ok {
-		detail = "refused"
+		return unknown
 	}
 	if reason == "park-codes-unknown" && park != "" {
 		detail += " (" + park + ")"
-	}
-	detail += " [" + reason + "]"
-	if why != "" {
-		detail += ": " + why
 	}
 	return detail
 }
@@ -78,14 +80,15 @@ func ApproveRefusal(pr int, r *pb.VerifyApproveResult) string {
 	return fmt.Sprintf("PR #%d not approved: %s%s", pr, RefusalDetail(r.GetReason(), r.GetWhy(), r.GetPark()), postedRecordDetail(r, "re-run approve"))
 }
 
-// MergeRefusal is ApproveRefusal for the TUI's [m]erge on a verify-parked PR.
+// MergeRefusal is ApproveRefusal for the TUI's [m]erge on a review row, whose
+// approval was refused, so nothing merged.
 func MergeRefusal(pr int, r *pb.VerifyApproveResult) string {
-	return fmt.Sprintf("PR #%d not merged: %s%s", pr, MergeRefusalDetail(r.GetReason(), r.GetWhy(), r.GetPark()), postedRecordDetail(r, "merge again"))
+	return fmt.Sprintf("Couldn't merge PR #%d: %s%s", pr, MergeRefusalDetail(r.GetReason()), postedRecordDetail(r, "merge again"))
 }
 
 // ParkCodeLines renders each park code in plain words, one indented line per
 // code in the verify gate's report order, e.g.
-// "  ledger-open: review left must-fix findings open".
+// "  human-review:ui: a UI change; watch the evidence before it merges".
 func ParkCodeLines(codes []string) []string {
 	normalized := attention.ParkCodes(codes)
 	lines := make([]string, 0, len(normalized))
@@ -106,37 +109,10 @@ func failureList(codes []string) string {
 	return strings.Join(named, ", ")
 }
 
-// sendBackCommand is the CLI verb that rejects the head instead.
-func sendBackCommand(pr int) string {
-	return fmt.Sprintf("boss pr send-back %d \"<note>\"", pr)
-}
-
-// MergeConfirm is the TUI's [m]erge confirmation on a verify-parked PR: the
-// question, each park code in plain words, and, when any code reports a
-// failure, which failure merging overrides and the send-back alternative.
-// overridesFailure reports that last case, in which the TUI makes merging the
-// non-default choice.
-func MergeConfirm(pr int, codes []string) (lines []string, overridesFailure bool) {
-	failures := failureList(codes)
-	if failures == "" && len(attention.ParkCodes(codes)) > 0 {
-		lines = append(lines, fmt.Sprintf("Merge PR #%d? Verify waives its park on the current head, re-checks it, then merges:", pr))
-		return append(lines, ParkCodeLines(codes)...), false
-	}
-	lines = append(lines, fmt.Sprintf("Merge PR #%d anyway? Verify waives its park on the current head, re-checks it, then merges:", pr))
-	lines = append(lines, ParkCodeLines(codes)...)
-	if failures == "" {
-		failures = "a park that names no reason"
-	}
-	return append(lines,
-		fmt.Sprintf("Merging overrides %s.", failures),
-		"To send it back instead: "+sendBackCommand(pr),
-	), true
-}
-
 // approvedParkLines renders, after an approval that waived waives, each waived
 // code in plain words and, when one reports a failure, what the approval
-// overrode and how to undo it.
-func approvedParkLines(pr int, waives string, planned bool) []string {
+// overrode.
+func approvedParkLines(waives string, planned bool) []string {
 	codes := attention.ParkCodes([]string{waives})
 	if len(codes) == 0 {
 		return nil
@@ -147,16 +123,10 @@ func approvedParkLines(pr int, waives string, planned bool) []string {
 	case failures == "":
 		return lines
 	case planned:
-		return append(lines, fmt.Sprintf("Approving would override %s; %s sends the head back instead.", failures, sendBackCommand(pr)))
+		return append(lines, fmt.Sprintf("Approving would override %s.", failures))
 	default:
-		return append(lines, fmt.Sprintf("Approving overrode %s; if that was not intended, %s revokes the approval and sends the head back.", failures, sendBackCommand(pr)))
+		return append(lines, fmt.Sprintf("Approving overrode %s; to undo it, push a new head, which verify judges afresh.", failures))
 	}
-}
-
-// SendBackRefusal is the sentence for a send-back that neither posted nor
-// planned.
-func SendBackRefusal(pr int, r *pb.SendBackSessionPRResponse) string {
-	return fmt.Sprintf("PR #%d not sent back: %s", pr, RefusalDetail(r.GetReason(), "", ""))
 }
 
 // postedRecordDetail adds what a refused approve's record still does: a posted
@@ -182,33 +152,36 @@ func ApproveLines(pr int, r *pb.VerifyApproveResult) []string {
 	sentBack := r.GetLifted() == "sent-back"
 	switch {
 	case r.GetIsPlanned() && sentBack:
-		return []string{fmt.Sprintf("Would approve #%d: record an approval lifting the send-back of head %s (dry run; nothing written).", pr, head)}
+		return []string{fmt.Sprintf("Would approve #%d: record an approval lifting the older send-back of head %s (dry run; nothing written).", pr, head)}
 	case r.GetIsPlanned():
 		planned := fmt.Sprintf("Would approve #%d: record an approval waiving %s on head %s, then remove the needs-human label (dry run; nothing written).", pr, r.GetWaives(), head)
-		return append([]string{planned}, approvedParkLines(pr, r.GetWaives(), true)...)
+		return append([]string{planned}, approvedParkLines(r.GetWaives(), true)...)
 	case sentBack:
-		return []string{fmt.Sprintf("Approved #%d: lifted the send-back of head %s (record: %s). Run /boss-verify %d to merge it.", pr, head, r.GetApprovalUrl(), pr)}
+		return []string{fmt.Sprintf("Approved #%d: lifted the older send-back of head %s (record: %s). Run /boss-verify %d to merge it.", pr, head, r.GetApprovalUrl(), pr)}
 	}
 	lines := []string{fmt.Sprintf("Approved #%d: waived %s on head %s (record: %s). Verify will re-check and merge.", pr, r.GetWaives(), head, r.GetApprovalUrl())}
-	lines = append(lines, approvedParkLines(pr, r.GetWaives(), false)...)
+	lines = append(lines, approvedParkLines(r.GetWaives(), false)...)
 	if label := labelLine(r, "the approval"); label != "" {
 		lines = append(lines, label)
 	}
 	return lines
 }
 
-// MergeLines is ApproveLines for the TUI's [m]erge on a verify-parked PR,
-// which never dry-runs.
-func MergeLines(pr int, r *pb.VerifyApproveResult) []string {
-	head := shortSHA(r.GetHeadSha())
-	if r.GetLifted() == "sent-back" {
-		return []string{fmt.Sprintf("Send-back lifted for #%d on head %s (record: %s). Run /boss-verify %d to merge it.", pr, head, r.GetApprovalUrl(), pr)}
+// OperatorMerged is the TUI's result line for a landed [m]erge: "Merged PR
+// #N", plus the tracker bookkeeping when it did not happen.
+func OperatorMerged(pr int, r *pb.OperatorMergeSessionResponse) string {
+	merged := fmt.Sprintf("Merged PR #%d", pr)
+	switch r.GetTrackerWrites() {
+	case "ok", "none":
+		return merged
+	case "":
+		return merged + "; the tracker was not updated, so move the ticket to done by hand"
 	}
-	lines := []string{fmt.Sprintf("Merge requested for #%d: verify waived %s on head %s and will re-check and merge (record: %s).", pr, r.GetWaives(), head, r.GetApprovalUrl())}
-	if label := labelLine(r, "the merge request"); label != "" {
-		lines = append(lines, label)
+	why := r.GetTrackerWrites()
+	if r.GetTrackerWhy() != "" {
+		why += ": " + r.GetTrackerWhy()
 	}
-	return lines
+	return fmt.Sprintf("%s; the tracker was not updated (%s), so move the ticket to done by hand", merged, why)
 }
 
 // labelLine explains a needs-human label the approval did not remove; decision

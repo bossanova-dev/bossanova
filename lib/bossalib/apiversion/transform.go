@@ -3,6 +3,7 @@ package apiversion
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 // Account labels involved in UnmanagedLabelChange (V20260706). They are the raw
@@ -542,6 +544,24 @@ type RefMsg struct {
 // REVIEW kind and its leading APPROVE on a blocked verify park's attention.
 // It runs before ResumeAttentionActionsChange, so that change never mistakes
 // the park for a fix row and prepends RESUME.
+//
+// UnverifiedMergeAttentionChange (introduced at V20260920), which restores the
+// MERGE answer on a merge-ready PR nothing has verified. Its rows are REVIEWs
+// with no park codes that offer MERGE, which no older change reads; the rows it
+// writes are MERGEs, which no older change rewrites either.
+//
+// DeadBootstrapAttentionChange (also V20260920), which restores OPEN_CHAT and
+// the "open the chat, then resume" sentence on the FIX of a session whose
+// bootstrap was reaped. Its rows are FIXes with no park codes and never
+// REVIEWs offering MERGE, so it and UnverifiedMergeAttentionChange are
+// disjoint. It runs before ResumeAttentionActionsChange, which then prepends
+// RESUME for pins older than V20260918 exactly as it did before.
+//
+// ParkMergeAttentionChange (also V20260920), which restores APPROVE and
+// SEND_BACK, and the sentences that named them, on a verify park's attention.
+// Its rows carry park codes, which neither other V20260920 change reads. It is
+// registered last so it runs first: BlockedParkAttentionChange then sees the
+// SEND_BACK-led blocked FIX it was written against.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -602,6 +622,9 @@ func ProductionChanges() *Changes {
 		VerifyParkSplitChange{},
 		WorkingOverWaitingChange{},
 		BlockedParkAttentionChange{},
+		UnverifiedMergeAttentionChange{},
+		DeadBootstrapAttentionChange{},
+		ParkMergeAttentionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3245,4 +3268,194 @@ func downconvertBlockedParkAttentionSession(s *pb.Session) *pb.Session {
 // every session-bearing unary response and is a no-op elsewhere.
 func (BlockedParkAttentionChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertBlockedParkAttentionSession)
+}
+
+// UnverifiedMergeAttentionChange is the production VersionChange introduced at
+// V20260920.
+//
+// At V20260920 Session.attention answers a merge-ready PR (open, ready, checks
+// green, mergeable, no park) as ATTENTION_KIND_MERGE only when the verify stage
+// passed its head. A merge-ready PR nothing verified is ATTENTION_KIND_REVIEW
+// with no park_codes, the sentence "Not verified"
+// and the actions GITHUB then MERGE: there is no park to sign off,
+// so the operator's merge is the review's outcome. Older pins get the MERGE
+// kind, the "Ready to merge" sentence and MERGE ahead of the other actions
+// back; the sentence is a fixed string, so it can be rebuilt exactly. A verify
+// park's REVIEW always carries park codes, so it is never rewritten here;
+// ParkMergeAttentionChange, which runs first, handles the MERGE it offers.
+type UnverifiedMergeAttentionChange struct{}
+
+// mergeReadySentence is the sentence every MERGE answer carried before
+// V20260920.
+const mergeReadySentence = "Ready to merge"
+
+// Version implements VersionChange.
+func (UnverifiedMergeAttentionChange) Version() Version { return V20260920 }
+
+// downconvertUnverifiedMergeAttentionSession clones before writing because
+// bosso's registry path caches these pointers. Only an unverified merge-ready
+// row allocates.
+func downconvertUnverifiedMergeAttentionSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || len(a.GetParkCodes()) != 0 ||
+		!slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	actions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE}
+	for _, action := range cloned.Attention.Actions {
+		if action != pb.AttentionAction_ATTENTION_ACTION_MERGE {
+			actions = append(actions, action)
+		}
+	}
+	cloned.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_MERGE
+	cloned.Attention.Sentence = mergeReadySentence
+	cloned.Attention.Actions = actions
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the MERGE answer on
+// every session-bearing unary response and is a no-op elsewhere.
+func (UnverifiedMergeAttentionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertUnverifiedMergeAttentionSession)
+}
+
+// DeadBootstrapAttentionChange is the production VersionChange introduced at
+// V20260920.
+//
+// At V20260920 the FIX for a session whose blocked_reason is
+// sessionreason.BootstrapStranded (the bootstrap was reaped and its worktree,
+// branch and chat cleaned up) offers DISMISS alone and says only that it died
+// before setup finished, where it offered DISMISS and OPEN_CHAT and read "Run blocked:
+// <reason> · open the chat, then resume". Opening a chat there could only fail
+// on the missing worktree. Older pins get OPEN_CHAT after DISMISS and the old
+// sentence back; the reason is a fixed string, so the sentence is rebuilt
+// exactly.
+type DeadBootstrapAttentionChange struct{}
+
+// Version implements VersionChange.
+func (DeadBootstrapAttentionChange) Version() Version { return V20260920 }
+
+// downconvertDeadBootstrapAttentionSession clones before writing because
+// bosso's registry path caches these pointers. Only a reaped-bootstrap FIX row
+// allocates.
+func downconvertDeadBootstrapAttentionSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !sessionreason.IsBootstrapStranded(s.BlockedReason) ||
+		slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT) {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	actions := make([]pb.AttentionAction, 0, len(cloned.Attention.Actions)+1)
+	for _, action := range cloned.Attention.Actions {
+		actions = append(actions, action)
+		if action == pb.AttentionAction_ATTENTION_ACTION_DISMISS {
+			actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
+		}
+	}
+	cloned.Attention.Sentence = "Run blocked: " + sessionreason.BootstrapStranded() + " · open the chat, then resume"
+	cloned.Attention.Actions = actions
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the open-chat answer
+// on every session-bearing unary response and is a no-op elsewhere.
+func (DeadBootstrapAttentionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertDeadBootstrapAttentionSession)
+}
+
+// ParkMergeAttentionChange is the production VersionChange introduced at
+// V20260920.
+//
+// At V20260920 the operator no longer approves or sends back a verify park.
+// A sign-off park's REVIEW offers GITHUB (and VIDEO) then MERGE, a merge that
+// records the head-bound approval first; a blocked park's FIX offers GITHUB
+// (and VIDEO) and is fixed through a chat. Their sentences state only the issue
+// ("Database migration", "The PR checklist has 1 open item"). Older pins get APPROVE and SEND_BACK
+// ahead of the other actions on a REVIEW, with MERGE dropped, and SEND_BACK
+// ahead of them on a blocked FIX, plus the sentences they were served. Every
+// park sentence is a fixed string except the UI one, whose video length sits
+// before a fixed suffix, and the open-checklist one, which counts its open
+// items after a fixed prefix, so each is rebuilt exactly. The open_items field
+// is additive and passes through. A row that already offers the old actions is
+// left alone.
+type ParkMergeAttentionChange struct{}
+
+// Version implements VersionChange.
+func (ParkMergeAttentionChange) Version() Version { return V20260920 }
+
+// previousParkSentence maps a V20260920 park sentence back to the one older
+// pins were served. The UI sentence carries the evidence video's length and
+// the security one the park's label, and the open-checklist one counts its
+// items; each keeps its interpolated part. Any other sentence is returned as
+// is.
+func previousParkSentence(sentence string) string {
+	if video, ok := strings.CutPrefix(sentence, "UI change · evidence video"); ok {
+		return "Watch the evidence video" + video + ", then approve · UI change"
+	}
+	if label, ok := strings.CutPrefix(sentence, "Security change"); ok {
+		return "Review the diff · security" + label
+	}
+	if strings.HasPrefix(sentence, "The PR checklist has ") {
+		return "The PR ledger is open · send it back to close it"
+	}
+	if previous, ok := previousParkSentences[sentence]; ok {
+		return previous
+	}
+	return sentence
+}
+
+// previousParkSentences maps each fixed V20260920 park sentence back.
+var previousParkSentences = map[string]string{
+	"Needs a sign-off":                 "Review the PR, then approve or send back",
+	"UI change":                        "Review the UI change, then approve",
+	"Database migration":               "Review the migration, then approve",
+	"Verify is blocked":                "Verify is blocked · send it back or fix the PR",
+	"Some checks have no evidence":     "Some checks have no evidence · send it back to prove them",
+	"Built by hand, no factory review": "Built by hand, no factory review · send it back through the factory",
+}
+
+// downconvertParkMergeAttentionSession clones before writing because bosso's
+// registry path caches these pointers. Only a verify-park row allocates.
+func downconvertParkMergeAttentionSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if len(a.GetParkCodes()) == 0 || slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_SEND_BACK) ||
+		slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE) {
+		return s
+	}
+	var lead []pb.AttentionAction
+	switch a.GetKind() {
+	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
+		lead = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE, pb.AttentionAction_ATTENTION_ACTION_SEND_BACK}
+	case pb.AttentionKind_ATTENTION_KIND_FIX:
+		lead = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_SEND_BACK}
+	default:
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	actions := lead
+	for _, action := range cloned.Attention.Actions {
+		if action != pb.AttentionAction_ATTENTION_ACTION_MERGE {
+			actions = append(actions, action)
+		}
+	}
+	cloned.Attention.Actions = actions
+	cloned.Attention.Sentence = previousParkSentence(cloned.Attention.Sentence)
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the approve and
+// send-back answer on every session-bearing unary response and is a no-op
+// elsewhere.
+func (ParkMergeAttentionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertParkMergeAttentionSession)
 }

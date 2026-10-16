@@ -11,9 +11,10 @@ import (
 // injectable so the orchestration logic can be tested with fixtures instead of
 // live commands.
 type ProcessSource interface {
-	// Snapshot returns the full pid -> ppid graph at a single instant. A
-	// non-nil error is a global failure: the whole scan degrades to incomplete.
-	Snapshot(ctx context.Context) (map[int]int, error)
+	// Snapshot returns the full process table (pid -> parent and executable
+	// name) at a single instant. A non-nil error is a global failure: the
+	// whole scan degrades to incomplete.
+	Snapshot(ctx context.Context) (map[int]Process, error)
 	// Identity returns the birth identity of pid. err == nil with Present=true
 	// is a readable live process; err == nil with Present=false is an
 	// authoritative "no such process"; a non-nil error is a transient
@@ -212,10 +213,12 @@ func (d *Detector) Scan(ctx context.Context, rootsBySession map[string][]Root) m
 	}
 
 	// Phase 5 — attribute surviving listeners to sessions, filter to valid TCP
-	// ports, then sort and dedup deterministically.
+	// ports, drop the agent runner's own listeners, then sort and dedup
+	// deterministically.
+	agents := agentProcesses(validRoots, graph, children)
 	perSession := make(map[string][]Listener)
 	for _, l := range scan.Listeners {
-		if l.Port <= 0 || l.Family == FamilyUnknown {
+		if l.Port <= 0 || l.Family == FamilyUnknown || agents[l.PID] {
 			continue
 		}
 		for sid := range trustedOwners[l.PID] {
@@ -240,11 +243,11 @@ func allIncomplete(rootsBySession map[string][]Root) map[string]SessionResult {
 	return out
 }
 
-// invertGraph builds a ppid -> children adjacency list from a pid -> ppid map.
-func invertGraph(graph map[int]int) map[int][]int {
+// invertGraph builds a ppid -> children adjacency list from the process table.
+func invertGraph(graph map[int]Process) map[int][]int {
 	children := make(map[int][]int, len(graph))
-	for pid, ppid := range graph {
-		children[ppid] = append(children[ppid], pid)
+	for pid, p := range graph {
+		children[p.PPID] = append(children[p.PPID], pid)
 	}
 	return children
 }

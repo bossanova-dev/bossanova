@@ -641,7 +641,7 @@ func TestMergeSessionRejectsUnverifiableLiveRead(t *testing.T) {
 func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no provider", func(t *testing.T) {
 		srv := &Server{logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42, "")
+		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42, "", mergeSessionBlocks)
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when no provider is configured", err)
 		}
@@ -652,7 +652,7 @@ func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no origin URL", func(t *testing.T) {
 		prov := &mergeGateProvider{prStatusErr: errors.New("must never be called")}
 		srv := &Server{provider: prov, logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "", 42, "")
+		block, err := srv.liveMergeBlock(context.Background(), "", 42, "", mergeSessionBlocks)
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when the repo has no origin URL", err)
 		}

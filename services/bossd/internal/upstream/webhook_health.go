@@ -42,6 +42,8 @@ type WebhookHealth struct {
 
 	mu       sync.Mutex
 	lastSeen map[string]time.Time
+	// latestDelivery is when the most recent webhook for any repo arrived.
+	latestDelivery time.Time
 	// missedAt maps a repo key to when a poll first found a PR change in it
 	// that no webhook announced (NotePolledChange). A delivery clears it.
 	missedAt map[string]time.Time
@@ -85,7 +87,9 @@ func (h *WebhookHealth) RecordDelivery(repo string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	key := webhookRepoKey(repo)
-	h.lastSeen[key] = h.now()
+	now := h.now()
+	h.lastSeen[key] = now
+	h.latestDelivery = now
 	delete(h.missedAt, key)
 }
 
@@ -120,6 +124,9 @@ func (h *WebhookHealth) NotePolledChange(repo string, since time.Time) {
 	if !ok {
 		return
 	}
+	// Stamped before link() so a reconnect right after it returns leaves the
+	// stamp before the new stream opened, where WebhooksMissing ignores it.
+	noted := h.now()
 	openedAt, open := h.link()
 	if !open || since.Before(openedAt.Add(polledReadStaleness)) {
 		return
@@ -131,16 +138,17 @@ func (h *WebhookHealth) NotePolledChange(repo string, since time.Time) {
 	}
 	// A miss from before the current stream opened no longer counts
 	// (WebhooksMissing), so a fresh one replaces it.
-	if prior, noted := h.missedAt[key]; !noted || prior.Before(openedAt) {
-		h.missedAt[key] = h.now()
+	if prior, ok := h.missedAt[key]; !ok || prior.Before(openedAt) {
+		h.missedAt[key] = noted
 	}
 }
 
 // WebhooksMissing reports that GitHub webhooks are evidently not reaching this
 // daemon for repo: a poll found a change in it that no webhook announced within
 // missedDeliveryGrace (NotePolledChange) and none has arrived for it since,
-// the stream is open, and some repo has had a delivery, so the pipe itself
-// works. Nil-safe: a nil tracker (no upstream) never reports missing.
+// the stream is open, and some repo has had a delivery on the current stream,
+// so the pipe itself works. Nil-safe: a nil tracker (no upstream) never reports
+// missing.
 func (h *WebhookHealth) WebhooksMissing(repo string) bool {
 	if h == nil || h.link == nil {
 		return false
@@ -158,5 +166,8 @@ func (h *WebhookHealth) WebhooksMissing(repo string) bool {
 	missed, ok := h.missedAt[key]
 	// A miss noted before the current stream opened proves nothing: the
 	// delivery that would have cleared it may have been lost in the disconnect.
-	return ok && !missed.Before(openedAt) && len(h.lastSeen) > 0 && h.now().Sub(missed) >= missedDeliveryGrace
+	// Only a delivery on this stream proves it forwards anything; otherwise a
+	// reconnect that stopped forwarding for every repo would flag each one.
+	pipeWorks := !h.latestDelivery.Before(openedAt)
+	return ok && !missed.Before(openedAt) && pipeWorks && h.now().Sub(missed) >= missedDeliveryGrace
 }

@@ -27,7 +27,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 // classifyCronBranch is the pure decision core (unit-tested). Given what we know
 // about a branch, it returns { action, reason } where action ∈ keep|delete|review.
@@ -41,12 +41,16 @@ export function classifyCronBranch({ hasLiveSession, prState, mergedIntoBase }) 
   return { action: 'review', reason: 'no PR and unmerged commits — inspect before deleting' }
 }
 
-function defaultDBPath() {
+export function defaultDBPath({ os = platform(), home = homedir(), env = process.env } = {}) {
   // Mirrors services/bossd/internal/db/db.go DefaultDBPath().
-  if (platform() === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'bossanova', 'bossd.db')
+  if (os === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'bossanova', 'bossd.db')
   }
-  return join(homedir(), '.config', 'bossanova', 'bossd.db')
+  if (os === 'linux' && env.XDG_CONFIG_HOME) {
+    if (!isAbsolute(env.XDG_CONFIG_HOME)) throw new Error('XDG_CONFIG_HOME must be absolute')
+    return join(env.XDG_CONFIG_HOME, 'bossanova', 'bossd.db')
+  }
+  return join(home, '.config', 'bossanova', 'bossd.db')
 }
 
 function parseArgs(argv) {
@@ -54,7 +58,7 @@ function parseArgs(argv) {
     apply: false,
     glob: 'cron-*',
     base: '',
-    db: defaultDBPath(),
+    db: undefined,
     gh: true,
     force: false,
   }
@@ -69,6 +73,7 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') opts.help = true
     else throw new Error(`unknown argument: ${a}`)
   }
+  opts.db ??= defaultDBPath()
   return opts
 }
 

@@ -18,8 +18,8 @@ var (
 
 func boolPtr(b bool) *bool { return &b }
 
-// readyPR is an open, non-draft PR whose checks are all done and green and
-// which GitHub reports mergeable.
+// readyPR is an open, non-draft PR whose checks are all done and green, which
+// GitHub reports mergeable and whose head the verify stage passed.
 func readyPR() attention.Input {
 	return attention.Input{
 		HasPR:       true,
@@ -27,31 +27,41 @@ func readyPR() attention.Input {
 		ChecksTotal: 7,
 		ChecksDone:  7,
 		Mergeable:   boolPtr(true),
+		Verified:    true,
 		StateSince:  stateSince,
 	}
 }
+
+// unverifiedPR is readyPR before anything verified its head: a fresh-claim
+// cron's PR in a repo with no verify stage.
+func unverifiedPR() attention.Input {
+	in := readyPR()
+	in.Verified = false
+	return in
+}
+
+// unverifiedActions are the actions of a merge-ready PR nothing verified.
+var unverifiedActions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE}
 
 func withParks(in attention.Input, codes ...string) attention.Input {
 	in.ParkCodes = codes
 	return in
 }
 
+// reviewActions is a sign-off park's REVIEW: blockedActions, then the MERGE
+// that records the approval and merges.
 func reviewActions(video bool) []pb.AttentionAction {
-	acts := []pb.AttentionAction{
-		pb.AttentionAction_ATTENTION_ACTION_APPROVE,
-		pb.AttentionAction_ATTENTION_ACTION_SEND_BACK,
-		pb.AttentionAction_ATTENTION_ACTION_GITHUB,
-	}
+	return append(blockedActions(video), pb.AttentionAction_ATTENTION_ACTION_MERGE)
+}
+
+// blockedActions is a blocked park's FIX: GITHUB, and VIDEO when there is
+// evidence. It is fixed through a chat, never merged from the row.
+func blockedActions(video bool) []pb.AttentionAction {
+	acts := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB}
 	if video {
 		acts = append(acts, pb.AttentionAction_ATTENTION_ACTION_VIDEO)
 	}
 	return acts
-}
-
-// blockedActions is reviewActions without APPROVE: a blocked park is sent
-// back, never approved.
-func blockedActions(video bool) []pb.AttentionAction {
-	return reviewActions(video)[1:]
 }
 
 func TestCompute_Cases(t *testing.T) {
@@ -75,7 +85,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Watch the evidence video (2:40), then approve · UI change",
+			sentence:  "UI change · evidence video (2:40)",
 			actions:   reviewActions(true),
 			parkCodes: []string{"always-human-path", "human-review:ui"},
 		},
@@ -87,15 +97,37 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Review left must-fix findings open · send it back to fix them",
+			sentence:  "The PR checklist has open items",
 			actions:   blockedActions(true),
 			parkCodes: []string{"always-human-path", "ledger-open", "human-review:ui"},
 		},
 		{
-			name:     "UI park without a known duration omits (m:ss)",
+			name: "UI park without a known duration omits (m:ss)",
+			in: func() attention.Input {
+				in := withParks(factory, "human-review:ui")
+				in.Evidence = &attention.Evidence{URL: "https://evidence.example/2979.mp4"}
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "UI change · evidence video",
+			actions:  reviewActions(true),
+		},
+		{
+			name:     "UI park with no evidence never asks for a video",
 			in:       withParks(factory, "human-review:ui"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Watch the evidence video, then approve · UI change",
+			sentence: "UI change",
+			actions:  reviewActions(false),
+		},
+		{
+			name: "UI park with a duration but no evidence URL has no video to watch",
+			in: func() attention.Input {
+				in := withParks(factory, "human-review:ui")
+				in.Evidence = &attention.Evidence{VideoDuration: 6 * time.Second}
+				return in
+			}(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "UI change",
 			actions:  reviewActions(false),
 		},
 		{
@@ -106,42 +138,42 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Review the diff · security: verify gate rules (how PRs get merged)",
+			sentence: "Security change: verify gate rules (how PRs get merged)",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "security park without a label uses the unlabelled form",
 			in:       withParks(factory, "human-review:security"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Review the diff · security",
+			sentence: "Security change",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "always-human-path alone uses the security sentence",
 			in:       withParks(factory, "always-human-path"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Review the diff · security",
+			sentence: "Security change",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "#2967 unproven park is blocked",
 			in:       withParks(factory, "human-review:unproven"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Some checks have no evidence · send it back to prove them",
+			sentence: "Some checks have no evidence",
 			actions:  blockedActions(false),
 		},
 		{
 			name:     "#2965 no-receipt park is blocked",
 			in:       withParks(factory, "no-receipt"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Built by hand, no factory review · send it back through the factory",
+			sentence: "Built by hand, no factory review",
 			actions:  blockedActions(false),
 		},
 		{
 			name:      "#2987 database park beats always-human-path",
 			in:        withParks(factory, "always-human-path", "human-review:database"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Review the migration, then approve",
+			sentence:  "Database migration",
 			actions:   reviewActions(false),
 			parkCodes: []string{"always-human-path", "human-review:database"},
 		},
@@ -149,28 +181,28 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "ledger-open park is blocked",
 			in:       withParks(factory, "ledger-open"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Review left must-fix findings open · send it back to fix them",
+			sentence: "The PR checklist has open items",
 			actions:  blockedActions(false),
 		},
 		{
 			name:     "repair-exhausted is blocked with the generic blocked sentence",
 			in:       withParks(factory, "repair-exhausted"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Verify is blocked · send it back or fix the PR",
+			sentence: "Verify is blocked",
 			actions:  blockedActions(false),
 		},
 		{
 			name:     "a templated code beats an earlier generic one",
 			in:       withParks(factory, "repair-exhausted", "ledger-open"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Review left must-fix findings open · send it back to fix them",
+			sentence: "The PR checklist has open items",
 			actions:  blockedActions(false),
 		},
 		{
 			name:      "unknown code is blocked with the generic blocked sentence",
 			in:        withParks(factory, "some-future-code"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Verify is blocked · send it back or fix the PR",
+			sentence:  "Verify is blocked",
 			actions:   blockedActions(false),
 			parkCodes: []string{"some-future-code"},
 		},
@@ -178,7 +210,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "an unknown code beside a sign-off code is blocked",
 			in:        withParks(factory, "human-review:security", "some-future-code"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Verify is blocked · send it back or fix the PR",
+			sentence:  "Verify is blocked",
 			actions:   blockedActions(false),
 			parkCodes: []string{"human-review:security", "some-future-code"},
 		},
@@ -186,22 +218,50 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "comma-joined park codes are split, trimmed and deduped",
 			in:        withParks(factory, "human-review:ui, always-human-path", "always-human-path"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Watch the evidence video, then approve · UI change",
+			sentence:  "UI change",
 			actions:   reviewActions(false),
 			parkCodes: []string{"always-human-path", "human-review:ui"},
 		},
 		{
-			name:     "fresh-claim ready PR in a non-factory repo is merge",
+			name:     "verified ready PR in a non-factory repo is merge",
 			in:       readyPR(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_MERGE,
 			sentence: "Ready to merge",
 			actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
 		},
 		{
+			name:      "fresh-claim ready PR nothing verified is a review without a park",
+			in:        unverifiedPR(),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Not verified",
+			actions:   unverifiedActions,
+			parkCodes: []string{},
+		},
+		{
+			name:     "an unverified PR in a factory repo stays in progress",
+			in:       func() attention.Input { in := unverifiedPR(); in.IsFactoryRepo = true; return in }(),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "stopped",
+		},
+		{
+			name:     "an unverified PR verify is waiting on stays in progress",
+			in:       withParks(unverifiedPR(), "stack-busy"),
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting for the test stack",
+		},
+		{
+			name:      "an unverified PR verify parked for sign-off is the park's review",
+			in:        withParks(unverifiedPR(), "human-review:security"),
+			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence:  "Security change",
+			actions:   reviewActions(false),
+			parkCodes: []string{"human-review:security"},
+		},
+		{
 			name:     "the same PR in a factory repo stays in progress",
 			in:       factory,
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
 			name: "draft PR is not merge",
@@ -211,7 +271,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
 			name: "failing check is not merge",
@@ -221,7 +281,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
 			name: "unknown mergeability is not merge",
@@ -231,7 +291,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
 			name: "conflicting PR is not merge",
@@ -241,17 +301,17 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
-			name: "running checks show CI n/m",
+			name: "running checks show checking n/m",
 			in: func() attention.Input {
 				in := readyPR()
 				in.ChecksDone = 3
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "CI 3/7",
+			progress: "checking 3/7",
 		},
 		{
 			name: "no checks reported yet is not merge",
@@ -261,7 +321,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "idle",
+			progress: "stopped",
 		},
 		{
 			name:     "base-ci-red is not the operator's",
@@ -319,7 +379,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "operator codes win over waiting codes",
 			in:        withParks(factory, "stack-busy", "human-review:database"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Review the migration, then approve",
+			sentence:  "Database migration",
 			actions:   reviewActions(false),
 			parkCodes: []string{"human-review:database", "stack-busy"},
 		},
@@ -327,7 +387,7 @@ func TestCompute_Cases(t *testing.T) {
 			name: "known phase is the progress label",
 			in: attention.Input{
 				ProgressPhase: "building",
-				ChatWorking:   true,
+				ChatStatus:    pb.ChatStatus_CHAT_STATUS_WORKING,
 				StateSince:    stateSince,
 			},
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
@@ -337,15 +397,27 @@ func TestCompute_Cases(t *testing.T) {
 			name: "unknown phase is ignored",
 			in: attention.Input{
 				ProgressPhase: "ready",
-				ChatWorking:   true,
+				ChatStatus:    pb.ChatStatus_CHAT_STATUS_WORKING,
 				StateSince:    stateSince,
 			},
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
 			progress: "working",
 		},
 		{
-			name:     "no PR, no chat work is idle",
+			name:     "no PR and no chat status is stopped",
 			in:       attention.Input{StateSince: stateSince},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "stopped",
+		},
+		{
+			name:     "no PR and a stopped chat is stopped",
+			in:       attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED, StateSince: stateSince},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "stopped",
+		},
+		{
+			name:     "no PR and an idle chat is idle",
+			in:       attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE, StateSince: stateSince},
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
 			progress: "idle",
 		},
@@ -500,7 +572,7 @@ func TestCompute_QuestionWithoutText(t *testing.T) {
 	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_QUESTION {
 		t.Fatalf("kind = %v, want QUESTION", got.GetKind())
 	}
-	if got.GetSentence() != "Answer the agent's question in its chat" {
+	if got.GetSentence() != "The agent asked a question" {
 		t.Errorf("sentence = %q", got.GetSentence())
 	}
 }
@@ -519,12 +591,12 @@ func TestCompute_QuestionTextIsCapped(t *testing.T) {
 func TestCompute_FactoryRepoNeverLabelledReadyOrPassing(t *testing.T) {
 	phases := []string{"", "planning", "building", "reviewing", "verifying", "ready", "passing"}
 	for _, phase := range phases {
-		for _, working := range []bool{false, true} {
+		for _, chat := range []pb.ChatStatus{pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_WORKING} {
 			for _, done := range []int{0, 3, 7} {
 				in := readyPR()
 				in.IsFactoryRepo = true
 				in.ProgressPhase = phase
-				in.ChatWorking = working
+				in.ChatStatus = chat
 				in.ChecksDone = done
 				got := attention.Compute(in)
 				if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
@@ -581,6 +653,7 @@ func TestCompute_TrackerActionAppendedLastWhenLinked(t *testing.T) {
 		{name: "review", in: withParks(readyPR(), "human-review:ui"), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "blocked park", in: withParks(readyPR(), "ledger-open"), kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "merge", in: readyPR(), kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{name: "unverified review", in: unverifiedPR(), kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "done", in: attention.Input{HasPR: true, PRState: attention.PRStateMerged}, kind: pb.AttentionKind_ATTENTION_KIND_DONE},
 		{name: "in progress", in: attention.Input{ProgressPhase: "building"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	}
@@ -616,10 +689,10 @@ func TestParkCategory(t *testing.T) {
 		kind  pb.AttentionKind
 	}{
 		{name: "#2979 UI park names the UI change", codes: []string{"always-human-path,human-review:ui"}, want: "UI change", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
-		{name: "a failure code beats every sign-off code", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "open findings", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "a failure code beats every sign-off code", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "open checklist items", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "a human-review code beats an earlier report-order code", codes: []string{"always-human-path", "human-review:database"}, want: "database migration", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "security", codes: []string{"always-human-path"}, want: "security", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
-		{name: "open findings", codes: []string{"ledger-open"}, want: "open findings", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "open checklist items", codes: []string{"ledger-open"}, want: "open checklist items", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "unknown operator code is named as-is and blocked", codes: []string{"brand-new-code"}, want: "brand-new-code", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "only waiting codes are not the operator's", codes: []string{"base-ci-red", "waiting: stack"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 		{name: "no codes", codes: nil, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
@@ -678,7 +751,111 @@ func TestParkCategoryNamesTheSentencesCode(t *testing.T) {
 
 func TestParkCategoryRepairExhaustedWithLedgerOpen(t *testing.T) {
 	codes := []string{attention.ParkCodeLedgerOpen, "repair-exhausted"}
-	if got, _ := attention.ParkCategory(codes); got != "open findings" {
-		t.Fatalf("ParkCategory(%q) = %q, want the code the sentence names (open findings)", codes, got)
+	if got, _ := attention.ParkCategory(codes); got != "open checklist items" {
+		t.Fatalf("ParkCategory(%q) = %q, want the code the sentence names (open ledger)", codes, got)
 	}
+}
+
+// TestCompute_MergeOnlyWhenVerified checks every merge-ready input across the
+// facts that outrank it: with no fix, question or operator park, a verified PR
+// is MERGE, and an unverified one is a REVIEW that carries no park codes,
+// offers GITHUB then MERGE. MERGE never answers an unverified PR, whatever else
+// holds, and no answer ever offers the retired APPROVE or SEND_BACK.
+func TestCompute_MergeOnlyWhenVerified(t *testing.T) {
+	fixes := []*attention.FixFact{nil, fixFact("k")}
+	questions := []string{"", "chat-1"}
+	parks := [][]string{nil, {"stack-busy"}, {"human-review:ui"}, {"ledger-open"}}
+	for _, verified := range []bool{false, true} {
+		for _, fix := range fixes {
+			for _, q := range questions {
+				for _, park := range parks {
+					for _, linked := range []bool{false, true} {
+						in := withParks(readyPR(), park...)
+						in.Verified, in.Fix, in.QuestionChatID, in.HasTrackerLink = verified, fix, q, linked
+						got := attention.Compute(in)
+						if slices.ContainsFunc(got.GetActions(), isRetiredAction) {
+							t.Fatalf("%+v offers a retired action: %v", in, got.GetActions())
+						}
+						if !verified && got.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
+							t.Fatalf("unverified %+v computed MERGE", in)
+						}
+						if fix != nil || q != "" || len(park) > 0 {
+							if len(got.GetParkCodes()) == 0 && slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+								t.Fatalf("%+v answered merge-ready %v over an outranking fact", in, got)
+							}
+							continue
+						}
+						want := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB}
+						kind := pb.AttentionKind_ATTENTION_KIND_MERGE
+						if !verified {
+							want, kind = slices.Clone(unverifiedActions), pb.AttentionKind_ATTENTION_KIND_REVIEW
+						}
+						if linked {
+							want = append(want, pb.AttentionAction_ATTENTION_ACTION_TRACKER)
+						}
+						if got.GetKind() != kind || !slices.Equal(got.GetActions(), want) || len(got.GetParkCodes()) != 0 {
+							t.Fatalf("verified=%v linked=%v = %v %v %v, want %v %v", verified, linked, got.GetKind(), got.GetActions(), got.GetParkCodes(), kind, want)
+						}
+						if kind != attention.MergeReadyKind(in) {
+							t.Fatalf("MergeReadyKind(%+v) = %v, want %v", in, attention.MergeReadyKind(in), kind)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestCompute_MergeReadyActionsAreNotShared checks that a producer filtering
+// one answer's actions in place cannot change the next answer.
+func TestCompute_MergeReadyActionsAreNotShared(t *testing.T) {
+	first := attention.Compute(unverifiedPR())
+	first.Actions[0] = pb.AttentionAction_ATTENTION_ACTION_RESUME
+	if got := attention.Compute(unverifiedPR()).GetActions(); !slices.Equal(got, unverifiedActions) {
+		t.Fatalf("actions = %v after an in-place edit, want %v", got, unverifiedActions)
+	}
+}
+
+// TestIsUnverifiedReview tells the unverified merge-ready REVIEW from every
+// other answer, a park's REVIEW included.
+func TestIsUnverifiedReview(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   attention.Input
+		want bool
+	}{
+		{"unverified merge-ready", unverifiedPR(), true},
+		{"verified merge", readyPR(), false},
+		{"sign-off park", withParks(unverifiedPR(), "human-review:ui"), false},
+		{"blocked park", withParks(unverifiedPR(), "ledger-open"), false},
+		{"fix", attention.Input{Fix: fixFact("k")}, false},
+		{"in progress", attention.Input{ProgressPhase: "building"}, false},
+	} {
+		if got := attention.IsUnverifiedReview(attention.Compute(tc.in)); got != tc.want {
+			t.Errorf("%s: IsUnverifiedReview = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCompute_FixWithWorktreeGoneOffersOnlyDismiss checks that a fault whose
+// session has no worktree or chat left offers DISMISS alone: OPEN_CHAT would
+// mint a chat that cannot start and RESUME has nothing to restart. A linked
+// tracker still trails it.
+func TestCompute_FixWithWorktreeGoneOffersOnlyDismiss(t *testing.T) {
+	got := attention.Compute(attention.Input{
+		Fix:            &attention.FixFact{AlertKey: "blocked:blocked", Sentence: "Run died before setup finished", Since: fixSince, WorktreeGone: true},
+		HasTrackerLink: true,
+	})
+	want := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_TRACKER}
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !slices.Equal(got.GetActions(), want) {
+		t.Fatalf("attention = %v %v, want FIX %v", got.GetKind(), got.GetActions(), want)
+	}
+	if got.GetAlertKey() != "blocked:blocked" || got.GetSentence() != "Run died before setup finished" {
+		t.Fatalf("alert key %q sentence %q", got.GetAlertKey(), got.GetSentence())
+	}
+}
+
+// isRetiredAction reports an action Compute no longer offers.
+func isRetiredAction(a pb.AttentionAction) bool {
+	return a == pb.AttentionAction_ATTENTION_ACTION_APPROVE || a == pb.AttentionAction_ATTENTION_ACTION_SEND_BACK
 }

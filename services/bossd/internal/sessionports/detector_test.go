@@ -32,6 +32,7 @@ var unavailable = idResult{err: errors.New("identity unavailable")}
 // identity Y after" to simulate PID reuse mid-scan.
 type fakeProcess struct {
 	graph     map[int]int
+	names     map[int]string
 	graphErr  error
 	idResults map[int][]idResult
 	idCalls   map[int]int
@@ -40,8 +41,15 @@ type fakeProcess struct {
 	onIdentity func(pid int)
 }
 
-func (f *fakeProcess) Snapshot(_ context.Context) (map[int]int, error) {
-	return f.graph, f.graphErr
+func (f *fakeProcess) Snapshot(_ context.Context) (map[int]Process, error) {
+	if f.graphErr != nil {
+		return nil, f.graphErr
+	}
+	procs := make(map[int]Process, len(f.graph))
+	for pid, ppid := range f.graph {
+		procs[pid] = Process{PPID: ppid, Name: f.names[pid]}
+	}
+	return procs, nil
 }
 
 func (f *fakeProcess) Identity(_ context.Context, pid int) (Identity, error) {

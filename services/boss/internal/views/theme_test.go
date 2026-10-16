@@ -54,6 +54,60 @@ func TestActionBar(t *testing.T) {
 	}
 }
 
+func TestCompactKeyHint(t *testing.T) {
+	for _, tc := range []struct{ hint, want string }{
+		{"[m] merge", "[m]erge"},
+		{"[g] github", "[g]ithub"},
+		{"[v] video", "[v]ideo"},
+		{"[r] resume", "[r]esume"},
+		{"[t] tracker", "[t]racker"},
+		{"[y] approve", "[y] approve"},
+		{"[b] send back", "[b] send back"},
+		{"[x] dismiss", "[x] dismiss"},
+		{"[a]rchive", "[a]rchive"},
+		{"[R]eauth", "[R]eauth"},
+		{"[R] reauth", "[R] reauth"},
+		{"[r] Resume", "[r] Resume"},
+		{"[M] Merge", "[M]erge"},
+		{"[enter] enter", "[enter] enter"},
+		{"[ctrl+d] delete", "[ctrl+d] delete"},
+		{"[a] delete all", "[a] delete all"},
+		{"[y] merge anyway  [m] merge", "[y] merge anyway  [m]erge"},
+		{"[m] merge  [g] github", "[m]erge  [g]ithub"},
+		{"no hint here", "no hint here"},
+	} {
+		if got := compactKeyHint(tc.hint); got != tc.want {
+			t.Errorf("compactKeyHint(%q) = %q, want %q", tc.hint, got, tc.want)
+		}
+	}
+}
+
+// TestActionBarCompactsKeyHints renders through every action-bar entry point,
+// so a caller that builds "[key] label" never has to compact it itself.
+func TestActionBarCompactsKeyHints(t *testing.T) {
+	groups := [][]string{{"[n]ew session", "[m] merge", "[y] approve"}, {"[g] github"}, {"[q]uit"}}
+	want := "[n]ew session  [m]erge  [y] approve · [g]ithub · [q]uit"
+	if got := ansi.Strip(actionBar(groups...)); !strings.Contains(got, want) {
+		t.Errorf("actionBar = %q, want %q", got, want)
+	}
+	if got := ansi.Strip(actionBarWidth(120, groups...)); !strings.Contains(got, want) {
+		t.Errorf("actionBarWidth = %q, want %q", got, want)
+	}
+	if got := ansi.Strip(formActionBarWidth(120, []string{"[s] save"}, []string{"[esc] back"})); !strings.Contains(got, "[s]ave · [esc] back") {
+		t.Errorf("formActionBarWidth = %q, want [s]ave", got)
+	}
+	folded := []string{"[m] merge", "[v] video", "[r] resume", "[x] dismiss"}
+	if n := actionBarLineCount(24, folded); n < 2 {
+		t.Fatalf("the oversized group renders on %d line(s); this case needs it folded", n)
+	}
+	got := ansi.Strip(actionBarWidth(24, folded))
+	for _, hint := range []string{"[m]erge", "[v]ideo", "[r]esume", "[x] dismiss"} {
+		if !strings.Contains(got, hint) {
+			t.Errorf("folded group = %q, want %q", got, hint)
+		}
+	}
+}
+
 func TestActionBarWidth(t *testing.T) {
 	groups := [][]string{
 		{"[n]ew session", "[enter] select"},

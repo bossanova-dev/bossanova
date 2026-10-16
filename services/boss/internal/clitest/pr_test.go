@@ -38,8 +38,8 @@ func TestCLI_PrApprove_RunsOnTheDaemon(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 	if want := "Approved #42: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-		"  ledger-open: review left must-fix findings open\n" +
-		"Approving overrode ledger-open (review left must-fix findings open); if that was not intended, boss pr send-back 42 \"<note>\" revokes the approval and sends the head back.\n"; res.Stdout != want {
+		"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+		"Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh.\n"; res.Stdout != want {
 		t.Fatalf("stdout = %q, want %q", res.Stdout, want)
 	}
 	calls := h.Daemon.ApproveSessionPRCalls()
@@ -62,13 +62,24 @@ func TestCLI_PrVerbs_RefuseInsideAnAgentChat(t *testing.T) {
 	h := prHarness(t, clitest.WithEnv("BOSS_AGENT_SESSION_ID=chat-xyz"))
 	h.Daemon.SetApproveResult(&pb.VerifyApproveResult{IsApproved: true})
 
-	for _, args := range [][]string{{"pr", "approve", "42"}, {"pr", "send-back", "42", "fix it"}} {
-		res := h.Run(args...)
-		if res.ExitCode == 0 || !strings.Contains(res.Stderr, "your own terminal") {
-			t.Fatalf("%v: exit=%d stderr=%q", args, res.ExitCode, res.Stderr)
-		}
+	res := h.Run("pr", "approve", "42")
+	if res.ExitCode == 0 || !strings.Contains(res.Stderr, "your own terminal") {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if n := len(h.Daemon.ApproveSessionPRCalls()) + len(h.Daemon.SendBackSessionPRCalls()); n != 0 {
-		t.Fatalf("an agent chat reached the daemon's verify verbs %d times", n)
+	if n := len(h.Daemon.ApproveSessionPRCalls()); n != 0 {
+		t.Fatalf("an agent chat reached the daemon's approve verb %d times", n)
+	}
+}
+
+// TestCLI_PrSendBack_IsGone proves the retired verb no longer runs and reaches
+// no daemon RPC.
+func TestCLI_PrSendBack_IsGone(t *testing.T) {
+	h := prHarness(t)
+	res := h.Run("pr", "send-back", "42", "fix it")
+	if strings.Contains(res.Stdout+res.Stderr, "send-back") || strings.Contains(res.Stdout+res.Stderr, "Sent #42 back") {
+		t.Fatalf("boss pr still knows send-back: stdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+	if n := len(h.Daemon.ApproveSessionPRCalls()) + len(h.Daemon.OperatorMergeCalls()); n != 0 {
+		t.Fatalf("a removed verb reached the daemon %d times", n)
 	}
 }

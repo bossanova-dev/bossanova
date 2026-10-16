@@ -1,7 +1,10 @@
 package views
 
 import (
+	"fmt"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -145,5 +148,25 @@ func TestRepositoryPickerTableHeightReservesFoldedFooter(t *testing.T) {
 	want := clampedTableHeight(len(model.repos), height, bannerOverhead+5+footerLines)
 	if got := model.repoTableHeight(); got != want {
 		t.Fatalf("repoTableHeight() = %d, want %d", got, want)
+	}
+}
+
+func TestHomeTableHeightReservesFilter(t *testing.T) {
+	for _, applied := range []bool{false, true} {
+		h := filteredHome(t)
+		h.width, h.height = 40, 24
+		h.sessions = nil
+		for i := range 50 {
+			h.sessions = append(h.sessions, &pb.Session{Id: fmt.Sprint(i), Title: "alpha"})
+		}
+		h.filter.Activate()
+		h.filter.input.SetValue("alpha")
+		if applied {
+			h.filter.Commit()
+		}
+		h.buildTableRows()
+		if got := bannerOverhead + lipgloss.Height(h.View().Content); got > h.height {
+			t.Fatalf("filtered Home renders %d rows in %d-row terminal", got, h.height)
+		}
 	}
 }

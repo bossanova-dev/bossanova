@@ -2026,7 +2026,13 @@ type SessionDelta struct {
 	// On CREATE/UPDATE: full Session. On DELETE: id only.
 	// Session.transferring_to / transferring_from (models.proto) hide the
 	// session from ListForUser during the coordinated transfer protocol.
-	Session       *Session `protobuf:"bytes,2,opt,name=session,proto3" json:"session,omitempty"`
+	Session *Session `protobuf:"bytes,2,opt,name=session,proto3" json:"session,omitempty"`
+	// Daemon-assigned delta identity, strictly increasing across all session
+	// deltas sent by one daemon process, including across reconnects. Seeded at
+	// process start from wall-clock Unix nanoseconds to avoid reuse on restart.
+	// Zero means an older daemon that does not stamp deltas. This identifies
+	// the delta, not session state: do not order state across daemons by seq.
+	Seq           uint64 `protobuf:"varint,3,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2073,6 +2079,13 @@ func (x *SessionDelta) GetSession() *Session {
 		return x.Session
 	}
 	return nil
+}
+
+func (x *SessionDelta) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 // ChatDelta is a single ClaudeChatMetadata lifecycle change.
@@ -4476,6 +4489,20 @@ func (x *MoveSessionCommand) GetRepoId() string {
 //   - A daemon that predates this command drops the unknown oneof arm and sends
 //     no reply, so bosso bounds its own wait and records the invocation as
 //     FAILED with decision_reason "daemon_unsupported".
+//
+// Differs from CreateSessionCommand on purpose:
+//   - Addresses the repo by repo_origin_url, not repo_id: bosso does not know
+//     daemon repo ids for triggers. prompt becomes CreateSessionRequest.plan.
+//   - invocation_id and trigger_id identify the invocation for idempotency.
+//   - Replies with one asynchronous CommandResult, not a SessionCreateChunk stream.
+//   - The daemon always sets detach, is_tmux_unattended, defer_pr and force.
+//   - Carries no quick-chat, PR, branch-name, tracker, force_branch or account_id
+//     fields; base_branch still selects the worktree's starting branch.
+//   - Carries should_run_setup_command and is_zero_output, which
+//     CreateSessionCommand does not.
+//
+// TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField guards these
+// choices against drift in both this command and CreateSessionRequest.
 type LaunchTriggerSessionCommand struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// TriggerInvocation.id; the idempotency key.
@@ -9518,10 +9545,11 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"S\n" +
 	"\x13CallbackInterestSet\x12<\n" +
-	"\tinterests\x18\x01 \x03(\v2\x1e.bossanova.v1.CallbackInterestR\tinterests\"\xc8\x01\n" +
+	"\tinterests\x18\x01 \x03(\v2\x1e.bossanova.v1.CallbackInterestR\tinterests\"\xda\x01\n" +
 	"\fSessionDelta\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.bossanova.v1.SessionDelta.KindR\x04kind\x12/\n" +
-	"\asession\x18\x02 \x01(\v2\x15.bossanova.v1.SessionR\asession\"R\n" +
+	"\asession\x18\x02 \x01(\v2\x15.bossanova.v1.SessionR\asession\x12\x10\n" +
+	"\x03seq\x18\x03 \x01(\x04R\x03seq\"R\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_CREATED\x10\x01\x12\x10\n" +

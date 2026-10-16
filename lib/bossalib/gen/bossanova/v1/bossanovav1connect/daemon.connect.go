@@ -105,9 +105,9 @@ const (
 	// DaemonServiceApproveSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// ApproveSessionPR RPC.
 	DaemonServiceApproveSessionPRProcedure = "/bossanova.v1.DaemonService/ApproveSessionPR"
-	// DaemonServiceSendBackSessionPRProcedure is the fully-qualified name of the DaemonService's
-	// SendBackSessionPR RPC.
-	DaemonServiceSendBackSessionPRProcedure = "/bossanova.v1.DaemonService/SendBackSessionPR"
+	// DaemonServiceOperatorMergeSessionProcedure is the fully-qualified name of the DaemonService's
+	// OperatorMergeSession RPC.
+	DaemonServiceOperatorMergeSessionProcedure = "/bossanova.v1.DaemonService/OperatorMergeSession"
 	// DaemonServiceRemoveSessionProcedure is the fully-qualified name of the DaemonService's
 	// RemoveSession RPC.
 	DaemonServiceRemoveSessionProcedure = "/bossanova.v1.DaemonService/RemoveSession"
@@ -343,10 +343,18 @@ type DaemonServiceClient interface {
 	// stored tracker credentials. It hands a `needs human:` verify park on the
 	// PR's current head back to verify.
 	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
-	// SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
-	// session's PR: it posts the operator's note on the PR as a rejection of its
-	// current head. Starting the repair chat stays with the caller.
-	SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error)
+	// OperatorMergeSession is the operator's merge from a review or merge row.
+	// It refuses a session whose attention is a FIX (a blocked verify park or a
+	// failure), then merges the session's PR at exactly expected_head_sha
+	// through MergeSession's gate. With should_approve it first records the
+	// head-bound approval `boss pr approve` writes (the boss-verify toolbox's
+	// `approve --for-merge`), refusing before anything is written when the head
+	// moved, the PR is a draft, its checks are running or failing, or the park
+	// no longer waives exactly `waives`. After the merge it runs the toolbox's
+	// `mark-merged` tracker bookkeeping, the write the verify stage's own merge
+	// makes, cut short when the reply would otherwise miss the daemon's write
+	// deadline.
+	OperatorMergeSession(context.Context, *connect.Request[v1.OperatorMergeSessionRequest]) (*connect.Response[v1.OperatorMergeSessionResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -757,10 +765,10 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
-		sendBackSessionPR: connect.NewClient[v1.SendBackSessionPRRequest, v1.SendBackSessionPRResponse](
+		operatorMergeSession: connect.NewClient[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse](
 			httpClient,
-			baseURL+DaemonServiceSendBackSessionPRProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("SendBackSessionPR")),
+			baseURL+DaemonServiceOperatorMergeSessionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("OperatorMergeSession")),
 			connect.WithClientOptions(opts...),
 		),
 		removeSession: connect.NewClient[v1.RemoveSessionRequest, v1.RemoveSessionResponse](
@@ -1170,7 +1178,7 @@ type daemonServiceClient struct {
 	closeSession                *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
 	mergeSession                *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
 	approveSessionPR            *connect.Client[v1.ApproveSessionPRRequest, v1.ApproveSessionPRResponse]
-	sendBackSessionPR           *connect.Client[v1.SendBackSessionPRRequest, v1.SendBackSessionPRResponse]
+	operatorMergeSession        *connect.Client[v1.OperatorMergeSessionRequest, v1.OperatorMergeSessionResponse]
 	removeSession               *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
 	updateSession               *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	linkSessionPR               *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
@@ -1356,9 +1364,9 @@ func (c *daemonServiceClient) ApproveSessionPR(ctx context.Context, req *connect
 	return c.approveSessionPR.CallUnary(ctx, req)
 }
 
-// SendBackSessionPR calls bossanova.v1.DaemonService.SendBackSessionPR.
-func (c *daemonServiceClient) SendBackSessionPR(ctx context.Context, req *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error) {
-	return c.sendBackSessionPR.CallUnary(ctx, req)
+// OperatorMergeSession calls bossanova.v1.DaemonService.OperatorMergeSession.
+func (c *daemonServiceClient) OperatorMergeSession(ctx context.Context, req *connect.Request[v1.OperatorMergeSessionRequest]) (*connect.Response[v1.OperatorMergeSessionResponse], error) {
+	return c.operatorMergeSession.CallUnary(ctx, req)
 }
 
 // RemoveSession calls bossanova.v1.DaemonService.RemoveSession.
@@ -1724,10 +1732,18 @@ type DaemonServiceHandler interface {
 	// stored tracker credentials. It hands a `needs human:` verify park on the
 	// PR's current head back to verify.
 	ApproveSessionPR(context.Context, *connect.Request[v1.ApproveSessionPRRequest]) (*connect.Response[v1.ApproveSessionPRResponse], error)
-	// SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
-	// session's PR: it posts the operator's note on the PR as a rejection of its
-	// current head. Starting the repair chat stays with the caller.
-	SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error)
+	// OperatorMergeSession is the operator's merge from a review or merge row.
+	// It refuses a session whose attention is a FIX (a blocked verify park or a
+	// failure), then merges the session's PR at exactly expected_head_sha
+	// through MergeSession's gate. With should_approve it first records the
+	// head-bound approval `boss pr approve` writes (the boss-verify toolbox's
+	// `approve --for-merge`), refusing before anything is written when the head
+	// moved, the PR is a draft, its checks are running or failing, or the park
+	// no longer waives exactly `waives`. After the merge it runs the toolbox's
+	// `mark-merged` tracker bookkeeping, the write the verify stage's own merge
+	// makes, cut short when the reply would otherwise miss the daemon's write
+	// deadline.
+	OperatorMergeSession(context.Context, *connect.Request[v1.OperatorMergeSessionRequest]) (*connect.Response[v1.OperatorMergeSessionResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	LinkSessionPR(context.Context, *connect.Request[v1.LinkSessionPRRequest]) (*connect.Response[v1.LinkSessionPRResponse], error)
@@ -2134,10 +2150,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ApproveSessionPR")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceSendBackSessionPRHandler := connect.NewUnaryHandler(
-		DaemonServiceSendBackSessionPRProcedure,
-		svc.SendBackSessionPR,
-		connect.WithSchema(daemonServiceMethods.ByName("SendBackSessionPR")),
+	daemonServiceOperatorMergeSessionHandler := connect.NewUnaryHandler(
+		DaemonServiceOperatorMergeSessionProcedure,
+		svc.OperatorMergeSession,
+		connect.WithSchema(daemonServiceMethods.ByName("OperatorMergeSession")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRemoveSessionHandler := connect.NewUnaryHandler(
@@ -2568,8 +2584,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceMergeSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceApproveSessionPRProcedure:
 			daemonServiceApproveSessionPRHandler.ServeHTTP(w, r)
-		case DaemonServiceSendBackSessionPRProcedure:
-			daemonServiceSendBackSessionPRHandler.ServeHTTP(w, r)
+		case DaemonServiceOperatorMergeSessionProcedure:
+			daemonServiceOperatorMergeSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveSessionProcedure:
 			daemonServiceRemoveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateSessionProcedure:
@@ -2801,8 +2817,8 @@ func (UnimplementedDaemonServiceHandler) ApproveSessionPR(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ApproveSessionPR is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) SendBackSessionPR(context.Context, *connect.Request[v1.SendBackSessionPRRequest]) (*connect.Response[v1.SendBackSessionPRResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SendBackSessionPR is not implemented"))
+func (UnimplementedDaemonServiceHandler) OperatorMergeSession(context.Context, *connect.Request[v1.OperatorMergeSessionRequest]) (*connect.Response[v1.OperatorMergeSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.OperatorMergeSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error) {

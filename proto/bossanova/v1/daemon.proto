@@ -58,10 +58,18 @@ service DaemonService {
   // stored tracker credentials. It hands a `needs human:` verify park on the
   // PR's current head back to verify.
   rpc ApproveSessionPR(ApproveSessionPRRequest) returns (ApproveSessionPRResponse);
-  // SendBackSessionPR runs the boss-verify toolbox's `send-back` verb for the
-  // session's PR: it posts the operator's note on the PR as a rejection of its
-  // current head. Starting the repair chat stays with the caller.
-  rpc SendBackSessionPR(SendBackSessionPRRequest) returns (SendBackSessionPRResponse);
+  // OperatorMergeSession is the operator's merge from a review or merge row.
+  // It refuses a session whose attention is a FIX (a blocked verify park or a
+  // failure), then merges the session's PR at exactly expected_head_sha
+  // through MergeSession's gate. With should_approve it first records the
+  // head-bound approval `boss pr approve` writes (the boss-verify toolbox's
+  // `approve --for-merge`), refusing before anything is written when the head
+  // moved, the PR is a draft, its checks are running or failing, or the park
+  // no longer waives exactly `waives`. After the merge it runs the toolbox's
+  // `mark-merged` tracker bookkeeping, the write the verify stage's own merge
+  // makes, cut short when the reply would otherwise miss the daemon's write
+  // deadline.
+  rpc OperatorMergeSession(OperatorMergeSessionRequest) returns (OperatorMergeSessionResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
@@ -803,10 +811,11 @@ message ApproveSessionPRResponse {
 
 // VerifyApproveResult is `verify-gate.mjs approve`'s outcome. is_approved is
 // true only when the head-bound approval record (approval_url) took effect on
-// head_sha: it waives `waives` there, or, with lifted "sent-back", it lifts a
-// send-back of a head verify already passed. tracker_writes reports the
-// needs-human label removal that follows. A refusal carries reason, plus
-// approval_url when a posted record waives nothing.
+// head_sha: it waives `waives` there; with lifted "sent-back" it lifts a
+// legacy send-back of a head verify already passed; with sign_off "merge" it
+// signs off an operator merge of a head with nothing parked. tracker_writes
+// reports the needs-human label removal that follows. A refusal carries
+// reason, plus approval_url when a posted record waives nothing.
 message VerifyApproveResult {
   bool is_approved = 1;
   bool is_planned = 2;
@@ -820,24 +829,35 @@ message VerifyApproveResult {
   string why = 10;
   string park = 11;
   string state = 12;
+  string sign_off = 13;
 }
 
-message SendBackSessionPRRequest {
+message OperatorMergeSessionRequest {
   string id = 1;
-  string note = 2;
-  bool is_dry_run = 3;
+  // Required 40-hex head SHA the operator was looking at. Nothing is recorded
+  // or merged unless the PR head is exactly this commit.
+  string expected_head_sha = 2;
+  // Record the head-bound approval before merging (a review row).
+  bool should_approve = 3;
+  // The park codes the operator confirmed waiving, in report order; empty for
+  // a review with nothing parked. Ignored without should_approve.
+  repeated string waives = 4;
 }
 
-// SendBackSessionPRResponse is `verify-gate.mjs send-back`'s outcome. is_posted
-// is true only when the PR comment was created; a refusal carries reason.
-message SendBackSessionPRResponse {
-  bool is_posted = 1;
-  bool is_planned = 2;
-  bool is_dry_run = 3;
-  string reason = 4;
-  string comment_url = 5;
-  string head_sha = 6;
-  string state = 7;
+// OperatorMergeSessionResponse reports what happened. is_merged is false only
+// when the approval was refused: approval then carries the reason and nothing
+// was merged. A refused or failed merge is an error. tracker_writes is the
+// toolbox's `mark-merged` outcome (ok, none, unavailable, failed, ...) with
+// tracker_why when it did not happen; bookkeeping never fails a landed merge.
+message OperatorMergeSessionResponse {
+  bool is_merged = 1;
+  Session session = 2;
+  // MergeSessionResponse.detail: how the merge was performed, when notable.
+  string merge_detail = 3;
+  // The approval recorded before the merge; unset without should_approve.
+  VerifyApproveResult approval = 4;
+  string tracker_writes = 5;
+  string tracker_why = 6;
 }
 
 message RemoveSessionRequest {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -152,9 +154,8 @@ func TestChatPicker_ResurrectedMerged_NoArchivingSpinner(t *testing.T) {
 	}
 }
 
-// TestChatPicker_ArchivePending_ShowsArchivingSpinner verifies the daemon-driven
-// signal drives the spinner: archive_pending=true renders "Archiving session…".
-func TestChatPicker_ArchivePending_ShowsArchivingSpinner(t *testing.T) {
+// A daemon-side archive keeps live actions visible while it waits for chats.
+func TestChatPicker_ArchivePending_ShowsStatusAndActions(t *testing.T) {
 	m := seedChatPicker(&chatPickerStub{}, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(ChatPickerModel)
@@ -169,14 +170,12 @@ func TestChatPicker_ArchivePending_ShowsArchivingSpinner(t *testing.T) {
 		t.Fatal("archive_pending=true must be considered archiving")
 	}
 	rendered := m.View().Content
-	if !strings.Contains(rendered, "Archiving session") {
-		t.Errorf("archive_pending=true did not render 'Archiving session' spinner; got:\n%s", rendered)
-	}
+	assertDeferredArchiveActions(t, rendered)
 }
 
 // TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner verifies the
 // short-lived optimistic latch: right after a TUI-initiated merge on an
-// archive-after-merge repo, the detail view shows "Archiving session…"
+// archive-after-merge repo, the detail view shows the pending status and actions
 // immediately, before the daemon's archive_pending round-trips.
 func TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner(t *testing.T) {
 	m := seedChatPicker(&chatPickerStub{}, "")
@@ -200,9 +199,7 @@ func TestChatPicker_OptimisticLatchAfterMerge_ShowsArchivingSpinner(t *testing.T
 		t.Fatal("optimistic latch must make the picker considered archiving")
 	}
 	rendered := m.View().Content
-	if !strings.Contains(rendered, "Archiving session") {
-		t.Errorf("optimistic latch did not render 'Archiving session' spinner; got:\n%s", rendered)
-	}
+	assertDeferredArchiveActions(t, rendered)
 }
 
 // TestChatPicker_OptimisticLatch_ClearedWhenRepoDisablesArchive verifies the
@@ -311,4 +308,70 @@ func TestChatPicker_InFlightSpinnerCopy_OmitsEscHint(t *testing.T) {
 			t.Errorf("merging spinner with PR number should not include esc hint; got:\n%s", rendered)
 		}
 	})
+}
+
+func assertDeferredArchiveActions(t *testing.T, rendered string) {
+	t.Helper()
+	for _, text := range []string{"Archiving session once every chat is idle…", "[n]ew chat", "[a]rchive", "[esc] back", "[enter] select"} {
+		if !strings.Contains(rendered, text) {
+			t.Errorf("missing %q in deferred archive view:\n%s", text, rendered)
+		}
+	}
+}
+
+func TestChatPicker_ArchivePending_ErrorStateKeepsActions(t *testing.T) {
+	m := seedChatPicker(&chatPickerStub{}, "")
+	m.session = &pb.Session{Id: "session-1", ArchivePending: true}
+	m.err = errors.New("listing failed")
+	rendered := m.View().Content
+	for _, text := range []string{"listing failed", "Archiving session once every chat is idle…", "[a]rchive", "[esc] back"} {
+		if !strings.Contains(rendered, text) {
+			t.Errorf("missing %q in error view:\n%s", text, rendered)
+		}
+	}
+}
+
+func TestChatPicker_DeferredArchive_ReservesFooterLine(t *testing.T) {
+	for _, source := range []string{"daemon", "optimistic latch"} {
+		t.Run(source, func(t *testing.T) {
+			m := seedChatPickerSized(t, 20, 20)
+			m.session = &pb.Session{Id: "session-1"}
+			before := m.tableHeight()
+			if source == "daemon" {
+				m.session.ArchivePending = true
+			} else {
+				m.optimisticArchiveLatch = true
+			}
+			if got := m.tableHeight(); got != before-1 {
+				t.Errorf("table height = %d, want %d", got, before-1)
+			}
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+			m = updated.(ChatPickerModel)
+			rendered := m.View().Content
+			assertDeferredArchiveActions(t, rendered)
+			if h := lipgloss.Height(rendered); h > 20 {
+				t.Errorf("view height = %d, exceeds 20 rows:\n%s", h, rendered)
+			}
+		})
+	}
+}
+
+func TestChatPicker_LocalArchive_HidesActions(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		m := seedChatPicker(&chatPickerStub{}, "")
+		m.session = &pb.Session{Id: "session-1", ArchivePending: true}
+		m.archiving = true
+		if failed {
+			m.err = errors.New("listing failed")
+		}
+		rendered := m.View().Content
+		if !strings.Contains(rendered, "Archiving session…") {
+			t.Errorf("missing local archive spinner:\n%s", rendered)
+		}
+		for _, text := range []string{"[n]ew chat", "[a]rchive", "[esc] back"} {
+			if strings.Contains(rendered, text) {
+				t.Errorf("local archive advertises %q:\n%s", text, rendered)
+			}
+		}
+	}
 }

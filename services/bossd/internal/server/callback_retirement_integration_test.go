@@ -155,7 +155,7 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	srv := &Server{sessions: h.sessions, repos: h.repos, agentChats: h.chats, chatStatus: h.tracker, displayTracker: h.display, logger: zerolog.Nop()}
 	d := newArchiveDeferrer(h.chats, h.tracker, h.display, h.sessions, exec.archive, zerolog.Nop())
 	d.interval = time.Hour
-	srv.archiveDeferrerOnce.Do(func() { srv.archiveDeferrer = d })
+	srv.archiveDeferrer = d
 	handles := make(chan (<-chan struct{}), 4)
 	track := func(_ string, done <-chan struct{}) { handles <- done }
 	dispatcher := session.NewDispatcher(h.sessions, h.repos, nil, zerolog.Nop())

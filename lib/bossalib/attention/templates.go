@@ -2,6 +2,7 @@ package attention
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,13 +48,15 @@ var waitingLabels = map[string]string{
 	codeStackBusy: "waiting for the test stack",
 }
 
-// Fixed sentences.
+// Fixed sentences. Every attention sentence states the issue and nothing
+// else: the row's actions are what the operator can do about it.
 const (
-	genericReviewSentence  = "Review the PR, then approve or send back"
-	genericBlockedSentence = "Verify is blocked · send it back or fix the PR"
-	genericFixSentence     = "Something needs fixing · open the chat, then resume"
-	genericQuestion        = "Answer the agent's question in its chat"
+	genericReviewSentence  = "Needs a sign-off"
+	genericBlockedSentence = "Verify is blocked"
+	genericFixSentence     = "Something needs fixing"
+	genericQuestion        = "The agent asked a question"
 	mergeSentence          = "Ready to merge"
+	unverifiedSentence     = "Not verified"
 )
 
 // slot names the one optional fact a sentence template interpolates.
@@ -63,10 +66,14 @@ const (
 	// The zero slot interpolates nothing: the format is the sentence.
 	_ slot = iota
 	// slotVideoDuration renders " (m:ss)" from Evidence.VideoDuration, or
-	// nothing when the duration is unknown.
+	// nothing when the duration is unknown. A park with no evidence URL has no
+	// video to watch, so it renders the template's withoutEvidence sentence.
 	slotVideoDuration
 	// slotParkLabel renders ": <label>" from ParkLabel, or nothing when empty.
 	slotParkLabel
+	// slotOpenItems counts Input.OpenItems: "1 open item", "N open items", or
+	// the uncounted "open items" when none was read.
+	slotOpenItems
 )
 
 // sentenceTemplate is one park sentence: a format with a single %s verb
@@ -74,10 +81,17 @@ const (
 type sentenceTemplate struct {
 	format string
 	slot   slot
+	// withoutEvidence is the sentence a slotVideoDuration template renders
+	// when the park has no evidence URL: evidence comes from a repo's own
+	// verify extension, which most repos do not have.
+	withoutEvidence string
 }
 
-// ParkCodeLedgerOpen is the verify park code for a branch whose review ledger
-// still has open must-fix findings.
+// ParkCodeLedgerOpen is the verify park code for a PR whose own checklist (the
+// "ledger" in verify's vocabulary, never in operator-facing words) is open or
+// unreadable: an unmet acceptance criterion, an open human follow-up or
+// question, a do-not-merge marker, or one of those sections missing, repeated
+// or not a checklist. Review findings are not part of it.
 const ParkCodeLedgerOpen = "ledger-open"
 
 // parkCodeInfo is what one known park code renders.
@@ -97,48 +111,50 @@ type parkCodeInfo struct {
 	plain string
 }
 
-// knownParkCodes is the one table of known operator park codes. The park's
-// attention kind, its sentence and its category all read it, through
+// knownParkCodes is the one table of known operator park codes. Its plain
+// words and sentences are mirrored in PARK_CODE_WORDS in
+// skills-toolbox/verify-park-note.mjs, which the verify park note reads. The
+// park's attention kind, its sentence and its category all read it, through
 // decidingParkCode, so they always describe the same code. A code absent here
 // (an unknown code) is not a sign-off: it uses genericBlockedSentence and is
 // named as-is.
 var knownParkCodes = map[string]parkCodeInfo{
 	"human-review:ui": {
-		sentence: &sentenceTemplate{format: "Watch the evidence video%s, then approve · UI change", slot: slotVideoDuration},
+		sentence: &sentenceTemplate{format: "UI change · evidence video%s", slot: slotVideoDuration, withoutEvidence: "UI change"},
 		category: "UI change",
 		signOff:  true,
 		plain:    "a UI change; watch the evidence before it merges",
 	},
 	"human-review:security": {
-		sentence: &sentenceTemplate{format: "Review the diff · security%s", slot: slotParkLabel},
+		sentence: &sentenceTemplate{format: "Security change%s", slot: slotParkLabel},
 		category: "security",
 		signOff:  true,
 		plain:    "a security-sensitive change for a person to review",
 	},
 	"always-human-path": {
-		sentence: &sentenceTemplate{format: "Review the diff · security%s", slot: slotParkLabel},
+		sentence: &sentenceTemplate{format: "Security change%s", slot: slotParkLabel},
 		category: "security",
 		signOff:  true,
 		plain:    "touches a path that always needs a person's sign-off",
 	},
 	"human-review:database": {
-		sentence: &sentenceTemplate{format: "Review the migration, then approve"},
+		sentence: &sentenceTemplate{format: "Database migration"},
 		category: "database migration",
 		signOff:  true,
 		plain:    "a database migration for a person to review",
 	},
 	"human-review:unproven": {
-		sentence: &sentenceTemplate{format: "Some checks have no evidence · send it back to prove them"},
+		sentence: &sentenceTemplate{format: "Some checks have no evidence"},
 		category: "unproven checks",
 		plain:    "some checks have no evidence that they pass",
 	},
 	ParkCodeLedgerOpen: {
-		sentence: &sentenceTemplate{format: "Review left must-fix findings open · send it back to fix them"},
-		category: "open findings",
-		plain:    "review left must-fix findings open",
+		sentence: &sentenceTemplate{slot: slotOpenItems},
+		category: "open checklist items",
+		plain:    "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
 	},
 	"no-receipt": {
-		sentence: &sentenceTemplate{format: "Built by hand, no factory review · send it back through the factory"},
+		sentence: &sentenceTemplate{format: "Built by hand, no factory review"},
 		category: "built by hand",
 		plain:    "no build receipt: built by hand, without the factory's build and review",
 	},
@@ -244,6 +260,30 @@ func ParkCategory(raw []string) (string, pb.AttentionKind) {
 	return code, info.kind()
 }
 
+// ParkCategories names, in report order and once each, what every operator
+// code of a park asks about ("UI change", "database migration", ...), for an
+// operator-facing line that must not show raw codes. An unknown code reads
+// unknownParkCodeCategory.
+func ParkCategories(raw []string) []string {
+	var out []string
+	for _, code := range normalizeParkCodes(raw) {
+		if !isOperatorCode(code) {
+			continue
+		}
+		category := knownParkCodes[code].category
+		if category == "" {
+			category = unknownParkCodeCategory
+		}
+		if !slices.Contains(out, category) {
+			out = append(out, category)
+		}
+	}
+	return out
+}
+
+// unknownParkCodeCategory names a code outside knownParkCodes in plain words.
+const unknownParkCodeCategory = "an issue this version of boss does not know"
+
 // kind is the attention kind a park decided by this code is answered with: a
 // REVIEW for a sign-off code, a blocked FIX for any other.
 func (p parkCodeInfo) kind() pb.AttentionKind {
@@ -257,8 +297,11 @@ func (p parkCodeInfo) kind() pb.AttentionKind {
 func (t sentenceTemplate) render(in Input) string {
 	switch t.slot {
 	case slotVideoDuration:
+		if in.Evidence == nil || in.Evidence.URL == "" {
+			return t.withoutEvidence
+		}
 		d := ""
-		if in.Evidence != nil && in.Evidence.VideoDuration > 0 {
+		if in.Evidence.VideoDuration > 0 {
 			d = " (" + formatMinSec(in.Evidence.VideoDuration) + ")"
 		}
 		return fmt.Sprintf(t.format, d)
@@ -268,8 +311,23 @@ func (t sentenceTemplate) render(in Input) string {
 			l = ": " + in.ParkLabel
 		}
 		return fmt.Sprintf(t.format, l)
+	case slotOpenItems:
+		return openItemsSentence(len(in.OpenItems))
 	default:
 		return t.format
+	}
+}
+
+// openItemsSentence is the open-checklist park's sentence for n open items;
+// n is zero when the park's note has not been read.
+func openItemsSentence(n int) string {
+	switch n {
+	case 0:
+		return "The PR checklist has open items"
+	case 1:
+		return "The PR checklist has 1 open item"
+	default:
+		return fmt.Sprintf("The PR checklist has %d open items", n)
 	}
 }
 

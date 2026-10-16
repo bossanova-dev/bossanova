@@ -36,6 +36,16 @@ type DaemonSupervisionProbe func() DaemonSupervision
 // subprocess rate is one per minute plus one per return to Home.
 const daemonSupervisionProbeInterval = 60 * time.Second
 
+// daemonSupervisionLineLimit bounds one unsupervised verdict's Home advisory.
+const daemonSupervisionLineLimit = time.Minute
+
+func daemonSupervisionLineVisible(s DaemonSupervision, now, since time.Time) bool {
+	if !s.Unsupervised {
+		return false
+	}
+	return since.IsZero() || now.Before(since.Add(daemonSupervisionLineLimit))
+}
+
 // statusDaemonUnsupervisedFormat / statusDaemonUnsupervisedNoPID are the
 // health line's copy, with and without a recorded PID.
 const (
@@ -121,6 +131,10 @@ func (h HomeModel) handleDaemonSupervision(msg daemonSupervisionMsg) (tea.Model,
 	}
 	h.supervisionProbing = false
 	h.supervision = msg.result
+	if msg.result.Unsupervised && (h.supervisionSince.IsZero() || msg.result.PID != h.supervisionSincePID) {
+		h.supervisionSince = h.currentTime()
+		h.supervisionSincePID = msg.result.PID
+	}
 	// The line adds or removes footer rows below the table; refresh the cached
 	// table height now rather than at the next poll.
 	h.table.SetHeight(h.tableHeight())
@@ -130,7 +144,11 @@ func (h HomeModel) handleDaemonSupervision(msg daemonSupervisionMsg) (tea.Model,
 // daemonSupervisionLine renders the unsupervised-daemon advisory, or "" when
 // the last probe found the daemon supervised, could not tell, or never ran.
 func (h HomeModel) daemonSupervisionLine() string {
-	if !h.supervision.Unsupervised {
+	since := h.supervisionSince
+	if since.IsZero() {
+		since = h.startedAt
+	}
+	if !daemonSupervisionLineVisible(h.supervision, h.currentTime(), since) {
 		return ""
 	}
 	text := statusDaemonUnsupervisedNoPID

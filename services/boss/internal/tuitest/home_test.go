@@ -473,14 +473,14 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(fixtures.AttentionSessions()...), tuitest.WithTerminalSize(width, 60))
-			for _, text := range []string{"NEEDS YOU · 7", "IN PROGRESS · 2", "[r]esume", "[x] dismiss", "? question", "checking 4/9"} {
+			for _, text := range []string{"─ NEEDS YOU ─", "─ IN PROGRESS ─", "[r]esume", "[x] dismiss", "? question", "checking 4/9", "[BOS-1509]"} {
 				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
 					t.Fatal(err)
 				}
 			}
 			before := h.Driver.Screen()
-			if strings.Contains(before, "◌") || strings.Contains(before, "[BOS-1509]") {
-				t.Fatalf("unexpected progress glyph or finished session:\n%s", before)
+			if strings.Contains(before, "◌") {
+				t.Fatalf("unexpected progress glyph:\n%s", before)
 			}
 			// One down skips every wrapped sentence and lands on the oldest review.
 			if err := h.Driver.SendKey('j'); err != nil {

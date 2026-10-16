@@ -48,6 +48,8 @@ type SQLiteRepoStore struct {
 	listReadBudget time.Duration
 	// keyLocks serializes each repo's key updates; see updateRowWithKeys.
 	keyLocks repoKeyLocker
+	// commit ends updateInTx's write transaction; execCommit outside tests.
+	commit commitFunc
 
 	fallbackWarnOnce sync.Once
 	hydrateWarnOnce  sync.Once
@@ -103,6 +105,7 @@ func NewRepoStore(db *sql.DB, opts ...RepoStoreOption) *SQLiteRepoStore {
 		readTimeout:    keyringReadTimeout,
 		listReadBudget: listKeyringReadBudget,
 		keyLocks:       &keyedgate.Registry{Name: "repo-key"},
+		commit:         execCommit,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -311,6 +314,13 @@ func (s *SQLiteRepoStore) updateRow(ctx context.Context, id string, params Updat
 
 // updateInTx runs params' guards and the UPDATE (carrying keys' column
 // clauses) in one write transaction and commits it.
+//
+// For a keyed update (keys.sets non-empty) a COMMIT error is returned as an
+// *uncertainCommitError carrying the row's key state before and after the
+// UPDATE, so updateRowWithKeys can tell from a fresh read whether the commit
+// landed before it compensates the keyring. It must make that read only after
+// this returns: the connection is released here, and an in-memory database has
+// only the one.
 func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params UpdateRepoParams, keys keyClauses) (*models.Repo, bool, error) {
 	conn, err := beginImmediate(ctx, s.db, "repo")
 	if err != nil {
@@ -322,12 +332,33 @@ func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params Upda
 	if err := s.checkUpdateGuards(ctx, conn, id, params); err != nil {
 		return nil, false, err
 	}
+	keyed := len(keys.sets) > 0
+	var before repoKeyState
+	if keyed {
+		// Read inside the write transaction, this is exactly the state a
+		// COMMIT that does not land leaves behind.
+		before, err = readRepoKeyState(ctx, conn, id)
+		if err != nil {
+			return nil, false, err
+		}
+		keys.updatedAfter = before.updatedAt
+	}
 	repo, hasKeyringSecrets, err := s.update(ctx, conn, id, params, keys)
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return nil, false, fmt.Errorf("commit repo update: %w", err)
+	if err := s.commit(ctx, conn); err != nil {
+		err = fmt.Errorf("commit repo update: %w", err)
+		if !keyed {
+			return nil, false, err
+		}
+		return nil, false, &uncertainCommitError{
+			err:               err,
+			before:            before,
+			after:             repoKeyState{updatedAt: sqlutil.FormatTime(repo.UpdatedAt), flagged: hasKeyringSecrets},
+			repo:              repo,
+			hasKeyringSecrets: hasKeyringSecrets,
+		}
 	}
 	committed = true
 	return repo, hasKeyringSecrets, nil
@@ -381,7 +412,7 @@ func (s *SQLiteRepoStore) checkExpectedUpdatedAt(ctx context.Context, q repoSQL,
 // phase resolved; it never reads params.LinearAPIKey / SentryAPIKey itself. It
 // returns the updated row unhydrated (see getRow).
 func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, params UpdateRepoParams, keys keyClauses) (*models.Repo, bool, error) {
-	now := sqlutil.TimeNow()
+	now := nextUpdatedAt(sqlutil.TimeNow(), keys.updatedAfter)
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 

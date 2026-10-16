@@ -241,6 +241,68 @@ func TestGetSessionTimeline_ShowsEvidenceOnlyForTheNewestSnapshotHead(t *testing
 	}
 }
 
+// TestGetSessionTimeline_ReadsTheRepoVerifyStage builds the timeline from the
+// same verify jobs session hydration reads from the repo's cron jobs: a green,
+// mergeable PR nothing verified gets a merge step when no verify job is
+// enabled, a disabled one included, and no merge step at all when one is
+// enabled, since verify will reach the head.
+func TestGetSessionTimeline_ReadsTheRepoVerifyStage(t *testing.T) {
+	skipped := vcs.CheckConclusionSkipped
+	skippedCI := []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &skipped}}
+	for _, tc := range []struct {
+		name string
+		jobs []*models.CronJob
+		last string
+	}{
+		{"no verify job", nil, "Ready to merge"},
+		{"verify job disabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}}, "Ready to merge"},
+		{"verify job enabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: true}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sqlDB := setupServerTestDB(t)
+			repos := db.NewRepoStore(sqlDB)
+			sessions := db.NewSessionStore(sqlDB)
+			snapshots := db.NewCheckSnapshotStore(sqlDB)
+			repo, err := repos.Create(ctx, db.CreateRepoParams{
+				DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
+				DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
+			})
+			if err != nil {
+				t.Fatalf("create repo: %v", err)
+			}
+			pr := 3150
+			sess, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/v", BaseBranch: "main", PRNumber: &pr})
+			if err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			for _, when := range []time.Time{at(26), at(31)} {
+				if err := snapshots.Insert(ctx, db.CheckSnapshot{SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: when, RawJSON: checksJSON(t, skippedCI), ComputedStatus: int(vcs.DisplayStatusPassing)}); err != nil {
+					t.Fatalf("insert snapshot: %v", err)
+				}
+			}
+			srv := New(Config{Repos: repos, Sessions: sessions, CheckSnapshots: snapshots})
+			srv.cronJobs = &attentionCronStore{jobs: tc.jobs}
+			resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+			if err != nil {
+				t.Fatalf("GetSessionTimeline: %v", err)
+			}
+			steps := resp.Msg.GetSteps()
+			logSteps(t, steps)
+			merge := slices.IndexFunc(steps, func(st *pb.TimelineStep) bool { return strings.HasPrefix(st.GetTitle(), "Ready to merge") })
+			if tc.last == "" {
+				if merge >= 0 {
+					t.Fatalf("merge step %q with verify enabled", steps[merge].GetTitle())
+				}
+				return
+			}
+			if merge < 0 || steps[merge].GetTitle() != tc.last || steps[merge].GetState() != current {
+				t.Fatalf("merge step index %d, want %q CURRENT", merge, tc.last)
+			}
+		})
+	}
+}
+
 func TestGetSessionTimeline_NoPRYieldsOnlyBuildStarted(t *testing.T) {
 	ctx := context.Background()
 	sqlDB := setupServerTestDB(t)
@@ -506,7 +568,7 @@ func TestBuildTimeline_QuestionRowEndsOnTheQuestion(t *testing.T) {
 }
 
 // A merge-ready row ends on CI passing and the PR becoming ready, whether it
-// is the unverified REVIEW (as here, no boss/verify verdict) or a MERGE.
+// is verified or not (as here, no boss/verify verdict).
 func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
@@ -524,17 +586,15 @@ func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
 		{at(21), "Ready for review", "", done},
 		{at(26), "CI passed, 6 checks", "", current},
 	})
-	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
-		t.Fatalf("kind = %s, want the unverified REVIEW", kind)
+	if kind != pb.AttentionKind_ATTENTION_KIND_MERGE {
+		t.Fatalf("kind = %s, want MERGE", kind)
 	}
 }
 
 // A mergeable PR whose ordinary checks were all skipped is merge-ready for
 // attention.Compute (a skipped check is done), yet it has no "CI passed" step
 // and, never a draft, no "Ready for review" step: the merge wait gets its own
-// step instead of an unrelated old one going CURRENT. Verified, it is a MERGE;
-// with no boss/verify verdict on the head it is the unverified REVIEW, and the
-// step says so.
+// step instead of an unrelated old one going CURRENT, verified or not.
 func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 	skipped := vcs.CheckConclusionSkipped
 	success := vcs.CheckConclusionSuccess
@@ -543,11 +603,9 @@ func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		checks []vcs.CheckResult
-		kind   pb.AttentionKind
-		title  string
 	}{
-		{"verified", verified, pb.AttentionKind_ATTENTION_KIND_MERGE, "Ready to merge"},
-		{"unverified", skippedCI, pb.AttentionKind_ATTENTION_KIND_REVIEW, "Ready to merge · not verified"},
+		{"verified", verified},
+		{"unverified", skippedCI},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			steps, kind := assembleTimeline(timelineFacts{
@@ -559,13 +617,13 @@ func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 					snap(t, at(31), vcs.DisplayStatusPassing, tc.checks),
 				},
 			})
-			if kind != tc.kind {
-				t.Fatalf("kind = %s, want %s", kind, tc.kind)
+			if kind != pb.AttentionKind_ATTENTION_KIND_MERGE {
+				t.Fatalf("kind = %s, want MERGE", kind)
 			}
 			assertSteps(t, steps, []wantStep{
 				{at(4), "Build started", "", done},
 				{at(20), "Built and reviewed", "", done},
-				{at(26), tc.title, "", current},
+				{at(26), "Ready to merge", "", current},
 			})
 		})
 	}
@@ -984,4 +1042,179 @@ func TestRepairFact_HonoursTheLeaseStallRecord(t *testing.T) {
 	if rf := s.repairFact(sess); rf == nil || !rf.Current {
 		t.Fatalf("stalled: repairFact = %+v; want the alert current while the stall is live", rf)
 	}
+}
+
+func chatRun(chat string, start time.Time, stop *time.Time, reason string) db.AgentRun {
+	return db.AgentRun{AgentSessionID: chat, StartedAt: start, StoppedAt: stop, StopReason: reason}
+}
+
+// A daemon restart closes every chat's open run with one stop time (session
+// 7cca2741535092fd: five runs stopped at 12:34:56.397, all resumed by the run
+// at 15:30). It is one interruption and one resume, not five of each.
+func TestBuildTimeline_OneRestartAcrossChatsIsOneInterruption(t *testing.T) {
+	restart := timePtr(at(10))
+	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+		chatRun("a", at(1), restart, db.AgentRunStopDaemonRestart),
+		chatRun("b", at(2), restart, db.AgentRunStopDaemonRestart),
+		chatRun("c", at(3), restart, db.AgentRunStopDaemonRestart),
+		chatRun("d", at(4), restart, db.AgentRunStopDaemonRestart),
+		chatRun("e", at(5), restart, db.AgentRunStopDaemonRestart),
+		chatRun("f", at(20), nil, ""),
+	}})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at(10), "Run interrupted by a daemon restart", "5 chats", failed},
+		{at(20), "Resumed", "new run", current},
+	})
+}
+
+// Distinct interruptions stay distinct: two restarts twenty minutes apart and
+// a different stop reason at the same instant are separate failures, while the
+// one run that resumed after all of them is one resume.
+func TestBuildTimeline_DistinctInterruptionsAreKept(t *testing.T) {
+	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+		chatRun("a", at(1), timePtr(at(10)), db.AgentRunStopDaemonRestart),
+		chatRun("c", at(2), timePtr(at(10)), db.AgentRunStopRateLimited),
+		chatRun("b", at(3), timePtr(at(10)), db.AgentRunStopDaemonRestart),
+		chatRun("d", at(4), timePtr(at(30)), db.AgentRunStopDaemonRestart),
+		chatRun("e", at(40), nil, ""),
+	}})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at(10), "Run interrupted by a daemon restart", "2 chats", failed},
+		{at(10), "Run stopped by a rate limit", "", failed},
+		{at(30), "Run interrupted by a daemon restart", "", failed},
+		{at(40), "Resumed", "new run", current},
+	})
+}
+
+// A real event between two identical restart-and-resume pairs is preserved,
+// and so are both pairs: each is its own restart.
+func TestBuildTimeline_InterleavedEventBetweenRestartsIsPreserved(t *testing.T) {
+	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
+	steps := buildTimeline(timelineFacts{
+		Runs: []db.AgentRun{
+			chatRun("a", at(1), timePtr(at(10)), db.AgentRunStopDaemonRestart),
+			chatRun("b", at(2), timePtr(at(10)), db.AgentRunStopDaemonRestart),
+			chatRun("c", at(12), timePtr(at(30)), db.AgentRunStopDaemonRestart),
+			chatRun("d", at(13), timePtr(at(30)), db.AgentRunStopDaemonRestart),
+			chatRun("e", at(32), nil, ""),
+		},
+		RotationEvents: []db.RotationEvent{
+			rotationEvent(at(20), usage, pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, "limit reached"),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at(10), "Run interrupted by a daemon restart", "2 chats", failed},
+		{at(12), "Resumed", "new run", done},
+		{at(20), "Hit its usage limit", "limit reached", failed},
+		{at(20), "Resumed automatically", "switched account", done},
+		{at(30), "Run interrupted by a daemon restart", "2 chats", failed},
+		{at(32), "Resumed", "new run", current},
+	})
+}
+
+// at10 is 23:10:ss plus ms milliseconds on the #2979 evening.
+func at10(ss, ms int) time.Time {
+	return at(10).Add(time.Duration(ss)*time.Second + time.Duration(ms)*time.Millisecond)
+}
+
+// Two chats stopping for the same reason forty seconds apart are two
+// interruptions, and the run that resumed between them stays on the timeline
+// as the current step, which the render moves to the end.
+func TestBuildTimeline_ResumeBetweenNearbyStopsIsKept(t *testing.T) {
+	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopUnknown),
+		chatRun("b", at(2), timePtr(at10(40, 0)), db.AgentRunStopUnknown),
+		chatRun("a", at10(10, 0), nil, ""),
+	}})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at10(0, 0), "Run ended unexpectedly", "", failed},
+		{at10(40, 0), "Run ended unexpectedly", "", failed},
+		{at10(10, 0), "Resumed", "new run", current},
+	})
+}
+
+// One chat crash-looping inside a minute keeps every stop and every resume.
+func TestBuildTimeline_CrashLoopKeepsEachResume(t *testing.T) {
+	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopUnknown),
+		chatRun("a", at10(10, 0), timePtr(at10(20, 0)), db.AgentRunStopUnknown),
+		chatRun("a", at10(30, 0), timePtr(at10(40, 0)), db.AgentRunStopUnknown),
+		chatRun("a", at10(50, 0), nil, ""),
+	}})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at10(0, 0), "Run ended unexpectedly", "", failed},
+		{at10(10, 0), "Resumed", "new run", done},
+		{at10(20, 0), "Run ended unexpectedly", "", failed},
+		{at10(30, 0), "Resumed", "new run", done},
+		{at10(40, 0), "Run ended unexpectedly", "", failed},
+		{at10(50, 0), "Resumed", "new run", current},
+	})
+}
+
+// Only an identical stop instant groups: restart stops one millisecond apart
+// are two interruptions, both resumed by the one later run.
+func TestBuildTimeline_StopsAMillisecondApartAreDistinct(t *testing.T) {
+	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopDaemonRestart),
+		chatRun("b", at(2), timePtr(at10(0, 1)), db.AgentRunStopDaemonRestart),
+		chatRun("c", at(20), nil, ""),
+	}})
+	assertSteps(t, steps, []wantStep{
+		{at(1), "Build started", "", done},
+		{at10(0, 0), "Run interrupted by a daemon restart", "", failed},
+		{at10(0, 1), "Run interrupted by a daemon restart", "", failed},
+		{at(20), "Resumed", "new run", current},
+	})
+}
+
+// The restart recovery writes one stop per chat and is idempotent: three
+// chats' open runs closed by ReconcileOpen, then a second recovery pass, read
+// back through the handler as one interruption and one resume.
+func TestGetSessionTimeline_RestartRecoveryRecordsOneInterruption(t *testing.T) {
+	ctx := context.Background()
+	sqlDB := setupServerTestDB(t)
+	repos := db.NewRepoStore(sqlDB)
+	sessions := db.NewSessionStore(sqlDB)
+	runs := db.NewAgentRunStore(sqlDB)
+	repo, err := repos.Create(ctx, db.CreateRepoParams{
+		DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
+		DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	sess, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/y", BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for i, chat := range []string{"chat-1", "chat-2", "chat-3"} {
+		if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: at(1 + i)}); err != nil {
+			t.Fatalf("start %s: %v", chat, err)
+		}
+	}
+	if n, err := runs.ReconcileOpen(ctx, at(10), nil); err != nil || n != 3 {
+		t.Fatalf("first recovery pass = %d, %v; want 3 runs closed", n, err)
+	}
+	if n, err := runs.ReconcileOpen(ctx, at(11), nil); err != nil || n != 0 {
+		t.Fatalf("second recovery pass = %d, %v; want nothing closed again", n, err)
+	}
+	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "chat-1", StartedAt: at(20)}); err != nil {
+		t.Fatalf("start resumed run: %v", err)
+	}
+
+	srv := New(Config{Repos: repos, Sessions: sessions, AgentRuns: runs, CheckSnapshots: db.NewCheckSnapshotStore(sqlDB)})
+	resp, err := srv.GetSessionTimeline(ctx, connect.NewRequest(&pb.GetSessionTimelineRequest{SessionId: sess.ID}))
+	if err != nil {
+		t.Fatalf("GetSessionTimeline: %v", err)
+	}
+	assertSteps(t, resp.Msg.GetSteps(), []wantStep{
+		{at(1), "Build started", "", done},
+		{at(10), "Run interrupted by a daemon restart", "3 chats", failed},
+		{at(20), "Resumed", "new run", current},
+	})
 }

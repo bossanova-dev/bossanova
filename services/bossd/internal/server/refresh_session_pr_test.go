@@ -10,9 +10,11 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 )
@@ -120,6 +122,179 @@ func TestRefreshSessionPRRejectsMismatchedSessionAndPR(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument (err: %v)", got, err)
 	}
+}
+
+// TestRefreshLinkedPRDisplayReplacesTheClosedEnd pins the display half of
+// reviving a session by linking its replacement PR. The previous PR's closed
+// end in the tracker is a settled end the display poller skips, and it makes
+// the session read as done, so linking must replace it with the linked PR's
+// open status, or drop it when that read fails.
+func TestRefreshLinkedPRDisplayReplacesTheClosedEnd(t *testing.T) {
+	linked := &models.Session{ID: "s1", RepoID: "r1", Title: "s1", PRNumber: intPtr(6606)}
+
+	t.Run("fresh read", func(t *testing.T) {
+		tracker := status.NewDisplayTracker()
+		tracker.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusClosed, HeadSHA: "old-sha"})
+		provider := &refreshPRProvider{prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true, HeadSHA: "new-sha"}}
+		newRefreshPRServer(tracker, provider, linked).refreshLinkedPRDisplay(context.Background(), linked)
+
+		if provider.lastPR != 6606 {
+			t.Fatalf("read PR #%d, want the linked #6606", provider.lastPR)
+		}
+		if got := tracker.Get("s1"); got == nil || got.Status != vcs.DisplayStatusDraft || got.HeadSHA != "new-sha" {
+			t.Fatalf("tracker entry = %+v, want the linked PR's draft at new-sha", got)
+		}
+	})
+
+	t.Run("failed read", func(t *testing.T) {
+		tracker := status.NewDisplayTracker()
+		tracker.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusClosed, HeadSHA: "old-sha"})
+		provider := &refreshPRProvider{prStatusErr: errors.New("github unavailable")}
+		newRefreshPRServer(tracker, provider, linked).refreshLinkedPRDisplay(context.Background(), linked)
+
+		if got := tracker.Get("s1"); got != nil {
+			t.Fatalf("tracker entry = %+v, want the stale closed end dropped", got)
+		}
+	})
+}
+
+// TestLinkSessionPRMovesToThePRBranchAndReportsTheWorktree pins the operator's
+// case end to end through the RPC: a session on its original branch is linked
+// to a PR whose head is another branch. The session must move to the PR's
+// branch, and the response must name the worktree's branch when the checkout
+// is still elsewhere, so the CLI can say what to check out.
+func TestLinkSessionPRMovesToThePRBranchAndReportsTheWorktree(t *testing.T) {
+	const oldBranch, prBranch = "dave-madverts/mad-1594", "fix/source-led-planner-structured-output"
+	for _, worktreeBranch := range []string{oldBranch, prBranch} {
+		t.Run("worktree on "+worktreeBranch, func(t *testing.T) {
+			sessions := &linkPRSessionStore{refreshPRSessionStore: refreshPRSessionStore{sessions: []*models.Session{{
+				ID: "s1", RepoID: "r1", Title: "s1", BranchName: oldBranch, WorktreePath: "/wt/s1", PRNumber: intPtr(6395),
+			}}}}
+			provider := &refreshPRProvider{prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}}
+			srv := newRefreshPRServer(nil, provider)
+			srv.sessions = sessions
+			srv.lifecycle = session.NewLifecycle(sessions, srv.repos, nil, nil, nil, nil, nil, provider, zerolog.Nop())
+			srv.lifecycle.SetBranchResolver(staticBranchResolver(worktreeBranch))
+
+			resp, err := srv.LinkSessionPR(context.Background(), connect.NewRequest(&pb.LinkSessionPRRequest{Id: "s1", Pr: "6606"}))
+			if err != nil {
+				t.Fatalf("LinkSessionPR: %v", err)
+			}
+			if got := resp.Msg.GetSession().GetBranchName(); got != prBranch {
+				t.Fatalf("branch_name = %q, want %q", got, prBranch)
+			}
+			wantWorktree := ""
+			if worktreeBranch != prBranch {
+				wantWorktree = worktreeBranch
+			}
+			if got := resp.Msg.GetWorktreeBranch(); got != wantWorktree {
+				t.Fatalf("worktree_branch = %q, want %q", got, wantWorktree)
+			}
+		})
+	}
+}
+
+type staticBranchResolver string
+
+func (b staticBranchResolver) CurrentBranch(context.Context, string) (string, error) {
+	return string(b), nil
+}
+
+// TestLinkSessionPRRefusesAPRAnotherLiveSessionOwns pins the RPC's answer when
+// the PR is already another live session's: AlreadyExists, carrying the plain
+// message the CLI prints, and the session is left unlinked.
+func TestLinkSessionPRRefusesAPRAnotherLiveSessionOwns(t *testing.T) {
+	sessions := &linkPRSessionStore{refreshPRSessionStore: refreshPRSessionStore{sessions: []*models.Session{
+		{ID: "s1", RepoID: "r1", Title: "s1", BranchName: "dave/old", State: machine.AwaitingChecks},
+		{ID: "s2", RepoID: "r1", Title: "Consolidated work", BranchName: "fix/pr-head", State: machine.AwaitingChecks, PRNumber: intPtr(6606)},
+	}}}
+	provider := &refreshPRProvider{prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: "fix/pr-head"}}
+	srv := newRefreshPRServer(nil, provider)
+	srv.sessions = sessions
+	srv.lifecycle = session.NewLifecycle(sessions, srv.repos, nil, nil, nil, nil, nil, provider, zerolog.Nop())
+
+	_, err := srv.LinkSessionPR(context.Background(), connect.NewRequest(&pb.LinkSessionPRRequest{Id: "s1", Pr: "6606"}))
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists (err: %v)", got, err)
+	}
+	var connectErr *connect.Error
+	want := `PR #6606 is already linked to session s2 ("Consolidated work"); archive that session first`
+	if !errors.As(err, &connectErr) || connectErr.Message() != want {
+		t.Fatalf("message = %v, want %q", err, want)
+	}
+	if s1 := sessions.sessions[0]; s1.PRNumber != nil || s1.BranchName != "dave/old" {
+		t.Fatalf("refused link changed s1: PR %v, branch %q", s1.PRNumber, s1.BranchName)
+	}
+}
+
+// TestLinkSessionPRAnswersABusyStartPathLockAsUnavailable pins that a link
+// which cannot take the repo's start-path lock tells the caller to retry, as
+// the create paths do, rather than blaming its arguments.
+func TestLinkSessionPRAnswersABusyStartPathLockAsUnavailable(t *testing.T) {
+	sessions := &linkPRSessionStore{refreshPRSessionStore: refreshPRSessionStore{sessions: []*models.Session{
+		{ID: "s1", RepoID: "r1", Title: "s1", BranchName: "dave/old", State: machine.AwaitingChecks},
+	}}}
+	provider := &refreshPRProvider{prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: "fix/pr-head"}}
+	srv := newRefreshPRServer(nil, provider)
+	srv.sessions = sessions
+	srv.lifecycle = session.NewLifecycle(sessions, srv.repos, nil, nil, nil, nil, nil, provider, zerolog.Nop())
+
+	release, _, err := session.AcquireStartPath(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("hold start-path lock: %v", err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = srv.LinkSessionPR(ctx, connect.NewRequest(&pb.LinkSessionPRRequest{Id: "s1", Pr: "6606"}))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("code = %v, want Unavailable (err: %v)", got, err)
+	}
+	if s1 := sessions.sessions[0]; s1.PRNumber != nil || s1.BranchName != "dave/old" {
+		t.Fatalf("link without the lock changed s1: PR %v, branch %q", s1.PRNumber, s1.BranchName)
+	}
+}
+
+type linkPRSessionStore struct{ refreshPRSessionStore }
+
+func (s *linkPRSessionStore) ListByRepoAndPR(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+	var rows []*db.SessionWithRepo
+	for _, sess := range s.sessions {
+		if sess.RepoID == repoID && sess.PRNumber != nil && *sess.PRNumber == prNumber && sess.ArchivedAt == nil {
+			rows = append(rows, &db.SessionWithRepo{Session: sess})
+		}
+	}
+	return rows, nil
+}
+
+func (s *linkPRSessionStore) ListActiveWithRepo(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	var rows []*db.SessionWithRepo
+	for _, sess := range s.sessions {
+		if sess.RepoID == repoID && sess.ArchivedAt == nil {
+			rows = append(rows, &db.SessionWithRepo{Session: sess})
+		}
+	}
+	return rows, nil
+}
+
+func (s *linkPRSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	for _, sess := range s.sessions {
+		if sess.ID != id {
+			continue
+		}
+		if params.PRNumber != nil {
+			sess.PRNumber = *params.PRNumber
+		}
+		if params.PRURL != nil {
+			sess.PRURL = *params.PRURL
+		}
+		if params.BranchName != nil {
+			sess.BranchName = *params.BranchName
+		}
+		return sess, nil
+	}
+	return nil, sql.ErrNoRows
 }
 
 func TestRefreshSessionPRUnknownIDIsNotFound(t *testing.T) {

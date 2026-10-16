@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -338,5 +339,117 @@ func TestAppRoutesSupervisionResultToHomeFromAnotherView(t *testing.T) {
 	got := model.(App).home
 	if !got.supervision.Unsupervised || got.supervisionProbing {
 		t.Fatalf("result delivered while Settings was active did not reach Home: %+v probing=%v", got.supervision, got.supervisionProbing)
+	}
+}
+
+func TestHomeDaemonSupervisionLineVerdictLifetime(t *testing.T) {
+	start := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	for _, unknownBetween := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unknown-between=%v", unknownBetween), func(t *testing.T) {
+			clock := start
+			h := unsupervisedHome(nil, 120, 40)
+			h.startedAt = start.Add(-10 * time.Minute)
+			h.now = func() time.Time { return clock }
+			deliver := func(result DaemonSupervision) {
+				t.Helper()
+				model, _ := h.Update(daemonSupervisionMsg{homeGeneration: h.generation, probeID: h.supervisionProbeID, result: result})
+				h = model.(HomeModel)
+			}
+			visible := func(want bool) {
+				t.Helper()
+				if got := h.daemonSupervisionLine() != ""; got != want {
+					t.Fatalf("at %s: visible = %v, want %v", clock.Sub(start), got, want)
+				}
+			}
+			deliver(DaemonSupervision{})
+			deliver(DaemonSupervision{Unsupervised: true, PID: 4242})
+			visible(true)
+			clock = start.Add(59 * time.Second)
+			visible(true)
+			clock = start.Add(time.Minute)
+			visible(false)
+			clock = start.Add(61 * time.Second)
+			if unknownBetween {
+				deliver(DaemonSupervision{})
+			}
+			deliver(DaemonSupervision{Unsupervised: true, PID: 4242})
+			visible(false)
+			deliver(DaemonSupervision{Unsupervised: true, PID: 5151})
+			visible(true)
+			clock = clock.Add(time.Minute)
+			visible(false)
+		})
+	}
+}
+
+func TestHomeDaemonSupervisionLineSessionFallbackExpires(t *testing.T) {
+	h := unsupervisedHome(nil, 120, 40)
+	clock := h.startedAt.Add(time.Minute)
+	h.now = func() time.Time { return clock }
+	if h.daemonSupervisionLine() != "" {
+		t.Fatal("direct verdict without an anchor outlived the session's first minute")
+	}
+}
+
+func TestNewHomeModelKeepsExpiredSupervisionAnchor(t *testing.T) {
+	start := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	clock := start
+	a := NewApp(nil, nil)
+	a.startedAt = start
+	a.home.now = func() time.Time { return clock }
+	model, _ := a.home.Update(daemonSupervisionMsg{homeGeneration: a.home.generation, probeID: a.home.supervisionProbeID, result: DaemonSupervision{Unsupervised: true, PID: 4242}})
+	a.home = model.(HomeModel)
+	clock = start.Add(time.Minute)
+	rebuilt := a.newHomeModel()
+	rebuilt.now = func() time.Time { return clock }
+	if rebuilt.daemonSupervisionLine() != "" {
+		t.Fatal("returning Home revived the expired line")
+	}
+	model, _ = rebuilt.Update(daemonSupervisionMsg{homeGeneration: rebuilt.generation, probeID: rebuilt.supervisionProbeID, result: DaemonSupervision{Unsupervised: true, PID: 4242}})
+	rebuilt = model.(HomeModel)
+	if rebuilt.daemonSupervisionLine() != "" {
+		t.Fatal("the rebuilt Home's same-PID probe revived the expired line")
+	}
+}
+
+func TestHomeDaemonSupervisionExpiryReclaimsTableRows(t *testing.T) {
+	h := unsupervisedHome(manySessions(100), 40, 24)
+	clock := h.startedAt
+	h.now = func() time.Time { return clock }
+	before := h.table.Height()
+	quiet := h
+	quiet.supervision = DaemonSupervision{}
+	quiet.buildTableRows()
+	want := quiet.table.Height()
+	clock = clock.Add(time.Minute)
+	model, _ := h.Update(tickMsg{})
+	h = model.(HomeModel)
+	if h.table.Height() <= before {
+		t.Fatalf("expired line left table height at %d, want above %d", h.table.Height(), before)
+	}
+	if h.table.Height() != want {
+		t.Fatalf("table height = %d, want current layout %d", h.table.Height(), want)
+	}
+}
+
+func TestDaemonSupervisionLineVisible(t *testing.T) {
+	since := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name       string
+		result     DaemonSupervision
+		now, since time.Time
+		want       bool
+	}{
+		{"supervised", DaemonSupervision{}, since, since, false},
+		{"no anchor", DaemonSupervision{Unsupervised: true}, since, time.Time{}, true},
+		{"first observed", DaemonSupervision{Unsupervised: true}, since, since, true},
+		{"just before expiry", DaemonSupervision{Unsupervised: true}, since.Add(time.Minute - time.Nanosecond), since, true},
+		{"expiry", DaemonSupervision{Unsupervised: true}, since.Add(time.Minute), since, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := daemonSupervisionLineVisible(tt.result, tt.now, tt.since); got != tt.want {
+				t.Fatalf("visibility = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

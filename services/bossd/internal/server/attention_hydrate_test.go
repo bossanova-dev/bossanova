@@ -112,19 +112,25 @@ func (f *attentionResumeStore) ListForRun(_ context.Context, _, key string) ([]*
 	return f.rows, nil
 }
 
-// TestAttentionFactoryMerge serves a green, mergeable PR that nothing verified
-// as a REVIEW in a repo with no enabled verify cron, and in progress in a
-// factory repo, whose verify stage will reach it.
+// TestAttentionFactoryMerge reads the repo's verify jobs from its cron jobs,
+// once a minute per repo, and answers a green, mergeable PR nothing verified
+// by them: in progress when a verify job is enabled, since verify will reach
+// the head, and otherwise an unverified MERGE, a disabled verify job included.
+// A job counts as verify by its prompt or by running the boss-verify cron gate.
 func TestAttentionFactoryMerge(t *testing.T) {
+	const verifyGate = `node "$HOME/.claude/skills/boss-verify/toolbox/cron-gates/boss-verify.mjs"`
 	for _, tc := range []struct {
 		name string
 		jobs []*models.CronJob
 		kind pb.AttentionKind
 	}{
-		{"absent", nil, pb.AttentionKind_ATTENTION_KIND_REVIEW},
-		{"disabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}}, pb.AttentionKind_ATTENTION_KIND_REVIEW},
-		{"unrelated", []*models.CronJob{{Prompt: "/boss-build", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{"absent", nil, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"unrelated", []*models.CronJob{{Prompt: "/boss-build", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"disabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}}, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"disabled gate", []*models.CronJob{{Prompt: "/gi-verify", GateCommand: verifyGate, IsEnabled: false}}, pb.AttentionKind_ATTENTION_KIND_MERGE},
 		{"enabled", []*models.CronJob{{Prompt: "$boss-verify headless", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{"enabled gate", []*models.CronJob{{Prompt: "/gi-verify", GateCommand: verifyGate, IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{"one of two enabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}, {Prompt: "/boss-verify", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 1
@@ -142,47 +148,53 @@ func TestAttentionFactoryMerge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got := onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != tc.kind {
-					t.Fatalf("attention = %v", got)
+				got := onlySession(t, resp.Msg.Sessions).GetAttention()
+				if got.GetKind() != tc.kind {
+					t.Fatalf("attention = %v, want %v", got, tc.kind)
+				}
+				if tc.kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS && !got.GetIsUnverified() {
+					t.Fatalf("merge-ready attention %v is not marked unverified", got)
 				}
 			}
 			if crons.reads != 1 {
-				t.Fatalf("factory reads=%d", crons.reads)
+				t.Fatalf("cron reads=%d, want 1 (cached)", crons.reads)
 			}
 		})
 	}
 }
 
 // TestAttentionVerifiedMerge reads "verified" from the persisted check
-// snapshot of the current head: a successful boss/verify status there serves
-// MERGE, and no verdict there serves the unverified REVIEW, which offers GITHUB
-// then MERGE and never APPROVE. A snapshot of an older head is not read at all,
-// so its verdict never makes the current head a MERGE.
+// snapshot of the current head: a successful boss/verify status there serves a
+// verified MERGE, and no verdict there serves the same MERGE marked
+// is_unverified. A snapshot of an older head is not read at all, so its
+// verdict never makes the current head merge-ready.
 func TestAttentionVerifiedMerge(t *testing.T) {
 	const oldHead = "1111111111111111111111111111111111111111"
 	success := vcs.CheckConclusionSuccess
 	verified := append(greenCI(2, ""), vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success, Description: "verified"})
-	unverifiedActions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE}
+	mergeActions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB}
 	for _, tc := range []struct {
-		name     string
-		snaps    []db.CheckSnapshot
-		kind     pb.AttentionKind
-		sentence string
-		actions  []pb.AttentionAction
+		name       string
+		snaps      []db.CheckSnapshot
+		kind       pb.AttentionKind
+		sentence   string
+		actions    []pb.AttentionAction
+		unverified bool
 	}{
 		{
 			name:     "verified head",
 			snaps:    []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, verified)}},
 			kind:     pb.AttentionKind_ATTENTION_KIND_MERGE,
 			sentence: "Ready to merge",
-			actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
+			actions:  mergeActions,
 		},
 		{
-			name:     "no verdict on the head",
-			snaps:    []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}},
-			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Not verified",
-			actions:  unverifiedActions,
+			name:       "no verdict on the head",
+			snaps:      []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}},
+			kind:       pb.AttentionKind_ATTENTION_KIND_MERGE,
+			sentence:   "Ready to merge",
+			actions:    mergeActions,
+			unverified: true,
 		},
 		{
 			name:  "verdict on an older head",
@@ -205,6 +217,9 @@ func TestAttentionVerifiedMerge(t *testing.T) {
 			got := onlySession(t, resp.Msg.Sessions).GetAttention()
 			if got.GetKind() != tc.kind || got.GetSentence() != tc.sentence || !slices.Equal(got.GetActions(), tc.actions) {
 				t.Fatalf("attention = %v, want %v %q %v", got, tc.kind, tc.sentence, tc.actions)
+			}
+			if got.GetIsUnverified() != tc.unverified {
+				t.Fatalf("is_unverified = %v, want %v", got.GetIsUnverified(), tc.unverified)
 			}
 			if len(got.GetParkCodes()) != 0 {
 				t.Fatalf("park codes = %v, want none", got.GetParkCodes())

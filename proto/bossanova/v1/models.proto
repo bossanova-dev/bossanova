@@ -734,17 +734,20 @@ enum AttentionKind {
   // The agent asked a question and is waiting for an answer.
   ATTENTION_KIND_QUESTION = 2;
   // The verify stage parked the PR for a person to sign off: every park code
-  // is a policy sign-off code. From API version 2026-09-20 it also answers a PR
-  // that is open, green and mergeable but that the verify stage has not passed:
-  // that REVIEW carries no park_codes and offers ATTENTION_ACTION_GITHUB then
-  // ATTENTION_ACTION_MERGE; older pins receive ATTENTION_KIND_MERGE. From the
-  // same version a verify park's REVIEW offers ATTENTION_ACTION_GITHUB (and
-  // ATTENTION_ACTION_VIDEO) then ATTENTION_ACTION_MERGE, where it led with
-  // ATTENTION_ACTION_APPROVE and ATTENTION_ACTION_SEND_BACK; older pins
-  // receive those back.
+  // is a policy sign-off code. Pins at API version 2026-09-20 also receive it
+  // for a PR that is open, green and mergeable but that the verify stage has
+  // not passed: that REVIEW carries no park_codes and offers
+  // ATTENTION_ACTION_GITHUB then ATTENTION_ACTION_MERGE. Older pins receive
+  // ATTENTION_KIND_MERGE for that PR, and so do current pins, with
+  // is_unverified set. From 2026-09-20 a verify park's REVIEW offers
+  // ATTENTION_ACTION_GITHUB (and ATTENTION_ACTION_VIDEO) then
+  // ATTENTION_ACTION_MERGE, where it led with ATTENTION_ACTION_APPROVE and
+  // ATTENTION_ACTION_SEND_BACK; older pins receive those back.
   ATTENTION_KIND_REVIEW = 3;
-  // The PR is open, green and mergeable, the verify stage passed its head, and
-  // nothing else will merge it.
+  // The PR is open, green and mergeable, and nothing else will merge it: no
+  // enabled verify job on the daemon will reach its head. is_unverified marks
+  // one the verify stage has not passed; pins at API version 2026-09-20
+  // receive that one as the unverified ATTENTION_KIND_REVIEW.
   ATTENTION_KIND_MERGE = 4;
   // Work is moving without the operator.
   ATTENTION_KIND_IN_PROGRESS = 5;
@@ -801,6 +804,9 @@ message SessionAttention {
   // own note recorded them for the current head. Empty when the park has no
   // open checklist or its note has not been read.
   repeated string open_items = 10;
+  // True on an ATTENTION_KIND_MERGE whose current head the verify stage has
+  // not passed. Clients label that row "ready" rather than "merge".
+  bool is_unverified = 11;
 }
 
 // DisplayStatus represents the unified display status for a session in the TUI.

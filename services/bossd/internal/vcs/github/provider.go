@@ -364,22 +364,23 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	out, err := p.gh(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,mergeStateStatus,isDraft,title,headRefName,baseRefName,headRefOid,reviewDecision,reviews",
+		"--json", "state,mergeable,mergeStateStatus,isDraft,title,headRefName,baseRefName,headRefOid,isCrossRepository,reviewDecision,reviews",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
 	}
 
 	var raw struct {
-		State            string `json:"state"`
-		Mergeable        string `json:"mergeable"`
-		MergeStateStatus string `json:"mergeStateStatus"`
-		IsDraft          bool   `json:"isDraft"`
-		Title            string `json:"title"`
-		HeadRefName      string `json:"headRefName"`
-		BaseRefName      string `json:"baseRefName"`
-		HeadRefOid       string `json:"headRefOid"`
-		ReviewDecision   string `json:"reviewDecision"`
+		State             string `json:"state"`
+		Mergeable         string `json:"mergeable"`
+		MergeStateStatus  string `json:"mergeStateStatus"`
+		IsDraft           bool   `json:"isDraft"`
+		Title             string `json:"title"`
+		HeadRefName       string `json:"headRefName"`
+		BaseRefName       string `json:"baseRefName"`
+		HeadRefOid        string `json:"headRefOid"`
+		IsCrossRepository bool   `json:"isCrossRepository"`
+		ReviewDecision    string `json:"reviewDecision"`
 		// Each review object already carries its author's association; a
 		// top-level authorAssociation field would be the PR author's instead.
 		Reviews []struct {
@@ -398,12 +399,13 @@ func (p *Provider) fetchPRStatus(ctx context.Context, repoPath string, prID int)
 	}
 
 	status := &vcs.PRStatus{
-		State:      parsePRState(raw.State),
-		Draft:      raw.IsDraft,
-		Title:      raw.Title,
-		HeadBranch: raw.HeadRefName,
-		BaseBranch: raw.BaseRefName,
-		HeadSHA:    raw.HeadRefOid,
+		State:             parsePRState(raw.State),
+		Draft:             raw.IsDraft,
+		Title:             raw.Title,
+		HeadBranch:        raw.HeadRefName,
+		BaseBranch:        raw.BaseRefName,
+		HeadSHA:           raw.HeadRefOid,
+		IsCrossRepository: raw.IsCrossRepository,
 	}
 	status.MergeStateStatus = parseMergeStateStatus(raw.MergeStateStatus)
 

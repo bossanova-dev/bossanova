@@ -42,6 +42,9 @@ export const VENDOR_MAP = {
     'tracker/linear.mjs',
     'tracker/outcome.mjs',
     'verify-gate.mjs',
+    // verify-gate's import closure.
+    'verify-range.mjs',
+    'verify-vocabulary.mjs',
     'verify-park-note.mjs',
   ],
   'boss-release': [
@@ -76,6 +79,9 @@ export const VENDOR_MAP = {
     // Its import closure (commit-status, merge-eligibility, pr-check-state, skill-config,
     // skill-extensions, tracker/adapter) already ships here.
     'verify-gate.mjs',
+    // verify-gate's import closure.
+    'verify-range.mjs',
+    'verify-vocabulary.mjs',
     // verify-gate.mjs renders a park's operator note through verify-park-note.mjs.
     'verify-park-note.mjs',
     // BOS-1515: followup-route.mjs decides which follow-ups reach the ledger sections that park a
@@ -527,6 +533,9 @@ export const VENDOR_MAP = {
   // reach back into. selection.mjs and skill-extensions.mjs are also invoked by path from the body.
   'boss-verify': [
     'verify-gate.mjs',
+    // verify-gate's import closure.
+    'verify-range.mjs',
+    'verify-vocabulary.mjs',
     'verify-park-note.mjs',
     'verify-route.mjs',
     'cron-gates/boss-verify.mjs',

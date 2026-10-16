@@ -4,6 +4,7 @@ go_library(
     name = "git",
     srcs = [
         "pathsafety.go",
+        "push_provenance.go",
         "redact.go",
         "worktree.go",
     ],
@@ -24,6 +25,7 @@ go_test(
     srcs = [
         "keepcurrent_test.go",
         "pathsafety_test.go",
+        "push_provenance_test.go",
         "redact_test.go",
         "worktree_bazel_test.go",
         "worktree_bootstrap_test.go",

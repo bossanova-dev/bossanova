@@ -54,7 +54,7 @@ func (s *Server) GetSessionTimeline(ctx context.Context, req *connect.Request[pb
 // timelineFacts gathers everything buildTimeline reads. Every source is
 // optional: an unwired store contributes nothing rather than failing.
 func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timelineFacts, error) {
-	f := timelineFacts{HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey}
+	f := timelineFacts{HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey, IsFactoryRepo: s.attentionFactory(ctx, sess.RepoID)}
 	if sess.TrackerID != nil {
 		f.TrackerID = *sess.TrackerID
 	}

@@ -323,16 +323,8 @@ export function carryReport(options, deps = {}) {
   }
   report.posted = commitStatus(post, {
     spawn,
-    readyGate: (flags) =>
-      readyGateReport(
-        {
-          head: flags.sha,
-          base: flags.base ?? options.base,
-          reviewVerdictFile: flags['review-verdict-file'],
-          reviewedHeadFile: flags['reviewed-head-file'],
-        },
-        gateDeps,
-      ),
+    readyGateReport: (gateOptions) =>
+      readyGateReport({ ...gateOptions, base: gateOptions.base ?? options.base }, gateDeps),
   }).result
   return report
 }

@@ -62,6 +62,14 @@ func (s FactoryStage) MatchesPrompt(prompt string) bool {
 	return len(fields) > 0 && (fields[0] == "/"+s.Skill || fields[0] == "$"+s.Skill)
 }
 
+// MatchesGate reports whether gate runs the stage's cron gate script
+// (cron-gates/<skill>.mjs, from the installed skill tree or a repo's own
+// toolbox), so a repo-local cron that serves the stage under its own prompt
+// still counts as the stage.
+func (s FactoryStage) MatchesGate(gate string) bool {
+	return strings.Contains(gate, "cron-gates/"+s.Skill+".mjs")
+}
+
 // FactoryStageTable is a factory stage table. It is a FactoryStageReader: a
 // live job is a factory stage only when its prompt is exactly that stage's
 // prompt for the job's agent, so a prompt with extra arguments exports as a

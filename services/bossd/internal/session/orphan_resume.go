@@ -134,10 +134,18 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 		return false
 	}
 
+	// Orphaned released the PR and branch, so another session may have taken
+	// them over since; resuming now would put two live sessions on one PR. Like
+	// the refusal above, this declines without claiming.
+	releaseTarget, ok := lockRevival(ctx, l.sessions, session, l.logger, "orphan-resume sweep")
+	if !ok {
+		return false
+	}
 	// Claim the row atomically before doing any restart work. Losing the CAS
 	// means a concurrent signal changed it, archived it, or cleared its orphan
 	// marker after this sweep listed the candidate.
 	advanced, err := claimStore.ClaimUnarchivedOrphan(ctx, session.ID, orphanReason)
+	releaseTarget()
 	if err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: transition to implementing failed")

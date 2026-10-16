@@ -884,6 +884,10 @@ message LinkSessionPRRequest {
 
 message LinkSessionPRResponse {
   Session session = 1;
+  // The branch checked out in the session worktree when it is not
+  // session.branch_name, so a push from that worktree would miss the linked PR.
+  // Empty when they match or the worktree branch cannot be read.
+  string worktree_branch = 2;
 }
 
 message SetSessionTrackerRequest {

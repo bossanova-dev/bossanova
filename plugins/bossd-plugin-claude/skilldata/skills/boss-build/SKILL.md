@@ -562,12 +562,8 @@ so a later re-review can never clear an earlier blocking finding:
 ```bash
 BUILD_STATE="$(git rev-parse --git-dir)/boss-build"; REVIEW_ROOT="$BUILD_STATE/review"
 VERDICT="$BUILD_STATE/review-verdict.json"
-find "$REVIEW_ROOT" -mindepth 2 -maxdepth 2 -type d | sort | sed 's#$#/review-verdict.json#' >"$BUILD_STATE/review-verdicts.txt"
-rm -f "$VERDICT"
-tr '\n' '\0' <"$BUILD_STATE/review-verdicts.txt" | xargs -0 node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" merge --out "$VERDICT" >/dev/null
-STATUS="$(node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" status "$VERDICT")"
-case "$STATUS" in pass) REVIEW_VERDICT=clean ;; blocked) REVIEW_VERDICT=capped ;; *) REVIEW_VERDICT=none ;; esac
-printf 'REVIEW_VERDICT=%s\n' "$REVIEW_VERDICT" >"$(git rev-parse --git-dir)/boss-build-review-verdict"
+REVIEW_VERDICT="$(node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" pool --root "$REVIEW_ROOT" \
+  --out "$VERDICT" --note "$(git rev-parse --git-dir)/boss-build-review-verdict")"
 node "$BOSS_BUILD_TOOLBOX/review-verdict.mjs" render "$VERDICT" --report >"$BUILD_STATE/review-report.md"
 ```
 
@@ -578,7 +574,7 @@ and `none` go straight to Step 7 so the work is pushed and visible; their termin
 `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger dispatch-failed --where "boss-build Step 6 review"` (never fatal).
 
 `BOSS_BS_REVIEW=0` is the one way to skip review: dispatch nothing, write `REVIEW_VERDICT=disabled`
-(the ready gate passes the operator's opt-out), and publish `## Review coverage`
+(the ready gate waives the review, not the reviewed-tree check), and publish `## Review coverage`
 `none: review did not run (disabled by BOSS_BS_REVIEW=0)` and `## Cross-model review`
 `skipped: disabled`.
 

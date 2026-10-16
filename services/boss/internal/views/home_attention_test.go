@@ -39,16 +39,67 @@ func TestHomeAttentionBoard(t *testing.T) {
 	}
 	h.buildTableRows()
 	screen := ansi.Strip(h.table.View())
-	for _, want := range []string{"NEEDS YOU · 2", "IN PROGRESS · 1", "Database migration", "building"} {
+	for _, want := range []string{"NEEDS YOU", "IN PROGRESS", "Database migration", "building", "Finished feature"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("missing %q in:\n%s", want, screen)
 		}
 	}
-	if strings.Contains(screen, "Finished feature") || strings.Contains(screen, "◌") {
-		t.Fatalf("unexpected finished row or glyph:\n%s", screen)
+	if strings.Contains(screen, "◌") {
+		t.Fatalf("unexpected glyph:\n%s", screen)
 	}
 	if got := h.selectedSessionID(); got != "fix" {
 		t.Errorf("selected %s, want fix", got)
+	}
+}
+
+// TestHomeAttentionBoardKeepsFinishedRowsStruckThrough pins the board's
+// pre-attention treatment of a resolved PR: a session whose PR closed or merged
+// stays in IN PROGRESS, struck through, and only archiving removes it. Hiding
+// it lost a session whose chat was still in use after its PR closed.
+func TestHomeAttentionBoardKeepsFinishedRowsStruckThrough(t *testing.T) {
+	done := &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_DONE}
+	muted := pb.DisplayIntent_DISPLAY_INTENT_MUTED
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width, h.height = 120, 50
+	h.sessions = []*pb.Session{
+		{Id: "review", Title: "Review feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Database migration"}},
+		{Id: "progress", Title: "Building feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "building"}},
+		{Id: "closed", Title: "Closed PR feature", PrNumber: proto.Int32(6395), Attention: done, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CLOSED, DisplayLabel: "closed", DisplayIntent: muted},
+		{Id: "merged", Title: "Merged PR feature", PrNumber: proto.Int32(6400), Attention: done, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED, DisplayLabel: "✓ merged", DisplayIntent: muted},
+		{Id: "archived", Title: "Archived feature", PrNumber: proto.Int32(6401), Attention: done, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED, DisplayLabel: "✓ merged", ArchivedAt: timestamppb.Now()},
+	}
+	h.buildTableRows()
+
+	screen := ansi.Strip(h.table.View())
+	if strings.Contains(screen, "Archived feature") {
+		t.Fatalf("archived session rendered:\n%s", screen)
+	}
+	progressAt := strings.Index(screen, "IN PROGRESS")
+	if progressAt < 0 || !strings.Contains(screen, "NEEDS YOU") {
+		t.Fatalf("want NEEDS YOU then IN PROGRESS:\n%s", screen)
+	}
+	rowFor := func(title string) string {
+		for _, r := range h.table.Rows() {
+			if strings.Contains(ansi.Strip(r[2]), title) {
+				return strings.Join(r, " ")
+			}
+		}
+		return ""
+	}
+	for title, status := range map[string]string{"Closed PR feature": "closed", "Merged PR feature": "✓ merged"} {
+		if at := strings.Index(screen, title); at < progressAt {
+			t.Errorf("%q rendered at %d, want under IN PROGRESS at %d:\n%s", title, at, progressAt, screen)
+		}
+		row := rowFor(title)
+		if !strings.Contains(row, ";9m") {
+			t.Errorf("%q row is not struck through: %q", title, row)
+		}
+		if !strings.Contains(ansi.Strip(row), status) {
+			t.Errorf("%q row = %q, want status %q", title, ansi.Strip(row), status)
+		}
+	}
+	if row := rowFor("Building feature"); strings.Contains(row, ";9m") {
+		t.Errorf("live row is struck through: %q", row)
 	}
 }
 
@@ -93,7 +144,7 @@ func TestHomeAttentionGolden(t *testing.T) {
 				if len(r) != 5 {
 					t.Fatalf("expected five columns, got %d", len(r))
 				}
-				if r[0] == "" && r[1] == "" && r[3] == "" && r[4] == "" && !strings.Contains(ansi.Strip(r[2]), " · ") {
+				if r[0] == "" && r[1] == "" && r[3] == "" && r[4] == "" {
 					if ansi.StringWidth(r[2]) > h.attentionSentenceWidth() {
 						t.Fatalf("sentence exceeds NAME: %q", r[2])
 					}
@@ -110,7 +161,7 @@ func TestHomeAttentionOrderingAndSections(t *testing.T) {
 	for _, s := range got {
 		ids = append(ids, s.Id)
 	}
-	want := []string{"attention-2", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8"}
+	want := []string{"attention-2", "attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("order=%v, want %v", ids, want)
 	}
@@ -185,7 +236,7 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	}
 
 	h.table.SetCursor(h.tableCursorForSessionIndex(0))
-	for _, want := range []string{"attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8"} {
+	for _, want := range []string{"attention-0", "attention-3", "attention-4", "attention-5", "attention-6", "attention-7", "attention-1", "attention-8", "attention-9"} {
 		next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 		h = next.(HomeModel)
 		if got := h.selectedSessionID(); got != want {
@@ -194,8 +245,8 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	}
 	next, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	h = next.(HomeModel)
-	if got := h.selectedSessionID(); got != "attention-1" {
-		t.Fatalf("up selected %s, want attention-1", got)
+	if got := h.selectedSessionID(); got != "attention-8" {
+		t.Fatalf("up selected %s, want attention-8", got)
 	}
 }
 
@@ -283,17 +334,20 @@ func TestHomeAttentionNotifiesAParkOnlyIfTheBoardHasNotShownIt(t *testing.T) {
 func TestHomeAttentionStatus(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	for _, tc := range []struct {
-		kind pb.AttentionKind
-		want string
+		kind       pb.AttentionKind
+		unverified bool
+		want       string
 	}{
-		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question"},
-		{pb.AttentionKind_ATTENTION_KIND_REVIEW, "review"},
-		{pb.AttentionKind_ATTENTION_KIND_MERGE, "✓ merge"},
-		{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ansi.Strip(h.spinner.View()) + "building"},
+		{pb.AttentionKind_ATTENTION_KIND_QUESTION, false, "? question"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, false, "review"},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, true, "review"},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, false, "✓ merge"},
+		{pb.AttentionKind_ATTENTION_KIND_MERGE, true, "✓ ready"},
+		{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, false, ansi.Strip(h.spinner.View()) + "building"},
 	} {
-		s := &pb.Session{DisplayLabel: "passing", DisplaySpinner: true, Attention: &pb.SessionAttention{Kind: tc.kind, ProgressLabel: "building"}}
+		s := &pb.Session{DisplayLabel: "passing", DisplaySpinner: true, Attention: &pb.SessionAttention{Kind: tc.kind, ProgressLabel: "building", IsUnverified: tc.unverified}}
 		if got := ansi.Strip(h.renderSessionStatus(s)); got != tc.want {
-			t.Errorf("kind %v: got %q want %q", tc.kind, got, tc.want)
+			t.Errorf("kind %v unverified %v: got %q want %q", tc.kind, tc.unverified, got, tc.want)
 		}
 	}
 }
@@ -308,7 +362,7 @@ func TestHomeAttentionMixedDaemon(t *testing.T) {
 	}
 	h.buildTableRows()
 	screen := ansi.Strip(h.table.View())
-	for _, want := range []string{"NEEDS YOU · 1", "IN PROGRESS · 1", "working", "legacy setup warning"} {
+	for _, want := range []string{"NEEDS YOU", "IN PROGRESS", "working", "legacy setup warning"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("missing %q: %s", want, screen)
 		}
@@ -318,6 +372,35 @@ func TestHomeAttentionMixedDaemon(t *testing.T) {
 	h.buildTableRows()
 	if h.selectedSessionID() != "legacy" {
 		t.Fatal("legacy selection lost after grouping")
+	}
+}
+
+// TestHomeReadyRowInARepoWithNoVerifyStage renders an unverified MERGE (a repo
+// with no running verify stage) as a plain "✓ ready" row: no "merge" label, no
+// "Not verified" warning, and no subline restating it.
+func TestHomeReadyRowInARepoWithNoVerifyStage(t *testing.T) {
+	ready := &pb.Session{Id: "ready", Title: "Fresh claim", Attention: &pb.SessionAttention{
+		Kind:         pb.AttentionKind_ATTENTION_KIND_MERGE,
+		Sentence:     "Ready to merge",
+		Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
+		IsUnverified: true,
+	}}
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width, h.height = 120, 30
+	h.sessions = []*pb.Session{ready}
+	h.buildTableRows()
+
+	screen := ansi.Strip(h.table.View())
+	if !strings.Contains(screen, "✓ ready") {
+		t.Fatalf("ready status missing:\n%s", screen)
+	}
+	for _, unwanted := range []string{"✓ merge", "Not verified", "Ready to merge"} {
+		if strings.Contains(screen, unwanted) {
+			t.Fatalf("ready row shows %q:\n%s", unwanted, screen)
+		}
+	}
+	if got := len(h.table.Rows()); got != 1 {
+		t.Fatalf("rows = %d, want the one primary row and no subline", got)
 	}
 }
 
@@ -523,7 +606,7 @@ func TestHomeSectionTitlesOnlySeparateTwoGroups(t *testing.T) {
 			titles := 0
 			for i, r := range rows {
 				title := ansi.Strip(r[2])
-				if !strings.HasPrefix(title, "NEEDS YOU · ") && !strings.HasPrefix(title, "IN PROGRESS · ") {
+				if title != "NEEDS YOU" && title != "IN PROGRESS" {
 					continue
 				}
 				titles++
@@ -540,12 +623,30 @@ func TestHomeSectionTitlesOnlySeparateTwoGroups(t *testing.T) {
 			if tc.titled {
 				board := strings.Split(ansi.Strip(h.boardView()), "\n")
 				repoAt := strings.Index(board[0], "REPO")
+				rules := 0
 				for _, line := range board {
-					for _, title := range []string{"NEEDS YOU · ", "IN PROGRESS · "} {
-						if at := strings.Index(line, title); at >= 0 && at != repoAt {
-							t.Errorf("%q starts at column %d, want the REPO column %d:\n%s", title, at, repoAt, strings.Join(board, "\n"))
+					for _, title := range []string{"NEEDS YOU", "IN PROGRESS"} {
+						if !strings.Contains(line, " "+title+" ") {
+							continue
+						}
+						rules++
+						left, right, ok := strings.Cut(strings.TrimLeft(line, " "), " "+title+" ")
+						if !ok || strings.Trim(left, "─") != "" || strings.Trim(right, "─") != "" {
+							t.Errorf("%q is not a rule around its title: %q", title, line)
+						}
+						if at := len(line) - len(strings.TrimLeft(line, " ")); at != repoAt {
+							t.Errorf("%q rule starts at column %d, want the REPO column %d:\n%s", title, at, repoAt, strings.Join(board, "\n"))
+						}
+						if got, want := ansi.StringWidth(line), ansi.StringWidth(board[0]); got != want {
+							t.Errorf("%q rule is %d wide, want the table's %d", title, got, want)
+						}
+						if l, r := ansi.StringWidth(left), ansi.StringWidth(right); r-l < 0 || r-l > 1 {
+							t.Errorf("%q is not centred: %d cells of rule left, %d right", title, l, r)
 						}
 					}
+				}
+				if rules != 2 {
+					t.Fatalf("rules = %d, want 2:\n%s", rules, strings.Join(board, "\n"))
 				}
 			}
 
@@ -638,5 +739,34 @@ func TestHomeFooterActionsNeverShareAKey(t *testing.T) {
 		if !offered[b.action] {
 			t.Errorf("no state offers %v, so the matrix no longer covers every footer action", b.action)
 		}
+	}
+}
+
+// TestHomeSectionRuleFitsItsWidth: a group rule never overflows the width it
+// is given, centres its title in light rule when there is room, and shows the
+// title alone, cut to fit, when there is not.
+func TestHomeSectionRuleFitsItsWidth(t *testing.T) {
+	for _, tt := range []struct {
+		width int
+		want  string
+	}{
+		{0, ""},
+		{5, "NEED…"},
+		{9, "NEEDS YOU"},
+		{12, "NEEDS YOU"},
+		{13, "─ NEEDS YOU ─"},
+		{14, "─ NEEDS YOU ──"},
+		{30, "───────── NEEDS YOU ──────────"},
+	} {
+		got := sectionRule("NEEDS YOU", tt.width)
+		if ansi.Strip(got) != tt.want {
+			t.Errorf("width %d: %q, want %q", tt.width, ansi.Strip(got), tt.want)
+		}
+		if ansi.StringWidth(got) > tt.width {
+			t.Errorf("width %d: rule is %d wide", tt.width, ansi.StringWidth(got))
+		}
+	}
+	if got := sectionRule("NEEDS YOU", 30); !strings.Contains(got, styleStatusInfo.Render("NEEDS YOU")) || !strings.Contains(got, styleStatusMuted.Render("──────────")) {
+		t.Errorf("rule styling: %q", got)
 	}
 }

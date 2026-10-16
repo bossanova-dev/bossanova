@@ -471,12 +471,14 @@ func (c *RemoteClient) DismissSessionAlert(context.Context, string, string) (*pb
 	return nil, errLocalOnly("DismissSessionAlert")
 }
 
-func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.Session, error) {
+// LinkSessionPR leaves WorktreeBranch empty: the orchestrator proxy relays only
+// the session.
+func (c *RemoteClient) LinkSessionPR(ctx context.Context, id, pr string) (*pb.LinkSessionPRResponse, error) {
 	resp, err := c.rpc.ProxyLinkSessionPR(ctx, connect.NewRequest(&pb.ProxyLinkSessionPRRequest{Id: id, Pr: pr}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetSession(), nil
+	return &pb.LinkSessionPRResponse{Session: resp.Msg.GetSession()}, nil
 }
 
 func (c *RemoteClient) RefreshSessionPR(context.Context, *pb.RefreshSessionPRRequest) (*pb.Session, error) {

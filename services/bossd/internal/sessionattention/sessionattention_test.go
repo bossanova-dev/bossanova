@@ -185,26 +185,34 @@ func TestDerive_ParkCodesOnlyFromAVerifyPark(t *testing.T) {
 
 // TestDerive_VerifiedFromTheHeadsVerifyVerdict reads Input.Verified from a
 // successful boss/verify status in the poll's checks, so a merge-ready PR is a
-// MERGE only once verify passed it, and the unverified REVIEW otherwise.
+// MERGE marked is_unverified until verify passed it, and carries the factory
+// flag through, so in a factory repo it stays in progress.
 func TestDerive_VerifiedFromTheHeadsVerifyVerdict(t *testing.T) {
 	success := vcs.CheckConclusionSuccess
 	green := checks(success, success)
 	verdict := vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success, Description: "verified (approved)"}
 	for _, tc := range []struct {
-		name   string
-		checks []vcs.CheckResult
-		kind   pb.AttentionKind
+		name     string
+		checks   []vcs.CheckResult
+		factory  bool
+		verified bool
+		kind     pb.AttentionKind
 	}{
-		{"verified", append(slices.Clone(green), verdict), pb.AttentionKind_ATTENTION_KIND_MERGE},
-		{"unverified", green, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{"verified", append(slices.Clone(green), verdict), false, true, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"unverified", green, false, false, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"unverified in a factory repo", green, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			in := Derive(Facts{HasPR: true, PR: &PR{Status: vcs.DisplayStatusPassing, Checks: tc.checks}}).Input
-			if in.Verified != (tc.kind == pb.AttentionKind_ATTENTION_KIND_MERGE) {
-				t.Fatalf("verified = %v", in.Verified)
+			in := Derive(Facts{HasPR: true, PR: &PR{Status: vcs.DisplayStatusPassing, Checks: tc.checks}, IsFactoryRepo: tc.factory}).Input
+			if in.Verified != tc.verified {
+				t.Fatalf("verified = %v, want %v", in.Verified, tc.verified)
 			}
-			if got := attention.Compute(in).GetKind(); got != tc.kind {
-				t.Fatalf("kind = %v, want %v", got, tc.kind)
+			got := attention.Compute(in)
+			if got.GetKind() != tc.kind {
+				t.Fatalf("kind = %v, want %v", got.GetKind(), tc.kind)
+			}
+			if wantUnverified := tc.kind == pb.AttentionKind_ATTENTION_KIND_MERGE && !tc.verified; got.GetIsUnverified() != wantUnverified {
+				t.Fatalf("is_unverified = %v, want %v", got.GetIsUnverified(), wantUnverified)
 			}
 		})
 	}

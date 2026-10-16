@@ -3671,10 +3671,14 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	// discarded: since BOS-717 this can fail by being REFUSED the per-clone gate
 	// (a concurrent create in the same repo), and the row is deleted immediately
 	// below, so a silent refusal orphans the branch with nothing left naming it.
+	var branches []string
 	if sess.RepoID != "" && sess.BranchName != "" {
+		branches = s.unsharedBranches(ctx, sess.RepoID, sess.ID, []string{sess.BranchName})
+	}
+	if len(branches) > 0 {
 		repo, err := s.repos.Get(ctx, sess.RepoID)
 		if err == nil {
-			if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); reapErr != nil {
+			if reapErr := s.worktrees.ReapLocalBranches(ctx, repo.LocalPath, branches); reapErr != nil {
 				s.logger.Warn().Err(reapErr).
 					Str("session", req.Msg.Id).
 					Str("repo", repo.LocalPath).
@@ -3765,16 +3769,47 @@ func (s *Server) LinkSessionPR(ctx context.Context, req *connect.Request[pb.Link
 	}
 
 	sess, err := s.lifecycle.LinkPR(ctx, req.Msg.Id, req.Msg.Pr)
+	if session.IsDuplicateActiveSessionError(err) {
+		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+	}
+	if errors.Is(err, session.ErrStartPathBusy) {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("link PR: %w", err))
+	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("link PR: %w", err))
 	}
+	s.refreshLinkedPRDisplay(ctx, sess)
 
 	p := s.sessionProtoWithRepo(ctx, sess)
 	if s.onSessionUpdated != nil {
 		s.onSessionUpdated(ctx, p)
 	}
 
-	return connect.NewResponse(&pb.LinkSessionPRResponse{Session: p}), nil
+	return connect.NewResponse(&pb.LinkSessionPRResponse{
+		Session:        p,
+		WorktreeBranch: s.lifecycle.WorktreeBranchMismatch(ctx, sess),
+	}), nil
+}
+
+// refreshLinkedPRDisplay replaces the display entry of the session's previous
+// PR with the linked one's. A closed or merged entry left behind would make the
+// display poller skip the session as settled and keep it hidden as done. When
+// the fresh read fails the entry is dropped, so the next poll reads the linked
+// PR instead.
+func (s *Server) refreshLinkedPRDisplay(ctx context.Context, sess *models.Session) {
+	if s.displayTracker == nil || sess.PRNumber == nil {
+		return
+	}
+	repo, err := s.repos.Get(ctx, sess.RepoID)
+	if err == nil {
+		refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
+		err = s.refreshSessionPRDisplay(refreshCtx, repo, sess.ID, *sess.PRNumber)
+		cancel()
+	}
+	if err != nil {
+		s.logger.Warn().Err(err).Str("session", sess.ID).Msg("link PR: refresh display status; dropping the stale entry")
+		s.displayTracker.Remove(sess.ID)
+	}
 }
 
 // --- Archive / Resurrect ---
@@ -4088,6 +4123,10 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	// rows are already gone by here, so a refused reap (see RemoveSession) leaves
 	// branches nothing names — log it rather than discarding it.
 	for repoID, branches := range repoBranches {
+		branches = s.unsharedBranches(ctx, repoID, "", branches)
+		if len(branches) == 0 {
+			continue
+		}
 		repo, err := s.repos.Get(ctx, repoID)
 		if err != nil {
 			continue
@@ -4101,6 +4140,36 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	}
 
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil
+}
+
+// unsharedBranches drops each branch that a session row in repoID other than
+// removedID still names. Two sessions can share a branch (a PR linked across
+// sessions before link-pr refused it), and deleting the local ref for one would
+// take the other's unpushed commits with it. A failed read keeps every branch:
+// a skipped delete only leaves a branch behind.
+func (s *Server) unsharedBranches(ctx context.Context, repoID, removedID string, branches []string) []string {
+	rows, err := s.sessions.List(ctx, repoID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("repo_id", repoID).Strs("branches", branches).
+			Msg("could not check which sessions name these branches; keeping them")
+		return nil
+	}
+	owner := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if row.ID != removedID && row.BranchName != "" {
+			owner[row.BranchName] = row.ID
+		}
+	}
+	var unshared []string
+	for _, branch := range branches {
+		if other, ok := owner[branch]; ok {
+			s.logger.Info().Str("repo_id", repoID).Str("branch", branch).Str("session", other).
+				Msg("keeping local branch another session still names")
+			continue
+		}
+		unshared = append(unshared, branch)
+	}
+	return unshared
 }
 
 // SwitchSessionAccount stops the session's live chat, rebinds the session to the

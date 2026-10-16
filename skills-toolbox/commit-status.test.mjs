@@ -16,7 +16,7 @@ import {
   main,
   postArgs,
   readArgs,
-  runReadyGate,
+  readyGateOptions,
   validatePostInput,
 } from './commit-status.mjs'
 import { PROVENANCE_CONTEXTS } from './pr-check-state.mjs'
@@ -243,7 +243,7 @@ test('main post — success is exit 0 with verdict posted', () => {
   const { spawn, calls } = fakeSpawn({ status: 0, stdout: '{"id":1}', stderr: '' })
   const { exitCode, result } = main(
     ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA.toUpperCase()],
-    { spawn, readyGate: READY },
+    { spawn, readyGateReport: READY },
   )
   assert.equal(exitCode, 0)
   assert.deepEqual(result, { verdict: 'posted', sha: SHA, context: 'boss/build', state: 'success' })
@@ -304,11 +304,11 @@ test('main post — boss/build success asks the ready gate with the head and the
       '--base',
       'main',
     ],
-    { spawn, readyGate: (flags) => (asked.push(flags), { ready: true, reasons: [] }) },
+    { spawn, readyGateReport: (flags) => (asked.push(flags), { ready: true, reasons: [] }) },
   )
   assert.equal(exitCode, 0)
   assert.deepEqual(asked, [
-    { sha: SHA, 'review-verdict-file': '/tmp/v', 'reviewed-head-file': '/tmp/h', base: 'main' },
+    { head: SHA, reviewVerdictFile: '/tmp/v', reviewedHeadFile: '/tmp/h', base: 'main' },
   ])
   assert.equal(calls.length, 1)
   assert.ok(!calls[0].args.some((a) => /review|base=/.test(a)), 'gate flags never reach gh')
@@ -320,7 +320,7 @@ test('main post — a not-ready boss/build success is refused with exit 3 and no
     ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
     {
       spawn,
-      readyGate: () => ({
+      readyGateReport: () => ({
         ready: false,
         reasons: ['review-not-clean', 'tree-changed-since-review'],
       }),
@@ -346,7 +346,7 @@ test('main post — a malformed gate answer refuses as ready-gate-error', () => 
     const { spawn, calls } = fakeSpawn()
     const { exitCode, result } = main(
       ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
-      { spawn, readyGate: () => answer },
+      { spawn, readyGateReport: () => answer },
     )
     assert.equal(exitCode, 3, JSON.stringify(answer))
     assert.deepEqual(result.reasons, ['ready-gate-error'])
@@ -360,7 +360,7 @@ test('main post — a gate that throws refuses as ready-gate-error, naming the e
     ['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA],
     {
       spawn,
-      readyGate: () => {
+      readyGateReport: () => {
         throw new Error('git exploded')
       },
     },
@@ -382,7 +382,7 @@ test('main post — gate flags on any post but a boss/build success are a usage 
         () =>
           main(['post', '--context', context, '--state', state, '--sha', SHA, flag, 'x'], {
             spawn,
-            readyGate: () => assert.fail('gate asked'),
+            readyGateReport: () => assert.fail('gate asked'),
           }),
         UsageError,
         `${context} ${state} ${flag}`,
@@ -403,26 +403,28 @@ test('main post — other contexts and other boss/build states never ask the gat
     const { spawn, calls } = fakeSpawn()
     const { exitCode } = main(['post', '--context', context, '--state', state, '--sha', SHA], {
       spawn,
-      readyGate: () => assert.fail(`gate asked for ${context} ${state}`),
+      readyGateReport: () => assert.fail(`gate asked for ${context} ${state}`),
     })
     assert.equal(exitCode, 0)
     assert.equal(calls.length, 1)
   }
 })
 
-test('runReadyGate — asks ready-gate.mjs in-process with the head and the three flags', () => {
-  const asked = []
-  const verdict = runReadyGate(
-    { sha: SHA, 'review-verdict-file': '/tmp/v', 'reviewed-head-file': undefined, base: 'main' },
-    { report: (options) => (asked.push(options), { ready: true, reasons: [] }) },
+test('readyGateOptions maps receipt flags without partial or route opt-ins', () => {
+  assert.deepEqual(
+    readyGateOptions({
+      sha: SHA,
+      base: 'main',
+      'review-verdict-file': '/tmp/v',
+      'reviewed-head-file': '/tmp/h',
+      partial: true,
+      honourRoute: true,
+    }),
+    { head: SHA, base: 'main', reviewVerdictFile: '/tmp/v', reviewedHeadFile: '/tmp/h' },
   )
-  assert.equal(verdict.ready, true)
-  assert.deepEqual(asked, [
-    { head: SHA, base: 'main', reviewVerdictFile: '/tmp/v', reviewedHeadFile: undefined },
-  ])
 })
 
-test('runReadyGate — a boss/build receipt never takes the PARTIAL route file', () => {
+test('single seam — a boss/build receipt never takes the PARTIAL route file', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'commit-status-route-'))
   try {
     const git = (...args) => {
@@ -442,7 +444,7 @@ test('runReadyGate — a boss/build receipt never takes the PARTIAL route file',
     const { spawn, calls } = fakeSpawn()
     const refused = main(['post', '--context', 'boss/build', '--state', 'success', '--sha', SHA], {
       spawn,
-      readyGate: (flags) => runReadyGate(flags, { report }),
+      readyGateReport: report,
     })
     assert.equal(refused.exitCode, 3)
     assert.deepEqual(refused.result.reasons, ['review-not-clean'])
@@ -746,6 +748,7 @@ test('CLI post — boss/build success runs the real ready gate: refused (3) or p
       )
       assert.equal(recorded().filter((a) => a === 'POST').length, 0, 'nothing posted')
       writeFileSync(verdictFile, 'REVIEW_VERDICT=disabled\n')
+      writeFileSync(missing, `${SHA}\n`)
       const posted = run([
         'post',
         '--context',
@@ -765,6 +768,54 @@ test('CLI post — boss/build success runs the real ready gate: refused (3) or p
       assert.equal(JSON.parse(posted.stdout).verdict, 'posted')
       assert.ok(recorded().includes(`repos/{owner}/{repo}/statuses/${SHA}`))
     })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('boss/build refuses a disabled note after a tree-changing commit', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'commit-status-disabled-'))
+  try {
+    const git = (...args) => {
+      const r = spawnSync(
+        'git',
+        [
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          '-c',
+          'commit.gpgsign=false',
+          ...args,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      )
+      assert.equal(r.status, 0, r.stderr)
+      return r.stdout.trim()
+    }
+    git('init', '--initial-branch=main')
+    writeFileSync(path.join(dir, 'file'), 'base')
+    git('add', 'file')
+    git('commit', '-m', 'base')
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    const reviewed = git('rev-parse', 'HEAD')
+    const gitDir = git('rev-parse', '--absolute-git-dir')
+    writeFileSync(path.join(gitDir, 'boss-build-review-verdict'), 'REVIEW_VERDICT=disabled\n')
+    writeFileSync(path.join(gitDir, 'boss-build-reviewed-head'), reviewed)
+    const { spawn, calls } = fakeSpawn()
+    const post = (head) =>
+      main(
+        ['post', '--context', 'boss/build', '--state', 'success', '--sha', head, '--base', 'main'],
+        { spawn, readyGateReport: (options) => readyGateReport(options, { cwd: dir }) },
+      )
+    assert.equal(post(reviewed).exitCode, 0)
+    writeFileSync(path.join(dir, 'file'), 'repair')
+    git('add', 'file')
+    git('commit', '-m', 'repair')
+    const refused = post(git('rev-parse', 'HEAD'))
+    assert.equal(refused.exitCode, 3)
+    assert.deepEqual(refused.result.reasons, ['tree-changed-since-review'])
+    assert.equal(calls.length, 1, 'changed head never posts to GitHub')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -4,17 +4,20 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/client"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -175,33 +178,6 @@ func TestChatPickerNeededQuestionAndTimeline(t *testing.T) {
 	}
 }
 
-// TestChatPickerUnverifiedReviewIsNotAPark explains the REVIEW a merge-ready
-// PR nothing verified gets as a review to merge, never as a verify park or an
-// approval.
-func TestChatPickerUnverifiedReviewIsNotAPark(t *testing.T) {
-	mergeable := true
-	m := NewChatPickerModel(nil, context.Background(), "s", "")
-	m.width = 100
-	m.height = 40
-	m.session = &pb.Session{Id: "s", PrDisplayHeadSha: "2bbaede9000", Attention: attention.Compute(attention.Input{
-		HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 2, ChecksDone: 2, Mergeable: &mergeable, StateSince: time.Now().Add(-time.Hour),
-	})}
-	m.timeline = []*pb.TimelineStep{{Title: "CI passed, 2 checks", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT}}
-	if got := attentionDetailStatus(m.session); !strings.HasPrefix(got, "review · ready ") {
-		t.Fatalf("detail status = %q, want a ready review", got)
-	}
-	if got := m.neededQuestion(); got != "Is this unverified PR safe to merge?" {
-		t.Fatalf("needed question = %q", got)
-	}
-	block := stripANSI(m.timelineBlock())
-	if !strings.Contains(block, "Waiting for your review") || !strings.Contains(block, "Not verified") {
-		t.Fatalf("timeline block does not explain the unverified review:\n%s", block)
-	}
-	if strings.Contains(block, "Parked") || strings.Contains(strings.ToLower(m.neededQuestion()), "approve") {
-		t.Fatalf("unverified review explained as a park:\n%s", block)
-	}
-}
-
 func detailFixture(kind pb.AttentionKind, height int) ChatPickerModel {
 	now := time.Now().Truncate(time.Minute).Add(-time.Hour)
 	m := NewChatPickerModel(nil, context.Background(), "s", "")
@@ -215,7 +191,8 @@ func detailFixture(kind pb.AttentionKind, height int) ChatPickerModel {
 	m.daemonStatuses = map[string]string{"verify": statusWaiting, "build": statusWaiting}
 	m.daemonWaitingReasons = map[string]string{"build": armedTestReason("checks_failed")}
 	for i, title := range []string{"Build started", "Built and reviewed", "CI passed", "Evidence recorded", "Parked for you"} {
-		m.timeline = append(m.timeline, &pb.TimelineStep{At: timestamppb.New(time.Date(2026, 10, 16, 23, 4+i, 0, 0, time.Local)), Title: title, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+		// The steps share the attention's local day so the rows show bare times.
+		m.timeline = append(m.timeline, &pb.TimelineStep{At: timestamppb.New(time.Date(now.Year(), now.Month(), now.Day(), 23, 4+i, 0, 0, time.Local)), Title: title, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
 	}
 	m.timeline[len(m.timeline)-1].State = pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
 	if kind == pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
@@ -282,7 +259,7 @@ func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
 	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 10)
 	block := stripANSI(m.attentionDetailsBlock())
-	if strings.Join(strings.Fields(block[strings.Index(block, "Needed from you")+len("Needed from you"):]), " ") != strings.TrimSpace(m.fullQuestion) {
+	if strings.Join(strings.Fields(block[strings.Index(block, "Needed from you:")+len("Needed from you:"):]), " ") != strings.TrimSpace(m.fullQuestion) {
 		t.Fatal("full question truncated")
 	}
 	m.session.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_REVIEW
@@ -322,19 +299,19 @@ func TestChatPickerNeededAnswerIsEmphasised(t *testing.T) {
 	lines := strings.Split(block, "\n")
 	heading := -1
 	for i, line := range lines {
-		if stripANSI(line) == "Needed from you" {
+		if stripANSI(line) == "Needed from you:" {
 			heading = i
 		}
 	}
 	if heading < 0 || heading == len(lines)-1 {
 		t.Fatalf("no answer under the heading:\n%s", stripANSI(block))
 	}
-	if lines[heading] != "Needed from you" {
+	if lines[heading] != "Needed from you:" {
 		t.Fatalf("heading is styled: %q", lines[heading])
 	}
 	for _, line := range lines[heading+1:] {
-		text := stripANSI(line)
-		if want := styleEmphasis.Render(text); line != want {
+		text := strings.TrimPrefix(stripANSI(line), neededIndent)
+		if want := neededIndent + styleEmphasis.Render(text); line != want {
 			t.Fatalf("answer line %q rendered %q, want bold %q", text, line, want)
 		}
 		if line == styleSubtle.Render(text) || line == text {
@@ -410,5 +387,472 @@ func TestChatPickerTimelineRejectsPreviousSession(t *testing.T) {
 	model, _ := second.Update(pending())
 	if model.(ChatPickerModel).timelineBlock() != "" {
 		t.Fatal("accepted timeline from previous session with identical head/kind")
+	}
+}
+
+// operatorQuestion is the sentence from the operator's report: long enough to
+// wrap, with a hyphenated token a hyphen-breaking wrapper would split.
+const operatorQuestion = "I judge no real logical prerequisites. MAD-1745's YAML rewrite is a rebase risk the plan already handles, not a blocker. Next I'll run the classifier."
+
+func questionTimelineModel(width, height int, sentence string) ChatPickerModel {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, height)
+	m.width = width
+	m.session.Attention.Sentence = "“" + sentence + "”"
+	since := m.session.GetAttention().GetSince().AsTime().Local()
+	m.timeline = []*pb.TimelineStep{
+		{At: timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 17, 10, 0, 0, time.Local)), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{Title: "Asked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+	}
+	m.buildTableRows()
+	return m
+}
+
+// currentStepRows returns the timeline's waiting step: its first line and the
+// continuation lines under it.
+func currentStepRows(t *testing.T, block string) []string {
+	t.Helper()
+	lines := strings.Split(stripANSI(block), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "● ") {
+			return lines[i:]
+		}
+	}
+	t.Fatalf("no waiting step:\n%s", stripANSI(block))
+	return nil
+}
+
+// titleColumn is the display column the waiting step's title starts at.
+func titleColumn(t *testing.T, row string) int {
+	t.Helper()
+	at := strings.Index(row, "Waiting for your answer")
+	if at < 0 {
+		t.Fatalf("no waiting title in %q", row)
+	}
+	return ansi.StringWidth(row[:at])
+}
+
+// TestChatPickerTimelineWrapsLongDetail: a long step detail wraps at the
+// terminal's prose width on word boundaries, every continuation line starting
+// under the step title, so no word is lost or split.
+func TestChatPickerTimelineWrapsLongDetail(t *testing.T) {
+	for _, tt := range []struct {
+		width, rows int
+	}{{80, 3}, {120, 2}} {
+		t.Run(fmt.Sprint(tt.width), func(t *testing.T) {
+			m := questionTimelineModel(tt.width, 60, operatorQuestion)
+			block := m.timelineBlock()
+			t.Logf("timeline at %d columns:\n%s", tt.width, stripANSI(block))
+			rows := currentStepRows(t, block)
+			if len(rows) != tt.rows {
+				t.Fatalf("waiting step wraps into %d rows, want %d:\n%s", len(rows), tt.rows, strings.Join(rows, "\n"))
+			}
+			indent := titleColumn(t, rows[0])
+			for _, line := range rows {
+				if w := ansi.StringWidth(line); w > m.chatPickerProseAvailWidth() {
+					t.Errorf("line is %d wide, budget %d: %q", w, m.chatPickerProseAvailWidth(), line)
+				}
+			}
+			for _, line := range rows[1:] {
+				if got := len(line) - len(strings.TrimLeft(line, " ")); got != indent || line[got:] == "" {
+					t.Errorf("continuation indented %d, want %d (under the title): %q", got, indent, line)
+				}
+			}
+			detail := strings.Join(strings.Fields(strings.Join(rows, " ")), " ")
+			if detail == "" || !strings.HasSuffix(detail, "“"+operatorQuestion+"”") {
+				t.Fatalf("detail words lost or split: %q", detail)
+			}
+			if strings.Contains(stripANSI(block), "…") {
+				t.Fatal("detail truncated on a tall terminal")
+			}
+		})
+	}
+}
+
+// TestChatPickerTimelineWrapsWideCharacters: CJK and emoji wrap by display
+// width, so no line overflows and no wide character is split, and an
+// unbroken CJK run longer than a line is hard-broken.
+func TestChatPickerTimelineWrapsWideCharacters(t *testing.T) {
+	sentence := "确认这个改动是否可以安全地合并到主分支并且不影响现有的部署流程以及回滚步骤 🚀 请检查数据库迁移 ✅ 然后回复"
+	m := questionTimelineModel(60, 60, sentence)
+	block := m.timelineBlock()
+	t.Logf("timeline at 60 columns:\n%s", stripANSI(block))
+	rows := currentStepRows(t, block)
+	if len(rows) < 2 {
+		t.Fatalf("wide detail did not wrap:\n%s", strings.Join(rows, "\n"))
+	}
+	indent := titleColumn(t, rows[0])
+	for _, line := range rows {
+		if w := ansi.StringWidth(line); w > m.chatPickerProseAvailWidth() {
+			t.Errorf("line is %d wide, budget %d: %q", w, m.chatPickerProseAvailWidth(), line)
+		}
+		if !utf8.ValidString(line) {
+			t.Errorf("wide character split: %q", line)
+		}
+	}
+	for _, line := range rows[1:] {
+		if got := len(line) - len(strings.TrimLeft(line, " ")); got != indent || line[got:] == "" {
+			t.Errorf("continuation indented %d, want %d: %q", got, indent, line)
+		}
+	}
+	joined := strings.Join(strings.Fields(strings.Join(rows, " ")), "")
+	if !strings.HasSuffix(joined, strings.Join(strings.Fields("“"+sentence+"”"), "")) {
+		t.Fatalf("wide detail lost characters: %q", joined)
+	}
+}
+
+// TestChatPickerNeededFromYouLabelAndIndent: the answer sits under a
+// "Needed from you:" label, set in two columns, wrapped to the block width
+// less that indent, on word boundaries.
+func TestChatPickerNeededFromYouLabelAndIndent(t *testing.T) {
+	m := questionTimelineModel(80, 60, operatorQuestion)
+	m.fullQuestion = operatorQuestion
+	block := stripANSI(m.attentionDetailsBlock())
+	t.Logf("details at 80 columns:\n%s", block)
+	_, answer, ok := strings.Cut(block, "\nNeeded from you:\n")
+	if !ok {
+		t.Fatalf("no \"Needed from you:\" label:\n%s", block)
+	}
+	lines := strings.Split(answer, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("answer did not wrap at %d: %q", m.blockWrapWidth(), answer)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, neededIndent) || strings.HasPrefix(line, neededIndent+" ") {
+			t.Errorf("answer line not indented by %q: %q", neededIndent, line)
+		}
+		if w := ansi.StringWidth(line); w > m.blockWrapWidth() {
+			t.Errorf("answer line is %d wide, block width %d: %q", w, m.blockWrapWidth(), line)
+		}
+	}
+	if got := strings.Join(strings.Fields(answer), " "); got != operatorQuestion {
+		t.Fatalf("answer words lost or split: %q", got)
+	}
+}
+
+// TestChatPickerTimelineFitsShortTerminal: the answer below the timeline is
+// what the operator acts on, so a wrapped detail gets only the rows the chat
+// table and the whole answer leave. When they leave none it is cut to one line
+// ending in an ellipsis, the chats and footer stay on screen, and an answer
+// that still does not fit pages as before. A tall terminal still caps a step at timelineMaxStepRows.
+func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
+	long := strings.Repeat("Should we keep the behavior for every supported platform? ", 12) + "FINAL?"
+	for _, tt := range []struct {
+		name         string
+		height, rows int
+		question     string
+		paged        bool
+	}{
+		{"long answer at 24 rows", 24, 1, long, true},
+		{"short answer at 21 rows", 21, 1, operatorQuestion, true},
+		{"short answer at 24 rows", 24, 3, operatorQuestion, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := questionTimelineModel(80, tt.height, operatorQuestion)
+			m.fullQuestion = tt.question
+			screen := m.View().Content
+			t.Logf("screen at 80x%d:\n%s", tt.height, stripANSI(screen))
+			if got := lipgloss.Height(screen) + bannerOverhead; got > tt.height {
+				t.Fatalf("view uses %d rows, budget %d", got, tt.height)
+			}
+			for _, text := range []string{"verify", "Run bs-build", "[enter] open chat", "[n]ew chat", "Waiting for your answer"} {
+				if !strings.Contains(screen, text) {
+					t.Errorf("missing %q", text)
+				}
+			}
+			for _, line := range strings.Split(stripANSI(screen), "\n") {
+				if ansi.StringWidth(line) > m.width {
+					t.Errorf("overwide line %q", line)
+				}
+			}
+			rows := currentStepRows(t, m.timelineBlock())
+			if len(rows) != tt.rows {
+				t.Fatalf("waiting step uses %d rows, want %d:\n%s", len(rows), tt.rows, strings.Join(rows, "\n"))
+			}
+			if cut := strings.HasSuffix(rows[len(rows)-1], "…"); cut != (tt.rows == 1) {
+				t.Fatalf("ellipsis = %v, want %v:\n%s", cut, tt.rows == 1, strings.Join(rows, "\n"))
+			}
+			if lines, _, size := m.neededWindow(); (len(lines) > size) != tt.paged || strings.Contains(screen, "pgup/pgdown") != tt.paged {
+				t.Fatalf("answer paged = %v, want %v: %d lines in a %d-line window", len(lines) > size, tt.paged, len(lines), size)
+			}
+		})
+	}
+	m := questionTimelineModel(80, 60, long)
+	if rows := currentStepRows(t, m.timelineBlock()); len(rows) != timelineMaxStepRows || !strings.HasSuffix(rows[len(rows)-1], "…") {
+		t.Fatalf("tall terminal: %d rows, want %d ending in an ellipsis:\n%s", len(rows), timelineMaxStepRows, strings.Join(rows, "\n"))
+	}
+}
+
+// TestChatPickerTimelineCapsLongHistory: a long-running session's dozens of
+// steps never push the chats, the answer or the footer off screen. The
+// timeline keeps the most recent steps that fit, at most timelineMaxSteps,
+// and folds the rest into one "… N earlier steps" line.
+func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
+	for _, height := range []int{24, 40} {
+		t.Run(fmt.Sprint(height), func(t *testing.T) {
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, height)
+			since := m.session.GetAttention().GetSince().AsTime().Local()
+			m.timeline = nil
+			for i := range 50 {
+				m.timeline = append(m.timeline, &pb.TimelineStep{At: timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 0, i, 0, 0, time.Local)), Title: fmt.Sprintf("Run %d", i+1), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+			}
+			m.timeline = append(m.timeline, &pb.TimelineStep{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
+			for _, id := range []string{"third", "fourth"} {
+				m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+				m.daemonStatuses[id] = statusWaiting
+			}
+			m.buildTableRows()
+			m.table.SetHeight(m.tableHeight())
+			screen := stripANSI(m.View().Content)
+			t.Logf("screen at 100x%d:\n%s", height, screen)
+			if got := lipgloss.Height(screen) + bannerOverhead; got > height {
+				t.Fatalf("view uses %d rows, budget %d", got, height)
+			}
+			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "Needed from you:", "Does this UI change look right in the video?", "[enter] open chat", "[esc] back", "Parked for you"} {
+				if !strings.Contains(screen, text) {
+					t.Errorf("missing %q", text)
+				}
+			}
+			shown, earlier := 0, -1
+			for _, line := range strings.Split(stripANSI(m.timelineBlock()), "\n") {
+				if strings.Contains(line, "✓ ") || strings.Contains(line, "● ") {
+					shown++
+				}
+				if _, err := fmt.Sscanf(strings.TrimSpace(line), "… %d earlier steps", &earlier); err == nil && !strings.HasPrefix(line, "  … ") {
+					t.Errorf("earlier line not indented with the steps: %q", line)
+				}
+			}
+			if shown < 1 || shown > timelineMaxSteps {
+				t.Fatalf("timeline shows %d steps, want 1..%d", shown, timelineMaxSteps)
+			}
+			if earlier+shown != 51 {
+				t.Fatalf("earlier line says %d, with %d shown of 51", earlier, shown)
+			}
+		})
+	}
+}
+
+// TestChatPickerTimelineDatesStepsAcrossDays: when visible steps span local
+// days, each row that starts a new day carries its date (or "Today") before
+// its time, the time and glyph columns stay aligned, and a timeline within one
+// day keeps bare times.
+func TestChatPickerTimelineDatesStepsAcrossDays(t *testing.T) {
+	now := time.Now()
+	day := func(back, hour, minute int) time.Time {
+		d := now.AddDate(0, 0, -back)
+		return time.Date(d.Year(), d.Month(), d.Day(), hour, minute, 0, 0, time.Local)
+	}
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 60)
+	m.session.Attention.Since = timestamppb.New(day(0, 0, 5))
+	m.timeline = []*pb.TimelineStep{
+		{At: timestamppb.New(day(3, 21, 34)), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: timestamppb.New(day(2, 0, 30)), Title: "Built", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: timestamppb.New(day(2, 10, 52)), Title: "CI passed", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+	}
+	block := stripANSI(m.timelineBlock())
+	t.Logf("multi-day timeline:\n%s", block)
+	rows := strings.Split(block, "\n")[1:]
+	want := []string{
+		"  " + day(3, 21, 34).Format("Jan _2") + " 21:34  ✓ Build started",
+		"  " + day(2, 0, 30).Format("Jan _2") + " 00:30  ✓ Built",
+		"         10:52  ✓ CI passed",
+		"  Today  00:05  ● Parked for you",
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), block)
+	}
+	for i, row := range rows {
+		if !strings.HasPrefix(row, want[i]) {
+			t.Errorf("row %d = %q, want prefix %q", i, row, want[i])
+		}
+	}
+	m.timeline = m.timeline[2:]
+	m.timeline[0].At = timestamppb.New(day(0, 0, 1))
+	if block := stripANSI(m.timelineBlock()); !strings.Contains(block, "\n  00:01  ✓ CI passed") || strings.Contains(block, "Today") {
+		t.Fatalf("one-day timeline is dated:\n%s", block)
+	}
+}
+
+// TestChatPickerTimelineDatesStepsLeftAfterFold: the day labels describe the
+// steps the fold leaves. When the step that carried a day's date is folded,
+// the first row left for that day carries it instead, and when the fold leaves
+// only today's steps no date column shows.
+func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
+	now := time.Now()
+	day := func(back, hour, minute int) time.Time {
+		d := now.AddDate(0, 0, -back)
+		return time.Date(d.Year(), d.Month(), d.Day(), hour, minute, 0, 0, time.Local)
+	}
+	for _, tt := range []struct {
+		name   string
+		height int
+		want   []string
+	}{
+		{"fold drops the labelled step", 23, []string{
+			"  … 2 earlier steps",
+			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
+			"         23:55  ✓ B2",
+			"  Today  00:01  ✓ C",
+			"         00:05  ● Parked for you",
+		}},
+		{"fold leaves only today", 21, []string{
+			"  … 4 earlier steps",
+			"  00:01  ✓ C",
+			"  00:05  ● Parked for you",
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, tt.height)
+			m.width = 80
+			m.session.Attention.Since = timestamppb.New(day(0, 0, 5))
+			m.timeline = []*pb.TimelineStep{
+				{At: timestamppb.New(day(1, 23, 30)), Title: "A0", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(1, 23, 40)), Title: "A", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(1, 23, 50)), Title: "B", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(1, 23, 55)), Title: "B2", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(0, 0, 1)), Title: "C", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+			}
+			block := stripANSI(m.timelineBlock())
+			t.Logf("timeline at 80x%d:\n%s", tt.height, block)
+			rows := strings.Split(block, "\n")[1:]
+			if len(rows) != len(tt.want) {
+				t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(tt.want), block)
+			}
+			for i, row := range rows {
+				if !strings.HasPrefix(row, tt.want[i]) {
+					t.Errorf("row %d = %q, want prefix %q", i, row, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail: dropping the date
+// column widens a step's detail, and a long unbroken token that only fits the
+// wider continuation line must not make that step taller and fold it away.
+func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
+	now := time.Now()
+	day := func(back, hour, minute int) time.Time {
+		d := now.AddDate(0, 0, -back)
+		return time.Date(d.Year(), d.Month(), d.Day(), hour, minute, 0, 0, time.Local)
+	}
+	for _, token := range []int{59, 60} {
+		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 23)
+			m.width = 80
+			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
+			m.timeline = []*pb.TimelineStep{
+				{At: timestamppb.New(day(1, 23, 0)), Title: "Build started", Detail: strings.Repeat("word ", 20), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(0, 0, 1)), Title: "Built", Detail: strings.Repeat("x", token) + " tail words", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{At: timestamppb.New(day(0, 0, 2)), Title: "CI passed", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+			}
+			block := stripANSI(m.timelineBlock())
+			t.Logf("timeline at 80x23:\n%s", block)
+			rows := strings.Split(block, "\n")[1:]
+			want := []string{"  … 1 earlier step", "  00:01  ✓ Built", strings.Repeat(" ", 11) + "x", "  00:02  ✓ CI passed", "  00:09  ● Parked for you"}
+			if len(rows) != len(want) {
+				t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), block)
+			}
+			for i, row := range rows {
+				if !strings.HasPrefix(row, want[i]) {
+					t.Errorf("row %d = %q, want prefix %q", i, row, want[i])
+				}
+			}
+		})
+	}
+}
+
+// randomWrapText is a few words, some of them long unbroken tokens, mixing
+// narrow and wide characters.
+func randomWrapText(r *rand.Rand) string {
+	glyphs := []string{"x", "y", "語", "🙂"}
+	words := make([]string, r.IntN(6))
+	for i := range words {
+		var word strings.Builder
+		for range 1 + r.IntN([]int{6, 30, 130}[r.IntN(3)]) {
+			word.WriteString(glyphs[r.IntN(len(glyphs))])
+		}
+		words[i] = word.String()
+	}
+	return strings.Join(words, " ")
+}
+
+// TestWordWrapMoreWidthNeverAddsLines: a wider wrap, whether both widths grow
+// together or only the first line's, never yields more lines, and every width
+// keeps the text and stays within its limits once rest holds a wide character.
+func TestWordWrapMoreWidthNeverAddsLines(t *testing.T) {
+	r := rand.New(rand.NewPCG(3185, 1))
+	strip := func(s string) string { return strings.Join(strings.Fields(s), "") }
+	for range 500 {
+		text := randomWrapText(r)
+		gap := r.IntN(40)
+		previous := -1
+		for rest := 0; rest <= 140; rest++ {
+			first := rest - gap
+			lines := wordWrap(text, first, rest)
+			if previous >= 0 && len(lines) > previous {
+				t.Fatalf("wordWrap(%q, %d, %d) = %d lines, one cell narrower gave %d", text, first, rest, len(lines), previous)
+			}
+			previous = len(lines)
+			if got := strip(strings.Join(lines, "")); got != strip(text) {
+				t.Fatalf("wordWrap(%q, %d, %d) lost text: %q", text, first, rest, lines)
+			}
+			if rest < 2 {
+				continue
+			}
+			for i, line := range lines {
+				limit := rest
+				if i == 0 {
+					limit = max(0, first)
+				}
+				if ansi.StringWidth(line) > limit {
+					t.Fatalf("wordWrap(%q, %d, %d) line %d = %q is wider than %d", text, first, rest, i, line, limit)
+				}
+			}
+		}
+		rest := 2 + r.IntN(100)
+		previous = -1
+		for first := -2; first <= rest; first++ {
+			n := len(wordWrap(text, first, rest))
+			if previous >= 0 && n > previous {
+				t.Fatalf("wordWrap(%q, %d, %d) = %d lines, a first line one cell narrower gave %d", text, first, rest, n, previous)
+			}
+			previous = n
+		}
+	}
+}
+
+// TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept: relabelling the steps a
+// fold keeps never costs one of them, at any width or budget.
+func TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept(t *testing.T) {
+	r := rand.New(rand.NewPCG(3185, 2))
+	now := time.Now()
+	for range 4000 {
+		steps := make([]*pb.TimelineStep, 1+r.IntN(7))
+		yesterday, titleWidth := r.IntN(len(steps)), 0
+		for i := range steps {
+			detail := randomWrapText(r)
+			if r.IntN(2) == 0 {
+				detail = strings.Repeat("x", 1+r.IntN(130)) + " tail words"
+			}
+			step := &pb.TimelineStep{Title: []string{"Built", "CI passed", "Build started", "Parked for you"}[r.IntN(4)], Detail: detail, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE}
+			if r.IntN(8) > 0 {
+				d := now
+				if i < yesterday {
+					d = now.AddDate(0, 0, -1)
+				}
+				step.At = timestamppb.New(time.Date(d.Year(), d.Month(), d.Day(), 12, i, 0, 0, time.Local))
+			}
+			titleWidth = max(titleWidth, ansi.StringWidth(step.GetTitle()))
+			steps[i] = step
+		}
+		older, avail, budget := r.IntN(3), 10+r.IntN(120), 2+r.IntN(10)
+		_, folded := fitTimelineRows(timelineStepRows(steps, timelineDayLabels(steps, now, false), titleWidth, avail), older, budget)
+		rows, earlier := foldTimelineSteps(steps, older, now, titleWidth, avail, budget)
+		if earlier != folded {
+			t.Fatalf("avail %d, budget %d: first fold left out %d steps, relabelled fold left out %d:\n%s", avail, budget, folded, earlier, rows)
+		}
 	}
 }

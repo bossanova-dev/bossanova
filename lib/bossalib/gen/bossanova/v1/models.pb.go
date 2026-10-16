@@ -960,17 +960,20 @@ const (
 	// The agent asked a question and is waiting for an answer.
 	AttentionKind_ATTENTION_KIND_QUESTION AttentionKind = 2
 	// The verify stage parked the PR for a person to sign off: every park code
-	// is a policy sign-off code. From API version 2026-09-20 it also answers a PR
-	// that is open, green and mergeable but that the verify stage has not passed:
-	// that REVIEW carries no park_codes and offers ATTENTION_ACTION_GITHUB then
-	// ATTENTION_ACTION_MERGE; older pins receive ATTENTION_KIND_MERGE. From the
-	// same version a verify park's REVIEW offers ATTENTION_ACTION_GITHUB (and
-	// ATTENTION_ACTION_VIDEO) then ATTENTION_ACTION_MERGE, where it led with
-	// ATTENTION_ACTION_APPROVE and ATTENTION_ACTION_SEND_BACK; older pins
-	// receive those back.
+	// is a policy sign-off code. Pins at API version 2026-09-20 also receive it
+	// for a PR that is open, green and mergeable but that the verify stage has
+	// not passed: that REVIEW carries no park_codes and offers
+	// ATTENTION_ACTION_GITHUB then ATTENTION_ACTION_MERGE. Older pins receive
+	// ATTENTION_KIND_MERGE for that PR, and so do current pins, with
+	// is_unverified set. From 2026-09-20 a verify park's REVIEW offers
+	// ATTENTION_ACTION_GITHUB (and ATTENTION_ACTION_VIDEO) then
+	// ATTENTION_ACTION_MERGE, where it led with ATTENTION_ACTION_APPROVE and
+	// ATTENTION_ACTION_SEND_BACK; older pins receive those back.
 	AttentionKind_ATTENTION_KIND_REVIEW AttentionKind = 3
-	// The PR is open, green and mergeable, the verify stage passed its head, and
-	// nothing else will merge it.
+	// The PR is open, green and mergeable, and nothing else will merge it: no
+	// enabled verify job on the daemon will reach its head. is_unverified marks
+	// one the verify stage has not passed; pins at API version 2026-09-20
+	// receive that one as the unverified ATTENTION_KIND_REVIEW.
 	AttentionKind_ATTENTION_KIND_MERGE AttentionKind = 4
 	// Work is moving without the operator.
 	AttentionKind_ATTENTION_KIND_IN_PROGRESS AttentionKind = 5
@@ -4516,7 +4519,10 @@ type SessionAttention struct {
 	// unticked item, a missing section, a do-not-merge marker), as the park's
 	// own note recorded them for the current head. Empty when the park has no
 	// open checklist or its note has not been read.
-	OpenItems     []string `protobuf:"bytes,10,rep,name=open_items,json=openItems,proto3" json:"open_items,omitempty"`
+	OpenItems []string `protobuf:"bytes,10,rep,name=open_items,json=openItems,proto3" json:"open_items,omitempty"`
+	// True on an ATTENTION_KIND_MERGE whose current head the verify stage has
+	// not passed. Clients label that row "ready" rather than "merge".
+	IsUnverified  bool `protobuf:"varint,11,opt,name=is_unverified,json=isUnverified,proto3" json:"is_unverified,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4619,6 +4625,13 @@ func (x *SessionAttention) GetOpenItems() []string {
 		return x.OpenItems
 	}
 	return nil
+}
+
+func (x *SessionAttention) GetIsUnverified() bool {
+	if x != nil {
+		return x.IsUnverified
+	}
+	return false
 }
 
 // MergeBlock explains why a session's PR cannot currently be merged, so an
@@ -7220,7 +7233,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\x95\x03\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xba\x03\n" +
 	"\x10SessionAttention\x12/\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1b.bossanova.v1.AttentionKindR\x04kind\x12\x1a\n" +
 	"\bsentence\x18\x02 \x01(\tR\bsentence\x127\n" +
@@ -7234,7 +7247,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\fevidence_url\x18\t \x01(\tR\vevidenceUrl\x12\x1d\n" +
 	"\n" +
 	"open_items\x18\n" +
-	" \x03(\tR\topenItems\"\xdf\x02\n" +
+	" \x03(\tR\topenItems\x12#\n" +
+	"\ris_unverified\x18\v \x01(\bR\fisUnverified\"\xdf\x02\n" +
 	"\n" +
 	"MergeBlock\x121\n" +
 	"\x04gate\x18\x01 \x01(\x0e2\x1d.bossanova.v1.MergeBlock.GateR\x04gate\x12\x16\n" +

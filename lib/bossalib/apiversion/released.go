@@ -56,6 +56,7 @@ var ReleasedVersions = []Version{
 	"2026-09-17", // V20260917 — SessionAttentionChange (BOS-1534 Session.attention).
 	"2026-09-18", // V20260918 — NeedsHumanWaitDemotionChange, ResumeAttentionActionsChange, VerifyParkSplitChange and WorkingOverWaitingChange.
 	"2026-09-19", // V20260919 — BlockedParkAttentionChange (a blocked verify park's attention is a FIX, not a REVIEW).
+	"2026-09-20", // V20260920 — UnverifiedMergeAttentionChange, DeadBootstrapAttentionChange and ParkMergeAttentionChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

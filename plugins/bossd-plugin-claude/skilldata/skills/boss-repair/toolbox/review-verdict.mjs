@@ -12,8 +12,11 @@
 //   followups <file>                         JSON candidates for followup-route.mjs
 //   merge --out <file> <file>...             one verdict from a chain or a re-review; exit 2 on error
 //
+//   pool --root <dir> --out <file> --note <file> pooled verdict and readiness note; exit 2 on write/usage error
+//
 // Pure apart from the CLI wrapper. Node builtins only.
 import defaultFs from 'node:fs'
+import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMainModule } from './main-module.mjs'
 
@@ -238,6 +241,35 @@ export function mergeVerdicts(results) {
   return { ...merged, status: merged.findings.some(isBlocking) ? 'blocked' : 'pass' }
 }
 
+/** Readiness-note value for a pooled verdict; unknown statuses never pass. */
+export const noteVerdict = (status) =>
+  status === 'pass' ? 'clean' : status === 'blocked' ? 'capped' : 'none'
+
+/** Numeric pass/member ordering, independent of directory enumeration order. */
+export function poolVerdictFiles(entries) {
+  const digits = (value) => typeof value === 'string' && /^\d+$/.test(value)
+  const compare = (a, b) =>
+    BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : a.localeCompare(b)
+  return entries
+    .filter(({ pass, member }) => digits(pass) && digits(member))
+    .toSorted((a, b) => compare(a.pass, b.pass) || compare(a.member, b.member))
+    .map(({ pass, member }) => path.join(pass, member, VERDICT_FILENAME))
+}
+
+function discoverVerdictFiles(fs, root) {
+  const directories = (dir) =>
+    fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+  const entries = directories(root).flatMap((pass) =>
+    directories(path.join(root, pass.name)).map((member) => ({
+      pass: pass.name,
+      member: member.name,
+    })),
+  )
+  return poolVerdictFiles(entries).map((file) => path.join(root, file))
+}
+
 /** The `<!-- bs-review -->` comment body. */
 export function renderReport(result) {
   const lines = [REPORT_MARKER, `## boss-review: ${result.status}`, '']
@@ -289,7 +321,7 @@ export function followUpCandidates(result) {
 }
 
 export const USAGE =
-  'usage: review-verdict.mjs validate|status|followups <file> | render <file> [--pr-section|--report] | merge --out <file> <file>...'
+  'usage: review-verdict.mjs validate|status|followups <file> | render <file> [--pr-section|--report] | merge --out <file> <file>... | pool --root <dir> --out <file> --note <file>'
 
 function readVerdict(fs, file) {
   try {
@@ -316,6 +348,8 @@ export function main(argv, deps = {}) {
         'pr-section': { type: 'boolean' },
         report: { type: 'boolean' },
         out: { type: 'string' },
+        root: { type: 'string' },
+        note: { type: 'string' },
       },
       allowPositionals: true,
     })
@@ -330,8 +364,42 @@ export function main(argv, deps = {}) {
       ? { status: 'error', warnings: [], errors: [readError], verdict: null }
       : verdictStatus(input)
   }
+  if (command === 'pool') {
+    const { root, out, note } = parsed.values
+    if (!root || !out || !note || file || parsed.values['pr-section'] || parsed.values.report) {
+      stderr(`review-verdict: bad arguments\n${USAGE}\n`)
+      return 2
+    }
+    let merged
+    try {
+      merged = mergeVerdicts(discoverVerdictFiles(fs, root).map(load))
+    } catch (error) {
+      merged = {
+        version: VERDICT_VERSION,
+        status: 'error',
+        error: `cannot discover verdicts: ${error.message}`,
+      }
+    }
+    const value = noteVerdict(merged.status)
+    try {
+      fs.writeFileSync(out, `${JSON.stringify(merged, null, 2)}\n`)
+      fs.writeFileSync(note, `REVIEW_VERDICT=${value}\n`)
+    } catch (error) {
+      stderr(`review-verdict: cannot write pool output: ${error.message}\n`)
+      return 2
+    }
+    stdout(`${value}\n`)
+    return 0
+  }
   if (command === 'merge') {
-    if (!parsed.values.out || !file || parsed.values['pr-section'] || parsed.values.report) {
+    if (
+      !parsed.values.out ||
+      !file ||
+      parsed.values.root !== undefined ||
+      parsed.values.note !== undefined ||
+      parsed.values['pr-section'] ||
+      parsed.values.report
+    ) {
       stderr(`review-verdict: bad arguments\n${USAGE}\n`)
       return 2
     }
@@ -352,6 +420,8 @@ export function main(argv, deps = {}) {
     !file ||
     extra.length ||
     parsed.values.out !== undefined ||
+    parsed.values.root !== undefined ||
+    parsed.values.note !== undefined ||
     (renderFlags && command !== 'render') ||
     (parsed.values['pr-section'] && parsed.values.report)
   ) {

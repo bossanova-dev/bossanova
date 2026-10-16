@@ -195,6 +195,8 @@ type HomeModel struct {
 	// re-probe, and supervisionProbeID discards a superseded result.
 	supervisionProbe    DaemonSupervisionProbe
 	supervision         DaemonSupervision
+	supervisionSince    time.Time
+	supervisionSincePID int
 	supervisionProbing  bool
 	supervisionProbedAt time.Time
 	supervisionProbeID  uint64
@@ -462,6 +464,8 @@ func (h HomeModel) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
 }
 
 func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
+	// Time-limited footer lines can expire without a probe or session update.
+	h.table.SetHeight(h.tableHeight())
 	// Re-poll auth status alongside sessions so the menu label
 	// (e.g. [l]ogout vs [l]ogin) and the re-login warning catch up
 	// after the daemon flags the stored credentials on a terminal

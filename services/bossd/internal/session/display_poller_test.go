@@ -1281,6 +1281,78 @@ func TestDisplayPollerLeavesOtherBlockedReasonsUntouched(t *testing.T) {
 	}
 }
 
+// TestDisplayPollerKeepsABlockedSessionDownWhenAnotherHoldsItsTarget pins the
+// #3183 follow-up: Blocked releases a session's PR and branch, so another
+// session can take them over (link-pr, or a re-dispatch). The stale-block
+// auto-unblock must then leave the Blocked session down, or two live sessions
+// drive one PR. A target holder that is archived or itself Blocked does not
+// stop the unblock.
+func TestDisplayPollerKeepsABlockedSessionDownWhenAnotherHoldsItsTarget(t *testing.T) {
+	archived := time.Now()
+	tests := []struct {
+		name        string
+		other       models.Session
+		wantBlocked bool
+	}{
+		{name: "live session on the PR", other: models.Session{State: machine.AwaitingChecks, PRNumber: intPtr(42), BranchName: "other/branch"}, wantBlocked: true},
+		{name: "live session on the branch", other: models.Session{State: machine.ImplementingPlan, BranchName: "fix/pr-head"}, wantBlocked: true},
+		{name: "archived session on the PR", other: models.Session{State: machine.AwaitingChecks, PRNumber: intPtr(42), BranchName: "fix/pr-head", ArchivedAt: &archived}},
+		{name: "blocked session on the branch", other: models.Session{State: machine.Blocked, BranchName: "fix/pr-head"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			var logs bytes.Buffer
+
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			blockedReason := sessionreason.FixLoopExhausted()
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:            "sess-1",
+				RepoID:        "repo-1",
+				PRNumber:      intPtr(42),
+				BranchName:    "fix/pr-head",
+				State:         machine.Blocked,
+				BlockedReason: &blockedReason,
+				AttemptCount:  machine.MaxAttempts,
+			}
+			other := tt.other
+			other.ID, other.RepoID = "sess-2", "repo-1"
+			sessions.sessions["sess-2"] = &other
+
+			success := vcs.CheckConclusionSuccess
+			vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), HeadSHA: "sha-green"}
+
+			poller := NewDisplayPoller(sessions, repos, vp, status.NewDisplayTracker(), time.Minute, zerolog.New(&logs))
+			if err := poller.RefreshPR(context.Background(), "owner/repo", 42); err != nil {
+				t.Fatalf("RefreshPR returned error: %v", err)
+			}
+
+			sess := sessions.sessions["sess-1"]
+			if !tt.wantBlocked {
+				if sess.State == machine.Blocked {
+					t.Fatalf("state = Blocked, want unblocked: %s", logs.String())
+				}
+				return
+			}
+			if sess.State != machine.Blocked {
+				t.Fatalf("state = %v, want Blocked while sess-2 holds the target", sess.State)
+			}
+			if sess.BlockedReason == nil || *sess.BlockedReason != blockedReason {
+				t.Fatalf("BlockedReason = %v, want %q kept", sess.BlockedReason, blockedReason)
+			}
+			if sess.AttemptCount != machine.MaxAttempts {
+				t.Fatalf("AttemptCount = %d, want %d kept", sess.AttemptCount, machine.MaxAttempts)
+			}
+			if !strings.Contains(logs.String(), "another live session now holds its PR or branch") || !strings.Contains(logs.String(), "sess-2") {
+				t.Fatalf("logs do not name the holder sess-2: %s", logs.String())
+			}
+		})
+	}
+}
+
 // TestDisplayPollerReconcilesBlockedSessionOnMergedPR covers the BOS-246 fix:
 // a session wedged in Blocked (e.g. by a non-gating finalize failure) whose PR
 // is later observed merged is reconciled to Merged, clearing blocked_reason and

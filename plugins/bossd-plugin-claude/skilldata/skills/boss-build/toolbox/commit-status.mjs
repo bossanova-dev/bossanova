@@ -56,14 +56,14 @@ export function isGatedPost({ context, state } = {}) {
   return context === RECEIPT_CONTEXT && state === 'success'
 }
 
-// runReadyGate asks ready-gate.mjs in-process about flags.sha, with the three optional flags.
-export function runReadyGate(flags = {}, { report = readyGateReport } = {}) {
-  return report({
+// Map receipt flags to the gate options; receipts never opt into the PARTIAL route.
+export function readyGateOptions(flags = {}) {
+  return {
     head: flags.sha,
     base: flags.base,
     reviewVerdictFile: flags['review-verdict-file'],
     reviewedHeadFile: flags['reviewed-head-file'],
-  })
+  }
 }
 
 export class UsageError extends Error {}
@@ -295,11 +295,11 @@ function parseFlags(verb, argv) {
 
 // main runs one verb and returns `{exitCode, result}` (plus `stderr` on a refusal); it throws
 // UsageError on bad input before gh is spawned. `deps.spawn` (gh) defaults to `spawnSync`;
-// `deps.readyGate` defaults to `runReadyGate`. Anything but `{ready: true}` from the gate — a
+// `deps.readyGateReport` defaults to `readyGateReport`. Anything but `{ready: true}` from the gate — a
 // throw or a malformed answer included — refuses.
 export function main(argv, deps = {}) {
   const spawn = deps.spawn ?? spawnSync
-  const readyGate = deps.readyGate ?? runReadyGate
+  const report = deps.readyGateReport ?? readyGateReport
   const [cmd, ...rest] = argv
 
   if (cmd === 'post') {
@@ -332,7 +332,7 @@ export function main(argv, deps = {}) {
       let gate
       let detail = ''
       try {
-        gate = readyGate(gateFlags)
+        gate = report(readyGateOptions(gateFlags))
       } catch (error) {
         detail = ` (${error?.message ?? error})`
       }

@@ -4182,10 +4182,14 @@ func (x *LinkSessionPRRequest) GetPr() string {
 }
 
 type LinkSessionPRResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Session       *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Session *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	// The branch checked out in the session worktree when it is not
+	// session.branch_name, so a push from that worktree would miss the linked PR.
+	// Empty when they match or the worktree branch cannot be read.
+	WorktreeBranch string `protobuf:"bytes,2,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *LinkSessionPRResponse) Reset() {
@@ -4223,6 +4227,13 @@ func (x *LinkSessionPRResponse) GetSession() *Session {
 		return x.Session
 	}
 	return nil
+}
+
+func (x *LinkSessionPRResponse) GetWorktreeBranch() string {
+	if x != nil {
+		return x.WorktreeBranch
+	}
+	return ""
 }
 
 type SetSessionTrackerRequest struct {
@@ -13529,9 +13540,10 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\"6\n" +
 	"\x14LinkSessionPRRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x0e\n" +
-	"\x02pr\x18\x02 \x01(\tR\x02pr\"H\n" +
+	"\x02pr\x18\x02 \x01(\tR\x02pr\"q\n" +
 	"\x15LinkSessionPRResponse\x12/\n" +
-	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\"I\n" +
+	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\x12'\n" +
+	"\x0fworktree_branch\x18\x02 \x01(\tR\x0eworktreeBranch\"I\n" +
 	"\x18SetSessionTrackerRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

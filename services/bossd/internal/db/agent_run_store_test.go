@@ -278,6 +278,42 @@ func TestAgentRunStoreReconcileOpenKeepsTmuxBackedRunsOpen(t *testing.T) {
 	}
 }
 
+// One restart stamps every chat's open run with the same stop time, which is
+// what makes it one interruption, and a second recovery pass rewrites nothing.
+func TestAgentRunStoreReconcileOpenStampsOneRestartAndIsIdempotent(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, NewSessionStore(database), repo.ID)
+	store := NewAgentRunStore(database)
+	started := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	restart := started.Add(9 * time.Hour)
+
+	for i, chat := range []string{"chat-1", "chat-2", "chat-3"} {
+		if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: started.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatalf("start %s: %v", chat, err)
+		}
+	}
+	if n, err := store.ReconcileOpen(ctx, restart, nil); err != nil || n != 3 {
+		t.Fatalf("first pass = %d, %v; want 3", n, err)
+	}
+	if n, err := store.ReconcileOpen(ctx, restart.Add(time.Minute), nil); err != nil || n != 0 {
+		t.Fatalf("second pass = %d, %v; want 0", n, err)
+	}
+	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(runs) != 3 {
+		t.Fatalf("runs = %d, want 3", len(runs))
+	}
+	for _, r := range runs {
+		if r.StopReason != AgentRunStopDaemonRestart || r.StoppedAt == nil || !r.StoppedAt.Equal(restart) {
+			t.Fatalf("%s = (%v, %q), want stopped at the first pass's restart", r.AgentSessionID, r.StoppedAt, r.StopReason)
+		}
+	}
+}
+
 func TestAgentRunStoreRecordsTelemetryByAgentSessionID(t *testing.T) {
 	database := setupTestDB(t)
 	ctx := context.Background()

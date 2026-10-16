@@ -12,7 +12,6 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -534,9 +533,7 @@ func (m ChatPickerModel) detailChatStatus(chat *pb.ClaudeChat) string {
 		return ""
 	}
 	id := chat.GetAgentSessionId()
-	// An unverified merge-ready REVIEW is not a park: no chat is waiting on
-	// the operator, so its chats keep their own status.
-	parked := a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW && !attention.IsUnverifiedReview(a) && (id == a.GetTargetChatId() || (a.GetTargetChatId() == "" && m.daemonStatuses[id] == statusWaiting))
+	parked := a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW && (id == a.GetTargetChatId() || (a.GetTargetChatId() == "" && m.daemonStatuses[id] == statusWaiting))
 	switch wait := m.chatWait(id); {
 	case wait == waitStandby:
 		return "done · standby: wakes if CI turns red"

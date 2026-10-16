@@ -10,6 +10,7 @@
 //     prints {ready, reasons, reviewVerdict, reviewedHead, head, treeDrift[, admittedFor]}
 //     exit 0 ready · 3 not ready · 2 usage error (stderr, nothing printed) · 1 internal error
 //
+// A waiver admits review-quality reasons only, never provenance or an unknown review verdict.
 // The partial exception admits a capped review (`review-not-clean`) for boss-build's PARTIAL route;
 // every other reason still refuses, and the verdict says `admittedFor: 'partial'` when it applied.
 // The CLI applies it when `--partial` is given or the route file (default
@@ -42,11 +43,11 @@ function readText(path) {
 
 // A failed read is `{ok: false, status}`, never an empty successful payload; `status` is the exit
 // code (null when the command did not run to an exit).
-function commandReader({ spawn = spawnSync, cwd = process.cwd() } = {}) {
+export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
   return (command, args, { json = false, timeout = 30000 } = {}) => {
     let response
     try {
-      response = spawn(command, args, {
+      response = spawn(command === 'boss' ? bossBin : command, args, {
         cwd,
         encoding: 'utf8',
         timeout,
@@ -56,19 +57,27 @@ function commandReader({ spawn = spawnSync, cwd = process.cwd() } = {}) {
     } catch (error) {
       return { ok: false, status: null, error: error.code ?? 'spawn-error' }
     }
-    if (response?.error || response?.status !== 0)
+    let payload
+    if (json) {
+      try {
+        payload = JSON.parse(response.stdout)
+      } catch {
+        /* Failure remains unknown. */
+      }
+    }
+    if (response.error || response.status !== 0)
       return {
         ok: false,
-        status: response?.status ?? null,
-        error: response?.error?.code ?? `exit-${response?.status}`,
+        status: response.status ?? null,
+        error:
+          payload?.error?.code ??
+          payload?.code ??
+          response.error?.code ??
+          `exit-${response.status}`,
+        payload,
       }
-    const output = String(response.stdout ?? '').trim()
-    if (!json) return { ok: true, output }
-    try {
-      return { ok: true, output, payload: JSON.parse(output) }
-    } catch {
-      return { ok: false, status: 0, error: 'unreadable-json' }
-    }
+    if (json && payload === undefined) return { ok: false, status: 0, error: 'unreadable-json' }
+    return { ok: true, payload, output: String(response.stdout ?? '').trim() }
   }
 }
 
@@ -82,7 +91,7 @@ export const READY_GATE_REASONS = Object.freeze([
 ])
 
 // A missing, `none` or unrecognised verdict is unknown; `capped` and `disabled` are not clean.
-// The operator's `disabled` opt-out passes only through readyGate's own early return.
+// Waivers admit review quality only; reviewed-head and tree provenance still apply.
 export function reviewReasons(verdict) {
   const value = text(verdict) ? verdict.trim() : ''
   if (value === 'clean') return []
@@ -140,15 +149,26 @@ export function reviewedTreeDrift(read, base, reviewedHead, pushedHead) {
 
 // The gate. A head that cannot be named cannot be shown to carry the reviewed tree, so its drift
 // is unknown. `partial` admits `review-not-clean` and nothing else.
+export const READY_GATE_WAIVERS = Object.freeze({
+  disabled: Object.freeze(['review-not-clean']),
+  partial: Object.freeze(['review-not-clean']),
+})
+
 export function readyGate({ reviewVerdict, reviewedHead, pushedHead, treeDrift, partial } = {}) {
   const verdict = text(reviewVerdict) ? reviewVerdict.trim() : ''
-  if (verdict === 'disabled') return { ready: true, reasons: [] }
   let reasons = reviewReasons(verdict)
   if (!sha(reviewedHead)) reasons.push('reviewed-head-unknown')
   else reasons.push(...driftReasons(sha(pushedHead) ? treeDrift : 'unknown'))
-  const admitted = partial === true && reasons.includes('review-not-clean')
-  if (admitted) reasons = reasons.filter((reason) => reason !== 'review-not-clean')
-  return { ready: reasons.length === 0, reasons, ...(admitted ? { admittedFor: 'partial' } : {}) }
+  let admittedFor
+  for (const waiver of [verdict === 'disabled' && 'disabled', partial === true && 'partial']) {
+    if (!waiver) continue
+    const admitted = READY_GATE_WAIVERS[waiver]
+    if (reasons.some((reason) => admitted.includes(reason))) {
+      reasons = reasons.filter((reason) => !admitted.includes(reason))
+      admittedFor ??= waiver
+    }
+  }
+  return { ready: reasons.length === 0, reasons, ...(admittedFor ? { admittedFor } : {}) }
 }
 
 // The review files boss-build's Step 6/7 write in the git dir, and the route file its Step 9

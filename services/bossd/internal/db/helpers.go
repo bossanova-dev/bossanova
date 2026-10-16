@@ -38,3 +38,13 @@ func closeImmediate(ctx context.Context, conn *sql.Conn, committed *bool) {
 	}
 	_ = conn.Close()
 }
+
+// commitFunc ends a beginImmediate write transaction on conn. execCommit is the
+// only production implementation; tests swap in one that fails.
+type commitFunc func(ctx context.Context, conn *sql.Conn) error
+
+// execCommit runs COMMIT on conn.
+func execCommit(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, `COMMIT`)
+	return err
+}

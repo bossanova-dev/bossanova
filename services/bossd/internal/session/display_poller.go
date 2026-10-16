@@ -700,6 +700,13 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 	if sess.BlockedReason == nil || *sess.BlockedReason != sessionreason.FixLoopExhausted() {
 		return
 	}
+	// Blocked released the PR and branch, so another session may have taken
+	// them over since; unblocking now would put two live sessions on one PR.
+	release, ok := lockRevival(ctx, p.sessions, sess, p.logger, "display poller: stale fix_loop_exhausted unblock")
+	if !ok {
+		return
+	}
+	defer release()
 
 	// Fire Unblock on a machine restored to Blocked; actionClearBlocked resets
 	// BlockedReason + AttemptCount in the machine, and we persist the same.

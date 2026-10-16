@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-20**. The engineering procedure for adding a new
+The current version is **2026-09-21**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -702,7 +702,7 @@ session-bearing unary responses. The sentence stays the new one: the earlier
 sentence could include the evidence video's length, which the response does not
 carry.
 
-### 2026-09-20 — An unverified PR needs a review, not a merge (Current)
+### 2026-09-20 — An unverified PR needs a review, not a merge
 
 `Session.attention` answers `ATTENTION_KIND_MERGE` only for a PR the verify
 stage has passed: open, ready, green, mergeable, and carrying a successful
@@ -748,6 +748,26 @@ Other attention sentences now state only the issue too: a fault reads, for
 example, "Run stopped" or "Merge conflict" without the "open the chat, then
 resume" advice, and a question with no text reads "The agent asked a question".
 These are display copy and every version receives the new wording.
+
+### 2026-09-21 — An unverified green PR is ready to merge (Current)
+
+The unverified `ATTENTION_KIND_REVIEW` from 2026-09-20 is retired. A PR that
+is open, ready, green and mergeable, with no verify park, that the verify stage
+has not passed is `ATTENTION_KIND_MERGE` again, with the sentence "Ready to
+merge", `ATTENTION_ACTION_MERGE` then `ATTENTION_ACTION_GITHUB`, and the new
+`SessionAttention.is_unverified` set. Such a PR only reaches the operator when
+no enabled verify job on the daemon will reach its head: either the repository
+has no job that runs `boss-verify` (by prompt, or by running its cron gate), or
+every such job is disabled. A repository with an enabled verify job still
+answers it as in progress.
+
+`is_unverified` is set only on that `ATTENTION_KIND_MERGE`. The first-party
+clients label the row "ready" rather than "merge".
+
+Clients pinned to 2026-09-20 get the unverified `ATTENTION_KIND_REVIEW` back on
+session-bearing unary responses: the sentence "Not verified" and
+`ATTENTION_ACTION_GITHUB` then `ATTENTION_ACTION_MERGE`. Older pins keep
+receiving `ATTENTION_KIND_MERGE`, as before.
 
 ## Additive changes
 

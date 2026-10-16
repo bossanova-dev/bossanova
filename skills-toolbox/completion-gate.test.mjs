@@ -14,11 +14,11 @@ import {
   settleCompletion,
   buildEnvelope,
   fastPath,
-  commandReader,
   main,
   INELIGIBLE_REASONS,
   VERIFY_GATE,
 } from './completion-gate.mjs'
+import { commandReader } from './ready-gate.mjs'
 import { SHARED_INELIGIBLE_REASONS, sharedEligibility } from './merge-eligibility.mjs'
 
 const HEAD = 'a'.repeat(40),

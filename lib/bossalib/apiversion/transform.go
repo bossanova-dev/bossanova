@@ -562,6 +562,11 @@ type RefMsg struct {
 // Its rows carry park codes, which neither other V20260920 change reads. It is
 // registered last so it runs first: BlockedParkAttentionChange then sees the
 // SEND_BACK-led blocked FIX it was written against.
+//
+// NoVerifyStageMergeAttentionChange (introduced at V20260921), which restores
+// the unverified REVIEW on a merge-ready PR nothing verified. Its rows are
+// MERGEs carrying is_unverified; the REVIEWs it writes are exactly the
+// rows UnverifiedMergeAttentionChange turns back into MERGEs for older pins.
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -625,6 +630,7 @@ func ProductionChanges() *Changes {
 		UnverifiedMergeAttentionChange{},
 		DeadBootstrapAttentionChange{},
 		ParkMergeAttentionChange{},
+		NoVerifyStageMergeAttentionChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3321,6 +3327,55 @@ func downconvertUnverifiedMergeAttentionSession(s *pb.Session) *pb.Session {
 // every session-bearing unary response and is a no-op elsewhere.
 func (UnverifiedMergeAttentionChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertUnverifiedMergeAttentionSession)
+}
+
+// NoVerifyStageMergeAttentionChange is the production VersionChange introduced
+// at V20260921.
+//
+// At V20260921 Session.attention answers a merge-ready PR nothing verified as
+// ATTENTION_KIND_MERGE with is_unverified set. Such a PR only exists where no
+// enabled verify job will reach its head, so "Not verified" warned about a
+// step that was never going to run. Older pins get the V20260920 answer back: the
+// REVIEW kind, the sentence "Not verified" and GITHUB then MERGE ahead of the
+// other actions. The sentence is a fixed string, so it is rebuilt exactly. A
+// verified MERGE never carries is_unverified, and a daemon that predates the
+// field never sets it, so neither is rewritten.
+type NoVerifyStageMergeAttentionChange struct{}
+
+// unverifiedReviewSentence is the sentence of the V20260920 unverified REVIEW.
+const unverifiedReviewSentence = "Not verified"
+
+// Version implements VersionChange.
+func (NoVerifyStageMergeAttentionChange) Version() Version { return V20260921 }
+
+// downconvertNoVerifyStageMergeAttentionSession clones before writing because
+// bosso's registry path caches these pointers. Only an unverified MERGE
+// allocates.
+func downconvertNoVerifyStageMergeAttentionSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_MERGE || !a.GetIsUnverified() || len(a.GetParkCodes()) != 0 {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	actions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE}
+	for _, action := range cloned.Attention.Actions {
+		if action != pb.AttentionAction_ATTENTION_ACTION_GITHUB && action != pb.AttentionAction_ATTENTION_ACTION_MERGE {
+			actions = append(actions, action)
+		}
+	}
+	cloned.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_REVIEW
+	cloned.Attention.Sentence = unverifiedReviewSentence
+	cloned.Attention.Actions = actions
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the unverified
+// REVIEW on every session-bearing unary response and is a no-op elsewhere.
+func (NoVerifyStageMergeAttentionChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertNoVerifyStageMergeAttentionSession)
 }
 
 // DeadBootstrapAttentionChange is the production VersionChange introduced at

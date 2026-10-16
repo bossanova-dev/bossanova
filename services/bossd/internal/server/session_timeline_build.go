@@ -50,6 +50,9 @@ type timelineFacts struct {
 	// DismissedAlertKey is the alert the operator last dismissed on the
 	// session; a fix row with that key is not the session's wait.
 	DismissedAlertKey string
+	// IsFactoryRepo marks a repo with an enabled verify job on the daemon,
+	// the value session hydration reads.
+	IsFactoryRepo bool
 }
 
 // The fix-row and question facts are sessionattention's own types: Derive
@@ -124,7 +127,8 @@ func (c waitCandidate) latest() time.Time {
 //   - Parked for you · <category> / Verifying: the start of the newest run of
 //     snapshots in that verify phase.
 //   - Fix rows: a lost login or usage limit (rotation audit) with each
-//     automatic resume and the give-up; an interrupted agent run and the run that resumed it;
+//     automatic resume and the give-up; an interruption (one per daemon
+//     restart, however many chats it stopped) and the run that resumed it;
 //     a failed or refused automatic repair; a Blocked session.
 //   - Asked you a question: while a chat is asking.
 //
@@ -222,7 +226,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 				}
 			}
 			if len(group) > 0 {
-				candidates = append(candidates, waitCandidate{kind: attention.MergeReadyKind(ans.Input), steps: group})
+				candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_MERGE, steps: group})
 			}
 		case vcs.DisplayStatusMerged:
 			add(&tlStep{at: since, rank: rankResolved, title: "Merged"})
@@ -271,16 +275,11 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 	att := attention.Compute(ans.Input)
 	kind := att.GetKind()
-	mergeReady := kind == attention.MergeReadyKind(ans.Input) && len(att.GetParkCodes()) == 0
-	if mergeReady && latest != nil && !hasCandidate(candidates, kind) {
+	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && latest != nil && !hasCandidate(candidates, kind) {
 		// Mergeable with no "CI passed" or "Ready for review" step (every
 		// ordinary check skipped, never a draft): the merge wait still gets a
 		// step of its own, where the head turned green.
-		title := "Ready to merge"
-		if !ans.Input.Verified {
-			title = "Ready to merge · not verified"
-		}
-		st := add(&tlStep{at: trailingRunStart(snaps), rank: rankReadyToMerge, title: title})
+		st := add(&tlStep{at: trailingRunStart(snaps), rank: rankReadyToMerge, title: "Ready to merge"})
 		candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 	}
 	sortSteps(steps)
@@ -309,6 +308,7 @@ func attentionFacts(f timelineFacts, latest *db.CheckSnapshot) sessionattention.
 		Blocked:           f.Blocked,
 		Repair:            f.Repair,
 		DismissedAlertKey: f.DismissedAlertKey,
+		IsFactoryRepo:     f.IsFactoryRepo,
 	}
 	if latest != nil {
 		af.PR = &sessionattention.PR{
@@ -546,26 +546,63 @@ var interruptedRunTitles = map[string]string{
 	db.AgentRunStopUnknown:        "Run ended unexpectedly",
 }
 
-// interruptedRuns returns a failure step for every agent run that stopped
-// abnormally, followed by a resume step at the next run's start when one
-// began. A usage-exhausted stop already on the timeline as a usage-limit
-// rotation incident is skipped. runs must be sorted by start.
+// interruptedRuns returns a failure step per interruption, followed by a
+// resume step at the start of the first other run that began after it.
+// Abnormal stops sharing a reason and the exact stop time are one
+// interruption, its detail counting the chats when it stopped more than one:
+// ReconcileOpen closes every chat's open run at a daemon restart with one
+// stop time, while any nearness window could swallow a run that resumed
+// between two stops. Interruptions the same run resumed share that run's one
+// resume step. A usage-exhausted stop already on the timeline as a
+// usage-limit rotation incident is skipped. runs must be sorted by start.
 func interruptedRuns(runs []db.AgentRun, events []db.RotationEvent) []*tlStep {
-	var out []*tlStep
+	var stops []int
 	for i, r := range runs {
-		title, ok := interruptedRunTitles[r.StopReason]
-		if !ok || r.StoppedAt == nil {
+		if _, ok := interruptedRunTitles[r.StopReason]; !ok || r.StoppedAt == nil {
 			continue
 		}
 		if r.StopReason == db.AgentRunStopUsageExhausted && usageEventNear(events, *r.StoppedAt) {
 			continue
 		}
-		out = append(out, &tlStep{at: *r.StoppedAt, rank: rankFailure, title: title, failed: true})
-		for _, next := range runs[i+1:] {
-			if !next.StartedAt.Before(*r.StoppedAt) {
-				out = append(out, &tlStep{at: next.StartedAt, rank: rankResume, title: "Resumed", detail: "new run"})
-				break
+		stops = append(stops, i)
+	}
+	slices.SortStableFunc(stops, func(a, b int) int {
+		if c := runs[a].StoppedAt.Compare(*runs[b].StoppedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(runs[a].StopReason, runs[b].StopReason)
+	})
+
+	var out []*tlStep
+	resumed := make(map[int]bool)
+	for len(stops) > 0 {
+		first := runs[stops[0]]
+		n := 1
+		for n < len(stops) && runs[stops[n]].StopReason == first.StopReason && runs[stops[n]].StoppedAt.Equal(*first.StoppedAt) {
+			n++
+		}
+		group := stops[:n]
+		stops = stops[n:]
+
+		chats := make(map[string]bool, n)
+		for _, i := range group {
+			chats[runs[i].AgentSessionID] = true
+		}
+		detail := ""
+		if len(chats) > 1 {
+			detail = plural(len(chats), "chat")
+		}
+		out = append(out, &tlStep{at: *first.StoppedAt, rank: rankFailure, title: interruptedRunTitles[first.StopReason], detail: detail, failed: true})
+
+		for k, next := range runs {
+			if next.StartedAt.Before(*first.StoppedAt) || slices.Contains(group, k) {
+				continue
 			}
+			if !resumed[k] {
+				resumed[k] = true
+				out = append(out, &tlStep{at: next.StartedAt, rank: rankResume, title: "Resumed", detail: "new run"})
+			}
+			break
 		}
 	}
 	return out

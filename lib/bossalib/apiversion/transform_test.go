@@ -1269,8 +1269,8 @@ func TestProductionChanges_IncludesLimitedTransform(t *testing.T) {
 
 func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260920 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260920)
+	if got := reg.Current(); got != apiversion.V20260921 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260921)
 	}
 	msg := &pb.ProxyListAccountsResponse{
 		Accounts: []*pb.Account{{

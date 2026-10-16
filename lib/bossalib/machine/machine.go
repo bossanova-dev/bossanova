@@ -1,5 +1,5 @@
 // Package machine provides the session state machine for the Bossanova
-// session lifecycle. It defines 14 states, 17 event triggers, guards, and
+// session lifecycle. It defines 14 states, 18 event triggers, guards, and
 // actions using qmuntal/stateless.
 package machine
 
@@ -81,6 +81,13 @@ const (
 	// Orphan transitions a stranded headless ImplementingPlan run to Orphaned
 	// (see the Orphaned state). Appended last to keep existing event values stable.
 	Orphan
+	// PRLinked records an operator linking a pull request to the session
+	// (boss session link-pr). It moves a session the linked PR can drive again
+	// back to AwaitingChecks, where the poller takes over. From Closed and
+	// Merged the caller must only fire it for an open PR (a merged session also
+	// needs a different PR): the machine holds no PR facts, so that guard lives
+	// in Lifecycle.LinkPR.
+	PRLinked
 )
 
 // MaxAttempts is the default maximum number of fix attempts before blocking.
@@ -326,11 +333,16 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		// existed; PRMerged was missing, which wedged merged sessions in
 		// Blocked forever (BOS-246).
 		Permit(PRMerged, Merged).
-		Permit(PRClosed, Closed)
+		Permit(PRClosed, Closed).
+		Permit(PRLinked, AwaitingChecks)
 
-	sm.Configure(Merged)
+	// A PR-resolved terminal reopens only when the operator links an open PR:
+	// work that moved to a replacement PR keeps its session alive.
+	sm.Configure(Merged).
+		Permit(PRLinked, AwaitingChecks)
 
-	sm.Configure(Closed)
+	sm.Configure(Closed).
+		Permit(PRLinked, AwaitingChecks)
 
 	// Orphaned is terminal: a daemon restart killed the headless run, so there is
 	// nothing to advance. The only outbound transitions mirror the other terminal
@@ -349,7 +361,8 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	sm.Configure(Finalizing).
 		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed).
-		Permit(Block, Blocked)
+		Permit(Block, Blocked).
+		Permit(PRLinked, AwaitingChecks)
 
 	return sm
 }
@@ -460,6 +473,8 @@ func (e Event) String() string {
 		return "finalize_requested"
 	case Orphan:
 		return "orphan"
+	case PRLinked:
+		return "pr_linked"
 	default:
 		return "unknown"
 	}

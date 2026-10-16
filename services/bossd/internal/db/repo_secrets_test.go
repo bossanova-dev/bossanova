@@ -429,6 +429,271 @@ func TestMigrateRepoSecretsFromSQLite(t *testing.T) {
 	}
 }
 
+// TestClassifyKeyCommit pins every rule classifyKeyCommit applies to a keyed
+// write's COMMIT error (BOS-1658).
+func TestClassifyKeyCommit(t *testing.T) {
+	const (
+		t0 = "2026-01-01T00:00:00.000Z"
+		t1 = "2026-01-01T00:00:00.001Z"
+		t2 = "2026-01-01T00:00:00.002Z"
+	)
+	unflagged := repoKeyState{updatedAt: t0, flagged: false}
+	flaggedT0 := repoKeyState{updatedAt: t0, flagged: true}
+	flaggedT1 := repoKeyState{updatedAt: t1, flagged: true}
+	readErr := errors.New("disk I/O error")
+
+	for _, tc := range []struct {
+		name                 string
+		before, after, fresh repoKeyState
+		freshErr             error
+		want                 commitOutcome
+	}{
+		{"flag 0 to 1, fresh flagged: landed", unflagged, flaggedT1, flaggedT1, nil, commitLanded},
+		{"flag 0 to 1, fresh unflagged: not landed", unflagged, flaggedT1, unflagged, nil, commitNotLanded},
+		{"flag 0 to 1 decided by the flag despite a concurrent updated_at", unflagged, flaggedT1,
+			repoKeyState{updatedAt: t2, flagged: true}, nil, commitLanded},
+		{"flag 1 to 0, fresh unflagged: landed", flaggedT0, repoKeyState{updatedAt: t1}, repoKeyState{updatedAt: t1}, nil, commitLanded},
+		{"move with no updated_at, fresh flagged: landed", repoKeyState{}, repoKeyState{flagged: true},
+			repoKeyState{updatedAt: t0, flagged: true}, nil, commitLanded},
+		{"move with no updated_at, fresh unflagged: not landed", repoKeyState{}, repoKeyState{flagged: true},
+			repoKeyState{updatedAt: t0}, nil, commitNotLanded},
+		{"flagged row, fresh has the write's updated_at: landed", flaggedT0, flaggedT1, flaggedT1, nil, commitLanded},
+		{"flagged row, fresh has the previous updated_at: not landed", flaggedT0, flaggedT1, flaggedT0, nil, commitNotLanded},
+		{"flagged row, concurrent updated_at change: unknown", flaggedT0, flaggedT1,
+			repoKeyState{updatedAt: t2, flagged: true}, nil, commitUnknown},
+		{"flagged row, write did not move updated_at: unknown", flaggedT0, flaggedT0, flaggedT0, nil, commitUnknown},
+		{"row gone: unknown", unflagged, flaggedT1, repoKeyState{}, sql.ErrNoRows, commitUnknown},
+		{"read error: unknown", flaggedT0, flaggedT1, repoKeyState{}, readErr, commitUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyKeyCommit(tc.before, tc.after, tc.fresh, tc.freshErr); got != tc.want {
+				t.Fatalf("classifyKeyCommit = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNextUpdatedAt: a keyed update always moves updated_at strictly forward,
+// even within one millisecond or under a clock that stepped back, so
+// classifyKeyCommit can decide a flagged row's commit (BOS-1658).
+func TestNextUpdatedAt(t *testing.T) {
+	const (
+		t0 = "2026-01-01T00:00:00.000Z"
+		t1 = "2026-01-01T00:00:00.001Z"
+	)
+	for _, tc := range []struct{ name, now, after, want string }{
+		{"no floor", t0, "", t0},
+		{"now already later", t1, t0, t1},
+		{"same millisecond", t0, t0, t1},
+		{"clock stepped back", t0, t1, "2026-01-01T00:00:00.002Z"},
+		{"unparsable floor ignored", t0, "zzzz", t0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextUpdatedAt(tc.now, tc.after); got != tc.want {
+				t.Fatalf("nextUpdatedAt(%q, %q) = %q, want %q", tc.now, tc.after, got, tc.want)
+			}
+		})
+	}
+}
+
+// errInjectedCommit is the COMMIT failure the commit seams below report.
+var errInjectedCommit = errors.New("injected commit failure")
+
+// commitThenFail runs the real COMMIT and then reports a failure: a COMMIT
+// error whose transaction landed anyway.
+func commitThenFail(ctx context.Context, conn *sql.Conn) error {
+	if err := execCommit(ctx, conn); err != nil {
+		return err
+	}
+	return errInjectedCommit
+}
+
+// failWithoutCommit reports a COMMIT failure without committing, so the
+// caller's rollback discards the transaction: a COMMIT error that did not land.
+func failWithoutCommit(context.Context, *sql.Conn) error {
+	return errInjectedCommit
+}
+
+// commitDeleteThenFail runs the real COMMIT, deletes the repo row, then reports
+// a failure, so the read that resolves the error finds no row: an outcome that
+// cannot be decided.
+func commitDeleteThenFail(id string) commitFunc {
+	return func(ctx context.Context, conn *sql.Conn) error {
+		if err := execCommit(ctx, conn); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `DELETE FROM repos WHERE id = ?`, id); err != nil {
+			return err
+		}
+		return errInjectedCommit
+	}
+}
+
+// TestRepoStore_CommitErrorResolvedFromFreshRead (BOS-1658): when a key
+// update's COMMIT reports an error, a fresh read decides what happened before
+// the keyring write is compensated. A commit that landed keeps the new keyring
+// item and Update succeeds; one that did not land is undone exactly as before;
+// one that cannot be decided is left alone rather than undone on a guess.
+func TestRepoStore_CommitErrorResolvedFromFreshRead(t *testing.T) {
+	ctx := context.Background()
+
+	type fixture struct {
+		dbConn               *sql.DB
+		ring                 *reposecretstest.Ring
+		store                *SQLiteRepoStore
+		id                   string
+		oldLinear, oldSentry string
+	}
+	rows := []struct {
+		name    string
+		flagged bool
+	}{
+		{"unflagged row", false},
+		{"flagged row", true},
+	}
+	setup := func(t *testing.T, flagged bool) fixture {
+		t.Helper()
+		dbConn := setupTestDB(t)
+		ring := reposecretstest.NewRing()
+		store := NewRepoStore(dbConn, WithRepoSecrets(reposecretstest.NewStore(ring)))
+		repo := createTestRepo(t, store)
+		linear, sentry := markerKeys("old")
+		if flagged {
+			setRepoKeys(t, store, repo.ID, linear, sentry)
+		} else if _, err := dbConn.ExecContext(ctx,
+			`UPDATE repos SET linear_api_key = ?, sentry_api_key = ?, has_keyring_secrets = 0 WHERE id = ?`,
+			linear, sentry, repo.ID); err != nil {
+			t.Fatalf("seed key columns: %v", err)
+		}
+		return fixture{dbConn: dbConn, ring: ring, store: store, id: repo.ID, oldLinear: linear, oldSentry: sentry}
+	}
+	// ringView reads the keyring item through a fresh store, bypassing the
+	// writing store's cache.
+	ringView := func(t *testing.T, f fixture) reposecrets.Secrets {
+		t.Helper()
+		sec, err := reposecretstest.NewStore(f.ring).Get(ctx, f.id)
+		if err != nil {
+			t.Fatalf("read keyring item: %v", err)
+		}
+		return sec
+	}
+
+	for _, row := range rows {
+		t.Run("landed/"+row.name, func(t *testing.T) {
+			f := setup(t, row.flagged)
+			f.store.commit = commitThenFail
+			newLinear, _ := markerKeys("new")
+
+			got, err := f.store.Update(ctx, f.id, UpdateRepoParams{LinearAPIKey: &newLinear})
+			if err != nil {
+				t.Fatalf("Update whose COMMIT landed returned %v, want nil", err)
+			}
+			if got.LinearAPIKey != newLinear || got.SentryAPIKey != f.oldSentry {
+				t.Fatal("Update did not return the keys it committed")
+			}
+			if rl, rs, flag := rawRepoSecretColumns(t, f.dbConn, f.id); rl != "" || rs != "" || flag != 1 {
+				t.Fatalf("row after a landed commit: columns not cleared or flag %d != 1", flag)
+			}
+			if sec := ringView(t, f); sec.LinearAPIKey != newLinear || sec.SentryAPIKey != f.oldSentry {
+				t.Fatal("a landed commit's keyring item was undone")
+			}
+		})
+
+		t.Run("not landed/"+row.name, func(t *testing.T) {
+			f := setup(t, row.flagged)
+			f.store.commit = failWithoutCommit
+			newLinear, _ := markerKeys("new")
+
+			_, err := f.store.Update(ctx, f.id, UpdateRepoParams{LinearAPIKey: &newLinear})
+			if err == nil || !errors.Is(err, errInjectedCommit) || !strings.Contains(err.Error(), "commit repo update") {
+				t.Fatalf("Update err = %v, want the commit repo update error", err)
+			}
+			rl, rs, flag := rawRepoSecretColumns(t, f.dbConn, f.id)
+			if row.flagged {
+				if rl != "" || rs != "" || flag != 1 {
+					t.Fatal("a commit that did not land changed the flagged row")
+				}
+				if sec := ringView(t, f); sec.LinearAPIKey != f.oldLinear || sec.SentryAPIKey != f.oldSentry {
+					t.Fatal("a commit that did not land left the new key in the keyring item")
+				}
+				return
+			}
+			if rl != f.oldLinear || rs != f.oldSentry || flag != 0 {
+				t.Fatal("a commit that did not land changed the unflagged row's key columns")
+			}
+			if f.ring.Has(reposecrets.ItemKey(f.id)) {
+				t.Fatal("a commit that did not land left a keyring item for a row whose columns are authoritative")
+			}
+		})
+
+		t.Run("unknown/"+row.name, func(t *testing.T) {
+			f := setup(t, row.flagged)
+			f.store.commit = commitDeleteThenFail(f.id)
+			newLinear, _ := markerKeys("new")
+
+			_, err := f.store.Update(ctx, f.id, UpdateRepoParams{LinearAPIKey: &newLinear})
+			if err == nil || !errors.Is(err, errInjectedCommit) || !strings.Contains(err.Error(), "unknown") {
+				t.Fatalf("Update err = %v, want an outcome-unknown error", err)
+			}
+			if sec := ringView(t, f); sec.LinearAPIKey != newLinear || sec.SentryAPIKey != f.oldSentry {
+				t.Fatal("an undecidable commit's keyring item was undone on a guess")
+			}
+		})
+	}
+}
+
+// TestMigrateRepoSecretsFromSQLite_CommitError (BOS-1658): the startup move
+// resolves a COMMIT error from a fresh read too. A move that landed is reported
+// as moved; one that did not leaves the row as it was, to retry next start.
+func TestMigrateRepoSecretsFromSQLite_CommitError(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T) (*sql.DB, *reposecretstest.Ring, *reposecrets.Store, string, string, string) {
+		t.Helper()
+		dbConn := setupTestDB(t)
+		plain := NewRepoStore(dbConn)
+		repo := createTestRepo(t, plain)
+		linear, sentry := markerKeys("mv")
+		setRepoKeys(t, plain, repo.ID, linear, sentry)
+		ring := reposecretstest.NewRing()
+		return dbConn, ring, reposecretstest.NewStore(ring), repo.ID, linear, sentry
+	}
+
+	t.Run("landed", func(t *testing.T) {
+		dbConn, ring, secrets, id, linear, sentry := setup(t)
+		moved, err := migrateRepoSecrets(ctx, dbConn, secrets, commitThenFail)
+		if err != nil || moved != 1 {
+			t.Fatalf("migrate = (%d, %v), want (1, nil) for a move whose COMMIT landed", moved, err)
+		}
+		if rl, rs, flag := rawRepoSecretColumns(t, dbConn, id); rl != "" || rs != "" || flag != 1 {
+			t.Fatalf("row after a landed move: columns not cleared or flag %d != 1", flag)
+		}
+		sec, err := reposecretstest.NewStore(ring).Get(ctx, id)
+		if err != nil || sec.LinearAPIKey != linear || sec.SentryAPIKey != sentry {
+			t.Fatalf("keyring item after a landed move does not hold the keys (err %v)", err)
+		}
+	})
+
+	t.Run("not landed", func(t *testing.T) {
+		dbConn, _, secrets, id, linear, sentry := setup(t)
+		moved, err := migrateRepoSecrets(ctx, dbConn, secrets, failWithoutCommit)
+		if moved != 0 || !errors.Is(err, errInjectedCommit) {
+			t.Fatalf("migrate = (%d, %v), want (0, the commit error)", moved, err)
+		}
+		if rl, rs, flag := rawRepoSecretColumns(t, dbConn, id); rl != linear || rs != sentry || flag != 0 {
+			t.Fatal("a move whose COMMIT did not land changed the row")
+		}
+
+		// The next start moves it.
+		moved, err = migrateRepoSecrets(ctx, dbConn, secrets, execCommit)
+		if err != nil || moved != 1 {
+			t.Fatalf("retry migrate = (%d, %v), want (1, nil)", moved, err)
+		}
+		if rl, rs, flag := rawRepoSecretColumns(t, dbConn, id); rl != "" || rs != "" || flag != 1 {
+			t.Fatalf("row after the retried move: columns not cleared or flag %d != 1", flag)
+		}
+	})
+}
+
 // TestMigrateRepoSecretsFromSQLite_UnavailableKeyring: with no keyring at all,
 // the move changes nothing and reports the keyring as unavailable.
 func TestMigrateRepoSecretsFromSQLite_UnavailableKeyring(t *testing.T) {

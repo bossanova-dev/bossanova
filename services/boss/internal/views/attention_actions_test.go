@@ -3,12 +3,19 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"connectrpc.com/connect"
+	"github.com/charmbracelet/x/ansi"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 )
 
 func attentionSession(actions ...pb.AttentionAction) *pb.Session {
@@ -27,39 +34,35 @@ func attentionHome(c *attentionStub, s *pb.Session) HomeModel {
 	return h
 }
 
-type attentionStub struct {
-	noAgent         bool
-	delivery        *pb.SendChatMessageResponse
-	deliveryErr     error
-	postedResult    *pb.SendBackSessionPRResponse
-	recordErr       error
-	recordedSession string
-	recordedTitle   string
-	recordedRole    pb.ChatRole
-	recordCalls     int
-	sentMessages    []*pb.SendChatMessageRequest
-	chatPickerStub
-	calls []string
-	head  string
-	note  string
+// operatorMergeCall is one recorded OperatorMergeSession request.
+type operatorMergeCall struct {
+	id, head string
+	approve  bool
+	waives   []string
 }
 
-func (s *attentionStub) ApproveSessionPR(_ context.Context, id string, _ bool) (*pb.VerifyApproveResult, error) {
-	s.calls = append(s.calls, "approve:"+id)
-	return &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open"}, nil
+type attentionStub struct {
+	chatPickerStub
+	calls  []string
+	head   string
+	merges []operatorMergeCall
+	// mergeResp / mergeErr answer OperatorMergeSession; a nil mergeResp
+	// reports a landed merge with its bookkeeping done.
+	mergeResp *pb.OperatorMergeSessionResponse
+	mergeErr  error
 }
-func (s *attentionStub) SendBackSessionPR(_ context.Context, id, note string, _ bool) (*pb.SendBackSessionPRResponse, error) {
-	s.calls = append(s.calls, "send-back:"+id)
-	s.note = note
-	if s.postedResult != nil {
-		return s.postedResult, nil
-	}
-	return &pb.SendBackSessionPRResponse{IsPosted: true}, nil
-}
-func (s *attentionStub) MergeSession(_ context.Context, id, head string) (*pb.Session, string, error) {
+
+func (s *attentionStub) OperatorMergeSession(_ context.Context, id, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error) {
 	s.calls = append(s.calls, "merge:"+id)
 	s.head = head
-	return nil, "", nil
+	s.merges = append(s.merges, operatorMergeCall{id: id, head: head, approve: approve, waives: slices.Clone(waives)})
+	if s.mergeErr != nil {
+		return nil, s.mergeErr
+	}
+	if s.mergeResp != nil {
+		return s.mergeResp, nil
+	}
+	return &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "ok"}, nil
 }
 func (s *attentionStub) DismissSessionAlert(_ context.Context, id, key string) (*pb.Session, error) {
 	s.calls = append(s.calls, "dismiss:"+id+":"+key)
@@ -76,7 +79,6 @@ func TestAttentionActionConfirm(t *testing.T) {
 		action pb.AttentionAction
 		call   string
 	}{
-		{'y', pb.AttentionAction_ATTENTION_ACTION_APPROVE, "approve:session-1"},
 		{'m', pb.AttentionAction_ATTENTION_ACTION_MERGE, "merge:session-1"},
 		{'x', pb.AttentionAction_ATTENTION_ACTION_DISMISS, "dismiss:session-1:resume:auth"},
 	} {
@@ -88,7 +90,7 @@ func TestAttentionActionConfirm(t *testing.T) {
 			if len(c.calls) != 0 {
 				t.Fatal("write before confirmation")
 			}
-			if !strings.Contains(h.View().Content, "[y/enter] confirm") {
+			if !strings.Contains(h.View().Content, "[y/enter]") {
 				t.Fatal("missing confirmation")
 			}
 			model, cmd := h.Update(keyPress('n'))
@@ -129,52 +131,6 @@ func attentionKey(s string) tea.KeyMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	}
 	return keyPress([]rune(s)[0])
-}
-
-func TestAttentionActionSendBack(t *testing.T) {
-	for _, details := range []bool{false, true} {
-		t.Run(map[bool]string{false: "home", true: "details"}[details], func(t *testing.T) {
-			c := &attentionStub{}
-			s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_SEND_BACK)
-			var model tea.Model = attentionHome(c, s)
-			if details {
-				m := seedChatPicker(&c.chatPickerStub, statusStopped)
-				m.client = c
-				m.session = s
-				model = m
-			}
-			model, _ = model.Update(keyPress('b'))
-			model, cmd := model.Update(attentionKey("enter"))
-			if cmd != nil || len(c.calls) != 0 {
-				t.Fatal("empty note submitted")
-			}
-			if !strings.Contains(model.View().Content, "Note cannot be empty") {
-				t.Fatal("empty note did not stay editable")
-			}
-			model, _ = model.Update(attentionKey("esc"))
-			if len(c.calls) != 0 {
-				t.Fatal("cancel sent request")
-			}
-			model, _ = model.Update(keyPress('b'))
-			model, _ = model.Update(tea.PasteMsg{Content: "Fix the race"})
-			model, cmd = model.Update(attentionKey("enter"))
-			if cmd == nil {
-				t.Fatal("note did not dispatch")
-			}
-			// A second confirm while the request is outstanding must not send again.
-			model, duplicate := model.Update(attentionKey("enter"))
-			if duplicate != nil {
-				t.Fatal("duplicate send-back")
-			}
-			model, _ = model.Update(cmd())
-			if len(c.calls) != 1 || c.calls[0] != "send-back:session-1" || c.note != "Fix the race" {
-				t.Fatalf("calls=%v note=%q", c.calls, c.note)
-			}
-			if !strings.Contains(model.View().Content, "Sent back #42") {
-				t.Fatal("missing result")
-			}
-		})
-	}
 }
 
 func TestAttentionActionResumeAndRename(t *testing.T) {
@@ -232,7 +188,6 @@ func TestAttentionActionDetailsConfirm(t *testing.T) {
 		action pb.AttentionAction
 		call   string
 	}{
-		{'y', pb.AttentionAction_ATTENTION_ACTION_APPROVE, "approve:session-1"},
 		{'m', pb.AttentionAction_ATTENTION_ACTION_MERGE, "merge:session-1"},
 		{'x', pb.AttentionAction_ATTENTION_ACTION_DISMISS, "dismiss:session-1:resume:auth"},
 	} {
@@ -243,7 +198,7 @@ func TestAttentionActionDetailsConfirm(t *testing.T) {
 			m.session = attentionSession(tc.action)
 			model, _ := m.Update(keyPress(tc.key))
 			m = model.(ChatPickerModel)
-			if !strings.Contains(m.View().Content, "[y/enter] confirm") {
+			if !strings.Contains(m.View().Content, "[y/enter]") {
 				t.Fatal("missing confirmation")
 			}
 			model, cmd := m.Update(attentionKey("esc"))
@@ -284,15 +239,17 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 	openURLFunc = func(url string) error { opened = append(opened, url); return nil }
 	t.Cleanup(func() { openURLFunc = original })
 	for _, tc := range []struct {
-		key    string
-		action pb.AttentionAction
-		url    string
+		key        string
+		detailsKey string
+		action     pb.AttentionAction
+		url        string
 	}{
-		{"g", pb.AttentionAction_ATTENTION_ACTION_GITHUB, "https://github.com/org/repo/pull/42"},
-		{"v", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
-		{"l", pb.AttentionAction_ATTENTION_ACTION_TRACKER, "https://example.com/issue"},
-		{"enter", pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, ""},
-		{"enter", pb.AttentionAction_ATTENTION_ACTION_ANSWER, ""},
+		{"g", "g", pb.AttentionAction_ATTENTION_ACTION_GITHUB, "https://github.com/org/repo/pull/42"},
+		{"v", "v", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
+		// Details keeps t for [t]erminal and opens the tracker from its own [l]inear.
+		{"t", "l", pb.AttentionAction_ATTENTION_ACTION_TRACKER, "https://example.com/issue"},
+		{"enter", "enter", pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, ""},
+		{"enter", "enter", pb.AttentionAction_ATTENTION_ACTION_ANSWER, ""},
 	} {
 		t.Run(tc.action.String(), func(t *testing.T) {
 			s := attentionSession(tc.action)
@@ -318,7 +275,7 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 			// Details enter continues to attach the selected chat, not attention's target.
 			m := seedChatPicker(&chatPickerStub{}, statusStopped)
 			m.session = s
-			_, cmd = m.Update(attentionKey(tc.key))
+			_, cmd = m.Update(attentionKey(tc.detailsKey))
 			if cmd == nil {
 				t.Fatal("missing details navigation")
 			}
@@ -359,20 +316,47 @@ func TestAttentionActionMissingMergeHeadRefuses(t *testing.T) {
 	h = model.(HomeModel)
 	model, _ = h.Update(cmd())
 	h = model.(HomeModel)
-	if len(c.calls) != 0 || !h.statusErr || !strings.Contains(h.status, "head is unavailable") {
+	if len(c.calls) != 0 || !h.statusErr || h.status != "Couldn't merge PR #42: its head is not known yet; refresh and try again" {
 		t.Fatalf("calls=%v status=%s", c.calls, h.status)
 	}
 }
 
-func TestAttentionActionNoteKeepsTypedHintText(t *testing.T) {
-	h := attentionHome(&attentionStub{}, attentionSession(pb.AttentionAction_ATTENTION_ACTION_SEND_BACK))
-	model, _ := h.Update(keyPress('b'))
+// TestAttentionActionMergesAnUnverifiedReview drives the row attention.Compute
+// answers for a merge-ready PR nothing verified: a REVIEW whose footer offers
+// merge (and github too on the details view, where g is advertised), whose [m]
+// asks a plain confirm, then records the sign-off and merges the rendered head,
+// and whose [y] does nothing.
+func TestAttentionActionMergesAnUnverifiedReview(t *testing.T) {
+	mergeable := true
+	n := int32(42)
+	s := &pb.Session{Id: "session-1", PrNumber: &n, PrDisplayHeadSha: "rendered-head", Attention: attention.Compute(attention.Input{
+		HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 2, ChecksDone: 2, Mergeable: &mergeable,
+	})}
+	if s.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Fatalf("kind = %v, want the unverified REVIEW", s.GetAttention().GetKind())
+	}
+	if got, want := attentionFooter(s, false), []string{"[m] merge"}; !slices.Equal(got, want) {
+		t.Fatalf("home footer = %q, want %q", got, want)
+	}
+	if got, want := attentionFooter(s, true), []string{"[g] github", "[m] merge"}; !slices.Equal(got, want) {
+		t.Fatalf("details footer = %q, want %q", got, want)
+	}
+	c := &attentionStub{}
+	h := attentionHome(c, s)
+	if _, cmd := h.Update(keyPress('y')); cmd != nil || len(c.calls) != 0 {
+		t.Fatalf("[y] dispatched on an unverified review: %v", c.calls)
+	}
+	model, _ := h.Update(keyPress('m'))
 	h = model.(HomeModel)
-	model, _ = h.Update(tea.PasteMsg{Content: "Keep [enter] rename visible"})
+	assertMergeConfirm(t, h.attentionAction)
+	model, cmd := h.Update(keyPress('y'))
 	h = model.(HomeModel)
-	screen := h.View().Content
-	if !strings.Contains(screen, "Keep [enter] rename visible") || !strings.Contains(screen, "[enter] send") {
-		t.Fatalf("note or hint altered:\n%s", screen)
+	if cmd == nil {
+		t.Fatal("merge confirmation did not send a request")
+	}
+	h.Update(cmd())
+	if len(c.merges) != 1 || c.merges[0].head != "rendered-head" || !c.merges[0].approve || len(c.merges[0].waives) != 0 {
+		t.Fatalf("merges=%+v, want one approving merge of the rendered head waiving nothing", c.merges)
 	}
 }
 
@@ -406,109 +390,331 @@ func TestAttentionActionFooterShowsOneEnterDestination(t *testing.T) {
 	}
 }
 
-func (s *attentionStub) RecordChat(_ context.Context, sessionID, agentSessionID, title, agent string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error) {
-	s.recordCalls++
-	s.recordedSession = sessionID
-	s.recordedTitle = title
-	s.recordedRole = role
-	if s.recordErr != nil {
-		return nil, s.recordErr
+// TestChatPickerUnverifiedReviewChatsKeepTheirStatus opens the details view on a
+// fresh-claim PR: merge-ready, nothing verified, so attention answers a REVIEW
+// with no park and no target chat. Its waiting build chat keeps its own
+// status; only a real park labels a chat "parked for you".
+func TestChatPickerUnverifiedReviewChatsKeepTheirStatus(t *testing.T) {
+	mergeable := true
+	for _, tc := range []struct {
+		name   string
+		in     attention.Input
+		parked bool
+	}{
+		{"unverified merge-ready review", attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 2, ChecksDone: 2, Mergeable: &mergeable}, false},
+		{"control: verify parked it for a human", attention.Input{ParkCodes: []string{"human-review:ui"}}, true},
+	} {
+		for _, status := range []string{statusWaiting, statusIdle} {
+			t.Run(tc.name+"/"+status, func(t *testing.T) {
+				m := seedChatPicker(&chatPickerStub{}, status)
+				m.session = &pb.Session{Id: "session-1", PrNumber: proto.Int32(42), Attention: attention.Compute(tc.in)}
+				if m.session.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || m.session.GetAttention().GetTargetChatId() != "" {
+					t.Fatalf("attention = %v, want a REVIEW with no target chat", m.session.GetAttention())
+				}
+				m.buildTableRows()
+				screen := ansi.Strip(m.table.View())
+				wantParked := tc.parked && status == statusWaiting
+				if got := strings.Contains(screen, "parked for you"); got != wantParked {
+					t.Fatalf("parked for you shown = %v, want %v:\n%s", got, wantParked, screen)
+				}
+				if !wantParked && !strings.Contains(screen, status) {
+					t.Fatalf("the %s chat lost its own status:\n%s", status, screen)
+				}
+			})
+		}
 	}
-	if s.noAgent {
-		return &pb.ClaudeChat{AgentSessionId: agentSessionID}, nil
-	}
-	return &pb.ClaudeChat{AgentSessionId: agentSessionID, TmuxSessionName: "repair-pane"}, nil
-}
-func (s *attentionStub) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
-	s.sentMessages = append(s.sentMessages, req)
-	if s.deliveryErr != nil {
-		return nil, s.deliveryErr
-	}
-	if s.delivery != nil {
-		return s.delivery, nil
-	}
-	return &pb.SendChatMessageResponse{Delivered: true, DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED}, nil
 }
 
-func TestAttentionActionSendBackStartsRepair(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		refused   bool
-		recordErr error
-	}{
-		{name: "posted"}, {name: "refused", refused: true}, {name: "repair failed", recordErr: errors.New("runner unavailable")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := &attentionStub{recordErr: tc.recordErr}
-			if tc.refused {
-				c.postedResult = &pb.SendBackSessionPRResponse{Reason: "pr-not-open"}
+// knownParkCodes is every operator park code verify can raise
+// (skills-toolbox/verify-gate.mjs HUMAN_REASONS).
+var knownParkCodes = []string{
+	"always-human-path", "human-review:database", "human-review:security", "human-review:ui",
+	"no-receipt", "repair-exhausted", "ledger-open", "extension-failed", "no-session",
+	"worktree-diverged", "worktree-unsynced", "human-review:unproven",
+}
+
+const renderedHead = "0123456789abcdef0123456789abcdef01234567"
+
+// parkSession is a session parked by verify on code, as bossd serves it: the
+// attention Compute answers, plus the legacy display fields older views read.
+func parkSession(code string, openItems ...string) *pb.Session {
+	n := int32(42)
+	a := attention.Compute(attention.Input{ParkCodes: []string{code}, OpenItems: openItems, Evidence: &attention.Evidence{URL: "https://example.com/proof"}})
+	return &pb.Session{
+		Id: "session-1", Title: "Parked change", PrNumber: &n, PrDisplayHeadSha: renderedHead, Attention: a,
+		DisplayStatus:   pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN,
+		AttentionStatus: &pb.AttentionStatus{NeedsAttention: true, Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT, Summary: "needs human: " + code},
+	}
+}
+
+func attentionDetails(c *attentionStub, s *pb.Session) ChatPickerModel {
+	m := seedChatPicker(&c.chatPickerStub, statusStopped)
+	m.client = c
+	m.session = s
+	m.timeline = []*pb.TimelineStep{{Title: "Opened", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE}}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	return updated.(ChatPickerModel)
+}
+
+// TestAttentionReviewMergeRecordsTheApprovalAndMergesOnce drives [m] on a
+// sign-off park's review row, on Home and on the details view: the footer
+// offers merge and neither approve nor send back, the confirmation is a plain
+// ok-to-merge with no mechanism, codes or repeated reason, and confirming sends
+// exactly one approving merge pinned to the rendered head and waiving exactly
+// the park.
+func TestAttentionReviewMergeRecordsTheApprovalAndMergesOnce(t *testing.T) {
+	s := parkSession("human-review:ui")
+	if got, want := attentionFooter(s, false), []string{"[v] video", "[m] merge"}; !slices.Equal(got, want) {
+		t.Fatalf("home footer = %q, want %q", got, want)
+	}
+	if got, want := attentionFooter(s, true), []string{"[g] github", "[v] video", "[m] merge"}; !slices.Equal(got, want) {
+		t.Fatalf("details footer = %q, want %q", got, want)
+	}
+	for _, details := range []bool{false, true} {
+		t.Run(map[bool]string{false: "home", true: "details"}[details], func(t *testing.T) {
+			c := &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{
+				IsMerged: true, TrackerWrites: "ok",
+				Approval: &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui", HeadSha: renderedHead, ApprovalUrl: "https://x/9", TrackerWrites: "ok"},
+			}}
+			var model tea.Model = attentionHome(c, proto.CloneOf(s))
+			if details {
+				model = attentionDetails(c, proto.CloneOf(s))
 			}
-			h := attentionHome(c, attentionSession(pb.AttentionAction_ATTENTION_ACTION_SEND_BACK))
-			model, _ := h.Update(keyPress('b'))
-			h = model.(HomeModel)
-			model, _ = h.Update(tea.PasteMsg{Content: "Fix the race"})
-			h = model.(HomeModel)
-			model, cmd := h.Update(attentionKey("enter"))
-			h = model.(HomeModel)
-			model, _ = h.Update(cmd())
-			h = model.(HomeModel)
-			if tc.refused {
-				if c.recordCalls != 0 || len(c.sentMessages) != 0 || !h.statusErr {
-					t.Fatal("refusal started repair or lost reason")
+			for _, retired := range []rune{'y', 'b'} {
+				if _, cmd := model.Update(keyPress(retired)); cmd != nil || len(c.calls) != 0 {
+					t.Fatalf("[%c] dispatched on a review row: %v", retired, c.calls)
 				}
-				return
 			}
-			if c.recordCalls != 1 || c.recordedSession != "session-1" || c.recordedTitle != "send back" {
-				t.Fatalf("repair calls=%d session=%s title=%s", c.recordCalls, c.recordedSession, c.recordedTitle)
+			model, _ = model.Update(keyPress('m'))
+			switch m := model.(type) {
+			case HomeModel:
+				assertMergeConfirm(t, m.attentionAction)
+			case ChatPickerModel:
+				assertMergeConfirm(t, m.attentionAction)
 			}
-			if c.recordedRole != pb.ChatRole_CHAT_ROLE_OPERATOR {
-				t.Fatalf("repair chat role=%v", c.recordedRole)
+			model, cmd := model.Update(keyPress('y'))
+			if cmd == nil {
+				t.Fatal("confirmation did not send the merge")
 			}
-			if tc.recordErr != nil {
-				if len(c.sentMessages) != 0 || !h.statusErr || !strings.Contains(h.status, "note is posted") {
-					t.Fatalf("false success after posted note: %s", h.status)
-				}
-				return
+			if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, "Merging PR #42…") || strings.Contains(screen, "Requesting merge") {
+				t.Fatalf("missing the merge progress line:\n%s", screen)
 			}
-			if len(c.sentMessages) != 1 {
-				t.Fatalf("repair messages=%v", c.sentMessages)
+			model, duplicate := model.Update(keyPress('y'))
+			if duplicate != nil {
+				t.Fatal("a second confirm sent a second merge")
 			}
-			req := c.sentMessages[0]
-			want := "/boss-repair 42\n\nThe operator sent PR #42 back. Address this feedback before anything else:\n\nFix the race"
-			if req.GetAgentSessionId() == "" || req.GetMessage() != want || !req.GetSubmit() || !req.GetWakeIfAsleep() {
-				t.Fatalf("repair delivery=%v", req)
+			model, _ = model.Update(cmd())
+			want := operatorMergeCall{id: "session-1", head: renderedHead, approve: true, waives: []string{"human-review:ui"}}
+			if len(c.merges) != 1 || c.merges[0].id != want.id || c.merges[0].head != want.head || !c.merges[0].approve || !slices.Equal(c.merges[0].waives, want.waives) {
+				t.Fatalf("merges = %+v, want exactly %+v", c.merges, want)
+			}
+			if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, "Merged PR #42") || strings.Contains(screen, "Merging PR #42…") {
+				t.Fatalf("missing the merge result line:\n%s", screen)
 			}
 		})
 	}
 }
 
-func TestAttentionActionSendBackDeliveryStatus(t *testing.T) {
+// TestAttentionMergeRefusesAMovedHead lands both ways the daemon refuses a
+// head the operator did not see: the approval refusing before it records, and
+// the merge gate refusing a moved head. Each says so and merges nothing.
+func TestAttentionMergeRefusesAMovedHead(t *testing.T) {
+	for name, c := range map[string]*attentionStub{
+		"approval":   {mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved", HeadSha: "ffffffffffffffffffffffffffffffffffffffff"}}},
+		"merge gate": {mergeErr: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: expected head %s, live head fff; nothing was approved or merged", vcs.ErrHeadMismatch, renderedHead))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := attentionHome(c, parkSession("human-review:ui"))
+			model, _ := h.Update(keyPress('m'))
+			model, cmd := model.Update(keyPress('y'))
+			model, _ = model.Update(cmd())
+			h = model.(HomeModel)
+			if !h.statusErr || h.status != "PR #42 changed since you opened it; refresh and try again" {
+				t.Fatalf("status = %q (error %v), want the moved-head refusal", h.status, h.statusErr)
+			}
+			if len(c.merges) != 1 {
+				t.Fatalf("merges = %d, want the one refused request", len(c.merges))
+			}
+		})
+	}
+}
+
+// TestAttentionMergeRowMergesWithoutApproving checks a verified MERGE row asks
+// plainly and records no approval.
+func TestAttentionMergeRowMergesWithoutApproving(t *testing.T) {
+	mergeable := true
+	n := int32(42)
+	s := &pb.Session{Id: "session-1", PrNumber: &n, PrDisplayHeadSha: renderedHead, Attention: attention.Compute(attention.Input{
+		HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable, Verified: true,
+	})}
+	c := &attentionStub{}
+	model, _ := attentionHome(c, s).Update(keyPress('m'))
+	assertMergeConfirm(t, model.(HomeModel).attentionAction)
+	model, cmd := model.Update(keyPress('y'))
+	model.Update(cmd())
+	if len(c.merges) != 1 || c.merges[0].approve || len(c.merges[0].waives) != 0 || c.merges[0].head != renderedHead {
+		t.Fatalf("merges = %+v, want one plain merge of the rendered head", c.merges)
+	}
+}
+
+// TestAttentionFixRowsOfferNoMerge checks that no fix row, a blocked park or a
+// fault, offers [m] on Home or the details view, even when its PR reads green.
+func TestAttentionFixRowsOfferNoMerge(t *testing.T) {
+	fault := attentionSession(pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS)
+	fault.Attention.Kind, fault.Attention.ParkCodes = pb.AttentionKind_ATTENTION_KIND_FIX, nil
+	rows := map[string]*pb.Session{"fault": fault}
+	for _, code := range knownParkCodes {
+		if s := parkSession(code); s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX {
+			rows[code] = s
+		}
+	}
+	for name, s := range rows {
+		t.Run(name, func(t *testing.T) {
+			s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_PASSING
+			if slices.Contains(attentionFooter(s, true), "[m] merge") {
+				t.Fatalf("footer offers merge: %q", attentionFooter(s, true))
+			}
+			c := &attentionStub{}
+			if _, cmd := attentionHome(c, proto.CloneOf(s)).Update(keyPress('m')); cmd != nil {
+				t.Fatal("[m] dispatched on a Home fix row")
+			}
+			m := attentionDetails(c, proto.CloneOf(s))
+			updated, cmd := m.Update(keyPress('m'))
+			m = updated.(ChatPickerModel)
+			if cmd != nil || m.confirm != confirmNone || m.attentionAction.active() {
+				t.Fatal("[m] raised a merge on a details fix row")
+			}
+			if screen := ansi.Strip(m.View().Content); strings.Contains(screen, "[m]erge") {
+				t.Fatalf("details footer offers merge:\n%s", screen)
+			}
+			if len(c.calls) != 0 {
+				t.Fatalf("calls = %v", c.calls)
+			}
+		})
+	}
+}
+
+// TestParkRowsShowNoCodesOrJargon renders every known park on Home, on the
+// details view and, for a review row, in its merge confirmation: no raw park
+// code and no "ledger" may reach the operator.
+func TestParkRowsShowNoCodesOrJargon(t *testing.T) {
+	for _, code := range knownParkCodes {
+		t.Run(code, func(t *testing.T) {
+			var items []string
+			if code == "ledger-open" {
+				items = []string{"Open human follow-up: watch the rollout"}
+			}
+			s := parkSession(code, items...)
+			c := &attentionStub{}
+			home := attentionHome(c, proto.CloneOf(s))
+			screens := map[string]string{"home": home.View().Content, "details": attentionDetails(c, proto.CloneOf(s)).View().Content}
+			if s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+				confirm, _ := home.Update(keyPress('m'))
+				screens["merge confirmation"] = confirm.View().Content
+			}
+			for where, screen := range screens {
+				plain := ansi.Strip(screen)
+				if strings.Contains(strings.ToLower(plain), "ledger") {
+					t.Errorf("%s shows \"ledger\":\n%s", where, plain)
+				}
+				for _, known := range knownParkCodes {
+					if strings.Contains(plain, known) {
+						t.Errorf("%s shows the park code %q:\n%s", where, known, plain)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestBlockedParkDetailsListOpenItemsAndTheEscapeHatch opens the details view
+// on an open-checklist park: it lists each open item its park note recorded,
+// and since the row offers no merge it names the two ways forward.
+func TestBlockedParkDetailsListOpenItemsAndTheEscapeHatch(t *testing.T) {
+	m := attentionDetails(&attentionStub{}, parkSession("ledger-open", "Open human follow-up: watch the rollout", "Open question: which region first?"))
+	screen := ansi.Strip(m.View().Content)
+	for _, want := range []string{
+		"The PR checklist has 2 open items",
+		"Open in the PR checklist:",
+		"• Open human follow-up: watch the rollout",
+		"• Open question: which region first?",
+		"boss pr approve 42",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("details view lacks %q:\n%s", want, screen)
+		}
+	}
+	unread := attentionDetails(&attentionStub{}, parkSession("repair-exhausted"))
+	if screen := ansi.Strip(unread.View().Content); !strings.Contains(screen, "Verify is blocked: repair exhausted.") || !strings.Contains(screen, "boss pr approve 42") {
+		t.Errorf("a park with no open items does not say what blocks it:\n%s", screen)
+	}
+}
+
+// assertMergeConfirm pins the [m]erge confirmation every row shows: exactly the
+// question, then the shared confirm/cancel hints, with nothing about how the
+// merge works or why the row is parked.
+func assertMergeConfirm(t *testing.T, a attentionActionState) {
+	t.Helper()
+	if !a.confirm.active || a.confirm.prompt != "Merge PR #42?" {
+		t.Fatalf("merge confirmation prompt = %q (active %v), want exactly %q", a.confirm.prompt, a.confirm.active, "Merge PR #42?")
+	}
+	var lines []string
+	for _, line := range strings.Split(ansi.Strip(a.footer(120, "")), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if want := []string{"Merge PR #42?", "[y/enter] confirm  [n/esc] cancel"}; !slices.Equal(lines, want) {
+		t.Fatalf("merge confirmation renders %q, want %q", lines, want)
+	}
+}
+
+// TestAttentionMergeAlwaysEndsOnAResultLine runs [m] on a review row through
+// every way the merge can end and checks the spinner gives way to one
+// persistent result line: "Merged PR #42" in the success colour, or a plain
+// reason in the danger colour. A merge that lands also re-reads the session
+// list, so the merged row leaves NEEDS YOU.
+func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		client  *attentionStub
+		stub    *attentionStub
 		want    string
 		wantErr bool
 	}{
-		{"no live agent", &attentionStub{noAgent: true}, "has no live agent", true},
-		{"delivery failed", &attentionStub{deliveryErr: errors.New("delivery failed")}, "note is posted", true},
-		{"delivery unconfirmed", &attentionStub{delivery: &pb.SendChatMessageResponse{}}, "inspect it before retrying", false},
-		{"queued", &attentionStub{delivery: &pb.SendChatMessageResponse{Delivered: true, DeliveryState: pb.SendChatMessageResponse_DELIVERY_STATE_QUEUED, NoticeText: "queued; do not resend"}}, "queued; do not resend", false},
+		{"merged", &attentionStub{}, "Merged PR #42", false},
+		{"merged without bookkeeping", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "no-adapter"}},
+			"Merged PR #42; the tracker was not updated (unavailable: no-adapter), so move the ticket to done by hand", false},
+		{"approval refused, head moved", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved"}}},
+			"PR #42 changed since you opened it; refresh and try again", true},
+		{"approval refused, park changed", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "park-changed"}}},
+			"Couldn't merge PR #42: what verify asks you to sign off changed since you looked; review it again, then merge", true},
+		{"gate: head moved", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: expected head a, live head b; nothing was approved or merged", vcs.ErrHeadMismatch))},
+			"PR #42 changed since you opened it; refresh and try again", true},
+		{"gate: checks failing", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=checks; 2 required checks are still failing; gated at head abc; nothing was approved or merged"))},
+			"Couldn't merge PR #42: 2 required checks are still failing", true},
+		{"gate after the approval landed", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=conflict; the PR has a merge conflict; gated at head abc; the approval of abc (https://x/9) stays recorded"))},
+			"Couldn't merge PR #42: the PR has a merge conflict; your approval stays recorded, so verify may merge it once it passes", true},
+		{"rpc error", &attentionStub{mergeErr: connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))},
+			"Couldn't merge PR #42: daemon unreachable", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := attentionHome(tc.client, attentionSession(pb.AttentionAction_ATTENTION_ACTION_SEND_BACK))
-			model, _ := h.Update(keyPress('b'))
+			h := attentionHome(tc.stub, parkSession("human-review:ui"))
+			model, _ := h.Update(keyPress('m'))
+			model, cmd := model.Update(keyPress('y'))
+			model, refresh := model.Update(cmd())
 			h = model.(HomeModel)
-			model, _ = h.Update(tea.PasteMsg{Content: "Fix the race"})
-			h = model.(HomeModel)
-			model, cmd := h.Update(attentionKey("enter"))
-			h = model.(HomeModel)
-			model, _ = h.Update(cmd())
-			h = model.(HomeModel)
-			if h.statusErr != tc.wantErr || !strings.Contains(h.status, tc.want) {
-				t.Fatalf("status=%q error=%v", h.status, h.statusErr)
+			if h.status != tc.want || h.statusErr != tc.wantErr {
+				t.Fatalf("result line = %q (error %v), want %q (error %v)", h.status, h.statusErr, tc.want, tc.wantErr)
 			}
-			if tc.client.noAgent && len(tc.client.sentMessages) != 0 {
-				t.Fatal("attempted delivery to dead agent")
+			if h.attentionAction.active() {
+				t.Fatal("the merge is still showing its spinner after the result landed")
+			}
+			screen := ansi.Strip(h.View().Content)
+			if !strings.Contains(screen, tc.want[:min(len(tc.want), 40)]) || strings.Contains(screen, "Merging PR #42…") {
+				t.Fatalf("the result line is not on screen:\n%s", screen)
+			}
+			if (refresh != nil) != !tc.wantErr {
+				t.Fatalf("session re-read after the merge = %v, want %v", refresh != nil, !tc.wantErr)
 			}
 		})
 	}

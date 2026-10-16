@@ -20,6 +20,8 @@ import {
   SKILL_DRIFT_ADVISORY_SENTENCE,
   SKILL_DRIFT_CORE_CLOSURE,
   SKILL_DRIFT_DIRECTIONS,
+  SKILL_DRIFT_DIRECTION_CLASS,
+  SKILL_DRIFT_REFUSALS,
   SKILL_DRIFT_KINDS,
   SKILL_DRIFT_VERDICTS,
   classifySkillDrift,
@@ -288,7 +290,7 @@ test('whole-tree scope treats every content row as executed, so the sentence is 
 test('a content/unrecoverable row is advisory-withheld and its render carries no runnable command', () => {
   const output = gate(
     row('a/b.mjs', 'content', 'unrecoverable'),
-    '  reinstall withheld — it would overwrite installed content this checkout cannot restore:',
+    '  reinstall withheld [lost] — it would overwrite installed content this checkout cannot restore:',
     '    a/b.mjs (content, unrecoverable)',
     '  next: move the listed paths out of the skills directory (or delete them if they are disposable); with nothing unrecoverable left, the reinstall command is offered again',
   )
@@ -684,7 +686,7 @@ function vendoredCopy(core) {
   const toolbox = path.join(root, 'ns', core, 'toolbox')
   mkdirSync(toolbox, { recursive: true })
   const here = path.dirname(SCRIPT_PATH)
-  for (const file of ['skill-drift-verdict.mjs', 'main-module.mjs']) {
+  for (const file of ['skill-drift-verdict.mjs', 'main-module.mjs', 'skill-extensions.mjs']) {
     copyFileSync(path.join(here, file), path.join(toolbox, file))
   }
   const skills = path.join(root, 'skills')
@@ -748,9 +750,9 @@ test('--core overrides inference, repeats, and a valueless --core widens to the 
 // Direction wording: only a row the checkout is ahead of may be called lagging
 
 const DOWNGRADE_LEAD =
-  '  reinstall withheld — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:'
+  '  reinstall withheld [downgrade] — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:'
 const DESTRUCTIVE_LEAD =
-  '  reinstall withheld — it would overwrite installed content this checkout cannot restore:'
+  '  reinstall withheld [lost] — it would overwrite installed content this checkout cannot restore:'
 
 test('a content/ahead row is withheld and worded as newer, never as lagging', () => {
   const output = gate(
@@ -996,6 +998,7 @@ test('the helper stays publishable: node builtins and main-module.mjs only, no p
   const imports = [...source.matchAll(/^import .*? from '([^']+)'$/gm)].map((m) => m[1])
   assert.deepEqual([...new Set(imports)].sort(), [
     './main-module.mjs',
+    './skill-extensions.mjs',
     'node:fs',
     'node:path',
     'node:url',
@@ -1004,4 +1007,146 @@ test('the helper stays publishable: node builtins and main-module.mjs only, no p
   // or a repo path here would leak out of this project entirely.
   assert.ok(!/bossanova|mcp__|Internal Bossanova/i.test(source), 'project identity leaked')
   assert.ok(!/\b[A-Z]{2,5}-\d{2,}\b/.test(source), 'tracker id leaked')
+})
+
+test('repo-local extension references keep absent capabilities blocking', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const url = pathToFileURL(copy.direct).href
+  const output = gate(row(UNRELEASED, 'absent', 'lossless'))
+  for (const extensionRoot of ['.claude/skills', '.codex/skills', 'custom/skills']) {
+    const root = path.join(copy.root, extensionRoot.replaceAll('/', '-'))
+    const extension = path.join(root, extensionRoot, 'boss-plan-foo')
+    mkdirSync(extension, { recursive: true })
+    if (extensionRoot === 'custom/skills') {
+      writeFileSync(
+        path.join(root, '.boss-skills.json'),
+        JSON.stringify({ extensionRoots: [extensionRoot] }),
+      )
+    }
+    const entry = path.join(extension, 'SKILL.md')
+    writeFileSync(entry, 'Run unreleased-helper.mjs')
+    assert.equal(
+      installedReferenceChecker(url, ['boss-plan'], { root })(UNRELEASED),
+      true,
+      extensionRoot,
+    )
+    let printed = ''
+    assert.equal(
+      main(['classify', '--status', '1'], {
+        moduleUrl: url,
+        root,
+        stdin: output,
+        stdout: {
+          write: (s) => {
+            printed += s
+          },
+        },
+      }),
+      1,
+    )
+    assert.match(printed, /^BLOCKED:/)
+    const child = spawnSync(process.execPath, [copy.direct, 'classify', '--status', '1'], {
+      cwd: root,
+      input: output,
+      encoding: 'utf8',
+    })
+    assert.equal(child.status, 1, child.stdout + child.stderr)
+    writeFileSync(entry, 'No helper needed')
+    printed = ''
+    assert.equal(
+      main(['classify', '--status', '1'], {
+        moduleUrl: url,
+        root,
+        stdin: output,
+        stdout: {
+          write: (s) => {
+            printed += s
+          },
+        },
+      }),
+      0,
+    )
+    assert.match(printed, /unreleased; they decide nothing here/)
+  }
+})
+
+test('extension scan follows top-level links but fails closed on nested links', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const extensions = path.join(copy.root, '.claude/skills')
+  const target = path.join(copy.root, 'target')
+  mkdirSync(extensions, { recursive: true })
+  mkdirSync(target)
+  writeFileSync(path.join(target, 'SKILL.md'), 'unreleased-helper.mjs')
+  symlinkSync(target, path.join(extensions, 'boss-plan-linked'))
+  const check = installedReferenceChecker(pathToFileURL(copy.direct).href, ['boss-plan'], {
+    root: copy.root,
+  })
+  assert.equal(check(UNRELEASED), true)
+  writeFileSync(path.join(target, 'SKILL.md'), '')
+  symlinkSync(target, path.join(target, 'nested'))
+  assert.equal(check(UNRELEASED), null)
+})
+
+test('extension references respect core closure and invalid roots fail closed', (t) => {
+  const copy = vendoredCopy('boss-plan')
+  t.after(() => rmSync(copy.root, { recursive: true, force: true }))
+  const url = pathToFileURL(copy.direct).href
+  const foreign = path.join(copy.root, '.claude/skills/boss-epic-foo')
+  mkdirSync(foreign, { recursive: true })
+  writeFileSync(path.join(foreign, 'SKILL.md'), 'unreleased-helper.mjs')
+  assert.equal(
+    installedReferenceChecker(url, ['boss-plan'], { root: copy.root })(UNRELEASED),
+    false,
+  )
+  for (const core of ['boss-build', 'boss-review', 'boss-finalize'])
+    mkdirSync(path.join(copy.root, 'ns', core), { recursive: true })
+  const review = path.join(copy.root, '.claude/skills/boss-review-foo')
+  mkdirSync(review)
+  writeFileSync(path.join(review, 'SKILL.md'), 'unreleased-helper.mjs')
+  assert.equal(
+    installedReferenceChecker(url, ['boss-build'], { root: copy.root })(UNRELEASED),
+    true,
+  )
+  for (const config of ['{', JSON.stringify({ extensionRoots: ['../escape'] })]) {
+    writeFileSync(path.join(copy.root, '.boss-skills.json'), config)
+    const check = installedReferenceChecker(url, ['boss-plan'], { root: copy.root })
+    assert.equal(check(UNRELEASED), null)
+    assert.equal(
+      classifySkillDrift({
+        exitStatus: 1,
+        output: gate(row(UNRELEASED, 'absent', 'lossless')),
+        cores: ['boss-plan'],
+        isReferenced: check,
+      }).verdict,
+      'blocking',
+    )
+  }
+})
+
+test('refusal lead controls repair even when row directions disagree', () => {
+  const rows = [row('a/x.mjs', 'absent', 'lossless'), row('a/new.mjs', 'content', 'ahead')]
+  for (const [lead, expected] of [
+    [DESTRUCTIVE_LEAD, /move or delete/],
+    [DOWNGRADE_LEAD, /update the checkout to origin\/HEAD/],
+    ['  reinstall withheld [undecided] — cannot compare', /readable and no longer changing/],
+    ['  reinstall withheld — legacy', /follow the gate.s own `next:` line/],
+    [DOWNGRADE_LEAD + '\n' + DESTRUCTIVE_LEAD, /move or delete/],
+  ]) {
+    assert.match(render(gate(...rows, lead)), expected)
+  }
+})
+
+test('direction classes and refusal tokens define the producer contract', () => {
+  assert.ok(Object.isFrozen(SKILL_DRIFT_DIRECTION_CLASS))
+  assert.deepEqual(SKILL_DRIFT_DIRECTION_CLASS, {
+    lossless: 'none',
+    behind: 'none',
+    ahead: 'downgrade',
+    unrecoverable: 'lost',
+    unknown: 'lost',
+  })
+  assert.deepEqual(SKILL_DRIFT_DIRECTIONS, Object.keys(SKILL_DRIFT_DIRECTION_CLASS))
+  assert.deepEqual(SKILL_DRIFT_REFUSALS, ['lost', 'downgrade', 'undecided'])
 })

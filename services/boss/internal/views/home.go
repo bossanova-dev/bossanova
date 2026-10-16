@@ -88,6 +88,10 @@ type HomeModel struct {
 	// OS notification), Home jumps into this session's chat if it is still
 	// waiting, then clears it. Empty when there is nothing pending. See BOS-459.
 	pendingAttentionSessionID string
+	// shownParks is the verify park each session's row last showed, by session
+	// id (rememberShownParks). It lets a cleared fix alert that reveals an
+	// already-shown park stay silent.
+	shownParks map[string]string
 
 	// mergedOptimisticID is set when the user returns from a successful merge
 	// in the chat picker. While set, the matching session's DisplayStatus
@@ -159,6 +163,7 @@ type HomeModel struct {
 	// (BOS-837). Like confirm it stands in for the action bar while active and
 	// swallows the keys the board would otherwise act on.
 	rename               renamePrompt
+	filter               listFilter
 	cloudAccess          CloudAccessClient
 	cloudStatus          *pb.CloudAccessStatus
 	cloudErr             error
@@ -236,6 +241,7 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		ctx:                  ctx,
 		authMgr:              authMgr,
 		spinner:              newStatusSpinner(),
+		filter:               newListFilter(),
 		loading:              true,
 		focused:              true,
 		nextSessionPollID:    1,
@@ -341,6 +347,12 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.status = rpcStatusDetail(msg.err)
 		}
 		h.table.SetHeight(h.tableHeight())
+		if msg.action == pb.AttentionAction_ATTENTION_ACTION_MERGE && msg.err == nil {
+			// Re-read now so the merged row leaves NEEDS YOU without waiting
+			// for the next poll.
+			h.nextSessionPollID++
+			return h, fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID)
+		}
 		return h, nil
 	case sessionRenamedMsg:
 		return h.handleSessionRenamed(msg)
@@ -351,12 +363,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// arm because a tea.PasteMsg would otherwise fall through to the default
 	// return and be dropped. Inert unless the rename prompt is open.
 	case tea.PasteMsg:
-		if h.attentionAction.note.Active() {
-			var cmd tea.Cmd
-			h.attentionAction, cmd = h.attentionAction.update(msg)
-			return h, cmd
-		}
 		if !h.rename.Active() {
+			if h.filter.Active() {
+				return h.updateFilter(msg)
+			}
 			return h, nil
 		}
 		var cmd tea.Cmd
@@ -496,7 +506,7 @@ func (h HomeModel) View() tea.View {
 // aliasing ctrl+x to the back action while a title is being typed
 // (app.go's backKeyAliasEligible). Mirrors ChatPickerModel.textEntryActive.
 func (h HomeModel) textEntryActive() bool {
-	return h.rename.Active() || h.attentionAction.note.Active()
+	return h.rename.Active() || h.filter.Active()
 }
 
 func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {

@@ -914,10 +914,21 @@ func TestRepairDoctorIncludesProtectedRootsCheck(t *testing.T) {
 	t.Setenv("PATH", stubBin)
 
 	srv := New(Config{PluginHost: &plugin.Host{}})
+	srv.SetFixedPortStatusProvider(fakeFixedPortProvider{lost: true, configured: 44127, live: 51234})
 
 	resp, err := srv.RepairDoctor(context.Background(), connect.NewRequest(&bossanovav1.RepairDoctorRequest{}))
 	if err != nil {
 		t.Fatalf("RepairDoctor: %v", err)
+	}
+
+	var fixedCheck *bossanovav1.RepairDoctorCheck
+	for _, check := range resp.Msg.GetChecks() {
+		if check.GetName() == "failover proxy fixed port" {
+			fixedCheck = check
+		}
+	}
+	if fixedCheck == nil || fixedCheck.GetOk() {
+		t.Fatalf("fixed-port check = %v, want present and Ok=false", fixedCheck)
 	}
 
 	var names []string

@@ -81,8 +81,12 @@ func TestLiveProcessSnapshot(t *testing.T) {
 		t.Fatalf("Snapshot error: %v", err)
 	}
 	self := os.Getpid()
-	if _, ok := graph[self]; !ok {
+	p, ok := graph[self]
+	if !ok {
 		t.Fatalf("snapshot missing self pid %d", self)
+	}
+	if p.PPID != os.Getppid() || p.Name == "" {
+		t.Fatalf("snapshot row for self = %+v, want ppid %d and a name", p, os.Getppid())
 	}
 }
 

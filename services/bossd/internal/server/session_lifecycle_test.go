@@ -424,6 +424,7 @@ func TestArchiveSession_MissingSession(t *testing.T) {
 			onSessionDeleted: func(_ context.Context, id string) { deletedID = id },
 		}
 
+		srv.initDeferrers()
 		resp, err := srv.ArchiveSession(context.Background(), connect.NewRequest(&pb.ArchiveSessionRequest{Id: "s1"}))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -447,6 +448,7 @@ func TestArchiveSession_MissingSession(t *testing.T) {
 			onSessionDeleted: func(_ context.Context, _ string) { deletedCalled = true },
 		}
 
+		srv.initDeferrers()
 		_, err := srv.ArchiveSession(context.Background(), connect.NewRequest(&pb.ArchiveSessionRequest{Id: "s1"}))
 		if connect.CodeOf(err) != connect.CodeInternal {
 			t.Fatalf("code = %v, want CodeInternal (err=%v)", connect.CodeOf(err), err)
@@ -472,6 +474,7 @@ func TestArchiveSession_CallerCancelledContext(t *testing.T) {
 	repos := &archiveRepoStoreFake{repo: &models.Repo{ID: "r1", LocalPath: "/x"}}
 	lc := session.NewLifecycle(store, repos, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 	srv := &Server{sessions: store, repos: repos, lifecycle: lc}
+	srv.initDeferrers()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

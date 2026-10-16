@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -28,26 +29,58 @@ func (f *verifyRepoStoreFake) Get(context.Context, string) (*models.Repo, error)
 }
 
 // verifyVerbsFake records what the handler ran and with which environment.
+// calls, when set, is a log shared with the merge provider so a test can assert
+// the order of approve, merge and mark-merged.
 type verifyVerbsFake struct {
-	env     []string
-	targets []verifybridge.Target
-	notes   []string
+	env        []string
+	targets    []verifybridge.Target
+	forMerge   []*verifybridge.MergeApproval
+	calls      *[]string
+	markCtxErr error
 
 	approve    verifybridge.ApproveResult
-	sendBack   verifybridge.SendBackResult
+	markMerged verifybridge.MarkMergedResult
+	markErr    error
 	err        error
 	builtCount int
+
+	// onApprove runs inside Approve, before it returns; approveCtxDeadline
+	// records the deadline Approve ran under. markBlocks makes MarkMerged hang
+	// until its context ends, the way a stuck tracker call would.
+	onApprove          func()
+	approveCtxDeadline time.Time
+	markBlocks         bool
 }
 
-func (f *verifyVerbsFake) Approve(_ context.Context, t verifybridge.Target) (verifybridge.ApproveResult, error) {
+func (f *verifyVerbsFake) log(call string) {
+	if f.calls != nil {
+		*f.calls = append(*f.calls, call)
+	}
+}
+
+func (f *verifyVerbsFake) Approve(ctx context.Context, t verifybridge.Target, forMerge *verifybridge.MergeApproval) (verifybridge.ApproveResult, error) {
+	f.log("approve")
 	f.targets = append(f.targets, t)
+	f.forMerge = append(f.forMerge, forMerge)
+	f.approveCtxDeadline, _ = ctx.Deadline()
+	if f.onApprove != nil {
+		f.onApprove()
+	}
 	return f.approve, f.err
 }
 
-func (f *verifyVerbsFake) SendBack(_ context.Context, t verifybridge.Target, note string) (verifybridge.SendBackResult, error) {
+func (f *verifyVerbsFake) MarkMerged(ctx context.Context, t verifybridge.Target) (verifybridge.MarkMergedResult, error) {
+	f.log("mark-merged")
 	f.targets = append(f.targets, t)
-	f.notes = append(f.notes, note)
-	return f.sendBack, f.err
+	f.markCtxErr = ctx.Err()
+	if f.markBlocks {
+		select {
+		case <-ctx.Done():
+			return verifybridge.MarkMergedResult{}, fmt.Errorf("%w: %v", verifybridge.ErrNodeTimeout, ctx.Err())
+		case <-time.After(10 * time.Second):
+		}
+	}
+	return f.markMerged, f.markErr
 }
 
 func newVerifyTestServer(sess *models.Session, repo *models.Repo, verbs *verifyVerbsFake) *Server {
@@ -92,8 +125,8 @@ func TestApproveSessionPR_RunsTheVerbWithTheRepoCredentials(t *testing.T) {
 		t.Fatalf("ApproveSessionPR: %v", err)
 	}
 	want := verifybridge.Target{PR: 7, Repo: "acme/app", Dir: sess.WorktreePath, DryRun: true}
-	if len(verbs.targets) != 1 || verbs.targets[0] != want {
-		t.Fatalf("targets = %+v, want %+v", verbs.targets, want)
+	if len(verbs.targets) != 1 || verbs.targets[0] != want || verbs.forMerge[0] != nil {
+		t.Fatalf("targets = %+v (for merge %+v), want %+v and a plain approve", verbs.targets, verbs.forMerge, want)
 	}
 	if got, _ := envValue(verbs.env, "LINEAR_API_KEY"); got != "lin_repo_key" {
 		t.Fatalf("LINEAR_API_KEY = %q, want the repo's stored key over the daemon's", got)
@@ -116,28 +149,6 @@ func TestApproveSessionPR_AnUnconfiguredRepoPinsTheKeyEmpty(t *testing.T) {
 	}
 	if got, ok := envValue(verbs.env, "LINEAR_API_KEY"); !ok || got != "" {
 		t.Fatalf("LINEAR_API_KEY = %q (set %v), want it pinned empty rather than the daemon's", got, ok)
-	}
-}
-
-func TestSendBackSessionPR_PassesTheNoteAndMapsTheResult(t *testing.T) {
-	sess := verifyTestSession(t)
-	verbs := &verifyVerbsFake{sendBack: verifybridge.SendBackResult{Posted: true, CommentURL: "https://x/1", HeadSHA: "abc"}}
-	srv := newVerifyTestServer(sess, &models.Repo{ID: "r1", OriginURL: "https://github.com/acme/app"}, verbs)
-
-	resp, err := srv.SendBackSessionPR(context.Background(), connect.NewRequest(&pb.SendBackSessionPRRequest{Id: "s1", Note: "--fix the copy"}))
-	if err != nil {
-		t.Fatalf("SendBackSessionPR: %v", err)
-	}
-	if len(verbs.notes) != 1 || verbs.notes[0] != "--fix the copy" || verbs.targets[0].Repo != "acme/app" || verbs.targets[0].Dir != sess.WorktreePath {
-		t.Fatalf("ran %+v with notes %q", verbs.targets, verbs.notes)
-	}
-	if !resp.Msg.GetIsPosted() || resp.Msg.GetCommentUrl() != "https://x/1" || resp.Msg.GetHeadSha() != "abc" {
-		t.Fatalf("response = %+v", resp.Msg)
-	}
-
-	_, err = srv.SendBackSessionPR(context.Background(), connect.NewRequest(&pb.SendBackSessionPRRequest{Id: "s1", Note: "  "}))
-	if connect.CodeOf(err) != connect.CodeInvalidArgument || len(verbs.notes) != 1 {
-		t.Fatalf("an empty note: err = %v, verb ran %d times", err, len(verbs.notes))
 	}
 }
 

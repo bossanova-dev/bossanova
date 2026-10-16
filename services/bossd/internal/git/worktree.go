@@ -3517,7 +3517,7 @@ const cloneCredentialFileName = "boss-credentials"
 // validated with ValidateCloneURL and passed after `--`, so it can never be
 // parsed as a git option.
 //
-// An http(s) URL whose userinfo carries a password (https://user:token@host/...)
+// An http(s) URL whose userinfo carries a password or token-shaped username
 // is never passed to git as argv, where it would be visible in ps for the
 // clone's lifetime and then written into .git/config (BOS-1587). The userinfo
 // is stripped, written to a 0600 file in a fresh 0700 temp directory, and git
@@ -3526,12 +3526,12 @@ const cloneCredentialFileName = "boss-credentials"
 // .git/boss-credentials and the repo-local credential.helper points at it, so
 // later fetches and pushes still authenticate.
 //
-// The guarantee covers password userinfo only. A bare username
-// (https://alice@host/...) is passed through unchanged so the configured
-// credential helpers still see who is asking — and that includes a token
-// placed in the username slot (https://<token>@host/...), which therefore
-// reaches argv, .git/config and the recorded origin like any other username.
-// Any other URL (ssh, scp-like, unparseable) is also cloned as given.
+// Bare usernames are passed through to configured credential helpers unless
+// isTokenShapedUsername recognizes them (BOS-1657). Recognized tokens are stored
+// with an empty password. A long ordinary username misclassified as a token
+// fails authentication safely instead of exposing it. Short unprefixed tokens
+// remain indistinguishable from ordinary usernames. Other transports retain
+// their login names.
 func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
 	if err := ValidateCloneURL(cloneURL); err != nil {
 		return fmt.Errorf("clone: %w", err)
@@ -3590,37 +3590,38 @@ func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
 	return nil
 }
 
-// CloneURLWithoutCredentials returns raw as Clone records it for origin: an
-// http(s) URL with its user:password removed. Any URL Clone passes through
-// unchanged (no password — including a token in the username slot — ssh,
-// unparseable) is returned as is.
+// CloneURLWithoutCredentials returns raw as Clone records it for origin:
+// http(s) password userinfo and token-shaped usernames are removed (BOS-1657).
+// Plain usernames and other transports are unchanged. The token heuristic errs
+// toward storing ambiguous long usernames safely; short unprefixed tokens may
+// still pass through.
 func CloneURLWithoutCredentials(raw string) string {
 	plainURL, _, _ := splitCloneCredentials(raw)
 	return plainURL
 }
 
-// splitCloneCredentials separates an http(s) URL's userinfo from the URL. It
-// returns the URL without userinfo and the git-credential-store line
-// (scheme://user:password@host/path?query#fragment) and true, or false for any URL it leaves alone:
-// no userinfo, an unparseable URL, a non-http(s) scheme, where userinfo is a
-// login name (ssh://git@host) rather than a credential, or userinfo with no
-// password (https://alice@host), which only names the user for the configured
-// credential helpers and must keep reaching them. That last case is decided by
-// shape alone: a token in the username slot (https://<token>@host) is
-// indistinguishable from a username, so it is passed through and is not kept
-// out of argv.
+// splitCloneCredentials separates http(s) password userinfo or token-shaped
+// usernames into a clean URL and a credential-store line carrying path, query
+// and fragment. Bare tokens use an empty password (BOS-1657). Plain usernames
+// keep reaching configured helpers; misclassified long usernames fail auth
+// safely, while short unprefixed tokens may pass through. Other transports and
+// unparseable URLs are left alone.
 func splitCloneCredentials(raw string) (plainURL, credential string, ok bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.User == nil || u.Host == "" {
-		return raw, "", false
-	}
-	if _, hasPassword := u.User.Password(); !hasPassword {
 		return raw, "", false
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
 	default:
 		return raw, "", false
+	}
+	user := u.User
+	if _, hasPassword := user.Password(); !hasPassword {
+		if !isTokenShapedUsername(user.Username()) {
+			return raw, "", false
+		}
+		user = url.UserPassword(user.Username(), "")
 	}
 	// The stored line carries everything after the host: git's
 	// credential-store only matches an entry that has every field the lookup
@@ -3629,13 +3630,34 @@ func splitCloneCredentials(raw string) (plainURL, credential string, ok bool) {
 	// passes path=o/r.git?x=1#frag to the helper on a real clone). A lookup
 	// without a path (the default) still matches an entry that has one.
 	cred := url.URL{
-		Scheme: strings.ToLower(u.Scheme), User: u.User, Host: u.Host,
+		Scheme: strings.ToLower(u.Scheme), User: user, Host: u.Host,
 		Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery,
 		Fragment: u.Fragment, RawFragment: u.RawFragment,
 	}
 	stripped := *u
 	stripped.User = nil
 	return stripped.String(), cred.String(), true
+}
+
+// isTokenShapedUsername recognizes decoded usernames that should be kept in
+// the credential store rather than exposed in argv or origin URLs.
+func isTokenShapedUsername(name string) bool {
+	for _, prefix := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "gldt-"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	if len(name) < 40 {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // credentialStoreHelper is the credential.helper value that reads path. git

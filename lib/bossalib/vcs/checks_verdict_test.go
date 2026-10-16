@@ -308,3 +308,32 @@ func TestClassifyVerify(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyPassed(t *testing.T) {
+	success := CheckConclusionSuccess
+	failure := CheckConclusionFailure
+	ci := CheckResult{Name: "ci", Status: CheckStatusCompleted, Conclusion: &success}
+	tests := []struct {
+		name   string
+		checks []CheckResult
+		want   bool
+	}{
+		{name: "no checks"},
+		{name: "green CI alone is not verified", checks: []CheckResult{ci}},
+		{name: "verify passed", checks: []CheckResult{ci, {Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "verified"}}, want: true},
+		{name: "operator approved the park", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &success, Description: "verified (approved)"}}, want: true},
+		{name: "verify found a defect", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: &failure, Description: "defect: x"}}},
+		{name: "verify still verifying", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "verifying… 3f2a"}}},
+		{name: "verify parked for a human", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: "needs human: human-review:ui"}}},
+		{name: "completed without a conclusion", checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted}}},
+		{name: "a build receipt is not a verdict", checks: []CheckResult{{Name: BuildReceiptContext, Status: CheckStatusCompleted, Conclusion: &success}}},
+		{name: "case-variant context is not verify", checks: []CheckResult{{Name: "BOSS/VERIFY", Status: CheckStatusCompleted, Conclusion: &success}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VerifyPassed(tt.checks); got != tt.want {
+				t.Errorf("VerifyPassed = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

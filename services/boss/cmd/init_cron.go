@@ -739,7 +739,7 @@ func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, w
 		for _, o := range others {
 			names = append(names, o.GetName())
 		}
-		res.Warnings = append(res.Warnings, fmt.Sprintf("other jobs also run %s (%s); several enabled jobs for one stage break plan → build chaining", st.skill, strings.Join(names, ", ")))
+		res.Warnings = append(res.Warnings, fmt.Sprintf("other jobs also run %s (%s); each enabled job runs the stage on its own schedule, so the stage runs more often than any one schedule", st.skill, strings.Join(names, ", ")))
 	}
 
 	if job == nil {

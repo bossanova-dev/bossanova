@@ -63,12 +63,14 @@ func (f *recordChatStoreFake) Create(_ context.Context, params db.CreateAgentCha
 
 func newRecordChatTestServer(sess *models.Session) (*Server, *recordChatStoreFake) {
 	chats := &recordChatStoreFake{}
-	return &Server{
+	srv := &Server{
 		agentChats: chats,
 		sessions:   &sessionStoreFake{sess: sess},
 		// tmux left nil → ensureChatTmuxSession is a no-op, keeping the
 		// test focused on the agent-name resolution rules.
-	}, chats
+	}
+	srv.initDeferrers()
+	return srv, chats
 }
 
 type recordChatAgentClient struct {

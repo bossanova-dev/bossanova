@@ -16,7 +16,7 @@ func blockedParkSession() *pb.Session {
 		Id: "sess-blocked",
 		Attention: &pb.SessionAttention{
 			Kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			Sentence: "Review left must-fix findings open · send it back to fix them",
+			Sentence: "The PR ledger is open · send it back to close it",
 			Actions: []pb.AttentionAction{
 				pb.AttentionAction_ATTENTION_ACTION_SEND_BACK,
 				pb.AttentionAction_ATTENTION_ACTION_GITHUB,

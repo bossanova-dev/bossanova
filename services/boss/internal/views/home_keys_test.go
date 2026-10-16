@@ -3,12 +3,17 @@ package views
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // renameKeyHome is a three-session board with its rows already built, so the
@@ -194,9 +199,13 @@ func TestHomeKeysAreUnchangedWhenNoRenameIsActive(t *testing.T) {
 		if h.table.Cursor() != 2 {
 			t.Fatalf("cursor = %d after G, want the last row 2", h.table.Cursor())
 		}
-		h = homeFromKey(t, mustModel(h.handleKey(keyPress('g'))))
+		h = homeFromKey(t, mustModel(h.handleKey(specialKeyPress(tea.KeyHome))))
 		if h.table.Cursor() != 0 {
-			t.Fatalf("cursor = %d after g, want 0", h.table.Cursor())
+			t.Fatalf("cursor = %d after home, want 0", h.table.Cursor())
+		}
+		h = homeFromKey(t, mustModel(h.handleKey(specialKeyPress(tea.KeyEnd))))
+		if h.table.Cursor() != 2 {
+			t.Fatalf("cursor = %d after end, want the last row 2", h.table.Cursor())
 		}
 	})
 
@@ -337,5 +346,98 @@ func TestHomeRenameClosesWhenThePollHidesItsScreen(t *testing.T) {
 			t.Fatalf("fixture still holds %d sessions; the empty-state branch was never reached", len(h.sessions))
 		}
 		quitsOnQ(t, h)
+	})
+}
+
+// TestHomeHiddenTrackerAndGitHubKeys pins Home's two unadvertised shortcuts:
+// t opens the tracker issue and g opens the PR, and neither appears in the
+// footer, whatever attention shape the row has.
+func TestHomeHiddenTrackerAndGitHubKeys(t *testing.T) {
+	var opened []string
+	original := openURLFunc
+	openURLFunc = func(url string) error { opened = append(opened, url); return nil }
+	t.Cleanup(func() { openURLFunc = original })
+	const prURL, issueURL = "https://github.com/org/repo/pull/42", "https://linear.app/team/issue/BOS-1"
+	mergeable := true
+	inputs := map[string]attention.Input{
+		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
+		"question":    {QuestionText: "which one?"},
+		"review":      {ParkCodes: []string{"human-review:ui"}},
+		"blocked":     {ParkCodes: []string{"human-review:unproven"}},
+		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable, Verified: true},
+		"unverified":  {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
+		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}
+	for kind, in := range inputs {
+		in.HasTrackerLink = true
+		s := &pb.Session{Id: "s", Title: "session", PrNumber: proto.Int32(42), PrUrl: proto.String(prURL), TrackerUrl: proto.String(issueURL), Attention: attention.Compute(in)}
+		home := func() HomeModel {
+			h := attentionHome(&attentionStub{}, s)
+			h.authMgr, h.loggedIn = &auth.Manager{}, true
+			return h
+		}
+
+		footer := ansi.Strip(home().renderSessionTableFooter())
+		if strings.Contains(footer, "[t]") || strings.Contains(footer, "[g]") {
+			t.Errorf("%s: footer advertises a hidden key: %q", kind, footer)
+		}
+		if !strings.Contains(footer, "[l]ogout") {
+			t.Errorf("%s: footer lost [l]ogout: %q", kind, footer)
+		}
+
+		for key, want := range map[rune]string{'t': issueURL, 'g': prURL} {
+			opened = nil
+			model, cmd := home().Update(keyPress(key))
+			if cmd == nil {
+				t.Fatalf("%s: %c scheduled nothing", kind, key)
+			}
+			model, _ = model.Update(cmd())
+			if !slices.Equal(opened, []string{want}) {
+				t.Errorf("%s: %c opened %v, want %s", kind, key, opened, want)
+			}
+			if got := model.(HomeModel); got.statusErr {
+				t.Errorf("%s: %c reported an error: %s", kind, key, got.status)
+			}
+		}
+	}
+
+	t.Run("g opens the PR of a row with no attention", func(t *testing.T) {
+		opened = nil
+		h := renameKeyHome(t)
+		h.sessions[0].PrUrl = proto.String(prURL)
+		_, cmd := h.handleKey(keyPress('g'))
+		if cmd == nil {
+			t.Fatal("g scheduled nothing on a row with a PR")
+		}
+		cmd()
+		if !slices.Equal(opened, []string{prURL}) {
+			t.Fatalf("g opened %v, want %s", opened, prURL)
+		}
+	})
+
+	t.Run("control: the real table keymap binds g to go-to-top", func(t *testing.T) {
+		h := renameKeyHome(t)
+		h.table.SetCursor(2)
+		got := homeFromKey(t, mustModel(h.handleTableKey(keyPress('g'))))
+		if got.table.Cursor() != 0 {
+			t.Fatalf("cursor = %d after g reached the table, want 0; without this binding the no-op case below passes vacuously", got.table.Cursor())
+		}
+	})
+
+	t.Run("g on a row without a PR does nothing and never reaches the table", func(t *testing.T) {
+		opened = nil
+		h := renameKeyHome(t)
+		h.table.SetCursor(2)
+		model, cmd := h.handleKey(keyPress('g'))
+		got := homeFromKey(t, model)
+		if cmd != nil {
+			t.Fatal("g scheduled a command on a row without a PR")
+		}
+		if got.table.Cursor() != 2 {
+			t.Fatalf("cursor = %d after g, want 2; g fell through to the table's go-to-top", got.table.Cursor())
+		}
+		if len(opened) != 0 || got.status != "" {
+			t.Fatalf("g opened %v with status %q on a row without a PR", opened, got.status)
+		}
 	})
 }

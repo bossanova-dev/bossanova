@@ -1,5 +1,6 @@
 // Package verifybridge runs the installed boss-verify toolbox's operator verbs
-// (`verify-gate.mjs approve` and `send-back`) for one PR and decodes their JSON.
+// (`verify-gate.mjs approve` and `mark-merged`) for one PR and decodes their
+// JSON.
 //
 // The verbs live in verify-gate because the park format, the needs-human label
 // and the tracker adapter already live there; this package only bridges. Like
@@ -59,10 +60,20 @@ type Target struct {
 	DryRun bool
 }
 
+// MergeApproval pins an approval to what the operator saw before merging: the
+// head and the exact park codes waived (empty when nothing is parked). approve
+// runs with --for-merge and refuses before writing anything when either moved.
+type MergeApproval struct {
+	Head   string
+	Waives []string
+}
+
 // ApproveResult is `verify-gate.mjs approve`'s outcome. Approved is true only
 // when the head-bound approval record (ApprovalURL) took effect on HeadSHA:
-// it waives Waives there, or, with Lifted "sent-back", it waives nothing and
-// lifts a send-back of a head verify already passed. TrackerWrites reports the
+// it waives Waives there; with Lifted "sent-back" it waives nothing and lifts a
+// legacy send-back of a head verify already passed; with SignOff "merge" it
+// waives nothing and signs off an operator merge of a head with nothing
+// parked. TrackerWrites reports the
 // needs-human label removal that follows, which is housekeeping. A refusal
 // carries Reason, plus ApprovalURL when a record was posted that waives
 // nothing (or whose effect could not be confirmed).
@@ -79,18 +90,20 @@ type ApproveResult struct {
 	Why           string `json:"why,omitempty"`
 	Park          string `json:"park,omitempty"`
 	State         string `json:"state,omitempty"`
+	SignOff       string `json:"signOff,omitempty"`
 }
 
-// SendBackResult is `verify-gate.mjs send-back`'s outcome. Posted is true only
-// when the PR comment was created; a refusal carries Reason.
-type SendBackResult struct {
-	Posted     bool   `json:"posted"`
-	Planned    bool   `json:"planned,omitempty"`
-	DryRun     bool   `json:"dryRun,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	CommentURL string `json:"commentUrl,omitempty"`
-	HeadSHA    string `json:"headSha,omitempty"`
-	State      string `json:"state,omitempty"`
+// MarkMergedResult is `verify-gate.mjs mark-merged`'s outcome: for a merged PR,
+// the post-merge tracker write the verify stage's merge makes (TrackerWrites
+// ok, none, unavailable, failed, ..., with Why when it did not happen). A PR
+// that is not merged carries Reason instead.
+type MarkMergedResult struct {
+	Merged        bool   `json:"merged"`
+	MergeSHA      string `json:"mergeSha,omitempty"`
+	TrackerWrites string `json:"trackerWrites,omitempty"`
+	Why           string `json:"why,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	State         string `json:"state,omitempty"`
 }
 
 // Bridge runs verify-gate.mjs. The zero value uses `node` from PATH, locates the
@@ -135,11 +148,21 @@ func Locate(getenv func(string) string, home string) (string, error) {
 	return "", fmt.Errorf("%w: looked in %s; run `boss skills install`", ErrToolboxMissing, strings.Join(candidates, ", "))
 }
 
-// Approve hands the standing park on t's current head back to verify.
-func (b *Bridge) Approve(ctx context.Context, t Target) (ApproveResult, error) {
+// Approve hands the standing park on t's current head back to verify. A
+// non-nil forMerge signs off an operator merge instead: approve runs with
+// --for-merge pinned to forMerge's head and waived codes.
+func (b *Bridge) Approve(ctx context.Context, t Target, forMerge *MergeApproval) (ApproveResult, error) {
 	args, err := verbArgs("approve", t)
 	if err != nil {
 		return ApproveResult{}, err
+	}
+	if forMerge != nil {
+		if !shaPattern.MatchString(forMerge.Head) {
+			return ApproveResult{}, fmt.Errorf("%w: merge approval head %q is not a 40-hex SHA", ErrInvalidTarget, forMerge.Head)
+		}
+		// Inserted before the trailing --json; `--waives=` keeps an empty set
+		// an explicit "nothing parked".
+		args = append(args[:len(args)-1], "--for-merge", "--head="+forMerge.Head, "--waives="+strings.Join(forMerge.Waives, ","), args[len(args)-1])
 	}
 	out, err := b.run(ctx, t.Dir, args)
 	if err != nil {
@@ -158,52 +181,51 @@ func (b *Bridge) Approve(ctx context.Context, t Target) (ApproveResult, error) {
 	r := wire.ApproveResult
 	r.Approved = *wire.Approved
 	switch {
-	case r.Approved && (r.HeadSHA == "" || r.ApprovalURL == "" || (r.Waives == "" && r.Lifted != "sent-back")):
-		return ApproveResult{}, fmt.Errorf("%w: approve reported approved without a head, an approval record and waived codes or a lifted send-back (an older verify-gate removes the needs-human label without a record: re-add the label and run `boss skills install`): %s", ErrShape, truncate(out))
+	case r.Approved && (r.HeadSHA == "" || r.ApprovalURL == "" || (r.Waives == "" && r.Lifted != "sent-back" && r.SignOff != "merge")):
+		return ApproveResult{}, fmt.Errorf("%w: approve reported approved without a head, an approval record and waived codes, a lifted send-back or a merge sign-off (an older verify-gate removes the needs-human label without a record: re-add the label and run `boss skills install`): %s", ErrShape, truncate(out))
+	case r.Approved && forMerge != nil && !strings.EqualFold(r.HeadSHA, forMerge.Head):
+		return ApproveResult{}, fmt.Errorf("%w: approve --for-merge approved head %s, not the pinned %s: %s", ErrShape, r.HeadSHA, forMerge.Head, truncate(out))
 	case !r.Approved && !r.Planned && r.Reason == "":
 		return ApproveResult{}, fmt.Errorf("%w: approve refused without a reason: %s", ErrShape, truncate(out))
 	}
 	return r, nil
 }
 
-// SendBack posts note on t's PR as the operator's rejection.
-func (b *Bridge) SendBack(ctx context.Context, t Target, note string) (SendBackResult, error) {
-	if strings.TrimSpace(note) == "" {
-		return SendBackResult{}, fmt.Errorf("%w: send-back needs a non-empty note", ErrInvalidTarget)
-	}
-	args, err := verbArgs("send-back", t)
+// MarkMerged runs the post-merge tracker bookkeeping for t's merged PR.
+func (b *Bridge) MarkMerged(ctx context.Context, t Target) (MarkMergedResult, error) {
+	args, err := verbArgs("mark-merged", t)
 	if err != nil {
-		return SendBackResult{}, err
+		return MarkMergedResult{}, err
 	}
-	// Inserted before the trailing flags; `--note=` keeps a note that starts
-	// with `--` from being read as a flag.
-	args = append(args[:len(args)-1], "--note="+note, args[len(args)-1])
 	out, err := b.run(ctx, t.Dir, args)
 	if err != nil {
-		return SendBackResult{}, err
+		return MarkMergedResult{}, err
 	}
 	var wire struct {
-		SendBackResult
-		Posted *bool `json:"posted"`
+		MarkMergedResult
+		Merged *bool `json:"merged"`
 	}
 	if err := decode(out, &wire); err != nil {
-		return SendBackResult{}, err
+		return MarkMergedResult{}, err
 	}
-	if wire.Posted == nil {
-		return SendBackResult{}, fmt.Errorf("%w: send-back printed no `posted` field: %s", ErrShape, truncate(out))
+	if wire.Merged == nil {
+		return MarkMergedResult{}, fmt.Errorf("%w: mark-merged printed no `merged` field: %s", ErrShape, truncate(out))
 	}
-	r := wire.SendBackResult
-	r.Posted = *wire.Posted
+	r := wire.MarkMergedResult
+	r.Merged = *wire.Merged
 	switch {
-	case r.Posted && r.CommentURL == "":
-		return SendBackResult{}, fmt.Errorf("%w: send-back reported posted without a comment URL: %s", ErrShape, truncate(out))
-	case !r.Posted && !r.Planned && r.Reason == "":
-		return SendBackResult{}, fmt.Errorf("%w: send-back refused without a reason: %s", ErrShape, truncate(out))
+	case r.Merged && r.TrackerWrites == "":
+		return MarkMergedResult{}, fmt.Errorf("%w: mark-merged reported merged without a tracker outcome: %s", ErrShape, truncate(out))
+	case !r.Merged && r.Reason == "":
+		return MarkMergedResult{}, fmt.Errorf("%w: mark-merged reported not merged without a reason: %s", ErrShape, truncate(out))
 	}
 	return r, nil
 }
 
-var repoSlug = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+var (
+	repoSlug   = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	shaPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+)
 
 // verbArgs validates t and renders the verb's argv. The last element is always
 // `--json`, so callers may insert verb-specific flags before it.

@@ -91,9 +91,8 @@ Report (Phase 6) the `summary` verb's rows as a table — id, title, `planned` /
 unless that child returned `outcome: "drift"` (its scratch is then the only copy of the intended
 bytes; name it in the report). A planned child's own Phase 5 already removed its scratch.
 
-Exit non-zero when `summary` says `ok: false` or the parent read-back mismatched. Phase 6's hand-off
-runs when any child was planned with `agent-build`; Phase 7's outcome is `planned` when `ok` and the
-parent write (if any) verified, else `failed`.
+Exit non-zero when `summary` says `ok: false` or the parent read-back mismatched. Phase 7's outcome
+is `planned` when `ok` and the parent write (if any) verified, else `failed`.
 
 ## Child-planner brief
 
@@ -120,7 +119,7 @@ dispatched. Never call `AskUserQuestion`.
    becomes a `## Planning` note plus an open question (and `agent-question`), because two concurrent
    siblings writing edges toward each other could form a cycle.
 4. **Clean up** — SKILL.md Phase 5 for your scratch only (kept after a write-back `drift`). Skip
-   Phases 6–7: no report, notes flush, hand-off or self-archive — the orchestrator owns those.
+   Phases 6–7: no report, notes flush or self-archive — the orchestrator owns those.
 5. **Sentinel, last** — only when Phase 4 completed:
 
    ```bash

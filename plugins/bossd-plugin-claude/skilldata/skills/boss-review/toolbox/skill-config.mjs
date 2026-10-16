@@ -2800,6 +2800,24 @@ function zeroSelectionRisk(segment, rawSegment, separatorAfter) {
   return !(search && !negated && ownsExitStatus)
 }
 
+const SEARCH_VALUE_OPTIONS = new Set([
+  '-A',
+  '-B',
+  '-C',
+  '-m',
+  '-g',
+  '-t',
+  '--context',
+  '--max-count',
+  '--glob',
+  '--iglob',
+  '--type',
+  '--type-not',
+  '--include',
+  '--exclude',
+  '--exclude-dir',
+])
+
 function searchPatternAndPaths(segment) {
   if (!['rg', 'grep'].includes(segment[0])) return null
   const paths = []
@@ -2813,7 +2831,8 @@ function searchPatternAndPaths(segment) {
     if (token.startsWith('-')) {
       if (/^(?:-e|--regexp)$/.test(token)) pattern = segment[++index] ?? null
       else if (token.startsWith('--regexp=')) pattern = token.slice('--regexp='.length)
-      else if (/^(?:--glob|--type|--context|--max-count|-[ABCm])$/.test(token)) index += 1
+      else if (SEARCH_VALUE_OPTIONS.has(token) || (segment[0] === 'rg' && token === '-T'))
+        index += 1
       continue
     }
     if (pattern === null) pattern = token
@@ -3864,6 +3883,22 @@ export function unmatchedPolicyGlobs(policy, files) {
       if (!paths.some((path) => re.test(path))) out.push({ list, glob })
     }
   return out
+}
+
+/**
+ * A shared glob declares a mirror; report only category globs missing from alwaysHumanPaths.
+ * Zero overlap reads as independent, including a mirror whose every glob has drifted.
+ */
+export function policyMirrorGaps(policy) {
+  const mirror = new Set(globList(policy?.alwaysHumanPaths))
+  const lists = VERIFY_HUMAN_REVIEW_CATEGORIES.map((category) => [
+    `humanReview.${category}`,
+    globList(policy?.humanReview?.[category]),
+  ])
+  if (!lists.some(([, globs]) => globs.some((glob) => mirror.has(glob)))) return []
+  return lists.flatMap(([list, globs]) =>
+    [...new Set(globs)].filter((glob) => !mirror.has(glob)).map((glob) => ({ list, glob })),
+  )
 }
 
 function validateRetro(block, fail) {

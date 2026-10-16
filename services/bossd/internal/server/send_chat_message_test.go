@@ -346,6 +346,55 @@ func TestSendChatMessage_CodexChat_RewritesCommandPrefix(t *testing.T) {
 	}
 }
 
+// TestSendChatMessage_MultiLineSkillCommand covers a skill command followed by
+// a note ("/boss-repair N", a blank line, then free text). Codex chats showed
+// "Unrecognized command '/boss-repair'" because a multi-line message was never
+// rewritten. The first line's skill command takes the chat agent's prefix and
+// the note is delivered byte for byte; built-ins and free text stay as typed.
+func TestSendChatMessage_MultiLineSkillCommand(t *testing.T) {
+	const note = "\n\nAddress this feedback on PR #3138 before anything else:\n\n/status of the retry loop is wrong"
+	cases := []struct {
+		name    string
+		agent   string
+		message string
+		want    string
+	}{
+		{"codex skill command becomes a dollar skill", "codex", "/boss-repair 3138" + note, "$boss-repair 3138" + note},
+		{"claude skill command is unchanged", "claude", "/boss-repair 3138" + note, "/boss-repair 3138" + note},
+		{"codex native built-in is unchanged", "codex", "/status" + note, "/status" + note},
+		{"codex free text is unchanged", "codex", "please look again" + note, "please look again" + note},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: tc.agent}
+			sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: tc.agent}
+			writeSendChatTestSkill(t, filepath.Join(sess.WorktreePath, ".codex", "skills", "bossanova", "boss-repair"))
+			writeSendChatTestSkill(t, filepath.Join(sess.WorktreePath, ".claude", "skills", "bossanova", "boss-repair"))
+			tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+			s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+			if _, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+				AgentSessionId: "agent-1",
+				Message:        tc.message,
+				Submit:         true,
+			})); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			tmuxer.mu.Lock()
+			msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+			tmuxer.mu.Unlock()
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+			}
+			if msgs[0].text != tc.want {
+				t.Errorf("SendMessage text = %q, want %q", msgs[0].text, tc.want)
+			}
+		})
+	}
+}
+
 func TestSendChatMessage_CodexChat_RewritesProjectCustomCommandPrefix(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}

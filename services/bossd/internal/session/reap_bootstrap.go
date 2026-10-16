@@ -171,7 +171,16 @@ func (l *Lifecycle) reapOneStrandedBootstrap(ctx context.Context, sess *models.S
 		l.logger.Warn().Err(updErr).Str("session", sess.ID).Msg("stranded-bootstrap reap: persist blocked reason failed")
 	}
 
-	l.cleanUpStrandedBootstrapArtifacts(ctx, sess)
+	abandoned := l.cleanUpStrandedBootstrapArtifacts(ctx, sess)
+	// A cron run has nothing left to open or resume and its schedule fires a
+	// fresh run, so leaving it Blocked only parks an alert nobody can act on.
+	// A run whose worktree purge did not run stays visible: its artifacts need
+	// reclaiming by hand.
+	if isCronSession(sess) && !abandoned {
+		if err := l.sessions.Archive(ctx, sess.ID); err != nil {
+			l.logger.Warn().Err(err).Str("session", sess.ID).Msg("stranded-bootstrap reap: archive cron run failed; leaving it Blocked")
+		}
+	}
 	return true
 }
 
@@ -223,14 +232,17 @@ func (l *Lifecycle) bootstrapStrandIsDead(sess *models.Session, phase reapPhase,
 // underneath itself), so the honest response to a refused purge is to say the
 // artifacts are being abandoned and name them, not to promise a retry that
 // cannot happen.
-func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess *models.Session) {
+//
+// It reports whether it abandoned a worktree on disk, which happens only when
+// the purge did not run.
+func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess *models.Session) (abandoned bool) {
 	if sess.RepoID == "" || l.worktrees == nil || l.repos == nil {
-		return
+		return false
 	}
 	repo, err := l.repos.Get(ctx, sess.RepoID)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).Msg("stranded-bootstrap reap: get repo failed")
-		return
+		return false
 	}
 	// Decide ownership BEFORE the purge (the ancestry check is read-only in the
 	// main clone, so the purge does not disturb it) but delete the branch AFTER:
@@ -239,7 +251,7 @@ func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess 
 	// is already gone — which a stranded bootstrap's is not.
 	if sess.WorktreeCreatedAt == nil || sess.WorktreePath == "" {
 		l.logger.Warn().Str("worktree", sess.WorktreePath).Msg("worktree ownership unknown; not purged")
-		return
+		return false
 	}
 	ours := l.strandedBranchIsOurs(ctx, sess, repo)
 	if err := l.worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.WorktreePath); err != nil {
@@ -274,7 +286,7 @@ func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess 
 			event.Str("worktree_dir_branch", sess.BranchName).
 				Msg("stranded-bootstrap reap: worktree purge did not run; abandoning this session's worktree directory — no later sweep revisits a Blocked row. The branch is left alone deliberately: this reaper judged it not its own to delete")
 		}
-		return
+		return true
 	}
 	if ours {
 		if err := l.worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); err != nil {
@@ -282,6 +294,7 @@ func (l *Lifecycle) cleanUpStrandedBootstrapArtifacts(ctx context.Context, sess 
 				Msg("stranded-bootstrap reap: delete branch failed")
 		}
 	}
+	return false
 }
 
 // strandedBranchIsOurs requires recorded fresh-branch ownership and no PR.

@@ -133,6 +133,9 @@ checks it). Some things help the implementer and the guards:
   that is only true because a file needed no change is written
   `` - [ ] (verify-only) <the claim> — check: `<runnable command>` `` — the command in backticks, each
   `;`/`|`/`&&` segment starting with something runnable (not a bare path, not prose).
+- **After merge**: an observation only possible once the change is merged (a scheduled run firing,
+  a rollout, a production metric) is not an acceptance criterion. List it under `## After merge`;
+  the build publishes it as a non-gating PR section, so it never holds the merge it waits on.
 - **Premises** the plan rests on, written the same way (`- [ ] <fact> — check: `<command>``, at most
   one marked `(central)`). A `path:line` citation is repo-relative and carries a backticked token
   from that line, so it can be re-checked.

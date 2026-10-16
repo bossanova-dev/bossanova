@@ -124,6 +124,28 @@ func TestSubscribeDeltas_SessionUpdatedEvent_EmitsSessionDeltaUpdated(t *testing
 	}
 }
 
+func TestForwardEvent_SessionDeltaSequence(t *testing.T) {
+	clock := newFakeClock()
+	seed := uint64(clock.Now().UnixNano())
+	client := NewStreamClient(StreamClientConfig{Clock: clock, Logger: zerolog.Nop()})
+	var previous uint64
+	// A new outbound channel models a reconnect without replacing the client.
+	for i, kind := range []pb.SessionDelta_Kind{pb.SessionDelta_KIND_CREATED, pb.SessionDelta_KIND_UPDATED, pb.SessionDelta_KIND_DELETED} {
+		outbound := make(chan *pb.DaemonEvent, 1)
+		client.forwardEvent(context.Background(), StreamEvent{Session: &SessionEvent{
+			Kind: kind, Session: &pb.Session{Id: "s1"},
+		}}, outbound, nil)
+		delta := (<-outbound).GetSession()
+		if seq := delta.GetSeq(); seq == 0 || seq <= seed || seq <= previous {
+			t.Fatalf("delta %d sequence = %d, want above seed %d and previous %d", i, seq, seed, previous)
+		}
+		if i == 0 && delta.GetSeq() != seed+1 {
+			t.Fatalf("first sequence = %d, want seed + 1 = %d", delta.GetSeq(), seed+1)
+		}
+		previous = delta.GetSeq()
+	}
+}
+
 func TestSubscribeDeltas_SessionDeletedEvent_EmitsSessionDeltaDeleted(t *testing.T) {
 	// Deletes propagate with only session.id populated — the forwarder
 	// is dumb on purpose: the publisher upstream decides what fields

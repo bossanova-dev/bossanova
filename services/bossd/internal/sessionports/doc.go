@@ -7,8 +7,8 @@
 // a tmux pane PID paired with the OS birth Identity captured at the same
 // instant. Detector.Scan then runs a single batched pass:
 //
-//  1. Snapshot the whole pid -> ppid graph once (production: `ps -axo
-//     pid=,ppid=`).
+//  1. Snapshot the whole process table (pid -> ppid and executable name) once
+//     (production: `ps -axo pid=,ppid=,comm=`).
 //  2. Validate each root against its captured Identity, rejecting a PID reused
 //     before the scan began.
 //  3. Expand every valid root to its descendant tree, so overlapping and
@@ -18,7 +18,9 @@
 //     (production: one lsof invocation on macOS, one procfs sweep on Linux).
 //  5. Revalidate process identities AFTER socket inspection and attribute only
 //     listeners whose entire ancestry chain stayed identity-stable across the
-//     window.
+//     window, minus the agent runner's own listeners (agentrunner.go): the
+//     codex/claude CLI and its vendored helpers listen on loopback ports for
+//     internal use, which are not the session's services.
 //
 // # Why identity revalidation
 //

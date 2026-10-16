@@ -81,6 +81,7 @@ test('vocabulary is frozen and closed', () => {
     'host',
     'outside-worktree',
     'plan-question',
+    'post-merge',
     'review-finding',
     'stage-evidence',
   ])
@@ -134,6 +135,32 @@ test('outside-worktree criteria still park the PR', () => {
   assert.deepEqual(routed.warnings, [])
   assert.match(renderFollowUpSections(routed), /^- \[ \] Confirm the dashboard loads/m)
   assert.deepEqual(reasonsFor(candidates), ['human-follow-up-open'])
+})
+
+test('a post-merge observation is listed under ## After merge and never parks the PR', () => {
+  const candidates = [
+    {
+      text: 'Observe the nightly build run on its configured schedule',
+      source: 'post-merge',
+      criterion: 'scheduled build cadence',
+    },
+  ]
+  const routed = routeFollowUps(candidates)
+  assert.deepEqual(routed.humanFollowUp, [])
+  assert.deepEqual(routed.afterMerge, [
+    'Observe the nightly build run on its configured schedule (criterion: scheduled build cadence)',
+  ])
+  assert.deepEqual(routed.warnings, [])
+  const parsed = sections(bodyWith(renderFollowUpSections(routed)))
+  assert.deepEqual(parsed.get('after merge').filter(Boolean), [
+    '- [ ] Observe the nightly build run on its configured schedule (criterion: scheduled build cadence)',
+  ])
+  assert.deepEqual(parsed.get('human follow-up').filter(Boolean), ['- none'])
+  assert.deepEqual(reasonsFor(candidates), [])
+  assert.equal(
+    sections(bodyWith(renderFollowUpSections(routeFollowUps([])))).has('after merge'),
+    false,
+  )
 })
 
 test('a pre-existing review finding is listed for a ticket and never parks the PR', () => {

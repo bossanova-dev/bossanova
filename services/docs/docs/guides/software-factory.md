@@ -326,24 +326,29 @@ there, mentioning the ticket's creator. The PR's `boss/verify` status reads
 `needs human:` with the reason. A saved Linear view filtered to label `needs-human`
 lists everything waiting for you, at any stage.
 
-Read the findings, then approve the PR one of three ways:
+Read the findings, then decide.
 
-1. Run `boss pr approve <pr>`. It records an approval bound to the PR's current
-   commit, so verification waives exactly the parked reasons on that commit and
-   judges any later push afresh. Removing `needs-human` from the ticket alone no
-   longer hands a park back; on a parked defect it still asks for a fresh verdict.
-   The daemon runs the approval on its own host with the repo's stored Linear key,
-   so it works from any machine connected to that daemon. In the TUI, open the
-   parked session and press `m`, which reads `[m]erge` as it does on a passing PR.
-2. Have a teammate approve the PR on GitHub. Verification accepts the review
-   approval and still checks the required gates.
-3. Merge the PR yourself after your own review.
+- Sign-off parks (a UI change, a security change, a database migration) show as
+  review rows in the TUI. Press `m` on one, confirm `Merge PR #N?`, and boss
+  records your approval bound to the PR's current commit, merges that commit at
+  once, and moves the ticket to Done. When the PR moved to a new commit since you
+  opened it, or it does not pass the merge gate (failing checks, a conflict),
+  nothing is approved or merged and the TUI says why.
+- Blocked parks (an open PR checklist, missing evidence, a build without the
+  factory's review) show as fix rows, which offer no merge. Their details list
+  what is open, such as each unticked checklist item. Open a chat in the session
+  to fix it; the next push is judged afresh.
+- To merge over a blocked park anyway, run `boss pr approve <pr>`. It records an
+  approval bound to the PR's current commit, so verification waives exactly the
+  parked reasons on that commit and judges any later push afresh. The daemon
+  runs it on its own host with the repo's stored Linear key, so it works from
+  any machine connected to that daemon. Removing `needs-human` from the ticket
+  alone does not hand a park back.
+- Verification also accepts a teammate's approving review on GitHub, and still
+  checks the required gates. GitHub does not let authors approve their own PRs,
+  so for solo work use the TUI merge or `boss pr approve`.
 
-To reject a commit instead, run `boss pr send-back <pr> "<note>"`. It revokes any
-approval of that commit, so verification neither waives nor merges it, and starts a
-repair. GitHub does not let authors approve their own PRs, so for solo work
-`boss pr approve` is the approval path. Approval does not waive a broken required
-verify extension; fix the extension.
+Approval does not waive a broken required verify extension; fix the extension.
 
 ## Filtering and extending
 

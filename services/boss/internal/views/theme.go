@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"regexp"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
@@ -123,6 +124,9 @@ var (
 	styleActionBar = lipgloss.NewStyle().Faint(true).Padding(actionBarPadY, 2)
 	styleError     = lipgloss.NewStyle().Foreground(colorDanger).Padding(0, 2)
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
+	// styleEmphasis is the primary foreground, bold: the one line a screen asks
+	// the operator to act on.
+	styleEmphasis = lipgloss.NewStyle().Bold(true)
 )
 
 // --- Status Styles ---
@@ -618,6 +622,36 @@ func MaxColWidth(header string, values []string, cap int) int {
 
 const actionBarSeparator = " · "
 
+// keyHintPattern matches a one-character key hint and the space after it.
+var keyHintPattern = regexp.MustCompile(`\[([\p{L}\p{N}])\] `)
+
+// compactKeyHint folds every hint whose label starts with its own key into the
+// label, so "[m] merge" renders as "[m]erge". The match is case-sensitive:
+// "[R] reauth" keeps its space because R and r are different keys.
+func compactKeyHint(hint string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range keyHintPattern.FindAllStringSubmatchIndex(hint, -1) {
+		key := hint[m[2]:m[3]]
+		if !strings.HasPrefix(hint[m[1]:], key) {
+			continue
+		}
+		b.WriteString(hint[last:m[0]])
+		b.WriteString("[" + key + "]")
+		last = m[1] + len(key)
+	}
+	b.WriteString(hint[last:])
+	return b.String()
+}
+
+func compactKeyHints(hints []string) []string {
+	out := make([]string, len(hints))
+	for i, hint := range hints {
+		out[i] = compactKeyHint(hint)
+	}
+	return out
+}
+
 // actionBarText builds the unstyled text of a grouped action bar. Each group's
 // items are joined with double-space, then groups are joined with " · ".
 // Split out of actionBar so formActionBar can compose two such lines inside a
@@ -626,7 +660,7 @@ func actionBarText(groups ...[]string) string {
 	var parts []string
 	for _, g := range groups {
 		if len(g) > 0 {
-			parts = append(parts, strings.Join(g, "  "))
+			parts = append(parts, strings.Join(compactKeyHints(g), "  "))
 		}
 	}
 	return strings.Join(parts, actionBarSeparator)
@@ -672,6 +706,7 @@ func actionBarTextLines(width int, groups ...[]string) []string {
 		if len(group) == 0 {
 			continue
 		}
+		group = compactKeyHints(group)
 		part := strings.Join(group, "  ")
 		if ansi.StringWidth(part) > textWidth {
 			// A legacy caller may place several independent actions in one
@@ -706,6 +741,7 @@ func actionBarPartsLines(width int, separator string, parts []string) []string {
 	if len(parts) == 0 {
 		return []string{""}
 	}
+	parts = compactKeyHints(parts)
 	if width <= 0 {
 		return []string{strings.Join(parts, separator)}
 	}
@@ -883,6 +919,13 @@ func renderBanner(active View, opts bannerOpts) string {
 		}
 		line2 = styleSubtle.Render(wt)
 		line2 += " " + styleSubtle.Render("· "+accountBannerLabel(opts.session.GetAccountId()))
+		if active == ViewChatPicker && opts.session.GetAttention() != nil {
+			line1 = renderTrackerLink(opts.session, opts.session.Title)
+			if pr := renderPRLink(opts.session); pr != "" {
+				line1 = pr + "  " + line1
+			}
+			line2 = styleSubtle.Render(attentionDetailStatus(opts.session))
+		}
 
 	case opts.repo != nil:
 		line1 = opts.repo.DisplayName

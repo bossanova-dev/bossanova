@@ -183,8 +183,8 @@ func (s *chatPickerStub) ApproveSessionPR(_ context.Context, id string, _ bool) 
 	return s.approveResult, s.approveErr
 }
 
-func (s *chatPickerStub) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
-	return nil, nil
+func (s *chatPickerStub) OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error) {
+	panic("unused")
 }
 func (s *chatPickerStub) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *chatPickerStub) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
@@ -538,8 +538,8 @@ func TestChatPickerResponsiveTableKeepsProseAndHTTPReservationsAt72Columns(t *te
 		t.Errorf("blockWrapWidth() = %d, want <= terminal content width %d", got, avail)
 	}
 	m.session = &pb.Session{Id: "session-1", HttpEndpoints: manyEndpoints(12)}
-	if got := m.httpLineHeight(); got != 1 {
-		t.Errorf("httpLineHeight() = %d, want 1 at 72 columns", got)
+	if got := m.httpLineHeight(); got != 2 {
+		t.Errorf("httpLineHeight() = %d, want 2 (one line and its blank) at 72 columns", got)
 	}
 }
 
@@ -2398,9 +2398,9 @@ func TestChatPicker_HTTPLineHeightZeroWithoutEndpoints(t *testing.T) {
 	}
 }
 
-// TestChatPicker_HTTPLineRendersAboveTable verifies the HTTP line occupies
-// exactly one line directly above the chat table (no extra blank line), shows
-// every port, and that tableHeight's reservation matches what View renders.
+// TestChatPicker_HTTPLineRendersAboveTable verifies the HTTP line sits one
+// blank line above the chat table, shows every port, and that tableHeight's
+// reservation matches what View renders.
 func TestChatPicker_HTTPLineRendersAboveTable(t *testing.T) {
 	m := seedChatPickerForEndpoints(t)
 	m.session = &pb.Session{
@@ -2426,8 +2426,8 @@ func TestChatPicker_HTTPLineRendersAboveTable(t *testing.T) {
 	if httpIdx == -1 || tableIdx == -1 {
 		t.Fatalf("HTTP line (%d) or chat table header (%d) not found in:\n%s", httpIdx, tableIdx, rendered)
 	}
-	if tableIdx != httpIdx+1 {
-		t.Errorf("HTTP line at %d, table header at %d: want the table on the immediately following line (no blank line)", httpIdx, tableIdx)
+	if tableIdx != httpIdx+2 || strings.TrimSpace(lines[httpIdx+1]) != "" {
+		t.Errorf("HTTP line at %d, table header at %d: want one blank line between them", httpIdx, tableIdx)
 	}
 	// BOS-616: the ports are joined by a single space, so assert on the visible
 	// text (OSC 8 envelopes stripped) and pin the removal of the old middot.
@@ -2438,8 +2438,8 @@ func TestChatPicker_HTTPLineRendersAboveTable(t *testing.T) {
 	if strings.Contains(visibleHTTP, "·") {
 		t.Errorf("HTTP line = %q, want no separator glyph between the ports", visibleHTTP)
 	}
-	if got := m.httpLineHeight(); got != 1 {
-		t.Errorf("httpLineHeight() = %d, want 1", got)
+	if got := m.httpLineHeight(); got != 2 {
+		t.Errorf("httpLineHeight() = %d, want 2", got)
 	}
 	// The HTTP line is the only thing above the table here, so the reservation
 	// must equal the number of rendered lines preceding it.
@@ -2517,8 +2517,8 @@ func TestChatPicker_HTTPLineShrinksTable(t *testing.T) {
 		Id:            "session-1",
 		HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}},
 	}
-	if got := withEP.tableHeight(); got != baseHeight-1 {
-		t.Errorf("tableHeight() with one endpoint = %d, want %d (baseline %d minus the reserved HTTP line)", got, baseHeight-1, baseHeight)
+	if got := withEP.tableHeight(); got != baseHeight-2 {
+		t.Errorf("tableHeight() with one endpoint = %d, want %d (baseline %d minus the reserved HTTP line and its blank)", got, baseHeight-2, baseHeight)
 	}
 }
 
@@ -2556,7 +2556,7 @@ func manyEndpoints(n int) []*pb.HttpEndpoint {
 // TestChatPicker_HTTPLineNarrowTerminalStaysOneLine is the counterpart to
 // TestHomeEndpointRowNarrowTerminal. Nothing upstream caps how many listeners a
 // worktree exposes, so a session with many endpoints must still occupy exactly
-// the ONE line httpLineHeight reserves — otherwise the wrapped remainder pushes
+// the one line (plus its blank) httpLineHeight reserves — otherwise the wrapped remainder pushes
 // the last chat row (or the action bar) off screen. The load-bearing assertion is
 // the VISIBLE width: bubbletea writes View().Content verbatim and the terminal is
 // what soft-wraps, so a too-wide line costs a second row without ever containing a
@@ -2584,11 +2584,11 @@ func TestChatPicker_HTTPLineNarrowTerminalStaysOneLine(t *testing.T) {
 			if n := strings.Count(line, "\x1b]8;;"); n%2 != 0 {
 				t.Errorf("httpEndpointLine() has %d OSC 8 markers (odd) — a hyperlink envelope was left open: %q", n, line)
 			}
-			if got := m.httpLineHeight(); got != 1 {
-				t.Errorf("httpLineHeight() = %d, want 1", got)
+			if got := m.httpLineHeight(); got != 2 {
+				t.Errorf("httpLineHeight() = %d, want 2", got)
 			}
 
-			// The rendered View must gain exactly one line over the same view
+			// The rendered View must gain exactly the reserved lines over the same view
 			// with no endpoints — a delta assertion, so it stays valid if
 			// anything is ever added above the HTTP line.
 			base := seedChatPickerSized(t, 6, 24)
@@ -3000,7 +3000,6 @@ const (
 // block's content.
 const (
 	alignWarningText    = "finalize failed (pr_failed): worktree has uncommitted changes"
-	alignWaitingReason  = "awaiting checks_failed on acme/my-app#668"
 	alignRotationDetail = "refreshed auth in place"
 
 	// The warning block wraps at blockWrapWidth (the table's content width), so
@@ -3012,10 +3011,10 @@ const (
 )
 
 // seedChatPickerForAlignment builds a chat picker that draws every prose line
-// the view has at once — the finalize/repair warning block, the usage-limited
-// hint, the waiting-reason line, the HTTP endpoint line and the
-// rotation-history block — alongside the chat table and the action bar, so all
-// of their columns can be measured from a single render.
+// the view has at once (the finalize/repair warning block, the usage-limited
+// hint and the rotation-history block) plus the HTTP endpoint line, alongside
+// the chat table and the action bar, so all of their columns can be measured
+// from a single render.
 func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
 	t.Helper()
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
@@ -3036,10 +3035,8 @@ func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
 				CreatedAt:      timestamppb.Now(),
 			},
 		},
-		// agent-1 limited drives limitedProviderLine; agent-2 waiting plus a
-		// reason drives waitingReasonLine.
-		daemonStatuses:       map[string]string{"agent-1": statusLimited, "agent-2": statusWaiting},
-		daemonWaitingReasons: map[string]string{"agent-2": alignWaitingReason},
+		// agent-1 limited drives limitedProviderLine.
+		daemonStatuses: map[string]string{"agent-1": statusLimited, "agent-2": statusWaiting},
 	})
 	m = updated.(ChatPickerModel)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: alignProbeWidth, Height: alignProbeHeight})
@@ -3107,12 +3104,6 @@ func TestChatPicker_StatusLinesAlignWithActionBar(t *testing.T) {
 	}{
 		{name: "session warning block", needle: alignWarningAnchor},
 		{name: "usage-limited hint", needle: "usage-limited"},
-		{name: "waiting reason line", needle: alignWaitingReason},
-		// The HTTP line hand-rolls its inset as spaces (lipgloss mangles its
-		// OSC 8 envelopes), so it is the one site a change to the prose column
-		// can leave behind. Anchored on ":3000" rather than "HTTP" so the
-		// assertion also proves the envelopes did not displace the text.
-		{name: "http endpoint line", needle: ":3000"},
 		{name: "rotation history block", needle: alignRotationDetail},
 	}
 	for _, tt := range lines {
@@ -3136,7 +3127,7 @@ func TestChatPicker_StatusLinesAlignWithTableCaret(t *testing.T) {
 	rendered := m.View().Content
 
 	caretCol := renderedColumnOf(t, rendered, cursorChevron)
-	for _, needle := range []string{alignWarningAnchor, "usage-limited", alignWaitingReason, ":3000", alignRotationDetail} {
+	for _, needle := range []string{alignWarningAnchor, "usage-limited", alignRotationDetail} {
 		if got := lineColumnOf(t, stripANSI(rendered), needle); got != caretCol {
 			t.Errorf("line %q starts at column %d, table caret at column %d; want them aligned\n%s",
 				needle, got, caretCol, visibleRowText(stripANSI(rendered)))
@@ -3153,22 +3144,33 @@ func TestChatPicker_StatusLinesAlignWithTableCaret(t *testing.T) {
 	}
 }
 
-// TestChatPicker_HTTPLineInsetMatchesTheProseConstant pins the hand-rolled
-// inset directly, not just via the rendered view: httpEndpointLine builds its
-// leading spaces itself, so a future edit could restore the table constant
-// there while every lipgloss-rendered line stayed correct.
-func TestChatPicker_HTTPLineInsetMatchesTheProseConstant(t *testing.T) {
+// TestChatPicker_HTTPLineSitsAboveTheTableInTheChatColumn: the HTTP endpoint
+// line starts in the chat table's CHAT column, one blank line above the table
+// header, so the ports read as part of the table block. Measured from one real
+// render, so the hand-rolled inset cannot drift from the table's columns.
+func TestChatPicker_HTTPLineSitsAboveTheTableInTheChatColumn(t *testing.T) {
 	m := seedChatPickerForAlignment(t)
-	line := visibleRowText(m.httpEndpointLine())
-	got := len(line) - len(strings.TrimLeft(line, " "))
-	if got != chatPickerProsePadding {
-		t.Errorf("httpEndpointLine() inset = %d spaces, want chatPickerProsePadding (%d): %q",
-			got, chatPickerProsePadding, line)
+	lines := strings.Split(visibleRowText(m.View().Content), "\n")
+	httpRow, headerRow := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, ":3000") && httpRow < 0 {
+			httpRow = i
+		}
+		if strings.Contains(line, "CHAT") && strings.Contains(line, "STATUS") && headerRow < 0 {
+			headerRow = i
+		}
 	}
-	// The prose helper and the hand-rolled inset must agree, which is the
-	// property that actually keeps the line in step.
-	if want := firstNonSpaceColumn(t, chatPickerProseBlock("x")); got != want {
-		t.Errorf("httpEndpointLine() inset = %d, chatPickerProseBlock inset = %d; the two have drifted", got, want)
+	if httpRow < 0 || headerRow < 0 {
+		t.Fatalf("http row %d, header row %d:\n%s", httpRow, headerRow, strings.Join(lines, "\n"))
+	}
+	if headerRow != httpRow+2 || strings.TrimSpace(lines[httpRow+1]) != "" {
+		t.Fatalf("want exactly one blank line between the HTTP line (row %d) and the table header (row %d):\n%s", httpRow, headerRow, strings.Join(lines, "\n"))
+	}
+	if got, want := strings.Index(lines[httpRow], "HTTP"), strings.Index(lines[headerRow], "CHAT"); got != want {
+		t.Fatalf("HTTP at column %d, CHAT header at column %d; want them aligned:\n%s", got, want, strings.Join(lines, "\n"))
+	}
+	if got := m.httpLineHeight(); got != 2 {
+		t.Fatalf("httpLineHeight = %d, want 2 (the line and its blank)", got)
 	}
 }
 
@@ -3194,8 +3196,8 @@ func TestChatPickerProseInsetIsWiderThanTheTableInset(t *testing.T) {
 
 // TestChatPicker_SingleLineHintsNeverOverhangTheTerminal pins the guard
 // fitProseLine adds, for the reservation invariant tableHeight's doc states:
-// limitedLineHeight and waitingLineHeight each claim a fixed row count, so a
-// line wider than the terminal soft-wraps onto a row nobody reserved.
+// limitedLineHeight claims a fixed row count, so a line wider than the
+// terminal soft-wraps onto a row nobody reserved.
 //
 // Measured as a width through the real render path — chatPickerProseBlock's
 // inset included, since the inset is what the reservation forgets. Deliberately
@@ -3203,18 +3205,10 @@ func TestChatPickerProseInsetIsWiderThanTheTableInset(t *testing.T) {
 // lipgloss never inserts a newline and Height reports 1 for an overhanging line
 // too. The soft wrap happens in the terminal, where only the column count can
 // see it.
-//
-// Both callers are exercised: dropping fitProseLine from either one alone must
-// fail here.
 func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
-	// Shaped like the real things: waitingHintLine's reason is a daemon-supplied
-	// "owner/repo#N" with no upstream bound on the repo name, and the limited
-	// hint grows with the number of distinct agent names in the session.
-	//
-	// The limited hint (159 columns) overhangs at all four widths below; the
-	// waiting reason (94) overhangs at 40, 61 and 80 but fits at 120, which is
-	// the control — the guard must leave a line that already fits alone.
-	const longReason = "checks_passed_ready on some-very-long-organisation-name/an-equally-long-repository-name#123456"
+	// Shaped like the real thing: the limited hint grows with the number of
+	// distinct agent names in the session. It (159 columns) overhangs at all
+	// four widths below.
 	longAgents := []string{
 		"claude-opus-with-a-long-account-label", "codex-gpt-with-a-long-account-label",
 		"opencode-with-a-long-account-label", "another-agent-with-a-long-label",
@@ -3225,17 +3219,6 @@ func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
 		// seed returns a model showing only this hint, and the line it draws.
 		seed func(width int) (ChatPickerModel, string)
 	}{
-		{
-			name: "waiting reason",
-			seed: func(width int) (ChatPickerModel, string) {
-				m := seedChatPickerHint(width, []*pb.ClaudeChat{{
-					SessionId: "session-1", AgentSessionId: "agent-1",
-					Title: "Parked chat", AgentName: "claude", CreatedAt: timestamppb.Now(),
-				}}, map[string]string{"agent-1": statusWaiting},
-					map[string]string{"agent-1": longReason})
-				return m, m.waitingReasonLine()
-			},
-		},
 		{
 			name: "usage-limited hint",
 			seed: func(width int) (ChatPickerModel, string) {
@@ -3268,7 +3251,7 @@ func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
 						hint.name, got, width, rendered)
 				}
 				// The reservation this width protects, so a failure names it.
-				if got := m.limitedLineHeight() + m.waitingLineHeight(); got != 2 {
+				if got := m.limitedLineHeight(); got != 2 {
 					t.Errorf("reserved rows = %d, want 2 (one hint on screen)", got)
 				}
 			})

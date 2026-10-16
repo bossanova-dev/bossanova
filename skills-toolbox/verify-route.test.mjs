@@ -8,6 +8,7 @@ import { basename, join } from 'node:path'
 import {
   CALL_TIMEOUT_MS,
   DEFAULT_BATCH,
+  discoveryLimit,
   DEFAULT_BUDGET_MS,
   OBSERVE_TIMEOUT_MS,
   START_FLOOR_MS,
@@ -74,7 +75,11 @@ function world(opts = {}) {
       if (verb === 'candidates')
         return opts.candidatesFail
           ? fail()
-          : ok({ candidates: opts.candidates ?? [candidate(1)], skipped: [] })
+          : ok({
+              candidates: opts.candidates ?? [candidate(1)],
+              skipped: [],
+              ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
+            })
       if (verb === 'judge') {
         const v = verdicts[pr] ?? { verdict: 'pass', reason: 'verified' }
         return ok({ headSha: sha(pr), ...v })
@@ -88,6 +93,8 @@ function world(opts = {}) {
         }
         if (verdict === 'human' && opts.trackerUnavailable)
           return ok({ verdict, posted: false, trackerWrites: 'unavailable' })
+        if (verdict === 'human' && opts.ticketless?.includes(pr))
+          return ok({ verdict, posted: true, trackerWrites: 'none', why: 'no-ticket' })
         return ok({ ...(dry ? { dryRun: true } : {}), verdict, posted: true })
       }
       if (verb === 'observe-merge') {
@@ -365,6 +372,32 @@ test('a human verdict posts needs-human and parks; tracker writes unavailable is
   assert.deepEqual(lines(sweep({}, u.deps())), ['#1 skipped: tracker writes unavailable'])
 })
 
+test('a ticketless park says so on its line, and a park carries the ledger it was judged on', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(5, { ticket: null })],
+    verdicts: {
+      1: { verdict: 'human', reason: 'ledger-open' },
+      5: {
+        verdict: 'human',
+        reason: 'no-receipt,ledger-open',
+        ledgerFingerprint: '0123456789abcdef',
+      },
+    },
+    ticketless: [5],
+  })
+  assert.deepEqual(lines(sweep({}, w.deps())), [
+    '#1 parked: needs human (ledger-open)',
+    '#5 parked: needs human (no-receipt,ledger-open) · no ticket',
+  ])
+  // The ledger the judge saw rides to the post, which records it beside the park.
+  const ledgerArgs = (post) => {
+    const at = post.indexOf('--ledger')
+    // gate-region-ok: an argv array slice (the flag and its value), not a text section.
+    return at === -1 ? [] : post.slice(at, at + 2)
+  }
+  assert.deepEqual(w.posts().map(ledgerArgs), [[], ['--ledger', '0123456789abcdef']])
+})
+
 test('the sweep leaves label derivation to the human post gate', () => {
   const w = world({
     verdicts: { 1: { verdict: 'human', reason: 'human-review:ui', labels: ['web UI'] } },
@@ -569,7 +602,7 @@ test('only a submitted or queued delivery counts as dispatched', () => {
 test('the batch bound: 5 candidates and --batch 2 act on 2 and defer 3', () => {
   const w = world({ candidates: [1, 2, 3, 4, 5].map((n) => candidate(n)) })
   const r = sweep({ batch: 2 }, w.deps())
-  assert.deepEqual(w.verbs()[0].slice(0, 3), ['candidates', '--limit', '6'])
+  assert.deepEqual(w.verbs()[0].slice(0, 3), ['candidates', '--limit', '25'])
   assert.deepEqual(lines(r), [
     `#1 merged ${sha(901)}`,
     `#2 merged ${sha(902)}`,
@@ -897,4 +930,90 @@ test('real-process settle: a detached child writes its result to the log and the
   assert.deepEqual(lines(r), [`#1 merged ${mergeSha}`])
   assert.ok(Date.now() - started < DEFAULT_BUDGET_MS)
   assert.match(readFileSync(r.records[0].log, 'utf8'), /gh: merging/)
+})
+
+test('discovery keeps a floor for small batches and scales larger batches', () => {
+  for (const [batch, limit] of [
+    [1, 25],
+    [8, 25],
+    [9, 27],
+    [10, 30],
+  ]) {
+    assert.equal(discoveryLimit(batch), limit)
+  }
+  const w = world()
+  sweep({ batch: 1 }, w.deps())
+  assert.deepEqual(w.verbs()[0], ['candidates', '--limit', '25'])
+})
+
+test('merge retries run head-pinned without judge or post and keep the judge batch', () => {
+  const w = world({ mergeRetries: [candidate(10)], candidates: [candidate(1), candidate(2)] })
+  const r = sweep({ batch: 1 }, w.deps())
+  assert.deepEqual(lines(r), [
+    `#10 merged ${sha(910)} (merge retry)`,
+    `#1 merged ${sha(901)}`,
+    '#2 deferred: budget',
+  ])
+  assert.equal(r.records[0].retry, true)
+  assert.deepEqual(w.mergeSpawns()[0].args.slice(1), [
+    'merge',
+    '--pr',
+    '10',
+    '--head',
+    sha(10),
+    '--repo',
+    'o/r',
+  ])
+  assert.equal(
+    w.verbs().some((v) => ['judge', 'post'].includes(v[0]) && v.includes('10')),
+    false,
+  )
+})
+
+test('merge retries have a separate batch cap and a time budget', () => {
+  const w = world({ candidates: [], mergeRetries: [candidate(1), candidate(2), candidate(3)] })
+  const r = sweep({ batch: 2 }, w.deps())
+  assert.equal(w.mergeSpawns().length, 2)
+  assert.equal(r.records[2].outcome, 'deferred')
+  assert.equal(r.records[2].retry, true)
+  assert.match(r.records[2].line, /deferred: budget/)
+  const expired = world({ candidates: [], mergeRetries: [candidate(1)] })
+  assert.match(
+    lines(sweep({ budgetMs: START_FLOOR_MS - 1 }, expired.deps()))[0],
+    /deferred: budget/,
+  )
+  assert.equal(expired.spawns.length, 0)
+})
+
+test('merge retries settle refused and in-flight merges using the existing observer', () => {
+  const w = world({
+    candidates: [],
+    mergeRetries: [candidate(1), candidate(2)],
+    mergeResults: { 1: { merged: false, verdict: 'wait', reasons: ['sent-back', 'ci-red'] } },
+    mergeDelay: { 2: Infinity },
+  })
+  const r = sweep({}, w.deps())
+  assert.equal(r.records[0].outcome, 'skipped')
+  assert.match(r.records[0].line, /wait: sent-back,ci-red.*merge retry/)
+  assert.equal(r.records[1].outcome, 'dispatched')
+  assert.match(r.records[1].line, /merge in flight.*merge retry/)
+  assert.ok(r.records.every((r) => r.retry === true))
+})
+
+test('merge retries dry-run without mutations and defer when boss is unreachable', () => {
+  const w = world({ candidates: [], mergeRetries: [candidate(1)] })
+  const r = sweep({ dryRun: true }, w.deps())
+  assert.match(lines(r)[0], new RegExp(`dry-run: would retry merge ${sha(1)}`))
+  assert.equal(r.records[0].retry, true)
+  assert.equal(w.spawns.length, 0)
+  assert.equal(w.mutating().length, 0)
+  const missing = world({
+    mergeRetries: [candidate(10), candidate(11)],
+    boss: { ok: false, reason: 'missing' },
+  })
+  const deferred = sweep({}, missing.deps())
+  assert.ok(
+    deferred.records.every((r) => r.outcome === 'deferred' && /undispatchable/.test(r.line)),
+  )
+  assert.equal(missing.spawns.length, 0)
 })

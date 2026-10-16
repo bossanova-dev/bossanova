@@ -6,8 +6,16 @@ package views
 import (
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// chatPickerReply wraps a chat picker fetch result with the session it was
+// fetched for; see ChatPickerModel.reply.
+type chatPickerReply struct {
+	sessionID string
+	msg       tea.Msg
+}
 
 // chatPickerSessionMsg carries a session fetched via RPC for the chat picker.
 type chatPickerSessionMsg struct {
@@ -53,7 +61,7 @@ type chatPickerRefreshMsg struct {
 // (BOS-1517), keyed by agent_session_id, plus the waiting set it was fetched
 // for so a reply that no longer matches can be discarded.
 type armedCallbacksMsg struct {
-	byChat map[string]*pb.GithubCallback
+	byChat map[string]listedCallbacks
 	keys   []waitKey
 	// failed reports that at least one chat's lookup errored.
 	failed bool
@@ -109,15 +117,6 @@ type mergeResultMsg struct {
 	err       error
 }
 
-// approveResultMsg carries the result of an async ApproveSessionPR call for PR
-// pr. sessionID tags the session it was issued for, like mergeResultMsg.
-type approveResultMsg struct {
-	sessionID string
-	pr        int
-	result    *pb.VerifyApproveResult
-	err       error
-}
-
 // archiveResultMsg carries the result of an async ArchiveSession RPC call.
 // sessionID tags the session this archive was issued for so a completion that
 // resolves after the user navigated to a different session is discarded rather
@@ -143,7 +142,6 @@ const (
 	confirmMerge
 	confirmArchive
 	confirmSwitch // switch-account against a mid-turn (WORKING) chat
-	confirmApprove
 )
 
 // wakeResultMsg carries the result of an async WakeChat RPC call.

@@ -1,26 +1,16 @@
 #!/usr/bin/env node
 // skills-toolbox/stage-chain.mjs
-// Event-driven stage chaining and phase reporting for the plan → build → verify → release cores.
+// Report session phases and arm the deferred, same-PR verify callback.
+// No verb starts another cron job; each stage runs on the operator's schedule.
 //
-// A finished stage hands off to the next one instead of waiting for that stage's cron tick, and
-// every working core reports which phase it is in. This helper owns every argv those hand-offs and
-// phase calls run, so each call site is one line and the behaviour is tested here, not in prose.
-//
-//   node stage-chain.mjs next       --stage <plan|build|verify|release>              [--dry-run]
-//   node stage-chain.mjs run-next   --stage <plan|build|verify|release>              [--dry-run]
 //   node stage-chain.mjs arm-verify --pr <n> [--completion <file>] [--run-id <id>]
-//                                   [--session <id>]                                 [--dry-run]
-//   node stage-chain.mjs phase      <name>                                           [--dry-run]
+//                                   [--session <id>] [--dry-run]
+//   node stage-chain.mjs phase <name> [--dry-run]
 //
-// Every verb prints exactly one JSON line `{"verb","action",...}` on stdout and exits 0 — chaining
-// only accelerates a stage whose cron job still fires on schedule, so it is never fatal. Exit 64
-// only on a usage error. Every `boss` call has a timeout; a timeout is `error`, still exit 0.
-//
-// Matching is the first `/<skill>` or `$<skill>` token of a cron job's prompt, compared exactly, so
-// `/boss-build-ce` never counts as `/boss-build`. `arm-verify` never sends `/boss-verify` now: the
-// `checks_passed_ready` callback is the deferred send, so verify judges a settled head.
-//
-// Node built-ins plus ./main-module.mjs, ./boss-binary.mjs and ./bossd-present.mjs only.
+// Every valid invocation prints one JSON line and exits 0; exit 64 denotes a usage error.
+// Boss calls have bounded timeouts and report errors without stopping the calling skill.
+// An enabled verify job permits the checks_passed_ready callback into the same PR's verify chat.
+// Matching uses the first exact /skill or $skill token, so /boss-build-ce never matches /boss-build.
 
 import { execFile as defaultExecFile } from 'node:child_process'
 import defaultFs from 'node:fs'
@@ -36,12 +26,6 @@ export const STAGE_SKILL = Object.freeze({
   verify: 'boss-verify',
   release: 'boss-release',
 })
-export const NEXT_STAGE = Object.freeze({
-  plan: 'build',
-  build: 'verify',
-  verify: 'release',
-  release: null,
-})
 // The role bossd stores on a PR session's verify chat, and the title it was created with. The
 // title is only the fallback for a chat created before chats carried roles: agents and operators
 // rename titles, so a current chat is found by role.
@@ -50,8 +34,6 @@ export const VERIFY_CHAT_TITLE = 'verify'
 export const VERIFY_TRIGGER = 'checks_passed_ready'
 // If the callback lapses, the verify cron gate still covers the PR.
 export const VERIFY_CALLBACK_EXPIRY = '7d'
-// `cron run-now` runs the job's gate, which alone may take 60 s.
-export const RUN_NOW_TIMEOUT_MS = 120_000
 export const CALL_TIMEOUT_MS = 30_000
 export const EXIT_USAGE = 64
 
@@ -83,30 +65,6 @@ export function hasStageJob({ stage, jobs } = {}) {
   const skill = STAGE_SKILL[stage]
   if (!skill || !Array.isArray(jobs)) return false
   return jobs.some((job) => invokes(job, skill) && job.enabled === true)
-}
-
-/**
- * Which cron job, if any, runs the stage after `stage`.
- * @returns {{action: 'run-now'|'none'|'ambiguous', jobId: string, nextStage: string|null,
- *   reason: string, matches: string[]}}
- */
-export function resolveNext({ stage, jobs } = {}) {
-  const nextStage = NEXT_STAGE[stage] ?? null
-  const result = (action, reason, matches = [], jobId = '') => ({
-    action,
-    jobId,
-    nextStage,
-    reason,
-    matches,
-  })
-  if (!nextStage) return result('none', 'terminal-stage')
-  if (!Array.isArray(jobs)) return result('none', 'unreadable-jobs')
-  const skill = STAGE_SKILL[nextStage]
-  const matching = jobs.filter((job) => invokes(job, skill))
-  const enabled = matching.filter((job) => job.enabled === true).map((job) => String(job.id ?? ''))
-  if (enabled.length === 1) return result('run-now', '', enabled, enabled[0])
-  if (enabled.length > 1) return result('ambiguous', 'several-jobs', enabled)
-  return result('none', matching.length > 0 ? 'disabled' : 'no-job')
 }
 
 function normalizeStatus(status) {
@@ -174,10 +132,6 @@ export function isEpicChild(env = {}) {
   return unattended && !text(env.BOSS_CRON_JOB_ID)
 }
 
-export function runNowArgv(jobId) {
-  return ['cron', 'run-now', jobId]
-}
-
 export function cronListArgv(repoId) {
   return ['cron', 'ls', '--repo', repoId, '--json']
 }
@@ -232,16 +186,6 @@ export function phaseArgv(name) {
   return ['session', 'phase', name]
 }
 
-/** Read `boss cron run-now` output: it has no --json and exits 0 whether it fired or skipped. */
-export function parseRunNow(stdout) {
-  const out = String(stdout ?? '')
-  const started = /Started session (\S+) for cron job/.exec(out)
-  if (started) return { action: 'started', sessionId: started[1] }
-  const skippedLine = /Fire skipped for cron job \S+: (.+)$/m.exec(out)
-  if (skippedLine) return { action: 'skipped', reason: skippedLine[1].trim() }
-  return { action: 'error', reason: 'unrecognized-output' }
-}
-
 // ---------------------------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------------------------
@@ -249,18 +193,13 @@ export function parseRunNow(stdout) {
 export class UsageError extends Error {}
 
 export const USAGE = [
-  'usage: node stage-chain.mjs next|run-next --stage <plan|build|verify|release> [--dry-run]',
-  '       node stage-chain.mjs arm-verify --pr <n> [--completion <file>] [--run-id <id>] [--session <id>] [--dry-run]',
+  'usage: node stage-chain.mjs arm-verify --pr <n> [--completion <file>] [--run-id <id>] [--session <id>] [--dry-run]',
   '       node stage-chain.mjs phase <name> [--dry-run]',
 ].join('\n')
 
 export function parseArgs(argv = []) {
   const [subcommand, ...rest] = argv
-  const known =
-    subcommand === 'next' ||
-    subcommand === 'run-next' ||
-    subcommand === 'arm-verify' ||
-    subcommand === 'phase'
+  const known = subcommand === 'arm-verify' || subcommand === 'phase'
   if (!known) throw new UsageError(`unknown verb: ${subcommand ?? '(none)'}`)
   const verb = subcommand
   const opts = { verb, dryRun: false }
@@ -273,18 +212,12 @@ export function parseArgs(argv = []) {
       return next
     }
     if (arg === '--dry-run') opts.dryRun = true
-    else if (arg === '--stage' && (verb === 'next' || verb === 'run-next')) opts.stage = value()
     else if (arg === '--pr' && verb === 'arm-verify') opts.pr = value()
     else if (arg === '--completion' && verb === 'arm-verify') opts.completion = value()
     else if (arg === '--run-id' && verb === 'arm-verify') opts.runId = value()
     else if (arg === '--session' && verb === 'arm-verify') opts.session = value()
     else if (!arg.startsWith('--') && verb === 'phase') positionals.push(arg)
     else throw new UsageError(`unknown argument: ${arg}`)
-  }
-  if (verb === 'next' || verb === 'run-next') {
-    if (!opts.stage) throw new UsageError('--stage is required')
-    if (!Object.hasOwn(STAGE_SKILL, opts.stage))
-      throw new UsageError(`--stage must be one of ${Object.keys(STAGE_SKILL).join(', ')}`)
   }
   if (verb === 'arm-verify') {
     if (!/^[1-9]\d*$/.test(opts.pr ?? '')) throw new UsageError('--pr must be a PR number')
@@ -385,28 +318,6 @@ export async function runVerb(opts, deps = {}) {
     return failed(r.error, firstLine(r.stderr))
   }
 
-  if (opts.verb === 'next' || opts.verb === 'run-next') {
-    const listArgv = cronListArgv(repoId)
-    if (opts.dryRun)
-      return out({
-        action: 'dry-run',
-        argv: opts.verb === 'run-next' ? [listArgv, runNowArgv('<jobId>')] : [listArgv],
-      })
-    const jobs = await callJson(listArgv)
-    if (!jobs.ok) return failed(`cron-ls-${jobs.reason}`, jobs.detail)
-    const next = resolveNext({ stage: opts.stage, jobs: jobs.value })
-    if (next.action === 'ambiguous')
-      stderr.write(
-        `stage-chain: ${next.matches.length} enabled cron jobs run /${STAGE_SKILL[next.nextStage]} (${next.matches.join(', ')}); not chaining\n`,
-      )
-    const base = { stage: opts.stage, ...next }
-    if (opts.verb === 'next' || next.action !== 'run-now') return out(base)
-    const r = await call(runNowArgv(next.jobId), RUN_NOW_TIMEOUT_MS)
-    if (!r.ok) return out({ ...base, ...failedFields(r) })
-    const fired = parseRunNow(r.stdout)
-    return out({ ...base, ...fired })
-  }
-
   // arm-verify
   const sessionId = text(opts.session) ? opts.session.trim() : String(env.BOSS_SESSION_ID).trim()
   if (opts.dryRun)
@@ -475,13 +386,6 @@ export async function runVerb(opts, deps = {}) {
     reason: decision.reason,
     callbackId: String(added.value?.id ?? ''),
   })
-}
-
-function failedFields(r) {
-  const detail = firstLine(r.stderr)
-  return detail
-    ? { action: 'error', reason: r.error, detail }
-    : { action: 'error', reason: r.error }
 }
 
 /** Parse, run and render. Returns `{exitCode, line}`; never throws. */

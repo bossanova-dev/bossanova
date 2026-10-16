@@ -63,8 +63,10 @@ func stalePaneProxyPort(bakedURL string, livePort int) (int, bool) {
 // live. A single bad row (DB miss, parse error, dead pane, failed kill) never
 // blocks the rest. The whole sweep is inert when the proxy is off or unbound,
 // and with a fixed port that survives restarts it only fires on a changed port
-// config, a pane baked a pre-upgrade ephemeral port, or a lost fixed port
-// (ProxyServer.FixedPortLost).
+// config, a pane baked a pre-upgrade ephemeral port, or a lost fixed port.
+// The sweep detects that loss indirectly: l.proxyPort (the live port) differs
+// from the baked fixed port. ProxyServer.FixedPortLost reports the lost state
+// itself, surfaced on boss repair doctor.
 func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 	if l.agentChats == nil {
 		return

@@ -300,17 +300,19 @@ func VerifyParkSummaryCodes(summary string) []string {
 const verifyParkNoReason = "the verify stage named no reason"
 
 // VerifyParkHint renders a verify park's attention summary as the hint line a
-// client shows under the row: the park's label, then its codes, e.g.
-// "blocked: ledger-open" or "needs sign-off: human-review:ui". signOff reports
-// whether the park only asks for a sign-off, so a client can pick the warning
-// tier for it and the danger tier for "blocked".
+// client shows under the row: the park's label, then what its codes ask about
+// in plain words, e.g. "blocked: open checklist items" or "needs sign-off: UI
+// change". Raw codes stay out of operator-facing text. signOff reports whether
+// the park only asks for a sign-off, so a client can pick the warning tier for
+// it and the danger tier for "blocked".
 func VerifyParkHint(summary string) (text string, signOff bool) {
 	codes := VerifyParkSummaryCodes(summary)
 	label := VerifyParkOutput(codes).Label
-	if len(codes) == 0 {
+	categories := attention.ParkCategories(codes)
+	if len(categories) == 0 {
 		return label + ": " + verifyParkNoReason, false
 	}
-	return label + ": " + strings.Join(codes, ","), attention.IsSignOffPark(codes)
+	return label + ": " + strings.Join(categories, ", "), attention.IsSignOffPark(codes)
 }
 
 // VerifyParkOutput is the composite for a DISPLAY_STATUS_NEEDS_HUMAN PR with
@@ -511,6 +513,17 @@ func PreErroredOutput(sess *pb.Session) Output {
 		// Not an errored session — nothing was recolored, so leave it be.
 		return served
 	}
+}
+
+// UnderlyingIntent returns the intent of sess's own display state, without the
+// errored-recolor overlay Compute paints over an orphaned or blocked session.
+// A failure (⨯ failing, ⨯ conflict, blocked) still reads DANGER; an errored
+// session's idle, waiting or passing state reads its base intent.
+func UnderlyingIntent(sess *pb.Session) pb.DisplayIntent {
+	if !erroredSession(sess) || sess.GetDisplayLabel() == "" {
+		return sess.GetDisplayIntent()
+	}
+	return preErroredBlockedIntent(sess, sess.GetDisplayLabel(), sess.GetDisplayIntent())
 }
 
 // preErroredBlockedIntent returns the base (pre-recolor) intent baseStatus would

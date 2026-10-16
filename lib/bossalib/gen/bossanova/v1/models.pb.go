@@ -960,9 +960,17 @@ const (
 	// The agent asked a question and is waiting for an answer.
 	AttentionKind_ATTENTION_KIND_QUESTION AttentionKind = 2
 	// The verify stage parked the PR for a person to sign off: every park code
-	// is a policy sign-off code.
+	// is a policy sign-off code. From API version 2026-09-20 it also answers a PR
+	// that is open, green and mergeable but that the verify stage has not passed:
+	// that REVIEW carries no park_codes and offers ATTENTION_ACTION_GITHUB then
+	// ATTENTION_ACTION_MERGE; older pins receive ATTENTION_KIND_MERGE. From the
+	// same version a verify park's REVIEW offers ATTENTION_ACTION_GITHUB (and
+	// ATTENTION_ACTION_VIDEO) then ATTENTION_ACTION_MERGE, where it led with
+	// ATTENTION_ACTION_APPROVE and ATTENTION_ACTION_SEND_BACK; older pins
+	// receive those back.
 	AttentionKind_ATTENTION_KIND_REVIEW AttentionKind = 3
-	// The PR is open, green and mergeable, and nothing else will merge it.
+	// The PR is open, green and mergeable, the verify stage passed its head, and
+	// nothing else will merge it.
 	AttentionKind_ATTENTION_KIND_MERGE AttentionKind = 4
 	// Work is moving without the operator.
 	AttentionKind_ATTENTION_KIND_IN_PROGRESS AttentionKind = 5
@@ -1029,11 +1037,16 @@ const (
 	AttentionAction_ATTENTION_ACTION_DISMISS     AttentionAction = 2
 	AttentionAction_ATTENTION_ACTION_OPEN_CHAT   AttentionAction = 3
 	AttentionAction_ATTENTION_ACTION_ANSWER      AttentionAction = 4
-	AttentionAction_ATTENTION_ACTION_APPROVE     AttentionAction = 5
-	AttentionAction_ATTENTION_ACTION_SEND_BACK   AttentionAction = 6
-	AttentionAction_ATTENTION_ACTION_GITHUB      AttentionAction = 7
-	AttentionAction_ATTENTION_ACTION_VIDEO       AttentionAction = 8
-	AttentionAction_ATTENTION_ACTION_MERGE       AttentionAction = 9
+	// Not offered from API version 2026-09-20: a REVIEW offers
+	// ATTENTION_ACTION_MERGE, which records the approval and merges. Older pins
+	// still receive it on a verify park's REVIEW.
+	AttentionAction_ATTENTION_ACTION_APPROVE AttentionAction = 5
+	// Not offered from API version 2026-09-20. Older pins still receive it on a
+	// verify park's REVIEW or blocked FIX.
+	AttentionAction_ATTENTION_ACTION_SEND_BACK AttentionAction = 6
+	AttentionAction_ATTENTION_ACTION_GITHUB    AttentionAction = 7
+	AttentionAction_ATTENTION_ACTION_VIDEO     AttentionAction = 8
+	AttentionAction_ATTENTION_ACTION_MERGE     AttentionAction = 9
 	// Open the session's linked tracker issue (tracker_url).
 	AttentionAction_ATTENTION_ACTION_TRACKER AttentionAction = 10
 )
@@ -4487,7 +4500,7 @@ type SessionAttention struct {
 	Actions []AttentionAction `protobuf:"varint,3,rep,packed,name=actions,proto3,enum=bossanova.v1.AttentionAction" json:"actions,omitempty"`
 	// When the current kind began.
 	Since *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=since,proto3" json:"since,omitempty"`
-	// Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
+	// Short progress label for IN_PROGRESS ("building", "checking 3/7", "waiting for
 	// main CI", "working", "idle").
 	ProgressLabel string `protobuf:"bytes,5,opt,name=progress_label,json=progressLabel,proto3" json:"progress_label,omitempty"`
 	// The verify-stage park codes behind a REVIEW or a blocked-park FIX, in
@@ -4498,7 +4511,12 @@ type SessionAttention struct {
 	// The chat a FIX or QUESTION action should open.
 	TargetChatId string `protobuf:"bytes,8,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
 	// Evidence (video) URL behind a verify park, when one exists.
-	EvidenceUrl   string `protobuf:"bytes,9,opt,name=evidence_url,json=evidenceUrl,proto3" json:"evidence_url,omitempty"`
+	EvidenceUrl string `protobuf:"bytes,9,opt,name=evidence_url,json=evidenceUrl,proto3" json:"evidence_url,omitempty"`
+	// What keeps a verify park's PR checklist open, one plain line each (an
+	// unticked item, a missing section, a do-not-merge marker), as the park's
+	// own note recorded them for the current head. Empty when the park has no
+	// open checklist or its note has not been read.
+	OpenItems     []string `protobuf:"bytes,10,rep,name=open_items,json=openItems,proto3" json:"open_items,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4594,6 +4612,13 @@ func (x *SessionAttention) GetEvidenceUrl() string {
 		return x.EvidenceUrl
 	}
 	return ""
+}
+
+func (x *SessionAttention) GetOpenItems() []string {
+	if x != nil {
+		return x.OpenItems
+	}
+	return nil
 }
 
 // MergeBlock explains why a session's PR cannot currently be merged, so an
@@ -5728,16 +5753,18 @@ type Trigger struct {
 	Name          string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	// A disabled trigger records invocations as SKIPPED and launches nothing.
 	IsEnabled bool `protobuf:"varint,5,opt,name=is_enabled,json=isEnabled,proto3" json:"is_enabled,omitempty"`
-	// Trigger type name from the catalog: "http" or "github" today. A string,
-	// not an enum, so adding a type needs no change to this common model; the
-	// type's own settings live in the type_config oneof below.
+	// Authoritative type name and catalog key: "http" or "github" today.
+	// Kept as a string so older clients can read and show a new type's name
+	// even when they do not recognize its type_config arm.
 	TriggerType string `protobuf:"bytes,6,opt,name=trigger_type,json=triggerType,proto3" json:"trigger_type,omitempty"`
 	// Version of the type_config schema the stored config was written against.
 	// Output-only: bosso stamps the version the catalog advertises for
 	// trigger_type (TriggerTypeSpec.config_version) when the config is saved.
 	ConfigVersion int32 `protobuf:"varint,7,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
 	// Type-specific configuration. Exactly one arm is set, and it matches
-	// trigger_type. A new trigger type adds a new arm, which is wire-safe.
+	// trigger_type. Adding a type adds an arm to this model, which is wire-safe.
+	// Create rejects a mismatch with INVALID_ARGUMENT naming type_config;
+	// Update rejects a mismatch with INVALID_ARGUMENT naming trigger_type.
 	//
 	// Types that are valid to be assigned to TypeConfig:
 	//
@@ -7193,7 +7220,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xf6\x02\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\x95\x03\n" +
 	"\x10SessionAttention\x12/\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1b.bossanova.v1.AttentionKindR\x04kind\x12\x1a\n" +
 	"\bsentence\x18\x02 \x01(\tR\bsentence\x127\n" +
@@ -7204,7 +7231,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"park_codes\x18\x06 \x03(\tR\tparkCodes\x12\x1b\n" +
 	"\talert_key\x18\a \x01(\tR\balertKey\x12$\n" +
 	"\x0etarget_chat_id\x18\b \x01(\tR\ftargetChatId\x12!\n" +
-	"\fevidence_url\x18\t \x01(\tR\vevidenceUrl\"\xdf\x02\n" +
+	"\fevidence_url\x18\t \x01(\tR\vevidenceUrl\x12\x1d\n" +
+	"\n" +
+	"open_items\x18\n" +
+	" \x03(\tR\topenItems\"\xdf\x02\n" +
 	"\n" +
 	"MergeBlock\x121\n" +
 	"\x04gate\x18\x01 \x01(\x0e2\x1d.bossanova.v1.MergeBlock.GateR\x04gate\x12\x16\n" +

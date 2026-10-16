@@ -2713,9 +2713,11 @@ message CreateTriggerRequest {
   string organization_id = 1;
   string name = 2;
   bool is_enabled = 3;
-  // Required catalog type name, e.g. "http" or "github".
+  // Required authoritative type name and catalog key, e.g. "http" or "github".
+  // A string lets older clients show a new type even without recognizing its arm.
   string trigger_type = 4;
-  // Required; the arm must match trigger_type.
+  // Required; exactly one arm is set and must match trigger_type, otherwise
+  // INVALID_ARGUMENT names type_config. Adding a type adds a wire-safe arm.
   oneof type_config {
     HttpTriggerConfig http = 5;
     GithubTriggerConfig github = 6;
@@ -2750,6 +2752,9 @@ message CreateTriggerResponse {
 // fields cannot express "absent", so a non-empty list replaces the stored
 // list, an empty list leaves it unchanged, and the matching should_clear_*
 // flag clears it; a non-empty list together with its flag is INVALID_ARGUMENT.
+// These flags deliberately follow UpdateSessionWebhookRequest. Replacing the
+// repeated fields with wrapper messages would break their wire types without
+// adding expressiveness to this partial-update contract.
 message UpdateTriggerRequest {
   string id = 1;
   optional string name = 2;

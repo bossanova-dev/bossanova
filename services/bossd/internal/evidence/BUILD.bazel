@@ -15,6 +15,7 @@ go_library(
 go_test(
     name = "evidence_test",
     srcs = [
+        "open_items_test.go",
         "provider_contract_test.go",
         "reader_test.go",
     ],

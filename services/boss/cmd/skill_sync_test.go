@@ -1960,7 +1960,7 @@ func gateDriftLabel(t *testing.T, got, path string) string {
 func TestSkillCheckRemedyAdviceWithholdsAnUndecidedSafetyDecision(t *testing.T) {
 	assertWithheldAsUndecided := func(t *testing.T, advice skillRemedyAdvice) {
 		t.Helper()
-		if !advice.withheld {
+		if !advice.withheld() {
 			t.Fatalf("advice = %+v, want the reinstall withheld when the safety decision is undecided", advice)
 		}
 		inline := advice.inline()
@@ -2582,6 +2582,70 @@ func TestSkillsSubcommandsRejectPositionalArgs(t *testing.T) {
 			if !strings.Contains(err.Error(), "unknown command") &&
 				!strings.Contains(err.Error(), "accepts") {
 				t.Fatalf("err = %v, want a cobra positional-args rejection", err)
+			}
+		})
+	}
+}
+
+func TestSkillRemedyDirectionRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		direction skillDriftDirection
+		want      skillRemedyRefusal
+	}{
+		{skillDriftLossless, skillRefusalNone}, {skillDriftBehind, skillRefusalNone},
+		{skillDriftAhead, skillRefusalDowngrade}, {skillDriftUnrecoverable, skillRefusalLost},
+		{skillDriftUnknown, skillRefusalLost},
+	} {
+		t.Run(string(tc.direction), func(t *testing.T) {
+			if got := tc.direction.refusal(); got != tc.want {
+				t.Fatalf("refusal() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSkillRemedyComposerRefusal(t *testing.T) {
+	ahead := skillDriftEntry{direction: skillDriftAhead}
+	lost := skillDriftEntry{direction: skillDriftUnrecoverable}
+	for _, tc := range []struct {
+		name       string
+		entries    []skillDriftEntry
+		ancestry   bool
+		refusal    skillRemedyRefusal
+		paths      int
+		unverified bool
+	}{
+		{"newer", []skillDriftEntry{ahead}, true, skillRefusalDowngrade, 1, false},
+		{"loss wins", []skillDriftEntry{ahead, lost}, true, skillRefusalLost, 2, false},
+		{"loss first", []skillDriftEntry{lost, ahead}, true, skillRefusalLost, 2, false},
+		{"forward", []skillDriftEntry{{direction: skillDriftLossless}, {direction: skillDriftBehind}}, true, skillRefusalNone, 0, false},
+		{"no ancestry", []skillDriftEntry{lost}, false, skillRefusalNone, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := composeSkillInstallRemedy(selectedSkillPayload{}, tc.entries, tc.ancestry, true)
+			if got.refusal != tc.refusal || len(got.withheldPaths) != tc.paths || got.unverified != tc.unverified {
+				t.Fatalf("advice = %+v, want refusal=%v paths=%d unverified=%v", got, tc.refusal, tc.paths, tc.unverified)
+			}
+			if got.withheld() != (tc.refusal != skillRefusalNone) {
+				t.Fatalf("withheld = %v", got.withheld())
+			}
+			if !got.withheld() && got.command == "" {
+				t.Fatal("safe remedy missing command")
+			}
+		})
+	}
+}
+
+func TestSkillRemedyRefusalTokens(t *testing.T) {
+	for _, refusal := range []skillRemedyRefusal{skillRefusalLost, skillRefusalDowngrade, skillRefusalUndecided} {
+		t.Run(refusal.String(), func(t *testing.T) {
+			advice := skillRemedyAdvice{refusal: refusal}
+			prefix := "reinstall withheld [" + refusal.String() + "]"
+			if !strings.HasPrefix(advice.withheldLead(), prefix) {
+				t.Fatalf("lead = %q, want prefix %q", advice.withheldLead(), prefix)
+			}
+			if advice.nextAction() == "" {
+				t.Fatal("refusal missing next action")
 			}
 		})
 	}

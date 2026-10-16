@@ -243,3 +243,16 @@ func TestListFilter_ActionBarNonEmpty(t *testing.T) {
 		t.Errorf("ActionBar() returned empty slice")
 	}
 }
+
+func TestListFilterSeedApplied(t *testing.T) {
+	f := newListFilter()
+	f.Activate()
+	f.SeedApplied(" alpha ")
+	if f.Active() || !f.Applied() || f.input.Focused() || f.Query() != "alpha" {
+		t.Fatal("seed must restore blurred applied query")
+	}
+	f.SeedApplied("  ")
+	if f.Engaged() {
+		t.Fatal("empty seed must be idle")
+	}
+}

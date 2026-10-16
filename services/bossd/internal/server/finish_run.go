@@ -37,28 +37,7 @@ import (
 // push a branch and open a PR.
 const finishRunBudget = 5 * time.Minute
 
-// finishDeferral returns the server's finish deferrer, building it on first
-// use so a Server assembled as a struct literal still gets one.
 func (s *Server) finishDeferral() *archiveDeferrer {
-	s.finishDeferrerOnce.Do(func() {
-		var chats archiveChatLister
-		if s.agentChats != nil {
-			chats = s.agentChats
-		}
-		var sessions archiveSessionGetter
-		if s.sessions != nil {
-			sessions = s.sessions
-		}
-		logger := s.logger.With().Str("deferrer", "finish").Logger()
-		// No archiving flag: a pending finish is not an archive, and the
-		// session must not render as "Archiving…".
-		d := newArchiveDeferrer(chats, s.chatStatus, nil, sessions, s.finishRunNow, logger)
-		d.fireBudget = finishRunBudget
-		if s.lifecycle != nil {
-			d.settled = s.lifecycle.UnattendedRunQuiet
-		}
-		s.finishDeferrer = d
-	})
 	return s.finishDeferrer
 }
 

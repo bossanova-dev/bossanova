@@ -414,9 +414,10 @@ func (c *RemoteClient) ApproveSessionPR(context.Context, string, bool) (*pb.Veri
 	return nil, errLocalOnly("ApproveSessionPR")
 }
 
-// SendBackSessionPR is local-only for the same reason as ApproveSessionPR.
-func (c *RemoteClient) SendBackSessionPR(context.Context, string, string, bool) (*pb.SendBackSessionPRResponse, error) {
-	return nil, errLocalOnly("SendBackSessionPR")
+// OperatorMergeSession is local-only for the same reason as ApproveSessionPR,
+// and because a head pin cannot cross the remote boundary (see MergeSession).
+func (c *RemoteClient) OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error) {
+	return nil, errLocalOnly("OperatorMergeSession")
 }
 
 func (c *RemoteClient) RemoveSession(ctx context.Context, id string) error {

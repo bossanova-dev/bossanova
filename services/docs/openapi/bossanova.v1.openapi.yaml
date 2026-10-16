@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-19'
+  version: '2026-09-20'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -7870,7 +7870,9 @@ components:
             triggerType:
               type: string
               title: trigger_type
-              description: Required catalog type name, e.g. "http" or "github".
+              description: |-
+                Required authoritative type name and catalog key, e.g. "http" or "github".
+                 A string lets older clients show a new type even without recognizing its arm.
             repoOriginUrl:
               type: string
               title: repo_origin_url
@@ -10450,6 +10452,19 @@ components:
            - A daemon that predates this command drops the unknown oneof arm and sends
              no reply, so bosso bounds its own wait and records the invocation as
              FAILED with decision_reason "daemon_unsupported".
+
+         Differs from CreateSessionCommand on purpose:
+           - Addresses the repo by repo_origin_url, not repo_id: bosso does not know
+             daemon repo ids for triggers. prompt becomes CreateSessionRequest.plan.
+           - invocation_id and trigger_id identify the invocation for idempotency.
+           - Replies with one asynchronous CommandResult, not a SessionCreateChunk stream.
+           - The daemon always sets detach, is_tmux_unattended, defer_pr and force.
+           - Carries no quick-chat, PR, branch-name, tracker, force_branch or account_id
+             fields; base_branch still selects the worktree's starting branch.
+           - Carries should_run_setup_command and is_zero_output, which
+             CreateSessionCommand does not.
+         TestLaunchTriggerSessionClassifiesEveryCreateSessionRequestField guards these
+         choices against drift in both this command and CreateSessionRequest.
     bossanova.v1.LaunchTriggerSessionResult:
       type: object
       properties:
@@ -12262,6 +12277,63 @@ components:
       type: object
       title: NotifyStatusChangeResponse
       additionalProperties: false
+    bossanova.v1.OperatorMergeSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+          description: |-
+            Required 40-hex head SHA the operator was looking at. Nothing is recorded
+             or merged unless the PR head is exactly this commit.
+        shouldApprove:
+          type: boolean
+          title: should_approve
+          description: Record the head-bound approval before merging (a review row).
+        waives:
+          type: array
+          items:
+            type: string
+          title: waives
+          description: |-
+            The park codes the operator confirmed waiving, in report order; empty for
+             a review with nothing parked. Ignored without should_approve.
+      title: OperatorMergeSessionRequest
+      additionalProperties: false
+    bossanova.v1.OperatorMergeSessionResponse:
+      type: object
+      properties:
+        isMerged:
+          type: boolean
+          title: is_merged
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        mergeDetail:
+          type: string
+          title: merge_detail
+          description: 'MergeSessionResponse.detail: how the merge was performed, when notable.'
+        approval:
+          title: approval
+          description: The approval recorded before the merge; unset without should_approve.
+          $ref: '#/components/schemas/bossanova.v1.VerifyApproveResult'
+        trackerWrites:
+          type: string
+          title: tracker_writes
+        trackerWhy:
+          type: string
+          title: tracker_why
+      title: OperatorMergeSessionResponse
+      additionalProperties: false
+      description: |-
+        OperatorMergeSessionResponse reports what happened. is_merged is false only
+         when the approval was refused: approval then carries the reason and nothing
+         was merged. A refused or failed merge is an error. tracker_writes is the
+         toolbox's `mark-merged` outcome (ok, none, unavailable, failed, ...) with
+         tracker_why when it did not happen; bookkeeping never fails a landed merge.
     bossanova.v1.OrchestratorCommand:
       type: object
       allOf:
@@ -17605,49 +17677,6 @@ components:
       description: |-
         SecretUpdate carries a secret mutation. value is required iff action == SET
          and is ignored otherwise. Never populated on read/aggregate responses.
-    bossanova.v1.SendBackSessionPRRequest:
-      type: object
-      properties:
-        id:
-          type: string
-          title: id
-        note:
-          type: string
-          title: note
-        isDryRun:
-          type: boolean
-          title: is_dry_run
-      title: SendBackSessionPRRequest
-      additionalProperties: false
-    bossanova.v1.SendBackSessionPRResponse:
-      type: object
-      properties:
-        isPosted:
-          type: boolean
-          title: is_posted
-        isPlanned:
-          type: boolean
-          title: is_planned
-        isDryRun:
-          type: boolean
-          title: is_dry_run
-        reason:
-          type: string
-          title: reason
-        commentUrl:
-          type: string
-          title: comment_url
-        headSha:
-          type: string
-          title: head_sha
-        state:
-          type: string
-          title: state
-      title: SendBackSessionPRResponse
-      additionalProperties: false
-      description: |-
-        SendBackSessionPRResponse is `verify-gate.mjs send-back`'s outcome. is_posted
-         is true only when the PR comment was created; a refusal carries reason.
     bossanova.v1.SendBroadcastRequest:
       type: object
       properties:
@@ -18459,7 +18488,7 @@ components:
           type: string
           title: progress_label
           description: |-
-            Short progress label for IN_PROGRESS ("building", "CI 3/7", "waiting for
+            Short progress label for IN_PROGRESS ("building", "checking 3/7", "waiting for
              main CI", "working", "idle").
         parkCodes:
           type: array
@@ -18481,6 +18510,16 @@ components:
           type: string
           title: evidence_url
           description: Evidence (video) URL behind a verify park, when one exists.
+        openItems:
+          type: array
+          items:
+            type: string
+          title: open_items
+          description: |-
+            What keeps a verify park's PR checklist open, one plain line each (an
+             unticked item, a missing section, a do-not-merge marker), as the park's
+             own note recorded them for the current head. Empty when the park has no
+             open checklist or its note has not been read.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.
@@ -18559,6 +18598,18 @@ components:
              Session.transferring_to / transferring_from (models.proto) hide the
              session from ListForUser during the coordinated transfer protocol.
           $ref: '#/components/schemas/bossanova.v1.Session'
+        seq:
+          type:
+            - integer
+            - string
+          title: seq
+          format: int64
+          description: |-
+            Daemon-assigned delta identity, strictly increasing across all session
+             deltas sent by one daemon process, including across reconnects. Seeded at
+             process start from wall-clock Unix nanoseconds to avoid reuse on restart.
+             Zero means an older daemon that does not stamp deltas. This identifies
+             the delta, not session state: do not order state across daemons by seq.
       title: SessionDelta
       additionalProperties: false
       description: |-
@@ -20483,9 +20534,9 @@ components:
               type: string
               title: trigger_type
               description: |-
-                Trigger type name from the catalog: "http" or "github" today. A string,
-                 not an enum, so adding a type needs no change to this common model; the
-                 type's own settings live in the type_config oneof below.
+                Authoritative type name and catalog key: "http" or "github" today.
+                 Kept as a string so older clients can read and show a new type's name
+                 even when they do not recognize its type_config arm.
             configVersion:
               type: integer
               title: config_version
@@ -21775,6 +21826,9 @@ components:
          fields cannot express "absent", so a non-empty list replaces the stored
          list, an empty list leaves it unchanged, and the matching should_clear_*
          flag clears it; a non-empty list together with its flag is INVALID_ARGUMENT.
+         These flags deliberately follow UpdateSessionWebhookRequest. Replacing the
+         repeated fields with wrapper messages would break their wire types without
+         adding expressiveness to this partial-update contract.
     bossanova.v1.UpdateTriggerResponse:
       type: object
       properties:
@@ -21982,15 +22036,19 @@ components:
         state:
           type: string
           title: state
+        signOff:
+          type: string
+          title: sign_off
       title: VerifyApproveResult
       additionalProperties: false
       description: |-
         VerifyApproveResult is `verify-gate.mjs approve`'s outcome. is_approved is
          true only when the head-bound approval record (approval_url) took effect on
-         head_sha: it waives `waives` there, or, with lifted "sent-back", it lifts a
-         send-back of a head verify already passed. tracker_writes reports the
-         needs-human label removal that follows. A refusal carries reason, plus
-         approval_url when a posted record waives nothing.
+         head_sha: it waives `waives` there; with lifted "sent-back" it lifts a
+         legacy send-back of a head verify already passed; with sign_off "merge" it
+         signs off an operator merge of a head with nothing parked. tracker_writes
+         reports the needs-human label removal that follows. A refusal carries
+         reason, plus approval_url when a posted record waives nothing.
     bossanova.v1.WaitAgentRunHostRequest:
       type: object
       properties:

@@ -4,6 +4,7 @@ go_library(
     name = "sessionports",
     srcs = [
         "address.go",
+        "agentrunner.go",
         "clock.go",
         "command.go",
         "detector.go",
@@ -45,6 +46,7 @@ go_library(
 go_test(
     name = "sessionports_test",
     srcs = [
+        "agentrunner_test.go",
         "command_test.go",
         "detector_test.go",
         "endpoint_test.go",

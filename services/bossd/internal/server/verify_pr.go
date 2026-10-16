@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -20,8 +21,8 @@ import (
 // verifyVerbs is the boss-verify toolbox's operator surface;
 // *verifybridge.Bridge is the real one.
 type verifyVerbs interface {
-	Approve(context.Context, verifybridge.Target) (verifybridge.ApproveResult, error)
-	SendBack(context.Context, verifybridge.Target, string) (verifybridge.SendBackResult, error)
+	Approve(context.Context, verifybridge.Target, *verifybridge.MergeApproval) (verifybridge.ApproveResult, error)
+	MarkMerged(context.Context, verifybridge.Target) (verifybridge.MarkMergedResult, error)
 }
 
 // verifyVerbsFor returns the verbs that run with env as the child's whole
@@ -40,11 +41,15 @@ func (s *Server) ApproveSessionPR(ctx context.Context, req *connect.Request[pb.A
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.verifyVerbsFor(env).Approve(ctx, target)
+	r, err := s.verifyVerbsFor(env).Approve(ctx, target, nil)
 	if err != nil {
 		return nil, s.verifyBridgeError("approve", target, err)
 	}
-	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: &pb.VerifyApproveResult{
+	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: approveResultProto(r)}), nil
+}
+
+func approveResultProto(r verifybridge.ApproveResult) *pb.VerifyApproveResult {
+	return &pb.VerifyApproveResult{
 		IsApproved:    r.Approved,
 		IsPlanned:     r.Planned,
 		IsDryRun:      r.DryRun,
@@ -57,33 +62,155 @@ func (s *Server) ApproveSessionPR(ctx context.Context, req *connect.Request[pb.A
 		Why:           r.Why,
 		Park:          r.Park,
 		State:         r.State,
-	}}), nil
+		SignOff:       r.SignOff,
+	}
 }
 
-// SendBackSessionPR runs `verify-gate.mjs send-back` for the session's PR on
-// this host. Starting the repair chat stays with the caller.
-func (s *Server) SendBackSessionPR(ctx context.Context, req *connect.Request[pb.SendBackSessionPRRequest]) (*connect.Response[pb.SendBackSessionPRResponse], error) {
-	note := req.Msg.GetNote()
-	if strings.TrimSpace(note) == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("send-back needs a non-empty note"))
+// operatorMergeBudget splits OperatorMergeSession's time. The whole flow must
+// answer inside the daemon's 120s WriteTimeout, or a merge that landed reaches
+// the operator as a dropped reply. approve gets the first slice; mark-merged
+// gets whatever is left of total after the merge, and is skipped when nothing is.
+type operatorMergeBudget struct {
+	total, approve time.Duration
+}
+
+var defaultOperatorMergeBudget = operatorMergeBudget{total: 110 * time.Second, approve: 60 * time.Second}
+
+func (s *Server) mergeBudget() operatorMergeBudget {
+	if s.operatorMergeBudget.total > 0 {
+		return s.operatorMergeBudget
 	}
-	target, env, err := s.verifyTarget(ctx, req.Msg.GetId(), req.Msg.GetIsDryRun())
+	return defaultOperatorMergeBudget
+}
+
+// OperatorMergeSession is the operator's merge from a review or merge row, in
+// one order that never merges what the operator did not see: refuse a FIX,
+// check the live gate at the pinned head, record the head-bound approval
+// (review rows only), merge through MergeSession at that head, then run the
+// post-merge tracker bookkeeping. Nothing is recorded when the gate refuses or
+// the head moved.
+func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
+	budget := s.mergeBudget()
+	deadline := time.Now().Add(budget.total)
+	pin, ok := vcs.NormalizeHeadSHA(req.Msg.GetExpectedHeadSha())
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("expected_head_sha must be a 40-character hex commit SHA"))
+	}
+	id := req.Msg.GetId()
+	target, env, err := s.verifyTarget(ctx, id, false)
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.verifyVerbsFor(env).SendBack(ctx, target, note)
-	if err != nil {
-		return nil, s.verifyBridgeError("send-back", target, err)
+	if err := s.refuseFixAttention(ctx, id, target.PR); err != nil {
+		return nil, err
 	}
-	return connect.NewResponse(&pb.SendBackSessionPRResponse{
-		IsPosted:   r.Posted,
-		IsPlanned:  r.Planned,
-		IsDryRun:   r.DryRun,
-		Reason:     r.Reason,
-		CommentUrl: r.CommentURL,
-		HeadSha:    r.HeadSHA,
-		State:      r.State,
-	}), nil
+	verbs := s.verifyVerbsFor(env)
+	resp := &pb.OperatorMergeSessionResponse{}
+	if req.Msg.GetShouldApprove() {
+		if err := s.operatorMergeGate(ctx, id, target.PR, pin); err != nil {
+			return nil, err
+		}
+		approveCtx, cancel := context.WithTimeout(ctx, budget.approve)
+		r, err := verbs.Approve(approveCtx, target, &verifybridge.MergeApproval{Head: pin, Waives: req.Msg.GetWaives()})
+		cancel()
+		if err != nil {
+			return nil, s.verifyBridgeError("approve", target, err)
+		}
+		resp.Approval = approveResultProto(r)
+		if !r.Approved {
+			return connect.NewResponse(resp), nil
+		}
+	}
+	merged, err := s.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: pin}))
+	if err != nil {
+		if resp.Approval != nil {
+			return nil, approvalStandsError(err, resp.Approval)
+		}
+		return nil, err
+	}
+	resp.IsMerged = true
+	resp.Session = merged.Msg.GetSession()
+	resp.MergeDetail = merged.Msg.GetDetail()
+	resp.TrackerWrites, resp.TrackerWhy = s.markMerged(ctx, verbs, target, deadline)
+	return connect.NewResponse(resp), nil
+}
+
+// refuseFixAttention refuses a session whose attention is a FIX: a blocked
+// verify park or a failure. The TUI offers no merge on a fix row; this keeps a
+// direct call from merging over one too. The escape hatch for a blocked park
+// is an approval through the CLI, and for a failure a plain merge.
+func (s *Server) refuseFixAttention(ctx context.Context, id string, pr int) error {
+	got, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: id}))
+	if err != nil {
+		return err
+	}
+	a := got.Msg.GetSession().GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+		return nil
+	}
+	override := fmt.Sprintf("use boss merge %s to override", id)
+	if len(a.GetParkCodes()) > 0 {
+		override = fmt.Sprintf("use boss pr approve %d to override", pr)
+	}
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR #%d is blocked: %s; %s", pr, a.GetSentence(), override))
+}
+
+// operatorMergeGate runs a stricter live gate than MergeSession's before an
+// approval is recorded, so an approval is never left standing on a head that
+// could not merge, is a draft, has checks still running, or moved since the
+// operator looked.
+func (s *Server) operatorMergeGate(ctx context.Context, id string, pr int, pin string) error {
+	sess, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+	repo, err := s.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+	}
+	mb, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, pin, operatorApprovalBlocks)
+	switch {
+	case errors.Is(err, vcs.ErrHeadMismatch):
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w; nothing was approved or merged", err))
+	case err != nil:
+		return connect.NewError(connect.CodeCanceled, fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
+	case mb != nil:
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("merge blocked: gate=%s; %s; nothing was approved or merged", mb.Gate.Slug(), mb.Detail))
+	}
+	return nil
+}
+
+// approvalStandsError keeps a refused merge's code and says that the approval
+// recorded just before it still stands on that head.
+func approvalStandsError(err error, approval *pb.VerifyApproveResult) error {
+	msg := err.Error()
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		msg = ce.Message()
+	}
+	return connect.NewError(connect.CodeOf(err), fmt.Errorf("%s; the approval of %s (%s) stays recorded", msg, approval.GetHeadSha(), approval.GetApprovalUrl()))
+}
+
+// markMerged runs the toolbox's post-merge tracker bookkeeping. The merge has
+// landed, so it runs past the caller's cancellation but stops at deadline, so
+// the reply that says the merge landed is never dropped. A failure is
+// reported, never returned.
+func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verifybridge.Target, deadline time.Time) (writes, why string) {
+	if time.Until(deadline) <= 0 {
+		s.logger.Warn().Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: no time left for tracker bookkeeping")
+		return "failed", "no time was left to update the tracker"
+	}
+	markCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancel()
+	r, err := verbs.MarkMerged(markCtx, target)
+	switch {
+	case err != nil:
+		s.logger.Warn().Err(err).Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: tracker bookkeeping failed")
+		return "failed", err.Error()
+	case !r.Merged:
+		return "skipped", r.Reason
+	}
+	return r.TrackerWrites, r.Why
 }
 
 // verifyTarget resolves the session's PR, repo slug and worktree, and the

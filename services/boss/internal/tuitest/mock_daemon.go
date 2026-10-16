@@ -333,16 +333,18 @@ type MockDaemon struct {
 	// mock. Setting this drives the lagging shape.
 	mergeResponseState pb.SessionState
 
-	// approveSessionPRCalls / sendBackSessionPRCalls record every verify verb
-	// request, so a test can prove a declined confirmation ran no verb.
-	approveSessionPRCalls  []*pb.ApproveSessionPRRequest
-	sendBackSessionPRCalls []*pb.SendBackSessionPRRequest
-	// approveResult / sendBackResult are what the verbs answer; nil keeps the
-	// RPC answering Unimplemented, as an older daemon would.
-	approveResult  *pb.VerifyApproveResult
-	sendBackResult *pb.SendBackSessionPRResponse
+	// approveSessionPRCalls / operatorMergeCalls record every verify request,
+	// so a test can prove a declined confirmation ran nothing.
+	approveSessionPRCalls []*pb.ApproveSessionPRRequest
+	operatorMergeCalls    []*pb.OperatorMergeSessionRequest
+	// approveResult is what ApproveSessionPR answers; nil keeps the RPC
+	// answering Unimplemented, as an older daemon would.
+	approveResult *pb.VerifyApproveResult
+	// operatorMergeResult, when set, is OperatorMergeSession's answer; nil
+	// merges the stored session and reports the bookkeeping as done.
+	operatorMergeResult *pb.OperatorMergeSessionResponse
 	// verifyErrorCode/verifyErrorMsg, when verifyErrorMsg is non-empty, make
-	// both verbs fail with that connect error.
+	// ApproveSessionPR and OperatorMergeSession fail with that connect error.
 	verifyErrorCode connect.Code
 	verifyErrorMsg  string
 
@@ -2225,12 +2227,12 @@ func (m *MockDaemon) SetApproveResult(r *pb.VerifyApproveResult) {
 	m.approveResult = r
 }
 
-// SetSendBackResult makes SendBackSessionPR answer with r (nil restores
-// Unimplemented).
-func (m *MockDaemon) SetSendBackResult(r *pb.SendBackSessionPRResponse) {
+// SetOperatorMergeResult makes OperatorMergeSession answer with r (nil
+// restores merging the stored session).
+func (m *MockDaemon) SetOperatorMergeResult(r *pb.OperatorMergeSessionResponse) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sendBackResult = r
+	m.operatorMergeResult = r
 }
 
 // SetVerifyError makes both verify verbs fail with the given connect code and
@@ -2248,11 +2250,11 @@ func (m *MockDaemon) ApproveSessionPRCalls() []*pb.ApproveSessionPRRequest {
 	return cloneMsgs(m.approveSessionPRCalls)
 }
 
-// SendBackSessionPRCalls returns every SendBackSessionPR request in order.
-func (m *MockDaemon) SendBackSessionPRCalls() []*pb.SendBackSessionPRRequest {
+// OperatorMergeCalls returns every OperatorMergeSession request in order.
+func (m *MockDaemon) OperatorMergeCalls() []*pb.OperatorMergeSessionRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return cloneMsgs(m.sendBackSessionPRCalls)
+	return cloneMsgs(m.operatorMergeCalls)
 }
 
 // ApproveSessionPR answers with the configured result. The real daemon runs the
@@ -2270,18 +2272,26 @@ func (m *MockDaemon) ApproveSessionPR(_ context.Context, req *connect.Request[pb
 	return connect.NewResponse(&pb.ApproveSessionPRResponse{Result: cloneMsg(m.approveResult)}), nil
 }
 
-// SendBackSessionPR answers with the configured result.
-func (m *MockDaemon) SendBackSessionPR(_ context.Context, req *connect.Request[pb.SendBackSessionPRRequest]) (*connect.Response[pb.SendBackSessionPRResponse], error) {
+// OperatorMergeSession answers with the configured result, or marks the stored
+// session merged. Nothing here models the approval record, the head pin or the
+// tracker; SetOperatorMergeResult and SetVerifyError inject those outcomes.
+func (m *MockDaemon) OperatorMergeSession(_ context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sendBackSessionPRCalls = append(m.sendBackSessionPRCalls, cloneMsg(req.Msg))
+	m.operatorMergeCalls = append(m.operatorMergeCalls, cloneMsg(req.Msg))
 	if m.verifyErrorMsg != "" {
 		return nil, connect.NewError(m.verifyErrorCode, fmt.Errorf("%s", m.verifyErrorMsg))
 	}
-	if m.sendBackResult == nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SendBackSessionPR not configured"))
+	if m.operatorMergeResult != nil {
+		return connect.NewResponse(cloneMsg(m.operatorMergeResult)), nil
 	}
-	return connect.NewResponse(cloneMsg(m.sendBackResult)), nil
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.GetId() {
+			s.State = pb.SessionState_SESSION_STATE_MERGED
+			return connect.NewResponse(&pb.OperatorMergeSessionResponse{IsMerged: true, Session: s, TrackerWrites: "ok"}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetId()))
 }
 
 // SetRecordChatResponse makes RecordChat answer with chat verbatim instead of

@@ -16,14 +16,11 @@
 // three chances to disagree — and because the disagreement is invisible until the run that needed
 // the missing file is already past its preflight.
 //
-// Scope limit (load-bearing, do not "fix"): the gate's stdout and its exit status are the whole
-// account of the drift. This module runs no command and reads NO checkout. It ships vendored
-// inside globally installed cores, where there is no checkout to consult and where the gate has
-// already performed the only comparison that can be performed. The one thing it may read besides
-// that output is the installed cores it ships beside: whether the body this run executes calls a
-// file the checkout adds can only be answered there, never in the checkout. Everything else it
-// knows, it parses; anything it cannot parse or read, it refuses to call clean.
-//
+// Scope limit: drift comes from the gate's stdout and exit status. Reference checks read
+// installed cores and repo-local extension directories resolved by skill-extensions.mjs,
+// because those are the files this run executes. Checkout skill sources are never read.
+// The gate itself only reports drift inside a source checkout; elsewhere it is a no-op.
+
 // Fail-closed in both directions. An unrecognised kind or direction token is `undecided`, and so
 // is a non-zero gate whose output carries no parseable drift row at all — the shape that a
 // failed comparison or an unevaluable tree produces. A verdict allowlist whose default arm is the
@@ -33,8 +30,8 @@
 // the running core, and under the sibling cores it loads in-run, decide; rows under any other core
 // are still reported, but decide nothing. The running core is read from where this module sits —
 // a vendored copy lives at `<skills>/<core>/toolbox/` — or given by `--core`. That location, the
-// flag, and the installed cores in scope (read only to ask whether they mention an absent file) are
-// the only inputs besides the gate's own output; no checkout is read. An unrecognised or
+// flag, installed cores in scope, and repo-local extensions this run can load are the inputs
+// besides the gate's output. An unrecognised or
 // unlocatable core falls back to whole-tree scope, which is the fail-closed direction, and an
 // installed tree that cannot be located or scanned leaves every absent row blocking.
 
@@ -46,6 +43,7 @@ import { fileURLToPath } from 'node:url'
 // main-module.test.mjs), so this module shares it rather than inlining a second copy — every
 // skill that vendors this file already vendors main-module.mjs alongside it.
 import { isMainModule } from './main-module.mjs'
+import { resolveExtensionRoots } from './skill-extensions.mjs'
 
 // The five verdicts. `clean` and `advisory`/`advisory-withheld` continue; `undecided` and
 // `blocking` stop.
@@ -69,13 +67,15 @@ export const SKILL_DRIFT_KINDS = Object.freeze([
 // The gate's own direction vocabulary (`skillDriftDirection` in the boss CLI). Exactly five.
 // `ahead` is an installed copy NEWER than the checkout: a revision origin/HEAD reaches and the
 // checkout's HEAD does not.
-export const SKILL_DRIFT_DIRECTIONS = Object.freeze([
-  'lossless',
-  'behind',
-  'ahead',
-  'unrecoverable',
-  'unknown',
-])
+export const SKILL_DRIFT_DIRECTION_CLASS = Object.freeze({
+  lossless: 'none',
+  behind: 'none',
+  ahead: 'downgrade',
+  unrecoverable: 'lost',
+  unknown: 'lost',
+})
+export const SKILL_DRIFT_DIRECTIONS = Object.freeze(Object.keys(SKILL_DRIFT_DIRECTION_CLASS))
+export const SKILL_DRIFT_REFUSALS = Object.freeze(['lost', 'downgrade', 'undecided'])
 
 // Kinds on the absent-capability side: the file a later step invokes by path is not there
 // (`absent`), is there but cannot be invoked directly (`mode`), or does not resolve
@@ -87,7 +87,9 @@ const CAPABILITY_KINDS = new Set(['absent', 'mode', 'broken-symlink'])
 // bytes the checkout cannot restore, or downgrade bytes newer than the checkout. The tree still
 // runs, so this stays on the advisory side: only the REMEDY is unsafe, and withholding the command
 // while still warning is the decision the gate itself already made.
-const WITHHELD_DIRECTIONS = new Set(['ahead', 'unrecoverable', 'unknown'])
+const WITHHELD_DIRECTIONS = new Set(
+  SKILL_DRIFT_DIRECTIONS.filter((direction) => SKILL_DRIFT_DIRECTION_CLASS[direction] !== 'none'),
+)
 
 // Ascending severity; the aggregate verdict of a mixed report is its most severe row. `blocking`
 // outranks `undecided` so a report carrying both names the stop it can actually prove rather than
@@ -174,10 +176,14 @@ function treeMentions(dir, needle) {
 }
 
 // The real `isReferenced` for a module at moduleUrl judging the given cores: does any text file of
-// those installed cores mention the drifted path's basename? `true` or `false` when every core was
+// those installed cores or their repo-local extensions mention the drifted path's basename? `true` or `false` when every core was
 // scanned, `null` (unknown, which blocks) when the namespace cannot be located — the canonical
 // source copy, a test fixture — when there is no core scope, or when any scan throws.
-export function installedReferenceChecker(moduleUrl = import.meta.url, cores = []) {
+export function installedReferenceChecker(
+  moduleUrl = import.meta.url,
+  cores = [],
+  { root = process.cwd() } = {},
+) {
   const located = locateRunningCore(moduleUrl)
   const scope = scopeForCores(cores)
   if (located === null || scope === null) return () => null
@@ -185,8 +191,20 @@ export function installedReferenceChecker(moduleUrl = import.meta.url, cores = [
     const name = basename(String(path))
     if (name === '') return null
     try {
+      const extensionRoots = resolveExtensionRoots(root)
       for (const core of [...scope].sort()) {
         if (treeMentions(join(located.namespace, core), name)) return true
+        for (const extensionRoot of extensionRoots) {
+          for (const entry of readdirSync(extensionRoot)) {
+            const dir = join(extensionRoot, entry)
+            if (
+              entry.startsWith(`${core}-`) &&
+              statSync(dir).isDirectory() &&
+              treeMentions(dir, name)
+            )
+              return true
+          }
+        }
       }
       return false
     } catch {
@@ -258,6 +276,8 @@ export function parseSkillGateOutput(output = '') {
   const rows = []
   let command = null
   let withheld = false
+  let refusal = null
+  const refusalRank = { downgrade: 0, undecided: 1, lost: 2, unrecognised: 3 }
   for (const line of String(output).split('\n')) {
     const row = DRIFT_ROW.exec(line)
     if (row) {
@@ -273,6 +293,9 @@ export function parseSkillGateOutput(output = '') {
     }
     if (WITHHELD_LEAD.test(line)) {
       withheld = true
+      const token = /^ {2}reinstall withheld \[([a-z-]+)\]/.exec(line)?.[1]
+      const current = SKILL_DRIFT_REFUSALS.includes(token) ? token : 'unrecognised'
+      if (refusal === null || refusalRank[current] > refusalRank[refusal]) refusal = current
       continue
     }
     const run = RUN_LINE.exec(line)
@@ -282,7 +305,7 @@ export function parseSkillGateOutput(output = '') {
   // consumer that echoes one agent's safe command beside another agent's refusal invites running
   // it for both.
   if (withheld) command = null
-  return { rows, remedy: { command, withheld } }
+  return { rows, remedy: { command, withheld, refusal } }
 }
 
 // An out-of-scope row can raise the aggregate no higher than this: it is reported, never decisive.
@@ -429,10 +452,11 @@ function outOfScopeCapabilityLines(result) {
 // the checkout (a reinstall from here would downgrade it), or a difference the checkout cannot
 // place. Only the first group may be called lagging.
 function executedStaleClauses(rows) {
-  const group = (directions) => uniqueLabels(rows.filter((row) => directions.has(row.direction)))
-  const lag = group(new Set(['lossless', 'behind']))
-  const newer = group(new Set(['ahead']))
-  const unplaced = group(new Set(['unrecoverable', 'unknown']))
+  const group = (refusal) =>
+    uniqueLabels(rows.filter((row) => SKILL_DRIFT_DIRECTION_CLASS[row.direction] === refusal))
+  const lag = group('none')
+  const newer = group('downgrade')
+  const unplaced = group('lost')
   const clauses = []
   if (lag.length > 0) {
     clauses.push(
@@ -454,13 +478,8 @@ function executedStaleClauses(rows) {
   return clauses
 }
 
-// Whether the only withheld direction in a report is `ahead`, so its refusal is a downgrade the
-// operator fixes by updating the checkout rather than a loss fixed by moving files.
-const onlyDowngradeWithheld = (directions) =>
-  directions.includes('ahead') && !directions.some((d) => d === 'unrecoverable' || d === 'unknown')
-
 export function renderSkillDriftVerdict(result) {
-  const { verdict, remedy, evidence = [], reason, rows = [], directions = [] } = result
+  const { verdict, remedy, evidence = [], reason, rows = [] } = result
   if (verdict === SKILL_DRIFT_VERDICTS.CLEAN) return []
   const executedStale = rows.filter((row) => row.inScope && EXECUTED_STALE_KINDS.has(row.kind))
   if (
@@ -518,11 +537,15 @@ export function renderSkillDriftVerdict(result) {
       ' the step that invokes one of these and reports it as that step failing.',
     remedy.command
       ? `  repair: ${remedy.command}`
-      : onlyDowngradeWithheld(directions)
+      : remedy.refusal === 'downgrade'
         ? '  repair: the gate withheld its reinstall command because installed copies are newer than' +
           ' this checkout — update the checkout to origin/HEAD first, then re-run it.'
-        : '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
-          ' unrecoverable first, then re-run it.',
+        : remedy.refusal === 'lost'
+          ? '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
+            ' unrecoverable first, then re-run it.'
+          : remedy.refusal === 'undecided'
+            ? '  repair: re-run it once the skills directory is readable and no longer changing'
+            : "  repair: the gate withheld its reinstall command — follow the gate's own `next:` line above",
   ]
   // Only when the gate's own command lacks the build step: a command that already rebuilds the
   // plugins needs no second instruction to do so.
@@ -561,7 +584,10 @@ function coreFlags(argv) {
   return given ? cores : null
 }
 
-export function main(argv, { stdin, stdout = process.stdout, moduleUrl = import.meta.url } = {}) {
+export function main(
+  argv,
+  { stdin, stdout = process.stdout, moduleUrl = import.meta.url, root = process.cwd() } = {},
+) {
   const command = argv[0]
   if (command !== 'classify') {
     stdout.write(
@@ -578,7 +604,7 @@ export function main(argv, { stdin, stdout = process.stdout, moduleUrl = import.
     exitStatus: status,
     output: stdin !== undefined ? stdin : readStdin(),
     cores,
-    isReferenced: installedReferenceChecker(moduleUrl, cores),
+    isReferenced: installedReferenceChecker(moduleUrl, cores, { root }),
   })
   for (const line of renderSkillDriftVerdict(result)) stdout.write(`${line}\n`)
   return result.blocking ? 1 : 0

@@ -580,6 +580,28 @@ const V20260918 Version = "2026-09-18"
 // back.
 const V20260919 Version = "2026-09-19"
 
+// V20260920 ships UnverifiedMergeAttentionChange: Session.attention answers a
+// merge-ready PR that the verify stage has not passed (no successful
+// boss/verify status on its head) as ATTENTION_KIND_REVIEW with no park codes,
+// the sentence "Not verified" and the actions
+// GITHUB then MERGE, where it answered ATTENTION_KIND_MERGE ("Ready to merge",
+// MERGE then GITHUB). A verified merge-ready PR is still a MERGE. Older pins
+// get the MERGE answer back.
+//
+// The same window ships DeadBootstrapAttentionChange: the FIX for a session
+// whose bootstrap was reaped (blocked_reason sessionreason.BootstrapStranded)
+// offers DISMISS alone and says only that it died before setup finished, where
+// it offered DISMISS and OPEN_CHAT and said to open the chat and resume. Older
+// pins get OPEN_CHAT and the old sentence back.
+//
+// And ParkMergeAttentionChange: a verify park's attention no longer offers
+// APPROVE or SEND_BACK. A sign-off park's REVIEW offers GITHUB (and VIDEO) then
+// MERGE, which records the head-bound approval and merges at once; a blocked
+// park's FIX offers GITHUB (and VIDEO). Park sentences state only the issue.
+// Older pins get APPROVE and SEND_BACK (SEND_BACK alone on a FIX) and the old
+// sentences back.
+const V20260920 Version = "2026-09-20"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -734,8 +756,9 @@ func DefaultRegistry() *Registry {
 			V20260917,
 			V20260918,
 			V20260919,
+			V20260920,
 		},
-		V20260919,
+		V20260920,
 		Baseline,
 	)
 	if err != nil {

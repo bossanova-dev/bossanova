@@ -12,8 +12,8 @@ func TestApproveLines(t *testing.T) {
 		return &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: writes, Why: why}
 	}
 	const waived = "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge."
-	const ledgerLine = "  ledger-open: review left must-fix findings open"
-	const overrode = `Approving overrode ledger-open (review left must-fix findings open); if that was not intended, boss pr send-back 7 "<note>" revokes the approval and sends the head back.`
+	const ledgerLine = "  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section"
+	const overrode = "Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh."
 	signedOff := &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui,always-human-path", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}
 	for _, tc := range []struct {
 		name string
@@ -39,15 +39,15 @@ func TestApproveLines(t *testing.T) {
 			[]string{waived, ledgerLine, overrode, "The needs-human label was left on (status-unreadable); remove it on the ticket by hand if this head still stands."}},
 		{"a lifted send-back names how to merge",
 			&pb.VerifyApproveResult{IsApproved: true, Lifted: "sent-back", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9"},
-			[]string{"Approved #7: lifted the send-back of head abcdef01 (record: https://x/9). Run /boss-verify 7 to merge it."}},
+			[]string{"Approved #7: lifted the older send-back of head abcdef01 (record: https://x/9). Run /boss-verify 7 to merge it."}},
 		{"a dry run names what would be written and what it would override",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "ledger-open", HeadSha: "abcdef0123456789"},
 			[]string{"Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).",
 				ledgerLine,
-				`Approving would override ledger-open (review left must-fix findings open); boss pr send-back 7 "<note>" sends the head back instead.`}},
+				"Approving would override ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section)."}},
 		{"a dry-run lift names the send-back",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Lifted: "sent-back", HeadSha: "abcdef0123456789"},
-			[]string{"Would approve #7: record an approval lifting the send-back of head abcdef01 (dry run; nothing written)."}},
+			[]string{"Would approve #7: record an approval lifting the older send-back of head abcdef01 (dry run; nothing written)."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ApproveLines(7, tc.r); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
@@ -57,87 +57,50 @@ func TestApproveLines(t *testing.T) {
 	}
 }
 
-func TestMergeLines(t *testing.T) {
-	approved := func(writes, why string) *pb.VerifyApproveResult {
-		return &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: writes, Why: why}
-	}
-	const waived = "Merge requested for #7: verify waived ledger-open on head abcdef01 and will re-check and merge (record: https://x/9)."
+func TestOperatorMerged(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		r    *pb.VerifyApproveResult
-		want []string
+		r    *pb.OperatorMergeSessionResponse
+		want string
 	}{
-		{"a clean merge request is one line", approved("ok", ""), []string{waived}},
-		{"a failed label removal names the failure", approved("failed", "rate-limited"),
-			[]string{waived, "The needs-human label could not be removed (failed: rate-limited); remove it on the ticket by hand if this head still stands."}},
-		{"a moved head names the merge request", approved("skipped", "head-moved"),
-			[]string{waived, "The PR's head or its park changed after the merge request, so the needs-human label was left on."}},
-		{"a lifted send-back names how to merge",
-			&pb.VerifyApproveResult{IsApproved: true, Lifted: "sent-back", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9"},
-			[]string{"Send-back lifted for #7 on head abcdef01 (record: https://x/9). Run /boss-verify 7 to merge it."}},
+		{"bookkeeping done", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "ok"}, "Merged PR #7"},
+		{"a PR with no ticket needs no bookkeeping", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "none"}, "Merged PR #7"},
+		{"failed bookkeeping says to move the ticket by hand", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "TRACKER_CREDENTIALS_MISSING"},
+			"Merged PR #7; the tracker was not updated (unavailable: TRACKER_CREDENTIALS_MISSING), so move the ticket to done by hand"},
+		{"bookkeeping that never ran says so", &pb.OperatorMergeSessionResponse{IsMerged: true}, "Merged PR #7; the tracker was not updated, so move the ticket to done by hand"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MergeLines(7, tc.r); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
-				t.Fatalf("lines = %q\nwant    %q", got, tc.want)
+			if got := OperatorMerged(7, tc.r); got != tc.want {
+				t.Fatalf("got  %q\nwant %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestMergeConfirm(t *testing.T) {
-	t.Run("a sign-off lists each code and merges by default", func(t *testing.T) {
-		lines, overrides := MergeConfirm(42, []string{"human-review:ui"})
-		want := []string{
-			"Merge PR #42? Verify waives its park on the current head, re-checks it, then merges:",
-			"  human-review:ui: a UI change; watch the evidence before it merges",
-		}
-		if overrides || strings.Join(lines, "\n") != strings.Join(want, "\n") {
-			t.Fatalf("lines = %q overrides=%v\nwant    %q overrides=false", lines, overrides, want)
-		}
-	})
-	t.Run("a failure names what merging overrides and the send-back", func(t *testing.T) {
-		lines, overrides := MergeConfirm(42, []string{"human-review:ui,ledger-open"})
-		want := []string{
-			"Merge PR #42 anyway? Verify waives its park on the current head, re-checks it, then merges:",
-			"  ledger-open: review left must-fix findings open",
-			"  human-review:ui: a UI change; watch the evidence before it merges",
-			"Merging overrides ledger-open (review left must-fix findings open).",
-			`To send it back instead: boss pr send-back 42 "<note>"`,
-		}
-		if !overrides || strings.Join(lines, "\n") != strings.Join(want, "\n") {
-			t.Fatalf("lines = %q overrides=%v\nwant    %q overrides=true", lines, overrides, want)
-		}
-	})
-	t.Run("a park naming no codes is treated as a failure", func(t *testing.T) {
-		lines, overrides := MergeConfirm(42, nil)
-		if !overrides || !strings.Contains(strings.Join(lines, "\n"), "Merging overrides a park that names no reason.") {
-			t.Fatalf("lines = %q overrides=%v", lines, overrides)
-		}
-	})
-}
-
-// TestMergeRefusalUsesMergeWording keeps the TUI free of "approve" for every
-// refusal whose CLI detail names an approval, while the CLI wording stands.
+// TestMergeRefusalUsesMergeWording checks that every refusal the TUI's merge
+// words differently from the CLI says nothing merged, and never shows a park.
 func TestMergeRefusalUsesMergeWording(t *testing.T) {
-	for _, reason := range []string{"head-moved", "approval-record-failed", "approval-superseded", "approval-unconfirmed", "sent-back-approved-head"} {
-		r := &pb.VerifyApproveResult{Reason: reason, HeadSha: "abcdef0123456789"}
-		if got := strings.ToLower(MergeRefusal(7, r)); strings.Contains(got, "approv") && !strings.Contains(got, "["+reason+"]") {
-			t.Errorf("%s: TUI refusal still says approve: %q", reason, got)
-		} else if detail := strings.ToLower(MergeRefusalDetail(reason, "", "")); strings.Contains(strings.TrimSuffix(detail, " ["+reason+"]"), "approv") {
-			t.Errorf("%s: TUI detail still says approve: %q", reason, detail)
+	for _, reason := range []string{"head-moved", "park-changed", "approval-record-failed", "approval-superseded", "approval-unconfirmed"} {
+		r := &pb.VerifyApproveResult{Reason: reason, HeadSha: "abcdef0123456789", Park: "needs human: human-review:security"}
+		got := MergeRefusal(7, r)
+		if !strings.HasPrefix(got, "Couldn't merge PR #7: ") || strings.Contains(got, "human-review:") {
+			t.Errorf("%s: TUI refusal = %q", reason, got)
 		}
-		if RefusalDetail(reason, "", "") == MergeRefusalDetail(reason, "", "") {
-			t.Errorf("%s: the CLI and TUI details are identical; one of them lost its wording", reason)
+		if strings.Contains(got, reason) {
+			t.Errorf("%s: TUI refusal %q shows the raw reason code", reason, got)
 		}
 	}
-	if MergeRefusalDetail("pr-not-open", "", "") != RefusalDetail("pr-not-open", "", "") {
-		t.Error("a reason with no merge wording must read as the CLI does")
+	if got, want := MergeRefusalDetail("pr-not-open"), "the PR is not open"; got != want {
+		t.Errorf("a reason with no merge wording = %q, want the CLI's words %q without the code", got, want)
+	}
+	if got, want := MergeRefusalDetail("brand-new"), "verify refused the approval, so nothing was merged"; got != want {
+		t.Errorf("an unknown reason = %q, want %q", got, want)
 	}
 }
 
 func TestMergeRefusal(t *testing.T) {
 	const url = "https://github.com/acme/app/pull/7#issuecomment-9"
-	const unconfirmed = "PR #7 not merged: whether the merge request was recorded and took effect could not be read back [approval-unconfirmed]"
+	const unconfirmed = "Couldn't merge PR #7: whether your approval was recorded could not be read back, so nothing was merged"
 	for _, tc := range []struct{ name, recordURL, want string }{
 		{"no record says to merge again", "", unconfirmed + "; merge again to confirm"},
 		{"a posted record says to merge again", url, unconfirmed + "; the record at " + url + " may still stand for head abcdef01, so merge again to confirm"},
@@ -157,7 +120,7 @@ func TestApproveRefusal(t *testing.T) {
 	t.Run("a refusal after the record was posted names the record and what it still does", func(t *testing.T) {
 		for _, tc := range []struct{ reason, want string }{
 			{"head-moved", "the record at " + url + " names head abcdef01 only and waives nothing that stands now"},
-			{"approval-superseded", "a later operator decision on the head (a send-back or another approval)"},
+			{"approval-superseded", "a later operator decision on the head landed while approving"},
 			{"approval-unconfirmed", "the record at " + url + " may still stand for head abcdef01, so re-run approve to confirm"},
 		} {
 			got := ApproveRefusal(7, &pb.VerifyApproveResult{Reason: tc.reason, HeadSha: "abcdef0123456789", ApprovalUrl: url})
@@ -195,7 +158,7 @@ func TestRefusalDetailCoversEveryApproveReason(t *testing.T) {
 		"pr-unreadable", "pr-not-open", "head-unreadable", "status-unreadable",
 		"park-codes-unknown", "comments-unreadable", "no-standing-park",
 		"sent-back-approved-head", "approver-not-writer", "approver-unreadable",
-		"head-moved", "approval-superseded", "approval-record-failed", "approval-unconfirmed",
+		"head-moved", "park-changed", "approval-superseded", "approval-record-failed", "approval-unconfirmed",
 	} {
 		if got := RefusalDetail(reason, "", ""); strings.HasPrefix(got, "refused [") {
 			t.Errorf("reason %q falls back to the generic detail: %q", reason, got)
@@ -203,11 +166,5 @@ func TestRefusalDetailCoversEveryApproveReason(t *testing.T) {
 	}
 	if got := RefusalDetail("brand-new", "", ""); got != "refused [brand-new]" {
 		t.Fatalf("an unknown reason = %q", got)
-	}
-}
-
-func TestSendBackRefusal(t *testing.T) {
-	if got := SendBackRefusal(7, &pb.SendBackSessionPRResponse{Reason: "pr-not-open"}); got != "PR #7 not sent back: the PR is not open [pr-not-open]" {
-		t.Fatalf("%q", got)
 	}
 }

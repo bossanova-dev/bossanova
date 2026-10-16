@@ -2,7 +2,9 @@
 // Route each candidate follow-up by its declared source, then render the PR-body sections.
 // `## Human follow-up` and `## Open questions` park a PR at verify, so only an item about the
 // change itself may land there; host problems, stage-owned evidence and plan questions the build
-// already answered go elsewhere. An item the caller did not classify parks exactly as before.
+// already answered go elsewhere, and an observation only possible after merge goes under
+// `## After merge`, which verify never reads. An item the caller did not classify parks exactly as
+// before.
 // Pure apart from the CLI wrapper; nothing here fails closed except unreadable input, which must
 // never render as "no follow-ups".
 import defaultFs from 'node:fs'
@@ -19,6 +21,8 @@ export const FOLLOWUP_SOURCES = Object.freeze({
     'One of the plan’s open questions, with `chosen` (the option built) and `alternative` (the one not taken). With `chosen`, recorded as an autonomous decision; without it, parks the PR under ## Open questions.',
   'review-finding':
     'A serious problem the review verified in code this change did not introduce (`review-verdict.mjs followups`). Optional `where`: its file:line. Listed under ## Review follow-ups for a tracker ticket; never parks the PR.',
+  'post-merge':
+    'An observation that can only happen once the change is merged (a scheduled run, a rollout, a production metric). Optional `criterion`: the plan item it observes. Listed under ## After merge; never parks the PR.',
 })
 
 const RESERVED_PHRASE = /do not merge/i
@@ -83,6 +87,10 @@ export const ROUTES = Object.freeze({
   'review-finding': ({ text, routed }) => {
     routed.reviewFollowUps.push(text)
   },
+  'post-merge': ({ candidate, text, routed }) => {
+    const criterion = oneLine(candidate.criterion)
+    routed.afterMerge.push(criterion ? `${text} (criterion: ${criterion})` : text)
+  },
 })
 
 function parkUnclassified({ text, label, source, routed }) {
@@ -94,12 +102,13 @@ function parkUnclassified({ text, label, source, routed }) {
 
 /**
  * @param {unknown} candidates `{ text, source, criterion?, stage?, chosen?, alternative?, where? }[]`
- * @returns {{humanFollowUp: string[], openQuestions: string[], hostNotes: {where: string, detail: string}[], reviewFollowUps: string[], decisions: string[], warnings: string[]}}
+ * @returns {{humanFollowUp: string[], openQuestions: string[], afterMerge: string[], hostNotes: {where: string, detail: string}[], reviewFollowUps: string[], decisions: string[], warnings: string[]}}
  */
 export function routeFollowUps(candidates) {
   const routed = {
     humanFollowUp: [],
     openQuestions: [],
+    afterMerge: [],
     hostNotes: [],
     reviewFollowUps: [],
     decisions: [],
@@ -133,8 +142,8 @@ const ledgerSection = (heading, items) => [
 const listOf = (value) => (Array.isArray(value) ? value : [])
 
 /**
- * Body text for `## Human follow-up`, `## Open questions` and, when non-empty, `## Host notes` and
- * `## Review follow-ups`.
+ * Body text for `## Human follow-up`, `## Open questions` and, when non-empty, `## After merge`,
+ * `## Host notes` and `## Review follow-ups`.
  * @param {ReturnType<typeof routeFollowUps>} routed
  */
 export function renderFollowUpSections(routed) {
@@ -142,6 +151,9 @@ export function renderFollowUpSections(routed) {
     ...ledgerSection(LEDGER_HEADINGS.humanFollowUp, listOf(routed?.humanFollowUp)),
     ...ledgerSection(LEDGER_HEADINGS.openQuestions, listOf(routed?.openQuestions)),
   ]
+  const afterMerge = listOf(routed?.afterMerge)
+  if (afterMerge.length)
+    lines.push('## After merge', ...afterMerge.map((item) => `- [ ] ${item}`), '')
   const hostNotes = listOf(routed?.hostNotes)
   if (hostNotes.length) {
     lines.push('## Host notes')

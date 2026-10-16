@@ -134,21 +134,11 @@ CHAT=$(boss new --repo my-repo --prompt "/boss-build PROJ-42" --json | jq -r .se
 
 ### `boss pr`
 
-Act on a pull request by number: approve a verify park or send it back
+Act on a pull request by number: approve a verify park
 
 ### `boss pr approve <pr-number> [flags]`
 
 Approve the PR's needs-human verify park so verify re-checks and merges it
-
-**Flags:**
-
-- `--dry-run` — Show what would be written without writing anything
-- `--json` — Emit a stable JSON envelope instead of human-readable text
-- `--repo` — Repository as owner/repo, when sessions in two repos share the PR number
-
-### `boss pr send-back <pr-number> <note> [flags]`
-
-Reject the PR: post the note on it and start a repair chat in its session
 
 **Flags:**
 

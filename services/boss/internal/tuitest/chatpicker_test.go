@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/tuitest"
+	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -188,22 +189,31 @@ func TestTUI_ChatPicker_MergeConfirm_CancelKeepsPicker(t *testing.T) {
 	}
 }
 
+// TestTUI_ChatPicker_MergeParkedPR merges a sign-off park from the details
+// view: one approving merge pinned to the head the view showed.
 func TestTUI_ChatPicker_MergeParkedPR(t *testing.T) {
+	const head = "0123456789abcdef0123456789abcdef01234567"
 	sessions := testSessions()
 	sessions[0].DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
 	sessions[0].AttentionStatus = &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT, Summary: "needs human: human-review:ui"}
+	sessions[0].PrDisplayHeadSha = head
+	sessions[0].Attention = attention.Compute(attention.Input{ParkCodes: []string{"human-review:ui"}})
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(sessions...),
 		tuitest.WithChats(testChats()...),
 	)
-	h.Daemon.SetApproveResult(&pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"})
 
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
+	}
+	// Home offers [m]erge on this row too, so wait for a details-only key
+	// before reading the details footer.
+	if err := h.Driver.WaitForText(waitTimeout, "[n]ew chat"); err != nil {
+		t.Fatalf("details view did not open; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "[m]erge"); err != nil {
 		t.Fatalf("parked PR does not offer [m]erge; screen:\n%s", h.Driver.Screen())
@@ -214,18 +224,15 @@ func TestTUI_ChatPicker_MergeParkedPR(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Merge PR #597?"); err != nil {
 		t.Fatalf("parked merge confirm not shown; screen:\n%s", h.Driver.Screen())
 	}
-	if !h.Driver.ScreenContains("human-review:ui: a UI change; watch the evidence before it merges") {
-		t.Fatalf("parked merge confirm does not name the park code in plain words; screen:\n%s", h.Driver.Screen())
-	}
 	if err := h.Driver.SendKey('y'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Merge requested for #597"); err != nil {
-		t.Fatalf("merge request outcome not shown; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "Merged PR #597"); err != nil {
+		t.Fatalf("merge outcome not shown; screen:\n%s", h.Driver.Screen())
 	}
-	calls := h.Daemon.ApproveSessionPRCalls()
-	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetIsDryRun() {
-		t.Fatalf("ApproveSessionPRCalls = %v, want one real approve of sess-aaa-111", calls)
+	calls := h.Daemon.OperatorMergeCalls()
+	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetExpectedHeadSha() != head || !calls[0].GetShouldApprove() {
+		t.Fatalf("OperatorMergeCalls = %v, want one approving merge of sess-aaa-111 at %s", calls, head)
 	}
 }
 
@@ -725,4 +732,96 @@ func TestTUI_ChatPickerView_Back(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatalf("expected home view after esc; screen:\n%s", h.Driver.Screen())
 	}
+}
+
+// The details surface keeps the park, its history and the actionable question
+// together when entered through the real application and PTY.
+func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
+	for _, kind := range []pb.AttentionKind{pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED} {
+		t.Run(kind.String(), func(t *testing.T) {
+			sessions := testSessions()[:1]
+			sessions[0].PrDisplayHeadSha = "2bbaede9000"
+			if kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
+				sessions[0].Attention = &pb.SessionAttention{Kind: kind, Sentence: "Failed after 3 attempts", ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_APPROVE, pb.AttentionAction_ATTENTION_ACTION_VIDEO}, EvidenceUrl: "https://example.com/video"}
+			}
+			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...), tuitest.WithTerminalSize(100, 24))
+			h.Daemon.SetSessionTimeline(sessions[0].GetId(), &pb.TimelineStep{Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+			if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.SendEnter(); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+				t.Fatal(err)
+			}
+			if kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
+				for _, text := range []string{"Timeline", "Needed from you", "head 2bbaede", "[enter] open chat"} {
+					if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+						t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
+					}
+				}
+				if kind == pb.AttentionKind_ATTENTION_KIND_REVIEW {
+					if err := h.Driver.WaitForText(waitTimeout, "Does this UI change look right in the video?"); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := h.Driver.WaitForText(waitTimeout, "Waiting for a fix"); err != nil {
+					t.Fatal(err)
+				}
+			} else if h.Driver.ScreenContains("Needed from you") {
+				t.Fatal("legacy view has attention block")
+			}
+			t.Logf("PTY details capture:\n%s", h.Driver.Screen())
+		})
+	}
+}
+
+func TestTUI_ChatPicker_LongQuestionScroll(t *testing.T) {
+	sessions := testSessions()[:1]
+	sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: strings.Repeat("Should we keep the behavior for every supported platform? ", 40) + "FINAL QUESTION?"}
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...), tuitest.WithTerminalSize(100, 24))
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Needed from you · pgup/pgdown", "Initial implementation", "[enter] open chat"} {
+		if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// More pages than this question needs; the final page clamps to its end.
+	for range 30 {
+		if err := h.Driver.SendNamedKey("pgdn"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "FINAL QUESTION?"); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Initial implementation", "[enter] open chat", "[n]ew chat"} {
+		if !h.Driver.ScreenContains(text) {
+			t.Fatalf("lost %q after scrolling: %s", text, h.Driver.Screen())
+		}
+	}
+	t.Logf("PTY long question capture:\n%s", h.Driver.Screen())
+}
+
+func TestTUI_ChatPicker_DeferredArchive_KeepsActions(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].ArchivePending = true
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...))
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Archiving session once every chat is idle") && strings.Contains(screen, "[n]ew chat") && strings.Contains(screen, "[a]rchive") && strings.Contains(screen, "[esc] back")
+	}); err != nil {
+		t.Fatalf("expected pending archive status and actions; screen:\n%s", h.Driver.Screen())
+	}
+	t.Logf("deferred archive screen:\n%s", h.Driver.Screen())
 }

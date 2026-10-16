@@ -18,9 +18,9 @@ func newCommandProcessSource() *commandProcessSource {
 	return &commandProcessSource{timeout: defaultProcessTimeout}
 }
 
-// Snapshot runs `ps -axo pid=,ppid=` and parses the pid -> ppid graph.
-func (s *commandProcessSource) Snapshot(ctx context.Context) (map[int]int, error) {
-	out, err := runCommand(ctx, s.timeout, "ps", "-axo", "pid=,ppid=")
+// Snapshot runs `ps -axo pid=,ppid=,comm=` and parses the process table.
+func (s *commandProcessSource) Snapshot(ctx context.Context) (map[int]Process, error) {
+	out, err := runCommand(ctx, s.timeout, "ps", "-axo", "pid=,ppid=,comm=")
 	if err != nil {
 		return nil, err
 	}

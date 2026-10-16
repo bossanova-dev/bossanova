@@ -20,8 +20,8 @@ func supersededCheck() *pb.AuthCheck {
 // than a literal keeps the test meaningful after the next bump.
 func TestSupersededCredentialClassChange_DownconvertsOneVersionBack(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
-	if got := reg.Current(); got != apiversion.V20260919 {
-		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260919)
+	if got := reg.Current(); got != apiversion.V20260920 {
+		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260920)
 	}
 
 	msg := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{Id: "acct-1", AuthCheck: supersededCheck()}}}

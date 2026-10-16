@@ -2667,6 +2667,48 @@ test('classifyCheckCommand distinguishes criterion negative searches from premis
   )
 })
 
+test('classifyCheckCommand skips search option values while preserving tool-specific flags', () => {
+  const valueOptions = [
+    "rg -g '*.go'",
+    'rg -t go',
+    "rg --iglob '*.GO'",
+    'rg --type-not md',
+    'rg -T md',
+    "grep -r --include '*.go'",
+    "grep -r --exclude '*.md'",
+    "grep -r --exclude-dir 'vendor'",
+    "rg --glob='*.go'",
+    'rg --type-not=md',
+    "rg -g'*.go'",
+  ]
+  const unanchored = (command) =>
+    classifyCheckCommand(command, { kind: 'criterion' }).blocking.some(
+      (finding) => finding.code === 'unanchored-negative-search',
+    )
+  assert.deepEqual(
+    valueOptions.filter((search) => unanchored(`! ${search} '\\bfoo\\b' dir`)),
+    [],
+    'anchored patterns must not be confused with option values',
+  )
+  for (const search of valueOptions) {
+    assert.equal(unanchored(`! ${search} foo dir`), true, search)
+  }
+  assert.equal(unanchored("! grep -T '\\bfoo\\b' file"), false)
+  assert.equal(unanchored('! grep -T foo'), true)
+  for (const [command, expected] of [
+    ['rg -t go needle', true],
+    ['rg -t go needle dir', false],
+  ]) {
+    assert.equal(
+      classifyCheckCommand(command, { kind: 'premise' }).advisory.some(
+        (finding) => finding.code === 'unscoped-premise-search',
+      ),
+      expected,
+      command,
+    )
+  }
+})
+
 test('classifyCheckCommand exports every blocking reason and its remedy', () => {
   assert.ok(Object.isFrozen(COMMAND_BLOCKING_CODES))
   for (const code of COMMAND_BLOCKING_CODES) {
@@ -4811,4 +4853,57 @@ test('loadSkillConfig keeps global faults fatal even alongside a deferred fault'
     )
     assert.throws(() => loadSkillConfig({ cwd: dir }), /skill-config: invalid config/)
   }
+})
+
+test('policyMirrorGaps ignores empty, independent and full mirrors', async () => {
+  const { policyMirrorGaps } = await import('./skill-config.mjs')
+  const humanReview = { ui: ['web/**'] }
+  for (const alwaysHumanPaths of [[], ['private/**'], ['web/**', 'private/**']])
+    assert.deepEqual(policyMirrorGaps({ alwaysHumanPaths, humanReview }), [])
+})
+
+test('policyMirrorGaps reports partial mirrors in category then config order', async () => {
+  const { policyMirrorGaps } = await import('./skill-config.mjs')
+  assert.deepEqual(
+    policyMirrorGaps({
+      alwaysHumanPaths: ['shared/**', 'private/**'],
+      humanReview: {
+        ui: ['web/z/**', 'web/a/**', 'web/z/**'],
+        security: ['shared/**', 'auth/**'],
+        database: ['db/**', 'shared/**', 'db/**'],
+      },
+    }),
+    [
+      { list: 'humanReview.database', glob: 'db/**' },
+      { list: 'humanReview.security', glob: 'auth/**' },
+      { list: 'humanReview.ui', glob: 'web/z/**' },
+      { list: 'humanReview.ui', glob: 'web/a/**' },
+    ],
+  )
+})
+
+test('policyMirrorGaps compares labelled entries by glob on either side', async () => {
+  const { policyMirrorGaps } = await import('./skill-config.mjs')
+  assert.deepEqual(
+    policyMirrorGaps({
+      alwaysHumanPaths: [{ glob: 'db/**', label: 'Database' }, 'web/**'],
+      humanReview: {
+        database: ['db/**'],
+        ui: [{ glob: 'web/**', label: 'UI' }, { glob: 'views/**' }],
+      },
+    }),
+    [{ list: 'humanReview.ui', glob: 'views/**' }],
+  )
+})
+
+test('policyMirrorGaps tolerates absent and malformed lists', async () => {
+  const { policyMirrorGaps } = await import('./skill-config.mjs')
+  for (const policy of [
+    undefined,
+    null,
+    {},
+    { alwaysHumanPaths: 'db/**' },
+    { alwaysHumanPaths: ['db/**'], humanReview: { database: 'db/**', ui: null } },
+  ])
+    assert.deepEqual(policyMirrorGaps(policy), [])
 })

@@ -73,13 +73,17 @@ func (f *fakeRollout) recordUserTurn() {
 
 // codexPaneFactory drives the real tmux client against a codex pane. The first
 // capture is the readiness wait's empty composer; every later capture is
-// answered by pane. onEnter runs when the Enter key reaches the pane, and the
-// factory records whether the composer was ever cleared with C-u.
+// answered by pane, and a styled capture by styled after onStyled runs. onEnter
+// runs when the Enter key reaches the pane, and the factory records every
+// send-keys call and whether the composer was ever cleared with C-u.
 type codexPaneFactory struct {
 	mu       sync.Mutex
 	captures int
 	cleared  bool
+	keys     int
 	pane     func(capture int) string
+	styled   string
+	onStyled func()
 	onEnter  func()
 }
 
@@ -88,7 +92,10 @@ func (f *codexPaneFactory) factory(ctx context.Context, _ string, args ...string
 	defer f.mu.Unlock()
 	if len(args) > 0 && args[0] == "capture-pane" {
 		if slices.Contains(args, "-e") {
-			return exec.CommandContext(ctx, "true")
+			if f.onStyled != nil {
+				f.onStyled()
+			}
+			return exec.CommandContext(ctx, "printf", "%s", f.styled)
 		}
 		f.captures++
 		out := "› \n"
@@ -98,6 +105,7 @@ func (f *codexPaneFactory) factory(ctx context.Context, _ string, args ...string
 		return exec.CommandContext(ctx, "printf", "%s", out)
 	}
 	if len(args) > 0 && args[0] == "send-keys" {
+		f.keys++
 		switch args[len(args)-1] {
 		case "Enter":
 			if f.onEnter != nil {
@@ -114,6 +122,12 @@ func (f *codexPaneFactory) wasCleared() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.cleared
+}
+
+func (f *codexPaneFactory) sendKeys() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.keys
 }
 
 func boundCodexChat() *models.AgentChat {
@@ -213,6 +227,32 @@ func TestSendChatMessage_CodexBurstFlushedIntoComposerRetries(t *testing.T) {
 	}
 	if !panes.wasCleared() {
 		t.Fatal("the held payload was never cleared: the retry did not run")
+	}
+}
+
+// TestSendChatMessage_CodexOccupiedComposerRefusalIsNotDelivered is PR #3134's
+// verdict finding 1: the composer holds a draft, so the send is refused before a
+// key is typed, and a user turn lands in the rollout while the refusal reads
+// the styled capture. That turn is someone else's message. The send must come
+// back undelivered, naming the refusal, with no key sent.
+func TestSendChatMessage_CodexOccupiedComposerRefusalIsNotDelivered(t *testing.T) {
+	rollout := &fakeRollout{exists: true}
+	panes := &codexPaneFactory{
+		pane:     func(int) string { return "› operator draft\n" },
+		styled:   "\x1b[1m›\x1b[0m \x1b[38;2;2;2;2moperator draft\x1b[39m\n",
+		onStyled: rollout.recordUserTurn,
+	}
+	s, _ := newCodexReceiptServer(t, boundCodexChat(), rollout, panes.factory)
+
+	resp, err := sendCodex(t, s)
+	if resp != nil && resp.Msg.GetDelivered() {
+		t.Fatalf("a refused send read delivered, state %v", resp.Msg.GetDeliveryState())
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(fmt.Sprint(err), tmux.OutcomeComposerOccupied.String()) {
+		t.Fatalf("err = %v (code %v); want FailedPrecondition naming %q", err, connect.CodeOf(err), tmux.OutcomeComposerOccupied)
+	}
+	if keys := panes.sendKeys(); keys != 0 {
+		t.Fatalf("%d send-keys calls reached a composer holding a draft; want 0", keys)
 	}
 }
 

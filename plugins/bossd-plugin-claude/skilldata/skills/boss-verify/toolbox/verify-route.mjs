@@ -32,9 +32,9 @@
 //
 // Every subprocess goes through one injected `run(cmd, args, {timeoutMs, json, env})` seam whose
 // failed read is unknown, never an empty success. One deadline bounds the whole sweep: discovery
-// reads up to 3x `--batch` PRs within min(30 s, remaining - 15 s), every other call gets
-// min(15 s, remaining), no new PR starts with less than 15 s left, and at most `--batch` PRs are
-// acted on. What is left over is reported `deferred` for the next run.
+// collects up to max(25, 3x `--batch`) judge candidates and scans statuses for merge retries
+// within min(30 s, remaining - 15 s). Every other call gets min(15 s, remaining), no new PR starts with less than 15 s left, and at most `--batch` PRs are
+// judged, plus at most `--batch` verified heads retried for merge. What is left over is `deferred`.
 
 import { closeSync, openSync, readFileSync } from 'node:fs'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
@@ -339,10 +339,12 @@ export function routeCandidate({ pr, url, ticket, token, waive }, ctx) {
 // ---------------------------------------------------------------------------
 // The sweep.
 
-// Discovery reads a few times more PRs than one run acts on, so PRs still waiting cannot starve
-// the ones behind them; `--batch` bounds the actions, not the reads. The wider read gets a longer
-// call timeout, still leaving START_FLOOR_MS of the budget for starting a PR.
+// Discovery keeps a floor for small batches and reads a few times more judge candidates than
+// one run acts on, so waiting PRs do not exhaust a small discovery limit. The wider read gets
+// a longer call timeout, still leaving START_FLOOR_MS of the budget for starting a PR.
 export const DISCOVERY_FACTOR = 3
+export const DISCOVERY_FLOOR = 25
+export const discoveryLimit = (batch) => Math.max(DISCOVERY_FLOOR, batch * DISCOVERY_FACTOR)
 const OUTCOMES = ['merged', 'parked', 'dispatched', 'skipped', 'deferred']
 
 /**
@@ -377,7 +379,7 @@ export function sweep(options = {}, deps = {}) {
   const dry = dryRun ? ['--dry-run'] : []
 
   const found = gate(
-    ['candidates', '--limit', String(batch * DISCOVERY_FACTOR), ...(options.selectionArgs ?? [])],
+    ['candidates', '--limit', String(discoveryLimit(batch)), ...(options.selectionArgs ?? [])],
     Math.max(1000, Math.min(2 * CALL_TIMEOUT_MS, remaining() - START_FLOOR_MS)),
   )
   if (!found.ok || !Array.isArray(found.payload?.candidates))
@@ -404,16 +406,53 @@ export function sweep(options = {}, deps = {}) {
       return (dispatchState = { ok: false, unreachable: true, why: `boss ls: ${ls.error}` })
     return (dispatchState = { ok: false, unreachable: false, why: `boss ls: ${ls.error}` })
   }
-  const needBoss = (pr) => {
+  const needBoss = (pr, extra = {}) => {
     const d = dispatchable()
     if (d.ok) return true
     if (d.unreachable) {
       undispatchable = d.why
-      record(pr, 'deferred', `deferred: undispatchable (${d.why})`, { undispatchable: true })
+      record(pr, 'deferred', `deferred: undispatchable (${d.why})`, {
+        ...extra,
+        undispatchable: true,
+      })
     } else {
-      record(pr, 'skipped', `skipped: unknown:sessions (${d.why})`)
+      record(pr, 'skipped', `skipped: unknown:sessions (${d.why})`, extra)
     }
     return false
+  }
+
+  let retried = 0
+  const mergeRetries = Array.isArray(found.payload.mergeRetries) ? found.payload.mergeRetries : []
+  for (const c of mergeRetries) {
+    const pr = c.pr
+    const extra = { retry: true }
+    if (undispatchable) {
+      record(pr, 'deferred', 'deferred: undispatchable', extra)
+      continue
+    }
+    if (retried >= batch || remaining() < START_FLOOR_MS) {
+      record(pr, 'deferred', 'deferred: budget', extra)
+      continue
+    }
+    if (!needBoss(pr, extra)) continue
+    retried++
+    if (dryRun) {
+      record(pr, 'merged', `merged (dry-run: would retry merge ${c.headSha})`, extra)
+      continue
+    }
+    const repoArgs = text(c.repo) ? ['--repo', c.repo] : []
+    const handed = spawnDetached(
+      node,
+      [VERIFY_GATE, 'merge', '--pr', String(pr), '--head', c.headSha, ...repoArgs],
+      { env: childEnv, cwd, logDir, now, label: `merge-${pr}` },
+      { spawn: deps.spawn ?? nodeSpawn },
+    )
+    if (!handed.ok) {
+      record(pr, 'skipped', `merge: spawn failed (${handed.error ?? 'unknown'})`, extra)
+      continue
+    }
+    pending.push({ pr, repoArgs, log: handed.log, slot: records.length, retry: true })
+    records.push(null)
   }
 
   for (const c of found.payload.candidates) {
@@ -459,13 +498,18 @@ export function sweep(options = {}, deps = {}) {
         '--reason',
         j.reason,
         ...(text(j.policyFingerprint) ? ['--policy', j.policyFingerprint] : []),
+        ...(text(j.ledgerFingerprint) ? ['--ledger', j.ledgerFingerprint] : []),
         ...repoArgs,
         ...dry,
       ])
       if (posted.payload?.trackerWrites === 'unavailable')
         record(pr, 'skipped', 'skipped: tracker writes unavailable')
       else if (posted.ok && (posted.payload?.posted || posted.payload?.skipped))
-        record(pr, 'parked', `parked: needs human (${j.reason})${suffix}`)
+        record(
+          pr,
+          'parked',
+          `parked: needs human (${j.reason})${posted.payload?.why === 'no-ticket' ? ' · no ticket' : ''}${suffix}`,
+        )
       else record(pr, 'skipped', `skipped: post failed (${postWhy(posted)})`)
       continue
     }
@@ -583,7 +627,13 @@ export function sweep(options = {}, deps = {}) {
  */
 function settleMerges(pending, records, { readFile, sleep, remaining, gate }) {
   const fill = (p, outcome, line) =>
-    (records[p.slot] = { pr: p.pr, outcome, line: `#${p.pr} ${line}`, log: p.log })
+    (records[p.slot] = {
+      pr: p.pr,
+      outcome,
+      line: `#${p.pr} ${line}${p.retry ? ' (merge retry)' : ''}`,
+      log: p.log,
+      ...(p.retry ? { retry: true } : {}),
+    })
   const result = (p) => {
     try {
       return readMergeResult(readFile(p.log))

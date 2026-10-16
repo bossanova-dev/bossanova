@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/projectconfig"
 	"github.com/recurser/bossalib/resumepolicy"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -93,6 +94,9 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		if e.Status == vcs.DisplayStatusNeedsHuman {
 			in.ParkCodes = e.ParkCodes()
 			in.ParkLabel = e.VerifyLabel
+			if s.evidence != nil && e.HeadSHA != "" {
+				in.OpenItems = s.evidence.OpenItems(row.ID, e.HeadSHA)
+			}
 		}
 		if s.evidence != nil && e.HeadSHA != "" {
 			if entry, ok := s.evidence.Entry(row.ID); ok && strings.EqualFold(entry.Summary.Head, e.HeadSHA) {
@@ -121,7 +125,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	}
 	if s.chatStatus != nil {
 		served, _, _, _ := s.chatStatusAndWaitingAggregate(ctx, d.chats, true)
-		in.ChatWorking = served == pb.ChatStatus_CHAT_STATUS_WORKING
+		in.ChatStatus = served
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
 	}
 	in.Fix = s.attentionFix(ctx, p, d, in.StateSince)
@@ -188,6 +192,16 @@ func (s *Server) attentionQuestion(ctx context.Context, sessionID, chatID string
 	return text
 }
 
+// deadBootstrapSentence explains a run reaped before setup finished. Its
+// worktree, branch and chat are gone, so it names the only remedy left; a cron
+// run is rerun by its schedule, so archiving loses nothing.
+func deadBootstrapSentence(row *models.Session) string {
+	if row.CronJobID != nil && *row.CronJobID != "" {
+		return "Run died before setup finished and left no worktree or chat"
+	}
+	return "Session died before setup finished and left no worktree or chat"
+}
+
 func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDeps, since time.Time) *attention.FixFact {
 	row := d.row
 	chatID := p.GetAgentSessionId()
@@ -213,27 +227,35 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 		}
 	}
 	staleBlocked := d.display != nil && d.display.HeadSHA != "" && row.LastAttemptHeadSHA != nil && *row.LastAttemptHeadSHA != "" && !strings.EqualFold(*row.LastAttemptHeadSHA, d.display.HeadSHA)
+	if row.State == machine.Blocked && sessionreason.IsBootstrapStranded(row.BlockedReason) {
+		return &attention.FixFact{
+			AlertKey:     "blocked:" + row.State.String(),
+			Sentence:     deadBootstrapSentence(row),
+			Since:        since,
+			WorktreeGone: true,
+		}
+	}
 	if (row.State == machine.Blocked && !staleBlocked) || row.State == machine.Orphaned {
-		sentence := "Run stopped · open the chat, then resume"
+		sentence := "Run stopped"
 		if row.State == machine.Orphaned {
-			sentence = "Run lost its agent · open the chat, then resume"
+			sentence = "Run lost its agent"
 		}
 		if row.BlockedReason != nil && strings.TrimSpace(*row.BlockedReason) != "" {
-			sentence = "Run blocked: " + *row.BlockedReason + " · open the chat, then resume"
+			sentence = "Run blocked: " + *row.BlockedReason
 		}
 		return fix("blocked:"+row.State.String(), sentence, since)
 	}
 	_, stalled := s.repairLease.StalledAt(row.ID)
 	if row.LastRepairAttemptCount >= 5 && alertstate.RepairAlertCurrent(session.RepairAlertFacts(row, d.display, stalled)) {
-		return fix("repair-exhausted", "Automatic repair exhausted its attempts · open the chat, then resume", since)
+		return fix("repair-exhausted", "Automatic repair exhausted its attempts", since)
 	}
 	recovered := alertstate.WedgeRecovery{LastAgentActivityAt: protoTime(p.LastAgentActivityAt), PRDone: p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED || p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED}
 	if alertstate.AuthWedgeCurrent(p.RotationEvents, recovered) {
-		return fix("auth-wedge", "Agent authentication failed · log in, then resume", since)
+		return fix("auth-wedge", "Agent authentication failed", since)
 	}
 	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && s.repos != nil {
 		if repo, err := s.repos.Get(ctx, row.RepoID); err == nil && repo != nil && !repo.CanAutoRepair {
-			return fix("merge-conflict", "Merge conflict needs repair · resolve the conflict, then resume", since)
+			return fix("merge-conflict", "Merge conflict", since)
 		}
 	}
 	return nil

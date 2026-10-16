@@ -86,7 +86,7 @@ func (c *StreamClient) forwardEvent(
 	switch {
 	case ev.Session != nil:
 		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_Session{
-			Session: &pb.SessionDelta{Kind: ev.Session.Kind, Session: ev.Session.Session},
+			Session: &pb.SessionDelta{Kind: ev.Session.Kind, Session: ev.Session.Session, Seq: c.nextSessionDeltaSeq()},
 		}}
 		select {
 		case outbound <- out:
@@ -130,4 +130,8 @@ func (c *StreamClient) forwardEvent(
 			c.logger.Debug().Msg("coalescer inbound full, dropping status event")
 		}
 	}
+}
+
+func (c *StreamClient) nextSessionDeltaSeq() uint64 {
+	return c.sessionDeltaSeq.Add(1)
 }

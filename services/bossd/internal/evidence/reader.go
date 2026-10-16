@@ -1,7 +1,8 @@
 // Package evidence keeps, per session, the verify evidence summary recorded on
-// the session's current PR head. The summary comes from the generic
-// machine-readable evidence line (lib/bossalib/evidence) inside a PR
-// conversation comment, so bossd never depends on a repo-local marker.
+// the session's current PR head, and the open checklist items the verify park
+// note recorded there. Both come from generic machine-readable lines
+// (lib/bossalib/evidence) inside PR conversation comments, read in one pass,
+// so bossd never depends on a repo-local marker.
 //
 // Reads are cheap by construction: the display poller reports each session's
 // PR on every poll until the PR ends, then reports the head the PR ended on
@@ -33,6 +34,7 @@ package evidence
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -135,8 +137,11 @@ func (r *Reader) SetOnChange(onChange func(context.Context, string)) {
 
 // headState is what the reader knows about one session's current head.
 type headState struct {
-	head      string
-	entry     *Entry
+	head  string
+	entry *Entry
+	// openItems is what the park note recorded as keeping the head's PR
+	// checklist open; nil when no note names this head.
+	openItems []string
 	fetchedAt time.Time
 	// failed is true when the last read of this head could not reach the
 	// comments, so it is retried after the refresh interval.
@@ -277,8 +282,8 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		return
 	}
 
-	entry, err := r.read(ctx, obs, head)
-	r.store(ctx, obs.SessionID, st, seq, entry, err)
+	entry, openItems, err := r.read(ctx, obs, head)
+	r.store(ctx, obs.SessionID, st, seq, entry, openItems, err)
 }
 
 // schedule marks a read of st's head as started at now and returns its
@@ -296,8 +301,9 @@ func (st *headState) schedule(now time.Time) uint64 {
 // of one head in flight, where an older read finishing last would
 // overwrite the newer result, for good on a head that is not read again. A
 // failed read says nothing about the comments, so it keeps the head's
-// known-good entry; a successful read that finds no usable comment clears it.
-func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq uint64, entry *Entry, err error) {
+// known-good entry and open items; a successful read that finds no usable
+// comment clears them.
+func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq uint64, entry *Entry, openItems []string, err error) {
 	r.mu.Lock()
 	cur := r.sessions[sessionID]
 	if cur != st || cur.seq != seq {
@@ -311,7 +317,9 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 		if cur.entry != nil && entry != nil {
 			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
 		}
+		changed = changed || !slices.Equal(cur.openItems, openItems)
 		cur.entry = entry
+		cur.openItems = openItems
 	}
 	onChange := r.onChange
 	r.mu.Unlock()
@@ -343,34 +351,40 @@ func (r *Reader) Retain(live map[string]struct{}) {
 	r.cycle++
 }
 
-// read fetches the marked comments and returns the newest usable one's
-// summary, or nil when none is usable for head. A non-nil error means the
-// comments could not be read at all, which is not evidence that none is usable. A comment is usable only when
-// a trusted author wrote it (vcs.IsTrustedReviewAuthor: anyone can comment on
-// a public PR and copy the marker) and its evidence line parses for head; an
-// unusable newer comment never hides an older usable one.
-func (r *Reader) read(ctx context.Context, obs Observation, head string) (*Entry, error) {
+// read fetches the comments carrying a machine-readable boss line and returns
+// the newest usable evidence summary (nil when none is usable for head) and the
+// newest usable open-items list. A non-nil error means the comments could not
+// be read at all, which is not evidence that none is usable. A comment is
+// usable only when a trusted author wrote it (vcs.IsTrustedReviewAuthor: anyone
+// can comment on a public PR and copy the marker) and its line parses for head;
+// an unusable newer comment never hides an older usable one.
+func (r *Reader) read(ctx context.Context, obs Observation, head string) (*Entry, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.readTimeout)
 	defer cancel()
-	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, libevidence.Marker)
+	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, libevidence.CommentMarker)
 	if err != nil {
 		r.logger.Warn().Err(err).
 			Str("session_id", obs.SessionID).
 			Int("pr_number", obs.PRNumber).
 			Msg("evidence reader: read PR comments failed; retrying after the refresh interval")
-		return nil, err
+		return nil, nil, err
 	}
+	var (
+		entry     *Entry
+		openItems []string
+	)
 	for _, c := range comments {
 		if !vcs.IsTrustedReviewAuthor(c.AuthorLogin, c.AuthorAssociation) {
 			continue
 		}
-		summary, ok := libevidence.Parse(c.Body)
-		if !ok || !sameHead(summary.Head, head) {
-			continue
+		if summary, ok := libevidence.Parse(c.Body); entry == nil && ok && sameHead(summary.Head, head) {
+			entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
 		}
-		return &Entry{Summary: summary, RecordedAt: c.WrittenAt}, nil
+		if items, ok := libevidence.ParseOpenItems(c.Body); openItems == nil && ok && sameHead(items.Head, head) {
+			openItems = items.Items
+		}
 	}
-	return nil, nil
+	return entry, openItems, nil
 }
 
 // Get returns the evidence summary recorded on the session's current head.
@@ -392,6 +406,21 @@ func (r *Reader) Entry(sessionID string) (Entry, bool) {
 		return Entry{}, false
 	}
 	return *st.entry, true
+}
+
+// OpenItems returns what the verify park note recorded as keeping the PR
+// checklist open on head, when head is the session's current head.
+func (r *Reader) OpenItems(sessionID, head string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.sessions[sessionID]
+	if st == nil || !sameHead(st.head, head) {
+		return nil
+	}
+	return slices.Clone(st.openItems)
 }
 
 // sameHead compares two commit SHAs case-insensitively.

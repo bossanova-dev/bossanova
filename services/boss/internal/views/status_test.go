@@ -1797,8 +1797,8 @@ func TestWarningHintStyle_BlockedVerifyParkRendersDangerTier(t *testing.T) {
 	assertWarningTierStylesDiffer(t)
 	blocked := blockedVerifyParkSession(displaystatus.BlockedLabel)
 	hint := soleHint(t, blocked)
-	if hint.Text != "blocked: ledger-open,human-review:ui" || hint.SignOff {
-		t.Fatalf("blocked park hint = %q signOff=%v, want %q on the danger tier", hint.Text, hint.SignOff, "blocked: ledger-open,human-review:ui")
+	if hint.Text != "blocked: open checklist items, UI change" || hint.SignOff {
+		t.Fatalf("blocked park hint = %q signOff=%v, want %q on the danger tier", hint.Text, hint.SignOff, "blocked: open checklist items, UI change")
 	}
 	if got, want := warningHintStyle(blocked, hint).Render(hint.Text), styleStatusDanger.Render(hint.Text); got != want {
 		t.Errorf("blocked park hint rendered %q, want full danger %q", got, want)
@@ -1806,7 +1806,7 @@ func TestWarningHintStyle_BlockedVerifyParkRendersDangerTier(t *testing.T) {
 
 	signOff := verifyParkSession(displaystatus.NeedsSignOffLabel)
 	signOffHint := soleHint(t, signOff)
-	if signOffHint.Text != "needs sign-off: human-review:security" || !signOffHint.SignOff {
+	if signOffHint.Text != "review: security" || !signOffHint.SignOff {
 		t.Fatalf("sign-off park hint = %q signOff=%v", signOffHint.Text, signOffHint.SignOff)
 	}
 	if got, want := warningHintStyle(signOff, signOffHint).Render(signOffHint.Text), styleStatusWarning.Render(signOffHint.Text); got != want {
@@ -2375,7 +2375,7 @@ func TestDraftPRFailureHint_AuthAndTransientDoNotCollide(t *testing.T) {
 
 // TestRenderDisplayStatus_VerifyRows renders the two BOS-1382 rows from
 // fixtures whose composite comes from displaystatus.Compute: "verifying" spins
-// in the info style, and a sign-off park renders "needs sign-off" static in the
+// in the info style, and a sign-off park renders "review" static in the
 // warning style with the attention "!" its AWAITING_HUMAN_INPUT overlay raises.
 func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 	sp := newStatusSpinner()
@@ -2406,7 +2406,7 @@ func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 		},
 	})
 	gotParked := renderDisplayStatus(parked, sp)
-	if want := styleStatusWarning.Render("needs sign-off"); gotParked != want {
+	if want := styleStatusWarning.Render("review"); gotParked != want {
 		t.Errorf("sign-off park row = %q, want %q (warning style, no spinner)", gotParked, want)
 	}
 	if styled := styledPRStatus(parked, sp); styled != gotParked {

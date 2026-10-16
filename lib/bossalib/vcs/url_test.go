@@ -143,6 +143,9 @@ func TestCanonicalRepoURL(t *testing.T) {
 		originURL string
 		want      string
 	}{
+		{"github mixed case", "git@GitHub.com:Acme/Alpha.git", "https://github.com/acme/alpha"},
+		{"github subdomain port", "https://ssh.github.com:443/Acme/Alpha", "https://ssh.github.com:443/acme/alpha"},
+		{"non github case", "https://gitlab.example/Group/Repo", "https://gitlab.example/Group/Repo"},
 		// Spellings NormalizeRepoURL already settles in a single pass.
 		{"github ssh shorthand", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
 		{"github https no .git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
@@ -182,6 +185,8 @@ func TestCanonicalRepoURL(t *testing.T) {
 // derived spellings of one repository compare equal.
 func TestCanonicalRepoURL_IsANormalizeFixedPoint(t *testing.T) {
 	inputs := []string{
+		"git@GitHub.com:Acme/Alpha.GIT",
+		"git@GitHub.com:Acme/Alpha.git",
 		"git@github.com:owner/repo.git",
 		"https://github.com/owner/repo.git/",
 		"https://github.com/owner/repo.git//",
@@ -543,5 +548,21 @@ func TestPullRequestWebLink_RejectsZeroBeforeProvider(t *testing.T) {
 	provider, webURL, ok := PullRequestWebLink("https://example.test/owner/repo.git", 0)
 	if provider != "" || webURL != "" || ok {
 		t.Errorf("PullRequestWebLink with prNumber=0 = (%q, %q, %v), want empty values and false", provider, webURL, ok)
+	}
+}
+
+func TestIsGitHubHost(t *testing.T) {
+	for _, tt := range []struct {
+		host string
+		want bool
+	}{
+		{"github.com", true}, {"GitHub.COM", true}, {"api.github.com", true}, {"github.com:443", true}, {"github.com.", true}, {"github.com.:443", true},
+		{"gitlab.com", false}, {"notgithub.com", false}, {"github.com.evil.example", false}, {"evilgithub.com", false}, {"", false},
+	} {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := IsGitHubHost(tt.host); got != tt.want {
+				t.Fatalf("IsGitHubHost(%q)=%v, want %v", tt.host, got, tt.want)
+			}
+		})
 	}
 }

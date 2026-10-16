@@ -18,6 +18,7 @@ go_library(
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/sessionreason",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
@@ -29,8 +30,10 @@ go_test(
     srcs = [
         "blocked_park_attention_test.go",
         "changelogversion_test.go",
+        "dead_bootstrap_attention_test.go",
         "export_test.go",
         "interceptor_test.go",
+        "park_merge_attention_test.go",
         "park_split_test.go",
         "procedureset_test.go",
         "production_coverage_test.go",
@@ -43,6 +46,7 @@ go_test(
         "session_list_rank_order_test.go",
         "superseded_credential_class_test.go",
         "transform_test.go",
+        "unverified_merge_attention_test.go",
         "version_test.go",
         "waiting_demotion_test.go",
         "working_over_waiting_test.go",
@@ -54,9 +58,11 @@ go_test(
     # still covered by `make test`. See docs/solutions/build-systems/bazel-sandbox-patterns.md.
     tags = ["manual"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/sessionreason",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/fixtures"
 	bosspty "github.com/recurser/boss/internal/pty"
 	"github.com/recurser/bossalib/displaystatus"
@@ -68,6 +69,17 @@ func deliverArmed(t *testing.T, m ChatPickerModel, cmd tea.Cmd) ChatPickerModel 
 		}
 	}
 	return m
+}
+
+// firstArmedLine is the armed line [enter] would carry for the first waiting
+// chat in table order, or "" when none is waiting with a reason.
+func firstArmedLine(m ChatPickerModel) string {
+	for _, chat := range m.chats {
+		if line := m.armedLine(chat); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func verifyChat(id, title string) *pb.ClaudeChat {
@@ -146,37 +158,191 @@ func TestExpiresInLabel(t *testing.T) {
 	}
 }
 
-// The STATUS cell names the armed trigger when the callback is known, and
-// stays "waiting" when it is not.
-func TestChatPicker_ArmedStatusCellShowsTrigger(t *testing.T) {
-	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "checks_passed_ready")}}
-	reason := armedTestReason("checks_passed_ready")
-	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-		[]*pb.ClaudeChat{verifyChat("agent-armed", "verify"), verifyChat("agent-unknown", "other")},
-		map[string]string{"agent-armed": statusWaiting, "agent-unknown": statusWaiting},
-		map[string]string{"agent-armed": reason, "agent-unknown": armedTestReason("merged")})
+// prSession is a session whose PR (number pr, 0 for none) lives at url, a
+// GitHub PR or repo URL ("" for a session that names no repo).
+func prSession(url string, pr int32) *pb.Session {
+	sess := &pb.Session{Id: "session-1"}
+	if pr != 0 {
+		sess.PrNumber = new(pr)
+		sess.PrUrl = new(url)
+	} else {
+		sess.RepoOriginUrl = url
+	}
+	return sess
+}
 
-	rows := m.table.Rows()
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2", len(rows))
-	}
-	statusCol := len(rows[0]) - 1
-	byTitle := map[string]string{}
-	for _, r := range rows {
-		byTitle[stripANSI(r[1])] = r[statusCol]
-	}
-	armed := byTitle["verify"]
-	if want := styleStatusInfo.Render(m.spinner.View() + "checks_passed_ready"); armed != want {
-		t.Fatalf("armed STATUS = %q, want %q", stripANSI(armed), stripANSI(want))
-	}
-	if got, want := byTitle["other"], styleStatusInfo.Render(m.spinner.View()+statusWaiting); got != want {
-		t.Fatalf("unknown-callback STATUS = %q, want %q", stripANSI(got), stripANSI(want))
+// The STATUS cell phrases the armed trigger as a wait when the callback is
+// known, and stays "waiting" when it is not. A bare "merged" would read as a
+// merged PR. A wait only on the session's own PR (same owner/repo and number)
+// merging or closing is a muted "done" with no spinner: the chat's work is
+// finished. A wait on another PR names that PR, with its repo when the repo
+// differs, since nothing else on the screen does.
+func TestChatPicker_ArmedStatusCellShowsTrigger(t *testing.T) {
+	const ownURL, otherRepoURL = "https://github.com/acme/my-app/pull/2960", "https://github.com/other/repo/pull/2960"
+	for _, tc := range []struct {
+		name    string
+		trigger string
+		sess    *pb.Session
+		want    string
+		done    bool
+	}{
+		{name: "checks_passed_ready", trigger: "checks_passed_ready", sess: prSession(ownURL, 2960), want: "awaiting green"},
+		{name: "checks_passed", trigger: "checks_passed", sess: prSession(ownURL, 2960), want: "awaiting checks"},
+		{name: "ready_for_review", trigger: "ready_for_review", sess: prSession(ownURL, 2960), want: "awaiting ready"},
+		{name: "unknown trigger", trigger: "new_event", sess: prSession(ownURL, 2960), want: "awaiting new event"},
+		{name: "merged on own PR", trigger: "merged", sess: prSession(ownURL, 2960), want: "done", done: true},
+		{name: "closed on own PR", trigger: "closed", sess: prSession(ownURL, 2960), want: "done", done: true},
+		{name: "merged on own PR spelled in another case", trigger: "merged", sess: prSession("https://github.com/Acme/My-App/pull/2960", 2960), want: "done", done: true},
+		{name: "merged on own PR when the session names no repo", trigger: "merged", sess: prSession("", 2960), want: "done", done: true},
+		{name: "merged on another PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "awaiting merge #2960"},
+		{name: "checks on another PR", trigger: "checks_passed", sess: prSession("https://github.com/acme/my-app/pull/3154", 3154), want: "awaiting checks #2960"},
+		{name: "merged on the same number in another repo", trigger: "merged", sess: prSession(otherRepoURL, 2960), want: "awaiting merge acme/my-app#2960"},
+		{name: "checks on the same number in another repo", trigger: "checks_passed", sess: prSession(otherRepoURL, 2960), want: "awaiting checks acme/my-app#2960"},
+		{name: "merged without a session PR", trigger: "merged", sess: prSession("https://github.com/acme/my-app.git", 0), want: "awaiting merge #2960"},
+		{name: "merged without a session PR in another repo", trigger: "merged", sess: prSession("git@github.com:other/repo.git", 0), want: "awaiting merge acme/my-app#2960"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", tc.trigger)}}
+			m := armedPicker(t, stub, tc.sess,
+				[]*pb.ClaudeChat{verifyChat("agent-armed", "verify"), verifyChat("agent-unknown", "other")},
+				map[string]string{"agent-armed": statusWaiting, "agent-unknown": statusWaiting},
+				map[string]string{"agent-armed": armedTestReason(tc.trigger), "agent-unknown": armedTestReason("checks_passed")})
+			m.buildTableRows()
+
+			byTitle := statusCellsByTitle(m)
+			want := styleStatusInfo.Render(m.spinner.View() + tc.want)
+			if tc.done {
+				want = styleStatusMuted.Render(tc.want)
+			}
+			if got := byTitle["verify"]; got != want {
+				t.Fatalf("armed STATUS = %q, want %q", stripANSI(got), stripANSI(want))
+			}
+			if got, want := byTitle["other"], styleStatusInfo.Render(m.spinner.View()+statusWaiting); got != want {
+				t.Fatalf("unknown-callback STATUS = %q, want %q", stripANSI(got), stripANSI(want))
+			}
+		})
 	}
 }
 
-// The chat picker shows routine waits #2901 hid on Home — title, the verbatim
-// reason, and the expiry — while Home keeps hiding them (see
-// TestRoutinePRWaitingHintsHidden).
+// A cross-repo reference keeps the PR number visible however long the repo is.
+func TestChatPicker_PRRefCutsALongRepoFromTheLeft(t *testing.T) {
+	m := ChatPickerModel{session: prSession("https://github.com/acme/my-app/pull/1", 1)}
+	cb := &pb.GithubCallback{RepoOwner: "a-very-long-organisation", RepoName: "an-even-longer-repository", PrNumber: 2960}
+	got := m.prRef(cb)
+	if want := "…-even-longer-repository#2960"; got != want {
+		t.Fatalf("prRef = %q, want %q", got, want)
+	}
+	if w := ansi.StringWidth(strings.TrimSuffix(got, "#2960")); w != maxPRRefRepoCells {
+		t.Fatalf("repo part is %d cells, want %d", w, maxPRRefRepoCells)
+	}
+	cb.RepoOwner, cb.RepoName = "other", "repo"
+	if got, want := m.prRef(cb), "other/repo#2960"; got != want {
+		t.Fatalf("short prRef = %q, want %q", got, want)
+	}
+}
+
+// boss-build arms checks_passed, checks_failed and merged as independent
+// callbacks and re-arms only the missing ones, so after a push the older merged
+// is the daemon's reason while a newer checks_passed still holds the chat. The
+// STATUS cell names that progress wait instead of claiming done. Standby,
+// expired and finished callbacks do not hold the chat.
+func TestChatPicker_ProgressCallbackOutranksADoneReason(t *testing.T) {
+	merged := armedTestCallback("cb-merged", "merged")
+	merged.CreatedAt = timestamppb.New(time.Now().Add(-2 * time.Hour))
+	other := func(trigger string, edit func(*pb.GithubCallback)) *pb.GithubCallback {
+		cb := armedTestCallback("cb-other", trigger)
+		if edit != nil {
+			edit(cb)
+		}
+		return cb
+	}
+	for _, tc := range []struct {
+		name  string
+		other *pb.GithubCallback
+		want  string // "" for done
+	}{
+		{name: "newer checks_passed", other: other("checks_passed", nil), want: "awaiting checks"},
+		{name: "newer ready_for_review", other: other("ready_for_review", nil), want: "awaiting ready"},
+		{name: "merge of a child PR", other: other("merged", func(cb *pb.GithubCallback) { cb.PrNumber = 3154 }), want: "awaiting merge #3154"},
+		{name: "standby checks_failed", other: other("checks_failed", nil)},
+		{name: "own PR closing", other: other("closed", nil)},
+		{name: "expired checks_passed", other: other("checks_passed", func(cb *pb.GithubCallback) { cb.ExpiresAt = timestamppb.New(time.Now().Add(-time.Minute)) })},
+		{name: "delivered checks_passed", other: other("checks_passed", func(cb *pb.GithubCallback) { cb.State = "delivered" })},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &chatPickerStub{callbacks: []*pb.GithubCallback{merged, tc.other}}
+			for _, attended := range []bool{false, true} {
+				sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+				if attended {
+					sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, TargetChatId: "agent-v", ParkCodes: []string{"human-review:ui"}}
+				}
+				m := armedPicker(t, stub, sess,
+					[]*pb.ClaudeChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")},
+					map[string]string{"agent-armed": statusWaiting},
+					map[string]string{"agent-armed": armedTestReason("merged")})
+				m.buildTableRows()
+				want := styleStatusMuted.Render(chatDoneLabel)
+				if tc.want != "" {
+					want = styleStatusInfo.Render(m.spinner.View() + tc.want)
+				}
+				if got := statusCellsByTitle(m)["build"]; got != want {
+					t.Fatalf("attention=%v: STATUS = %q, want %q", attended, stripANSI(got), stripANSI(want))
+				}
+			}
+		})
+	}
+}
+
+// A reason that reads as done is shown as done only once the chat's callbacks
+// are listed and confirm nothing else holds it, so the cell never shows done
+// and then takes it back. The session-details attention view agrees.
+func TestChatPicker_DoneWaitsForTheCallbackList(t *testing.T) {
+	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+	chats := []*pb.ClaudeChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")}
+	statuses := map[string]string{"agent-armed": statusWaiting, "agent-v": statusWaiting}
+	reasons := map[string]string{"agent-armed": armedTestReason("merged")}
+
+	unlisted := ChatPickerModel{session: sess, chats: chats, daemonStatuses: statuses, daemonWaitingReasons: reasons}
+	unlisted.buildTableRows()
+	if got, want := statusCellsByTitle(unlisted)["build"], renderClaudeStatus(statusWaiting, unlisted.spinner); got != want {
+		t.Fatalf("STATUS before the list = %q, want %q", stripANSI(got), stripANSI(want))
+	}
+
+	failing := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "merged")}, callbacksErr: errors.New("unavailable")}
+	m := armedPicker(t, failing, sess, chats, statuses, reasons)
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["build"]); got == chatDoneLabel {
+		t.Fatalf("STATUS after a failed list = %q, want a wait", got)
+	}
+
+	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "merged")}}
+	m = armedPicker(t, stub, sess, chats, statuses, reasons)
+	m.buildTableRows()
+	if got, want := statusCellsByTitle(m)["build"], styleStatusMuted.Render(chatDoneLabel); got != want {
+		t.Fatalf("STATUS after the list = %q, want %q", stripANSI(got), stripANSI(want))
+	}
+
+	m.session.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, TargetChatId: "agent-v", ParkCodes: []string{"human-review:ui"}}
+	m.buildTableRows()
+	cells := statusCellsByTitle(m)
+	if got, want := cells["build"], styleStatusMuted.Render(chatDoneLabel); got != want {
+		t.Fatalf("done STATUS under attention = %q, want %q", stripANSI(got), stripANSI(want))
+	}
+	if got := stripANSI(cells["verify"]); got != "parked for you" {
+		t.Fatalf("park target STATUS = %q, want parked for you", got)
+	}
+
+	// The park's own target keeps "parked for you" even when its wait is done.
+	m.session.Attention.TargetChatId = "agent-armed"
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["build"]); got != "parked for you" {
+		t.Fatalf("park target with a done wait = %q, want parked for you", got)
+	}
+}
+
+// The armed line [enter] carries names the chat title, the verbatim reason and
+// the expiry. The picker itself never renders it under the table: the STATUS
+// cell names the wait.
 func TestChatPicker_ArmedLineNamesTitleReasonAndExpiry(t *testing.T) {
 	for _, trigger := range []string{"checks_passed", "checks_passed_ready", "merged"} {
 		t.Run(trigger, func(t *testing.T) {
@@ -187,15 +353,12 @@ func TestChatPicker_ArmedLineNamesTitleReasonAndExpiry(t *testing.T) {
 				map[string]string{"agent-armed": statusWaiting},
 				map[string]string{"agent-armed": reason})
 			want := "verify · " + reason + " · expires in 6d"
-			if got := m.waitingReasonLine(); got != want {
-				t.Fatalf("waitingReasonLine = %q, want %q", got, want)
-			}
-			if got := m.waitingLineHeight(); got != 2 {
-				t.Fatalf("waitingLineHeight = %d, want 2", got)
+			if got := firstArmedLine(m); got != want {
+				t.Fatalf("armedLine = %q, want %q", got, want)
 			}
 			rendered := stripANSI(m.View().Content)
-			if !strings.Contains(rendered, want) {
-				t.Fatalf("rendered picker missing %q:\n%s", want, rendered)
+			if strings.Contains(rendered, reason) || strings.Contains(rendered, "expires in") {
+				t.Fatalf("picker rendered the waiting line:\n%s", rendered)
 			}
 			if strings.Contains(rendered, armedSentinel) {
 				t.Fatalf("callback message body rendered:\n%s", rendered)
@@ -225,64 +388,17 @@ func TestChatPicker_ArmedLineCarriesNeedsHumanPark(t *testing.T) {
 				[]*pb.ClaudeChat{verifyChat("agent-armed", "verify")},
 				map[string]string{"agent-armed": statusWaiting},
 				map[string]string{"agent-armed": reason})
-			got := m.waitingReasonLine()
+			got := firstArmedLine(m)
 			if has := strings.Contains(got, "needs human: ledger-open"); has != tc.wantPark {
 				t.Fatalf("park in line = %v, want %v: %q", has, tc.wantPark, got)
 			}
 			if tc.wantPark {
 				want := "verify · " + reason + " · needs human: ledger-open · expires in 6d"
 				if got != want {
-					t.Fatalf("waitingReasonLine = %q, want %q", got, want)
+					t.Fatalf("armedLine = %q, want %q", got, want)
 				}
 			}
 		})
-	}
-}
-
-// The line follows the cursor when the cursor chat is waiting, otherwise it
-// names the first waiting chat — and its height never moves. Both waits here
-// are blocking; standby ordering is pinned in chatpicker_standby_test.go.
-func TestChatPicker_ArmedLineFollowsCursor(t *testing.T) {
-	stub := &chatPickerStub{}
-	reasonA := armedTestReason("checks_passed_ready")
-	reasonB := "awaiting merged on acme/my-app#2961"
-	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-		[]*pb.ClaudeChat{verifyChat("agent-busy", "busy"), verifyChat("agent-a", "first"), verifyChat("agent-b", "second")},
-		map[string]string{"agent-busy": statusWorking, "agent-a": statusWaiting, "agent-b": statusWaiting},
-		map[string]string{"agent-a": reasonA, "agent-b": reasonB})
-
-	titleAt := func(i int) string { return m.chats[i].GetTitle() }
-	idx := map[string]int{}
-	for i := range m.chats {
-		idx[titleAt(i)] = i
-	}
-	for _, tc := range []struct {
-		cursor string
-		want   string
-	}{
-		{"busy", ""}, // non-waiting cursor: falls back to the first waiting chat
-		{"second", "second · " + reasonB},
-		{"first", "first · " + reasonA},
-	} {
-		m.table.SetCursor(idx[tc.cursor])
-		got := m.waitingReasonLine()
-		want := tc.want
-		if want == "" {
-			first := m.chats[0]
-			for _, c := range m.chats {
-				if m.daemonStatuses[c.GetAgentSessionId()] == statusWaiting {
-					first = c
-					break
-				}
-			}
-			want = first.GetTitle() + " · " + m.daemonWaitingReasons[first.GetAgentSessionId()]
-		}
-		if got != want {
-			t.Errorf("cursor on %q: waitingReasonLine = %q, want %q", tc.cursor, got, want)
-		}
-		if h := m.waitingLineHeight(); h != 2 {
-			t.Errorf("cursor on %q: waitingLineHeight = %d, want 2", tc.cursor, h)
-		}
 	}
 }
 
@@ -310,8 +426,8 @@ func TestChatPicker_ArmedFetchIsKeyDiffed(t *testing.T) {
 	if got := len(stub.listCallbackCalls()); got != 1 {
 		t.Fatalf("steady refresh issued ListGithubCallbacks: calls = %d, want 1", got)
 	}
-	if !strings.Contains(m.waitingReasonLine(), "expires in 6d") {
-		t.Fatalf("steady refresh lost the armed expiry: %q", m.waitingReasonLine())
+	if !strings.Contains(firstArmedLine(m), "expires in 6d") {
+		t.Fatalf("steady refresh lost the armed expiry: %q", firstArmedLine(m))
 	}
 
 	// The reason changes: a new fetch goes out. Its reply is held back while the
@@ -336,7 +452,7 @@ func TestChatPicker_ArmedFetchIsKeyDiffed(t *testing.T) {
 	if len(m.armedCallbacks) != 0 {
 		t.Fatalf("stale reply attached: %v", m.armedCallbacks)
 	}
-	if got := m.waitingReasonLine(); got != "" {
+	if got := firstArmedLine(m); got != "" {
 		t.Fatalf("no chat waiting, yet line = %q", got)
 	}
 }
@@ -350,8 +466,8 @@ func TestChatPicker_ArmedFetchErrorFallsBack(t *testing.T) {
 		map[string]string{"agent-armed": statusWaiting},
 		map[string]string{"agent-armed": reason})
 
-	if got, want := m.waitingReasonLine(), "verify · "+reason; got != want {
-		t.Fatalf("waitingReasonLine = %q, want %q", got, want)
+	if got, want := firstArmedLine(m), "verify · "+reason; got != want {
+		t.Fatalf("armedLine = %q, want %q", got, want)
 	}
 	rows := m.table.Rows()
 	if got, want := rows[0][len(rows[0])-1], styleStatusInfo.Render(m.spinner.View()+statusWaiting); got != want {
@@ -401,8 +517,8 @@ func TestChatPicker_ArmedFetchErrorRetriedOnce(t *testing.T) {
 	stub.mu.Unlock()
 	updated, cmd = m.Update(chatPickerRefreshMsg{daemonStatuses: statuses, daemonWaitingReasons: reasons})
 	m = deliverArmed(t, updated.(ChatPickerModel), cmd)
-	if !strings.Contains(m.waitingReasonLine(), "expires in 6d") {
-		t.Fatalf("retry after a transient error did not attach the expiry: %q", m.waitingReasonLine())
+	if !strings.Contains(firstArmedLine(m), "expires in 6d") {
+		t.Fatalf("retry after a transient error did not attach the expiry: %q", firstArmedLine(m))
 	}
 }
 
@@ -477,8 +593,9 @@ func TestAttach_LaunchingViewShowsArmedNote(t *testing.T) {
 	}
 }
 
-// The armed-verify fixture through the real picker: the proof's first screen,
-// in test form, plus Home on the same world still hiding the routine wait.
+// The armed-verify fixture through the real picker: the STATUS cell names the
+// wait and [enter] carries the full armed line, plus Home on the same world
+// still hiding the routine wait.
 func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 	w := fixtures.ArmedVerifyWorld()
 	sess := w.Sessions[0]
@@ -493,18 +610,16 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 	}
 	m := armedPicker(t, stub, sess, w.Chats, statuses, reasons)
 
-	line := m.waitingReasonLine()
+	line := firstArmedLine(m)
 	// The row badge reads "blocked", so the line restores the wait's
 	// antecedent the way every demoted row does (BOS-1269).
 	wantPrefix := "verify · waiting: " + fixtures.ArmedVerifyReason + " · " + fixtures.ArmedVerifyPark + " · expires in "
 	if !strings.HasPrefix(line, wantPrefix) {
-		t.Fatalf("waitingReasonLine = %q, want prefix %q", line, wantPrefix)
+		t.Fatalf("armedLine = %q, want prefix %q", line, wantPrefix)
 	}
 	rendered := stripANSI(m.View().Content)
-	for _, token := range []string{"checks_passed_ready", fixtures.ArmedVerifyReason, fixtures.ArmedVerifyPark} {
-		if !strings.Contains(rendered, token) {
-			t.Fatalf("picker missing %q:\n%s", token, rendered)
-		}
+	if !strings.Contains(rendered, "awaiting green") || strings.Contains(rendered, fixtures.ArmedVerifyReason) {
+		t.Fatalf("picker should name the wait in STATUS only:\n%s", rendered)
 	}
 	if strings.Contains(rendered, fixtures.ArmedVerifyCallbackMessage) {
 		t.Fatalf("callback message body rendered:\n%s", rendered)
@@ -535,7 +650,65 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 	if !strings.Contains(row, displaystatus.BlockedLabel) || strings.Contains(row, displaystatus.WaitingLabel) {
 		t.Fatalf("parked row reads %q, want %q and no %q", row, displaystatus.BlockedLabel, displaystatus.WaitingLabel)
 	}
-	if hint := "blocked: ledger-open"; !strings.Contains(home, hint) {
+	if hint := "blocked: open checklist items"; !strings.Contains(home, hint) {
 		t.Fatalf("Home is missing the park hint %q:\n%s", hint, home)
+	}
+}
+
+// TestChatPicker_DoneIsReListedOnASlowTimer covers a newer checks_passed armed
+// under an unchanged waiting reason: the daemon still names the older merged
+// wait, so no waiting key changes. While the chat reads "done", a steady poll
+// re-lists its callbacks once armedDoneRelist has passed (and not before), and
+// the stale done gives way to the new wait. A chat that is not done is never
+// re-listed by the timer.
+func TestChatPicker_DoneIsReListedOnASlowTimer(t *testing.T) {
+	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+	chats := []*pb.ClaudeChat{verifyChat("agent-armed", "build")}
+	statuses := map[string]string{"agent-armed": statusWaiting}
+	reasons := map[string]string{"agent-armed": armedTestReason("merged")}
+	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-merged", "merged")}}
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.now = func() time.Time { return clock }
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = updated.(ChatPickerModel)
+	m.session = sess
+	updated, cmd := m.Update(chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonWaitingReasons: reasons})
+	m = deliverArmed(t, updated.(ChatPickerModel), cmd)
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["build"]); got != chatDoneLabel {
+		t.Fatalf("STATUS = %q, want done", got)
+	}
+
+	poll := func() {
+		t.Helper()
+		updated, cmd := m.Update(chatPickerRefreshMsg{daemonStatuses: statuses, daemonWaitingReasons: reasons})
+		m = deliverArmed(t, updated.(ChatPickerModel), cmd)
+	}
+	stub.mu.Lock()
+	stub.callbacks = append(stub.callbacks, armedTestCallback("cb-checks", "checks_passed"))
+	stub.mu.Unlock()
+
+	clock = clock.Add(armedDoneRelist - time.Second)
+	poll()
+	if got := len(stub.listCallbackCalls()); got != 1 {
+		t.Fatalf("re-listed before the interval: calls = %d, want 1", got)
+	}
+
+	clock = clock.Add(time.Second)
+	poll()
+	if got := len(stub.listCallbackCalls()); got != 2 {
+		t.Fatalf("a done chat was not re-listed after %s: calls = %d, want 2", armedDoneRelist, got)
+	}
+	m.buildTableRows()
+	if got := stripANSI(statusCellsByTitle(m)["build"]); got == chatDoneLabel {
+		t.Fatalf("STATUS still reads done after the re-list armed checks_passed")
+	}
+
+	clock = clock.Add(10 * armedDoneRelist)
+	poll()
+	if got := len(stub.listCallbackCalls()); got != 2 {
+		t.Fatalf("a chat that is no longer done was re-listed by the timer: calls = %d, want 2", got)
 	}
 }

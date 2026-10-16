@@ -12,6 +12,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -20,20 +21,22 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestAttentionListParkCases serves a sign-off park as a REVIEW offering
-// APPROVE and a blocked park as a FIX that never offers it.
+// TestAttentionListParkCases serves a sign-off park as a REVIEW whose merge
+// records the approval and a blocked park as a FIX that never offers a merge,
+// with the open checklist items its park note recorded.
 func TestAttentionListParkCases(t *testing.T) {
 	review, fix := pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_FIX
 	for _, tc := range []struct {
 		id, code, label, sentence string
 		kind                      pb.AttentionKind
+		openItems                 []string
 	}{
-		{"2979", "human-review:ui", "", "Watch the evidence video (2:40), then approve · UI change", review},
-		{"2983", "human-review:security", "outbound requests", "Review the diff · security: outbound requests", review},
-		{"2987", "human-review:database", "", "Review the migration, then approve", review},
-		{"2967", "human-review:unproven", "", "Some checks have no evidence · send it back to prove them", fix},
-		{"2965", "no-receipt", "", "Built by hand, no factory review · send it back through the factory", fix},
-		{"mixed", "human-review:ui,ledger-open", "", "Review left must-fix findings open · send it back to fix them", fix},
+		{"2979", "human-review:ui", "", "UI change · evidence video (2:40)", review, nil},
+		{"2983", "human-review:security", "outbound requests", "Security change: outbound requests", review, nil},
+		{"2987", "human-review:database", "", "Database migration", review, nil},
+		{"2967", "human-review:unproven", "", "Some checks have no evidence", fix, nil},
+		{"2965", "no-receipt", "", "Built by hand, no factory review", fix, nil},
+		{"mixed", "human-review:ui,ledger-open", "", "The PR checklist has 1 open item", fix, []string{"Open human follow-up: watch the rollout"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			n := 1
@@ -41,7 +44,11 @@ func TestAttentionListParkCases(t *testing.T) {
 			tracker := status.NewDisplayTracker()
 			tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: tc.code, VerifyLabel: tc.label, HeadSHA: timelineHead})
 			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
-			s.evidence = stubEvidence{"s": evidence.Entry{Summary: libevidence.Summary{Head: timelineHead, VideoURL: "https://proof.example/video.mp4", VideoDuration: 160 * time.Second, Proven: 3, Total: 4}}}
+			s.evidence = openItemsEvidence{
+				stubEvidence: stubEvidence{"s": evidence.Entry{Summary: libevidence.Summary{Head: timelineHead, VideoURL: "https://proof.example/video.mp4", VideoDuration: 160 * time.Second, Proven: 3, Total: 4}}},
+				head:         timelineHead,
+				items:        []string{"Open human follow-up: watch the rollout"},
+			}
 			resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
 			if err != nil {
 				t.Fatal(err)
@@ -50,11 +57,28 @@ func TestAttentionListParkCases(t *testing.T) {
 			if got.GetKind() != tc.kind || got.GetSentence() != tc.sentence {
 				t.Fatalf("attention = %v", got)
 			}
-			if approves := slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE); approves != (tc.kind == review) {
-				t.Fatalf("actions = %v; APPROVE offered = %v on a %v", got.GetActions(), approves, tc.kind)
+			if merges := slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE); merges != (tc.kind == review) {
+				t.Fatalf("actions = %v; MERGE offered = %v on a %v", got.GetActions(), merges, tc.kind)
+			}
+			if !slices.Equal(got.GetOpenItems(), tc.openItems) {
+				t.Fatalf("open items = %q, want %q", got.GetOpenItems(), tc.openItems)
 			}
 		})
 	}
+}
+
+// openItemsEvidence serves items as the park note's open items on head.
+type openItemsEvidence struct {
+	stubEvidence
+	head  string
+	items []string
+}
+
+func (e openItemsEvidence) OpenItems(_, head string) []string {
+	if head != e.head {
+		return nil
+	}
+	return e.items
 }
 
 type attentionCronStore struct {
@@ -88,15 +112,18 @@ func (f *attentionResumeStore) ListForRun(_ context.Context, _, key string) ([]*
 	return f.rows, nil
 }
 
+// TestAttentionFactoryMerge serves a green, mergeable PR that nothing verified
+// as a REVIEW in a repo with no enabled verify cron, and in progress in a
+// factory repo, whose verify stage will reach it.
 func TestAttentionFactoryMerge(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		jobs []*models.CronJob
 		kind pb.AttentionKind
 	}{
-		{"absent", nil, pb.AttentionKind_ATTENTION_KIND_MERGE},
-		{"disabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}}, pb.AttentionKind_ATTENTION_KIND_MERGE},
-		{"unrelated", []*models.CronJob{{Prompt: "/boss-build", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"absent", nil, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{"disabled", []*models.CronJob{{Prompt: "/boss-verify", IsEnabled: false}}, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{"unrelated", []*models.CronJob{{Prompt: "/boss-build", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{"enabled", []*models.CronJob{{Prompt: "$boss-verify headless", IsEnabled: true}}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,6 +148,66 @@ func TestAttentionFactoryMerge(t *testing.T) {
 			}
 			if crons.reads != 1 {
 				t.Fatalf("factory reads=%d", crons.reads)
+			}
+		})
+	}
+}
+
+// TestAttentionVerifiedMerge reads "verified" from the persisted check
+// snapshot of the current head: a successful boss/verify status there serves
+// MERGE, and no verdict there serves the unverified REVIEW, which offers GITHUB
+// then MERGE and never APPROVE. A snapshot of an older head is not read at all,
+// so its verdict never makes the current head a MERGE.
+func TestAttentionVerifiedMerge(t *testing.T) {
+	const oldHead = "1111111111111111111111111111111111111111"
+	success := vcs.CheckConclusionSuccess
+	verified := append(greenCI(2, ""), vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success, Description: "verified"})
+	unverifiedActions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_MERGE}
+	for _, tc := range []struct {
+		name     string
+		snaps    []db.CheckSnapshot
+		kind     pb.AttentionKind
+		sentence string
+		actions  []pb.AttentionAction
+	}{
+		{
+			name:     "verified head",
+			snaps:    []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, verified)}},
+			kind:     pb.AttentionKind_ATTENTION_KIND_MERGE,
+			sentence: "Ready to merge",
+			actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
+		},
+		{
+			name:     "no verdict on the head",
+			snaps:    []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}},
+			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
+			sentence: "Not verified",
+			actions:  unverifiedActions,
+		},
+		{
+			name:  "verdict on an older head",
+			snaps: []db.CheckSnapshot{{HeadSHA: oldHead, RawJSON: checksJSON(t, verified)}},
+			kind:  pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 1
+			mergeable := true
+			row := &models.Session{ID: "s", RepoID: "r", PRNumber: &n, State: machine.ReadyForReview}
+			tr := status.NewDisplayTracker()
+			tr.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: timelineHead, Mergeable: &mergeable})
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tr, nil)
+			s.checkSnapshots = &fakeCheckSnapshotStore{snaps: tc.snaps}
+			resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := onlySession(t, resp.Msg.Sessions).GetAttention()
+			if got.GetKind() != tc.kind || got.GetSentence() != tc.sentence || !slices.Equal(got.GetActions(), tc.actions) {
+				t.Fatalf("attention = %v, want %v %q %v", got, tc.kind, tc.sentence, tc.actions)
+			}
+			if len(got.GetParkCodes()) != 0 {
+				t.Fatalf("park codes = %v, want none", got.GetParkCodes())
 			}
 		})
 	}
@@ -268,5 +355,76 @@ func TestAttentionResumeDoesNotExhaustLiveReplacement(t *testing.T) {
 	s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
 	if p.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX {
 		t.Fatalf("third replacement has not failed: %v", p.Attention)
+	}
+}
+
+// TestAttentionDeadBootstrapOffersOnlyDismiss pins the 2026-10-16 madverts
+// row: a cron session the stranded-bootstrap reaper blocked after a daemon
+// restart has no agent chat, no tmux pane and no worktree. Offering OPEN_CHAT
+// minted a chat that failed on "worktree directory missing", and "open the
+// chat, then resume" named two impossible steps.
+func TestAttentionDeadBootstrapOffersOnlyDismiss(t *testing.T) {
+	reason := sessionreason.BootstrapStranded()
+	cronJob := "cron-mv-sweep-build"
+	for name, cron := range map[string]*string{"cron": &cronJob, "interactive": nil} {
+		t.Run(name, func(t *testing.T) {
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, CronJobID: cron, Plan: "/boss-build --assignee me",
+				WorktreePath: "/Users/dave/.bossanova/worktrees/madverts-core/cron-mv-sweep-build-1792103581", BlockedReason: &reason}
+			p := SessionToProto(row)
+			(&Server{}).hydrateAttention(context.Background(), p, attentionDeps{row: row})
+			a := p.GetAttention()
+			if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+				t.Fatalf("kind = %v, want FIX", a.GetKind())
+			}
+			if want := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_DISMISS}; !slices.Equal(a.GetActions(), want) {
+				t.Fatalf("actions = %v, want %v", a.GetActions(), want)
+			}
+			for _, advice := range []string{"open the chat", "resume", "archive it"} {
+				if strings.Contains(a.GetSentence(), advice) {
+					t.Fatalf("sentence = %q advises %q; it must state only what happened", a.GetSentence(), advice)
+				}
+			}
+			if a.GetTargetChatId() != "" {
+				t.Fatalf("target chat = %q, want none", a.GetTargetChatId())
+			}
+			want := "Session died before setup finished and left no worktree or chat"
+			if cron != nil {
+				want = "Run died before setup finished and left no worktree or chat"
+			}
+			if a.GetSentence() != want {
+				t.Fatalf("sentence = %q, want %q", a.GetSentence(), want)
+			}
+		})
+	}
+}
+
+// TestAttentionProgressLabelMatchesChatState serves a quick chat (no PR) in each
+// chat state and checks the in-progress label names that state, as the display
+// label does: a stopped chat reads "stopped", never "idle".
+func TestAttentionProgressLabelMatchesChatState(t *testing.T) {
+	for _, tc := range []struct {
+		chat pb.ChatStatus
+		want string
+	}{
+		{pb.ChatStatus_CHAT_STATUS_STOPPED, "stopped"},
+		{pb.ChatStatus_CHAT_STATUS_IDLE, "idle"},
+		{pb.ChatStatus_CHAT_STATUS_WORKING, "working"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			chatID := "chat-" + tc.want
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.ImplementingPlan, AgentSessionID: &chatID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			chats := map[string][]*models.AgentChat{"s": {{ID: "c", SessionID: "s", AgentSessionID: chatID}}}
+			tracker := status.NewTracker()
+			tracker.Update(chatID, tc.chat, time.Now())
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, chats, status.NewDisplayTracker(), tracker)
+			resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			att := onlySession(t, resp.Msg.Sessions).GetAttention()
+			if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || att.GetProgressLabel() != tc.want {
+				t.Fatalf("attention = %v %q, want IN_PROGRESS %q", att.GetKind(), att.GetProgressLabel(), tc.want)
+			}
+		})
 	}
 }

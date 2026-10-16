@@ -193,10 +193,11 @@ func newDeferralHarness(t *testing.T, chatIDs ...string) *deferralHarness {
 		displayTracker: h.display,
 		logger:         zerolog.Nop(),
 	}
+	h.srv.initDeferrers()
 	h.d = newArchiveDeferrer(h.chats, h.tracker, h.display, h.sessions, h.exec.archive, zerolog.Nop())
 	h.d.now = h.clock.Now
 	h.d.interval = time.Hour
-	h.srv.archiveDeferrerOnce.Do(func() { h.srv.archiveDeferrer = h.d })
+	h.srv.archiveDeferrer = h.d
 	return h
 }
 
@@ -570,7 +571,7 @@ func TestArchiveDeferrer_RestartDropsPending(t *testing.T) {
 		srv := &Server{sessions: sessions, repos: repos, agentChats: chats, chatStatus: tracker, displayTracker: status.NewDisplayTracker(), logger: zerolog.Nop()}
 		d := newArchiveDeferrer(chats, tracker, srv.displayTracker, sessions, exec.archive, zerolog.Nop())
 		d.interval = time.Hour
-		srv.archiveDeferrerOnce.Do(func() { srv.archiveDeferrer = d })
+		srv.archiveDeferrer = d
 		return srv, d
 	}
 
@@ -731,7 +732,7 @@ func TestDispatcherPRMerged_RealDeferrer_DefersWhileChatWorking(t *testing.T) {
 	srv := &Server{sessions: sessions, repos: repos, agentChats: chats, chatStatus: tracker, displayTracker: display, logger: zerolog.Nop()}
 	d := newArchiveDeferrer(chats, tracker, display, sessions, exec.archive, zerolog.Nop())
 	d.interval = time.Hour
-	srv.archiveDeferrerOnce.Do(func() { srv.archiveDeferrer = d })
+	srv.archiveDeferrer = d
 
 	tracked := make(chan (<-chan struct{}), 4)
 	track := func(_ string, done <-chan struct{}) { tracked <- done }
@@ -889,5 +890,23 @@ func TestRequestArchive_ConcurrentRequestJoinsInflightArchive(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", calls)
+	}
+}
+
+// New must wire deferrers before any request or status hook uses the server.
+func TestNewInitializesDeferrers(t *testing.T) {
+	srv := New(Config{Logger: zerolog.Nop()})
+	if srv.archiveDeferrer == nil || srv.finishDeferrer == nil {
+		t.Fatal("New left archive or finish deferrer unwired")
+	}
+	srv.NudgePendingArchive("missing")
+	if srv.CancelPendingArchive("missing") {
+		t.Error("cancelled an archive that was never requested")
+	}
+	if srv.CancelPendingFinish("missing") {
+		t.Error("cancelled a finish that was never requested")
+	}
+	if srv.finishDeferrer.fireBudget != finishRunBudget {
+		t.Errorf("finish budget = %v, want %v", srv.finishDeferrer.fireBudget, finishRunBudget)
 	}
 }

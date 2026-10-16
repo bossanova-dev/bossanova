@@ -1396,9 +1396,25 @@ release-codex-check:
 clean-cache:
 	node scripts/clean-go-build-cache.mjs
 
+## recover-disk-space: Reclaim disk from the Go cache, Docker caches, ALL WhatsApp
+## Desktop media (quits WhatsApp; chat text survives) and downloaded macOS aerial
+## wallpapers (re-downloaded on demand).
+WHATSAPP_MEDIA := $(HOME)/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media
+AERIAL_VIDEOS := $(HOME)/Library/Application Support/com.apple.wallpaper/aerials/videos
 recover-disk-space:
 	go clean -cache
-	docker image prune -a
+	@if docker info >/dev/null 2>&1; then \
+		docker image prune -a; \
+		docker builder prune -a -f; \
+		for b in $$(docker buildx ls --format json | grep '"Status":"running"' | sed -n 's/.*"Name":"\([^"]*\)","Nodes".*/\1/p'); do \
+			docker buildx prune -a -f --builder "$$b" || true; \
+		done; \
+		docker volume prune -f; \
+	else echo "==> Docker not running; skipping Docker cleanup"; fi
+	@if pgrep -x WhatsApp >/dev/null; then osascript -e 'tell application id "net.whatsapp.WhatsApp" to quit'; sleep 3; fi
+	-rm -rf "$(WHATSAPP_MEDIA)"/*
+	rm -f "$(AERIAL_VIDEOS)"/*.mov
+	-killall WallpaperAgent 2>/dev/null
 
 ## clean: Remove build artifacts and generated code
 clean:

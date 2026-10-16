@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -909,6 +910,9 @@ type StreamClient struct {
 	refreshInterval  time.Duration
 	refreshThreshold time.Duration
 
+	// sessionDeltaSeq survives reconnects and distinguishes repeated transitions.
+	sessionDeltaSeq atomic.Uint64
+
 	// reconnectCh is a coalesced wake signal for the Run loop. Reconnect()
 	// does a non-blocking send here; the loop's backoff select drains it to
 	// skip the remaining sleep and re-open immediately. Buffered size 1 so a
@@ -1238,7 +1242,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 	if refreshThreshold == 0 {
 		refreshThreshold = defaultRefreshThreshold
 	}
-	return &StreamClient{
+	client := &StreamClient{
 		opener:           opener,
 		reconnectCh:      make(chan struct{}, 1),
 		stores:           cfg.Stores,
@@ -1261,6 +1265,8 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		refreshInterval:  refreshInterval,
 		refreshThreshold: refreshThreshold,
 	}
+	client.sessionDeltaSeq.Store(uint64(clock.Now().UnixNano()))
+	return client
 }
 
 // Run is the reconnect outer loop. It returns only when ctx is cancelled.

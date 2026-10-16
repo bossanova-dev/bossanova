@@ -7,7 +7,8 @@
 //   1. `verify-route.mjs sweep`: discover the In Review PRs that need judging (verify-gate
 //      `candidates`), judge each with the zero-token `judge`, then post/merge mechanically or route
 //      `/boss-verify <pr> --claim <token>` into the PR's session (its `verify` chat, a new one, or a
-//      `boss new --pr <n>` session for an orphan PR). Bounded: at most `--batch` PRs (default 3) and
+//      `boss new --pr <n>` session for an orphan PR). Bounded: at most `--batch` judged PRs (default 3),
+//      plus a separate `--batch` cap for verified-head merge retries, and
 //      a 45 s budget inside the scheduler's 60 s gate timeout; the rest are `deferred`. A merge is
 //      handed to a detached `verify-gate merge` and settled inside that budget; one still running
 //      at the deadline is `dispatched: merge in flight (log …)` and finishes on its own.

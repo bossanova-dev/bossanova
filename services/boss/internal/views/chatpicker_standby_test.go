@@ -54,10 +54,22 @@ func statusCellsByTitle(m ChatPickerModel) map[string]string {
 // A standby chat's STATUS cell is a muted "standby" with no spinner; the
 // blocking chat keeps "<spinner><trigger>" in INFO style. Standby is decided by
 // the daemon's reason, so it holds before the callback fetch answers too.
+//
+// closed is standby only on a PR other than the session's own: on its own PR
+// it is a done wait (TestChatPicker_ArmedStatusCellShowsTrigger), so its
+// session here owns another PR and the blocking chat's wait names #2960.
 func TestChatPicker_StandbyStatusCell(t *testing.T) {
-	for _, trigger := range []string{"checks_failed", "closed"} {
+	for _, tc := range []struct {
+		trigger      string
+		sessionPR    int32
+		blockingWant string
+	}{
+		{"checks_failed", 2960, "awaiting green"},
+		{"closed", 3154, "awaiting green #2960"},
+	} {
+		trigger := tc.trigger
 		t.Run(trigger, func(t *testing.T) {
-			m := standbyPicker(t, &pb.Session{Id: "session-1"}, armedTestReason(trigger), armedTestReason("checks_passed_ready"))
+			m := standbyPicker(t, &pb.Session{Id: "session-1", PrNumber: new(tc.sessionPR)}, armedTestReason(trigger), armedTestReason("checks_passed_ready"))
 			cells := statusCellsByTitle(m)
 			if got, want := cells["build"], styleStatusMuted.Render(displaystatus.StandbyLabel); got != want {
 				t.Fatalf("standby STATUS = %q, want %q", stripANSI(got), stripANSI(want))
@@ -65,7 +77,7 @@ func TestChatPicker_StandbyStatusCell(t *testing.T) {
 			if spin := strings.TrimSpace(stripANSI(m.spinner.View())); spin != "" && strings.Contains(stripANSI(cells["build"]), spin) {
 				t.Fatalf("standby STATUS must carry no spinner: %q", stripANSI(cells["build"]))
 			}
-			if got, want := cells["verify"], styleStatusInfo.Render(m.spinner.View()+"checks_passed_ready"); got != want {
+			if got, want := cells["verify"], styleStatusInfo.Render(m.spinner.View()+tc.blockingWant); got != want {
 				t.Fatalf("blocking STATUS = %q, want %q", stripANSI(got), stripANSI(want))
 			}
 		})
@@ -83,23 +95,9 @@ func TestChatPicker_StandbyStatusCell(t *testing.T) {
 	}
 }
 
-// The waiting line describes the blocking chat even when the standby chat
-// comes first in table order and holds the cursor.
-func TestChatPicker_WaitingLinePrefersBlockingChat(t *testing.T) {
-	blocking := armedTestReason("checks_passed_ready")
-	m := standbyPicker(t, &pb.Session{Id: "session-1"}, armedTestReason("checks_failed"), blocking)
-	for _, cursor := range []int{0, 1} {
-		m.table.SetCursor(cursor)
-		got := m.waitingReasonLine()
-		if want := "verify · " + blocking + " · expires in 6d"; got != want {
-			t.Fatalf("cursor %d: waitingReasonLine = %q, want %q", cursor, got, want)
-		}
-	}
-}
-
-// With only standby waits, the line still describes one — prefixed "standby: ",
-// never "waiting: ", even when Ready supersedes the waiting badge.
-func TestChatPicker_StandbyOnlyWaitingLine(t *testing.T) {
+// A standby chat's armed line is prefixed "standby: ", never "waiting: ", even
+// when Ready supersedes the waiting badge.
+func TestChatPicker_StandbyOnlyArmedLine(t *testing.T) {
 	standby := armedTestReason("checks_failed")
 	for _, sess := range []*pb.Session{
 		{Id: "session-1"},
@@ -108,26 +106,9 @@ func TestChatPicker_StandbyOnlyWaitingLine(t *testing.T) {
 	} {
 		m := standbyPicker(t, sess, standby, "")
 		want := "build · standby: " + standby + " · expires in 6d"
-		if got := m.waitingReasonLine(); got != want {
-			t.Fatalf("session %+v: waitingReasonLine = %q, want %q", sess, got, want)
+		if got := firstArmedLine(m); got != want {
+			t.Fatalf("session %+v: armedLine = %q, want %q", sess, got, want)
 		}
-		if h := m.waitingLineHeight(); h != 2 {
-			t.Fatalf("waitingLineHeight = %d, want 2", h)
-		}
-	}
-}
-
-// Of two standby chats, the cursor one is described, else the first.
-func TestChatPicker_StandbyLineFollowsCursorAmongStandby(t *testing.T) {
-	m := ChatPickerModel{
-		chats:                []*pb.ClaudeChat{{AgentSessionId: "a", Title: "one"}, {AgentSessionId: "b", Title: "two"}},
-		daemonStatuses:       map[string]string{"a": statusWaiting, "b": statusWaiting},
-		daemonWaitingReasons: map[string]string{"a": armedTestReason("checks_failed"), "b": armedTestReason("closed")},
-	}
-	m.buildTableRows()
-	m.table.SetCursor(1)
-	if got, want := m.waitingReasonLine(), "two · standby: "+armedTestReason("closed"); got != want {
-		t.Fatalf("waitingReasonLine = %q, want %q", got, want)
 	}
 }
 
@@ -169,11 +150,11 @@ func TestChatPicker_BuildHandoffStandbyFixture(t *testing.T) {
 	if got := stripANSI(cells[fixtures.BuildHandoffBuildChatTitle]); got != displaystatus.StandbyLabel {
 		t.Fatalf("build STATUS = %q, want %q", got, displaystatus.StandbyLabel)
 	}
-	if got := stripANSI(cells["verify"]); !strings.HasSuffix(got, "checks_passed_ready") {
-		t.Fatalf("verify STATUS = %q, want the blocking trigger", got)
+	if got := stripANSI(cells["verify"]); !strings.HasSuffix(got, "awaiting green") {
+		t.Fatalf("verify STATUS = %q, want the blocking trigger phrased as a wait", got)
 	}
-	if line := m.waitingReasonLine(); !strings.HasPrefix(line, "verify · "+fixtures.BuildHandoffVerifyReason) {
-		t.Fatalf("waitingReasonLine = %q, want it to describe verify", line)
+	if line := firstArmedLine(m); !strings.HasPrefix(line, "verify · "+fixtures.BuildHandoffVerifyReason) {
+		t.Fatalf("armedLine = %q, want it to describe verify", line)
 	}
 
 	h := NewHomeModel(nil, context.Background(), nil)

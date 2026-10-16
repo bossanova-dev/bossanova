@@ -13,15 +13,19 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// isArchiving reports whether the detail view should render "Archiving…". True
-// when a manual archive is in flight (m.archiving), when the daemon reports an
-// archive actually running for this session (Session.archive_pending, hydrated
-// from the DisplayTracker), or while the short-lived optimistic merge latch is
-// set right after a TUI-initiated merge. The daemon signal replaced the old
-// inferred MERGED + repo-flag heuristic that never cleared for a resurrected
-// merged session (BOS-425).
+// isArchiving includes the local archive RPC and a daemon archive waiting for
+// chats to idle or already running. Only the local RPC blocks action keys.
 func (m ChatPickerModel) isArchiving() bool {
-	return m.archiving || m.optimisticArchiveLatch || m.session.GetArchivePending()
+	return m.archiving || m.archiveAwaited()
+}
+
+func (m ChatPickerModel) archiveAwaited() bool {
+	return m.optimisticArchiveLatch || m.session.GetArchivePending()
+}
+
+func (m ChatPickerModel) archiveStatusLine() string {
+	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+		m.fitProseLine(m.spinner.View() + "Archiving session once every chat is idle…"))
 }
 
 // renderErrState renders the chat picker once chat listing has failed. The
@@ -34,13 +38,16 @@ func (m ChatPickerModel) renderErrState() string {
 	// instead (BOS-724).
 	body := renderError(rpcErrorMessage(m.err), m.width) + "\n"
 	switch {
-	case m.isArchiving():
+	case m.archiving:
 		body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session…")
 	case m.confirm == confirmArchive:
 		body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?") + "\n" +
 			styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
 	default:
+		if m.archiveAwaited() {
+			body += m.archiveStatusLine() + "\n"
+		}
 		// Surface a failed archive (stored in statusMsg) so the user isn't
 		// dropped back to the bare error screen with no feedback.
 		if m.statusMsg != "" {
@@ -103,7 +110,12 @@ func (m ChatPickerModel) renderChatList() string {
 	// above the chat list. The header banner already renders one blank line
 	// below the worktree-path line, so we add none above here; the trailing
 	// "\n\n" yields the single blank line below, before the chat list.
-	if block := selectedSessionWarningBlock(m.session, m.chats, m.blockWrapWidth()); block != "" {
+	if block := m.legacyWarningBlock(); block != "" {
+		b.WriteString(chatPickerProseBlock(block))
+		b.WriteString("\n\n")
+	}
+
+	if block := m.attentionDetailsBlock(); block != "" {
 		b.WriteString(chatPickerProseBlock(block))
 		b.WriteString("\n\n")
 	}
@@ -116,23 +128,12 @@ func (m ChatPickerModel) renderChatList() string {
 		b.WriteString("\n\n")
 	}
 
-	// Why a chat here is parked on an external event (BOS-668). Informational,
-	// not a warning: the session is healthy, it is simply blocked on something
-	// outside the agent's control, so it renders in the info style below the
-	// usage-limited line rather than alongside it. waitingLineHeight reserves
-	// these two lines in tableHeight.
-	if line := m.waitingReasonLine(); line != "" {
-		b.WriteString(chatPickerProseBlock(styleStatusInfo.Render(line)))
-		b.WriteString("\n\n")
-	}
-
-	// The session's machine-local HTTP endpoints (BOS-474), directly above the
-	// chat table with no blank line between, so the ports read as belonging to
-	// this session. Written raw (not via lipgloss) to keep the OSC 8 envelopes
-	// intact; httpLineHeight reserves the single line in tableHeight.
+	// The session's machine-local HTTP endpoints (BOS-474), one blank line
+	// above the chat table. Written raw (not via lipgloss) to keep the OSC 8
+	// envelopes intact; httpLineHeight reserves both rows in tableHeight.
 	if line := m.httpEndpointLine(); line != "" {
 		b.WriteString(line)
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 	}
 
 	b.WriteString(chatPickerContentBlock(m.table.View()))
@@ -188,8 +189,8 @@ func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
 	return b.String(), true
 }
 
-// renderConfirm renders the transient in-flight spinner or y/n prompt that
-// stands in for the action bar.
+// renderConfirm replaces the action bar for a local in-flight RPC or y/n
+// prompt. Daemon-side archives leave keys live and fall through to the bar.
 //
 // The bool reports whether this chain owned the state, not whether it produced
 // output: a confirmDelete with no selected chat is owned here and deliberately
@@ -198,7 +199,7 @@ func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
 // mid-confirm and change behaviour.
 func (m ChatPickerModel) renderConfirm() (string, bool) {
 	if m.attentionAction.active() {
-		return m.attentionAction.footer(m.width), true
+		return m.attentionAction.footer(m.width, m.spinner.View()), true
 	}
 	var b strings.Builder
 	if m.merging {
@@ -208,10 +209,7 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
-	} else if m.approving {
-		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
-			m.spinner.View() + fmt.Sprintf("Requesting merge of PR #%d…", m.session.GetPrNumber())))
-	} else if m.isArchiving() {
+	} else if m.archiving {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session…"))
 	} else if m.switching {
@@ -245,16 +243,6 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(prompt))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else if m.confirm == confirmApprove {
-		lines, overridesFailure := m.approveConfirm()
-		color, keys := colorWarning, "[y/enter] confirm  [n/esc] cancel"
-		if overridesFailure {
-			color, keys = colorDanger, "[y] merge anyway  [n/enter/esc] cancel"
-		}
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(color).Render(strings.Join(lines, "\n")))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render(keys))
 	} else if m.confirm == confirmArchive {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?"))
@@ -270,6 +258,10 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 // the switch-account notice, the merged label, and the action bar itself.
 func (m ChatPickerModel) renderActionBar() string {
 	var b strings.Builder
+	if m.archiveAwaited() {
+		b.WriteString(m.archiveStatusLine())
+		b.WriteString("\n")
+	}
 	if m.statusMsg != "" {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
 		b.WriteString("\n")
@@ -308,13 +300,13 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	if m.newTabSupported {
 		middle = append(middle, "[t]erminal")
 	}
-	if _, ok := attentionBinding(m.session, "g"); !ok && m.canOpenGitHub() {
+	if _, ok := attentionBinding(m.session, "g", true); !ok && m.canOpenGitHub() {
 		middle = append(middle, "[g]ithub")
 	}
-	if _, ok := attentionBinding(m.session, "l"); !ok && m.canOpenTracker() {
+	if m.canOpenTracker() {
 		middle = append(middle, "[l]inear")
 	}
-	if _, ok := attentionBinding(m.session, "m"); !ok && (m.canApprove() || m.canMerge()) {
+	if _, ok := attentionBinding(m.session, "m", true); !ok && m.canMerge() {
 		middle = append(middle, "[m]erge")
 	}
 	if m.sessionID != "" {
@@ -322,6 +314,9 @@ func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	}
 	if chat := m.selectedChat(); chat != nil {
 		left = []string{"[enter] select", "[d]elete"}
+		if m.session.GetAttention() != nil {
+			left[0] = "[enter] open chat"
+		}
 		// [r]ename and swit[c]h account are deliberately unadvertised
 		// (BOS-1063): both keys still work, but the bar stays short enough to
 		// read at a glance. Their availability predicates live with the key

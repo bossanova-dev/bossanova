@@ -563,24 +563,31 @@ func (d *archiveDeferrer) fire(sessionID string, f *inflightArchive, track sessi
 
 // --- Server surface ---
 
-// archiveDeferral returns the server's deferrer, building it on first use so
-// a Server assembled as a struct literal (as most tests do) still gets one.
+// initDeferrers captures the server's dependencies during construction.
+func (s *Server) initDeferrers() {
+	var chats archiveChatLister
+	if s.agentChats != nil {
+		chats = s.agentChats
+	}
+	var display archivingFlagger
+	if s.displayTracker != nil {
+		display = s.displayTracker
+	}
+	var sessions archiveSessionGetter
+	if s.sessions != nil {
+		sessions = s.sessions
+	}
+	s.archiveDeferrer = newArchiveDeferrer(chats, s.chatStatus, display, sessions, s.ArchiveSessionAndNotify, s.logger)
+	logger := s.logger.With().Str("deferrer", "finish").Logger()
+	// Pending finishes must not set the session's archiving flag.
+	s.finishDeferrer = newArchiveDeferrer(chats, s.chatStatus, nil, sessions, s.finishRunNow, logger)
+	s.finishDeferrer.fireBudget = finishRunBudget
+	if s.lifecycle != nil {
+		s.finishDeferrer.settled = s.lifecycle.UnattendedRunQuiet
+	}
+}
+
 func (s *Server) archiveDeferral() *archiveDeferrer {
-	s.archiveDeferrerOnce.Do(func() {
-		var chats archiveChatLister
-		if s.agentChats != nil {
-			chats = s.agentChats
-		}
-		var display archivingFlagger
-		if s.displayTracker != nil {
-			display = s.displayTracker
-		}
-		var sessions archiveSessionGetter
-		if s.sessions != nil {
-			sessions = s.sessions
-		}
-		s.archiveDeferrer = newArchiveDeferrer(chats, s.chatStatus, display, sessions, s.ArchiveSessionAndNotify, s.logger)
-	})
 	return s.archiveDeferrer
 }
 

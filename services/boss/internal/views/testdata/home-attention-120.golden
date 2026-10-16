@@ -1,24 +1,22 @@
    REPO    NAME                                                          PR     STATUS           
-           NEEDS YOU · 7                                                                         
-   my-app  [BOS-1502] Improve the unattended session workflow            #2982  fix              
+                                                                                                 
+   NEEDS YOU · 7                                                                                 
+   my-app  [BOS-1502] Improve the unattended session workflow            #2982  ⨯ failing        
            Resumed 3 times since 23:16; each attempt lost its Claude                             
-           login. Run claude /login on delta, then press r.                                      
+           login                                                                                 
  ❯ my-app  [BOS-1500] Improve the unattended session workflow            #2980  review           
-           Review the diff · security: verify gate rules (how PRs get                            
-           merged)                                                                               
+           Security change: verify gate rules (how PRs get merged)                               
    my-app  [BOS-1503] Improve the unattended session workflow            #2983  ? question       
            Which deployment should receive the update?                                           
    my-app  [BOS-1504] Improve the unattended session workflow            #2984  review           
-           Review the diff · the session changes billing settings and                            
-           needs an operator to approve them before merging.                                     
+           Security change: billing settings                                                     
    my-app  [BOS-1505] Improve the unattended session workflow            #2985  review           
-           Review the diff · confirm the migration preserves existing                            
-           data.                                                                                 
+           Database migration                                                                    
    my-app  [BOS-1506] Improve the unattended session workflow            #2986  review           
-           Review the diff · approve the permission change.                                      
-   my-app  [BOS-1507] Improve the unattended session workflow            #2987  merge            
-           Merge this pull request when ready.                                                   
-           IN PROGRESS · 2                                                                       
-   my-app  [BOS-1501] Improve the unattended session workflow            #2981  building         
-   my-app  [BOS-1508] Improve the unattended session workflow            #2988  CI 4/9           
-[n]ew session  [y] approve  [b] send back  [g] github  [v] video  [s]ettings  [q]uit
+           Security change: permission rules                                                     
+   my-app  [BOS-1507] Improve the unattended session workflow            #2987  ✓ merge          
+                                                                                                 
+   IN PROGRESS · 2                                                                               
+   my-app  [BOS-1501] Improve the unattended session workflow            #2981  ⣾ building       
+   my-app  [BOS-1508] Improve the unattended session workflow            #2988  ⣾ checking 4/9   
+[n]ew session  [v]ideo  [m]erge  [/] filter · [s]ettings · [q]uit

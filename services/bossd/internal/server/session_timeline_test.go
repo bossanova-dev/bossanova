@@ -36,6 +36,8 @@ func (s stubEvidence) Entry(sessionID string) (evidence.Entry, bool) {
 	return e, ok
 }
 
+func (s stubEvidence) OpenItems(string, string) []string { return nil }
+
 func checksJSON(t *testing.T, checks []vcs.CheckResult) string {
 	t.Helper()
 	raw, err := json.Marshal(checks)
@@ -164,7 +166,7 @@ func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
 
 	assertSteps(t, resp.Msg.GetSteps(), []wantStep{
 		{at(4), "Build started", "BOS-1528", done},
-		{at(20), "Built and reviewed", "no open findings", done},
+		{at(20), "Built and reviewed", "ledger closed", done},
 		{at(21), "CI passed, 6 checks", "", done},
 		{at(40), "Evidence recorded", "5 of 5 proven · 2:40 video", done},
 		{at(40), "Parked for you · UI change", "", current},
@@ -503,9 +505,10 @@ func TestBuildTimeline_QuestionRowEndsOnTheQuestion(t *testing.T) {
 	})
 }
 
-// A merge row ends on CI passing and the PR becoming ready.
+// A merge-ready row ends on CI passing and the PR becoming ready, whether it
+// is the unverified REVIEW (as here, no boss/verify verdict) or a MERGE.
 func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
-	steps := buildTimeline(timelineFacts{
+	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
 		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
@@ -521,32 +524,51 @@ func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
 		{at(21), "Ready for review", "", done},
 		{at(26), "CI passed, 6 checks", "", current},
 	})
+	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Fatalf("kind = %s, want the unverified REVIEW", kind)
+	}
 }
 
-// A mergeable PR whose ordinary checks were all skipped is a merge for
+// A mergeable PR whose ordinary checks were all skipped is merge-ready for
 // attention.Compute (a skipped check is done), yet it has no "CI passed" step
 // and, never a draft, no "Ready for review" step: the merge wait gets its own
-// step instead of an unrelated old one going CURRENT.
+// step instead of an unrelated old one going CURRENT. Verified, it is a MERGE;
+// with no boss/verify verdict on the head it is the unverified REVIEW, and the
+// step says so.
 func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 	skipped := vcs.CheckConclusionSkipped
+	success := vcs.CheckConclusionSuccess
 	skippedCI := []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusCompleted, Conclusion: &skipped}}
-	steps, kind := assembleTimeline(timelineFacts{
-		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
-		Snapshots: []db.CheckSnapshot{
-			snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
-			snap(t, at(26), vcs.DisplayStatusPassing, skippedCI),
-			snap(t, at(31), vcs.DisplayStatusPassing, skippedCI),
-		},
-	})
-	if kind != pb.AttentionKind_ATTENTION_KIND_MERGE {
-		t.Fatalf("kind = %s, want MERGE", kind)
+	verified := append(slices.Clone(skippedCI), vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success, Description: "verified"})
+	for _, tc := range []struct {
+		name   string
+		checks []vcs.CheckResult
+		kind   pb.AttentionKind
+		title  string
+	}{
+		{"verified", verified, pb.AttentionKind_ATTENTION_KIND_MERGE, "Ready to merge"},
+		{"unverified", skippedCI, pb.AttentionKind_ATTENTION_KIND_REVIEW, "Ready to merge · not verified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps, kind := assembleTimeline(timelineFacts{
+				HasPR: true,
+				Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+				Snapshots: []db.CheckSnapshot{
+					snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
+					snap(t, at(26), vcs.DisplayStatusPassing, tc.checks),
+					snap(t, at(31), vcs.DisplayStatusPassing, tc.checks),
+				},
+			})
+			if kind != tc.kind {
+				t.Fatalf("kind = %s, want %s", kind, tc.kind)
+			}
+			assertSteps(t, steps, []wantStep{
+				{at(4), "Build started", "", done},
+				{at(20), "Built and reviewed", "", done},
+				{at(26), tc.title, "", current},
+			})
+		})
 	}
-	assertSteps(t, steps, []wantStep{
-		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "", done},
-		{at(26), "Ready to merge", "", current},
-	})
 }
 
 // A green PR that attention.Compute does not answer MERGE for (no checks at
@@ -566,7 +588,7 @@ func TestBuildTimeline_NoMergeStepWhenNotAMerge(t *testing.T) {
 	})
 }
 
-// A park with open findings says so on the hand-off step; an open repair
+// A park with an open checklist items says so on the hand-off step; an open repair
 // failure outranks the park (fix > review).
 func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
@@ -579,9 +601,9 @@ func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 	})
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "open findings", done},
+		{at(20), "Built and reviewed", "ledger open", done},
 		{at(40), "CI passed, 3 checks", "", done},
-		{at(40), "Parked for you · open findings", "", done},
+		{at(40), "Parked for you · open checklist items", "", done},
 		{at(35), "Automatic repair failed", "3 attempts", current},
 	})
 }
@@ -604,10 +626,10 @@ func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
 	}
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "open findings", done},
+		{at(20), "Built and reviewed", "ledger open", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
-		{at(40), "Parked for you · open findings", "", current},
+		{at(40), "Parked for you · open checklist items", "", current},
 	})
 }
 
@@ -728,7 +750,7 @@ func TestBuildTimeline_DismissedFixIsNotTheWait(t *testing.T) {
 	}
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "no open findings", done},
+		{at(20), "Built and reviewed", "ledger closed", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
 		{at(40), "Parked for you · UI change", "", current},

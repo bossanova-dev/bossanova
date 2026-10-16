@@ -42,6 +42,7 @@ export const VENDOR_MAP = {
     'tracker/linear.mjs',
     'tracker/outcome.mjs',
     'verify-gate.mjs',
+    'verify-park-note.mjs',
   ],
   'boss-release': [
     'main-module.mjs',
@@ -75,9 +76,14 @@ export const VENDOR_MAP = {
     // Its import closure (commit-status, merge-eligibility, pr-check-state, skill-config,
     // skill-extensions, tracker/adapter) already ships here.
     'verify-gate.mjs',
+    // verify-gate.mjs renders a park's operator note through verify-park-note.mjs.
+    'verify-park-note.mjs',
     // BOS-1515: followup-route.mjs decides which follow-ups reach the ledger sections that park a
     // PR at verify; its only import is main-module.mjs.
     'followup-route.mjs',
+    // pr-body.mjs merges changed sections into a published PR body; it imports main-module.mjs and
+    // skill-config.mjs, both already vendored here.
+    'pr-body.mjs',
     'worktree-lock.sh',
     // review-verdict.mjs (the review contract) is how Step 6 reads any review's verdict and
     // renders its PR sections; its only import is main-module.mjs.
@@ -179,8 +185,8 @@ export const VENDOR_MAP = {
     // of those are a stale record (warn) and which are an absent capability (stop), so the rule
     // has one implementation instead of one `case` block per consuming core. The preflight
     // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
-    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
-    // already vendored here.
+    // no repo-root skills-toolbox/ to reach back into. Its imports main-module.mjs and skill-extensions.mjs
+    // are already vendored here.
     'skill-drift-verdict.mjs',
     // Preflight names bossEpicTransportPreflight to choose the MCP or CLI carrier, so the
     // module must ship in boss-build's own toolbox — an installed core cannot reach into
@@ -193,8 +199,8 @@ export const VENDOR_MAP = {
     // shares its reasons) and main-module.mjs.
     'commit-status.mjs',
     'ready-gate.mjs',
-    // stage-chain.mjs (BOS-1388): Step 5/6 phase reports and Step 12's verify hand-off
-    // (`run-next`, `arm-verify`); completion-gate.mjs imports its consent matcher. Its imports
+    // stage-chain.mjs: Step 5/6 phase reports and Step 12's same-PR verify callback
+    // (`arm-verify`); completion-gate.mjs imports its enabled-job matcher. Its imports
     // (boss-binary, bossd-present, main-module) already ship here.
     'stage-chain.mjs',
   ],
@@ -393,8 +399,8 @@ export const VENDOR_MAP = {
     // of those are a stale record (warn) and which are an absent capability (stop), so the rule
     // has one implementation instead of one `case` block per consuming core. The preflight
     // invokes it by path, so it must resolve inside an INSTALLED toolbox — a consuming repo has
-    // no repo-root skills-toolbox/ to reach back into. Its only import is main-module.mjs,
-    // already vendored here.
+    // no repo-root skills-toolbox/ to reach back into. Its imports main-module.mjs and skill-extensions.mjs
+    // are already vendored here.
     'skill-drift-verdict.mjs',
     // boss-plan-env.sh (BOS-1102) is the toolbox preamble itself: every Bash block in the
     // skill sources it to resolve BOSS_SKILLS_HOME/BOSS_PLAN_TOOLBOX instead of repeating an
@@ -408,8 +414,8 @@ export const VENDOR_MAP = {
     // ESM link time.
     'boss-binary.mjs',
     'session-self-archive.mjs',
-    // stage-chain.mjs (BOS-1388): the `planning` phase report and Phase 6's build hand-off
-    // (`run-next --stage plan`). It imports bossd-present.mjs, which boss-plan did not ship before.
+    // stage-chain.mjs: the `planning` phase report. It imports bossd-present.mjs,
+    // which boss-plan did not ship before.
     'stage-chain.mjs',
     'bossd-present.mjs',
   ],
@@ -521,6 +527,7 @@ export const VENDOR_MAP = {
   // reach back into. selection.mjs and skill-extensions.mjs are also invoked by path from the body.
   'boss-verify': [
     'verify-gate.mjs',
+    'verify-park-note.mjs',
     'verify-route.mjs',
     'cron-gates/boss-verify.mjs',
     'main-module.mjs',
@@ -542,8 +549,8 @@ export const VENDOR_MAP = {
     'tracker/adapter-core.mjs',
     'tracker/linear.mjs',
     'tracker/outcome.mjs',
-    // stage-chain.mjs (BOS-1388): the `verifying` phase report and the post-merge release
-    // hand-off; verify-route.mjs imports its verify-chat title and finder. It brings
+    // stage-chain.mjs: the `verifying` phase report; verify-route.mjs imports
+    // its verify-chat title and finder. It brings
     // bossd-present.mjs, which boss-verify did not ship before.
     'stage-chain.mjs',
     'bossd-present.mjs',

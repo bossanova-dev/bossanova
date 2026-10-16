@@ -160,10 +160,70 @@ func TestWebhooksMissingFlagsAFreshMissAfterAReconnect(t *testing.T) {
 	now = now.Add(time.Minute)
 	openedAt = now
 	now = now.Add(time.Hour)
+	h.RecordDelivery("https://github.com/acme/has-app.git")
 	h.NotePolledChange(noApp, openedAt.Add(polledReadStaleness))
 	now = now.Add(missedDeliveryGrace)
 	if !h.WebhooksMissing(noApp) {
 		t.Fatal("a miss noted before a reconnect hid a fresh miss on the new stream")
+	}
+}
+
+func TestWebhooksMissingKeepsTheFirstMissOnAStream(t *testing.T) {
+	h, openedAt, now, _ := missFixture(t)
+	h.NotePolledChange(noApp, openedAt.Add(polledReadStaleness))
+	*now = now.Add(4 * time.Minute)
+	h.NotePolledChange(noApp, now.Add(-time.Minute))
+	*now = now.Add(time.Minute)
+	if !h.WebhooksMissing(noApp) {
+		t.Fatal("a later miss on the same stream restarted the grace, so a repo that changes often would never be flagged")
+	}
+}
+
+func TestWebhooksMissingNeedsADeliveryOnTheCurrentStream(t *testing.T) {
+	openedAt := time.Unix(1_800_000_000, 0)
+	now := openedAt.Add(time.Hour)
+	h := NewWebhookHealth(func() (time.Time, bool) { return openedAt, true })
+	h.now = func() time.Time { return now }
+	h.RecordDelivery("https://github.com/acme/has-app.git")
+
+	// Forwarding stops for every repo across this reconnect.
+	now = now.Add(time.Minute)
+	openedAt = now
+	now = now.Add(time.Hour)
+	h.NotePolledChange(noApp, openedAt.Add(polledReadStaleness))
+	now = now.Add(missedDeliveryGrace)
+	if h.WebhooksMissing(noApp) {
+		t.Fatal("a delivery from the previous stream proved a pipe that delivers nothing now")
+	}
+
+	h.RecordDelivery("https://github.com/acme/has-app.git")
+	if !h.WebhooksMissing(noApp) {
+		t.Fatal("not flagged once a delivery on the current stream proved the pipe")
+	}
+}
+
+func TestNotePolledChangeIgnoresAReconnectDuringTheCall(t *testing.T) {
+	openedAt := time.Unix(1_800_000_000, 0)
+	now := openedAt.Add(time.Hour)
+	reconnectOnRead := true
+	h := NewWebhookHealth(func() (time.Time, bool) {
+		current := openedAt
+		if reconnectOnRead {
+			// The stream drops and reopens right after this read returns.
+			reconnectOnRead = false
+			now = now.Add(time.Second)
+			openedAt = now
+			now = now.Add(time.Second)
+		}
+		return current, true
+	})
+	h.now = func() time.Time { return now }
+
+	h.NotePolledChange(noApp, openedAt.Add(polledReadStaleness))
+	h.RecordDelivery("https://github.com/acme/has-app.git")
+	now = now.Add(missedDeliveryGrace)
+	if h.WebhooksMissing(noApp) {
+		t.Fatal("a change seen on the previous stream was credited to the new one")
 	}
 }
 

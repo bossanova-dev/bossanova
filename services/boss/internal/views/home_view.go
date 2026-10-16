@@ -448,12 +448,19 @@ func (h HomeModel) renderNoSessionsEmptyState() string {
 func (h HomeModel) renderSessionTable() string {
 	var b strings.Builder
 
-	if len(h.sessions) > 0 {
+	if h.filter.Engaged() && len(h.boardSessions()) == 0 {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No sessions match filter."))
+		b.WriteString("\n")
+	} else if len(h.sessions) > 0 {
 		// homeTableBlockPadding, not a literal 1: tableAvailWidth subtracts this
 		// same number from the terminal width to get the fit budget, so a
 		// literal here could be widened without the fit following and every
 		// narrow board would overhang by the difference (BOS-572).
-		b.WriteString(lipgloss.NewStyle().Padding(0, homeTableBlockPadding).Render(h.table.View()))
+		b.WriteString(lipgloss.NewStyle().Padding(0, homeTableBlockPadding).Render(h.boardView()))
+		b.WriteString("\n")
+	}
+	if h.filter.Engaged() {
+		b.WriteString(h.filter.View())
 		b.WriteString("\n")
 	}
 	if h.status != "" {
@@ -470,7 +477,7 @@ func (h HomeModel) renderSessionTable() string {
 	// the editor two lines taller than the bar it replaces where tableHeight
 	// only gives a row back for one.
 	if h.attentionAction.active() {
-		b.WriteString(h.attentionAction.footer(h.width))
+		b.WriteString(h.attentionAction.footer(h.width, h.spinner.View()))
 	} else if h.rename.Active() {
 		b.WriteString(h.rename.footer(h.width))
 	} else if h.confirm.active {
@@ -535,13 +542,21 @@ func (h HomeModel) renderSessionTableFooter() string {
 }
 
 func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
+	if h.filter.Active() {
+		return h.filter.ActionBar(), nil, nil
+	}
 	actions := attentionFooter(h.selectedSession(), false)
 	left = make([]string, 0, len(actions)+2)
 	left = append(left, "[n]ew session")
-	if h.selectedSession().GetAttention() == nil {
+	if h.selectedSession() != nil && h.selectedSession().GetAttention() == nil {
 		left = append(left, "[enter] select")
 	}
 	left = append(left, actions...)
+	if h.filter.Applied() {
+		left = append(left, "[/] edit filter", "[esc] clear")
+	} else if len(h.boardSessions()) > 0 {
+		left = append(left, "[/] filter")
+	}
 	nav = []string{"[s]ettings"}
 	if la := h.loginAction(); la != "" {
 		nav = append(nav, la)

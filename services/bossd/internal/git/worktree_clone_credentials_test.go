@@ -27,6 +27,11 @@ const fixtureUser = "boss-user"
 // git-http-backend, requiring HTTP basic auth as fixtureUser/password.
 func gitHTTPFixture(t *testing.T, root, password string) *httptest.Server {
 	t.Helper()
+	return gitHTTPFixtureUser(t, root, fixtureUser, password)
+}
+
+func gitHTTPFixtureUser(t *testing.T, root, user, password string) *httptest.Server {
+	t.Helper()
 	execPath, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
 		t.Fatalf("git --exec-path: %v", err)
@@ -41,7 +46,7 @@ func gitHTTPFixture(t *testing.T, root, password string) *httptest.Server {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		if !ok || u != fixtureUser || p != password {
+		if !ok || u != user || p != password {
 			w.Header().Set("WWW-Authenticate", `Basic realm="boss-test"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -329,9 +334,103 @@ func TestCloneWithoutUserinfoPassesURLThrough(t *testing.T) {
 	}
 }
 
-// TestSplitCloneCredentials: only http(s) userinfo that carries a password is
-// a credential. A username-only URL keeps its username so the configured
-// credential helpers still see who is asking.
+func TestCloneWithTokenUsernameKeepsTokenOutOfArgv(t *testing.T) {
+	for _, usePath := range []string{"false", "true"} {
+		t.Run("useHttpPath="+usePath, func(t *testing.T) {
+			hermeticGitEnv(t)
+			if err := os.WriteFile(os.Getenv("GIT_CONFIG_GLOBAL"), []byte("[credential]\nuseHttpPath = "+usePath+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			root, name := bareFixtureRepo(t)
+			token := "ghp_" + strings.TrimPrefix(markerPassword(t), "marker-")
+			srv := gitHTTPFixtureUser(t, root, token, "")
+			cloneURL, err := url.Parse(srv.URL + "/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cloneURL.User = url.User(token)
+			calls := recordCloneArgv(t)
+			dest := filepath.Join(t.TempDir(), "clone")
+			mgr := NewManager(zerolog.Nop())
+			if err := mgr.Clone(context.Background(), cloneURL.String(), dest); err != nil {
+				t.Fatalf("Clone: %v", redactURLCredentials(err.Error()))
+			}
+			if len(calls()) == 0 {
+				t.Fatal("no clone argv recorded")
+			}
+			for _, argv := range calls() {
+				if strings.Contains(strings.Join(argv, " "), token) {
+					t.Fatal("token reached git argv")
+				}
+			}
+			config, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(config), token) {
+				t.Fatal("token reached .git/config")
+			}
+			info, err := os.Stat(filepath.Join(dest, ".git", cloneCredentialFileName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Fatalf("credential mode = %o, want 600", info.Mode().Perm())
+			}
+			if CloneURLWithoutCredentials(cloneURL.String()) != srv.URL+"/"+name {
+				t.Fatal("recorded origin contains userinfo")
+			}
+			origin, err := mgr.DetectOriginURL(context.Background(), dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if origin != srv.URL+"/"+name {
+				t.Fatal("detected origin contains userinfo")
+			}
+			if out, err := exec.Command("git", "-C", dest, "fetch", "origin").CombinedOutput(); err != nil {
+				t.Fatalf("fetch: %v\n%s", err, redactURLCredentials(string(out)))
+			}
+		})
+	}
+}
+
+func TestCloneWithPlainUsernameReachesConfiguredHelper(t *testing.T) {
+	hermeticGitEnv(t)
+	root, name := bareFixtureRepo(t)
+	password := markerPassword(t)
+	srv := gitHTTPFixtureUser(t, root, "alice", password)
+	cloneURL, err := url.Parse(srv.URL + "/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloneURL.User = url.UserPassword("alice", password)
+	store := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(store, []byte(cloneURL.String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "config", "--global", "credential.helper", credentialStoreHelper(store)).CombinedOutput(); err != nil {
+		t.Fatalf("configure helper: %v\n%s", err, out)
+	}
+	cloneURL.User = url.User("alice")
+	calls := recordCloneArgv(t)
+	dest := filepath.Join(t.TempDir(), "clone")
+	if err := NewManager(zerolog.Nop()).Clone(context.Background(), cloneURL.String(), dest); err != nil {
+		t.Fatal(err)
+	}
+	got := calls()
+	want := []string{"clone", "--", cloneURL.String(), dest}
+	if len(got) != 1 || strings.Join(got[0], "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("clone argv = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git", cloneCredentialFileName)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected credential file: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", dest, "fetch", "origin").CombinedOutput(); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, redactURLCredentials(string(out)))
+	}
+}
+
+// TestSplitCloneCredentials distinguishes token-shaped from ordinary usernames.
 func TestSplitCloneCredentials(t *testing.T) {
 	pw := "pw-" + "marker"
 	cases := []struct {
@@ -350,6 +449,12 @@ func TestSplitCloneCredentials(t *testing.T) {
 			"https://example.com/o/r.git?x=1#frag", "https://alice:" + pw + "@example.com/o/r.git?x=1#frag", true},
 		{"username only", "https://alice@example.com/o/r.git",
 			"https://alice@example.com/o/r.git", "", false},
+		{"GitHub token", "https://ghp_marker@example.com/o/r.git?x=1#frag", "https://example.com/o/r.git?x=1#frag", "https://ghp_marker:@example.com/o/r.git?x=1#frag", true},
+		{"GitLab token", "https://glpat-marker@example.com/o/r.git", "https://example.com/o/r.git", "https://glpat-marker:@example.com/o/r.git", true},
+		{"40 hex token", "https://" + strings.Repeat("a", 40) + "@example.com/o/r.git", "https://example.com/o/r.git", "https://" + strings.Repeat("a", 40) + ":@example.com/o/r.git", true},
+		{"39 character username", "https://" + strings.Repeat("a", 39) + "@example.com/o/r.git", "https://" + strings.Repeat("a", 39) + "@example.com/o/r.git", "", false},
+		{"email username", "https://a.b%40x.com@example.com/o/r.git", "https://a.b%40x.com@example.com/o/r.git", "", false},
+		{"ssh token", "ssh://ghp_marker@example.com/o/r.git", "ssh://ghp_marker@example.com/o/r.git", "", false},
 		{"no userinfo", "https://example.com/o/r.git", "https://example.com/o/r.git", "", false},
 		{"ssh login name", "ssh://git@example.com/o/r.git", "ssh://git@example.com/o/r.git", "", false},
 	}
@@ -400,17 +505,42 @@ func TestSplitCloneCredentialsMatchUnderUseHTTPPath(t *testing.T) {
 }
 
 // TestCloneURLWithoutCredentials: the URL a credentialed clone records for
-// origin drops user:password and leaves every other URL untouched.
+// origin drops password userinfo and token-shaped usernames.
 func TestCloneURLWithoutCredentials(t *testing.T) {
 	pw := "pw-" + "marker"
 	for raw, want := range map[string]string{
-		"https://alice:" + pw + "@example.com/o/r.git": "https://example.com/o/r.git",
-		"https://alice@example.com/o/r.git":            "https://alice@example.com/o/r.git",
-		"git@github.com:o/r.git":                       "git@github.com:o/r.git",
-		"https://example.com/o/r.git":                  "https://example.com/o/r.git",
+		"https://alice:" + pw + "@example.com/o/r.git":                "https://example.com/o/r.git",
+		"https://ghp_marker@example.com/o/r.git":                      "https://example.com/o/r.git",
+		"https://glpat-marker@example.com/o/r.git":                    "https://example.com/o/r.git",
+		"https://" + strings.Repeat("a", 40) + "@example.com/o/r.git": "https://example.com/o/r.git",
+		"https://alice@example.com/o/r.git":                           "https://alice@example.com/o/r.git",
+		"git@github.com:o/r.git":                                      "git@github.com:o/r.git",
+		"https://example.com/o/r.git":                                 "https://example.com/o/r.git",
 	} {
 		if got := CloneURLWithoutCredentials(raw); got != want {
 			t.Errorf("CloneURLWithoutCredentials(%q) = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+func TestIsTokenShapedUsername(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"", false}, {"alice", false}, {strings.Repeat("a", 39), false},
+		{strings.Repeat("a", 40), true}, {strings.Repeat("A0_-", 13), true},
+		{strings.Repeat("a", 40) + ".", false}, {strings.Repeat("a", 40) + "é", false},
+		{"a.b@x.com", false}, {"GHP_marker", false}, {"GLPAT-marker", false},
+		{"ghp_marker", true}, {"gho_marker", true}, {"ghu_marker", true},
+		{"ghs_marker", true}, {"ghr_marker", true}, {"github_pat_marker", true},
+		{"glpat-marker", true}, {"gldt-marker", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTokenShapedUsername(tc.name); got != tc.want {
+				t.Fatalf("isTokenShapedUsername(%q) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
 	}
 }

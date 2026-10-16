@@ -594,8 +594,6 @@ most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and d
 validate with `--role notes`. Never fatal.
 For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
 
-**Hand-off** (before Phase 7): when the outcome is `planned` or `epic` and at least one ticket left with `agent-build`, run `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" run-next --stage plan` and print its line; never fatal (the build job's own gate decides eligibility).
-
 ## Phase 7 — Self-archive
 
 The very last action on every terminal path, after the report and any notes dispatch:

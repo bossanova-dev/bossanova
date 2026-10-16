@@ -3325,9 +3325,10 @@ var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}\b`)
 // Fenced code blocks (``` or ~~~), inline code spans and non-Linear URLs are
 // left intact: rewriting a key-shaped token there (SHA-256 in a command,
 // docs/ABC-12.md in a GitHub link) would break copy-paste and links. Two kinds
-// of span are still defused, because each links an issue after a magic word
-// just like a bare key: an inline code span holding nothing but one key
-// ("Fixes `ABC-12`"), and a linear.app URL (which then no longer resolves).
+// of span are still defused: a linear.app URL (which then no longer resolves),
+// and an inline code span holding one key only after a linking magic word
+// ("Fixes `ABC-12`"). Without that context, key-shaped literals like `UTF-8`
+// stay intact so copying code preserves the original bytes.
 func draftPRBody(plan string, trackerID *string) string {
 	own := ""
 	if trackerID != nil {
@@ -3346,7 +3347,7 @@ func draftPRBody(plan string, trackerID *string) string {
 	for _, loc := range protectedSpanPattern.FindAllStringIndex(plan, -1) {
 		b.WriteString(defuse(plan[last:loc[0]]))
 		span := plan[loc[0]:loc[1]]
-		if isLinearURL(span) || isKeyOnlyCodeSpan(span) {
+		if isLinearURL(span) || (isKeyOnlyCodeSpan(span) && followsLinkingWord(plan[:loc[0]])) {
 			span = defuse(span)
 		}
 		b.WriteString(span)
@@ -3364,6 +3365,21 @@ var protectedSpanPattern = regexp.MustCompile("(?s:```.*?```)|(?s:~~~.*?~~~)|``[
 
 // keyOnlyPattern matches a string that is exactly one issue key.
 var keyOnlyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}$`)
+
+// linkingContextPattern recognizes a linking word followed only by formatting
+// and an optional list of issue keys. Inspect the original plan so keys already
+// defused in the output still count as list continuations.
+var linkingContextPattern = regexp.MustCompile("(?i)\\b(?:close|closes|closed|closing|fix|fixes|fixed|fixing|resolve|resolves|resolved|resolving|complete|completes|completed|completing|implement|implements|implemented|implementing|ref|refs|references|part\\s+of|related\\s+to|relates\\s+to|contributes\\s+to|toward|towards|updates|linear\\s+issue)\\b[*_:\\s]*(?:`{0,2}\\s*[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}\\s*`{0,2}(?:\\s*(?:,|&|\\band\\b)\\s*|\\s+))*$")
+
+func followsLinkingWord(before string) bool {
+	// Bound the per-span scan so plans containing many code spans stay linear.
+	// The regexp tolerates a partial leading UTF-8 rune in the bounded tail.
+	const contextBytes = 512
+	if len(before) > contextBytes {
+		before = before[len(before)-contextBytes:]
+	}
+	return linkingContextPattern.MatchString(before)
+}
 
 // isKeyOnlyCodeSpan reports whether span is an inline code span (not a fence)
 // whose trimmed content is exactly one issue key, e.g. `BOS-865`.

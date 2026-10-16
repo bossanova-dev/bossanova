@@ -259,7 +259,7 @@ func attentionNotificationBody(s *pb.Session) string {
 	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
 		return a.GetSentence()
 	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
-		return name + " needs you · review · " + a.GetSentence()
+		return name + " needs you · " + a.GetSentence()
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
 		return name + " is ready to merge"
 	default:

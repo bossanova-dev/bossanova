@@ -183,6 +183,33 @@ func TestDerive_ParkCodesOnlyFromAVerifyPark(t *testing.T) {
 	}
 }
 
+// TestDerive_VerifiedFromTheHeadsVerifyVerdict reads Input.Verified from a
+// successful boss/verify status in the poll's checks, so a merge-ready PR is a
+// MERGE only once verify passed it, and the unverified REVIEW otherwise.
+func TestDerive_VerifiedFromTheHeadsVerifyVerdict(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	green := checks(success, success)
+	verdict := vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success, Description: "verified (approved)"}
+	for _, tc := range []struct {
+		name   string
+		checks []vcs.CheckResult
+		kind   pb.AttentionKind
+	}{
+		{"verified", append(slices.Clone(green), verdict), pb.AttentionKind_ATTENTION_KIND_MERGE},
+		{"unverified", green, pb.AttentionKind_ATTENTION_KIND_REVIEW},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := Derive(Facts{HasPR: true, PR: &PR{Status: vcs.DisplayStatusPassing, Checks: tc.checks}}).Input
+			if in.Verified != (tc.kind == pb.AttentionKind_ATTENTION_KIND_MERGE) {
+				t.Fatalf("verified = %v", in.Verified)
+			}
+			if got := attention.Compute(in).GetKind(); got != tc.kind {
+				t.Fatalf("kind = %v, want %v", got, tc.kind)
+			}
+		})
+	}
+}
+
 func TestAskingChat_TakesTheNewestQuestion(t *testing.T) {
 	tracker := status.NewTracker()
 	tracker.Update("a", pb.ChatStatus_CHAT_STATUS_QUESTION, at(10))

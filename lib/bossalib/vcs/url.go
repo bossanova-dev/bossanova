@@ -2,6 +2,7 @@ package vcs
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -175,7 +176,9 @@ func parseOriginURLParts(originURL string) (host string, parts []string) {
 const MaxCanonicalRepoURLPasses = 8
 
 // CanonicalRepoURL iterates NormalizeRepoURL to its fixed point and returns
-// that canonical form, or "" when the input has no one.
+// that canonical form, or "" when the input has no one. GitHub origins are
+// lowercased because their owner and repository names are case insensitive;
+// other hosts retain their case.
 //
 // One pass of NormalizeRepoURL is not a canonical form. It strips ".git"
 // before the trailing slash, so it is not idempotent on inputs it accepts:
@@ -207,6 +210,9 @@ func CanonicalRepoURL(originURL string) string {
 	}
 	for pass := 0; ; pass++ {
 		next := NormalizeRepoURL(canonical)
+		if parsed, err := url.Parse(next); err == nil && IsGitHubHost(parsed.Hostname()) {
+			next = strings.ToLower(next)
+		}
 		if next == canonical {
 			return canonical
 		}
@@ -215,4 +221,14 @@ func CanonicalRepoURL(originURL string) string {
 		}
 		canonical = next
 	}
+}
+
+// IsGitHubHost reports whether host names github.com or one of its subdomains.
+// Host names are case insensitive; a port and trailing dot do not affect identity.
+func IsGitHubHost(host string) bool {
+	if before, _, ok := strings.Cut(host, ":"); ok {
+		host = before
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	return host == "github.com" || strings.HasSuffix(host, ".github.com")
 }

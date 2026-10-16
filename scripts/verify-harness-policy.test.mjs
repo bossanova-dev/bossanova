@@ -15,7 +15,11 @@ import {
   decideVerdict,
   policySurfaceHits,
 } from '../skills-toolbox/verify-gate.mjs'
-import { CONFIG_FILENAME, verifyPolicyFromConfigText } from '../skills-toolbox/skill-config.mjs'
+import {
+  CONFIG_FILENAME,
+  policyMirrorGaps,
+  verifyPolicyFromConfigText,
+} from '../skills-toolbox/skill-config.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const policy = verifyPolicyFromConfigText(
@@ -131,4 +135,12 @@ test('a policy-surface edit mixed with harness edits still parks', () => {
 test('a PR outside the visual paths and the policy surface passes', () => {
   const r = decideVerdict(factsFor([CONTROL_PATH]))
   assert.equal(r.verdict, 'pass')
+})
+
+test('the repo policy has no unsafe legacy mirror gaps', () => {
+  assert.deepEqual(
+    policyMirrorGaps(policy),
+    [],
+    'mirror the category glob into alwaysHumanPaths, or remove the mirror entirely',
+  )
 })

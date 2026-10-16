@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -148,9 +150,12 @@ type pidRolloutCandidate struct {
 }
 
 // resolveInteractiveSessionIDByPIDAt is the testable core of
-// resolveInteractiveSessionIDByPID with the sessions root injected. When the
-// process tree holds more than one rollout open (e.g. a resumed session), it
-// prefers a cwd-matching rollout, then the newest.
+// resolveInteractiveSessionIDByPID with the sessions root injected. Only a
+// rollout whose recorded cwd is workDir can bind: an open fd proves which
+// process holds a file, not that the file is this chat's conversation, and a
+// rollout recorded for another worktree would show one repo's transcript in
+// another repo's chat. When several match (e.g. a resumed session), the newest
+// wins.
 func resolveInteractiveSessionIDByPIDAt(insp processInspector, root, workDir string, panePID int) (id, path string, outcome fdResolutionOutcome) {
 	if insp == nil || panePID <= 0 {
 		return "", "", fdOutcomeTreeNotVisible
@@ -190,7 +195,7 @@ func resolveInteractiveSessionIDByPIDAt(insp processInspector, root, workDir str
 				continue
 			}
 			cand, cok := rolloutCandidate(f, workDir)
-			if !cok {
+			if !cok || (workDir != "" && !cand.cwdMatch) {
 				continue
 			}
 			cands = append(cands, cand)
@@ -207,11 +212,8 @@ func resolveInteractiveSessionIDByPIDAt(insp processInspector, root, workDir str
 		return "", "", fdOutcomeNoRolloutFDOpen
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
-		if cands[i].cwdMatch != cands[j].cwdMatch {
-			return cands[i].cwdMatch // cwd-match first
-		}
 		if !cands[i].modTime.Equal(cands[j].modTime) {
-			return cands[i].modTime.After(cands[j].modTime) // newest next
+			return cands[i].modTime.After(cands[j].modTime) // newest first
 		}
 		return cands[i].path > cands[j].path // stable deterministic tiebreak
 	})
@@ -353,10 +355,23 @@ func openFilesForPID(pid int) ([]string, error) {
 	return openFilesFromLsof(pid)
 }
 
+// processGone reports whether pid no longer exists. The descendant tree is a
+// `ps` snapshot and the open-file probes run one by one after it, so a
+// short-lived child (a tool call's shell, a git invocation at codex startup)
+// routinely exits in between. Its probe then fails although the process holds
+// nothing, and counting that as a probe failure turned a routine race into
+// "rollout fd unreadable".
+func processGone(pid int) bool {
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+}
+
 func openFilesFromProc(pid int) ([]string, error) {
 	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(fdDir)
 	if err != nil {
+		if processGone(pid) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("read %s: %w", fdDir, err)
 	}
 	var files []string
@@ -388,6 +403,9 @@ func openFilesFromLsof(pid int) ([]string, error) {
 		// output at all the probe told us nothing, and saying so is the whole
 		// point of the error result (BOS-1298).
 		if len(out) == 0 {
+			if processGone(pid) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("lsof -p %d: %w", pid, err)
 		}
 	}

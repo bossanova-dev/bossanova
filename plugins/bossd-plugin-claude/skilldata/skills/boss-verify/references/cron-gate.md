@@ -1,7 +1,8 @@
 # Cron gate — the verify job
 
 Read this when scheduling the verify stage (a setup-time concern, not part of a run). One cron job
-covers every open PR whose ticket waits in the review state:
+covers every open PR whose ticket waits in the review state, plus every open PR a cron run opened
+that no ticket names:
 
 - **Schedule:** for example `*/15 * * * *`.
 - **Prompt:** `/boss-verify`.
@@ -13,7 +14,7 @@ if [ ! -d "$BOSS_VERIFY_TOOLBOX" ]; then BOSS_VERIFY_TOOLBOX="$HOME/.codex/skill
 node "$BOSS_VERIFY_TOOLBOX/cron-gates/boss-verify.mjs"
 ```
 
-Append `--batch <n>` (default 3 PRs acted on per run), `--budget-ms <ms>` (default 45000, inside
+Append `--batch <n>` (default 3 judged PRs plus up to 3 verified-head merge retries per run), `--budget-ms <ms>` (default 45000, inside
 the scheduler's 60 s gate timeout) or any shared selection flag (`--label`, `--exclude-label`,
 `--assignee`, `--creator`, `--project` and their `--exclude-` forms) to narrow the scan. Any other
 argument makes the gate exit `1` with a reason.

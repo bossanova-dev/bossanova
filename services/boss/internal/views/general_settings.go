@@ -952,7 +952,7 @@ func (m GeneralSettingsModel) View() tea.View {
 		b.WriteString(styleSubtle.Render("  Rotating MCP token…\n"))
 	}
 	if !editing && m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].Kind == settingsRowKindMCPToken {
-		b.WriteString(actionBarWidth(m.width, []string{"[enter] reveal/hide", "[r] rotate", "[esc] back"}))
+		b.WriteString(actionBarWidth(m.width, []string{"[enter] reveal/hide", "[r]otate", "[esc] back"}))
 	} else if editing {
 		b.WriteString(actionBarWidth(m.width, []string{"[enter] save", "[esc] cancel"}))
 	} else {

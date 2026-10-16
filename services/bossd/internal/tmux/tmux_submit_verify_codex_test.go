@@ -270,8 +270,8 @@ func TestSendRefusesCodexComposerHoldingDraft(t *testing.T) {
 	c := NewClient(WithCommandFactory(fake.factory))
 
 	err := c.sendPlan(context.Background(), "boss-test-sess", stuckComposerPayload, codexSendOpts())
-	if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, errComposerOccupied) {
-		t.Fatalf("err = %v (outcome %v); want %v carrying errComposerOccupied", err, OutcomeOf(err), OutcomeNotSubmitted)
+	if OutcomeOf(err) != OutcomeComposerOccupied || !errors.Is(err, errComposerOccupied) {
+		t.Fatalf("err = %v (outcome %v); want %v carrying errComposerOccupied", err, OutcomeOf(err), OutcomeComposerOccupied)
 	}
 	for _, call := range fake.callsCopy() {
 		if call.subcommand == "send-keys" {

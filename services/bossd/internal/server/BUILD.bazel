@@ -179,6 +179,7 @@ go_test(
         "note_sync_test.go",
         "note_test.go",
         "notify_auth_change_test.go",
+        "operator_merge_test.go",
         "path_test.go",
         "pause_resume_test.go",
         "pprof_test.go",

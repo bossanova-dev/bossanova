@@ -796,6 +796,7 @@ func TestPreErroredOutputInvertsRecolor(t *testing.T) {
 				// Pre-BOS-430 behavior: ORPHANED short-circuited to a fixed
 				// tuple; BLOCKED had no overlay, so it equals the base cascade.
 				wantOld := baseStatus(in)
+				wantIntent := wantOld.Intent
 				if st.state == pb.SessionState_SESSION_STATE_ORPHANED {
 					wantOld = Output{Label: "orphaned", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}
 				}
@@ -810,6 +811,9 @@ func TestPreErroredOutputInvertsRecolor(t *testing.T) {
 				got := PreErroredOutput(in.Session)
 				if got != wantOld {
 					t.Errorf("PreErroredOutput() = %+v, want %+v (served %+v)", got, wantOld, served)
+				}
+				if got := UnderlyingIntent(in.Session); got != wantIntent {
+					t.Errorf("UnderlyingIntent() = %v, want the base intent %v (served %+v)", got, wantIntent, served)
 				}
 			})
 		}

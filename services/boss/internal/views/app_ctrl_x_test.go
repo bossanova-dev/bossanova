@@ -1067,3 +1067,26 @@ func settleView(t *testing.T, a App, key tea.KeyPressMsg) View {
 	}
 	return got.activeView
 }
+
+func TestAppCtrlXHomeFilter(t *testing.T) {
+	for _, applied := range []bool{false, true} {
+		a := NewApp(nil, nil)
+		a.activeView = ViewHome
+		a.home = filteredHome(t)
+		a.home.filter.Activate()
+		a.home.filter.input.SetValue("alpha")
+		if applied {
+			a.home.filter.Commit()
+		}
+		a = applyKey(t, a, ctrlXKey)
+		if a.activeView != ViewHome {
+			t.Fatal("ctrl+x left Home")
+		}
+		if applied && a.home.filter.Engaged() {
+			t.Fatal("ctrl+x did not clear applied query")
+		}
+		if !applied && !a.home.filter.Active() {
+			t.Fatal("ctrl+x dismissed active input")
+		}
+	}
+}

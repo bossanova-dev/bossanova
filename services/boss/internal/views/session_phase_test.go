@@ -96,11 +96,11 @@ func TestPhasePolling(t *testing.T) {
 		t.Errorf("home poll phase %q", got)
 	}
 	m := NewChatPickerModel(c, context.Background(), "s", "")
-	listed := m.listChats()().(chatsListedMsg)
+	listed := m.listChats()().(chatPickerReply).msg.(chatsListedMsg)
 	if listed.daemonPhases["working"] != "reviewing" {
 		t.Errorf("picker list poll lost phase: %v", listed.daemonPhases)
 	}
-	refreshed := m.refreshStatuses()().(chatPickerRefreshMsg)
+	refreshed := m.refreshStatuses()().(chatPickerReply).msg.(chatPickerRefreshMsg)
 	if refreshed.daemonPhases["working"] != "reviewing" {
 		t.Errorf("picker refresh poll lost phase: %v", refreshed.daemonPhases)
 	}

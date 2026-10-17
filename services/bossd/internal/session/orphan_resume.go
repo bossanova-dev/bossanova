@@ -137,7 +137,9 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	// Orphaned released the PR and branch, so another session may have taken
 	// them over since; resuming now would put two live sessions on one PR. Like
 	// the refusal above, this declines without claiming.
-	releaseTarget, ok := lockRevival(ctx, l.sessions, session, l.logger, "orphan-resume sweep")
+	_, releaseTarget, ok := lockRevival(ctx, l.sessions, session, l.logger, "orphan-resume sweep", func(s *models.Session) bool {
+		return s.State == machine.Orphaned && s.BlockedReason != nil && *s.BlockedReason == orphanReason
+	})
 	if !ok {
 		return false
 	}

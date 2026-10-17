@@ -18,12 +18,14 @@ import (
 	"github.com/recurser/bossd/internal/status"
 )
 
-// EvidenceSource serves a session's current-head verify evidence summary and
-// the open checklist items its verify park note recorded on head.
+// EvidenceSource serves a session's current-head verify evidence summary, the
+// open checklist items its verify park note recorded on head, and whether the
+// operator's newest record on head is a legacy send-back.
 // *evidence.Reader satisfies it.
 type EvidenceSource interface {
 	Entry(sessionID string) (evidence.Entry, bool)
 	OpenItems(sessionID, head string) []string
+	SentBack(sessionID, head string) bool
 }
 
 // timelineRotationEventLimit bounds the rotation audit read. A session that
@@ -54,7 +56,7 @@ func (s *Server) GetSessionTimeline(ctx context.Context, req *connect.Request[pb
 // timelineFacts gathers everything buildTimeline reads. Every source is
 // optional: an unwired store contributes nothing rather than failing.
 func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timelineFacts, error) {
-	f := timelineFacts{HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey, IsFactoryRepo: s.attentionFactory(ctx, sess.RepoID)}
+	f := timelineFacts{HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey, IsFactoryRepo: s.attentionFactory(ctx, sess.RepoID), Now: time.Now()}
 	if sess.TrackerID != nil {
 		f.TrackerID = *sess.TrackerID
 	}
@@ -86,6 +88,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 		if entry, ok := s.evidence.Entry(sess.ID); ok && strings.EqualFold(entry.Summary.Head, f.HeadSHA) {
 			f.Evidence = &entry
 		}
+		f.IsSentBack = s.evidence.SentBack(sess.ID, f.HeadSHA)
 	}
 
 	if s.rotationEvents != nil {

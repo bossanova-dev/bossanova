@@ -956,11 +956,15 @@ const (
 	// API version 2026-09-19 it also answers a blocked verify park (any failure,
 	// incomplete or unknown park code), which carries park_codes and never
 	// offers ATTENTION_ACTION_APPROVE; older pins receive ATTENTION_KIND_REVIEW.
+	// Before 2026-09-22 a no-receipt or human-review:unproven code also made a
+	// park blocked; pins older than that still receive it so.
 	AttentionKind_ATTENTION_KIND_FIX AttentionKind = 1
 	// The agent asked a question and is waiting for an answer.
 	AttentionKind_ATTENTION_KIND_QUESTION AttentionKind = 2
 	// The verify stage parked the PR for a person to sign off: every park code
-	// is a policy sign-off code. Pins at API version 2026-09-20 also receive it
+	// only asks a person to look. From 2026-09-22 that includes no-receipt (the
+	// latest commit has not been reviewed) and human-review:unproven (some checks
+	// have no recorded evidence). Pins at API version 2026-09-20 also receive it
 	// for a PR that is open, green and mergeable but that the verify stage has
 	// not passed: that REVIEW carries no park_codes and offers
 	// ATTENTION_ACTION_GITHUB then ATTENTION_ACTION_MERGE. Older pins receive
@@ -2770,8 +2774,16 @@ type Session struct {
 	// Base branch tip the last conflict repair ran against (see
 	// RecordRepairOutcomeRequest.base_sha). Empty for other repairs.
 	LastRepairBaseSha string `protobuf:"bytes,80,opt,name=last_repair_base_sha,json=lastRepairBaseSha,proto3" json:"last_repair_base_sha,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Transport-only: the verify stage's park codes for a
+	// DISPLAY_STATUS_NEEDS_HUMAN session, in the verify gate's report order.
+	// Hydrated on every read path from the PR status, never persisted, empty for
+	// any other session. attention_status names the codes only when no other
+	// attention outranks the park, so this is what lets the 2026-09-22
+	// down-convert restore "blocked" on a Blocked, Orphaned or auth-wedged
+	// session whose park only asks for a sign-off.
+	VerifyParkCodes []string `protobuf:"bytes,81,rep,name=verify_park_codes,json=verifyParkCodes,proto3" json:"verify_park_codes,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -3362,6 +3374,13 @@ func (x *Session) GetLastRepairBaseSha() string {
 		return x.LastRepairBaseSha
 	}
 	return ""
+}
+
+func (x *Session) GetVerifyParkCodes() []string {
+	if x != nil {
+		return x.VerifyParkCodes
+	}
+	return nil
 }
 
 // Attempt represents a fix attempt within a session.
@@ -4522,9 +4541,15 @@ type SessionAttention struct {
 	OpenItems []string `protobuf:"bytes,10,rep,name=open_items,json=openItems,proto3" json:"open_items,omitempty"`
 	// True on an ATTENTION_KIND_MERGE whose current head the verify stage has
 	// not passed. Clients label that row "ready" rather than "merge".
-	IsUnverified  bool `protobuf:"varint,11,opt,name=is_unverified,json=isUnverified,proto3" json:"is_unverified,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsUnverified bool `protobuf:"varint,11,opt,name=is_unverified,json=isUnverified,proto3" json:"is_unverified,omitempty"`
+	// True on an ATTENTION_KIND_FIX whose session's own display state is itself
+	// a failure (a failing or conflicting PR, a blocked run). Clients show the
+	// session's display label on that row rather than "fix", and the sentence
+	// says what failed. It is the rule the boss TUI applies, served so other
+	// clients need not rebuild it.
+	ShouldShowDisplayLabel bool `protobuf:"varint,12,opt,name=should_show_display_label,json=shouldShowDisplayLabel,proto3" json:"should_show_display_label,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *SessionAttention) Reset() {
@@ -4630,6 +4655,13 @@ func (x *SessionAttention) GetOpenItems() []string {
 func (x *SessionAttention) GetIsUnverified() bool {
 	if x != nil {
 		return x.IsUnverified
+	}
+	return false
+}
+
+func (x *SessionAttention) GetShouldShowDisplayLabel() bool {
+	if x != nil {
+		return x.ShouldShowDisplayLabel
 	}
 	return false
 }
@@ -7021,7 +7053,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\r_setup_script\"4\n" +
 	"\fHttpEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\"\xee#\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"\x9a$\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -7115,7 +7147,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15is_ready_over_waiting\x18M \x01(\bR\x12isReadyOverWaiting\x12<\n" +
 	"\tattention\x18N \x01(\v2\x1e.bossanova.v1.SessionAttentionR\tattention\x125\n" +
 	"\x17is_working_over_waiting\x18O \x01(\bR\x14isWorkingOverWaiting\x12/\n" +
-	"\x14last_repair_base_sha\x18P \x01(\tR\x11lastRepairBaseShaB\x13\n" +
+	"\x14last_repair_base_sha\x18P \x01(\tR\x11lastRepairBaseSha\x12*\n" +
+	"\x11verify_park_codes\x18Q \x03(\tR\x0fverifyParkCodesB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -7233,7 +7266,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xba\x03\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xf5\x03\n" +
 	"\x10SessionAttention\x12/\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1b.bossanova.v1.AttentionKindR\x04kind\x12\x1a\n" +
 	"\bsentence\x18\x02 \x01(\tR\bsentence\x127\n" +
@@ -7248,7 +7281,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"open_items\x18\n" +
 	" \x03(\tR\topenItems\x12#\n" +
-	"\ris_unverified\x18\v \x01(\bR\fisUnverified\"\xdf\x02\n" +
+	"\ris_unverified\x18\v \x01(\bR\fisUnverified\x129\n" +
+	"\x19should_show_display_label\x18\f \x01(\bR\x16shouldShowDisplayLabel\"\xdf\x02\n" +
 	"\n" +
 	"MergeBlock\x121\n" +
 	"\x04gate\x18\x01 \x01(\x0e2\x1d.bossanova.v1.MergeBlock.GateR\x04gate\x12\x16\n" +

@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/vcs"
 )
 
 var ErrAgentChatNotFound = errors.New("agent_chat not found")
@@ -178,11 +179,16 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 	return nil
 }
 
+// UpdateTmuxSessionName points the chat at a pane, or at none for nil. A pane
+// means the chat is live again, so it also clears the replaced mark: the wake
+// and attach paths relaunch a reclaimed chat through this write alone, and a
+// live chat must not read as replaced or stay unroutable.
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`,
-		name, agentSessionID,
-	)
+	query := `UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`
+	if name != nil {
+		query = `UPDATE agent_chats SET tmux_session_name = ?, reclaimed_at = NULL, reclaim_reason = NULL WHERE agent_session_id = ?`
+	}
+	_, err := s.db.ExecContext(ctx, query, name, agentSessionID)
 	if err != nil {
 		return fmt.Errorf("update agent_chat tmux_session_name: %w", err)
 	}
@@ -341,16 +347,62 @@ func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSession
 // why, and clears tmux_session_name in the same statement so the chat no
 // longer counts as live. It clears start_error too, because a replaced chat
 // did come up and must not read as a failed start.
+//
+// The same transaction cancels the chat's unfinished callbacks: the reclaim
+// hands the chat's work to its replacement, so a watch it armed must not wake
+// it beside that replacement, even after a relaunch clears the mark
+// (UpdateTmuxSessionName). A merge watch on the session's own PR, its number in
+// the session's repository, survives, because nothing rivals the chat once that
+// PR merges.
 func (s *SQLiteAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID, reason string) error {
-	res, err := s.db.ExecContext(ctx,
+	conn, err := beginImmediate(ctx, s.db, "agent_chat")
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer closeImmediate(ctx, conn, &committed)
+
+	now := sqlutil.TimeNow()
+	res, err := conn.ExecContext(ctx,
 		`UPDATE agent_chats SET reclaimed_at = ?, reclaim_reason = ?, start_error = NULL, tmux_session_name = NULL WHERE agent_session_id = ?`,
-		sqlutil.TimeNow(), strings.ToValidUTF8(reason, "�"), agentSessionID,
+		now, strings.ToValidUTF8(reason, "�"), agentSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("mark agent_chat reclaimed: %w", err)
 	}
-	return requireRowAffected(res, "mark agent_chat reclaimed", agentSessionID)
+	if err := requireRowAffected(res, "mark agent_chat reclaimed", agentSessionID); err != nil {
+		return err
+	}
+	var ownPR sql.NullInt64
+	var origin string
+	err = conn.QueryRowContext(ctx,
+		`SELECT s.pr_number, r.origin_url FROM agent_chats c JOIN sessions s ON s.id = c.session_id JOIN repos r ON r.id = s.repo_id WHERE c.agent_session_id = ?`,
+		agentSessionID,
+	).Scan(&ownPR, &origin)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("get reclaimed agent_chat pr: %w", err)
+	}
+	ownOwner, ownName, _ := strings.Cut(vcs.GitHubNWO(origin), "/")
+	if _, err := conn.ExecContext(ctx,
+		`UPDATE github_callbacks SET state = ?, last_event = ?, updated_at = ?
+		 WHERE target_chat_id = ? AND state IN (?, ?, ?)
+		   AND NOT (trigger_event = ? AND pr_number IS ? AND repo_owner = ? COLLATE NOCASE AND repo_name = ? COLLATE NOCASE)`,
+		string(models.GithubCallbackStateCanceled), ReclaimedCallbackEvent, now,
+		agentSessionID, string(models.GithubCallbackStateActive), string(models.GithubCallbackStateLeased), string(models.GithubCallbackStateTriggered),
+		string(models.GithubCallbackTriggerMerged), ownPR, ownOwner, ownName,
+	); err != nil {
+		return fmt.Errorf("cancel reclaimed agent_chat callbacks: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit agent_chat reclaim: %w", err)
+	}
+	committed = true
+	return nil
 }
+
+// ReclaimedCallbackEvent is the last_event of a callback canceled because
+// automation reclaimed its target chat.
+const ReclaimedCallbackEvent = "chat reclaimed"
 
 // DeleteByAgentSessionID removes a chat AND the durable proxy-token row that
 // pointed at it (BOS-979), in one transaction.

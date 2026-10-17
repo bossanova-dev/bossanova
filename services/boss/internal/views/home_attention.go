@@ -89,7 +89,7 @@ func (h HomeModel) sectionRows(sessions []*pb.Session, i int, sectioned bool) in
 // sectionTitleCell is the styled group title buildTableRows lays out and
 // boardView finds again.
 func (h HomeModel) sectionTitleCell(sessions []*pb.Session, i int) string {
-	return styleStatusInfo.Render(h.sectionTitle(sessions, i))
+	return styleEmphasis.Render(h.sectionTitle(sessions, i))
 }
 
 // boardView is the table with each group's title row redrawn as a rule from
@@ -111,7 +111,7 @@ func (h HomeModel) boardView() string {
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
 		for _, title := range []string{"NEEDS YOU", "IN PROGRESS"} {
-			if !strings.Contains(line, styleStatusInfo.Render(title)) {
+			if !strings.Contains(line, styleEmphasis.Render(title)) {
 				continue
 			}
 			plain := ansi.Strip(line)
@@ -127,9 +127,9 @@ func (h HomeModel) boardView() string {
 func sectionRule(title string, width int) string {
 	side := width - lipgloss.Width(title) - 2
 	if side < 2 {
-		return styleStatusInfo.Render(ansi.Truncate(title, max(0, width), "…"))
+		return styleEmphasis.Render(ansi.Truncate(title, max(0, width), "…"))
 	}
-	return styleStatusMuted.Render(strings.Repeat("─", side/2)) + " " + styleStatusInfo.Render(title) + " " + styleStatusMuted.Render(strings.Repeat("─", side-side/2))
+	return styleStatusMuted.Render(strings.Repeat("─", side/2)) + " " + styleEmphasis.Render(title) + " " + styleStatusMuted.Render(strings.Repeat("─", side-side/2))
 }
 
 func (h HomeModel) sectionTitle(sessions []*pb.Session, i int) string {

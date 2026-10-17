@@ -416,3 +416,171 @@ func TestEvaluator_ClosedOwnerRetiresBeforeProviderError(t *testing.T) {
 		t.Fatal("provider error prevented closed owner retirement")
 	}
 }
+
+// reclaimFixture is the PR 3162 shape: an open session whose build chat armed
+// watches on its PR before repair replaced it with a repair chat.
+func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGithubCallbackStore, *models.AgentChat) {
+	t.Helper()
+	store := newStore(t)
+	pr := 7
+	sessions := &retirementSessions{session: &models.Session{ID: "child", RepoID: "repo", State: machine.FixingChecks, PRNumber: &pr}}
+	build := &models.AgentChat{SessionID: "child", AgentSessionID: "build", Role: models.AgentChatRoleBuild}
+	repair := &models.AgentChat{SessionID: "child", AgentSessionID: "repair", Role: models.AgentChatRoleRepair}
+	chats := &retirementChats{chats: []*models.AgentChat{build, repair}}
+	return NewRetirer(store, chats, sessions, retirementRepos{}, nil, time.Now, zerolog.Nop()), store, build
+}
+
+func TestWorker_ReclaimedChatIsNotRevivedByItsFailureWatch(t *testing.T) {
+	r, store, build := reclaimFixture(t)
+	failed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+	passed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksPassed)
+	triggerActive(t, store, passed.ID, time.Now())
+	reclaimedAt := failed.CreatedAt.Add(time.Second)
+	build.ReclaimedAt = &reclaimedAt
+	triggerActive(t, store, failed.ID, reclaimedAt.Add(17*time.Second))
+
+	deliverer := newCaptureDeliverer(nil)
+	worker := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: deliverer, Gate: r, Logger: zerolog.Nop()})
+	worker.scan(context.Background())
+	worker.scan(context.Background())
+
+	if deliverer.count() != 0 {
+		t.Fatalf("reclaimed build chat woken %d time(s) beside the repair chat", deliverer.count())
+	}
+	for _, cb := range []*models.GithubCallback{failed, passed} {
+		got, err := store.Get(context.Background(), cb.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != models.GithubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "dropped: target chat reclaimed" {
+			t.Fatalf("%s watch = %s/%v, want canceled by the reclaim", cb.Trigger, got.State, got.LastEvent)
+		}
+	}
+}
+
+func TestRetirer_DeliveryVerdictReclaimedChat(t *testing.T) {
+	cases := []struct {
+		name        string
+		trigger     models.GithubCallbackTrigger
+		pr          int
+		reclaimed   bool
+		reclaimedBy time.Duration // reclaim time relative to the watch's creation
+		want        bool
+	}{
+		{"failure watch armed before reclaim", models.GithubCallbackTriggerChecksFailed, 7, true, time.Second, false},
+		{"pass watch armed before reclaim", models.GithubCallbackTriggerChecksPassed, 7, true, time.Second, false},
+		{"reclaimed in the same millisecond", models.GithubCallbackTriggerChecksFailed, 7, true, 0, false},
+		{"own-PR merge wake armed before reclaim", models.GithubCallbackTriggerMerged, 7, true, time.Second, true},
+		{"other-PR merge watch armed before reclaim", models.GithubCallbackTriggerMerged, 8, true, time.Second, false},
+		{"watch armed after reclaim by a revived chat", models.GithubCallbackTriggerChecksFailed, 7, true, -time.Second, true},
+		{"never reclaimed", models.GithubCallbackTriggerChecksFailed, 7, false, 0, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			r, store, build := reclaimFixture(t)
+			cb := retirementWatch(t, store, "build", tt.pr, tt.trigger)
+			if tt.reclaimed {
+				at := cb.CreatedAt.Add(tt.reclaimedBy)
+				build.ReclaimedAt = &at
+			}
+			deliver, reason := r.DeliveryVerdict(context.Background(), cb)
+			if deliver != tt.want || (!deliver && reason == "") {
+				t.Fatalf("verdict = %v/%q, want deliver=%v", deliver, reason, tt.want)
+			}
+		})
+	}
+}
+
+// #3203 finding 4: reclaiming the build chat says nothing about the repair chat
+// that replaced it, so a watch the repair chat armed before the reclaim of the
+// build chat still delivers.
+func TestRetirer_DeliveryVerdictRepairWatchSurvivesBuildReclaim(t *testing.T) {
+	r, store, build := reclaimFixture(t)
+	cb := retirementWatch(t, store, "repair", 7, models.GithubCallbackTriggerChecksFailed)
+	at := cb.CreatedAt.Add(time.Second)
+	build.ReclaimedAt = &at
+	if deliver, reason := r.DeliveryVerdict(context.Background(), cb); !deliver {
+		t.Fatalf("repair chat's own watch dropped by the build chat's reclaim: %q", reason)
+	}
+}
+
+// TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive is PR 3162 with a
+// relaunch in it. Repair replaces build chat B, which still holds a
+// checks_failed watch from before. The operator then messages B, whose relaunch
+// clears the reclaim mark, and CI fails while the repair chat works. The old
+// watch must not wake B beside the repair chat; the repair chat's watch and a
+// watch B armed after its relaunch both deliver.
+func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
+	ctx := context.Background()
+	d := newCallbackDB(t)
+	if _, err := d.Exec(`INSERT INTO repos (id, display_name, local_path, origin_url, worktree_base_dir)
+		VALUES ('repo', 'widgets', '/tmp/widgets', 'git@github.com:Acme/Widgets.git', '/tmp/worktrees')`); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO sessions (id, repo_id, title, worktree_path, branch_name, base_branch, pr_number)
+		VALUES ('child', 'repo', 'PR 3162', '/tmp/worktrees/child', 'fix/child', 'main', 7)`); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	chats := db.NewAgentChatStore(d)
+	store := db.NewGithubCallbackStore(d)
+	for _, chat := range []db.CreateAgentChatParams{
+		{SessionID: "child", AgentSessionID: "build", Title: "Run bs-build", Role: models.AgentChatRoleBuild},
+		{SessionID: "child", AgentSessionID: "repair", Title: "Repair", Role: models.AgentChatRoleRepair},
+	} {
+		if _, err := chats.Create(ctx, chat); err != nil {
+			t.Fatalf("create chat %s: %v", chat.AgentSessionID, err)
+		}
+	}
+	pr := 7
+	sessions := &retirementSessions{session: &models.Session{ID: "child", RepoID: "repo", State: machine.FixingChecks, PRNumber: &pr}}
+	r := NewRetirer(store, chats, sessions, retirementRepos{}, nil, time.Now, zerolog.Nop())
+
+	stale := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+	if err := chats.MarkReclaimed(ctx, "build", "auto-repair replacing idle chat"); err != nil {
+		t.Fatalf("reclaim build chat: %v", err)
+	}
+	repair := retirementWatch(t, store, "repair", 7, models.GithubCallbackTriggerChecksFailed)
+	pane := "boss-child-build"
+	if err := chats.UpdateTmuxSessionName(ctx, "build", &pane); err != nil {
+		t.Fatalf("relaunch build chat: %v", err)
+	}
+	if chat, err := chats.GetByAgentSessionID(ctx, "build"); err != nil || chat.ReclaimedAt != nil {
+		t.Fatalf("relaunch left the reclaim mark: %+v, %v", chat, err)
+	}
+	revived := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+
+	active := models.GithubCallbackStateActive
+	failed := models.GithubCallbackTriggerChecksFailed
+	armed, err := store.List(ctx, db.ListGithubCallbacksFilter{PRNumber: &pr, Trigger: &failed, State: &active})
+	if err != nil {
+		t.Fatalf("list armed watches: %v", err)
+	}
+	for _, cb := range armed {
+		triggerActive(t, store, cb.ID, time.Now())
+	}
+	deliverer := newCaptureDeliverer(nil)
+	worker := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: deliverer, Gate: r, Logger: zerolog.Nop()})
+	worker.scan(ctx)
+	worker.scan(ctx)
+
+	woken := map[string]int{}
+	for _, id := range deliverer.ids {
+		woken[id]++
+	}
+	if woken["build"] != 1 || woken["repair"] != 1 || len(deliverer.ids) != 2 {
+		t.Fatalf("deliveries = %v, want the repair chat once and the relaunched build chat once", deliverer.ids)
+	}
+	want := map[string]models.GithubCallbackState{stale.ID: models.GithubCallbackStateCanceled, repair.ID: models.GithubCallbackStateDelivered, revived.ID: models.GithubCallbackStateDelivered}
+	for id, state := range want {
+		got, err := store.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != state {
+			t.Fatalf("watch %s on %s = %s, want %s", id, got.TargetChatID, got.State, state)
+		}
+	}
+	if got, _ := store.Get(ctx, stale.ID); got.LastEvent == nil || *got.LastEvent != db.ReclaimedCallbackEvent {
+		t.Fatalf("stale watch last_event = %v, want %q", got.LastEvent, db.ReclaimedCallbackEvent)
+	}
+}

@@ -1,6 +1,7 @@
 // Package evidence keeps, per session, the verify evidence summary recorded on
-// the session's current PR head, and the open checklist items the verify park
-// note recorded there. Both come from generic machine-readable lines
+// the session's current PR head, the open checklist items the verify park note
+// recorded there, and whether the operator's newest record on that head is a
+// legacy send-back. All come from generic machine-readable lines
 // (lib/bossalib/evidence) inside PR conversation comments, read in one pass,
 // so bossd never depends on a repo-local marker.
 //
@@ -41,6 +42,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/attention"
 	libevidence "github.com/recurser/bossalib/evidence"
 	"github.com/recurser/bossalib/vcs"
 )
@@ -142,6 +144,9 @@ type headState struct {
 	// openItems is what the park note recorded as keeping the head's PR
 	// checklist open; nil when no note names this head.
 	openItems []string
+	// sentBack is true when the operator's newest record on the head is a
+	// legacy send-back, which verify's merge refuses until an approval.
+	sentBack  bool
 	fetchedAt time.Time
 	// failed is true when the last read of this head could not reach the
 	// comments, so it is retried after the refresh interval.
@@ -282,8 +287,15 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		return
 	}
 
-	entry, openItems, err := r.read(ctx, obs, head)
-	r.store(ctx, obs.SessionID, st, seq, entry, openItems, err)
+	found, err := r.read(ctx, obs, head)
+	r.store(ctx, obs.SessionID, st, seq, found, err)
+}
+
+// headComments is what one read of a head's comments found.
+type headComments struct {
+	entry     *Entry
+	openItems []string
+	sentBack  bool
 }
 
 // schedule marks a read of st's head as started at now and returns its
@@ -301,9 +313,9 @@ func (st *headState) schedule(now time.Time) uint64 {
 // of one head in flight, where an older read finishing last would
 // overwrite the newer result, for good on a head that is not read again. A
 // failed read says nothing about the comments, so it keeps the head's
-// known-good entry and open items; a successful read that finds no usable
-// comment clears them.
-func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq uint64, entry *Entry, openItems []string, err error) {
+// known-good entry, open items and send-back; a successful read that finds no
+// usable comment clears them.
+func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq uint64, found headComments, err error) {
 	r.mu.Lock()
 	cur := r.sessions[sessionID]
 	if cur != st || cur.seq != seq {
@@ -313,13 +325,15 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 	cur.failed = err != nil
 	changed := false
 	if err == nil {
+		entry := found.entry
 		changed = (cur.entry == nil) != (entry == nil)
 		if cur.entry != nil && entry != nil {
 			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
 		}
-		changed = changed || !slices.Equal(cur.openItems, openItems)
+		changed = changed || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
 		cur.entry = entry
-		cur.openItems = openItems
+		cur.openItems = found.openItems
+		cur.sentBack = found.sentBack
 	}
 	onChange := r.onChange
 	r.mu.Unlock()
@@ -352,13 +366,21 @@ func (r *Reader) Retain(live map[string]struct{}) {
 }
 
 // read fetches the comments carrying a machine-readable boss line and returns
-// the newest usable evidence summary (nil when none is usable for head) and the
-// newest usable open-items list. A non-nil error means the comments could not
-// be read at all, which is not evidence that none is usable. A comment is
-// usable only when a trusted author wrote it (vcs.IsTrustedReviewAuthor: anyone
-// can comment on a public PR and copy the marker) and its line parses for head;
-// an unusable newer comment never hides an older usable one.
-func (r *Reader) read(ctx context.Context, obs Observation, head string) (*Entry, []string, error) {
+// the newest usable evidence summary (nil when none is usable for head), the
+// newest usable open-items list, and whether the newest operator record on
+// head is a send-back. Evidence and open items are dated by when their body
+// was last written, since verify edits them in place; an operator record is
+// dated by when it was posted, the comment id breaking a tie, as verify's
+// operatorDecision dates it. A non-nil error means the comments could not be
+// read at all, which is not evidence that none is usable. A comment is usable only
+// when a trusted author wrote it (vcs.IsTrustedReviewAuthor: anyone can
+// comment on a public PR and copy the marker) and its line parses for head; an
+// unusable newer comment never hides an older usable one. An operator record
+// counts, as verify counts it, only from an owner, member or collaborator, and
+// an approval only when it waives known codes. Verify also requires write
+// access, which a comment does not carry, so bossd may honour a send-back
+// verify ignores, and the row then stays in progress.
+func (r *Reader) read(ctx context.Context, obs Observation, head string) (headComments, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.readTimeout)
 	defer cancel()
 	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, libevidence.CommentMarker)
@@ -367,24 +389,57 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (*Entry
 			Str("session_id", obs.SessionID).
 			Int("pr_number", obs.PRNumber).
 			Msg("evidence reader: read PR comments failed; retrying after the refresh interval")
-		return nil, nil, err
+		return headComments{}, err
 	}
 	var (
-		entry     *Entry
-		openItems []string
+		found   headComments
+		decider *vcs.PRComment
 	)
-	for _, c := range comments {
+	for i := range comments {
+		c := &comments[i]
 		if !vcs.IsTrustedReviewAuthor(c.AuthorLogin, c.AuthorAssociation) {
 			continue
 		}
-		if summary, ok := libevidence.Parse(c.Body); entry == nil && ok && sameHead(summary.Head, head) {
-			entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
+		if summary, ok := libevidence.Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {
+			found.entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
 		}
-		if items, ok := libevidence.ParseOpenItems(c.Body); openItems == nil && ok && sameHead(items.Head, head) {
-			openItems = items.Items
+		if items, ok := libevidence.ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
+			found.openItems = items.Items
+		}
+		if rec, ok := libevidence.ParseOperatorRecord(c.Body); ok && sameHead(rec.Head, head) &&
+			vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) && !slices.ContainsFunc(rec.Waives, unknownParkCode) &&
+			(decider == nil || postedAfter(c, decider)) {
+			found.sentBack, decider = rec.IsSendBack, c
 		}
 	}
-	return entry, openItems, nil
+	return found, nil
+}
+
+// postedAfter reports whether a was posted after b, the larger comment id
+// breaking a tie.
+func postedAfter(a, b *vcs.PRComment) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.ID > b.ID
+}
+
+// unknownParkCode reports a code outside verify's closed park-code vocabulary;
+// verify ignores an approval that waives one.
+func unknownParkCode(code string) bool {
+	return !attention.IsReportedParkCode(code)
+}
+
+// SentBack reports whether the operator's newest record on head, when head is
+// the session's current head, is a legacy send-back.
+func (r *Reader) SentBack(sessionID, head string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.sessions[sessionID]
+	return st != nil && sameHead(st.head, head) && st.sentBack
 }
 
 // Get returns the evidence summary recorded on the session's current head.

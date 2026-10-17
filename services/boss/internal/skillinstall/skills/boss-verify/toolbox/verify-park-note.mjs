@@ -1,5 +1,5 @@
 // verify-park-note.mjs — the operator-facing explanation a verify park leaves on its PR: each park
-// code, what it means in plain words, the evidence verify saw for it, and what to do next. Also the
+// code's issue in plain words and the evidence verify saw for it. Also the
 // note a pass leaves listing the PR's `## After merge` items, which nothing gates on.
 //
 // Pure: no subprocess, no filesystem, no `process` reads. verify-gate.mjs `post` gathers the facts
@@ -11,67 +11,99 @@ import { createHash } from 'node:crypto'
 import { checklist, isPostMergeItem, sections } from './merge-eligibility.mjs'
 import { classifyVerifyOutcome } from './skill-extensions.mjs'
 
-// What each park code means and the issue it names. `plain` and `next` mirror the
-// `plain` words and the park sentence of the same code in lib/bossalib/attention/templates.go
-// (knownParkCodes), so the PR comment and the TUI describe a park the same way; keep them in step.
+// The issue each park code names in plain words, the category a person reads it as, and whether it
+// only asks a person to look. They are the `plain` words, the category and the sign-off flag of the
+// same code in lib/bossalib/attention/templates.go (knownParkCodes), so the PR
+// comment and the TUI describe a park the same way. Both sides are tested against
+// lib/bossalib/attention/testdata/park_code_words.json, which the Go table generates.
 export const PARK_CODE_WORDS = Object.freeze({
   'no-receipt': {
-    plain: "no build receipt: built by hand, without the factory's build and review",
-    next: 'Built by hand, no factory review',
+    plain:
+      'the latest commit has not had an automated build and review, or changed after its review',
+    category: 'latest commit not reviewed',
+    signOff: true,
   },
   'repair-exhausted': {
     plain: 'automatic repair gave up on this PR',
-    next: 'Verify is blocked',
+    category: 'repair exhausted',
+    signOff: false,
   },
   'always-human-path': {
     plain: "touches a path that always needs a person's sign-off",
-    next: 'Security change',
+    category: 'security',
+    signOff: true,
   },
   'ledger-open': {
     plain:
       'the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section',
-    next: 'The PR checklist has open items',
+    category: 'open checklist items',
+    signOff: false,
   },
   'extension-failed': {
     plain: 'a verify extension failed to run',
-    next: 'Verify is blocked',
+    category: 'verify extension failed',
+    signOff: false,
   },
   'no-session': {
     plain: 'verify found no session behind this PR',
-    next: 'Verify is blocked',
+    category: 'no session',
+    signOff: false,
   },
   'worktree-diverged': {
     plain: 'the session worktree is off the PR head and holds work the PR lacks',
-    next: 'Verify is blocked',
+    category: 'worktree diverged',
+    signOff: false,
   },
   'worktree-unsynced': {
     plain: 'verify could not move the session worktree to the PR head',
-    next: 'Verify is blocked',
+    category: 'worktree unsynced',
+    signOff: false,
   },
   'human-review:database': {
     plain: 'a database migration for a person to review',
-    next: 'Database migration',
+    category: 'database migration',
+    signOff: true,
   },
   'human-review:security': {
     plain: 'a security-sensitive change for a person to review',
-    next: 'Security change',
+    category: 'security',
+    signOff: true,
   },
   'human-review:ui': {
-    plain: 'a UI change; watch the evidence before it merges',
-    next: 'UI change · evidence video',
+    plain: 'a UI change',
+    category: 'UI change',
+    signOff: true,
   },
   'human-review:unproven': {
     plain: 'some checks have no evidence that they pass',
-    next: 'Some checks have no evidence',
+    category: 'unproven checks',
+    signOff: true,
   },
 })
 
-const UNKNOWN_CODE_WORDS = Object.freeze({
-  plain: 'a park code this version of boss does not know',
-  next: 'Verify is blocked',
+export const UNKNOWN_CODE_WORDS = Object.freeze({
+  plain: 'an issue this version of boss does not recognise',
+  category: 'an issue this version of boss does not recognise',
+  signOff: false,
 })
 
+// The words of a phrase that carry meaning: lower-cased, articles dropped.
+const meaningOf = (phrase) =>
+  phrase
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word && !['a', 'an', 'the'].includes(word))
+    .join(' ')
+
+/**
+ * Whether a code's plain words only repeat its category, ignoring case and articles, so a line
+ * naming the category already says them. lib/bossalib/attention ParkCodeRestatesCategory is the same
+ * rule; both are tested against park_code_words.json.
+ */
+export const restatesCategory = ({ plain, category }) => meaningOf(plain) === meaningOf(category)
+
 const text = (value) => typeof value === 'string' && value.trim() !== ''
+const capitalize = (value) => value.charAt(0).toUpperCase() + value.slice(1)
 const LINE_CAP = 300
 
 // One line of quoted PR or extension text: whitespace collapsed, capped, and unable to end the
@@ -196,7 +228,7 @@ export function extensionFailures(results) {
 /** The evidence lines for one park code. */
 function evidenceFor(code, facts) {
   if (code === 'ledger-open') return ledgerEvidence(facts)
-  if (code === 'no-receipt') return ['This head has no successful `boss/build` status.']
+  if (code === 'no-receipt') return ['No automated build and review has passed on this commit.']
   if (code === 'extension-failed') {
     const failures = extensionFailures(facts.extensionResults)
     if (failures === null)
@@ -229,25 +261,27 @@ const MARKER_RESERVE = 160
 const MORE_RESERVE = 32
 
 // The code lines and as much evidence as fits in what `used` leaves of NOTE_CHAR_LIMIT, in order;
-// each code whose evidence was cut ends with how many lines it lost.
+// each code whose evidence was cut ends with how many lines it lost. A code with no line of its own
+// lists its evidence at the top level.
 function fitEvidence(blocks, used) {
   let room =
     NOTE_CHAR_LIMIT -
     used -
-    blocks.reduce((sum, block) => sum + block.line.length + 1 + MORE_RESERVE, 0)
+    blocks.reduce((sum, block) => sum + (block.line?.length ?? 0) + 1 + MORE_RESERVE, 0)
   const out = []
   for (const { line, evidence } of blocks) {
-    out.push(line)
+    const indent = line ? '  - ' : '- '
+    if (line) out.push(line)
     let kept = 0
     for (const entry of evidence) {
-      if (entry.length + 1 > room) break
-      room -= entry.length + 1
-      out.push(entry)
+      if (indent.length + entry.length + 1 > room) break
+      room -= indent.length + entry.length + 1
+      out.push(`${indent}${entry}`)
       kept++
     }
     if (kept < evidence.length) {
       room = 0
-      out.push(`  - …and ${evidence.length - kept} more.`)
+      out.push(`${indent}…and ${evidence.length - kept} more.`)
     }
   }
   return out
@@ -271,6 +305,18 @@ export function openItemsLine(headSha, items) {
   return `<!-- boss-open-items: ${json} -->`
 }
 
+/**
+ * The machine-readable line naming the park's codes exactly, for readers of the comment that need
+ * them; the note itself names each code by its category. `<` and `>` are escaped so no code can
+ * close the comment early.
+ */
+export function parkCodesLine(codes) {
+  const json = JSON.stringify(codes).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+  return `<!-- boss-park-codes: ${json} -->`
+}
+
+export const PARK_CODES_LINE = /^<!-- boss-park-codes: (\[.*\]) -->$/
+
 export function parkNoteMarker(headSha, digest, ledger = null) {
   return `<!-- boss-park-note head=${headSha} digest=${digest}${ledger ? ` ledger=${ledger}` : ''} -->`
 }
@@ -285,16 +331,18 @@ export const PARK_NOTE_MARKER =
  * `ledger` is the ledgerFingerprint the park was judged on, carried in the marker when known. The
  * digest covers the note and that fingerprint, so an unchanged note is never rewritten.
  */
-export function parkNote({ codes, headSha, pr, facts = {}, ledger = null }) {
+export function parkNote({ codes, headSha, facts = {}, ledger = null }) {
+  const wordsOf = (code) => PARK_CODE_WORDS[code] ?? UNKNOWN_CODE_WORDS
+  const categories = [...new Set(codes.map((code) => wordsOf(code).category))]
   const head = [
-    `**boss-verify parked this PR for a person** on \`${headSha.slice(0, 12)}\`: ${codes.map((c) => `\`${c}\``).join(', ')}.`,
+    `**boss-verify parked this PR for a person** on \`${headSha.slice(0, 12)}\`: ${categories.join(', ')}.`,
     '',
   ]
   const blocks = codes.map((code) => {
-    const words = PARK_CODE_WORDS[code] ?? UNKNOWN_CODE_WORDS
+    const words = wordsOf(code)
     return {
-      line: `- **\`${code}\`**: ${words.plain}. ${words.next}.`,
-      evidence: evidenceFor(code, facts).map((evidence) => `  - ${evidence}`),
+      line: restatesCategory(words) ? null : `- ${capitalize(words.plain)}.`,
+      evidence: evidenceFor(code, facts),
     }
   })
   const tail = ['', ...afterMergeLines(facts.body)]
@@ -304,10 +352,11 @@ export function parkNote({ codes, headSha, pr, facts = {}, ledger = null }) {
       '',
     )
   tail.push(
-    `**Next:** \`boss pr approve ${pr}\` (or approve the PR on GitHub) waives exactly these codes on this head; to change the PR instead, open a chat in its session and push a fix. A new push is judged afresh${codes.includes('ledger-open') ? ', and a fixed ledger is re-judged at the next verify sweep' : ''}.`,
+    `An approval waives exactly what is listed above, on this commit only. A new push is judged afresh${codes.includes('ledger-open') ? ', and a fixed checklist is judged again the next time verify runs' : ''}.`,
   )
   const items = codes.includes('ledger-open') ? openItemsLine(headSha, ledgerEvidence(facts)) : ''
-  if (items) tail.push('', items)
+  tail.push('', parkCodesLine(codes))
+  if (items) tail.push(items)
   const content = [
     ...head,
     ...fitEvidence(blocks, [...head, ...tail].join('\n').length + MARKER_RESERVE),

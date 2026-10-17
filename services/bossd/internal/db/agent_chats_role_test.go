@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
@@ -129,6 +131,55 @@ func TestAgentChatStoreMarkReclaimedIsNotAFailedStart(t *testing.T) {
 	}
 }
 
+// A callback wake or an operator attach relaunches a reclaimed chat by writing
+// its new pane name. PR 3162's build chat was reclaimed at 04:33:24 and woken
+// by a callback 21 seconds later; it rebased and pushed the PR while the chat
+// list still called it replaced.
+func TestAgentChatStoreRevivedChatIsNoLongerReplaced(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	sessionID := seedChatSession(t, db)
+	chats := NewAgentChatStore(db)
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "Run bs-build", Role: models.AgentChatRoleBuild}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := chats.MarkReclaimed(ctx, "agent-1", "auto-repair replacing idle chat"); err != nil {
+		t.Fatalf("mark reclaimed: %v", err)
+	}
+	if err := chats.UpdateTmuxSessionName(ctx, "agent-1", nil); err != nil {
+		t.Fatalf("clear tmux: %v", err)
+	}
+	got, err := chats.GetByAgentSessionID(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ReclaimedAt == nil || got.ReclaimReason == nil {
+		t.Fatalf("clearing the pane pointer erased the replaced mark: reclaimed_at %v reason %v", got.ReclaimedAt, got.ReclaimReason)
+	}
+
+	pane := "boss-x-agent-1"
+	if err := chats.UpdateTmuxSessionName(ctx, "agent-1", &pane); err != nil {
+		t.Fatalf("set tmux: %v", err)
+	}
+	got, err = chats.GetByAgentSessionID(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("get revived: %v", err)
+	}
+	if got.ReclaimedAt != nil || got.ReclaimReason != nil || got.IsRetired() {
+		t.Fatalf("a chat with a live pane reads as replaced: reclaimed_at %v reason %v", got.ReclaimedAt, got.ReclaimReason)
+	}
+	if got.TmuxSessionName == nil || *got.TmuxSessionName != pane {
+		t.Fatalf("tmux_session_name = %v, want %q", got.TmuxSessionName, pane)
+	}
+	routable, err := chats.ListRoutableChats(ctx)
+	if err != nil {
+		t.Fatalf("list routable: %v", err)
+	}
+	if !slices.ContainsFunc(routable, func(c *models.AgentChat) bool { return c.AgentSessionID == "agent-1" }) {
+		t.Error("a revived chat is not routable")
+	}
+}
+
 func TestAgentChatsRoleMigrationBackfillsOnlyCreatorTitles(t *testing.T) {
 	db := dbtest.NewEmpty(t)
 	fsys := os.DirFS(migrationsDir())
@@ -188,5 +239,135 @@ func TestAgentChatsRoleMigrationBackfillsOnlyCreatorTitles(t *testing.T) {
 	}
 	if _, err := db.Exec(insert, "after-down", sessionID, "after-down", "t"); err != nil {
 		t.Fatalf("insert after down: %v", err)
+	}
+}
+
+// Reclaiming a chat cancels every watch it has not finished, whatever stage
+// the watch is at, so a later relaunch that clears the mark cannot revive one.
+// A merge watch on the session's own PR survives, as do watches of other chats
+// and watches already delivered.
+func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	sessionID := seedChatSession(t, db)
+	if _, err := db.Exec(`UPDATE sessions SET pr_number = 7 WHERE id = ?`, sessionID); err != nil {
+		t.Fatalf("set pr number: %v", err)
+	}
+	chats := NewAgentChatStore(db)
+	for _, id := range []string{"build", "repair"} {
+		if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: id, Title: id, Role: models.AgentChatRoleBuild}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	callbacks := NewGithubCallbackStore(db)
+	watch := func(chat string, pr int, trigger models.GithubCallbackTrigger) string {
+		t.Helper()
+		cb, _, err := callbacks.Create(ctx, CreateGithubCallbackParams{TargetChatID: chat, RepoOwner: "test", RepoName: "repo", PRNumber: pr, Trigger: trigger, Message: "watch", IndependentWatch: true})
+		if err != nil {
+			t.Fatalf("create watch: %v", err)
+		}
+		return cb.ID
+	}
+	now := time.Now()
+	active := watch("build", 7, models.GithubCallbackTriggerChecksFailed)
+	triggered := watch("build", 7, models.GithubCallbackTriggerChecksPassed)
+	if _, err := callbacks.TriggerGroup(ctx, triggered, "checks_passed", now); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	leased := watch("build", 7, models.GithubCallbackTriggerReadyForReview)
+	if _, err := callbacks.TriggerGroup(ctx, leased, "ready_for_review", now); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if _, err := callbacks.AcquireLease(ctx, leased, "worker", now, time.Minute); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	delivered := watch("build", 7, models.GithubCallbackTriggerClosed)
+	if _, err := callbacks.TriggerGroup(ctx, delivered, "closed", now); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if _, err := callbacks.AcquireLease(ctx, delivered, "worker", now, time.Minute); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if err := callbacks.MarkDelivered(ctx, delivered, "worker", now); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	ownMerge := watch("build", 7, models.GithubCallbackTriggerMerged)
+	otherMerge := watch("build", 8, models.GithubCallbackTriggerMerged)
+	repair := watch("repair", 7, models.GithubCallbackTriggerChecksFailed)
+
+	if err := chats.MarkReclaimed(ctx, "build", "auto-repair replacing idle chat"); err != nil {
+		t.Fatalf("mark reclaimed: %v", err)
+	}
+	pane := "boss-x-build"
+	if err := chats.UpdateTmuxSessionName(ctx, "build", &pane); err != nil {
+		t.Fatalf("relaunch: %v", err)
+	}
+	for id, want := range map[string]models.GithubCallbackState{
+		active: models.GithubCallbackStateCanceled, triggered: models.GithubCallbackStateCanceled, leased: models.GithubCallbackStateCanceled, otherMerge: models.GithubCallbackStateCanceled,
+		delivered: models.GithubCallbackStateDelivered, ownMerge: models.GithubCallbackStateActive, repair: models.GithubCallbackStateActive,
+	} {
+		got, err := callbacks.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.State != want {
+			t.Errorf("%s watch on %s PR %d = %s, want %s", got.Trigger, got.TargetChatID, got.PRNumber, got.State, want)
+		}
+		if want == models.GithubCallbackStateCanceled && (got.LastEvent == nil || *got.LastEvent != ReclaimedCallbackEvent) {
+			t.Errorf("%s watch last_event = %v, want %q", got.Trigger, got.LastEvent, ReclaimedCallbackEvent)
+		}
+	}
+
+	if err := chats.MarkReclaimed(ctx, "missing", "x"); !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("reclaim of a missing chat = %v, want ErrAgentChatNotFound", err)
+	}
+}
+
+// A reclaim spares only the merge watch on the session's own PR: acme/widgets#7
+// for a session on acme/widgets, whatever case its origin URL spells. A merge watch
+// on other/lib#7 shares the number but not the repository, so it is canceled;
+// otherwise the relaunch that clears the mark would let it wake the chat.
+func TestAgentChatStoreMarkReclaimedSparesOnlyItsOwnRepositorysMerge(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	sessionID := seedChatSession(t, db)
+	if _, err := db.Exec(`UPDATE repos SET origin_url = 'git@github.com:Acme/Widgets.git'`); err != nil {
+		t.Fatalf("set origin: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sessions SET pr_number = 7 WHERE id = ?`, sessionID); err != nil {
+		t.Fatalf("set pr number: %v", err)
+	}
+	chats := NewAgentChatStore(db)
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "build", Title: "build", Role: models.AgentChatRoleBuild}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	callbacks := NewGithubCallbackStore(db)
+	want := map[string]models.GithubCallbackState{}
+	for _, w := range []struct {
+		owner, name string
+		state       models.GithubCallbackState
+	}{
+		{"acme", "widgets", models.GithubCallbackStateActive},
+		{"other", "lib", models.GithubCallbackStateCanceled},
+		{"acme", "lib", models.GithubCallbackStateCanceled},
+		{"other", "widgets", models.GithubCallbackStateCanceled},
+	} {
+		cb, _, err := callbacks.Create(ctx, CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: w.owner, RepoName: w.name, PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "watch", IndependentWatch: true})
+		if err != nil {
+			t.Fatalf("create watch on %s/%s: %v", w.owner, w.name, err)
+		}
+		want[cb.ID] = w.state
+	}
+	if err := chats.MarkReclaimed(ctx, "build", "auto-repair replacing idle chat"); err != nil {
+		t.Fatalf("mark reclaimed: %v", err)
+	}
+	for id, state := range want {
+		got, err := callbacks.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.State != state {
+			t.Errorf("merge watch on %s/%s#%d = %s, want %s", got.RepoOwner, got.RepoName, got.PRNumber, got.State, state)
+		}
 	}
 }

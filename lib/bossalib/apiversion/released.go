@@ -57,6 +57,7 @@ var ReleasedVersions = []Version{
 	"2026-09-18", // V20260918 — NeedsHumanWaitDemotionChange, ResumeAttentionActionsChange, VerifyParkSplitChange and WorkingOverWaitingChange.
 	"2026-09-19", // V20260919 — BlockedParkAttentionChange (a blocked verify park's attention is a FIX, not a REVIEW).
 	"2026-09-20", // V20260920 — UnverifiedMergeAttentionChange, DeadBootstrapAttentionChange and ParkMergeAttentionChange.
+	"2026-09-21", // V20260921 — NoVerifyStageMergeAttentionChange (an unverified green PR is ready to merge).
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

@@ -13,6 +13,11 @@ import (
 )
 
 // ResumeSessionRun resumes the agent in place; ResumeSession controls automation.
+//
+// No dated API bump for refusing a revival onto a PR or branch another live
+// session holds: the RPC is local-only (the remote client refuses it) and the
+// CLI is co-deployed, and the refusal writes nothing.
+// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 func (s *Server) ResumeSessionRun(ctx context.Context, req *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetSessionId())
 	if id == "" {
@@ -23,8 +28,14 @@ func (s *Server) ResumeSessionRun(ctx context.Context, req *connect.Request[pb.R
 		code := connect.CodeInternal
 		if errors.Is(err, sql.ErrNoRows) {
 			code = connect.CodeNotFound
-		} else if errors.Is(err, session.ErrRunNotResumable) {
+		} else if errors.Is(err, session.ErrRunNotResumable) || session.IsDuplicateActiveSessionError(err) {
 			code = connect.CodeFailedPrecondition
+		} else if errors.Is(err, context.Canceled) {
+			// A lock wait times out with DeadlineExceeded, never Canceled, so
+			// Canceled is the caller giving up.
+			code = connect.CodeCanceled
+		} else if errors.Is(err, session.ErrStartPathBusy) || errors.Is(err, session.ErrRunResumeBusy) {
+			code = connect.CodeUnavailable
 		}
 		return nil, connect.NewError(code, fmt.Errorf("resume session run: %w", err))
 	}

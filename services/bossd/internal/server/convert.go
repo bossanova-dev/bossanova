@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -312,9 +313,16 @@ const verifyParkSummaryNoReason = "needs human — parked by the verify stage"
 // The summary names the park codes only: e.VerifyLabel is deliberately not
 // projected here or into MergeBlock yet. The label is cached on DisplayEntry
 // so a later client surface can show it without another PR fetch.
+//
+// It also stamps verify_park_codes on every NEEDS_HUMAN session, including one
+// whose attention outranks the park: there the summary never names the codes,
+// and the 2026-09-22 apiversion down-convert still needs them.
 func HydrateVerifyAttention(p *pb.Session, e *status.DisplayEntry) {
-	if p == nil || p.GetAttentionStatus() != nil ||
-		p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+	if p == nil || p.GetDisplayStatus() != pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN {
+		return
+	}
+	p.VerifyParkCodes = attention.ParkCodes(e.ParkCodes())
+	if p.GetAttentionStatus() != nil {
 		return
 	}
 	summary := verifyParkSummaryNoReason

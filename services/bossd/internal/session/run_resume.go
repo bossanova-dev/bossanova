@@ -92,9 +92,32 @@ func (l *Lifecycle) ResumeDroppedRuns(ctx context.Context) int {
 	return resumed
 }
 
+// ErrRunResumeBusy reports that another resume of the same session is still
+// running.
+var ErrRunResumeBusy = errors.New("another resume of this session is in progress")
+
+// lockRunResume serializes resumes of one session, so a manual and an automatic
+// resume never both relaunch it. The gate is per session: a manual resume
+// waiting on one repo's wedged start-path lock holds up only that session, not
+// the automatic resume of every other one. A caller whose own context ends
+// while it waits gets that context's error, not ErrRunResumeBusy.
+func (l *Lifecycle) lockRunResume(ctx context.Context, sessionID string, wait time.Duration) (release func(), err error) {
+	release, _, err = l.runResumeGates.Acquire(ctx, sessionID, wait)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %w", ErrRunResumeBusy, err)
+	}
+	return release, nil
+}
+
 func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) bool {
-	l.runResumeMu.Lock()
-	defer l.runResumeMu.Unlock()
+	release, err := l.lockRunResume(ctx, s.ID, RevivalLockTimeout)
+	if err != nil {
+		return false
+	}
+	defer release()
 	current, err := l.sessions.Get(ctx, s.ID)
 	if err != nil || !CanResumeSessionRun(current) {
 		return false
@@ -239,8 +262,11 @@ func resumePolicyAttempts(rows []*models.ResumeAttempt) []resumepolicy.Attempt {
 }
 
 func (l *Lifecycle) ResumeSessionRun(ctx context.Context, id string) (*models.Session, error) {
-	l.runResumeMu.Lock()
-	defer l.runResumeMu.Unlock()
+	unlock, err := l.lockRunResume(ctx, id, StartPathLockTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	s, err := l.sessions.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -255,6 +281,13 @@ func (l *Lifecycle) ResumeSessionRun(ctx context.Context, id string) (*models.Se
 	if l.hasActiveOtherChat(ctx, s, chats) {
 		return nil, ErrRunNotResumable
 	}
+	// Refuse before stopping or spawning anything; relaunchDroppedRun checks
+	// again, under the lock, as it commits.
+	release, err := l.lockRunRevival(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	release()
 	// A manual retry is immediate and gets a fresh automatic budget.
 	if l.runResumeStore != nil {
 		if _, err = l.runResumeStore.DeleteForRun(ctx, id, RunResumeKey(s, chats)); err != nil {
@@ -332,7 +365,13 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 		l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
 		return nil, ErrRunNotResumable
 	}
+	release, err := l.lockRunRevival(ctx, s)
+	if err != nil {
+		l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
+		return nil, err
+	}
 	updated, err := committer.CommitRunResume(ctx, s.ID, int(s.State), s.AgentSessionID, newID)
+	release()
 	if err != nil {
 		l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
 		return nil, err
@@ -342,6 +381,26 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 	}
 	l.rearmCompletionForRotatedRun(s.ID, newID, spawn)
 	return updated, nil
+}
+
+// lockRunRevival takes the start-path lock for a run resume that would bring a
+// Blocked or Orphaned session back to life, and refuses, naming the holder,
+// when another live session now holds its PR or branch. A session already in
+// a live state holds its own target, so it takes no lock.
+func (l *Lifecycle) lockRunRevival(ctx context.Context, s *models.Session) (release func(), err error) {
+	if StateBlocksDuplicateTarget(s.State) {
+		return func() {}, nil
+	}
+	_, release, err = AcquireRevival(ctx, l.sessions, s, StartPathLockTimeout, func(fresh *models.Session) bool {
+		return fresh.State == s.State
+	})
+	if errors.Is(err, ErrRevivalStale) {
+		return nil, fmt.Errorf("%w: %w", ErrRunNotResumable, err)
+	}
+	if err != nil {
+		return nil, RevivalRefusal(err)
+	}
+	return release, nil
 }
 
 func stringPtrPtr(s string) **string { p := &s; return &p }

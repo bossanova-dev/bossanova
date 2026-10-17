@@ -266,8 +266,8 @@ const VerifyingLabel = "verifying"
 const NeedsHumanLabel = "needs human"
 
 // NeedsSignOffLabel is the PR-derived label for a verify park whose codes are
-// all policy codes (attention.IsSignOffPark): verify passed the work and policy
-// asks a person to sign it off. WARNING, no spinner: nothing is running.
+// all sign-off codes (attention.IsSignOffPark): nothing is wrong, a person only
+// needs to look. WARNING, no spinner: nothing is running.
 const NeedsSignOffLabel = "needs sign-off"
 
 // BlockedLabel is the PR-derived label for a verify park with any failure or
@@ -506,7 +506,7 @@ func PreErroredOutput(sess *pb.Session) Output {
 	case pb.SessionState_SESSION_STATE_BLOCKED:
 		return Output{
 			Label:   served.Label,
-			Intent:  preErroredBlockedIntent(sess, served.Label, served.Intent),
+			Intent:  preErroredBlockedIntent(sess, nil, served.Label, served.Intent),
 			Spinner: served.Spinner,
 		}
 	default:
@@ -515,15 +515,26 @@ func PreErroredOutput(sess *pb.Session) Output {
 	}
 }
 
+// FixShowsLabel reports whether a FIX row shows sess's display label rather
+// than "fix". Only a state that is itself a failure (⨯ failing, ⨯ conflict,
+// blocked) is what needs fixing; any other state reads "fix" and the
+// attention's sentence says what failed. The errored recolor paints every
+// blocked or orphaned session DANGER, so this reads the underlying intent.
+func FixShowsLabel(sess *pb.Session) bool {
+	return sess.GetDisplayLabel() != "" && UnderlyingIntent(sess) == pb.DisplayIntent_DISPLAY_INTENT_DANGER
+}
+
 // UnderlyingIntent returns the intent of sess's own display state, without the
 // errored-recolor overlay Compute paints over an orphaned or blocked session.
 // A failure (⨯ failing, ⨯ conflict, blocked) still reads DANGER; an errored
-// session's idle, waiting or passing state reads its base intent.
+// session's idle, waiting, passing or sign-off park state reads its base
+// intent. A park's label depends on its codes, which bossd serves on
+// verify_park_codes.
 func UnderlyingIntent(sess *pb.Session) pb.DisplayIntent {
 	if !erroredSession(sess) || sess.GetDisplayLabel() == "" {
 		return sess.GetDisplayIntent()
 	}
-	return preErroredBlockedIntent(sess, sess.GetDisplayLabel(), sess.GetDisplayIntent())
+	return preErroredBlockedIntent(sess, sess.GetVerifyParkCodes(), sess.GetDisplayLabel(), sess.GetDisplayIntent())
 }
 
 // preErroredBlockedIntent returns the base (pre-recolor) intent baseStatus would
@@ -534,8 +545,10 @@ func UnderlyingIntent(sess *pb.Session) pb.DisplayIntent {
 // whose base intent is already DANGER (⨯ failing/conflict/rejected, a
 // prNeedsFix "working", a failing "checking") falls through to servedIntent —
 // the recolor was a no-op there, so the served DANGER is already correct.
-func preErroredBlockedIntent(sess *pb.Session, servedLabel string, servedIntent pb.DisplayIntent) pb.DisplayIntent {
-	if out, ok := prOutput(sess, nil); ok && out.Label == servedLabel {
+// parkCodes are the verify park's codes; PreErroredOutput passes none, so its
+// answer for older pins stays what it was.
+func preErroredBlockedIntent(sess *pb.Session, parkCodes []string, servedLabel string, servedIntent pb.DisplayIntent) pb.DisplayIntent {
+	if out, ok := prOutput(sess, parkCodes); ok && out.Label == servedLabel {
 		return out.Intent
 	}
 	if out, ok := workflowOutput(sess); ok && out.Label == servedLabel {

@@ -15,6 +15,7 @@ go_library(
     importpath = "github.com/recurser/bossalib/apiversion",
     visibility = ["//visibility:public"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
@@ -22,16 +23,19 @@ go_library(
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
 go_test(
     name = "apiversion_test",
     srcs = [
+        "attention_since_test.go",
         "blocked_park_attention_test.go",
         "changelogversion_test.go",
         "dead_bootstrap_attention_test.go",
         "export_test.go",
+        "factory_review_park_sentence_test.go",
         "interceptor_test.go",
         "no_verify_stage_merge_attention_test.go",
         "park_merge_attention_test.go",
@@ -43,6 +47,8 @@ go_test(
         "ready_test.go",
         "released_test.go",
         "resume_actions_test.go",
+        "review_only_park_pins_test.go",
+        "review_only_park_test.go",
         "session_attention_change_test.go",
         "session_list_rank_order_test.go",
         "superseded_credential_class_test.go",
@@ -52,6 +58,7 @@ go_test(
         "waiting_demotion_test.go",
         "working_over_waiting_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":apiversion"],
     # keep: webversion_test.go reads services/web/src/api.ts and
     # openapiversion_test.go reads services/docs/openapi/*.yaml; both escape the

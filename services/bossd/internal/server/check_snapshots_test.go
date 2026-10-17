@@ -46,6 +46,25 @@ func (f *fakeCheckSnapshotStore) ListBySessionHead(_ context.Context, sessionID,
 	return out, nil
 }
 
+// EachBySessionHeadNewestFirst serves ListBySessionHead newest first, without
+// the checks unless withRawJSON, as the SQLite store does.
+func (f *fakeCheckSnapshotStore) EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(db.CheckSnapshot) bool) error {
+	snaps, err := f.ListBySessionHead(ctx, sessionID, headSHA)
+	if err != nil {
+		return err
+	}
+	for i := len(snaps) - 1; i >= 0; i-- {
+		snap := snaps[i]
+		if !withRawJSON {
+			snap.RawJSON = ""
+		}
+		if !visit(snap) {
+			break
+		}
+	}
+	return nil
+}
+
 func TestListCheckSnapshotsRequiresSessionID(t *testing.T) {
 	srv := &Server{checkSnapshots: &fakeCheckSnapshotStore{}}
 	_, err := srv.ListCheckSnapshots(context.Background(), connect.NewRequest(&bossanovav1.ListCheckSnapshotsRequest{

@@ -37,9 +37,9 @@ func TestCLI_PrApprove_RunsOnTheDaemon(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if want := "Approved #42: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-		"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-		"Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh.\n"; res.Stdout != want {
+	if want := "Approved #42: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+		"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+		"Approving overrode open checklist items. A new push is judged afresh.\n"; res.Stdout != want {
 		t.Fatalf("stdout = %q, want %q", res.Stdout, want)
 	}
 	calls := h.Daemon.ApproveSessionPRCalls()

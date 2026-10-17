@@ -9,7 +9,9 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -567,6 +569,28 @@ type RefMsg struct {
 // the unverified REVIEW on a merge-ready PR nothing verified. Its rows are
 // MERGEs carrying is_unverified; the REVIEWs it writes are exactly the
 // rows UnverifiedMergeAttentionChange turns back into MERGEs for older pins.
+//
+// FactoryReviewParkSentenceChange (introduced at V20260922), which restores the
+// no-receipt park sentence "Built by hand, no factory review". It runs before
+// every older change, so ParkMergeAttentionChange then maps that sentence on
+// for pins older than V20260920 exactly as it did before. Its rows carry park
+// codes, which NoVerifyStageMergeAttentionChange never rewrites.
+//
+// ReviewOnlyParkChange (also V20260922), which restores the blocked answer and
+// the "blocked" display composite on a park whose no-receipt or
+// human-review:unproven code now only asks for a sign-off. It is registered
+// last so it runs first: the no-receipt sentence it restores is the V20260922
+// one, which FactoryReviewParkSentenceChange then maps back, and every older
+// change sees the blocked FIX it was written against.
+//
+// VerifiedNotMergedChange (also V20260922), which answers a factory repo's PR
+// that verify passed and left unmerged in progress again. Its rows are MERGEs
+// without park codes or is_unverified, which no older change rewrites.
+//
+// ParkSinceChange (also V20260922), which dates a verify park's attention from
+// the session's state again. It touches only the since of rows carrying park
+// codes, which no other change reads.
+//
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -631,6 +655,10 @@ func ProductionChanges() *Changes {
 		DeadBootstrapAttentionChange{},
 		ParkMergeAttentionChange{},
 		NoVerifyStageMergeAttentionChange{},
+		FactoryReviewParkSentenceChange{},
+		ReviewOnlyParkChange{},
+		VerifiedNotMergedChange{},
+		ParkSinceChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3376,6 +3404,233 @@ func downconvertNoVerifyStageMergeAttentionSession(s *pb.Session) *pb.Session {
 // REVIEW on every session-bearing unary response and is a no-op elsewhere.
 func (NoVerifyStageMergeAttentionChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertNoVerifyStageMergeAttentionSession)
+}
+
+// FactoryReviewParkSentenceChange is the production VersionChange introduced
+// at V20260922.
+//
+// At V20260922 a no-receipt verify park reads "No review of the latest
+// commit". The park fires when the PR head has no successful boss/build
+// status. A head an agent built in an ordinary chat lacks one, and so does a
+// reviewed head that a later rebase replaced, so the old "Built by hand, no
+// factory review" was false for both. Older pins get the old sentence back,
+// and ParkMergeAttentionChange then extends it for pins older than V20260920.
+// Only the sentence changes; kind, actions and park codes pass through.
+type FactoryReviewParkSentenceChange struct{}
+
+// Version implements VersionChange.
+func (FactoryReviewParkSentenceChange) Version() Version { return V20260922 }
+
+// previousV20260922ParkSentences maps each V20260922 park sentence that
+// changed back to the one V20260921 served.
+var previousV20260922ParkSentences = map[string]string{
+	noReceiptParkSentence: "Built by hand, no factory review",
+}
+
+// noReceiptParkSentence and unprovenParkSentence are the V20260922 sentences
+// of a park decided by no-receipt and human-review:unproven.
+const (
+	noReceiptParkSentence = "No review of the latest commit"
+	unprovenParkSentence  = "Some checks have no evidence"
+)
+
+// ReviewOnlyParkChange is the production VersionChange introduced at
+// V20260922.
+//
+// At V20260922 the no-receipt and human-review:unproven park codes only ask a
+// person to look, like the UI, security and database codes: nothing is wrong
+// with the PR, but its latest commit has not been reviewed or some checks have
+// no recorded proof. A park whose codes are all such codes is a REVIEW offering
+// MERGE and reads "needs sign-off" / WARNING, where it was a blocked FIX and
+// read "blocked" / DANGER. A park that still has a failure code stays blocked,
+// but these two codes no longer decide its sentence.
+//
+// Before V20260922 either code made the park blocked and decided its sentence:
+// human-review:unproven first, as the only failing human-review code with a
+// sentence, then no-receipt, the first failing code in report order with one.
+// Both sentences are fixed strings, so older pins get the blocked FIX, its
+// sentence and its actions without MERGE back exactly. The display leg restores
+// "blocked" / DANGER on a NEEDS_HUMAN row labelled "needs sign-off" whose park
+// codes include either code. It reads them from verify_park_codes, which bossd
+// stamps on every such row, including one whose Blocked, Orphaned or
+// auth-wedge attention outranks the park and so carries no codes elsewhere.
+type ReviewOnlyParkChange struct{}
+
+// Version implements VersionChange.
+func (ReviewOnlyParkChange) Version() Version { return V20260922 }
+
+// previousV20260922DecidingSentence returns the sentence the park's codes were
+// answered with before V20260922, when no-receipt or human-review:unproven
+// decided it, and false when neither code is present.
+func previousV20260922DecidingSentence(codes []string) (string, bool) {
+	switch {
+	case slices.Contains(codes, "human-review:unproven"):
+		return unprovenParkSentence, true
+	case slices.Contains(codes, "no-receipt"):
+		return noReceiptParkSentence, true
+	default:
+		return "", false
+	}
+}
+
+// downconvertReviewOnlyParkSession clones before writing because bosso's
+// registry path caches these pointers. Only a park row carrying one of the two
+// codes allocates.
+func downconvertReviewOnlyParkSession(s *pb.Session) *pb.Session {
+	sentence, attentionChanged := previousV20260922DecidingSentence(s.GetAttention().GetParkCodes())
+	_, parkWasBlocked := previousV20260922DecidingSentence(s.GetVerifyParkCodes())
+	displayChanged := parkWasBlocked && s.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
+		s.GetDisplayLabel() == displaystatus.NeedsSignOffLabel
+	if !attentionChanged && !displayChanged {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	if attentionChanged {
+		actions := make([]pb.AttentionAction, 0, len(cloned.Attention.Actions))
+		for _, action := range cloned.Attention.Actions {
+			if action != pb.AttentionAction_ATTENTION_ACTION_MERGE {
+				actions = append(actions, action)
+			}
+		}
+		cloned.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_FIX
+		cloned.Attention.Sentence = sentence
+		cloned.Attention.Actions = actions
+	}
+	if displayChanged {
+		cloned.DisplayLabel = displaystatus.BlockedLabel
+		cloned.DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		cloned.DisplaySpinner = false
+	}
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the blocked park on
+// every session-bearing unary response and is a no-op elsewhere.
+func (ReviewOnlyParkChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertReviewOnlyParkSession)
+}
+
+// downconvertFactoryReviewParkSentenceSession clones before writing because
+// bosso's registry path caches these pointers. Only a park row whose sentence
+// changed allocates.
+func downconvertFactoryReviewParkSentenceSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	previous, ok := previousV20260922ParkSentences[a.GetSentence()]
+	if !ok || len(a.GetParkCodes()) == 0 {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.Sentence = previous
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the V20260921 park
+// sentence on every session-bearing unary response and is a no-op elsewhere.
+func (FactoryReviewParkSentenceChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertFactoryReviewParkSentenceSession)
+}
+
+// stateSince is the attention since bossd served before V20260922 for a row
+// whose answer did not come from a fault or a question: when the session's
+// state began, or its last update when no state time is recorded.
+func stateSince(s *pb.Session) *timestamppb.Timestamp {
+	if s.GetStateEnteredAt() != nil {
+		return timestamppb.New(s.GetStateEnteredAt().AsTime())
+	}
+	if s.GetUpdatedAt() == nil || s.GetUpdatedAt().AsTime().IsZero() {
+		return nil
+	}
+	return timestamppb.New(s.GetUpdatedAt().AsTime())
+}
+
+// VerifiedNotMergedChange is the production VersionChange introduced at
+// V20260922.
+//
+// At V20260922 a repo's PR that the verify stage passed, that is green and
+// mergeable, and that verify left unmerged for attention.VerifyMergeGrace is
+// ATTENTION_KIND_MERGE ("Verified but not merged", MERGE then GITHUB), dated
+// from when the head was first seen verified. Before, a repo with an enabled
+// verify job kept every green PR in progress, expecting verify to merge it, so
+// a PR whose merge failed sat there with nothing asking the operator to merge
+// it. The MERGE carries the progress label the session showed before, so older
+// pins get the in-progress answer back exactly: no sentence, no actions but
+// TRACKER, that label, and the session's state time.
+type VerifiedNotMergedChange struct{}
+
+// Version implements VersionChange.
+func (VerifiedNotMergedChange) Version() Version { return V20260922 }
+
+// downconvertVerifiedNotMergedSession clones before writing because bosso's
+// registry path caches these pointers. Only a verified-not-merged row
+// allocates.
+func downconvertVerifiedNotMergedSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_MERGE || a.GetSentence() != attention.VerifiedNotMergedSentence {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	var actions []pb.AttentionAction
+	if slices.Contains(cloned.Attention.Actions, pb.AttentionAction_ATTENTION_ACTION_TRACKER) {
+		actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_TRACKER}
+	}
+	cloned.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+	cloned.Attention.Sentence = ""
+	cloned.Attention.Actions = actions
+	cloned.Attention.Since = stateSince(s)
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the in-progress
+// answer on every session-bearing unary response and is a no-op elsewhere.
+func (VerifiedNotMergedChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertVerifiedNotMergedSession)
+}
+
+// ParkSinceChange is the production VersionChange introduced at V20260922.
+//
+// At V20260922 a verify park's attention (a REVIEW or a blocked FIX carrying
+// park codes) is dated from when the park began: the first poll of the newest
+// unbroken run that saw the head parked, the time the session timeline gives
+// its park step. It was dated from when the session's state began, which can
+// be hours older than the park, so the session header read "failed 7h ago" for
+// a park minutes old. Older pins get the state time back.
+type ParkSinceChange struct{}
+
+// Version implements VersionChange.
+func (ParkSinceChange) Version() Version { return V20260922 }
+
+// downconvertParkSinceSession clones before writing because bosso's registry
+// path caches these pointers. Only a park row whose since moved allocates.
+func downconvertParkSinceSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if len(a.GetParkCodes()) == 0 {
+		return s
+	}
+	since := stateSince(s)
+	if proto.Equal(since, a.GetSince()) {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.Since = since
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the state-dated park
+// on every session-bearing unary response and is a no-op elsewhere.
+func (ParkSinceChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertParkSinceSession)
 }
 
 // DeadBootstrapAttentionChange is the production VersionChange introduced at

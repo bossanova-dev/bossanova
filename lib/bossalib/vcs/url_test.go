@@ -96,11 +96,19 @@ func TestNormalizeRepoURL(t *testing.T) {
 		{"nested namespace https", "https://gitlab.example/group/subgroup/repo-a.git", "https://gitlab.example/group/subgroup/repo-a"},
 		{"nested namespace ssh", "git@gitlab.example:group/subgroup/repo-a.git", "https://gitlab.example/group/subgroup/repo-a"},
 
+		// A GitHub transport port is not part of the repository's address;
+		// another host's port is kept.
+		{"github ssh port", "ssh://git@github.com:22/acme/widgets.git", "https://github.com/acme/widgets"},
+		{"github https port", "https://github.com:443/acme/widgets", "https://github.com/acme/widgets"},
+		{"self-hosted https port", "https://git.company.com:8443/team/service", "https://git.company.com:8443/team/service"},
+
 		// Unparseable inputs return "" so callers can filter.
 		{"empty", "", ""},
 		{"bare name", "foobar", ""},
 		{"trailing colon no path", "git@host:", ""},
 		{"leading colon not SSH", ":foo", ""},
+		{"non-decimal port", "https://github.com:abc/acme/widgets", ""},
+		{"query hides the real host", "https://evil.com?@github.com/acme/widgets", ""},
 	}
 
 	for _, tt := range tests {
@@ -144,7 +152,12 @@ func TestCanonicalRepoURL(t *testing.T) {
 		want      string
 	}{
 		{"github mixed case", "git@GitHub.com:Acme/Alpha.git", "https://github.com/acme/alpha"},
-		{"github subdomain port", "https://ssh.github.com:443/Acme/Alpha", "https://ssh.github.com:443/acme/alpha"},
+		{"github ssh-over-443 host", "https://ssh.github.com:443/Acme/Alpha", "https://github.com/acme/alpha"},
+		{"github ssh-over-443 ssh url", "ssh://git@SSH.GitHub.com:443/acme/widgets.git", "https://github.com/acme/widgets"},
+		{"github other subdomain keeps host", "https://api.github.com:443/Acme/Alpha", "https://api.github.com/acme/alpha"},
+		{"github ssh port", "ssh://git@github.com:22/acme/widgets.git", "https://github.com/acme/widgets"},
+		{"github ssh port mixed case", "ssh://git@GitHub.com:22/Acme/Widgets.git", "https://github.com/acme/widgets"},
+		{"github git+ssh port", "git+ssh://git@github.com:22/acme/widgets.git", "https://github.com/acme/widgets"},
 		{"non github case", "https://gitlab.example/Group/Repo", "https://gitlab.example/Group/Repo"},
 		// Spellings NormalizeRepoURL already settles in a single pass.
 		{"github ssh shorthand", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
@@ -209,6 +222,111 @@ func TestCanonicalRepoURL_IsANormalizeFixedPoint(t *testing.T) {
 	}
 }
 
+// bossd publishes NormalizeRepoURL in its repo snapshot and bosso keys
+// webhook routing, triggers and organization mappings on it and on
+// CanonicalRepoURL, so a parser change that moves any of these re-keys a
+// repository. Every row up to the self-hosted ports is what the previous parser
+// produced. The leading-slash rows are git's absolute-path spelling: the
+// GitHub ones key like their slash-less form, and the self-hosted one replaced
+// the previous parser's malformed "https://myserver:/srv/...". The one-letter
+// alias rows are what the previous parser produced, the bracketed IPv6 scp row
+// replaced its malformed "https://[2001/db8::1]:group/proj", and the
+// ssh.github.com rows pin the alias's case and trailing-dot tolerance.
+func TestRepoURLRoutingKeysAreStable(t *testing.T) {
+	for _, tt := range []struct {
+		origin, normalized, canonical string
+	}{
+		{"git@github.com:owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"git@GitHub.com:Acme/Alpha.git", "https://GitHub.com/Acme/Alpha", "https://github.com/acme/alpha"},
+		{"https://github.com/owner/repo", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"https://github.com/owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"https://github.com/owner/repo/", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"https://github.com/owner/repo.git/", "https://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"https://GitHub.com/Acme/Alpha", "https://GitHub.com/Acme/Alpha", "https://github.com/acme/alpha"},
+		{"https://user:token@github.com/owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"ssh://git@github.com/owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"git://github.com/owner/repo.git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"git@gitlab.com:group/subgroup/repo.git", "https://gitlab.com/group/subgroup/repo", "https://gitlab.com/group/subgroup/repo"},
+		{"https://gitlab.example/Group/Sub/Repo.git", "https://gitlab.example/Group/Sub/Repo", "https://gitlab.example/Group/Sub/Repo"},
+		{"git@git.company.com:team/service.git", "https://git.company.com/team/service", "https://git.company.com/team/service"},
+		{"http://git.internal/team/service", "https://git.internal/team/service", "https://git.internal/team/service"},
+		{"https://git.company.com:8443/team/service.git", "https://git.company.com:8443/team/service", "https://git.company.com:8443/team/service"},
+		{"ssh://git@git.company.com:2222/team/service.git", "https://git.company.com:2222/team/service", "https://git.company.com:2222/team/service"},
+		{"git@github.com:/o/r.git", "https://github.com/o/r", "https://github.com/o/r"},
+		{"ssh://git@github.com:/o/r.git", "https://github.com/o/r", "https://github.com/o/r"},
+		{"git@myserver:/srv/git/team/repo.git", "https://myserver/srv/git/team/repo", "https://myserver/srv/git/team/repo"},
+		{"a:team/widgets.git", "https://a/team/widgets", "https://a/team/widgets"},
+		{"git@a:team/widgets.git", "https://a/team/widgets", "https://a/team/widgets"},
+		{"git@[2001:db8::1]:group/proj.git", "https://[2001:db8::1]/group/proj", "https://[2001:db8::1]/group/proj"},
+		{"[2001:db8::1]:group/proj.git", "https://[2001:db8::1]/group/proj", "https://[2001:db8::1]/group/proj"},
+		{"ssh://git@[2001:db8::1]/group/proj.git", "https://[2001:db8::1]/group/proj", "https://[2001:db8::1]/group/proj"},
+		{"ssh://git@SSH.GitHub.com:443/acme/widgets.git", "https://github.com/acme/widgets", "https://github.com/acme/widgets"},
+		{"ssh://git@ssh.github.com.:443/acme/widgets.git", "https://github.com/acme/widgets", "https://github.com/acme/widgets"},
+		{"https://SSH.GitHub.com./acme/widgets", "https://github.com/acme/widgets", "https://github.com/acme/widgets"},
+	} {
+		t.Run(tt.origin, func(t *testing.T) {
+			if got := NormalizeRepoURL(tt.origin); got != tt.normalized {
+				t.Errorf("NormalizeRepoURL(%q) = %q, want %q", tt.origin, got, tt.normalized)
+			}
+			if got := CanonicalRepoURL(tt.origin); got != tt.canonical {
+				t.Errorf("CanonicalRepoURL(%q) = %q, want %q", tt.origin, got, tt.canonical)
+			}
+		})
+	}
+}
+
+// git reads "host:/path" as scp-like with an absolute path, so its path is
+// taken literally, as the slash-less form's is, and never URL-parsed.
+func TestParseRemote_SCPLikeAbsolutePathIsSCPLike(t *testing.T) {
+	abs, okAbs := parseRemote("git@myserver:/srv/my repo#1.git")
+	rel, okRel := parseRemote("git@myserver:srv/my repo#1.git")
+	if !okAbs || !okRel || abs != rel {
+		t.Fatalf("parseRemote absolute = %+v (%v), relative = %+v (%v), want equal", abs, okAbs, rel, okRel)
+	}
+}
+
+// A routing key keeps the path's percent-encoding: decoding it would collapse
+// "a%2Fb" into two segments and let a raw space into the key. The other rows
+// pin what the parser does with spellings the previous parser keyed
+// differently or not at all.
+func TestCanonicalRepoURL_PathEncodingAndSpelling(t *testing.T) {
+	for _, tt := range []struct {
+		origin, want string
+	}{
+		{"https://git.example/group/my%20repo.git", "https://git.example/group/my%20repo"},
+		{"https://git.example/group/my repo.git", "https://git.example/group/my%20repo"},
+		{"git@git.example:group/my repo.git", "https://git.example/group/my%20repo"},
+		{"https://git.example/group/a%2Fb.git", "https://git.example/group/a%2Fb"},
+		{"https://git.example/group/bad%zz.git", ""},
+		{"https://github.com/acme/widgets?x=1", "https://github.com/acme/widgets"},
+		{"https://github.com/acme/widgets#frag", "https://github.com/acme/widgets"},
+		{"HTTPS://github.com/acme/widgets", "https://github.com/acme/widgets"},
+		{"SSH://git@github.com/acme/widgets.git", "https://github.com/acme/widgets"},
+		{"\tgit@github.com:acme/widgets.git\n", "https://github.com/acme/widgets"},
+		{"ssh+git://git@github.com/acme/widgets.git", "https://github.com/acme/widgets"},
+		{"C:/Users/dev/widgets.git", ""},
+		{"c:/Users/dev/widgets.git", ""},
+		{"z:/src/repo", ""},
+		{`c:\src\repo`, ""},
+		{`C:\src/team/widgets.git`, ""},
+		{"C:src/widgets.git", "https://C/src/widgets"},
+		{"git@[not-an-ip]:group/proj.git", ""},
+		{"git@[2001:db8::1%eth0]:group/proj.git", ""},
+		{"git@[2001:db8::1]group/proj.git", ""},
+		{"x[2001:db8::1]:group/proj.git", ""},
+		{"../origin/widgets.git", ""},
+	} {
+		t.Run(tt.origin, func(t *testing.T) {
+			if got := CanonicalRepoURL(tt.origin); got != tt.want {
+				t.Errorf("CanonicalRepoURL(%q) = %q, want %q", tt.origin, got, tt.want)
+			}
+		})
+	}
+	if got := RepoSlug("https://git.example/group/a%2Fb.git"); got != "group/a%2Fb" {
+		t.Errorf("RepoSlug kept %q, want the escaped segment group/a%%2Fb", got)
+	}
+}
+
 func TestRepoWebLink(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -234,6 +352,13 @@ func TestRepoWebLink(t *testing.T) {
 		{
 			name:         "github ssh url",
 			originURL:    "ssh://git@github.com/owner/repo.git",
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo",
+			wantOK:       true,
+		},
+		{
+			name:         "github ssh-over-443 host",
+			originURL:    "ssh://git@ssh.github.com:443/owner/repo.git",
 			wantProvider: "github",
 			wantURL:      "https://github.com/owner/repo",
 			wantOK:       true,
@@ -289,6 +414,22 @@ func TestPullRequestWebLink(t *testing.T) {
 		{
 			name:         "github ssh shorthand",
 			originURL:    "git@github.com:owner/repo.git",
+			prNumber:     7,
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo/pull/7",
+			wantOK:       true,
+		},
+		{
+			name:         "github ssh-over-443 host",
+			originURL:    "ssh://git@ssh.github.com:443/owner/repo.git",
+			prNumber:     7,
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo/pull/7",
+			wantOK:       true,
+		},
+		{
+			name:         "github scp leading slash",
+			originURL:    "git@github.com:/owner/repo.git",
 			prNumber:     7,
 			wantProvider: "github",
 			wantURL:      "https://github.com/owner/repo/pull/7",
@@ -365,15 +506,7 @@ func TestConstructPRURL_Boundaries(t *testing.T) {
 			want:      "https://host/owner/repo/pull/4",
 		},
 		{
-			// at == 0 on the *full-URL* user@ strip (url.go:143), reached via a
-			// protocol prefix rather than SSH shorthand. "ssh://@host/..." has an
-			// empty user, so after stripping "ssh://" the path starts with "@".
-			// The SSH-shorthand branch (line 130) is skipped because the byte
-			// after the first ":" is "/", so the user@ strip must happen at the
-			// full-URL guard on line 143 — a path the SSH-shorthand cases above
-			// (which strip at line 133) never reach with at == 0.
-			// Catches CONDITIONALS_BOUNDARY at url.go:143: `at >= 0` → `at > 0`
-			// would leave the leading "@" in the host ("@github.com").
+			// An empty userinfo in a scheme URL must not leave "@" in the host.
 			name:      "full url empty user leading @",
 			originURL: "ssh://@github.com/owner/repo.git",
 			prNumber:  3,
@@ -441,8 +574,8 @@ func TestGitHubPullRequestURL_PRNumberBoundary(t *testing.T) {
 	}
 }
 
-// TestParseOriginURL_Boundaries targets the comparison boundaries in
-// parseOriginURL that the higher-level helpers don't isolate.
+// TestParseOriginURL_Boundaries pins how parseOriginURL splits host from slug
+// at the edges the higher-level helpers don't isolate.
 func TestParseOriginURL_Boundaries(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -450,41 +583,41 @@ func TestParseOriginURL_Boundaries(t *testing.T) {
 		wantHost  string
 		wantSlug  string
 	}{
-		// url.go:130 `idx > 0` (CONDITIONALS_BOUNDARY `>` → `>=`).
-		// idx == 0: a leading colon must NOT be treated as the SSH separator.
-		// With `>=` the SSH rewrite would fire on s[:0]="" and corrupt parsing.
 		{"leading colon not SSH", ":owner/repo.git", "", ""},
-		// Other side of url.go:130: idx > 0 (a real SSH shorthand) parses.
 		{"ssh shorthand idx gt 0", "host:owner/repo.git", "host", "owner/repo"},
-
-		// url.go:133 `at >= 0` inside the SSH-shorthand host (CONDITIONALS_BOUNDARY
-		// `>=` → `>` and CONDITIONALS_NEGATION `>=` → `<`).
-		// at == 0: leading "@" in the host must trigger the user@ strip.
 		{"ssh shorthand leading at", "@host:owner/repo.git", "host", "owner/repo"},
-		// Negation/other side: no "@" (at == -1) leaves the host untouched.
 		{"ssh shorthand no at", "myhost:owner/repo.git", "myhost", "owner/repo"},
-		// A *doubled* "@" in the SSH host pins url.go:133 on its own. The single
-		// leading-"@" case above can't: the full-URL user@ strip on line 143 also
-		// removes one leading "@", so a mutant that skips line 133 (`at > 0` or
-		// `at < 0`) still looks correct there. With "@git@host" the host region
-		// holds two "@": line 133 must strip the outer one so line 143 can strip
-		// the inner "git@" and leave "host". A line-133 mutant leaves "@git@host",
-		// line 143 strips only the outer "@", and the host parses as "git@host".
+		// Userinfo runs to the last "@", as it does for ssh itself.
 		{"ssh shorthand double at", "@git@host:owner/repo.git", "host", "owner/repo"},
-
-		// url.go:143 first comparison `at >= 0` for full URLs after protocol
-		// strip (CONDITIONALS_BOUNDARY `>=` → `>`).
-		// After stripping "ssh://", s == "@host/owner/repo.git", at == 0: the
-		// user@ strip must fire. With `>` the "@host" prefix would remain and
-		// host would parse as "@host".
 		{"full url leading at after protocol", "ssh://@host/owner/repo.git", "host", "owner/repo"},
-		// Other side: full URL with a real user@ (at > 0) still strips.
 		{"full url user at", "ssh://git@host/owner/repo.git", "host", "owner/repo"},
-
-		// url.go:143 second comparison `at < indexOfFirstSlash`: a "@" that
-		// appears in the PATH (after the first slash) must NOT be stripped,
-		// because the host segment has no "@".
 		{"at in path not stripped", "host/own@er/repo.git", "host", "own@er/repo"},
+
+		{"github ssh port dropped", "ssh://git@github.com:22/acme/widgets.git", "github.com", "acme/widgets"},
+		{"github https port dropped", "https://github.com:443/acme/widgets", "github.com", "acme/widgets"},
+		{"non-github https port kept", "https://git.company.com:8443/team/service", "git.company.com:8443", "team/service"},
+		{"ipv6 host keeps brackets", "https://[::1]:8443/team/service", "[::1]:8443", "team/service"},
+		{"non-decimal port", "https://github.com:abc/acme/widgets", "", ""},
+		{"empty port is no port", "https://github.com:/acme/widgets", "github.com", "acme/widgets"},
+		{"self-hosted empty port is no port", "ssh://git@myserver:/srv/repo.git", "myserver", "srv/repo"},
+		{"scp absolute path", "git@myserver:/srv/team/repo.git", "myserver", "srv/team"},
+		{"scp url-like is not scp", "git@host://owner/repo.git", "", ""},
+		{"ssh-over-443 host reads as github.com", "ssh://git@ssh.github.com:443/acme/widgets.git", "github.com", "acme/widgets"},
+		{"windows drive path", "C:/Users/dev/widgets.git", "", ""},
+		{"windows drive backslash path", `C:\Users\dev\widgets.git`, "", ""},
+		{"lowercase drive path", "c:/Users/dev/widgets.git", "", ""},
+		{"lowercase drive backslash path", `c:\Users\dev\widgets.git`, "", ""},
+		{"one-letter scp host", "a:team/widgets.git", "a", "team/widgets"},
+		{"ipv6 scp host", "git@[2001:db8::1]:group/proj.git", "[2001:db8::1]", "group/proj"},
+		{"ssh-over-443 host in capitals", "ssh://git@SSH.GitHub.com:443/acme/widgets.git", "github.com", "acme/widgets"},
+		{"ssh-over-443 host with trailing dot", "ssh://git@ssh.github.com.:443/acme/widgets.git", "github.com", "acme/widgets"},
+		{"leading dot host", "https://.example.com/acme/widgets", "", ""},
+		{"empty label host", "https://a..example.com/acme/widgets", "", ""},
+		{"unknown scheme", "file:///srv/acme/widgets", "", ""},
+		{"query before at names the host", "https://evil.com?@github.com/acme/widgets", "", ""},
+		{"fragment before at names the host", "https://evil.com#@github.com/acme/widgets", "", ""},
+		{"backslash before at", `https://evil.com\@github.com/acme/widgets`, "", ""},
+		{"query and fragment dropped", "https://example.com/acme/widgets?x=1#y", "example.com", "acme/widgets"},
 	}
 
 	for _, tt := range tests {
@@ -558,6 +691,7 @@ func TestIsGitHubHost(t *testing.T) {
 	}{
 		{"github.com", true}, {"GitHub.COM", true}, {"api.github.com", true}, {"github.com:443", true}, {"github.com.", true}, {"github.com.:443", true},
 		{"gitlab.com", false}, {"notgithub.com", false}, {"github.com.evil.example", false}, {"evilgithub.com", false}, {"", false},
+		{".github.com", false}, {"a..github.com", false}, {"github.com:abc", false}, {"github.com:", false},
 	} {
 		t.Run(tt.host, func(t *testing.T) {
 			if got := IsGitHubHost(tt.host); got != tt.want {

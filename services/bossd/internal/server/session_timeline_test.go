@@ -38,6 +38,8 @@ func (s stubEvidence) Entry(sessionID string) (evidence.Entry, bool) {
 
 func (s stubEvidence) OpenItems(string, string) []string { return nil }
 
+func (s stubEvidence) SentBack(string, string) bool { return false }
+
 func checksJSON(t *testing.T, checks []vcs.CheckResult) string {
 	t.Helper()
 	raw, err := json.Marshal(checks)
@@ -166,7 +168,7 @@ func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
 
 	assertSteps(t, resp.Msg.GetSteps(), []wantStep{
 		{at(4), "Build started", "BOS-1528", done},
-		{at(20), "Built and reviewed", "ledger closed", done},
+		{at(20), "Built and reviewed", "checklist closed", done},
 		{at(21), "CI passed, 6 checks", "", done},
 		{at(40), "Evidence recorded", "5 of 5 proven · 2:40 video", done},
 		{at(40), "Parked for you · UI change", "", current},
@@ -361,8 +363,8 @@ func rotationEvent(when time.Time, trigger pb.RotationTrigger, outcome pb.Rotati
 }
 
 // A fix row runs from the failure through each automatic resume attempt to
-// the give-up, even when later CI history exists: the session waits on the
-// lost login, and the give-up — not the last resume — is CURRENT.
+// the give-up: the session waits on the lost login, and the give-up — not the
+// last resume — is CURRENT. Later CI history stays after it, in time order.
 func TestBuildTimeline_FixRowEndsOnTheFailureAndEachResume(t *testing.T) {
 	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
 	respawn := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT
@@ -383,12 +385,12 @@ func TestBuildTimeline_FixRowEndsOnTheFailureAndEachResume(t *testing.T) {
 	})
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(30), "CI passed, 4 checks", "", done},
 		{at(16), "Lost its login", "401 Unauthorized", failed},
 		{at(17), "Resumed automatically", "same 401", done},
 		{at(19), "Resumed automatically", "same 401", done},
 		{at(27), "Resumed automatically", "same 401", done},
 		{at(28), "Stopped resuming automatically", "same 401", current},
+		{at(30), "CI passed, 4 checks", "", done},
 	})
 }
 
@@ -441,9 +443,8 @@ func TestBuildTimeline_ARunWithoutOutputDoesNotRecoverTheLogin(t *testing.T) {
 				},
 				LastAgentActivityAt: activity,
 			})
-			last := steps[len(steps)-1]
-			if last.GetTitle() != "Lost its login" || last.GetState() != current {
-				t.Fatalf("last step = %q %v; want the lost login CURRENT", last.GetTitle(), last.GetState())
+			if title := currentTitle(steps); title != "Lost its login" {
+				t.Fatalf("CURRENT step = %q; want the lost login", title)
 			}
 		})
 	}
@@ -453,12 +454,17 @@ func TestBuildTimeline_ARunWithoutOutputDoesNotRecoverTheLogin(t *testing.T) {
 // title of its CURRENT step.
 func rotationWait(f timelineFacts) (pb.AttentionKind, string) {
 	steps, kind := assembleTimeline(f)
+	return kind, currentTitle(steps)
+}
+
+// currentTitle is the title of the CURRENT step, wherever it falls.
+func currentTitle(steps []*pb.TimelineStep) string {
 	for _, st := range steps {
 		if st.GetState() == current {
-			return kind, st.GetTitle()
+			return st.GetTitle()
 		}
 	}
-	return kind, ""
+	return ""
 }
 
 func TestNewestGiveUpAt(t *testing.T) {
@@ -659,10 +665,10 @@ func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 	})
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "ledger open", done},
+		{at(20), "Built and reviewed", "checklist open", done},
+		{at(35), "Automatic repair failed", "3 attempts", current},
 		{at(40), "CI passed, 3 checks", "", done},
 		{at(40), "Parked for you · open checklist items", "", done},
-		{at(35), "Automatic repair failed", "3 attempts", current},
 	})
 }
 
@@ -684,10 +690,64 @@ func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
 	}
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "ledger open", done},
+		{at(20), "Built and reviewed", "checklist open", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
 		{at(40), "Parked for you · open checklist items", "", current},
+	})
+}
+
+// PR 3162: verify parked the rebased head at 23:42, and three hours later the
+// operator typed into the repair chat a watchdog had stopped, which started a
+// new run. The park stays CURRENT where it began, and the later run is drawn
+// after it, so no row is older than the row above it.
+func TestBuildTimeline_AStepAfterTheWaitStaysAfterIt(t *testing.T) {
+	steps, kind := assembleTimeline(timelineFacts{
+		HasPR: true,
+		Runs: []db.AgentRun{
+			{AgentSessionID: "build", StartedAt: at(0), StoppedAt: timePtr(at(11)), StopReason: db.AgentRunStopClean, TerminalState: db.AgentRunTerminalReviewReady},
+			chatRun("repair", at(33), timePtr(at(40)), db.AgentRunStopUnknown),
+			chatRun("build", at(34), nil, ""),
+			chatRun("repair", at(55), nil, ""),
+		},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(36), vcs.DisplayStatusPassing, greenCI(10, "")),
+			snap(t, at(42), vcs.DisplayStatusNeedsHuman, greenCI(10, "needs human: no-receipt,human-review:ui")),
+			snap(t, at(58), vcs.DisplayStatusNeedsHuman, greenCI(10, "needs human: no-receipt,human-review:ui")),
+		},
+	})
+	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Fatalf("kind = %s, want REVIEW", kind)
+	}
+	category, _ := attention.ParkCategory([]string{"no-receipt", "human-review:ui"})
+	assertSteps(t, steps, []wantStep{
+		{at(0), "Build started", "", done},
+		{at(11), "Built and reviewed", "checklist closed", done},
+		{at(36), "CI passed, 10 checks", "", done},
+		{at(40), "Run ended unexpectedly", "", failed},
+		{at(42), "Parked for you · " + category, "", current},
+		{at(55), "Resumed", "new run", done},
+	})
+}
+
+// A park on a code this version does not know names it in plain words, never
+// as the code.
+func TestBuildTimeline_AnUnknownParkCodeReadsInPlainWords(t *testing.T) {
+	steps, kind := assembleTimeline(timelineFacts{
+		HasPR: true,
+		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(11)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(21), vcs.DisplayStatusNeedsHuman, greenCI(2, "needs human: brand-new-code")),
+		},
+	})
+	if kind != pb.AttentionKind_ATTENTION_KIND_FIX {
+		t.Fatalf("kind = %s, want FIX", kind)
+	}
+	assertSteps(t, steps, []wantStep{
+		{at(4), "Build started", "", done},
+		{at(11), "Built and reviewed", "checklist closed", done},
+		{at(21), "CI passed, 2 checks", "", done},
+		{at(21), "Parked for you · an issue this version of boss does not recognise", "", current},
 	})
 }
 
@@ -727,8 +787,8 @@ func TestBuildTimeline_MergedPRWithAnOpenQuestionWaitsOnTheQuestion(t *testing.T
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
 		{at(21), "CI passed, 2 checks", "", done},
-		{at(50), "Merged", "", done},
 		{at(45), "Asked you a question", "", current},
+		{at(50), "Merged", "", done},
 	})
 }
 
@@ -808,7 +868,7 @@ func TestBuildTimeline_DismissedFixIsNotTheWait(t *testing.T) {
 	}
 	assertSteps(t, steps, []wantStep{
 		{at(4), "Build started", "", done},
-		{at(20), "Built and reviewed", "ledger closed", done},
+		{at(20), "Built and reviewed", "checklist closed", done},
 		{at(35), "Automatic repair failed", "3 attempts", failed},
 		{at(40), "CI passed, 3 checks", "", done},
 		{at(40), "Parked for you · UI change", "", current},
@@ -837,8 +897,8 @@ func TestBuildTimeline_DismissedFixIsNotTheInProgressFallback(t *testing.T) {
 				DismissedAlertKey: attention.BlockedAlertKey,
 			},
 			want: []wantStep{
-				{at(9), "Blocked", "stuck", failed},
 				{at(4), "Build started", "", current},
+				{at(9), "Blocked", "stuck", failed},
 			},
 		},
 		"dismissed lost login": {
@@ -851,10 +911,10 @@ func TestBuildTimeline_DismissedFixIsNotTheInProgressFallback(t *testing.T) {
 				DismissedAlertKey: attention.RotationAlertKey(auth.String()),
 			},
 			want: []wantStep{
+				{at(4), "Build started", "", current},
 				{at(16), "Lost its login", "401", failed},
 				{at(16), "Resumed automatically", "same account", done},
 				{at(18), "Stopped resuming automatically", "cap", failed},
-				{at(4), "Build started", "", current},
 			},
 		},
 	} {
@@ -884,15 +944,15 @@ func TestBuildTimeline_AFailureIsNotTheInProgressFallback(t *testing.T) {
 				LastAgentActivityAt: at(20),
 			},
 			want: []wantStep{
-				{at(16), "Lost its login", "401", failed},
 				{at(4), "Build started", "", current},
+				{at(16), "Lost its login", "401", failed},
 			},
 		},
 		"interrupted run, not resumed": {
 			facts: timelineFacts{Runs: []db.AgentRun{buildRun(at(4), timePtr(at(9)), db.AgentRunStopUnknown, "")}},
 			want: []wantStep{
-				{at(9), "Run ended unexpectedly", "", failed},
 				{at(4), "Build started", "", current},
+				{at(9), "Run ended unexpectedly", "", failed},
 			},
 		},
 	} {
@@ -1122,7 +1182,7 @@ func at10(ss, ms int) time.Time {
 
 // Two chats stopping for the same reason forty seconds apart are two
 // interruptions, and the run that resumed between them stays on the timeline
-// as the current step, which the render moves to the end.
+// as the current step, between them where it happened.
 func TestBuildTimeline_ResumeBetweenNearbyStopsIsKept(t *testing.T) {
 	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
 		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopUnknown),
@@ -1132,8 +1192,8 @@ func TestBuildTimeline_ResumeBetweenNearbyStopsIsKept(t *testing.T) {
 	assertSteps(t, steps, []wantStep{
 		{at(1), "Build started", "", done},
 		{at10(0, 0), "Run ended unexpectedly", "", failed},
-		{at10(40, 0), "Run ended unexpectedly", "", failed},
 		{at10(10, 0), "Resumed", "new run", current},
+		{at10(40, 0), "Run ended unexpectedly", "", failed},
 	})
 }
 
@@ -1216,5 +1276,20 @@ func TestGetSessionTimeline_RestartRecoveryRecordsOneInterruption(t *testing.T) 
 		{at(1), "Build started", "", done},
 		{at(10), "Run interrupted by a daemon restart", "3 chats", failed},
 		{at(20), "Resumed", "new run", current},
+	})
+}
+
+// A park on waiting codes alone says in plain words what verify waits on, the
+// words the session row's progress label uses, never the raw codes.
+func TestBuildTimeline_VerifyWaitingSaysWhatItWaitsOn(t *testing.T) {
+	steps := buildTimeline(timelineFacts{
+		HasPR: true,
+		Snapshots: []db.CheckSnapshot{
+			snap(t, at(30), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: stack-busy,base-ci-red")),
+		},
+	})
+	assertSteps(t, steps, []wantStep{
+		{at(30), "CI passed, 3 checks", "", done},
+		{at(30), "Verify waiting", "waiting for the test stack, waiting for main CI", current},
 	})
 }

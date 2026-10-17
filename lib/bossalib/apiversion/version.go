@@ -610,6 +610,19 @@ const V20260920 Version = "2026-09-20"
 // that was never going to run. 2026-09-20 pins get the REVIEW back.
 const V20260921 Version = "2026-09-21"
 
+// V20260922 ships FactoryReviewParkSentenceChange: a no-receipt verify park
+// reads "No review of the latest commit" where it read "Built by hand, no
+// factory review", which was false for a head an agent built in an ordinary
+// chat and for a reviewed head a later rebase replaced. It also ships
+// ReviewOnlyParkChange: a park whose no-receipt or human-review:unproven code
+// only asks a person to look is a REVIEW reading "needs sign-off", where it was
+// a blocked FIX reading "blocked". VerifiedNotMergedChange: a PR verify passed
+// and left unmerged for attention.VerifyMergeGrace is a MERGE ("Verified but
+// not merged") where it stayed in progress. ParkSinceChange: a verify park's
+// attention is dated from when the park began, not from the session's state.
+// 2026-09-21 and older pins get the old answers back.
+const V20260922 Version = "2026-09-22"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -766,8 +779,9 @@ func DefaultRegistry() *Registry {
 			V20260919,
 			V20260920,
 			V20260921,
+			V20260922,
 		},
-		V20260921,
+		V20260922,
 		Baseline,
 	)
 	if err != nil {

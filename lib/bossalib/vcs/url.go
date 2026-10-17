@@ -2,6 +2,7 @@ package vcs
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -73,6 +74,10 @@ func RepoSlug(originURL string) string {
 // repo snapshot and bosso's webhook dispatcher: a new git host works
 // without registering it anywhere, as long as both ends route through
 // this helper.
+//
+// A GitHub origin's port is dropped, so ssh://git@github.com:22/o/r keys the
+// same as the https://github.com/o/r a GitHub webhook carries. Other hosts
+// keep their port.
 func NormalizeRepoURL(originURL string) string {
 	host, slug := parseCanonicalOriginURL(originURL)
 	if host == "" || slug == "" {
@@ -141,34 +146,138 @@ func parseCanonicalOriginURL(originURL string) (host, slug string) {
 }
 
 func parseOriginURLParts(originURL string) (host string, parts []string) {
-	s := originURL
-	// Handle SSH shorthand: git@github.com:owner/repo.git → github.com/owner/repo.git.
-	// Detect by ":" not followed by "/" (excludes "https://").
-	if idx := strings.Index(s, ":"); idx > 0 && !strings.Contains(s[:idx], "/") && (idx+1 >= len(s) || s[idx+1] != '/') {
-		h := s[:idx]
-		// Strip user@ prefix (e.g. "git@github.com" → "github.com").
-		if at := strings.Index(h, "@"); at >= 0 {
-			h = h[at+1:]
-		}
-		s = h + "/" + s[idx+1:]
-	}
-	// Strip protocol prefix.
-	for _, prefix := range []string{"https://", "http://", "ssh://", "git://"} {
-		s = strings.TrimPrefix(s, prefix)
-	}
-	// Strip user@ prefix from full URLs (e.g. "ssh://git@github.com/..." → "github.com/...").
-	if at := strings.Index(s, "@"); at >= 0 && at < strings.Index(s+"/", "/") {
-		s = s[at+1:]
-	}
-	// Strip .git suffix.
-	s = strings.TrimSuffix(s, ".git")
-	// Strip trailing slash.
-	s = strings.TrimSuffix(s, "/")
-	parts = strings.Split(s, "/")
-	if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
+	r, ok := parseRemote(originURL)
+	if !ok {
 		return "", nil
 	}
-	return parts[0], parts[1:]
+	host = r.host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	// A GitHub repository has one web address whatever transport port the
+	// origin names, so the port is dropped there. Elsewhere it is kept, because
+	// a self-hosted https port can be part of the repository's address.
+	if r.port != "" && !IsGitHubHost(r.host) {
+		host += ":" + r.port
+	}
+	s := strings.TrimSuffix(r.path, ".git")
+	s = strings.TrimSuffix(s, "/")
+	parts = strings.Split(s, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", nil
+	}
+	return host, parts
+}
+
+// remote is a git origin reduced to the parts repository identity depends on.
+type remote struct {
+	host string // without userinfo, port or IPv6 brackets; ssh.github.com reads as github.com
+	port string // decimal, or "" when the origin names none
+	path string // without a leading slash, still percent-encoded; a URL's query and fragment are dropped
+}
+
+var remoteSchemes = map[string]bool{
+	"http": true, "https": true, "ssh": true, "git": true, "git+ssh": true, "ssh+git": true,
+}
+
+// gitHubSSHHost is GitHub's SSH-over-443 endpoint. It serves github.com's
+// repositories, so an origin naming it keys and links as github.com.
+const gitHubSSHHost = "ssh.github.com"
+
+// parseRemote is this package's one git origin parser. It accepts a URL whose
+// scheme is in remoteSchemes, git's scp-like [user@]host:path, and a
+// scheme-less host/path. The URL forms go through net/url, so the authority
+// ends at the first "/", "?" or "#", userinfo runs to the last "@", and a port
+// must be decimal or empty. ok is false when no valid host is found.
+func parseRemote(origin string) (r remote, ok bool) {
+	s := strings.TrimSpace(origin)
+	if hasDOSDrivePrefix(s) {
+		return remote{}, false
+	}
+	if r, ok = splitRemote(s); !ok || !validHost(r.host) {
+		return remote{}, false
+	}
+	if strings.EqualFold(strings.TrimSuffix(r.host, "."), gitHubSSHHost) {
+		r.host = "github.com"
+	}
+	return r, true
+}
+
+func splitRemote(s string) (remote, bool) {
+	if userHost, path, found := cutSCPLike(s); found {
+		host := userHost[strings.LastIndex(userHost, "@")+1:]
+		if strings.HasPrefix(host, "[") {
+			var ok bool
+			if host, ok = bracketedIP(host); !ok {
+				return remote{}, false
+			}
+		}
+		return remote{host: host, path: strings.TrimPrefix(path, "/")}, true
+	}
+	var u *url.URL
+	var err error
+	if strings.Contains(s, "://") {
+		u, err = url.Parse(s)
+		if err != nil || !remoteSchemes[u.Scheme] {
+			return remote{}, false
+		}
+	} else if u, err = url.Parse("//" + s); err != nil {
+		return remote{}, false
+	}
+	return remote{host: u.Hostname(), port: u.Port(), path: strings.TrimPrefix(u.EscapedPath(), "/")}, true
+}
+
+// cutSCPLike splits git's scp-like syntax, [user@]host:path, where host may be
+// a bracketed IPv6 literal. Git reads an origin that way when a colon comes
+// before any slash and does not start "://", so "host:22/repo" names the path
+// "22/repo", not a port, and "host:/srv/repo" names the absolute path
+// "/srv/repo".
+func cutSCPLike(s string) (userHost, path string, ok bool) {
+	i := strings.Index(s, ":")
+	if lb := strings.Index(s, "["); lb >= 0 && (i < 0 || lb < i) {
+		rb := strings.Index(s[lb:], "]:")
+		if rb < 0 || strings.ContainsAny(s[:lb], ":/") || (lb > 0 && s[lb-1] != '@') {
+			return "", "", false
+		}
+		i = lb + rb + 1
+	}
+	if i <= 0 || strings.Contains(s[:i], "/") || strings.HasPrefix(s[i:], "://") {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+// bracketedIP unwraps a "[addr]" host and reports whether addr is an IP
+// address. A zone's "%" fails validHost afterwards.
+func bracketedIP(host string) (string, bool) {
+	inner, ok := strings.CutPrefix(host, "[")
+	if !ok {
+		return "", false
+	}
+	inner, ok = strings.CutSuffix(inner, "]")
+	if !ok {
+		return "", false
+	}
+	_, err := netip.ParseAddr(inner)
+	return inner, err == nil
+}
+
+// hasDOSDrivePrefix reports a Windows path such as C:/src/repo or C:\src,
+// which git reads as a local path. A letter and colon followed by anything
+// else is an scp-like host with a one-letter name, as in the ssh alias
+// "a:team/widgets.git".
+func hasDOSDrivePrefix(s string) bool {
+	if len(s) < 3 || s[1] != ':' || (s[2] != '/' && s[2] != '\\') {
+		return false
+	}
+	return 'a' <= s[0] && s[0] <= 'z' || 'A' <= s[0] && s[0] <= 'Z'
+}
+
+func validHost(host string) bool {
+	return host != "" &&
+		!strings.HasPrefix(host, ".") &&
+		!strings.Contains(host, "..") &&
+		!strings.ContainsAny(host, `/?#\@[]% `)
 }
 
 // MaxCanonicalRepoURLPasses bounds CanonicalRepoURL's iteration. It is exported
@@ -224,11 +333,30 @@ func CanonicalRepoURL(originURL string) string {
 }
 
 // IsGitHubHost reports whether host names github.com or one of its subdomains.
-// Host names are case insensitive; a port and trailing dot do not affect identity.
+// Host names are case insensitive; a decimal port and a trailing dot do not
+// affect identity. A non-decimal port or an empty label is not a host.
 func IsGitHubHost(host string) bool {
-	if before, _, ok := strings.Cut(host, ":"); ok {
+	if before, port, ok := strings.Cut(host, ":"); ok {
+		if !isDecimal(port) {
+			return false
+		}
 		host = before
 	}
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
+		return false
+	}
 	return host == "github.com" || strings.HasSuffix(host, ".github.com")
+}
+
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

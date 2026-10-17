@@ -85,6 +85,15 @@ const (
 // five seconds per case that cost lands on every run of the suite.
 var TargetReapLockTimeout = 5 * time.Second
 
+// RevivalLockTimeout bounds a background sweep's wait for a repo's start-path
+// lock before it revives a Blocked or Orphaned session: the display poller's
+// stale-block unblock, the orphan resume and the parked-rotation re-dispatch.
+// It is short for the reason TargetReapLockTimeout is. No caller waits on a
+// sweep, and the display poller also runs inline in webhook dispatch, so a busy
+// lock means skip the session this pass rather than queue behind a wedged
+// holder. A var so a test proving the skip need not wait it out.
+var RevivalLockTimeout = 5 * time.Second
+
 // SlowStartLockWaitThreshold is the wait above which a SUCCESSFUL session-start
 // lock acquisition is logged at Warn (BOS-717). Both locks are meant to be taken
 // essentially uncontended: seconds of waiting means creates are queueing behind
@@ -122,10 +131,14 @@ var (
 // An empty repoID returns a no-op release. waited is returned on both the
 // success and failure paths so callers can log it either way.
 func AcquireStartPath(ctx context.Context, repoID string) (release func(), waited time.Duration, err error) {
+	return acquireStartPathWithin(ctx, repoID, StartPathLockTimeout)
+}
+
+func acquireStartPathWithin(ctx context.Context, repoID string, wait time.Duration) (release func(), waited time.Duration, err error) {
 	if repoID == "" {
 		return func() {}, 0, nil
 	}
-	return startPathGates.Acquire(ctx, repoID, StartPathLockTimeout)
+	return startPathGates.Acquire(ctx, repoID, wait)
 }
 
 // AcquireTargetStart takes the per-target lock for the PR or branch a create is

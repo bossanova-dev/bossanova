@@ -229,9 +229,13 @@ func TestRenderAggregateRunCostShowsTerminalStateMix(t *testing.T) {
 		RunCount:                    3,
 		TerminalStateMix:            map[string]int64{"REVIEW_READY": 2, "": 1},
 		MedianReviewerDispatchCount: &median,
+		NoReviewRoundLedgerCount:    3,
 	})
 
 	text := out.String()
+	if !strings.Contains(text, "review rounds not recorded: 3") || strings.Contains(text, "ledger") {
+		t.Errorf("output = %q, want the unrecorded review rounds counted in plain words", text)
+	}
 	if !strings.Contains(text, "REVIEW_READY 2") {
 		t.Errorf("output = %q, want the terminal state mix", text)
 	}

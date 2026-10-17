@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "evidence.go",
         "open_items.go",
+        "operator_record.go",
     ],
     importpath = "github.com/recurser/bossalib/evidence",
     visibility = ["//visibility:public"],
@@ -16,6 +17,7 @@ go_test(
         "evidence_test.go",
         "golden_test.go",
         "open_items_test.go",
+        "operator_record_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":evidence"],

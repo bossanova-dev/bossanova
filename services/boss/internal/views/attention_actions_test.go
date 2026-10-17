@@ -618,7 +618,7 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 	}{
 		{"merged", &attentionStub{}, "Merged PR #42", false},
 		{"merged without bookkeeping", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "no-adapter"}},
-			"Merged PR #42; the tracker was not updated (unavailable: no-adapter), so move the ticket to done by hand", false},
+			"Merged PR #42; the tracker was not updated because no tracker is set up", false},
 		{"approval refused, head moved", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved"}}},
 			"PR #42 changed since you opened it; refresh and try again", true},
 		{"approval refused, park changed", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "park-changed"}}},

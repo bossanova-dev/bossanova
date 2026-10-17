@@ -34,6 +34,12 @@ var humanReasonsOrder = []string{
 	"human-review:unproven",
 }
 
+// IsReportedParkCode reports whether code is in the verify gate's closed
+// park-code vocabulary (humanReasonsOrder), the codes an approval can waive.
+func IsReportedParkCode(code string) bool {
+	return slices.Contains(humanReasonsOrder, code)
+}
+
 // Park codes that are not the operator's to act on: the verify stage is
 // waiting on something else, so the session stays in progress.
 const (
@@ -57,6 +63,10 @@ const (
 	genericQuestion        = "The agent asked a question"
 	mergeSentence          = "Ready to merge"
 )
+
+// VerifiedNotMergedSentence is the MERGE sentence for a factory repo's PR that
+// verify passed and did not merge within VerifyMergeGrace.
+const VerifiedNotMergedSentence = "Verified but not merged"
 
 // slot names the one optional fact a sentence template interpolates.
 type slot int
@@ -101,17 +111,19 @@ type parkCodeInfo struct {
 	// category names what the code asks the operator to look at, for a
 	// one-line summary such as a timeline step.
 	category string
-	// signOff marks a policy code: verify passed the work and policy asks a
-	// person to sign it off. Every other code reports that something went
-	// wrong or is incomplete.
+	// signOff marks a code that only asks a person to look: verify found
+	// nothing wrong with the work, but policy, a missing proof or an unreviewed
+	// latest commit wants a person's sign-off. Every other code reports that
+	// something went wrong.
 	signOff bool
-	// plain says what the code means in plain words, for an operator deciding
-	// whether to merge over it.
+	// plain states the issue the code names in plain words, without advice,
+	// for an operator deciding whether to merge over it. It is shown on its
+	// own, so it reads as a whole statement.
 	plain string
 }
 
 // knownParkCodes is the one table of known operator park codes. Its plain
-// words and sentences are mirrored in PARK_CODE_WORDS in
+// words, categories and sign-off flags are mirrored in PARK_CODE_WORDS in
 // skills-toolbox/verify-park-note.mjs, which the verify park note reads. The
 // park's attention kind, its sentence and its category all read it, through
 // decidingParkCode, so they always describe the same code. A code absent here
@@ -122,7 +134,7 @@ var knownParkCodes = map[string]parkCodeInfo{
 		sentence: &sentenceTemplate{format: "UI change · evidence video%s", slot: slotVideoDuration, withoutEvidence: "UI change"},
 		category: "UI change",
 		signOff:  true,
-		plain:    "a UI change; watch the evidence before it merges",
+		plain:    "a UI change",
 	},
 	"human-review:security": {
 		sentence: &sentenceTemplate{format: "Security change%s", slot: slotParkLabel},
@@ -145,6 +157,7 @@ var knownParkCodes = map[string]parkCodeInfo{
 	"human-review:unproven": {
 		sentence: &sentenceTemplate{format: "Some checks have no evidence"},
 		category: "unproven checks",
+		signOff:  true,
 		plain:    "some checks have no evidence that they pass",
 	},
 	ParkCodeLedgerOpen: {
@@ -153,9 +166,10 @@ var knownParkCodes = map[string]parkCodeInfo{
 		plain:    "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
 	},
 	"no-receipt": {
-		sentence: &sentenceTemplate{format: "Built by hand, no factory review"},
-		category: "built by hand",
-		plain:    "no build receipt: built by hand, without the factory's build and review",
+		sentence: &sentenceTemplate{format: "No review of the latest commit"},
+		category: "latest commit not reviewed",
+		signOff:  true,
+		plain:    "the latest commit has not had an automated build and review, or changed after its review",
 	},
 	"repair-exhausted":  {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
 	"extension-failed":  {category: "verify extension failed", plain: "a verify extension failed to run"},
@@ -165,7 +179,7 @@ var knownParkCodes = map[string]parkCodeInfo{
 }
 
 // unknownParkCodePlain describes a code outside knownParkCodes.
-const unknownParkCodePlain = "a park code this version of boss does not know"
+const unknownParkCodePlain = "an issue this version of boss does not recognise"
 
 // ParkCodes splits comma-joined park-code entries, trims and dedupes them, and
 // returns them in the verify gate's report order.
@@ -173,9 +187,8 @@ func ParkCodes(raw []string) []string {
 	return normalizeParkCodes(raw)
 }
 
-// IsSignOffPark reports whether a verify park only asks a person to sign off
-// work verify passed: it has at least one code and every code is a policy
-// code. A park with any other code, an unknown code, or no code at all reports
+// IsSignOffPark reports whether a verify park only asks a person to look: it
+// has at least one code and every code is a sign-off code. A park with any other code, an unknown code, or no code at all reports
 // that something went wrong, so it is not a sign-off.
 func IsSignOffPark(raw []string) bool {
 	codes := normalizeParkCodes(raw)
@@ -183,8 +196,7 @@ func IsSignOffPark(raw []string) bool {
 }
 
 // ParkFailureCodes returns, in report order, the codes of a verify park that
-// are not policy sign-off codes: the failures or gaps an operator would merge
-// over.
+// are not sign-off codes: the failures an operator would merge over.
 func ParkFailureCodes(raw []string) []string {
 	var out []string
 	for _, code := range normalizeParkCodes(raw) {
@@ -201,6 +213,29 @@ func ParkCodePlainWords(code string) string {
 		return plain
 	}
 	return unknownParkCodePlain
+}
+
+// ParkCodeRestatesCategory reports whether a code's plain words only repeat
+// its category, ignoring case and articles ("a UI change" and "UI change"), so
+// a line that already names the category says them and they are not shown
+// again. verify-park-note.mjs restatesCategory is the same rule.
+func ParkCodeRestatesCategory(code string) bool {
+	return restatesCategory(ParkCodePlainWords(code), ParkCodeCategory(code))
+}
+
+func restatesCategory(plain, category string) bool {
+	return slices.Equal(meaningfulWords(plain), meaningfulWords(category))
+}
+
+// meaningfulWords lower-cases a phrase and drops its articles.
+func meaningfulWords(phrase string) []string {
+	var out []string
+	for _, word := range strings.Fields(strings.ToLower(phrase)) {
+		if word != "a" && word != "an" && word != "the" {
+			out = append(out, word)
+		}
+	}
+	return out
 }
 
 // decidingParkCode picks the one park code a park's attention describes, from
@@ -244,19 +279,15 @@ func decidingParkCode(codes []string) (string, bool) {
 // change", "security", ...) and the attention kind Compute answers it with:
 // the category of the code the park's sentence describes (decidingParkCode),
 // with ATTENTION_KIND_REVIEW for a sign-off and ATTENTION_KIND_FIX for a
-// blocked park. An unknown operator code is named as-is and is blocked. When
-// no code is the operator's to act on (none, or only waiting codes) the
-// category is empty and the kind is ATTENTION_KIND_IN_PROGRESS.
+// blocked park. An unknown operator code reads unknownParkCodeCategory and is
+// blocked. When no code is the operator's to act on (none, or only waiting
+// codes) the category is empty and the kind is ATTENTION_KIND_IN_PROGRESS.
 func ParkCategory(raw []string) (string, pb.AttentionKind) {
 	code, ok := decidingParkCode(normalizeParkCodes(raw))
 	if !ok {
 		return "", pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
 	}
-	info := knownParkCodes[code]
-	if info.category != "" {
-		return info.category, info.kind()
-	}
-	return code, info.kind()
+	return ParkCodeCategory(code), knownParkCodes[code].kind()
 }
 
 // ParkCategories names, in report order and once each, what every operator
@@ -269,19 +300,25 @@ func ParkCategories(raw []string) []string {
 		if !isOperatorCode(code) {
 			continue
 		}
-		category := knownParkCodes[code].category
-		if category == "" {
-			category = unknownParkCodeCategory
-		}
-		if !slices.Contains(out, category) {
+		if category := ParkCodeCategory(code); !slices.Contains(out, category) {
 			out = append(out, category)
 		}
 	}
 	return out
 }
 
+// ParkCodeCategory names what one park code asks about ("UI change", "open
+// checklist items", ...), for operator-facing text that must not show the
+// code. An unknown code reads unknownParkCodeCategory.
+func ParkCodeCategory(code string) string {
+	if category := knownParkCodes[code].category; category != "" {
+		return category
+	}
+	return unknownParkCodeCategory
+}
+
 // unknownParkCodeCategory names a code outside knownParkCodes in plain words.
-const unknownParkCodeCategory = "an issue this version of boss does not know"
+const unknownParkCodeCategory = unknownParkCodePlain
 
 // kind is the attention kind a park decided by this code is answered with: a
 // REVIEW for a sign-off code, a blocked FIX for any other.

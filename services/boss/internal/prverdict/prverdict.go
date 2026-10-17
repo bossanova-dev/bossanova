@@ -86,27 +86,35 @@ func MergeRefusal(pr int, r *pb.VerifyApproveResult) string {
 	return fmt.Sprintf("Couldn't merge PR #%d: %s%s", pr, MergeRefusalDetail(r.GetReason()), postedRecordDetail(r, "merge again"))
 }
 
-// ParkCodeLines renders each park code in plain words, one indented line per
-// code in the verify gate's report order, e.g.
-// "  human-review:ui: a UI change; watch the evidence before it merges".
-func ParkCodeLines(codes []string) []string {
-	normalized := attention.ParkCodes(codes)
-	lines := make([]string, 0, len(normalized))
-	for _, code := range normalized {
-		lines = append(lines, fmt.Sprintf("  %s: %s", code, attention.ParkCodePlainWords(code)))
+// parkCodeLines states each park code's issue in plain words, one indented
+// line per code in the verify gate's report order. The line above already
+// names the codes by category, so a code whose plain words only repeat its
+// category ("a UI change") gets no line.
+func parkCodeLines(codes []string) []string {
+	var lines []string
+	for _, code := range codes {
+		if attention.ParkCodeRestatesCategory(code) {
+			continue
+		}
+		plain := attention.ParkCodePlainWords(code)
+		lines = append(lines, "  "+strings.ToUpper(plain[:1])+plain[1:])
 	}
 	return lines
 }
 
-// failureList names a park's failure codes with their plain words, or "" when
-// the park only asks for a sign-off.
+// failureList names a park's failure codes by category, or "" when the park
+// only asks for a sign-off.
 func failureList(codes []string) string {
-	failures := attention.ParkFailureCodes(codes)
-	named := make([]string, 0, len(failures))
-	for _, code := range failures {
-		named = append(named, fmt.Sprintf("%s (%s)", code, attention.ParkCodePlainWords(code)))
+	return strings.Join(attention.ParkCategories(attention.ParkFailureCodes(codes)), ", ")
+}
+
+// waivedWords names what an approval waives by category, for a sentence a
+// person reads; the codes themselves stay in the approval record.
+func waivedWords(waives string) string {
+	if categories := attention.ParkCategories([]string{waives}); len(categories) > 0 {
+		return strings.Join(categories, ", ")
 	}
-	return strings.Join(named, ", ")
+	return "nothing"
 }
 
 // approvedParkLines renders, after an approval that waived waives, each waived
@@ -117,7 +125,7 @@ func approvedParkLines(waives string, planned bool) []string {
 	if len(codes) == 0 {
 		return nil
 	}
-	lines := ParkCodeLines(codes)
+	lines := parkCodeLines(codes)
 	failures := failureList(codes)
 	switch {
 	case failures == "":
@@ -125,7 +133,7 @@ func approvedParkLines(waives string, planned bool) []string {
 	case planned:
 		return append(lines, fmt.Sprintf("Approving would override %s.", failures))
 	default:
-		return append(lines, fmt.Sprintf("Approving overrode %s; to undo it, push a new head, which verify judges afresh.", failures))
+		return append(lines, fmt.Sprintf("Approving overrode %s. A new push is judged afresh.", failures))
 	}
 }
 
@@ -154,12 +162,12 @@ func ApproveLines(pr int, r *pb.VerifyApproveResult) []string {
 	case r.GetIsPlanned() && sentBack:
 		return []string{fmt.Sprintf("Would approve #%d: record an approval lifting the older send-back of head %s (dry run; nothing written).", pr, head)}
 	case r.GetIsPlanned():
-		planned := fmt.Sprintf("Would approve #%d: record an approval waiving %s on head %s, then remove the needs-human label (dry run; nothing written).", pr, r.GetWaives(), head)
+		planned := fmt.Sprintf("Would approve #%d: record an approval waiving %s on head %s, then remove the needs-human label (dry run; nothing written).", pr, waivedWords(r.GetWaives()), head)
 		return append([]string{planned}, approvedParkLines(r.GetWaives(), true)...)
 	case sentBack:
-		return []string{fmt.Sprintf("Approved #%d: lifted the older send-back of head %s (record: %s). Run /boss-verify %d to merge it.", pr, head, r.GetApprovalUrl(), pr)}
+		return []string{fmt.Sprintf("Approved #%d: lifted the older send-back of head %s (record: %s).", pr, head, r.GetApprovalUrl())}
 	}
-	lines := []string{fmt.Sprintf("Approved #%d: waived %s on head %s (record: %s). Verify will re-check and merge.", pr, r.GetWaives(), head, r.GetApprovalUrl())}
+	lines := []string{fmt.Sprintf("Approved #%d: waived %s on head %s (record: %s). Verify will re-check and merge.", pr, waivedWords(r.GetWaives()), head, r.GetApprovalUrl())}
 	lines = append(lines, approvedParkLines(r.GetWaives(), false)...)
 	if label := labelLine(r, "the approval"); label != "" {
 		lines = append(lines, label)
@@ -174,14 +182,33 @@ func OperatorMerged(pr int, r *pb.OperatorMergeSessionResponse) string {
 	switch r.GetTrackerWrites() {
 	case "ok", "none":
 		return merged
-	case "":
-		return merged + "; the tracker was not updated, so move the ticket to done by hand"
 	}
-	why := r.GetTrackerWrites()
-	if r.GetTrackerWhy() != "" {
-		why += ": " + r.GetTrackerWhy()
+	return merged + "; the tracker was not updated" + because(r.GetTrackerWhy())
+}
+
+// whyWords says in plain words why a tracker write or a label removal did not
+// happen, for the reasons the verify toolbox reports. A reason missing here
+// is left unsaid rather than shown as a code.
+var whyWords = map[string]string{
+	"TRACKER_CREDENTIALS_MISSING": "the tracker's credentials are missing",
+	"missing-credential":          "the tracker's credentials are missing",
+	"unauthorized":                "the tracker refused the credentials",
+	"forbidden":                   "the tracker refused the credentials",
+	"rate-limited":                "the tracker was rate limited",
+	"no-ticket-line":              "the PR names no ticket",
+	"no-capability":               "this setup cannot write to the tracker",
+	"no-adapter":                  "no tracker is set up",
+	"status-unreadable":           refusals["status-unreadable"],
+	"pr-unreadable":               refusals["pr-unreadable"],
+	"head-unreadable":             refusals["head-unreadable"],
+}
+
+// because is " because <why>" for a reason whyWords knows, else "".
+func because(why string) string {
+	if words, ok := whyWords[why]; ok {
+		return " because " + words
 	}
-	return fmt.Sprintf("%s; the tracker was not updated (%s), so move the ticket to done by hand", merged, why)
+	return ""
 }
 
 // labelLine explains a needs-human label the approval did not remove; decision
@@ -194,19 +221,14 @@ func labelLine(r *pb.VerifyApproveResult, decision string) string {
 		// verify-gate left the label on deliberately: what was approved no longer stands.
 		switch r.GetWhy() {
 		case "pr-not-open":
-			return "The PR is no longer open, so the needs-human label was left on; remove it on the ticket by hand if the work is done."
+			return "The PR is no longer open, so the needs-human label was left on."
 		case "head-moved":
 			return "The PR's head or its park changed after " + decision + ", so the needs-human label was left on."
 		}
 		// An older toolbox reported a failed re-read as skipped too.
-		return fmt.Sprintf("The needs-human label was left on (%s); remove it on the ticket by hand if this head still stands.", r.GetWhy())
+		return "The needs-human label was left on" + because(r.GetWhy()) + "."
 	}
-	why := r.GetTrackerWrites()
-	if r.GetWhy() != "" {
-		why += ": " + r.GetWhy()
-	}
-	// The head may have moved and parked meanwhile, so the removal is conditional.
-	return fmt.Sprintf("The needs-human label could not be removed (%s); remove it on the ticket by hand if this head still stands.", why)
+	return "The needs-human label could not be removed" + because(r.GetWhy()) + "."
 }
 
 // shortSHA abbreviates a commit SHA for display.

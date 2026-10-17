@@ -177,6 +177,12 @@ type mockSessionStore struct {
 	updateHook                 func(id string, params db.UpdateSessionParams) error
 	updateStateConditionalHook func(id string)
 
+	// afterGetHook runs after Get has read its row and beforeUpdateHook before
+	// Update takes m.mu, so both can act through the store the way a concurrent
+	// writer would.
+	afterGetHook     func(id string)
+	beforeUpdateHook func(id string, params db.UpdateSessionParams)
+
 	// Resurrect knobs. afterResurrectToState runs while m.mu is held, right
 	// after a winning resurrect write, so a test can move the row the way a
 	// concurrent writer would and make the compensating write miss.
@@ -232,10 +238,13 @@ func (m *mockSessionStore) Create(_ context.Context, params db.CreateSessionPara
 
 func (m *mockSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
+	m.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
+	}
+	if m.afterGetHook != nil {
+		m.afterGetHook(id)
 	}
 	return s, nil
 }
@@ -261,6 +270,8 @@ func (m *mockSessionStore) ListActive(_ context.Context, repoID string) ([]*mode
 }
 
 func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var result []*db.SessionWithRepo
 	for _, s := range m.sessions {
 		result = append(result, &db.SessionWithRepo{Session: s})
@@ -305,6 +316,9 @@ func (m *mockSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) 
 }
 
 func (m *mockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	if m.beforeUpdateHook != nil {
+		m.beforeUpdateHook(id, params)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -1731,6 +1745,10 @@ type mockVCSProvider struct {
 	// its call recording). Used by the BOS-540 concurrency tests to park the
 	// background create while another writer opens the PR.
 	createPRHook func(vcs.CreatePROpts) (*vcs.PRInfo, error)
+
+	// getPRStatusHook, when set, runs inside GetPRStatus before it answers, so a
+	// test can change a session while a caller waits on GitHub.
+	getPRStatusHook func()
 }
 
 type updatePRTitleCall struct {
@@ -1762,6 +1780,9 @@ func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts
 
 func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, prNumber int) (*vcs.PRStatus, error) {
 	m.getPRStatusPRNumbers = append(m.getPRStatusPRNumbers, prNumber)
+	if m.getPRStatusHook != nil {
+		m.getPRStatusHook()
+	}
 	if m.prStatusErr != nil {
 		return nil, m.prStatusErr
 	}
@@ -8129,6 +8150,132 @@ func TestLinkPR_RefusesATargetAnotherSessionOwns(t *testing.T) {
 		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
 		if _, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked)); err != nil {
 			t.Fatalf("LinkPR: %v", err)
+		}
+	})
+
+	// Note 5 of the #3192 verifier: relinking the PR a session already holds
+	// claims nothing new, so a Blocked peer on the same PR does not refuse it.
+	// A live peer still does, or a Blocked session would come back to life
+	// beside it.
+	relinkOwnPR := func(t *testing.T, selfState, peerState machine.State) (*models.Session, error) {
+		t.Helper()
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: prBranch, State: selfState, PRNumber: &linked}
+		sessions.sessions["sess-other"] = &models.Session{ID: "sess-other", RepoID: "repo-1", Title: "Other work", BranchName: prBranch, State: peerState, PRNumber: &linked}
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+		_, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked))
+		return sessions.sessions["sess-1"], err
+	}
+	t.Run("live session relinks its own PR past a blocked peer on it", func(t *testing.T) {
+		if _, err := relinkOwnPR(t, machine.AwaitingChecks, machine.Blocked); err != nil {
+			t.Fatalf("LinkPR: %v", err)
+		}
+	})
+	t.Run("blocked session relinking its own PR is refused past a live peer on it", func(t *testing.T) {
+		stored, err := relinkOwnPR(t, machine.Blocked, machine.AwaitingChecks)
+		want := `PR #6606 is already linked to session sess-other ("Other work"); archive that session first`
+		if err == nil || err.Error() != want {
+			t.Fatalf("LinkPR error = %v, want %q", err, want)
+		}
+		if stored.State != machine.Blocked {
+			t.Fatalf("refused relink moved the session to %v", stored.State)
+		}
+	})
+
+	// Finding 2 of the #3198 verifier: the relaxation covers a relink that
+	// claims nothing new. A relink of the same PR that moves the session onto
+	// the PR's head branch claims that branch, so a Blocked or Orphaned owner
+	// of it still refuses, as it does for any other link.
+	for _, ownerState := range []machine.State{machine.Blocked, machine.Orphaned} {
+		t.Run("relinking its own PR onto a branch owned by a "+ownerState.String()+" session is refused", func(t *testing.T) {
+			sessions := newMockSessionStore()
+			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: "dave/stale", State: machine.AwaitingChecks, PRNumber: &linked}
+			sessions.sessions["sess-other"] = &models.Session{ID: "sess-other", RepoID: "repo-1", Title: "Other work", BranchName: prBranch, State: ownerState}
+			vp := newMockVCSProvider()
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: prBranch}
+			lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+			_, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked))
+			want := `PR #6606's branch "fix/pr-head" belongs to session sess-other ("Other work"); archive that session first`
+			if err == nil || err.Error() != want {
+				t.Fatalf("LinkPR error = %v, want %q", err, want)
+			}
+			if stored := sessions.sessions["sess-1"]; stored.BranchName != "dave/stale" {
+				t.Fatalf("refused relink moved the session to branch %q", stored.BranchName)
+			}
+		})
+	}
+}
+
+// TestLinkPR_ReviveFollowsTheRevivalDiscipline pins finding 3 of the #3198
+// verifier: a link that brings a session back to life is a revival, so it
+// decides from the row as it is under the start-path lock and refuses when a
+// live session holds the branch the revived row keeps.
+func TestLinkPR_ReviveFollowsTheRevivalDiscipline(t *testing.T) {
+	ctx := context.Background()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: "git@github.com:owner/repo.git"}
+	const branch = "fix/shared"
+	linked := 6606
+
+	t.Run("a blocked session is not revived onto a branch a live session holds", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: branch, State: machine.Blocked}
+		sessions.sessions["sess-other"] = &models.Session{ID: "sess-other", RepoID: "repo-1", Title: "Other work", BranchName: branch, State: machine.ImplementingPlan}
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: branch}
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+		_, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked))
+		want := `PR #6606's branch "fix/shared" belongs to session sess-other ("Other work"); archive that session first`
+		if err == nil || err.Error() != want {
+			t.Fatalf("LinkPR error = %v, want %q", err, want)
+		}
+		if stored := sessions.sessions["sess-1"]; stored.State != machine.Blocked || stored.PRNumber != nil {
+			t.Fatalf("refused link changed the session: state %v, PR %v", stored.State, stored.PRNumber)
+		}
+	})
+
+	// Finding 3 of the #3204 verifier: a fork PR's head is not on origin, so the
+	// revived row keeps its own branch and the refusal must name that branch,
+	// not call it the PR's.
+	t.Run("a fork PR's refusal names the branch the session keeps", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: branch, State: machine.Blocked}
+		sessions.sessions["sess-other"] = &models.Session{ID: "sess-other", RepoID: "repo-1", Title: "Other work", BranchName: branch, State: machine.ImplementingPlan}
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: "patch-1", IsCrossRepository: true}
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+		_, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked))
+		want := `branch "fix/shared", which this session keeps, belongs to session sess-other ("Other work"); archive that session first`
+		if err == nil || err.Error() != want {
+			t.Fatalf("LinkPR error = %v, want %q", err, want)
+		}
+		if !IsDuplicateActiveSessionError(err) {
+			t.Fatalf("LinkPR error %T is not a duplicate-session error", err)
+		}
+	})
+
+	t.Run("the decision follows the row as it is under the lock", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", BranchName: branch, State: machine.Blocked, PRNumber: &linked}
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadBranch: branch}
+		vp.getPRStatusHook = func() {
+			merged := *sessions.sessions["sess-1"]
+			merged.State = machine.Merged
+			sessions.sessions["sess-1"] = &merged
+		}
+		lifecycle := newTestLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop())
+
+		if _, err := lifecycle.LinkPR(ctx, "sess-1", strconv.Itoa(linked)); err != nil {
+			t.Fatalf("LinkPR: %v", err)
+		}
+		if stored := sessions.sessions["sess-1"]; stored.State != machine.Merged {
+			t.Fatalf("state = %v, want Merged: the PR merged while link-pr waited on GitHub, and relinking a merged PR never reopens the session", stored.State)
 		}
 	})
 }

@@ -481,6 +481,10 @@ export function selectTargets(files) {
       file.startsWith('plugins/bossd-plugin-claude/skilldata/skills/') ||
       file.startsWith('lib/bossalib/bossmcp/') ||
       file.startsWith('lib/bossalib/config/') ||
+      // skills-toolbox/verify-park-note.test.mjs compares the PR comment's park words against
+      // the golden the Go park table generates here. No `continue`: the moduleRules lookup below
+      // still adds the Go tests.
+      file.startsWith('lib/bossalib/attention/') ||
       file.startsWith('services/bossd/internal/tmux/') ||
       // scripts/check-ellipsis-consistency.mjs reads the Boss TUI's four rendered-copy trees to
       // keep the ellipsis character from splitting back into a run of three full stops. A view

@@ -2,6 +2,7 @@ package callback
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,11 +37,17 @@ func migrationsDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
 }
 
-// newStore returns an isolated GithubCallback store. The migration chain is
-// expensive under -race, so it is run once into a closed template database and
-// each sequential unit test receives a copy. Keep the pool at one connection
-// to retain the in-memory fixture's deterministic behavior.
+// newStore returns an isolated GithubCallback store.
 func newStore(t *testing.T) *db.SQLiteGithubCallbackStore {
+	t.Helper()
+	return db.NewGithubCallbackStore(newCallbackDB(t))
+}
+
+// newCallbackDB returns an isolated, fully migrated database. The migration
+// chain is expensive under -race, so it is run once into a closed template
+// database and each sequential unit test receives a copy. Keep the pool at one
+// connection to retain the in-memory fixture's deterministic behavior.
+func newCallbackDB(t *testing.T) *sql.DB {
 	t.Helper()
 	template := callbackSchemaTemplate(t)
 	path := filepath.Join(t.TempDir(), "cb.db")
@@ -58,7 +65,7 @@ func newStore(t *testing.T) *db.SQLiteGithubCallbackStore {
 	d.SetMaxOpenConns(1)
 	d.SetMaxIdleConns(1)
 	t.Cleanup(func() { _ = d.Close() })
-	return db.NewGithubCallbackStore(d)
+	return d
 }
 
 func callbackSchemaTemplate(t *testing.T) string {

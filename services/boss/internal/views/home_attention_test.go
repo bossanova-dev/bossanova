@@ -451,30 +451,35 @@ func TestHomeFixRowShowsTheStateThatNeedsFixing(t *testing.T) {
 		intent pb.DisplayIntent
 		state  pb.SessionState
 		pr     pb.DisplayStatus
+		codes  []string
 		want   string
 	}{
-		{"failing checks", "⨯ failing", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_FAILING, styleStatusDanger.Render("⨯ failing")},
-		{"blocked verify park", displaystatus.BlockedLabel, danger, 0, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, styleStatusDanger.Render("blocked")},
-		{"merge conflict", "⨯ conflict", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, styleStatusDanger.Render("⨯ conflict")},
-		{"changes requested", "⨯ rejected", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, styleStatusDanger.Render("⨯ rejected")},
-		{"failing checks on a blocked run", "⨯ failing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_FAILING, styleStatusDanger.Render("⨯ failing")},
-		{"daemon without a display label", "", pb.DisplayIntent_DISPLAY_INTENT_UNSPECIFIED, 0, 0, fix},
-		{"idle", "idle", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, fix},
-		{"waiting", displaystatus.WaitingLabel, pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, fix},
-		{"repairing", "repairing", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, fix},
-		{"merging", "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, fix},
+		{"failing checks", "⨯ failing", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_FAILING, nil, styleStatusDanger.Render("⨯ failing")},
+		{"blocked verify park", displaystatus.BlockedLabel, danger, 0, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, nil, styleStatusDanger.Render("blocked")},
+		{"merge conflict", "⨯ conflict", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, nil, styleStatusDanger.Render("⨯ conflict")},
+		{"changes requested", "⨯ rejected", danger, 0, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, nil, styleStatusDanger.Render("⨯ rejected")},
+		{"failing checks on a blocked run", "⨯ failing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_FAILING, nil, styleStatusDanger.Render("⨯ failing")},
+		{"daemon without a display label", "", pb.DisplayIntent_DISPLAY_INTENT_UNSPECIFIED, 0, 0, nil, fix},
+		{"idle", "idle", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, nil, fix},
+		{"waiting", displaystatus.WaitingLabel, pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, nil, fix},
+		{"repairing", "repairing", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, nil, fix},
+		{"merging", "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, nil, fix},
 		// A rotation-incident FIX on a green PR: the label is not the problem.
-		{"passing checks", "✓ passing", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, 0, pb.DisplayStatus_DISPLAY_STATUS_PASSING, fix},
-		{"muted draft", "draft", pb.DisplayIntent_DISPLAY_INTENT_MUTED, 0, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, fix},
+		{"passing checks", "✓ passing", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, 0, pb.DisplayStatus_DISPLAY_STATUS_PASSING, nil, fix},
+		{"muted draft", "draft", pb.DisplayIntent_DISPLAY_INTENT_MUTED, 0, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, nil, fix},
 		// The errored recolor serves a blocked run's every state as DANGER.
-		{"idle blocked run", "idle", danger, blocked, 0, fix},
-		{"passing checks on a blocked run", "✓ passing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_PASSING, fix},
-		{"waiting orphaned run", displaystatus.WaitingLabel, danger, pb.SessionState_SESSION_STATE_ORPHANED, 0, fix},
+		{"idle blocked run", "idle", danger, blocked, 0, nil, fix},
+		{"passing checks on a blocked run", "✓ passing", danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_PASSING, nil, fix},
+		{"waiting orphaned run", displaystatus.WaitingLabel, danger, pb.SessionState_SESSION_STATE_ORPHANED, 0, nil, fix},
+		// A park that only asks for a sign-off is not the failure on a blocked
+		// run; a park with a failure code is.
+		{"sign-off verify park on a blocked run", displaystatus.NeedsSignOffLabel, danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, []string{"human-review:ui"}, fix},
+		{"blocked verify park on a blocked run", displaystatus.BlockedLabel, danger, blocked, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, []string{"ledger-open"}, styleStatusDanger.Render("blocked")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHomeModel(nil, context.Background(), nil)
 			h.width, h.height = 120, 30
-			s := &pb.Session{Id: "fix", Title: "Repair feature", DisplayLabel: tc.label, DisplayIntent: tc.intent, State: tc.state, DisplayStatus: tc.pr, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Run stopped"}}
+			s := &pb.Session{Id: "fix", Title: "Repair feature", DisplayLabel: tc.label, DisplayIntent: tc.intent, State: tc.state, DisplayStatus: tc.pr, VerifyParkCodes: tc.codes, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Run stopped"}}
 			if got := h.renderSessionStatus(s); got != tc.want {
 				t.Fatalf("status = %q, want %q", got, tc.want)
 			}
@@ -610,8 +615,8 @@ func TestHomeSectionTitlesOnlySeparateTwoGroups(t *testing.T) {
 					continue
 				}
 				titles++
-				if r[2] != styleStatusInfo.Render(title) {
-					t.Errorf("title %q is not in the info blue: %q", title, r[2])
+				if r[2] != styleEmphasis.Render(title) {
+					t.Errorf("title %q is not in the emphasis foreground: %q", title, r[2])
 				}
 				if i == 0 || strings.Join(rows[i-1], "") != "" {
 					t.Errorf("title %q has no blank row above it", title)
@@ -680,7 +685,7 @@ func TestHomeFooterActionsNeverShareAKey(t *testing.T) {
 		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
 		"question":    {QuestionText: "which one?"},
 		"review":      {ParkCodes: []string{"human-review:ui"}, Evidence: &attention.Evidence{URL: "https://example.com/proof.mp4"}},
-		"blocked":     {ParkCodes: []string{"human-review:unproven"}},
+		"blocked":     {ParkCodes: []string{"ledger-open"}},
 		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
 		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},
 		"legacy":      nil,
@@ -766,7 +771,7 @@ func TestHomeSectionRuleFitsItsWidth(t *testing.T) {
 			t.Errorf("width %d: rule is %d wide", tt.width, ansi.StringWidth(got))
 		}
 	}
-	if got := sectionRule("NEEDS YOU", 30); !strings.Contains(got, styleStatusInfo.Render("NEEDS YOU")) || !strings.Contains(got, styleStatusMuted.Render("──────────")) {
+	if got := sectionRule("NEEDS YOU", 30); !strings.Contains(got, styleEmphasis.Render("NEEDS YOU")) || !strings.Contains(got, styleStatusMuted.Render("──────────")) {
 		t.Errorf("rule styling: %q", got)
 	}
 }

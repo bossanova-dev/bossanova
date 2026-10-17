@@ -553,8 +553,8 @@ func rotationExhaustedHint(sess *pb.Session, now time.Time) string {
 // writes no rotation event, so recovery is what ends the wedge. bossd makes
 // last_agent_activity_at restart-proof after a give-up (it reads the persisted
 // transcripts and runs), so this reads the same two facts the web hint and the
-// session timeline read. rotationHistoryBlock keeps listing the event either
-// way.
+// session timeline read. The chat picker's timeline keeps listing the event
+// either way.
 func rotationRespawnCapHint(sess *pb.Session) string {
 	if sess == nil {
 		return ""
@@ -569,57 +569,16 @@ func rotationRespawnCapHint(sess *pb.Session) string {
 	return "auth wedge unresolved — respawn cap reached, may need /login"
 }
 
-// rotationHistoryBlock renders the session's recent rotation decisions
-// (newest-first, capped) as a muted block, e.g.
-// "15:02 yuki@kamik.ai switched to dave@kamik.ai — resumed". The per-row
-// timestamp is date-aware relative to now (see rotationEventTime). Returns ""
-// when the session has no rotation history so callers can skip rendering
-// entirely (no layout shift).
-func rotationHistoryBlock(sess *pb.Session, width int, now time.Time) string {
-	if sess == nil {
-		return ""
+// rotationEventText says what one rotation decision did, e.g.
+// "yuki@kamik.ai switched to dave@kamik.ai — resumed". A generic
+// (UNSPECIFIED) event has no label and reads as its detail alone, with no
+// "— " join (BOS-432).
+func rotationEventText(ev *pb.RotationEvent) string {
+	label, detail := rotationEventLabel(ev), rotationEventDetail(ev)
+	if label != "" && detail != "" {
+		return label + " — " + detail
 	}
-	evs := sess.GetRotationEvents()
-	if len(evs) == 0 {
-		return ""
-	}
-	const maxRows = 5
-	lines := make([]string, 0, maxRows+1)
-	lines = append(lines, "Rotation history")
-	for i, ev := range evs {
-		if i == maxRows {
-			break
-		}
-		// Assemble time + label + detail, tolerating an empty label: a
-		// generic (UNSPECIFIED) event drops the label entirely and renders
-		// "<time> <detail>" with no "— " join and no double space (BOS-432).
-		label := rotationEventLabel(ev)
-		detail := rotationEventDetail(ev)
-		line := rotationEventTime(ev.GetCreatedAt().AsTime(), now)
-		switch {
-		case label != "" && detail != "":
-			line += " " + label + " — " + detail
-		case label != "":
-			line += " " + label
-		case detail != "":
-			line += " " + detail
-		}
-		lines = append(lines, line)
-	}
-	return styleStatusMuted.Width(width).Render(strings.Join(lines, "\n"))
-}
-
-// rotationEventTime renders a rotation event's timestamp for a history row:
-// time-only ("15:04") when the event falls on the same local calendar day as
-// now, otherwise ISO date + time ("2006-01-02 15:04") so older events carry a
-// date. Both sides are converted to local time before comparison (BOS-432).
-func rotationEventTime(t, now time.Time) string {
-	lt := t.Local()
-	n := now.Local()
-	if lt.Year() == n.Year() && lt.YearDay() == n.YearDay() {
-		return lt.Format("15:04")
-	}
-	return lt.Format("2006-01-02 15:04")
+	return label + detail
 }
 
 // rotationEventDetail preserves outcome-specific context. The TrimPrefix is a

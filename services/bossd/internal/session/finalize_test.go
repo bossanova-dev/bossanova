@@ -2582,6 +2582,49 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	}
 }
 
+// A GitHub origin spelled with git's absolute-path or SSH-over-443 forms is
+// still GitHub, so a cron session with changes there must reach the PR path
+// rather than the no-GitHub hard delete.
+func TestFinalizeSession_GitHubOriginSpellingsAreNotHardDeleted(t *testing.T) {
+	for _, origin := range []string{
+		"git@github.com:/owner/repo.git",
+		"ssh://git@github.com:/owner/repo.git",
+		"ssh://git@ssh.github.com:443/owner/repo.git",
+	} {
+		t.Run(origin, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			wt := &mockWorktreeManager{statusOut: "?? new.txt"}
+			cron := &recordingCronJobStore{}
+
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo-main", OriginURL: origin}
+			cronJobID := "cron-1"
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:           "sess-1",
+				RepoID:       "repo-1",
+				WorktreePath: "/tmp/wt-sess1",
+				State:        machine.ImplementingPlan,
+				CronJobID:    &cronJobID,
+			}
+
+			lc := newTestLifecycle(sessions, repos, nil, cron, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+			res, err := lc.FinalizeSession(context.Background(), "sess-1")
+			if err != nil {
+				t.Fatalf("FinalizeSession: %v", err)
+			}
+			if res.Outcome == models.CronJobOutcomePRSkippedNoGitHub || res.Deleted {
+				t.Fatalf("outcome=%q deleted=%v, want the GitHub PR path", res.Outcome, res.Deleted)
+			}
+			if len(wt.archived) != 0 {
+				t.Errorf("worktree archived %v, want it kept", wt.archived)
+			}
+			if _, ok := sessions.sessions["sess-1"]; !ok {
+				t.Error("cron session row was deleted")
+			}
+		})
+	}
+}
+
 // TestFinalizeSession_PRSkippedNoGitHub_Interactive is the critical negative
 // guard: an interactive (non-cron, CronJobID==nil) session in a no-GitHub
 // repo must NOT be auto-deleted. The session row must be preserved and the

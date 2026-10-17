@@ -2,6 +2,7 @@ package taskorchestrator
 
 import (
 	"context"
+	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -31,6 +32,9 @@ type defaultLivenessChecker struct {
 	chats           db.AgentChatStore
 	agentForSession func(*models.Session) agent.AgentRunner
 	tmux            *tmux.Client
+	// daemonStartedAt is when this daemon process started. A revival claimed
+	// before it has no spawn in flight; see session.RevivalStarting.
+	daemonStartedAt time.Time
 }
 
 // NewLivenessChecker creates a SessionLivenessChecker backed by the
@@ -40,9 +44,9 @@ type defaultLivenessChecker struct {
 // own internal routing — and may return nil for sessions whose agent
 // plugin isn't loaded; SessionLiveness treats nil as "skip the runner
 // check, fall through to tmux/chat liveness signals" rather than as
-// a fatal error.
-func NewLivenessChecker(sessions db.SessionStore, chats db.AgentChatStore, agentForSession func(*models.Session) agent.AgentRunner, tmux *tmux.Client) SessionLivenessChecker {
-	return &defaultLivenessChecker{sessions: sessions, chats: chats, agentForSession: agentForSession, tmux: tmux}
+// a fatal error. daemonStartedAt is when this daemon process started.
+func NewLivenessChecker(sessions db.SessionStore, chats db.AgentChatStore, agentForSession func(*models.Session) agent.AgentRunner, tmux *tmux.Client, daemonStartedAt time.Time) SessionLivenessChecker {
+	return &defaultLivenessChecker{sessions: sessions, chats: chats, agentForSession: agentForSession, tmux: tmux, daemonStartedAt: daemonStartedAt}
 }
 
 // tmuxHostedSession reports whether the session runs inside a tmux pane rather
@@ -81,6 +85,10 @@ func (c *defaultLivenessChecker) SessionLiveness(ctx context.Context, sessionID 
 	default:
 		// All post-ImplementingPlan states (PushingBranch, AwaitingChecks, etc.)
 		// are driven by VCS events, not the agent. The task is not stuck.
+		return session.LivenessAlive
+	}
+
+	if session.RevivalStarting(sess, c.daemonStartedAt, time.Now()) {
 		return session.LivenessAlive
 	}
 

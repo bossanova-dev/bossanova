@@ -210,8 +210,28 @@ func (r *Retirer) retiresMergedBaseline(ctx context.Context, cb *models.GithubCa
 	return callbackOnOwnPR(cb, session, nwo), nil
 }
 
-// DeliveryVerdict drops stale terminal-session deliveries and missing targets.
-// A transient lookup failure preserves today's delivery/retry behavior.
+// armedBeforeReclaim reports a watch armed by a chat that automation has since
+// replaced. Delivery would wake that chat beside its replacement, so two agents
+// would react to one PR failure in one worktree. A watch armed after the reclaim
+// comes from a chat the operator revived.
+func armedBeforeReclaim(cb *models.GithubCallback, chat *models.AgentChat) bool {
+	return chat.ReclaimedAt != nil && !cb.CreatedAt.After(*chat.ReclaimedAt)
+}
+
+// ownMergeWake reports a merge watch on the session's own PR. Repair stops once
+// that PR merges, so waking a reclaimed chat for it raises no rival agent. A
+// failed repo lookup keeps the wake, matching the gate's transient-error rule.
+func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GithubCallback, session *models.Session) bool {
+	if cb.Trigger != models.GithubCallbackTriggerMerged {
+		return false
+	}
+	nwo, err := r.ownPR(ctx, session)
+	return err != nil || callbackOnOwnPR(cb, session, nwo)
+}
+
+// DeliveryVerdict drops stale terminal-session deliveries, watches armed by a
+// since-reclaimed chat, and missing targets. A transient lookup failure
+// preserves today's delivery/retry behavior.
 func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GithubCallback) (deliver bool, reason string) {
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -226,6 +246,9 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GithubCallback
 	}
 	if err != nil {
 		return true, ""
+	}
+	if armedBeforeReclaim(cb, chat) && !r.ownMergeWake(ctx, cb, session) {
+		return false, "target chat reclaimed"
 	}
 	if session.State == machine.Closed {
 		return false, "session closed"

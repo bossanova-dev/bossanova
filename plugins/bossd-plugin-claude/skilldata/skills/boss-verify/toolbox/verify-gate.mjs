@@ -2293,7 +2293,6 @@ export async function post(options, deps = {}) {
         note: parkNote({
           codes: reason.split(','),
           headSha,
-          pr,
           facts: { title: p.title, body: p.body, label, extensionResults, ticketless },
           ledger: options.ledger ?? null,
         }),

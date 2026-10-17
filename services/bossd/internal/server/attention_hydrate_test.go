@@ -34,8 +34,8 @@ func TestAttentionListParkCases(t *testing.T) {
 		{"2979", "human-review:ui", "", "UI change · evidence video (2:40)", review, nil},
 		{"2983", "human-review:security", "outbound requests", "Security change: outbound requests", review, nil},
 		{"2987", "human-review:database", "", "Database migration", review, nil},
-		{"2967", "human-review:unproven", "", "Some checks have no evidence", fix, nil},
-		{"2965", "no-receipt", "", "Built by hand, no factory review", fix, nil},
+		{"3189", "human-review:unproven", "", "Some checks have no evidence", review, nil},
+		{"no-receipt", "no-receipt", "", "No review of the latest commit", review, nil},
 		{"mixed", "human-review:ui,ledger-open", "", "The PR checklist has 1 open item", fix, []string{"Open human follow-up: watch the rollout"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {

@@ -61,6 +61,15 @@ func (s *SQLiteSessionStore) LinkTrackerIfUnlinked(ctx context.Context, id, expe
 	return n == 1, nil
 }
 
+// rotationStampOnStateWrite is the SET clause a state write carries when it can
+// land outside Blocked; bind the new state to its one placeholder.
+// rotation_resume_at marks a parked rotation, so a stamp that outlives the
+// Blocked state reads as a revival in flight for RevivalStartGrace and re-arms
+// the rotation sweep on a later, unrelated Blocked. The rotation sweep's own
+// claim (UpdateStateConditional) keeps the stamp on purpose: rotateAndRestart
+// clears it when it commits the new run, and a failed restart re-parks on it.
+var rotationStampOnStateWrite = fmt.Sprintf("rotation_resume_at = CASE WHEN ? = %d THEN rotation_resume_at ELSE NULL END", int(machine.Blocked))
+
 // OrphanHeadlessRun atomically records the daemon-restart marker with the
 // ImplementingPlan→Orphaned transition. Keeping both writes in one UPDATE
 // avoids leaving a markerless Orphaned row that an auto-resume sweep cannot
@@ -68,7 +77,7 @@ func (s *SQLiteSessionStore) LinkTrackerIfUnlinked(ctx context.Context, id, expe
 func (s *SQLiteSessionStore) OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, blocked_reason = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, blocked_reason = ?, rotation_resume_at = NULL, updated_at = ? WHERE id = ? AND state = ?`,
 		machine.Orphaned, machine.Orphaned, now, reason, now, id, machine.ImplementingPlan)
 	if err != nil {
 		return false, fmt.Errorf("orphan headless run: %w", err)
@@ -124,8 +133,8 @@ func (s *SQLiteSessionStore) ClaimUnarchivedOrphan(ctx context.Context, id, reas
 func (s *SQLiteSessionStore) ResurrectToState(ctx context.Context, id string, newState int) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET archived_at = NULL, run_blocked_reason = NULL, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
-		newState, newState, now, now, id)
+		`UPDATE sessions SET archived_at = NULL, run_blocked_reason = NULL, state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, `+rotationStampOnStateWrite+`, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
+		newState, newState, now, newState, now, id)
 	if err != nil {
 		return false, fmt.Errorf("resurrect session to state: %w", err)
 	}
@@ -176,7 +185,7 @@ func (s *SQLiteSessionStore) RollbackFailedResurrect(ctx context.Context, id str
 func (s *SQLiteSessionStore) CommitOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET agent_session_id = ?, blocked_reason = NULL, updated_at = ?
+		`UPDATE sessions SET agent_session_id = ?, blocked_reason = NULL, rotation_resume_at = NULL, updated_at = ?
 		 WHERE id = ? AND state = ? AND archived_at IS NULL AND blocked_reason = ? AND agent_session_id IS ?`,
 		newAgentSessionID, now, id, machine.ImplementingPlan, reason, priorAgentSession)
 	if err != nil {
@@ -245,7 +254,7 @@ func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id 
 	placeholders := make([]string, len(expectedStates))
 	args := make([]any, 0, len(expectedStates)+5)
 	now := sqlutil.TimeNow()
-	args = append(args, newState, newState, now, now, id)
+	args = append(args, newState, newState, now, newState, now, id)
 	for i, st := range expectedStates {
 		placeholders[i] = "?"
 		args = append(args, st)
@@ -253,7 +262,7 @@ func (s *SQLiteSessionStore) UpdateStateConditionalFrom(ctx context.Context, id 
 	// #nosec G202 -- `... IN (` + static `?` placeholder builder + `)`; states bound via ?, not user text
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
+		`UPDATE sessions SET state = ?, state_entered_at = CASE WHEN state != ? THEN ? ELSE state_entered_at END, `+rotationStampOnStateWrite+`, updated_at = ? WHERE id = ? AND state IN (`+strings.Join(placeholders, ", ")+`)`,
 		args...)
 	if err != nil {
 		return false, fmt.Errorf("update state conditional from: %w", err)
@@ -470,6 +479,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		args = append(args, *params.State, now)
 		sets = append(sets, "state = ?")
 		args = append(args, *params.State)
+		if params.RotationResumeAt == nil {
+			sets = append(sets, rotationStampOnStateWrite)
+			args = append(args, *params.State)
+		}
 	}
 	if params.IsBranchCreated != nil {
 		sets = append(sets, "is_branch_created = ?")
@@ -1020,7 +1033,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 // archive and a competing replacement. sql.ErrNoRows means ownership was lost.
 func (s *SQLiteSessionStore) CommitRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error) {
 	now := sqlutil.TimeNow()
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state = ?, state_entered_at = ?, agent_session_id = ?, blocked_reason = NULL, run_blocked_reason = NULL, is_automation_enabled = 1, run_dropped_at = NULL, run_dropped_agent_session_id = NULL, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ? AND agent_session_id IS ?`, int(machine.ImplementingPlan), now, newAgentID, now, id, expectedState, priorAgentID)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state = ?, state_entered_at = ?, agent_session_id = ?, blocked_reason = NULL, run_blocked_reason = NULL, rotation_resume_at = NULL, is_automation_enabled = 1, run_dropped_at = NULL, run_dropped_agent_session_id = NULL, updated_at = ? WHERE id = ? AND archived_at IS NULL AND state = ? AND agent_session_id IS ?`, int(machine.ImplementingPlan), now, newAgentID, now, id, expectedState, priorAgentID)
 	if err != nil {
 		return nil, fmt.Errorf("commit run resume: %w", err)
 	}

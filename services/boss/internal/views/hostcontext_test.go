@@ -24,3 +24,21 @@ func TestHostContextAccessorsFollowTheDestination(t *testing.T) {
 		t.Fatalf("remoteHostDestination() = %q, want the destination verbatim", got)
 	}
 }
+
+func TestURLHostFromSSHDestination(t *testing.T) {
+	cases := []struct{ destination, want string }{
+		{"delta", "delta"}, {"  delta  ", "delta"}, {"deploy@delta", "delta"},
+		{"deploy@delta.example.com", "delta.example.com"}, {"ssh://deploy@delta:2222", "delta"},
+		{"ssh://[fe80::1]:22", "fe80::1"}, {"fe80::1", "fe80::1"}, {"[::1]", "::1"},
+		{"a@b@delta", "delta"}, {"", ""}, {"  ", ""}, {"deploy@", ""},
+		{"-oProxyCommand=x", ""}, {"del ta", ""}, {"delta/x", ""}, {"delta\x1b", ""},
+		{"del\u00a0ta", ""}, {"delta\x7f", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.destination, func(t *testing.T) {
+			if got := urlHostFromSSHDestination(tc.destination); got != tc.want {
+				t.Errorf("host = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

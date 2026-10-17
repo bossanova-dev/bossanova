@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -896,8 +897,8 @@ func renderChatStartFailed() string {
 // with RAW ANSI (never lipgloss — lipgloss.Render on a string containing OSC 8
 // strips the leading ESC bytes and leaves the payload visible) and then calls
 // this to make it clickable. Callers are responsible for validating url; see
-// isHTTPEndpointURL for the endpoint path, where the URL is daemon-supplied
-// rather than a well-known PR/tracker URL.
+// isHTTPEndpointURL for the endpoint path, where the daemon URL becomes
+// host-aware under --host rather than using a well-known PR/tracker URL.
 func osc8Link(url, styledLabel string) string {
 	return "\x1b]8;;" + url + "\x1b\\" + styledLabel + "\x1b]8;;\x1b\\"
 }
@@ -1158,10 +1159,11 @@ func endpointLabel(ep *pb.HttpEndpoint) string {
 // renderSessionEndpoints returns the muted, individually clickable endpoint
 // labels for a session, joined by a single space, or "" when there is nothing
 // to render. Each label is underlined and wrapped in an OSC 8 hyperlink ONLY
-// when its URL passes isHTTPEndpointURL; an endpoint whose URL is missing,
+// when its host-aware URL passes isHTTPEndpointURL; an endpoint whose URL is missing,
 // non-HTTP, or otherwise unsafe still shows its port, plainly muted and not
 // underlined, so the operator sees the port without the TUI emitting an escape
-// envelope around an untrusted target.
+// envelope around an untrusted target. Under --host, loopback targets use the
+// remote destination host; an underivable destination leaves labels unlinked.
 func renderSessionEndpoints(sess *pb.Session) string {
 	eps := renderableEndpoints(sess)
 	if len(eps) == 0 {
@@ -1173,13 +1175,40 @@ func renderSessionEndpoints(sess *pb.Session) string {
 			b.WriteString(mutedTextOpen + endpointSeparator + mutedTextClose)
 		}
 		label := endpointLabel(ep)
-		if url := ep.GetUrl(); isHTTPEndpointURL(url) {
+		if url, ok := endpointLinkURL(ep); ok && isHTTPEndpointURL(url) {
 			b.WriteString(osc8Link(url, mutedUnderlineOpen+label+mutedUnderlineClose))
 			continue
 		}
 		b.WriteString(mutedTextOpen + label + mutedTextClose)
 	}
 	return b.String()
+}
+
+// endpointLinkURL keeps daemon endpoint data intact while deriving a browser
+// target for this client's host context. Non-loopback URLs remain unchanged.
+func endpointLinkURL(ep *pb.HttpEndpoint) (string, bool) {
+	raw := ep.GetUrl()
+	if !isRemoteHost() {
+		return raw, true
+	}
+	host := remoteHostURLHost()
+	if host == "" || !isHTTPEndpointURL(raw) {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	h := u.Hostname()
+	if !strings.EqualFold(h, "localhost") && !net.ParseIP(h).IsLoopback() {
+		return raw, true
+	}
+	port := u.Port()
+	if port == "" {
+		port = strconv.FormatUint(uint64(ep.GetPort()), 10)
+	}
+	u.Host = net.JoinHostPort(host, port)
+	return u.String(), true
 }
 
 // isHTTPEndpointURL reports whether raw is safe to place inside an OSC 8

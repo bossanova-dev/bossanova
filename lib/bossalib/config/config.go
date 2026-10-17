@@ -434,21 +434,23 @@ const (
 	switchPolicyMargin      = 35 * time.Second
 )
 
-// StartChatRunSubmitVerifierTail and StartChatRunFreshSessionIDResolveTail are
-// the two fixed in-RPC tails StartChatRunBudgetFor accounts for after the
-// session-start readiness wait. They restate values in services/bossd/internal:
-// submitVerifyWait from tmux.startDeliveryOpts and
+// StartChatRunTypedDrawTail, StartChatRunSubmitVerifierTail and
+// StartChatRunFreshSessionIDResolveTail are the fixed in-RPC tails
+// StartChatRunBudgetFor accounts for after the session-start readiness wait.
+// They restate values in services/bossd/internal: the typed-line draw wait times
+// its attempts and submitVerifyWait from tmux.startDeliveryOpts, and
 // freshProviderSessionIDResolveDeadline from session.StartTmuxChat. bossalib
 // cannot import either package, so bossd-side drift guards hold these pairs
 // equal.
 const (
+	StartChatRunTypedDrawTail             = 15 * time.Second
 	StartChatRunSubmitVerifierTail        = 2 * time.Second
 	StartChatRunFreshSessionIDResolveTail = 2 * time.Second
 )
 
 // StartChatRunInRPCTail is the fixed floor for the work that follows the
 // readiness wait inside one StartChatRun RPC.
-const StartChatRunInRPCTail = StartChatRunSubmitVerifierTail + StartChatRunFreshSessionIDResolveTail
+const StartChatRunInRPCTail = StartChatRunTypedDrawTail + StartChatRunSubmitVerifierTail + StartChatRunFreshSessionIDResolveTail
 
 // switchBudgetAllowances is the fixed part of the budget: everything except the
 // operator-configurable readiness term.

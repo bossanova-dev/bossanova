@@ -756,7 +756,7 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
-				for _, text := range []string{"Timeline", "Needed from you", "head 2bbaede", "[enter] open chat"} {
+				for _, text := range []string{"Timeline", "Needed from you", "[enter] open chat"} {
 					if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
 						t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
 					}
@@ -774,6 +774,45 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 			t.Logf("PTY details capture:\n%s", h.Driver.Screen())
 		})
 	}
+}
+
+// A session that needs you keeps its status in the details header, and an
+// archive in flight shows the archiving spinner there, as for any session.
+func TestTUI_ChatPicker_AttentionHeaderKeepsStatusAndArchiving(t *testing.T) {
+	sessions := testSessions()[:1]
+	sessions[0].DisplayLabel = "fix"
+	sessions[0].DisplayIntent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+	sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Failed after 3 attempts"}
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...), tuitest.WithTerminalSize(100, 24), tuitest.WithArchiveDelay(3*time.Second))
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Add dark mode (fix)", "add-dark-mode · work-claude", "Needed from you", "[a]rchive"} {
+		if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+			t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
+		}
+	}
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Archive this session?"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Archiving session…") && strings.Contains(screen, "archiving)")
+	}); err != nil {
+		t.Fatalf("header lost the archiving spinner: %v\n%s", err, h.Driver.Screen())
+	}
+	t.Logf("PTY archiving capture:\n%s", h.Driver.Screen())
 }
 
 func TestTUI_ChatPicker_LongQuestionScroll(t *testing.T) {

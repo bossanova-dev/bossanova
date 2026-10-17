@@ -40,6 +40,7 @@ go_test(
         "tmux_submit_verify_queued_test.go",
         "tmux_submit_verify_receipt_test.go",
         "tmux_test.go",
+        "tmux_typed_draw_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":tmux"],

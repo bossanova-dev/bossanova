@@ -244,7 +244,7 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 				}
 			}
 			if tt.kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
-				for _, text := range []string{"Timeline", "Needed from you", "done · standby: wakes if CI turns red", "verify", "[enter] open chat", "head 2bbaede"} {
+				for _, text := range []string{"Timeline", "Needed from you", "done · standby: wakes if CI turns red", "verify", "[enter] open chat"} {
 					if !strings.Contains(screen, text) {
 						t.Errorf("missing %s", text)
 					}
@@ -270,19 +270,10 @@ func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	if m.neededQuestion() != "Is this safe to merge?" {
 		t.Fatal("security question missing")
 	}
-	for _, tt := range []struct {
-		kind  pb.AttentionKind
-		label string
-	}{{pb.AttentionKind_ATTENTION_KIND_FIX, "fix · failed"}, {pb.AttentionKind_ATTENTION_KIND_QUESTION, "question · asked"}, {pb.AttentionKind_ATTENTION_KIND_REVIEW, "review · parked"}, {pb.AttentionKind_ATTENTION_KIND_MERGE, "merge · ready"}} {
-		m.session.Attention.Kind = tt.kind
-		if !strings.HasPrefix(attentionDetailStatus(m.session), tt.label) {
-			t.Errorf("header %s", attentionDetailStatus(m.session))
-		}
-	}
 	m.session.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
 	m.session.Attention.ProgressLabel = "building"
-	if !strings.HasPrefix(attentionDetailStatus(m.session), "building") || m.neededQuestion() != "" {
-		t.Fatal("progress header/needed block")
+	if m.neededQuestion() != "" {
+		t.Fatal("in-progress session has a needed block")
 	}
 	m.timeline[0].Detail = "https://secret.example/video"
 	m.timeline[0].State = pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED
@@ -337,19 +328,48 @@ func TestChatPickerUIReviewQuestionNamesTheVideoOnlyWithEvidence(t *testing.T) {
 }
 
 // TestChatPickerDetailsBannerSaysReviewNotNeedsSignOff: the session-details
-// title never shows the API's "needs sign-off" label. Without attention it
-// carries the TUI's "review" mapping; with attention the second line says
-// what the session waits on and the title carries no status suffix.
+// title never shows the API's "needs sign-off" label, with or without
+// attention. Its status suffix carries the TUI's "review" mapping.
 func TestChatPickerDetailsBannerSaysReviewNotNeedsSignOff(t *testing.T) {
 	sess := &pb.Session{Id: "s", Title: "Hide the line", PrNumber: new(int32(3154)), DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, DisplayLabel: displaystatus.NeedsSignOffLabel, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
-	banner := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: sess, width: 160}))
-	if !strings.Contains(banner, "Hide the line (review)") || strings.Contains(banner, displaystatus.NeedsSignOffLabel) {
-		t.Fatalf("banner without attention:\n%s", banner)
+	for _, attention := range []*pb.SessionAttention{nil, {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, ParkCodes: []string{"human-review:ui"}, Since: timestamppb.Now()}} {
+		sess.Attention = attention
+		banner := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: sess, width: 160}))
+		if !strings.Contains(banner, "Hide the line (review)") || strings.Contains(banner, displaystatus.NeedsSignOffLabel) {
+			t.Fatalf("banner with attention %v:\n%s", attention, banner)
+		}
 	}
-	sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, ParkCodes: []string{"human-review:ui"}, Since: timestamppb.Now()}
-	banner = stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: sess, width: 160}))
-	if strings.Contains(banner, displaystatus.NeedsSignOffLabel) || strings.Contains(banner, "Hide the line (") || !strings.Contains(banner, "review · parked") {
-		t.Fatalf("banner with attention:\n%s", banner)
+}
+
+// TestChatPickerBannerKeepsSessionStatusWithAttention: attention does not
+// change the session-details header. Line one ends in the session's display
+// status, or the archiving spinner while an archive is in flight, and line two
+// is the worktree and account. The Needed from you block and the timeline
+// explain the attention.
+func TestChatPickerBannerKeepsSessionStatusWithAttention(t *testing.T) {
+	account := "acct-work"
+	sp := newStatusSpinner()
+	frame := stripANSI(sp.View())
+	for _, tt := range []struct {
+		name      string
+		attention *pb.SessionAttention
+		archiving bool
+		want      string
+	}{
+		{"working", &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "checking"}, false, "#3184 Retain links (" + frame + "checking 3/5)"},
+		{"archiving a fix", &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Since: timestamppb.Now()}, true, "#3184 Retain links (" + frame + "archiving)"},
+		{"archiving a review", &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Since: timestamppb.Now()}, true, "#3184 Retain links (" + frame + "archiving)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &pb.Session{Id: "s", Title: "Retain links", PrNumber: new(int32(3184)), PrDisplayHeadSha: "395f2d3aaaa", WorktreePath: "/tmp/wt-3184", AccountId: &account, DisplayLabel: "checking 3/5", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, DisplaySpinner: true, Attention: tt.attention}
+			lines := strings.Split(stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: sess, spinner: sp, archiving: tt.archiving, width: 160})), "\n")
+			if len(lines) < 3 || !strings.HasSuffix(strings.TrimRight(lines[1], " "), tt.want) {
+				t.Fatalf("header line 1 = %q, want suffix %q", lines[1], tt.want)
+			}
+			if got := strings.TrimRight(lines[2], " "); !strings.HasSuffix(got, "/tmp/wt-3184 · acct-work") {
+				t.Fatalf("header line 2 = %q, want the worktree and account", got)
+			}
+		})
 	}
 }
 

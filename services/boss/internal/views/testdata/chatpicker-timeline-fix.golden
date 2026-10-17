@@ -1,7 +1,7 @@
-                                                                           
-  █▄▄  #2979  [BOS-1522] Change the color of needs-human alerts in the TUI 
-  █▄█  fix · failed 1h ago · head 2bbaede                                  
-                                                                           
+                                                                          
+  █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  /tmp/worktree · Unmanaged                                          
+                                                                          
   Needed from you:                                                             
     Verify is blocked: UI change.                                              
     Open a chat to fix it, or run boss pr approve 2979 to override it; verify  

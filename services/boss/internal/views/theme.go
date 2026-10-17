@@ -919,13 +919,6 @@ func renderBanner(active View, opts bannerOpts) string {
 		}
 		line2 = styleSubtle.Render(wt)
 		line2 += " " + styleSubtle.Render("· "+accountBannerLabel(opts.session.GetAccountId()))
-		if active == ViewChatPicker && opts.session.GetAttention() != nil {
-			line1 = renderTrackerLink(opts.session, opts.session.Title)
-			if pr := renderPRLink(opts.session); pr != "" {
-				line1 = pr + "  " + line1
-			}
-			line2 = styleSubtle.Render(attentionDetailStatus(opts.session))
-		}
 
 	case opts.repo != nil:
 		line1 = opts.repo.DisplayName

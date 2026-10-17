@@ -1218,6 +1218,13 @@ type sendPlanOpts struct {
 	// and its Enter (awaitComposerSettled). Zero skips the wait.
 	pasteSettleWait time.Duration
 
+	// typedDrawWait bounds how long a literally typed Claude line may take to
+	// appear in the composer before Enter is pressed (typeLineAwaitDrawn), and
+	// typedDrawAttempts is how many times the line is typed before the send
+	// gives up without pressing Enter. Zero typedDrawWait skips the wait.
+	typedDrawWait     time.Duration
+	typedDrawAttempts int
+
 	// submitted is the caller's independent proof that the agent took the
 	// payload — for Claude, the UserPromptSubmit receipt. The verifier consults
 	// it before every pane read and before the clear-and-redeliver retry, so a
@@ -1239,6 +1246,20 @@ type sendPlanOpts struct {
 // reservation — see TestEstablishedSendTailFitsRelayReservation.
 const pasteSettleWait = time.Second
 
+// A Claude pane that has just drawn its composer can still be loading, and
+// keys sent then are read late: the typed line and its Enter arrive in one read,
+// which Claude treats as a paste, so the Enter becomes a newline and the next
+// Enter is eaten too. Some typed lines are dropped outright. Measured on Claude
+// Code 2.1.302 under load, a typed line took up to ~3s to draw. Session start
+// therefore waits for the line to draw, retyping a dropped one, before Enter.
+// An established chat is already reading its input, so it gets the paste
+// settle bound and one attempt, which keeps its tail inside the relay
+// reservation (TestEstablishedSendTailFitsRelayReservation).
+const (
+	startTypedDrawWait     = 5 * time.Second
+	startTypedDrawAttempts = 3
+)
+
 // startDeliveryOpts builds the production timing for a SESSION-START (or
 // resume) delivery: this client's configured session-start readiness budget, or
 // DefaultSessionStartReadyDeadline when nothing is configured, plus the shared
@@ -1256,7 +1277,11 @@ func (c *Client) startDeliveryOpts(readyMarker string, submit bool, detector Mod
 	if attempts <= 0 {
 		attempts = sessionStartReadyAttempts
 	}
-	return c.deliveryOpts(c.sessionStartReadyDeadline, DefaultSessionStartReadyDeadline, attempts, readyMarker, submit, detector)
+	opts := c.deliveryOpts(c.sessionStartReadyDeadline, DefaultSessionStartReadyDeadline, attempts, readyMarker, submit, detector)
+	if opts.typedDrawWait > 0 {
+		opts.typedDrawWait, opts.typedDrawAttempts = startTypedDrawWait, startTypedDrawAttempts
+	}
+	return opts
 }
 
 // SessionStartReadyDeadline reports the composer-readiness budget this client
@@ -1323,6 +1348,7 @@ func (c *Client) deliveryOpts(configured, fallback time.Duration, attempts int, 
 			if c.pasteSettleWait > 0 {
 				opts.pasteSettleWait = c.pasteSettleWait
 			}
+			opts.typedDrawWait, opts.typedDrawAttempts = opts.pasteSettleWait, 1
 		}
 	} else {
 		opts.prefillOnly = true
@@ -1627,7 +1653,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	settle := opts.pasteFreeText && !opts.prefillOnly && opts.pasteSettleWait > 0
 	deliver := func(ctx context.Context) error {
 		if singleLine && (!opts.pasteFreeText || strings.HasPrefix(trimmedPlan, "/")) {
-			return c.typeLiteralLineNoEnter(ctx, sessionName, trimmedPlan)
+			return c.typeLineAwaitDrawn(ctx, sessionName, trimmedPlan, opts)
 		}
 		if !opts.pasteFreeText {
 			return c.pasteBufferNoEnter(ctx, sessionName, plan)
@@ -1707,7 +1733,7 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 	// A closure so the verifier's retry can re-run the identical delivery after
 	// clearing the composer (see verifyWithEnterRetry).
 	deliver := func(ctx context.Context) error {
-		return c.typeLiteralLineNoEnter(ctx, sessionName, line)
+		return c.typeLineAwaitDrawn(ctx, sessionName, line, opts)
 	}
 	if err := deliver(ctx); err != nil {
 		return err
@@ -1759,6 +1785,63 @@ func (c *Client) typeLiteralLineNoEnter(ctx context.Context, sessionName, line s
 	return nil
 }
 
+// typeLineAwaitDrawn types line and, when opts.typedDrawWait is set, returns
+// only once the composer draws exactly that line, so the Enter that follows
+// arrives as its own keystroke (see startTypedDrawWait). A line that never draws
+// is cleared and typed again. When the send gives up it clears the line before
+// returning not-submitted: a composer that reads the keys late would otherwise
+// draw the line afterwards, and the caller's retry would type a second copy
+// behind it.
+func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line string, opts sendPlanOpts) error {
+	if opts.typedDrawWait <= 0 {
+		return c.typeLiteralLineNoEnter(ctx, sessionName, line)
+	}
+	attempts := max(opts.typedDrawAttempts, 1)
+	for attempt := 1; ; attempt++ {
+		if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
+			return err
+		}
+		drawn, err := c.awaitComposerDraws(ctx, sessionName, line, opts.typedDrawWait, opts.submitVerifyTick)
+		if err == nil && drawn {
+			return nil
+		}
+		var verdict error
+		switch {
+		case err != nil:
+			verdict = fmt.Errorf("read composer after typing into tmux session %q, so no Enter was sent: %w", sessionName, err)
+		case attempt == attempts:
+			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s on any of %d attempts, so no Enter was sent", sessionName, opts.typedDrawWait, attempts)
+		}
+		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), typedLineClearTimeout)
+		clearErr := c.clearTypedLine(clearCtx, sessionName, line)
+		cancel()
+		if verdict != nil || clearErr != nil {
+			return classifySubmit(OutcomeNotSubmitted, errors.Join(verdict, clearErr))
+		}
+	}
+}
+
+// typedLineClearTimeout bounds each clear typeLineAwaitDrawn sends. The clear
+// runs even once the caller's context is done, because the typed keys are in
+// the pane either way.
+const typedLineClearTimeout = 2 * time.Second
+
+// shellModePrefix is the leading character that switches Claude's composer to
+// shell mode. Claude then draws it as the box's glyph in place of the prompt
+// marker (testdata/panes/claude_typed_shell_mode_real.txt).
+const shellModePrefix = "!"
+
+// clearTypedLine empties the composer of a typed line that did not draw. Shell
+// mode survives C-u, and a "!" typed into it draws a second "!", so a shell-mode
+// line also gets a BSpace, which leaves shell mode once the composer is empty.
+// Measured on Claude Code 2.1.302.
+func (c *Client) clearTypedLine(ctx context.Context, sessionName, line string) error {
+	if strings.HasPrefix(line, shellModePrefix) {
+		return c.sendNamedKeys(ctx, sessionName, "C-u", "BSpace")
+	}
+	return c.clearComposer(ctx, sessionName)
+}
+
 // pasteBufferNoEnter loads text into a tmux paste buffer and pastes it into the
 // composer with bracketed paste enabled (-p) WITHOUT submitting. It is the
 // load-buffer → paste-buffer half of SendMessage, split out so prefill delivery
@@ -1795,15 +1878,22 @@ func (c *Client) pasteBufferNoEnter(ctx context.Context, sessionName, text strin
 // out so prefill delivery can skip it and the submit path can retry it
 // independently. stderr from tmux is wrapped into the returned error.
 func (c *Client) sendEnter(ctx context.Context, sessionName string) error {
-	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
-	var enterStderr bytes.Buffer
-	enterCmd.Stderr = &enterStderr
-	enterCmd.WaitDelay = tmuxCommandWaitDelay
-	if err := enterCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
-			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
+	return c.sendNamedKeys(ctx, sessionName, "Enter")
+}
+
+// sendNamedKeys presses the named tmux keys, in order, in one send-keys call.
+// stderr from tmux is wrapped into the returned error.
+func (c *Client) sendNamedKeys(ctx context.Context, sessionName string, keys ...string) error {
+	cmd := c.cmdFunc(ctx, "tmux", append([]string{"send-keys", "-t", sessionName}, keys...)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = tmuxCommandWaitDelay
+	if err := cmd.Run(); err != nil {
+		named := strings.Join(keys, " ")
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("tmux send-keys %s for %q: %w (stderr: %s)", named, sessionName, err, msg)
 		}
-		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
+		return fmt.Errorf("tmux send-keys %s for %q: %w", named, sessionName, err)
 	}
 	return nil
 }
@@ -1825,17 +1915,7 @@ func (c *Client) sendEnter(ctx context.Context, sessionName string) error {
 // poll actually saw a prompt marker). stderr from tmux is wrapped into the
 // returned error.
 func (c *Client) clearComposer(ctx context.Context, sessionName string) error {
-	clearCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "C-u")
-	var clearStderr bytes.Buffer
-	clearCmd.Stderr = &clearStderr
-	clearCmd.WaitDelay = tmuxCommandWaitDelay
-	if err := clearCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(clearStderr.String()); msg != "" {
-			return fmt.Errorf("tmux send-keys C-u for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux send-keys C-u for %q: %w", sessionName, err)
-	}
-	return nil
+	return c.sendNamedKeys(ctx, sessionName, "C-u")
 }
 
 // escapeSendKeysLiteral protects a payload from tmux's command lexer on the

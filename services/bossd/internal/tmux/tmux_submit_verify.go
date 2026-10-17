@@ -738,6 +738,93 @@ func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before s
 	}
 }
 
+// awaitComposerDraws polls until the live composer shows payload on two
+// consecutive captures that agree, which means the agent has read and drawn the
+// typed keys. It reports false when waitFor expires first. Only a capture
+// failure or a cancelled context is an error.
+func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (bool, error) {
+	if tickEvery <= 0 {
+		tickEvery = sendPlanDefaultPollInterval
+	}
+	deadline := time.NewTimer(waitFor)
+	defer deadline.Stop()
+	ticker := time.NewTicker(tickEvery)
+	defer ticker.Stop()
+
+	last := ""
+	for {
+		pane, err := c.CapturePane(ctx, sessionName)
+		if err != nil {
+			return false, err
+		}
+		rows := typedComposerRows(pane, payload)
+		if composerShowsPayload(rows, payload) {
+			if rows == last {
+				return true, nil
+			}
+			last = rows
+		} else {
+			last = ""
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-deadline.C:
+			return false, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+// composerShowsPayload reports whether composer rows (see typedComposerRows)
+// hold exactly the payload, ignoring wrap and indent. Exact rather than
+// containment, so a box that also holds a draft or an earlier copy is not
+// entered: the Enter would submit that extra text with the payload. A
+// collapsed-paste placeholder is taken as the payload, since it cannot be read.
+// A shell-mode box has no prompt marker; its "!" glyph is the payload's own.
+func composerShowsPayload(rows, payload string) bool {
+	if rows == "" {
+		return false
+	}
+	first, rest, _ := strings.Cut(rows, "\n")
+	content, isPrompt := composerContent(strings.TrimSpace(first))
+	if !isPrompt {
+		content = first
+	} else if collapsedPastePlaceholderRe.MatchString(content) {
+		return true
+	}
+	want := withoutSpace(payload)
+	return want != "" && withoutSpace(content+" "+rest) == want
+}
+
+// typedComposerRows returns the composer rows a typed line is drawn into. A
+// shell-mode line is drawn behind a "!" glyph rather than a prompt marker, so
+// its rows are the box between the bottom two rules; the "! for shell mode"
+// hint below the bottom rule is outside it
+// (testdata/panes/claude_typed_shell_mode_real.txt).
+func typedComposerRows(pane, line string) string {
+	if !strings.HasPrefix(line, shellModePrefix) {
+		return composerRows(pane)
+	}
+	lines := strings.Split(pane, "\n")
+	bottom := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !isHorizontalRule(strings.TrimSpace(lines[i])) {
+			continue
+		}
+		if bottom == -1 {
+			bottom = i
+			continue
+		}
+		box := make([]string, 0, bottom-i-1)
+		for _, l := range lines[i+1 : bottom] {
+			box = append(box, strings.TrimRight(l, " "))
+		}
+		return strings.Join(box, "\n")
+	}
+	return ""
+}
+
 // composerAfterClear names what a captured pane shows once clearComposer has
 // run. The retry acts on it, so it distinguishes the two ways "the composer is
 // not holding the payload" can arise: an input box drawn and empty (the clear

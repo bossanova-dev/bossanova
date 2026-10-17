@@ -166,8 +166,8 @@ cli="boss init"
 />
 
 On a terminal, `boss init` also offers to set up the unattended plan → build →
-verify factory: it registers the repository, stores and validates its Linear key,
-maps your Linear team's states and labels, and creates the factory cron jobs.
+verify pipeline: it registers the repository, stores and validates its Linear key,
+maps your Linear team's states and labels, and creates the pipeline cron jobs.
 Press Enter at a question to accept its default, or at the Linear key question to
 skip every Linear step and write only the starting config.
 

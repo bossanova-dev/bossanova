@@ -855,7 +855,7 @@ func TestRotationRespawnCapHint_WiredIntoWarnings(t *testing.T) {
 		CreatedAt: timestamppb.New(time.Now()),
 	})
 	got := selectedSessionWarningBlock(capped, nil, 80)
-	if !strings.Contains(got, "respawn cap reached") {
+	if !strings.Contains(got, "stuck at a login prompt") {
 		t.Errorf("warning block missing respawn-cap hint: %q", got)
 	}
 
@@ -927,7 +927,7 @@ func TestRotationTimeline_KeepsEndedWedge(t *testing.T) {
 	}
 	m := NewChatPickerModel(nil, context.Background(), "s", "")
 	m.session = sess
-	if got := stripANSI(m.timelineBlock()); !strings.Contains(got, "✗ "+rotationStepTitle+"  auth-wedge respawn cap reached") {
+	if got := stripANSI(m.timelineBlock()); !strings.Contains(got, "✗ "+rotationStepTitle+"  stopped restarting the agent: it stayed signed out") {
 		t.Fatalf("timeline lost the ended wedge event: %q", got)
 	}
 }
@@ -959,18 +959,18 @@ func issue2986Session(advanced bool) *pb.Session {
 
 // TestSessionWarningHints_Issue2986StaleAlertsClear is the #2986 regression: two
 // hours after the wedge and the stall, with the head advanced and the agent
-// producing output again, neither "auth wedge unresolved" nor a repair line may
+// producing output again, neither the login-prompt hint nor a repair line may
 // render. The un-advanced control proves both hints are otherwise present.
 func TestSessionWarningHints_Issue2986StaleAlertsClear(t *testing.T) {
 	stale := issue2986Session(false)
 	texts := strings.Join(sessionWarningHintTexts(stale), "\n")
-	if !strings.Contains(texts, "auth wedge unresolved") || !strings.Contains(texts, "repair stalled") {
+	if !strings.Contains(texts, "stuck at a login prompt") || !strings.Contains(texts, "repair stalled") {
 		t.Fatalf("control: un-advanced #2986 session should show both alerts, got %q", texts)
 	}
 
 	ended := issue2986Session(true)
 	for _, hint := range sessionWarningHintTexts(ended) {
-		if strings.Contains(hint, "auth wedge") || strings.Contains(hint, "repair") {
+		if strings.Contains(hint, "login prompt") || strings.Contains(hint, "repair") {
 			t.Errorf("#2986: stale alert still rendered after its condition ended: %q", hint)
 		}
 	}
@@ -1012,7 +1012,7 @@ func TestRotationEventLabel(t *testing.T) {
 		{pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT, "no eligible account — status only"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "all accounts limited"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT, "refreshed auth in place on acct-b"},
-		{pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "auth-wedge respawn cap reached"},
+		{pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "stopped restarting the agent: it stayed signed out"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_FAILED, "switch to acct-b failed"},
 		{pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, ""},
 	}
@@ -1527,7 +1527,7 @@ func TestWarningHintStyle_ExemptHintsStayLoud(t *testing.T) {
 		{
 			name:     "rotation respawn cap",
 			sess:     &pb.Session{DisplayLabel: "working", RotationEvents: respawnCapEvent},
-			contains: "respawn cap reached",
+			contains: "stuck at a login prompt",
 		},
 		{
 			name:     "rotation exhausted",

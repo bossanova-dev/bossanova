@@ -466,6 +466,21 @@ func TestCLI_Cron_RunNow_Skipped(t *testing.T) {
 	}
 }
 
+// TestCLI_Cron_RunNow_SkippedPhrasesTheCode pins that `boss cron run-now`
+// prints a scheduler skip code in the TUI's words, never the raw code.
+func TestCLI_Cron_RunNow_SkippedPhrasesTheCode(t *testing.T) {
+	h := clitest.New(t, clitest.WithCronJobs(testCronJobs()...))
+	h.Daemon.SetRunCronJobNowMode("alwaysSkip", "gate_failed")
+	res := h.Run("cron", "run-now", "cron-aaa")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	if want := "Skipped cron job cron-aaa: the gate command could not run; check the daemon log\n"; res.Stdout != want {
+		t.Errorf("stdout = %q, want %q", res.Stdout, want)
+	}
+}
+
 // --- BOS-565: --zero-output on cron add/update, show, and --json ---
 
 // TestCLI_Cron_Add_ZeroOutput verifies `cron add --zero-output` sends the flag

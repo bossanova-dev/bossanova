@@ -38,6 +38,7 @@ go_test(
         "command_detach_pty_test.go",
         "command_detach_test.go",
         "command_reassert_pty_test.go",
+        "command_reply_pty_test.go",
         "command_reset_pty_test.go",
         "command_reset_test.go",
         "fdset_test.go",

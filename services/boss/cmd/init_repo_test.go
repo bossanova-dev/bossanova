@@ -106,10 +106,10 @@ func TestInitRepoNonGitAndNoRegister(t *testing.T) {
 	for _, tc := range []struct {
 		dir, want string
 		allow     bool
-	}{{t.TempDir(), "git repository", true}, {initGitRepo(t), "--register", false}} {
+	}{{t.TempDir(), "git repository", true}, {initGitRepo(t), "repository is not registered", false}} {
 		_, err := resolveInitRepo(context.Background(), c, tc.dir, initRegistration{allow: tc.allow}, &initAppliedSteps{})
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatal("expected actionable refusal")
+			t.Fatalf("dir %s: err = %v, want it to say %q", tc.dir, err, tc.want)
 		}
 	}
 	if len(daemon.RegisterRepoCalls()) != 0 {

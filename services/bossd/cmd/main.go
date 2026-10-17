@@ -187,6 +187,17 @@ func deliverChatMessage(ctx context.Context, sender chatMessageSender, agentSess
 	return nil
 }
 
+// deliverCallbackMessage is deliverChatMessage for the callback worker, with a
+// refusal for an occupied composer marked callback.ErrComposerOccupied so the
+// worker waits for the box instead of spending a delivery attempt.
+func deliverCallbackMessage(ctx context.Context, sender chatMessageSender, agentSessionID, message string) error {
+	err := deliverChatMessage(ctx, sender, agentSessionID, message)
+	if errors.Is(err, tmux.ErrComposerOccupied) {
+		return fmt.Errorf("%w: %w", callback.ErrComposerOccupied, err)
+	}
+	return err
+}
+
 // undeliveredReason renders why a SendChatMessage response reported
 // delivered=false, naming the structured delivery state and appending the
 // server's human-readable notice when it carried one.
@@ -633,7 +644,11 @@ func (h *streamSessionHydrator) Hydrate(ctx context.Context, pbSess *bossanovav1
 		if row, err := h.rawSessions.Get(ctx, pbSess.Id); err == nil && row != nil {
 			if h.repos != nil {
 				if repo, err := h.repos.Get(ctx, row.RepoID); err == nil && repo != nil {
-					server.HydrateBaseAttention(pbSess, row, repo)
+					var display *status.DisplayEntry
+					if h.displayTracker != nil {
+						display = h.displayTracker.Get(pbSess.Id)
+					}
+					server.HydrateBaseAttention(pbSess, row, repo, display)
 				}
 			}
 			if h.accountLabeler != nil {
@@ -2367,10 +2382,11 @@ func run(opts runOpts) error {
 	// plugins, and the mid-turn reader adapts the server-held status.Tracker so
 	// a WORKING chat is not interrupted without --force. The session→account
 	// binding defaults from the lifecycle's own session store.
-	lifecycle.SetAccountSwitchDeps(accounts, agentClients, func(agentSessionID string) bool {
+	chatWorking := func(agentSessionID string) bool {
 		e := chatStatusTracker.Get(agentSessionID)
 		return e != nil && e.Status == bossanovav1.ChatStatus_CHAT_STATUS_WORKING
-	})
+	}
+	lifecycle.SetAccountSwitchDeps(accounts, agentClients, chatWorking)
 
 	// Auto-rotate interactive chats (BOS-175): on a CHAT_STATUS_LIMITED transition
 	// the rotator asks the BOS-173 engine for the next account and executes the
@@ -3076,6 +3092,11 @@ func run(opts runOpts) error {
 		_ = displayComputer.Recompute(ctx, sessionID)
 		publishSessionUpdated(ctx, sessionID)
 	})
+
+	// A Blocked run whose own chat works again reads in progress while it does
+	// (the display tracker carries the mark Session.attention reads); the
+	// mark changes no display trio, so publish the delta explicitly.
+	lifecycle.SetBlockedRunDeps(chatWorking, displayTracker, publishSessionUpdated)
 
 	// Wire the auth-failed change hook: when a chat's login-required state flips
 	// — which need not coincide with any chat STATUS change — resolve it to its
@@ -4062,7 +4083,7 @@ func run(opts runOpts) error {
 	// evaluator (wired into the webhook dispatcher) advances callbacks to
 	// triggered; this worker owns triggered -> delivered.
 	callbackDeliverer := callback.DelivererFunc(func(ctx context.Context, agentSessionID, message string) error {
-		return deliverChatMessage(ctx, srv, agentSessionID, message)
+		return deliverCallbackMessage(ctx, srv, agentSessionID, message)
 	})
 
 	// --- Transient-API-error auto-resume (BOS-518) ---
@@ -4556,6 +4577,7 @@ func run(opts runOpts) error {
 				return
 			case <-ticker.C:
 				lifecycle.ResumeDroppedRuns(pollerCtx)
+				lifecycle.MarkWorkingBlockedRuns(pollerCtx)
 			}
 		}
 	})

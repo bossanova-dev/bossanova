@@ -501,8 +501,8 @@ See [Upgrade](/upgrade) for the full upgrade guide.
 
 Write a detected `.boss-skills.json` for the repository, giving the `boss-*`
 skills a starting config, and optionally set up the plan → build → verify
-factory: register the repository, store its Linear and Sentry credentials, map
-the Linear team's states and labels, and create the factory cron jobs.
+pipeline: register the repository, store its Linear and Sentry credentials, map
+the Linear team's states and labels, and create the pipeline cron jobs.
 
 On a terminal, `boss init` interviews for whatever its flags left open, in the
 order credentials → Linear mapping → filter → config → crons. Each question
@@ -528,9 +528,9 @@ job. A successful interview ends with a summary and what is left to do.
 | `--sentry-token-stdin`    | read the Sentry token from stdin (with `--sentry-org`)                                                 |
 | `--sentry-org <slug>`     | Sentry organization slug (requires a token)                                                            |
 | `--store-env-keys`        | store `LINEAR_API_KEY` and `SENTRY_AUTH_TOKEN` from the environment                                    |
-| `--cron <stages>`         | create or converge the factory cron jobs for `plan`, `build` and/or `verify`                           |
-| `--agent <claude\|codex>` | agent for the factory cron jobs (default: Claude when both qualify)                                    |
-| `--update-crons`          | update an existing factory job's prompt, gate and agent when they differ                               |
+| `--cron <stages>`         | create or converge the pipeline cron jobs for `plan`, `build` and/or `verify`                          |
+| `--agent <claude\|codex>` | agent for the pipeline cron jobs (default: Claude when both qualify)                                   |
+| `--update-crons`          | update an existing pipeline job's prompt, gate and agent when they differ                              |
 
 The file it writes carries what detection produced (in practice a `commands`
 block or an empty object), plus the tracker block when a Linear team is
@@ -544,7 +544,7 @@ and labels are matched to the roles case-insensitively and only names that diffe
 from the defaults are written. Labels are the only thing `boss init` ever creates
 in Linear, and only with `--create-labels` or your consent.
 
-Factory cron jobs are created enabled after a gate preflight in the daemon's own
+Pipeline cron jobs are created enabled after a gate preflight in the daemon's own
 environment; a job whose preflight fails is created disabled and the report names
 `boss skills install` as the remedy. An existing stage job is never duplicated,
 and its schedule, timezone and enabled state are never changed. Registration,
@@ -563,7 +563,7 @@ bossd plugin settings in `settings.json` and touches no `.boss-skills.json`.
 
 See [Skill Configuration](/skills/config) for the sections this file carries and
 the smallest config that switches the tracker-driven skills on.
-`docs/skills/factory.md` in the Bossanova repository walks through the factory
+`docs/skills/factory.md` in the Bossanova repository walks through the pipeline
 setup.
 
 ### `boss new` and `boss chat` (scripted chat control)

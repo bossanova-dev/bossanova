@@ -389,6 +389,65 @@ func TestBannerOverhead(t *testing.T) {
 	}
 }
 
+// struckThrough reports whether the last SGR sequence before text in s turns
+// strikethrough (parameter 9) on.
+func struckThrough(s, text string) bool {
+	at := strings.Index(s, text)
+	if at < 0 {
+		return false
+	}
+	var last string
+	for rest := s[:at]; ; {
+		start := strings.Index(rest, "\x1b[")
+		if start < 0 {
+			break
+		}
+		rest = rest[start+2:]
+		end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > ';' })
+		if end >= 0 && rest[end] == 'm' {
+			last = rest[:end]
+		}
+	}
+	return slices.Contains(strings.Split(last, ";"), "9")
+}
+
+// TestRenderBannerStrikesAMergedSessionWithAttention pins the header of a
+// merged or closed session that still carries attention to the same
+// strikethrough PR and title as one without it, and an open session with
+// attention to none.
+func TestRenderBannerStrikesAMergedSessionWithAttention(t *testing.T) {
+	prNum := int32(42)
+	prURL := "https://github.com/owner/repo/pull/42"
+	for _, tc := range []struct {
+		status pb.DisplayStatus
+		struck bool
+	}{
+		{pb.DisplayStatus_DISPLAY_STATUS_MERGED, true},
+		{pb.DisplayStatus_DISPLAY_STATUS_CLOSED, true},
+		{pb.DisplayStatus_DISPLAY_STATUS_PASSING, false},
+	} {
+		t.Run(tc.status.String(), func(t *testing.T) {
+			sess := &pb.Session{
+				Title:         "Fix the thing",
+				DisplayStatus: tc.status,
+				PrNumber:      &prNum,
+				PrUrl:         &prURL,
+				Attention:     &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE}},
+			}
+			c := &attentionStub{}
+			a := NewApp(c, nil)
+			a.chatPicker = attentionDetails(c, sess)
+			a.activeView = ViewChatPicker
+			header := strings.SplitN(a.View().Content, "\n", 3)[1]
+			for _, text := range []string{"#42", "Fix the thing"} {
+				if got := struckThrough(header, text); got != tc.struck {
+					t.Errorf("%q struck through = %v, want %v: %q", text, got, tc.struck, header)
+				}
+			}
+		})
+	}
+}
+
 // TestRenderBannerBranches exercises the non-default branches of renderBanner's
 // switch: the merged/closed session title (muted strikethrough PR + tracker),
 // the active session title (live PR + tracker link), the repo banner, and the

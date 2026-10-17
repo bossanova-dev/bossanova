@@ -19,6 +19,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/agenttelemetry"
+	"github.com/recurser/bossalib/alertstate"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/errortrack"
@@ -161,7 +162,7 @@ type Server struct {
 	finishDeferrer *archiveDeferrer
 	// prRefresher re-polls a single PR's display status on demand. MergeSession
 	// uses it to repopulate the display tracker after every merge attempt (see
-	// the SetMerging block there). Optional, may be nil in tests / older wiring.
+	// the HoldMerging block there). Optional, may be nil in tests / older wiring.
 	prRefresher PRRefresher
 	repairLease *status.RepairLeaseManager
 	// transcriptTally reads a chat transcript's telemetry for the
@@ -649,7 +650,7 @@ type PRAssociationResolver interface {
 // importing session) so the server depends only on this narrow surface;
 // *session.DisplayPoller satisfies it. MergeSession calls it after every merge
 // attempt on a server wired with a display tracker, so the label reflects what
-// the daemon just did (see the SetMerging block).
+// the daemon just did (see the HoldMerging block).
 //
 // It deliberately names the WithoutWebhookCredit variant: a refresh the daemon
 // triggered itself is not evidence that the session's webhook pipeline is
@@ -2380,12 +2381,12 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	p := SessionToProto(session)
 
 	// Hydrate attention status from session state and repo flags.
-	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
+	repo, repoErr := s.repos.Get(ctx, session.RepoID)
+	if repoErr == nil {
 		p.RepoDisplayName = repo.DisplayName
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 		p.RepoShouldArchiveSessionsAfterMerge = repo.ShouldArchiveSessionsAfterMerge
 		p.RepoCanAutoRepair = repo.CanAutoRepair
-		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
 	}
 
 	// Hydrate PR display status from the in-memory tracker.
@@ -2393,6 +2394,9 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	if s.displayTracker != nil {
 		displayEntry = s.displayTracker.Get(session.ID)
 		HydrateDisplayEntry(p, displayEntry)
+	}
+	if repoErr == nil {
+		p.AttentionStatus = baseAttentionStatus(session, repo, displayEntry)
 	}
 	// Hydrate recent rotation audit events before the auth-failed overlay below:
 	// the overlay requires a corroborating auth-invalidation audit row and fails
@@ -2489,7 +2493,11 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		if repo, ok := repoCache[sess.RepoID]; ok {
 			p.RepoDisplayName = repo.DisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
-			p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
+			var display *status.DisplayEntry
+			if s.displayTracker != nil {
+				display = s.displayTracker.Get(sess.ID)
+			}
+			p.AttentionStatus = baseAttentionStatus(sess, repo, display)
 		} else {
 			p.RepoDisplayName = row.RepoDisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(row.RepoOriginURL)
@@ -2966,7 +2974,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	// Surface the transient blue "merging" display status for the full duration
 	// of the blocking merge (gate + provider merge + verification). scheduleRecompute
 	// is synchronous, so clients see "merging" before any blocking work starts;
-	// the defer clears it on every return path (blocked gate, local/PR merge
+	// the defer releases it on every return path (blocked gate, local/PR merge
 	// success, or any error). Nil-guarded like lifecycle.go's SetSettingUp for
 	// test servers without a display tracker.
 	if s.displayTracker != nil {
@@ -2983,10 +2991,14 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		// lands, so re-polling on every return path is the only way the display
 		// the client goes on to read agrees with what just happened. On the
 		// merge-only path (no prior entry — e.g. the post-restart window) the
-		// deferred clear additionally drops the merge-only entry SetMerging
-		// created, which would otherwise leave the tracker with no PR status at
-		// all and downgrade recompute's output to the "stopped" fallback; the
-		// same re-poll restores the real label there too.
+		// re-poll gives the merge-only entry HoldMerging created a real PR status
+		// before the release; if it fails, the release drops that entry, which
+		// would otherwise leave recompute on the "stopped" fallback.
+		//
+		// The refresh runs under the hold and the release comes last, so clients
+		// read "merging" until the re-polled label lands, never the pre-merge
+		// one in between. The hold counts: an operator merge holding the same
+		// session keeps "merging" past this release.
 		//
 		// The refresh runs synchronously inside this defer (not fired off
 		// asynchronously) so the tracker can never be updated after this RPC
@@ -3022,9 +3034,9 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			prNumber := *sess.PRNumber
 			refreshPRNumber = &prNumber
 		}
-		s.displayTracker.SetMerging(req.Msg.Id, true)
+		releaseMerging := s.displayTracker.HoldMerging(req.Msg.Id)
 		defer func() {
-			s.displayTracker.SetMerging(req.Msg.Id, false)
+			defer releaseMerging()
 			if s.prRefresher != nil && refreshPRNumber != nil {
 				if err := s.prRefresher.RefreshPRWithoutWebhookCredit(ctx, repo.OriginURL, *refreshPRNumber); err != nil {
 					s.logger.Debug().Err(err).
@@ -3037,7 +3049,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 
 	// Serialize user-initiated merges per repo (BOS-439): concurrent merges on
 	// the same repo share one local clone and would race on .git/index.lock and
-	// refs/heads/<base>. Acquire AFTER SetMerging (a queued merge still shows the
+	// refs/heads/<base>. Acquire AFTER HoldMerging (a queued merge still shows the
 	// "merging" status while it waits) but BEFORE the live gate, so a merge that
 	// queued behind another re-reads the PR fresh once the base has advanced.
 	// A cancelled/timed-out queued merge bails here without merging.
@@ -3881,6 +3893,12 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 	}
 	if sess, err := s.sessions.Get(ctx, req.Msg.Id); err == nil {
 		resp.Session = s.sessionProtoWithRepo(ctx, sess)
+	}
+	// archive_pending lives only in the display tracker. Without it a client
+	// cannot tell a deferred archive from a finished one: the web detail page
+	// would leave a session whose archive is still waiting on a chat.
+	if s.displayTracker != nil {
+		HydrateDisplayEntry(resp.Session, s.displayTracker.Get(req.Msg.Id))
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -5863,18 +5881,32 @@ func sessionAgentStalled(tracker *status.Tracker, chats []*models.AgentChat) boo
 // a stale conflict attention AND (being non-nil) block the auth overlay. Merge
 // conflicts already reach the read model through the display-status path, so
 // they need no base-attention hydration here.
-func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.Repo) {
+func HydrateBaseAttention(p *pb.Session, session *models.Session, repo *models.Repo, display *status.DisplayEntry) {
 	if p == nil || session == nil || repo == nil {
 		return
 	}
 	switch session.State {
 	case machine.Blocked, machine.Orphaned:
-		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
+		p.AttentionStatus = baseAttentionStatus(session, repo, display)
 	default:
 		// All other states (including FixingChecks) carry no base attention on the
 		// reverse stream; see the doc comment above for why merge-conflict attention
 		// is deliberately excluded.
 	}
+}
+
+// baseAttentionStatus is the legacy attention_status for sess. A Blocked
+// session whose alert has ended or is suspended (alertstate.BlockedAlertCurrent,
+// the rule Session.attention follows: its run's agent is working, or its PR is
+// green and mergeable) carries none, so no client keeps a blocked hint under a
+// row that does not need the operator. display is the last-polled entry, nil
+// when never polled. apiversion.EndedBlockHintChange gives pins before
+// V20260923 the hint back.
+func baseAttentionStatus(sess *models.Session, repo *models.Repo, display *status.DisplayEntry) *pb.AttentionStatus {
+	if sess.State == machine.Blocked && !alertstate.BlockedAlertCurrent(session.BlockedAlertFacts(sess, display)) {
+		return nil
+	}
+	return attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
 }
 
 // HydrateAgentObservability sets the liveness heartbeat (last_agent_activity_at)

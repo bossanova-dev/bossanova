@@ -36,12 +36,16 @@ const defaultWebTargets = [
     ci: 'yes',
   },
   { command: 'pnpm run lint', description: 'Biome lint + format check', ci: 'yes' },
-  { command: 'pnpm run test', description: 'Vitest unit tests', ci: 'yes' },
+  {
+    command: 'pnpm run test',
+    description:
+      'Vitest unit tests (incl. `tests/e2e/routeCoverage.test.ts`, which maps every App.tsx route to the Playwright specs that reach it)',
+    ci: 'yes',
+  },
   { command: 'pnpm run build', description: 'Vite production build', ci: 'yes' },
   {
     command: 'pnpm run test:e2e',
-    description:
-      'Playwright Tier-1 faked suite (all specs under `tests/e2e/specs/` + `coverage.spec.ts`)',
+    description: 'Playwright Tier-1 faked suite (all specs under `tests/e2e/specs/`)',
     // Release-tier, not a feature-PR gate: test-web.yml's `web-e2e` job is
     // gated on `pull_request` into staging/production, same as the real-stack
     // suite below. The prose under this table already said so.
@@ -195,7 +199,7 @@ export function renderManifest({ rootTargets, modules, webTargets = defaultWebTa
     '',
     'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` (the pnpm script sets it) and boots its own bossd+bosso stack; locally it also needs `BOSSO_TEST_DATABASE_URL` exported \u2014 `make postgres-test-up` starts the throwaway container, and there is no make wrapper that exports it for you. In CI it is release-tier and merge-blocking there, not on feature PRs: `.github/workflows/test-web-real-stack.yml` runs it only on `pull_request` into `staging`/`production`, against its own `postgres:16` service.',
     '',
-    "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite, including the `smoke.spec.ts` harness-boot spec). It first does a best-effort `playwright install chromium-headless-shell` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
+    "The repo-root `make test-web-e2e` target delegates to this module's Tier-1 `pnpm run test:e2e` (the Playwright faked suite). It first does a best-effort `playwright install chromium-headless-shell` (non-fatal; fallback: `pnpm run test:e2e:install`), then runs `make -C services/web test-e2e`. It is opt-in / release-tier — NOT a per-feature-PR gate and NOT part of the default `make test` graph (the release-only `web-e2e` CI job invokes Playwright directly).",
     '',
     '## Go Module Targets',
     '',

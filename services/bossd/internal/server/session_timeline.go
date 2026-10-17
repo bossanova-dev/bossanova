@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/recurser/bossalib/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
@@ -131,7 +132,20 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	w.Runs = func(context.Context, string) ([]db.AgentRun, error) { return runs, nil }
 	f.LastAgentActivityAt = w.RestartProofActivity(ctx, q)
 
-	f.Blocked = sessionattention.BlockedRow(sess)
+	var display *status.DisplayEntry
+	if s.displayTracker != nil {
+		display = s.displayTracker.Get(sess.ID)
+	}
+	// No dated apiversion bump: the timeline drops its Blocked step when the
+	// block no longer needs the operator (its run's agent is working, or its PR
+	// is green and mergeable), as Session.attention already does.
+	// GetSessionTimeline reaches the boss TUI, which stamps its built Current but
+	// can point at a remote daemon of another version, and the web through
+	// version-skewed bosso; both render whatever steps arrive. A timeline
+	// response carries no blocked reason or state time to rebuild the step from. See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if alertstate.BlockedAlertCurrent(session.BlockedAlertFacts(sess, display)) {
+		f.Blocked = sessionattention.BlockedRow(sess)
+	}
 	f.Repair = s.repairFact(sess)
 	return f, nil
 }

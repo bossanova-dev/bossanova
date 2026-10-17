@@ -31,6 +31,9 @@ func TestReader_SentBackIsTheNewestOperatorRecordOnTheHead(t *testing.T) {
 	trusted := func(body string, at time.Time) vcs.PRComment {
 		return vcs.PRComment{Body: body, AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: at, CreatedAt: at}
 	}
+	unposted := func(body string, at time.Time) vcs.PRComment {
+		return vcs.PRComment{Body: body, AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: at}
+	}
 	newer, older := recordedAt.Add(time.Hour), recordedAt
 	for _, tc := range []struct {
 		name     string
@@ -47,6 +50,10 @@ func TestReader_SentBackIsTheNewestOperatorRecordOnTheHead(t *testing.T) {
 		{"a review bot is not an operator", []vcs.PRComment{{Body: sendBackOn(headA), AuthorLogin: "coderabbitai[bot]", AuthorAssociation: "NONE", WrittenAt: older}}, false},
 		{"a quoted marker that is not the last line", []vcs.PRComment{trusted(sendBackOn(headA)+"\n\nquoted above", older)}, false},
 		{"an approval waiving an unknown code does not lift it", []vcs.PRComment{trusted(approveOn(headA, "made-up"), newer), trusted(sendBackOn(headA), older)}, true},
+		{"records without a posting time cannot be ordered, so they read as sent back", []vcs.PRComment{unposted(approveOn(headA, ""), newer), unposted(sendBackOn(headA), older)}, true},
+		{"a lone approval without a posting time reads as sent back", []vcs.PRComment{unposted(approveOn(headA, ""), newer)}, true},
+		{"an approval without a posting time beside a dated one reads as sent back", []vcs.PRComment{trusted(approveOn(headA, ""), newer), unposted(approveOn(headA, ""), older)}, true},
+		{"an undated record on another head changes nothing", []vcs.PRComment{trusted(approveOn(headA, ""), newer), unposted(approveOn(headB, ""), older)}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := newTestReader(&fakeFinder{comments: tc.comments})

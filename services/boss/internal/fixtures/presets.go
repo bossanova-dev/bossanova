@@ -240,7 +240,7 @@ func Presets() map[string]Preset {
 		// two BOS-482 respawn-in-place outcomes, for the chat-picker proof scenario
 		// that shows both RESPAWNED_SAME_ACCOUNT label shapes ("refreshed auth in
 		// place" and "…on <account>") plus the newest RESPAWN_CAP_EXHAUSTED event
-		// ("auth-wedge respawn cap reached"), which also fires the home-list
+		// ("stopped restarting the agent: it stayed signed out"), which also fires the home-list
 		// needs-attention hint. Carries the same cloud-access e2e pin as demo so
 		// boss lands on the home session list.
 		"respawn-history": {

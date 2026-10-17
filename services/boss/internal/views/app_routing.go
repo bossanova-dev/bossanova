@@ -139,7 +139,7 @@ func (a *App) enterNewSession() tea.Cmd {
 }
 
 func (a *App) enterChatPicker(msg switchViewMsg) tea.Cmd {
-	a.chatPicker = a.newChatPickerModel(msg.sessionID, "")
+	a.chatPicker = a.newChatPickerModel(msg.sessionID, msg.chatID)
 	// Only seed the picker's key-swallowing archiving flag when the
 	// archive is still actually in flight. After a successful archive the
 	// override lingers on the still-present row for rendering, but no

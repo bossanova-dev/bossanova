@@ -791,6 +791,38 @@ func TestAgentChatStore_ListWithTmuxSession(t *testing.T) {
 	}
 }
 
+// A pane bound to a chat that was deleted mid-spawn is one no cleanup path can
+// find, so the bind must fail for the caller to roll the pane back. Clearing a
+// missing chat's pane already leaves no row naming it, so it succeeds.
+func TestAgentChatStore_UpdateTmuxSessionNameOnAMissingChat(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, NewSessionStore(database), repo.ID)
+	chatStore := NewAgentChatStore(database)
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: "deleted-mid-spawn", Title: "Reopened"}); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if err := chatStore.DeleteByAgentSessionID(ctx, "deleted-mid-spawn"); err != nil {
+		t.Fatalf("delete chat: %v", err)
+	}
+
+	pane := "boss-repo-orphan"
+	if err := chatStore.UpdateTmuxSessionName(ctx, "deleted-mid-spawn", &pane); !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("binding a pane to a deleted chat: err = %v, want ErrAgentChatNotFound", err)
+	}
+	if err := chatStore.UpdateTmuxSessionName(ctx, "deleted-mid-spawn", nil); err != nil {
+		t.Fatalf("clearing a deleted chat's pane: err = %v, want nil", err)
+	}
+	listed, err := chatStore.ListWithTmuxSession(ctx)
+	if err != nil {
+		t.Fatalf("list with tmux session: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("ListWithTmuxSession = %+v, want no rows", listed)
+	}
+}
+
 func TestAgentChatStore_ClearTmuxSessionNameIfRequiresObservedName(t *testing.T) {
 	database := setupTestDB(t)
 	ctx := context.Background()

@@ -49,8 +49,8 @@ func daemonSupervisionLineVisible(s DaemonSupervision, now, since time.Time) boo
 // statusDaemonUnsupervisedFormat / statusDaemonUnsupervisedNoPID are the
 // health line's copy, with and without a recorded PID.
 const (
-	statusDaemonUnsupervisedFormat = "bossd (PID %d) is not owned by the service manager. Run boss daemon doctor."
-	statusDaemonUnsupervisedNoPID  = "bossd is not owned by the service manager. Run boss daemon doctor."
+	statusDaemonUnsupervisedFormat = "The daemon (PID %d) is not supervised, so it will not restart after a crash or reboot."
+	statusDaemonUnsupervisedNoPID  = "The daemon is not supervised, so it will not restart after a crash or reboot."
 )
 
 // proofDaemonUnsupervised, when set via BOSS_PROOF_DAEMON_UNSUPERVISED (proof

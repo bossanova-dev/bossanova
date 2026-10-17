@@ -1035,6 +1035,22 @@ func TestTerminalStreamClient_HealthyDropResetsBackoff(t *testing.T) {
 		return d
 	}
 
+	// awaitBackoff waits for the Run loop to arm a backoff timer of exactly
+	// want, then checks it is the soonest timer. Waiting for "any pending
+	// timer" is not enough here: each closed stream leaves its liveness ping
+	// timer pending on the fake clock (clock.After timers are never stopped),
+	// so a bare wait could return before the backoff was armed and read that
+	// stale ping timer instead (backoff = 13.999s).
+	awaitBackoff := func(t *testing.T, label string, want time.Duration) {
+		t.Helper()
+		if !waitForTimerExactly(clock, want, 2*time.Second) {
+			t.Fatalf("%s: no %v backoff timer armed; soonest pending timer = %v", label, want, nextAfterDuration(t))
+		}
+		if got := nextAfterDuration(t); got != want {
+			t.Fatalf("%s: backoff = %v, want %v", label, got, want)
+		}
+	}
+
 	advancePastNext := func(t *testing.T) {
 		t.Helper()
 		waitForTimer(clock, 2*time.Second)
@@ -1046,24 +1062,15 @@ func TestTerminalStreamClient_HealthyDropResetsBackoff(t *testing.T) {
 
 	// Three fast failures ramp the backoff: 1s → 2s → 4s.
 	dropFast(t)
-	waitForTimer(clock, 2*time.Second)
-	if got, want := nextAfterDuration(t), 1*time.Second; got != want {
-		t.Fatalf("after fail #1: backoff = %v, want %v", got, want)
-	}
+	awaitBackoff(t, "after fail #1", 1*time.Second)
 	advancePastNext(t)
 
 	dropFast(t)
-	waitForTimer(clock, 2*time.Second)
-	if got, want := nextAfterDuration(t), 2*time.Second; got != want {
-		t.Fatalf("after fail #2: backoff = %v, want %v", got, want)
-	}
+	awaitBackoff(t, "after fail #2", 2*time.Second)
 	advancePastNext(t)
 
 	dropFast(t)
-	waitForTimer(clock, 2*time.Second)
-	if got, want := nextAfterDuration(t), 4*time.Second; got != want {
-		t.Fatalf("after fail #3: backoff = %v, want %v", got, want)
-	}
+	awaitBackoff(t, "after fail #3", 4*time.Second)
 	advancePastNext(t)
 
 	// Fourth attempt: let the stream "live" past the healthy threshold,
@@ -1078,10 +1085,7 @@ func TestTerminalStreamClient_HealthyDropResetsBackoff(t *testing.T) {
 	clock.Advance(terminalStreamHealthyDuration + time.Second)
 	close(s.recv)
 
-	waitForTimer(clock, 2*time.Second)
-	if got, want := nextAfterDuration(t), terminalStreamInitialBackoff; got != want {
-		t.Fatalf("after healthy drop: backoff = %v, want %v (reset)", got, want)
-	}
+	awaitBackoff(t, "after healthy drop (reset)", terminalStreamInitialBackoff)
 }
 
 // TestTerminalStreamClient_TerminalCloseCommand verifies that a

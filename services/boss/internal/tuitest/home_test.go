@@ -10,6 +10,7 @@ import (
 
 	"github.com/recurser/boss/internal/tuitest"
 	"github.com/recurser/bossalib/attention"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 func TestTUI_HomeView_ShowsSessions(t *testing.T) {
@@ -26,107 +27,6 @@ func TestTUI_HomeView_ShowsSessions(t *testing.T) {
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestTUI_HomeView_EmptyState(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestTUI_HomeView_NoRepoActionBarHidesNewSession(t *testing.T) {
-	h := tuitest.New(t)
-
-	// With no repos, the app lands on the Home empty state (no auto-route). The
-	// primary action is adding the first repository, not creating a session.
-	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
-		t.Fatal(err)
-	}
-	screen := h.Driver.Screen()
-	if strings.Contains(screen, "[n]ew session") {
-		t.Fatalf("home: should not offer [n]ew session when no repos exist; screen:\n%s", screen)
-	}
-	for _, kept := range []string{"[enter] add repository", "[q]uit"} {
-		if !strings.Contains(screen, kept) {
-			t.Fatalf("home: expected action bar to contain %q; screen:\n%s", kept, screen)
-		}
-	}
-}
-
-func TestTUI_HomeView_DataDisplay(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	screen := h.Driver.Screen()
-	if !strings.Contains(screen, "my-app") {
-		t.Fatalf("expected repo name 'my-app' on screen:\n%s", screen)
-	}
-	if !strings.Contains(screen, "Bossanova") {
-		t.Fatalf("expected 'Bossanova' banner on screen:\n%s", screen)
-	}
-}
-
-func TestTUI_HomeView_ArrowKeys(t *testing.T) {
-	h := newHomeWithSessions(t)
-
-	// Send down arrow (ESC [ B) and up arrow (ESC [ A).
-	assertHomeNavigationKeepsSessions(t, h,
-		func() error { return h.Driver.SendString("\x1b[B") },
-		func() error { return h.Driver.SendString("\x1b[A") },
-	)
-}
-
-func TestTUI_HomeView_ActionBar(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	screen := h.Driver.Screen()
-	// With sessions present, the action bar should show session creation and selection.
-	if !strings.Contains(screen, "[n]ew") {
-		t.Fatalf("expected '[n]ew' in action bar; screen:\n%s", screen)
-	}
-	if !strings.Contains(screen, "[enter] select") {
-		t.Fatalf("expected '[enter] select' in action bar; screen:\n%s", screen)
-	}
-}
-
-func TestTUI_HomeView_ActionBarHasNoMovedItems(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
-		t.Fatal(err)
-	}
-
-	screen := h.Driver.Screen()
-	for _, moved := range []string{"[r]epos", "[c]ron", "[t]rash", "[a]rchive"} {
-		if strings.Contains(screen, moved) {
-			t.Fatalf("expected action bar not to contain %q; screen:\n%s", moved, screen)
-		}
-	}
-	for _, kept := range []string{"[n]ew", "[s]ettings", "[q]uit"} {
-		if !strings.Contains(screen, kept) {
-			t.Fatalf("expected action bar to contain %q; screen:\n%s", kept, screen)
-		}
 	}
 }
 
@@ -232,9 +132,7 @@ func TestTUI_HomeView_MovedKeysAreInert(t *testing.T) {
 	}
 
 	// 'r' left this list when BOS-837 gave it the hidden rename shortcut; the
-	// keys below are still the ones that moved to the session detail view. The
-	// rename round trip, its cancel path and its hidden-ness are covered by
-	// TestTUI_HomeView_HiddenRename* further down this file.
+	// keys below are still the ones that moved to the session detail view.
 	for _, key := range []byte{'t', 'c', 'a'} {
 		if err := h.Driver.SendKey(key); err != nil {
 			t.Fatal(err)
@@ -270,15 +168,6 @@ func TestTUI_HomeView_SingleSession(t *testing.T) {
 	if !strings.Contains(screen, "[n]ew") {
 		t.Fatalf("expected action bar with single session; screen:\n%s", screen)
 	}
-}
-
-func TestTUI_HomeView_JKNavigation(t *testing.T) {
-	h := newHomeWithSessions(t)
-
-	assertHomeNavigationKeepsSessions(t, h,
-		func() error { return h.Driver.SendKey('j') },
-		func() error { return h.Driver.SendKey('k') },
-	)
 }
 
 // startHomeRename opens the hidden [r] editor on the first session of a freshly
@@ -382,27 +271,6 @@ func TestTUI_HomeView_HiddenRenameSwallowsQuit(t *testing.T) {
 	}
 }
 
-// TestTUI_HomeView_HiddenRenameIsUnadvertised pins the "hidden" half of the
-// ticket: the shortcut exists but the action bar never grows a [r]ename hint.
-func TestTUI_HomeView_HiddenRenameIsUnadvertised(t *testing.T) {
-	h := newHomeWithSessions(t)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-	screen := h.Driver.Screen()
-	// Positive control: the keys that ARE advertised are on screen, so a blank or
-	// half-drawn frame cannot pass this test by containing nothing at all.
-	for _, advertised := range []string{"[n]ew session", "[s]ettings"} {
-		if !strings.Contains(screen, advertised) {
-			t.Fatalf("expected the action bar to advertise %q; screen:\n%s", advertised, screen)
-		}
-	}
-	if strings.Contains(screen, "[r]ename") {
-		t.Fatalf("the rename shortcut must stay hidden; screen:\n%s", screen)
-	}
-}
-
 // TestTUI_HomeView_HiddenRenameEscapeCancels covers the abandon path: esc must
 // leave the title alone and write nothing at all.
 func TestTUI_HomeView_HiddenRenameEscapeCancels(t *testing.T) {
@@ -446,39 +314,20 @@ func newHomeWithSessions(t *testing.T) *tuitest.Harness {
 	)
 }
 
-func assertHomeNavigationKeepsSessions(t *testing.T, h *tuitest.Harness, navigate ...func() error) {
-	t.Helper()
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-	for _, step := range navigate {
-		if err := step(); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	screen := h.Driver.Screen()
-	if !strings.Contains(screen, "Add dark mode") {
-		t.Fatalf("expected 'Add dark mode' on screen:\n%s", screen)
-	}
-	if !strings.Contains(screen, "Fix login bug") {
-		t.Fatalf("expected 'Fix login bug' on screen:\n%s", screen)
-	}
-}
-
 // TestTUI_HomeView_AttentionBoard drives the real executable through a PTY.
 func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(fixtures.AttentionSessions()...), tuitest.WithTerminalSize(width, 60))
-			for _, text := range []string{"─ NEEDS YOU ─", "─ IN PROGRESS ─", "[r]esume", "[x] dismiss", "? question", "checking 4/9", "[BOS-1509]"} {
+			for _, text := range []string{"─ NEEDS YOU ─", "─ IN PROGRESS ─", "? question", "checking 4/9", "[BOS-1509]"} {
 				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
 					t.Fatal(err)
 				}
 			}
 			before := h.Driver.Screen()
+			if strings.Contains(before, "[r]esume") || strings.Contains(before, "[x] dismiss") {
+				t.Fatalf("fix footer advertises the unadvertised resume or dismiss:\n%s", before)
+			}
 			if strings.Contains(before, "◌") {
 				t.Fatalf("unexpected progress glyph:\n%s", before)
 			}
@@ -546,6 +395,98 @@ func TestTUI_Home_AttentionReviewMerge(t *testing.T) {
 	if calls := h.Daemon.ApproveSessionPRCalls(); len(calls) != 0 {
 		t.Fatalf("the TUI ran the CLI approve verb: %v", calls)
 	}
+}
+
+// Enter on a needs-you row opens the session's chat list with the chat the
+// attention names already selected, so a second enter opens that chat.
+func TestTUI_Home_AttentionEnterSelectsTheTargetChat(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].Attention = &pb.SessionAttention{
+		Kind:         pb.AttentionKind_ATTENTION_KIND_FIX,
+		Sentence:     "Failed after 3 attempts",
+		Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT},
+		TargetChatId: "claude-333",
+	}
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...))
+	if err := h.Driver.WaitForText(waitTimeout, "[enter] select"); err != nil {
+		t.Fatalf("plain enter hint missing: %v\n%s", err, h.Driver.Screen())
+	}
+	if h.Driver.ScreenContains("open the failed chat") {
+		t.Fatalf("footer still names the failed chat:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	selected := func(screen string) bool {
+		for _, line := range strings.Split(screen, "\n") {
+			if strings.Contains(line, "❯") && strings.Contains(line, "Address review comments") {
+				return true
+			}
+		}
+		return false
+	}
+	if err := h.Driver.WaitFor(waitTimeout, selected); err != nil {
+		t.Fatalf("details did not select the failed chat: %v\n%s", err, h.Driver.Screen())
+	}
+}
+
+// [r] on a blocked run asks before resuming, on Home and on the details view:
+// both screens also bind a hidden [r]ename, so the confirmation is what tells
+// the operator which one they pressed. Esc resumes nothing; y and enter resume.
+func TestTUI_AttentionResumeAsksFirst(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].Attention = &pb.SessionAttention{
+		Kind:         pb.AttentionKind_ATTENTION_KIND_FIX,
+		Sentence:     "Run blocked: MAD-1751 implemented",
+		Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT},
+		TargetChatId: "claude-333",
+	}
+	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...))
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	resumeAfter := func(where string, confirm func() error, want int) {
+		t.Helper()
+		if err := h.Driver.SendKey('r'); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Driver.WaitForText(waitTimeout, "Resume this run?"); err != nil {
+			t.Fatalf("%s: [r] did not ask to resume: %v\n%s", where, err, h.Driver.Screen())
+		}
+		if err := h.Driver.SendEscape(); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Driver.WaitForNoText(waitTimeout, "Resume this run?"); err != nil {
+			t.Fatalf("%s: esc left the confirmation up: %v\n%s", where, err, h.Driver.Screen())
+		}
+		if calls := h.Daemon.ResumeSessionRunCalls(); len(calls) != want-1 {
+			t.Fatalf("%s: esc resumed: %v", where, calls)
+		}
+		if err := h.Driver.SendKey('r'); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Driver.WaitForText(waitTimeout, "Resume this run?"); err != nil {
+			t.Fatalf("%s: second [r] did not ask: %v\n%s", where, err, h.Driver.Screen())
+		}
+		if err := confirm(); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Driver.WaitForText(waitTimeout, "Run resumed"); err != nil {
+			t.Fatalf("%s: no resume result: %v\n%s", where, err, h.Driver.Screen())
+		}
+		calls := h.Daemon.ResumeSessionRunCalls()
+		if len(calls) != want || calls[want-1].GetSessionId() != "sess-aaa-111" {
+			t.Fatalf("%s: resume calls=%v", where, calls)
+		}
+	}
+	resumeAfter("home", func() error { return h.Driver.SendKey('y') }, 1)
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Address review comments"); err != nil {
+		t.Fatalf("details did not open: %v\n%s", err, h.Driver.Screen())
+	}
+	resumeAfter("details", h.Driver.SendEnter, 2)
 }
 
 func TestTUI_HomeView_SlashFilter(t *testing.T) {

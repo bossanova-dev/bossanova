@@ -38,6 +38,10 @@ type MockAgentClient struct {
 	// racing tests that create-and-park sessions. A test that needs the run to
 	// complete (e.g. to exercise headless finalization) sets this true.
 	ExitComplete bool
+
+	// ReadTranscriptFunc, when set, drives ReadTranscript. Nil reports no
+	// transcript.
+	ReadTranscriptFunc func(*bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 }
 
 func (m *MockAgentClient) name() string {
@@ -155,7 +159,10 @@ func (*MockAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTur
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
 
-func (*MockAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+func (m *MockAgentClient) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	if m.ReadTranscriptFunc != nil {
+		return m.ReadTranscriptFunc(req)
+	}
 	return &bossanovav1.ReadTranscriptResponse{}, nil
 }
 

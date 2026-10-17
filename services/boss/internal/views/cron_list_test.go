@@ -280,18 +280,19 @@ func TestRunNowSkipLabel(t *testing.T) {
 		reason string
 		want   string
 	}{
+		{"", "no reason given"},
 		{"gated", "blocked by gate command"},
-		{"gate_failed", "gate command could not run — check the daemon log"},
+		{"gate_failed", "the gate command could not run; check the daemon log"},
 		{"overlap_prev_active", "previous run still active"},
 		{"disabled", "job is disabled"},
 		{"something_new", "something_new"},
 	}
 	for _, tt := range tests {
-		if got := runNowSkipLabel(tt.reason); got != tt.want {
-			t.Errorf("runNowSkipLabel(%q) = %q, want %q", tt.reason, got, tt.want)
+		if got := RunNowSkipLabel(tt.reason); got != tt.want {
+			t.Errorf("RunNowSkipLabel(%q) = %q, want %q", tt.reason, got, tt.want)
 		}
 	}
-	if runNowSkipLabel("gate_failed") == runNowSkipLabel("gated") {
+	if RunNowSkipLabel("gate_failed") == RunNowSkipLabel("gated") {
 		t.Error("gate_failed and gated must not share a run-now label")
 	}
 }

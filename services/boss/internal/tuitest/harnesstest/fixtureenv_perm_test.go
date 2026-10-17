@@ -1,21 +1,23 @@
-package tuitest
+package harnesstest
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/recurser/boss/internal/tuitest"
 )
 
-// WriteSeedSettings creates the config dir with least-privilege 0700 and writes
+// tuitest.WriteSeedSettings creates the config dir with least-privilege 0700 and writes
 // settings.json 0600 (gosec G301/G306). Assert both tightened modes and that
 // the settings still round-trip as valid JSON.
 func TestWriteSeedSettingsPerms(t *testing.T) {
 	home := t.TempDir()
-	if err := WriteSeedSettings(home, map[string]any{"providersAcknowledged": true}); err != nil {
-		t.Fatalf("WriteSeedSettings: %v", err)
+	if err := tuitest.WriteSeedSettings(home, map[string]any{"providersAcknowledged": true}); err != nil {
+		t.Fatalf("tuitest.WriteSeedSettings: %v", err)
 	}
 
-	configDir := ConfigDirForHome(home)
+	configDir := tuitest.ConfigDirForHome(home)
 	di, err := os.Stat(configDir)
 	if err != nil {
 		t.Fatalf("stat config dir: %v", err)

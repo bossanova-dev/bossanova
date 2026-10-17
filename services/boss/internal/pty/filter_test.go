@@ -70,6 +70,34 @@ func TestStripTerminalQueryReplies(t *testing.T) {
 			want: []byte{},
 		},
 		{
+			// Replies to Bubble Tea's startup DECRQM probe for modes 2026/2027.
+			name: "decrpm_replies",
+			data: []byte("a\x1b[?2026;2$y\x1b[?2027;0$yb"),
+			want: []byte("ab"),
+		},
+		{
+			name: "kitty_flags_reply",
+			data: []byte("a\x1b[?0ub"),
+			want: []byte("ab"),
+		},
+		{
+			name:    "decrpm_split_at_dollar_held",
+			data:    []byte("a\x1b[?2026;2$"),
+			want:    []byte("a"),
+			newPend: []byte("\x1b[?2026;2$"),
+		},
+		{
+			name:    "pending_decrpm_completed_in_next_chunk",
+			pending: []byte("\x1b[?2026;2$"),
+			data:    []byte("yb"),
+			want:    []byte("b"),
+		},
+		{
+			name: "dollar_without_y_passes_through",
+			data: []byte("\x1b[?1$x"),
+			want: []byte("\x1b[?1$x"),
+		},
+		{
 			// Reply to XTWINOPS "CSI 18 t" (report text-area size in chars).
 			// Outer terminal answers "CSI 8 ; rows ; cols t".
 			name: "xtwinops_text_area_reply",

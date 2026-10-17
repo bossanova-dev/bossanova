@@ -231,7 +231,7 @@ func planLocalProject(ctx context.Context, cmd *cobra.Command, env projectApplyE
 	if hasFactoryCron(proj.cfg) {
 		r, err := newFactoryCronResolver(ctx, c, filepath.Join(main, initConfigFilename), env.cronEnv())
 		if err != nil {
-			warnings = append(warnings, "factory crons cannot be resolved: "+err.Error())
+			warnings = append(warnings, "pipeline cron jobs cannot be resolved: "+err.Error())
 		} else {
 			factory = r
 		}

@@ -6,7 +6,6 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -61,37 +60,24 @@ func (h HomeModel) archiveInFlight(sessionID string) bool {
 	return ok
 }
 
-// homeMerge is a confirmed [m]erge whose row reads "merging" on Home.
-type homeMerge struct {
-	// action is the running merge, carried onto a reopened details view.
-	action attentionActionState
-	// awaitingPoll marks a merge whose call ended without bossd's answer. A
-	// session poll that shows how it ended settles it.
-	awaitingPoll bool
-}
-
-func (h *HomeModel) setMerge(sessionID string, m homeMerge) {
-	if h.mergesInFlight == nil {
-		h.mergesInFlight = make(map[string]homeMerge)
-	}
-	h.mergesInFlight[sessionID] = m
-}
-
 func (h *HomeModel) markMerging(a attentionActionState) {
-	h.setMerge(a.sessionID, homeMerge{action: a})
+	if h.mergesInFlight == nil {
+		h.mergesInFlight = make(map[string]attentionActionState)
+	}
+	h.mergesInFlight[a.sessionID] = a
 }
 
-// mergeInFlight returns the session's merge while its call is still running.
+// mergeInFlight returns the session's merge while its outcome is not known, so
+// a reopened details view carries it.
 func (h HomeModel) mergeInFlight(sessionID string) (attentionActionState, bool) {
 	m, ok := h.mergesInFlight[sessionID]
-	return m.action, ok && !m.awaitingPoll
+	return m, ok
 }
 
 // isMerging reports a session whose row reads "merging": no other attention
 // action is offered on it until the merge settles.
 func (h HomeModel) isMerging(sessionID string) bool {
-	_, ok := h.mergesInFlight[sessionID]
-	return ok
+	return h.mergesInFlight[sessionID].mergeUnresolved()
 }
 
 // showActionResult puts an action's outcome on the status line. A merge's row
@@ -99,7 +85,7 @@ func (h HomeModel) isMerging(sessionID string) bool {
 func (h *HomeModel) showActionResult(msg attentionActionResultMsg) {
 	if msg.action == pb.AttentionAction_ATTENTION_ACTION_MERGE {
 		if msg.unsettled {
-			h.setMerge(msg.sessionID, homeMerge{awaitingPoll: true})
+			h.markMerging(awaitingMerge(msg.sessionID, msg.text))
 		} else {
 			delete(h.mergesInFlight, msg.sessionID)
 		}
@@ -110,29 +96,27 @@ func (h *HomeModel) showActionResult(msg attentionActionResultMsg) {
 	}
 }
 
-// settleUnansweredMerges ends each unanswered merge the poll shows has ended:
-// its PR merged or closed, or bossd is no longer merging it.
+// settleUnansweredMerges ends each unanswered merge the poll shows has ended.
+// A session gone from the list takes its waiting line with it: Home does not
+// list archived sessions, so the poll cannot say whether it merged.
 func (h *HomeModel) settleUnansweredMerges() {
 	for id, m := range h.mergesInFlight {
-		if !m.awaitingPoll {
+		if m.waiting == "" {
 			continue
 		}
 		sess := sessionByID(h.sessions, id)
 		if sess == nil {
+			if h.status == m.waiting {
+				h.status, h.statusErr = "", false
+			}
 			delete(h.mergesInFlight, id)
 			continue
 		}
-		pr := sess.GetPrNumber()
-		switch {
-		case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_MERGED:
-			h.status, h.statusErr = fmt.Sprintf("Merged PR #%d", pr), false
-		case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
-			h.status, h.statusErr = fmt.Sprintf("PR #%d was closed without merging", pr), true
-		case !sess.GetDisplayMerging():
-			h.status, h.statusErr = fmt.Sprintf("PR #%d did not merge", pr), true
-		default:
+		status, isErr, settled := settleUnansweredMerge(sess)
+		if !settled {
 			continue
 		}
+		h.status, h.statusErr = status, isErr
 		delete(h.mergesInFlight, id)
 	}
 }

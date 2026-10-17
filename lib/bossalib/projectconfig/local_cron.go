@@ -112,9 +112,9 @@ func (p *planner) cronSpec(c Cron) *cronSpec {
 		res, ok := p.st.Factory[c.Name]
 		switch {
 		case !ok:
-			return block(ActionSkip, ReasonFactoryUnavailable, "factory stages resolve only through the CLI")
+			return block(ActionSkip, ReasonFactoryUnavailable, "pipeline stages resolve only through the CLI")
 		case errors.Is(res.Err, ErrUnknownFactoryStage):
-			return block(ActionSkip, ReasonUnknownStage, fmt.Sprintf("this boss has no factory stage %q", s.stage))
+			return block(ActionSkip, ReasonUnknownStage, fmt.Sprintf("this boss has no pipeline stage %q", s.stage))
 		case res.Err != nil:
 			return block(ActionSkip, ReasonFactoryUnavailable, res.Err.Error())
 		}
@@ -285,10 +285,10 @@ func (p *planner) mapDesired(s *cronSpec, change Change, jobs []*pb.CronJob, sta
 			change.Action, change.Fields = ActionSkip, nil
 			if p.opts.HostFreeFactory {
 				change.Reason = ReasonCreateViaCLI
-				change.Detail = "a factory cron's gate embeds this host's own paths, which only the CLI resolves; run `boss project apply` here to create it"
+				change.Detail = "a pipeline cron's gate embeds this host's own paths, which only the CLI resolves; run `boss project apply` here to create it"
 			} else {
 				change.Reason = ReasonNeedsLocalApply
-				change.Detail = fmt.Sprintf("a factory cron's gate embeds the host's own paths; run `boss project apply` on %s to create it", p.daemon)
+				change.Detail = fmt.Sprintf("a pipeline cron's gate embeds the host's own paths; run `boss project apply` on %s to create it", p.daemon)
 			}
 			p.add(change)
 			return

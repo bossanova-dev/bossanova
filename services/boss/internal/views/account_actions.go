@@ -118,8 +118,8 @@ func accountDisablePromptText(acct *pb.Account, count int, known bool) string {
 // accountRemovePromptText builds the confirm-prompt copy for removing an
 // account. Removal is always confirmed (it purges the keyring credential and is
 // irreversible). When the account is bound (or the count is unknown) the copy
-// escalates: it recommends disable over remove and explains that running chats
-// may continue or fail depending on spawn state — never silently broken.
+// escalates: it explains that running chats may continue or fail depending on
+// spawn state — never silently broken.
 func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
 	label := accountRowLabel(acct)
 	base := fmt.Sprintf(
@@ -129,13 +129,13 @@ func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
 		return base
 	case !known:
 		return base + " Running chats bound to this account may continue or fail depending on" +
-			" spawn state — consider disable instead of remove."
+			" spawn state."
 	case count == 1:
 		return base + " 1 running chat is bound to this account and may continue or fail depending on" +
-			" spawn state — consider disable instead of remove."
+			" spawn state."
 	default:
 		return base + fmt.Sprintf(" %d running chats are bound to this account and may continue or fail"+
-			" depending on spawn state — consider disable instead of remove.", count)
+			" depending on spawn state.", count)
 	}
 }
 

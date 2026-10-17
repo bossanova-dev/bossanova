@@ -12,6 +12,7 @@ go_library(
         "account_register.go",
         "account_register_exec.go",
         "account_register_prompter.go",
+        "account_register_proof.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "account_register_proof_disabled.go",
         "accounts_list.go",
         "app.go",
@@ -24,6 +25,7 @@ go_library(
         "attachpaste.go",
         "attachtransport.go",
         "attention_actions.go",
+        "browser_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "browser_prod.go",
         "bugreport.go",
         "buttons.go",
@@ -45,6 +47,7 @@ go_library(
         "form_mouse.go",
         "formfields.go",
         "general_settings.go",
+        "general_settings_proof.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "general_settings_proof_disabled.go",
         "github_app_install_url.go",
         "heartbeat.go",
@@ -294,3 +297,10 @@ go_test(
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
+
+go_test(
+    name = "views_e2e_test",
+    srcs = ["browser_e2e_test.go"],
+    embed = [":views"],
+    gotags = ["e2e"],
+)  # keep: unit tests of the e2e-tagged seams

@@ -396,6 +396,11 @@ type Lifecycle struct {
 	accountSwitchWorking     chatStatusReader
 	accountSwitchTranscripts transcriptProbe
 
+	// blockedRun wires MarkWorkingBlockedRuns (SetBlockedRunDeps).
+	blockedRun blockedRunDeps
+	// blockedFinish holds finishes from Blocked (AcceptBlockedRunFinish).
+	blockedFinish blockedFinishes
+
 	// backgroundDraftPRs tracks the in-flight background draft-PR creates
 	// StartSession spawns (BOS-540), keyed by session id. The value channel is
 	// closed when that session's create finishes. The registry is what makes

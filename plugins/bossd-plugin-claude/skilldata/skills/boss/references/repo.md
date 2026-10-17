@@ -38,7 +38,7 @@ Show what applying .boss-project.json would change on this daemon
 
 Print this checkout's boss setup as a project config file
 
-Reads the local daemon's registration of this checkout (repository settings, cron jobs and the daemon's own identity) and prints it as a canonical `.boss-project.json`. Factory cron jobs export symbolically (their stage, no prompt or gate), so the same job on two machines exports identically. With `--cloud` it also reads your inbound triggers on this repository and the organization's session webhooks. Secrets are never written: a repository credential that is set appears only as a reference to a `BOSS_*` environment variable. Warnings go to stderr, so stdout can be piped. `--write` writes the file to the main checkout and refuses to replace an existing one without `--force`.
+Reads the local daemon's registration of this checkout (repository settings, cron jobs and the daemon's own identity) and prints it as a canonical `.boss-project.json`. Pipeline cron jobs export symbolically (their stage, no prompt or gate), so the same job on two machines exports identically. With `--cloud` it also reads your inbound triggers on this repository and the organization's session webhooks. Secrets are never written: a repository credential that is set appears only as a reference to a `BOSS_*` environment variable. Warnings go to stderr, so stdout can be piped. `--write` writes the file to the main checkout and refuses to replace an existing one without `--force`.
 
 **Flags:**
 

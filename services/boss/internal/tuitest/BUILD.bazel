@@ -28,18 +28,11 @@ go_test(
         "bugreport_test.go",
         "chatpicker_test.go",
         "cron_test.go",
-        "fixtureenv_perm_test.go",
-        "fixtureenv_test.go",
-        "harness_test.go",
         "home_reorder_test.go",
         "home_test.go",
         "login_subscription_test.go",
         "login_test.go",
         "main_test.go",
-        "mock_daemon_attach_test.go",
-        "mock_daemon_notes_test.go",
-        "mock_daemon_rpcstall_test.go",
-        "mock_daemon_standalone_test.go",
         "navigation_test.go",
         "newsession_agent_test.go",
         "newsession_test.go",
@@ -52,7 +45,6 @@ go_test(
         "settings_test.go",
         "trash_test.go",
     ],
-    embed = [":tuitest"],
     # keep: TUI integration tests go-build the boss binary via a runtime.Caller
     # workspace root — "go" is absent from the sandbox PATH. Covered by `make test-boss`.
     tags = [
@@ -60,10 +52,10 @@ go_test(
         "requires-workspace",
     ],
     deps = [
+        ":tuitest",
         "//lib/bossalib/attention",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
-        "//services/boss/internal/client",
         "//services/boss/internal/fixtures",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//types/known/timestamppb",

@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "harnesstest_test",
+    srcs = [
+        "fixtureenv_perm_test.go",
+        "fixtureenv_test.go",
+        "mock_daemon_attach_test.go",
+        "mock_daemon_notes_test.go",
+        "mock_daemon_rpcstall_test.go",
+        "mock_daemon_standalone_test.go",
+    ],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/client",
+        "//services/boss/internal/tuitest",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

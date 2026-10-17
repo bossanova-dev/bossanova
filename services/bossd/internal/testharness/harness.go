@@ -399,6 +399,10 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	hostService := pluginpkg.NewHostServiceServer(vcsMock)
 	chatTracker := status.NewTracker()
 	hostService.SetSessionDeps(repos, sessions, agentChats, display, chatTracker)
+	lifecycle.SetBlockedRunDeps(func(agentSessionID string) bool {
+		e := chatTracker.Get(agentSessionID)
+		return e != nil && e.Status == pb.ChatStatus_CHAT_STATUS_WORKING
+	}, display, nil)
 	hostService.SetRepairLease(repairLease)
 	// Wire the lifecycle so tests that exercise StartChatRun directly
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.

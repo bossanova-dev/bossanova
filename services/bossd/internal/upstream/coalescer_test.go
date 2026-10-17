@@ -136,6 +136,33 @@ func waitForTimerAtLeast(clock *fakeClock, minDur, timeout time.Duration) bool {
 	return false
 }
 
+// waitForTimerExactly polls until the clock holds a pending timer due exactly
+// d after virtual now, reporting whether one appeared. Use it when the code
+// under test arms several timers on one clock and the test must advance past
+// one particular timer: StreamClient's coalescer arms its window timer as soon
+// as the stream opens, so "any pending timer" can be satisfied before the
+// token refresher has armed its own.
+func waitForTimerExactly(clock *fakeClock, d, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		clock.mu.Lock()
+		due := clock.now.Add(d)
+		found := false
+		for _, t := range clock.timers {
+			if !t.fired && !t.stopped && t.deadline.Equal(due) {
+				found = true
+				break
+			}
+		}
+		clock.mu.Unlock()
+		if found {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return false
+}
+
 // Advance moves virtual time forward by d and fires any callbacks
 // whose deadline now lies in the past. Callbacks run synchronously
 // under the clock's own mutex dropped temporarily — this matches the

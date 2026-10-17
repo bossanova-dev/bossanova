@@ -86,9 +86,9 @@ func restartDaemonCmd() tea.Cmd {
 			}
 			if !time.Now().Before(deadline) {
 				if !socketGone {
-					return daemonRestartMsg{err: errors.New("daemon restart timed out waiting for old socket to stop; check 'boss daemon status'")}
+					return daemonRestartMsg{err: errors.New("daemon restart timed out waiting for old socket to stop")}
 				}
-				return daemonRestartMsg{err: errors.New("daemon restarted but socket did not become reachable; check 'boss daemon status'")}
+				return daemonRestartMsg{err: errors.New("daemon restarted but socket did not become reachable")}
 			}
 			time.Sleep(restartPollInterval)
 		}
@@ -178,26 +178,17 @@ func hostDownRemediation(destination string) string {
 	// dressed as reassurance — the user would wait for a reconnect that is not
 	// coming.
 	remediation := "Reconnecting to " + destination + ".\n\n" +
-		"The ssh tunnel dropped. Boss keeps redialling and resumes automatically.\n\n"
+		"The ssh tunnel dropped. Boss keeps redialling and resumes automatically."
 	if remoteHostSupervisorStopped() {
 		remediation = "Disconnected from " + destination + ".\n\n" +
-			"The ssh tunnel dropped and its supervisor stopped, so boss is not redialling. Restart boss to reconnect.\n\n"
+			"The ssh tunnel dropped and boss stopped reconnecting. Restart boss to reconnect."
 	}
 	// The supervisor classifies every ssh exit; before BOS-724 that diagnosis
 	// only reached a Debug line, so a user watching a stalled TUI had no way to
 	// learn why. It is absent on the very first drop, when the RPC fails before
 	// the child has exited, so the affordance reads correctly without it.
 	if reason := remoteHostFailureReason(); reason != "" {
-		remediation += "Last tunnel failure: " + reason + "\n\n"
+		remediation += "\n\nLast tunnel failure: " + reason
 	}
-	return remediation +
-		"If it does not come back:\n\n" +
-		"  ssh " + destination + "                    # check the connection itself\n" +
-		"  ssh " + destination + " boss daemon status # check bossd on that host\n" +
-		// `boss tail` with no source reads the *bossd* log, which under --host is
-		// a local daemon boss is not talking to and never carries a line about
-		// the ssh child. The supervisor logs through the boss process's own
-		// logger, so the source has to be named or this pointer sends the user
-		// to the same empty log BOS-724 already wasted an hour on.
-		"  boss tail boss                      # every reconnect attempt, on this machine"
+	return remediation
 }

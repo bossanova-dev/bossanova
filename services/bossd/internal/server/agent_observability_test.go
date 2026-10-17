@@ -520,7 +520,7 @@ func TestHydrateBaseAttention_PreservesBlockedReasonUnderAuthOverlay(t *testing.
 
 	// Reverse-stream projection order: bare proto -> base attention -> overlay.
 	p := SessionToProto(sess)
-	HydrateBaseAttention(p, sess, repo)
+	HydrateBaseAttention(p, sess, repo, nil)
 	HydrateAgentObservability(tracker, p, chats)
 
 	if p.GetAttentionStatus() == nil {
@@ -555,7 +555,7 @@ func TestHydrateBaseAttention_AuthOverlayStillAppliesWhenNoBaseAttention(t *test
 
 	p := SessionToProto(sess)
 	p.RotationEvents = []*pb.RotationEvent{confirmedAuthRotationProto()}
-	HydrateBaseAttention(p, sess, repo)
+	HydrateBaseAttention(p, sess, repo, nil)
 	HydrateAgentObservability(tracker, p, chats)
 
 	if p.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED {
@@ -594,7 +594,7 @@ func TestHydrateBaseAttention_FixingChecksNoAutoRepairDoesNotResurrectStaleConfl
 	// it here), so the conflict reason is stale and must not be resurrected.
 	p := SessionToProto(sess)
 	p.RotationEvents = []*pb.RotationEvent{confirmedAuthRotationProto()}
-	HydrateBaseAttention(p, sess, repo)
+	HydrateBaseAttention(p, sess, repo, nil)
 	HydrateAgentObservability(tracker, p, chats)
 
 	if p.GetAttentionStatus() == nil {

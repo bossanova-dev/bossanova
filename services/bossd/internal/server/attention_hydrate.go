@@ -241,6 +241,22 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	fix := func(key, sentence string, at time.Time) *attention.FixFact {
 		return &attention.FixFact{AlertKey: key, Sentence: sentence, ChatID: chatID, Since: at}
 	}
+	blockedFacts := session.BlockedAlertFacts(row, d.display)
+	// A Blocked run whose own agent is at work on a turn the block did not see
+	// has nothing for the operator until that turn ends, so no FIX of any kind:
+	// the repair-exhausted leg below would otherwise re-raise the cap the block
+	// already reported.
+	//
+	// No dated apiversion bump for this leg: Session.attention reaches the boss
+	// TUI, which stamps its built Current but can point at a remote daemon of
+	// another version, and the web through version-skewed bosso. A response
+	// carries no transcript time and no head, so a down-convert cannot tell this
+	// leg from the green one below, and restoring FIX would re-show a "needs
+	// you" on a row whose agent is working. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if row.State == machine.Blocked && blockedFacts.RunWorking {
+		return nil
+	}
 	// The ledger's documented run key is the original prompt chat. A new chat
 	// starts a fresh budget; old attempts cannot poison a later run.
 	if s.resumeAttempts != nil && chatID != "" {
@@ -259,7 +275,18 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 			}
 		}
 	}
-	staleBlocked := d.display != nil && d.display.HeadSHA != "" && row.LastAttemptHeadSHA != nil && *row.LastAttemptHeadSHA != "" && !strings.EqualFold(*row.LastAttemptHeadSHA, d.display.HeadSHA)
+	// No dated apiversion bump for the green leg, and why: a blocked run whose
+	// PR is green and mergeable on the attempt head moves from FIX to in
+	// progress or merge for every pin. Session.attention reaches the boss TUI,
+	// which stamps its built Current but can point at a remote daemon of
+	// another version, and the web through bosso, which is version-skewed.
+	// Neither can get the old answer back: responses omit last_attempt_head_sha,
+	// so a down-convert cannot tell the old head-moved rule from the green leg,
+	// and restoring it would re-show the false FIX this corrects. The FIX
+	// sentence's single "Run blocked:" label is versioned by
+	// apiversion.RunBlockedLabelChange. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	staleBlocked := !alertstate.BlockedAlertCurrent(blockedFacts)
 	if row.State == machine.Blocked && sessionreason.IsBootstrapStranded(row.BlockedReason) {
 		return &attention.FixFact{
 			AlertKey:     "blocked:" + row.State.String(),
@@ -274,7 +301,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 			sentence = "Run lost its agent"
 		}
 		if row.BlockedReason != nil && strings.TrimSpace(*row.BlockedReason) != "" {
-			sentence = "Run blocked: " + *row.BlockedReason
+			sentence = "Run blocked: " + sessionreason.WithoutBlockedLabel(*row.BlockedReason)
 		}
 		return fix("blocked:"+row.State.String(), sentence, since)
 	}

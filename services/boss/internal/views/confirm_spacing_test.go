@@ -281,3 +281,109 @@ func TestChatPickerStatusLineKeepsCursorRowOnScreen(t *testing.T) {
 		}
 	}
 }
+
+// detailsAppOnFullList is the App on the details view of a merge-ready session
+// with more chats than any terminal here fits, sized to height, with the
+// cursor moved down to the last row the table shows.
+func detailsAppOnFullList(t *testing.T, s *pb.Session, height int) tea.Model {
+	t.Helper()
+	c := &attentionStub{}
+	a := NewApp(c, nil)
+	a.chatPicker = attentionDetails(c, s)
+	a.activeView = ViewChatPicker
+	var model tea.Model = a
+	model, _ = model.Update(listedChats(40))
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 160, Height: height})
+	a = model.(App)
+	a.chatPicker.table.MoveDown(a.chatPicker.table.Height() - 1)
+	updateCursorColumn(&a.chatPicker.table)
+	model = a
+	if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, cursorChevron) {
+		t.Fatalf("height %d: cursor row not on screen before any prompt opens:\n%s", height, screen)
+	}
+	return model
+}
+
+// TestChatPickerConfirmPromptsFitTheScreen opens each prompt that replaces the
+// details view's action bar on a full chat list, at every height from 16 to 40,
+// with the cursor on the last row the steady table shows. The whole frame,
+// banner included, must fit the terminal, so the banner, the prompt, its key
+// hints and the selected row are all on screen.
+func TestChatPickerConfirmPromptsFitTheScreen(t *testing.T) {
+	prNum := int32(42)
+	ready := &pb.Session{Id: "session-1", Title: "Ship the widget", PrNumber: &prNum, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
+	prompts := []struct {
+		name    string
+		session *pb.Session
+		open    func(tea.Model) tea.Model
+		prompt  string
+	}{
+		{"delete", ready, pressKey('d'), "Delete "},
+		{"archive", ready, pressKey('a'), "Archive this session?"},
+		{"merge", ready, pressKey('m'), "Merge PR #42?"},
+		{"rename", ready, pressKey('r'), "[enter] save"},
+		{"switch account", ready, func(model tea.Model) tea.Model {
+			a := model.(App)
+			a.chatPicker.confirm = confirmSwitch
+			a.chatPicker.syncTableHeight()
+			return a
+		}, "Switch account and interrupt it?"},
+		{"attention merge", parkSession("human-review:ui"), pressKey('m'), "Merge PR #42?"},
+	}
+	for height := 16; height <= 40; height++ {
+		steady := map[*pb.Session]tea.Model{}
+		for _, tt := range prompts {
+			if steady[tt.session] == nil {
+				steady[tt.session] = detailsAppOnFullList(t, proto.CloneOf(tt.session), height)
+			}
+			label := fmt.Sprintf("%s, height %d", tt.name, height)
+			model := tt.open(steady[tt.session])
+			lines := strings.Split(ansi.Strip(model.View().Content), "\n")
+			screen := strings.Join(lines, "\n")
+			if len(lines) > height {
+				t.Errorf("%s: frame is %d rows, %d past the terminal:\n%s", label, len(lines), len(lines)-height, screen)
+				continue
+			}
+			if !strings.Contains(lines[1], tt.session.GetTitle()) {
+				t.Errorf("%s: banner not at the top, line 1 is %q", label, lines[1])
+			}
+			for _, want := range []string{tt.prompt, "esc] cancel", cursorChevron} {
+				if !strings.Contains(screen, want) {
+					t.Errorf("%s: %q not on screen:\n%s", label, want, screen)
+				}
+			}
+		}
+	}
+}
+
+func pressKey(key rune) func(tea.Model) tea.Model {
+	return func(model tea.Model) tea.Model {
+		model, _ = model.Update(keyPress(key))
+		return model
+	}
+}
+
+// TestChatPickerErrorScreenFooterLeavesOneBlankLine covers the screen shown
+// once the chat list failed: the archive wait, a failed archive and the archive
+// confirmation each sit one blank line below the line above them.
+func TestChatPickerErrorScreenFooterLeavesOneBlankLine(t *testing.T) {
+	failed := func() ChatPickerModel {
+		m := chatPickerSized(&chatPickerStub{})
+		m.err = errors.New("listing chats failed")
+		return m
+	}
+	t.Run("stacked statuses", func(t *testing.T) {
+		m := failed()
+		m.optimisticArchiveLatch = true
+		m.statusMsg = "Couldn't archive: boom"
+		screen := m.View().Content
+		assertOneBlankLineAbove(t, screen, "Archiving session once every chat is idle…", "listing chats failed")
+		assertOneBlankLineAbove(t, screen, "Couldn't archive: boom", "Archiving session once every chat is idle…")
+		assertOneBlankLineAbove(t, screen, "[a]rchive", "Couldn't archive: boom")
+	})
+	t.Run("archive confirmation", func(t *testing.T) {
+		m := failed()
+		m.confirm = confirmArchive
+		assertOneBlankLineAbove(t, m.View().Content, "Archive this session?", "listing chats failed")
+	})
+}

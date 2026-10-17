@@ -169,7 +169,9 @@ func TestStreamClientOpenStreamStopsWhenRefreshErrorNeedsReconnect(t *testing.T)
 		t.Fatal("timed out waiting for command reader to start")
 	}
 
-	waitForTimer(clock, 200*time.Millisecond)
+	if !waitForTimerExactly(clock, 50*time.Millisecond, 2*time.Second) {
+		t.Fatal("token refresher never armed its refresh-interval timer")
+	}
 	clock.Advance(2 * time.Minute)
 
 	select {

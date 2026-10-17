@@ -5,7 +5,7 @@
 	debt-knip \
 	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
-	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse test-hermes-plugin grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse test-hermes-plugin grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-manifest test-manifest-update \
 	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
@@ -603,7 +603,7 @@ test-web: $(WEB_DEPS_STAMP)
 endif
 
 ifneq ($(wildcard services/web/package.json),)
-## test-web-e2e: Opt-in/release-tier web Playwright Tier-1 faked E2E suite (incl. smoke spec).
+## test-web-e2e: Opt-in/release-tier web Playwright Tier-1 faked E2E suite.
 ## NOT part of the default test/test-web/test-smoke graph — it rebuilds the VITE_E2E
 ## bundle and needs chrome-headless-shell, so it stays opt-in and matches the release-only CI job.
 test-web-e2e: $(WEB_DEPS_STAMP)
@@ -725,10 +725,6 @@ else
 	@node scripts/gate-cache.mjs run --site test-mcp-gateway --command '$(MAKE) -C services/mcp-gateway test-all' -- $(MAKE) -C services/mcp-gateway test-all
 endif
 endif
-
-## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
-test-integration-bossd:
-	cd services/bossd && go test -tags=integration -race ./internal/server/... ./internal/testharness/... -count=1
 
 ifneq ($(wildcard services/bosso/go.mod),)
 

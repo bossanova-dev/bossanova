@@ -94,7 +94,7 @@ func initCmd() *cobra.Command {
 			"no match, a truncated listing, or any lookup failure fails the command with\n" +
 			"nothing written. Missing labels are reported; --create-labels creates them in\n" +
 			"the team (labels are the only thing this command ever creates in Linear).\n\n" +
-			"With --cron plan,build,verify,retro (any subset) the factory cron jobs from\n" +
+			"With --cron plan,build,verify,retro (any subset) the pipeline cron jobs from\n" +
 			"docs/skills/factory.md are created enabled for a daemon-loaded agent (--agent claude|codex;\n" +
 			"Claude when both qualify), after a gate preflight in the daemon's own environment: node on\n" +
 			"the daemon's service PATH, the installed gate script, and the installed skill-config module\n" +
@@ -169,9 +169,9 @@ func initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&repoOpts.sentryStdin, "sentry-token-stdin", false, "Read the Sentry token from stdin")
 	cmd.Flags().StringVar(&repoOpts.sentryOrg, "sentry-org", "", "Sentry organization slug (requires a token)")
 	cmd.Flags().BoolVar(&repoOpts.storeEnv, "store-env-keys", false, "Store LINEAR_API_KEY and SENTRY_AUTH_TOKEN from the environment")
-	cmd.Flags().StringSliceVar(&cronOpts.stages, "cron", nil, "Create or converge the factory cron jobs for these stages (plan,build,verify,retro)")
-	cmd.Flags().StringVar(&cronOpts.agent, "agent", "", "Agent for the factory cron jobs: claude or codex (default: claude when both qualify)")
-	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing factory job's prompt, gate and agent when they differ")
+	cmd.Flags().StringSliceVar(&cronOpts.stages, "cron", nil, "Create or converge the pipeline cron jobs for these stages (plan,build,verify,retro)")
+	cmd.Flags().StringVar(&cronOpts.agent, "agent", "", "Agent for the pipeline cron jobs: claude or codex (default: claude when both qualify)")
+	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing pipeline job's prompt, gate and agent when they differ")
 	cmd.Flags().BoolVar(&trust.yes, "yes", false, "Apply .boss-project.json cron prompt and gate changes without asking")
 	cmd.Flags().BoolVar(&trust.allowBranch, "allow-branch", false, "Apply .boss-project.json from a checkout that is not on the repo's default branch")
 	return cmd

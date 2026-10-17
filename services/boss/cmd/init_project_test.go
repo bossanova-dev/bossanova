@@ -130,7 +130,7 @@ func TestInitProjectConfig(t *testing.T) {
 		if len(creates) != 1 || creates[0].GetName() != "factory-build" || creates[0].GetManagedBy() != "" {
 			t.Fatalf("creates %+v\n%s", creates, out)
 		}
-		if !strings.Contains(out, "warning: --cron overrides the crons in .boss-project.json for this run") || !strings.Contains(out, "Factory cron jobs (agent: claude)") {
+		if !strings.Contains(out, "warning: --cron overrides the crons in .boss-project.json for this run") || !strings.Contains(out, "Pipeline cron jobs (agent: claude)") {
 			t.Fatalf("warning or factory report missing:\n%s", out)
 		}
 	})

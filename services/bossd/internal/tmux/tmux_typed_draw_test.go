@@ -3,10 +3,12 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,8 @@ func TestComposerShowsPayloadOnlyWhenTheBoxHoldsExactlyThePayload(t *testing.T) 
 		"a draft before it":       {"❯ half-written draft " + typedSlashPayload, false},
 		"a second copy behind it": {"❯ " + typedSlashPayload + typedSlashPayload, false},
 		"the placeholder":         {undrawnPlaceholderRow, false},
+		"collapsed into a paste":  {"❯ [Pasted text #1]", true},
+		"collapsed with a tail":   {"❯ [Pasted text #5][Pasted text #6]lorem ipsum padding 90", true},
 	} {
 		if got := composerShowsPayload(tc.rows, typedSlashPayload); got != tc.want {
 			t.Errorf("%s: composerShowsPayload(%q) = %v, want %v", name, tc.rows, got, tc.want)
@@ -276,6 +280,10 @@ func TestProductionTypedDrawBudgets(t *testing.T) {
 // test below launches by re-running this test binary in the pane.
 const slowComposerEnv = "BOSS_TMUX_SLOW_COMPOSER_BUSY"
 
+// slowComposerSwallowEnv carries how many lone Enters the fake agent drops,
+// as a Claude composer mid-render can.
+const slowComposerSwallowEnv = "BOSS_TMUX_SLOW_COMPOSER_SWALLOW"
+
 // TestSlowComposerProcess is not a test of its own: it is the agent a pane runs
 // for TestTypedSlashCommandSubmitsOnASlowStartingComposer.
 func TestSlowComposerProcess(t *testing.T) {
@@ -283,7 +291,8 @@ func TestSlowComposerProcess(t *testing.T) {
 	if err != nil {
 		t.Skip("helper process for TestTypedSlashCommandSubmitsOnASlowStartingComposer")
 	}
-	runSlowComposer(os.Stdin, os.Stdout, busy)
+	swallow, _ := strconv.Atoi(os.Getenv(slowComposerSwallowEnv))
+	runSlowComposer(os.Stdin, os.Stdout, busy, swallow)
 }
 
 // runSlowComposer models the Claude startup behaviour measured on Claude Code
@@ -291,8 +300,12 @@ func TestSlowComposerProcess(t *testing.T) {
 // typed text together with a CR is a paste, so that CR is a newline. Only a CR
 // read on its own submits. A bare slash command opens the slash-command menu
 // below the box, its selected entry marked "❯" as in
-// testdata/panes/claude_typed_slash_menu_real.txt.
-func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
+// testdata/panes/claude_typed_slash_menu_real.txt. It styles the composer the
+// way Claude Code 2.1.302 renders it: the prompt glyph is coloured, the cursor
+// is an inverse cell, which an empty composer puts on the first letter of its
+// dim placeholder, and a slash command followed by a space shows a dim
+// argument hint. The first swallow lone CRs are dropped.
+func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration, swallow int) {
 	var composer string
 	var ran []string
 	draw := func() {
@@ -303,10 +316,15 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
 		}
 		b.WriteString("────────\r\n")
 		lines := strings.Split(composer, "\n")
+		last := len(lines) - 1
+		lines[last] += "\x1b[7m \x1b[27m"
 		if composer == "" {
-			lines = []string{`Try "fix typecheck errors"`}
+			lines = []string{"\x1b[7mT\x1b[27m\x1b[2m" + `ry "fix typecheck errors"` + "\x1b[22m"}
 		}
-		b.WriteString("❯ " + lines[0] + "\r\n")
+		if strings.HasPrefix(composer, "/") && strings.HasSuffix(composer, " ") && !strings.ContainsAny(strings.TrimSpace(composer), " \n") {
+			lines[last] += "\x1b[2m<ticket-id>\x1b[22m"
+		}
+		b.WriteString("\x1b[38;2;153;153;153m❯\x1b[39m " + lines[0] + "\r\n")
 		for _, l := range lines[1:] {
 			b.WriteString("  " + l + "\r\n")
 		}
@@ -331,6 +349,8 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
 			switch {
 			case ch == '\r' && pasted:
 				composer += "\n"
+			case ch == '\r' && swallow > 0:
+				swallow--
 			case ch == '\r':
 				ran = append(ran, composer)
 				composer = ""
@@ -348,6 +368,13 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
 // input for busy after drawing its composer.
 func startSlowComposer(ctx context.Context, t *testing.T, busy time.Duration) (*Client, string) {
 	t.Helper()
+	return startSlowComposerSwallowing(ctx, t, busy, 0)
+}
+
+// startSlowComposerSwallowing is startSlowComposer with a composer that drops
+// its first swallow lone Enters.
+func startSlowComposerSwallowing(ctx context.Context, t *testing.T, busy time.Duration, swallow int) (*Client, string) {
+	t.Helper()
 	skipIfNoTmux(t)
 	exe, err := os.Executable()
 	if err != nil {
@@ -359,7 +386,7 @@ func startSlowComposer(ctx context.Context, t *testing.T, busy time.Duration) (*
 		Name:    name,
 		WorkDir: t.TempDir(),
 		Command: []string{"sh", "-c", `stty raw -echo && exec "$0" -test.run='^TestSlowComposerProcess$'`, exe},
-		Env:     map[string]string{slowComposerEnv: busy.String()},
+		Env:     map[string]string{slowComposerEnv: busy.String(), slowComposerSwallowEnv: strconv.Itoa(swallow)},
 		Width:   120,
 		Height:  30,
 	}); err != nil {
@@ -441,5 +468,165 @@ func TestRetriedTypedLineSubmitsOneCopyAfterTheComposerReadsLate(t *testing.T) {
 	}
 	if ran := ranLines(ctx, t, c, name); !slices.Equal(ran, []string{typedSlashPayload}) {
 		t.Fatalf("the retry reported success; the agent ran %q, want exactly the payload once", ran)
+	}
+}
+
+// An operator typing in an attached Claude pane must not lose the draft when a
+// delivery lands. The send is refused before a key is typed, so the draft stays
+// in the box, nothing runs, and the caller can retry once the box is clear.
+// An operator's collapsed paste is a draft like any other.
+func TestDeliveryLeavesAnOperatorsDraftAlone(t *testing.T) {
+	sends := map[string]func(context.Context, *Client, string) error{
+		"typed slash command": func(ctx context.Context, c *Client, pane string) error {
+			return c.sendLine(ctx, pane, typedSlashPayload, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		},
+		"pasted message": func(ctx context.Context, c *Client, pane string) error {
+			return c.sendPlan(ctx, pane, "summarise the repo", c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		},
+	}
+	drafts := map[string]string{"draft": "half-written draft", "collapsed paste": "[Pasted text #1 +3 lines]"}
+	for draftName, draft := range drafts {
+		for name, send := range sends {
+			t.Run(draftName+" "+name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+				defer cancel()
+				c, pane := startSlowComposer(ctx, t, 0)
+				if err := c.typeLiteralLineNoEnter(ctx, pane, draft); err != nil {
+					t.Fatalf("type the operator's draft: %v", err)
+				}
+				if drawn, rows, err := c.awaitComposerDraws(ctx, pane, draft, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
+					t.Fatalf("the composer never drew the draft (err %v); it showed %q", err, rows)
+				}
+
+				err := send(ctx, c, pane)
+				if OutcomeOf(err) != OutcomeComposerOccupied || !errors.Is(err, ErrComposerOccupied) {
+					t.Fatalf("err = %v (outcome %v); want %v", err, OutcomeOf(err), OutcomeComposerOccupied)
+				}
+				screen, err := c.CapturePane(ctx, pane)
+				if err != nil {
+					t.Fatalf("capture: %v", err)
+				}
+				if rows := composerRows(screen); !composerShowsPayload(rows, draft) {
+					t.Fatalf("the composer shows %q after the refused send, want the draft %q untouched", rows, draft)
+				}
+				if ran := ranLines(ctx, t, c, pane); len(ran) != 0 {
+					t.Fatalf("the agent ran %q, want nothing", ran)
+				}
+			})
+		}
+	}
+}
+
+// A send that ends not submitted withdraws its payload, so the next send finds
+// an empty composer. The callback worker's retry is not the same text, since it
+// adds a "REPEAT DELIVERY" line, so without the withdrawal every retry finds the
+// first attempt in the box and is refused as occupied.
+func TestNotSubmittedSendWithdrawsItsPayloadForTheRetry(t *testing.T) {
+	type send func(context.Context, *Client, string, string) error
+	sendPlan := func(ctx context.Context, c *Client, pane, payload string) error {
+		return c.sendPlan(ctx, pane, payload, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+	}
+	sendLine := func(ctx context.Context, c *Client, pane, payload string) error {
+		return c.sendLine(ctx, pane, payload, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+	}
+	for name, tc := range map[string]struct {
+		send         send
+		first, retry string
+	}{
+		"pasted message":      {sendPlan, "summarise the repo", "REPEAT DELIVERY, attempt 2: summarise the repo"},
+		"typed slash command": {sendLine, bareSlashCommand, bareSlashCommand},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			// The first send's Enter and its retry's Enter are both dropped.
+			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+
+			err := tc.send(ctx, c, pane, tc.first)
+			if OutcomeOf(err) != OutcomeNotSubmitted {
+				t.Fatalf("first send: outcome = %v (%v), want %v while the composer drops Enter", OutcomeOf(err), err, OutcomeNotSubmitted)
+			}
+			styled, err := c.captureVisibleStyled(ctx, pane)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if composerHoldsDraft(styled) {
+				t.Fatalf("the not-submitted send left %q in the composer, want it empty", composerRows(plainText(styled)))
+			}
+
+			if err := tc.send(ctx, c, pane, tc.retry); err != nil {
+				t.Fatalf("retry: %v (outcome %v); ran %q", err, OutcomeOf(err), ranLines(ctx, t, c, pane))
+			}
+			if ran := ranLines(ctx, t, c, pane); !slices.Equal(ran, []string{tc.retry}) {
+				t.Fatalf("the agent ran %q, want exactly the retry once", ran)
+			}
+		})
+	}
+}
+
+// The withdrawal clears only a composer holding exactly the payload. Text
+// beside it stays, since an operator may have typed it while the send waited.
+func TestWithdrawLeavesAComposerHoldingMoreThanThePayload(t *testing.T) {
+	const payload = "summarise the repo"
+	for name, box := range map[string]string{
+		"text before the payload": "half-written " + payload,
+		"text after the payload":  payload + " and the tests",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposer(ctx, t, 0)
+			if err := c.typeLiteralLineNoEnter(ctx, pane, box); err != nil {
+				t.Fatalf("type the composer text: %v", err)
+			}
+			if drawn, rows, err := c.awaitComposerDraws(ctx, pane, box, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
+				t.Fatalf("the composer never drew %q (err %v); it showed %q", box, err, rows)
+			}
+
+			err := c.withdrawUnsubmitted(ctx, pane, payload, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+			if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, errSubmissionPending) {
+				t.Fatalf("err = %v (outcome %v); want the not-submitted verdict kept", err, OutcomeOf(err))
+			}
+			screen, err := c.CapturePane(ctx, pane)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if rows := composerRows(screen); !composerHoldsExactly(rows, box) {
+				t.Fatalf("the composer shows %q after the withdrawal, want %q untouched", rows, box)
+			}
+		})
+	}
+}
+
+// Claude draws an argument hint after a slash command that ends in a space,
+// so the line is typed trimmed or the box never holds exactly what was typed.
+func TestTypedLineWithATrailingSpaceRunsTheCommand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+	c, pane := startSlowComposer(ctx, t, 0)
+
+	if err := c.sendLine(ctx, pane, bareSlashCommand+" ", c.sendDeliveryOpts(sendPlanReadyMarker, true, nil)); err != nil {
+		t.Fatalf("sendLine: %v", err)
+	}
+	if ran := ranLines(ctx, t, c, pane); !slices.Equal(ran, []string{bareSlashCommand}) {
+		t.Fatalf("the agent ran %q, want exactly %q once", ran, bareSlashCommand)
+	}
+}
+
+// A ruled box whose first row carries no prompt marker is not the composer
+// row: Claude's shell mode draws "!" there. The composer row is then the
+// bottom-most marker row, and this real pane has none.
+func TestComposerMarkerIdxSkipsARuledBoxWithoutAPromptMarker(t *testing.T) {
+	shellMode := strings.Split(readPaneFixture(t, "claude_typed_shell_mode_real.txt"), "\n")
+	if top, _, ok := inputBoxRules(shellMode); !ok || strings.TrimSpace(shellMode[top+1]) != "! echo hi" {
+		t.Fatal("fixture lost its shell-mode box; recapture with capture_typed_shell_mode.sh")
+	}
+	if got := composerMarkerIdx(shellMode); got != -1 {
+		t.Errorf("composerMarkerIdx on the shell-mode pane = %d (%q), want -1", got, shellMode[got])
+	}
+
+	echoed := []string{"❯ earlier prompt", "⏺ reply", "────────", "  some other content", "────────", "  footer"}
+	if got := composerMarkerIdx(echoed); got != 0 {
+		t.Errorf("composerMarkerIdx = %d, want 0, the bottom-most marker row", got)
 	}
 }

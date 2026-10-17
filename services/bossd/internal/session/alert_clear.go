@@ -95,6 +95,28 @@ func RepairAlertFacts(sess *models.Session, display *status.DisplayEntry, stalle
 	return facts
 }
 
+// BlockedAlertFacts is the alertstate.BlockedFacts every bossd reader of a
+// Blocked session's alert decides currency from: the head of its last counted
+// attempt, the last-polled display entry (nil when never polled), and whether
+// the blocked-run sweep saw the run's own chat working in this block.
+func BlockedAlertFacts(sess *models.Session, display *status.DisplayEntry) alertstate.BlockedFacts {
+	facts := alertstate.BlockedFacts{}
+	if display == nil {
+		return facts
+	}
+	facts.RunWorking = sess.StateEnteredAt != nil && !display.BlockedRunWorkingAt.IsZero() &&
+		display.BlockedRunWorkingAt.Equal(*sess.StateEnteredAt)
+	if sess.LastAttemptHeadSHA != nil {
+		facts.AttemptHeadSHA = *sess.LastAttemptHeadSHA
+	}
+	facts.CurrentHeadSHA = display.HeadSHA
+	facts.DisplayStatus = pb.DisplayStatus(clampInt32(int(display.Status)))
+	facts.HasFailures = display.HasFailures
+	facts.HasChangesRequested = display.HasChangesRequested
+	facts.Mergeable = display.Mergeable
+	return facts
+}
+
 // clearResolvedAlert applies the sweep to one session and reports whether an
 // alert was cleared.
 func (l *Lifecycle) clearResolvedAlert(ctx context.Context, deps alertClearDeps, sess *models.Session) (bool, error) {

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +40,7 @@ const streamTestToken = "00112233445566778899aabbccddeeff00112233445566778899aab
 func TestServerListenSetsWriteTimeout(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("bossd-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	socketPath := shortSocketPath(t)
 	s := New(Config{})
 
 	if err := s.Listen(socketPath); err != nil {

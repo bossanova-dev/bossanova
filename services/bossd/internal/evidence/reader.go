@@ -379,7 +379,10 @@ func (r *Reader) Retain(live map[string]struct{}) {
 // counts, as verify counts it, only from an owner, member or collaborator, and
 // an approval only when it waives known codes. Verify also requires write
 // access, which a comment does not carry, so bossd may honour a send-back
-// verify ignores, and the row then stays in progress.
+// verify ignores, and the row then stays in progress. A record without a
+// posting time cannot be ordered against the others, so it reads as a
+// send-back: the row stays in progress rather than offering a merge verify may
+// refuse.
 func (r *Reader) read(ctx context.Context, obs Observation, head string) (headComments, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.readTimeout)
 	defer cancel()
@@ -392,8 +395,9 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		return headComments{}, err
 	}
 	var (
-		found   headComments
-		decider *vcs.PRComment
+		found     headComments
+		decider   *vcs.PRComment
+		unordered bool
 	)
 	for i := range comments {
 		c := &comments[i]
@@ -406,12 +410,17 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		if items, ok := libevidence.ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
 			found.openItems = items.Items
 		}
-		if rec, ok := libevidence.ParseOperatorRecord(c.Body); ok && sameHead(rec.Head, head) &&
-			vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) && !slices.ContainsFunc(rec.Waives, unknownParkCode) &&
-			(decider == nil || postedAfter(c, decider)) {
+		rec, ok := libevidence.ParseOperatorRecord(c.Body)
+		if !ok || !sameHead(rec.Head, head) || !vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) ||
+			slices.ContainsFunc(rec.Waives, unknownParkCode) {
+			continue
+		}
+		unordered = unordered || c.CreatedAt.IsZero()
+		if decider == nil || postedAfter(c, decider) {
 			found.sentBack, decider = rec.IsSendBack, c
 		}
 	}
+	found.sentBack = found.sentBack || unordered
 	return found, nil
 }
 

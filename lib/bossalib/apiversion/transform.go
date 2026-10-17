@@ -591,6 +591,16 @@ type RefMsg struct {
 // the session's state again. It touches only the since of rows carrying park
 // codes, which no other change reads.
 //
+// RunBlockedLabelChange (introduced at V20260923), which restores the doubled "Run
+// blocked: run blocked:" sentence. It rewrites only a FIX whose sentence is
+// the one today's server builds from the row's blocked_reason, which no other
+// change writes: a reaped bootstrap's sentence and a park's sentence are never
+// built from blocked_reason.
+//
+// EndedBlockHintChange (also V20260923), which gives a Blocked session with no
+// attention_status its blocked hint back. It writes only attention_status,
+// which no other change reads.
+//
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -659,6 +669,8 @@ func ProductionChanges() *Changes {
 		ReviewOnlyParkChange{},
 		VerifiedNotMergedChange{},
 		ParkSinceChange{},
+		RunBlockedLabelChange{},
+		EndedBlockHintChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3623,6 +3635,96 @@ func downconvertParkSinceSession(s *pb.Session) *pb.Session {
 // on every session-bearing unary response and is a no-op elsewhere.
 func (ParkSinceChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertParkSinceSession)
+}
+
+// RunBlockedLabelChange is the production VersionChange introduced at
+// V20260923.
+//
+// At V20260923 a blocked run's FIX sentence drops the reason's own leading
+// "run blocked:" or "blocked:" labels (sessionreason.WithoutBlockedLabel)
+// before prefixing "Run blocked: ". finalize stores every reported blocked
+// run's reason as "run blocked: <reason>", so the sentence said it twice.
+// Older pins get the sentence built from the whole reason back. The reason is
+// served as blocked_reason, so the old sentence is rebuilt exactly.
+type RunBlockedLabelChange struct{}
+
+// Version implements VersionChange.
+func (RunBlockedLabelChange) Version() Version { return V20260923 }
+
+// downconvertRunBlockedLabelSession clones before writing because bosso's
+// registry path caches these pointers. Only a FIX whose reason carried a label
+// allocates.
+func downconvertRunBlockedLabelSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	reason := s.GetBlockedReason()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || strings.TrimSpace(reason) == "" {
+		return s
+	}
+	previous := strings.TrimSpace("Run blocked: " + reason)
+	if a.GetSentence() != "Run blocked: "+sessionreason.WithoutBlockedLabel(reason) || a.GetSentence() == previous {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.Sentence = previous
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the doubled label
+// on every session-bearing unary response and is a no-op elsewhere.
+func (RunBlockedLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertRunBlockedLabelSession)
+}
+
+// EndedBlockHintChange is the production VersionChange introduced at
+// V20260923.
+//
+// At V20260923 a Blocked session whose block no longer needs the operator (its
+// run's own agent is working on a turn the block did not see, or its non-draft
+// PR is green and mergeable) carries no attention_status, as Session.attention
+// already reads in progress for it. Before, every Blocked session carried the
+// hint. Older pins get it back: BLOCKED_MAX_ATTEMPTS with the blocked_reason
+// (or the default summary) since the state began, which the response carries
+// exactly.
+type EndedBlockHintChange struct{}
+
+// Version implements VersionChange.
+func (EndedBlockHintChange) Version() Version { return V20260923 }
+
+// endedBlockHintSummary is the summary a Blocked session with no
+// blocked_reason carried.
+const endedBlockHintSummary = "blocked — needs human intervention"
+
+// downconvertEndedBlockHintSession clones before writing because bosso's
+// registry path caches these pointers. Only a Blocked row without a hint
+// allocates.
+func downconvertEndedBlockHintSession(s *pb.Session) *pb.Session {
+	if s.GetState() != pb.SessionState_SESSION_STATE_BLOCKED || s.GetAttentionStatus() != nil {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	summary := endedBlockHintSummary
+	if s.BlockedReason != nil {
+		summary = s.GetBlockedReason()
+	}
+	cloned.AttentionStatus = &pb.AttentionStatus{
+		NeedsAttention: true,
+		Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
+		Summary:        summary,
+		Since:          stateSince(s),
+	}
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the blocked hint on
+// every session-bearing unary response and is a no-op elsewhere.
+func (EndedBlockHintChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertEndedBlockHintSession)
 }
 
 // DeadBootstrapAttentionChange is the production VersionChange introduced at

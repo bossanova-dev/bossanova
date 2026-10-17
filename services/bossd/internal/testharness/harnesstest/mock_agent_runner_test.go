@@ -1,15 +1,17 @@
-package testharness
+package harnesstest
 
 import (
 	"context"
 	"testing"
+
+	"github.com/recurser/bossd/internal/testharness"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 )
 
 func TestMockAgentRunnerSupportsHeadlessCapabilityProfileDispatch(t *testing.T) {
-	runner := NewMockAgentRunner()
+	runner := testharness.NewMockAgentRunner()
 	profile := bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
 
 	var preflight agent.HeadlessCapabilityProfilePreflightDispatcher = runner

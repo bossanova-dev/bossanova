@@ -236,12 +236,12 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 		t.Fatalf("unknown count must not claim zero\n%s", disableCopy)
 	}
 
-	// Remove prompt: generic warning + disable recommendation.
+	// Remove prompt: generic warning, stated without advice.
 	updated, _ = m.Update(keyPress('d'))
 	rm := updated.(AccountsListModel)
 	removeCopy := flattenPrompt(rm.View().Content)
-	if !strings.Contains(removeCopy, "consider disable instead of remove") {
-		t.Fatalf("remove prompt must recommend disable\n%s", removeCopy)
+	if strings.Contains(removeCopy, "consider disable") {
+		t.Fatalf("remove prompt must state the risk, not advise\n%s", removeCopy)
 	}
 	if !strings.Contains(removeCopy, "may continue or fail") {
 		t.Fatalf("remove prompt must explain spawn-state outcome\n%s", removeCopy)
@@ -249,19 +249,27 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 }
 
 // TestAccountActions_RemovePromptText_StatesBoundCount is the direct evidence
-// that the remove prompt copy folds in the bound count and disable recommend.
+// that the remove prompt copy folds in the bound count, and states the risk to
+// running chats only when there may be any.
 func TestAccountActions_RemovePromptText_StatesBoundCount(t *testing.T) {
 	acct := &pb.Account{Id: "acc-1", Label: "Prod", Status: "active"}
 
 	if got := accountRemovePromptText(acct, 3, true); !strings.Contains(got, "3 running chats") ||
-		!strings.Contains(got, "consider disable instead of remove") {
+		!strings.Contains(got, "may continue or fail") {
 		t.Fatalf("bound remove copy = %q", got)
 	}
-	if got := accountRemovePromptText(acct, 0, true); strings.Contains(got, "consider disable") {
-		t.Fatalf("unbound remove copy must not recommend disable: %q", got)
+	if got := accountRemovePromptText(acct, 0, true); strings.Contains(got, "may continue or fail") {
+		t.Fatalf("unbound remove copy must not warn about running chats: %q", got)
 	}
-	if got := accountRemovePromptText(acct, 0, false); !strings.Contains(got, "consider disable instead of remove") {
-		t.Fatalf("unknown-count remove copy must recommend disable: %q", got)
+	if got := accountRemovePromptText(acct, 0, false); !strings.Contains(got, "may continue or fail") {
+		t.Fatalf("unknown-count remove copy must warn about running chats: %q", got)
+	}
+	for _, count := range []int{0, 1, 3} {
+		for _, known := range []bool{true, false} {
+			if got := accountRemovePromptText(acct, count, known); strings.Contains(got, "consider disable") {
+				t.Fatalf("remove copy must state the risk, not advise: %q", got)
+			}
+		}
 	}
 }
 

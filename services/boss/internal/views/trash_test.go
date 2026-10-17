@@ -422,6 +422,55 @@ func TestTrashModel_DeleteAllShowsProgressCount(t *testing.T) {
 	}
 }
 
+func TestTrashModel_ListsOnlyArchivedSessionsAndDeleteAllSparesLiveOnes(t *testing.T) {
+	archived := trashSharedRepoSessions()[:2]
+	live := []*pb.Session{
+		{Id: "live-x", RepoDisplayName: "alpha", Title: "still running"},
+		{Id: "live-y", RepoDisplayName: "beta", Title: "also running"},
+	}
+	client := &trashStubClient{
+		stubClient: &stubClient{},
+		sessions:   []*pb.Session{live[0], archived[0], live[1], archived[1]},
+	}
+	m := NewTrashModel(client, context.Background())
+	m.width, m.height = 120, 40
+	m = updateTrashMsg(t, m, m.fetchArchived()())
+
+	if got := fmt.Sprint(trashSessionIDs(m.sessions)); got != "[sess-a sess-b]" {
+		t.Fatalf("trash sessions = %s, want [sess-a sess-b]", got)
+	}
+	view := m.View().Content
+	for _, sess := range live {
+		if strings.Contains(view, sess.Title) {
+			t.Fatalf("trash lists live session %q:\n%s", sess.Title, view)
+		}
+	}
+
+	m = updateTrash(t, m, keyString("a"))
+	if got := m.View().Content; !strings.Contains(got, "Permanently delete all 2 archived sessions?") {
+		t.Fatalf("confirmation should count only archived sessions: %q", got)
+	}
+	model, cmd := m.Update(keyString("enter"))
+	drainDeleteAll(t, model.(TrashModel), cmd)
+	if got := fmt.Sprint(client.removedIDs); got != "[sess-a sess-b]" {
+		t.Fatalf("removed IDs = %s, want [sess-a sess-b]", got)
+	}
+}
+
+func TestTrashModel_OnlyLiveSessionsShowsEmptyTrash(t *testing.T) {
+	client := &trashStubClient{
+		stubClient: &stubClient{},
+		sessions:   []*pb.Session{{Id: "live-x", RepoDisplayName: "alpha", Title: "still running"}},
+	}
+	m := NewTrashModel(client, context.Background())
+	m.width, m.height = 120, 40
+	m = updateTrashMsg(t, m, m.fetchArchived()())
+
+	if got := m.View().Content; !strings.Contains(got, "Trash is empty.") || strings.Contains(got, "still running") {
+		t.Fatalf("trash with only live sessions should be empty:\n%s", got)
+	}
+}
+
 func TestTrashModel_DeleteAllProgressStopsOnError(t *testing.T) {
 	client := &trashStubClient{
 		stubClient: &stubClient{},

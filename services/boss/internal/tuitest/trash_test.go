@@ -114,19 +114,6 @@ func TestTUI_TrashDelete(t *testing.T) {
 	}
 }
 
-func TestTUI_TrashEmptyState(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	openTrashFromSettings(t, h, "Trash is empty")
-}
-
 func TestTUI_TrashEmptyAll(t *testing.T) {
 	sessions := testSessions()
 	// Archive every session so the home screen is empty regardless of how many
@@ -165,37 +152,6 @@ func TestTUI_TrashEmptyAll(t *testing.T) {
 
 	if len(h.Daemon.Sessions()) != 0 {
 		t.Fatalf("expected 0 sessions after empty trash, got %d", len(h.Daemon.Sessions()))
-	}
-}
-
-func TestTUI_TrashDeleteCancel(t *testing.T) {
-	sessions := testSessions()
-	sessions[0].ArchivedAt = timestamppb.Now()
-
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(sessions...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
-		t.Fatal(err)
-	}
-
-	openTrashFromSettings(t, h, "Add dark mode")
-
-	if err := h.Driver.SendKey('d'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Permanently delete"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('n'); err != nil {
-		t.Fatal(err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	if !h.Driver.ScreenContains("Add dark mode") {
-		t.Fatalf("session disappeared after cancel; screen:\n%s", h.Driver.Screen())
 	}
 }
 

@@ -239,18 +239,9 @@ func (m ChatPickerModel) fitProseLine(s string) string {
 // ansi.Truncate, the single-line hints by fitProseLine. Those sites cite this
 // one rather than restating the reasoning.
 func (m ChatPickerModel) chatListOverhead() int {
-	// gap + actionbar padding + actionbar, plus the session warning block
-	// (below the header, above the chat list). Reserving its lines shrinks the
-	// chat table rather than letting the block push the table off-screen.
-	left, middle, back := m.chatListActionGroups()
-	footerLines := actionBarLineCount(m.width, middle, back)
-	if len(left) > 0 {
-		footerLines = actionBarLineCount(m.width, left, middle, back)
-	}
-	if m.attentionAction.active() {
-		footerLines = m.attentionAction.lineCount(m.width)
-	}
-	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.statusFooterHeight() + m.httpLineHeight()
+	// The footer is measured as drawn, so a confirmation taller than the
+	// action bar shrinks the table instead of pushing the bottom rows off.
+	return bannerOverhead + lipgloss.Height(m.renderFooter()) + m.warningBlockHeight() + m.limitedLineHeight() + m.httpLineHeight()
 }
 
 func (m ChatPickerModel) tableHeight() int {

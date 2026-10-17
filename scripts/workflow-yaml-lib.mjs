@@ -225,6 +225,40 @@ export function nestedUnder(lines, start, column = keyColumn(lines[start])) {
 }
 
 /**
+ * The `on.push.paths` list of a workflow.
+ *
+ * @param {string} text Whole workflow file text.
+ * @returns {{hasPush: boolean, paths: string[] | null}} `paths` is null when the push trigger
+ *   has no `paths:` list (or there is no push trigger at all).
+ */
+export function pushPaths(text) {
+  const lines = text.split('\n')
+  const pushLine = lines.findIndex((line) => /^\s{2}push:\s*$/.test(line))
+  if (pushLine === -1) return { hasPush: false, paths: null }
+  const pushIndent = indentOf(lines[pushLine])
+  for (let i = pushLine + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+    if (indentOf(line) <= pushIndent) break
+    if (/^\s{4}paths:\s*$/.test(line)) return { hasPush: true, paths: dashList(lines, i) }
+  }
+  return { hasPush: true, paths: null }
+}
+
+function dashList(lines, headingLine) {
+  const headingIndent = indentOf(lines[headingLine])
+  const items = []
+  for (let i = headingLine + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+    if (indentOf(line) <= headingIndent) break
+    const item = line.match(/^\s*-\s+(.+?)\s*$/)
+    if (item) items.push(unquote(item[1]))
+  }
+  return items
+}
+
+/**
  * The workflow files directly under `dir`, as sorted repo-relative POSIX paths.
  *
  * @param {string} repoRoot Absolute repository root.

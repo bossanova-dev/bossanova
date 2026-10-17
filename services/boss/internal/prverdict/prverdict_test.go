@@ -11,9 +11,9 @@ func TestApproveLines(t *testing.T) {
 	approved := func(writes, why string) *pb.VerifyApproveResult {
 		return &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: writes, Why: why}
 	}
-	const waived = "Approved #7: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge."
+	const waived = "Approved #7 on head abcdef01 (record: https://x/9). It waives:"
 	const ledgerLine = "  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section"
-	const overrode = "Approving overrode open checklist items. A new push is judged afresh."
+	const overrode = "This overrode a blocking issue. A new push is judged afresh."
 	signedOff := &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui,always-human-path", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}
 	for _, tc := range []struct {
 		name string
@@ -21,19 +21,32 @@ func TestApproveLines(t *testing.T) {
 		want []string
 	}{
 		{"an approval over a failure names each code and what it overrode", approved("ok", ""), []string{waived, ledgerLine, overrode}},
-		{"a sign-off lists the codes, skips words that repeat a category, and warns of nothing", signedOff, []string{
-			"Approved #7: waived security, UI change on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+		{"a sign-off lists each code once in plain words and warns of nothing", signedOff, []string{
+			waived,
 			"  Touches a path that always needs a person's sign-off",
-		}},
-		{"a UI-only sign-off names the UI change once", &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
-			"Approved #7: waived UI change on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+			"  A UI change",
 		}},
 		{"a dry run over an unknown code names it once", &pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "made-up", HeadSha: "abcdef0123456789"}, []string{
-			"Would approve #7: record an approval waiving an issue this version of boss does not recognise on head abcdef01, then remove the needs-human label (dry run; nothing written).",
-			"Approving would override an issue this version of boss does not recognise.",
+			"Would approve #7: record an approval on head abcdef01, then remove the needs-human label (dry run; nothing written). It would waive:",
+			"  An issue this version of boss does not recognise",
+			"Approving would override a blocking issue, not only a sign-off.",
 		}},
-		{"a no-receipt waiver reads as its category", &pb.VerifyApproveResult{IsApproved: true, Waives: "no-receipt", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
-			"Approved #7: waived latest commit not reviewed on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+		{"an approval over an unknown code names it once", &pb.VerifyApproveResult{IsApproved: true, Waives: "made-up-code", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			waived,
+			"  An issue this version of boss does not recognise",
+			overrode,
+		}},
+		{"an approval over open checklist items and a UI change names each once", &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open,human-review:ui", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			waived,
+			ledgerLine,
+			"  A UI change",
+			overrode,
+		}},
+		{"an approval that waives nothing says so", &pb.VerifyApproveResult{IsApproved: true, HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			"Approved #7 on head abcdef01 (record: https://x/9). It waives nothing.",
+		}},
+		{"a no-receipt waiver reads as its plain words", &pb.VerifyApproveResult{IsApproved: true, Waives: "no-receipt", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			waived,
 			"  The latest commit has not had an automated build and review, or changed after its review",
 		}},
 		{"a toolbox that reported no tracker writes is still clean", approved("", ""), []string{waived, ledgerLine, overrode}},
@@ -44,7 +57,7 @@ func TestApproveLines(t *testing.T) {
 		{"a reason with no plain words is left unsaid", approved("failed", "brand-new-reason"),
 			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed."}},
 		{"a moved head left the label on", approved("skipped", "head-moved"),
-			[]string{waived, ledgerLine, overrode, "The PR's head or its park changed after the approval, so the needs-human label was left on."}},
+			[]string{waived, ledgerLine, overrode, "The PR changed after the approval, so the needs-human label was left on."}},
 		{"a closed PR left the label on", approved("skipped", "pr-not-open"),
 			[]string{waived, ledgerLine, overrode, "The PR is no longer open, so the needs-human label was left on."}},
 		{"an older toolbox's skipped re-read says why in plain words", approved("skipped", "status-unreadable"),
@@ -54,9 +67,9 @@ func TestApproveLines(t *testing.T) {
 			[]string{"Approved #7: lifted the older send-back of head abcdef01 (record: https://x/9)."}},
 		{"a dry run names what would be written and what it would override",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "ledger-open", HeadSha: "abcdef0123456789"},
-			[]string{"Would approve #7: record an approval waiving open checklist items on head abcdef01, then remove the needs-human label (dry run; nothing written).",
+			[]string{"Would approve #7: record an approval on head abcdef01, then remove the needs-human label (dry run; nothing written). It would waive:",
 				ledgerLine,
-				"Approving would override open checklist items."}},
+				"Approving would override a blocking issue, not only a sign-off."}},
 		{"a dry-run lift names the send-back",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Lifted: "sent-back", HeadSha: "abcdef0123456789"},
 			[]string{"Would approve #7: record an approval lifting the older send-back of head abcdef01 (dry run; nothing written)."}},
@@ -80,6 +93,9 @@ func TestOperatorMerged(t *testing.T) {
 		{"failed bookkeeping says why in plain words", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "TRACKER_CREDENTIALS_MISSING"},
 			"Merged PR #7; the tracker was not updated because the tracker's credentials are missing"},
 		{"bookkeeping that never ran says so", &pb.OperatorMergeSessionResponse{IsMerged: true}, "Merged PR #7; the tracker was not updated"},
+		{"bookkeeping that ran out of time says so", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "failed", TrackerWhy: "no time was left to update the tracker"},
+			"Merged PR #7; the tracker was not updated because no time was left to update the tracker"},
+		{"a reason with no plain words is left unsaid", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "failed", TrackerWhy: "exit status 1"}, "Merged PR #7; the tracker was not updated"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := OperatorMerged(7, tc.r); got != tc.want {
@@ -112,10 +128,10 @@ func TestMergeRefusalUsesMergeWording(t *testing.T) {
 
 func TestMergeRefusal(t *testing.T) {
 	const url = "https://github.com/acme/app/pull/7#issuecomment-9"
-	const unconfirmed = "Couldn't merge PR #7: whether your approval was recorded could not be read back, so nothing was merged"
+	const unconfirmed = "Couldn't merge PR #7: whether your approval was recorded could not be confirmed, so nothing was merged"
 	for _, tc := range []struct{ name, recordURL, want string }{
-		{"no record says to merge again", "", unconfirmed + "; merge again to confirm"},
-		{"a posted record says to merge again", url, unconfirmed + "; the record at " + url + " may still stand for head abcdef01, so merge again to confirm"},
+		{"no record names no record", "", unconfirmed},
+		{"a posted record says it may stand", url, unconfirmed + "; the approval at " + url + " may still stand for head abcdef01"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &pb.VerifyApproveResult{Reason: "approval-unconfirmed", HeadSha: "abcdef0123456789", ApprovalUrl: tc.recordURL}
@@ -128,40 +144,42 @@ func TestMergeRefusal(t *testing.T) {
 
 func TestApproveRefusal(t *testing.T) {
 	const url = "https://github.com/acme/app/pull/7#issuecomment-9"
-
-	t.Run("a refusal after the record was posted names the record and what it still does", func(t *testing.T) {
-		for _, tc := range []struct{ reason, want string }{
-			{"head-moved", "the record at " + url + " names head abcdef01 only and waives nothing that stands now"},
-			{"approval-superseded", "a later operator decision on the head landed while approving"},
-			{"approval-unconfirmed", "the record at " + url + " may still stand for head abcdef01, so re-run approve to confirm"},
-		} {
-			got := ApproveRefusal(7, &pb.VerifyApproveResult{Reason: tc.reason, HeadSha: "abcdef0123456789", ApprovalUrl: url})
-			if !strings.HasPrefix(got, "PR #7 not approved: ") || !strings.Contains(got, "["+tc.reason+"]") || !strings.Contains(got, tc.want) {
-				t.Fatalf("%s: %q", tc.reason, got)
+	for _, tc := range []struct {
+		name string
+		r    *pb.VerifyApproveResult
+		want string
+	}{
+		{"a moved head after the approval was posted names what it still covers",
+			&pb.VerifyApproveResult{Reason: "head-moved", HeadSha: "abcdef0123456789", ApprovalUrl: url, Why: "head-moved"},
+			"PR #7 not approved: the PR changed while it was being approved, so nothing that stands now is approved; the approval at " + url + " covers head abcdef01 only and waives nothing that stands now"},
+		{"a replaced approval says so",
+			&pb.VerifyApproveResult{Reason: "approval-superseded", HeadSha: "abcdef0123456789", ApprovalUrl: url},
+			"PR #7 not approved: a later decision on this commit replaced this approval; the approval at " + url + " covers head abcdef01 only and waives nothing that stands now"},
+		{"an unconfirmed approval with a record says it may stand",
+			&pb.VerifyApproveResult{Reason: "approval-unconfirmed", HeadSha: "abcdef0123456789", ApprovalUrl: url},
+			"PR #7 not approved: whether the approval was posted and took effect could not be confirmed; the approval at " + url + " may still stand for head abcdef01"},
+		{"an unconfirmed approval without a record stops at the reason",
+			&pb.VerifyApproveResult{Reason: "approval-unconfirmed", HeadSha: "abc"},
+			"PR #7 not approved: whether the approval was posted and took effect could not be confirmed"},
+		{"a failed record names no record",
+			&pb.VerifyApproveResult{Reason: "approval-record-failed", HeadSha: "abc"},
+			"PR #7 not approved: the approval could not be posted on the PR, so nothing is approved"},
+		{"an unknown park code shows neither the park nor the toolbox's why",
+			&pb.VerifyApproveResult{Reason: "park-codes-unknown", Park: "needs human: brand-new", Why: "upgrade"},
+			"PR #7 not approved: the PR is waiting on an issue this version of boss does not recognise"},
+		{"a reason with no words is left unsaid",
+			&pb.VerifyApproveResult{Reason: "brand-new", Why: "exit status 1"},
+			"PR #7 not approved"},
+		{"an older send-back on a passed head is stated without advice",
+			&pb.VerifyApproveResult{Reason: "sent-back-approved-head"},
+			"PR #7 not approved: this commit passed under an approval, but an older send-back still holds it, so verify will not merge it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ApproveRefusal(7, tc.r); got != tc.want {
+				t.Fatalf("got  %q\nwant %q", got, tc.want)
 			}
-		}
-	})
-
-	t.Run("an unconfirmed approval without a record says to re-run", func(t *testing.T) {
-		got := ApproveRefusal(7, &pb.VerifyApproveResult{Reason: "approval-unconfirmed", HeadSha: "abc"})
-		if !strings.HasSuffix(got, "whether the approval record was posted and took effect could not be read back [approval-unconfirmed]; re-run approve to confirm") {
-			t.Fatalf("%q", got)
-		}
-	})
-
-	t.Run("a failed record names no record", func(t *testing.T) {
-		got := ApproveRefusal(7, &pb.VerifyApproveResult{Reason: "approval-record-failed", HeadSha: "abc"})
-		if !strings.Contains(got, "could not be posted on the PR, so nothing is approved") || strings.Contains(got, "the record at") {
-			t.Fatalf("%q", got)
-		}
-	})
-
-	t.Run("an unknown park code names the park and the toolbox's why", func(t *testing.T) {
-		got := ApproveRefusal(7, &pb.VerifyApproveResult{Reason: "park-codes-unknown", Park: "needs human: brand-new", Why: "upgrade"})
-		if !strings.HasSuffix(got, "the park names a code this toolbox does not know (needs human: brand-new) [park-codes-unknown]: upgrade") {
-			t.Fatalf("%q", got)
-		}
-	})
+		})
+	}
 }
 
 func TestRefusalDetailCoversEveryApproveReason(t *testing.T) {
@@ -172,11 +190,11 @@ func TestRefusalDetailCoversEveryApproveReason(t *testing.T) {
 		"sent-back-approved-head", "approver-not-writer", "approver-unreadable",
 		"head-moved", "park-changed", "approval-superseded", "approval-record-failed", "approval-unconfirmed",
 	} {
-		if got := RefusalDetail(reason, "", ""); strings.HasPrefix(got, "refused [") {
-			t.Errorf("reason %q falls back to the generic detail: %q", reason, got)
+		if RefusalDetail(reason) == "" {
+			t.Errorf("reason %q has no plain words", reason)
 		}
 	}
-	if got := RefusalDetail("brand-new", "", ""); got != "refused [brand-new]" {
-		t.Fatalf("an unknown reason = %q", got)
+	if got := RefusalDetail("brand-new"); got != "" {
+		t.Fatalf("an unknown reason = %q, want it left unsaid", got)
 	}
 }

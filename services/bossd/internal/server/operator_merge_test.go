@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/vcs"
 
+	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/verifybridge"
 )
 
@@ -406,6 +407,103 @@ func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testin
 				if entry[k] != v {
 					t.Fatalf("outcome log %v: %s = %v, want %v (logs:\n%s)", entry, k, entry[k], v, logs.String())
 				}
+			}
+		})
+	}
+}
+
+// mergingRecorder is a Recomputer that records the merging flag each time the
+// tracker publishes, which is what every client reads.
+type mergingRecorder struct {
+	tracker   *status.DisplayTracker
+	published []bool
+}
+
+func (r *mergingRecorder) Recompute(_ context.Context, id string) error {
+	e := r.tracker.Get(id)
+	r.published = append(r.published, e != nil && e.Merging)
+	return nil
+}
+
+// requireHeldThenReleased fails unless merging, once published, stays
+// published until a single clear at the end.
+func (r *mergingRecorder) requireHeldThenReleased(t *testing.T) {
+	t.Helper()
+	first := slices.Index(r.published, true)
+	if first < 0 {
+		t.Fatalf("published = %v, want merging served", r.published)
+	}
+	last := len(r.published) - 1
+	if r.published[last] || slices.Contains(r.published[first:last], false) {
+		t.Fatalf("published = %v, want merging held from the first publish until the merge ends, then cleared once", r.published)
+	}
+}
+
+// pollingRefresher stands in for MergeSession's post-merge re-poll: it lands
+// the merged PR status in the tracker and notes whether merging still held.
+type pollingRefresher struct {
+	tracker      *status.DisplayTracker
+	calls        int
+	mergingAfter bool
+}
+
+func (r *pollingRefresher) RefreshPRWithoutWebhookCredit(context.Context, string, int) error {
+	r.calls++
+	r.tracker.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
+	e := r.tracker.Get("s1")
+	r.mergingAfter = e != nil && e.Merging
+	return nil
+}
+
+func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheBookkeeping(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(*operatorMergeHarness)
+		landed bool
+	}{
+		{"landed", func(*operatorMergeHarness) {}, true},
+		{"approval refused", func(h *operatorMergeHarness) {
+			h.verbs.approve = verifybridge.ApproveResult{Reason: "park-changed", HeadSHA: headPin}
+		}, false},
+		{"gate blocked", func(h *operatorMergeHarness) { h.prov.prStatus.Draft = true }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newOperatorMergeHarness(t, headPin)
+			tc.setup(h)
+			tracker := h.srv.displayTracker
+			rec := &mergingRecorder{tracker: tracker}
+			tracker.SetRecomputer(rec)
+			refresher := &pollingRefresher{tracker: tracker}
+			h.srv.prRefresher = refresher
+			merging := func() bool {
+				e := tracker.Get("s1")
+				return e != nil && e.Merging
+			}
+			var unserved []string
+			note := func(step string) {
+				if !merging() {
+					unserved = append(unserved, step)
+				}
+			}
+			h.verbs.onApprove = func() { note("approve") }
+			h.verbs.onMarkMerged = func() { note("mark-merged") }
+			onMerge := h.prov.onMerge
+			h.prov.onMerge = func() { note("merge"); onMerge() }
+
+			_, _ = h.merge(true, "human-review:ui")
+
+			if len(unserved) > 0 {
+				t.Errorf("merging was not served during %q", unserved)
+			}
+			if tc.landed && (refresher.calls != 1 || !refresher.mergingAfter) {
+				t.Errorf("post-merge re-poll: calls = %d, merging held after it = %v; want one re-poll under the hold", refresher.calls, refresher.mergingAfter)
+			}
+			rec.requireHeldThenReleased(t)
+			if merging() {
+				t.Error("merging still set after OperatorMergeSession returned")
+			}
+			if e := tracker.Get("s1"); tc.landed && (e == nil || e.Status != vcs.DisplayStatusMerged) {
+				t.Errorf("entry after the merge = %+v, want the re-polled merged status kept", e)
 			}
 		})
 	}

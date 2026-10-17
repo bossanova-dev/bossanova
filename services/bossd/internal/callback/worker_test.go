@@ -304,6 +304,55 @@ func TestWorker_RetryDeliveryUsesRepeatPrompt(t *testing.T) {
 	}
 }
 
+// A composer holding a draft refuses the delivery before anything is typed.
+// The worker waits for it rather than spending its attempts: twice the attempt
+// budget of refusals still leaves the callback live, and it lands, once, when
+// the box is free.
+func TestWorker_OccupiedComposerWaitsWithoutSpendingAttempts(t *testing.T) {
+	store := newStore(t)
+	clk := newClock(time.Now().UTC())
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
+		Trigger: models.GithubCallbackTriggerMerged, Message: "re-run the review",
+	})
+	triggerActive(t, store, cb.ID, clk.now())
+
+	refusals := 2 * maxDeliveryAttempts
+	var messages []string
+	w := newWorker(store, DelivererFunc(func(_ context.Context, _ string, message string) error {
+		messages = append(messages, message)
+		if len(messages) <= refusals {
+			return fmt.Errorf("send chat message: send message (delivery state: composer occupied): %w", ErrComposerOccupied)
+		}
+		return nil
+	}), clk.now, "worker-1")
+	for range refusals {
+		w.scan(context.Background())
+		got, err := store.Get(context.Background(), cb.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.State != models.GithubCallbackStateTriggered || got.AttemptCount != 0 {
+			t.Fatalf("after a refusal: state %q, attempt_count %d; want triggered with no attempt spent", got.State, got.AttemptCount)
+		}
+		if got.LastError == nil || !strings.Contains(*got.LastError, "composer") {
+			t.Fatalf("last_error = %v, want the occupied-composer refusal", got.LastError)
+		}
+		clk.advance(got.NextAttemptAt.Sub(clk.now()))
+	}
+	w.scan(context.Background())
+
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+		t.Fatalf("state = %q, want delivered once the composer is free", got)
+	}
+	if len(messages) != refusals+1 {
+		t.Fatalf("delivery attempts = %d, want %d", len(messages), refusals+1)
+	}
+	if strings.Contains(messages[len(messages)-1], "REPEAT DELIVERY") {
+		t.Errorf("the delivery that landed is marked a repeat, but nothing reached the agent before it:\n%s", messages[len(messages)-1])
+	}
+}
+
 func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()

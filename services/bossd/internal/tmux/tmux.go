@@ -1670,15 +1670,8 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 		}
 		return nil
 	}
-	// A Codex composer that already holds a draft would take the payload as an
-	// append, and its marker row would keep showing the draft's first line, so
-	// the submit is refused before anything is typed. The draft reading keys on
-	// Codex's dim placeholder, so it runs only for the Codex marker: OpenCode
-	// draws its placeholder and status rail in plain colour, not dim.
-	if !opts.prefillOnly && opts.readyMarker == codexReadyMarker {
-		if err := c.refuseOccupiedComposer(ctx, sessionName); err != nil {
-			return err
-		}
+	if err := c.refuseOccupiedComposer(ctx, sessionName, opts); err != nil {
+		return err
 	}
 	if err := deliver(ctx); err != nil {
 		return err
@@ -1706,10 +1699,46 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// TUI swallows is retried once inside verifyWithEnterRetry before erroring.
 	if opts.submitVerifyWait > 0 && trimmedPlan != "" {
 		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts, deliver); err != nil {
-			return err
+			return c.withdrawUnsubmitted(ctx, sessionName, plan, err)
 		}
 	}
 	return nil
+}
+
+// withdrawBudget bounds withdrawUnsubmitted, which runs after the send's own
+// budget may already be spent.
+const withdrawBudget = 5 * time.Second
+
+// withdrawUnsubmitted removes the payload a not-submitted send leaves in the
+// composer, so the send leaves the pane as it found it. Without it the payload
+// strands every later send: the next one, including the caller's retry of this
+// payload, finds the box occupied and is refused. A retry is often not the same
+// text, since the callback worker marks every retry "REPEAT DELIVERY — attempt
+// N", so the box cannot be matched against the retry instead.
+//
+// It clears only a box that holds exactly this payload and nothing else
+// (composerHoldsOnlyPayload), read after the verifier gave up. Typing appends,
+// so such a box held nothing when this send typed into it, and nobody has
+// typed into it since. A box holding anything more is left as it is, and the
+// error says so. ClearComposer checks before every press that the box still
+// holds the payload.
+func (c *Client) withdrawUnsubmitted(ctx context.Context, sessionName, payload string, sendErr error) error {
+	if OutcomeOf(sendErr) != OutcomeNotSubmitted {
+		return sendErr
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), withdrawBudget)
+	defer cancel()
+	styled, err := c.captureVisibleStyled(ctx, sessionName)
+	if err != nil {
+		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the composer could not be read to withdraw the payload: %v", sendErr, err))
+	}
+	if !composerHoldsOnlyPayload(styled, payload) {
+		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the composer does not hold only the payload, so it was left as it is", sendErr))
+	}
+	if err := c.ClearComposer(ctx, sessionName, payload); err != nil {
+		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; withdrawing the payload from the composer failed: %v", sendErr, err))
+	}
+	return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the payload was withdrawn from the composer", sendErr))
 }
 
 // sendLine is the test-injectable variant of SendLineWithReadyMarker.
@@ -1729,7 +1758,13 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 	if err := c.waitForReadyMarkerWithAttempts(ctx, sessionName, opts); err != nil {
 		return err
 	}
-
+	// Claude draws an argument hint after a slash command that ends in a space,
+	// so a line typed with surrounding whitespace may never draw exactly as
+	// typed. The line typed and checked for is trimmed, as sendPlan's is.
+	line = strings.TrimSpace(line)
+	if err := c.refuseOccupiedComposer(ctx, sessionName, opts); err != nil {
+		return err
+	}
 	// A closure so the verifier's retry can re-run the identical delivery after
 	// clearing the composer (see verifyWithEnterRetry).
 	deliver := func(ctx context.Context) error {
@@ -1752,7 +1787,7 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 	}
 	if opts.submitVerifyWait > 0 {
 		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts, deliver); err != nil {
-			return err
+			return c.withdrawUnsubmitted(ctx, sessionName, line, err)
 		}
 	}
 	return nil

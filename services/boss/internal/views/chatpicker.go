@@ -265,7 +265,7 @@ func (m ChatPickerModel) canMerge() bool {
 	// A merge already in flight hides the [m]erge affordance: m.merging is set
 	// when the user confirms a merge and cleared when the mergeResultMsg lands,
 	// so the "Merging PR #N…" feedback line stands in until the RPC resolves.
-	if m.merging {
+	if m.merging || m.attentionAction.mergeUnresolved() {
 		return false
 	}
 	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
@@ -396,11 +396,14 @@ func (m ChatPickerModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.attentionAction.action == msg.action {
 			m.attentionAction = attentionActionState{}
 		}
-		m.table.SetHeight(m.tableHeight())
 		m.statusMsg, m.statusNote = "", msg.text
-		if msg.err != nil {
+		switch {
+		case msg.unsettled:
+			m.attentionAction, m.statusNote = awaitingMerge(msg.sessionID, msg.text), ""
+		case msg.err != nil:
 			m.statusMsg, m.statusNote = rpcStatusDetail(msg.err), ""
 		}
+		m.table.SetHeight(m.tableHeight())
 		return m, nil
 	case mergeResultMsg:
 		return m.handleMergeResult(msg)
@@ -510,10 +513,10 @@ func (m ChatPickerModel) ArchivingSessionID() string {
 	return ""
 }
 
-// MergeInFlight returns the confirmed [m]erge this view leaves running, if any,
-// so app.go can carry it onto Home.
+// MergeInFlight returns the confirmed [m]erge this view leaves unresolved, if
+// any, so app.go can carry it onto Home.
 func (m ChatPickerModel) MergeInFlight() (attentionActionState, bool) {
-	return m.attentionAction, m.attentionAction.mergeInFlight()
+	return m.attentionAction, m.attentionAction.mergeUnresolved()
 }
 
 // Cancelled returns true if the user cancelled the chat picker.

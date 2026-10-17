@@ -591,6 +591,9 @@ func TestRepoSettingsOrganization_UnknownMappingDoesNotSwallowAReset(t *testing.
 			if !strings.Contains(out, "nothing this view can reset") {
 				t.Errorf("the refused reset is discarded without a word:\n%s", out)
 			}
+			if strings.Contains(out, "Reopen this view") {
+				t.Errorf("the refusal tells the user what to do instead of stating the issue:\n%s", out)
+			}
 			// One message serves both causes, so it must not name either read:
 			// the predicate cannot tell which one failed, and on a list failure
 			// the mapping read was never issued at all. The notice line below

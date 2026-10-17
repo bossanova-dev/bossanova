@@ -1,4 +1,4 @@
-package testharness_test
+package harnesstest
 
 import (
 	"context"
@@ -9,9 +9,25 @@ import (
 	"path/filepath"
 	"testing"
 
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/testharness"
 )
+
+func registerTestRepo(t *testing.T, h *testharness.Harness, ctx context.Context) string {
+	t.Helper()
+	resp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "my-app",
+		LocalPath:         testharness.TempRepoDir(t),
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	return resp.Msg.Repo.Id
+}
 
 // --- PostStopHook --------------------------------------------------------
 

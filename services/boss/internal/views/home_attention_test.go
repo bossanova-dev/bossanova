@@ -224,14 +224,14 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	h.sessions = fixtures.AttentionSessions()
 	h.buildTableRows()
 	left, _, _ := h.sessionTableFooterActions()
-	if !strings.Contains(strings.Join(left, " "), "[r] resume [x] dismiss [enter] open the failed chat") {
+	if want := []string{"[n]ew session", "[enter] select", "[/] filter"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("fix footer=%v", left)
 	}
 	row, _ := h.tableCursorForSessionID("attention-0")
 	h.table.SetCursor(row)
 	h.buildTableRows()
 	left, _, _ = h.sessionTableFooterActions()
-	if want := []string{"[n]ew session", "[v] video", "[m] merge", "[/] filter"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[enter] select", "[v] video", "[m] merge", "[/] filter"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("review footer=%v", left)
 	}
 
@@ -441,6 +441,124 @@ func TestHomeWorkingMergeRowStaysInNeedsYouAndKeepsItsFilterText(t *testing.T) {
 	}
 }
 
+// TestHomeArchivingAndMergingOverrideTheAttentionStatus pins the served
+// "archiving" and "merging" labels over every attention cell: the archive or
+// merge in flight ends whatever the board says the row needs. Each shows its
+// spinner in the colour bossd serves, and the row stays in its group.
+func TestHomeArchivingAndMergingOverrideTheAttentionStatus(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	spin := ansi.Strip(h.spinner.View())
+	served := []struct {
+		label  string
+		intent pb.DisplayIntent
+		style  func(...string) string
+	}{
+		{"archiving", pb.DisplayIntent_DISPLAY_INTENT_WARNING, styleStatusWarning.Render},
+		{"merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, styleStatusInfo.Render},
+	}
+	attentions := map[string]*pb.SessionAttention{
+		"ready":       {Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true},
+		"merge":       {Kind: pb.AttentionKind_ATTENTION_KIND_MERGE},
+		"review":      {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		"fix":         {Kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		"question":    {Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION},
+		"in progress": {Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "idle"},
+	}
+	for _, sv := range served {
+		for name, a := range attentions {
+			s := &pb.Session{DisplayLabel: sv.label, DisplayIntent: sv.intent, DisplaySpinner: true, Attention: a}
+			want := spin + sv.label
+			if got := h.renderSessionStatus(s); got != sv.style(want) {
+				t.Errorf("%s row while %s: status = %q, want %q", name, sv.label, ansi.Strip(got), want)
+			}
+			if hay := homeFilterHaystack(s); !strings.Contains(hay, sv.label) {
+				t.Errorf("%s row while %s: filter haystack %q lacks the shown label", name, sv.label, hay)
+			}
+		}
+	}
+
+	archiving := &pb.Session{Id: "a", Title: "Being archived", DisplayLabel: "archiving", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, DisplaySpinner: true, Attention: attentions["ready"]}
+	other := &pb.Session{Id: "o", Title: "Building", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "building"}}
+	h.width, h.height = 120, 30
+	h.sessions = []*pb.Session{other, archiving}
+	h.buildTableRows()
+	screen := ansi.Strip(h.boardView())
+	needs, progress, row := strings.Index(screen, "NEEDS YOU"), strings.Index(screen, "IN PROGRESS"), strings.Index(screen, "Being archived")
+	if needs < 0 || progress < 0 || row < needs || row > progress {
+		t.Fatalf("archiving ready row left NEEDS YOU:\n%s", screen)
+	}
+	if !strings.Contains(screen, spin+"archiving") || strings.Contains(screen, "ready") {
+		t.Fatalf("archiving ready row does not read archiving:\n%s", screen)
+	}
+}
+
+// TestHomeReadyRowReadsMergingThenArchivingThenLeaves walks a ready row through
+// a merge bossd runs (started from this TUI or any other client) and the
+// archive that follows it, as the session polls serve it.
+func TestHomeReadyRowReadsMergingThenArchivingThenLeaves(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width, h.height = 120, 30
+	spin := ansi.Strip(h.spinner.View())
+	ready := &pb.Session{Id: "r", Title: "Sign releases", DisplayLabel: "✓ ready", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true}}
+	other := &pb.Session{Id: "o", Title: "Building", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "building"}}
+	poll := func(mutate func(*pb.Session)) string {
+		s := proto.Clone(ready).(*pb.Session)
+		mutate(s)
+		h.sessions = []*pb.Session{other, s}
+		h.buildTableRows()
+		return ansi.Strip(h.boardView())
+	}
+	for _, step := range []struct {
+		name   string
+		mutate func(*pb.Session)
+		want   string
+	}{
+		{"ready", func(*pb.Session) {}, "✓ ready"},
+		{"merging", func(s *pb.Session) {
+			s.DisplayMerging, s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = true, "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, true
+		}, spin + "merging"},
+		{"archiving", func(s *pb.Session) {
+			s.ArchivePending, s.DisplayLabel, s.DisplayIntent, s.DisplaySpinner = true, "archiving", pb.DisplayIntent_DISPLAY_INTENT_WARNING, true
+		}, spin + "archiving"},
+	} {
+		screen := poll(step.mutate)
+		line := ""
+		for _, l := range strings.Split(screen, "\n") {
+			if strings.Contains(l, "Sign releases") {
+				line = l
+			}
+		}
+		if !strings.Contains(line, step.want) || (step.name != "ready" && strings.Contains(line, "ready")) {
+			t.Fatalf("%s: row %q, want it to read %q:\n%s", step.name, line, step.want, screen)
+		}
+		if needs, row := strings.Index(screen, "NEEDS YOU"), strings.Index(screen, "Sign releases"); needs < 0 || row < needs || row > strings.Index(screen, "IN PROGRESS") {
+			t.Fatalf("%s: row left NEEDS YOU:\n%s", step.name, screen)
+		}
+	}
+	if screen := poll(func(s *pb.Session) { s.ArchivedAt = timestamppb.Now() }); strings.Contains(screen, "Sign releases") {
+		t.Fatalf("archived row still on the board:\n%s", screen)
+	}
+}
+
+// TestHomeIdleAttentionRowsKeepTheirWords guards the other side of the
+// override: a row whose served label is anything but archiving or merging,
+// including the other live labels, keeps the board's words.
+func TestHomeIdleAttentionRowsKeepTheirWords(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	for _, label := range []string{"✓ passing", "idle", "initializing", "repairing", "waiting", "usage-limited", "? question"} {
+		for want, a := range map[string]*pb.SessionAttention{
+			"✓ ready": {Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true},
+			"review":  {Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+			"fix":     {Kind: pb.AttentionKind_ATTENTION_KIND_FIX},
+		} {
+			s := &pb.Session{DisplayLabel: label, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Attention: a}
+			if got := ansi.Strip(h.renderSessionStatus(s)); got != want {
+				t.Errorf("%s row with served label %q: status = %q, want %q", want, label, got, want)
+			}
+		}
+	}
+}
+
 func TestHomeAttentionMixedDaemon(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 120
@@ -552,7 +670,8 @@ func TestHomeFixRowShowsTheStateThatNeedsFixing(t *testing.T) {
 		{"idle", "idle", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, nil, fix},
 		{"waiting", displaystatus.WaitingLabel, pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, nil, fix},
 		{"repairing", "repairing", pb.DisplayIntent_DISPLAY_INTENT_WARNING, 0, 0, nil, fix},
-		{"merging", "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, nil, fix},
+		// A merge in flight ends the fix, so the row reads it.
+		{"merging", "merging", pb.DisplayIntent_DISPLAY_INTENT_INFO, 0, 0, nil, styleStatusInfo.Render("merging")},
 		// A rotation-incident FIX on a green PR: the label is not the problem.
 		{"passing checks", "✓ passing", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, 0, pb.DisplayStatus_DISPLAY_STATUS_PASSING, nil, fix},
 		{"muted draft", "draft", pb.DisplayIntent_DISPLAY_INTENT_MUTED, 0, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, nil, fix},

@@ -390,7 +390,7 @@ func chooseInitCronAgent(eligibility []cronAgentEligibility, requested string) (
 		for _, e := range eligibility {
 			if e.Name == requested {
 				if !e.Eligible() {
-					return "", fmt.Errorf("--agent %s cannot run factory cron jobs: %s", requested, e.reason())
+					return "", fmt.Errorf("--agent %s cannot run pipeline cron jobs: %s", requested, e.reason())
 				}
 				return requested, nil
 			}
@@ -404,7 +404,7 @@ func chooseInitCronAgent(eligibility []cronAgentEligibility, requested string) (
 		}
 		why = append(why, e.Name+": "+e.reason())
 	}
-	return "", fmt.Errorf("no agent can run factory cron jobs (%s)", strings.Join(why, "; "))
+	return "", fmt.Errorf("no agent can run pipeline cron jobs (%s)", strings.Join(why, "; "))
 }
 
 // --- Setup ----------------------------------------------------------------
@@ -625,7 +625,7 @@ func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repo
 		appendBaseBranchWarnings(ctx, &res, repo, repoDir, configPath, resolver.config, root, node, req.stages, env)
 	}
 	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(existing, mustCronStage("plan")) {
-		res.LeftToDo = append(res.LeftToDo, "factory-build is enabled without factory-plan: nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
+		res.LeftToDo = append(res.LeftToDo, "the build job (factory-build) is enabled without the plan job (factory-plan): nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
 	}
 	return res, nil
 }
@@ -984,7 +984,7 @@ func checkBaseMCPDeclaration(ctx context.Context, repoDir, ref, agent, server st
 
 func (r initCronResult) report() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\nFactory cron jobs (agent: %s):\n", r.Agent)
+	fmt.Fprintf(&b, "\nPipeline cron jobs (agent: %s):\n", r.Agent)
 	failed := false
 	for _, s := range r.Stages {
 		state := "disabled"
@@ -999,13 +999,13 @@ func (r initCronResult) report() string {
 		case cronUpdated:
 			fmt.Fprintf(&b, "  %s: updated (%s, schedule unchanged)\n", s.Name, state)
 		case cronUnchanged:
-			fmt.Fprintf(&b, "  %s: already matches the factory definition (%s)\n", s.Name, state)
+			fmt.Fprintf(&b, "  %s: already matches the standard definition (%s)\n", s.Name, state)
 		case cronLeftAlone:
 			why := "re-run with --update-crons to apply"
 			if s.PreflightFailure != "" {
 				why = "not updated because the preflight failed"
 			}
-			fmt.Fprintf(&b, "  %s: differs from the factory definition; left untouched (%s, %s):\n", s.Name, state, why)
+			fmt.Fprintf(&b, "  %s: differs from the standard definition; left untouched (%s, %s):\n", s.Name, state, why)
 		}
 		if s.Outcome == cronUpdated || s.Outcome == cronLeftAlone {
 			for _, d := range s.Diff {
@@ -1060,7 +1060,7 @@ func runInitCronStep(out io.Writer, opts initOptions, repoDir, configPath string
 		return nil
 	}
 	if remoteURL(cmd) != "" || hostDestination(cmd) != "" {
-		_, _ = io.WriteString(out, "\nCron setup skipped: factory cron jobs need a local daemon and a local repository id (--remote / --host has neither).\n")
+		_, _ = io.WriteString(out, "\nCron setup skipped: pipeline cron jobs need a local daemon and a local repository id (--remote / --host has neither).\n")
 		return nil
 	}
 	ctx := cmd.Context()

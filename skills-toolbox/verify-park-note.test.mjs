@@ -264,10 +264,10 @@ test('parkNote names each code by its issue and evidence, once each, and ends on
     lines.includes('  - `## Human follow-up` appears more than once, so verify cannot read it.'),
   )
   assert.ok(lines.includes('  - `boss-verify-evidence` crashed or returned nothing'))
-  assert.ok(lines.includes('- Matched: web UI'), 'the UI change keeps its evidence')
+  assert.ok(lines.includes('- The change touches web UI.'), 'the UI change keeps its evidence')
   assert.ok(
     lines.includes(
-      'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh, and a fixed checklist is judged again the next time verify runs.',
+      'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh, and a fixed checklist is judged again at the next check.',
     ),
   )
   assert.ok(!note.body.includes('boss pr approve'), 'no instruction to the reader')
@@ -275,6 +275,45 @@ test('parkNote names each code by its issue and evidence, once each, and ends on
   assert.ok(!note.body.includes('no tracker ticket'))
   const marker = lines.at(-1).match(PARK_NOTE_MARKER)
   assert.deepEqual([marker?.[1], marker?.[2]], [HEAD, note.digest])
+})
+
+test('parkNote says the park label once, as its own line before the codes', () => {
+  const touches = '- The change touches web/src/x.tsx.'
+  const both = parkNote({
+    codes: ['human-review:security', 'human-review:ui'],
+    headSha: HEAD,
+    facts: { title: 't', body: NO_LEDGER, label: 'web/src/x.tsx' },
+  }).body.split('\n')
+  assert.equal(
+    both.filter((l) => l.includes('web/src/x.tsx')).length,
+    1,
+    `two labelled codes repeat the label:\n${both.join('\n')}`,
+  )
+  assert.equal(both.indexOf(touches), 2, both.join('\n'))
+  assert.ok(both.includes('- A security-sensitive change for a person to review.'), both.join('\n'))
+
+  const withChecklist = parkNote({
+    codes: ['ledger-open', 'human-review:ui'],
+    headSha: HEAD,
+    facts: { title: 't', body: ledger({ followUp: ['- [ ] rotate the key'] }), label: 'web/a' },
+  }).body.split('\n')
+  const label = withChecklist.indexOf('- The change touches web/a.')
+  const checklist = withChecklist.findIndex((l) =>
+    l.startsWith('- The PR checklist has open items'),
+  )
+  const item = withChecklist.indexOf('  - Open human follow-up: rotate the key')
+  assert.ok(
+    label > 0 && label < checklist && checklist < item,
+    `the label sits under the checklist:\n${withChecklist.join('\n')}`,
+  )
+  assert.equal(withChecklist.filter((l) => l.includes('web/a')).length, 1)
+
+  const unlabelled = parkNote({
+    codes: ['ledger-open'],
+    headSha: HEAD,
+    facts: { title: 't', body: NO_LEDGER, label: 'web/a' },
+  }).body
+  assert.ok(!unlabelled.includes('web/a'), 'a park with no labelled code shows no label')
 })
 
 test('parkNote says when no ticket stands behind the PR and when it was not given extension results', () => {
@@ -286,8 +325,10 @@ test('parkNote says when no ticket stands behind the PR and when it was not give
   })
   assert.ok(note.body.includes('No automated build and review has passed on this commit.'))
   assert.ok(!note.body.includes('boss/build'), 'no status context named to people')
-  assert.ok(note.body.includes("This post was not given the extensions' results"))
-  assert.ok(note.body.includes('This PR has no tracker ticket, so verify made no tracker writes'))
+  assert.ok(
+    note.body.includes("The extensions' results were not available when this comment was written."),
+  )
+  assert.ok(note.body.includes('This PR has no tracker ticket, so no ticket was updated.'))
 })
 
 test('parkNote digests its content: the same facts give the same note, changed evidence another', () => {
@@ -342,7 +383,7 @@ test('afterMergeNote lists the unchecked After merge items, and is null when the
   assert.deepEqual(afterMergeItems(body), ['Observe the nightly run', 'Check the dashboard'])
   const note = afterMergeNote({ headSha: HEAD, body })
   const lines = note.body.split('\n')
-  assert.match(lines[0], /^\*\*boss-verify passed this PR\*\* on `aaaaaaaaaaaa`\./)
+  assert.match(lines[0], /^\*\*This PR passed verification\*\* on `aaaaaaaaaaaa`\./)
   assert.deepEqual(lines.slice(2, 5), [
     '**After merge, check:**',
     '- Observe the nightly run',

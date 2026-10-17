@@ -43,15 +43,15 @@ func TestChatPicker_EscDuringMerge_ReturnsToList(t *testing.T) {
 }
 
 // TestChatPicker_ConflictingKeysBlockedDuringArchive verifies that action keys
-// (a, m, d, n) are still swallowed while an archive is in flight — no second
-// conflicting operation can start.
+// (a, m, d, n, enter) are still swallowed while an archive is in flight — no
+// second conflicting operation can start and no chat opens.
 func TestChatPicker_ConflictingKeysBlockedDuringArchive(t *testing.T) {
-	for _, key := range []rune{'a', 'm', 'd', 'n'} {
-		t.Run(string(key), func(t *testing.T) {
+	for _, key := range []tea.KeyPressMsg{keyPress('a'), keyPress('m'), keyPress('d'), keyPress('n'), {Code: tea.KeyEnter}} {
+		t.Run(key.String(), func(t *testing.T) {
 			m := seedChatPicker(&chatPickerStub{}, "")
 			m.archiving = true
 
-			updated, _ := m.Update(keyPress(key))
+			updated, cmd := m.Update(key)
 			got := updated.(ChatPickerModel)
 
 			if got.confirm != confirmNone {
@@ -59,6 +59,9 @@ func TestChatPicker_ConflictingKeysBlockedDuringArchive(t *testing.T) {
 			}
 			if got.Cancelled() {
 				t.Errorf("pressing %q during archive must not cancel the picker", key)
+			}
+			if cmd != nil {
+				t.Errorf("pressing %q during archive must not start a command; got %T", key, cmd())
 			}
 		})
 	}

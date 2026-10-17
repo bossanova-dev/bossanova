@@ -46,10 +46,12 @@ type verifyVerbsFake struct {
 	err        error
 	builtCount int
 
-	// onApprove runs inside Approve, before it returns; approveCtxDeadline
-	// records the deadline Approve ran under. markBlocks makes MarkMerged hang
-	// until its context ends, the way a stuck tracker call would.
+	// onApprove and onMarkMerged run inside their verbs, before they return;
+	// approveCtxDeadline records the deadline Approve ran under. markBlocks
+	// makes MarkMerged hang until its context ends, the way a stuck tracker
+	// call would.
 	onApprove          func()
+	onMarkMerged       func()
 	approveCtxDeadline time.Time
 	markBlocks         bool
 }
@@ -76,6 +78,9 @@ func (f *verifyVerbsFake) MarkMerged(ctx context.Context, t verifybridge.Target)
 	f.targets = append(f.targets, t)
 	f.markCtxErr = ctx.Err()
 	f.markCtxDeadline, _ = ctx.Deadline()
+	if f.onMarkMerged != nil {
+		f.onMarkMerged()
+	}
 	if f.markBlocks {
 		select {
 		case <-ctx.Done():

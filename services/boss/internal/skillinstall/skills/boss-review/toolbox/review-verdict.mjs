@@ -270,9 +270,15 @@ function discoverVerdictFiles(fs, root) {
   return poolVerdictFiles(entries).map((file) => path.join(root, file))
 }
 
+const REPORT_HEADINGS = Object.freeze({
+  pass: 'passed',
+  blocked: 'blocking problems found',
+  error: 'no usable verdict',
+})
+
 /** The `<!-- bs-review -->` comment body. */
 export function renderReport(result) {
-  const lines = [REPORT_MARKER, `## boss-review: ${result.status}`, '']
+  const lines = [REPORT_MARKER, `## Code review: ${REPORT_HEADINGS[result.status]}`, '']
   if (result.status === 'error') {
     const reason =
       oneLine(result.verdict?.error ?? result.errors.join('; ')) || 'unreadable verdict'

@@ -211,7 +211,7 @@ func rpcStatusDetail(err error) string {
 	// reconnect while the other says nothing is redialling.
 	detail := "the connection to " + remoteHostDestination() + " dropped; boss is reconnecting"
 	if remoteHostSupervisorStopped() {
-		detail = "the connection to " + remoteHostDestination() + " dropped and boss is not redialling; restart boss"
+		detail = "the connection to " + remoteHostDestination() + " dropped and boss stopped reconnecting; restart boss to reconnect"
 	}
 	if reason := remoteHostFailureReason(); reason != "" {
 		detail += " (last tunnel failure: " + reason + ")"

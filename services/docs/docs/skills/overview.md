@@ -44,7 +44,7 @@ Each skill runs on its own, but they also compose: `boss-plan` emits a plan that
 
 ## Run the pipeline unattended
 
-The [software factory setup guide](https://github.com/recurser/bossanova/blob/main/docs/skills/factory.md)
+The [ticket pipeline setup guide](https://github.com/recurser/bossanova/blob/main/docs/skills/factory.md)
 walks through an unattended plan → build → verify and merge pipeline with one cron
 job per stage. It covers prerequisites, labels and commit statuses, human approvals,
 selection filters, extensions, and troubleshooting.
@@ -87,7 +87,7 @@ validates all of it before a skill acts on it.
 
 ## Learn more
 
-- [Software Factory](../guides/software-factory.md) shows the skills working
+- [Ticket Pipeline](../guides/software-factory.md) shows the skills working
   together: tickets go from plan to build, verification and merge on a schedule.
 - [Skill Configuration](/skills/config) covers every section of
   `.boss-skills.json`, the smallest config that switches the tracker-driven skills

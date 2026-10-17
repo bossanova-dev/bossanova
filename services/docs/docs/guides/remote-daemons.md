@@ -284,8 +284,9 @@ action, and no local daemon to restart.
 
 **Read that banner, though.** If the supervisor itself has stopped, nothing is
 redialling, and the TUI says so instead: `Disconnected from <destination>`,
-followed by `Restart boss to reconnect`. Waiting will not help in that state;
-only `Reconnecting to …` promises an automatic recovery.
+followed by `The ssh tunnel dropped and boss stopped reconnecting. Restart boss
+to reconnect.` Waiting will not help in that state; only `Reconnecting to …`
+promises an automatic recovery.
 
 ## Flag reference
 

@@ -93,10 +93,10 @@ func (v *validator) crons(crons []Cron, entries []Daemon, daemons map[string]Dae
 				v.fail(p+".factoryStage", "must not be empty")
 			}
 			if c.Prompt != nil {
-				v.fail(p+".prompt", "a factory cron must not carry a prompt; the stage defines it")
+				v.fail(p+".prompt", "a cron with factoryStage set must not carry a prompt; the stage defines it")
 			}
 			if c.GateCommand != nil {
-				v.fail(p+".gateCommand", "a factory cron must not carry a gate command; the stage defines it")
+				v.fail(p+".gateCommand", "a cron with factoryStage set must not carry a gate command; the stage defines it")
 			}
 		} else {
 			if strings.TrimSpace(deref(c.Prompt)) == "" {

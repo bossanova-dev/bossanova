@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/vcs"
 )
@@ -418,30 +419,30 @@ func TestSetPreservesSettingUp(t *testing.T) {
 	}
 }
 
-func TestSetMerging(t *testing.T) {
+func TestHoldMerging(t *testing.T) {
 	tr := NewDisplayTracker()
-	tr.SetMerging("s1", true)
+	release := tr.HoldMerging("s1")
 	if e := tr.Get("s1"); e == nil || !e.Merging {
 		t.Fatalf("expected Merging=true, got %+v", e)
 	}
-	// Clearing the flag on an entry that exists ONLY because of the transient
-	// merging flag (no polled PR status) must remove the entry entirely, so a
-	// zero-Status placeholder does not linger and mis-read a passing PR.
-	tr.SetMerging("s1", false)
+	// Releasing a hold on an entry that exists ONLY because of it (no polled
+	// PR status) must remove the entry entirely, so a zero-Status placeholder
+	// does not linger and mis-read a passing PR.
+	release()
 	if e := tr.Get("s1"); e != nil {
-		t.Fatalf("expected merging-only entry removed on clear, got %+v", e)
+		t.Fatalf("expected merging-only entry removed on release, got %+v", e)
 	}
 }
 
-func TestSetMergingClearKeepsRealStatus(t *testing.T) {
+func TestHoldMergingReleaseKeepsRealStatus(t *testing.T) {
 	tr := NewDisplayTracker()
-	tr.SetMerging("s1", true)
+	release := tr.HoldMerging("s1")
 	// A PR poll lands a real status while the merge is in flight.
 	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
-	tr.SetMerging("s1", false)
+	release()
 	e := tr.Get("s1")
 	if e == nil {
-		t.Fatalf("entry with real PR status must not be removed on clear")
+		t.Fatalf("entry with real PR status must not be removed on release")
 	}
 	if e.Merging {
 		t.Fatalf("expected Merging cleared, got %+v", e)
@@ -451,18 +452,65 @@ func TestSetMergingClearKeepsRealStatus(t *testing.T) {
 	}
 }
 
-func TestSetMergingClearWhenAbsentNoOp(t *testing.T) {
+func TestHoldMergingReleaseAfterRemoveFabricatesNothing(t *testing.T) {
 	tr := NewDisplayTracker()
-	// Clearing when no entry exists must not fabricate a placeholder entry.
-	tr.SetMerging("s1", false)
+	release := tr.HoldMerging("s1")
+	tr.Remove("s1")
+	release()
 	if e := tr.Get("s1"); e != nil {
-		t.Fatalf("clear-when-absent fabricated an entry: %+v", e)
+		t.Fatalf("release after Remove fabricated an entry: %+v", e)
+	}
+}
+
+func TestHoldMergingSurvivesRemoveAndRecreation(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	stale := tr.HoldMerging("s1")
+
+	tr.Remove("s1")
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("Remove dropped a held merge; got %+v", e)
+	}
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("a poll after Remove recreated the entry without its hold; got %+v", e)
+	}
+
+	newer := tr.HoldMerging("s1")
+	stale()
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("a release from before Remove cancelled a newer hold; got %+v", e)
+	}
+	newer()
+	if e := tr.Get("s1"); e == nil || e.Merging || e.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("after the last release got %+v, want Merging cleared and Passing kept", e)
+	}
+}
+
+func TestHoldMergingStaysUntilTheLastHoldReleases(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	outer := tr.HoldMerging("s1")
+	inner := tr.HoldMerging("s1")
+
+	inner()
+	inner()
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("Merging = false after the inner hold released (twice), want true while the outer hold stands; got %+v", e)
+	}
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
+	if e := tr.Get("s1"); e == nil || !e.Merging {
+		t.Fatalf("a poll dropped the outer hold; got %+v", e)
+	}
+	outer()
+	if e := tr.Get("s1"); e == nil || e.Merging || e.Status != vcs.DisplayStatusMerged {
+		t.Fatalf("after the last release got %+v, want Merging cleared and the polled Merged status kept", e)
 	}
 }
 
 func TestSetPreservesMerging(t *testing.T) {
 	tr := NewDisplayTracker()
-	tr.SetMerging("s1", true)
+	tr.HoldMerging("s1")
 	// A PR display poll update mid-merge must not clobber the Merging flag.
 	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 	if e := tr.Get("s1"); e == nil || !e.Merging {
@@ -489,7 +537,7 @@ func TestSetArchivingIndependentOfMerging(t *testing.T) {
 	tr := NewDisplayTracker()
 	// Setting Archiving must not touch Merging and vice versa — they are
 	// independent transient axes.
-	tr.SetMerging("s1", true)
+	tr.HoldMerging("s1")
 	tr.SetArchiving("s1", true)
 	e := tr.Get("s1")
 	if e == nil || !e.Archiving || !e.Merging {
@@ -550,8 +598,7 @@ func TestDisplayTrackerBuildReceiptFollowsEachPoll(t *testing.T) {
 		if got := tracker.GetBatch([]string{"session"})["session"].HasBuildReceipt; got != receipt {
 			t.Fatalf("GetBatch receipt = %v, want %v", got, receipt)
 		}
-		tracker.SetMerging("session", true)
-		tracker.SetMerging("session", false)
+		tracker.HoldMerging("session")()
 		if got := tracker.Get("session").HasBuildReceipt; got != receipt {
 			t.Fatalf("transient mutation changed receipt = %v, want %v", got, receipt)
 		}
@@ -616,6 +663,33 @@ func TestDisplayTrackerReceiptHeadSHALatchesLastReceiptedHead(t *testing.T) {
 
 	// Transient flag mutations do not disturb it.
 	tracker.SetRepairing("session", true)
-	tracker.SetMerging("session", true)
+	tracker.HoldMerging("session")
 	latch("headB")
+}
+
+func TestDisplayTracker_SetBlockedRunWorking(t *testing.T) {
+	tr := NewDisplayTracker()
+	blockedAt := time.Date(2026, 10, 17, 14, 3, 52, 0, time.UTC)
+	if tr.SetBlockedRunWorking("s", time.Time{}) || tr.Get("s") != nil {
+		t.Fatal("clearing an absent mark changed the tracker")
+	}
+	if !tr.SetBlockedRunWorking("s", blockedAt) || tr.SetBlockedRunWorking("s", blockedAt) {
+		t.Fatal("want a change on the first mark and none on the same mark again")
+	}
+	tr.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusDraft, HeadSHA: "abc"})
+	if got := tr.Get("s").BlockedRunWorkingAt; !got.Equal(blockedAt) {
+		t.Fatalf("mark after a poll = %v, want it kept", got)
+	}
+	if got := tr.GetBatch([]string{"s"})["s"].BlockedRunWorkingAt; !got.Equal(blockedAt) {
+		t.Fatalf("batch mark = %v, want %v", got, blockedAt)
+	}
+	if !tr.SetBlockedRunWorking("s", time.Time{}) || tr.Get("s") == nil || tr.Get("s").HeadSHA != "abc" {
+		t.Fatal("clearing the mark must keep the polled entry")
+	}
+	tr.Remove("s")
+	tr.SetBlockedRunWorking("s", blockedAt)
+	tr.SetBlockedRunWorking("s", time.Time{})
+	if tr.Get("s") != nil {
+		t.Fatal("an entry held only by the mark lingers after it clears")
+	}
 }

@@ -481,7 +481,7 @@ test('a pass starting on a head that lost the receipt re-earns it from the last 
   const [post] = postedOn(f.posts, head)
   assert.ok(post, 'the receipt is posted on the pushed head')
   assert.ok(
-    post.some((arg) => arg.includes(`re-reviewed from ${f.start.slice(0, 12)}`)),
+    post.some((arg) => arg.includes(`the changes since ${f.start.slice(0, 12)} were reviewed`)),
     'the receipt names the baseline it was re-earned from',
   )
 })

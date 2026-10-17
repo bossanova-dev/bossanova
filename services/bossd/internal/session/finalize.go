@@ -108,7 +108,12 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	if !advanced {
 		return &FinalizeResult{NoOp: true}, nil
 	}
+	return l.finalizeAdvanced(ctx, sessionID)
+}
 
+// finalizeAdvanced runs the finalize pipeline after step 1 moved the session
+// to Finalizing.
+func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*FinalizeResult, error) {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)

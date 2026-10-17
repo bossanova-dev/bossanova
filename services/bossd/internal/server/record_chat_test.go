@@ -275,6 +275,48 @@ func TestEnsureChatTmuxSession_ChatRowWriteFailureKillsPane(t *testing.T) {
 	}
 }
 
+// A failed repair start can delete an older failed chat while an operator's
+// reopen of it is still launching its pane. The reopen holds the chat it read
+// before the delete, so its pane must be rolled back rather than left live
+// with no row naming it.
+func TestEnsureChatTmuxSession_ChatDeletedDuringReopenKillsPane(t *testing.T) {
+	ctx := context.Background()
+	database := setupServerTestDB(t)
+	repo, err := db.NewRepoStore(database).Create(ctx, db.CreateRepoParams{DisplayName: "reopen", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/reopen", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := db.NewSessionStore(database).Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "Repair", WorktreePath: t.TempDir(), BranchName: "fix/reopen", AgentName: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chats := db.NewAgentChatStore(database)
+	if _, err := chats.Create(ctx, db.CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: "agent-reopened", Title: "failed repair", Role: models.AgentChatRoleRepair}); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := chats.GetByAgentSessionID(ctx, "agent-reopened")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chats.DeleteByAgentSessionID(ctx, chat.AgentSessionID); err != nil {
+		t.Fatal(err)
+	}
+	tmuxer := &fakeTmuxClient{available: true}
+	srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, nil)
+
+	err = srv.ensureChatTmuxSession(ctx, chat, false)
+	if !errors.Is(err, db.ErrAgentChatNotFound) {
+		t.Fatalf("ensureChatTmuxSession = %v, want ErrAgentChatNotFound", err)
+	}
+	wantName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
+	if got := tmuxer.killedSessions(); len(got) != 1 || got[0] != wantName {
+		t.Fatalf("KillSession targets = %v, want exactly [%q]", got, wantName)
+	}
+	if tmuxer.hasSession {
+		t.Fatal("the reopened pane outlived its deleted chat row")
+	}
+}
+
 // TestEnsureChatTmuxSession_ResolverErrorKeepsPaneAndRecordsChat covers the path
 // that produced the originally reported failure: the pane is created, then the
 // interactive-session resolver fails (in production, a DeadlineExceeded from the
@@ -410,16 +452,18 @@ func TestRecordInteractiveAgentRunStartTalliesStaleOpenRunBeforeStop(t *testing.
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	sess := &models.Session{ID: "s1", AgentName: "codex", WorktreePath: t.TempDir()}
 	chat := &models.AgentChat{SessionID: sess.ID, AgentSessionID: "agent-stale", ProviderSessionID: &providerSessionID, AgentName: "codex"}
-	originalTimeout := interactiveAgentRunRecordTimeout
-	interactiveAgentRunRecordTimeout = 50 * time.Millisecond
-	defer func() { interactiveAgentRunRecordTimeout = originalTimeout }()
+	// The replacement Start must run on a context of its own, not on the stale
+	// cleanup's. That is proved by deadlines below, not by letting a short
+	// budget expire: a 50ms budget also bounded the rollout tally, which under
+	// -race on a loaded runner overran it and skipped the telemetry write.
+	const cleanupWork = 5 * time.Millisecond
 	runs := &fakeAgentRunStore{runs: []db.AgentRun{{
 		ID:             "old-run",
 		SessionID:      sess.ID,
 		AgentSessionID: chat.AgentSessionID,
 		StartedAt:      started,
 	}}, recordTelemetryHook: func(context.Context) {
-		time.Sleep(75 * time.Millisecond)
+		time.Sleep(cleanupWork)
 	}}
 	srv := &Server{agentRuns: runs, logger: zerolog.Nop()}
 
@@ -447,6 +491,10 @@ func TestRecordInteractiveAgentRunStartTalliesStaleOpenRunBeforeStop(t *testing.
 	}
 	if gotErr := runs.ctxErrs[len(runs.ctxErrs)-1]; gotErr != nil {
 		t.Fatalf("replacement start ctx err = %v, want fresh context after stale cleanup", gotErr)
+	}
+	cleanupDeadline, startDeadline := runs.deadlines[0], runs.deadlines[len(runs.deadlines)-1]
+	if cleanupDeadline.IsZero() || startDeadline.Sub(cleanupDeadline) < cleanupWork {
+		t.Fatalf("replacement start deadline is %v after the cleanup deadline, want at least %v: start must get its own budget, created after the stale cleanup finished", startDeadline.Sub(cleanupDeadline), cleanupWork)
 	}
 	if _, err := agenttelemetry.CodexTranscriptPath(providerSessionID); err != nil {
 		t.Fatalf("CodexTranscriptPath(provider) = %v", err)

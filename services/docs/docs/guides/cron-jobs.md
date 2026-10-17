@@ -156,7 +156,7 @@ Both are **remembered**: the outcome is written to `last_run_outcome`, so it
 survives a daemon restart and stays visible in the list until a later fire
 supersedes it. A manual [Run now](#run-a-job-ad-hoc) reports them distinctly too:
 `blocked by gate command` for a real gate decision, and
-`gate command could not run — check the daemon log` when the gate never ran.
+`the gate command could not run; check the daemon log` when the gate never ran.
 
 The gate runs inside the shared cron concurrency slot (see [Overlap and
 concurrency](#overlap-and-concurrency)), so keep gate commands fast: a gate
@@ -413,9 +413,9 @@ sessions exactly as it does to manual sessions. See
 
 ## See also
 
-- [Software Factory](./software-factory.md): the stage jobs and gates that run
+- [Ticket Pipeline](./software-factory.md): the stage jobs and gates that run
   tickets from plan to merged PR.
-- [Software factory setup](https://github.com/recurser/bossanova/blob/main/docs/skills/factory.md):
+- [Ticket pipeline setup](https://github.com/recurser/bossanova/blob/main/docs/skills/factory.md):
   enable the unattended plan → build → verify and merge pipeline.
 - [Worktrees: Multiple sessions](../concepts/worktrees.md#multiple-sessions): the
   cross-job concurrency cap and how cron fits into the bigger

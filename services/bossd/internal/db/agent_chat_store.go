@@ -184,16 +184,24 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 // failed-start error: the wake and attach paths relaunch a reclaimed or
 // failed chat through this write alone, and a live chat must not read as
 // replaced or failed, or stay unroutable.
+//
+// Pointing a chat that no longer exists at a pane fails with
+// ErrAgentChatNotFound, because every pane cleanup path finds panes through
+// this column: a pane no row names cannot be reaped, so the caller must roll
+// it back. Clearing a missing chat's pane succeeds, since no row names it.
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	query := `UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`
 	if name != nil {
 		query = `UPDATE agent_chats SET tmux_session_name = ?, start_error = NULL, reclaimed_at = NULL, reclaim_reason = NULL WHERE agent_session_id = ?`
 	}
-	_, err := s.db.ExecContext(ctx, query, name, agentSessionID)
+	res, err := s.db.ExecContext(ctx, query, name, agentSessionID)
 	if err != nil {
 		return fmt.Errorf("update agent_chat tmux_session_name: %w", err)
 	}
-	return nil
+	if name == nil {
+		return nil
+	}
+	return requireRowAffected(res, "update agent_chat tmux_session_name", agentSessionID)
 }
 
 func (s *SQLiteAgentChatStore) ClearTmuxSessionNameIf(ctx context.Context, agentSessionID, tmuxSessionName string) error {

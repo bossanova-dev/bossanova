@@ -113,7 +113,7 @@ type HomeModel struct {
 
 	// mergesInFlight holds the confirmed [m]erges that run on without the
 	// operator, by session id. Their rows read "merging" until they settle.
-	mergesInFlight map[string]homeMerge
+	mergesInFlight map[string]attentionActionState
 
 	// statusUnseen marks a status set while Home was off screen, so the
 	// rebuilt Home the operator returns to still shows it.

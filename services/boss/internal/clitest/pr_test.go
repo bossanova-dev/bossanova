@@ -37,9 +37,9 @@ func TestCLI_PrApprove_RunsOnTheDaemon(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if want := "Approved #42: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+	if want := "Approved #42 on head abcdef01 (record: https://x/9). It waives:\n" +
 		"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-		"Approving overrode open checklist items. A new push is judged afresh.\n"; res.Stdout != want {
+		"This overrode a blocking issue. A new push is judged afresh.\n"; res.Stdout != want {
 		t.Fatalf("stdout = %q, want %q", res.Stdout, want)
 	}
 	calls := h.Daemon.ApproveSessionPRCalls()
@@ -48,12 +48,12 @@ func TestCLI_PrApprove_RunsOnTheDaemon(t *testing.T) {
 	}
 }
 
-func TestCLI_PrApprove_DaemonTimeoutSaysReRun(t *testing.T) {
+func TestCLI_PrApprove_DaemonTimeoutSaysAnApprovalMayBePosted(t *testing.T) {
 	h := prHarness(t)
 	h.Daemon.SetVerifyError(connect.CodeDeadlineExceeded, "verify-gate timed out")
 
 	res := h.Run("pr", "approve", "42")
-	if res.ExitCode == 0 || !strings.Contains(res.Stderr, "re-run approve to confirm") {
+	if res.ExitCode == 0 || !strings.Contains(res.Stderr, "an approval may already be posted") || strings.Contains(res.Stderr, "re-run") {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 }

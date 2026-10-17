@@ -59,7 +59,7 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	// reaches it.
 	if os.Getenv("BOSS_SOCKET") == "" {
 		if err := daemonEnsureRunning(socketPath); err != nil {
-			return nil, fmt.Errorf("daemon failed: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
+			return nil, fmt.Errorf("daemon failed to start: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
 		}
 	}
 
@@ -1032,13 +1032,14 @@ func restartFallbackAnnouncement() string {
 	case ok && mode == daemon.ServingModeSupervised:
 		return "Daemon restarted under the service manager: the first attempt did not produce a reachable socket, and a follow-up start did."
 	default:
-		return "Daemon restarted by a follow-up start: the service manager's first attempt did not produce a reachable socket. Run 'boss daemon status' to see what is now serving."
+		return "Daemon restarted by a follow-up start: the service manager's first attempt did not produce a reachable socket."
 	}
 }
 
-// restartRecoveryHint names the recovery for a restart that ended with no
-// reachable socket. daemon.RestartRecoveryHint leads with "the daemon is now
-// stopped", which is a claim about the host: the launchd path only makes it
+// restartRecoveryHint states what is left serving after a restart that ended
+// with no reachable socket, and the command that recovers it.
+// daemon.RestartRecoveryHint leads with "the daemon is now stopped", which is
+// a claim about the host: the launchd path only makes it
 // behind a liveness probe (verifiedRestartOutcome), and this mirrors that
 // discipline rather than asserting it blind. Every branch names
 // `boss daemon start`, which is what makes recovery discoverable (BOS-1181).
@@ -1048,9 +1049,9 @@ func restartRecoveryHint() string {
 	case ok && mode == daemon.ServingModeUnserved:
 		return daemon.RestartRecoveryHint
 	case ok:
-		return fmt.Sprintf("a %s daemon is still running but is not serving the socket — run 'boss daemon stop' then 'boss daemon start'", mode)
+		return fmt.Sprintf("a %s daemon is still running but is not serving the socket; run 'boss daemon stop' then 'boss daemon start'", mode)
 	default:
-		return "run 'boss daemon start' to restore service"
+		return "the daemon socket is not reachable; run 'boss daemon start' to restore service"
 	}
 }
 
@@ -3277,7 +3278,7 @@ func runDaemonStart(cmd *cobra.Command) error {
 		// lost, so it is the one that must not understate it: the shared
 		// consequence sentence names the immediate keychain/gh damage as well
 		// as the reboot one.
-		fmt.Printf("  Warning: started detached, not under the service manager — %s. Run 'boss daemon doctor'.\n", daemonUnsupervisedConsequences)
+		fmt.Printf("  Warning: started detached, not under the service manager — %s.\n", daemonUnsupervisedConsequences)
 	}
 	return nil
 }

@@ -26,7 +26,7 @@ func (h HomeModel) boardSessions() []*pb.Session {
 
 func homeFilterHaystack(sess *pb.Session) string {
 	status := sess.GetDisplayLabel()
-	if att := sess.GetAttention(); att != nil && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
+	if att := sess.GetAttention(); att != nil && !displaystatus.IsStateEndingLabel(status) && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
 		// Progress labels are stable; the rendered spinner is deliberately excluded,
 		// and a merge cell is matched by its resting text.
 		if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {

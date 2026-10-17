@@ -477,11 +477,13 @@ func TestRunDaemonStartAnnouncesStandaloneFallback(t *testing.T) {
 		"keychain",
 		"unauthenticated",
 		"will not survive reboot",
-		"boss daemon doctor",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output = %q, want %q", out, want)
 		}
+	}
+	if strings.Contains(out, "Run 'boss daemon doctor'") {
+		t.Fatalf("output = %q, must state the loss without telling the user what to run", out)
 	}
 }
 

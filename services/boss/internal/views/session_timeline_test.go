@@ -169,9 +169,9 @@ func TestChatPickerNeededQuestionAndTimeline(t *testing.T) {
 		}
 		q := m.neededQuestion()
 		if kind == pb.AttentionKind_ATTENTION_KIND_FIX {
-			// A blocked park's row offers no merge, so it names the ways forward.
-			if !strings.Contains(q, "Open a chat to fix it") || !strings.Contains(q, "boss pr approve") {
-				t.Fatalf("blocked park needed text lacks its ways forward: %q", q)
+			// A blocked park states what blocks it and gives no advice.
+			if q != "Verify is blocked: UI change." {
+				t.Fatalf("blocked park needed text = %q, want only what blocks it", q)
 			}
 			continue
 		}
@@ -514,6 +514,57 @@ func TestChatPickerTimelineWrapsLongDetail(t *testing.T) {
 				t.Fatal("detail truncated on a tall terminal")
 			}
 		})
+	}
+}
+
+// operatorFixSentence is the ~250-column "Waiting for a fix" detail from the
+// operator's report, which a 300-column terminal drew on one line.
+const operatorFixSentence = "Run blocked: MAD-1751 implemented; the PR is open but its CI is red on an unrelated flaky e2e suite that the agent cannot fix from this worktree, so a person must rerun the job or override the gate before verify can pick it up again and merge it"
+
+// TestChatPickerDetailsWrapAtAReadableWidth: on a terminal far wider than
+// detailsMaxWidth the timeline and the "Needed from you" answer still wrap at
+// detailsMaxWidth, keep every word, and fit the screen.
+func TestChatPickerDetailsWrapAtAReadableWidth(t *testing.T) {
+	const width, height = 300, 40
+	fix := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, height)
+	fix.width = width
+	fix.session.Attention.ParkCodes = nil
+	fix.session.Attention.Sentence = operatorFixSentence
+	fix.buildTableRows()
+	question := questionTimelineModel(width, height, operatorQuestion)
+	question.fullQuestion = strings.Repeat("Should we keep the behavior for every supported platform? ", 8) + "FINAL?"
+	for name, tt := range map[string]struct {
+		m     ChatPickerModel
+		block string
+		words string
+	}{
+		"timeline": {fix, fix.timelineBlock(), operatorFixSentence},
+		"needed":   {question, question.neededBlock(), question.fullQuestion},
+	} {
+		t.Run(name, func(t *testing.T) {
+			block := stripANSI(tt.block)
+			t.Logf("%s at %d columns:\n%s", name, width, block)
+			for _, line := range strings.Split(block, "\n") {
+				if w := ansi.StringWidth(line); w > detailsMaxWidth {
+					t.Errorf("line is %d wide, cap %d: %q", w, detailsMaxWidth, line)
+				}
+			}
+			if joined := strings.Join(strings.Fields(block), " "); !strings.Contains(joined, tt.words) {
+				t.Fatalf("words lost or split:\n%s", block)
+			}
+			screen := tt.m.View().Content
+			if got := lipgloss.Height(screen) + bannerOverhead; got > height {
+				t.Fatalf("view uses %d rows, budget %d", got, height)
+			}
+			for _, line := range strings.Split(stripANSI(screen), "\n") {
+				if ansi.StringWidth(line) > width {
+					t.Errorf("overwide line %q", line)
+				}
+			}
+		})
+	}
+	if rows := currentStepRows(t, stripANSI(fix.timelineBlock())); len(rows) != 3 || !regexp.MustCompile(`● Waiting for a fix +Run blocked: MAD-1751 `).MatchString(rows[0]) {
+		t.Fatalf("waiting step = %q, want the title then the detail, wrapped onto 3 rows", rows)
 	}
 }
 
@@ -1084,7 +1135,7 @@ func TestChatPickerTimelineWaitOnAGiveUpKeepsItsReason(t *testing.T) {
 		"23:04  ✓ Build started",
 		"23:06  ✗ Lost its login",
 		"23:06  ✓ Resumed automatically  a@x switched to b@x",
-		"23:09  ✗ Account rotation       auth-wedge respawn cap reached",
+		"23:09  ✗ Account rotation       stopped restarting the agent: it stayed signed out",
 		"23:09  ● Waiting for a fix      Failed after 3 attempts on this machine",
 	})
 }
@@ -1189,7 +1240,7 @@ func TestChatPickerTimelineSitsUnderTheChatList(t *testing.T) {
 // fold line and wrapped continuation included, renders in styleStatusMuted,
 // the style the rotation-history block used.
 func TestChatPickerTimelineUsesTheAccountSwapStyle(t *testing.T) {
-	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 24))
+	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 22))
 	m.timeline[3].Detail = strings.Repeat("all checks green ", 20)
 	lines := strings.Split(m.timelineBlock(), "\n")
 	if plain := stripANSI(strings.Join(lines, "\n")); !strings.Contains(plain, "earlier step") || !strings.Contains(plain, "…\n") {
@@ -1365,9 +1416,9 @@ func waitAmongLaterSteps(height, later int) ChatPickerModel {
 // timeline rather than one without it.
 func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 	for _, later := range []int{1, 2, 3, 6, 8, 12} {
-		for height := 18; height <= 60; height++ {
+		for height := 16; height <= 60; height++ {
 			m := waitAmongLaterSteps(height, later)
-			if !assertTimelineFold(t, m) && height >= 21 {
+			if !assertTimelineFold(t, m) && height >= 19 {
 				t.Fatalf("%d later steps at 80x%d: no timeline:\n%s", later, height, stripANSI(m.View().Content))
 			}
 		}
@@ -1377,12 +1428,12 @@ func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 		height, later int
 		want          []string
 	}{
-		{"two later at 20 rows", 20, 2, nil},
-		{"two later at 21 rows", 21, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
-		{"two later at 22 rows", 22, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"two later at 23 rows", 23, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"three later at 22 rows", 22, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
-		{"six later at 40 rows", 40, 6, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 1 later step", "  10:11  ✓ Resumed 1", "  10:12  ✓ Resumed 2", "  10:13  ✓ Resumed 3", "  10:14  ✓ Resumed 4", "  10:15  ✓ Resumed 5"}},
+		{"two later at 18 rows", 18, 2, nil},
+		{"two later at 19 rows", 19, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
+		{"two later at 20 rows", 20, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"two later at 21 rows", 21, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"three later at 20 rows", 20, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
+		{"six later at 38 rows", 38, 6, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 1 later step", "  10:11  ✓ Resumed 1", "  10:12  ✓ Resumed 2", "  10:13  ✓ Resumed 3", "  10:14  ✓ Resumed 4", "  10:15  ✓ Resumed 5"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := waitAmongLaterSteps(tt.height, tt.later)

@@ -6,6 +6,7 @@ package views
 // in-flight-marker mutation forward exactly as the inline arm did.
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -57,48 +58,48 @@ func (m ChatPickerModel) handleChatsListed(msg chatsListedMsg) (tea.Model, tea.C
 		return m.chats[i].CreatedAt.AsTime().After(m.chats[j].CreatedAt.AsTime())
 	})
 	m.buildTableRows()
-	// Auto-highlight the chat the user just left, or the first running chat.
-	if m.highlightID != "" {
-		for i, chat := range m.chats {
-			if chat.AgentSessionId == m.highlightID {
-				m.table.SetCursor(i)
-				updateCursorColumn(&m.table)
-				break
-			}
-		}
-	} else if m.daemonStatuses != nil {
-		// Prefer a chat that is waiting on the user (BOS-494): a `? question`
-		// chat is actionable now, so land the cursor there rather than on a
-		// newer working/idle chat. Among several question chats, pick the
-		// longest-waiting one (oldest chatLastActive). Only when no chat is
-		// asking do we fall back to the first working/idle/limited chat. Both
-		// are resolved in a single pass; the question index wins when set.
-		target, fallback := -1, -1
-		var oldestWait time.Time
-		for i, chat := range m.chats {
-			switch m.daemonStatuses[chat.AgentSessionId] {
-			case statusQuestion:
-				if wait := m.chatLastActive(chat); target == -1 || wait.Before(oldestWait) {
-					target, oldestWait = i, wait
-				}
-			case statusWorking, statusIdle, statusLimited:
-				if fallback == -1 {
-					fallback = i
-				}
-			}
-		}
-		if target == -1 {
-			target = fallback
-		}
-		if target >= 0 {
-			m.table.SetCursor(target)
-			updateCursorColumn(&m.table)
-		}
+	// Highlight the chat the caller named (the chat the user just left, or the
+	// attention target); when it is no longer listed, use the default cursor.
+	target := slices.IndexFunc(m.chats, func(c *pb.ClaudeChat) bool {
+		return m.highlightID != "" && c.AgentSessionId == m.highlightID
+	})
+	if target == -1 {
+		target = m.defaultCursor()
+	}
+	if target >= 0 {
+		m.table.SetCursor(target)
+		updateCursorColumn(&m.table)
 	}
 	// Hoisted: the return would otherwise read m in the same expression list as
 	// this pointer-receiver mutation, an order the Go spec leaves unspecified.
 	armedFetch := m.syncArmedCallbacks()
 	return m, tea.Batch(m.backfillTitles(), armedFetch)
+}
+
+// defaultCursor is the row the cursor starts on when no listed chat was named.
+// A chat waiting on the user (BOS-494) is actionable now, so it wins over a
+// newer working/idle chat; among several, the longest-waiting one (oldest
+// chatLastActive). With no question chat it is the first working, idle or
+// limited chat, and -1 when there is none.
+func (m ChatPickerModel) defaultCursor() int {
+	target, fallback := -1, -1
+	var oldestWait time.Time
+	for i, chat := range m.chats {
+		switch m.daemonStatuses[chat.AgentSessionId] {
+		case statusQuestion:
+			if wait := m.chatLastActive(chat); target == -1 || wait.Before(oldestWait) {
+				target, oldestWait = i, wait
+			}
+		case statusWorking, statusIdle, statusLimited:
+			if fallback == -1 {
+				fallback = i
+			}
+		}
+	}
+	if target == -1 {
+		return fallback
+	}
+	return target
 }
 
 func (m ChatPickerModel) handleTitlesBackfilled(msg chatTitlesBackfilledMsg) (tea.Model, tea.Cmd) {
@@ -316,6 +317,15 @@ func (m ChatPickerModel) handleRefresh(msg chatPickerRefreshMsg) (tea.Model, tea
 		if m.session.GetPrNumber() != prevPR {
 			m.repoWebLink = repoWebLink{}
 			refreshWebLink = m.fetchRepoWebLink()
+		}
+		if m.attentionAction.waiting != "" {
+			if status, isErr, settled := settleUnansweredMerge(m.session); settled {
+				m.attentionAction = attentionActionState{}
+				m.statusMsg, m.statusNote = "", status
+				if isErr {
+					m.statusMsg, m.statusNote = status, ""
+				}
+			}
 		}
 	}
 	if msg.daemonStatuses != nil {

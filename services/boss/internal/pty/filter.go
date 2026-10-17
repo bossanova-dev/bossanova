@@ -1,5 +1,7 @@
 package pty
 
+import "strings"
+
 // maxPendingFilterBytes caps the carry-over buffer used when a terminal
 // query reply is split across reads. DA replies are typically <30 bytes
 // and XTVERSION replies are short version strings, so 256 is generous
@@ -7,9 +9,11 @@ package pty
 const maxPendingFilterBytes = 256
 
 // stripTerminalQueryReplies removes terminal capability-query responses
-// from a stdin chunk. Four patterns are filtered:
+// from a stdin chunk. These patterns are filtered:
 //
 //   - DA1 reply:        \x1b[?<digits/semicolons>c
+//   - kitty flags:      \x1b[?<digits>u
+//   - DECRPM reply:     \x1b[?<digits/semicolons>$y
 //   - DA2 reply:        \x1b[><digits/semicolons>c
 //   - XTWINOPS reply:   \x1b[<digits/semicolons>t
 //   - DCS reply (incl.  \x1bP><something>|<text>\x1b\\
@@ -102,32 +106,47 @@ func matchQueryReply(buf []byte) (end int, matched, complete bool) {
 		if len(buf) < 3 {
 			return 0, false, false
 		}
-		// Three reply shapes start with ESC [:
-		//   ESC [ ? <digits;...> c    DA1 reply
-		//   ESC [ > <digits;...> c    DA2 reply
-		//   ESC [   <digits;...> t    XTWINOPS reply (window/text-area size)
-		// Pick the expected terminator and where params start. Anything else
-		// (arrow keys ESC[A, kitty CSI-u ESC[120;5u, modifyOtherKeys
-		// ESC[27;5;120~, bracketed-paste ESC[200~) falls through to passthrough.
+		// Reply shapes that start with ESC [:
+		//   ESC [ ? <digits;...> c      DA1 reply
+		//   ESC [ ? <digits;...> u      kitty keyboard flags reply
+		//   ESC [ ? <digits;...> $ y    DECRPM (mode report) reply
+		//   ESC [ > <digits;...> c      DA2 reply
+		//   ESC [   <digits;...> t      XTWINOPS reply (window/text-area size)
+		// The kitty and DECRPM replies answer Bubble Tea's own probes (CSI ? u,
+		// CSI ? 2026 $ p, CSI ? 2027 $ p). tmux never sends either query, so
+		// no attached child is waiting for them; forwarded, tmux turns them
+		// into keystrokes and the agent's composer shows "2026;2$y".
+		// Anything else (arrow keys ESC[A, kitty CSI-u ESC[120;5u, which has
+		// no '?', modifyOtherKeys ESC[27;5;120~, bracketed-paste ESC[200~)
+		// falls through to passthrough.
 		var startParams int
-		var terminator byte
+		var finals string
+		decrpm := false
 		switch buf[2] {
-		case '?', '>':
-			startParams = 3
-			terminator = 'c'
+		case '?':
+			startParams, finals, decrpm = 3, "cu", true
+		case '>':
+			startParams, finals = 3, "c"
 		default:
 			if buf[2] < '0' || buf[2] > '9' {
 				return 0, false, true
 			}
-			startParams = 2
-			terminator = 't'
+			startParams, finals = 2, "t"
 		}
 		for j := startParams; j < len(buf); j++ {
 			b := buf[j]
-			if b == terminator {
+			switch {
+			case strings.IndexByte(finals, b) >= 0:
 				return j + 1, true, true
-			}
-			if (b < '0' || b > '9') && b != ';' {
+			case decrpm && b == '$':
+				if j+1 == len(buf) {
+					return 0, false, false
+				}
+				if buf[j+1] == 'y' {
+					return j + 2, true, true
+				}
+				return 0, false, true
+			case (b < '0' || b > '9') && b != ';':
 				return 0, false, true
 			}
 		}

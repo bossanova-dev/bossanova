@@ -1,33 +1,44 @@
 name: Notify security scan failure
 description: >-
   Open a GitHub issue (or comment on the existing open one) when a security
-  scan workflow fails on main or a scheduled run. De-duplicates into a single
-  open issue labelled `security-scan-failure`.
+  scan or nightly workflow fails on main or a scheduled run. De-duplicates into
+  a single open issue per `label` (default `security-scan-failure`).
 
 inputs:
   github-token:
     description: "Token with issues:write permission (pass ${{ github.token }})."
     required: true
+  label:
+    description: 'Issue label the notifier de-duplicates on. Defaults to the security label.'
+    required: false
+    default: security-scan-failure
+  title-prefix:
+    description: 'Issue title before ` on <ref>`.'
+    required: false
+    default: Security scan failed
 
 runs:
   using: composite
   steps:
     - name: Open or update security-scan-failure issue
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        NOTIFY_LABEL: ${{ inputs.label }}
+        NOTIFY_TITLE_PREFIX: ${{ inputs.title-prefix }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          const label = 'security-scan-failure';
+          const label = process.env.NOTIFY_LABEL;
           const ref = context.ref.replace('refs/heads/', '');
           const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-          const title = `Security scan failed on ${ref}`;
+          const title = `${process.env.NOTIFY_TITLE_PREFIX} on ${ref}`;
           const body = [
             `Workflow **${context.workflow}** failed on \`${context.ref}\` (event: \`${context.eventName}\`).`,
             '',
             `- Run: ${runUrl}`,
             `- Commit: \`${context.sha}\``,
             '',
-            '_Opened automatically by the security-scan failure notifier. Close this issue once the failure is resolved; the next failure will open a fresh one._',
+            '_Opened automatically by the workflow failure notifier. Close this issue once the failure is resolved; the next failure will open a fresh one._',
           ].join('\n');
 
           // Ensure the label exists (ignore "already exists").
@@ -36,7 +47,7 @@ runs:
               ...context.repo,
               name: label,
               color: 'B60205',
-              description: 'Automated security scan failure',
+              description: 'Automated workflow failure',
             });
           } catch (e) {
             if (e.status !== 422) throw e;

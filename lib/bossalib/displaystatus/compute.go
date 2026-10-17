@@ -96,6 +96,21 @@ const ReadyLabel = "✓ ready"
 // IsReadyLabel reports whether label is the computed hand-off label.
 func IsReadyLabel(label string) bool { return label == ReadyLabel }
 
+// MergingLabel is the display label emitted while a PR merge is in flight.
+const MergingLabel = "merging"
+
+// ArchivingLabel is the display label emitted while an archive is in flight or
+// deferred until every chat is idle.
+const ArchivingLabel = "archiving"
+
+// IsStateEndingLabel reports whether label is live activity that ends the
+// session's current state: a merge or an archive in flight. Whatever the
+// attention board says the session needs stops applying once it lands, so a
+// client's status cell shows this label over the board's words.
+func IsStateEndingLabel(label string) bool {
+	return label == MergingLabel || label == ArchivingLabel
+}
+
 // IsWaitingLabel reports whether label is the display status used for a chat
 // blocked on an external event.
 func IsWaitingLabel(label string) bool {
@@ -365,8 +380,8 @@ func IsLiveActivityLabel(label string) bool {
 		WaitingLabel,
 		WorkingLabel,
 		"initializing",
-		"merging",
-		"archiving",
+		MergingLabel,
+		ArchivingLabel,
 		"repairing",
 		"pending":
 		return true
@@ -915,7 +930,7 @@ func cascade(in Input, withReady bool) Output {
 	// session renders "merging" for the full merge duration instead of a green
 	// label the merge is about to invalidate.
 	if in.Session != nil && in.Session.DisplayMerging {
-		return Output{Label: "merging", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
+		return Output{Label: MergingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	}
 	// An archive is in flight for this session — the daemon set the transient
 	// archive_pending flag via DisplayTracker.SetArchiving around the single
@@ -927,7 +942,7 @@ func cascade(in Input, withReady bool) Output {
 	// after merging — both are transient post-terminal overrides — so a live
 	// QUESTION above still wins, but the archive beats the merged PR label.
 	if in.Session != nil && in.Session.ArchivePending {
-		return Output{Label: "archiving", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
+		return Output{Label: ArchivingLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, Spinner: true}
 	}
 	// A current-head build receipt certifies hand-off. The predicate excludes
 	// every live, transient and failure state, preserving their precedence.

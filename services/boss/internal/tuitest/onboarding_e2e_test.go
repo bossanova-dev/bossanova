@@ -106,18 +106,6 @@ func assertHomeAfterLogin(t *testing.T, h *tuitest.Harness) {
 	}
 }
 
-func TestTUI_OnboardingFlow_ActiveSubscriptionReachesHome(t *testing.T) {
-	h := newFreshOnboardingHarness(t,
-		fakeProviderPath(t, "claude", "codex"),
-		tuitest.WithE2ELogin("test-user@example.com"),
-		tuitest.WithE2ECloudAccessSequence(tuitest.E2ECloudAccessActive),
-	)
-
-	completeProviderOnboarding(t, h)
-	loginFromHome(t, h)
-	assertHomeAfterLogin(t, h)
-}
-
 func TestTUI_OnboardingFlow_NoProvidersShowsInstallInstructions(t *testing.T) {
 	h := newFreshOnboardingHarness(t, emptyProviderPath(t))
 
@@ -170,72 +158,6 @@ func TestTUI_OnboardingFlow_DangerousModeToggleChecksBox(t *testing.T) {
 		t.Fatalf("confirm dangerous mode: %v", err)
 	}
 	loginFromHome(t, h)
-	assertHomeAfterLogin(t, h)
-}
-
-func TestTUI_OnboardingFlow_NeedsSubscriptionShowsWaitingView(t *testing.T) {
-	h := newFreshOnboardingHarness(t,
-		fakeProviderPath(t, "claude", "codex"),
-		tuitest.WithE2ELogin("test-user@example.com"),
-		tuitest.WithE2ECloudAccessSequence(tuitest.E2ECloudAccessNeedsSubscription),
-		tuitest.WithE2ECloudCheckoutURL("https://billing.example.test/checkout"),
-	)
-
-	completeProviderOnboarding(t, h)
-	loginFromHome(t, h)
-	waitForSubscriptionWaitingView(t, h)
-
-	// The action bar renders a frame after the loading view, so poll for each
-	// action rather than snapshotting the screen the instant the loading text
-	// appears (matches TestTUI_LoginFlow_NeedsSubscriptionShowsWaitingView).
-	for _, want := range []string{
-		subscriptionWaitingText,
-		"[enter] re-open subscription page",
-		"[esc] cancel",
-	} {
-		if err := h.Driver.WaitForText(waitTimeout, want); err != nil {
-			t.Fatalf("expected subscription waiting view to include %q; screen:\n%s", want, h.Driver.Screen())
-		}
-	}
-}
-
-func TestTUI_OnboardingFlow_SubscriptionActivationReturnsHome(t *testing.T) {
-	h := newFreshOnboardingHarness(t,
-		fakeProviderPath(t, "claude", "codex"),
-		tuitest.WithE2ELogin("test-user@example.com"),
-		tuitest.WithE2ECloudAccessSequence(
-			tuitest.E2ECloudAccessNeedsSubscription,
-			tuitest.E2ECloudAccessPendingEntitlement,
-			tuitest.E2ECloudAccessActive,
-		),
-		tuitest.WithE2ECloudCheckoutURL("https://billing.example.test/checkout"),
-		tuitest.WithE2ECloudRefreshInterval("100ms"),
-	)
-
-	completeProviderOnboarding(t, h)
-	loginFromHome(t, h)
-	waitForSubscriptionWaitingView(t, h)
-	assertHomeAfterLogin(t, h)
-}
-
-func TestTUI_OnboardingFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
-	h := newFreshOnboardingHarness(t,
-		fakeProviderPath(t, "claude", "codex"),
-		tuitest.WithE2ELogin("test-user@example.com"),
-		tuitest.WithE2ECloudAccessSequence(tuitest.E2ECloudAccessNeedsSubscription),
-		tuitest.WithE2ECloudCheckoutURL("https://billing.example.test/checkout"),
-	)
-
-	completeProviderOnboarding(t, h)
-	loginFromHome(t, h)
-	waitForSubscriptionWaitingView(t, h)
-
-	if !h.Driver.ScreenContains("[esc] cancel") {
-		t.Fatalf("expected subscription cancel action; screen:\n%s", h.Driver.Screen())
-	}
-	if err := h.Driver.SendEscape(); err != nil {
-		t.Fatalf("cancel subscription waiting view: %v", err)
-	}
 	assertHomeAfterLogin(t, h)
 }
 

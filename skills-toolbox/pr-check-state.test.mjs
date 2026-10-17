@@ -22,6 +22,7 @@ import {
   ABSENT_GATE_REMEDIES,
   absentGateRemedy,
   PROVENANCE_CONTEXTS,
+  partitionProvenance,
   PROVES_GREEN_REASONS,
   provesGreen,
   provesGreenAgrees,
@@ -1785,4 +1786,21 @@ test('CLI optional empty checks and missing prior retain their meanings', () => 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('partitionProvenance keeps gates and sorts unique receipts without mutating input', () => {
+  const entries = [
+    Object.freeze({ name: 'test', kind: 'passed' }),
+    Object.freeze({ name: PROVENANCE_CONTEXTS[0], kind: 'failed' }),
+    Object.freeze({ name: PROVENANCE_CONTEXTS[0], kind: 'passed' }),
+    Object.freeze({ name: PROVENANCE_CONTEXTS[0], kind: 'pending' }),
+  ]
+  const original = structuredClone(entries)
+  Object.freeze(entries)
+  const result = partitionProvenance(entries)
+  assert.deepEqual(result, {
+    kept: [entries[0]],
+    provenance: [...new Set([PROVENANCE_CONTEXTS[0], PROVENANCE_CONTEXTS[0]])].sort(),
+  })
+  assert.deepEqual(entries, original)
 })

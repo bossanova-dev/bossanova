@@ -489,3 +489,44 @@ func TestWaitingReasonForChat_UsesCanonicalWording(t *testing.T) {
 		t.Fatalf("WaitingReasonForChat = %q, want %q", got, want)
 	}
 }
+
+func TestDeliveryPendingForChat(t *testing.T) {
+	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	for _, state := range []models.GithubCallbackState{
+		models.GithubCallbackStateActive, models.GithubCallbackStateLeased,
+		models.GithubCallbackStateTriggered, models.GithubCallbackStateDelivered,
+		models.GithubCallbackStateCanceled, models.GithubCallbackStateExpired,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			callback := chatCB("cb", "chat", now, models.GithubCallbackTriggerMerged, 1, state)
+			for _, expiry := range []time.Time{now.Add(-time.Second), now, now.Add(time.Second)} {
+				callback.ExpiresAt = expiry
+				store := &fakeInterestStore{callbacks: []*models.GithubCallback{callback}}
+				got, err := DeliveryPendingForChat(context.Background(), store, "chat", now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := (state == models.GithubCallbackStateLeased || state == models.GithubCallbackStateTriggered) && expiry.After(now)
+				if got != want {
+					t.Errorf("expiry=%v: got %v, want %v", expiry, got, want)
+				}
+			}
+		})
+	}
+	for _, callbacks := range [][]*models.GithubCallback{nil, {
+		chatCB("cb", "other-chat", now, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateLeased),
+	}} {
+		got, err := DeliveryPendingForChat(context.Background(), &fakeInterestStore{callbacks: callbacks}, "chat", now)
+		if err != nil || got {
+			t.Errorf("unrelated callbacks: got %v, %v", got, err)
+		}
+	}
+	boom := errors.New("boom")
+	store := &fakeInterestStore{err: boom}
+	if got, err := DeliveryPendingForChat(context.Background(), store, "", now); got || err != nil {
+		t.Errorf("empty chat: got %v, %v", got, err)
+	}
+	if got, err := DeliveryPendingForChat(context.Background(), store, "chat", now); got || !errors.Is(err, boom) {
+		t.Errorf("store failure: got %v, %v", got, err)
+	}
+}

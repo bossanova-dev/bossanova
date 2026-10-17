@@ -611,26 +611,32 @@ pointer must be ordered so that its reachable partial-failure state is the harml
 
 ### Reaping
 
-The daemon's periodic sweep that kills panes it judges no longer worth keeping. It acts on two
-independent reasons and never confuses them: an **orphan reap** kills a pane that no live row claims
-at all, and an **idle reap** kills the pane of a chat that is genuinely still in use but has been
-reported idle, with no visible output, for longer than a configured window.
+The daemon's sweep that kills panes it judges no longer worth keeping. An **orphan reap** kills a
+pane that no live row claims. An **idle reap** clears the chat's pane pointer before killing its
+pane, preserving the chat row and its place in the list; attaching wakes it again while its
+worktree survives. Orphan reaping is opt-in and conservative; idle reaping ships on by default.
 
-The two reasons differ in reversibility, and everything else follows from that. An orphan reap
-destroys the only trace of whatever was running, so it is opt-in and conservative. An idle reap is
-recoverable — the chat row survives, the chat stays listed, and attaching wakes it — so it ships on
-by default. Both require a candidate to be seen eligible on more than one consecutive sweep before
-acting, and each reason carries its own confirmation marker so a sighting for one reason can never
-confirm the other.
+Idle reaping chooses a policy from the owning session. The **long-idle policy** requires reported
+IDLE status, no raw output for the configured window, a usable resume id and transcript, and a
+second consecutive eligible sweep. Orphan and long-idle sightings carry separate confirmation
+markers, so neither can confirm the other.
+
+The **terminal policy** covers Merged, Closed and archived sessions. It uses a short raw-output
+grace instead of the long-idle window, permits parked QUESTION and LIMITED chats, and requires no
+transcript or confirmation strike: an archived session may no longer have a worktree to resume in.
+It still keeps a WORKING chat, an attached pane, or a chat with an unexpired leased or triggered
+callback. A missing or failed pending-delivery lookup also keeps the pane. An active callback
+watch alone is not a pending delivery. Merged and Closed transitions nudge the same sweep loop;
+the periodic sweep also catches archived stragglers.
 
 Reaping is not the daemon's only destructive sweep — the merged-but-unarchived repair pass described
 under **Archive** dispatches archives, which release workspaces — but it is the one that destroys the
 only trace of live work, so its rule on evidence is inverted from the rest of the system: it must
-**under**-reap when unsure. A pane whose identity is ambiguous keeps, a
-chat with no current telemetry keeps (absence of evidence is unknown, never idle), and a chat that
-could not be resumed with its history intact keeps regardless of age — reaping that one would
-destroy context rather than reclaim memory. The idle clock is in-memory, so a daemon restart resets
-it; on a host restarted more often than the window, idle reaping simply never fires.
+**under**-reap when unsure. A pane whose identity is ambiguous keeps, and a chat with no current
+telemetry or raw-output clock keeps (absence of evidence is unknown, never idle). For long-idle
+reaping, a chat that cannot be resumed with its history intact keeps regardless of age. The output
+clock is in-memory, so a daemon restart resets it; on a host restarted more often than the long-idle
+window, that policy simply never fires.
 
 ## Input delivery
 

@@ -22,23 +22,24 @@ import (
 type settingsRowKind int
 
 const (
-	settingsRowKindBool          settingsRowKind = iota // checkbox toggle (plugin Bool config)
-	settingsRowKindString                               // text input (plugin String config)
-	settingsRowKindEnum                                 // cycle picker (plugin Enum config)
-	settingsRowKindWorktree                             // built-in worktree base directory
-	settingsRowKindPollInterval                         // built-in poll interval seconds
-	settingsRowKindDefaultAgent                         // cycle picker over enabled agents
-	settingsRowKindAgentEnabled                         // checkbox toggle for plugin Enabled
-	settingsRowKindAgentHeader                          // pseudo-row: section header (non-interactive)
-	settingsRowKindTracingHeader                        // pseudo-row: tracing section header (non-interactive)
-	settingsRowKindEventTracing                         // built-in event tracing toggle
-	settingsRowKindErrorTracking                        // built-in error tracking toggle (Sentry)
-	settingsRowKindPostHogToken                         // built-in PostHog project token
-	settingsRowKindPostHogHost                          // built-in PostHog host
-	settingsRowKindRotation                             // built-in automatic account rotation kill-switch
-	settingsRowKindNotifications                        // built-in desktop notifications toggle
-	settingsRowKindDaemonName                           // built-in daemon display name override
-	settingsRowKindMCPToken                             // transient MCP HTTP credential
+	settingsRowKindBool             settingsRowKind = iota // checkbox toggle (plugin Bool config)
+	settingsRowKindString                                  // text input (plugin String config)
+	settingsRowKindEnum                                    // cycle picker (plugin Enum config)
+	settingsRowKindWorktree                                // built-in worktree base directory
+	settingsRowKindPollInterval                            // built-in poll interval seconds
+	settingsRowKindDefaultAgent                            // cycle picker over enabled agents
+	settingsRowKindAgentEnabled                            // checkbox toggle for plugin Enabled
+	settingsRowKindAgentHeader                             // pseudo-row: section header (non-interactive)
+	settingsRowKindTracingHeader                           // pseudo-row: tracing section header (non-interactive)
+	settingsRowKindEventTracing                            // built-in event tracing toggle
+	settingsRowKindErrorTracking                           // built-in error tracking toggle (Sentry)
+	settingsRowKindPostHogToken                            // built-in PostHog project token
+	settingsRowKindPostHogHost                             // built-in PostHog host
+	settingsRowKindRotation                                // built-in automatic account rotation kill-switch
+	settingsRowKindNotifications                           // built-in desktop notifications toggle
+	settingsRowKindDisplayOpenPorts                        // built-in open-port display toggle
+	settingsRowKindDaemonName                              // built-in daemon display name override
+	settingsRowKindMCPToken                                // transient MCP HTTP credential
 )
 
 // daemonRestartHint is appended to the daemon name row so the delayed effect
@@ -384,6 +385,7 @@ func (m *GeneralSettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindDaemonName, Label: "Daemon name"},
 		settingsRow{Kind: settingsRowKindRotation, Label: "Enable automatic account rotation"},
 		settingsRow{Kind: settingsRowKindNotifications, Label: "Enable desktop notifications for questions"},
+		settingsRow{Kind: settingsRowKindDisplayOpenPorts, Label: "Display open ports"},
 		settingsRow{Kind: settingsRowKindMCPToken, Label: "MCP HTTP token"},
 	)
 
@@ -705,6 +707,11 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		if m.err == nil {
 			m.rebuildRows()
 		}
+	case settingsRowKindDisplayOpenPorts:
+		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
+			settings.DisplayOpenPorts = !settings.DisplayOpenPorts
+			return nil
+		})
 	case settingsRowKindNotifications:
 		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
 			next := !config.NotificationsEnabled(*settings)
@@ -1072,6 +1079,8 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 		line = renderCheckboxLabel(m.settings.ErrorTrackingEnabled, row.Label)
 	case settingsRowKindRotation:
 		line = renderCheckboxLabel(m.settings.ManagedAccounts.ManagedAccountsEnabled(), row.Label)
+	case settingsRowKindDisplayOpenPorts:
+		line = renderCheckboxLabel(m.settings.DisplayOpenPorts, row.Label)
 	case settingsRowKindNotifications:
 		line = renderCheckboxLabel(config.NotificationsEnabled(m.settings), row.Label)
 	case settingsRowKindPostHogToken:

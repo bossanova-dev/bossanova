@@ -125,10 +125,14 @@ func (a attentionActionState) start(ctx context.Context, c client.BossClient, s 
 }
 
 // footer renders the confirmation, or, while the confirmed action runs, its
-// progress beside spin (the caller's spinner frame).
+// progress beside spin (the caller's spinner frame). The confirmation opens
+// with its own blank line because confirmPrompt.footer carries none and the
+// callers write this straight after the table's last row; the progress and
+// Working lines get theirs from their top padding. lineCount sees that extra
+// row, so both tableHeights keep the table on screen.
 func (a attentionActionState) footer(width int, spin string) string {
 	if a.confirm.active {
-		return a.confirm.footer(width)
+		return "\n" + a.confirm.footer(width)
 	}
 	if a.progress != "" {
 		return lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(spin + a.progress)

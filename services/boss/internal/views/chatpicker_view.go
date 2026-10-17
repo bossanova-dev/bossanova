@@ -252,35 +252,53 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 	return b.String(), true
 }
 
-// renderActionBar renders the steady-state footer: the transient status line,
-// the switch-account notice, the merged label, and the action bar itself.
-func (m ChatPickerModel) renderActionBar() string {
-	var b strings.Builder
-	if m.archiveAwaited() {
-		b.WriteString(m.archiveStatusLine())
-		b.WriteString("\n")
+// statusFooterLines are the one-line statuses the steady-state footer stacks
+// above the action bar, in display order: the daemon archive wait, the transient
+// failure line, the last attention result, the switch-account notice and the
+// merged label. renderActionBar and statusFooterHeight both read this list, so
+// what is drawn and what the table gives up for it cannot drift apart.
+func (m ChatPickerModel) statusFooterLines() []string {
+	var lines []string
+	if m.archiveAwaited() && !m.archiving {
+		lines = append(lines, m.archiveStatusLine())
 	}
 	if m.statusMsg != "" {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
-		b.WriteString("\n")
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
 	}
 	if m.statusNote != "" {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.statusNote)))
-		b.WriteString("\n")
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.statusNote)))
 	}
 	// Passive system/notice line for the switch-account outcome (BOS-171):
 	// the daemon's "switched to <label> — resumed/started fresh" text, or its
 	// human-readable error. Rendered muted, not injected into any input.
 	if m.switchNotice != "" {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.switchNotice)))
-		b.WriteString("\n")
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.switchNotice)))
 	}
 	if m.merged {
 		mergedLabel := "✓ merged"
 		if n := m.session.GetPrNumber(); n != 0 {
 			mergedLabel = fmt.Sprintf("✓ PR #%d merged", n)
 		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(mergedLabel)))
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(mergedLabel)))
+	}
+	return lines
+}
+
+// statusFooterHeight is the rows statusFooterLines occupy: each line carries
+// the blank line above it.
+func (m ChatPickerModel) statusFooterHeight() int {
+	return 2 * len(m.statusFooterLines())
+}
+
+// renderActionBar renders the steady-state footer: the status lines, each with
+// a blank line above it (the first one separates it from the chat table, which
+// ends its last row with a newline), then the action bar, whose own top padding
+// is the blank line above it.
+func (m ChatPickerModel) renderActionBar() string {
+	var b strings.Builder
+	for _, line := range m.statusFooterLines() {
+		b.WriteString("\n")
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	left, middle, back := m.chatListActionGroups()

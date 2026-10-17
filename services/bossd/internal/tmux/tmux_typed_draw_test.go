@@ -67,6 +67,51 @@ func TestComposerShowsPayloadOnlyWhenTheBoxHoldsExactlyThePayload(t *testing.T) 
 	}
 }
 
+const bareSlashCommand = "/boss-repair"
+
+// typedSlashMenuPanes returns the real Claude 2.1.302 pane drawing a typed bare
+// slash command with the slash-command menu open below the input box, and the
+// same pane after the command was submitted, which empties the box and closes
+// the menu.
+func typedSlashMenuPanes(t *testing.T) (drawn, submitted string) {
+	t.Helper()
+	drawn = readPaneFixture(t, "claude_typed_slash_menu_real.txt")
+	const menuRow = "  ❯ " + bareSlashCommand + " "
+	if !strings.Contains(drawn, "\n❯ "+bareSlashCommand+"\n") || !strings.Contains(drawn, "\n"+menuRow) {
+		t.Fatalf("fixture lost its composer row or its menu row; recapture with capture_typed_slash_menu.sh")
+	}
+	lines := strings.Split(drawn, "\n")
+	_, bottom, _ := inputBoxRules(lines)
+	submitted = strings.Replace(strings.Join(lines[:bottom+1], "\n"), "❯ "+bareSlashCommand, "❯ ", 1)
+	return drawn, submitted
+}
+
+func TestBareSlashCommandReadsAsDrawnWithTheMenuOpen(t *testing.T) {
+	drawn, submitted := typedSlashMenuPanes(t)
+	if !composerShowsPayload(typedComposerRows(drawn, bareSlashCommand), bareSlashCommand) {
+		t.Errorf("the input box holds exactly %q, but the draw check read %q", bareSlashCommand, typedComposerRows(drawn, bareSlashCommand))
+	}
+	if !lineStillAtPrompt(drawn, bareSlashCommand) {
+		t.Error("an unsubmitted bare slash command must read as still at the prompt while its menu is open")
+	}
+	if lineStillAtPrompt(submitted, bareSlashCommand) {
+		t.Error("the submitted pane must read as submitted")
+	}
+}
+
+func TestBareSlashCommandIsEnteredOnceTheComposerDrawsItWithTheMenuOpen(t *testing.T) {
+	drawn, submitted := typedSlashMenuPanes(t)
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{drawn, drawn, drawn, submitted}}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendLine(context.Background(), "boss-test-typed", bareSlashCommand, typedDrawOpts(time.Second, 3)); err != nil {
+		t.Fatalf("sendLine: %v", err)
+	}
+	if callIndex(fake.calls, "send-keys", "Enter") < 0 {
+		t.Fatalf("no Enter was sent for a drawn command: %+v", fake.calls)
+	}
+}
+
 func TestShellModeLineReadsAsDrawnOnARealClaudePane(t *testing.T) {
 	const line = "!echo hi"
 	const drawnRow = "! echo hi"
@@ -196,6 +241,17 @@ func TestTypedLineThatNeverDrawsIsRetypedThenStopsBeforeEnter(t *testing.T) {
 	}
 }
 
+func TestTypedLineThatNeverDrawsNamesWhatTheComposerShowed(t *testing.T) {
+	undrawn, _, _ := typedSlashPanes(t)
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{undrawn}}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	err := c.sendLine(context.Background(), "boss-test-typed", typedSlashPayload, typedDrawOpts(30*time.Millisecond, 1))
+	if want := `it last showed "❯ Try \"fix typecheck errors\""`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want it to end with %s", err, want)
+	}
+}
+
 func TestProductionTypedDrawBudgets(t *testing.T) {
 	c := NewClient()
 	start := c.startDeliveryOpts(sendPlanReadyMarker, true, nil)
@@ -233,7 +289,9 @@ func TestSlowComposerProcess(t *testing.T) {
 // runSlowComposer models the Claude startup behaviour measured on Claude Code
 // 2.1.302: the composer is drawn before input is read, and a read that carries
 // typed text together with a CR is a paste, so that CR is a newline. Only a CR
-// read on its own submits.
+// read on its own submits. A bare slash command opens the slash-command menu
+// below the box, its selected entry marked "❯" as in
+// testdata/panes/claude_typed_slash_menu_real.txt.
 func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
 	var composer string
 	var ran []string
@@ -253,6 +311,10 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration) {
 			b.WriteString("  " + l + "\r\n")
 		}
 		b.WriteString("────────\r\n")
+		if strings.HasPrefix(composer, "/") && !strings.ContainsAny(composer, " \n") {
+			fmt.Fprintf(&b, "  ❯ %-30s Automated PR repair (user)\r\n", composer)
+			fmt.Fprintf(&b, "    %-30s Find-then-verify code review (user)\r\n", "/boss-review")
+		}
 		_, _ = io.WriteString(out, b.String())
 	}
 	draw()
@@ -332,6 +394,26 @@ func TestTypedSlashCommandSubmitsOnASlowStartingComposer(t *testing.T) {
 	}
 	if ran := ranLines(ctx, t, c, name); !slices.Equal(ran, []string{typedSlashPayload}) {
 		t.Fatalf("sendLine reported success; the agent ran %q, want exactly the payload once", ran)
+	}
+}
+
+func TestBareSlashCommandSubmitsWhileClaudeShowsTheSlashMenu(t *testing.T) {
+	for name, delivery := range map[string]func(*Client) sendPlanOpts{
+		"session start":    func(c *Client) sendPlanOpts { return c.startDeliveryOpts(sendPlanReadyMarker, true, nil) },
+		"established chat": func(c *Client) sendPlanOpts { return c.sendDeliveryOpts(sendPlanReadyMarker, true, nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposer(ctx, t, 0)
+
+			if err := c.sendLine(ctx, pane, bareSlashCommand, delivery(c)); err != nil {
+				t.Fatalf("sendLine: %v", err)
+			}
+			if ran := ranLines(ctx, t, c, pane); !slices.Equal(ran, []string{bareSlashCommand}) {
+				t.Fatalf("sendLine reported success; the agent ran %q, want exactly the command once", ran)
+			}
+		})
 	}
 }
 

@@ -342,8 +342,8 @@ func TestChatPicker_DeferredArchive_ReservesFooterLine(t *testing.T) {
 			} else {
 				m.optimisticArchiveLatch = true
 			}
-			if got := m.tableHeight(); got != before-1 {
-				t.Errorf("table height = %d, want %d", got, before-1)
+			if got := m.tableHeight(); got != before-2 {
+				t.Errorf("table height = %d, want %d (the status line and the blank line above it)", got, before-2)
 			}
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
 			m = updated.(ChatPickerModel)

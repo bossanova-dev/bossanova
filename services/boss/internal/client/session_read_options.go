@@ -6,7 +6,7 @@ package client
 // endpoint boundary (BOS-473) is opt-in per call, never a client-wide mode.
 //
 // The zero value is the safe default: no endpoint hydration. Only the two local
-// TUI reads (Home and ChatPicker) pass IncludeLocalHTTPEndpoints: true.
+// TUI reads (Home and ChatPicker) pass the user's display_open_ports setting.
 type SessionReadOptions struct {
 	// IncludeLocalHTTPEndpoints asks the local daemon to hydrate each returned
 	// session's verified machine-local HTTP endpoints. It is honored only by

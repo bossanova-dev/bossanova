@@ -1,0 +1,19 @@
+ ▐▛███▛█   Claude Code v2.1.302
+▝▜██████▀  Opus 5.5 (1M context) with high effort · API Usage Billing
+ ▝▝   ▝▝   ~/.bossanova/worktrees/madverts-core/dependabot/bun/opentelemetry/instrumentation-nestjs-core-0.69.0
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ /boss-repair
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❯ /boss-repair                                         Automated PR repair — fixes conflicts, failing checks, and review feedback (user)
+    /boss-review                                         Find-then-verify code review of the current branch. Three independent finders (correctness, repo guidelines, security) and a cross-agent
+                                                         second model propose findings; each candidate is verified against the code, and only verified P0/P1 problems the change introduced block. Wr…
+    /boss-epic                                           Orchestrate an entire epic of planned Linear tickets to merged PRs, unattended. Assembles the epic's sub-issues (or an explicit ticket list),
+                                                         computes a dependency-ordered schedule, spawns parallel boss-build sessions, drives repair on failures, serializes merges, and reports progr…
+    /boss-review-thermonuclear                           Madverts repo-local boss-review round extension for strict maintainability review. Discovered by the installed boss-review toolbox's
+                                                         skill-extensions.mjs (x-boss-extension, extends boss-review, role round); wraps thermonuclear-review so the published boss-review core has n…
+    /boss-retro                                          Turn improvement notes, human-correction signals and guidance findings into remedy-ladder tickets. Writes by default; --dry-run previews.
+                                                         (user)
+    /mv-sweep-security                                   Madverts skill for scheduled, unattended sweeping of GitHub Dependabot security alerts. Lists open alerts via `gh`, triages and prioritizes
+                                                         them, and either reports the one low-blast-radius batch it would fix (`--dry-run`, the default) or applies the batched bumps, opens a PR, an…

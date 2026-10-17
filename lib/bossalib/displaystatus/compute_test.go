@@ -2085,3 +2085,23 @@ func TestPreNeedsHumanWaitDemotionOutput_RestoresThePreChangeComposite(t *testin
 		}
 	}
 }
+
+func TestIsVerifyParkAttention(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		session *pb.Session
+		want    bool
+	}{
+		{name: "nil session"},
+		{name: "park", session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT}}, want: true},
+		{name: "orphaned", session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, State: pb.SessionState_SESSION_STATE_ORPHANED, AttentionStatus: &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT}}},
+		{name: "different reason", session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN}},
+		{name: "different display status", session: &pb.Session{AttentionStatus: &pb.AttentionStatus{Reason: pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsVerifyParkAttention(tt.session); got != tt.want {
+				t.Errorf("IsVerifyParkAttention() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

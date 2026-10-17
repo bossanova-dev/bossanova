@@ -182,7 +182,7 @@ type sessionHint struct {
 	// Demotable is true when the recessive treatment may apply to this hint.
 	Demotable bool
 	// SignOff marks a verify-park hint whose park only asks for a sign-off
-	// (BOS-1522; see isVerifyParkAttention and displaystatus.VerifyParkHint). It
+	// (BOS-1522; see displaystatus.IsVerifyParkAttention and displaystatus.VerifyParkHint). It
 	// selects the warning tone tier in warningHintStyle so the
 	// "needs sign-off: …" line matches the row's warning STATUS label.
 	// A "blocked: …" park keeps the zero value, the danger tier, like every
@@ -210,7 +210,7 @@ func sessionWarningHints(sess *pb.Session) []sessionHint {
 		duplicatesDraftPR := draftPRFailure != "" && sessionreason.IsDraftPRCreationFailure(&hint)
 		if !duplicatesDraftPR {
 			signOff := false
-			if isVerifyParkAttention(sess) {
+			if displaystatus.IsVerifyParkAttention(sess) {
 				hint, signOff = displaystatus.VerifyParkHint(hint)
 				hint = tuiStatusLabel(hint)
 			}
@@ -447,18 +447,6 @@ func warningHintStyle(sess *pb.Session, hint sessionHint) lipgloss.Style {
 		return styleStatusDangerFaded
 	}
 	return styleStatusDanger
-}
-
-// isVerifyParkAttention reports whether sess carries the attention the bossd
-// verify-park overlay sets (HydrateVerifyAttention), and nothing else could have
-// produced: NEEDS_HUMAN display status on a non-orphaned session with an
-// AWAITING_HUMAN_INPUT reason. It deliberately duplicates the predicate of the
-// same name in lib/bossalib/apiversion/transform.go rather than importing the
-// API down-convert package for a display decision — keep the two in step.
-func isVerifyParkAttention(sess *pb.Session) bool {
-	return sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
-		sess.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
-		sess.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
 }
 
 // setupErrorHint returns a short "setup script failed: <reason>" hint when
@@ -1259,16 +1247,16 @@ func isHTTPEndpointURL(raw string) bool {
 // construction, table height, cursor↔session mapping, and cursor normalization
 // all route through it — if any of them counted independently they could
 // disagree and strand the cursor on an unselectable row (BOS-474).
-func sessionSubRowCount(sess *pb.Session, waitingReason string, nameWidth int) int {
+func sessionSubRowCount(sess *pb.Session, waitingReason string, nameWidth int, showEndpoints bool) int {
 	if sess.GetAttention() != nil {
 		n := len(attentionSentenceLines(sess, nameWidth))
-		if sessionHasEndpointRow(sess) {
+		if showEndpoints && sessionHasEndpointRow(sess) {
 			n++
 		}
 		return n
 	}
 	n := len(sessionWarningHints(sess))
-	if sessionHasEndpointRow(sess) {
+	if showEndpoints && sessionHasEndpointRow(sess) {
 		n++
 	}
 	if waitingHintLine(waitingReason, waitingBadgeSuperseded(sess)) != "" {

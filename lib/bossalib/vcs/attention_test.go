@@ -213,7 +213,7 @@ func TestComputeAttentionStatus(t *testing.T) {
 }
 
 // TestComputeAttentionStatus_AwaitingHumanInputOnlyForOrphaned pins the
-// invariant apiversion's isVerifyParkAttention relies on (BOS-1382): the only
+// invariant displaystatus.IsVerifyParkAttention relies on (BOS-1382): the only
 // AWAITING_HUMAN_INPUT that ComputeAttentionStatus emits is for an orphaned
 // session, so a non-orphaned NEEDS_HUMAN session carrying that reason can only
 // have come from bossd's verify-park overlay. Iterate every state under both

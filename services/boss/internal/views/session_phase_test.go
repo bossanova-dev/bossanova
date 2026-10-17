@@ -85,7 +85,7 @@ func (s *phasePollingStub) ListSessionsWithReadFailures(context.Context, *pb.Lis
 }
 func TestPhasePolling(t *testing.T) {
 	c := &phasePollingStub{}
-	msg := fetchSessions(c, context.Background(), 0, 0)().(sessionListMsg)
+	msg := fetchSessions(c, context.Background(), 0, 0, false)().(sessionListMsg)
 	if msg.daemonPhases["s"] != "reviewing" {
 		t.Fatalf("home poll lost phase: %v", msg.daemonPhases)
 	}

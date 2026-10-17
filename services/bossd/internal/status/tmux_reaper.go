@@ -82,7 +82,7 @@ type killSessionFunc func(ctx context.Context, name string) error
 //
 // It mirrors TmuxStatusPoller's Run/Done shape and, like it, re-reads
 // everything each tick; the only state carried between sweeps is the
-// confirmation-strike map.
+// confirmation-strike map and the next terminal sweep deadline.
 type TmuxReaper struct {
 	chats    db.AgentChatStore
 	sessions db.SessionStore
@@ -107,7 +107,10 @@ type TmuxReaper struct {
 
 	// now is injectable so grace and confirmation windows are testable without
 	// sleeping, following Lifecycle.clock.
-	now func() time.Time
+	now      func() time.Time
+	newTimer func(time.Duration) reapTimer
+	nudges   chan struct{}
+	followUp time.Time
 
 	// kill is the injectable destructive seam. Never call tmux.KillSession
 	// directly from a sweep.
@@ -132,8 +135,43 @@ type TmuxReaper struct {
 	done chan struct{} // closed when Run's goroutine exits
 }
 
-// strikeKey identifies one confirmation marker: which pane, and what it was
-// seen doing.
+// reapTimer lets timing tests fire the single follow-up timer without sleeping.
+type reapTimer struct {
+	ch    <-chan time.Time
+	stop  func() bool
+	reset func(time.Duration) bool
+}
+
+func newReapTimer(d time.Duration) reapTimer {
+	t := time.NewTimer(d)
+	return reapTimer{ch: t.C, stop: t.Stop, reset: t.Reset}
+}
+
+// NudgeSession schedules a prompt terminal sweep without blocking a store write.
+func (r *TmuxReaper) NudgeSession(_ string) {
+	select {
+	case r.nudges <- struct{}{}:
+	default:
+	}
+}
+
+func (r *TmuxReaper) requestFollowUp(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.followUp.IsZero() || at.Before(r.followUp) {
+		r.followUp = at
+	}
+}
+
+func (r *TmuxReaper) takeFollowUp() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at := r.followUp
+	r.followUp = time.Time{}
+	return at
+}
+
+// strikeKey identifies a pane and the reason it earned a confirmation marker.
 type strikeKey struct {
 	name   string
 	reason string
@@ -146,12 +184,14 @@ type strikeKey struct {
 //
 // Every dependency fails closed when absent: no tracker means no evidence and
 // therefore no reap; no oracle means no provable transcript and therefore no
-// reap; no kill seam means candidates are logged and left alive.
+// reap; no kill seam means candidates are logged and left alive. Terminal
+// reaping also requires a successful pending-delivery lookup.
 type IdleReapDeps struct {
-	Config      config.TmuxIdleReapConfig
-	Tracker     *Tracker
-	Transcripts TranscriptOracle
-	KillChat    killChatFunc
+	Config          config.TmuxIdleReapConfig
+	Tracker         *Tracker
+	Transcripts     TranscriptOracle
+	KillChat        killChatFunc
+	DeliveryPending func(context.Context, string) (bool, error)
 }
 
 // sweepDecision is one pane's classification, carrying enough context for the
@@ -159,6 +199,7 @@ type IdleReapDeps struct {
 type sweepDecision struct {
 	bucket string
 	reason string
+	policy reapPolicy
 
 	// idle marks a decision produced by the idle gate rather than the orphan
 	// one. On a reap it selects the chat teardown seam (clear the pane pointer,
@@ -192,6 +233,8 @@ func NewTmuxReaper(
 		idle:     idle,
 		daemonID: daemonID,
 		now:      time.Now,
+		newTimer: newReapTimer,
+		nudges:   make(chan struct{}, 1),
 		strikes:  make(map[strikeKey]time.Time),
 		done:     make(chan struct{}),
 	}
@@ -216,7 +259,7 @@ func (r *TmuxReaper) setClock(fn func() time.Time) { r.now = fn }
 // would have made the on-by-default idle path silently inert on every install
 // that never opted into orphan reaping — which is all of them. With both off,
 // done closes immediately and nothing is listed: a disabled sweep that still
-// asked tmux for its sessions every five minutes would be pure cost.
+// asked tmux for its sessions every minute would be pure cost.
 //
 // What D6's independence does NOT cover: the sweep CADENCE. One goroutine
 // serving both paths necessarily has one ticker, and it reads
@@ -248,17 +291,42 @@ func (r *TmuxReaper) Run(ctx context.Context) {
 		defer close(r.done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		timer := r.newTimer(time.Hour)
+		timer.stop()
+		defer timer.stop()
+		var deadline time.Time
+		var timerCh <-chan time.Time
+		arm := func(at time.Time) {
+			if at.IsZero() || (!deadline.IsZero() && !at.Before(deadline)) {
+				return
+			}
+			if !timer.stop() {
+				select {
+				case <-timer.ch:
+				default:
+				}
+			}
+			delay := at.Sub(r.now())
+			if delay < 0 {
+				delay = 0
+			}
+			timer.reset(delay)
+			deadline, timerCh = at, timer.ch
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-r.nudges:
+				arm(r.now().Add(r.idle.Config.TerminalGrace()))
+				continue
 			case <-ticker.C:
-				if _, err := r.SweepOnce(ctx); err != nil {
-					// Already logged at the failure site; the sweep is
-					// fail-closed, so the next tick simply retries.
-					continue
-				}
+			case <-timerCh:
+				deadline, timerCh = time.Time{}, nil
 			}
+			// All wake-ups share this lane; a nudge never overlaps a sweep.
+			_, _ = r.SweepOnce(ctx) // Failed reads are logged and retried on the next tick.
+			arm(r.takeFollowUp())
 		}
 	})
 }
@@ -386,6 +454,8 @@ func (r *TmuxReaper) reapIdle(ctx context.Context, s tmux.LiveSession, dec sweep
 		Str("tmuxSession", s.Name).
 		Str("bucket", dec.bucket).
 		Str("reason", dec.reason).
+		Str("policy", string(dec.policy)).
+		Str("sessionState", dec.owner.session.State.String()).
 		Str("chatId", dec.owner.chat.ID).
 		Str("agentSessionId", dec.owner.chat.AgentSessionID).
 		Str("sessionId", dec.owner.session.ID).
@@ -438,7 +508,10 @@ func (r *TmuxReaper) decisionLog(
 		Time("sessionCreated", s.Created).
 		Bool("idlePath", dec.idle)
 	if dec.idle {
-		ev = ev.Bool("dryRun", idleDryRun).Dur("idleFor", dec.idleFor)
+		ev = ev.Bool("dryRun", idleDryRun).Dur("idleFor", dec.idleFor).Str("policy", string(dec.policy))
+		if dec.owner != nil && dec.owner.session != nil {
+			ev = ev.Str("sessionState", dec.owner.session.State.String())
+		}
 	} else {
 		ev = ev.Bool("dryRun", dryRun)
 	}
@@ -568,7 +641,11 @@ func (r *TmuxReaper) classifyIdle(
 	}
 
 	owner := owners[s.Name]
+	policy := policyForOwner(owner)
 	ev := idleReapEvidence{owner: owner, attachedClients: s.AttachedClients}
+	if owner != nil && owner.chat != nil && r.idle.DeliveryPending != nil {
+		ev.deliveryPending = func() (bool, error) { return r.idle.DeliveryPending(ctx, owner.chat.AgentSessionID) }
+	}
 	if owner != nil && owner.chat != nil && r.idle.Tracker != nil {
 		ev.entry = r.idle.Tracker.Get(owner.chat.AgentSessionID)
 	}
@@ -584,10 +661,22 @@ func (r *TmuxReaper) classifyIdle(
 		}
 	}
 
-	eligible, reason, idleFor := evaluateIdleReap(ev, now, r.idle.Config.IdleThreshold())
+	threshold := r.idle.Config.IdleThreshold()
+	if policy == policyTerminal {
+		threshold = r.idle.Config.TerminalGrace()
+	}
+	eligible, reason, idleFor := evaluateIdleReap(ev, now, threshold, policy)
+	if reason == reasonTerminalWithinGrace {
+		r.requestFollowUp(now.Add(threshold - idleFor))
+	}
 	if !eligible {
 		r.clearStrike(s.Name, reasonIdleTooLong)
-		return sweepDecision{bucket: bucketKeep, reason: reason, idle: true, idleFor: idleFor}
+		return sweepDecision{bucket: bucketKeep, reason: reason, idle: true, idleFor: idleFor, owner: owner, policy: policy}
+	}
+
+	if policy == policyTerminal {
+		r.clearStrike(s.Name, reasonIdleTooLong)
+		return sweepDecision{bucket: bucketReap, reason: reason, idle: true, owner: owner, idleFor: idleFor, policy: policy}
 	}
 
 	// Confirmation strike on the idle path's OWN key (D7). Against an 8-hour
@@ -603,10 +692,10 @@ func (r *TmuxReaper) classifyIdle(
 	// documented purpose is the orphan create-race window and whose feature may
 	// be switched off entirely (D6: the idle path is knobbed on its own).
 	if _, seen := r.recordStrike(s.Name, reasonIdleTooLong, now); !seen {
-		return sweepDecision{bucket: bucketKeep, reason: reasonIdleFirstStrike, idle: true, owner: owner, idleFor: idleFor}
+		return sweepDecision{bucket: bucketKeep, reason: reasonIdleFirstStrike, idle: true, owner: owner, idleFor: idleFor, policy: policy}
 	}
 
-	return sweepDecision{bucket: bucketReap, reason: reason, idle: true, owner: owner, idleFor: idleFor}
+	return sweepDecision{bucket: bucketReap, reason: reason, idle: true, owner: owner, idleFor: idleFor, policy: policy}
 }
 
 // recordStrike returns the instant name was first observed eligible for reason

@@ -18,7 +18,7 @@ import (
 
 func (m ChatPickerModel) fetchSession() tea.Cmd {
 	return func() tea.Msg {
-		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: m.showOpenPorts})
 		if err != nil {
 			return m.reply(chatPickerErrMsg{err: err})
 		}
@@ -109,7 +109,7 @@ func (m ChatPickerModel) fetchRepoWebLink() tea.Cmd {
 // chat statuses without re-listing all chats.
 func (m ChatPickerModel) refreshStatuses() tea.Cmd {
 	return func() tea.Msg {
-		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, client.SessionReadOptions{IncludeLocalHTTPEndpoints: m.showOpenPorts})
 		if err != nil {
 			return m.reply(chatPickerRefreshMsg{})
 		}

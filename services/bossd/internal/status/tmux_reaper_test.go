@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
@@ -235,9 +238,10 @@ func newReaperFixtureWithIdle(t *testing.T, cfg config.TmuxReaperConfig, idleCfg
 	logger := zerolog.New(fx.logs).Level(zerolog.TraceLevel)
 	client := tmux.NewClient(tmux.WithCommandFactory(fx.tmuxFake.factory))
 	fx.reaper = NewTmuxReaper(fx.chats, fx.sessions, fx.repos, client, reaperDaemonID, cfg, IdleReapDeps{
-		Config:      idleCfg,
-		Tracker:     fx.tracker,
-		Transcripts: fixtureTranscriptOracle{fx: fx},
+		Config:          idleCfg,
+		DeliveryPending: func(context.Context, string) (bool, error) { return false, nil },
+		Tracker:         fx.tracker,
+		Transcripts:     fixtureTranscriptOracle{fx: fx},
 		KillChat: func(_ context.Context, sessionID, agentSessionID, paneName string) error {
 			if fx.killChatErr != nil {
 				return fx.killChatErr
@@ -1157,5 +1161,179 @@ func assertLogged(t *testing.T, buf *bytes.Buffer, want string) {
 	t.Helper()
 	if got := buf.String(); !strings.Contains(got, want) {
 		t.Fatalf("logs missing %q\nlogs:\n%s", want, got)
+	}
+}
+
+func TestTmuxReaper_TerminalSessionReapedOnFirstSweep(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.sessions.all[0].State = machine.Merged
+	fx.addResumableChat(ptr(reaperIdleChatPane))
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	fx.markIdle(31 * time.Second)
+	fx.transcriptExists = false
+	fx.wantsChatTeardown = true
+	if n := fx.sweep(); n != 1 {
+		t.Fatalf("first sweep reaped %d, want 1", n)
+	}
+	if fx.transcriptProbes != 0 {
+		t.Fatal("terminal reap probed transcript")
+	}
+	for _, field := range []string{`"level":"info"`, `"reason":"terminalSession"`, `"policy":"terminal"`, `"sessionState":"merged"`, `"chatId":"chat-` + reaperIdleChatID + `"`, `"sessionId":"` + reaperSessionID + `"`, `"idleFor":31000`} {
+		assertLogged(t, fx.logs, field)
+	}
+	t.Log(fx.logs.String())
+}
+
+func TestTmuxReaper_TerminalKeepsAndRetries(t *testing.T) {
+	cases := []struct {
+		name, reason string
+		setup        func(*reaperFixture)
+		clear        func(*reaperFixture)
+	}{
+		{"working", reasonTerminalChatWorking, func(f *reaperFixture) {
+			f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_WORKING, f.now.Add(-time.Minute))
+		}, func(f *reaperFixture) { f.markIdle(time.Minute) }},
+		{"attached", reasonIdleAttachedClient, func(f *reaperFixture) { f.setAttached(reaperIdleChatPane, 1) }, func(f *reaperFixture) { f.setAttached(reaperIdleChatPane, 0) }},
+		{"delivery", reasonTerminalDeliveryPending, func(f *reaperFixture) {
+			f.reaper.idle.DeliveryPending = func(context.Context, string) (bool, error) { return true, nil }
+		}, func(f *reaperFixture) {
+			f.reaper.idle.DeliveryPending = func(context.Context, string) (bool, error) { return false, nil }
+		}},
+		{"grace", reasonTerminalWithinGrace, func(f *reaperFixture) { f.markIdle(10 * time.Second) }, func(f *reaperFixture) { f.now = f.now.Add(20 * time.Second) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := armedFixture(t, false)
+			fx.sessions.all[0].State = machine.Merged
+			fx.addResumableChat(ptr(reaperIdleChatPane))
+			fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+			fx.markIdle(time.Minute)
+			fx.wantsChatTeardown = true
+			tc.setup(fx)
+			if n := fx.sweep(); n != 0 {
+				t.Fatalf("kept reap=%d", n)
+			}
+			assertLogged(t, fx.logs, tc.reason)
+			tc.clear(fx)
+			if n := fx.sweep(); n != 1 {
+				t.Fatalf("retry reap=%d", n)
+			}
+		})
+	}
+}
+
+func TestTmuxReaper_ArchivedAndClosedChats(t *testing.T) {
+	for _, archived := range []bool{true, false} {
+		t.Run(fmt.Sprint(archived), func(t *testing.T) {
+			fx := armedFixture(t, false)
+			if archived {
+				fx.sessions.all[0].ArchivedAt = &fx.now
+				fx.sessions.all[0].WorktreePath = ""
+			} else {
+				fx.sessions.all[0].State = machine.Closed
+			}
+			fx.addAgentChat(reaperIdleChatID, "claude", ptr(reaperIdleChatPane), nil)
+			fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+			fx.markIdle(time.Minute)
+			if !archived {
+				fx.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_QUESTION, fx.now.Add(-time.Minute))
+			}
+			fx.transcriptExists = false
+			fx.wantsChatTeardown = true
+			if n := fx.sweep(); n != 1 {
+				t.Fatalf("reaped=%d", n)
+			}
+			if fx.transcriptProbes != 0 {
+				t.Fatal("transcript probe")
+			}
+		})
+	}
+}
+
+func TestTmuxReaper_TerminalDisabledAndDryRun(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			fx := newReaperFixtureWithIdle(t, reaperConfig(false, false, false, time.Minute), reaperIdleConfig(enabled, true))
+			fx.addSession(reaperSessionID, nil)
+			fx.sessions.all[0].State = machine.Merged
+			fx.addResumableChat(ptr(reaperIdleChatPane))
+			fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+			fx.markIdle(time.Minute)
+			if n := fx.sweep(); n != 0 {
+				t.Fatalf("reaped=%d", n)
+			}
+		})
+	}
+}
+
+func TestTmuxReaper_NudgeSchedulesGraceAndFollowUp(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.reaper.cfg.SweepIntervalSeconds = 3600
+	fx.sessions.all[0].State = machine.Merged
+	fx.addResumableChat(ptr(reaperIdleChatPane))
+	fx.addLivePane(reaperIdleChatPane, time.Hour, ptr(reaperDaemonID))
+	// The chat emits output 20 seconds into the transition's grace.
+	fx.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_IDLE, fx.now.Add(20*time.Second))
+	var clock atomic.Int64
+	clock.Store(fx.now.UnixNano())
+	fx.reaper.setClock(func() time.Time { return time.Unix(0, clock.Load()) })
+	fired := make(chan time.Time, 1)
+	resets := make(chan time.Duration, 4)
+	killed := make(chan struct{}, 1)
+	fx.reaper.newTimer = func(time.Duration) reapTimer {
+		return reapTimer{ch: fired, stop: func() bool { return true }, reset: func(d time.Duration) bool { resets <- d; return true }}
+	}
+	fx.reaper.idle.KillChat = func(context.Context, string, string, string) error { killed <- struct{}{}; return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fx.reaper.Run(ctx)
+	waitReset := func(want time.Duration) {
+		t.Helper()
+		select {
+		case got := <-resets:
+			if got != want {
+				t.Fatalf("timer=%s want %s", got, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timer not armed")
+		}
+	}
+	fx.reaper.NudgeSession(reaperSessionID)
+	waitReset(30 * time.Second)
+	// A second nudge cannot postpone the pending deadline.
+	fx.reaper.NudgeSession(reaperSessionID)
+	clock.Store(fx.now.Add(30 * time.Second).UnixNano())
+	fired <- fx.now
+	waitReset(20 * time.Second)
+	clock.Store(fx.now.Add(50 * time.Second).UnixNano())
+	fired <- fx.now
+	select {
+	case <-killed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up did not reap")
+	}
+	cancel()
+	select {
+	case <-fx.reaper.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not stop")
+	}
+	if fx.transcriptProbes != 0 {
+		t.Fatal("terminal loop probed transcript")
+	}
+}
+
+func TestTmuxReaper_NudgeFullChannelNeverBlocks(t *testing.T) {
+	fx := armedFixture(t, false)
+	fx.reaper.NudgeSession("one")
+	done := make(chan struct{})
+	go func() { fx.reaper.NudgeSession("two"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("nudge blocked")
+	}
+	if len(fx.reaper.nudges) != 1 {
+		t.Fatal("nudge not coalesced")
 	}
 }

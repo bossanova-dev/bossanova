@@ -22,11 +22,11 @@ func TestTmuxReaperConfig_Defaults(t *testing.T) {
 		wantGrace         time.Duration
 	}{
 		{
-			name:        "unset is off, dry-run, unstamped-safe, 5m/10m",
+			name:        "unset is off, dry-run, unstamped-safe, 1m/10m",
 			cfg:         TmuxReaperConfig{},
 			wantEnabled: false,
 			wantDryRun:  true,
-			wantSweep:   5 * time.Minute,
+			wantSweep:   time.Minute,
 			wantGrace:   10 * time.Minute,
 		},
 		{
@@ -52,7 +52,7 @@ func TestTmuxReaperConfig_Defaults(t *testing.T) {
 			cfg:         TmuxReaperConfig{Enabled: &yes},
 			wantEnabled: true,
 			wantDryRun:  true,
-			wantSweep:   5 * time.Minute,
+			wantSweep:   time.Minute,
 			wantGrace:   10 * time.Minute,
 		},
 		{
@@ -62,7 +62,7 @@ func TestTmuxReaperConfig_Defaults(t *testing.T) {
 			name:       "zero and negative durations fall back",
 			cfg:        TmuxReaperConfig{SweepIntervalSeconds: 0, GracePeriodSeconds: -600},
 			wantDryRun: true,
-			wantSweep:  5 * time.Minute,
+			wantSweep:  time.Minute,
 			wantGrace:  10 * time.Minute,
 		},
 	}

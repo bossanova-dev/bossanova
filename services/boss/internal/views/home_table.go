@@ -97,7 +97,7 @@ func (h *HomeModel) buildTableRows() {
 			names[i] = sess.BranchName
 		}
 		nameWidthLabels = append(nameWidthLabels, names[i])
-		if sessionHasEndpointRow(sess) {
+		if h.hasEndpointRow(sess) {
 			nameWidthLabels = append(nameWidthLabels, sessionEndpointLabels(sess))
 		}
 		if waitingHint := waitingHintLine(h.sessionWaitingReason(sess), waitingBadgeSuperseded(sess)); sess.GetAttention() == nil && waitingHint != "" {
@@ -193,10 +193,10 @@ func (h *HomeModel) buildTableRows() {
 		// directly under the session they belong to and ABOVE any warning rows,
 		// so the ":port" links read as part of the session rather than as part
 		// of the warning block. Non-selectable, like the warning rows — the row
-		// exists exactly when sessionHasEndpointRow says so, which is the same
+		// exists exactly when hasEndpointRow says so, which is the same
 		// predicate sessionSubRowCount uses, so every cursor/height helper
 		// agrees with what is actually emitted here.
-		if sessionHasEndpointRow(sess) {
+		if h.hasEndpointRow(sess) {
 			rows = append(rows, project(table.Row{"", "", renderSessionEndpoints(sess), "", ""}))
 		}
 		if sess.GetAttention() != nil {

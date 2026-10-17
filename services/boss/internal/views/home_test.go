@@ -3190,6 +3190,7 @@ func visibleRowText(cell string) string {
 // must all agree that an endpoint row precedes any warning rows.
 func TestHomeEndpointRowAccounting(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	withBoth := endpointSession("both", 3000, 5173)
 	withBoth.SetupError = "setup script blew up"
 	h.sessions = []*pb.Session{
@@ -3243,6 +3244,7 @@ func TestHomeEndpointRowAccounting(t *testing.T) {
 // that only the NAME column carries the labels.
 func TestHomeEndpointRowRendersBeforeWarnings(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	sess := endpointSession("both", 3000, 5173)
 	sess.SetupError = "setup script blew up"
 	h.sessions = []*pb.Session{sess}
@@ -3283,6 +3285,7 @@ func TestHomeEndpointRowRendersBeforeWarnings(t *testing.T) {
 // fails here rather than silently shipping unclickable ports.
 func TestHomeEndpointLinksSurviveTableRender(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	h.loading = false
 	h.loggedIn = true
 	h.repoCount = 1
@@ -3339,11 +3342,13 @@ func TestHomeNoEndpointsRowsUnchanged(t *testing.T) {
 // a long endpoint list even when every session title is short.
 func TestHomeEndpointLabelsCountTowardNameWidth(t *testing.T) {
 	narrow := NewHomeModel(nil, context.Background(), nil)
+	narrow.settings.DisplayOpenPorts = true
 	narrow.sessions = []*pb.Session{{Id: "a", Title: "ab"}}
 	narrow.buildTableRows()
 	narrowWidth := narrow.table.Columns()[2].Width
 
 	wide := NewHomeModel(nil, context.Background(), nil)
+	wide.settings.DisplayOpenPorts = true
 	wide.sessions = []*pb.Session{endpointSession("a", 3000, 5173, 8080, 9229)}
 	wide.sessions[0].Title = "ab"
 	wide.buildTableRows()
@@ -3366,7 +3371,7 @@ func TestHomeEndpointLabelsCountTowardNameWidth(t *testing.T) {
 
 // TestHomeTableHeightCountsEndpointRows mirrors the repair-warning height test.
 func TestHomeTableHeightCountsEndpointRows(t *testing.T) {
-	h := HomeModel{sessions: []*pb.Session{endpointSession("a", 3000)}}
+	h := HomeModel{settings: config.Settings{DisplayOpenPorts: true}, sessions: []*pb.Session{endpointSession("a", 3000)}}
 	if got := h.tableHeight(); got != 3 {
 		t.Fatalf("tableHeight() = %d, want 3: header + session row + endpoint row", got)
 	}
@@ -3377,6 +3382,7 @@ func TestHomeTableHeightCountsEndpointRows(t *testing.T) {
 // only ever settles on primary rows.
 func TestHomeNavigationSkipsEndpointRows(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	h.sessions = []*pb.Session{
 		{Id: "first", Title: "First"},
 		endpointSession("middle", 3000),
@@ -3427,6 +3433,7 @@ func TestHomeSelectionSurvivesEndpointChurn(t *testing.T) {
 	}
 
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	poll := func(sessions []*pb.Session) {
 		t.Helper()
 		updated, _ := h.Update(sessionListMsg{sessions: sessions})
@@ -3466,6 +3473,7 @@ func TestHomeSelectionSurvivesEndpointChurn(t *testing.T) {
 // the endpoint row from the accounting nor panics on the truncated NAME column.
 func TestHomeEndpointRowNarrowTerminal(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	h.width = 40
 	h.height = 10
 	h.sessions = []*pb.Session{endpointSession("a", 3000, 5173, 8080, 9229, 4000)}
@@ -4016,6 +4024,7 @@ func responsiveHomeSessions() []*pb.Session {
 // shared fixture and a freshly fitted table.
 func homeResponsiveModel(width int) HomeModel {
 	h := NewHomeModel(nil, context.Background(), nil)
+	h.settings.DisplayOpenPorts = true
 	h.loading = false
 	h.loggedIn = true
 	h.repoCount = 1
@@ -5443,5 +5452,68 @@ func TestDeferredArchive_RowRendersFromArchivePendingAndStopsWhenCleared(t *test
 	}
 	if !strings.Contains(got.home.table.Rows()[0][4], "working") {
 		t.Fatalf("row status = %q, want working", got.home.table.Rows()[0][4])
+	}
+}
+
+func TestHomeHiddenEndpointRowsFromSnapshot(t *testing.T) {
+	previous := NewHomeModel(nil, context.Background(), nil)
+	previous.settings.DisplayOpenPorts = true
+	previous.sessions = []*pb.Session{endpointSession("first", 3000, 5173), endpointSession("second", 8080)}
+	app := App{ctx: context.Background(), home: previous, userSettings: config.Settings{DisplayOpenPorts: false}}
+	h := app.newHomeModel()
+	h.loading = false
+	h.repoCount = 1
+	h.buildTableRows()
+	if got := len(h.table.Rows()); got != 2 {
+		t.Fatalf("rows = %d, want one per session", got)
+	}
+	for i, sess := range h.sessions {
+		if got := h.subRowCount(sess); got != 0 {
+			t.Fatalf("subrows = %d, want 0", got)
+		}
+		if got := h.tableCursorForSessionIndex(i); got != i {
+			t.Fatalf("session %d maps to row %d", i, got)
+		}
+	}
+	if strings.Contains(h.View().Content, ":3000") {
+		t.Fatal("stale endpoint snapshot rendered while hidden")
+	}
+}
+
+type endpointReadStub struct {
+	*stubClient
+	reads []bool
+}
+
+func (s *endpointReadStub) ListSessionsWithReadFailures(_ context.Context, _ *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	s.reads = append(s.reads, opts.IncludeLocalHTTPEndpoints)
+	return nil, nil, nil
+}
+func (s *endpointReadStub) GetSession(_ context.Context, _ string, opts client.SessionReadOptions) (*pb.Session, error) {
+	s.reads = append(s.reads, opts.IncludeLocalHTTPEndpoints)
+	return &pb.Session{Id: "session-1"}, nil
+}
+func (s *endpointReadStub) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error) {
+	return nil, nil
+}
+
+func TestEndpointReadOptionsFollowSetting(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			stub := &endpointReadStub{stubClient: &stubClient{}}
+			fetchSessions(stub, context.Background(), 0, 0, enabled)()
+			m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+			m.SetShowOpenPorts(enabled)
+			m.fetchSession()()
+			m.refreshStatuses()()
+			if len(stub.reads) != 3 {
+				t.Fatalf("reads = %v, want Home and both picker reads", stub.reads)
+			}
+			for _, got := range stub.reads {
+				if got != enabled {
+					t.Fatalf("endpoint opt-in = %v, want %v", got, enabled)
+				}
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -2302,6 +2304,9 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	}
 	if err != nil {
 		s.restoreChatRun(registration)
+		if input.Role == models.AgentChatRoleRepair {
+			s.reapSupersededFailedRepairChats(ctx, sessionID)
+		}
 		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
 		// Internal) through unchanged. Wrap untyped errors as Internal
 		// so callers always get a status code they can switch on.
@@ -2410,6 +2415,57 @@ func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, se
 
 // maxRepairBlockingChats bounds StartChatRun's replace-or-start-beside passes.
 const maxRepairBlockingChats = 8
+
+// reapSupersededFailedRepairChats deletes every repair chat of the session that
+// failed to start and never ran, except the newest. The repair plugin retries a
+// failed start on its backoff, and each retry is a fresh chat, so without this
+// every retry left another empty failed chat in the session's list. The newest
+// keeps the latest reason on view. A chat with an agent run did work before a
+// later resume failed, and a failed chat the operator has since reopened has a
+// pane again; both are left alone. Without the run store nothing proves a chat
+// never ran, so nothing is reaped.
+func (s *HostServiceServer) reapSupersededFailedRepairChats(ctx context.Context, sessionID string) {
+	if s.agentChats == nil || s.agentRuns == nil {
+		return
+	}
+	reapCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
+	defer cancel()
+	chats, err := s.agentChats.ListBySession(reapCtx, sessionID)
+	if err != nil {
+		log.Warn().Err(err).Str("session", sessionID).Msg("list chats to reap superseded failed repair chats failed")
+		return
+	}
+	runs, err := s.agentRuns.List(reapCtx, db.AgentRunFilter{SessionID: sessionID, IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true, OmitChildren: true})
+	if err != nil {
+		log.Warn().Err(err).Str("session", sessionID).Msg("list agent runs to reap superseded failed repair chats failed")
+		return
+	}
+	ran := make(map[string]bool, len(runs))
+	for _, run := range runs {
+		ran[run.AgentSessionID] = true
+	}
+	var failed []*models.AgentChat
+	for _, chat := range chats {
+		if chat.Role == models.AgentChatRoleRepair && chat.StartError != nil && *chat.StartError != "" && chat.TmuxSessionName == nil && !ran[chat.AgentSessionID] {
+			failed = append(failed, chat)
+		}
+	}
+	if len(failed) < 2 {
+		return
+	}
+	newest := slices.MaxFunc(failed, func(a, b *models.AgentChat) int { return cmp.Compare(a.Seq, b.Seq) })
+	for _, chat := range failed {
+		if chat == newest {
+			continue
+		}
+		if s.chatTracker != nil {
+			s.chatTracker.Remove(chat.AgentSessionID)
+		}
+		if err := s.agentChats.DeleteByAgentSessionID(reapCtx, chat.AgentSessionID); err != nil {
+			log.Warn().Err(err).Str("session", sessionID).Str("agent_session", chat.AgentSessionID).Msg("reap superseded failed repair chat failed")
+		}
+	}
+}
 
 // chatNeverReclaimed reports whether repair must leave the chat alone because
 // its role is not agent-owned: an operator chat, or a legacy chat whose purpose

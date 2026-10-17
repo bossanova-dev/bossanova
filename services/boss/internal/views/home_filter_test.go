@@ -226,6 +226,7 @@ func TestHomeFilterPollKeepsFullState(t *testing.T) {
 
 func TestHomeFilterAuxiliaryRowsStayWithSession(t *testing.T) {
 	h := filteredHome(t)
+	h.settings.DisplayOpenPorts = true
 	extras := responsiveHomeSessions()
 	for _, sess := range extras {
 		sess.RepoDisplayName = "alpha"

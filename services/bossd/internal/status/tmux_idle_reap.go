@@ -5,6 +5,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/tmux"
@@ -15,18 +16,38 @@ import (
 // keyed by name AND reason: sharing a string would let an orphan sighting and
 // an idle sighting confirm each other.
 const (
-	reasonIdleUnresolvedName    = "idleUnresolvedName"
-	reasonIdleNoTrackerEntry    = "idleNoTrackerEntry"
-	reasonIdleStatusNotIdle     = "idleStatusNotIdle"
-	reasonIdleNoOutputClock     = "idleNoOutputClock"
-	reasonIdleWithinWindow      = "idleWithinWindow"
-	reasonIdleAttachedClient    = "idleAttachedClient"
-	reasonIdleNoResumeSessionID = "idleNoResumeSessionID"
-	reasonIdleTranscriptOracle  = "idleTranscriptOracleMissing"
-	reasonIdleTranscriptMissing = "idleTranscriptMissing"
-	reasonIdleFirstStrike       = "idleFirstStrike"
-	reasonIdleTooLong           = "idleTooLong"
+	reasonTerminalNoTrackerEntry  = "terminalNoTrackerEntry"
+	reasonTerminalChatWorking     = "terminalChatWorking"
+	reasonTerminalWithinGrace     = "terminalWithinGrace"
+	reasonTerminalDeliveryPending = "terminalDeliveryPending"
+	reasonTerminalDeliveryUnknown = "terminalDeliveryUnknown"
+	reasonTerminalSession         = "terminalSession"
+	reasonIdleUnresolvedName      = "idleUnresolvedName"
+	reasonIdleNoTrackerEntry      = "idleNoTrackerEntry"
+	reasonIdleStatusNotIdle       = "idleStatusNotIdle"
+	reasonIdleNoOutputClock       = "idleNoOutputClock"
+	reasonIdleWithinWindow        = "idleWithinWindow"
+	reasonIdleAttachedClient      = "idleAttachedClient"
+	reasonIdleNoResumeSessionID   = "idleNoResumeSessionID"
+	reasonIdleTranscriptOracle    = "idleTranscriptOracleMissing"
+	reasonIdleTranscriptMissing   = "idleTranscriptMissing"
+	reasonIdleFirstStrike         = "idleFirstStrike"
+	reasonIdleTooLong             = "idleTooLong"
 )
+
+type reapPolicy string
+
+const (
+	policyLongIdle reapPolicy = "longIdle"
+	policyTerminal reapPolicy = "terminal"
+)
+
+func policyForOwner(owner *chatOwner) reapPolicy {
+	if owner != nil && owner.session != nil && (owner.session.State == machine.Merged || owner.session.State == machine.Closed || owner.session.ArchivedAt != nil) {
+		return policyTerminal
+	}
+	return policyLongIdle
+}
 
 // idleReapDefaultAgent is the registry key a chat row persisted before
 // AgentName existed resolves to, mirroring the server package's
@@ -185,7 +206,8 @@ func resolveChatOwners(sessions []*models.Session, chats []*models.AgentChat) ma
 // at. Assembling it is the sweep's job; judging it is this file's, so the
 // policy is testable without tmux, a database, a plugin or a clock.
 type idleReapEvidence struct {
-	owner *chatOwner
+	deliveryPending func() (bool, error)
+	owner           *chatOwner
 
 	// entry is the tracker's record for this chat, or nil. Nil covers both
 	// "never polled" and "polled too long ago to trust" — Tracker.Get evicts
@@ -218,19 +240,24 @@ type idleReapEvidence struct {
 // dry run can show the clock (D10: that clock restarts with the daemon, and an
 // operator staring at a reaper that never fires needs to see the truncation
 // rather than guess at it).
-func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duration) (reap bool, reason string, idleFor time.Duration) {
+func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duration, policy reapPolicy) (reap bool, reason string, idleFor time.Duration) {
 	if ev.owner == nil || ev.owner.chat == nil || ev.owner.session == nil {
 		return false, reasonIdleUnresolvedName, 0
 	}
 	if ev.entry == nil {
+		if policy == policyTerminal {
+			return false, reasonTerminalNoTrackerEntry, 0
+		}
 		return false, reasonIdleNoTrackerEntry, 0
 	}
 
-	// D3, first conjunct. D4: QUESTION and LIMITED need no separate exclusion —
-	// a pane parked at a question or a usage-limit banner produces no output,
-	// but the poller reports those statuses rather than IDLE, so this gate
-	// already keeps them. A second, drifting exclusion would only rot.
-	if ev.entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
+	// Long-idle reaping requires IDLE. Terminal sessions may also reclaim a
+	// parked question or usage banner, but never a chat still doing work.
+	if policy == policyTerminal {
+		if ev.entry.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+			return false, reasonTerminalChatWorking, 0
+		}
+	} else if ev.entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		return false, reasonIdleStatusNotIdle, 0
 	}
 
@@ -245,16 +272,30 @@ func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duratio
 	}
 	idleFor = now.Sub(ev.entry.LastOutputAt)
 	if idleFor < threshold {
+		if policy == policyTerminal {
+			return false, reasonTerminalWithinGrace, idleFor
+		}
 		return false, reasonIdleWithinWindow, idleFor
 	}
 
-	// D5, revised by BOS-1179. Waking a chat is safe when the transcript
-	// exists at the resume id the wake would actually use. A provider id is
-	// only one possible resume id and is absent by design for many Claude
-	// chats, so it is not an eligibility signal.
+	// An attached operator always keeps the pane, under either policy.
 	if ev.attachedClients > 0 {
 		return false, reasonIdleAttachedClient, idleFor
 	}
+	if policy == policyTerminal {
+		if ev.deliveryPending == nil {
+			return false, reasonTerminalDeliveryUnknown, idleFor
+		}
+		pending, err := ev.deliveryPending()
+		if err != nil {
+			return false, reasonTerminalDeliveryUnknown, idleFor
+		}
+		if pending {
+			return false, reasonTerminalDeliveryPending, idleFor
+		}
+		return true, reasonTerminalSession, idleFor
+	}
+	// Long-idle reaping preserves the transcript a later wake needs.
 	if ev.resumeSessionID == "" {
 		return false, reasonIdleNoResumeSessionID, idleFor
 	}

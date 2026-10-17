@@ -104,6 +104,17 @@ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS'])
 export const PROVENANCE_CONTEXTS = Object.freeze(['boss/build'])
 const PROVENANCE_SET = new Set(PROVENANCE_CONTEXTS)
 
+// Split gate entries from provenance receipts without changing either input entries or their order.
+export function partitionProvenance(entries) {
+  const kept = []
+  const provenance = new Set()
+  for (const entry of entries) {
+    if (PROVENANCE_SET.has(entry.name)) provenance.add(entry.name)
+    else kept.push(entry)
+  }
+  return { kept, provenance: [...provenance].sort() }
+}
+
 function upper(value) {
   return typeof value === 'string' ? value.trim().toUpperCase() : ''
 }
@@ -514,29 +525,19 @@ export function classifyChecks(options) {
     structurallyAbsentContexts = [],
     workflowRuns = null,
   } = options ?? {}
-  const merged = mergeEntries([
-    ...normalizeRollup(rollup),
-    ...normalizeCheckRuns(checkRuns),
-    ...normalizeBuckets(buckets),
+  const head = partitionProvenance([
+    ...mergeEntries([
+      ...normalizeRollup(rollup),
+      ...normalizeCheckRuns(checkRuns),
+      ...normalizeBuckets(buckets),
+    ]).values(),
   ])
 
-  // Provenance receipts are not gates: drop them from both SHAs before anything is counted or
-  // compared, and report which ones were seen.
-  const provenanceSeen = new Set()
-  for (const name of [...merged.keys()]) {
-    if (PROVENANCE_SET.has(name)) {
-      provenanceSeen.add(name)
-      merged.delete(name)
-    }
-  }
-  const priorSide =
-    priorContexts == null
-      ? null
-      : normalizeDiffSide(priorContexts).filter((entry) => {
-          if (!PROVENANCE_SET.has(entry.name)) return true
-          provenanceSeen.add(entry.name)
-          return false
-        })
+  // Provenance receipts are not gates: exclude them from both SHAs before comparison.
+  const prior = priorContexts == null ? null : partitionProvenance(normalizeDiffSide(priorContexts))
+  const merged = new Map(head.kept.map((entry) => [entry.name, entry]))
+  const priorSide = prior?.kept ?? null
+  const provenance = [...new Set([...head.provenance, ...(prior?.provenance ?? [])])].sort()
 
   const counts = { passed: 0, failed: 0, pending: 0, skipped: 0, unclassified: 0 }
   for (const { kind } of merged.values()) counts[kind] += 1
@@ -594,7 +595,7 @@ export function classifyChecks(options) {
     workflowRunsKnown: runsKnown,
     pendingRuns,
     // Provenance contexts (`PROVENANCE_CONTEXTS`) seen on either SHA and excluded from the verdict.
-    provenance: [...provenanceSeen].sort(),
+    provenance,
   }
 
   if (readError != null) {

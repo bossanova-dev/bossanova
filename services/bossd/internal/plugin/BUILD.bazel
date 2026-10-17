@@ -77,6 +77,7 @@ go_test(
         "repair_chat_role_test.go",
         "repair_chat_visibility_test.go",
         "repair_conflict_base_move_integration_test.go",
+        "repair_failed_start_reap_test.go",
         "repair_workflow_integration_test.go",
         "shared_test.go",
         "test_helpers_test.go",

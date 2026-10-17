@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/dotenv"
@@ -66,15 +67,15 @@ func approveResultProto(r verifybridge.ApproveResult) *pb.VerifyApproveResult {
 	}
 }
 
-// operatorMergeBudget splits OperatorMergeSession's time. The whole flow must
-// answer inside the daemon's 120s WriteTimeout, or a merge that landed reaches
-// the operator as a dropped reply. approve gets the first slice; mark-merged
-// gets whatever is left of total after the merge, and is skipped when nothing is.
+// operatorMergeBudget splits OperatorMergeSession's time. total bounds the
+// whole merge once it runs detached from the caller, tracker bookkeeping
+// included; approve is the slice the approval gets. The handler is exempt from
+// the daemon's generic write timeout, so a reply inside total still arrives.
 type operatorMergeBudget struct {
 	total, approve time.Duration
 }
 
-var defaultOperatorMergeBudget = operatorMergeBudget{total: 110 * time.Second, approve: 60 * time.Second}
+var defaultOperatorMergeBudget = operatorMergeBudget{total: config.OperatorMergeCeiling, approve: 60 * time.Second}
 
 func (s *Server) mergeBudget() operatorMergeBudget {
 	if s.operatorMergeBudget.total > 0 {
@@ -88,51 +89,84 @@ func (s *Server) mergeBudget() operatorMergeBudget {
 // check the live gate at the pinned head, record the head-bound approval
 // (review rows only), merge through MergeSession at that head, then run the
 // post-merge tracker bookkeeping. Nothing is recorded when the gate refuses or
-// the head moved.
+// the head moved. A merge the operator confirmed finishes even if they leave:
+// the TUI lets them walk away, and quitting it drops the request context.
 func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
-	budget := s.mergeBudget()
-	deadline := time.Now().Add(budget.total)
 	pin, ok := vcs.NormalizeHeadSHA(req.Msg.GetExpectedHeadSha())
 	if !ok {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("expected_head_sha must be a 40-character hex commit SHA"))
 	}
-	id := req.Msg.GetId()
-	target, env, err := s.verifyTarget(ctx, id, false)
+	budget := s.mergeBudget()
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget.total)
+	defer cancel()
+	resp, pr, err := s.operatorMerge(runCtx, req.Msg, pin, budget)
+	s.logOperatorMergeOutcome(req.Msg.GetId(), pr, ctx.Err() != nil, resp, err)
 	if err != nil {
 		return nil, err
 	}
+	return connect.NewResponse(resp), nil
+}
+
+// operatorMerge is OperatorMergeSession on its detached context. It also
+// returns the session's PR once known, for the outcome log.
+func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget) (*pb.OperatorMergeSessionResponse, int, error) {
+	id := req.GetId()
+	target, env, err := s.verifyTarget(ctx, id, false)
+	if err != nil {
+		return nil, 0, err
+	}
 	if err := s.refuseFixAttention(ctx, id, target.PR); err != nil {
-		return nil, err
+		return nil, target.PR, err
 	}
 	verbs := s.verifyVerbsFor(env)
 	resp := &pb.OperatorMergeSessionResponse{}
-	if req.Msg.GetShouldApprove() {
+	if req.GetShouldApprove() {
 		if err := s.operatorMergeGate(ctx, id, target.PR, pin); err != nil {
-			return nil, err
+			return nil, target.PR, err
 		}
 		approveCtx, cancel := context.WithTimeout(ctx, budget.approve)
-		r, err := verbs.Approve(approveCtx, target, &verifybridge.MergeApproval{Head: pin, Waives: req.Msg.GetWaives()})
+		r, err := verbs.Approve(approveCtx, target, &verifybridge.MergeApproval{Head: pin, Waives: req.GetWaives()})
 		cancel()
 		if err != nil {
-			return nil, s.verifyBridgeError("approve", target, err)
+			return nil, target.PR, s.verifyBridgeError("approve", target, err)
 		}
 		resp.Approval = approveResultProto(r)
 		if !r.Approved {
-			return connect.NewResponse(resp), nil
+			return resp, target.PR, nil
 		}
 	}
 	merged, err := s.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: pin}))
 	if err != nil {
 		if resp.Approval != nil {
-			return nil, approvalStandsError(err, resp.Approval)
+			return nil, target.PR, approvalStandsError(err, resp.Approval)
 		}
-		return nil, err
+		return nil, target.PR, err
 	}
 	resp.IsMerged = true
 	resp.Session = merged.Msg.GetSession()
 	resp.MergeDetail = merged.Msg.GetDetail()
-	resp.TrackerWrites, resp.TrackerWhy = s.markMerged(ctx, verbs, target, deadline)
-	return connect.NewResponse(resp), nil
+	resp.TrackerWrites, resp.TrackerWhy = s.markMerged(ctx, verbs, target)
+	return resp, target.PR, nil
+}
+
+// logOperatorMergeOutcome records how an operator merge ended, so the outcome
+// of one the operator left before it answered is still on record.
+func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, resp *pb.OperatorMergeSessionResponse, err error) {
+	outcome := "not approved"
+	switch {
+	case err != nil:
+		outcome = "refused"
+	case resp.GetIsMerged():
+		outcome = "merged"
+	}
+	ev := s.logger.Info().Str("session", id).Int("pr", pr).Str("outcome", outcome).Bool("operator_left", operatorLeft)
+	if err != nil {
+		ev = ev.Err(err)
+	}
+	if resp.GetIsMerged() {
+		ev = ev.Str("tracker_writes", resp.GetTrackerWrites())
+	}
+	ev.Msg("operator merge finished")
 }
 
 // refuseFixAttention refuses a session whose attention is a FIX: a blocked
@@ -191,18 +225,15 @@ func approvalStandsError(err error, approval *pb.VerifyApproveResult) error {
 	return connect.NewError(connect.CodeOf(err), fmt.Errorf("%s; the approval of %s (%s) stays recorded", msg, approval.GetHeadSha(), approval.GetApprovalUrl()))
 }
 
-// markMerged runs the toolbox's post-merge tracker bookkeeping. The merge has
-// landed, so it runs past the caller's cancellation but stops at deadline, so
-// the reply that says the merge landed is never dropped. A failure is
+// markMerged runs the toolbox's post-merge tracker bookkeeping on what is left
+// of the merge's detached budget, and is skipped when nothing is. A failure is
 // reported, never returned.
-func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verifybridge.Target, deadline time.Time) (writes, why string) {
-	if time.Until(deadline) <= 0 {
+func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verifybridge.Target) (writes, why string) {
+	if ctx.Err() != nil {
 		s.logger.Warn().Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: no time left for tracker bookkeeping")
 		return "failed", "no time was left to update the tracker"
 	}
-	markCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
-	defer cancel()
-	r, err := verbs.MarkMerged(markCtx, target)
+	r, err := verbs.MarkMerged(ctx, target)
 	switch {
 	case err != nil:
 		s.logger.Warn().Err(err).Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: tracker bookkeeping failed")

@@ -96,6 +96,12 @@ func renderArchivingStatus(sp spinner.Model) string {
 	return styleStatusWarning.Render(sp.View() + "archiving")
 }
 
+// renderMergingStatus renders a merge the operator confirmed and left running,
+// styled like the daemon's own "merging" label.
+func renderMergingStatus(sp spinner.Model) string {
+	return styleStatusInfo.Render(sp.View() + "merging")
+}
+
 // styledPRStatus returns a styled label for a PR display status.
 // Returns "" for unspecified/unknown statuses.
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {

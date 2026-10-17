@@ -510,6 +510,12 @@ func (m ChatPickerModel) ArchivingSessionID() string {
 	return ""
 }
 
+// MergeInFlight returns the confirmed [m]erge this view leaves running, if any,
+// so app.go can carry it onto Home.
+func (m ChatPickerModel) MergeInFlight() (attentionActionState, bool) {
+	return m.attentionAction, m.attentionAction.mergeInFlight()
+}
+
 // Cancelled returns true if the user cancelled the chat picker.
 func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 

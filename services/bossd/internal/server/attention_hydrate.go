@@ -42,6 +42,15 @@ type attentionDeps struct {
 	chats   []*models.AgentChat
 }
 
+// SessionAttention returns the current RPC attention for daemon policies.
+func (s *Server) SessionAttention(ctx context.Context, sessionID string) (*pb.SessionAttention, error) {
+	resp, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session.Attention, nil
+}
+
 // HydrateAttentionForStream shares the RPC producer with the reverse stream.
 // Call after the legacy display and observability overlays on every snapshot/delta.
 func (s *Server) HydrateAttentionForStream(ctx context.Context, p *pb.Session) {

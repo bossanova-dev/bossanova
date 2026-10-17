@@ -21,6 +21,39 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func TestSessionAttention_MatchesGetSessionVerifyPark(t *testing.T) {
+	for _, code := range []string{"human-review:security", "ledger-open"} {
+		t.Run(code, func(t *testing.T) {
+			n := 1
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.ReadyForReview, PRNumber: &n, UpdatedAt: time.Now()}
+			tracker := status.NewDisplayTracker()
+			tracker.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: code, HeadSHA: timelineHead})
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+			s.sessions = &sessionStoreFake{sess: row}
+			served, err := s.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: row.ID}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.SessionAttention(t.Context(), row.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := served.Msg.Session.Attention
+			if got == nil || got.GetKind() != want.GetKind() || !slices.Equal(got.GetParkCodes(), want.GetParkCodes()) || len(got.GetParkCodes()) == 0 {
+				t.Fatalf("attention = %v, want served verify park %v", got, want)
+			}
+		})
+	}
+}
+
+func TestSessionAttention_UnknownSession(t *testing.T) {
+	s := &Server{sessions: &sessionStoreFake{}}
+	got, err := s.SessionAttention(t.Context(), "missing")
+	if got != nil || connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("attention = %v, error = %v; want nil, NotFound", got, err)
+	}
+}
+
 // TestAttentionListParkCases serves a sign-off park as a REVIEW whose merge
 // records the approval and a blocked park as a FIX that never offers a merge,
 // with the open checklist items its park note recorded.

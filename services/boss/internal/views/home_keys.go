@@ -100,6 +100,13 @@ func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if h.attentionAction.active() {
 		var cmd tea.Cmd
 		h.attentionAction, cmd = h.attentionAction.update(msg)
+		if h.attentionAction.mergeInFlight() {
+			// A confirmed merge runs on without the operator: its row reads
+			// merging and Home stays usable, as on the details view.
+			h.markMerging(h.attentionAction)
+			h.status, h.statusErr = h.attentionAction.progress, false
+			h.attentionAction = attentionActionState{}
+		}
 		h.table.SetHeight(h.tableHeight())
 		return h, cmd
 	}
@@ -149,7 +156,9 @@ func (h HomeModel) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 	var cmd tea.Cmd
 	var handled bool
-	h.attentionAction, cmd, handled = h.attentionAction.start(h.ctx, h.client, h.selectedSession(), msg.String(), false)
+	if sel := h.selectedSession(); !h.isMerging(sel.GetId()) {
+		h.attentionAction, cmd, handled = h.attentionAction.start(h.ctx, h.client, sel, msg.String(), false)
+	}
 	if handled {
 		h.status, h.statusErr = "", false
 		h.table.SetHeight(h.tableHeight())

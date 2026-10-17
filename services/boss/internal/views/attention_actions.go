@@ -74,6 +74,9 @@ type attentionActionResultMsg struct {
 	sessionID string
 	text      string
 	err       error
+	// unsettled marks a merge whose call ended without bossd's answer, so
+	// whether it landed is not known yet.
+	unsettled bool
 }
 
 type attentionActionState struct {
@@ -87,6 +90,11 @@ type attentionActionState struct {
 }
 
 func (a attentionActionState) active() bool { return a.busy || a.confirm.active }
+
+// mergeInFlight reports a confirmed [m]erge whose result has not landed.
+func (a attentionActionState) mergeInFlight() bool {
+	return a.busy && a.action == pb.AttentionAction_ATTENTION_ACTION_MERGE
+}
 
 func (a attentionActionState) update(msg tea.Msg) (attentionActionState, tea.Cmd) {
 	if a.busy {
@@ -150,6 +158,10 @@ func attentionActionCmd(ctx context.Context, c client.BossClient, s *pb.Session,
 		switch action {
 		case pb.AttentionAction_ATTENTION_ACTION_MERGE:
 			result.text, result.err = operatorMerge(ctx, c, s)
+			if errors.Is(result.err, errMergeUnsettled) {
+				result.text = fmt.Sprintf("Waiting to hear whether PR #%d merged", s.GetPrNumber())
+				result.err, result.unsettled = nil, true
+			}
 		case pb.AttentionAction_ATTENTION_ACTION_DISMISS:
 			_, result.err = c.DismissSessionAlert(ctx, s.GetId(), s.GetAttention().GetAlertKey())
 			result.text = "Alert dismissed"
@@ -187,6 +199,8 @@ func operatorMerge(ctx context.Context, c client.BossClient, s *pb.Session) (str
 	review := a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
 	r, err := c.OperatorMergeSession(ctx, s.GetId(), head, review, a.GetParkCodes())
 	switch {
+	case mergeOutcomeUnknown(err):
+		return "", errMergeUnsettled
 	case err != nil:
 		return "", plainMergeError(pr, err)
 	case r.GetApproval().GetReason() == "head-moved":
@@ -195,6 +209,18 @@ func operatorMerge(ctx context.Context, c client.BossClient, s *pb.Session) (str
 		return "", mergeFailure(prverdict.MergeRefusal(pr, r.GetApproval()))
 	}
 	return prverdict.OperatorMerged(pr, r), nil
+}
+
+// errMergeUnsettled is a merge whose call ended before bossd answered. bossd
+// runs the merge on regardless, so a session poll settles the outcome.
+var errMergeUnsettled = errors.New("merge outcome not known yet")
+
+// mergeOutcomeUnknown reports a merge call that ended without bossd's answer:
+// this client stopped waiting or lost the daemon. An answer bossd sent, even
+// one with the same code, is an outcome.
+func mergeOutcomeUnknown(err error) bool {
+	code := connect.CodeOf(err)
+	return (code == connect.CodeDeadlineExceeded || code == connect.CodeUnavailable) && !connect.IsWireError(err)
 }
 
 // mergeFailure is the result line a merge that did not land leaves on screen.

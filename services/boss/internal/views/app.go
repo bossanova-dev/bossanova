@@ -340,6 +340,8 @@ func (a App) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.handleSwitchAccountResult(msg)
 	case archiveResultMsg:
 		a.handleArchiveResult(msg)
+	case attentionActionResultMsg:
+		a.handleAttentionActionResult(msg)
 	case accountsLoadedMsg:
 		a.handleAccountsLoadedResult(msg)
 	case accountStatusUpdatedMsg:

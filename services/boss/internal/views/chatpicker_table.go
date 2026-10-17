@@ -95,10 +95,15 @@ func (m *ChatPickerModel) buildTableRows() {
 		// pre-#350). The row is preserved so the operator can see the
 		// attempt; surface that explicitly here instead of letting the
 		// row look like a fresh "stopped" chat.
-		if chat.GetStartError() != "" {
-			statusStr = renderChatStartFailed()
-		} else if chat.GetReclaimedAt() != nil {
-			statusStr = renderChatReplaced()
+		//
+		// A chat working now is past that: a start error or replaced mark still
+		// on its row is stale, and the live state wins over it.
+		if daemon != statusWorking {
+			if chat.GetStartError() != "" {
+				statusStr = renderChatStartFailed()
+			} else if chat.GetReclaimedAt() != nil {
+				statusStr = renderChatReplaced()
+			}
 		}
 		if chat.AgentSessionId != "" && chat.AgentSessionId == m.deletingAgentSessionID {
 			statusStr = renderRowPendingStatus(m.spinner, "deleting")

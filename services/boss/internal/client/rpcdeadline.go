@@ -74,6 +74,11 @@ var slowRPCDeadline = config.SwitchResultCeiling
 // both bounds into one value that could hide an ordering bug.
 const slowDeadlineRatio = 4
 
+// operatorMergeRPCDeadline bounds OperatorMergeSession. bossd runs that merge
+// detached for up to config.OperatorMergeCeiling and exempts it from its write
+// timeout, so the client waits a minute longer and hears bossd's own answer.
+const operatorMergeRPCDeadline = config.OperatorMergeCeiling + time.Minute
+
 // slowProcedures is the SET of unary RPCs that get slowRPCDeadline instead
 // of defaultRPCDeadline, because each can block on work that is not bounded by
 // the daemon's own database access: a subprocess, an external network call, a
@@ -139,7 +144,6 @@ var slowProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: {},
 	bossanovav1connect.DaemonServiceMergeSessionProcedure:         {},
 	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     {},
-	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure: {},
 	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     {},
 	bossanovav1connect.DaemonServiceGetRunCostProcedure:           {},
 	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    {},
@@ -163,6 +167,9 @@ var slowProcedures = map[string]struct{}{
 // from their vars on every call, so an override applied after initialisation
 // (this file's e2e hook, or a test) takes effect immediately.
 func deadlineFor(procedure string) time.Duration {
+	if procedure == bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure {
+		return operatorMergeRPCDeadline
+	}
 	if _, ok := slowProcedures[procedure]; ok {
 		return slowRPCDeadline
 	}

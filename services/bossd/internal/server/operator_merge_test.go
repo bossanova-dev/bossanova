@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -9,7 +11,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/vcs"
@@ -308,7 +312,12 @@ func TestOperatorMergeSession_SlowBookkeepingStillReportsTheMerge(t *testing.T) 
 
 func TestOperatorMergeSession_NoTimeLeftSkipsTheBookkeeping(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
-	h.srv.operatorMergeBudget = operatorMergeBudget{total: time.Nanosecond, approve: time.Nanosecond}
+	h.srv.operatorMergeBudget = operatorMergeBudget{total: 100 * time.Millisecond, approve: 100 * time.Millisecond}
+	merge := h.prov.onMerge
+	h.prov.onMerge = func() {
+		time.Sleep(200 * time.Millisecond)
+		merge()
+	}
 
 	resp, err := h.merge(false)
 	if err != nil {
@@ -316,5 +325,88 @@ func TestOperatorMergeSession_NoTimeLeftSkipsTheBookkeeping(t *testing.T) {
 	}
 	if !resp.GetIsMerged() || resp.GetTrackerWrites() != "failed" || slices.Contains(h.calls, "mark-merged") {
 		t.Fatalf("response = %+v, calls = %q, want a landed merge and no bookkeeping started after the budget ran out", resp, h.calls)
+	}
+}
+
+func TestOperatorMergeSession_TheOperatorLeavingDoesNotAbandonTheMerge(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	ctx, leave := context.WithCancel(context.Background())
+	defer leave()
+	h.verbs.onApprove = leave
+
+	resp, err := h.srv.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{
+		Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: true, Waives: []string{"human-review:ui"},
+	}))
+	if err != nil {
+		t.Fatalf("OperatorMergeSession after the caller left: %v", err)
+	}
+	if want := []string{"approve", "merge", "mark-merged"}; !slices.Equal(h.calls, want) {
+		t.Fatalf("calls = %q, want %q: a caller that leaves mid-merge must not stop the merge or its bookkeeping", h.calls, want)
+	}
+	if !resp.Msg.GetIsMerged() || h.verbs.markCtxErr != nil {
+		t.Fatalf("response = %+v, mark-merged ctx err = %v, want a landed merge with live bookkeeping", resp.Msg, h.verbs.markCtxErr)
+	}
+}
+
+func TestOperatorMergeSession_BookkeepingRunsOnTheMergesBudgetNotTheCallers(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	merge := h.prov.onMerge
+	h.prov.onMerge = func() {
+		<-ctx.Done()
+		merge()
+	}
+
+	start := time.Now()
+	resp, err := h.srv.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
+	if err != nil {
+		t.Fatalf("OperatorMergeSession past the caller's deadline: %v", err)
+	}
+	if want := []string{"merge", "mark-merged"}; !slices.Equal(h.calls, want) || !resp.Msg.GetIsMerged() {
+		t.Fatalf("calls = %q, response = %+v, want %q: a merge that lands after the caller gave up still runs its bookkeeping", h.calls, resp.Msg, want)
+	}
+	if d := h.verbs.markCtxDeadline; h.verbs.markCtxErr != nil || d.Before(start.Add(config.OperatorMergeCeiling-time.Minute)) {
+		t.Fatalf("mark-merged ran with deadline %v (err %v), want the merge's own %v budget from %v", d, h.verbs.markCtxErr, config.OperatorMergeCeiling, start)
+	}
+}
+
+func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name, outcome string
+		refuse        bool
+	}{
+		{name: "merged", outcome: "merged"},
+		{name: "refused", outcome: "refused", refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newOperatorMergeHarness(t, headPin)
+			var logs bytes.Buffer
+			h.srv.logger = zerolog.New(&logs)
+			ctx, leave := context.WithCancel(context.Background())
+			defer leave()
+			h.verbs.onApprove = leave
+			if tc.refuse {
+				h.verbs.err = errors.New("toolbox exploded")
+			}
+
+			_, _ = h.srv.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{
+				Id: "s1", ExpectedHeadSha: headPin, ShouldApprove: true,
+			}))
+
+			var entry map[string]any
+			for line := range strings.Lines(logs.String()) {
+				var e map[string]any
+				if json.Unmarshal([]byte(line), &e) == nil && e["message"] == "operator merge finished" {
+					entry = e
+				}
+			}
+			want := map[string]any{"level": "info", "session": "s1", "pr": float64(h.verbs.targets[0].PR), "outcome": tc.outcome, "operator_left": true}
+			for k, v := range want {
+				if entry[k] != v {
+					t.Fatalf("outcome log %v: %s = %v, want %v (logs:\n%s)", entry, k, entry[k], v, logs.String())
+				}
+			}
+		})
 	}
 }

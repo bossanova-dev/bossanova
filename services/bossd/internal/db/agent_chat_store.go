@@ -180,13 +180,14 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 }
 
 // UpdateTmuxSessionName points the chat at a pane, or at none for nil. A pane
-// means the chat is live again, so it also clears the replaced mark: the wake
-// and attach paths relaunch a reclaimed chat through this write alone, and a
-// live chat must not read as replaced or stay unroutable.
+// means the chat is live again, so it also clears the replaced mark and any
+// failed-start error: the wake and attach paths relaunch a reclaimed or
+// failed chat through this write alone, and a live chat must not read as
+// replaced or failed, or stay unroutable.
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
 	query := `UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`
 	if name != nil {
-		query = `UPDATE agent_chats SET tmux_session_name = ?, reclaimed_at = NULL, reclaim_reason = NULL WHERE agent_session_id = ?`
+		query = `UPDATE agent_chats SET tmux_session_name = ?, start_error = NULL, reclaimed_at = NULL, reclaim_reason = NULL WHERE agent_session_id = ?`
 	}
 	_, err := s.db.ExecContext(ctx, query, name, agentSessionID)
 	if err != nil {

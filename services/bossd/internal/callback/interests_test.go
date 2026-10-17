@@ -530,3 +530,88 @@ func TestDeliveryPendingForChat(t *testing.T) {
 		t.Errorf("store failure: got %v, %v", got, err)
 	}
 }
+
+func TestHoldsProgressWait(t *testing.T) {
+	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	pr := 42
+	for _, tt := range []struct {
+		name       string
+		trigger    models.GithubCallbackTrigger
+		callbackPR int
+		nwo        string
+		sessionPR  *int
+		want       bool
+	}{
+		{"own merge", models.GithubCallbackTriggerMerged, 42, "acme/widget", &pr, false},
+		{"own close", models.GithubCallbackTriggerClosed, 42, "acme/widget", &pr, false},
+		{"case insensitive own merge", models.GithubCallbackTriggerMerged, 42, "ACME/Widget", &pr, false},
+		{"standby checks failed", models.GithubCallbackTriggerChecksFailed, 42, "acme/widget", &pr, false},
+		{"checks passed", models.GithubCallbackTriggerChecksPassed, 42, "acme/widget", &pr, true},
+		{"checks passed ready", models.GithubCallbackTriggerChecksPassedReady, 42, "acme/widget", &pr, true},
+		{"ready for review", models.GithubCallbackTriggerReadyForReview, 42, "acme/widget", &pr, true},
+		{"another PR", models.GithubCallbackTriggerMerged, 43, "acme/widget", &pr, true},
+		{"another repo", models.GithubCallbackTriggerMerged, 42, "acme/other", &pr, true},
+		{"another owner", models.GithubCallbackTriggerMerged, 42, "other/widget", &pr, true},
+		{"other PR close is standby", models.GithubCallbackTriggerClosed, 43, "acme/widget", &pr, false},
+		{"unknown own repo", models.GithubCallbackTriggerMerged, 42, "", &pr, true},
+		{"no session PR", models.GithubCallbackTriggerMerged, 42, "acme/widget", nil, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, state := range []models.GithubCallbackState{models.GithubCallbackStateActive, models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered} {
+				cb := chatCB("cb", "chat", now, tt.trigger, tt.callbackPR, state)
+				store := &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}
+				got, err := HoldsProgressWait(context.Background(), store, "chat", &models.Session{PRNumber: tt.sessionPR}, tt.nwo, now)
+				if err != nil || got != tt.want {
+					t.Fatalf("state=%s: got %v, %v; want %v", state, got, err, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestHoldsProgressWaitIgnoresInactiveAndUnrelated(t *testing.T) {
+	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	for _, state := range []models.GithubCallbackState{
+		models.GithubCallbackStateActive, models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered,
+		models.GithubCallbackStateDelivered, models.GithubCallbackStateCanceled, models.GithubCallbackStateExpired,
+	} {
+		for _, expiry := range []time.Time{now.Add(-time.Second), now, now.Add(time.Second)} {
+			cb := chatCB("cb", "chat", now, models.GithubCallbackTriggerChecksPassed, 42, state)
+			cb.ExpiresAt = expiry
+			got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}, "chat", &models.Session{}, "acme/widget", now)
+			want := (state == models.GithubCallbackStateActive || state == models.GithubCallbackStateLeased || state == models.GithubCallbackStateTriggered) && expiry.After(now)
+			if err != nil || got != want {
+				t.Fatalf("state=%s expiry=%v: got %v, %v; want %v", state, expiry, got, err, want)
+			}
+		}
+	}
+	other := chatCB("cb", "other-chat", now, models.GithubCallbackTriggerChecksPassed, 42, models.GithubCallbackStateActive)
+	if got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GithubCallback{other}}, "chat", &models.Session{}, "", now); got || err != nil {
+		t.Fatalf("unrelated callback: got %v, %v", got, err)
+	}
+	boom := errors.New("boom")
+	store := &fakeInterestStore{err: boom}
+	if got, err := HoldsProgressWait(context.Background(), store, "", &models.Session{}, "", now); got || err != nil {
+		t.Fatalf("empty chat: got %v, %v", got, err)
+	}
+	if got, err := HoldsProgressWait(context.Background(), store, "chat", &models.Session{}, "", now); got || !errors.Is(err, boom) {
+		t.Fatalf("store failure: got %v, %v", got, err)
+	}
+}
+
+func TestHoldsProgressWaitFindsProgressAlongsideFinishedWatches(t *testing.T) {
+	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
+	pr := 42
+	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
+		chatCB("own", "chat", now, models.GithubCallbackTriggerMerged, pr, models.GithubCallbackStateActive),
+		chatCB("standby", "chat", now, models.GithubCallbackTriggerChecksFailed, pr, models.GithubCallbackStateActive),
+	}}
+	session := &models.Session{PRNumber: &pr}
+	if got, err := HoldsProgressWait(context.Background(), store, "chat", session, "acme/widget", now); err != nil || got {
+		t.Fatalf("finished watches: got %v, %v", got, err)
+	}
+	store.callbacks = append(store.callbacks, chatCB("progress", "chat", now.Add(time.Minute), models.GithubCallbackTriggerChecksPassedReady, pr, models.GithubCallbackStateTriggered))
+	if got, err := HoldsProgressWait(context.Background(), store, "chat", session, "acme/widget", now); err != nil || !got {
+		t.Fatalf("additional progress watch: got %v, %v", got, err)
+	}
+}

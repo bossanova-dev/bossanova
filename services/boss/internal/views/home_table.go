@@ -50,10 +50,13 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if sess != nil && h.isArchiving(sess.Id) {
 		return renderArchivingStatus(h.spinner)
 	}
+	if h.isMerging(sess.GetId()) {
+		return renderMergingStatus(h.spinner)
+	}
 	// A finished row reads its PR's end ("✓ merged", "closed") like the rest of
 	// its struck-through cells.
 	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
-		return h.renderAttentionStatus(a)
+		return h.renderAttentionStatus(a, sess.GetDisplayLabel() == statusWorking)
 	}
 	if sess != nil && sess.GetDisplayLabel() == statusWorking {
 		if phase := h.daemonPhases[sess.GetId()]; phase != "" {

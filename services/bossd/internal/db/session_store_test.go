@@ -1838,3 +1838,104 @@ func TestUpdateRepairDiagnosticsPersistsBaseSHA(t *testing.T) {
 		t.Fatalf("LastRepairBaseSHA=%q, want it cleared by a repair that read no base", got.LastRepairBaseSHA)
 	}
 }
+
+// TestLeavingBlockedClearsTheParkedRotationStamp pins finding 2 of the #3204
+// verifier: rotation_resume_at marks a parked rotation, so a write that takes
+// the row out of Blocked by any path but the rotation sweep's own claim clears
+// it. A stamp left behind reads as a revival in flight and re-arms the
+// rotation sweep on a later, unrelated Blocked.
+func TestLeavingBlockedClearsTheParkedRotationStamp(t *testing.T) {
+	ctx := context.Background()
+	const orphanReason = "orphaned"
+	setState := func(st machine.State) UpdateSessionParams {
+		v := int(st)
+		return UpdateSessionParams{State: &v}
+	}
+	update := func(p UpdateSessionParams) func(*SQLiteSessionStore, string) error {
+		return func(s *SQLiteSessionStore, id string) error {
+			_, err := s.Update(ctx, id, p)
+			return err
+		}
+	}
+	claim := func(s *SQLiteSessionStore, id string) error {
+		_, err := s.UpdateStateConditional(ctx, id, int(machine.ImplementingPlan), int(machine.Blocked))
+		return err
+	}
+	reason := orphanReason
+	reasonPtr := &reason
+	tests := []struct {
+		name      string
+		write     func(*SQLiteSessionStore, string) error
+		wantStamp bool
+	}{
+		{"an update that links a PR and moves the row on", update(setState(machine.AwaitingChecks)), false},
+		{"an update that unblocks into ImplementingPlan", update(setState(machine.ImplementingPlan)), false},
+		{"an update that re-blocks", update(setState(machine.Blocked)), true},
+		{"an update that leaves the state alone", update(UpdateSessionParams{BlockedReason: &reasonPtr}), true},
+		{"the rotation sweep's claim", claim, true},
+		{"a manual run resume", func(s *SQLiteSessionStore, id string) error {
+			_, err := s.CommitRunResume(ctx, id, int(machine.Blocked), nil, "new-run")
+			return err
+		}, false},
+		{"a finalize entry after the claim", func(s *SQLiteSessionStore, id string) error {
+			if err := claim(s, id); err != nil {
+				return err
+			}
+			_, err := s.UpdateStateConditionalFrom(ctx, id, int(machine.Finalizing), []int{int(machine.ImplementingPlan)})
+			return err
+		}, false},
+		{"a restart that orphans the claimed row", func(s *SQLiteSessionStore, id string) error {
+			if err := claim(s, id); err != nil {
+				return err
+			}
+			_, err := s.OrphanHeadlessRun(ctx, id, orphanReason)
+			return err
+		}, false},
+		{"an orphan resume commit", func(s *SQLiteSessionStore, id string) error {
+			if err := claim(s, id); err != nil {
+				return err
+			}
+			if _, err := s.Update(ctx, id, UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
+				return err
+			}
+			_, err := s.CommitOrphanResume(ctx, id, orphanReason, nil, "new-run")
+			return err
+		}, false},
+		{"a resurrect", func(s *SQLiteSessionStore, id string) error {
+			if err := s.Archive(ctx, id); err != nil {
+				return err
+			}
+			_, err := s.ResurrectToState(ctx, id, int(machine.ImplementingPlan))
+			return err
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			store := NewSessionStore(db)
+			repo := createTestRepo(t, NewRepoStore(db))
+			sess, err := store.Create(ctx, CreateSessionParams{RepoID: repo.ID, Title: "parked", WorktreePath: "/tmp/wt/parked", BranchName: "feat/parked", BaseBranch: "main"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumeAt := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+			resumePtr := &resumeAt
+			park := setState(machine.Blocked)
+			park.RotationResumeAt = &resumePtr
+			if _, err := store.Update(ctx, sess.ID, park); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tt.write(store, sess.ID); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := store.Get(ctx, sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasStamp := got.RotationResumeAt != nil; hasStamp != tt.wantStamp {
+				t.Fatalf("state %v: rotation_resume_at set = %v, want %v", got.State, hasStamp, tt.wantStamp)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package evidence_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/internal/vcs/github"
 )
 
 const contractHead = "cccccccccccccccccccccccccccccccccccccccc"
@@ -65,5 +67,68 @@ func TestProviderContract_MockVCSProvider(t *testing.T) {
 func TestProviderContract_StubProvider(t *testing.T) {
 	if _, ok := readThrough(testharness.NewStubProvider()).Entry("s1"); ok {
 		t.Fatal("Entry ok = true through a provider that cannot read comments")
+	}
+}
+
+// restComment is one REST issue comment as GitHub returns it.
+type restComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	AuthorAssociation string `json:"author_association"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
+func operatorComment(id int64, kind, created, updated string) restComment {
+	c := restComment{ID: id, AuthorAssociation: "OWNER", CreatedAt: created, UpdatedAt: updated}
+	c.User.Login = "operator"
+	c.Body = "**Recorded by the operator**\n\n<!-- boss-" + kind + " head=" + contractHead + " -->"
+	return c
+}
+
+// TestProviderContract_GitHubOperatorRecordIsTheNewestPosted feeds REST
+// comments through the GitHub provider into the reader and pins that the
+// operator record posted last decides the head, the larger comment id breaking
+// a tie, however recently an older record was edited. That is the order
+// verify's operatorDecision uses, so bossd and verify agree on whether the
+// head was sent back.
+func TestProviderContract_GitHubOperatorRecordIsTheNewestPosted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		comments []restComment
+		want     bool
+	}{
+		{"an edited old approval does not lift a newer send-back", []restComment{
+			operatorComment(1, "approve", "2026-10-13T10:00:00Z", "2026-10-13T12:00:00Z"),
+			operatorComment(2, "send-back", "2026-10-13T11:00:00Z", "2026-10-13T11:00:00Z"),
+		}, true},
+		{"an edited old send-back does not undo a newer approval", []restComment{
+			operatorComment(1, "send-back", "2026-10-13T10:00:00Z", "2026-10-13T12:00:00Z"),
+			operatorComment(2, "approve", "2026-10-13T11:00:00Z", "2026-10-13T11:00:00Z"),
+		}, false},
+		{"in the same second the later comment id decides, approved", []restComment{
+			operatorComment(5, "send-back", "2026-10-13T10:00:00Z", "2026-10-13T12:00:00Z"),
+			operatorComment(6, "approve", "2026-10-13T10:00:00Z", "2026-10-13T10:00:00Z"),
+		}, false},
+		{"in the same second the later comment id decides, sent back", []restComment{
+			operatorComment(5, "approve", "2026-10-13T10:00:00Z", "2026-10-13T12:00:00Z"),
+			operatorComment(6, "send-back", "2026-10-13T10:00:00Z", "2026-10-13T10:00:00Z"),
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := json.Marshal(tc.comments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := github.New(zerolog.Nop(), github.WithRunGH(func(context.Context, ...string) (string, error) {
+				return string(page), nil
+			}))
+			if got := readThrough(p).SentBack("s1", contractHead); got != tc.want {
+				t.Fatalf("SentBack = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

@@ -11,9 +11,9 @@ func TestApproveLines(t *testing.T) {
 	approved := func(writes, why string) *pb.VerifyApproveResult {
 		return &pb.VerifyApproveResult{IsApproved: true, Waives: "ledger-open", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: writes, Why: why}
 	}
-	const waived = "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge."
-	const ledgerLine = "  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section"
-	const overrode = "Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh."
+	const waived = "Approved #7: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge."
+	const ledgerLine = "  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section"
+	const overrode = "Approving overrode open checklist items. A new push is judged afresh."
 	signedOff := &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui,always-human-path", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}
 	for _, tc := range []struct {
 		name string
@@ -21,30 +21,42 @@ func TestApproveLines(t *testing.T) {
 		want []string
 	}{
 		{"an approval over a failure names each code and what it overrode", approved("ok", ""), []string{waived, ledgerLine, overrode}},
-		{"a sign-off lists the codes and warns of nothing", signedOff, []string{
-			"Approved #7: waived human-review:ui,always-human-path on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
-			"  always-human-path: touches a path that always needs a person's sign-off",
-			"  human-review:ui: a UI change; watch the evidence before it merges",
+		{"a sign-off lists the codes, skips words that repeat a category, and warns of nothing", signedOff, []string{
+			"Approved #7: waived security, UI change on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+			"  Touches a path that always needs a person's sign-off",
+		}},
+		{"a UI-only sign-off names the UI change once", &pb.VerifyApproveResult{IsApproved: true, Waives: "human-review:ui", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			"Approved #7: waived UI change on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+		}},
+		{"a dry run over an unknown code names it once", &pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "made-up", HeadSha: "abcdef0123456789"}, []string{
+			"Would approve #7: record an approval waiving an issue this version of boss does not recognise on head abcdef01, then remove the needs-human label (dry run; nothing written).",
+			"Approving would override an issue this version of boss does not recognise.",
+		}},
+		{"a no-receipt waiver reads as its category", &pb.VerifyApproveResult{IsApproved: true, Waives: "no-receipt", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9", TrackerWrites: "ok"}, []string{
+			"Approved #7: waived latest commit not reviewed on head abcdef01 (record: https://x/9). Verify will re-check and merge.",
+			"  The latest commit has not had an automated build and review, or changed after its review",
 		}},
 		{"a toolbox that reported no tracker writes is still clean", approved("", ""), []string{waived, ledgerLine, overrode}},
-		{"a failed label removal names the failure", approved("failed", "rate-limited"),
-			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed (failed: rate-limited); remove it on the ticket by hand if this head still stands."}},
-		{"missing credentials name the code", approved("unavailable", "TRACKER_CREDENTIALS_MISSING"),
-			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands."}},
+		{"a failed label removal says why in plain words", approved("failed", "rate-limited"),
+			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed because the tracker was rate limited."}},
+		{"missing credentials read in plain words", approved("unavailable", "TRACKER_CREDENTIALS_MISSING"),
+			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed because the tracker's credentials are missing."}},
+		{"a reason with no plain words is left unsaid", approved("failed", "brand-new-reason"),
+			[]string{waived, ledgerLine, overrode, "The needs-human label could not be removed."}},
 		{"a moved head left the label on", approved("skipped", "head-moved"),
 			[]string{waived, ledgerLine, overrode, "The PR's head or its park changed after the approval, so the needs-human label was left on."}},
 		{"a closed PR left the label on", approved("skipped", "pr-not-open"),
-			[]string{waived, ledgerLine, overrode, "The PR is no longer open, so the needs-human label was left on; remove it on the ticket by hand if the work is done."}},
-		{"an older toolbox's skipped re-read names why", approved("skipped", "status-unreadable"),
-			[]string{waived, ledgerLine, overrode, "The needs-human label was left on (status-unreadable); remove it on the ticket by hand if this head still stands."}},
-		{"a lifted send-back names how to merge",
+			[]string{waived, ledgerLine, overrode, "The PR is no longer open, so the needs-human label was left on."}},
+		{"an older toolbox's skipped re-read says why in plain words", approved("skipped", "status-unreadable"),
+			[]string{waived, ledgerLine, overrode, "The needs-human label was left on because the PR's verify status could not be read."}},
+		{"a lifted send-back states what it did and gives no advice",
 			&pb.VerifyApproveResult{IsApproved: true, Lifted: "sent-back", HeadSha: "abcdef0123456789", ApprovalUrl: "https://x/9"},
-			[]string{"Approved #7: lifted the older send-back of head abcdef01 (record: https://x/9). Run /boss-verify 7 to merge it."}},
+			[]string{"Approved #7: lifted the older send-back of head abcdef01 (record: https://x/9)."}},
 		{"a dry run names what would be written and what it would override",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Waives: "ledger-open", HeadSha: "abcdef0123456789"},
-			[]string{"Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).",
+			[]string{"Would approve #7: record an approval waiving open checklist items on head abcdef01, then remove the needs-human label (dry run; nothing written).",
 				ledgerLine,
-				"Approving would override ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section)."}},
+				"Approving would override open checklist items."}},
 		{"a dry-run lift names the send-back",
 			&pb.VerifyApproveResult{IsPlanned: true, IsDryRun: true, Lifted: "sent-back", HeadSha: "abcdef0123456789"},
 			[]string{"Would approve #7: record an approval lifting the older send-back of head abcdef01 (dry run; nothing written)."}},
@@ -65,9 +77,9 @@ func TestOperatorMerged(t *testing.T) {
 	}{
 		{"bookkeeping done", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "ok"}, "Merged PR #7"},
 		{"a PR with no ticket needs no bookkeeping", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "none"}, "Merged PR #7"},
-		{"failed bookkeeping says to move the ticket by hand", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "TRACKER_CREDENTIALS_MISSING"},
-			"Merged PR #7; the tracker was not updated (unavailable: TRACKER_CREDENTIALS_MISSING), so move the ticket to done by hand"},
-		{"bookkeeping that never ran says so", &pb.OperatorMergeSessionResponse{IsMerged: true}, "Merged PR #7; the tracker was not updated, so move the ticket to done by hand"},
+		{"failed bookkeeping says why in plain words", &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "TRACKER_CREDENTIALS_MISSING"},
+			"Merged PR #7; the tracker was not updated because the tracker's credentials are missing"},
+		{"bookkeeping that never ran says so", &pb.OperatorMergeSessionResponse{IsMerged: true}, "Merged PR #7; the tracker was not updated"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := OperatorMerged(7, tc.r); got != tc.want {

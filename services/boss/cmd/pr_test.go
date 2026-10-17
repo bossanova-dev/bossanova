@@ -139,10 +139,10 @@ func TestPrApprove(t *testing.T) {
 		if len(f.verbs) != 1 || f.verbs[0] != (prVerbCall{"s-a", false}) {
 			t.Fatalf("verbs = %+v, want one approve of s-a", f.verbs)
 		}
-		want := "Approved #7: waived ledger-open on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-			"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-			"Approving overrode ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section); to undo it, push a new head, which verify judges afresh.\n" +
-			"The needs-human label could not be removed (unavailable: TRACKER_CREDENTIALS_MISSING); remove it on the ticket by hand if this head still stands.\n"
+		want := "Approved #7: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+			"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+			"Approving overrode open checklist items. A new push is judged afresh.\n" +
+			"The needs-human label could not be removed because the tracker's credentials are missing.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
@@ -189,9 +189,9 @@ func TestPrApprove(t *testing.T) {
 		if !f.verbs[0].dryRun {
 			t.Fatal("--dry-run did not reach the daemon")
 		}
-		want := "Would approve #7: record an approval waiving ledger-open on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" +
-			"  ledger-open: the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-			"Approving would override ledger-open (the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section).\n"
+		want := "Would approve #7: record an approval waiving open checklist items on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" +
+			"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
+			"Approving would override open checklist items.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
@@ -203,8 +203,8 @@ func TestPrApprove(t *testing.T) {
 		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7}); err != nil {
 			t.Fatalf("prApprove: %v", err)
 		}
-		want := "Approved #7: waived human-review:database on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
-			"  human-review:database: a database migration for a person to review\n"
+		want := "Approved #7: waived database migration on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+			"  A database migration for a person to review\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}

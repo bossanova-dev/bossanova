@@ -5,18 +5,24 @@
 //
 //   node receipt-carry.mjs --start-sha <40-hex> --head <40-hex> [--base <branch>]
 //                          [--review-verdict <file>]... [--target-url <url>] [--repo <owner/name>]
-//     prints {decision, reasons, startSha, head[, drift][, review][, posted][, findings][, reportFile]}
+//     prints {decision, reasons, startSha, head[, baselineSha][, drift][, review][, posted]
+//             [, findings][, reportFile]}
 //     exit 0 posted (`carry`, `post`) · 3 nothing posted (`refused`, `blocked`)
 //          4 `re-review`: review `review.base`...`review.head`, then re-run adding each verdict file
 //          1 the post failed, or an internal error · 2 usage error (stderr, nothing printed)
 //
 // The start head's receipt certifies that its tree was reviewed clean, so it is the baseline. A
-// pushed head whose tree is the start head replayed onto the pushed head's base carries it. One
-// whose tree differs needs a review of exactly the delta no review saw: the repair commits when the
-// start head is an ancestor, else the diff from the start head's automatic replay onto the new base
-// (conflict markers included, as `git show --remerge-diff` shows them) to the pushed tree. That
-// delta is materialised as two deterministic unreferenced commits so a `BASE...HEAD` review reads
-// it. Every post goes through commit-status.mjs, whose ready gate re-checks the tree.
+// start head with no receipt (an earlier push dropped it) takes its baseline from the newest
+// receipted head in a run of the remote-tracking ref's reflog: pushes whose head this worktree made
+// itself, ending at a fetch, a pull, or a push from another worktree. The first head not made here
+// is still a candidate before the run stops, so a peer's push head can be the baseline, and at most
+// 20 heads are read. The baseline is reported as `baselineSha`; the delta from it covers every
+// commit since, so the receipt is re-earned rather than lost for good. A pushed head whose tree is the baseline replayed onto the pushed head's base
+// carries it. One whose tree differs needs a review of exactly the delta no review saw: the commits
+// since the baseline when it is an ancestor, else the diff from the baseline's automatic replay onto
+// the new base (conflict markers included, as `git show --remerge-diff` shows them) to the pushed
+// tree. That delta is materialised as two deterministic unreferenced commits so a `BASE...HEAD`
+// review reads it. Every post goes through commit-status.mjs, whose ready gate re-checks the tree.
 
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -61,7 +67,8 @@ const SYNTHETIC_ENV = Object.freeze({
 /**
  * The decision, from facts already read.
  * - `startReceipt`: `success` (present with state success), `absent`, or `unknown`.
- * - `gateReady`: the default ready gate (the worktree's review state) calls the head ready.
+ * - `gateReady`: the default ready gate (the review verdict for the reviewed head, plus tree drift
+ *   against it) calls the head ready.
  * - `drift`: the pushed head against the start head, as `reviewedTreeDrift` reads it.
  * - `range`: the delta to review, or null when it could not be computed.
  * - `review`: absent before a review, else `{status, rangeMatches}`.
@@ -210,6 +217,64 @@ function startReceiptState(read) {
   return read?.verdict === 'absent' ? 'absent' : 'unknown'
 }
 
+// How many of the branch's pushed heads the baseline lookup reads a receipt for, newest first.
+const BASELINE_LOOKBACK = 20
+
+/**
+ * Whether this worktree's HEAD reflog shows it made `target`: the oldest entry at `target` is a
+ * commit, cherry-pick, revert, or rebase step other than its start, not a fast-forward, merge, pull,
+ * reset or checkout onto a commit made elsewhere. HEAD's reflog is per-worktree; the remote-tracking
+ * reflog is shared by every worktree of the clone.
+ */
+function authoredHere(headLog, target) {
+  let arrival
+  for (const line of headLog) {
+    const [oidText = '', ...subject] = line.trim().split(' ')
+    if (oidText.toLowerCase() === target) arrival = subject.join(' ')
+  }
+  if (arrival === undefined) return false
+  if (/^(cherry-pick|rebase[^:]*): fast-forward$/.test(arrival)) return false
+  if (/^(commit|cherry-pick|revert)/.test(arrival)) return true
+  return arrival.startsWith('rebase') && !arrival.includes('(start)')
+}
+
+/**
+ * The newest head the current branch pushed, other than `skip`, whose receipt reads `success`, or
+ * null; `receiptOf(sha)` reads one head's receipt state. Candidates are the remote-tracking ref's
+ * reflog, newest first, while each entry is a push (`update by push`) and every newer pushed head
+ * was made in this worktree: a fetch or pull, or a push from another worktree of the clone, ends
+ * the run. Commits a pushed head carries are not checked one by one, so one merged in from
+ * FETCH_HEAD stays inside the run; the review range from the baseline covers it.
+ */
+export function receiptedBaseline(read, receiptOf, skip = []) {
+  const branch = read('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+  if (!branch.ok || branch.output === '') return null
+  const log = read('git', [
+    'reflog',
+    'show',
+    '--format=%H %gs',
+    `refs/remotes/origin/${branch.output}`,
+  ])
+  const headLog = read('git', ['reflog', 'show', '--format=%H %gs', 'HEAD'])
+  if (!log.ok || !headLog.ok) return null
+  const headLines = headLog.output.split('\n')
+  const seen = new Set(skip.map((value) => String(value).toLowerCase()))
+  const candidates = []
+  for (const line of log.output.split('\n')) {
+    const [oidText = '', ...subject] = line.trim().split(' ')
+    if (subject.join(' ') !== 'update by push') break
+    const value = oidText.toLowerCase()
+    if (!sha(value)) break
+    if (!seen.has(value)) {
+      seen.add(value)
+      candidates.push(value)
+      if (candidates.length === BASELINE_LOOKBACK) break
+    }
+    if (!authoredHere(headLines, value)) break
+  }
+  return candidates.find((candidate) => receiptOf(candidate) === 'success') ?? null
+}
+
 function refuse(report, reason) {
   return { ...report, decision: DECISIONS.REFUSED, reasons: [reason] }
 }
@@ -235,18 +300,28 @@ export function carryReport(options, deps = {}) {
     return branch
   }
 
-  const receipt = commitStatus(
-    ['read', '--sha', startSha, '--context', RECEIPT_CONTEXT, ...repoFlag],
-    { spawn },
-  ).result
-  const facts = { startReceipt: startReceiptState(receipt) }
+  const receiptOf = (target) =>
+    startReceiptState(
+      commitStatus(['read', '--sha', target, '--context', RECEIPT_CONTEXT, ...repoFlag], { spawn })
+        .result,
+    )
+  const facts = { startReceipt: receiptOf(startSha) }
   const report = { startSha, head }
+  let baseline = startSha
+  if (facts.startReceipt !== 'success') {
+    const found = receiptedBaseline(read, receiptOf, [startSha, head])
+    if (found) {
+      baseline = found
+      facts.startReceipt = 'success'
+      report.baselineSha = found
+    }
+  }
   if (facts.startReceipt === 'success') {
     facts.gateReady = readyGateReport({ head, base: options.base }, gateDeps).ready === true
     if (!facts.gateReady) {
-      facts.drift = reviewedTreeDrift(read, base, startSha, head)
+      facts.drift = reviewedTreeDrift(read, base, baseline, head)
       report.drift = facts.drift
-      if (facts.drift === 'changed') facts.range = reviewRange(read, base, startSha, head)
+      if (facts.drift === 'changed') facts.range = reviewRange(read, base, baseline, head)
     }
   }
   const files = options.reviewVerdicts ?? []
@@ -304,7 +379,7 @@ export function carryReport(options, deps = {}) {
     head,
     '--description',
     decided.decision === DECISIONS.POST
-      ? `boss-repair pass pushed ${short(head)}; delta re-reviewed from ${short(startSha)}`
+      ? `boss-repair pass pushed ${short(head)}; delta re-reviewed from ${short(baseline)}`
       : `boss-repair pass pushed ${short(head)}`,
     ...(options.targetUrl ? ['--target-url', options.targetUrl] : []),
     ...repoFlag,
@@ -314,7 +389,7 @@ export function carryReport(options, deps = {}) {
   if (decided.baseline !== 'review-state') {
     if (!stateRoot) return refuse(report, 'git-dir-unknown')
     const dir = headDir('receipt')
-    const reviewedHead = decided.decision === DECISIONS.POST ? judged.verdictHead : startSha
+    const reviewedHead = decided.decision === DECISIONS.POST ? judged.verdictHead : baseline
     writeFileSync(join(dir, 'review-verdict'), 'REVIEW_VERDICT=clean\n')
     writeFileSync(join(dir, 'reviewed-head'), `${reviewedHead}\n`)
     post.push('--review-verdict-file', join(dir, 'review-verdict'))

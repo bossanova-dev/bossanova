@@ -2,45 +2,33 @@ package vcs
 
 import "strings"
 
-// IsGitHubURL returns true if the given origin URL points to github.com.
-// Supports both HTTPS and SSH formats:
-//   - https://github.com/owner/repo.git
-//   - git@github.com:owner/repo.git
+// IsGitHubURL reports whether a git origin's host is github.com or one of its
+// subdomains. The host comes from parseRemote, never a substring match, so
+// evilgithub.com and a path that names github.com do not count.
 func IsGitHubURL(originURL string) bool {
-	s := strings.ToLower(strings.TrimSpace(originURL))
-	if s == "" {
-		return false
-	}
-	return strings.Contains(s, "github.com")
+	r, ok := parseRemote(originURL)
+	return ok && IsGitHubHost(r.host)
 }
 
 // GitHubNWO extracts the "owner/repo" identifier from a GitHub origin URL.
 // Only the first two path segments are returned, so extra path or query parts
-// (e.g. /tree/main) are discarded. Returns empty string if owner/repo cannot be
-// determined.
+// (e.g. /tree/main) are discarded. The origin is split by parseRemote and its
+// host must satisfy IsGitHubHost. Returns empty string if owner/repo cannot be
+// determined or the host is not GitHub.
 //
 // Examples:
-//   - "git@github.com:owner/repo.git"          → "owner/repo"
-//   - "https://github.com/owner/repo.git"      → "owner/repo"
-//   - "https://github.com/owner/repo"          → "owner/repo"
-//   - "https://github.com/owner/repo/tree/main" → "owner/repo"
+//   - "git@github.com:owner/repo.git"                  → "owner/repo"
+//   - "https://github.com/owner/repo.git"              → "owner/repo"
+//   - "https://github.com/owner/repo/tree/main"        → "owner/repo"
+//   - "ssh://git@github.com:22/owner/repo.git"         → "owner/repo"
+//   - "https://user:token@github.com:443/owner/repo"   → "owner/repo"
+//   - "git@github.com:22/repo.git"                     → "22/repo"
 func GitHubNWO(originURL string) string {
-	s := strings.TrimSpace(originURL)
-	if s == "" {
+	r, ok := parseRemote(originURL)
+	if !ok || !IsGitHubHost(r.host) {
 		return ""
 	}
-
-	// SSH format: git@github.com:owner/repo.git
-	if _, after, ok := strings.Cut(s, "github.com:"); ok {
-		return ownerRepo(after)
-	}
-
-	// HTTPS format: https://github.com/owner/repo.git
-	if _, after, ok := strings.Cut(s, "github.com/"); ok {
-		return ownerRepo(after)
-	}
-
-	return ""
+	return ownerRepo(r.path)
 }
 
 // ownerRepo returns the "owner/repo" prefix of a GitHub path, trimming a

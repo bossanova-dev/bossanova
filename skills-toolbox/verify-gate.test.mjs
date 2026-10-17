@@ -6732,7 +6732,7 @@ test('a ticketless factory PR parks on its status and a park note, and writes no
   )
   const [note] = parkNotes(w)
   for (const line of [
-    'This head has no successful `boss/build` status.',
+    'No automated build and review has passed on this commit.',
     '`## Acceptance criteria` is missing.',
     'This PR has no tracker ticket, so verify made no tracker writes',
   ])

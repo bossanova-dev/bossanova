@@ -70,13 +70,24 @@ type Input struct {
 	Mergeable *bool
 	// IsFactoryRepo marks a repo with an enabled verify job on this daemon.
 	// Verify reaches a green PR's head and merges it, so a green PR there is
-	// never the operator's to merge.
+	// not the operator's to merge until verify has passed it and left it
+	// unmerged for VerifyMergeGrace.
 	IsFactoryRepo bool
 	// Verified marks a head the verify stage passed (vcs.VerifyPassed): a
 	// completed, successful boss/verify status on the current head, posted
 	// when verify passes it or the operator approves its park. A merge-ready
 	// PR nothing verified is still a MERGE, marked is_unverified.
 	Verified bool
+	// VerifiedSince is when the current head was first seen verified, in the
+	// newest unbroken run of polls that saw it verified; zero when unknown.
+	VerifiedSince time.Time
+	// IsSentBack marks a verified head whose newest operator decision on the
+	// PR is a legacy send-back. Verify's merge refuses such a head until an
+	// approval lifts it, so it is never verified-not-merged.
+	IsSentBack bool
+	// Now is when the answer is computed; it is compared with VerifiedSince.
+	// Zero never makes verify's merge overdue.
+	Now time.Time
 
 	// ParkCodes are the verify stage's park codes; comma-joined entries are
 	// split.
@@ -100,6 +111,10 @@ type Input struct {
 
 	// StateSince is when the session's current state began.
 	StateSince time.Time
+	// ParkSince is when the current verify park began: the first poll of the
+	// newest unbroken run that saw the head parked. A park's attention is dated
+	// from it; zero falls back to StateSince.
+	ParkSince time.Time
 
 	// HasTrackerLink marks a session linked to a tracker issue (a non-empty
 	// tracker_url); every kind then offers ATTENTION_ACTION_TRACKER last.
@@ -124,12 +139,20 @@ func NeedsYou(kind pb.AttentionKind) bool {
 	}
 }
 
+// VerifyMergeGrace is how long a factory repo's verified, green, mergeable PR
+// may stay open before it is the operator's to merge. Verify merges a head
+// right after it passes it, so a head still open this long after it was first
+// seen verified is one whose merge failed or never came.
+const VerifyMergeGrace = 30 * time.Minute
+
 // Compute returns the session's attention. Precedence:
 // fix > question > verify park > merge-ready > done > in_progress. A verify
 // park whose codes all ask for a sign-off is a REVIEW whose MERGE records the
 // operator's approval and merges; one with any failure or unknown code is
 // blocked, a FIX that never offers MERGE. A merge-ready PR outside a factory
-// repo is a MERGE, marked is_unverified when nothing verified its head. A
+// repo is a MERGE, marked is_unverified when nothing verified its head. In a
+// factory repo it is a MERGE only once verify passed its head and left it
+// unmerged for VerifyMergeGrace. A
 // session with a tracker link offers ATTENTION_ACTION_TRACKER last, whatever
 // its kind.
 func Compute(in Input) *pb.SessionAttention {
@@ -154,13 +177,21 @@ func computeKind(in Input) *pb.SessionAttention {
 	// Every code left here is a waiting code; a parked PR is not the
 	// operator's to merge, however green it looks.
 	if len(codes) == 0 && isMergeReady(in) {
-		return &pb.SessionAttention{
+		att := &pb.SessionAttention{
 			Kind:         pb.AttentionKind_ATTENTION_KIND_MERGE,
 			Sentence:     mergeSentence,
 			Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_GITHUB},
 			Since:        timestamp(in.StateSince),
 			IsUnverified: !in.Verified,
 		}
+		if in.IsFactoryRepo {
+			// The label the session showed while verify held it rides along,
+			// so an older pin can be answered in progress again.
+			att.Sentence = VerifiedNotMergedSentence
+			att.Since = timestamp(in.VerifiedSince)
+			att.ProgressLabel = progressLabel(in, codes)
+		}
+		return att
 	}
 	if in.HasPR && (in.PRState == PRStateMerged || in.PRState == PRStateClosed) {
 		return &pb.SessionAttention{
@@ -239,11 +270,15 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	if slices.Contains(codes, ParkCodeLedgerOpen) {
 		openItems = slices.Clone(in.OpenItems)
 	}
+	since := in.StateSince
+	if !in.ParkSince.IsZero() {
+		since = in.ParkSince
+	}
 	return &pb.SessionAttention{
 		Kind:        info.kind(),
 		Sentence:    sentence,
 		Actions:     actions,
-		Since:       timestamp(in.StateSince),
+		Since:       timestamp(since),
 		ParkCodes:   codes,
 		EvidenceUrl: evidenceURL,
 		OpenItems:   openItems,
@@ -251,7 +286,7 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 }
 
 func isMergeReady(in Input) bool {
-	return !in.IsFactoryRepo &&
+	return (!in.IsFactoryRepo || verifyMergeOverdue(in)) &&
 		in.HasPR &&
 		in.PRState == PRStateOpen &&
 		!in.PRDraft &&
@@ -259,6 +294,15 @@ func isMergeReady(in Input) bool {
 		in.ChecksDone >= in.ChecksTotal &&
 		in.ChecksFailing == 0 &&
 		in.Mergeable != nil && *in.Mergeable
+}
+
+// verifyMergeOverdue reports a head verify passed at least VerifyMergeGrace
+// ago and has not been sent back. It reads only poll times, the operator's
+// decision and the given clock, so recomputing it gives the same answer until
+// the PR merges, its head moves, verify's status changes or the decision does.
+func verifyMergeOverdue(in Input) bool {
+	return in.Verified && !in.IsSentBack && !in.VerifiedSince.IsZero() && !in.Now.IsZero() &&
+		!in.Now.Before(in.VerifiedSince.Add(VerifyMergeGrace))
 }
 
 func progressLabel(in Input, codes []string) string {
@@ -300,6 +344,19 @@ func waitingLabel(code string) (string, bool) {
 		return "waiting", true
 	}
 	return "waiting: " + reason, true
+}
+
+// WaitingWords says, in report order and once each, what a verify park's
+// waiting codes wait on, in the words the in-progress label uses ("waiting for
+// main CI"). Operator codes are left out: they are not waits.
+func WaitingWords(raw []string) []string {
+	var out []string
+	for _, code := range normalizeParkCodes(raw) {
+		if label, ok := waitingLabel(code); ok && !slices.Contains(out, label) {
+			out = append(out, label)
+		}
+	}
+	return out
 }
 
 // isOperatorCode reports whether a park code is the operator's to act on.

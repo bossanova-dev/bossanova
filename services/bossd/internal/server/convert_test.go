@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1631,7 +1632,9 @@ func TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial(t *testing.T) {
 
 // TestHydrateVerifyAttention pins the BOS-1382 overlay: a NEEDS_HUMAN session
 // with no attention gets AWAITING_HUMAN_INPUT carrying the park reason, and the
-// overlay never overwrites an existing attention or touches another status.
+// overlay never overwrites an existing attention or touches another status. It
+// stamps verify_park_codes on every NEEDS_HUMAN session, an outranked park
+// included, because the 2026-09-22 down-convert reads them from nowhere else.
 func TestHydrateVerifyAttention(t *testing.T) {
 	updated := timestamppb.New(time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	existing := func(reason pb.AttentionReason) *pb.AttentionStatus {
@@ -1643,6 +1646,7 @@ func TestHydrateVerifyAttention(t *testing.T) {
 		entry       *status.DisplayEntry
 		wantReason  pb.AttentionReason
 		wantSummary string
+		wantCodes   []string
 		wantNil     bool
 	}{
 		{
@@ -1651,6 +1655,7 @@ func TestHydrateVerifyAttention(t *testing.T) {
 			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "always-human-path"},
 			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
 			wantSummary: "needs human: always-human-path",
+			wantCodes:   []string{"always-human-path"},
 		},
 		{
 			name:        "needs human without reason",
@@ -1668,35 +1673,39 @@ func TestHydrateVerifyAttention(t *testing.T) {
 		{
 			name:        "blocked attention kept",
 			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS)},
-			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui, no-receipt"},
 			wantReason:  pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
 			wantSummary: "prior",
+			wantCodes:   []string{"no-receipt", "human-review:ui"},
 		},
 		{
 			name:        "orphaned attention kept",
 			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT)},
-			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui, no-receipt"},
 			wantReason:  pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT,
 			wantSummary: "prior",
+			wantCodes:   []string{"no-receipt", "human-review:ui"},
 		},
 		{
 			name:        "agent auth failed kept",
 			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED)},
-			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui, no-receipt"},
 			wantReason:  pb.AttentionReason_ATTENTION_REASON_AGENT_AUTH_FAILED,
 			wantSummary: "prior",
+			wantCodes:   []string{"no-receipt", "human-review:ui"},
 		},
 		{
 			name:        "agent stalled kept",
 			session:     &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN, AttentionStatus: existing(pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED)},
-			entry:       &status.DisplayEntry{VerifyReason: "x"},
+			entry:       &status.DisplayEntry{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:ui, no-receipt"},
 			wantReason:  pb.AttentionReason_ATTENTION_REASON_AGENT_STALLED,
 			wantSummary: "prior",
+			wantCodes:   []string{"no-receipt", "human-review:ui"},
 		},
 		{
 			name:    "verifying untouched",
 			session: &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_VERIFYING},
-			entry:   &status.DisplayEntry{Status: vcs.DisplayStatusVerifying},
+			entry:   &status.DisplayEntry{Status: vcs.DisplayStatusVerifying, VerifyReason: "no-receipt"},
 			wantNil: true,
 		},
 		{
@@ -1713,6 +1722,9 @@ func TestHydrateVerifyAttention(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			HydrateVerifyAttention(tt.session, tt.entry)
+			if codes := tt.session.GetVerifyParkCodes(); !slices.Equal(codes, tt.wantCodes) {
+				t.Fatalf("VerifyParkCodes = %q, want %q", codes, tt.wantCodes)
+			}
 			got := tt.session.GetAttentionStatus()
 			if tt.wantNil {
 				if got != nil {

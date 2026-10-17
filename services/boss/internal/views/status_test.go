@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -909,12 +910,11 @@ func TestRotationRespawnCapHint_EndsWhenPRDone(t *testing.T) {
 	}
 }
 
-// TestRotationHistoryBlock_KeepsEndedWedge proves history is not current state:
-// once later agent output ends the auth wedge, the hint goes but the rotation
-// history still lists the wedge event (BOS-1535).
-func TestRotationHistoryBlock_KeepsEndedWedge(t *testing.T) {
-	now := time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC)
-	wedgeAt := now.Add(-2 * time.Hour)
+// TestRotationTimeline_KeepsEndedWedge proves history is not current state:
+// once later agent output ends the auth wedge, the hint goes but the session
+// timeline still lists the wedge event, marked failed (BOS-1535).
+func TestRotationTimeline_KeepsEndedWedge(t *testing.T) {
+	wedgeAt := time.Now().Add(-2 * time.Hour)
 	sess := rotationSession(&pb.RotationEvent{
 		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED,
 		CreatedAt: timestamppb.New(wedgeAt),
@@ -924,9 +924,10 @@ func TestRotationHistoryBlock_KeepsEndedWedge(t *testing.T) {
 	if hint := rotationRespawnCapHint(sess); hint != "" {
 		t.Fatalf("wedge should no longer be current, got %q", hint)
 	}
-	got := rotationHistoryBlock(sess, 80, now)
-	if !strings.Contains(got, "auth-wedge respawn cap reached") {
-		t.Fatalf("rotation history lost the ended wedge event: %q", got)
+	m := NewChatPickerModel(nil, context.Background(), "s", "")
+	m.session = sess
+	if got := stripANSI(m.timelineBlock()); !strings.Contains(got, "✗ "+rotationStepTitle+"  auth-wedge respawn cap reached") {
+		t.Fatalf("timeline lost the ended wedge event: %q", got)
 	}
 }
 
@@ -974,132 +975,27 @@ func TestSessionWarningHints_Issue2986StaleAlertsClear(t *testing.T) {
 	}
 }
 
-// TestRotationHistoryBlock covers the rendered rotation-history block: a
-// rotated event shows the account transition, and a session with no history
-// renders nothing.
-func TestRotationHistoryBlock(t *testing.T) {
-	cases := []struct {
-		name         string
-		sess         *pb.Session
-		wantContains string
+// TestRotationEventText pins what a rotation says on the timeline: the account
+// transition with its outcome suffix, the LEGACY-row shim that drops a stored
+// "switched to <account> — " prefix rather than repeat the label, and a generic
+// (UNSPECIFIED) event's detail alone with no "— " join or filler prefix.
+func TestRotationEventText(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ev   *pb.RotationEvent
+		want string
 	}{
-		{
-			name: "rotated latest",
-			sess: rotationSession(&pb.RotationEvent{
-				Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
-				FromAccount: "acct-a",
-				ToAccount:   "acct-b",
-				CreatedAt:   timestamppb.New(time.Now()),
-			}),
-			wantContains: "acct-a switched to acct-b",
-		},
-		{name: "no events", sess: rotationSession(), wantContains: ""},
-		{name: "nil session", sess: nil, wantContains: ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := rotationHistoryBlock(tc.sess, 80, time.Now())
-			if tc.wantContains == "" {
-				if got != "" {
-					t.Errorf("rotationHistoryBlock = %q, want empty", got)
-				}
-				return
-			}
-			if !strings.Contains(got, "Rotation history") {
-				t.Errorf("rotationHistoryBlock missing header: %q", got)
-			}
-			if !strings.Contains(got, tc.wantContains) {
-				t.Errorf("rotationHistoryBlock = %q, want contains %q", got, tc.wantContains)
+		{"rotated, no detail", &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "acct-a", ToAccount: "acct-b"}, "acct-a switched to acct-b"},
+		{"legacy full sentence", &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "acct-a", ToAccount: "acct-b", Detail: "switched to acct-b — resumed"}, "acct-a switched to acct-b — resumed"},
+		{"outcome suffix", &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "acct-c", ToAccount: "acct-d", Detail: "resets 15:04"}, "acct-c switched to acct-d — resets 15:04"},
+		{"unspecified", &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED, Detail: "stale failover-proxy port (BOS-409)"}, "stale failover-proxy port (BOS-409)"},
+		{"label only", &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED}, "all accounts limited"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rotationEventText(tt.ev); got != tt.want {
+				t.Errorf("rotationEventText = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-// TestRotationHistoryBlockKeepsRotatedDetailSuffix preserves information such
-// as whether a switch resumed the prior conversation or when the capped account
-// resets. The first event exercises the LEGACY-row shim: manual-switch audits
-// written before the daemon split the pane notice from the audit Detail stored
-// the full "switched to <account> — resumed" sentence; new daemon rows carry
-// only the suffix (the second event's shape), which passes through untouched.
-func TestRotationHistoryBlockKeepsRotatedDetailSuffix(t *testing.T) {
-	sess := rotationSession(
-		&pb.RotationEvent{
-			Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
-			FromAccount: "acct-a",
-			ToAccount:   "acct-b",
-			Detail:      "switched to acct-b — resumed",
-			CreatedAt:   timestamppb.New(time.Now()),
-		},
-		&pb.RotationEvent{
-			Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
-			FromAccount: "acct-c",
-			ToAccount:   "acct-d",
-			Detail:      "resets 15:04",
-			CreatedAt:   timestamppb.New(time.Now()),
-		},
-	)
-	got := rotationHistoryBlock(sess, 80, time.Now())
-	for _, want := range []string{
-		"acct-a switched to acct-b — resumed",
-		"acct-c switched to acct-d — resets 15:04",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rotationHistoryBlock = %q, want %q", got, want)
-		}
-	}
-	if strings.Contains(got, "acct-a switched to acct-b — switched to acct-b") {
-		t.Errorf("rotationHistoryBlock = %q, should not repeat the switch label", got)
-	}
-}
-
-// TestRotationEventTime pins the date-aware per-row timestamp: an event from
-// the same calendar day as now renders time-only (15:04); an event from any
-// other day is prefixed with an ISO date (2006-01-02 15:04).
-func TestRotationEventTime(t *testing.T) {
-	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
-	today := time.Date(2026, 7, 18, 9, 5, 0, 0, time.Local)
-	if got, want := rotationEventTime(today, now), "09:05"; got != want {
-		t.Errorf("today: rotationEventTime = %q, want %q", got, want)
-	}
-	older := time.Date(2026, 7, 17, 14, 34, 0, 0, time.Local)
-	if got, want := rotationEventTime(older, now), "2026-07-17 14:34"; got != want {
-		t.Errorf("not-today: rotationEventTime = %q, want %q", got, want)
-	}
-}
-
-// TestRotationHistoryBlockUnspecifiedDropsPrefix proves a BOS-409 stale-port
-// event (recorded UNSPECIFIED with the whole message in Detail) renders as
-// "<time> <detail>" with no "rotation event — " prefix and no double space.
-func TestRotationHistoryBlockUnspecifiedDropsPrefix(t *testing.T) {
-	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
-	sess := rotationSession(&pb.RotationEvent{
-		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED,
-		Detail:    "stale failover-proxy port (BOS-409)",
-		CreatedAt: timestamppb.New(now),
-	})
-	got := rotationHistoryBlock(sess, 80, now)
-	if !strings.Contains(got, "14:34 stale failover-proxy port (BOS-409)") {
-		t.Errorf("rotationHistoryBlock = %q, want time + detail with no label", got)
-	}
-	if strings.Contains(got, "rotation event") {
-		t.Errorf("rotationHistoryBlock = %q, should not contain the dropped generic prefix", got)
-	}
-}
-
-// TestRotationHistoryBlockDatesNonTodayEvents proves a not-today event carries
-// the ISO date prefix in the assembled row.
-func TestRotationHistoryBlockDatesNonTodayEvents(t *testing.T) {
-	now := time.Date(2026, 7, 18, 14, 34, 0, 0, time.Local)
-	older := time.Date(2026, 7, 17, 8, 2, 0, 0, time.Local)
-	sess := rotationSession(&pb.RotationEvent{
-		Outcome:     pb.RotationOutcome_ROTATION_OUTCOME_ROTATED,
-		FromAccount: "acct-a",
-		ToAccount:   "acct-b",
-		CreatedAt:   timestamppb.New(older),
-	})
-	got := rotationHistoryBlock(sess, 80, now)
-	if !strings.Contains(got, "2026-07-17 08:02 acct-a switched to acct-b") {
-		t.Errorf("rotationHistoryBlock = %q, want date-prefixed not-today row", got)
 	}
 }
 

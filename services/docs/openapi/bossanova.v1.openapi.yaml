@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-21'
+  version: '2026-09-22'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -18423,6 +18423,19 @@ components:
           description: |-
             Base branch tip the last conflict repair ran against (see
              RecordRepairOutcomeRequest.base_sha). Empty for other repairs.
+        verifyParkCodes:
+          type: array
+          items:
+            type: string
+          title: verify_park_codes
+          description: |-
+            Transport-only: the verify stage's park codes for a
+             DISPLAY_STATUS_NEEDS_HUMAN session, in the verify gate's report order.
+             Hydrated on every read path from the PR status, never persisted, empty for
+             any other session. attention_status names the codes only when no other
+             attention outranks the park, so this is what lets the 2026-09-22
+             down-convert restore "blocked" on a Blocked, Orphaned or auth-wedged
+             session whose park only asks for a sign-off.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -18533,6 +18546,15 @@ components:
           description: |-
             True on an ATTENTION_KIND_MERGE whose current head the verify stage has
              not passed. Clients label that row "ready" rather than "merge".
+        shouldShowDisplayLabel:
+          type: boolean
+          title: should_show_display_label
+          description: |-
+            True on an ATTENTION_KIND_FIX whose session's own display state is itself
+             a failure (a failing or conflicting PR, a blocked run). Clients show the
+             session's display label on that row rather than "fix", and the sentence
+             says what failed. It is the rule the boss TUI applies, served so other
+             clients need not rebuild it.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.

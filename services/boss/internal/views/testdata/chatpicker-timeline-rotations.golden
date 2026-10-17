@@ -1,0 +1,22 @@
+                                                                           
+  █▄▄  #2979  [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  fix · failed 1h ago · head 2bbaede                                  
+                                                                           
+  Needed from you:                                                             
+    Verify is blocked: UI change.                                              
+    Open a chat to fix it, or run boss pr approve 2979 to override it; verify  
+    re-checks the PR before it merges.                                         
+
+    CHAT          AGENT   CREATED  ACTIVE  STATUS                                   
+  ❯ verify        claude  1h ago   1h ago  ⣾ waiting                                
+    Run bs-build  claude  1h ago   1h ago  done · standby: wakes if CI turns red    
+                                                                                                   
+  [enter] open chat  [d]elete · [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [a]rchive · [esc] back  
+                                                                                                   
+  Timeline                                                                             
+    23:04  ✓ Build started                                                             
+    23:06  ✗ Hit its usage limit    usage limit reached                                
+    23:07  ✓ Resumed automatically  yuki@kamik.ai switched to dave@kamik.ai — resumed  
+    23:08  ✓ Account rotation       dave@kamik.ai switched to yuki@kamik.ai — resumed  
+    23:09  ✓ CI passed                                                                 
+    23:10  ● Waiting for a fix      Failed after 3 attempts on this machine            

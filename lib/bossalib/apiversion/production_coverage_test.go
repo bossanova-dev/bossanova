@@ -314,6 +314,28 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return sessionProbes(noVerifyStageMergeSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
 		})
+	case FactoryReviewParkSentenceChange:
+		return sessionProbes(noReceiptParkSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetSentence() == "Built by hand, no factory review"
+		})
+	case VerifiedNotMergedChange:
+		return sessionProbes(func() *pb.Session {
+			return sinceSession(sinceShape{}, verifiedNotMergedInput(true, pb.ChatStatus_CHAT_STATUS_IDLE, ""))
+		}, func(s *pb.Session) bool {
+			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+		})
+	case ParkSinceChange:
+		return sessionProbes(func() *pb.Session {
+			return sinceSession(sinceShape{}, parkInput(false, "human-review:ui"))
+		}, func(s *pb.Session) bool {
+			return s.GetAttention().GetSince().AsTime().Equal(sinceStateEntered)
+		})
+	case ReviewOnlyParkChange:
+		return sessionProbes(func() *pb.Session {
+			return reviewOnlyParkSession("ui+unproven", "human-review:ui", "human-review:unproven")
+		}, func(s *pb.Session) bool {
+			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && s.GetDisplayLabel() == displaystatus.BlockedLabel
+		})
 	case UnverifiedMergeAttentionChange:
 		return sessionProbes(unverifiedMergeSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE

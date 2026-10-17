@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -149,29 +150,115 @@ func ensureNoTargetOwner(ctx context.Context, sessions db.SessionStore, repoID s
 	return nil
 }
 
-// lockRevival takes the repo's start-path lock for sess, a Blocked or Orphaned
-// row about to come back to life, and keeps it only when no other live session
-// now holds the row's PR or branch. The caller writes the revival before
-// calling release, so a racing create or link cannot claim the target in
-// between, the same check-then-write session creation does. A refusal is
-// logged under who and leaves the row down for the next pass.
-func lockRevival(ctx context.Context, sessions db.SessionStore, sess *models.Session, logger zerolog.Logger, who string) (release func(), ok bool) {
-	release, _, err := AcquireStartPath(ctx, sess.RepoID)
+// ErrRevivalStale reports that a session changed while its revival waited for
+// the start-path lock: it was archived, relinked, or left the state the caller
+// revives it from.
+var ErrRevivalStale = errors.New("session changed while waiting to revive it")
+
+// AcquireRevival takes the repo's start-path lock, waiting at most wait, for
+// sess, a Blocked or Orphaned row about to come back to life. Under the lock it
+// re-reads the row and keeps the lock only when the fresh row is unarchived,
+// still passes eligible, and no other live session holds its PR or branch.
+// Creation and link-pr write targets under the same lock, so the fresh row's
+// target cannot move while it is held. The caller writes the revival from the
+// returned row and only then calls release, so a racing create or link cannot
+// claim the target between the check and the write.
+func AcquireRevival(ctx context.Context, sessions db.SessionStore, sess *models.Session, wait time.Duration, eligible func(*models.Session) bool) (fresh *models.Session, release func(), err error) {
+	release, _, err = acquireStartPathWithin(ctx, sess.RepoID, wait)
 	if err != nil {
-		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": start-path lock busy; leaving the session down for the next pass")
-		return nil, false
+		return nil, nil, fmt.Errorf("%w: %w", ErrStartPathBusy, err)
 	}
-	err = EnsureNoOtherActivePROrBranchSession(ctx, sessions, sess.ID, sess.RepoID, sess.PRNumber, sess.BranchName)
+	fresh, err = sessions.Get(ctx, sess.ID)
+	if err == nil && (fresh.ArchivedAt != nil || !eligible(fresh)) {
+		err = ErrRevivalStale
+	}
 	if err == nil {
-		return release, true
+		err = EnsureNoOtherActivePROrBranchSession(ctx, sessions, fresh.ID, fresh.RepoID, fresh.PRNumber, fresh.BranchName)
 	}
-	release()
-	if IsDuplicateActiveSessionError(err) {
-		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": not reviving; another live session now holds its PR or branch")
-	} else {
-		logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": could not check who holds its PR or branch; leaving the session down")
+	if err != nil {
+		release()
+		return nil, nil, err
 	}
-	return nil, false
+	return fresh, release, nil
+}
+
+// lockRevival is AcquireRevival for a background sweep. It waits only
+// RevivalLockTimeout, logs a refusal under who, and leaves the row down for
+// the next pass.
+func lockRevival(ctx context.Context, sessions db.SessionStore, sess *models.Session, logger zerolog.Logger, who string, eligible func(*models.Session) bool) (fresh *models.Session, release func(), ok bool) {
+	fresh, release, err := AcquireRevival(ctx, sessions, sess, RevivalLockTimeout, eligible)
+	if err == nil {
+		return fresh, release, true
+	}
+	var msg string
+	switch {
+	case errors.Is(err, ErrRevivalStale):
+		logger.Debug().Str("session", sess.ID).Msg(who + ": session changed while waiting to revive it; nothing to do")
+		return nil, nil, false
+	case errors.Is(err, ErrStartPathBusy):
+		msg = "start-path lock busy; leaving the session down for the next pass"
+	case IsDuplicateActiveSessionError(err):
+		msg = "not reviving; another live session now holds its PR or branch"
+	default:
+		msg = "could not check who holds its PR or branch; leaving the session down"
+	}
+	logger.Warn().Err(err).Str("session", sess.ID).Msg(who + ": " + msg)
+	return nil, nil, false
+}
+
+// RevivalStartGrace bounds how long a revived row reads as starting. A spawn
+// that fails puts the row back down at once; this covers one that never
+// returns.
+const RevivalStartGrace = 2 * time.Minute
+
+// RevivalStarting reports whether the orphan resume or the parked rotation
+// wrote sess back into ImplementingPlan less than RevivalStartGrace ago and its
+// replacement run has not landed yet. Both write the state first, release the
+// start-path lock, and only then spawn, so until the new run id is committed
+// the row names the dead run. A liveness check must read it as starting, or a
+// create would take its PR in that window. The mark is the revival write
+// itself: one statement sets the state and state_entered_at, and the marker it
+// claimed from (the orphan blocked_reason, or rotation_resume_at) stays until
+// the commit that writes the new run id clears it.
+//
+// A claim written before daemonStartedAt belongs to a daemon that has since
+// exited, so no spawn is in flight for it and the row is dead. Without that
+// bound the startup orphan sweep, which runs once, would skip the row and leave
+// it in ImplementingPlan for good. daemonStartedAt is compared at millisecond
+// precision, the precision state_entered_at is stored at.
+func RevivalStarting(sess *models.Session, daemonStartedAt, now time.Time) bool {
+	if sess == nil || sess.State != machine.ImplementingPlan || sess.StateEnteredAt == nil {
+		return false
+	}
+	if sess.StateEnteredAt.Before(daemonStartedAt.Truncate(time.Millisecond)) {
+		return false
+	}
+	if now.Sub(*sess.StateEnteredAt) >= RevivalStartGrace {
+		return false
+	}
+	orphanClaim := sess.BlockedReason != nil && *sess.BlockedReason == OrphanedHeadlessRunReason
+	return orphanClaim || sess.RotationResumeAt != nil
+}
+
+// RevivalRefusal turns an AcquireRevival error into the error a person asking
+// for the revival sees: a rival holder is named, as link-pr names one.
+func RevivalRefusal(err error) error {
+	const next = "archive that session before resuming this one"
+	var pr *DuplicateActivePRSessionError
+	if errors.As(err, &pr) {
+		return &targetOwnedError{
+			msg: fmt.Sprintf("PR #%d is now held by session %s; %s", pr.PRNumber, describeSession(pr.ExistingSessionID, pr.ExistingTitle), next),
+			err: err,
+		}
+	}
+	var branch *DuplicateActiveBranchSessionError
+	if errors.As(err, &branch) {
+		return &targetOwnedError{
+			msg: fmt.Sprintf("branch %q is now held by session %s; %s", branch.BranchName, describeSession(branch.ExistingSessionID, branch.ExistingTitle), next),
+			err: err,
+		}
+	}
+	return err
 }
 
 func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAlive func(context.Context, string) bool) bool {
@@ -195,9 +282,9 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 // a fresh session can reuse it — Orphaned belongs with Blocked/Merged/Closed
 // here: a headless run killed by a daemon restart is over, and the plan lets a
 // human re-dispatch the same ticket, which must not be refused as a duplicate.
-// Because a Blocked or Orphaned row can still come back to life, its revival
-// paths re-check the target first (lockRevival), and link-pr uses the
-// stricter EnsureNoOtherPROrBranchClaim.
+// Because a Blocked or Orphaned row can still come back to life, every path
+// that revives one re-checks the target under the start-path lock first
+// (AcquireRevival), and link-pr uses the stricter EnsureNoOtherPROrBranchClaim.
 func StateBlocksDuplicateTarget(state machine.State) bool {
 	return state != machine.Blocked && state != machine.Merged &&
 		state != machine.Closed && state != machine.Orphaned

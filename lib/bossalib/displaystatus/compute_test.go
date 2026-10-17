@@ -1869,9 +1869,9 @@ func TestPreErroredBlockedIntent_DemotedGreenRestoresSuccess(t *testing.T) {
 
 // TestCompute_VerifyStatuses pins BOS-1382's PR-derived composites:
 // "verifying" spins with INFO (DANGER when changes are requested or checks
-// failed, mirroring checking); a park whose codes are all policy codes is a
-// static WARNING "needs sign-off", and a park with any failure code, an unknown
-// code or no code at all is a static DANGER "blocked".
+// failed, mirroring checking); a park whose codes all only ask a person to look
+// is a static WARNING "needs sign-off", and a park with any failure code, an
+// unknown code or no code at all is a static DANGER "blocked".
 func TestCompute_VerifyStatuses(t *testing.T) {
 	parked := func() *pb.Session { return &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN} }
 	signOff := Output{Label: NeedsSignOffLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
@@ -1884,13 +1884,16 @@ func TestCompute_VerifyStatuses(t *testing.T) {
 		{"ui sign-off", []string{"human-review:ui"}, signOff},
 		{"every policy code", []string{"human-review:ui,always-human-path", "human-review:security", "human-review:database"}, signOff},
 		{"ledger open", []string{"ledger-open"}, blocked},
-		{"no receipt", []string{"no-receipt"}, blocked},
+		{"no receipt", []string{"no-receipt"}, signOff},
+		{"#3162 no receipt and a UI change", []string{"no-receipt,human-review:ui"}, signOff},
+		{"#3184 a UI change and unproven checks", []string{"human-review:ui,human-review:unproven"}, signOff},
+		{"#3189 unproven checks", []string{"human-review:unproven"}, signOff},
+		{"no receipt and an open checklist", []string{"no-receipt,ledger-open"}, blocked},
 		{"extension failed", []string{"extension-failed"}, blocked},
 		{"repair exhausted", []string{"repair-exhausted"}, blocked},
 		{"no session", []string{"no-session"}, blocked},
 		{"worktree diverged", []string{"worktree-diverged"}, blocked},
 		{"worktree unsynced", []string{"worktree-unsynced"}, blocked},
-		{"unproven checks", []string{"human-review:unproven"}, blocked},
 		{"one failure among policy codes", []string{"human-review:ui,ledger-open"}, blocked},
 		{"unknown code", []string{"brand-new"}, blocked},
 		{"no codes", nil, blocked},

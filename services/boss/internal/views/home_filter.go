@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -25,7 +26,7 @@ func (h HomeModel) boardSessions() []*pb.Session {
 
 func homeFilterHaystack(sess *pb.Session) string {
 	status := sess.GetDisplayLabel()
-	if att := sess.GetAttention(); att != nil && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !fixShowsDisplayLabel(sess)) {
+	if att := sess.GetAttention(); att != nil && (att.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
 		// Progress labels are stable; the rendered spinner is deliberately excluded.
 		if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
 			status = att.GetProgressLabel()

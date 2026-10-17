@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +55,12 @@ type timelineFacts struct {
 	// IsFactoryRepo marks a repo with an enabled verify job on the daemon,
 	// the value session hydration reads.
 	IsFactoryRepo bool
+	// Now is when the timeline is built; it decides whether verify's merge of
+	// a verified head is overdue, as session hydration does.
+	Now time.Time
+	// IsSentBack marks a head whose newest operator record is a legacy
+	// send-back, as session hydration reads it.
+	IsSentBack bool
 }
 
 // The fix-row and question facts are sessionattention's own types: Derive
@@ -75,6 +83,7 @@ const (
 	rankReadyForReview
 	rankReadyToMerge
 	rankEvidence
+	rankVerified
 	rankVerifying
 	rankParked
 	rankQuestion
@@ -138,10 +147,10 @@ func (c waitCandidate) latest() time.Time {
 // attention.Input (fix row and its dismissal choice, question, park codes,
 // check counts, PR state, mergeability) and which rotation incident and fix
 // rows are open. What is the timeline's own is which steps exist and where
-// they are dated. The answered kind's steps are placed last, the final one
-// CURRENT; for FIX they are the steps of the fix row Derive offered. A
-// dismissed fix is not the wait, a park with no operator code is not a review,
-// and DONE waits on nothing, so no step is CURRENT. A merged or closed PR is
+// they are dated. Every step stays in time order, and the newest of the
+// answered kind's steps is CURRENT; for FIX they are the steps of the fix row
+// Derive offered. A dismissed fix is not the wait, a park with no operator code
+// is not a review, and DONE waits on nothing, so no step is CURRENT. A merged or closed PR is
 // DONE unless attention.Compute still answers a fix or a question for it
 // (both outrank DONE): an open fix row or a chat still asking keeps its step
 // CURRENT, as the session's attention row shows it. A failure step is FAILED;
@@ -176,14 +185,17 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 		latest = &snaps[len(snaps)-1]
 	}
 	ans := sessionattention.Derive(attentionFacts(f, latest))
+	ans.Input.ParkSince, ans.Input.VerifiedSince = headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
+	ans.Input.Now = f.Now
+	ans.Input.IsSentBack = f.IsSentBack
 	parkCodes, parked := ans.Input.ParkCodes, ans.Parked
 
 	if built := newestReviewReady(runs); built != nil {
 		detail := ""
 		if parked {
-			detail = "ledger closed"
+			detail = "checklist closed"
 			if slices.Contains(parkCodes, attention.ParkCodeLedgerOpen) {
-				detail = "ledger open"
+				detail = "checklist open"
 			}
 		}
 		add(&tlStep{at: *built.StoppedAt, rank: rankBuiltReviewed, title: "Built and reviewed", detail: detail})
@@ -212,7 +224,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 			} else {
 				// Only waiting codes, or none: verify still holds the PR,
 				// but nothing is the operator's to review.
-				st := add(&tlStep{at: since, rank: rankVerifying, title: "Verify waiting", detail: strings.Join(parkCodes, ", ")})
+				st := add(&tlStep{at: since, rank: rankVerifying, title: "Verify waiting", detail: strings.Join(attention.WaitingWords(parkCodes), ", ")})
 				candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, steps: []*tlStep{st}})
 			}
 		case vcs.DisplayStatusVerifying:
@@ -275,6 +287,14 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 	att := attention.Compute(ans.Input)
 	kind := att.GetKind()
+	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && ans.Input.IsFactoryRepo {
+		// A factory repo's PR is the operator's to merge only once verify
+		// passed its head and left it unmerged: the wait began at the
+		// verification, the time the session row is dated from.
+		st := add(&tlStep{at: ans.Input.VerifiedSince, rank: rankVerified, title: "Verified"})
+		candidates = slices.DeleteFunc(candidates, func(c waitCandidate) bool { return c.kind == kind })
+		candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
+	}
 	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && latest != nil && !hasCandidate(candidates, kind) {
 		// Mergeable with no "CI passed" or "Ready for review" step (every
 		// ordinary check skipped, never a draft): the merge wait still gets a
@@ -366,28 +386,23 @@ func waitSteps(kind pb.AttentionKind, fix []*tlStep, inFix map[*tlStep]bool, can
 	return nil
 }
 
-// renderTimeline lists the steps chronologically with the wait group moved to
-// the end, its last step CURRENT.
+// renderTimeline lists the sorted steps in time order, the wait group's newest
+// step CURRENT where it happened. A step after it (a run started while verify
+// still held the PR) stays after it: moving the wait to the end would draw it
+// below a later row with an earlier time.
 func renderTimeline(steps, wait []*tlStep) []*pb.TimelineStep {
-	inWait := make(map[*tlStep]bool, len(wait))
-	for _, st := range wait {
-		inWait[st] = true
+	var current *tlStep
+	if len(wait) > 0 {
+		tail := slices.Clone(wait)
+		sortSteps(tail)
+		current = tail[len(tail)-1]
 	}
-	ordered := make([]*tlStep, 0, len(steps))
-	for _, st := range steps {
-		if !inWait[st] {
-			ordered = append(ordered, st)
-		}
-	}
-	tail := slices.Clone(wait)
-	sortSteps(tail)
-	ordered = append(ordered, tail...)
 
-	out := make([]*pb.TimelineStep, 0, len(ordered))
-	for i, st := range ordered {
+	out := make([]*pb.TimelineStep, 0, len(steps))
+	for _, st := range steps {
 		state := pb.TimelineStepState_TIMELINE_STEP_STATE_DONE
 		switch {
-		case len(tail) > 0 && i == len(ordered)-1:
+		case st == current:
 			state = pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
 		case st.failed:
 			state = pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED
@@ -480,6 +495,76 @@ func readyAfterDraft(snaps []db.CheckSnapshot) *db.CheckSnapshot {
 	return &snaps[lastDraft+1]
 }
 
+// headSince returns when the head's current verify park began and when the
+// head was first seen verified, each the first snapshot of the newest unbroken
+// run that saw it so. Either is zero when the newest snapshot does not. The
+// park's start is the timeline's own "Parked for you" or "Verify waiting" step
+// time.
+//
+// polls and snaps yield the head's snapshots newest first; both walks stop
+// where their run ends, so a long-lived
+// head costs only its trailing runs. polls need only poll times and computed
+// statuses; snaps also need the checks, decoded only for a poll that names
+// boss/verify and whose checks differ from the newer poll's, as a settled
+// head's polls repeat the same checks.
+func headSince(polls, snaps iter.Seq[db.CheckSnapshot]) (park, verified time.Time) {
+	first := true
+	var status int
+	for p := range polls {
+		if first {
+			first, status = false, p.ComputedStatus
+			if vcs.DisplayStatus(status) != vcs.DisplayStatusNeedsHuman {
+				break
+			}
+		}
+		if p.ComputedStatus != status {
+			break
+		}
+		park = p.PolledAt
+	}
+	passed, decoded := false, ""
+	for s := range snaps {
+		if s.RawJSON != decoded {
+			passed = strings.Contains(s.RawJSON, vcs.VerifyStatusContext) && vcs.VerifyPassed(snapshotChecks(s))
+			decoded = s.RawJSON
+		}
+		if !passed {
+			break
+		}
+		verified = s.PolledAt
+	}
+	return park, verified
+}
+
+// newestFirstSnapshots yields snaps (oldest first) newest first.
+func newestFirstSnapshots(snaps []db.CheckSnapshot) iter.Seq[db.CheckSnapshot] {
+	return func(yield func(db.CheckSnapshot) bool) {
+		for i := len(snaps) - 1; i >= 0; i-- {
+			if !yield(snaps[i]) {
+				return
+			}
+		}
+	}
+}
+
+// storedHeadSince is headSince over the store's snapshots of sessionID on
+// head. A failed read reports both times zero, as if nothing were known.
+func storedHeadSince(ctx context.Context, store db.CheckSnapshotStore, sessionID, head string) (park, verified time.Time) {
+	var err error
+	read := func(withRawJSON bool) iter.Seq[db.CheckSnapshot] {
+		return func(yield func(db.CheckSnapshot) bool) {
+			if err == nil {
+				err = store.EachBySessionHeadNewestFirst(ctx, sessionID, head, withRawJSON, yield)
+			}
+		}
+	}
+	park, verified = headSince(read(false), read(true))
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	return park, verified
+}
+
 // trailingRunStart returns when the newest run of snapshots sharing the
 // latest computed status began.
 func trailingRunStart(snaps []db.CheckSnapshot) time.Time {
@@ -499,41 +584,38 @@ func evidenceDetail(e *evidence.Entry) string {
 	return detail
 }
 
-// Rotation outcomes that resumed the chat automatically.
-var resumeOutcomes = map[string]string{
+// resumeDetails say how an automatic resume resumed the chat, by outcome.
+var resumeDetails = map[string]string{
 	pb.RotationOutcome_ROTATION_OUTCOME_ROTATED.String():                "switched account",
 	pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT.String(): "same account",
-}
-
-var incidentTitles = map[string]string{
-	pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED.String(): "Lost its login",
-	pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED.String():    "Hit its usage limit",
 }
 
 // incidentSteps renders one rotation incident (sessionattention groups and
 // opens them): a failure step at its first event plus one step per automatic
 // resume, usage-limit wait or give-up. A give-up is a failure step, so an open
 // incident ends on it rather than on the resume it followed; a give-up that is
-// the incident's first event is already its failure step.
+// the incident's first event is already its failure step. The titles are
+// attention's, which the TUI matches rotations against.
 func incidentSteps(inc sessionattention.Incident) []*tlStep {
 	first := inc.Events[0]
 	steps := []*tlStep{{
-		at: first.CreatedAt, rank: rankFailure, title: incidentTitles[inc.Trigger],
+		at: first.CreatedAt, rank: rankFailure, title: attention.RotationFailureTitle(inc.Trigger),
 		detail: capDetail(first.Detail), failed: true,
 	}}
 	for k, ev := range inc.Events {
-		if how, ok := resumeOutcomes[ev.Outcome]; ok {
-			detail := how
+		switch title := attention.RotationOutcomeTitle(ev.Outcome); title {
+		case attention.RotationResumedTitle:
+			detail := resumeDetails[ev.Outcome]
 			if k > 0 && ev.Detail != "" {
 				detail = capDetail(ev.Detail)
 			}
-			steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: "Resumed automatically", detail: detail})
-		}
-		if ev.Outcome == pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED.String() {
-			steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: "Waiting for the usage limit to reset"})
-		}
-		if k > 0 && sessionattention.IsGiveUp(ev.Outcome) {
-			steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: "Stopped resuming automatically", detail: capDetail(ev.Detail), failed: true})
+			steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: title, detail: detail})
+		case attention.RotationWaitingTitle:
+			steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: title})
+		case attention.RotationStoppedTitle:
+			if k > 0 {
+				steps = append(steps, &tlStep{at: ev.CreatedAt, rank: rankResume, title: title, detail: capDetail(ev.Detail), failed: true})
+			}
 		}
 	}
 	return steps

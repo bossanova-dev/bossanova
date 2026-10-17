@@ -2628,7 +2628,7 @@ func run(opts runOpts) error {
 	agentForSession := func(_ *models.Session) agent.AgentRunner {
 		return agentRunner
 	}
-	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
+	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient, lifecycle.StartedAt())
 	lifecycle.SetSessionLiveness(livenessChecker)
 
 	// Auto-rotation wiring. Install policy knobs, the real rotation.Engine, and

@@ -694,15 +694,15 @@ func (p *DisplayPoller) maybeClearStaleFixLoopBlock(ctx context.Context, session
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get session for stale-block check")
 		return
 	}
-	if sess.State != machine.Blocked {
-		return
+	staleFixLoopBlock := func(s *models.Session) bool {
+		return s.State == machine.Blocked && s.BlockedReason != nil && *s.BlockedReason == sessionreason.FixLoopExhausted()
 	}
-	if sess.BlockedReason == nil || *sess.BlockedReason != sessionreason.FixLoopExhausted() {
+	if !staleFixLoopBlock(sess) {
 		return
 	}
 	// Blocked released the PR and branch, so another session may have taken
 	// them over since; unblocking now would put two live sessions on one PR.
-	release, ok := lockRevival(ctx, p.sessions, sess, p.logger, "display poller: stale fix_loop_exhausted unblock")
+	sess, release, ok := lockRevival(ctx, p.sessions, sess, p.logger, "display poller: stale fix_loop_exhausted unblock", staleFixLoopBlock)
 	if !ok {
 		return
 	}

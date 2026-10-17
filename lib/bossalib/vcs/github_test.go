@@ -21,6 +21,16 @@ func TestIsGitHubURL(t *testing.T) {
 		{"empty string", "", false},
 		{"bare path", "/some/local/path", false},
 		{"bitbucket", "https://bitbucket.org/owner/repo.git", false},
+		{"ssh scheme with port", "ssh://git@github.com:22/owner/repo.git", true},
+		{"suffix look-alike", "https://evilgithub.com/owner/repo", false},
+		{"prefix look-alike", "https://github.com.evil.com/owner/repo", false},
+		{"github in path", "https://evil.com/github.com/owner/repo", false},
+		{"query then at", "https://evil.com?@github.com/owner/repo", false},
+		{"bare look-alike", "evilgithub.com/owner/repo", false},
+		{"scp leading slash", "git@github.com:/owner/repo.git", true},
+		{"ssh empty port leading slash", "ssh://git@github.com:/owner/repo.git", true},
+		{"ssh over 443 host", "ssh://git@ssh.github.com:443/owner/repo.git", true},
+		{"windows drive path", "C:/Users/dev/github.com/repo.git", false},
 	}
 
 	for _, tt := range tests {
@@ -48,6 +58,62 @@ func TestGitHubNWO(t *testing.T) {
 		{"owner only", "https://github.com/owner", ""},
 		{"non-github", "https://gitlab.com/owner/repo.git", ""},
 		{"empty", "", ""},
+
+		{"ssh scheme with port", "ssh://git@github.com:22/acme/widgets.git", "acme/widgets"},
+		{"ssh scheme with port no .git", "ssh://git@github.com:22/acme/widgets", "acme/widgets"},
+		{"ssh scheme no port", "ssh://git@github.com/acme/widgets", "acme/widgets"},
+		{"ssh scheme no port with .git", "ssh://git@github.com/acme/widgets.git", "acme/widgets"},
+		{"ssh over 443 host", "ssh://git@ssh.github.com:443/acme/widgets.git", "acme/widgets"},
+		{"scp leading slash", "git@github.com:/acme/widgets.git", "acme/widgets"},
+		{"ssh empty port leading slash", "ssh://git@github.com:/acme/widgets.git", "acme/widgets"},
+		{"git+ssh scheme", "git+ssh://git@github.com/acme/widgets.git", "acme/widgets"},
+		{"git+ssh scheme with port", "git+ssh://git@github.com:22/acme/widgets.git", "acme/widgets"},
+		{"https userinfo token", "https://user:token@github.com/acme/widgets.git", "acme/widgets"},
+		{"https userinfo token with port", "https://user:token@github.com:443/acme/widgets", "acme/widgets"},
+		{"https with port", "https://github.com:443/acme/widgets", "acme/widgets"},
+		{"https with port and .git", "https://github.com:443/acme/widgets.git", "acme/widgets"},
+		{"trailing slash", "https://github.com/acme/widgets/", "acme/widgets"},
+		{"trailing slash after .git", "https://github.com/acme/widgets.git/", "acme/widgets"},
+		{"ssh port trailing slash", "ssh://git@github.com:22/acme/widgets.git/", "acme/widgets"},
+		{"query and fragment", "https://github.com/acme/widgets?tab=readme#top", "acme/widgets"},
+		{"uppercase host https", "https://GitHub.COM/acme/widgets.git", "acme/widgets"},
+		{"uppercase host ssh scheme with port", "ssh://git@GITHUB.COM:22/acme/widgets.git", "acme/widgets"},
+		{"uppercase host scp", "git@GitHub.com:acme/widgets.git", "acme/widgets"},
+		{"owner case preserved", "ssh://git@github.com:22/Acme/Widgets.git", "Acme/Widgets"},
+		{"scp owner that looks like a port", "git@github.com:22/widgets.git", "22/widgets"},
+		{"ssh scheme port without repo", "ssh://git@github.com:22/acme", ""},
+		{"ssh scheme port only", "ssh://git@github.com:22/", ""},
+		{"non-github ssh scheme with port", "ssh://git@gitlab.com:22/acme/widgets.git", ""},
+		{"non-github host naming github in path", "ssh://git@gitlab.com:22/github.com/widgets.git", ""},
+		{"non-github https with port", "https://gitlab.com:443/acme/widgets", ""},
+		{"trailing dot host", "https://github.com./acme/widgets", "acme/widgets"},
+		{"bare host path", "github.com/acme/widgets", "acme/widgets"},
+		{"scp no user", "github.com:acme/widgets.git", "acme/widgets"},
+
+		// Look-alike hosts: GitHub must be the whole host, not a substring of it.
+		{"suffix look-alike", "https://evilgithub.com/acme/widgets", ""},
+		{"prefix look-alike", "https://github.com.evil.com/acme/widgets", ""},
+		{"github as userinfo", "https://user@github.com@evil.com/acme/widgets", ""},
+		{"github subdomain-shaped host", "https://github.company.com/acme/widgets", ""},
+		{"github in path", "https://evil.com/github.com/acme/widgets", ""},
+		{"file scheme", "file:///github.com/acme/widgets", ""},
+
+		// The authority ends at the first "/", "?" or "#", so text after them
+		// cannot name the host.
+		{"query then at", "https://evil.com?@github.com/acme/widgets", ""},
+		{"fragment then at", "https://evil.com#@github.com/acme/widgets", ""},
+		{"backslash then at", `https://evil.com\@github.com/acme/widgets`, ""},
+
+		// Without a scheme the host still has to match exactly.
+		{"bare look-alike", "evilgithub.com/acme/widgets", ""},
+		{"scp look-alike", "git@evilgithub.com:acme/widgets.git", ""},
+		{"bare github in path", "evil.com/github.com/acme/widgets", ""},
+
+		{"non-decimal port", "https://github.com:abc/acme/widgets", ""},
+		{"empty port is no port", "https://github.com:/acme/widgets", "acme/widgets"},
+		{"leading dot host", "https://.github.com/acme/widgets", ""},
+		{"bare leading dot host", ".github.com/acme/widgets", ""},
+		{"scp leading dot host", "git@.github.com:acme/widgets.git", ""},
 	}
 
 	for _, tt := range tests {

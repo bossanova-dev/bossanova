@@ -328,14 +328,16 @@ lists everything waiting for you, at any stage.
 
 Read the findings, then decide.
 
-- Sign-off parks (a UI change, a security change, a database migration) show as
+- Sign-off parks (a UI change, a security change, a database migration, checks
+  with no recorded evidence, a latest commit that has not been reviewed) show as
   review rows in the TUI. Press `m` on one, confirm `Merge PR #N?`, and boss
   records your approval bound to the PR's current commit, merges that commit at
   once, and moves the ticket to Done. When the PR moved to a new commit since you
   opened it, or it does not pass the merge gate (failing checks, a conflict),
   nothing is approved or merged and the TUI says why.
-- Blocked parks (an open PR checklist, missing evidence, a build without the
-  factory's review) show as fix rows, which offer no merge. Their details list
+- Blocked parks (an open PR checklist, exhausted repair, a failed verify
+  extension, a session worktree off the PR head) show as fix rows, which offer
+  no merge. Their details list
   what is open, such as each unticked checklist item. Open a chat in the session
   to fix it; the next push is judged afresh.
 - To merge over a blocked park anyway, run `boss pr approve <pr>`. It records an

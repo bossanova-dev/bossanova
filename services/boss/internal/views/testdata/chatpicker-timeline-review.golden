@@ -2,13 +2,6 @@
   █▄▄  #2979  [BOS-1522] Change the color of needs-human alerts in the TUI 
   █▄█  review · parked 1h ago · head 2bbaede                               
                                                                            
-  Timeline                                        
-    23:04  ✓ Build started                        
-    23:05  ✓ Built and reviewed                   
-    23:06  ✓ CI passed                            
-    23:07  ✓ Evidence recorded                    
-    23:40  ● Parked for you      UI change        
-                                                  
   Needed from you:                                
     Does this UI change look right in the video?  
 
@@ -19,3 +12,9 @@
   [enter] open chat  [d]elete · [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [m]erge  [a]rchive  
   [esc] back                                                                                   
                                                                                                
+  Timeline                                  
+    23:04  ✓ Build started                  
+    23:05  ✓ Built and reviewed             
+    23:06  ✓ CI passed                      
+    23:07  ✓ Evidence recorded              
+    23:08  ● Parked for you      UI change  

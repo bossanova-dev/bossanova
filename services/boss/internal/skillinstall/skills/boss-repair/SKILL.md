@@ -113,8 +113,9 @@ judgement.
 
 1. **Assess.** Report the phase (`node "$BOSS_REPAIR_TOOLBOX/stage-chain.mjs" phase repairing`, never fatal), then record the PR head SHA as `START_SHA` and read its receipt:
    `node "$BOSS_REPAIR_TOOLBOX/commit-status.mjs" read --sha "$START_SHA" --context boss/build`.
-   `present` with `state: success` ⇒ this pass carries the receipt; `absent` or `unknown` ⇒ it does
-   not. Read the PR, its checks (via the classifier), its open review feedback (via the probe),
+   `absent` or `unknown` does not stop step 4: `receipt-carry.mjs` then re-earns the receipt from
+   the newest receipted head among the branch's pushes made in this worktree (at most 20); the first
+   push made elsewhere ends the run, and its head is still a candidate. Read the PR, its checks (via the classifier), its open review feedback (via the probe),
    mergeability, and the worktree state. Decide what is wrong: conflict,
    failing checks, review feedback, a blocking finding recorded only in the PR body or the
    dispatching core's review report, or nothing. A probe answer you could not read counts as "there
@@ -135,9 +136,8 @@ judgement.
    `gap: <what could not be selected reliably and why>`). A command you did not run is
    `not run`, never a pass. Take verdicts from the command's exit status, not a pipeline tail.
 
-4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions. When the
-   pass carries the receipt, rule 5 confirmed the push landed, and `HEAD` equals `origin/<branch>`,
-   carry it to the new head — in default mode and on every pushing Watch-mode pass, whose next start
+4. **Commit and push** small, descriptive commits. Follow the repo's commit conventions. When rule
+   5 confirmed the push landed and `HEAD` equals `origin/<branch>`, carry the receipt to the new head — in default mode and on every pushing Watch-mode pass, whose next start
    head is then the receipted one (substitute step 1's `START_SHA`). `receipt-carry.mjs` prints a
    `decision`. `carry` or `post` (exit 0) posted the receipt through `commit-status.mjs`. `refused`
    (exit 3) posted nothing; `reasons` says why. `re-review` (exit 4) means the push changed the
@@ -327,8 +327,8 @@ Report concisely:
 - **Gate results** — each gate's own quoted summary line, or "not run".
 - **Root causes** — the cause → checks table, when checks failed.
 - **Push state** — whether everything you committed is on `origin/<branch>`, or why not, and the
-  receipt: `boss/build` posted (carried, or after a clean re-review), not carried (the start head
-  had none), withheld by a blocking or unusable re-review, or failed.
+  receipt: `boss/build` posted (carried, or after a clean re-review), not carried (no push in the
+  run the receipt lookup walks had one), withheld by a blocking or unusable re-review, or failed.
 - **Status** — checks green / failing / pending / unknown; review feedback clean / parked / open.
   At the terminal report, for classifier `unknown` or `pending` with reason `absent-gate`, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger gate-unknown --where "<check name>"` (never fatal).
 - **Residuals** — each with why this pass stopped short, or "none".

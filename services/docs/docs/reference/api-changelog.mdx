@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-21**. The engineering procedure for adding a new
+The current version is **2026-09-22**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -749,7 +749,7 @@ example, "Run stopped" or "Merge conflict" without the "open the chat, then
 resume" advice, and a question with no text reads "The agent asked a question".
 These are display copy and every version receives the new wording.
 
-### 2026-09-21 — An unverified green PR is ready to merge (Current)
+### 2026-09-21 — An unverified green PR is ready to merge
 
 The unverified `ATTENTION_KIND_REVIEW` from 2026-09-20 is retired. A PR that
 is open, ready, green and mergeable, with no verify park, that the verify stage
@@ -768,6 +768,69 @@ Clients pinned to 2026-09-20 get the unverified `ATTENTION_KIND_REVIEW` back on
 session-bearing unary responses: the sentence "Not verified" and
 `ATTENTION_ACTION_GITHUB` then `ATTENTION_ACTION_MERGE`. Older pins keep
 receiving `ATTENTION_KIND_MERGE`, as before.
+
+A repository whose only enabled verify job runs the `boss-verify` cron gate,
+with no `/boss-verify` prompt, now counts as having a verify job, so its
+unverified green PR answers in progress for every version, including clients
+pinned to 2026-09-20 and older. The response carries nothing that tells this
+in-progress answer apart from any other, so a transform has nothing to restore
+the old one from.
+
+### 2026-09-22 — Parks that only need a look are reviews (Current)
+
+A `no-receipt` verify park now reads "No review of the latest commit". It read
+"Built by hand, no factory review", which was false: the park fires when the PR
+head has no successful `boss/build` status, and a head an agent built in an
+ordinary chat, or a reviewed head replaced by a later rebase, has none. Clients
+pinned to 2026-09-21 or 2026-09-20 get "Built by hand, no factory review" back
+on session-bearing unary responses, and older pins keep "Built by hand, no
+factory review · send it back through the factory".
+
+The `no-receipt` and `human-review:unproven` codes now only ask a person to
+look, like the UI, security and database codes. A park whose codes are all such
+codes is an `ATTENTION_KIND_REVIEW` offering `ATTENTION_ACTION_MERGE`, and its
+`display_label` reads "needs sign-off" with `DISPLAY_INTENT_WARNING`. It was an
+`ATTENTION_KIND_FIX` with no merge, reading "blocked" with
+`DISPLAY_INTENT_DANGER`. A park that also has a code meaning something is wrong
+(an open checklist, exhausted repair, a failed verify extension, a worktree off
+the PR head, no session, or an unknown code) stays blocked, but the missing
+review or evidence no longer decides its sentence. A park with `ledger-open`
+reads "The PR checklist has open items" (with a count once the items are read),
+and any other such park reads the generic "Verify is blocked".
+Clients pinned to 2026-09-21 or older get the blocked answer, its sentence and
+its actions back on session-bearing unary responses, and "blocked" /
+`DISPLAY_INTENT_DANGER` back on any such row, including a Blocked, Orphaned or
+auth-wedged session whose own attention outranks the park.
+
+The new transport-only `Session.verify_park_codes` (field 81) carries a
+`DISPLAY_STATUS_NEEDS_HUMAN` session's park codes in the verify gate's report
+order on every read path, even when another attention outranks the park and
+`attention_status` names something else. It is never persisted and is empty
+for any other session. It is additive, so every pin receives it.
+
+In a repo with an enabled verify job, a green, mergeable PR whose head the
+verify stage passed, and that verify has left unmerged for 30 minutes, is now an
+`ATTENTION_KIND_MERGE` reading "Verified but not merged" with
+`ATTENTION_ACTION_MERGE` then `ATTENTION_ACTION_GITHUB`, dated from when the head
+was first seen verified. It stayed `ATTENTION_KIND_IN_PROGRESS`, so a PR whose
+merge failed sat there with nothing asking anyone to merge it. The row carries
+the `progress_label` it showed before. Clients pinned to 2026-09-21 or older get
+the in-progress answer back on session-bearing unary responses: no sentence, no
+actions but `ATTENTION_ACTION_TRACKER`, that label, and the session's state time.
+A head whose newest operator record on the PR is a send-back stays
+`ATTENTION_KIND_IN_PROGRESS` on every pin, because verify does not merge it.
+
+A verify park's attention (a review or a blocked fix carrying `park_codes`) is
+now dated from when the park began, the time the session timeline gives its park
+step. It was dated from when the session's state began, often hours earlier. Clients pinned to 2026-09-21 or older get `state_entered_at` (or
+`updated_at` when no state time is recorded) back as the park's `since`.
+
+The new `SessionAttention.should_show_display_label` (field 12) is true on an
+`ATTENTION_KIND_FIX` whose session's own display state is itself a failure, such
+as a failing or conflicting PR or a blocked run. A verify park that only asks
+for a sign-off is not a failure, on a blocked or orphaned run too. Clients show the session's
+`display_label` on that row rather than "fix", as the boss TUI does. It is
+additive, so every pin receives it.
 
 ## Additive changes
 

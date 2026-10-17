@@ -363,7 +363,7 @@ func TestHomeHiddenTrackerAndGitHubKeys(t *testing.T) {
 		"fix":         {Fix: &attention.FixFact{AlertKey: "alert", Sentence: "broken"}},
 		"question":    {QuestionText: "which one?"},
 		"review":      {ParkCodes: []string{"human-review:ui"}},
-		"blocked":     {ParkCodes: []string{"human-review:unproven"}},
+		"blocked":     {ParkCodes: []string{"ledger-open"}},
 		"merge":       {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable, Verified: true},
 		"unverified":  {HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 1, ChecksDone: 1, Mergeable: &mergeable},
 		"in progress": {ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING},

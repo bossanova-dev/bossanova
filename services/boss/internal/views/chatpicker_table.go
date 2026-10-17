@@ -245,7 +245,7 @@ func (m ChatPickerModel) chatListOverhead() int {
 	if m.attentionAction.active() {
 		footerLines = m.attentionAction.lineCount(m.width)
 	}
-	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.archiveLineHeight() + m.httpLineHeight() + m.rotationHistoryHeight()
+	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.archiveLineHeight() + m.httpLineHeight()
 }
 
 func (m ChatPickerModel) tableHeight() int {
@@ -383,7 +383,7 @@ func chatPickerProseBlock(s string) string {
 }
 
 // blockWrapWidth returns the width the chat picker's wrapped prose blocks —
-// the session-warning block and the rotation-history block — wrap at. It
+// the session-warning block and the needed-from-you answer — wrap at. It
 // mirrors HomeModel.statusWrapWidth (BOS-507/BOS-532): track the rendered
 // table so those blocks span roughly the table's content instead of running to
 // the terminal edge.
@@ -441,20 +441,6 @@ func (m ChatPickerModel) blockWrapWidth() int {
 		w = avail
 	}
 	return w
-}
-
-// rotationHistoryHeight returns the vertical lines the rotation-history block
-// (BOS-176) occupies at the very bottom of the chat-picker View (BOS-432) — just
-// the rendered block, since the single blank line above it is the preceding
-// action-bar/prompt's own bottom-pad line (View writes only a "\n" to close it,
-// adding no extra row) — or 0 when the session has no rotation history.
-// Reserving these keeps the block from pushing a chat row off-screen.
-func (m ChatPickerModel) rotationHistoryHeight() int {
-	block := rotationHistoryBlock(m.session, m.blockWrapWidth(), time.Now())
-	if block == "" {
-		return 0
-	}
-	return lipgloss.Height(block)
 }
 
 // warningBlockHeight returns the number of vertical lines the session warning

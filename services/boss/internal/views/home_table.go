@@ -52,7 +52,7 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	}
 	// A finished row reads its PR's end ("✓ merged", "closed") like the rest of
 	// its struck-through cells.
-	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !fixShowsDisplayLabel(sess)) {
+	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {
 		return h.renderAttentionStatus(a)
 	}
 	if sess != nil && sess.GetDisplayLabel() == statusWorking {
@@ -65,15 +65,6 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 		}
 	}
 	return renderDisplayStatus(sess, h.spinner)
-}
-
-// fixShowsDisplayLabel reports whether a FIX row shows the session's display
-// label rather than "fix". Only a state that is itself a failure (⨯ failing,
-// ⨯ conflict, blocked) is what needs fixing; any other state reads "fix" and
-// the sentence below says what to do. The errored recolor paints every blocked
-// or orphaned session DANGER, so this reads the underlying intent.
-func fixShowsDisplayLabel(sess *pb.Session) bool {
-	return sess.GetDisplayLabel() != "" && displaystatus.UnderlyingIntent(sess) == pb.DisplayIntent_DISPLAY_INTENT_DANGER
 }
 
 // buildTableRows rebuilds the table columns and rows from h.sessions.

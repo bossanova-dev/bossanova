@@ -262,6 +262,11 @@ type PRComment struct {
 	// WrittenAt is when the body was last written: the comment's update
 	// time, or its creation time when it was never edited.
 	WrittenAt time.Time
+	// CreatedAt is when the comment was first posted and ID is the forge's
+	// comment id. A decision comment is dated by these, the id breaking a
+	// tie, because editing an old decision does not make it the newest one.
+	CreatedAt time.Time
+	ID        int64
 }
 
 // SortPRCommentsNewestFirst orders comments most recently written first,

@@ -124,10 +124,21 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 			// Rotate-shaped but nothing un-cooled yet — leave parked.
 			return false
 		}
+		// Blocked released the PR and branch, so another session may have taken
+		// them over while this run was parked; reviving it now would put two live
+		// sessions on one PR. The lock is held across the CAS below.
+		fresh, release, ok := lockRevival(ctx, l.sessions, session, l.logger, "parked-rotation sweep", func(s *models.Session) bool {
+			return s.State == machine.Blocked && s.RotationResumeAt != nil
+		})
+		if !ok {
+			return false
+		}
+		session = fresh
 		// The CAS Blocked→ImplementingPlan is the idempotency gate: a concurrent
 		// sweep or a late completion signal that already advanced this session
 		// loses the CAS and this pass no-ops.
 		advanced, err := l.sessions.UpdateStateConditional(ctx, session.ID, int(machine.ImplementingPlan), int(machine.Blocked))
+		release()
 		if err != nil {
 			l.logger.Error().Err(err).Str("session", session.ID).
 				Msg("parked-rotation sweep: transition to implementing failed")

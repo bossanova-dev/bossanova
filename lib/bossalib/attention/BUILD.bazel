@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "alertkeys.go",
         "attention.go",
+        "rotation.go",
         "templates.go",
     ],
     importpath = "github.com/recurser/bossalib/attention",
@@ -20,8 +21,15 @@ go_test(
     srcs = [
         "alertkeys_test.go",
         "attention_test.go",
+        "park_code_words_test.go",
         "park_kind_test.go",
+        "verified_not_merged_test.go",
+        "waiting_words_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":attention"],
-    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@org_golang_google_protobuf//proto",
+    ],
 )

@@ -8,6 +8,9 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -212,13 +215,13 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 		name   string
 		kind   pb.AttentionKind
 		height int
-	}{{"review", pb.AttentionKind_ATTENTION_KIND_REVIEW, 40}, {"review-24", pb.AttentionKind_ATTENTION_KIND_REVIEW, 24}, {"fix", pb.AttentionKind_ATTENTION_KIND_FIX, 24}, {"legacy", pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 24}} {
+	}{{"review", pb.AttentionKind_ATTENTION_KIND_REVIEW, 40}, {"review-24", pb.AttentionKind_ATTENTION_KIND_REVIEW, 24}, {"fix", pb.AttentionKind_ATTENTION_KIND_FIX, 24}, {"legacy", pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 24}, {"rotations", pb.AttentionKind_ATTENTION_KIND_FIX, 24}} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := detailFixture(tt.kind, tt.height)
-			screen := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: m.session, width: m.width}) + "\n" + m.View().Content)
-			if tt.kind != pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED {
-				screen = strings.ReplaceAll(screen, m.session.GetAttention().GetSince().AsTime().Local().Format("15:04")+"  ●", "23:40  ●")
+			if tt.name == "rotations" {
+				m = withRotations(m)
 			}
+			screen := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: m.session, width: m.width}) + "\n" + m.View().Content)
 			path := filepath.Join("testdata", "chatpicker-timeline-"+tt.name+".golden")
 			if os.Getenv("UPDATE_GOLDEN") == "1" {
 				if err := os.WriteFile(path, []byte(screen), 0600); err != nil {
@@ -258,7 +261,7 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
 	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 10)
-	block := stripANSI(m.attentionDetailsBlock())
+	block := stripANSI(m.neededBlock())
 	if strings.Join(strings.Fields(block[strings.Index(block, "Needed from you:")+len("Needed from you:"):]), " ") != strings.TrimSpace(m.fullQuestion) {
 		t.Fatal("full question truncated")
 	}
@@ -295,7 +298,7 @@ func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 func TestChatPickerNeededAnswerIsEmphasised(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
 	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 4)
-	block := m.attentionDetailsBlock()
+	block := m.neededBlock()
 	lines := strings.Split(block, "\n")
 	heading := -1
 	for i, line := range lines {
@@ -506,9 +509,9 @@ func TestChatPickerTimelineWrapsWideCharacters(t *testing.T) {
 func TestChatPickerNeededFromYouLabelAndIndent(t *testing.T) {
 	m := questionTimelineModel(80, 60, operatorQuestion)
 	m.fullQuestion = operatorQuestion
-	block := stripANSI(m.attentionDetailsBlock())
+	block := stripANSI(m.neededBlock())
 	t.Logf("details at 80 columns:\n%s", block)
-	_, answer, ok := strings.Cut(block, "\nNeeded from you:\n")
+	answer, ok := strings.CutPrefix(block, "Needed from you:\n")
 	if !ok {
 		t.Fatalf("no \"Needed from you:\" label:\n%s", block)
 	}
@@ -543,7 +546,7 @@ func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
 		paged        bool
 	}{
 		{"long answer at 24 rows", 24, 1, long, true},
-		{"short answer at 21 rows", 21, 1, operatorQuestion, true},
+		{"short answer at 19 rows", 19, 1, operatorQuestion, true},
 		{"short answer at 24 rows", 24, 3, operatorQuestion, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -631,6 +634,42 @@ func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
 	}
 }
 
+// PR 3162: the session entered its fixing state at 13:18, verify parked the
+// rebased head at 14:12, and the operator's message started a run at 17:15.
+// The waiting step takes the park's time and place, not the state's start
+// drawn last below a later row.
+func TestChatPickerTimelineWaitKeepsTheDaemonsTimeAndPlace(t *testing.T) {
+	now := time.Now()
+	clock := func(hour, minute int) time.Time {
+		return time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.Local)
+	}
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 60)
+	m.session.Attention.Since = timestamppb.New(clock(13, 18))
+	m.timeline = []*pb.TimelineStep{
+		{At: timestamppb.New(clock(11, 0)), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: timestamppb.New(clock(13, 40)), Title: "Run ended unexpectedly", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
+		{At: timestamppb.New(clock(14, 12)), Title: "Parked for you · UI change", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+		{At: timestamppb.New(clock(17, 15)), Title: "Resumed", Detail: "new run", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+	}
+	block := stripANSI(m.timelineBlock())
+	t.Logf("timeline:\n%s", block)
+	rows := strings.Split(block, "\n")[1:]
+	want := []string{
+		"  11:00  ✓ Build started",
+		"  13:40  ✗ Run ended unexpectedly",
+		"  14:12  ● Waiting for a fix",
+		"  17:15  ✓ Resumed",
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), block)
+	}
+	for i, row := range rows {
+		if !strings.HasPrefix(row, want[i]) {
+			t.Errorf("row %d = %q, want prefix %q", i, row, want[i])
+		}
+	}
+}
+
 // TestChatPickerTimelineDatesStepsAcrossDays: when visible steps span local
 // days, each row that starts a new day carries its date (or "Today") before
 // its time, the time and glyph columns stay aligned, and a timeline within one
@@ -688,14 +727,14 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 		height int
 		want   []string
 	}{
-		{"fold drops the labelled step", 23, []string{
+		{"fold drops the labelled step", 21, []string{
 			"  … 2 earlier steps",
 			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
 			"         23:55  ✓ B2",
 			"  Today  00:01  ✓ C",
 			"         00:05  ● Parked for you",
 		}},
-		{"fold leaves only today", 21, []string{
+		{"fold leaves only today", 19, []string{
 			"  … 4 earlier steps",
 			"  00:01  ✓ C",
 			"  00:05  ● Parked for you",
@@ -730,7 +769,9 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 
 // TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail: dropping the date
 // column widens a step's detail, and a long unbroken token that only fits the
-// wider continuation line must not make that step taller and fold it away.
+// wider continuation line moves whole off the title line, making that step
+// taller. The fold keeps the step anyway, and the kept steps keep their date
+// column.
 func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	now := time.Now()
 	day := func(back, hour, minute int) time.Time {
@@ -739,7 +780,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	}
 	for _, token := range []int{59, 60} {
 		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
-			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 23)
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 21)
 			m.width = 80
 			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
 			m.timeline = []*pb.TimelineStep{
@@ -749,9 +790,9 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
 			}
 			block := stripANSI(m.timelineBlock())
-			t.Logf("timeline at 80x23:\n%s", block)
+			t.Logf("timeline at 80x21:\n%s", block)
 			rows := strings.Split(block, "\n")[1:]
-			want := []string{"  … 1 earlier step", "  00:01  ✓ Built", strings.Repeat(" ", 11) + "x", "  00:02  ✓ CI passed", "  00:09  ● Parked for you"}
+			want := []string{"  … 1 earlier step", "  Today  00:01  ✓ Built", strings.Repeat(" ", 18) + "x", "         00:02  ✓ CI passed", "         00:09  ● Parked for you"}
 			if len(rows) != len(want) {
 				t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), block)
 			}
@@ -779,28 +820,41 @@ func randomWrapText(r *rand.Rand) string {
 	return strings.Join(words, " ")
 }
 
-// TestWordWrapMoreWidthNeverAddsLines: a wider wrap, whether both widths grow
-// together or only the first line's, never yields more lines, and every width
-// keeps the text and stays within its limits once rest holds a wide character.
-func TestWordWrapMoreWidthNeverAddsLines(t *testing.T) {
+// TestWordWrapWiderFirstLineNeverAddsLines: a wider first line never yields
+// more lines, every width keeps the text and stays within its limits once rest
+// holds a wide character, and a word no wider than rest is never split. A
+// wider rest can add a line, since a word it stops overflowing moves whole off
+// the first line; foldTimelineSteps carries the fold invariant that used to
+// lean on rest monotonicity.
+func TestWordWrapWiderFirstLineNeverAddsLines(t *testing.T) {
 	r := rand.New(rand.NewPCG(3185, 1))
 	strip := func(s string) string { return strings.Join(strings.Fields(s), "") }
 	for range 500 {
 		text := randomWrapText(r)
+		widths := map[string]int{}
+		for _, word := range strings.Fields(text) {
+			widths[word] = ansi.StringWidth(word)
+		}
 		gap := r.IntN(40)
-		previous := -1
 		for rest := 0; rest <= 140; rest++ {
 			first := rest - gap
 			lines := wordWrap(text, first, rest)
-			if previous >= 0 && len(lines) > previous {
-				t.Fatalf("wordWrap(%q, %d, %d) = %d lines, one cell narrower gave %d", text, first, rest, len(lines), previous)
-			}
-			previous = len(lines)
 			if got := strip(strings.Join(lines, "")); got != strip(text) {
 				t.Fatalf("wordWrap(%q, %d, %d) lost text: %q", text, first, rest, lines)
 			}
 			if rest < 2 {
 				continue
+			}
+			whole := map[string]bool{}
+			for _, line := range lines {
+				for _, word := range strings.Fields(line) {
+					whole[word] = true
+				}
+			}
+			for word, width := range widths {
+				if width <= rest && !whole[word] {
+					t.Fatalf("wordWrap(%q, %d, %d) split %q, which fits a %d-cell line: %q", text, first, rest, word, rest, lines)
+				}
 			}
 			for i, line := range lines {
 				limit := rest
@@ -813,7 +867,7 @@ func TestWordWrapMoreWidthNeverAddsLines(t *testing.T) {
 			}
 		}
 		rest := 2 + r.IntN(100)
-		previous = -1
+		previous := -1
 		for first := -2; first <= rest; first++ {
 			n := len(wordWrap(text, first, rest))
 			if previous >= 0 && n > previous {
@@ -825,12 +879,13 @@ func TestWordWrapMoreWidthNeverAddsLines(t *testing.T) {
 }
 
 // TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept: relabelling the steps a
-// fold keeps never costs one of them, at any width or budget.
+// fold keeps never costs one of them, at any width or budget, wherever the
+// pinned step sits.
 func TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept(t *testing.T) {
 	r := rand.New(rand.NewPCG(3185, 2))
 	now := time.Now()
 	for range 4000 {
-		steps := make([]*pb.TimelineStep, 1+r.IntN(7))
+		steps := make([]*pb.TimelineStep, 1+r.IntN(9))
 		yesterday, titleWidth := r.IntN(len(steps)), 0
 		for i := range steps {
 			detail := randomWrapText(r)
@@ -848,11 +903,563 @@ func TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept(t *testing.T) {
 			titleWidth = max(titleWidth, ansi.StringWidth(step.GetTitle()))
 			steps[i] = step
 		}
-		older, avail, budget := r.IntN(3), 10+r.IntN(120), 2+r.IntN(10)
-		_, folded := fitTimelineRows(timelineStepRows(steps, timelineDayLabels(steps, now, false), titleWidth, avail), older, budget)
-		rows, earlier := foldTimelineSteps(steps, older, now, titleWidth, avail, budget)
-		if earlier != folded {
-			t.Fatalf("avail %d, budget %d: first fold left out %d steps, relabelled fold left out %d:\n%s", avail, budget, folded, earlier, rows)
+		pin, avail, budget := r.IntN(len(steps)), 10+r.IntN(120), 3+r.IntN(10)
+		candidates := timelineOrder(len(steps), pin)
+		candidates = candidates[:1+r.IntN(len(candidates))]
+		slices.Sort(candidates)
+		picked := make([]*pb.TimelineStep, len(candidates))
+		for i, k := range candidates {
+			picked[i] = steps[k]
+		}
+		folded, _ := fitTimelineRows(timelineStepRows(picked, timelineDayLabels(picked, now, false), titleWidth, avail), candidates, len(steps), slices.Index(candidates, pin), budget)
+		kept, rows := foldTimelineSteps(steps, candidates, pin, now, titleWidth, avail, budget)
+		if !slices.Equal(kept, folded) {
+			t.Fatalf("avail %d, budget %d, pin %d: first fold kept %v, relabelled fold kept %v:\n%s", avail, budget, pin, folded, kept, rows)
 		}
 	}
+}
+
+// withRotations gives the fixture the daemon's narration of a usage-limit
+// incident and the session's two account rotations: one at the instant of the
+// daemon's resume step, which is that step, and a later manual switch the
+// daemon does not narrate.
+func withRotations(m ChatPickerModel) ChatPickerModel {
+	since := m.session.GetAttention().GetSince().AsTime().Local()
+	at := func(minute int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 23, minute, 0, 0, time.Local))
+	}
+	m.timeline = []*pb.TimelineStep{
+		{At: at(4), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(6), Title: "Hit its usage limit", Detail: "usage limit reached", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
+		{At: at(7), Title: "Resumed automatically", Detail: "switched account", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(9), Title: "CI passed", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(10), Title: "Waiting", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+	}
+	m.session.RotationEvents = []*pb.RotationEvent{
+		{Id: "manual", Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "dave@kamik.ai", ToAccount: "yuki@kamik.ai", Detail: "resumed", CreatedAt: at(8)},
+		{Id: "limit", Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, Trigger: pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED, FromAccount: "yuki@kamik.ai", ToAccount: "dave@kamik.ai", Detail: "resumed", CreatedAt: at(7)},
+	}
+	m.buildTableRows()
+	return m
+}
+
+// timelineRowsOf is the rendered timeline below its heading, styling removed.
+func timelineRowsOf(m ChatPickerModel) []string {
+	return strings.Split(stripANSI(m.timelineBlock()), "\n")[1:]
+}
+
+// TestChatPickerTimelineMergesRotationsByTime: the session's rotations join the
+// daemon's steps in time order. A rotation the daemon already narrates stays
+// one step, the daemon's, now naming the accounts; one it does not narrate
+// becomes its own step between its neighbours.
+func TestChatPickerTimelineMergesRotationsByTime(t *testing.T) {
+	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40))
+	rows := timelineRowsOf(m)
+	want := []string{
+		"  23:04  ✓ Build started",
+		"  23:06  ✗ Hit its usage limit    usage limit reached",
+		"  23:07  ✓ Resumed automatically  yuki@kamik.ai switched to dave@kamik.ai — resumed",
+		"  23:08  ✓ Account rotation       dave@kamik.ai switched to yuki@kamik.ai — resumed",
+		"  23:09  ✓ CI passed",
+		"● Waiting for a fix",
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), strings.Join(rows, "\n"))
+	}
+	for i, row := range rows {
+		if !strings.Contains(row, want[i]) {
+			t.Errorf("row %d = %q, want %q", i, row, want[i])
+		}
+	}
+	block := stripANSI(m.timelineBlock())
+	if got := strings.Count(block, "switched to dave@kamik.ai"); got != 1 {
+		t.Fatalf("the usage-limit rotation shows %d times, want once:\n%s", got, block)
+	}
+	if strings.Contains(block, "switched account") {
+		t.Fatalf("the merged step kept the daemon's account-less detail:\n%s", block)
+	}
+}
+
+// TestChatPickerTimelineShowsRotationsWithoutAttention: a session with nothing
+// waiting has no daemon history, so its timeline is its rotations, oldest
+// first, with a failed switch marked failed.
+func TestChatPickerTimelineShowsRotationsWithoutAttention(t *testing.T) {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 40)
+	m.timeline = nil
+	m.session.RotationEvents = []*pb.RotationEvent{
+		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_FAILED, ToAccount: "b@x", CreatedAt: timestamppb.New(time.Now().Add(-time.Minute))},
+		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "a@x", ToAccount: "c@x", CreatedAt: timestamppb.New(time.Now().Add(-time.Hour))},
+	}
+	rows := timelineRowsOf(m)
+	if len(rows) != 2 || !strings.Contains(rows[0], "✓ Account rotation  a@x switched to c@x") || !strings.Contains(rows[1], "✗ Account rotation  switch to b@x failed") {
+		t.Fatalf("rotation-only timeline:\n%s", strings.Join(rows, "\n"))
+	}
+	if screen := stripANSI(m.View().Content); strings.Contains(screen, "Rotation history") {
+		t.Fatalf("the separate rotation block still renders:\n%s", screen)
+	}
+}
+
+// expectTimelineRows fails unless rows match want one for one, each row
+// containing its wanted text.
+func expectTimelineRows(t *testing.T, rows, want []string) {
+	t.Helper()
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(want), strings.Join(rows, "\n"))
+	}
+	for i, row := range rows {
+		if !strings.Contains(row, want[i]) {
+			t.Errorf("row %d = %q, want %q", i, row, want[i])
+		}
+	}
+}
+
+// TestChatPickerTimelineWaitOnAGiveUpKeepsItsReason: a FIX waiting on a
+// rotation give-up shares the give-up's instant, because the daemon marks the
+// give-up's step current in place. The waiting row keeps the attention's
+// reason, and the give-up rotation stays its own failed row just ahead of it.
+func TestChatPickerTimelineWaitOnAGiveUpKeepsItsReason(t *testing.T) {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40)
+	since := m.session.GetAttention().GetSince().AsTime().Local()
+	at := func(minute int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 23, minute, 0, 0, time.Local))
+	}
+	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
+	m.timeline = []*pb.TimelineStep{
+		{At: at(4), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(6), Title: "Lost its login", Detail: "login expired", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
+		{At: at(6), Title: "Resumed automatically", Detail: "switched account", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(9), Title: "Stopped resuming automatically", Detail: "gave up", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+	}
+	m.session.RotationEvents = []*pb.RotationEvent{
+		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, Trigger: auth, CreatedAt: at(9)},
+		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, Trigger: auth, FromAccount: "a@x", ToAccount: "b@x", CreatedAt: at(6)},
+	}
+	expectTimelineRows(t, timelineRowsOf(m), []string{
+		"23:04  ✓ Build started",
+		"23:06  ✗ Lost its login",
+		"23:06  ✓ Resumed automatically  a@x switched to b@x",
+		"23:09  ✗ Account rotation       auth-wedge respawn cap reached",
+		"23:09  ● Waiting for a fix      Failed after 3 attempts on this machine",
+	})
+}
+
+// TestChatPickerTimelineRotationMergesOnlyIntoItsNarration: a rotation joins
+// a daemon step at its instant only when that step narrates it, and a step
+// takes one rotation at most. A manual switch at the instant of "CI passed"
+// and a second rotation at the instant of one resume stay rows of their own.
+func TestChatPickerTimelineRotationMergesOnlyIntoItsNarration(t *testing.T) {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40)
+	since := m.session.GetAttention().GetSince().AsTime().Local()
+	at := func(minute int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 23, minute, 0, 0, time.Local))
+	}
+	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
+	rotated := pb.RotationOutcome_ROTATION_OUTCOME_ROTATED
+	m.timeline = []*pb.TimelineStep{
+		{At: at(6), Title: "Hit its usage limit", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
+		{At: at(7), Title: "Resumed automatically", Detail: "switched account", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(8), Title: "CI passed", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: at(10), Title: "Waiting", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
+	}
+	m.session.RotationEvents = []*pb.RotationEvent{
+		{Outcome: rotated, Trigger: pb.RotationTrigger_ROTATION_TRIGGER_MANUAL, FromAccount: "m@x", ToAccount: "n@x", CreatedAt: at(8)},
+		{Outcome: rotated, Trigger: usage, FromAccount: "c@x", ToAccount: "d@x", CreatedAt: at(7)},
+		{Outcome: rotated, Trigger: usage, FromAccount: "a@x", ToAccount: "b@x", CreatedAt: at(7)},
+	}
+	rows := timelineRowsOf(m)
+	expectTimelineRows(t, rows, []string{
+		"23:06  ✗ Hit its usage limit",
+		"23:07  ✓ Account rotation       a@x switched to b@x",
+		"23:07  ✓ Resumed automatically  c@x switched to d@x",
+		"23:08  ✓ Account rotation       m@x switched to n@x",
+		"23:08  ✓ CI passed",
+		"23:10  ● Waiting for a fix",
+	})
+	if strings.Contains(strings.Join(rows, "\n"), "CI passed  m@x") {
+		t.Fatalf("CI passed swallowed the manual switch:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+// TestChatPickerTimelineMarksEveryGiveUpFailed: a rotation the daemon does
+// not narrate is failed exactly when the daemon stopped trying after it, the
+// status-only outcomes and the respawn cap included.
+func TestChatPickerTimelineMarksEveryGiveUpFailed(t *testing.T) {
+	giveUps := map[pb.RotationOutcome]bool{
+		pb.RotationOutcome_ROTATION_OUTCOME_FAILED:                          true,
+		pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED:            true,
+		pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY:       true,
+		pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT: true,
+		pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED:           true,
+	}
+	for value := range pb.RotationOutcome_name {
+		outcome := pb.RotationOutcome(value)
+		if outcome == pb.RotationOutcome_ROTATION_OUTCOME_UNSPECIFIED {
+			continue
+		}
+		t.Run(outcome.String(), func(t *testing.T) {
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 40)
+			m.timeline = nil
+			m.session.RotationEvents = []*pb.RotationEvent{{Outcome: outcome, ToAccount: "b@x", CreatedAt: timestamppb.New(time.Now().Add(-time.Minute))}}
+			rows := timelineRowsOf(m)
+			want := "✓ Account rotation"
+			if giveUps[outcome] {
+				want = "✗ Account rotation"
+			}
+			if len(rows) != 1 || !strings.Contains(rows[0], want) {
+				t.Fatalf("rows = %q, want one row with %q", rows, want)
+			}
+		})
+	}
+}
+
+// TestChatPickerTimelineSitsUnderTheChatList: the answer stays above the chat
+// table, and the timeline, rotations included, renders under the chat list
+// and its action bar, with no separate rotation block.
+func TestChatPickerTimelineSitsUnderTheChatList(t *testing.T) {
+	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40))
+	lines := strings.Split(stripANSI(m.View().Content), "\n")
+	row := func(text string) int {
+		for i, line := range lines {
+			if strings.Contains(line, text) {
+				return i
+			}
+		}
+		t.Fatalf("missing %q:\n%s", text, strings.Join(lines, "\n"))
+		return -1
+	}
+	needed, header, lastChat, bar, timeline := row("Needed from you:"), row("CHAT"), row("Run bs-build"), row("[esc] back"), row("Timeline")
+	if needed >= header || lastChat >= bar || bar >= timeline {
+		t.Fatalf("needed row %d, table header %d, last chat %d, action bar %d, timeline %d:\n%s", needed, header, lastChat, bar, timeline, strings.Join(lines, "\n"))
+	}
+	if rotation := row("dave@kamik.ai switched to yuki@kamik.ai"); rotation <= timeline {
+		t.Fatalf("rotation row %d is not on the timeline starting at %d", rotation, timeline)
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "Rotation history") {
+		t.Fatal("the separate rotation block still renders")
+	}
+}
+
+// TestChatPickerTimelineUsesTheAccountSwapStyle: every timeline line, heading,
+// fold line and wrapped continuation included, renders in styleStatusMuted,
+// the style the rotation-history block used.
+func TestChatPickerTimelineUsesTheAccountSwapStyle(t *testing.T) {
+	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 24))
+	m.timeline[3].Detail = strings.Repeat("all checks green ", 20)
+	lines := strings.Split(m.timelineBlock(), "\n")
+	if plain := stripANSI(strings.Join(lines, "\n")); !strings.Contains(plain, "earlier step") || !strings.Contains(plain, "…\n") {
+		t.Fatalf("fixture lacks a fold line or a cut continuation:\n%s", plain)
+	}
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if line != styleStatusMuted.Render(plain) || line == plain {
+			t.Errorf("timeline line %q rendered %q, want it in styleStatusMuted", plain, line)
+		}
+	}
+}
+
+// TestChatPickerTimelineKeepsAPathWholeOnTheNextLine: a detail whose first
+// word overflows the title line but fits a continuation line starts the next
+// line whole instead of splitting mid-word, while a word wider than any line
+// still fills the title line.
+func TestChatPickerTimelineKeepsAPathWholeOnTheNextLine(t *testing.T) {
+	const path = "services/boss/internal/views/session_timeline.go"
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40)
+	m.width = 80
+	m.timeline[3].Detail = path + " changed"
+	rows := timelineRowsOf(m)
+	evidence := slices.IndexFunc(rows, func(row string) bool { return strings.Contains(row, "Evidence recorded") })
+	if evidence < 0 || evidence+1 >= len(rows) {
+		t.Fatalf("no evidence step with a continuation:\n%s", strings.Join(rows, "\n"))
+	}
+	if !strings.HasSuffix(rows[evidence], "Evidence recorded") {
+		t.Errorf("title line carries part of the path: %q", rows[evidence])
+	}
+	if got := strings.TrimSpace(rows[evidence+1]); got != path+" changed" {
+		t.Errorf("continuation = %q, want the whole path", got)
+	}
+	if got := wordWrap(strings.Repeat("x", 30)+" tail", 10, 20); got[0] != strings.Repeat("x", 10) {
+		t.Errorf("a word wider than a continuation line no longer fills the title line: %q", got)
+	}
+}
+
+// TestChatPickerLongTimelineKeepsChatsVisible: under a long history and many
+// rotations the chat table keeps its rows and the frame its height, at every
+// size, and the fold accounts for every step.
+func TestChatPickerLongTimelineKeepsChatsVisible(t *testing.T) {
+	for _, width := range []int{80, 100, 120} {
+		for height := 18; height <= 40; height++ {
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, height)
+			m.width = width
+			since := m.session.GetAttention().GetSince().AsTime().Local()
+			stamp := func(minute int) *timestamppb.Timestamp {
+				return timestamppb.New(time.Date(since.Year(), since.Month(), since.Day(), 0, minute, 0, 0, time.Local))
+			}
+			m.timeline = nil
+			for i := range 50 {
+				m.timeline = append(m.timeline, &pb.TimelineStep{At: stamp(2 * i), Title: fmt.Sprintf("Run %d", i+1), Detail: strings.Repeat("detail ", i%15), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+			}
+			m.timeline = append(m.timeline, &pb.TimelineStep{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
+			m.session.RotationEvents = nil
+			for i := range 20 {
+				m.session.RotationEvents = append([]*pb.RotationEvent{{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "a@x", ToAccount: "b@x", CreatedAt: stamp(2*i + 1)}}, m.session.RotationEvents...)
+			}
+			for _, id := range []string{"third", "fourth", "fifth"} {
+				m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+				m.daemonStatuses[id] = statusWaiting
+			}
+			m.buildTableRows()
+			m.table.SetHeight(m.tableHeight())
+			screen := stripANSI(m.View().Content)
+			if got := lipgloss.Height(screen) + bannerOverhead; got > height {
+				t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, screen)
+			}
+			if !strings.Contains(screen, "[esc] back") || !strings.Contains(screen, "Needed from you") {
+				t.Fatalf("%dx%d: footer or answer pushed off:\n%s", width, height, screen)
+			}
+			if m.timelineBlock() == "" {
+				if height >= 24 {
+					t.Fatalf("%dx%d: no timeline on a terminal with room for one:\n%s", width, height, screen)
+				}
+				continue
+			}
+			// A timeline on screen means every chat the table reserves is too.
+			for _, text := range []string{"verify", "Run bs-build", "third chat", "fourth chat", "fifth chat", "Timeline", "Parked for you"} {
+				if !strings.Contains(screen, text) {
+					t.Fatalf("%dx%d: missing %q:\n%s", width, height, text, screen)
+				}
+			}
+			shown, earlier := 0, 0
+			for _, row := range timelineRowsOf(m) {
+				if strings.Contains(row, "✓ ") || strings.Contains(row, "● ") {
+					shown++
+				}
+				_, _ = fmt.Sscanf(strings.TrimSpace(row), "… %d earlier", &earlier)
+			}
+			if earlier+shown != 71 {
+				t.Fatalf("%dx%d: %d earlier plus %d shown, want all 71 steps:\n%s", width, height, earlier, shown, screen)
+			}
+		}
+	}
+}
+
+var (
+	timelineStepRow = regexp.MustCompile(`^  .*?  ([✓✗●]) (.*?)(  |…|$)`)
+	timelineFoldRow = regexp.MustCompile(`^  … (\d+) (earlier|later) steps?$`)
+)
+
+// assertTimelineFold reads the rendered timeline back against the steps it
+// draws from: every step row is the next step not yet accounted for, every
+// fold line counts the run of steps it stands for and says "earlier" only
+// ahead of the first step row, and the rows and folds account for every step.
+// It reports whether the timeline shows, and fails if it shows without the
+// waiting step.
+func assertTimelineFold(t *testing.T, m ChatPickerModel) bool {
+	t.Helper()
+	block := stripANSI(m.timelineBlock())
+	if block == "" {
+		return false
+	}
+	steps := m.timelineSteps()
+	next, current, seenStep := 0, 0, false
+	for _, row := range strings.Split(block, "\n")[1:] {
+		if fold := timelineFoldRow.FindStringSubmatch(row); fold != nil {
+			n, _ := strconv.Atoi(fold[1])
+			if (fold[2] == "earlier") == seenStep || n < 1 {
+				t.Fatalf("fold line %q after a step row = %v:\n%s", row, seenStep, block)
+			}
+			next += n
+			continue
+		}
+		step := timelineStepRow.FindStringSubmatch(row)
+		if step == nil {
+			continue
+		}
+		if next >= len(steps) || !strings.HasPrefix(steps[next].GetTitle(), step[2]) {
+			t.Fatalf("row %q is not step %d of %d:\n%s", row, next, len(steps), block)
+		}
+		if step[1] == "●" {
+			current++
+		}
+		seenStep = true
+		next++
+	}
+	if next != len(steps) {
+		t.Fatalf("rows and folds account for %d of %d steps:\n%s", next, len(steps), block)
+	}
+	if want := slices.ContainsFunc(steps, func(s *pb.TimelineStep) bool { return s.GetState() == pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT }); current > 1 || (current == 1) != want {
+		t.Fatalf("timeline shows %d waiting steps, want one = %v:\n%s", current, want, block)
+	}
+	return true
+}
+
+// waitAmongLaterSteps is a fix the session has waited on since 10:05, after
+// four earlier steps and with later runs after it.
+func waitAmongLaterSteps(height, later int) ChatPickerModel {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, height)
+	m.width = 80
+	day := m.session.GetAttention().GetSince().AsTime().Local()
+	clock := func(minute int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(day.Year(), day.Month(), day.Day(), 10, minute, 0, 0, time.Local))
+	}
+	m.timeline = nil
+	for i, title := range []string{"Build started", "Built", "CI failed", "Repair started"} {
+		m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(i + 1), Title: title, State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+	}
+	m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(5), Title: "Parked for you", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
+	for i := range later {
+		m.timeline = append(m.timeline, &pb.TimelineStep{At: clock(10 + i), Title: fmt.Sprintf("Resumed %d", i), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE})
+	}
+	m.buildTableRows()
+	return m
+}
+
+// The waiting step sits in place, so later steps follow it. The fold keeps it
+// however many follow and however short the terminal, folding the steps on
+// either side of it; a terminal too short for it and its folds shows no
+// timeline rather than one without it.
+func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
+	for _, later := range []int{1, 2, 3, 6, 8, 12} {
+		for height := 18; height <= 60; height++ {
+			m := waitAmongLaterSteps(height, later)
+			if !assertTimelineFold(t, m) && height >= 21 {
+				t.Fatalf("%d later steps at 80x%d: no timeline:\n%s", later, height, stripANSI(m.View().Content))
+			}
+		}
+	}
+	for _, tt := range []struct {
+		name          string
+		height, later int
+		want          []string
+	}{
+		{"two later at 20 rows", 20, 2, nil},
+		{"two later at 21 rows", 21, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
+		{"two later at 22 rows", 22, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"two later at 23 rows", 23, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"three later at 22 rows", 22, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
+		{"six later at 40 rows", 40, 6, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 1 later step", "  10:11  ✓ Resumed 1", "  10:12  ✓ Resumed 2", "  10:13  ✓ Resumed 3", "  10:14  ✓ Resumed 4", "  10:15  ✓ Resumed 5"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := waitAmongLaterSteps(tt.height, tt.later)
+			block := stripANSI(m.timelineBlock())
+			t.Logf("timeline at 80x%d:\n%s", tt.height, block)
+			if tt.want == nil {
+				if block != "" {
+					t.Fatalf("a timeline too short for the waiting step and its folds shows:\n%s", block)
+				}
+				return
+			}
+			rows := strings.Split(block, "\n")[1:]
+			if len(rows) != len(tt.want) {
+				t.Fatalf("rows = %d, want %d:\n%s", len(rows), len(tt.want), block)
+			}
+			for i, row := range rows {
+				if strings.TrimRight(row, " ") != tt.want[i] && !strings.HasPrefix(row, tt.want[i]+"  ") {
+					t.Errorf("row %d = %q, want %q", i, row, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// A timeline fetched out of step with the session row can lack the daemon's
+// current step while attention still needs the operator. The waiting step then
+// goes in at attention's since among the daemon's steps, not drawn last below
+// a later one.
+func TestChatPickerTimelineWaitWithoutTheDaemonsStepKeepsTimeOrder(t *testing.T) {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 60)
+	day := m.session.GetAttention().GetSince().AsTime().Local()
+	clock := func(minute int) *timestamppb.Timestamp {
+		return timestamppb.New(time.Date(day.Year(), day.Month(), day.Day(), 10, minute, 0, 0, time.Local))
+	}
+	m.timeline = []*pb.TimelineStep{
+		{At: clock(0), Title: "Build started", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: clock(1), Title: "Run ended unexpectedly", State: pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED},
+		{At: clock(10), Title: "Resumed 0", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+		{At: clock(11), Title: "Resumed 1", State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE},
+	}
+	for _, tt := range []struct {
+		since int
+		want  []string
+	}{
+		{1, []string{"  10:00  ✓ Build started", "  10:01  ✗ Run ended unexpectedly", "  10:01  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{5, []string{"  10:00  ✓ Build started", "  10:01  ✗ Run ended unexpectedly", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{20, []string{"  10:00  ✓ Build started", "  10:01  ✗ Run ended unexpectedly", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1", "  10:20  ● Waiting for a fix"}},
+	} {
+		m.session.Attention.Since = clock(tt.since)
+		rows := timelineRowsOf(m)
+		if len(rows) != len(tt.want) {
+			t.Fatalf("since 10:%02d: rows = %d, want %d:\n%s", tt.since, len(rows), len(tt.want), strings.Join(rows, "\n"))
+		}
+		for i, row := range rows {
+			if !strings.HasPrefix(row, tt.want[i]) {
+				t.Errorf("since 10:%02d: row %d = %q, want prefix %q", tt.since, i, row, tt.want[i])
+			}
+		}
+	}
+}
+
+// A random sweep over timelines, waiting positions, rotations, kinds and
+// terminal sizes: whenever the timeline shows, it shows the waiting step, its
+// rows keep time order, its folds account for every step, and the view stays
+// within the terminal.
+func TestChatPickerTimelineAlwaysShowsTheWait(t *testing.T) {
+	r := rand.New(rand.NewPCG(3200, 1))
+	kinds := []pb.AttentionKind{pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_QUESTION, pb.AttentionKind_ATTENTION_KIND_MERGE}
+	shown := 0
+	for range 3000 {
+		height, width := 14+r.IntN(50), 40+r.IntN(111)
+		m := detailFixture(kinds[r.IntN(len(kinds))], height)
+		m.width = width
+		day := m.session.GetAttention().GetSince().AsTime().Local()
+		n := 1 + r.IntN(14)
+		current := r.IntN(n + 1)
+		m.timeline = nil
+		for i := range n {
+			d := day.AddDate(0, 0, -r.IntN(2)*(n-i)/n)
+			step := &pb.TimelineStep{At: timestamppb.New(time.Date(d.Year(), d.Month(), d.Day(), 9, 2*i, 0, 0, time.Local)), Title: fmt.Sprintf("Step %d", i), Detail: strings.Repeat("detail ", r.IntN(20)), State: pb.TimelineStepState_TIMELINE_STEP_STATE_DONE}
+			if r.IntN(5) == 0 {
+				step.State = pb.TimelineStepState_TIMELINE_STEP_STATE_FAILED
+			}
+			if i == current {
+				step.State = pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT
+			}
+			m.timeline = append(m.timeline, step)
+		}
+		m.session.RotationEvents = nil
+		for range r.IntN(4) {
+			at := time.Date(day.Year(), day.Month(), day.Day(), 9, 2*r.IntN(n)+1, 0, 0, time.Local)
+			m.session.RotationEvents = append(m.session.RotationEvents, &pb.RotationEvent{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "a@x", ToAccount: "b@x", CreatedAt: timestamppb.New(at)})
+		}
+		slices.SortFunc(m.session.RotationEvents, func(a, b *pb.RotationEvent) int { return b.GetCreatedAt().AsTime().Compare(a.GetCreatedAt().AsTime()) })
+		for i := range r.IntN(4) {
+			id := fmt.Sprintf("chat-%d", i)
+			m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id, CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+			m.daemonStatuses[id] = statusWaiting
+		}
+		m.buildTableRows()
+		m.table.SetHeight(m.tableHeight())
+		if !assertTimelineFold(t, m) {
+			continue
+		}
+		shown++
+		steps := m.timelineSteps()
+		for i := 1; i < len(steps); i++ {
+			if steps[i].GetAt() != nil && steps[i-1].GetAt() != nil && steps[i].GetAt().AsTime().Before(steps[i-1].GetAt().AsTime()) {
+				t.Fatalf("step %d %q at %s follows step %q at %s", i, steps[i].GetTitle(), steps[i].GetAt().AsTime(), steps[i-1].GetTitle(), steps[i-1].GetAt().AsTime())
+			}
+		}
+		screen := stripANSI(m.View().Content)
+		if got := lipgloss.Height(screen) + bannerOverhead; got > height {
+			t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, screen)
+		}
+		for _, line := range strings.Split(screen, "\n") {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("%dx%d: overwide line %q", width, height, line)
+			}
+		}
+	}
+	if shown < 1500 {
+		t.Fatalf("the timeline showed in only %d of 3000 cases", shown)
+	}
+	t.Logf("the timeline showed in %d of 3000 cases", shown)
 }

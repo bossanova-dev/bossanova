@@ -12,6 +12,7 @@ import (
 
 // rawIssueComment is the subset of a REST issue comment the marker read needs.
 type rawIssueComment struct {
+	ID   int64  `json:"id"`
 	Body string `json:"body"`
 	User struct {
 		Login string `json:"login"`
@@ -61,6 +62,8 @@ func (p *Provider) FindPRCommentsWithMarker(ctx context.Context, repoPath string
 			AuthorLogin:       c.User.Login,
 			AuthorAssociation: c.AuthorAssociation,
 			WrittenAt:         c.writtenAt(),
+			CreatedAt:         c.CreatedAt,
+			ID:                c.ID,
 		})
 	}
 	vcs.SortPRCommentsNewestFirst(marked)

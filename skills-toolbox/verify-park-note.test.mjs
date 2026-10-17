@@ -3,8 +3,6 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { region } from '../scripts/gate-region-lib.mjs'
-
 import {
   criteriaReasons,
   followUpReasons,
@@ -16,7 +14,9 @@ import {
   AFTER_MERGE_MARKER,
   NOTE_CHAR_LIMIT,
   PARK_CODE_WORDS,
+  UNKNOWN_CODE_WORDS,
   PARK_NOTE_MARKER,
+  PARK_CODES_LINE,
   OPEN_ITEMS_MAX,
   afterMergeItems,
   afterMergeNote,
@@ -25,6 +25,7 @@ import {
   ledgerFingerprint,
   openItemsLine,
   parkNote,
+  restatesCategory,
 } from './verify-park-note.mjs'
 
 const HEAD = 'a'.repeat(40)
@@ -198,28 +199,38 @@ test('extensionFailures names each malfunctioning extension, how it failed and i
   assert.equal(extensionFailures(null), null)
 })
 
-test('every park code verify can raise has plain words and a next step', () => {
-  for (const code of HUMAN_REASONS) {
-    assert.ok(PARK_CODE_WORDS[code]?.plain, code)
-    assert.ok(PARK_CODE_WORDS[code]?.next, code)
-  }
+test('every park code verify can raise has plain words', () => {
+  for (const code of HUMAN_REASONS) assert.ok(PARK_CODE_WORDS[code]?.plain, code)
 })
 
-test('the plain words match the TUI table they mirror, so the PR and the TUI explain a park alike', () => {
-  const go = readFileSync(
-    fileURLToPath(new URL('../lib/bossalib/attention/templates.go', import.meta.url)),
-    'utf8',
+test('the park words equal the table the TUI renders, code for code, so the PR and the TUI explain a park alike', () => {
+  const table = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL('../lib/bossalib/attention/testdata/park_code_words.json', import.meta.url),
+      ),
+      'utf8',
+    ),
   )
-  const table = region(go, 'var knownParkCodes = map[string]parkCodeInfo{', null, 'templates.go')
-  for (const code of HUMAN_REASONS) {
-    const key = code === 'ledger-open' ? 'ParkCodeLedgerOpen:' : `"${code}":`
-    const entry = region(table, key, null, code)
-    const plain = entry.match(/plain:\s*"((?:[^"\\]|\\.)*)"/)?.[1]
-    assert.equal(PARK_CODE_WORDS[code].plain, plain, code)
+  assert.deepEqual(Object.keys(PARK_CODE_WORDS).sort(), Object.keys(table.codes).sort())
+  const withRule = (words) => ({ ...words, restates: restatesCategory(words) })
+  for (const [code, words] of Object.entries(table.codes)) {
+    assert.deepEqual(withRule(PARK_CODE_WORDS[code]), words, code)
   }
+  assert.deepEqual(withRule(UNKNOWN_CODE_WORDS), table.unknown)
 })
 
-test('parkNote names each code with its meaning, evidence and next step, and ends on its marker', () => {
+test('restatesCategory ignores case and articles and nothing else', () => {
+  assert.equal(restatesCategory({ plain: 'a UI change', category: 'UI change' }), true)
+  assert.equal(restatesCategory({ plain: 'The  ui CHANGE', category: 'an UI change' }), true)
+  assert.equal(restatesCategory({ plain: 'a UI change to review', category: 'UI change' }), false)
+  assert.equal(
+    restatesCategory({ plain: 'a security-sensitive change', category: 'security' }),
+    false,
+  )
+})
+
+test('parkNote names each code by its issue and evidence, once each, and ends on its marker', () => {
   const facts = {
     title: 't',
     body: DUPLICATED,
@@ -229,20 +240,37 @@ test('parkNote names each code with its meaning, evidence and next step, and end
   const codes = ['ledger-open', 'extension-failed', 'human-review:ui']
   const note = parkNote({ codes, headSha: HEAD, pr: 7, facts })
   const lines = note.body.split('\n')
-  assert.match(lines[0], /`ledger-open`, `extension-failed`, `human-review:ui`\.$/)
-  for (const code of codes) {
-    const at = lines.findIndex((l) => l.startsWith(`- **\`${code}\`**:`))
-    assert.ok(at > 0, code)
-    assert.ok(lines[at].includes(PARK_CODE_WORDS[code].plain), code)
-    assert.ok(lines[at].includes(PARK_CODE_WORDS[code].next), code)
+  assert.match(lines[0], /: open checklist items, verify extension failed, UI change\.$/)
+  const plainLine = (code) => {
+    const plain = PARK_CODE_WORDS[code].plain
+    return `- ${plain[0].toUpperCase()}${plain.slice(1)}.`
   }
+  for (const code of ['ledger-open', 'extension-failed'])
+    assert.ok(lines.indexOf(plainLine(code)) > 0, code)
+  assert.equal(
+    lines.filter((l) => /UI change/i.test(l)).length,
+    1,
+    'the UI change is named once, in the summary, since its own words would only repeat it',
+  )
+  const shown = note.body.split('\n').filter((l) => !l.startsWith('<!--'))
+  for (const code of codes) assert.ok(!shown.join('\n').includes(code), `${code} shown to people`)
+  const hidden = lines.map((l) => l.match(PARK_CODES_LINE)).find(Boolean)
+  assert.deepEqual(
+    JSON.parse(hidden?.[1] ?? 'null'),
+    codes,
+    'the exact codes ride in a hidden line',
+  )
   assert.ok(
     lines.includes('  - `## Human follow-up` appears more than once, so verify cannot read it.'),
   )
   assert.ok(lines.includes('  - `boss-verify-evidence` crashed or returned nothing'))
-  assert.ok(lines.includes('  - Matched: web UI'))
-  const next = lines.find((l) => l.startsWith('**Next:**'))
-  assert.ok(next?.includes('`boss pr approve 7`'), next)
+  assert.ok(lines.includes('- Matched: web UI'), 'the UI change keeps its evidence')
+  assert.ok(
+    lines.includes(
+      'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh, and a fixed checklist is judged again the next time verify runs.',
+    ),
+  )
+  assert.ok(!note.body.includes('boss pr approve'), 'no instruction to the reader')
   assert.ok(!note.body.includes('send-back') && !note.body.includes('send it back'), note.body)
   assert.ok(!note.body.includes('no tracker ticket'))
   const marker = lines.at(-1).match(PARK_NOTE_MARKER)
@@ -256,7 +284,8 @@ test('parkNote says when no ticket stands behind the PR and when it was not give
     pr: 3,
     facts: { title: 't', body: NO_LEDGER, ticketless: true },
   })
-  assert.ok(note.body.includes('This head has no successful `boss/build` status.'))
+  assert.ok(note.body.includes('No automated build and review has passed on this commit.'))
+  assert.ok(!note.body.includes('boss/build'), 'no status context named to people')
   assert.ok(note.body.includes("This post was not given the extensions' results"))
   assert.ok(note.body.includes('This PR has no tracker ticket, so verify made no tracker writes'))
 })
@@ -267,7 +296,13 @@ test('parkNote digests its content: the same facts give the same note, changed e
   assert.equal(at(open).body, at(open).body)
   assert.notEqual(at(open).digest, at(ledger({ followUp: ['- [x] rotate the key'] })).digest)
   const unknown = parkNote({ codes: ['made-up'], headSha: HEAD, pr: 7 })
-  assert.ok(unknown.body.includes('a park code this version of boss does not know'))
+  assert.equal(
+    unknown.body.split('an issue this version of boss does not recognise').length - 1,
+    1,
+    unknown.body,
+  )
+  assert.ok(!/^- /m.test(unknown.body), 'no bullet repeats the summary')
+  assert.ok(!unknown.body.includes('park code'), unknown.body)
 })
 
 test('a park note lists the After merge items for a person without counting them as ledger', () => {
@@ -287,7 +322,7 @@ test('a park note lists the After merge items for a person without counting them
     '- Ping @\u200bops &lt;!-- x -->',
     '',
   ])
-  assert.ok(at < lines.findIndex((l) => l.startsWith('**Next:**')))
+  assert.ok(at < lines.findIndex((l) => l.startsWith('An approval waives')))
   assert.deepEqual(ledgerEvidence({ body }), ['Open human follow-up: rotate the key'])
   assert.equal(
     ledgerFingerprint({ body }),
@@ -345,12 +380,11 @@ test('parkNote stays under the comment size limit, cutting evidence with a count
   const shown = lines.filter((line) => line.startsWith('  - Unmet acceptance criterion: ')).length
   assert.ok(shown > 0 && shown < items.length, `${shown} shown`)
   assert.ok(lines.includes(`  - …and ${items.length - shown} more.`))
-  const receipt = lines.indexOf(
-    `- **\`no-receipt\`**: ${PARK_CODE_WORDS['no-receipt'].plain}. ${PARK_CODE_WORDS['no-receipt'].next}.`,
-  )
+  const words = PARK_CODE_WORDS['no-receipt']
+  const receipt = lines.indexOf(`- ${words.plain[0].toUpperCase()}${words.plain.slice(1)}.`)
   assert.ok(receipt > 0, 'every code keeps its line')
   assert.equal(lines[receipt + 1], '  - …and 1 more.')
-  assert.ok(lines.some((line) => line.startsWith('**Next:**')))
+  assert.ok(lines.some((line) => line.startsWith('An approval waives')))
   assert.match(lines.at(-1), PARK_NOTE_MARKER)
 
   const small = parkNote({

@@ -37,6 +37,7 @@ func TestResumeSessionRunLifecycleErrors(t *testing.T) {
 		{"missing session", sql.ErrNoRows, connect.CodeNotFound},
 		{"store failed", errors.New("store unavailable"), connect.CodeInternal},
 		{"not resumable", session.ErrRunNotResumable, connect.CodeFailedPrecondition},
+		{"start-path lock busy", fmt.Errorf("%w: timed out", session.ErrStartPathBusy), connect.CodeUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &lifecycleSessionStoreFake{getErr: tc.cause}
@@ -50,6 +51,66 @@ func TestResumeSessionRunLifecycleErrors(t *testing.T) {
 				t.Fatalf("err = %v, lost cause %v", err, tc.cause)
 			}
 		})
+	}
+}
+
+// TestResumeSessionRunRefusesARevivalOntoATakenBranch drives the resume RPC
+// through the production store: a Blocked run whose branch another live
+// session now holds is refused as FailedPrecondition, naming that session,
+// with nothing launched and the row left Blocked.
+func TestResumeSessionRunRefusesARevivalOntoATakenBranch(t *testing.T) {
+	ctx := context.Background()
+	database := setupServerTestDB(t)
+	repos := db.NewRepoStore(database)
+	sessions := db.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
+	chats := db.NewAgentChatStore(database)
+	repo, err := repos.Create(ctx, db.CreateRepoParams{DisplayName: "resume", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/resume", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "Build", Plan: "/boss-build TEST-1", WorktreePath: repo.LocalPath, BranchName: "fix/shared", AgentName: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := "old-run"
+	priorPtr := &prior
+	blocked := int(machine.Blocked)
+	if _, err = sessions.Update(ctx, row.ID, db.UpdateSessionParams{State: &blocked, AgentSessionID: &priorPtr}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = chats.Create(ctx, db.CreateAgentChatParams{SessionID: row.ID, AgentSessionID: prior, AgentName: "claude", Title: "Build"}); err != nil {
+		t.Fatal(err)
+	}
+	rival, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "Rival", WorktreePath: t.TempDir(), BranchName: "fix/shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaiting := int(machine.AwaitingChecks)
+	if _, err = sessions.Update(ctx, rival.ID, db.UpdateSessionParams{State: &awaiting}); err != nil {
+		t.Fatal(err)
+	}
+	launched := 0
+	runner := &setupStreamAgent{startFn: func(context.Context, string, string, *string, string) (string, error) {
+		launched++
+		return "new-run", nil
+	}}
+	lc := session.NewLifecycle(sessions, repos, chats, nil, nil, runner, nil, nil, zerolog.Nop())
+	lc.SetProofEnvResolver(proofenv.NewNoop())
+	srv := &Server{sessions: sessions, repos: repos, lifecycle: lc}
+
+	_, err = srv.ResumeSessionRun(ctx, connect.NewRequest(&pb.ResumeSessionRunRequest{SessionId: row.ID}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("err = %v, want FailedPrecondition", err)
+	}
+	if !strings.Contains(err.Error(), rival.ID) {
+		t.Fatalf("err = %v, want it to name the rival %s", err, rival.ID)
+	}
+	if launched != 0 {
+		t.Fatalf("launched = %d, want 0", launched)
+	}
+	stored, err := sessions.Get(ctx, row.ID)
+	if err != nil || stored.State != machine.Blocked {
+		t.Fatalf("session = %v err = %v, want Blocked kept", stored, err)
 	}
 }
 

@@ -186,7 +186,7 @@ func renderAggregateRunCost(cmd *cobra.Command, agg *pb.RunCostAggregate) {
 	_, _ = fmt.Fprintf(out, "Backfilled rows included: %d; excluded by default unless --include-backfilled: %d\n",
 		agg.GetBackfilledIncludedCount(), agg.GetBackfilledExcludedCount())
 	_, _ = fmt.Fprintf(out, "Open rows excluded by default unless --include-open: %d\n", agg.GetOpenExcludedCount())
-	_, _ = fmt.Fprintf(out, "Effort not recorded: %d; review ledger not recorded: %d\n", agg.GetNoEffortCount(), agg.GetNoReviewRoundLedgerCount())
+	_, _ = fmt.Fprintf(out, "Effort not recorded: %d; review rounds not recorded: %d\n", agg.GetNoEffortCount(), agg.GetNoReviewRoundLedgerCount())
 }
 
 func renderExcludedRunHint(out interface{ Write([]byte) (int, error) }, agg *pb.RunCostAggregate) {

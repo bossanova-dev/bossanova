@@ -240,6 +240,7 @@ go_test(
         "trash_test.go",
         "truncate_display_test.go",
         "tui_action_telemetry_test.go",
+        "verify_park_tier_test.go",
         "waiting_status_test.go",
         "webopen_test.go",
     ],
@@ -255,6 +256,7 @@ go_test(
         "testdata/chatpicker-timeline-legacy.golden",
         "testdata/chatpicker-timeline-review-24.golden",
         "testdata/chatpicker-timeline-review.golden",
+        "testdata/chatpicker-timeline-rotations.golden",
     ],
     deps = [
         "//lib/bossalib/agentcred",

@@ -1,0 +1,100 @@
+{
+  "codes": {
+    "always-human-path": {
+      "plain": "touches a path that always needs a person's sign-off",
+      "category": "security",
+      "signOff": true,
+      "restates": false
+    },
+    "extension-failed": {
+      "plain": "a verify extension failed to run",
+      "category": "verify extension failed",
+      "signOff": false,
+      "restates": false
+    },
+    "human-review:database": {
+      "plain": "a database migration for a person to review",
+      "category": "database migration",
+      "signOff": true,
+      "restates": false
+    },
+    "human-review:security": {
+      "plain": "a security-sensitive change for a person to review",
+      "category": "security",
+      "signOff": true,
+      "restates": false
+    },
+    "human-review:ui": {
+      "plain": "a UI change",
+      "category": "UI change",
+      "signOff": true,
+      "restates": true
+    },
+    "human-review:unproven": {
+      "plain": "some checks have no evidence that they pass",
+      "category": "unproven checks",
+      "signOff": true,
+      "restates": false
+    },
+    "ledger-open": {
+      "plain": "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
+      "category": "open checklist items",
+      "signOff": false,
+      "restates": false
+    },
+    "no-receipt": {
+      "plain": "the latest commit has not had an automated build and review, or changed after its review",
+      "category": "latest commit not reviewed",
+      "signOff": true,
+      "restates": false
+    },
+    "no-session": {
+      "plain": "verify found no session behind this PR",
+      "category": "no session",
+      "signOff": false,
+      "restates": false
+    },
+    "repair-exhausted": {
+      "plain": "automatic repair gave up on this PR",
+      "category": "repair exhausted",
+      "signOff": false,
+      "restates": false
+    },
+    "worktree-diverged": {
+      "plain": "the session worktree is off the PR head and holds work the PR lacks",
+      "category": "worktree diverged",
+      "signOff": false,
+      "restates": false
+    },
+    "worktree-unsynced": {
+      "plain": "verify could not move the session worktree to the PR head",
+      "category": "worktree unsynced",
+      "signOff": false,
+      "restates": false
+    }
+  },
+  "unknown": {
+    "plain": "an issue this version of boss does not recognise",
+    "category": "an issue this version of boss does not recognise",
+    "signOff": false,
+    "restates": true
+  },
+  "order": [
+    "no-receipt",
+    "repair-exhausted",
+    "always-human-path",
+    "ledger-open",
+    "extension-failed",
+    "no-session",
+    "worktree-diverged",
+    "worktree-unsynced",
+    "human-review:database",
+    "human-review:security",
+    "human-review:ui",
+    "human-review:unproven"
+  ],
+  "waiting": {
+    "base-ci-red": "waiting for main CI",
+    "stack-busy": "waiting for the test stack"
+  }
+}

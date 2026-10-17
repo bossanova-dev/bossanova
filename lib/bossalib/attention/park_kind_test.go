@@ -10,11 +10,11 @@ import (
 )
 
 // verifyGateHumanReasons is skills-toolbox/verify-gate.mjs HUMAN_REASONS, split
-// by what each asks of the operator: the policy codes ask for a sign-off on
-// work verify passed, the rest report a failure or a gap.
+// by what each asks of the operator: the sign-off codes only ask a person to
+// look, the rest report that something is wrong.
 var (
-	signOffCodes = []string{"always-human-path", "human-review:database", "human-review:security", "human-review:ui"}
-	failureCodes = []string{"no-receipt", "repair-exhausted", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced", "human-review:unproven"}
+	signOffCodes = []string{"no-receipt", "always-human-path", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven"}
+	failureCodes = []string{"repair-exhausted", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced"}
 )
 
 func TestIsSignOffPark(t *testing.T) {
@@ -42,8 +42,8 @@ func TestIsSignOffPark(t *testing.T) {
 }
 
 func TestParkFailureCodesKeepReportOrder(t *testing.T) {
-	got := attention.ParkFailureCodes([]string{"human-review:ui,extension-failed", "no-receipt", "brand-new"})
-	if want := []string{"no-receipt", "extension-failed", "brand-new"}; !slices.Equal(got, want) {
+	got := attention.ParkFailureCodes([]string{"human-review:ui,extension-failed", "ledger-open", "no-receipt", "brand-new"})
+	if want := []string{"ledger-open", "extension-failed", "brand-new"}; !slices.Equal(got, want) {
 		t.Fatalf("ParkFailureCodes = %v, want %v", got, want)
 	}
 }
@@ -99,11 +99,36 @@ func TestComputeAnswersAParkByWhatItAsks(t *testing.T) {
 	}
 }
 
+// TestNoReceiptParkNamesTheLatestCommit checks the words a no-receipt park
+// renders. The code fires when the head has no automated build status: an
+// agent built it in an ordinary chat, or a rebase replaced a reviewed head. The
+// words say only that the latest commit has not been reviewed, and the park
+// only asks a person to look, so it is a REVIEW.
+func TestNoReceiptParkNamesTheLatestCommit(t *testing.T) {
+	got := attention.Compute(attention.Input{ParkCodes: []string{"no-receipt"}})
+	category, kind := attention.ParkCategory([]string{"no-receipt"})
+	for _, tc := range []struct{ what, got, want string }{
+		{"sentence", got.GetSentence(), "No review of the latest commit"},
+		{"category", category, "latest commit not reviewed"},
+		{"plain words", attention.ParkCodePlainWords("no-receipt"), "the latest commit has not had an automated build and review, or changed after its review"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("no-receipt %s = %q, want %q", tc.what, tc.got, tc.want)
+		}
+	}
+	if kind != pb.AttentionKind_ATTENTION_KIND_REVIEW || got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Errorf("no-receipt park kind = %v (category %v), want REVIEW", got.GetKind(), kind)
+	}
+}
+
 // operatorJargon is what operator-facing park words must never show: a raw park
-// code, or verify's internal name for the PR checklist.
+// code, or verify's internal names for the PR checklist, the build status and
+// the automated pipeline.
 func operatorJargon(text string) string {
-	if strings.Contains(strings.ToLower(text), "ledger") {
-		return "ledger"
+	for _, word := range []string{"ledger", "receipt", "factory"} {
+		if strings.Contains(strings.ToLower(text), word) {
+			return word
+		}
 	}
 	for _, code := range append(slices.Clone(signOffCodes), failureCodes...) {
 		if strings.Contains(text, code) {
@@ -156,7 +181,7 @@ func TestOpenChecklistParkCountsItsOpenItems(t *testing.T) {
 // confirmation shows.
 func TestParkCategoriesNameEveryOperatorCodeOnce(t *testing.T) {
 	got := attention.ParkCategories([]string{"human-review:security,always-human-path", "human-review:ui", "stack-busy", "brand-new"})
-	want := []string{"security", "UI change", "an issue this version of boss does not know"}
+	want := []string{"security", "UI change", "an issue this version of boss does not recognise"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("ParkCategories = %q, want %q", got, want)
 	}

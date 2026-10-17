@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/alertstate"
 	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -106,6 +107,15 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		}
 	}
 	in.IsFactoryRepo = s.attentionFactory(ctx, row.RepoID)
+	if e := d.display; e != nil && e.HeadSHA != "" && s.checkSnapshots != nil &&
+		(e.Status == vcs.DisplayStatusNeedsHuman || (in.IsFactoryRepo && in.Verified)) {
+		// Only a park or a factory repo's verified head reads the head's
+		// snapshots: the park's own start dates it, and how long verify has
+		// left a verified head unmerged decides whether it is the operator's.
+		in.ParkSince, in.VerifiedSince = storedHeadSince(ctx, s.checkSnapshots, row.ID, e.HeadSHA)
+		in.Now = time.Now()
+		in.IsSentBack = s.evidence != nil && s.evidence.SentBack(row.ID, e.HeadSHA)
+	}
 	q := sessionattention.AskingChat(s.chatStatus, d.chats)
 	s.attentionCache.mu.Lock()
 	for _, chat := range d.chats {
@@ -130,6 +140,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	}
 	in.Fix = s.attentionFix(ctx, p, d, in.StateSince)
 	p.Attention = attention.Compute(in)
+	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
 		actions := p.Attention.Actions[:0]
 		for _, action := range p.Attention.Actions {
@@ -161,6 +172,15 @@ func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
 	}
 	verify, _ := projectconfig.DefaultFactoryStages().Lookup("verify")
 	value := false
+	// No dated apiversion bump for the MatchesGate leg, and why: it moves a
+	// repo whose only enabled verify job matches by gate from merge-ready to
+	// in progress for every pin. Session.attention reaches the boss TUI, which
+	// stamps its built Current but can point at a remote daemon of another
+	// version, and the web through bosso, which is version-skewed. Neither can
+	// get the old answer back: the in-progress row carries nothing that tells
+	// it apart from any other in-progress row, and restoring it would need this
+	// daemon's cron jobs, which no response carries. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 	for _, job := range jobs {
 		if job != nil && job.IsEnabled && (verify.MatchesPrompt(job.Prompt) || verify.MatchesGate(job.GateCommand)) {
 			value = true

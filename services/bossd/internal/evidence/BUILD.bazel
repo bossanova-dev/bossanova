@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/evidence",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/evidence",
         "//lib/bossalib/vcs",
         "@com_github_rs_zerolog//:zerolog",
@@ -18,12 +19,14 @@ go_test(
         "open_items_test.go",
         "provider_contract_test.go",
         "reader_test.go",
+        "sent_back_test.go",
     ],
     embed = [":evidence"],
     deps = [
         "//lib/bossalib/evidence",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/testharness",
+        "//services/bossd/internal/vcs/github",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

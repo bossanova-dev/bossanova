@@ -7,9 +7,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
+	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/rotation"
+	"github.com/recurser/bossd/internal/status"
 )
 
 // failingDuplicateStore wraps mockSessionStore so the duplicate-guard list
@@ -456,5 +463,312 @@ func TestTargetStartKeyPrefersPRNumber(t *testing.T) {
 	}
 	if branchOnly := targetStartKey("r", "b", nil); branchOnly == targetStartKey("r", "b", &pr) {
 		t.Fatalf("branch-only and PR keys collide: %q", branchOnly)
+	}
+}
+
+// revivalPath is one code path that brings a Blocked or Orphaned sess-1, on
+// PR 42 and branch fix/pr-head in repo-1, back to life.
+type revivalPath struct {
+	name string
+	// background marks a sweep, which skips a busy start-path lock rather than
+	// waiting the create-sized timeout.
+	background bool
+	// setup builds the fixture and returns its store and one pass of the path,
+	// which reports whether sess-1 came back to life.
+	setup func(t *testing.T) (*mockSessionStore, func() bool)
+	// onWrite arms fn to run once, just before the path writes the revival.
+	onWrite func(store *mockSessionStore, fn func())
+}
+
+func onRevivalUpdate(store *mockSessionStore, fn func()) {
+	fired := false
+	store.beforeUpdateHook = func(id string, params db.UpdateSessionParams) {
+		if fired || id != "sess-1" || params.State == nil || machine.State(*params.State) != machine.ImplementingPlan {
+			return
+		}
+		fired = true
+		fn()
+	}
+}
+
+func onRevivalCAS(store *mockSessionStore, fn func()) {
+	fired := false
+	store.updateStateConditionalHook = func(id string) {
+		if fired || id != "sess-1" {
+			return
+		}
+		fired = true
+		fn()
+	}
+}
+
+func newPollerRevival(t *testing.T) (*mockSessionStore, func() bool) {
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	reason := sessionreason.FixLoopExhausted()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", PRNumber: intPtr(42), BranchName: "fix/pr-head",
+		State: machine.Blocked, BlockedReason: &reason, AttemptCount: machine.MaxAttempts,
+	}
+	vp := newMockVCSProvider()
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), HeadSHA: "sha-green"}
+	poller := NewDisplayPoller(sessions, repos, vp, status.NewDisplayTracker(), time.Minute, zerolog.Nop())
+	return sessions, func() bool {
+		if err := poller.RefreshPR(context.Background(), "owner/repo", 42); err != nil {
+			t.Fatalf("RefreshPR: %v", err)
+		}
+		return storedSession(sessions, "sess-1").State == machine.ImplementingPlan
+	}
+}
+
+func newParkedRotationRevival(t *testing.T) *rotationFixture {
+	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	f := newParkedRotationFixture(t, past)
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}}
+	f.lc.SetClockForTest(fixedClock(past.Add(time.Minute)))
+	parked := f.sessions.sessions[f.sessionID]
+	parked.PRNumber, parked.BranchName = intPtr(42), "fix/pr-head"
+	return f
+}
+
+func revivalPaths() []revivalPath {
+	return []revivalPath{
+		{name: "display poller stale fix-loop unblock", background: true, onWrite: onRevivalUpdate, setup: newPollerRevival},
+		{
+			name:       "orphan-resume sweep",
+			background: true,
+			onWrite:    onRevivalCAS,
+			setup: func(t *testing.T) (*mockSessionStore, func() bool) {
+				f := newOrphanResumeFixture(t)
+				f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+					f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+				}}
+				orphan := f.sessions.sessions[f.sessionID]
+				orphan.PRNumber, orphan.BranchName = intPtr(42), "fix/pr-head"
+				return f.sessions, func() bool { return f.lc.ResumeOrphanedHeadlessRuns(context.Background()) == 1 }
+			},
+		},
+		{
+			name:       "parked-rotation sweep",
+			background: true,
+			onWrite:    onRevivalCAS,
+			setup: func(t *testing.T) (*mockSessionStore, func() bool) {
+				f := newParkedRotationRevival(t)
+				return f.sessions, func() bool { return f.lc.SweepParkedRotations(context.Background()) == 1 }
+			},
+		},
+		{
+			name:    "manual run resume",
+			onWrite: onRevivalUpdate,
+			setup: func(t *testing.T) (*mockSessionStore, func() bool) {
+				f := newRotationFixture(t)
+				row := f.sessions.sessions[f.sessionID]
+				row.State, row.PRNumber, row.BranchName = machine.Blocked, intPtr(42), "fix/pr-head"
+				f.lc.SetRunResumeStore(&runResumeLedger{})
+				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+					f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
+				}}
+				return f.sessions, func() bool {
+					_, err := f.lc.ResumeSessionRun(context.Background(), f.sessionID)
+					return err == nil
+				}
+			},
+		},
+	}
+}
+
+func storedSession(store *mockSessionStore, id string) models.Session {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return *store.sessions[id]
+}
+
+// replaceSession swaps in a changed copy of a row, as a concurrent writer to a
+// real store would: a snapshot read earlier keeps the old values.
+func replaceSession(store *mockSessionStore, id string, change func(*models.Session)) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	updated := *store.sessions[id]
+	change(&updated)
+	store.sessions[id] = &updated
+}
+
+func addLiveRival(store *mockSessionStore) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.sessions["rival"] = &models.Session{ID: "rival", RepoID: "repo-1", Title: "Rival", PRNumber: intPtr(42), State: machine.ImplementingPlan}
+}
+
+// raceCreate is a session create for PR 42 racing a revival. Like the real
+// create path it claims the PR only when it can take the repo's start-path
+// lock and no live session holds the PR.
+func raceCreate(store *mockSessionStore) bool {
+	release, _, err := acquireStartPathWithin(context.Background(), "repo-1", 20*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	defer release()
+	if EnsureNoActivePROrBranchSession(context.Background(), store, "repo-1", intPtr(42), "") != nil {
+		return false
+	}
+	addLiveRival(store)
+	return true
+}
+
+// TestRevivalPathsStayDownWhileALiveSessionHoldsTheTarget pins note 1 of the
+// #3192 verifier: every path that revives a Blocked or Orphaned session leaves
+// it down while another live session holds its PR, and revives it once the
+// holder is gone.
+func TestRevivalPathsStayDownWhileALiveSessionHoldsTheTarget(t *testing.T) {
+	for _, p := range revivalPaths() {
+		t.Run(p.name, func(t *testing.T) {
+			store, revive := p.setup(t)
+			before := storedSession(store, "sess-1")
+			addLiveRival(store)
+
+			if revive() {
+				t.Fatal("revived sess-1 while a live rival holds PR 42")
+			}
+			if after := storedSession(store, "sess-1"); after.State != before.State {
+				t.Fatalf("state = %v, want %v kept", after.State, before.State)
+			}
+
+			store.mu.Lock()
+			delete(store.sessions, "rival")
+			store.mu.Unlock()
+			if !revive() {
+				t.Fatal("did not revive sess-1 once the rival was gone")
+			}
+		})
+	}
+}
+
+// TestRevivalPathsHoldTheStartPathLockAcrossTheWrite pins note 3: a create
+// racing a revival must not claim the PR between the revival's ownership check
+// and its write. The create fires at the moment of the write. Had the revival
+// already let go of the lock, the create would see a Blocked row and claim the
+// PR, and the write would then leave two live sessions on it.
+func TestRevivalPathsHoldTheStartPathLockAcrossTheWrite(t *testing.T) {
+	for _, p := range revivalPaths() {
+		t.Run(p.name, func(t *testing.T) {
+			store, revive := p.setup(t)
+			raced := false
+			p.onWrite(store, func() { raced = raceCreate(store) })
+
+			if !revive() {
+				t.Fatal("did not revive sess-1")
+			}
+			if raced {
+				t.Fatal("a create claimed PR 42 during the revival's write; two live sessions now drive it")
+			}
+			var dup *DuplicateActivePRSessionError
+			err := EnsureNoActivePROrBranchSession(context.Background(), store, "repo-1", intPtr(42), "")
+			if !errors.As(err, &dup) || dup.ExistingSessionID != "sess-1" {
+				t.Fatalf("create after the revival: err = %v, want a refusal naming sess-1", err)
+			}
+		})
+	}
+}
+
+// TestBackgroundRevivalsSkipABusyStartPathLock pins note 2: a sweep waits only
+// RevivalLockTimeout for the lock, leaves the session down, and revives it on
+// a later pass once the lock is free.
+func TestBackgroundRevivalsSkipABusyStartPathLock(t *testing.T) {
+	prev := RevivalLockTimeout
+	RevivalLockTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { RevivalLockTimeout = prev })
+
+	for _, p := range revivalPaths() {
+		if !p.background {
+			continue
+		}
+		t.Run(p.name, func(t *testing.T) {
+			store, revive := p.setup(t)
+			before := storedSession(store, "sess-1")
+			release, _, err := AcquireStartPath(context.Background(), "repo-1")
+			if err != nil {
+				t.Fatalf("hold start-path lock: %v", err)
+			}
+
+			start := time.Now()
+			revived := revive()
+			waited := time.Since(start)
+			release()
+			if revived {
+				t.Fatal("revived sess-1 while the start-path lock was held")
+			}
+			if waited > 2*time.Second {
+				t.Fatalf("pass took %v behind a busy lock, want about RevivalLockTimeout", waited)
+			}
+			if after := storedSession(store, "sess-1"); after.State != before.State {
+				t.Fatalf("state = %v, want %v kept", after.State, before.State)
+			}
+			if !revive() {
+				t.Fatal("did not revive sess-1 on the next pass")
+			}
+		})
+	}
+}
+
+// TestRevivalActsOnTheRowAsItIsUnderTheLock pins note 4: a revival that read
+// its row before waiting for the lock must not write over an archive or a
+// relink that landed in the meantime.
+func TestRevivalActsOnTheRowAsItIsUnderTheLock(t *testing.T) {
+	archive := func(s *models.Session) { now := time.Now(); s.ArchivedAt = &now }
+	relink := func(s *models.Session) {
+		s.PRNumber, s.BranchName, s.State, s.BlockedReason = intPtr(43), "other/head", machine.AwaitingChecks, nil
+	}
+	t.Run("poller, archived", func(t *testing.T) {
+		store, revive := newPollerRevival(t)
+		landAfterFirstRead(store, archive)
+		if revive() {
+			t.Fatal("unblocked a session archived while the unblock waited for the lock")
+		}
+		if got := storedSession(store, "sess-1"); got.State != machine.Blocked {
+			t.Fatalf("archived row's state = %v, want Blocked kept", got.State)
+		}
+	})
+	t.Run("poller, relinked", func(t *testing.T) {
+		store, revive := newPollerRevival(t)
+		landAfterFirstRead(store, relink)
+		if revive() {
+			t.Fatal("unblocked a session relinked while the unblock waited for the lock")
+		}
+		if got := storedSession(store, "sess-1"); got.State != machine.AwaitingChecks || *got.PRNumber != 43 {
+			t.Fatalf("relinked row = %v on PR %d, want AwaitingChecks on PR 43", got.State, *got.PRNumber)
+		}
+	})
+	t.Run("rotation sweep, archived", func(t *testing.T) {
+		f := newParkedRotationRevival(t)
+		decide := f.decider.Decide
+		f.lc.SetRotationDecider(func(ctx context.Context, sig rotation.Signal) (rotation.Outcome, error) {
+			replaceSession(f.sessions, f.sessionID, archive)
+			return decide(ctx, sig)
+		})
+		if n := f.lc.SweepParkedRotations(context.Background()); n != 0 {
+			t.Fatalf("redispatched = %d, want 0 for a session archived while the sweep decided", n)
+		}
+		if got := storedSession(f.sessions, f.sessionID); got.State != machine.Blocked {
+			t.Fatalf("archived row's state = %v, want Blocked kept", got.State)
+		}
+		if len(f.runner.started) != 0 {
+			t.Fatalf("StartByAgent calls = %d, want 0", len(f.runner.started))
+		}
+	})
+}
+
+// landAfterFirstRead applies change to sess-1 right after the first Get of it
+// returns, so that read is a snapshot taken before the change.
+func landAfterFirstRead(store *mockSessionStore, change func(*models.Session)) {
+	landed := false
+	store.afterGetHook = func(id string) {
+		if id == "sess-1" && !landed {
+			landed = true
+			replaceSession(store, id, change)
+		}
 	}
 }

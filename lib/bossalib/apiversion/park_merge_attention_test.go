@@ -99,8 +99,8 @@ func TestParkMergeAttention_OlderPinsGetApproveAndSendBackBack(t *testing.T) {
 }
 
 // TestParkMergeAttention_RebuildsEveryParkSentence pins the sentence map
-// against what attention.Compute renders, so a reworded park sentence without
-// a rewrite entry fails here.
+// against what attention.Compute renders, taken back to V20260921 first, so a
+// reworded park sentence without a rewrite entry fails here.
 func TestParkMergeAttention_RebuildsEveryParkSentence(t *testing.T) {
 	for code, want := range map[string]string{
 		"human-review:database": "Review the migration, then approve",
@@ -110,7 +110,7 @@ func TestParkMergeAttention_RebuildsEveryParkSentence(t *testing.T) {
 		"repair-exhausted":      "Verify is blocked · send it back or fix the PR",
 		"human-review:ui":       "Review the UI change, then approve",
 	} {
-		a := attention.Compute(attention.Input{ParkCodes: []string{code}})
+		a := downconvertFactoryReviewParkSentenceSession(&pb.Session{Attention: attention.Compute(attention.Input{ParkCodes: []string{code}})}).GetAttention()
 		if got := previousParkSentence(a.GetSentence()); got != want {
 			t.Errorf("%s: %q rebuilt as %q, want %q", code, a.GetSentence(), got, want)
 		}

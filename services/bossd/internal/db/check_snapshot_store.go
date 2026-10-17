@@ -31,6 +31,10 @@ type CheckSnapshotStore interface {
 	// ListBySessionHead returns every snapshot of one session taken on one PR
 	// head, oldest first. An empty head returns none.
 	ListBySessionHead(ctx context.Context, sessionID, headSHA string) ([]CheckSnapshot, error)
+	// EachBySessionHeadNewestFirst visits one session's snapshots on one PR
+	// head, newest first, until visit returns false; RawJSON is filled only
+	// withRawJSON. An empty head visits none.
+	EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(CheckSnapshot) bool) error
 }
 
 // SQLiteCheckSnapshotStore is the SQLite-backed implementation.
@@ -84,6 +88,41 @@ func (s *SQLiteCheckSnapshotStore) ListBySessionHead(ctx context.Context, sessio
 	return scanCheckSnapshots(rows)
 }
 
+// EachBySessionHeadNewestFirst calls visit with each snapshot of sessionID on
+// headSHA, newest first, until visit returns false or the snapshots run out.
+// Without withRawJSON, RawJSON stays empty and the read is answered from
+// idx_session_check_snapshots_session_id_head_sha_polled_at_computed_status
+// alone, never touching a row's checks. An empty head visits none.
+func (s *SQLiteCheckSnapshotStore) EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(CheckSnapshot) bool) error {
+	if headSHA == "" {
+		return nil
+	}
+	rawJSON := "''"
+	if withRawJSON {
+		rawJSON = "raw_json"
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, polled_at, head_sha, `+rawJSON+`, computed_status
+		 FROM session_check_snapshots
+		 WHERE session_id = ? AND head_sha = ?
+		 ORDER BY polled_at DESC, id DESC`,
+		sessionID, headSHA)
+	if err != nil {
+		return fmt.Errorf("scan check snapshots by head: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		snap, err := scanCheckSnapshot(rows)
+		if err != nil {
+			return err
+		}
+		if !visit(snap) {
+			return nil
+		}
+	}
+	return rows.Err()
+}
+
 // RecentBySession returns up to `limit` snapshots, newest-first.
 func (s *SQLiteCheckSnapshotStore) RecentBySession(ctx context.Context, sessionID string, limit int) ([]CheckSnapshot, error) {
 	if limit <= 0 {
@@ -108,13 +147,21 @@ func scanCheckSnapshots(rows *sql.Rows) ([]CheckSnapshot, error) {
 
 	var out []CheckSnapshot
 	for rows.Next() {
-		var snap CheckSnapshot
-		var polledAt string
-		if err := rows.Scan(&snap.ID, &snap.SessionID, &polledAt, &snap.HeadSHA, &snap.RawJSON, &snap.ComputedStatus); err != nil {
-			return nil, fmt.Errorf("scan check snapshot: %w", err)
+		snap, err := scanCheckSnapshot(rows)
+		if err != nil {
+			return nil, err
 		}
-		snap.PolledAt = sqlutil.ParseTime(polledAt)
 		out = append(out, snap)
 	}
 	return out, rows.Err()
+}
+
+func scanCheckSnapshot(rows *sql.Rows) (CheckSnapshot, error) {
+	var snap CheckSnapshot
+	var polledAt string
+	if err := rows.Scan(&snap.ID, &snap.SessionID, &polledAt, &snap.HeadSHA, &snap.RawJSON, &snap.ComputedStatus); err != nil {
+		return CheckSnapshot{}, fmt.Errorf("scan check snapshot: %w", err)
+	}
+	snap.PolledAt = sqlutil.ParseTime(polledAt)
+	return snap, nil
 }

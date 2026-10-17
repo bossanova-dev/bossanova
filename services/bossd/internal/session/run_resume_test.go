@@ -3,10 +3,13 @@ package session
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
@@ -195,6 +198,57 @@ func TestRunResumeExclusions(t *testing.T) {
 			}
 			if n := f.lc.ResumeDroppedRuns(context.Background()); n != 0 || len(f.runner.started) != 0 {
 				t.Fatalf("resumed=%d launches=%d", n, len(f.runner.started))
+			}
+		})
+	}
+}
+
+// TestRunResumeManualRefusesARevivalOntoATakenTarget pins the human-initiated
+// half of note 1 of the #3192 verifier: resuming a Blocked or Orphaned run
+// whose PR or branch another live session now holds is refused, naming that
+// session, before anything is stopped or spawned.
+func TestRunResumeManualRefusesARevivalOntoATakenTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state machine.State
+		rival models.Session
+		want  string
+	}{
+		{
+			name:  "blocked, rival on the PR",
+			state: machine.Blocked,
+			rival: models.Session{State: machine.AwaitingChecks, PRNumber: intPtr(42), BranchName: "other/branch"},
+			want:  `PR #42 is now held by session rival ("Rival"); archive that session before resuming this one`,
+		},
+		{
+			name:  "orphaned, rival on the branch",
+			state: machine.Orphaned,
+			rival: models.Session{State: machine.ImplementingPlan, BranchName: "fix/pr-head"},
+			want:  `branch "fix/pr-head" is now held by session rival ("Rival"); archive that session before resuming this one`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRotationFixture(t)
+			row := f.sessions.sessions[f.sessionID]
+			row.State, row.PRNumber, row.BranchName = tc.state, intPtr(42), "fix/pr-head"
+			f.lc.SetRunResumeStore(&runResumeLedger{})
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			rival := tc.rival
+			rival.ID, rival.RepoID, rival.Title = "rival", row.RepoID, "Rival"
+			f.sessions.sessions["rival"] = &rival
+
+			_, err := f.lc.ResumeSessionRun(context.Background(), f.sessionID)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("ResumeSessionRun error = %v, want %q", err, tc.want)
+			}
+			if !IsDuplicateActiveSessionError(err) {
+				t.Fatalf("error %T does not unwrap to a duplicate-session error", err)
+			}
+			if len(f.runner.started) != 0 || len(f.runner.stopped) != 0 {
+				t.Fatalf("refused resume started %d and stopped %d runs, want none", len(f.runner.started), len(f.runner.stopped))
+			}
+			if row.State != tc.state {
+				t.Fatalf("state = %v, want %v kept", row.State, tc.state)
 			}
 		})
 	}
@@ -396,5 +450,65 @@ func TestRunResumeKeySurvivesSameMillisecondReplacement(t *testing.T) {
 		if key := RunResumeKey(&models.Session{}, chats); key != "old-run" {
 			t.Fatalf("%s: key=%q, want old-run", name, key)
 		}
+	}
+}
+
+// TestRunResumeSkipsASessionAnotherResumeHolds pins the per-session resume
+// gate: while one resume holds a session, the automatic resume leaves that
+// session for a later pass instead of relaunching it a second time.
+func TestRunResumeSkipsASessionAnotherResumeHolds(t *testing.T) {
+	prev := RevivalLockTimeout
+	RevivalLockTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { RevivalLockTimeout = prev })
+	f := newRotationFixture(t)
+	ctx := context.Background()
+	death := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	now := death
+	row := f.sessions.sessions[f.sessionID]
+	row.IsTmuxUnattended = true
+	row.UpdatedAt = death.Add(-time.Hour)
+	f.lc.sessions = &runResumeObservedStore{mockSessionStore: f.sessions, observations: map[string]time.Time{}}
+	f.lc.agentChats = &runResumeChats{mockAgentChatStore: &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old", Title: "Run build", CreatedAt: death}}}}, now: func() time.Time { return now }}
+	f.lc.SetRunResumeStore(&runResumeLedger{})
+	f.lc.SetClockForTest(func() time.Time { return now })
+	f.lc.ResumeDroppedRuns(ctx)
+	now = death.Add(time.Minute)
+
+	release, err := f.lc.lockRunResume(ctx, f.sessionID, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := f.lc.ResumeDroppedRuns(ctx); n != 0 || len(f.runner.started) != 0 {
+		t.Fatalf("resumed=%d launches=%d while another resume held the session, want 0 and 0", n, len(f.runner.started))
+	}
+	release()
+	if n := f.lc.ResumeDroppedRuns(ctx); n != 1 || len(f.runner.started) != 1 {
+		t.Fatalf("resumed=%d launches=%d once the gate was free, want 1 and 1", n, len(f.runner.started))
+	}
+}
+
+// TestRunResumeGateErrors pins finding 4 of the #3204 verifier: a wait that
+// times out names the gate, and a caller that gives up while waiting gets its
+// own context's error rather than ErrRunResumeBusy.
+func TestRunResumeGateErrors(t *testing.T) {
+	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, nil, zerolog.Nop())
+	ctx := context.Background()
+	release, err := lc.lockRunResume(ctx, "sess-1", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, err = lc.lockRunResume(ctx, "sess-1", 10*time.Millisecond)
+	want := `another resume of this session is in progress: acquire run-resume lock "sess-1": context deadline exceeded`
+	if !errors.Is(err, ErrRunResumeBusy) || err.Error() != want {
+		t.Fatalf("timed-out wait = %v, want %q", err, want)
+	}
+
+	giveUp, cancel := context.WithCancel(ctx)
+	time.AfterFunc(10*time.Millisecond, cancel)
+	_, err = lc.lockRunResume(giveUp, "sess-1", time.Minute)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrRunResumeBusy) {
+		t.Fatalf("abandoned wait = %v, want context.Canceled and not ErrRunResumeBusy", err)
 	}
 }

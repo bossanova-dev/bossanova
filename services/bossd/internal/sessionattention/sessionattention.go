@@ -274,29 +274,6 @@ func ParkCodes(st vcs.DisplayStatus, checks []vcs.CheckResult) ([]string, bool) 
 	return codes, true
 }
 
-// incidentTriggers are the automatic rotation triggers grouped into incidents.
-var incidentTriggers = map[string]bool{
-	pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED.String(): true,
-	pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED.String():    true,
-}
-
-// giveUpOutcomes are the rotation outcomes after which the daemon stopped
-// trying: the operator must act. EXHAUSTED is absent — the session resumes
-// itself when the limit resets.
-var giveUpOutcomes = map[string]bool{
-	pb.RotationOutcome_ROTATION_OUTCOME_FAILED.String():                          true,
-	pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_DISABLED.String():            true,
-	pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY.String():       true,
-	pb.RotationOutcome_ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT.String(): true,
-	pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED.String():           true,
-}
-
-// IsGiveUp reports whether a rotation outcome (its RotationOutcome enum name)
-// is one after which the daemon stopped trying.
-func IsGiveUp(outcome string) bool {
-	return giveUpOutcomes[outcome]
-}
-
 // RotationIncidents groups the rotation audit into incidents, oldest first.
 //
 // At most one incident is open — the session waits on the operator — and only
@@ -308,8 +285,8 @@ func IsGiveUp(outcome string) bool {
 //     (alertstate.WedgeRecovery.RecoveredSince, the same rule
 //     alertstate.AuthWedgeCurrent applies to the TUI's respawn-cap hint).
 //
-// The give-up outcome set here is broader than the TUI hint's, which covers
-// only the auth respawn cap; that difference is by design.
+// The give-up outcome set (attention.IsRotationGiveUp) is broader than the TUI
+// hint's, which covers only the auth respawn cap; that difference is by design.
 func RotationIncidents(events []db.RotationEvent, rec alertstate.WedgeRecovery) []Incident {
 	evs := incidentEvents(events)
 	var out []Incident
@@ -323,7 +300,7 @@ func RotationIncidents(events []db.RotationEvent, rec alertstate.WedgeRecovery) 
 	}
 	if len(evs) > 0 {
 		last := evs[len(evs)-1]
-		out[len(out)-1].Open = giveUpOutcomes[last.Outcome] && !rec.RecoveredSince(last.CreatedAt)
+		out[len(out)-1].Open = attention.IsRotationGiveUp(last.Outcome) && !rec.RecoveredSince(last.CreatedAt)
 	}
 	return out
 }
@@ -332,7 +309,7 @@ func RotationIncidents(events []db.RotationEvent, rec alertstate.WedgeRecovery) 
 // event gave up — the only event whose recovery an open incident asks about.
 func NewestGiveUpAt(events []db.RotationEvent) (time.Time, bool) {
 	evs := incidentEvents(events)
-	if len(evs) == 0 || !giveUpOutcomes[evs[len(evs)-1].Outcome] {
+	if len(evs) == 0 || !attention.IsRotationGiveUp(evs[len(evs)-1].Outcome) {
 		return time.Time{}, false
 	}
 	return evs[len(evs)-1].CreatedAt, true
@@ -357,7 +334,7 @@ func NewestGiveUpAtProto(events []*pb.RotationEvent) (time.Time, bool) {
 func incidentEvents(events []db.RotationEvent) []db.RotationEvent {
 	evs := make([]db.RotationEvent, 0, len(events))
 	for _, ev := range events {
-		if incidentTriggers[ev.Trigger] {
+		if attention.RotationFailureTitle(ev.Trigger) != "" {
 			evs = append(evs, ev)
 		}
 	}

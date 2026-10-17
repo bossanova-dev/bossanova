@@ -948,14 +948,12 @@ func TestChatPicker_NoWarningBlockForCleanSession(t *testing.T) {
 	}
 }
 
-// TestChatPicker_RendersRotationHistoryBelowActionBar guards the BOS-432
-// placement: the rotation-history block moved to the very bottom of the
-// chat-picker view, so its detail line must render AFTER the "[esc] back"
-// action bar (not above the chat list as it did before). A regression that
-// restored the block to the top would place the detail before the action bar
-// and fail here. The scenario proof captures the same ordering visually; this
-// is the code-level regression guard.
-func TestChatPicker_RendersRotationHistoryBelowActionBar(t *testing.T) {
+// TestChatPicker_RendersRotationsOnTimelineBelowActionBar guards the BOS-432
+// placement the timeline inherited from the rotation-history block: a
+// rotation's detail renders on the timeline AFTER the "[esc] back" action
+// bar, so a regression that moved the timeline above the chat list would place
+// the detail before the action bar and fail here.
+func TestChatPicker_RendersRotationsOnTimelineBelowActionBar(t *testing.T) {
 	const detail = "stale failover-proxy port: pane baked 52106 (BOS-409)"
 	rendered := stripANSI(renderChatPickerWith(t, &pb.Session{
 		Id:    "session-1",
@@ -976,11 +974,10 @@ func TestChatPicker_RendersRotationHistoryBelowActionBar(t *testing.T) {
 		t.Fatalf("chat-picker view missing the rotation detail %q:\n%s", detail, rendered)
 	}
 	if detailIdx < actionIdx {
-		t.Errorf("rotation history rendered above the action bar (detail idx %d < action idx %d); BOS-432 requires it below:\n%s", detailIdx, actionIdx, rendered)
+		t.Errorf("timeline rendered above the action bar (detail idx %d < action idx %d); BOS-432 requires it below:\n%s", detailIdx, actionIdx, rendered)
 	}
 
-	// Exactly one blank line separates the action-bar line from the rotation
-	// block (BOS-432 acceptance criterion: "one blank line above"). The action
+	// Exactly one blank line separates the action-bar line from the timeline (BOS-432 acceptance criterion: "one blank line above"). The action
 	// bar's Padding(actionBarPadY, 2) bottom-pad already supplies that single
 	// blank line, so View writes only a "\n"; a regression back to "\n\n" would
 	// render two blank lines here.
@@ -1000,7 +997,7 @@ func TestChatPicker_RendersRotationHistoryBelowActionBar(t *testing.T) {
 		blanks++
 	}
 	if blanks != 1 {
-		t.Errorf("expected exactly one blank line between the action bar and the rotation block, got %d:\n%s", blanks, rendered)
+		t.Errorf("expected exactly one blank line between the action bar and the timeline, got %d:\n%s", blanks, rendered)
 	}
 }
 
@@ -2620,7 +2617,7 @@ func chatPickerWrapColumns(want int) []table.Column {
 }
 
 // TestChatPickerBlockWrapWidth pins the width rule the chat picker's wrapped
-// prose blocks (session warning, rotation history) use — the ChatPicker
+// prose blocks (session warning, needed-from-you answer) use — the ChatPicker
 // counterpart of TestHomeStatusWrapWidth (BOS-532).
 func TestChatPickerBlockWrapWidth(t *testing.T) {
 	tests := []struct {
@@ -2751,18 +2748,18 @@ func resizeChatPickerWider(m ChatPickerModel) ChatPickerModel {
 	return updated.(ChatPickerModel)
 }
 
-// rotationBlockLines returns the rendered rotation-history block's lines: the
-// run of non-blank lines from its "Rotation history" header on.
+// timelineBlockLines returns the rendered timeline's lines: the run of
+// non-blank lines from its "Timeline" heading on.
 //
 // Bounded at the next blank line rather than taken to the end of the content,
 // for the same reason warningBlockLines anchors on its own text: relying on
 // this being the last thing View writes would silently fold anything appended
 // below it into the measurement, hiding a reflow in the width guard.
-func rotationBlockLines(t *testing.T, m ChatPickerModel) []string {
+func timelineBlockLines(t *testing.T, m ChatPickerModel) []string {
 	t.Helper()
 	lines := strings.Split(stripANSI(m.View().Content), "\n")
 	for i, ln := range lines {
-		if strings.Contains(ln, "Rotation history") {
+		if strings.TrimSpace(ln) == "Timeline" {
 			end := i
 			for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
 				end++
@@ -2770,7 +2767,7 @@ func rotationBlockLines(t *testing.T, m ChatPickerModel) []string {
 			return lines[i:end]
 		}
 	}
-	t.Fatalf("rotation-history block not found in:\n%s", m.View().Content)
+	t.Fatalf("timeline not found in:\n%s", m.View().Content)
 	return nil
 }
 
@@ -2855,23 +2852,6 @@ func warningSession() *pb.Session {
 	}
 }
 
-// TestChatPicker_RotationHistoryWidthStableAcrossResize is the regression this
-// ticket exists to prevent (BOS-532): the rotation-history block used to wrap
-// at m.table.Width(), which means the table's content width before the first
-// tea.WindowSizeMsg and the terminal width after it — so the block visibly
-// reflowed on the first resize and stayed reflowed.
-func TestChatPicker_RotationHistoryWidthStableAcrossResize(t *testing.T) {
-	m := seedChatPickerForWrap(t, rotatingSession())
-	before := maxLineWidth(rotationBlockLines(t, m))
-
-	m = resizeChatPickerWider(m)
-	after := maxLineWidth(rotationBlockLines(t, m))
-
-	if before != after {
-		t.Errorf("rotation-history block reflowed on resize: max line width %d before, %d after", before, after)
-	}
-}
-
 // TestChatPicker_SessionWarningWidthStableAcrossResize is the same regression
 // guard for the finalize/repair warning block (BOS-532).
 func TestChatPicker_SessionWarningWidthStableAcrossResize(t *testing.T) {
@@ -2886,32 +2866,26 @@ func TestChatPicker_SessionWarningWidthStableAcrossResize(t *testing.T) {
 	}
 }
 
-// TestChatPicker_RotationHistoryHeightMatchesRenderedBlock pins measure/render
-// agreement (BOS-532): rotationHistoryHeight() backs tableHeight()'s row
-// reservation, so it must equal the number of lines the block actually
-// occupies in View() — before and after a resize. A future edit that changes
-// one of the four wrap-width call sites without the others fails here.
-func TestChatPicker_RotationHistoryHeightMatchesRenderedBlock(t *testing.T) {
+// TestChatPicker_TimelineHeightMatchesRenderedBlock pins measure/render
+// agreement (BOS-532): timelineHeight() backs tableHeight()'s row
+// reservation, so it must equal the number of lines the timeline actually
+// occupies in View(), before and after a resize.
+func TestChatPicker_TimelineHeightMatchesRenderedBlock(t *testing.T) {
 	m := seedChatPickerForWrap(t, rotatingSession())
-	if got, want := m.rotationHistoryHeight(), len(rotationBlockLines(t, m)); got != want {
-		t.Errorf("before resize: rotationHistoryHeight() = %d, rendered block occupies %d lines", got, want)
+	if got, want := m.timelineHeight(), len(timelineBlockLines(t, m)); got != want {
+		t.Errorf("before resize: timelineHeight() = %d, rendered block occupies %d lines", got, want)
 	}
 
 	m = resizeChatPickerWider(m)
-	if got, want := m.rotationHistoryHeight(), len(rotationBlockLines(t, m)); got != want {
-		t.Errorf("after resize: rotationHistoryHeight() = %d, rendered block occupies %d lines", got, want)
+	if got, want := m.timelineHeight(), len(timelineBlockLines(t, m)); got != want {
+		t.Errorf("after resize: timelineHeight() = %d, rendered block occupies %d lines", got, want)
 	}
 }
 
 // TestChatPicker_WarningBlockHeightMatchesRenderedBlock is the same
 // measure/render agreement guard for the warning block, whose reservation
 // includes the single blank line View renders below it (BOS-532).
-//
-// Both agreement guards constrain width only. rotationHistoryHeight and View
-// each call time.Now() independently, and rotationEventTime renders same-day
-// events as "15:04" but older ones as "2006-01-02 15:04", so a local-midnight
-// crossing between the two calls can still change the line count. That skew
-// predates BOS-532 (BOS-432) and is not what these tests pin.
+
 func TestChatPicker_WarningBlockHeightMatchesRenderedBlock(t *testing.T) {
 	m := seedChatPickerForWrap(t, warningSession())
 	if got, want := m.warningBlockHeight(), len(warningBlockLines(t, m))+1; got != want {
@@ -2967,8 +2941,8 @@ func TestChatPicker_BlocksNeverOverhangNarrowTerminal(t *testing.T) {
 		session *pb.Session
 		lines   func(*testing.T, ChatPickerModel) []string
 	}{
-		"rotation history": {session: rotatingSession(), lines: rotationBlockLines},
-		"session warning":  {session: warningSession(), lines: warningBlockLines},
+		"timeline":        {session: rotatingSession(), lines: timelineBlockLines},
+		"session warning": {session: warningSession(), lines: warningBlockLines},
 	}
 	// 50 and 61 sit below the fixture table's content width, so the clamp
 	// binds; wrapProbeWidth is the ordinary wide case.
@@ -3012,7 +2986,7 @@ const (
 
 // seedChatPickerForAlignment builds a chat picker that draws every prose line
 // the view has at once (the finalize/repair warning block, the usage-limited
-// hint and the rotation-history block) plus the HTTP endpoint line, alongside
+// hint and the timeline) plus the HTTP endpoint line, alongside
 // the chat table and the action bar, so all of their columns can be measured
 // from a single render.
 func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
@@ -3104,7 +3078,7 @@ func TestChatPicker_StatusLinesAlignWithActionBar(t *testing.T) {
 	}{
 		{name: "session warning block", needle: alignWarningAnchor},
 		{name: "usage-limited hint", needle: "usage-limited"},
-		{name: "rotation history block", needle: alignRotationDetail},
+		{name: "timeline heading", needle: "Timeline"},
 	}
 	for _, tt := range lines {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3127,7 +3101,7 @@ func TestChatPicker_StatusLinesAlignWithTableCaret(t *testing.T) {
 	rendered := m.View().Content
 
 	caretCol := renderedColumnOf(t, rendered, cursorChevron)
-	for _, needle := range []string{alignWarningAnchor, "usage-limited", alignRotationDetail} {
+	for _, needle := range []string{alignWarningAnchor, "usage-limited", "Timeline"} {
 		if got := lineColumnOf(t, stripANSI(rendered), needle); got != caretCol {
 			t.Errorf("line %q starts at column %d, table caret at column %d; want them aligned\n%s",
 				needle, got, caretCol, visibleRowText(stripANSI(rendered)))

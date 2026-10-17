@@ -1188,6 +1188,11 @@ func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanova
 	if err := sm.Fire(event); err != nil {
 		return nil, fmt.Errorf("fire event %v on state %v: %w", event, session.State, err)
 	}
+	release, err := lockFiredRevival(ctx, s.sessionStore, session, sm.State())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	// Persist new state and any context mutations (AttemptCount, BlockedReason).
 	newState := sm.State()
@@ -1208,6 +1213,30 @@ func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanova
 	}
 
 	return &bossanovav1.FireSessionEventResponse{NewState: newState.String()}, nil
+}
+
+// lockFiredRevival guards a plugin-fired event, such as Unblock or PRLinked,
+// that moves a session from a state that released its PR and branch (Blocked,
+// for one) to a live state. The event is refused when another live session
+// has taken them. Otherwise the start-path lock is returned held, for the
+// caller to release after its write. Any other transition takes no lock.
+func lockFiredRevival(ctx context.Context, sessions db.SessionStore, sess *models.Session, next machine.State) (release func(), err error) {
+	if session.StateBlocksDuplicateTarget(sess.State) || !session.StateBlocksDuplicateTarget(next) {
+		return func() {}, nil
+	}
+	_, release, err = session.AcquireRevival(ctx, sessions, sess, session.StartPathLockTimeout, func(fresh *models.Session) bool {
+		return fresh.State == sess.State && fresh.AttemptCount == sess.AttemptCount
+	})
+	switch {
+	case err == nil:
+		return release, nil
+	case errors.Is(err, session.ErrStartPathBusy):
+		return nil, grpcstatus.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, session.ErrRevivalStale), session.IsDuplicateActiveSessionError(err):
+		return nil, grpcstatus.Error(codes.FailedPrecondition, session.RevivalRefusal(err).Error())
+	default:
+		return nil, fmt.Errorf("check who holds the session's PR or branch: %w", err)
+	}
 }
 
 // --- VCS domain type → proto enum converters ---

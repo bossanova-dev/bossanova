@@ -4818,6 +4818,54 @@ func TestFireSessionEvent_NonQuickChatPlanCompleteAdvances(t *testing.T) {
 	}
 }
 
+// TestFireSessionEvent_UnblockRefusesATakenTarget pins the plugin-fired half
+// of note 1 of the #3192 verifier: Unblock brings a Blocked session back to
+// life, so it is refused, naming the holder, while another live session holds
+// the session's branch, and goes through once that session is archived.
+func TestFireSessionEvent_UnblockRefusesATakenTarget(t *testing.T) {
+	srv, sessions, id := newFireSessionEventServer(t, false)
+	ctx := t.Context()
+	blocked := int(machine.Blocked)
+	if _, err := sessions.Update(ctx, id, db.UpdateSessionParams{State: &blocked}); err != nil {
+		t.Fatalf("block session: %v", err)
+	}
+	self, err := sessions.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	rival, err := sessions.Create(ctx, db.CreateSessionParams{RepoID: self.RepoID, Title: "Rival", BaseBranch: "main", WorktreePath: "/tmp/worktrees/rival", BranchName: self.BranchName})
+	if err != nil {
+		t.Fatalf("create rival: %v", err)
+	}
+	awaiting := int(machine.AwaitingChecks)
+	if _, err := sessions.Update(ctx, rival.ID, db.UpdateSessionParams{State: &awaiting}); err != nil {
+		t.Fatalf("seed rival state: %v", err)
+	}
+	unblock := &bossanovav1.FireSessionEventRequest{SessionId: id, Event: bossanovav1.SessionEvent_SESSION_EVENT_UNBLOCK}
+
+	_, err = srv.FireSessionEvent(ctx, unblock)
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("FireSessionEvent code = %v (err %v), want FailedPrecondition", got, err)
+	}
+	if !strings.Contains(err.Error(), rival.ID) {
+		t.Fatalf("refusal %v does not name the holder %s", err, rival.ID)
+	}
+	if stored, err := sessions.Get(ctx, id); err != nil || stored.State != machine.Blocked {
+		t.Fatalf("stored = %v (err %v), want Blocked kept", stored, err)
+	}
+
+	if err := sessions.Archive(ctx, rival.ID); err != nil {
+		t.Fatalf("archive rival: %v", err)
+	}
+	resp, err := srv.FireSessionEvent(ctx, unblock)
+	if err != nil {
+		t.Fatalf("FireSessionEvent after the holder was archived: %v", err)
+	}
+	if resp.GetNewState() != machine.ImplementingPlan.String() {
+		t.Fatalf("new state = %q, want %q", resp.GetNewState(), machine.ImplementingPlan.String())
+	}
+}
+
 func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
 }

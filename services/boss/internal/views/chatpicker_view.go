@@ -8,7 +8,6 @@ package views
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 )
@@ -101,8 +100,9 @@ func (m ChatPickerModel) renderSwitchAccounts() string {
 }
 
 // renderChatList renders the picker's default mode: the shared chrome (warning
-// block, usage-limited hint, HTTP endpoints, chat table, rotation history) with
-// either a transient confirm/in-flight prompt or the action bar between them.
+// block, needed-from-you answer, usage-limited hint, HTTP endpoints, chat
+// table, session timeline) with either a transient confirm/in-flight prompt or
+// the action bar between the table and the timeline.
 func (m ChatPickerModel) renderChatList() string {
 	var b strings.Builder
 
@@ -115,7 +115,7 @@ func (m ChatPickerModel) renderChatList() string {
 		b.WriteString("\n\n")
 	}
 
-	if block := m.attentionDetailsBlock(); block != "" {
+	if block := m.neededBlock(); block != "" {
 		b.WriteString(chatPickerProseBlock(block))
 		b.WriteString("\n\n")
 	}
@@ -147,17 +147,15 @@ func (m ChatPickerModel) renderChatList() string {
 		b.WriteString(m.renderActionBar())
 	}
 
-	// Recent automatic-rotation decisions for this session (BOS-176), moved to
-	// the very bottom of the view (BOS-432) — below the action bar (or, during a
-	// transient confirm/merge/archive dialog, harmlessly below that prompt), with
-	// one blank line above. The preceding action-bar/prompt block ends in a
-	// styleActionBar Padding(actionBarPadY, 2) bottom-pad blank line (no trailing
-	// newline), so a single leading "\n" closes that pad line and leaves exactly
-	// one blank line above the block. Empty (skipped) when the session has no
-	// rotation history, so sessions that never rotated see nothing.
-	if hist := rotationHistoryBlock(m.session, m.blockWrapWidth(), time.Now()); hist != "" {
+	// The session timeline, account rotations included, sits at the very bottom
+	// of the view where the rotation history used to (BOS-432): below the
+	// action bar, or during a transient dialog harmlessly below that prompt.
+	// The preceding block ends in a styleActionBar Padding(actionBarPadY, 2)
+	// bottom-pad blank line with no trailing newline, so a single leading "\n"
+	// closes that pad line and leaves exactly one blank line above the block.
+	if block := m.timelineBlock(); block != "" {
 		b.WriteString("\n")
-		b.WriteString(chatPickerProseBlock(hist))
+		b.WriteString(chatPickerProseBlock(block))
 	}
 
 	return b.String()

@@ -799,3 +799,9 @@ func TestReadyHandoffWorld(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPEndpointsPresetEnablesPortDisplay(t *testing.T) {
+	if got := Presets()["http-endpoints"].SettingsOverrides["display_open_ports"]; got != true {
+		t.Fatalf("display_open_ports = %v, want true", got)
+	}
+}

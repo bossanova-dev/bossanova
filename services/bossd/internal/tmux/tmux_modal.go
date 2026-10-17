@@ -64,7 +64,7 @@ func blockedByModalErr(sessionName, pane string) error {
 // anywhere in the capture — inside a box border, a tip line, or a menu entry —
 // so a pane with no composer at all satisfied the gate and delivery typed into
 // whatever was on screen. Anchoring the match to the start of a row is the same
-// resolution bottomMostPromptMarkerIdx already uses for the submit verifier,
+// resolution composerMarkerIdx already uses for the submit verifier,
 // specialised to the caller's configured marker rather than every known glyph.
 //
 // "Leading" tolerates a box border, because some agents draw the composer
@@ -77,7 +77,7 @@ func blockedByModalErr(sessionName, pane string) error {
 // wrong is asymmetric: a false accept is caught by the detector, a false reject
 // means this pane can never be delivered to at all.
 //
-// bottomMostPromptMarkerIdx, the submit verifier's row resolution, does NOT
+// composerMarkerIdx, the submit verifier's row resolution, does NOT
 // carry that tolerance, so on a boxed composer the two disagree: delivery
 // proceeds and the verifier then reports the outcome unconfirmed rather than
 // submitted. That is the safe side of its own contract (an unresolved composer
@@ -96,7 +96,7 @@ func blockedByModalErr(sessionName, pane string) error {
 // The scan covers the whole capture, which the caller takes with scrollback, so
 // a prompt row that has scrolled off-screen still satisfies it. That is
 // deliberate: this package cannot know the pane's visible height, and the
-// submit verifier's bottomMostPromptMarkerIdx resolves rows the same way, so
+// submit verifier's composerMarkerIdx resolves rows the same way, so
 // tightening one without the other would only split the two answers apart.
 // Taking the bottom-most match keeps the newest drawn prompt authoritative.
 func composerRowIndex(pane, marker string) int {

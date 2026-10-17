@@ -834,9 +834,9 @@ func (h *HomeModel) restoreTableCursor(selectedID string) {
 	}
 }
 
-func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pollID uint64) tea.Cmd {
+func fetchSessions(c client.BossClient, ctx context.Context, homeGeneration, pollID uint64, includeEndpoints bool) tea.Cmd {
 	return func() tea.Msg {
-		sessions, readFailures, err := c.ListSessionsWithReadFailures(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+		sessions, readFailures, err := c.ListSessionsWithReadFailures(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{IncludeLocalHTTPEndpoints: includeEndpoints})
 		if err != nil {
 			return sessionListMsg{homeGeneration: homeGeneration, pollID: pollID, err: err}
 		}

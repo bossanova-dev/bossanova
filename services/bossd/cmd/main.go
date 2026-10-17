@@ -1604,8 +1604,9 @@ func run(opts runOpts) error {
 	// why it is layered ON the decorator rather than around it, and for the one
 	// known gap (AdvanceOrphanedSessions) the periodic reconcile sweep covers.
 	callbackRetirer := callback.NewRetirer(githubCallbacks, agentChats, rawSessions, repos, displayComputer, time.Now, log.Logger)
+	terminalReapObserver := &status.TerminalReapObserver{}
 	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer).
-		WithTransitionObserver(db.TransitionObservers{callbackRetirer, broadcastSubscriptionEvaluator})
+		WithTransitionObserver(db.TransitionObservers{callbackRetirer, terminalReapObserver, broadcastSubscriptionEvaluator})
 	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
 
 	// Wire the display tracker so its mutations recompute synchronously.
@@ -4506,7 +4507,10 @@ func run(opts runOpts) error {
 	// seam means candidates are logged and left alive.
 	tmuxReaper := status.NewTmuxReaper(agentChats, sessions, repos, tmuxClient,
 		tmuxDaemonID, settings.TmuxReaper, status.IdleReapDeps{
-			Config:      settings.TmuxIdleReap,
+			Config: settings.TmuxIdleReap,
+			DeliveryPending: func(ctx context.Context, id string) (bool, error) {
+				return callback.DeliveryPendingForChat(ctx, githubCallbacks, id, time.Now())
+			},
 			Tracker:     chatStatusTracker,
 			Transcripts: status.NewAgentTranscriptOracle(agentClients),
 			// The canonical clear-then-kill teardown, reached through a
@@ -4514,6 +4518,7 @@ func run(opts runOpts) error {
 			// status, so importing it back would be a cycle.
 			KillChat: lifecycle.ReapIdleChatTmuxSession,
 		}, log.Logger)
+	terminalReapObserver.Bind(tmuxReaper)
 	tmuxReaper.Run(pollerCtx)
 	trackDone("tmux-reaper", tmuxReaper.Done())
 

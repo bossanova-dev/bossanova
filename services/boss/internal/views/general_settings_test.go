@@ -1805,3 +1805,48 @@ func TestGeneralSettings_MCPTokenRevealAndRotate(t *testing.T) {
 		t.Fatal("rotation result not applied safely")
 	}
 }
+
+func TestGeneralSettings_DisplayOpenPortsTogglePersistsAndRenders(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	idx := -1
+	for i, row := range m.rows {
+		if row.Label == "Display open ports" {
+			idx = i
+			break
+		}
+	}
+	if idx < 1 {
+		t.Fatal("display open ports row not found")
+	}
+	if m.rows[idx-1].Kind != settingsRowKindNotifications {
+		t.Fatal("ports checkbox must follow notifications")
+	}
+	if !strings.Contains(m.View().Content, "[ ] Display open ports") {
+		t.Fatal("ports must default unchecked")
+	}
+	m.cursor = idx
+	for i, key := range []tea.KeyPressMsg{{Code: ' ', Text: " "}, {Code: tea.KeyEnter}} {
+		updated, _ := m.Update(key)
+		m = updated.(GeneralSettingsModel)
+		want := i == 0
+		persisted, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if persisted.DisplayOpenPorts != want {
+			t.Fatalf("persisted ports = %v, want %v", persisted.DisplayOpenPorts, want)
+		}
+		label := "[ ] Display open ports"
+		if want {
+			label = "[x] Display open ports"
+		}
+		if !strings.Contains(m.View().Content, label) {
+			t.Fatalf("missing %q", label)
+		}
+		reopened := NewGeneralSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+		if !strings.Contains(reopened.View().Content, label) {
+			t.Fatalf("reopened settings missing %q", label)
+		}
+	}
+}

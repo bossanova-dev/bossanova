@@ -140,3 +140,35 @@ func TestSettings_TmuxIdleReapOmittedWhenUnset(t *testing.T) {
 		t.Errorf("tmux_idle_reap present in marshalled defaults: %s", out)
 	}
 }
+
+func TestTmuxIdleReapConfig_TerminalGrace(t *testing.T) {
+	for _, tt := range []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{0, 30 * time.Second}, {-1, 30 * time.Second}, {7, 7 * time.Second},
+	} {
+		cfg := TmuxIdleReapConfig{TerminalGraceSeconds: tt.seconds}
+		if got := cfg.TerminalGrace(); got != tt.want {
+			t.Errorf("TerminalGrace(%d) = %v, want %v", tt.seconds, got, tt.want)
+		}
+	}
+	var cfg TmuxIdleReapConfig
+	if err := json.Unmarshal([]byte(`{"terminal_grace_seconds":45}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.TerminalGrace(); got != 45*time.Second {
+		t.Fatalf("JSON TerminalGrace() = %v", got)
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round map[string]int
+	if err := json.Unmarshal(raw, &round); err != nil {
+		t.Fatal(err)
+	}
+	if round["terminal_grace_seconds"] != 45 {
+		t.Fatalf("terminal grace missing from JSON: %s", raw)
+	}
+}

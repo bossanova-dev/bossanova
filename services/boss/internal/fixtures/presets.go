@@ -377,9 +377,10 @@ func Presets() map[string]Preset {
 		// show the "HTTP" line directly above the chat table. Carries the same
 		// cloud-access e2e pin as demo so boss lands on the home session list.
 		"http-endpoints": {
-			World:      HTTPEndpointsWorld,
-			SeedKind:   SeedAcknowledged,
-			DefaultEnv: map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
+			SettingsOverrides: map[string]any{"display_open_ports": true},
+			World:             HTTPEndpointsWorld,
+			SeedKind:          SeedAcknowledged,
+			DefaultEnv:        map[string]string{"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active"},
 		},
 		// cloud-error: the demo board (sessions present, so the home table is
 		// drawn and the status wrap width tracks it) with the cloud-access probe

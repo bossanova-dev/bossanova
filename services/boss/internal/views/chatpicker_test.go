@@ -526,6 +526,7 @@ func TestChatPickerResponsiveColumns(t *testing.T) {
 
 func TestChatPickerResponsiveTableKeepsProseAndHTTPReservationsAt72Columns(t *testing.T) {
 	m := responsiveChatPickerModel(72, true)
+	m.SetShowOpenPorts(true)
 	if got, tableWidth := m.blockWrapWidth(), columnsWidth(m.table.Columns()); got > tableWidth {
 		t.Errorf("blockWrapWidth() = %d, want <= fitted table width %d", got, tableWidth)
 	}
@@ -2362,6 +2363,7 @@ func seedChatPickerSized(t *testing.T, chatCount, termHeight int) ChatPickerMode
 	t.Helper()
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.SetShowOpenPorts(true)
 	chats := make([]*pb.ClaudeChat, 0, chatCount)
 	statuses := make(map[string]string, chatCount)
 	for i := range chatCount {
@@ -2465,8 +2467,8 @@ func TestChatPicker_HTTPLinePortsIndependentlyClickable(t *testing.T) {
 			t.Errorf("httpEndpointLine() = %q\nmissing independent link %q", line, want)
 		}
 	}
-	if got := strings.TrimSpace(visibleRowText(line)); !strings.HasPrefix(got, "HTTP  :3000") {
-		t.Errorf("httpEndpointLine() visible text = %q, want it to start with %q", got, "HTTP  :3000")
+	if got := strings.TrimSpace(visibleRowText(line)); !strings.HasPrefix(got, "HTTP :3000") {
+		t.Errorf("httpEndpointLine() visible text = %q, want it to start with %q", got, "HTTP :3000")
 	}
 }
 
@@ -2493,7 +2495,7 @@ func TestChatPicker_HTTPLinkSurvivesViewRender(t *testing.T) {
 			t.Errorf("rendered chat-picker view lost the hyperlink %q:\n%q", want, content)
 		}
 	}
-	if !strings.Contains(visibleRowText(content), "HTTP  :3000 :5173") {
+	if !strings.Contains(visibleRowText(content), "HTTP :3000 :5173") {
 		t.Errorf("rendered chat-picker view lost the visible HTTP line:\n%q", content)
 	}
 }
@@ -2992,6 +2994,7 @@ const (
 func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
 	t.Helper()
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	m.SetShowOpenPorts(true)
 	updated, _ := m.Update(chatsListedMsg{
 		chats: []*pb.ClaudeChat{
 			{
@@ -3712,5 +3715,20 @@ func TestChatPicker_HTTPLineHostAware(t *testing.T) {
 	line := m.httpEndpointLine()
 	if !strings.Contains(line, "\x1b]8;;http://delta:3000") || strings.Contains(line, "127.0.0.1") {
 		t.Errorf("HTTP line has wrong target: %q", line)
+	}
+}
+
+func TestChatPicker_HiddenEndpointsReserveNoHeight(t *testing.T) {
+	m := seedChatPickerForEndpoints(t)
+	m.SetShowOpenPorts(false)
+	m.session = endpointSession("session-1", 3000, 5173)
+	if got := m.httpEndpointLine(); got != "" {
+		t.Fatalf("hidden endpoint line = %q", got)
+	}
+	if got := m.httpLineHeight(); got != 0 {
+		t.Fatalf("hidden endpoint height = %d", got)
+	}
+	if strings.Contains(m.View().Content, "HTTP") {
+		t.Fatal("hidden HTTP line rendered")
 	}
 }

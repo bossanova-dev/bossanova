@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -556,7 +557,7 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 			// failure to submit.
 			return OutcomeUnconfirmed, fmt.Errorf("verify command submission: %w", err)
 		}
-		composerDrawn = bottomMostPromptMarkerIdx(strings.Split(pane, "\n")) != -1
+		composerDrawn = composerMarkerIdx(strings.Split(pane, "\n")) != -1
 		left := false
 		if multiLine {
 			left = multiLineSubmitted(pane, payload)
@@ -653,7 +654,7 @@ const composerRowsUnread = "\x00unread"
 // reading as settled. Returns "" when no composer is drawn.
 func composerRows(pane string) string {
 	lines := strings.Split(pane, "\n")
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		return ""
 	}
@@ -740,9 +741,9 @@ func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before s
 
 // awaitComposerDraws polls until the live composer shows payload on two
 // consecutive captures that agree, which means the agent has read and drawn the
-// typed keys. It reports false when waitFor expires first. Only a capture
-// failure or a cancelled context is an error.
-func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (bool, error) {
+// typed keys. It reports false when waitFor expires first, with the composer
+// rows it read last. Only a capture failure or a cancelled context is an error.
+func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (drawn bool, rows string, err error) {
 	if tickEvery <= 0 {
 		tickEvery = sendPlanDefaultPollInterval
 	}
@@ -755,12 +756,12 @@ func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload st
 	for {
 		pane, err := c.CapturePane(ctx, sessionName)
 		if err != nil {
-			return false, err
+			return false, rows, err
 		}
-		rows := typedComposerRows(pane, payload)
+		rows = typedComposerRows(pane, payload)
 		if composerShowsPayload(rows, payload) {
 			if rows == last {
-				return true, nil
+				return true, rows, nil
 			}
 			last = rows
 		} else {
@@ -768,12 +769,26 @@ func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload st
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, rows, ctx.Err()
 		case <-deadline.C:
-			return false, nil
+			return false, rows, nil
 		case <-ticker.C:
 		}
 	}
+}
+
+// composerRowsForError renders composer rows on one line for an error message,
+// cut to a length a log line can carry.
+func composerRowsForError(rows string) string {
+	const maxRunes = 160
+	text := strings.Join(strings.Fields(rows), " ")
+	if text == "" {
+		return "no input box"
+	}
+	if r := []rune(text); len(r) > maxRunes {
+		return strconv.Quote(string(r[:maxRunes])) + " (truncated)"
+	}
+	return strconv.Quote(text)
 }
 
 // composerShowsPayload reports whether composer rows (see typedComposerRows)
@@ -807,22 +822,31 @@ func typedComposerRows(pane, line string) string {
 		return composerRows(pane)
 	}
 	lines := strings.Split(pane, "\n")
-	bottom := -1
+	top, bottom, ok := inputBoxRules(lines)
+	if !ok {
+		return ""
+	}
+	box := make([]string, 0, bottom-top-1)
+	for _, l := range lines[top+1 : bottom] {
+		box = append(box, strings.TrimRight(l, " "))
+	}
+	return strings.Join(box, "\n")
+}
+
+// inputBoxRules returns the indexes of the bottom two horizontal rules, which
+// bound Claude's input box, and whether the pane has two.
+func inputBoxRules(lines []string) (top, bottom int, ok bool) {
+	bottom = -1
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !isHorizontalRule(strings.TrimSpace(lines[i])) {
 			continue
 		}
-		if bottom == -1 {
-			bottom = i
-			continue
+		if bottom != -1 {
+			return i, bottom, true
 		}
-		box := make([]string, 0, bottom-i-1)
-		for _, l := range lines[i+1 : bottom] {
-			box = append(box, strings.TrimRight(l, " "))
-		}
-		return strings.Join(box, "\n")
+		bottom = i
 	}
-	return ""
+	return -1, -1, false
 }
 
 // composerAfterClear names what a captured pane shows once clearComposer has
@@ -852,7 +876,7 @@ const (
 // state that licenses the retry to re-type and press Enter, concatenating a
 // second copy onto the first.
 func classifyComposerAfterClear(pane, payload string) composerAfterClear {
-	if bottomMostPromptMarkerIdx(strings.Split(pane, "\n")) == -1 {
+	if composerMarkerIdx(strings.Split(pane, "\n")) == -1 {
 		return composerClearUnknown
 	}
 	if composerEmptyOf(pane, payload) {
@@ -873,7 +897,7 @@ func classifyComposerAfterClear(pane, payload string) composerAfterClear {
 // hold the user's text.
 func composerEmptyOf(pane, payload string) bool {
 	lines := strings.Split(pane, "\n")
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		return false
 	}
@@ -950,7 +974,7 @@ const baselineFootprintPolls = 4
 // never the silent submit this predicate exists to prevent.
 func composerFootprint(pane, payload string) string {
 	lines := strings.Split(pane, "\n")
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		return ""
 	}
@@ -1145,7 +1169,7 @@ func (c *Client) awaitComposerCleared(ctx context.Context, sessionName, payload 
 func multiLineSubmitted(pane, payload string) bool {
 	lines := strings.Split(pane, "\n")
 
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		return false
 	}
@@ -1284,7 +1308,7 @@ var queuedMessagesHintRe = regexp.MustCompile(`(?i)queued messages?\b`)
 // would actually mislead an operator.
 func paneShowsPayloadQueued(pane, payload string) bool {
 	lines := strings.Split(pane, "\n")
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		return false
 	}
@@ -1366,7 +1390,7 @@ func payloadEchoedAbove(above []string, payload string) bool {
 // fails that case toward "still pending"; the single-line path must not, so the
 // no-marker check stays here.
 func lineStillAtPrompt(pane, line string) bool {
-	if bottomMostPromptMarkerIdx(strings.Split(pane, "\n")) == -1 {
+	if composerMarkerIdx(strings.Split(pane, "\n")) == -1 {
 		return false
 	}
 	return !multiLineSubmitted(pane, line)
@@ -1376,11 +1400,19 @@ func lineStillAtPrompt(pane, line string) bool {
 // hasPromptMarker and composerContent so the list lives in one place.
 var promptMarkers = []string{"❯", "›", "┃", ">"}
 
-// bottomMostPromptMarkerIdx returns the index of the bottom-most row carrying an
-// input-box prompt marker, or -1 if none is present. It is the live input box:
-// everything below it is footer / statusline chrome, so submission checks scan
-// from this row. Shared by lineStillAtPrompt and multiLineSubmitted.
-func bottomMostPromptMarkerIdx(lines []string) int {
+// composerMarkerIdx returns the index of the live input box's prompt-marker
+// row, or -1 if none is present. Everything below it is footer, statusline or
+// menu chrome, so submission checks scan from this row. Shared by
+// lineStillAtPrompt and multiLineSubmitted.
+//
+// A Claude prompt row opening the box between the bottom two rules is the input
+// box. Claude draws its slash-command menu below that box and marks the
+// selected entry with the same "❯" (testdata/panes/claude_typed_slash_menu_real.txt),
+// so the bottom-most marker row is the input box only when no such box is drawn.
+func composerMarkerIdx(lines []string) int {
+	if top, bottom, ok := inputBoxRules(lines); ok && top+1 < bottom && strings.HasPrefix(strings.TrimSpace(lines[top+1]), sendPlanReadyMarker) {
+		return top + 1
+	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		if hasPromptMarker(strings.TrimSpace(lines[i])) {
 			return i
@@ -1564,7 +1596,7 @@ func composerHoldsDraft(styled string) bool {
 	for i, row := range rows {
 		plain[i] = plainText(row)
 	}
-	markerIdx := bottomMostPromptMarkerIdx(plain)
+	markerIdx := composerMarkerIdx(plain)
 	if markerIdx == -1 || !strings.Contains(rows[markerIdx], "\x1b[") {
 		return false
 	}

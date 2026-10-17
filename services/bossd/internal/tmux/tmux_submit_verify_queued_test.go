@@ -67,7 +67,7 @@ const (
 func composerHintOf(t *testing.T, pane string) string {
 	t.Helper()
 	lines := strings.Split(pane, "\n")
-	idx := bottomMostPromptMarkerIdx(lines)
+	idx := composerMarkerIdx(lines)
 	if idx == -1 {
 		t.Fatalf("invalid fixture: no live input box on the pane:\n%s", pane)
 	}
@@ -211,7 +211,7 @@ func TestPayloadHeldInComposerIsNeverQueued(t *testing.T) {
 	real := readPaneFixture(t, realSwallowedEnterPane)
 
 	lines := strings.Split(real, "\n")
-	markerIdx := bottomMostPromptMarkerIdx(lines)
+	markerIdx := composerMarkerIdx(lines)
 	if markerIdx == -1 {
 		t.Fatalf("the swallowed-Enter fixture no longer has a live composer row to splice above:\n%s", real)
 	}

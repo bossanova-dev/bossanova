@@ -1097,3 +1097,13 @@ func prOutput(sess *pb.Session, parkCodes []string) (Output, bool) {
 		return Output{}, false
 	}
 }
+
+// IsVerifyParkAttention reports whether sess carries the attention the bossd
+// verify-park overlay sets (HydrateVerifyAttention), and nothing else could have
+// produced: NEEDS_HUMAN display status on a non-orphaned session with an
+// AWAITING_HUMAN_INPUT reason.
+func IsVerifyParkAttention(sess *pb.Session) bool {
+	return sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
+		sess.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
+		sess.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
+}

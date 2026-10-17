@@ -235,6 +235,7 @@ func (a App) newChatPickerModel(sessionID, highlightAgentSessionID string) ChatP
 	// to the session's own agent — the pre-fix behaviour, not a crash.
 	if settings, err := config.Load(); err == nil {
 		m.SetPreferredAgent(settings.DefaultAgent)
+		m.SetShowOpenPorts(settings.DisplayOpenPorts)
 	}
 	m.SetAgentSelectionHandler(saveDefaultAgent)
 	m.width = a.width

@@ -1801,7 +1801,7 @@ func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line strin
 		if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
 			return err
 		}
-		drawn, err := c.awaitComposerDraws(ctx, sessionName, line, opts.typedDrawWait, opts.submitVerifyTick)
+		drawn, rows, err := c.awaitComposerDraws(ctx, sessionName, line, opts.typedDrawWait, opts.submitVerifyTick)
 		if err == nil && drawn {
 			return nil
 		}
@@ -1810,7 +1810,7 @@ func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line strin
 		case err != nil:
 			verdict = fmt.Errorf("read composer after typing into tmux session %q, so no Enter was sent: %w", sessionName, err)
 		case attempt == attempts:
-			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s on any of %d attempts, so no Enter was sent", sessionName, opts.typedDrawWait, attempts)
+			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s on any of %d attempts, so no Enter was sent; it last showed %s", sessionName, opts.typedDrawWait, attempts, composerRowsForError(rows))
 		}
 		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), typedLineClearTimeout)
 		clearErr := c.clearTypedLine(clearCtx, sessionName, line)

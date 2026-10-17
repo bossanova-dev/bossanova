@@ -286,13 +286,18 @@ func (h HomeModel) sessionWaitingReason(sess *pb.Session) string {
 	return h.daemonWaitingReasons[sess.GetId()]
 }
 
-// subRowCount is sessionSubRowCount bound to this model's waiting reasons.
+// hasEndpointRow applies the port display preference to the endpoint predicate.
+func (h HomeModel) hasEndpointRow(sess *pb.Session) bool {
+	return h.settings.DisplayOpenPorts && sessionHasEndpointRow(sess)
+}
+
+// subRowCount binds auxiliary row accounting to this model's settings and waiting reasons.
 func (h HomeModel) subRowCount(sess *pb.Session) int {
-	return sessionSubRowCount(sess, h.sessionWaitingReason(sess), h.attentionSentenceWidth())
+	return sessionSubRowCount(sess, h.sessionWaitingReason(sess), h.attentionSentenceWidth(), h.settings.DisplayOpenPorts)
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
+	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID, h.settings.DisplayOpenPorts), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.authStatusGeneration))
 	}
@@ -353,7 +358,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Re-read now so the merged row leaves NEEDS YOU without waiting
 			// for the next poll.
 			h.nextSessionPollID++
-			return h, fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID)
+			return h, fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID, h.settings.DisplayOpenPorts)
 		}
 		return h, nil
 	case sessionRenamedMsg:
@@ -472,7 +477,7 @@ func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
 	// refresh failure. Without this, the TUI keeps showing the
 	// pre-expiry label until the user navigates away and back.
 	h.nextSessionPollID++
-	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID), tickCmd()}
+	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID, h.settings.DisplayOpenPorts), tickCmd()}
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.authStatusGeneration))
 	}

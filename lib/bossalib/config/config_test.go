@@ -3257,3 +3257,35 @@ func TestResolveSocketPathRejectsARelativeSettingsPath(t *testing.T) {
 		t.Fatalf("ResolveSocketPath() = %q, want error for a relative %s", got, settingsPathEnv)
 	}
 }
+
+func TestDisplayOpenPortsJSON(t *testing.T) {
+	for _, input := range []string{`{}`, `{"display_open_ports":false}`, `{"display_open_ports":true}`} {
+		t.Run(input, func(t *testing.T) {
+			var settings Settings
+			if err := json.Unmarshal([]byte(input), &settings); err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Contains(input, "true")
+			if settings.DisplayOpenPorts != want {
+				t.Fatalf("DisplayOpenPorts = %v, want %v", settings.DisplayOpenPorts, want)
+			}
+			data, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := bytes.Contains(data, []byte(`"display_open_ports":true`)); got != want {
+				t.Fatalf("encoded setting presence = %v, want %v: %s", got, want, data)
+			}
+			if bytes.Contains(data, []byte(`"display_open_ports":false`)) {
+				t.Fatal("false setting was not omitted")
+			}
+			var loaded Settings
+			if err := json.Unmarshal(data, &loaded); err != nil {
+				t.Fatal(err)
+			}
+			if loaded.DisplayOpenPorts != want {
+				t.Fatal("setting did not round trip")
+			}
+		})
+	}
+}

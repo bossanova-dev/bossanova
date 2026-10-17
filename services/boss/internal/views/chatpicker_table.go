@@ -245,7 +245,7 @@ func (m ChatPickerModel) chatListOverhead() int {
 	if m.attentionAction.active() {
 		footerLines = m.attentionAction.lineCount(m.width)
 	}
-	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.archiveLineHeight() + m.httpLineHeight()
+	return bannerOverhead + 1 + actionBarPadY + footerLines + m.warningBlockHeight() + m.limitedLineHeight() + m.statusFooterHeight() + m.httpLineHeight()
 }
 
 func (m ChatPickerModel) tableHeight() int {
@@ -272,11 +272,14 @@ func (m ChatPickerModel) tableHeight() int {
 // off screen. ansi.Truncate is OSC 8-aware, so a cut line still closes every
 // hyperlink envelope it opened.
 func (m ChatPickerModel) httpEndpointLine() string {
+	if !m.showOpenPorts {
+		return ""
+	}
 	links := renderSessionEndpoints(m.session)
 	if links == "" {
 		return ""
 	}
-	line := strings.Repeat(" ", chatPickerFirstColumnInset) + mutedTextOpen + "HTTP" + mutedTextClose + "  " + links
+	line := strings.Repeat(" ", chatPickerFirstColumnInset) + mutedTextOpen + "HTTP" + mutedTextClose + " " + links
 	if m.width > 0 && ansi.StringWidth(line) > m.width {
 		line = ansi.Truncate(line, m.width, "…")
 	}
@@ -465,14 +468,6 @@ func (m ChatPickerModel) limitedLineHeight() int {
 		return 0
 	}
 	return 2
-}
-
-// archiveLineHeight reserves the daemon archive status above the live actions.
-func (m ChatPickerModel) archiveLineHeight() int {
-	if m.archiveAwaited() && !m.archiving {
-		return 1
-	}
-	return 0
 }
 
 // chatLastActive returns the most recent activity time for a chat.

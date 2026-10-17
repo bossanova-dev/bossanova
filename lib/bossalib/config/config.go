@@ -233,14 +233,14 @@ func (c TmuxReaperConfig) ReapsUnstamped() bool {
 	return c.ReapUnstamped != nil && *c.ReapUnstamped
 }
 
-// SweepInterval returns the configured gap between sweeps or the default of 5
-// minutes. A non-positive value (unset, or a hand-edited negative) falls back
+// SweepInterval returns the configured gap between sweeps or the default of 60
+// seconds. A non-positive value (unset, or a hand-edited negative) falls back
 // rather than spinning the sweep loop.
 func (c TmuxReaperConfig) SweepInterval() time.Duration {
 	if c.SweepIntervalSeconds > 0 {
 		return time.Duration(c.SweepIntervalSeconds) * time.Second
 	}
-	return 5 * time.Minute
+	return time.Minute
 }
 
 // GracePeriod returns how old a pane must be, and how long it must have been
@@ -278,6 +278,7 @@ type TmuxIdleReapConfig struct {
 	Enabled              *bool `json:"enabled,omitempty"`
 	DryRun               *bool `json:"dry_run,omitempty"`
 	IdleThresholdSeconds int   `json:"idle_threshold_seconds,omitempty"`
+	TerminalGraceSeconds int   `json:"terminal_grace_seconds,omitempty"`
 }
 
 // IsEnabled reports whether idle panes are reaped at all. Unset means ON — the
@@ -306,6 +307,15 @@ func (c TmuxIdleReapConfig) IdleThreshold() time.Duration {
 		return time.Duration(c.IdleThresholdSeconds) * time.Second
 	}
 	return 8 * time.Hour
+}
+
+// TerminalGrace returns how long a terminal chat must remain quiet before its
+// pane may be reaped. Non-positive values use the default of 30 seconds.
+func (c TmuxIdleReapConfig) TerminalGrace() time.Duration {
+	if c.TerminalGraceSeconds > 0 {
+		return time.Duration(c.TerminalGraceSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // NotesConfig holds bossd's note-retention policy (BOS-1384). Notes are pruned
@@ -1537,6 +1547,7 @@ type Settings struct {
 	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
 	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
 	NotificationsEnabled           *bool             `json:"notifications_enabled,omitempty"`
+	DisplayOpenPorts               bool              `json:"display_open_ports,omitempty"`
 	EventTracingEnabled            bool              `json:"event_tracing_enabled,omitempty"`
 	ErrorTrackingEnabled           bool              `json:"error_tracking_enabled,omitempty"`
 	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`

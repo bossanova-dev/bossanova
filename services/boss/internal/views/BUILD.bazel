@@ -180,6 +180,7 @@ go_test(
         "chatpicker_test.go",
         "checkbox_test.go",
         "cloudpromo_test.go",
+        "confirm_spacing_test.go",
         "confirm_test.go",
         "cron_form_test.go",
         "cron_list_test.go",

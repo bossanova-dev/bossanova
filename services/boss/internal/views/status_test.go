@@ -1434,7 +1434,7 @@ func TestSessionSubRowCount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionSubRowCount(tc.sess, "", 60); got != tc.want {
+			if got := sessionSubRowCount(tc.sess, "", 60, true); got != tc.want {
 				t.Errorf("sessionSubRowCount = %d, want %d", got, tc.want)
 			}
 		})
@@ -1940,7 +1940,7 @@ func TestDraftPRFailure_SuccessCompositeWithExemptHint(t *testing.T) {
 	if unwanted := styleStatusDangerFaded.Render(hints[0].Text); warningHintStyle(sess, hints[0]).Render(hints[0].Text) == unwanted {
 		t.Error("hint rendered faded on a row that is never recolored")
 	}
-	if got := sessionSubRowCount(sess, "", 60); got != 1 {
+	if got := sessionSubRowCount(sess, "", 60, true); got != 1 {
 		t.Errorf("sessionSubRowCount = %d, want 1 (the hint adds a row)", got)
 	}
 }
@@ -2168,7 +2168,7 @@ func TestSessionWarningHints_EdgeCasesProduceNoRow(t *testing.T) {
 			if got := selectedSessionWarningBlock(tc.sess, nil, 80); got != "" {
 				t.Errorf("selectedSessionWarningBlock = %q, want an empty string (no styled empty row)", got)
 			}
-			if got := sessionSubRowCount(tc.sess, "", 60); got != 0 {
+			if got := sessionSubRowCount(tc.sess, "", 60, true); got != 0 {
 				t.Errorf("sessionSubRowCount = %d, want 0", got)
 			}
 		})
@@ -2192,7 +2192,7 @@ func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
 	}
 	wantExtra := 0
 	for _, sess := range sessions {
-		wantExtra += sessionSubRowCount(sess, "", 60)
+		wantExtra += sessionSubRowCount(sess, "", 60, true)
 	}
 	if wantExtra == 0 {
 		t.Fatal("fixture produced no auxiliary rows; the test would be vacuous")
@@ -2205,13 +2205,13 @@ func TestSessionSubRowCount_AgreesWithBuildTableRows(t *testing.T) {
 		t.Fatalf("buildTableRows emitted %d rows, want %d (%d primary + %d auxiliary)",
 			gotRows, want, len(sessions), wantExtra)
 	}
-	if got, want := sessionSubRowCount(sessions[0], "", 60), 0; got != want {
+	if got, want := sessionSubRowCount(sessions[0], "", 60, true), 0; got != want {
 		t.Errorf("no-hint session sub-rows = %d, want %d", got, want)
 	}
-	if got, want := sessionSubRowCount(sessions[1], "", 60), 1; got != want {
+	if got, want := sessionSubRowCount(sessions[1], "", 60, true), 1; got != want {
 		t.Errorf("one-hint session sub-rows = %d, want %d", got, want)
 	}
-	if got, want := sessionSubRowCount(sessions[2], "", 60), 3; got != want {
+	if got, want := sessionSubRowCount(sessions[2], "", 60, true), 3; got != want {
 		t.Errorf("several-hint session sub-rows = %d, want %d", got, want)
 	}
 }

@@ -31,8 +31,8 @@ var nonTerminalCallbackStates = []models.GithubCallbackState{
 	models.GithubCallbackStateTriggered,
 }
 
-// interestLister is the subset of db.GithubCallbackStore that DeriveInterests
-// needs. db.GithubCallbackStore satisfies it.
+// interestLister is the subset of db.GithubCallbackStore used by interest
+// and delivery queries. db.GithubCallbackStore satisfies it.
 type interestLister interface {
 	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
 }
@@ -179,6 +179,27 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 		CreatedAt: best.CreatedAt,
 		ExpiresAt: best.ExpiresAt,
 	}, nil
+}
+
+// DeliveryPendingForChat reports whether an unexpired callback has fired or is
+// leased for delivery to this chat. An active watch alone does not mean a
+// delivery is pending.
+func DeliveryPendingForChat(ctx context.Context, store interestLister, targetChatID string, now time.Time) (bool, error) {
+	if targetChatID == "" {
+		return false, nil
+	}
+	for _, state := range []models.GithubCallbackState{models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered} {
+		callbacks, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
+		if err != nil {
+			return false, fmt.Errorf("list %s github callbacks for chat %s: %w", state, targetChatID, err)
+		}
+		for _, c := range callbacks {
+			if c != nil && now.Before(c.ExpiresAt) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // earlierCallback reports whether a sorts before b under the documented

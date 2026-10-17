@@ -2618,14 +2618,6 @@ func isVerifyDisplayStatus(s pb.DisplayStatus) bool {
 		s == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN
 }
 
-// isVerifyParkAttention reports whether s carries the attention the bossd
-// verify-park overlay sets, and nothing else could have produced.
-func isVerifyParkAttention(s *pb.Session) bool {
-	return s.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN &&
-		s.GetState() != pb.SessionState_SESSION_STATE_ORPHANED &&
-		s.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_AWAITING_HUMAN_INPUT
-}
-
 // downconvertVerifySession returns the Session to place in the response for a
 // pre-V20260916 client. Cloning is essential, as for every session transform
 // here: bosso's single-instance registry path holds the same pointers it
@@ -2641,7 +2633,7 @@ func downconvertVerifySession(s *pb.Session) *pb.Session {
 	}
 	// Order matters: the attention discriminator and the composite inverse both
 	// read the CURRENT display_status, so they run before it is rewritten.
-	if isVerifyParkAttention(clone) {
+	if displaystatus.IsVerifyParkAttention(clone) {
 		clone.AttentionStatus = nil
 	}
 	out := displaystatus.PreVerifyStatusOutput(clone)

@@ -66,16 +66,17 @@ type ChatPickerModel struct {
 	fullQuestion      string
 	neededOffset      int
 
-	session *pb.Session
-	chats   []*pb.ClaudeChat
-	table   table.Model
-	spinner spinner.Model
-	loading bool
-	err     error
-	cancel  bool
-	merged  bool
-	width   int
-	height  int
+	showOpenPorts bool
+	session       *pb.Session
+	chats         []*pb.ClaudeChat
+	table         table.Model
+	spinner       spinner.Model
+	loading       bool
+	err           error
+	cancel        bool
+	merged        bool
+	width         int
+	height        int
 
 	// optimisticArchiveLatch is a short-lived local latch set the moment a
 	// TUI-initiated merge succeeds (mergeResultMsg) on an archive-after-merge
@@ -168,6 +169,11 @@ type ChatPickerModel struct {
 // SetTelemetry installs a telemetry client for successful chat-picker actions.
 func (m *ChatPickerModel) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
+}
+
+// SetShowOpenPorts controls endpoint hydration and display for this picker.
+func (m *ChatPickerModel) SetShowOpenPorts(show bool) {
+	m.showOpenPorts = show
 }
 
 // SetPreferredAgent sets the default cursor in the [n]ew-chat agent picker.
@@ -303,11 +309,33 @@ func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
 	return m.chats[idx]
 }
 
-// Update dispatches each message to its named handler. The arm order is the
+// Update runs update, then re-sizes the table to the footer the handlers left.
+func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if picker, ok := next.(ChatPickerModel); ok {
+		picker.syncTableHeight()
+		next = picker
+	}
+	return next, cmd
+}
+
+// syncTableHeight resizes the retained table to the room tableHeight leaves.
+// The footer status lines come and go on many handlers; running this once after
+// every Update keeps the table in step with whichever of them just changed
+// without each handler remembering to. setReservedTableHeight, not a bare
+// SetHeight, because a shrink would otherwise leave the cursor row outside the
+// rendered window.
+func (m *ChatPickerModel) syncTableHeight() {
+	if h := m.tableHeight(); h != m.table.Height() {
+		setReservedTableHeight(&m.table, h)
+	}
+}
+
+// update dispatches each message to its named handler. The arm order is the
 // original inline order and every handler keeps the value receiver, so the
 // in-flight markers merge/archive/wake/switch-account set and clear still
 // travel back out on the returned model.
-func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m ChatPickerModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd

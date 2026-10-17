@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -227,7 +228,7 @@ func TestEvaluateIdleReap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reap, reason, idleFor := evaluateIdleReap(tc.ev, idleTestNow, idleTestThreshold)
+			reap, reason, idleFor := evaluateIdleReap(tc.ev, idleTestNow, idleTestThreshold, policyLongIdle)
 			if reap != tc.wantReap || reason != tc.wantReason {
 				t.Fatalf("evaluateIdleReap = (%v, %q), want (%v, %q)", reap, reason, tc.wantReap, tc.wantReason)
 			}
@@ -261,7 +262,7 @@ func TestEvaluateIdleReap_TranscriptProbeIsLazy(t *testing.T) {
 				transcriptPresent: func() bool { probes++; return true },
 				resumeSessionID:   "provider-1",
 			}
-			evaluateIdleReap(ev, idleTestNow, idleTestThreshold)
+			evaluateIdleReap(ev, idleTestNow, idleTestThreshold, policyLongIdle)
 			if probes != tc.wantProbes {
 				t.Fatalf("transcript probes = %d, want %d", probes, tc.wantProbes)
 			}
@@ -662,5 +663,65 @@ func TestNewAgentTranscriptOracle_FailsClosed(t *testing.T) {
 	oracle := NewAgentTranscriptOracle(nil)
 	if oracle.TranscriptExists(context.Background(), "claude", "/tmp/wt", "agent-1") {
 		t.Fatal("a nil plugin registry answered true; an unreachable oracle must keep the pane")
+	}
+}
+
+func TestEvaluateIdleReap_TerminalPolicies(t *testing.T) {
+	for _, kind := range []string{"merged", "closed", "archived"} {
+		t.Run(kind, func(t *testing.T) {
+			owner := idleTestOwner()
+			switch kind {
+			case "merged":
+				owner.session.State = machine.Merged
+			case "closed":
+				owner.session.State = machine.Closed
+			case "archived":
+				owner.session.ArchivedAt = &idleTestNow
+			}
+			policy := policyForOwner(owner)
+			if policy != policyTerminal {
+				t.Fatalf("policy = %q", policy)
+			}
+			cases := []struct {
+				name   string
+				mutate func(*idleReapEvidence)
+				want   string
+			}{
+				{"unresolved", func(e *idleReapEvidence) { e.owner = nil }, reasonIdleUnresolvedName},
+				{"no tracker", func(e *idleReapEvidence) { e.entry = nil }, reasonTerminalNoTrackerEntry},
+				{"working", func(e *idleReapEvidence) { e.entry.Status = pb.ChatStatus_CHAT_STATUS_WORKING }, reasonTerminalChatWorking},
+				{"no clock", func(e *idleReapEvidence) { e.entry.LastOutputAt = time.Time{} }, reasonIdleNoOutputClock},
+				{"grace", func(e *idleReapEvidence) { e.entry.LastOutputAt = idleTestNow.Add(-10 * time.Second) }, reasonTerminalWithinGrace},
+				{"attached", func(e *idleReapEvidence) { e.attachedClients = 1 }, reasonIdleAttachedClient},
+				{"unknown delivery", func(e *idleReapEvidence) { e.deliveryPending = nil }, reasonTerminalDeliveryUnknown},
+				{"failed delivery read", func(e *idleReapEvidence) {
+					e.deliveryPending = func() (bool, error) { return false, errors.New("read failed") }
+				}, reasonTerminalDeliveryUnknown},
+				{"pending delivery", func(e *idleReapEvidence) { e.deliveryPending = func() (bool, error) { return true, nil } }, reasonTerminalDeliveryPending},
+				{"idle", func(*idleReapEvidence) {}, reasonTerminalSession},
+				{"question", func(e *idleReapEvidence) { e.entry.Status = pb.ChatStatus_CHAT_STATUS_QUESTION }, reasonTerminalSession},
+				{"limited", func(e *idleReapEvidence) { e.entry.Status = pb.ChatStatus_CHAT_STATUS_LIMITED }, reasonTerminalSession},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					calls := 0
+					ev := idleReapEvidence{owner: owner, entry: idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 31*time.Second), deliveryPending: func() (bool, error) { calls++; return false, nil }, transcriptPresent: func() bool { t.Fatal("terminal transcript probe"); return false }}
+					tc.mutate(&ev)
+					reap, reason, age := evaluateIdleReap(ev, idleTestNow, 30*time.Second, policy)
+					if reason != tc.want || reap != (tc.want == reasonTerminalSession) {
+						t.Fatalf("(%v,%s), want %s", reap, reason, tc.want)
+					}
+					if tc.want == reasonTerminalWithinGrace && age != 10*time.Second {
+						t.Fatalf("age=%s", age)
+					}
+					if (tc.want == reasonTerminalWithinGrace || tc.want == reasonIdleAttachedClient) && calls != 0 {
+						t.Fatal("delivery read before cheaper gates")
+					}
+				})
+			}
+		})
+	}
+	if got := policyForOwner(idleTestOwner()); got != policyLongIdle {
+		t.Fatalf("live policy=%s", got)
 	}
 }

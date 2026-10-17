@@ -423,6 +423,7 @@ func TestStreamingWriteDeadlineOverrideCoversResurrect(t *testing.T) {
 		bossanovav1connect.DaemonServiceCreateSessionProcedure,
 		bossanovav1connect.DaemonServiceResurrectSessionProcedure,
 		bossanovav1connect.DaemonServiceGetRunCostProcedure,
+		bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure,
 	} {
 		rw := &deadlineCaptureResponseWriter{header: http.Header{}}
 		called := false

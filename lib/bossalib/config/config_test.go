@@ -3289,3 +3289,26 @@ func TestDisplayOpenPortsJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestTmuxIdleReapFinishedGrace(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		json string
+		want time.Duration
+	}{
+		{"default", `{}`, 180 * time.Second},
+		{"explicit", `{"finished_grace_seconds":240}`, 240 * time.Second},
+		{"zero", `{"finished_grace_seconds":0}`, 180 * time.Second},
+		{"negative", `{"finished_grace_seconds":-1}`, 180 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg TmuxIdleReapConfig
+			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.FinishedGrace(); got != tt.want {
+				t.Fatalf("FinishedGrace() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

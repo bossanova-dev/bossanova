@@ -180,6 +180,41 @@ func TestAgentChatStoreRevivedChatIsNoLongerReplaced(t *testing.T) {
 	}
 }
 
+// A chat whose start was stamped failed (a daemon restart cut the run short)
+// and that an operator attach or a callback wake then relaunched kept
+// start_error, so the chat table read "× failed" over a working chat.
+func TestAgentChatStoreRelaunchedFailedChatIsNoLongerFailed(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	sessionID := seedChatSession(t, db)
+	chats := NewAgentChatStore(db)
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "factory improvements"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := chats.MarkStartFailed(ctx, "agent-1", "daemon restarted mid-run"); err != nil {
+		t.Fatalf("mark start failed: %v", err)
+	}
+	got, err := chats.GetByAgentSessionID(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.StartError == nil || !got.IsRetired() {
+		t.Fatalf("a failed start did not retire the chat: start_error %v", got.StartError)
+	}
+
+	pane := "boss-x-agent-1"
+	if err := chats.UpdateTmuxSessionName(ctx, "agent-1", &pane); err != nil {
+		t.Fatalf("set tmux: %v", err)
+	}
+	got, err = chats.GetByAgentSessionID(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("get relaunched: %v", err)
+	}
+	if got.StartError != nil || got.IsRetired() {
+		t.Fatalf("a chat with a live pane reads as failed: start_error %v", got.StartError)
+	}
+}
+
 func TestAgentChatsRoleMigrationBackfillsOnlyCreatorTitles(t *testing.T) {
 	db := dbtest.NewEmpty(t)
 	fsys := os.DirFS(migrationsDir())

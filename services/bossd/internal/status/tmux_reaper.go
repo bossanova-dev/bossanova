@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/config"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
@@ -187,19 +189,22 @@ type strikeKey struct {
 // reap; no kill seam means candidates are logged and left alive. Terminal
 // reaping also requires a successful pending-delivery lookup.
 type IdleReapDeps struct {
-	Config          config.TmuxIdleReapConfig
-	Tracker         *Tracker
-	Transcripts     TranscriptOracle
-	KillChat        killChatFunc
-	DeliveryPending func(context.Context, string) (bool, error)
+	Config           config.TmuxIdleReapConfig
+	Tracker          *Tracker
+	Transcripts      TranscriptOracle
+	KillChat         killChatFunc
+	DeliveryPending  func(context.Context, string) (bool, error)
+	ProgressWait     func(context.Context, *models.AgentChat, *models.Session) (bool, error)
+	SessionAttention func(context.Context, string) (*pb.SessionAttention, error)
 }
 
 // sweepDecision is one pane's classification, carrying enough context for the
 // sweep to route the kill and for an operator to read the log line.
 type sweepDecision struct {
-	bucket string
-	reason string
-	policy reapPolicy
+	bucket        string
+	reason        string
+	policy        reapPolicy
+	attentionKind pb.AttentionKind
 
 	// idle marks a decision produced by the idle gate rather than the orphan
 	// one. On a reap it selects the chat teardown seam (clear the pane pointer,
@@ -456,6 +461,7 @@ func (r *TmuxReaper) reapIdle(ctx context.Context, s tmux.LiveSession, dec sweep
 		Str("reason", dec.reason).
 		Str("policy", string(dec.policy)).
 		Str("sessionState", dec.owner.session.State.String()).
+		Str("attentionKind", dec.attentionKind.String()).
 		Str("chatId", dec.owner.chat.ID).
 		Str("agentSessionId", dec.owner.chat.AgentSessionID).
 		Str("sessionId", dec.owner.session.ID).
@@ -480,6 +486,7 @@ func (r *TmuxReaper) reapIdle(ctx context.Context, s tmux.LiveSession, dec sweep
 		return false
 	}
 	r.clearStrike(s.Name, reasonIdleTooLong)
+	r.clearStrike(s.Name, reasonFinishedIdle)
 	evt.Msg("tmux reaper: reaped idle chat pane")
 	return true
 }
@@ -508,7 +515,7 @@ func (r *TmuxReaper) decisionLog(
 		Time("sessionCreated", s.Created).
 		Bool("idlePath", dec.idle)
 	if dec.idle {
-		ev = ev.Bool("dryRun", idleDryRun).Dur("idleFor", dec.idleFor).Str("policy", string(dec.policy))
+		ev = ev.Bool("dryRun", idleDryRun).Dur("idleFor", dec.idleFor).Str("policy", string(dec.policy)).Str("attentionKind", dec.attentionKind.String())
 		if dec.owner != nil && dec.owner.session != nil {
 			ev = ev.Str("sessionState", dec.owner.session.State.String())
 		}
@@ -637,6 +644,7 @@ func (r *TmuxReaper) classifyIdle(
 	if !r.idle.Config.IsEnabled() {
 		// Pre-BOS-886 behaviour, reason string included: accounted for, kept.
 		r.clearStrike(s.Name, reasonIdleTooLong)
+		r.clearStrike(s.Name, reasonFinishedIdle)
 		return sweepDecision{bucket: bucketKeep, reason: reasonAccountedFor}
 	}
 
@@ -661,11 +669,35 @@ func (r *TmuxReaper) classifyIdle(
 		}
 	}
 
+	// Try the finished-wait policy before long-idle; every keep still falls
+	// through so this fast path cannot spare panes the old policy reaped.
+	if policy != policyTerminal && r.idle.ProgressWait != nil && r.idle.SessionAttention != nil {
+		if owner != nil && owner.chat != nil && owner.session != nil {
+			ev.progressWait = func() (bool, error) { return r.idle.ProgressWait(ctx, owner.chat, owner.session) }
+			ev.sessionAttention = func() (*pb.SessionAttention, error) { return r.idle.SessionAttention(ctx, owner.session.ID) }
+		}
+		eligible, reason, idleFor := evaluateIdleReap(&ev, now, r.idle.Config.FinishedGrace(), policyFinishedWait)
+		dec := sweepDecision{bucket: bucketKeep, reason: reason, idle: true, owner: owner, idleFor: idleFor, policy: policyFinishedWait, attentionKind: ev.attentionKind}
+		if eligible {
+			// One confirming sighting, on this policy's own key; no elapsed-time
+			// condition. Long-idle and orphan sightings cannot confirm this strike.
+			if _, seen := r.recordStrike(s.Name, reasonFinishedIdle, now); seen {
+				dec.bucket = bucketReap
+				return dec
+			}
+			dec.reason = reasonIdleFirstStrike
+		} else {
+			r.clearStrike(s.Name, reasonFinishedIdle)
+		}
+		r.decisionLog(r.logger.Debug(), s, dec, false, r.idle.Config.IsDryRun()).Msg("tmux reaper: finished wait kept pane; checking long idle")
+	} else {
+		r.clearStrike(s.Name, reasonFinishedIdle)
+	}
 	threshold := r.idle.Config.IdleThreshold()
 	if policy == policyTerminal {
 		threshold = r.idle.Config.TerminalGrace()
 	}
-	eligible, reason, idleFor := evaluateIdleReap(ev, now, threshold, policy)
+	eligible, reason, idleFor := evaluateIdleReap(&ev, now, threshold, policy)
 	if reason == reasonTerminalWithinGrace {
 		r.requestFollowUp(now.Add(threshold - idleFor))
 	}

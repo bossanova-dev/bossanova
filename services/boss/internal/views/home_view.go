@@ -545,10 +545,14 @@ func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
 	if h.filter.Active() {
 		return h.filter.ActionBar(), nil, nil
 	}
-	actions := attentionFooter(h.selectedSession(), false)
+	sel := h.selectedSession()
+	var actions []string
+	if !h.isMerging(sel.GetId()) {
+		actions = attentionFooter(sel, false)
+	}
 	left = make([]string, 0, len(actions)+2)
 	left = append(left, "[n]ew session")
-	if h.selectedSession() != nil && h.selectedSession().GetAttention() == nil {
+	if sel != nil && (sel.GetAttention() == nil || h.isMerging(sel.GetId())) {
 		left = append(left, "[enter] select")
 	}
 	left = append(left, actions...)

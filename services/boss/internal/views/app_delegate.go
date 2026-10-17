@@ -146,6 +146,9 @@ func (a App) updateChatPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if archivingID := a.chatPicker.ArchivingSessionID(); archivingID != "" {
 			a.home.markArchiving(archivingID)
 		}
+		if merge, ok := a.chatPicker.MergeInFlight(); ok {
+			a.home.markMerging(merge)
+		}
 		return a, a.home.Init()
 	}
 	return a, cmd

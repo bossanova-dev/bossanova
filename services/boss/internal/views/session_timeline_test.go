@@ -373,6 +373,32 @@ func TestChatPickerBannerKeepsSessionStatusWithAttention(t *testing.T) {
 	}
 }
 
+// TestChatPickerBannerSpinsWhileAChatIsWorking: the header suffix is the
+// session's display status. A session with a chat working reads "working" with
+// the spinner whatever outcome its attention names; one without keeps its
+// outcome label and no spinner.
+func TestChatPickerBannerSpinsWhileAChatIsWorking(t *testing.T) {
+	sp := newStatusSpinner()
+	frame := stripANSI(sp.View())
+	for _, tt := range []struct {
+		name         string
+		displayLabel string
+		spinner      bool
+		want         string
+	}{
+		{"a merge-ready session with a chat working", "working", true, "(" + frame + "working)"},
+		{"a merge-ready session with no chat working", "✓ passing", false, "(✓ passing)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &pb.Session{Id: "s", Title: "Retain links", PrNumber: new(int32(3184)), DisplayLabel: tt.displayLabel, DisplaySpinner: tt.spinner, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE}}
+			lines := strings.Split(stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: sess, spinner: sp, width: 160})), "\n")
+			if len(lines) < 2 || !strings.HasSuffix(strings.TrimRight(lines[1], " "), tt.want) {
+				t.Fatalf("header = %q, want line 1 suffix %q", lines, tt.want)
+			}
+		})
+	}
+}
+
 func TestChatPickerLongQuestionKeepsChatsVisible(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 24)
 	m.fullQuestion = strings.Repeat("Should we keep this behavior for all supported platforms? ", 40) + "Can you confirm the final choice?"

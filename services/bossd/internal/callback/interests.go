@@ -181,6 +181,32 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 	}, nil
 }
 
+// HoldsProgressWait reports whether a live callback holds this chat for further
+// progress. Standby watches and merge watches on the session's own PR do not:
+// those chats have finished their work and are waiting on a person. Leased and
+// triggered callbacks remain live until delivery, and expiry is exclusive.
+func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID string, session *models.Session, ownNWO string, now time.Time) (bool, error) {
+	if targetChatID == "" {
+		return false, nil
+	}
+	for _, state := range nonTerminalCallbackStates {
+		callbacks, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
+		if err != nil {
+			return false, fmt.Errorf("list %s github callbacks for chat %s: %w", state, targetChatID, err)
+		}
+		for _, cb := range callbacks {
+			if cb == nil || !now.Before(cb.ExpiresAt) || cb.Trigger.IsStandby() {
+				continue
+			}
+			if cb.Trigger == models.GithubCallbackTriggerMerged && session != nil && callbackOnOwnPR(cb, session, ownNWO) {
+				continue
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // DeliveryPendingForChat reports whether an unexpired callback has fired or is
 // leased for delivery to this chat. An active watch alone does not mean a
 // delivery is pending.

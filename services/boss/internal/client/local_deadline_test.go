@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/socketauth"
@@ -516,7 +517,6 @@ func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 		bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: true,
 		bossanovav1connect.DaemonServiceMergeSessionProcedure:         true,
 		bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     true,
-		bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure: true,
 		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     true,
 		bossanovav1connect.DaemonServiceGetRunCostProcedure:           true,
 		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    true,
@@ -606,6 +606,10 @@ func TestDeadlineFor(t *testing.T) {
 		want      time.Duration
 	}{
 		{"table member gets the slow bound", bossanovav1connect.DaemonServiceMergeSessionProcedure, slowRPCDeadline},
+		// bossd runs the operator's merge detached for up to its ceiling; a
+		// client that stopped listening first would report a landing merge
+		// as failed.
+		{"operator merge outwaits bossd's own ceiling", bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure, config.OperatorMergeCeiling + time.Minute},
 		{"ordinary procedure gets the default", "/bossanova.v1.DaemonService/ListSessions", defaultRPCDeadline},
 		{"unknown procedure gets the default", "/bossanova.v1.DaemonService/NoSuchRPC", defaultRPCDeadline},
 		{"empty procedure gets the default", "", defaultRPCDeadline},

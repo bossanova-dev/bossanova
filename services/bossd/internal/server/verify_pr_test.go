@@ -37,6 +37,8 @@ type verifyVerbsFake struct {
 	forMerge   []*verifybridge.MergeApproval
 	calls      *[]string
 	markCtxErr error
+	// markCtxDeadline is the deadline MarkMerged ran under.
+	markCtxDeadline time.Time
 
 	approve    verifybridge.ApproveResult
 	markMerged verifybridge.MarkMergedResult
@@ -73,6 +75,7 @@ func (f *verifyVerbsFake) MarkMerged(ctx context.Context, t verifybridge.Target)
 	f.log("mark-merged")
 	f.targets = append(f.targets, t)
 	f.markCtxErr = ctx.Err()
+	f.markCtxDeadline, _ = ctx.Deadline()
 	if f.markBlocks {
 		select {
 		case <-ctx.Done():

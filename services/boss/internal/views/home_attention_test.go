@@ -352,6 +352,95 @@ func TestHomeAttentionStatus(t *testing.T) {
 	}
 }
 
+// TestHomeMergeStatusSpinsWhileAChatIsWorking pins the merge cell's glyph. An
+// unverified "ready" shows the spinner, in the success colour, while the
+// session's served display label says a chat is working, and the check mark
+// otherwise. A verified "merge" always keeps its check mark.
+func TestHomeMergeStatusSpinsWhileAChatIsWorking(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	spin := ansi.Strip(h.spinner.View())
+	for _, tc := range []struct {
+		name         string
+		unverified   bool
+		displayLabel string
+		want         string
+	}{
+		{"unverified with a working chat", true, "working", spin + "ready"},
+		{"verified with a working chat", false, "working", "✓ merge"},
+		{"unverified with no working chat", true, "✓ passing", "✓ ready"},
+		{"verified with no working chat", false, "✓ passing", "✓ merge"},
+		{"unverified with an idle chat", true, "idle", "✓ ready"},
+		{"verified with a waiting chat", false, "waiting", "✓ merge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &pb.Session{DisplayLabel: tc.displayLabel, Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: tc.unverified}}
+			got := h.renderSessionStatus(s)
+			if ansi.Strip(got) != tc.want {
+				t.Fatalf("status = %q, want %q", ansi.Strip(got), tc.want)
+			}
+			if want := styleStatusSuccess.Render(ansi.Strip(got)); got != want {
+				t.Fatalf("status = %q, want the success colour %q", got, want)
+			}
+		})
+	}
+}
+
+// TestHomeOutcomeStatusSpinsInPlaceOfItsGlyphWhileAChatIsWorking pins the one
+// rule behind every attention cell that names an outcome: while a chat works,
+// the spinner stands where the glyph was (or opens a bare word), in the cell's
+// own colour. A question keeps its "?" because the agent waits on the operator.
+func TestHomeOutcomeStatusSpinsInPlaceOfItsGlyphWhileAChatIsWorking(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	spin := ansi.Strip(h.spinner.View())
+	for _, tc := range []struct {
+		kind    pb.AttentionKind
+		working string
+		resting string
+		style   func(...string) string
+	}{
+		{pb.AttentionKind_ATTENTION_KIND_FIX, spin + "fix", "fix", styleStatusDanger.Render},
+		{pb.AttentionKind_ATTENTION_KIND_REVIEW, spin + "review", "review", styleStatusWarning.Render},
+		{pb.AttentionKind_ATTENTION_KIND_QUESTION, "? question", "? question", styleStatusWarning.Render},
+	} {
+		for _, working := range []bool{true, false} {
+			want, label := tc.resting, "passing"
+			if working {
+				want, label = tc.working, "working"
+			}
+			s := &pb.Session{DisplayLabel: label, Attention: &pb.SessionAttention{Kind: tc.kind}}
+			got := h.renderSessionStatus(s)
+			if ansi.Strip(got) != want || got != tc.style(want) {
+				t.Errorf("%v working=%v: got %q, want %q in its own colour", tc.kind, working, got, want)
+			}
+		}
+	}
+}
+
+// TestHomeWorkingMergeRowStaysInNeedsYouAndKeepsItsFilterText keeps the row in
+// NEEDS YOU and matches the filter by the resting "ready" text, not a frame of
+// the spinner.
+func TestHomeWorkingMergeRowStaysInNeedsYouAndKeepsItsFilterText(t *testing.T) {
+	working := &pb.Session{Id: "w", Title: "Still working", DisplayLabel: "working", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, IsUnverified: true}}
+	other := &pb.Session{Id: "o", Title: "Building", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "building"}}
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width, h.height = 120, 30
+	h.sessions = []*pb.Session{other, working}
+	h.buildTableRows()
+
+	screen := ansi.Strip(h.boardView())
+	needs, progress := strings.Index(screen, "NEEDS YOU"), strings.Index(screen, "IN PROGRESS")
+	row := strings.Index(screen, "Still working")
+	if needs < 0 || progress < 0 || row < needs || row > progress {
+		t.Fatalf("working merge row is not under NEEDS YOU:\n%s", screen)
+	}
+	if !strings.Contains(screen, ansi.Strip(h.spinner.View())+"ready") || strings.Contains(screen, "✓ ready") {
+		t.Fatalf("working merge row does not show the spinner in place of the check:\n%s", screen)
+	}
+	if hay := homeFilterHaystack(working); !strings.Contains(hay, "✓ ready") {
+		t.Fatalf("filter haystack %q lost the resting merge text", hay)
+	}
+}
+
 func TestHomeAttentionMixedDaemon(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 120

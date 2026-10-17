@@ -953,6 +953,9 @@ var writeDeadlineExemptProcedures = map[string]struct{}{
 	bossanovav1connect.DaemonServiceCreateSessionProcedure:    {},
 	bossanovav1connect.DaemonServiceResurrectSessionProcedure: {},
 	bossanovav1connect.DaemonServiceGetRunCostProcedure:       {},
+	// OperatorMergeSession runs detached for up to config.OperatorMergeCeiling,
+	// so a merge queued behind another still reports its outcome.
+	bossanovav1connect.DaemonServiceOperatorMergeSessionProcedure: {},
 }
 
 func withStreamingWriteDeadlineOverride(next http.Handler) http.Handler {

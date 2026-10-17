@@ -4511,8 +4511,16 @@ func run(opts runOpts) error {
 			DeliveryPending: func(ctx context.Context, id string) (bool, error) {
 				return callback.DeliveryPendingForChat(ctx, githubCallbacks, id, time.Now())
 			},
-			Tracker:     chatStatusTracker,
-			Transcripts: status.NewAgentTranscriptOracle(agentClients),
+			ProgressWait: func(ctx context.Context, chat *models.AgentChat, sess *models.Session) (bool, error) {
+				repo, err := repos.Get(ctx, sess.RepoID)
+				if err != nil {
+					return false, err
+				}
+				return callback.HoldsProgressWait(ctx, githubCallbacks, chat.AgentSessionID, sess, vcs.GitHubNWO(repo.OriginURL), time.Now())
+			},
+			SessionAttention: srv.SessionAttention,
+			Tracker:          chatStatusTracker,
+			Transcripts:      status.NewAgentTranscriptOracle(agentClients),
 			// The canonical clear-then-kill teardown, reached through a
 			// function value rather than an import: session already imports
 			// status, so importing it back would be a cycle.

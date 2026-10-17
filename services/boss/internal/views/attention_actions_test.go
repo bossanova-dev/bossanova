@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"connectrpc.com/connect"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -629,8 +632,10 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 			"Couldn't merge PR #42: 2 required checks are still failing", true},
 		{"gate after the approval landed", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=conflict; the PR has a merge conflict; gated at head abc; the approval of abc (https://x/9) stays recorded"))},
 			"Couldn't merge PR #42: the PR has a merge conflict; your approval stays recorded, so verify may merge it once it passes", true},
-		{"rpc error", &attentionStub{mergeErr: connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))},
-			"Couldn't merge PR #42: daemon unreachable", true},
+		{"rpc error", &attentionStub{mergeErr: connect.NewError(connect.CodeInternal, errors.New("the tracker refused the write"))},
+			"Couldn't merge PR #42: the tracker refused the write", true},
+		{"no answer from bossd", &attentionStub{mergeErr: connect.NewError(connect.CodeUnavailable, errors.New("dial unix: connection refused"))},
+			"Waiting to hear whether PR #42 merged", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := attentionHome(tc.stub, parkSession("human-review:ui"))
@@ -653,4 +658,310 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mergeLeftRunning confirms [m]erge on the details view and presses Esc before
+// the merge answers. It returns the app, now on Home, and the merge command
+// the operator walked away from.
+func mergeLeftRunning(t *testing.T, c *attentionStub) (tea.Model, tea.Cmd) {
+	t.Helper()
+	s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)
+	a := NewApp(c, nil)
+	a.home = attentionHome(c, proto.CloneOf(s))
+	a.chatPicker = attentionDetails(c, proto.CloneOf(s))
+	a.activeView = ViewChatPicker
+	var model tea.Model = a
+	model, _ = model.Update(keyPress('m'))
+	model, merge := model.Update(keyPress('y'))
+	if merge == nil {
+		t.Fatal("confirming did not send the merge")
+	}
+	model, _ = model.Update(attentionKey("esc"))
+	got := model.(App)
+	if got.activeView != ViewHome {
+		t.Fatalf("active view after Esc mid-merge = %v, want Home", got.activeView)
+	}
+	if row := ansi.Strip(got.home.renderSessionStatus(got.home.sessions[0])); !strings.Contains(row, "merging") {
+		t.Fatalf("Home row = %q, want it to read merging while the merge runs", row)
+	}
+	return model, merge
+}
+
+func TestAttentionMergeEscLeavesAndHomeShowsTheOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "merged", want: "Merged PR #42"},
+		{name: "refused", err: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=checks; checks are still running; nothing was approved or merged")), want: "Couldn't merge PR #42: checks are still running"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &attentionStub{mergeErr: tc.err}
+			model, merge := mergeLeftRunning(t, c)
+
+			model, _ = model.Update(merge())
+			got := model.(App)
+			if len(c.merges) != 1 {
+				t.Fatalf("merges = %+v, want the one merge the operator confirmed", c.merges)
+			}
+			if !strings.Contains(got.home.status, tc.want) || got.home.statusErr != (tc.err != nil) {
+				t.Fatalf("Home status = %q (err %v), want %q", got.home.status, got.home.statusErr, tc.want)
+			}
+			if row := ansi.Strip(got.home.renderSessionStatus(got.home.sessions[0])); strings.Contains(row, "merging") {
+				t.Fatalf("Home row = %q after the merge answered, want it to stop reading merging", row)
+			}
+		})
+	}
+}
+
+func TestAttentionMergeOutcomeWaitsForTheOperatorsReturnToHome(t *testing.T) {
+	c := &attentionStub{}
+	model, merge := mergeLeftRunning(t, c)
+
+	model, _ = model.Update(switchViewMsg{view: ViewChatPicker, sessionID: "session-1"})
+	if footer := model.(App).chatPicker.attentionAction.footer(80, ""); !strings.Contains(footer, "Merging PR #42…") {
+		t.Fatalf("reopened details view footer = %q, want it to say the merge is still running", footer)
+	}
+	model, _ = model.Update(attentionKey("esc"))
+	model, _ = model.Update(switchViewMsg{view: ViewChatPicker, sessionID: "session-2"})
+	model, _ = model.Update(merge())
+	model, _ = model.Update(attentionKey("esc"))
+	got := model.(App)
+	if got.activeView != ViewHome || !strings.Contains(got.home.status, "Merged PR #42") {
+		t.Fatalf("view %v, Home status %q: want the outcome that landed off screen waiting on Home", got.activeView, got.home.status)
+	}
+	if _, ok := got.home.mergeInFlight("session-1"); ok {
+		t.Fatal("Home still holds the merge as running after it answered")
+	}
+}
+
+// mergeRowReadsMerging reports whether Home's session-1 row reads merging.
+func mergeRowReadsMerging(h HomeModel) bool {
+	return strings.Contains(ansi.Strip(h.renderSessionStatus(sessionByID(h.sessions, "session-1"))), "merging")
+}
+
+// homeMergeRunning confirms [m]erge on Home's first row, with a second,
+// quiet session below it, and returns Home and the merge command.
+func homeMergeRunning(t *testing.T, c *attentionStub) (HomeModel, tea.Cmd) {
+	t.Helper()
+	h := attentionHome(c, attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE))
+	other := &pb.Session{Id: "session-2", Title: "Quiet"}
+	h.sessions = append(h.sessions, other)
+	h.buildTableRows()
+	model, _ := h.Update(keyPress('m'))
+	model, merge := model.Update(keyPress('y'))
+	if merge == nil {
+		t.Fatal("confirming did not send the merge")
+	}
+	h = model.(HomeModel)
+	if !mergeRowReadsMerging(h) {
+		t.Fatalf("Home row = %q, want it to read merging while the merge runs", ansi.Strip(h.renderSessionStatus(h.sessions[0])))
+	}
+	return h, merge
+}
+
+func TestAttentionMergeFromHomeLeavesHomeUsable(t *testing.T) {
+	c := &attentionStub{}
+	h, merge := homeMergeRunning(t, c)
+
+	model, _ := h.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	h = model.(HomeModel)
+	if got := h.selectedSession().GetId(); got != "session-2" {
+		t.Fatalf("selected session after down mid-merge = %q, want session-2", got)
+	}
+	_, open := h.Update(attentionKey("enter"))
+	if open == nil {
+		t.Fatal("enter mid-merge opened nothing")
+	}
+	if msg, ok := open().(switchViewMsg); !ok || msg.view != ViewChatPicker || msg.sessionID != "session-2" {
+		t.Fatalf("enter mid-merge sent %#v, want the details view of session-2", msg)
+	}
+	if _, quit := h.Update(keyPress('q')); quit == nil {
+		t.Fatal("q mid-merge did not quit")
+	} else if _, ok := quit().(tea.QuitMsg); !ok {
+		t.Fatal("q mid-merge did not quit")
+	}
+
+	model, _ = h.Update(merge())
+	h = model.(HomeModel)
+	if mergeRowReadsMerging(h) || !strings.Contains(h.status, "Merged PR #42") || len(c.merges) != 1 {
+		t.Fatalf("after the merge answered: row merging %v, status %q, merges %d; want the outcome and one merge", mergeRowReadsMerging(h), h.status, len(c.merges))
+	}
+}
+
+func TestAttentionMergeIsNotOfferedTwiceWhileItRuns(t *testing.T) {
+	for name, running := range map[string]func(*testing.T, *attentionStub) (HomeModel, tea.Cmd){
+		"started on Home": homeMergeRunning,
+		"left running on the details view": func(t *testing.T, c *attentionStub) (HomeModel, tea.Cmd) {
+			model, merge := mergeLeftRunning(t, c)
+			var home tea.Model = model.(App).home
+			home, _ = home.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+			home, _ = home.Update(sessionListMsg{sessions: []*pb.Session{attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)}})
+			return home.(HomeModel), merge
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &attentionStub{}
+			h, merge := running(t, c)
+			h.table.SetCursor(0)
+			if got := h.selectedSession().GetId(); got != "session-1" {
+				t.Fatalf("selected session = %q, want the merging session-1", got)
+			}
+			if left, _, _ := h.sessionTableFooterActions(); slices.Contains(left, "[m] merge") {
+				t.Fatalf("Home footer %q offers merge on a row that reads merging", left)
+			}
+			model, cmd := h.Update(keyPress('m'))
+			model, confirm := model.Update(keyPress('y'))
+			if cmd != nil || confirm != nil || model.(HomeModel).attentionAction.active() {
+				t.Fatal("[m] on a row that reads merging started a second merge")
+			}
+			_ = merge()
+			if len(c.merges) != 1 {
+				t.Fatalf("merges = %+v, want only the merge already running", c.merges)
+			}
+		})
+	}
+}
+
+func TestAttentionDismissLeftRunningIsNotShownAsMerging(t *testing.T) {
+	c := &attentionStub{}
+	s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_DISMISS)
+	a := NewApp(c, nil)
+	a.home = attentionHome(c, proto.CloneOf(s))
+	a.chatPicker = attentionDetails(c, proto.CloneOf(s))
+	a.activeView = ViewChatPicker
+	var model tea.Model = a
+	model, _ = model.Update(keyPress('x'))
+	model, dismiss := model.Update(keyPress('y'))
+	if dismiss == nil {
+		t.Fatal("confirming did not send the dismiss")
+	}
+	model, _ = model.Update(attentionKey("esc"))
+	if got := model.(App); got.activeView != ViewHome || mergeRowReadsMerging(got.home) {
+		t.Fatalf("view %v, row merging %v after Esc mid-dismiss: want Home without a merging row", got.activeView, mergeRowReadsMerging(got.home))
+	}
+	model, _ = model.Update(dismiss())
+	if got := model.(App); mergeRowReadsMerging(got.home) || len(got.home.mergesInFlight) != 0 {
+		t.Fatalf("after the dismiss answered: row merging %v, merges held %v; want none", mergeRowReadsMerging(got.home), got.home.mergesInFlight)
+	}
+}
+
+// noAnswerErrors are the ways a merge call ends without bossd's answer: the
+// client's own deadline, as the deadline interceptor words it, and a lost
+// daemon.
+var noAnswerErrors = map[string]error{
+	"client deadline": fmt.Errorf("daemon at /tmp/bossd.sock accepted the connection but did not answer in time; check it with `boss daemon status` and recover it with `boss daemon restart`: %w",
+		connect.NewError(connect.CodeDeadlineExceeded, context.DeadlineExceeded)),
+	"daemon lost": connect.NewError(connect.CodeUnavailable, errors.New("dial unix /tmp/bossd.sock: connect: connection refused")),
+}
+
+func TestAttentionMergeWithNoAnswerReadsMergingUntilAPollSettlesIt(t *testing.T) {
+	for errName, noAnswer := range noAnswerErrors {
+		for _, tc := range []struct {
+			name    string
+			settled func(*pb.Session)
+			want    string
+			wantErr bool
+		}{
+			{"merged", func(s *pb.Session) { s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED }, "Merged PR #42", false},
+			{"closed", func(s *pb.Session) { s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CLOSED }, "PR #42 was closed without merging", true},
+			{"no longer merging", func(*pb.Session) {}, "PR #42 did not merge", true},
+		} {
+			t.Run(errName+"/"+tc.name, func(t *testing.T) {
+				c := &attentionStub{mergeErr: noAnswer}
+				h, merge := homeMergeRunning(t, c)
+				model, refresh := h.Update(merge())
+				h = model.(HomeModel)
+				if h.status != "Waiting to hear whether PR #42 merged" || h.statusErr || refresh == nil {
+					t.Fatalf("status %q (err %v), re-read %v: want the waiting line and a session re-read", h.status, h.statusErr, refresh != nil)
+				}
+				for _, banned := range []string{"Couldn't merge", "deadline", "daemon", "connection"} {
+					if screen := ansi.Strip(h.View().Content); strings.Contains(screen, banned) {
+						t.Fatalf("screen says %q after a merge with no answer:\n%s", banned, screen)
+					}
+				}
+
+				stillMerging := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)
+				stillMerging.DisplayMerging = true
+				model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{stillMerging}})
+				h = model.(HomeModel)
+				if !mergeRowReadsMerging(h) || h.status != "Waiting to hear whether PR #42 merged" {
+					t.Fatalf("row merging %v, status %q while bossd still merges: want it still merging", mergeRowReadsMerging(h), h.status)
+				}
+
+				settled := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)
+				tc.settled(settled)
+				model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{settled}})
+				h = model.(HomeModel)
+				if mergeRowReadsMerging(h) || h.status != tc.want || h.statusErr != tc.wantErr {
+					t.Fatalf("row merging %v, status %q (err %v); want %q (err %v)", mergeRowReadsMerging(h), h.status, h.statusErr, tc.want, tc.wantErr)
+				}
+			})
+		}
+	}
+}
+
+func TestAttentionMergeWithNoAnswerOnTheDetailsViewSettlesOnHome(t *testing.T) {
+	c := &attentionStub{mergeErr: noAnswerErrors["client deadline"]}
+	s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)
+	a := NewApp(c, nil)
+	a.home = attentionHome(c, proto.CloneOf(s))
+	a.chatPicker = attentionDetails(c, proto.CloneOf(s))
+	a.activeView = ViewChatPicker
+	var model tea.Model = a
+	model, _ = model.Update(keyPress('m'))
+	model, merge := model.Update(keyPress('y'))
+	model, _ = model.Update(merge())
+	if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, "Waiting to hear whether PR #42 merged") || strings.Contains(screen, "deadline") || strings.Contains(screen, "Couldn't merge") {
+		t.Fatalf("details view after a merge with no answer:\n%s", screen)
+	}
+	model, _ = model.Update(attentionKey("esc"))
+	got := model.(App)
+	if got.activeView != ViewHome || !mergeRowReadsMerging(got.home) {
+		t.Fatalf("view %v, row merging %v: want Home showing the unanswered merge as merging", got.activeView, mergeRowReadsMerging(got.home))
+	}
+	merged := proto.CloneOf(s)
+	merged.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
+	model, _ = model.Update(sessionListMsg{sessions: []*pb.Session{merged}})
+	if got := model.(App); mergeRowReadsMerging(got.home) || got.home.status != "Merged PR #42" {
+		t.Fatalf("after the poll: row merging %v, status %q; want the merge settled as merged", mergeRowReadsMerging(got.home), got.home.status)
+	}
+}
+
+// TestMergeOutcomeUnknownTrustsOnlyAnAnswerBossdSent runs a real connect
+// round trip: bossd's own DeadlineExceeded is an outcome, while the client
+// giving up first is not. The hanging handler ignores its own deadline, as the
+// detached merge does, so only the client can end that call.
+func TestMergeOutcomeUnknownTrustsOnlyAnAnswerBossdSent(t *testing.T) {
+	release := make(chan struct{})
+	_, handler := bossanovav1connect.NewDaemonServiceHandler(operatorMergeServer{release: release})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	defer close(release)
+	rpc := bossanovav1connect.NewDaemonServiceClient(srv.Client(), srv.URL)
+
+	_, answered := rpc.OperatorMergeSession(context.Background(), connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "answer"}))
+	if connect.CodeOf(answered) != connect.CodeDeadlineExceeded || mergeOutcomeUnknown(answered) {
+		t.Fatalf("bossd's own deadline answer (%v) classified as unknown = %v, want an outcome", answered, mergeOutcomeUnknown(answered))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, gaveUp := rpc.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "hang"}))
+	if !mergeOutcomeUnknown(gaveUp) {
+		t.Fatalf("the client giving up (%v) classified as an outcome, want unknown", gaveUp)
+	}
+}
+
+type operatorMergeServer struct {
+	bossanovav1connect.UnimplementedDaemonServiceHandler
+	release chan struct{}
+}
+
+func (s operatorMergeServer) OperatorMergeSession(_ context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
+	if req.Msg.GetId() == "answer" {
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, errors.New("merge queue wait expired"))
+	}
+	<-s.release
+	return connect.NewResponse(&pb.OperatorMergeSessionResponse{IsMerged: true}), nil
 }

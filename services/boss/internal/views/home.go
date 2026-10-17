@@ -111,6 +111,14 @@ type HomeModel struct {
 	// RPC is still active, avoiding a picker stuck waiting on a resolved archive.
 	archiveInFlightIDs map[string]struct{}
 
+	// mergesInFlight holds the confirmed [m]erges that run on without the
+	// operator, by session id. Their rows read "merging" until they settle.
+	mergesInFlight map[string]homeMerge
+
+	// statusUnseen marks a status set while Home was off screen, so the
+	// rebuilt Home the operator returns to still shows it.
+	statusUnseen bool
+
 	// moveOverrideOrder is the session-id order the alt+up / alt+down chords
 	// imposed locally (BOS-1231), held so the list responds to the keystroke at
 	// once instead of at the next poll tick. The poll reassigns h.sessions
@@ -349,10 +357,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.attentionAction.sessionID == msg.sessionID && h.attentionAction.action == msg.action {
 			h.attentionAction = attentionActionState{}
 		}
-		h.status, h.statusErr = msg.text, msg.err != nil
-		if msg.err != nil {
-			h.status = rpcStatusDetail(msg.err)
-		}
+		h.showActionResult(msg)
 		h.table.SetHeight(h.tableHeight())
 		if msg.action == pb.AttentionAction_ATTENTION_ACTION_MERGE && msg.err == nil {
 			// Re-read now so the merged row leaves NEEDS YOU without waiting

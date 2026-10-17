@@ -19,6 +19,7 @@ import (
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
+	"github.com/rs/zerolog"
 )
 
 // errTestDelivery is a canned delivery failure for exercising the error path.
@@ -163,6 +164,56 @@ func TestSendChatMessage_AsleepChat_WakeIfAsleep_WakesThenDelivers(t *testing.T)
 	}
 	if msgs[0].text != "wake up and work" {
 		t.Errorf("SendMessage text = %q, want %q", msgs[0].text, "wake up and work")
+	}
+}
+
+func TestSendChatMessage_ReapedChat_CallbackWakesAndResumes(t *testing.T) {
+	tmuxName := tmux.ChatSessionName("r1", "agent-1")
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude", TmuxSessionName: &tmuxName}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+	s.wakeHook.transcripts = &fakeTranscriptOracle{exists: true}
+	// Exercise the real clear-before-kill lifecycle operation, sharing its row
+	// and pane state with the wake and delivery seams.
+	reapTmux := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "kill-session" {
+			if chat.TmuxSessionName != nil {
+				t.Error("pane killed before clearing the chat pointer")
+			}
+			if err := tmuxer.KillSession(ctx, args[len(args)-1]); err != nil {
+				t.Error(err)
+			}
+		}
+		return exec.CommandContext(ctx, "true")
+	}))
+	lc := session.NewLifecycle(s.sessions, nil, s.agentChats, nil, nil, nil, reapTmux, nil, zerolog.Nop())
+	if err := lc.ReapIdleChatTmuxSession(t.Context(), sess.ID, chat.AgentSessionID, tmuxName); err != nil {
+		t.Fatal(err)
+	}
+	if chat.TmuxSessionName != nil || tmuxer.HasSession(t.Context(), tmuxName) || len(tmuxer.killed) != 1 {
+		t.Fatal("reap must clear the pointer and kill the pane")
+	}
+	resp, err := s.SendChatMessage(t.Context(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: chat.AgentSessionID,
+		Message:        "PR merged; continue the factory",
+		Submit:         true,
+		WakeIfAsleep:   true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Msg.GetDelivered() || resp.Msg.GetDeliveryState() != pb.SendChatMessageResponse_DELIVERY_STATE_SUBMITTED {
+		t.Fatalf("callback delivery = %v, want delivered SUBMITTED", resp.Msg)
+	}
+	if tmuxer.createdN != 1 || !contains(tmuxer.captured, "--resume") || !contains(tmuxer.captured, chat.AgentSessionID) {
+		t.Fatalf("spawn count = %d, command = %v; want one resumed pane", tmuxer.createdN, tmuxer.captured)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != resp.Msg.GetTmuxSessionName() {
+		t.Fatal("wake must restore the pane pointer")
+	}
+	if len(tmuxer.sentMessages) != 1 || !tmuxer.sentMessages[0].submit || tmuxer.sentMessages[0].text != "PR merged; continue the factory" {
+		t.Fatalf("sent messages = %+v, want one submitted callback", tmuxer.sentMessages)
 	}
 }
 

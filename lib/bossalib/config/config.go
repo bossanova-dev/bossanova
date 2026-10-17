@@ -279,6 +279,7 @@ type TmuxIdleReapConfig struct {
 	DryRun               *bool `json:"dry_run,omitempty"`
 	IdleThresholdSeconds int   `json:"idle_threshold_seconds,omitempty"`
 	TerminalGraceSeconds int   `json:"terminal_grace_seconds,omitempty"`
+	FinishedGraceSeconds int   `json:"finished_grace_seconds,omitempty"`
 }
 
 // IsEnabled reports whether idle panes are reaped at all. Unset means ON — the
@@ -316,6 +317,17 @@ func (c TmuxIdleReapConfig) TerminalGrace() time.Duration {
 		return time.Duration(c.TerminalGraceSeconds) * time.Second
 	}
 	return 30 * time.Second
+}
+
+// FinishedGrace returns the quiet period for agent chats waiting on a person.
+// Non-positive values use the default of 180 seconds. This is a floor: the
+// 60-second sweep and confirmation strike reap between one and two minutes
+// later, measured from the later of the last output and attention since.
+func (c TmuxIdleReapConfig) FinishedGrace() time.Duration {
+	if c.FinishedGraceSeconds > 0 {
+		return time.Duration(c.FinishedGraceSeconds) * time.Second
+	}
+	return 180 * time.Second
 }
 
 // NotesConfig holds bossd's note-retention policy (BOS-1384). Notes are pruned
@@ -520,6 +532,13 @@ func StartChatRunBudgetFor(readiness time.Duration) time.Duration {
 // this ceiling move, update services/docs/docs/reference/settings.md with the
 // new derived figure.
 const SwitchResultCeiling = 120 * time.Second
+
+// OperatorMergeCeiling bounds the operator's [m]erge in bossd once it runs
+// detached from the caller: long enough to queue behind another merge on the
+// repo and run the tracker bookkeeping, finite so a wedged step cannot pin the
+// handler. The boss client waits longer than this, so bossd's own answer
+// always arrives first.
+const OperatorMergeCeiling = 10 * time.Minute
 
 // SwitchBudgetCrossoverReadiness returns the nominal configured readiness at
 // which SwitchRespawnBudgetFor exactly meets SwitchResultCeiling. It compares

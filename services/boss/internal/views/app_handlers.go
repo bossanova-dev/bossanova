@@ -264,6 +264,22 @@ func (a *App) handleArchiveResult(msg archiveResultMsg) {
 	}
 }
 
+// handleAttentionActionResult settles a merge the operator walked away from
+// while Home is off screen. The retained Home drops the row's "merging" and
+// keeps the outcome for the operator's return. A merge whose outcome is not
+// known yet reads merging on Home until a poll settles it, wherever it was
+// started. An active Home settles its own result.
+func (a *App) handleAttentionActionResult(msg attentionActionResultMsg) {
+	if a.activeView == ViewHome {
+		return
+	}
+	if _, ok := a.home.mergeInFlight(msg.sessionID); !ok && !msg.unsettled {
+		return
+	}
+	a.home.showActionResult(msg)
+	a.home.statusUnseen = true
+}
+
 // handleAccountStatusResult captures account_enabled / account_disabled.
 // Observes only; see the note above. [space] is a toggle, so this one message
 // carries both directions: msg.status is the status the flip requested.

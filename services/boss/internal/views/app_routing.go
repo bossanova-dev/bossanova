@@ -1,6 +1,7 @@
 package views
 
 import (
+	"maps"
 	"net/url"
 
 	tea "charm.land/bubbletea/v2"
@@ -147,6 +148,9 @@ func (a *App) enterChatPicker(msg switchViewMsg) tea.Cmd {
 	// session…" swallowing every key but Esc.
 	if a.home.archiveInFlight(msg.sessionID) {
 		a.chatPicker.archiving = true
+	}
+	if merge, ok := a.home.mergeInFlight(msg.sessionID); ok {
+		a.chatPicker.attentionAction = merge
 	}
 	return a.chatPicker.Init()
 }
@@ -298,6 +302,10 @@ func (a *App) newHomeModel() HomeModel {
 	// RPCs must survive until the next poll or result reconciles each session.
 	home.archivingOverrideIDs = cloneSessionIDSet(a.home.archivingOverrideIDs)
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
+	home.mergesInFlight = maps.Clone(a.home.mergesInFlight)
+	if a.home.statusUnseen {
+		home.status, home.statusErr = a.home.status, a.home.statusErr
+	}
 	// Same reason for the reorder override (BOS-1231): home.sessions above
 	// already carries the optimistically swapped order, so dropping the
 	// override that defends it would let the next poll snap the row back to its

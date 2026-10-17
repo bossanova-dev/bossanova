@@ -16,6 +16,12 @@ import (
 
 // handleKey dispatches a key press to whichever mode currently owns input.
 func (m ChatPickerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// A confirmed action runs on without the operator: Esc leaves, and Home
+	// carries a merge's progress and outcome.
+	if m.attentionAction.busy && msg.String() == "esc" {
+		m.cancel = true
+		return m, nil
+	}
 	if m.attentionAction.active() {
 		var cmd tea.Cmd
 		m.attentionAction, cmd = m.attentionAction.update(msg)

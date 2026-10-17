@@ -16,30 +16,42 @@ import (
 // keyed by name AND reason: sharing a string would let an orphan sighting and
 // an idle sighting confirm each other.
 const (
-	reasonTerminalNoTrackerEntry  = "terminalNoTrackerEntry"
-	reasonTerminalChatWorking     = "terminalChatWorking"
-	reasonTerminalWithinGrace     = "terminalWithinGrace"
-	reasonTerminalDeliveryPending = "terminalDeliveryPending"
-	reasonTerminalDeliveryUnknown = "terminalDeliveryUnknown"
-	reasonTerminalSession         = "terminalSession"
-	reasonIdleUnresolvedName      = "idleUnresolvedName"
-	reasonIdleNoTrackerEntry      = "idleNoTrackerEntry"
-	reasonIdleStatusNotIdle       = "idleStatusNotIdle"
-	reasonIdleNoOutputClock       = "idleNoOutputClock"
-	reasonIdleWithinWindow        = "idleWithinWindow"
-	reasonIdleAttachedClient      = "idleAttachedClient"
-	reasonIdleNoResumeSessionID   = "idleNoResumeSessionID"
-	reasonIdleTranscriptOracle    = "idleTranscriptOracleMissing"
-	reasonIdleTranscriptMissing   = "idleTranscriptMissing"
-	reasonIdleFirstStrike         = "idleFirstStrike"
-	reasonIdleTooLong             = "idleTooLong"
+	reasonFinishedNotAgentOwned        = "finishedNotAgentOwned"
+	reasonFinishedWithinGrace          = "finishedWithinGrace"
+	reasonFinishedDeliveryPending      = "finishedDeliveryPending"
+	reasonFinishedDeliveryUnknown      = "finishedDeliveryUnknown"
+	reasonFinishedProgressWait         = "finishedProgressWait"
+	reasonFinishedProgressWaitUnknown  = "finishedProgressWaitUnknown"
+	reasonFinishedAttentionUnknown     = "finishedAttentionUnknown"
+	reasonFinishedAttentionNotWaiting  = "finishedAttentionNotWaiting"
+	reasonFinishedAttentionWithinGrace = "finishedAttentionWithinGrace"
+	reasonFinishedIdle                 = "finishedIdle"
+	reasonFinishedWaitingOnHuman       = "finishedWaitingOnHuman"
+	reasonTerminalNoTrackerEntry       = "terminalNoTrackerEntry"
+	reasonTerminalChatWorking          = "terminalChatWorking"
+	reasonTerminalWithinGrace          = "terminalWithinGrace"
+	reasonTerminalDeliveryPending      = "terminalDeliveryPending"
+	reasonTerminalDeliveryUnknown      = "terminalDeliveryUnknown"
+	reasonTerminalSession              = "terminalSession"
+	reasonIdleUnresolvedName           = "idleUnresolvedName"
+	reasonIdleNoTrackerEntry           = "idleNoTrackerEntry"
+	reasonIdleStatusNotIdle            = "idleStatusNotIdle"
+	reasonIdleNoOutputClock            = "idleNoOutputClock"
+	reasonIdleWithinWindow             = "idleWithinWindow"
+	reasonIdleAttachedClient           = "idleAttachedClient"
+	reasonIdleNoResumeSessionID        = "idleNoResumeSessionID"
+	reasonIdleTranscriptOracle         = "idleTranscriptOracleMissing"
+	reasonIdleTranscriptMissing        = "idleTranscriptMissing"
+	reasonIdleFirstStrike              = "idleFirstStrike"
+	reasonIdleTooLong                  = "idleTooLong"
 )
 
 type reapPolicy string
 
 const (
-	policyLongIdle reapPolicy = "longIdle"
-	policyTerminal reapPolicy = "terminal"
+	policyFinishedWait reapPolicy = "finishedWait"
+	policyLongIdle     reapPolicy = "longIdle"
+	policyTerminal     reapPolicy = "terminal"
 )
 
 func policyForOwner(owner *chatOwner) reapPolicy {
@@ -206,8 +218,11 @@ func resolveChatOwners(sessions []*models.Session, chats []*models.AgentChat) ma
 // at. Assembling it is the sweep's job; judging it is this file's, so the
 // policy is testable without tmux, a database, a plugin or a clock.
 type idleReapEvidence struct {
-	deliveryPending func() (bool, error)
-	owner           *chatOwner
+	deliveryPending  func() (bool, error)
+	progressWait     func() (bool, error)
+	sessionAttention func() (*pb.SessionAttention, error)
+	attentionKind    pb.AttentionKind
+	owner            *chatOwner
 
 	// entry is the tracker's record for this chat, or nil. Nil covers both
 	// "never polled" and "polled too long ago to trust" — Tracker.Get evicts
@@ -240,9 +255,12 @@ type idleReapEvidence struct {
 // dry run can show the clock (D10: that clock restarts with the daemon, and an
 // operator staring at a reaper that never fires needs to see the truncation
 // rather than guess at it).
-func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duration, policy reapPolicy) (reap bool, reason string, idleFor time.Duration) {
+func evaluateIdleReap(ev *idleReapEvidence, now time.Time, threshold time.Duration, policy reapPolicy) (reap bool, reason string, idleFor time.Duration) {
 	if ev.owner == nil || ev.owner.chat == nil || ev.owner.session == nil {
 		return false, reasonIdleUnresolvedName, 0
+	}
+	if policy == policyFinishedWait && !ev.owner.chat.Role.IsAgentOwned() {
+		return false, reasonFinishedNotAgentOwned, 0
 	}
 	if ev.entry == nil {
 		if policy == policyTerminal {
@@ -275,6 +293,9 @@ func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duratio
 		if policy == policyTerminal {
 			return false, reasonTerminalWithinGrace, idleFor
 		}
+		if policy == policyFinishedWait {
+			return false, reasonFinishedWithinGrace, idleFor
+		}
 		return false, reasonIdleWithinWindow, idleFor
 	}
 
@@ -295,7 +316,50 @@ func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duratio
 		}
 		return true, reasonTerminalSession, idleFor
 	}
-	// Long-idle reaping preserves the transcript a later wake needs.
+
+	if policy == policyFinishedWait {
+		if ev.deliveryPending == nil {
+			return false, reasonFinishedDeliveryUnknown, idleFor
+		}
+		pending, err := ev.deliveryPending()
+		if err != nil {
+			return false, reasonFinishedDeliveryUnknown, idleFor
+		}
+		if pending {
+			return false, reasonFinishedDeliveryPending, idleFor
+		}
+		if ev.progressWait == nil {
+			return false, reasonFinishedProgressWaitUnknown, idleFor
+		}
+		progress, err := ev.progressWait()
+		if err != nil {
+			return false, reasonFinishedProgressWaitUnknown, idleFor
+		}
+		if progress {
+			return false, reasonFinishedProgressWait, idleFor
+		}
+		if ev.sessionAttention == nil {
+			return false, reasonFinishedAttentionUnknown, idleFor
+		}
+		attention, err := ev.sessionAttention()
+		if err != nil || attention == nil {
+			return false, reasonFinishedAttentionUnknown, idleFor
+		}
+		ev.attentionKind = attention.GetKind()
+		switch attention.GetKind() {
+		case pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_MERGE:
+		case pb.AttentionKind_ATTENTION_KIND_FIX:
+			if len(attention.GetParkCodes()) == 0 {
+				return false, reasonFinishedAttentionNotWaiting, idleFor
+			}
+		default:
+			return false, reasonFinishedAttentionNotWaiting, idleFor
+		}
+		if attention.GetSince() != nil && now.Sub(attention.GetSince().AsTime()) < threshold {
+			return false, reasonFinishedAttentionWithinGrace, idleFor
+		}
+	}
+	// Live-session reaping preserves the transcript a later wake needs.
 	if ev.resumeSessionID == "" {
 		return false, reasonIdleNoResumeSessionID, idleFor
 	}
@@ -306,5 +370,8 @@ func evaluateIdleReap(ev idleReapEvidence, now time.Time, threshold time.Duratio
 		return false, reasonIdleTranscriptMissing, idleFor
 	}
 
+	if policy == policyFinishedWait {
+		return true, reasonFinishedWaitingOnHuman, idleFor
+	}
 	return true, reasonIdleTooLong, idleFor
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -228,7 +230,7 @@ func TestEvaluateIdleReap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reap, reason, idleFor := evaluateIdleReap(tc.ev, idleTestNow, idleTestThreshold, policyLongIdle)
+			reap, reason, idleFor := evaluateIdleReap(&tc.ev, idleTestNow, idleTestThreshold, policyLongIdle)
 			if reap != tc.wantReap || reason != tc.wantReason {
 				t.Fatalf("evaluateIdleReap = (%v, %q), want (%v, %q)", reap, reason, tc.wantReap, tc.wantReason)
 			}
@@ -262,7 +264,7 @@ func TestEvaluateIdleReap_TranscriptProbeIsLazy(t *testing.T) {
 				transcriptPresent: func() bool { probes++; return true },
 				resumeSessionID:   "provider-1",
 			}
-			evaluateIdleReap(ev, idleTestNow, idleTestThreshold, policyLongIdle)
+			evaluateIdleReap(&ev, idleTestNow, idleTestThreshold, policyLongIdle)
 			if probes != tc.wantProbes {
 				t.Fatalf("transcript probes = %d, want %d", probes, tc.wantProbes)
 			}
@@ -707,7 +709,7 @@ func TestEvaluateIdleReap_TerminalPolicies(t *testing.T) {
 					calls := 0
 					ev := idleReapEvidence{owner: owner, entry: idleTestEntry(pb.ChatStatus_CHAT_STATUS_IDLE, 31*time.Second), deliveryPending: func() (bool, error) { calls++; return false, nil }, transcriptPresent: func() bool { t.Fatal("terminal transcript probe"); return false }}
 					tc.mutate(&ev)
-					reap, reason, age := evaluateIdleReap(ev, idleTestNow, 30*time.Second, policy)
+					reap, reason, age := evaluateIdleReap(&ev, idleTestNow, 30*time.Second, policy)
 					if reason != tc.want || reap != (tc.want == reasonTerminalSession) {
 						t.Fatalf("(%v,%s), want %s", reap, reason, tc.want)
 					}
@@ -723,5 +725,188 @@ func TestEvaluateIdleReap_TerminalPolicies(t *testing.T) {
 	}
 	if got := policyForOwner(idleTestOwner()); got != policyLongIdle {
 		t.Fatalf("live policy=%s", got)
+	}
+}
+
+func finishedArmedFixture(t *testing.T) *reaperFixture {
+	fx := idleArmedFixture(t)
+	fx.chats.all[1].Role = models.AgentChatRoleBuild
+	fx.markIdle(4 * time.Minute)
+	fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return false, nil }
+	fx.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+		return &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Since: timestamppb.New(fx.now.Add(-4 * time.Minute))}, nil
+	}
+	return fx
+}
+
+func TestTmuxReaper_FinishedWaiting(t *testing.T) {
+	for _, kind := range []pb.AttentionKind{pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_MERGE, pb.AttentionKind_ATTENTION_KIND_FIX} {
+		t.Run(kind.String(), func(t *testing.T) {
+			fx := finishedArmedFixture(t)
+			fx.wantsChatTeardown = true
+			fx.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+				return &pb.SessionAttention{Kind: kind, ParkCodes: []string{"human-review"}}, nil
+			}
+			if n := fx.sweep(); n != 0 {
+				t.Fatalf("first sighting reaped %d", n)
+			}
+			fx.now = fx.now.Add(time.Second)
+			if n := fx.sweep(); n != 1 {
+				t.Fatalf("confirming sweep reaped %d", n)
+			}
+			for _, field := range []string{`"reason":"finishedWaitingOnHuman"`, `"attentionKind":"` + kind.String() + `"`, `"policy":"finishedWait"`, `"chatId":"chat-` + reaperIdleChatID + `"`, `"sessionId":"` + reaperSessionID + `"`, `"idleFor":`, `"level":"info"`} {
+				assertLogged(t, fx.logs, field)
+			}
+			if len(fx.chats.all) != 2 || len(fx.sessions.all) != 1 {
+				t.Fatal("reaping removed persisted rows")
+			}
+		})
+	}
+}
+
+func TestTmuxReaper_FinishedKeepReasons(t *testing.T) {
+	tests := []struct {
+		name, reason string
+		setup        func(*reaperFixture)
+	}{
+		{"operator", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = models.AgentChatRoleOperator }},
+		{"unknown role", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = models.AgentChatRoleUnknown }},
+		{"no clock", "idleNoOutputClock", func(f *reaperFixture) {
+			f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_IDLE, time.Time{})
+		}},
+		{"missing transcript oracle", "idleTranscriptOracleMissing", func(f *reaperFixture) { f.reaper.idle.Transcripts = nil }},
+		{"no tracker", "idleNoTrackerEntry", func(f *reaperFixture) { f.reaper.idle.Tracker = nil }},
+		{"working", "idleStatusNotIdle", func(f *reaperFixture) { f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_WORKING, f.now) }},
+		{"question", "idleStatusNotIdle", func(f *reaperFixture) { f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_QUESTION, f.now) }},
+		{"limited", "idleStatusNotIdle", func(f *reaperFixture) { f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_LIMITED, f.now) }},
+		{"recent output", "finishedWithinGrace", func(f *reaperFixture) { f.markIdle(time.Minute) }},
+		{"attached", "idleAttachedClient", func(f *reaperFixture) { f.setAttached(*f.chats.all[1].TmuxSessionName, 1) }},
+		{"pending delivery", "finishedDeliveryPending", func(f *reaperFixture) {
+			f.reaper.idle.DeliveryPending = func(context.Context, string) (bool, error) { return true, nil }
+		}},
+		{"delivery error", "finishedDeliveryUnknown", func(f *reaperFixture) {
+			f.reaper.idle.DeliveryPending = func(context.Context, string) (bool, error) { return false, errors.New("read") }
+		}},
+		{"progress wait", "finishedProgressWait", func(f *reaperFixture) {
+			f.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+		}},
+		{"progress error", "finishedProgressWaitUnknown", func(f *reaperFixture) {
+			f.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) {
+				return false, errors.New("read")
+			}
+		}},
+		{"attention error", "finishedAttentionUnknown", func(f *reaperFixture) {
+			f.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) { return nil, errors.New("read") }
+		}},
+		{"attention nil", "finishedAttentionUnknown", func(f *reaperFixture) {
+			f.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) { return nil, nil }
+		}},
+		{"recent attention", "finishedAttentionWithinGrace", func(f *reaperFixture) {
+			f.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+				return &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Since: timestamppb.New(f.now.Add(-time.Minute))}, nil
+			}
+		}},
+		{"no resume", "idleNoResumeSessionID", func(f *reaperFixture) {
+			f.chats.all[1].ProviderSessionID = nil
+			f.chats.all[1].AgentSessionID = ""
+			f.tracker.Update("", pb.ChatStatus_CHAT_STATUS_IDLE, f.now.Add(-4*time.Minute))
+		}},
+		{"no transcript", "idleTranscriptMissing", func(f *reaperFixture) { f.transcriptExists = false }},
+	}
+	for _, kind := range []pb.AttentionKind{pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, pb.AttentionKind_ATTENTION_KIND_QUESTION, pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_DONE, pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED} {
+		tests = append(tests, struct {
+			name, reason string
+			setup        func(*reaperFixture)
+		}{kind.String(), "finishedAttentionNotWaiting", func(f *reaperFixture) {
+			f.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+				return &pb.SessionAttention{Kind: kind}, nil
+			}
+		}})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := finishedArmedFixture(t)
+			tc.setup(fx)
+			fx.sweep()
+			fx.now = fx.now.Add(time.Second)
+			if n := fx.sweep(); n != 0 {
+				t.Fatalf("reaped %d", n)
+			}
+			assertLogged(t, fx.logs, `"reason":"`+tc.reason+`"`)
+		})
+	}
+}
+
+func TestTmuxReaper_FinishedFallsThrough(t *testing.T) {
+	for _, which := range []string{"operator", "progress wait", "missing seams"} {
+		t.Run(which, func(t *testing.T) {
+			fx := finishedArmedFixture(t)
+			fx.markIdle(9 * time.Hour)
+			fx.wantsChatTeardown = true
+			switch which {
+			case "operator":
+				fx.chats.all[1].Role = models.AgentChatRoleOperator
+			case "progress wait":
+				fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+			case "missing seams":
+				fx.reaper.idle.ProgressWait = nil
+				fx.reaper.idle.SessionAttention = nil
+			}
+			fx.sweep()
+			fx.now = fx.now.Add(time.Second)
+			if n := fx.sweep(); n != 1 {
+				t.Fatalf("long-idle reaped %d", n)
+			}
+			assertLogged(t, fx.logs, `"reason":"idleTooLong"`)
+		})
+	}
+}
+
+func TestTmuxReaper_FinishedLazySeams(t *testing.T) {
+	fx := finishedArmedFixture(t)
+	fx.markIdle(time.Minute)
+	fx.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+		t.Fatal("attention read before grace gate")
+		return nil, nil
+	}
+	fx.sweep()
+	if fx.transcriptProbes != 0 {
+		t.Fatal("transcript read before grace gate")
+	}
+	fx.markIdle(4 * time.Minute)
+	fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+	fx.sweep()
+	if fx.transcriptProbes != 0 {
+		t.Fatal("transcript read before progress gate")
+	}
+}
+
+func TestTmuxReaper_FinishedGraceAndStrikeReset(t *testing.T) {
+	fx := finishedArmedFixture(t)
+	fx.wantsChatTeardown = true
+	fx.reaper.idle.Config.FinishedGraceSeconds = 300
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("before configured output grace: %d", n)
+	}
+	assertLogged(t, fx.logs, `"reason":"finishedWithinGrace"`)
+	fx.markIdle(6 * time.Minute)
+	since := fx.now.Add(-4 * time.Minute)
+	fx.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
+		return &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Since: timestamppb.New(since)}, nil
+	}
+	fx.sweep()
+	assertLogged(t, fx.logs, `"reason":"finishedAttentionWithinGrace"`)
+	fx.now = fx.now.Add(time.Minute)
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("first eligible sighting: %d", n)
+	}
+	fx.setAttached(*fx.chats.all[1].TmuxSessionName, 1)
+	fx.sweep()
+	fx.setAttached(*fx.chats.all[1].TmuxSessionName, 0)
+	if n := fx.sweep(); n != 0 {
+		t.Fatalf("stale finished strike survived attach: %d", n)
+	}
+	if n := fx.sweep(); n != 1 {
+		t.Fatalf("confirmation after reset: %d", n)
 	}
 }

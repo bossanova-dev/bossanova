@@ -20,12 +20,13 @@ func TestFindPRCommentsWithMarker_MarkedCommentsNewestWrittenFirst(t *testing.T)
 	// marked comment edited last comes first even though an older one was
 	// created later, because a reader wants the most recently written body;
 	// every marked comment is returned with its author so the reader can
-	// judge trust.
+	// judge trust, and with its creation time and id, which the reader needs
+	// to order operator records (a record without them reads as a send-back).
 	pages := `[
 		{"body":"unrelated","user":{"login":"a"},"author_association":"OWNER","created_at":"2026-10-13T23:00:00Z","updated_at":"2026-10-13T23:00:00Z"},
-		{"body":"old ` + prCommentMarker + ` {} -->","user":{"login":"operator"},"author_association":"OWNER","created_at":"2026-10-13T23:10:00Z","updated_at":"2026-10-13T23:40:00Z"}
+		{"id":11,"body":"old ` + prCommentMarker + ` {} -->","user":{"login":"operator"},"author_association":"OWNER","created_at":"2026-10-13T23:10:00Z","updated_at":"2026-10-13T23:40:00Z"}
 	][
-		{"body":"stale ` + prCommentMarker + ` {} -->","user":{"login":"drive-by"},"author_association":"NONE","created_at":"2026-10-13T23:20:00Z","updated_at":"2026-10-13T23:20:00Z"},
+		{"id":12,"body":"stale ` + prCommentMarker + ` {} -->","user":{"login":"drive-by"},"author_association":"NONE","created_at":"2026-10-13T23:20:00Z","updated_at":"2026-10-13T23:20:00Z"},
 		{"body":"later, unmarked","user":{"login":"a"},"author_association":"OWNER","created_at":"2026-10-13T23:50:00Z","updated_at":"2026-10-13T23:50:00Z"}
 	]`
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
@@ -39,15 +40,16 @@ func TestFindPRCommentsWithMarker_MarkedCommentsNewestWrittenFirst(t *testing.T)
 		t.Fatalf("FindPRCommentsWithMarker: %v", err)
 	}
 	want := []vcs.PRComment{
-		{Body: "old " + prCommentMarker + " {} -->", AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: time.Date(2026, 10, 13, 23, 40, 0, 0, time.UTC)},
-		{Body: "stale " + prCommentMarker + " {} -->", AuthorLogin: "drive-by", AuthorAssociation: "NONE", WrittenAt: time.Date(2026, 10, 13, 23, 20, 0, 0, time.UTC)},
+		{Body: "old " + prCommentMarker + " {} -->", AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: time.Date(2026, 10, 13, 23, 40, 0, 0, time.UTC), CreatedAt: time.Date(2026, 10, 13, 23, 10, 0, 0, time.UTC), ID: 11},
+		{Body: "stale " + prCommentMarker + " {} -->", AuthorLogin: "drive-by", AuthorAssociation: "NONE", WrittenAt: time.Date(2026, 10, 13, 23, 20, 0, 0, time.UTC), CreatedAt: time.Date(2026, 10, 13, 23, 20, 0, 0, time.UTC), ID: 12},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d comments %+v, want %d", len(got), got, len(want))
 	}
 	for i := range want {
 		if got[i].Body != want[i].Body || got[i].AuthorLogin != want[i].AuthorLogin ||
-			got[i].AuthorAssociation != want[i].AuthorAssociation || !got[i].WrittenAt.Equal(want[i].WrittenAt) {
+			got[i].AuthorAssociation != want[i].AuthorAssociation || !got[i].WrittenAt.Equal(want[i].WrittenAt) ||
+			!got[i].CreatedAt.Equal(want[i].CreatedAt) || got[i].ID != want[i].ID {
 			t.Errorf("comment %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}

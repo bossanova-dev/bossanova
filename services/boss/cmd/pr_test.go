@@ -139,9 +139,9 @@ func TestPrApprove(t *testing.T) {
 		if len(f.verbs) != 1 || f.verbs[0] != (prVerbCall{"s-a", false}) {
 			t.Fatalf("verbs = %+v, want one approve of s-a", f.verbs)
 		}
-		want := "Approved #7: waived open checklist items on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+		want := "Approved #7 on head abcdef01 (record: https://x/9). It waives:\n" +
 			"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-			"Approving overrode open checklist items. A new push is judged afresh.\n" +
+			"This overrode a blocking issue. A new push is judged afresh.\n" +
 			"The needs-human label could not be removed because the tracker's credentials are missing.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
@@ -152,7 +152,7 @@ func TestPrApprove(t *testing.T) {
 		f := &prFake{sessions: sessions, approve: &pb.VerifyApproveResult{Reason: "no-standing-park", HeadSha: "abc"}}
 		cmd, _ := prTestCmd(false)
 		err := prApprove(context.Background(), cmd, f, prOptions{pr: 7})
-		if err == nil || !strings.Contains(err.Error(), "PR #7 not approved: no `needs human:` park stands on the PR's current head [no-standing-park]") {
+		if err == nil || err.Error() != "PR #7 not approved: nothing on the PR's latest commit is waiting for a person" {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -161,7 +161,7 @@ func TestPrApprove(t *testing.T) {
 		f := &prFake{sessions: sessions, approveErr: connect.NewError(connect.CodeDeadlineExceeded, errors.New("verify-gate timed out"))}
 		cmd, _ := prTestCmd(false)
 		err := prApprove(context.Background(), cmd, f, prOptions{pr: 7})
-		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || !strings.Contains(err.Error(), "an approval record may already be posted, so re-run approve to confirm") {
+		if connect.CodeOf(err) != connect.CodeDeadlineExceeded || !strings.HasSuffix(err.Error(), "; an approval may already be posted") {
 			t.Fatalf("err = %v", err)
 		}
 		cmd, _ = prTestCmd(false)
@@ -189,9 +189,9 @@ func TestPrApprove(t *testing.T) {
 		if !f.verbs[0].dryRun {
 			t.Fatal("--dry-run did not reach the daemon")
 		}
-		want := "Would approve #7: record an approval waiving open checklist items on head abcdef01, then remove the needs-human label (dry run; nothing written).\n" +
+		want := "Would approve #7: record an approval on head abcdef01, then remove the needs-human label (dry run; nothing written). It would waive:\n" +
 			"  The PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section\n" +
-			"Approving would override open checklist items.\n"
+			"Approving would override a blocking issue, not only a sign-off.\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)
 		}
@@ -203,7 +203,7 @@ func TestPrApprove(t *testing.T) {
 		if err := prApprove(context.Background(), cmd, f, prOptions{pr: 7}); err != nil {
 			t.Fatalf("prApprove: %v", err)
 		}
-		want := "Approved #7: waived database migration on head abcdef01 (record: https://x/9). Verify will re-check and merge.\n" +
+		want := "Approved #7 on head abcdef01 (record: https://x/9). It waives:\n" +
 			"  A database migration for a person to review\n"
 		if got := out.String(); got != want {
 			t.Fatalf("output = %q", got)

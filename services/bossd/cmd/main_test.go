@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,8 +22,10 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/chatupload"
 	"github.com/recurser/bossd/internal/server"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
 )
 
@@ -90,6 +93,23 @@ func TestDeliverChatMessageRejectsUndeliveredResponses(t *testing.T) {
 				t.Fatal("deliverChatMessage() error = nil, want error")
 			}
 		})
+	}
+}
+
+// The server refuses a send into an occupied composer with a connect error
+// wrapping the tmux refusal. The callback worker must still see it through
+// that error, or it spends an attempt on every refusal.
+func TestDeliverCallbackMessageMarksAnOccupiedComposer(t *testing.T) {
+	occupied := connect.NewError(connect.CodeFailedPrecondition,
+		fmt.Errorf("send message (delivery state: composer occupied): %w", tmux.ErrComposerOccupied))
+	err := deliverCallbackMessage(context.Background(), sendChatMessageStub{err: occupied}, "chat-1", "message")
+	if !errors.Is(err, callback.ErrComposerOccupied) {
+		t.Fatalf("deliverCallbackMessage() error = %v, want it marked callback.ErrComposerOccupied", err)
+	}
+
+	err = deliverCallbackMessage(context.Background(), sendChatMessageStub{err: errors.New("unavailable")}, "chat-1", "message")
+	if err == nil || errors.Is(err, callback.ErrComposerOccupied) {
+		t.Fatalf("deliverCallbackMessage() error = %v, want an unmarked failure", err)
 	}
 }
 

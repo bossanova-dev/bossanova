@@ -218,7 +218,7 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setStatus(rpcStatusMessage("Run failed", msg.err), true)
 		} else if msg.skippedReason != "" {
-			m.setStatus(fmt.Sprintf("Skipped: %s", runNowSkipLabel(msg.skippedReason)), true)
+			m.setStatus(fmt.Sprintf("Skipped: %s", RunNowSkipLabel(msg.skippedReason)), true)
 		} else {
 			m.setFiringStatus(fmt.Sprintf("Firing %q…", msg.name))
 		}
@@ -546,10 +546,13 @@ func (m CronListModel) tableHeight() int {
 	return clampedTableHeight(len(m.jobs), m.height, bannerOverhead+1+actionBarPadY+actionLines)
 }
 
-// runNowSkipLabel maps a scheduler skip reason to a human-readable phrase for
-// the run-now status line. Unknown reasons pass through verbatim.
-func runNowSkipLabel(reason string) string {
+// RunNowSkipLabel phrases a scheduler skip reason for people. The TUI's run-now
+// status line and `boss cron run-now` both print it. Unknown reasons pass
+// through verbatim.
+func RunNowSkipLabel(reason string) string {
 	switch reason {
+	case "":
+		return "no reason given"
 	case "gated":
 		return "blocked by gate command"
 	case "gate_failed":
@@ -557,7 +560,7 @@ func runNowSkipLabel(reason string) string {
 		// verdict, so the run was blocked defensively rather than because the
 		// gate decided there was no work. Saying "blocked by gate command"
 		// here would repeat the conflation the ticket removed.
-		return "gate command could not run — check the daemon log"
+		return "the gate command could not run; check the daemon log"
 	case "overlap_prev_active":
 		return "previous run still active"
 	case "disabled":

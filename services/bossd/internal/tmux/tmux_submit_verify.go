@@ -85,9 +85,9 @@ const (
 	// caller must surface the modal for a human rather than re-send into it
 	// (BOS-600).
 	OutcomeBlockedByModal
-	// OutcomeComposerOccupied: the live Codex composer already held a draft this
+	// OutcomeComposerOccupied: the live composer already held a draft this
 	// send did not type, so the send was refused before any key or Enter
-	// (refuseOccupiedComposer). Like OutcomeBlockedByModal, nothing was
+	// (checkComposerBeforeTyping). Like OutcomeBlockedByModal, nothing was
 	// delivered: a prompt receipt seen afterwards belongs to someone else's
 	// message, and the draft must not be cleared, since it may be an operator's.
 	OutcomeComposerOccupied
@@ -792,12 +792,18 @@ func composerRowsForError(rows string) string {
 }
 
 // composerShowsPayload reports whether composer rows (see typedComposerRows)
-// hold exactly the payload, ignoring wrap and indent. Exact rather than
-// containment, so a box that also holds a draft or an earlier copy is not
-// entered: the Enter would submit that extra text with the payload. A
-// collapsed-paste placeholder is taken as the payload, since it cannot be read.
-// A shell-mode box has no prompt marker; its "!" glyph is the payload's own.
+// show the payload this send just typed: exactly its text, or a
+// collapsed-paste placeholder, which cannot be read and so is taken as it.
 func composerShowsPayload(rows, payload string) bool {
+	return composerHoldsCollapsedPaste(rows) || composerHoldsExactly(rows, payload)
+}
+
+// composerHoldsExactly reports whether composer rows (see typedComposerRows)
+// hold exactly text, ignoring wrap and indent. Exact rather than containment,
+// so a box that also holds a draft or an earlier copy is not entered: the
+// Enter would submit that extra text with it. A shell-mode box has no prompt
+// marker; its "!" glyph is the text's own.
+func composerHoldsExactly(rows, text string) bool {
 	if rows == "" {
 		return false
 	}
@@ -805,11 +811,17 @@ func composerShowsPayload(rows, payload string) bool {
 	content, isPrompt := composerContent(strings.TrimSpace(first))
 	if !isPrompt {
 		content = first
-	} else if collapsedPastePlaceholderRe.MatchString(content) {
-		return true
 	}
-	want := withoutSpace(payload)
+	want := withoutSpace(text)
 	return want != "" && withoutSpace(content+" "+rest) == want
+}
+
+// composerHoldsCollapsedPaste reports whether composer rows lead with the
+// placeholder an agent draws in place of a long paste.
+func composerHoldsCollapsedPaste(rows string) bool {
+	first, _, _ := strings.Cut(rows, "\n")
+	content, isPrompt := composerContent(strings.TrimSpace(first))
+	return isPrompt && collapsedPastePlaceholderRe.MatchString(content)
 }
 
 // typedComposerRows returns the composer rows a typed line is drawn into. A
@@ -1547,73 +1559,94 @@ func isAgentActivity(text string) bool {
 	return false
 }
 
-// errComposerOccupied is the cause carried by an OutcomeComposerOccupied
-// refusal.
-var errComposerOccupied = errors.New("the live composer already holds unsubmitted text")
+// ErrComposerOccupied is the cause carried by an OutcomeComposerOccupied
+// refusal. A caller that only sees the error, such as the callback worker
+// behind the SendChatMessage RPC, matches it with errors.Is.
+var ErrComposerOccupied = errors.New("the live composer already holds unsubmitted text")
 
-// refuseOccupiedComposer refuses a send into a Codex composer that already
-// holds a draft, before a single key is typed.
+// refuseOccupiedComposer refuses a submit into a Codex or Claude composer that
+// already holds a draft, before a single key is typed. Prefill types without
+// submitting, so the composer owner sees the result and it is not refused.
 //
-// Typing into it appends: the payload lands after the draft, and an Enter
+// Typing into a draft appends: the payload lands after the draft, and an Enter
 // either submits both as one message or, when the draft is a pile of earlier
 // sends Codex never took, leaves the payload stuck behind them where only the
 // draft's oldest line shows on the marker row. That is how a verify chat
 // collected ten unsent "$boss-verify" lines while every send read submitted.
+// In Claude a typed line is entered only once the box holds exactly that line,
+// so a draft makes every attempt fail and the give-up clear erases the draft.
 //
-// It refuses rather than clears. The pane cannot say who wrote the draft: it may
-// be earlier automation that never ran, or an operator's half-typed message,
-// and C-u would destroy the second as readily as the first. A refusal costs one
-// loud OutcomeComposerOccupied naming the draft; a clear could silently erase a
-// person's work. The operator clears the composer and the next send goes
-// through.
+// It refuses rather than clears or submits, whatever the draft says. The pane
+// cannot say who wrote it: it may be earlier automation that never ran, or an
+// operator's half-typed message, even one whose text equals an earlier send's,
+// and C-u or Enter would act on the second as readily as the first. A send
+// that ends not submitted withdraws its own payload before it returns
+// (withdrawUnsubmitted), so a retry does not meet it here. A refusal costs one
+// loud OutcomeComposerOccupied; a clear could silently erase a person's work.
+// The operator clears the composer and the next send goes through.
 //
-// It reads a styled capture because the plain text cannot tell a draft from
-// Codex's empty-composer placeholder ("Ask Codex to do anything", which
-// rotates): only the SGR dim attribute separates them
-// (testdata/panes/codex_placeholder_styled_real.txt). A capture that fails, or
-// carries no styling on the marker row, holds no evidence either way, so the
-// send proceeds and the submit verifier remains the check.
-func (c *Client) refuseOccupiedComposer(ctx context.Context, sessionName string) error {
+// It reads a styled capture because the plain text cannot tell a draft from an
+// empty composer's placeholder (Codex's "Ask Codex to do anything", Claude's
+// `Try "…"`, both of which rotate): only SGR attributes separate them (see
+// composerHoldsDraft). A capture that fails holds no evidence either way, so
+// the send proceeds and the submit verifier remains the check. OpenCode is not
+// checked: it draws its placeholder and status rail in plain colour, not dim.
+func (c *Client) refuseOccupiedComposer(ctx context.Context, sessionName string, opts sendPlanOpts) error {
+	if opts.prefillOnly || (opts.readyMarker != codexReadyMarker && !isClaudeComposer(opts.readyMarker)) {
+		return nil
+	}
 	styled, err := c.captureVisibleStyled(ctx, sessionName)
 	if err != nil || !composerHoldsDraft(styled) {
 		return nil
 	}
 	return classifySubmit(OutcomeComposerOccupied, fmt.Errorf(
 		"refused to type into tmux session %q: the live composer already holds text this send did not type, so the payload would be appended to it; nothing was typed and no Enter was sent; clear the composer and resend: %w",
-		sessionName, errComposerOccupied))
+		sessionName, ErrComposerOccupied))
 }
 
 // composerHoldsDraft reports whether a styled capture (capture-pane -e) shows
 // the live composer holding text rather than an empty box or a placeholder.
-// The composer is the bottom-most prompt-marker row and the rows below it up to
-// the first blank row or horizontal rule; any visible character in it that is
-// not rendered dim, other than the marker glyph itself, is draft text. A marker
-// row with no escape sequence at all is an unstyled capture, which cannot
-// separate a placeholder from text, so it reports false.
+// The composer is the live prompt-marker row (composerMarkerIdx) and the rows
+// below it up to the first blank row or horizontal rule; any visible character
+// in it that is neither dim nor inverse, other than the marker glyph itself, is
+// draft text. Inverse is the cursor Claude paints, which an empty composer puts
+// on its placeholder's first letter: Claude Code 2.1.302 renders a placeholder
+// as inverse(p[0]) + dim(p[1:]). The IDE selection pill Claude may draw ahead
+// of the text is not draft text either (afterIDESelectionPill).
+//
+// A composer styled with nothing but inverse cells holds no evidence, so it
+// reports false. That is an unstyled capture, and also Claude under NO_COLOR:
+// the colour level 0 it sets strips the dim from the placeholder, while the
+// cursor stays inverse, so an empty box draws as an inverse first letter
+// followed by plain text, which reads exactly like a draft.
 func composerHoldsDraft(styled string) bool {
 	rows := strings.Split(styled, "\n")
-	plain := make([]string, len(rows))
-	for i, row := range rows {
-		plain[i] = plainText(row)
+	cellRows := styledRows(styled)
+	plain := make([]string, len(cellRows))
+	for i, cells := range cellRows {
+		plain[i] = cellText(cells)
 	}
 	markerIdx := composerMarkerIdx(plain)
-	if markerIdx == -1 || !strings.Contains(rows[markerIdx], "\x1b[") {
+	if markerIdx == -1 || markerIdx >= len(rows) {
 		return false
 	}
-	for i := markerIdx; i < len(rows); i++ {
-		if trimmed := strings.TrimSpace(plain[i]); i > markerIdx && (trimmed == "" || isHorizontalRule(trimmed)) {
+	end := markerIdx + 1
+	for end < len(plain) {
+		if trimmed := strings.TrimSpace(plain[end]); trimmed == "" || isHorizontalRule(trimmed) {
 			break
 		}
-		glyphPending := i == markerIdx
-		for _, cell := range styledCells(rows[i]) {
-			if unicode.IsSpace(cell.r) {
-				continue
-			}
-			if glyphPending {
-				glyphPending = false
-				continue
-			}
-			if !cell.dim {
+		end++
+	}
+	if !styledBeyondCursor(rows[markerIdx:min(end, len(rows))]) {
+		return false
+	}
+	for i := markerIdx; i < end; i++ {
+		cells := cellRows[i]
+		if i == markerIdx {
+			cells = afterIDESelectionPill(afterMarkerGlyph(cells))
+		}
+		for _, cell := range cells {
+			if !unicode.IsSpace(cell.r) && !cell.dim && !cell.inverse {
 				return true
 			}
 		}
@@ -1621,23 +1654,165 @@ func composerHoldsDraft(styled string) bool {
 	return false
 }
 
-// styledCell is one visible character of a styled row and whether the SGR
-// state in force when it was drawn had the dim attribute set.
-type styledCell struct {
-	r   rune
-	dim bool
+// sgrSequenceRe matches one SGR escape sequence and captures its parameters.
+var sgrSequenceRe = regexp.MustCompile("\x1b\\[([0-9;:]*)m")
+
+// styledBeyondCursor reports whether styled rows set any SGR attribute other
+// than inverse, the one attribute Claude draws whatever the colour level.
+func styledBeyondCursor(rows []string) bool {
+	for _, row := range rows {
+		for _, m := range sgrSequenceRe.FindAllStringSubmatch(row, -1) {
+			for _, param := range strings.Split(m[1], ";") {
+				switch param {
+				case "", "0", "7", "27":
+				default:
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
-// styledCells walks a row captured with escape sequences, tracking the dim
-// attribute through SGR sequences and dropping every escape sequence (CSI and
-// OSC) from the output.
+// unreadableCell stands in for a cell typedText cannot read. No payload holds
+// it, so a match against one fails.
+const unreadableCell = '\uFFFD'
+
+// typedText is a styled capture as plain text, reduced to what may be typed
+// text. A dim cell is blanked: it is a placeholder, a suggestion or a
+// completion Claude draws after what was typed. A non-blank inverse cell is
+// Claude's cursor sitting on a character, which may be typed or the first
+// letter of a suggestion, since Claude renders a suggestion as inverse(s[0]) +
+// dim(s[1:]); it reads as unreadableCell.
+func typedText(styled string) string {
+	cells := styledCells(styled)
+	out := make([]rune, len(cells))
+	for i, cell := range cells {
+		switch {
+		case cell.r == '\n':
+			out[i] = cell.r
+		case cell.dim:
+			out[i] = ' '
+		case cell.inverse && !unicode.IsSpace(cell.r):
+			out[i] = unreadableCell
+		default:
+			out[i] = cell.r
+		}
+	}
+	return string(out)
+}
+
+// collapsedPasteOnlyRe matches composer content that is exactly one
+// collapsed-paste placeholder (see collapsedPastePlaceholderRe), in the forms
+// Claude Code 2.1.302 and codex-cli 0.161.0 draw.
+var collapsedPasteOnlyRe = regexp.MustCompile(`^\[(?:Pasted text #\d+(?: \+\d+ lines)?|Pasted Content \d+ chars)\]$`)
+
+// composerHoldsOnlyPayload reports whether a styled capture shows the live
+// composer holding this send's payload and nothing else: exactly its text, or
+// exactly one collapsed-paste placeholder, which is what a long paste draws.
+// It reads typedText, so a suggestion Claude draws after what was typed is not
+// taken for part of it, and a cursor on a character fails the match. A
+// composer drawn without rules (Codex) ends at its first blank row, above the
+// footer.
+func composerHoldsOnlyPayload(styled, payload string) bool {
+	text := typedText(styled)
+	rows := typedComposerRows(text, payload)
+	if _, _, ruled := inputBoxRules(strings.Split(text, "\n")); !ruled {
+		rows, _, _ = strings.Cut(rows, "\n\n")
+	}
+	if composerHoldsExactly(rows, payload) {
+		return true
+	}
+	first, rest, _ := strings.Cut(rows, "\n")
+	content, isPrompt := composerContent(strings.TrimSpace(first))
+	return isPrompt && collapsedPasteOnlyRe.MatchString(content) && strings.TrimSpace(rest) == ""
+}
+
+// afterMarkerGlyph returns a marker row's cells after its prompt glyph.
+func afterMarkerGlyph(cells []styledCell) []styledCell {
+	for i, cell := range cells {
+		if !unicode.IsSpace(cell.r) {
+			return cells[i+1:]
+		}
+	}
+	return nil
+}
+
+// ideSelectionPillOpen is how the IDE selection pill starts: Claude Code
+// 2.1.302 labels it "[⧉ 3 lines from main.go] " or "[⧉ In main.go] ".
+const ideSelectionPillOpen = "[⧉"
+
+// afterIDESelectionPill returns the composer cells after the IDE selection
+// pill, or all of them when the row does not lead with one. Claude draws the
+// pill, while an IDE is connected with a selection, ahead of the placeholder
+// or the text, in its "ide" colour rather than dim, so without this an empty
+// composer reads as a draft. Every cell of the pill must carry a foreground
+// colour: text an operator types is drawn in the default one.
+func afterIDESelectionPill(cells []styledCell) []styledCell {
+	start := 0
+	for start < len(cells) && unicode.IsSpace(cells[start].r) {
+		start++
+	}
+	open := []rune(ideSelectionPillOpen)
+	if len(cells)-start < len(open) {
+		return cells
+	}
+	for i, r := range open {
+		if cells[start+i].r != r {
+			return cells
+		}
+	}
+	for i := start; i < len(cells); i++ {
+		if !cells[i].coloured {
+			return cells
+		}
+		if cells[i].r == ']' {
+			return cells[i+1:]
+		}
+	}
+	return cells
+}
+
+// styledCell is one visible character of a styled row and the SGR attributes
+// in force when it was drawn.
+type styledCell struct {
+	r rune
+	sgrAttrs
+}
+
+// sgrAttrs are the SGR attributes the draft reading uses. coloured is any
+// foreground colour other than the terminal default.
+type sgrAttrs struct {
+	dim      bool
+	inverse  bool
+	coloured bool
+}
+
+// styledRows splits a styled capture into rows of cells. The attributes carry
+// across rows: capture-pane -e emits a sequence only where the style changes,
+// so a dim placeholder wrapped onto a second row starts that row with none.
+func styledRows(styled string) [][]styledCell {
+	rows := [][]styledCell{nil}
+	for _, cell := range styledCells(styled) {
+		if cell.r == '\n' {
+			rows = append(rows, nil)
+			continue
+		}
+		rows[len(rows)-1] = append(rows[len(rows)-1], cell)
+	}
+	return rows
+}
+
+// styledCells walks text captured with escape sequences, tracking sgrAttrs
+// through SGR sequences and dropping every escape sequence (CSI and OSC) from
+// the output.
 func styledCells(row string) []styledCell {
 	var cells []styledCell
-	dim := false
+	var attrs sgrAttrs
 	runes := []rune(row)
 	for i := 0; i < len(runes); i++ {
 		if runes[i] != '\x1b' {
-			cells = append(cells, styledCell{r: runes[i], dim: dim})
+			cells = append(cells, styledCell{r: runes[i], sgrAttrs: attrs})
 			continue
 		}
 		if i+1 >= len(runes) {
@@ -1650,7 +1825,7 @@ func styledCells(row string) []styledCell {
 				end++
 			}
 			if end < len(runes) && runes[end] == 'm' {
-				dim = applySGRDim(string(runes[i+2:end]), dim)
+				attrs = applySGR(string(runes[i+2:end]), attrs)
 			}
 			i = end
 		case ']':
@@ -1669,19 +1844,35 @@ func styledCells(row string) []styledCell {
 	return cells
 }
 
-// applySGRDim returns the dim attribute after one SGR parameter list: 2 sets
-// it, 0 / 22 / an empty list clear it, and the arguments of an extended colour
-// (38/48/58 followed by 5;n or 2;r;g;b) are skipped so a "2" among them is not
-// read as dim.
-func applySGRDim(params string, dim bool) bool {
+// applySGR returns the attributes after one SGR parameter list: 2 sets dim and
+// 22 clears it, 7 sets inverse and 27 clears it, 30-37, 90-97 and 38 set a
+// foreground colour and 39 clears it, 0 or an empty list clears all of them,
+// and the arguments of an extended colour (38/48/58 followed by 5;n or
+// 2;r;g;b) are skipped so a "2" or "7" among them is not read as an attribute.
+func applySGR(params string, attrs sgrAttrs) sgrAttrs {
 	fields := strings.Split(params, ";")
 	for i := 0; i < len(fields); i++ {
+		if n, err := strconv.Atoi(fields[i]); err == nil && (30 <= n && n <= 37 || 90 <= n && n <= 97) {
+			attrs.coloured = true
+			continue
+		}
 		switch fields[i] {
-		case "", "0", "22":
-			dim = false
+		case "", "0":
+			attrs = sgrAttrs{}
 		case "2":
-			dim = true
+			attrs.dim = true
+		case "22":
+			attrs.dim = false
+		case "7":
+			attrs.inverse = true
+		case "27":
+			attrs.inverse = false
+		case "39":
+			attrs.coloured = false
 		case "38", "48", "58":
+			if fields[i] == "38" {
+				attrs.coloured = true
+			}
 			if i+1 < len(fields) {
 				switch fields[i+1] {
 				case "5":
@@ -1692,12 +1883,16 @@ func applySGRDim(params string, dim bool) bool {
 			}
 		}
 	}
-	return dim
+	return attrs
 }
 
-// plainText is a styled row with its escape sequences removed.
-func plainText(row string) string {
-	cells := styledCells(row)
+// plainText is styled text with its escape sequences removed.
+func plainText(styled string) string {
+	return cellText(styledCells(styled))
+}
+
+// cellText is the characters of cells.
+func cellText(cells []styledCell) string {
 	out := make([]rune, len(cells))
 	for i, cell := range cells {
 		out[i] = cell.r

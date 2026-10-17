@@ -1,17 +1,17 @@
 ---
-title: Software Factory
+title: Ticket Pipeline
 description: 'Take Linear tickets from plan to merged PR unattended: the stages, the skills that run them, the cron gates that wake them, and where a person steps in.'
 ---
 
-# Software Factory
+# Ticket Pipeline
 
-The software factory is a chain of boss skills and cron jobs that takes a Linear
+The ticket pipeline is a chain of boss skills and cron jobs that takes a Linear
 ticket to a merged pull request with nobody at the keyboard. You label a ticket.
-The factory plans it, builds it, reviews the branch, verifies the PR and merges
-it. A person steps in when the factory parks a ticket or PR and says why. A retro
+The pipeline plans it, builds it, reviews the branch, verifies the PR and merges
+it. A person steps in when the pipeline parks a ticket or PR and says why. A retro
 stage reads what went wrong along the way and files tickets to fix it, so the
-factory improves its own process.
-The [in-repo factory guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md)
+pipeline improves its own process.
+The [in-repo pipeline guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md)
 describes the same pipeline for agents and maintainers working inside a
 repository.
 
@@ -49,7 +49,7 @@ flowchart LR
     Retro -.->|new tickets| Backlog
 ```
 
-The factory runs on three rules:
+The pipeline runs on three rules:
 
 - Verification decides the merge. A PR merges only after `boss-verify` records a
   passing verdict on its current commit, and CI and GitHub mergeability agree.
@@ -129,7 +129,7 @@ changes and stops.
 
 ### boss-retro
 
-`boss-retro` is how the factory learns from its own runs. It reads the notes the
+`boss-retro` is how the pipeline learns from its own runs. It reads the notes the
 other stages record, tagged `improvement`, and collects the corrections people made: reverted commits, comments on agent PRs, the
 reasons people gave for parking work, and CI failures that repeat. It groups all of
 this into themes and checks each theme against the current code, so a problem
@@ -224,7 +224,7 @@ or uses other state or label names, set them in `.boss-skills.json` as
 
 Newer boss releases ship a `boss init` that asks a few questions and creates the
 plan, build, verify and retro jobs for you; the
-[in-repo factory guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md#set-it-up-with-boss-init)
+[in-repo pipeline guide](https://github.com/bossanova-dev/bossanova/blob/main/docs/skills/factory.md#set-it-up-with-boss-init)
 walks through it. If `boss init --help` does not mention cron jobs, your release
 predates it, so add the jobs by hand.
 
@@ -297,7 +297,7 @@ removes the label.
 ### Commit statuses
 
 A commit status is a small record that a tool attaches to one commit. GitHub shows
-it among the PR's checks, next to your CI. The factory writes two:
+it among the PR's checks, next to your CI. The pipeline writes two:
 
 - `boss/build` is the build run's receipt that the commit is review-ready.
 - `boss/verify` is the verdict on that commit.
@@ -313,7 +313,7 @@ longer counts and the new commit needs fresh evidence.
 | failure             | `defect: …`                         | Findings need repair. A `, needs human` suffix means repair parked. |
 | pending             | `needs human: <reason>`             | A person has to decide.                                             |
 
-A chat doing factory work reports its phase: planning, building, reviewing,
+A chat doing pipeline work reports its phase: planning, building, reviewing,
 verifying, repairing or releasing. The session list shows the phase with a spinner
 while the work runs. A PR session at rest shows one of two states read from its
 current commit: verifying, with a spinner, while a verifier holds the commit, and
@@ -321,7 +321,7 @@ needs human, without one, when the PR is parked.
 
 ## Human review and approval
 
-When the factory parks work, it adds `needs-human` to the Linear ticket and comments
+When the pipeline parks work, it adds `needs-human` to the Linear ticket and comments
 there, mentioning the ticket's creator. The PR's `boss/verify` status reads
 `needs human:` with the reason. A saved Linear view filtered to label `needs-human`
 lists everything waiting for you, at any stage.
@@ -354,7 +354,7 @@ Approval does not waive a broken required verify extension; fix the extension.
 
 ## Filtering and extending
 
-### Choose which tickets the factory takes
+### Choose which tickets the pipeline takes
 
 Put shared filters in `.boss-skills.json`, so the gates and the workers scan the same
 tickets:

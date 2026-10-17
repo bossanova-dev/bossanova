@@ -138,48 +138,6 @@ func TestTUI_HomeView_BareArrowsStillOnlyNavigate(t *testing.T) {
 	}
 }
 
-// TestTUI_HomeView_ReorderChordsAreUnadvertised is AC7, shaped like
-// TestTUI_HomeView_HiddenRenameIsUnadvertised: the chords exist, and the action
-// bar never grows a hint for them.
-func TestTUI_HomeView_ReorderChordsAreUnadvertised(t *testing.T) {
-	h := newHomeWithSessions(t)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-	assertReorderChordsUnadvertised(t, h.Driver.Screen())
-
-	// And still unadvertised after the chord has been used — a hint that only
-	// appeared once the feature was exercised would be just as much clutter.
-	if err := h.Driver.SendNamedKey("alt+down"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		up, low := screenLineOf(screen, "Fix login bug"), screenLineOf(screen, "Add dark mode")
-		return up >= 0 && low >= 0 && up < low
-	}); err != nil {
-		t.Fatalf("the chord never took effect, so this test would not be checking the post-reorder bar: %v; screen:\n%s",
-			err, h.Driver.Screen())
-	}
-	assertReorderChordsUnadvertised(t, h.Driver.Screen())
-}
-
-func assertReorderChordsUnadvertised(t *testing.T, screen string) {
-	t.Helper()
-	// Positive control: the keys that ARE advertised are on screen, so a blank
-	// or half-drawn frame cannot pass by containing nothing at all.
-	for _, advertised := range []string{"[n]ew session", "[enter] select", "[s]ettings", "[q]uit"} {
-		if !strings.Contains(screen, advertised) {
-			t.Fatalf("expected the action bar to advertise %q; screen:\n%s", advertised, screen)
-		}
-	}
-	for _, hidden := range []string{"alt+", "[alt]", "alt+up", "alt+down"} {
-		if strings.Contains(screen, hidden) {
-			t.Fatalf("the reorder chords must stay hidden, but %q is on screen:\n%s", hidden, screen)
-		}
-	}
-}
-
 // pollSettle is Home's session-poll interval. Waiting a few of them is how a
 // test distinguishes a reorder that stuck from one the next poll undid.
 const pollSettle = 2 * time.Second

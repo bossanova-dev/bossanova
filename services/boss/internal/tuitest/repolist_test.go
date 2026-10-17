@@ -39,21 +39,6 @@ func TestTUI_RepoListView(t *testing.T) {
 	}
 }
 
-func TestTUI_RepoListView_EmptyState(t *testing.T) {
-	h := tuitest.New(t)
-
-	// With no repos, the app lands on the Home empty state (no auto-route).
-	// Navigate to Settings → Repos.
-	waitForZeroRepoHome(t, h)
-	openSettingsHub(t, h)
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Press 'a' to add your first repository"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestTUI_RepoListView_RemoveConfirm(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

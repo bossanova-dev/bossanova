@@ -324,7 +324,7 @@ func newRegistry() map[string]Prose {
 		"boss project export": {
 			Long: "Reads the local daemon's registration of this checkout (repository settings, " +
 				"cron jobs and the daemon's own identity) and prints it as a canonical " +
-				"`.boss-project.json`. Factory cron jobs export symbolically (their stage, no " +
+				"`.boss-project.json`. Pipeline cron jobs export symbolically (their stage, no " +
 				"prompt or gate), so the same job on two machines exports identically. With " +
 				"`--cloud` it also reads your inbound triggers on this repository and the " +
 				"organization's session webhooks. Secrets are never written: a repository " +

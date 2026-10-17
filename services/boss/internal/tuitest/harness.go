@@ -133,7 +133,6 @@ type harnessConfig struct {
 	chatListDelay                 time.Duration
 	chatListError                 string
 	env                           []string
-	skipSettingsAcknowledgedSeed  bool
 	firstRunOnboarding            bool
 	worktreeBaseDir               string
 	moveSessionBehaviour          MoveSessionBehaviour
@@ -398,13 +397,6 @@ func WithEnv(vars ...string) Option {
 	}
 }
 
-// WithoutSettingsAcknowledgedSeed skips the default ProvidersAcknowledged seed.
-func WithoutSettingsAcknowledgedSeed() Option {
-	return func(c *harnessConfig) {
-		c.skipSettingsAcknowledgedSeed = true
-	}
-}
-
 // WithFirstRunOnboarding launches boss into the first-run onboarding gate. It
 // seeds a settings file that leaves providers unacknowledged but points
 // socket_path at the mock daemon, and leaves BOSS_SOCKET unset so boss runs the
@@ -476,14 +468,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 	// Each tuitest gets its own HOME so the boss subprocess's settings file
 	// doesn't leak into the developer's real config (and vice versa). We
 	// pre-seed ProvidersAcknowledged=true so the first-run onboarding gate
-	// doesn't fire — tests that exercise onboarding can override by writing
-	// their own settings file before launch (or omit the seed via a future
-	// option if we add one).
+	// doesn't fire; WithFirstRunOnboarding seeds unacknowledged settings instead.
 	tempHome := t.TempDir()
-	switch {
-	case cfg.firstRunOnboarding:
+	if cfg.firstRunOnboarding {
 		seedFirstRunSettings(t, tempHome, daemon.SocketPath())
-	case !cfg.skipSettingsAcknowledgedSeed:
+	} else {
 		seedSettingsAcknowledged(t, tempHome, cfg.worktreeBaseDir)
 	}
 

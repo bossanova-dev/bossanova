@@ -36,3 +36,30 @@ func RunBlocked(reason string) string {
 	}
 	return "run blocked: " + reason
 }
+
+// blockedLabels are the leading labels a sentence that already opens with
+// "Run blocked: " would repeat.
+var blockedLabels = []string{"run blocked:", "blocked:"}
+
+// WithoutBlockedLabel returns reason trimmed, less every leading "run blocked:"
+// or "blocked:" label in any case, so a sentence that prefixes "Run blocked: "
+// says it once. A reason that is nothing but labels is returned trimmed.
+func WithoutBlockedLabel(reason string) string {
+	reason = strings.TrimSpace(reason)
+	rest := reason
+	for {
+		cut := false
+		for _, label := range blockedLabels {
+			if len(rest) >= len(label) && strings.EqualFold(rest[:len(label)], label) {
+				rest, cut = strings.TrimSpace(rest[len(label):]), true
+			}
+		}
+		if !cut {
+			break
+		}
+	}
+	if rest == "" {
+		return reason
+	}
+	return rest
+}

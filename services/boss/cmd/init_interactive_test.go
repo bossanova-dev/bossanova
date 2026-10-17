@@ -352,13 +352,13 @@ func TestInitInteractiveMergeQuestionComesBeforeCrons(t *testing.T) {
 	f.daemon()
 	script = append(script[:crons:crons], scriptStep{match: "--merge", answer: "n"})
 	_, _, errOut, err := f.runInterview(script)
-	if err == nil || !strings.Contains(err.Error(), "already exists") || !strings.Contains(err.Error(), "--merge or --force") {
+	if err == nil || !strings.Contains(err.Error(), "already exists; left untouched") || strings.Contains(err.Error(), "Re-run") {
 		t.Fatalf("declined merge: err = %v", err)
 	}
 	if string(f.config()) != existing {
 		t.Fatal("declined merge changed the config")
 	}
-	if !strings.Contains(errOut, "Re-run `boss init` to finish") {
+	if !strings.Contains(errOut, "boss init stopped before finishing") {
 		t.Errorf("declined merge did not report what was applied:\n%s", errOut)
 	}
 }

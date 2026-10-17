@@ -557,7 +557,7 @@ func TestInitCronAgentEligibility(t *testing.T) {
 	t.Run("none eligible", func(t *testing.T) {
 		f := newCronFixture(t)
 		_, err := setupInitCron(context.Background(), f.c, f.repo, f.repoDir, f.configPath, initCronRequest{stages: []string{"plan"}}, f.env)
-		if err == nil || !strings.Contains(err.Error(), "no agent can run factory cron jobs") {
+		if err == nil || !strings.Contains(err.Error(), "no agent can run pipeline cron jobs") {
 			t.Fatalf("err %v", err)
 		}
 	})
@@ -785,7 +785,7 @@ func TestInitCronThroughInitCommand(t *testing.T) {
 	if len(calls) != 2 || calls[0].RepoId != "repo-git" || calls[0].Name != "factory-plan" || calls[1].Name != "factory-verify" {
 		t.Fatalf("creates %+v\n%s", calls, out.String())
 	}
-	if !strings.Contains(out.String(), "Factory cron jobs (agent: claude)") {
+	if !strings.Contains(out.String(), "Pipeline cron jobs (agent: claude)") {
 		t.Fatalf("report missing:\n%s", out.String())
 	}
 }

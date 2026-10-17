@@ -21,6 +21,7 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { selectTargets } from './select-affected-tests.mjs'
+import { pushPaths } from './workflow-yaml-lib.mjs'
 
 const repoRoot = path.dirname(fileURLToPath(new URL('../Makefile', import.meta.url)))
 
@@ -33,6 +34,8 @@ export const workflowRouteRules = [
   { workflow: 'test-proto.yml', requiredTarget: null },
   { workflow: 'test-scripts.yml', requiredTarget: 'test-scripts' },
   { workflow: 'test-warehouse.yml', requiredTarget: 'test-warehouse' },
+  // Playwright real-stack has no worktree-local make target; it boots bossd + bosso.
+  { workflow: 'test-web-real-stack.yml', requiredTarget: null },
   { workflow: 'test-web.yml', requiredTarget: 'test-web' },
 ]
 
@@ -96,6 +99,13 @@ export const workflowRouteExemptions = [
     workflow: 'test-scripts.yml',
     pattern: '**/*_test.go',
     reason: 'CI is deliberately broad; local mirroring would run scripts on every Go test edit',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: '**/BUILD.bazel',
+    reason:
+      'only scripts/check-flaky-quarantine.mjs reads it, and that gate runs in local `make lint`; ' +
+      'mirroring it would run the scripts suite on every gazelle regeneration',
   },
   {
     workflow: 'test-scripts.yml',
@@ -295,37 +305,11 @@ function readWorkflow(name) {
 }
 
 export function extractPushPaths(text, { required = true } = {}) {
-  const lines = text.split('\n')
-  const pushLine = lines.findIndex((line) => /^\s{2}push:\s*$/.test(line))
-  if (pushLine === -1 && !required) return []
-  assert.notEqual(pushLine, -1, 'workflow push block not found')
-  const pushIndent = indentOf(lines[pushLine])
-  let pathsLine = -1
-  for (let i = pushLine + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-    if (indentOf(line) <= pushIndent) break
-    if (/^\s{4}paths:\s*$/.test(line)) {
-      pathsLine = i
-      break
-    }
-  }
-  if (pathsLine === -1 && !required) return []
-  assert.notEqual(pathsLine, -1, 'workflow push.paths block not found')
-  return extractDashList(lines, pathsLine)
-}
-
-function extractDashList(lines, headingLine) {
-  const headingIndent = indentOf(lines[headingLine])
-  const items = []
-  for (let i = headingLine + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-    if (indentOf(line) <= headingIndent) break
-    const item = line.match(/^\s*-\s+(.+?)\s*$/)
-    if (item) items.push(unquoteYamlScalar(item[1]))
-  }
-  return items
+  const { hasPush, paths } = pushPaths(text)
+  if (!required && paths === null) return []
+  assert.ok(hasPush, 'workflow push block not found')
+  assert.notEqual(paths, null, 'workflow push.paths block not found')
+  return paths
 }
 
 function targetsForPattern(pattern) {
@@ -349,19 +333,4 @@ function probePathForPattern(pattern) {
 
 function exemptionKey(workflow, pattern) {
   return `${workflow}\0${pattern}`
-}
-
-function indentOf(line) {
-  return line.match(/^\s*/)[0].length
-}
-
-function unquoteYamlScalar(value) {
-  const trimmed = value.trim()
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
 }

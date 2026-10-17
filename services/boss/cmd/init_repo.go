@@ -105,7 +105,7 @@ func (s *initAppliedSteps) stoppedReport() string {
 	} else {
 		b.WriteString("Nothing was applied.\n")
 	}
-	b.WriteString("Re-run `boss init` to finish: every step converges, so a re-run completes the job.\n")
+	b.WriteString("Re-run `boss init` to finish.\n")
 	if s.ProjectRerun != "" {
 		b.WriteString("Or run `" + s.ProjectRerun + "` to apply .boss-project.json on its own.\n")
 	}
@@ -204,7 +204,7 @@ func resolveInitRepo(ctx context.Context, c client.BossClient, dir string, reg i
 		return repo, err
 	}
 	if !reg.allow {
-		return nil, errors.New("repository is unregistered; re-run with --register")
+		return nil, errors.New("repository is not registered")
 	}
 	validation, err := c.ValidateRepoPath(ctx, main)
 	if err != nil || validation == nil || !validation.IsValid {

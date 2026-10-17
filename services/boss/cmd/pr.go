@@ -197,7 +197,7 @@ func prApprove(ctx context.Context, cmd *cobra.Command, c prApproveClient, opts 
 	r, err := c.ApproveSessionPR(ctx, s.GetId(), opts.dryRun)
 	if verbTimedOut(err, opts) {
 		// The record may already be on the PR, so its effect is unknown, not refused.
-		err = fmt.Errorf("%w; an approval record may already be posted, so re-run approve to confirm", err)
+		err = fmt.Errorf("%w; an approval may already be posted", err)
 	}
 	if err != nil {
 		return emitJSONFailure(cmd, opts.asJSON, fmt.Errorf("approve PR #%d: %w", opts.pr, err))

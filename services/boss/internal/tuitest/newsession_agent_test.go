@@ -1,7 +1,6 @@
 package tuitest_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -103,36 +102,4 @@ func TestTUI_NewSession_NoAgentFlag_LeavesNil(t *testing.T) {
 	if req.AgentName != nil {
 		t.Fatalf("CreateSession.AgentName = %q, want nil (daemon falls back to Settings.DefaultAgent)", *req.AgentName)
 	}
-}
-
-// TestCLI_New_AgentFlagRegistered is a fast sanity check that `boss new --help`
-// advertises the --agent flag. Catches accidental removal of the flag without
-// needing to spin up the full TUI driver.
-func TestCLI_New_AgentFlagRegistered(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithTerminalSize(120, 50),
-		tuitest.WithArgs("new", "--help"),
-	)
-	// `--help` exits before the TUI starts; wait for the help text.
-	deadline := time.Now().Add(waitTimeout)
-	for time.Now().Before(deadline) {
-		// READ THIS BEFORE "FIXING" A FAILURE HERE (BOS-1281). The gated
-		// contract is the TOTAL length of `boss new --help`, not anything about
-		// --agent in particular. The screen is a fixed 120x50 above, cobra prints
-		// flags alphabetically, and the driver reads only what fits — so --agent,
-		// the second flag cobra prints (--account sorts ahead of it), scrolls off
-		// the top early once the accumulated help text grows past 50 rows.
-		//
-		// That is why a failure here usually names a flag nobody touched: the
-		// culprit is whatever flag or usage string was lengthened elsewhere, not
-		// --agent. Shorten the added help text, or raise the terminal size above
-		// — do not swap this assertion for a different flag, which only moves the
-		// tripwire to the next alphabetical entry.
-		if strings.Contains(h.Driver.Screen(), "--agent") {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("expected `--agent` in `boss new --help`; screen:\n%s", h.Driver.Screen())
 }

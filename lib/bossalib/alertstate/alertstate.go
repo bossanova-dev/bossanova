@@ -8,6 +8,7 @@
 package alertstate
 
 import (
+	"strings"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -57,6 +58,9 @@ const (
 	ClearCIGreen ClearReason = "ci-green"
 	// ClearLeftRepairStates: the PR is merged, closed, a draft, or gone.
 	ClearLeftRepairStates ClearReason = "pr-left-repair-states"
+	// ClearRunWorking: a blocked run's own agent is working on a turn the
+	// block did not see. It lasts only while the agent works.
+	ClearRunWorking ClearReason = "run-working"
 )
 
 // RepairAlertResolution returns why the repair alert described by f has ended,
@@ -74,6 +78,47 @@ func RepairAlertResolution(f RepairFacts) ClearReason {
 	}
 	return ""
 }
+
+// BlockedFacts describes the last counted attempt, the PR's current polled
+// state, and whether the run's own agent is working again.
+type BlockedFacts struct {
+	AttemptHeadSHA, CurrentHeadSHA   string
+	DisplayStatus                    pb.DisplayStatus
+	HasFailures, HasChangesRequested bool
+	Mergeable                        *bool
+	// RunWorking: the run's own chat is mid-turn on a message newer than the
+	// block. The alert is suspended while it holds, not resolved.
+	RunWorking bool
+}
+
+// BlockedResolution returns why a blocked alert has ended. A working agent
+// suspends it; a head move retains the existing escape hatch; otherwise only
+// settled, mergeable, non-draft PRs clear it. Unknown facts keep the alert
+// current.
+func BlockedResolution(f BlockedFacts) ClearReason {
+	if f.RunWorking {
+		return ClearRunWorking
+	}
+	if f.AttemptHeadSHA != "" && f.CurrentHeadSHA != "" && !strings.EqualFold(f.AttemptHeadSHA, f.CurrentHeadSHA) {
+		return ClearHeadMoved
+	}
+	if f.Mergeable == nil || !*f.Mergeable || f.HasFailures || f.HasChangesRequested {
+		return ""
+	}
+	switch f.DisplayStatus {
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+		pb.DisplayStatus_DISPLAY_STATUS_APPROVED,
+		pb.DisplayStatus_DISPLAY_STATUS_REVIEW,
+		pb.DisplayStatus_DISPLAY_STATUS_VERIFYING,
+		pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN:
+		return ClearCIGreen
+	default:
+		return ""
+	}
+}
+
+// BlockedAlertCurrent reports whether the blocked alert described by f remains current.
+func BlockedAlertCurrent(f BlockedFacts) bool { return BlockedResolution(f) == "" }
 
 // leftRepairStates reports whether the PR is in a state repair never acts on.
 func leftRepairStates(status pb.DisplayStatus) bool {

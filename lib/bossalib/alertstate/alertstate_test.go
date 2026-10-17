@@ -231,3 +231,48 @@ func TestFailedHeadFor(t *testing.T) {
 		t.Fatal("blocked alert on current head was cleared as head-moved")
 	}
 }
+
+func TestBlockedResolution(t *testing.T) {
+	yes, no := true, false
+	tests := []struct {
+		name  string
+		facts BlockedFacts
+		want  ClearReason
+	}{
+		{"head moved", BlockedFacts{AttemptHeadSHA: "abc", CurrentHeadSHA: "def"}, ClearHeadMoved},
+		{"equal heads ignore case", BlockedFacts{AttemptHeadSHA: "ABC", CurrentHeadSHA: "abc"}, ""},
+		{"unknown current head", BlockedFacts{AttemptHeadSHA: "abc"}, ""},
+		{"unknown attempt head", BlockedFacts{CurrentHeadSHA: "abc"}, ""},
+		{"unpolled", BlockedFacts{}, ""},
+		{"unknown mergeability", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}, ""},
+		{"not mergeable", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, Mergeable: &no}, ""},
+		{"failures", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING, Mergeable: &yes, HasFailures: true}, ""},
+		{"changes requested", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_APPROVED, Mergeable: &yes, HasChangesRequested: true}, ""},
+		{"run working on a draft", BlockedFacts{RunWorking: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT}, ClearRunWorking},
+		{"run working with CI failing", BlockedFacts{RunWorking: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING, HasFailures: true}, ClearRunWorking},
+	}
+	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_PASSING, pb.DisplayStatus_DISPLAY_STATUS_APPROVED, pb.DisplayStatus_DISPLAY_STATUS_REVIEW, pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN} {
+		tests = append(tests, struct {
+			name  string
+			facts BlockedFacts
+			want  ClearReason
+		}{status.String(), BlockedFacts{DisplayStatus: status, Mergeable: &yes}, ClearCIGreen})
+	}
+	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_CHECKING, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, pb.DisplayStatus_DISPLAY_STATUS_FAILING, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, pb.DisplayStatus_DISPLAY_STATUS_IDLE, pb.DisplayStatus_DISPLAY_STATUS_MERGED, pb.DisplayStatus_DISPLAY_STATUS_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED} {
+		tests = append(tests, struct {
+			name  string
+			facts BlockedFacts
+			want  ClearReason
+		}{status.String(), BlockedFacts{DisplayStatus: status, Mergeable: &yes}, ""})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BlockedResolution(tc.facts); got != tc.want {
+				t.Fatalf("BlockedResolution = %q, want %q", got, tc.want)
+			}
+			if got := BlockedAlertCurrent(tc.facts); got != (tc.want == "") {
+				t.Fatalf("BlockedAlertCurrent = %v, want %v", got, tc.want == "")
+			}
+		})
+	}
+}

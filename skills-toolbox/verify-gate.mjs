@@ -100,6 +100,7 @@ import {
   PARK_NOTE_MARKER,
   afterMergeNote,
   ledgerFingerprint,
+  parkCategories,
   parkNote,
 } from './verify-park-note.mjs'
 
@@ -1954,25 +1955,24 @@ async function trackerProbe(adapter, ticket) {
   }
 }
 
+// The categories a comma-separated park code set names, for a sentence a person reads.
+const categoryWords = (codes) => parkCategories(codes.split(',')).join(', ')
+
 function humanComment({ code, pr, url, label = '' }) {
-  return [
-    `boss-verify needs a human for PR #${pr}${url ? ` (${url})` : ''}: \`${code}\`${label ? ` (${label})` : ''}.`,
-    `Run \`boss pr approve ${pr}\` (or approve the PR on GitHub) to hand this head back; the next verify run re-judges it. Removing the needs-human label alone does not.`,
-  ].join('\n\n')
+  return `PR #${pr}${url ? ` (${url})` : ''} is waiting for a person: ${categoryWords(code)}${label ? ` (${label})` : ''}.`
 }
 
 function extensionRecordComment(headSha, reason, record) {
   return [
-    `boss-verify parked \`${headSha.slice(0, 12)}\` for a human (\`${reason}\`) after its verify extensions ran clean. An approval of this head reuses that run; a new head is judged afresh.`,
+    `The checks on \`${headSha.slice(0, 12)}\` passed, and it is waiting for a person: ${categoryWords(reason)}. An approval of this commit keeps that result; a new commit is judged afresh.`,
     extensionRecordMarker(headSha, record),
   ].join('\n\n')
 }
 
 function defectTrackerComment({ count, pr, url, commentUrl }) {
   return [
-    `boss-verify found ${count} finding(s) on PR #${pr}${url ? ` (${url})` : ''}, and auto-repair is not on for this repository.`,
+    `Verification found ${count} finding(s) on PR #${pr}${url ? ` (${url})` : ''}, and automatic repair is off for this repository.`,
     commentUrl ? `Findings: ${commentUrl}` : '',
-    'Fix the findings, or remove the needs-human label (or approve the PR) to have verify re-judge the head.',
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -1980,7 +1980,7 @@ function defectTrackerComment({ count, pr, url, commentUrl }) {
 
 function findingsComment(findings, headSha) {
   const lines = [
-    `### boss-verify: ${findings.length} finding(s) on \`${headSha.slice(0, 12)}\``,
+    `### Verification found ${findings.length} finding(s) on \`${headSha.slice(0, 12)}\``,
     '',
   ]
   for (const f of findings) {
@@ -2772,10 +2772,10 @@ export function sendBackMarker(headSha) {
 function approveComment(headSha, codes, signOff = null) {
   const scope =
     codes.length > 0
-      ? `Verify may waive \`${codes.join(',')}\` on \`${headSha}\` only; a new head is judged afresh.`
+      ? `This approval waives ${categoryWords(codes.join(','))} on \`${headSha}\` only; a new commit is judged afresh.`
       : signOff === 'merge'
-        ? `Signed off for an operator merge of \`${headSha}\` with nothing parked; it waives nothing.`
-        : `This lifts the send-back of \`${headSha}\`; it waives nothing.`
+        ? `Signed off for a merge of \`${headSha}\`; nothing was waiting, so it waives nothing.`
+        : `This lifts the earlier send-back of \`${headSha}\`; it waives nothing.`
   return ['**Approved by the operator**', scope, approveMarker(headSha, codes)].join('\n\n')
 }
 
@@ -2847,14 +2847,14 @@ function carryComment(headSha, { from, waives, url, patchId }) {
   const approval = url ? `[approval](${url})` : 'approval'
   return [
     '**Approval carried across a rebase**',
-    `The operator's ${approval} of \`${from}\` carries to \`${headSha}\`: both heads make the same change against their merge base (whitespace-exact patch-id \`${patchId}\`, generated paths left out), and CI is green on \`${headSha}\`. It waives \`${waives}\` only.`,
+    `The operator's ${approval} of \`${from}\` carries to \`${headSha}\`: both commits make the same change against their base, and CI is green on \`${headSha}\`. It waives ${categoryWords(waives)} only.`,
     carryMarker(headSha, from, patchId),
   ].join('\n\n')
 }
 
 function policyComment(headSha, fingerprint) {
   return [
-    `boss-verify judged the park on \`${headSha.slice(0, 12)}\` under verify policy \`${fingerprint}\`. If the base's verify policy or verify extensions change, the next verify sweep re-judges it and releases the codes the base no longer raises.`,
+    `What \`${headSha.slice(0, 12)}\` is waiting on was judged under the repository's current review rules. If those rules change, it is judged again.`,
     policyMarker(headSha, fingerprint),
   ].join('\n\n')
 }

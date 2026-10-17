@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/apiversion"
 	libevidence "github.com/recurser/bossalib/evidence"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
@@ -406,6 +408,42 @@ func TestAttentionResumeDoesNotExhaustLiveReplacement(t *testing.T) {
 	}
 }
 
+// TestAttentionRunBlockedSaysRunBlockedOnce pins the operator's MAD-1751 row:
+// finalize stores a blocked run's reason as "run blocked: <reason>", and the
+// FIX sentence prefixed "Run blocked: " onto it again. A client pinned before
+// V20260923 still reads the sentence built from the whole reason.
+func TestAttentionRunBlockedSaysRunBlockedOnce(t *testing.T) {
+	for stored, want := range map[string]string{
+		sessionreason.RunBlocked("MAD-1751 implemented; the PR awaits a person"): "Run blocked: MAD-1751 implemented; the PR awaits a person",
+		"Blocked: needs a rerun":           "Run blocked: needs a rerun",
+		"  RUN BLOCKED:  blocked: twice  ": "Run blocked: twice",
+		"draft PR creation failed: boom":   "Run blocked: draft PR creation failed: boom",
+	} {
+		for _, state := range []machine.State{machine.Blocked, machine.Orphaned} {
+			t.Run(state.String()+"/"+stored, func(t *testing.T) {
+				reason := stored
+				row := &models.Session{ID: "s", RepoID: "r", State: state, BlockedReason: &reason}
+				p := SessionToProto(row)
+				(&Server{}).hydrateAttention(context.Background(), p, attentionDeps{row: row})
+				if got := p.GetAttention().GetSentence(); got != want {
+					t.Fatalf("sentence = %q, want %q", got, want)
+				}
+				if got, old := sentenceAtV20260922(p), strings.TrimSpace("Run blocked: "+stored); got != old {
+					t.Fatalf("V20260922 sentence = %q, want %q", got, old)
+				}
+			})
+		}
+	}
+}
+
+// sentenceAtV20260922 is p's attention sentence as bosso serves it to a client
+// pinned to the last version before RunBlockedLabelChange.
+func sentenceAtV20260922(p *pb.Session) string {
+	resp := &pb.ProxyGetSessionResponse{Session: p}
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, resp, apiversion.V20260922)
+	return resp.GetSession().GetAttention().GetSentence()
+}
+
 // TestAttentionDeadBootstrapOffersOnlyDismiss pins the 2026-10-16 madverts
 // row: a cron session the stranded-bootstrap reaper blocked after a daemon
 // restart has no agent chat, no tmux pane and no worktree. Offering OPEN_CHAT
@@ -472,6 +510,167 @@ func TestAttentionProgressLabelMatchesChatState(t *testing.T) {
 			att := onlySession(t, resp.Msg.Sessions).GetAttention()
 			if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || att.GetProgressLabel() != tc.want {
 				t.Fatalf("attention = %v %q, want IN_PROGRESS %q", att.GetKind(), att.GetProgressLabel(), tc.want)
+			}
+		})
+	}
+}
+
+func TestAttentionBlockedRunClearsWhenPRGreen(t *testing.T) {
+	mergeable := true
+	head, oldHead := timelineHead, "old"
+	reason := "run blocked: MAD-1751 implemented; inherited dashboard-e2e Rendering timeout remains after repair cap"
+	fix, progress := pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+	for _, tc := range []struct {
+		name      string
+		attempt   *string
+		status    vcs.DisplayStatus
+		mergeable *bool
+		want      pb.AttentionKind
+	}{
+		{"green without recorded attempt", nil, vcs.DisplayStatusPassing, &mergeable, progress},
+		{"green on attempt head", &head, vcs.DisplayStatusPassing, &mergeable, progress},
+		{"draft without recorded attempt", nil, vcs.DisplayStatusDraft, &mergeable, fix},
+		{"draft on attempt head", &head, vcs.DisplayStatusDraft, &mergeable, fix},
+		{"checking", &head, vcs.DisplayStatusChecking, &mergeable, fix},
+		{"unknown mergeability", &head, vcs.DisplayStatusPassing, nil, fix},
+		{"failing", &head, vcs.DisplayStatusFailing, &mergeable, fix},
+		{"head moved", &oldHead, vcs.DisplayStatusPassing, &mergeable, progress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 1
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, PRNumber: &n, BlockedReason: &reason, LastAttemptHeadSHA: tc.attempt}
+			tracker := status.NewDisplayTracker()
+			tracker.Set(row.ID, vcs.DisplayInfo{Status: tc.status, HeadSHA: head, Mergeable: tc.mergeable})
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			served := onlySession(t, resp.Msg.Sessions)
+			got := served.GetAttention()
+			if got.GetKind() != tc.want {
+				t.Fatalf("attention = %v, want kind %v", got, tc.want)
+			}
+			if tc.want == fix && got.GetSentence() != "Run blocked: MAD-1751 implemented; inherited dashboard-e2e Rendering timeout remains after repair cap" {
+				t.Fatalf("sentence = %q", got.GetSentence())
+			}
+			if old := sentenceAtV20260922(onlySession(t, resp.Msg.Sessions)); tc.want == fix && old != "Run blocked: "+reason {
+				t.Fatalf("V20260922 sentence = %q", old)
+			}
+			if hint := served.GetAttentionStatus(); (hint != nil) != (tc.want == fix) {
+				t.Fatalf("legacy attention_status = %v, want present only while the block needs the operator", hint)
+			}
+			if hint := hintAtV20260922(served); hint.GetReason() != pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS || hint.GetSummary() != reason {
+				t.Fatalf("V20260922 attention_status = %v, want the blocked hint every Blocked session carried", hint)
+			}
+			facts, err := s.timelineFacts(t.Context(), row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			steps := buildTimeline(facts)
+			blockedStep := false
+			for _, st := range steps {
+				blockedStep = blockedStep || st.GetTitle() == "Blocked"
+			}
+			if blockedStep != (tc.want == fix) {
+				t.Fatalf("timeline Blocked step = %v, want %v: %v", blockedStep, tc.want == fix, steps)
+			}
+		})
+	}
+}
+
+// hintAtV20260922 is p's legacy attention_status as bosso serves it to a
+// client pinned to the last version before EndedBlockHintChange.
+func hintAtV20260922(p *pb.Session) *pb.AttentionStatus {
+	resp := &pb.ProxyGetSessionResponse{Session: p}
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, resp, apiversion.V20260922)
+	return resp.GetSession().GetAttentionStatus()
+}
+
+// TestAttentionBlockedRunReadsInProgressWhileItsAgentWorks pins the #6655 row:
+// a blocked run whose own agent works again (the blocked-run sweep's mark for
+// this block) reads in progress with no hint and no timeline Blocked step,
+// even with its repair budget spent and CI red. A mark from an earlier block
+// does not count. A client pinned to V20260922 still gets the blocked hint.
+func TestAttentionBlockedRunReadsInProgressWhileItsAgentWorks(t *testing.T) {
+	blockedAt := time.Date(2026, 10, 17, 14, 3, 52, 0, time.UTC)
+	reason := "run blocked: flows CI remains red after 5 repair passes"
+	for _, tc := range []struct {
+		name    string
+		mark    time.Time
+		status  vcs.DisplayStatus
+		working bool
+	}{
+		{"agent working, draft PR", blockedAt, vcs.DisplayStatusDraft, true},
+		{"agent working, CI failing and repair spent", blockedAt, vcs.DisplayStatusFailing, true},
+		{"mark from an earlier block", blockedAt.Add(-time.Hour), vcs.DisplayStatusDraft, false},
+		{"no mark", time.Time{}, vcs.DisplayStatusDraft, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, at := 1, blockedAt
+			row := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, PRNumber: &n, BlockedReason: &reason, StateEnteredAt: &at, LastRepairAttemptCount: 5}
+			tracker := status.NewDisplayTracker()
+			tracker.Set(row.ID, vcs.DisplayInfo{Status: tc.status, HeadSHA: timelineHead})
+			tracker.SetBlockedRunWorking(row.ID, tc.mark)
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			served := onlySession(t, resp.Msg.Sessions)
+			want := pb.AttentionKind_ATTENTION_KIND_FIX
+			if tc.working {
+				want = pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+			}
+			if got := served.GetAttention(); got.GetKind() != want {
+				t.Fatalf("attention = %v, want kind %v", got, want)
+			}
+			if hint := served.GetAttentionStatus(); (hint == nil) != tc.working {
+				t.Fatalf("legacy attention_status = %v, want absent only while the agent works", hint)
+			}
+			if hint := hintAtV20260922(served); hint.GetReason() != pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS ||
+				hint.GetSummary() != reason || !hint.GetSince().AsTime().Equal(blockedAt) {
+				t.Fatalf("V20260922 attention_status = %v, want the blocked hint since the block", hint)
+			}
+			facts, err := s.timelineFacts(t.Context(), row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blockedStep := false
+			for _, st := range buildTimeline(facts) {
+				blockedStep = blockedStep || st.GetTitle() == "Blocked"
+			}
+			if blockedStep == tc.working {
+				t.Fatalf("timeline Blocked step = %v, want it only while the agent is not working", blockedStep)
+			}
+		})
+	}
+}
+
+// TestHydrateBaseAttentionDropsAnEndedBlock pins the reverse-stream half of the
+// legacy hint: a Blocked session whose non-draft PR is green and mergeable, or
+// whose run's agent works again in this block, does not need the operator, so
+// the web read model gets no blocked hint for it.
+func TestHydrateBaseAttentionDropsAnEndedBlock(t *testing.T) {
+	reason := "run blocked: inherited flows failure"
+	blockedAt := time.Date(2026, 10, 17, 14, 3, 52, 0, time.UTC)
+	sess := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, BlockedReason: &reason, StateEnteredAt: &blockedAt}
+	mergeable := true
+	for _, tc := range []struct {
+		name     string
+		display  *status.DisplayEntry
+		wantHint bool
+	}{
+		{"never polled", nil, true},
+		{"draft", &status.DisplayEntry{Status: vcs.DisplayStatusDraft, HeadSHA: timelineHead, Mergeable: &mergeable}, true},
+		{"green and mergeable", &status.DisplayEntry{Status: vcs.DisplayStatusPassing, HeadSHA: timelineHead, Mergeable: &mergeable}, false},
+		{"run's agent working", &status.DisplayEntry{Status: vcs.DisplayStatusDraft, HeadSHA: timelineHead, BlockedRunWorkingAt: blockedAt}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := SessionToProto(sess)
+			HydrateBaseAttention(p, sess, &models.Repo{ID: "r"}, tc.display)
+			if got := p.GetAttentionStatus() != nil; got != tc.wantHint {
+				t.Fatalf("attention_status present = %v, want %v", got, tc.wantHint)
 			}
 		})
 	}

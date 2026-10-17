@@ -168,6 +168,10 @@ func TestTUI_LoginFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
 		t.Fatalf("expected home action bar after cancel; screen:\n%s", h.Driver.Screen())
 	}
+	// Cancelling the subscription wait must not sign the user out.
+	if err := h.Driver.WaitForText(waitTimeout, "[l]ogout"); err != nil {
+		t.Fatalf("expected logged-in action bar after cancel; screen:\n%s", h.Driver.Screen())
+	}
 }
 
 func TestTUI_LoginFlow_BillingUnavailableAllowsFallback(t *testing.T) {

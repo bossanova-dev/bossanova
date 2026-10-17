@@ -13,7 +13,6 @@ const slowTestFiles = [
   'services/boss/internal/tuitest/login_subscription_test.go',
   'services/bossd/internal/session/tmux_chat_test.go',
   'services/bossd/internal/status/tmux_poller_test.go',
-  'services/bossd/internal/tmux/tmux_test.go',
   'services/bossd/internal/testharness/e2e_record_chat_tmux_test.go',
 ]
 

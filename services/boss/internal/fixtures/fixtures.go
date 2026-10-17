@@ -562,7 +562,7 @@ func RespawnHistoryWorld() World {
 
 // RespawnHistorySessions returns the single BOS-482 session. Its newest rotation
 // event is RESPAWN_CAP_EXHAUSTED, so the home-list warning hint
-// ("auth wedge unresolved — respawn cap reached, may need /login") fires; the two
+// ("agent is stuck at a login prompt") fires; the two
 // older RESPAWNED_SAME_ACCOUNT events exercise both label shapes ("refreshed auth
 // in place on <acct>" when to_account is set, and the bare "refreshed auth in
 // place" otherwise).

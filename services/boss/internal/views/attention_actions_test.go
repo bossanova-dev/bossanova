@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/charmbracelet/x/ansi"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -84,6 +85,7 @@ func TestAttentionActionConfirm(t *testing.T) {
 	}{
 		{'m', pb.AttentionAction_ATTENTION_ACTION_MERGE, "merge:session-1"},
 		{'x', pb.AttentionAction_ATTENTION_ACTION_DISMISS, "dismiss:session-1:resume:auth"},
+		{'r', pb.AttentionAction_ATTENTION_ACTION_RESUME, "resume:session-1"},
 	} {
 		t.Run(string(tc.key), func(t *testing.T) {
 			c := &attentionStub{}
@@ -149,6 +151,10 @@ func TestAttentionActionResumeAndRename(t *testing.T) {
 				model = m
 			}
 			model, cmd := model.Update(keyPress('r'))
+			if cmd != nil || !strings.Contains(ansi.Strip(model.View().Content), "Resume this run?") {
+				t.Fatal("[r] did not ask to resume")
+			}
+			model, cmd = model.Update(keyPress('y'))
 			if cmd == nil {
 				t.Fatal("resume not dispatched")
 			}
@@ -193,6 +199,7 @@ func TestAttentionActionDetailsConfirm(t *testing.T) {
 	}{
 		{'m', pb.AttentionAction_ATTENTION_ACTION_MERGE, "merge:session-1"},
 		{'x', pb.AttentionAction_ATTENTION_ACTION_DISMISS, "dismiss:session-1:resume:auth"},
+		{'r', pb.AttentionAction_ATTENTION_ACTION_RESUME, "resume:session-1"},
 	} {
 		t.Run(string(tc.key), func(t *testing.T) {
 			c := &attentionStub{}
@@ -251,8 +258,6 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 		{"v", "v", pb.AttentionAction_ATTENTION_ACTION_VIDEO, "https://example.com/proof"},
 		// Details keeps t for [t]erminal and opens the tracker from its own [l]inear.
 		{"t", "l", pb.AttentionAction_ATTENTION_ACTION_TRACKER, "https://example.com/issue"},
-		{"enter", "enter", pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, ""},
-		{"enter", "enter", pb.AttentionAction_ATTENTION_ACTION_ANSWER, ""},
 	} {
 		t.Run(tc.action.String(), func(t *testing.T) {
 			s := attentionSession(tc.action)
@@ -266,28 +271,15 @@ func TestAttentionActionNavigationAndAvailability(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("missing navigation")
 			}
-			msg := cmd()
-			if tc.key == "enter" {
-				nav, ok := msg.(switchViewMsg)
-				if !ok || nav.sessionID != "session-1" || nav.resumeID != "target-chat" || nav.view != ViewAttach {
-					t.Fatalf("navigation=%#v", msg)
-				}
-			} else if len(opened) == 0 || opened[len(opened)-1] != tc.url {
+			cmd()
+			if len(opened) == 0 || opened[len(opened)-1] != tc.url {
 				t.Fatalf("opened=%v", opened)
 			}
-			// Details enter continues to attach the selected chat, not attention's target.
 			m := seedChatPicker(&chatPickerStub{}, statusStopped)
 			m.session = s
 			_, cmd = m.Update(attentionKey(tc.detailsKey))
 			if cmd == nil {
 				t.Fatal("missing details navigation")
-			}
-			msg = cmd()
-			if tc.key == "enter" {
-				nav, ok := msg.(switchViewMsg)
-				if !ok || nav.resumeID != m.selectedChat().GetAgentSessionId() {
-					t.Fatalf("details navigation=%#v", msg)
-				}
 			}
 		})
 	}
@@ -319,7 +311,7 @@ func TestAttentionActionMissingMergeHeadRefuses(t *testing.T) {
 	h = model.(HomeModel)
 	model, _ = h.Update(cmd())
 	h = model.(HomeModel)
-	if len(c.calls) != 0 || !h.statusErr || h.status != "Couldn't merge PR #42: its head is not known yet; refresh and try again" {
+	if len(c.calls) != 0 || !h.statusErr || h.status != "Couldn't merge PR #42: its latest commit is not known yet" {
 		t.Fatalf("calls=%v status=%s", c.calls, h.status)
 	}
 }
@@ -332,7 +324,9 @@ func TestAttentionActionNavigationResultDoesNotUnlockResume(t *testing.T) {
 	h := attentionHome(c, attentionSession(pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_RESUME))
 	model, open := h.Update(keyPress('g'))
 	h = model.(HomeModel)
-	model, resume := h.Update(keyPress('r'))
+	model, _ = h.Update(keyPress('r'))
+	h = model.(HomeModel)
+	model, resume := h.Update(keyPress('y'))
 	h = model.(HomeModel)
 	model, _ = h.Update(open())
 	h = model.(HomeModel)
@@ -345,12 +339,125 @@ func TestAttentionActionNavigationResultDoesNotUnlockResume(t *testing.T) {
 	}
 }
 
-func TestAttentionActionFooterShowsOneEnterDestination(t *testing.T) {
-	h := attentionHome(&attentionStub{}, attentionSession(pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT))
-	left, _, _ := h.sessionTableFooterActions()
-	labels := strings.Join(left, "  ")
-	if strings.Count(labels, "[enter]") != 1 || !strings.Contains(labels, "open the failed chat") {
-		t.Fatalf("ambiguous enter footer: %s", labels)
+func TestAttentionActionFooterShowsThePlainEnter(t *testing.T) {
+	for _, action := range []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, pb.AttentionAction_ATTENTION_ACTION_ANSWER} {
+		h := attentionHome(&attentionStub{}, attentionSession(action))
+		left, _, _ := h.sessionTableFooterActions()
+		if want := []string{"[n]ew session", "[enter] select", "[/] filter"}; !slices.Equal(left, want) {
+			t.Fatalf("%s footer=%v, want %v", action, left, want)
+		}
+	}
+}
+
+// TestAttentionEnterOpensDetailsWithTheTargetChatSelected walks a needs-you
+// row through the app: Home's enter opens the session's chat list, not a chat,
+// with the cursor on the chat the attention names (the failed chat on a fix
+// row, the asking chat on a question row), and a second enter attaches it.
+// The target is neither the newest chat nor the asking one the picker would
+// otherwise land on.
+func TestAttentionEnterOpensDetailsWithTheTargetChatSelected(t *testing.T) {
+	for _, action := range []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, pb.AttentionAction_ATTENTION_ACTION_ANSWER} {
+		t.Run(action.String(), func(t *testing.T) {
+			c := &attentionStub{}
+			h := attentionHome(c, attentionSession(action, pb.AttentionAction_ATTENTION_ACTION_RESUME))
+			_, cmd := h.Update(attentionKey("enter"))
+			if cmd == nil {
+				t.Fatal("enter did nothing")
+			}
+			nav, ok := cmd().(switchViewMsg)
+			if !ok || nav.view != ViewChatPicker || nav.sessionID != "session-1" {
+				t.Fatalf("enter navigated to %#v, want the session's chat list", nav)
+			}
+			if len(c.calls) != 0 {
+				t.Fatalf("enter dispatched %v", c.calls)
+			}
+
+			a := NewApp(c, nil)
+			a.home = h
+			model, _ := a.Update(nav)
+			a = model.(App)
+			if a.activeView != ViewChatPicker {
+				t.Fatalf("activeView=%v, want the chat list", a.activeView)
+			}
+			now := time.Now()
+			chat := func(id string, age time.Duration) *pb.ClaudeChat {
+				return &pb.ClaudeChat{SessionId: "session-1", AgentSessionId: id, Title: id, CreatedAt: timestamppb.New(now.Add(-age))}
+			}
+			model, _ = a.Update(chatsListedMsg{
+				chats:          []*pb.ClaudeChat{chat("newest-chat", time.Minute), chat("target-chat", time.Hour), chat("asking-chat", 2*time.Hour)},
+				daemonStatuses: map[string]string{"newest-chat": statusWorking, "target-chat": statusStopped, "asking-chat": statusQuestion},
+			})
+			a = model.(App)
+			if got := a.chatPicker.selectedChat().GetAgentSessionId(); got != "target-chat" {
+				t.Fatalf("details selected %q, want target-chat", got)
+			}
+
+			_, cmd = a.Update(attentionKey("enter"))
+			if cmd == nil {
+				t.Fatal("second enter did nothing")
+			}
+			attach, ok := cmd().(switchViewMsg)
+			if !ok || attach.view != ViewAttach || attach.sessionID != "session-1" || attach.resumeID != "target-chat" {
+				t.Fatalf("second enter navigated to %#v, want target-chat attached", attach)
+			}
+		})
+	}
+}
+
+// TestHomeEnterWithoutATargetChatLeavesTheDefaultSelection keeps the details
+// view's own cursor choice for a row whose attention names no chat.
+func TestHomeEnterWithoutATargetChatLeavesTheDefaultSelection(t *testing.T) {
+	s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE)
+	s.Attention.TargetChatId = ""
+	h := attentionHome(&attentionStub{}, s)
+	_, cmd := h.Update(attentionKey("enter"))
+	if cmd == nil {
+		t.Fatal("enter did nothing")
+	}
+	if nav, ok := cmd().(switchViewMsg); !ok || nav.view != ViewChatPicker || nav.chatID != "" {
+		t.Fatalf("enter navigated to %#v", nav)
+	}
+}
+
+// TestAttentionResumeAndDismissWorkUnadvertised: a blocked run's FIX offers
+// resume and dismiss, and neither Home's footer nor the details action bar
+// names them, yet [r] still asks to resume and [x] still asks to dismiss.
+func TestAttentionResumeAndDismissWorkUnadvertised(t *testing.T) {
+	fix := func() *pb.Session {
+		s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
+		s.Attention.Kind, s.Attention.ParkCodes, s.Attention.Sentence = pb.AttentionKind_ATTENTION_KIND_FIX, nil, "Run blocked: MAD-1751 implemented"
+		return s
+	}
+	screens := map[string]func(*attentionStub) tea.Model{
+		"home":    func(c *attentionStub) tea.Model { return attentionHome(c, fix()) },
+		"details": func(c *attentionStub) tea.Model { return attentionDetails(c, fix()) },
+	}
+	for name, open := range screens {
+		t.Run(name, func(t *testing.T) {
+			c := &attentionStub{}
+			screen := ansi.Strip(open(c).View().Content)
+			for _, hint := range []string{"[r]", "resume", "[x]", "dismiss"} {
+				if strings.Contains(screen, hint) {
+					t.Fatalf("%s advertises %q:\n%s", name, hint, screen)
+				}
+			}
+			model, cmd := open(c).Update(keyPress('r'))
+			if cmd != nil || !strings.Contains(ansi.Strip(model.View().Content), "Resume this run?") {
+				t.Fatal("[r] did not ask to resume")
+			}
+			model, cmd = model.Update(keyPress('y'))
+			if cmd == nil {
+				t.Fatal("confirming did not resume")
+			}
+			model.Update(cmd())
+			if !slices.Equal(c.calls, []string{"resume:session-1"}) {
+				t.Fatalf("calls = %v", c.calls)
+			}
+			model, _ = open(c).Update(keyPress('x'))
+			if !strings.Contains(ansi.Strip(model.View().Content), "[y/enter]") {
+				t.Fatal("[x] did not ask to dismiss")
+			}
+		})
 	}
 }
 
@@ -458,7 +565,7 @@ func TestAttentionMergeRefusesAMovedHead(t *testing.T) {
 			model, cmd := model.Update(keyPress('y'))
 			model, _ = model.Update(cmd())
 			h = model.(HomeModel)
-			if !h.statusErr || h.status != "PR #42 changed since you opened it; refresh and try again" {
+			if !h.statusErr || h.status != "PR #42 changed since you opened it, so nothing was merged" {
 				t.Fatalf("status = %q (error %v), want the moved-head refusal", h.status, h.statusErr)
 			}
 			if len(c.merges) != 1 {
@@ -565,10 +672,10 @@ func TestParkRowsShowNoCodesOrJargon(t *testing.T) {
 	}
 }
 
-// TestBlockedParkDetailsListOpenItemsAndTheEscapeHatch opens the details view
-// on an open-checklist park: it lists each open item its park note recorded,
-// and since the row offers no merge it names the two ways forward.
-func TestBlockedParkDetailsListOpenItemsAndTheEscapeHatch(t *testing.T) {
+// TestBlockedParkDetailsListOpenItems opens the details view on an
+// open-checklist park: it lists each open item its park note recorded and
+// gives no advice.
+func TestBlockedParkDetailsListOpenItems(t *testing.T) {
 	m := attentionDetails(&attentionStub{}, parkSession("ledger-open", "Open human follow-up: watch the rollout", "Open question: which region first?"))
 	screen := ansi.Strip(m.View().Content)
 	for _, want := range []string{
@@ -576,14 +683,16 @@ func TestBlockedParkDetailsListOpenItemsAndTheEscapeHatch(t *testing.T) {
 		"Open in the PR checklist:",
 		"• Open human follow-up: watch the rollout",
 		"• Open question: which region first?",
-		"boss pr approve 42",
 	} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("details view lacks %q:\n%s", want, screen)
 		}
 	}
+	if strings.Contains(screen, "boss pr approve") || strings.Contains(screen, "Open a chat") {
+		t.Errorf("details view gives advice:\n%s", screen)
+	}
 	unread := attentionDetails(&attentionStub{}, parkSession("repair-exhausted"))
-	if screen := ansi.Strip(unread.View().Content); !strings.Contains(screen, "Verify is blocked: repair exhausted.") || !strings.Contains(screen, "boss pr approve 42") {
+	if screen := ansi.Strip(unread.View().Content); !strings.Contains(screen, "Verify is blocked: repair exhausted.") {
 		t.Errorf("a park with no open items does not say what blocks it:\n%s", screen)
 	}
 }
@@ -623,11 +732,11 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 		{"merged without bookkeeping", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "unavailable", TrackerWhy: "no-adapter"}},
 			"Merged PR #42; the tracker was not updated because no tracker is set up", false},
 		{"approval refused, head moved", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved"}}},
-			"PR #42 changed since you opened it; refresh and try again", true},
+			"PR #42 changed since you opened it, so nothing was merged", true},
 		{"approval refused, park changed", &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "park-changed"}}},
-			"Couldn't merge PR #42: what verify asks you to sign off changed since you looked; review it again, then merge", true},
+			"Couldn't merge PR #42: what needs your sign-off changed since you opened it, so nothing was merged", true},
 		{"gate: head moved", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: expected head a, live head b; nothing was approved or merged", vcs.ErrHeadMismatch))},
-			"PR #42 changed since you opened it; refresh and try again", true},
+			"PR #42 changed since you opened it, so nothing was merged", true},
 		{"gate: checks failing", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=checks; 2 required checks are still failing; gated at head abc; nothing was approved or merged"))},
 			"Couldn't merge PR #42: 2 required checks are still failing", true},
 		{"gate after the approval landed", &attentionStub{mergeErr: connect.NewError(connect.CodeFailedPrecondition, errors.New("merge blocked: gate=conflict; the PR has a merge conflict; gated at head abc; the approval of abc (https://x/9) stays recorded"))},
@@ -950,6 +1059,119 @@ func TestMergeOutcomeUnknownTrustsOnlyAnAnswerBossdSent(t *testing.T) {
 	_, gaveUp := rpc.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{Id: "hang"}))
 	if !mergeOutcomeUnknown(gaveUp) {
 		t.Fatalf("the client giving up (%v) classified as an outcome, want unknown", gaveUp)
+	}
+}
+
+// TestAttentionMergeWithNoAnswerOffersNoActionOnTheDetailsView pins the details
+// view to Home's rule: while a merge's outcome is not known it neither offers
+// nor accepts an attention action or a second merge, whether the unanswered
+// result landed on it or it was reopened from Home. A poll that still shows
+// bossd merging keeps it so, and one that settles the merge gives them back.
+func TestAttentionMergeWithNoAnswerOffersNoActionOnTheDetailsView(t *testing.T) {
+	s := attentionSession(pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_DISMISS)
+	s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_PASSING
+	unanswered := map[string]func(*testing.T, *attentionStub) tea.Model{
+		"answer lands on the details view": func(t *testing.T, c *attentionStub) tea.Model {
+			a := NewApp(c, nil)
+			a.home = attentionHome(c, proto.CloneOf(s))
+			a.chatPicker = attentionDetails(c, proto.CloneOf(s))
+			a.activeView = ViewChatPicker
+			var model tea.Model = a
+			if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, "[m]erge") {
+				t.Fatalf("premise: details view offers no merge before the merge:\n%s", screen)
+			}
+			model, _ = model.Update(keyPress('m'))
+			model, merge := model.Update(keyPress('y'))
+			model, _ = model.Update(merge())
+			return model
+		},
+		"reopened from Home": func(t *testing.T, c *attentionStub) tea.Model {
+			a := NewApp(c, nil)
+			a.home = attentionHome(c, proto.CloneOf(s))
+			var model tea.Model = a
+			model, _ = model.Update(keyPress('m'))
+			model, merge := model.Update(keyPress('y'))
+			model, _ = model.Update(merge())
+			model, _ = model.Update(switchViewMsg{view: ViewChatPicker, sessionID: "session-1"})
+			model, _ = model.Update(chatPickerSessionMsg{session: proto.CloneOf(s)})
+			model, _ = model.Update(listedChats(1))
+			if got := model.(App); got.activeView != ViewChatPicker {
+				t.Fatalf("active view = %v, want the reopened details view", got.activeView)
+			}
+			return model
+		},
+	}
+	for name, setup := range unanswered {
+		t.Run(name, func(t *testing.T) {
+			c := &attentionStub{mergeErr: noAnswerErrors["daemon lost"]}
+			model := setup(t, c)
+			assertNoActions := func(when string) {
+				t.Helper()
+				screen := ansi.Strip(model.View().Content)
+				if !strings.Contains(screen, "Waiting to hear whether PR #42 merged") || strings.Contains(screen, "[m]erge") || strings.Contains(screen, "dismiss") {
+					t.Fatalf("%s: want the waiting line and no merge or dismiss on offer:\n%s", when, screen)
+				}
+				for _, key := range []rune{'m', 'y', 'x', 'y'} {
+					var cmd tea.Cmd
+					model, cmd = model.Update(keyPress(key))
+					got := model.(App).chatPicker
+					if cmd != nil || got.attentionAction.active() || got.confirm != confirmNone {
+						t.Fatalf("%s: %q started an action (cmd %v, attention %+v, confirm %v)", when, key, cmd != nil, got.attentionAction, got.confirm)
+					}
+				}
+				if len(c.merges) != 1 {
+					t.Fatalf("%s: merges = %+v, want only the unanswered one", when, c.merges)
+				}
+			}
+			assertNoActions("after the unanswered merge")
+
+			stillMerging := proto.CloneOf(s)
+			stillMerging.DisplayMerging = true
+			model, _ = model.Update(chatPickerRefreshMsg{session: stillMerging})
+			assertNoActions("while bossd still merges")
+
+			model, _ = model.Update(chatPickerRefreshMsg{session: proto.CloneOf(s)})
+			screen := ansi.Strip(model.View().Content)
+			if !strings.Contains(screen, "PR #42 did not merge") || strings.Contains(screen, "Waiting to hear") || !strings.Contains(screen, "[m]erge") {
+				t.Fatalf("after a poll showing the merge ended: want the outcome and merge on offer again:\n%s", screen)
+			}
+			model, _ = model.Update(keyPress('m'))
+			if got := model.(App).chatPicker.attentionAction; !got.confirm.active {
+				t.Fatalf("[m] after the merge settled did not ask to merge: %+v", got)
+			}
+		})
+	}
+}
+
+// TestAttentionMergeWithNoAnswerEndsWhenTheSessionLeavesTheList covers the poll
+// that no longer lists the session, as when it archived after merging: the
+// merge stops holding the session, and its waiting line goes with it unless a
+// newer status has replaced it.
+func TestAttentionMergeWithNoAnswerEndsWhenTheSessionLeavesTheList(t *testing.T) {
+	for name, tc := range map[string]struct{ newer, want string }{
+		"waiting line still shown": {want: ""},
+		"newer status shown":       {newer: "Alert dismissed", want: "Alert dismissed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &attentionStub{mergeErr: noAnswerErrors["daemon lost"]}
+			h, merge := homeMergeRunning(t, c)
+			model, _ := h.Update(merge())
+			h = model.(HomeModel)
+			if h.status != "Waiting to hear whether PR #42 merged" || !h.isMerging("session-1") {
+				t.Fatalf("premise: status %q, merging %v; want the unanswered merge held", h.status, h.isMerging("session-1"))
+			}
+			if tc.newer != "" {
+				h.status = tc.newer
+			}
+			model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{{Id: "session-2", Title: "Quiet"}}})
+			h = model.(HomeModel)
+			if h.status != tc.want || h.statusErr || h.isMerging("session-1") || len(h.mergesInFlight) != 0 {
+				t.Fatalf("after the poll without session-1: status %q (err %v), merging %v, held %v; want status %q and nothing held", h.status, h.statusErr, h.isMerging("session-1"), h.mergesInFlight, tc.want)
+			}
+			if screen := ansi.Strip(h.View().Content); strings.Contains(screen, "Waiting to hear") {
+				t.Fatalf("Home still shows the waiting line:\n%s", screen)
+			}
+		})
 	}
 }
 

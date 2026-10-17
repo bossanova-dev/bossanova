@@ -976,7 +976,7 @@ func (m RepoSettingsModel) applyOrganizationChoice(choice orgChoice) (tea.Model,
 		// reason: a failed read is a fact about this attempt, not about the
 		// server, which may still hold a mapping this view never received.
 		if choice.id == "" {
-			m.orgRefusal = "Bossanova could not determine this repo's current organization, so there is nothing this view can reset. Reopen this view to retry."
+			m.orgRefusal = "Bossanova could not determine this repo's current organization, so there is nothing this view can reset."
 			return m, nil
 		}
 	case choice.id == current:

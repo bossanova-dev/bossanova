@@ -349,7 +349,7 @@ func (h HomeModel) handleSelectKey() (HomeModel, tea.Cmd) {
 	}
 	if sess := h.selectedSession(); sess != nil {
 		return h, func() tea.Msg {
-			return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
+			return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id, chatID: sess.GetAttention().GetTargetChatId()}
 		}
 	}
 	return h, nil

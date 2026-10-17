@@ -337,6 +337,9 @@ type MockDaemon struct {
 	// so a test can prove a declined confirmation ran nothing.
 	approveSessionPRCalls []*pb.ApproveSessionPRRequest
 	operatorMergeCalls    []*pb.OperatorMergeSessionRequest
+	// resumeSessionRunCalls records every resume request, so a test can prove
+	// a cancelled confirmation resumed nothing.
+	resumeSessionRunCalls []*pb.ResumeSessionRunRequest
 	// approveResult is what ApproveSessionPR answers; nil keeps the RPC
 	// answering Unimplemented, as an older daemon would.
 	approveResult *pb.VerifyApproveResult
@@ -2107,8 +2110,24 @@ func (m *MockDaemon) ResumeSession(context.Context, *connect.Request[pb.ResumeSe
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+// ResumeSessionRun records the request and answers with the session unchanged.
+func (m *MockDaemon) ResumeSessionRun(_ context.Context, req *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resumeSessionRunCalls = append(m.resumeSessionRunCalls, cloneMsg(req.Msg))
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.GetSessionId() {
+			return connect.NewResponse(&pb.ResumeSessionRunResponse{Session: cloneMsg(s)}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetSessionId()))
+}
+
+// ResumeSessionRunCalls returns every ResumeSessionRun request in order.
+func (m *MockDaemon) ResumeSessionRunCalls() []*pb.ResumeSessionRunRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.resumeSessionRunCalls)
 }
 
 func (m *MockDaemon) RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {

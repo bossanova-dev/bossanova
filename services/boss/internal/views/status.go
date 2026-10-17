@@ -561,7 +561,7 @@ func rotationRespawnCapHint(sess *pb.Session) string {
 	if !alertstate.AuthWedgeCurrent(sess.GetRotationEvents(), rec) {
 		return ""
 	}
-	return "auth wedge unresolved — respawn cap reached, may need /login"
+	return "agent is stuck at a login prompt"
 }
 
 // rotationEventText says what one rotation decision did, e.g.
@@ -620,7 +620,7 @@ func rotationEventLabel(ev *pb.RotationEvent) string {
 		}
 		return fmt.Sprintf("refreshed auth in place on %s", ev.GetToAccount())
 	case pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED:
-		return "auth-wedge respawn cap reached"
+		return "stopped restarting the agent: it stayed signed out"
 	case pb.RotationOutcome_ROTATION_OUTCOME_FAILED:
 		return fmt.Sprintf("switch to %s failed", ev.GetToAccount())
 	default:

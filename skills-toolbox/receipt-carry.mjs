@@ -379,8 +379,8 @@ export function carryReport(options, deps = {}) {
     head,
     '--description',
     decided.decision === DECISIONS.POST
-      ? `boss-repair pass pushed ${short(head)}; delta re-reviewed from ${short(baseline)}`
-      : `boss-repair pass pushed ${short(head)}`,
+      ? `Automatic repair pushed ${short(head)}; the changes since ${short(baseline)} were reviewed`
+      : `Automatic repair pushed ${short(head)}`,
     ...(options.targetUrl ? ['--target-url', options.targetUrl] : []),
     ...repoFlag,
   ]

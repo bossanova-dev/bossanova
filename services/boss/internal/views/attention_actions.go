@@ -22,12 +22,15 @@ type attentionActionBinding struct {
 	key    string
 	label  string
 	// details marks an action the session details view also offers. That view
-	// keeps its own enter (open the selected chat), t ([t]erminal) and
-	// [l]inear tracker button, so the actions bound there stay Home-only.
+	// keeps its own t ([t]erminal) and [l]inear tracker button, so the actions
+	// bound there stay Home-only.
 	details bool
 	// homeHidden keeps the key working on Home without advertising it in the
 	// footer, like Home's [r]ename.
 	homeHidden bool
+	// detailsHidden keeps the key working on the session details view without
+	// advertising it in that view's action bar.
+	detailsHidden bool
 }
 
 // footer is the action-bar hint; the action bar itself compacts "[m] merge"
@@ -38,12 +41,14 @@ func (b attentionActionBinding) footer() string {
 
 var attentionActionBindings = []attentionActionBinding{
 	{action: pb.AttentionAction_ATTENTION_ACTION_MERGE, key: "m", label: "merge", details: true},
-	{action: pb.AttentionAction_ATTENTION_ACTION_DISMISS, key: "x", label: "dismiss", details: true},
-	{action: pb.AttentionAction_ATTENTION_ACTION_RESUME, key: "r", label: "resume", details: true},
+	// [x] and [r] act whenever the attention offers them, though neither
+	// footer names them: the operator asked for a shorter bar. This is the
+	// deliberate exception to "a hidden shortcut must do nothing", which
+	// guards keys whose action is unavailable, not keys left unadvertised.
+	{action: pb.AttentionAction_ATTENTION_ACTION_DISMISS, key: "x", label: "dismiss", details: true, homeHidden: true, detailsHidden: true},
+	{action: pb.AttentionAction_ATTENTION_ACTION_RESUME, key: "r", label: "resume", details: true, homeHidden: true, detailsHidden: true},
 	{action: pb.AttentionAction_ATTENTION_ACTION_GITHUB, key: "g", label: "github", details: true, homeHidden: true},
 	{action: pb.AttentionAction_ATTENTION_ACTION_VIDEO, key: "v", label: "video", details: true},
-	{action: pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, key: "enter", label: "open the failed chat"},
-	{action: pb.AttentionAction_ATTENTION_ACTION_ANSWER, key: "enter", label: "answer in the chat"},
 	{action: pb.AttentionAction_ATTENTION_ACTION_TRACKER, key: "t", label: "tracker", homeHidden: true},
 }
 
@@ -60,7 +65,7 @@ func attentionFooter(s *pb.Session, details bool) []string {
 	var labels []string
 	for _, a := range s.GetAttention().GetActions() {
 		for _, b := range attentionActionBindings {
-			if b.action == a && (details && b.details || !details && !b.homeHidden) {
+			if b.action == a && (details && b.details && !b.detailsHidden || !details && !b.homeHidden) {
 				labels = append(labels, b.footer())
 				break
 			}
@@ -87,13 +92,44 @@ type attentionActionState struct {
 	// progress is what the footer says, beside the spinner, while the
 	// confirmed action runs; empty reads "Working…".
 	progress string
+	// waiting is the status line of a merge whose call ended without bossd's
+	// answer. A session poll that shows how the merge ended settles it.
+	waiting string
+}
+
+// awaitingMerge is a merge whose call ended without bossd's answer.
+func awaitingMerge(sessionID, waiting string) attentionActionState {
+	return attentionActionState{action: pb.AttentionAction_ATTENTION_ACTION_MERGE, sessionID: sessionID, waiting: waiting}
 }
 
 func (a attentionActionState) active() bool { return a.busy || a.confirm.active }
 
-// mergeInFlight reports a confirmed [m]erge whose result has not landed.
+// mergeInFlight reports a confirmed [m]erge whose call is still running.
 func (a attentionActionState) mergeInFlight() bool {
 	return a.busy && a.action == pb.AttentionAction_ATTENTION_ACTION_MERGE
+}
+
+// mergeUnresolved reports a confirmed [m]erge whose outcome is not known: its
+// call is still running, or it ended unanswered and no poll has settled it.
+// Home and the details view offer no attention action on such a session.
+func (a attentionActionState) mergeUnresolved() bool {
+	return a.mergeInFlight() || a.action == pb.AttentionAction_ATTENTION_ACTION_MERGE && a.waiting != ""
+}
+
+// settleUnansweredMerge reads how a poll of the session ends a merge whose call
+// went unanswered: its PR merged or closed, or bossd is no longer merging it.
+// settled is false while bossd still reports the merge running.
+func settleUnansweredMerge(sess *pb.Session) (status string, isErr, settled bool) {
+	pr := sess.GetPrNumber()
+	switch {
+	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_MERGED:
+		return fmt.Sprintf("Merged PR #%d", pr), false, true
+	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
+		return fmt.Sprintf("PR #%d was closed without merging", pr), true, true
+	case !sess.GetDisplayMerging():
+		return fmt.Sprintf("PR #%d did not merge", pr), true, true
+	}
+	return "", false, false
 }
 
 func (a attentionActionState) update(msg tea.Msg) (attentionActionState, tea.Cmd) {
@@ -125,8 +161,11 @@ func (a attentionActionState) start(ctx context.Context, c client.BossClient, s 
 		a.progress = fmt.Sprintf("Merging PR #%d…", captured.GetPrNumber())
 	case pb.AttentionAction_ATTENTION_ACTION_DISMISS:
 		a.confirm = newConfirmPrompt("Dismiss this alert? It returns only if a different failure happens.", command)
+	case pb.AttentionAction_ATTENTION_ACTION_RESUME:
+		// Both screens also bind a hidden [r]ename, so a resume must not
+		// start on a key pressed out of habit.
+		a.confirm = newConfirmPrompt("Resume this run?", command)
 	default:
-		a.busy = b.action == pb.AttentionAction_ATTENTION_ACTION_RESUME
 		return a, command, true
 	}
 	return a, nil, true
@@ -136,8 +175,8 @@ func (a attentionActionState) start(ctx context.Context, c client.BossClient, s 
 // progress beside spin (the caller's spinner frame). The confirmation opens
 // with its own blank line because confirmPrompt.footer carries none and the
 // callers write this straight after the table's last row; the progress and
-// Working lines get theirs from their top padding. lineCount sees that extra
-// row, so both tableHeights keep the table on screen.
+// Working lines get theirs from their top padding. Both tableHeights reserve
+// that extra row, so the table stays on screen.
 func (a attentionActionState) footer(width int, spin string) string {
 	if a.confirm.active {
 		return "\n" + a.confirm.footer(width)
@@ -177,11 +216,12 @@ func attentionActionCmd(ctx context.Context, c client.BossClient, s *pb.Session,
 		case pb.AttentionAction_ATTENTION_ACTION_TRACKER:
 			result.err = openURLFunc(s.GetTrackerUrl())
 			result.text = "Opened issue"
-		case pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, pb.AttentionAction_ATTENTION_ACTION_ANSWER:
-			return switchViewMsg{view: ViewAttach, sessionID: s.GetId(), resumeID: s.GetAttention().GetTargetChatId()}
 		case pb.AttentionAction_ATTENTION_ACTION_UNSPECIFIED,
 			// Retired: an older daemon may still list them, but no key binds them.
-			pb.AttentionAction_ATTENTION_ACTION_APPROVE, pb.AttentionAction_ATTENTION_ACTION_SEND_BACK:
+			pb.AttentionAction_ATTENTION_ACTION_APPROVE, pb.AttentionAction_ATTENTION_ACTION_SEND_BACK,
+			// Home's enter opens the details view with the target chat selected
+			// instead, on every row.
+			pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, pb.AttentionAction_ATTENTION_ACTION_ANSWER:
 			return nil
 		}
 		return result
@@ -193,7 +233,7 @@ func attentionActionCmd(ctx context.Context, c client.BossClient, s *pb.Session,
 func operatorMerge(ctx context.Context, c client.BossClient, s *pb.Session) (string, error) {
 	head, pr := s.GetPrDisplayHeadSha(), int(s.GetPrNumber())
 	if head == "" {
-		return "", mergeFailure(fmt.Sprintf("Couldn't merge PR #%d: its head is not known yet; refresh and try again", pr))
+		return "", mergeFailure(fmt.Sprintf("Couldn't merge PR #%d: its latest commit is not known yet", pr))
 	}
 	a := s.GetAttention()
 	review := a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
@@ -232,7 +272,7 @@ func (f mergeFailure) Error() string { return string(f) }
 // headMovedError is the refusal for a PR whose head moved since the row showed
 // it: nothing was approved or merged.
 func headMovedError(pr int) error {
-	return mergeFailure(fmt.Sprintf("PR #%d changed since you opened it; refresh and try again", pr))
+	return mergeFailure(fmt.Sprintf("PR #%d changed since you opened it, so nothing was merged", pr))
 }
 
 // mergeBlockedPrefix opens the daemon's refusal of a PR its merge gate will not

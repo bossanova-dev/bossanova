@@ -127,7 +127,7 @@ func (h hostFreeFactory) Resolve(stage, agent string) (FactoryCron, error) {
 		agent = agentClaude
 	case agentClaude, agentCodex:
 	default:
-		return FactoryCron{}, fmt.Errorf("agent %q cannot run factory cron jobs", agent)
+		return FactoryCron{}, fmt.Errorf("agent %q cannot run pipeline cron jobs", agent)
 	}
 	return FactoryCron{Skill: st.Skill, Agent: agent, Prompt: st.Prompt(agent), DefaultSchedule: st.DefaultSchedule}, nil
 }

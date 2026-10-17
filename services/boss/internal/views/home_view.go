@@ -552,7 +552,7 @@ func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
 	}
 	left = make([]string, 0, len(actions)+2)
 	left = append(left, "[n]ew session")
-	if sel != nil && (sel.GetAttention() == nil || h.isMerging(sel.GetId())) {
+	if sel != nil {
 		left = append(left, "[enter] select")
 	}
 	left = append(left, actions...)

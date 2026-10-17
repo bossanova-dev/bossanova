@@ -27,6 +27,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/safego"
 
 	"github.com/recurser/bossd/internal/session"
@@ -130,13 +131,30 @@ func (s *Server) FinishUnattendedRun(ctx context.Context, req *connect.Request[p
 	if !owned {
 		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("chat %q is not a chat of session %q", requester, id))
 	}
+	if (sess.State == machine.Blocked || req.Msg.GetIsBlocked()) && s.lifecycle == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("lifecycle unavailable"))
+	}
+	// A Blocked run moves only on its own chat's claim: a finish from that chat
+	// finalizes it from Blocked, a finish --blocked re-Blocks it with the new
+	// reason. Any other requester is refused, so another chat cannot ready the
+	// draft. No dated apiversion bump: FinishUnattendedRun is a DaemonService
+	// procedure whose one client is the boss CLI run inside the session,
+	// installed with the daemon, and nothing a transform could restore exists
+	// in its empty response (the old answer from Blocked was a deferred no-op or
+	// FailedPrecondition). See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if sess.State == machine.Blocked {
+		if err := s.lifecycle.AcceptBlockedRunFinish(sess, requester); err != nil {
+			if errors.Is(err, session.ErrNotRunChat) {
+				return nil, connect.NewError(connect.CodePermissionDenied, err)
+			}
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+	}
 	// Persist a blocked report before deferring: whichever finalize reaches
 	// the run next (this finish, the Stop-hook gate, the stranded sweep) reads
 	// it from the session row.
 	if req.Msg.GetIsBlocked() {
-		if s.lifecycle == nil {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("lifecycle unavailable"))
-		}
 		if err := s.lifecycle.ReportRunBlocked(ctx, id, req.Msg.GetBlockedReason()); err != nil {
 			if errors.Is(err, session.ErrRunAlreadyFinalized) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition, err)

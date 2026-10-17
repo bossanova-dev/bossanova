@@ -229,6 +229,10 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 	prompt := BuildCallbackPrompt(cb, verified)
 
 	if derr := w.deliverer.Deliver(ctx, cb.TargetChatID, prompt); derr != nil {
+		if errors.Is(derr, ErrComposerOccupied) {
+			w.awaitComposer(ctx, cb, derr)
+			return
+		}
 		w.scheduleRetry(ctx, cb, derr)
 		return
 	}
@@ -278,6 +282,38 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCal
 	w.logger.Info().Str("callback_id", cb.ID).Int("attempt", attempt).
 		Time("next_attempt_at", next).Bool("expiring", expiring).
 		Msg("callback worker: delivery failed, retry scheduled")
+}
+
+// ErrComposerOccupied marks a delivery the target chat refused before anything
+// was typed, because its composer held a draft. The bossd wiring wraps the
+// tmux refusal in it.
+var ErrComposerOccupied = errors.New("the target chat's composer holds a draft")
+
+// awaitComposer reschedules a delivery refused for an occupied composer without
+// counting the attempt. Nothing reached the agent, and the box is usually an
+// operator typing, so spending the five attempts would abandon the callback
+// within minutes while the person is still there. It waits instead, at the
+// backoff it has reached, until the draft is submitted or cleared or the
+// callback expires. last_error names the refusal, so `boss callback list`
+// shows why it is waiting.
+func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCallback, cause error) {
+	next := w.now().Add(backoffFor(cb.AttemptCount))
+	if next.After(cb.ExpiresAt) {
+		next = cb.ExpiresAt
+	}
+	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
+		NextAttemptAt:        next,
+		LastError:            callbackDiagnostic(cause, cb.Message),
+		LastEvent:            string(cb.Trigger),
+		PreserveAttemptCount: true,
+	}); err != nil {
+		w.logger.Warn().Err(err).Str("callback_id", cb.ID).
+			Msg("callback worker: reschedule for an occupied composer failed")
+		return
+	}
+	w.logger.Info().Str("callback_id", cb.ID).Str("chat_id", cb.TargetChatID).
+		Time("next_attempt_at", next).
+		Msg("callback worker: target composer holds a draft; delivery waits for it")
 }
 
 // abandon pins a callback to expiry after delivery attempts are exhausted. The

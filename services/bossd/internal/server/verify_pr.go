@@ -118,6 +118,13 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	if err := s.refuseFixAttention(ctx, id, target.PR); err != nil {
 		return nil, target.PR, err
 	}
+	// Hold "merging" from the gate to the end of the tracker bookkeeping, so
+	// every client sees the merge the operator asked for until it is over.
+	// MergeSession takes its own hold inside this one; releasing it leaves
+	// this one standing.
+	if s.displayTracker != nil {
+		defer s.displayTracker.HoldMerging(id)()
+	}
 	verbs := s.verifyVerbsFor(env)
 	resp := &pb.OperatorMergeSessionResponse{}
 	if req.GetShouldApprove() {

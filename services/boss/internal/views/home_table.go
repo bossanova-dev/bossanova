@@ -53,6 +53,9 @@ func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
 	if h.isMerging(sess.GetId()) {
 		return renderMergingStatus(h.spinner)
 	}
+	if displaystatus.IsStateEndingLabel(sess.GetDisplayLabel()) {
+		return renderDisplayStatus(sess, h.spinner)
+	}
 	// A finished row reads its PR's end ("✓ merged", "closed") like the rest of
 	// its struck-through cells.
 	if a := sess.GetAttention(); a != nil && a.GetKind() != pb.AttentionKind_ATTENTION_KIND_DONE && (a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !displaystatus.FixShowsLabel(sess)) {

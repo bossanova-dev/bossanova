@@ -12,24 +12,25 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// refusals maps each reason verify-gate.mjs refuses with to its detail. A
-// reason missing here renders as "refused".
+// refusals maps each reason verify-gate.mjs refuses with to its detail in
+// plain words. A reason missing here is left unsaid rather than shown as a
+// code.
 var refusals = map[string]string{
-	"no-standing-park":        "no `needs human:` park stands on the PR's current head",
-	"head-moved":              "the PR's head or its park changed while approving, so what stands now is not approved; re-check and approve again",
-	"park-changed":            "the PR's park changed since it was read, so what stands now is not approved; re-check and approve again",
-	"approval-record-failed":  "the approval record could not be posted on the PR, so nothing is approved and the needs-human label was left alone",
-	"approval-superseded":     "a later operator decision on the head landed while approving and replaces this one",
-	"approval-unconfirmed":    "whether the approval record was posted and took effect could not be read back",
-	"approver-not-writer":     "the account boss runs gh as cannot write to the repository, so its record on the PR would not count",
-	"approver-unreadable":     "the repository permission of the account boss runs gh as could not be read",
-	"sent-back-approved-head": "the head verify passed under an approval carries an older send-back; run /boss-verify on the PR to re-raise its park, then approve that",
-	"comments-unreadable":     "the PR's comments could not be read, so an earlier operator decision cannot be ruled out",
-	"park-codes-unknown":      "the park names a code this toolbox does not know",
+	"no-standing-park":        "nothing on the PR's latest commit is waiting for a person",
+	"head-moved":              "the PR changed while it was being approved, so nothing that stands now is approved",
+	"park-changed":            "what needs a person changed since it was read, so nothing that stands now is approved",
+	"approval-record-failed":  "the approval could not be posted on the PR, so nothing is approved",
+	"approval-superseded":     "a later decision on this commit replaced this approval",
+	"approval-unconfirmed":    "whether the approval was posted and took effect could not be confirmed",
+	"approver-not-writer":     "the GitHub account boss uses cannot write to the repository, so its approval would not count",
+	"approver-unreadable":     "whether the GitHub account boss uses can write to the repository could not be read",
+	"sent-back-approved-head": "this commit passed under an approval, but an older send-back still holds it, so verify will not merge it",
+	"comments-unreadable":     "the PR's comments could not be read, so an earlier decision cannot be ruled out",
+	"park-codes-unknown":      "the PR is waiting on an issue this version of boss does not recognise",
 	"pr-not-open":             "the PR is not open",
 	"pr-unreadable":           "the PR could not be read",
 	"status-unreadable":       "the PR's verify status could not be read",
-	"head-unreadable":         "the PR's head commit could not be read",
+	"head-unreadable":         "the PR's latest commit could not be read",
 	"pr-comment-failed":       "the PR comment could not be posted",
 }
 
@@ -37,120 +38,95 @@ var refusals = map[string]string{
 // approval, for the TUI's [m]erge, which records the approval and merges.
 // Every other reason reads the same in both. Nothing was merged in any case.
 var mergeRefusals = map[string]string{
-	"head-moved":             "the PR changed since you opened it; refresh and try again",
-	"park-changed":           "what verify asks you to sign off changed since you looked; review it again, then merge",
+	"head-moved":             "the PR changed since you opened it, so nothing was merged",
+	"park-changed":           "what needs your sign-off changed since you opened it, so nothing was merged",
 	"approval-record-failed": "your approval could not be recorded on the PR, so nothing was merged",
-	"approval-superseded":    "a later operator decision on the head landed meanwhile and replaces this one",
-	"approval-unconfirmed":   "whether your approval was recorded could not be read back, so nothing was merged",
+	"approval-superseded":    "a later decision on this commit replaced your approval, so nothing was merged",
+	"approval-unconfirmed":   "whether your approval was recorded could not be confirmed, so nothing was merged",
 }
 
-// RefusalDetail renders a verify-gate refusal reason for the CLI, with the
-// park it names, the reason code, and the toolbox's why when present.
-func RefusalDetail(reason, why, park string) string {
-	detail := refusalText(refusals, reason, park, "refused") + " [" + reason + "]"
-	if why != "" {
-		detail += ": " + why
-	}
-	return detail
+// RefusalDetail renders a verify-gate refusal reason in plain words, or ""
+// for a reason it has no words for.
+func RefusalDetail(reason string) string {
+	return refusals[reason]
 }
 
-// MergeRefusalDetail renders a refusal for the TUI's [m]erge in plain words
-// only: no reason code, park code or toolbox why, which are machine text.
+// MergeRefusalDetail renders a refusal for the TUI's [m]erge in plain words.
 func MergeRefusalDetail(reason string) string {
 	if detail, ok := mergeRefusals[reason]; ok {
 		return detail
 	}
-	return refusalText(refusals, reason, "", "verify refused the approval, so nothing was merged")
-}
-
-func refusalText(details map[string]string, reason, park, unknown string) string {
-	detail, ok := details[reason]
-	if !ok {
-		return unknown
+	if detail := RefusalDetail(reason); detail != "" {
+		return detail
 	}
-	if reason == "park-codes-unknown" && park != "" {
-		detail += " (" + park + ")"
-	}
-	return detail
+	return "verify refused the approval, so nothing was merged"
 }
 
 // ApproveRefusal is the sentence for an approve that neither approved nor
-// planned: the reason, then what a record it posted still does.
+// planned: the reason, then what an approval it posted still does.
 func ApproveRefusal(pr int, r *pb.VerifyApproveResult) string {
-	return fmt.Sprintf("PR #%d not approved: %s%s", pr, RefusalDetail(r.GetReason(), r.GetWhy(), r.GetPark()), postedRecordDetail(r, "re-run approve"))
+	refusal := fmt.Sprintf("PR #%d not approved", pr)
+	if detail := RefusalDetail(r.GetReason()); detail != "" {
+		refusal += ": " + detail
+	}
+	return refusal + postedRecordDetail(r)
 }
 
 // MergeRefusal is ApproveRefusal for the TUI's [m]erge on a review row, whose
 // approval was refused, so nothing merged.
 func MergeRefusal(pr int, r *pb.VerifyApproveResult) string {
-	return fmt.Sprintf("Couldn't merge PR #%d: %s%s", pr, MergeRefusalDetail(r.GetReason()), postedRecordDetail(r, "merge again"))
+	return fmt.Sprintf("Couldn't merge PR #%d: %s%s", pr, MergeRefusalDetail(r.GetReason()), postedRecordDetail(r))
 }
 
-// parkCodeLines states each park code's issue in plain words, one indented
-// line per code in the verify gate's report order. The line above already
-// names the codes by category, so a code whose plain words only repeat its
-// category ("a UI change") gets no line.
-func parkCodeLines(codes []string) []string {
-	var lines []string
+// waivedLines states each waived park code's issue in plain words, one
+// indented line per code in the verify gate's report order.
+func waivedLines(codes []string) []string {
+	lines := make([]string, 0, len(codes))
 	for _, code := range codes {
-		if attention.ParkCodeRestatesCategory(code) {
-			continue
-		}
 		plain := attention.ParkCodePlainWords(code)
 		lines = append(lines, "  "+strings.ToUpper(plain[:1])+plain[1:])
 	}
 	return lines
 }
 
-// failureList names a park's failure codes by category, or "" when the park
-// only asks for a sign-off.
-func failureList(codes []string) string {
-	return strings.Join(attention.ParkCategories(attention.ParkFailureCodes(codes)), ", ")
-}
-
-// waivedWords names what an approval waives by category, for a sentence a
-// person reads; the codes themselves stay in the approval record.
-func waivedWords(waives string) string {
-	if categories := attention.ParkCategories([]string{waives}); len(categories) > 0 {
-		return strings.Join(categories, ", ")
-	}
-	return "nothing"
-}
-
-// approvedParkLines renders, after an approval that waived waives, each waived
-// code in plain words and, when one reports a failure, what the approval
-// overrode.
-func approvedParkLines(waives string, planned bool) []string {
+// waivedPark renders what an approval waives: the summary's ending, which
+// says nothing is waived or introduces the codes, then each waived code once
+// in plain words and, when one of them blocks rather than asks for a
+// sign-off, that the approval overrides it.
+func waivedPark(waives string, planned bool) (string, []string) {
 	codes := attention.ParkCodes([]string{waives})
 	if len(codes) == 0 {
-		return nil
+		if planned {
+			return " It would waive nothing.", nil
+		}
+		return " It waives nothing.", nil
 	}
-	lines := parkCodeLines(codes)
-	failures := failureList(codes)
+	lines := waivedLines(codes)
+	blocking := len(attention.ParkFailureCodes(codes)) > 0
 	switch {
-	case failures == "":
-		return lines
+	case planned && blocking:
+		return " It would waive:", append(lines, "Approving would override a blocking issue, not only a sign-off.")
 	case planned:
-		return append(lines, fmt.Sprintf("Approving would override %s.", failures))
+		return " It would waive:", lines
+	case blocking:
+		return " It waives:", append(lines, "This overrode a blocking issue. A new push is judged afresh.")
 	default:
-		return append(lines, fmt.Sprintf("Approving overrode %s. A new push is judged afresh.", failures))
+		return " It waives:", lines
 	}
 }
 
-// postedRecordDetail adds what a refused approve's record still does: a posted
-// record is inert for a moved head or a superseding operator decision; for an
-// unconfirmed approval it may stand (or may not have been posted), so the
-// operator retries to confirm.
-func postedRecordDetail(r *pb.VerifyApproveResult, retry string) string {
+// postedRecordDetail adds what a refused approve's posted approval still
+// does: one that took effect covers a head that moved or a decision that
+// replaced it, so it waives nothing that stands now; an unconfirmed one may
+// stand.
+func postedRecordDetail(r *pb.VerifyApproveResult) string {
 	switch {
-	case r.GetReason() == "approval-unconfirmed" && r.GetApprovalUrl() != "":
-		return fmt.Sprintf("; the record at %s may still stand for head %s, so %s to confirm", r.GetApprovalUrl(), shortSHA(r.GetHeadSha()), retry)
+	case r.GetApprovalUrl() == "":
+		return ""
 	case r.GetReason() == "approval-unconfirmed":
-		return "; " + retry + " to confirm"
-	case r.GetApprovalUrl() != "":
-		return fmt.Sprintf("; the record at %s names head %s only and waives nothing that stands now", r.GetApprovalUrl(), shortSHA(r.GetHeadSha()))
+		return fmt.Sprintf("; the approval at %s may still stand for head %s", r.GetApprovalUrl(), shortSHA(r.GetHeadSha()))
 	}
-	return ""
+	return fmt.Sprintf("; the approval at %s covers head %s only and waives nothing that stands now", r.GetApprovalUrl(), shortSHA(r.GetHeadSha()))
 }
 
 // ApproveLines renders an approve that approved or planned: the outcome, then,
@@ -162,13 +138,14 @@ func ApproveLines(pr int, r *pb.VerifyApproveResult) []string {
 	case r.GetIsPlanned() && sentBack:
 		return []string{fmt.Sprintf("Would approve #%d: record an approval lifting the older send-back of head %s (dry run; nothing written).", pr, head)}
 	case r.GetIsPlanned():
-		planned := fmt.Sprintf("Would approve #%d: record an approval waiving %s on head %s, then remove the needs-human label (dry run; nothing written).", pr, waivedWords(r.GetWaives()), head)
-		return append([]string{planned}, approvedParkLines(r.GetWaives(), true)...)
+		ending, waived := waivedPark(r.GetWaives(), true)
+		planned := fmt.Sprintf("Would approve #%d: record an approval on head %s, then remove the needs-human label (dry run; nothing written).%s", pr, head, ending)
+		return append([]string{planned}, waived...)
 	case sentBack:
 		return []string{fmt.Sprintf("Approved #%d: lifted the older send-back of head %s (record: %s).", pr, head, r.GetApprovalUrl())}
 	}
-	lines := []string{fmt.Sprintf("Approved #%d: waived %s on head %s (record: %s). Verify will re-check and merge.", pr, waivedWords(r.GetWaives()), head, r.GetApprovalUrl())}
-	lines = append(lines, approvedParkLines(r.GetWaives(), false)...)
+	ending, waived := waivedPark(r.GetWaives(), false)
+	lines := append([]string{fmt.Sprintf("Approved #%d on head %s (record: %s).%s", pr, head, r.GetApprovalUrl(), ending)}, waived...)
 	if label := labelLine(r, "the approval"); label != "" {
 		lines = append(lines, label)
 	}
@@ -190,17 +167,18 @@ func OperatorMerged(pr int, r *pb.OperatorMergeSessionResponse) string {
 // happen, for the reasons the verify toolbox reports. A reason missing here
 // is left unsaid rather than shown as a code.
 var whyWords = map[string]string{
-	"TRACKER_CREDENTIALS_MISSING": "the tracker's credentials are missing",
-	"missing-credential":          "the tracker's credentials are missing",
-	"unauthorized":                "the tracker refused the credentials",
-	"forbidden":                   "the tracker refused the credentials",
-	"rate-limited":                "the tracker was rate limited",
-	"no-ticket-line":              "the PR names no ticket",
-	"no-capability":               "this setup cannot write to the tracker",
-	"no-adapter":                  "no tracker is set up",
-	"status-unreadable":           refusals["status-unreadable"],
-	"pr-unreadable":               refusals["pr-unreadable"],
-	"head-unreadable":             refusals["head-unreadable"],
+	"TRACKER_CREDENTIALS_MISSING":            "the tracker's credentials are missing",
+	"missing-credential":                     "the tracker's credentials are missing",
+	"unauthorized":                           "the tracker refused the credentials",
+	"forbidden":                              "the tracker refused the credentials",
+	"rate-limited":                           "the tracker was rate limited",
+	"no-ticket-line":                         "the PR names no ticket",
+	"no-capability":                          "this setup cannot write to the tracker",
+	"no-adapter":                             "no tracker is set up",
+	"no time was left to update the tracker": "no time was left to update the tracker",
+	"status-unreadable":                      refusals["status-unreadable"],
+	"pr-unreadable":                          refusals["pr-unreadable"],
+	"head-unreadable":                        refusals["head-unreadable"],
 }
 
 // because is " because <why>" for a reason whyWords knows, else "".
@@ -223,7 +201,7 @@ func labelLine(r *pb.VerifyApproveResult, decision string) string {
 		case "pr-not-open":
 			return "The PR is no longer open, so the needs-human label was left on."
 		case "head-moved":
-			return "The PR's head or its park changed after " + decision + ", so the needs-human label was left on."
+			return "The PR changed after " + decision + ", so the needs-human label was left on."
 		}
 		// An older toolbox reported a failed re-read as skipped too.
 		return "The needs-human label was left on" + because(r.GetWhy()) + "."

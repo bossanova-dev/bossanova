@@ -305,6 +305,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return sessionProbes(deadBootstrapSession, func(s *pb.Session) bool {
 			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 		})
+	case RunBlockedLabelChange:
+		return sessionProbes(runBlockedSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetSentence() == "Run blocked: run blocked: MAD-1751 implemented"
+		})
 	case ParkMergeAttentionChange:
 		return sessionProbes(signOffParkSession, func(s *pb.Session) bool {
 			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE) &&
@@ -323,6 +327,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			return sinceSession(sinceShape{}, verifiedNotMergedInput(true, pb.ChatStatus_CHAT_STATUS_IDLE, ""))
 		}, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+		})
+	case EndedBlockHintChange:
+		return sessionProbes(endedBlockSession, func(s *pb.Session) bool {
+			return s.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS
 		})
 	case ParkSinceChange:
 		return sessionProbes(func() *pb.Session {

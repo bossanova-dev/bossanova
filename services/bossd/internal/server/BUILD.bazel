@@ -259,6 +259,7 @@ go_test(
     deps = [
         "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/alertstate",
+        "//lib/bossalib/apiversion",
         "//lib/bossalib/attention",
         "//lib/bossalib/broadcast",
         "//lib/bossalib/chatdelivery",

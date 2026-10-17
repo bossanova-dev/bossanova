@@ -12,10 +12,20 @@ description: >
 # and ~43 min of pure repetition. GitHub keys check runs to the COMMIT, not the PR,
 # so the staging run's green checks are already displayed on the production PR; the
 # re-run adds nothing.
+#
+# The probe alone fired only 3 times in 35 release pairs (2026-09/10), because both
+# release PRs open within minutes and their runs overlap: neither has succeeded
+# when the other probes. Each calling workflow therefore keys its `concurrency`
+# group on `github.event.pull_request.head.sha` with cancel-in-progress off, so the
+# second same-SHA run queues until the first concludes and this probe then sees it.
+#
+# Only a prior `pull_request` run counts. A feature-push run of the same workflow
+# on the same commit ran the feature tier (affected targets, no release gates), so
+# its success says nothing about the release jobs this probe would skip.
 
 outputs:
   skip:
-    description: "'true' when a prior successful run of this workflow exists for this commit"
+    description: "'true' when a prior successful pull_request run of this workflow exists for this commit"
     value: ${{ steps.probe.outputs.skip }}
 
 runs:
@@ -41,7 +51,7 @@ runs:
 
         count=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" 2>/dev/null \
           | jq --arg name "${WORKFLOW_NAME}" --argjson rid "${RUN_ID}" \
-               '[.workflow_runs[]? | select(.name == $name and .conclusion == "success" and .id != $rid)] | length' \
+               '[.workflow_runs[]? | select(.name == $name and .event == "pull_request" and .conclusion == "success" and .id != $rid)] | length' \
                2>/dev/null) || count=""
 
         case "${count}" in

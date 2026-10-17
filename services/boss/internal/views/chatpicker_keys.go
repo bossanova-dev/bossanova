@@ -109,7 +109,9 @@ func (m ChatPickerModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	var handled bool
-	m.attentionAction, cmd, handled = m.attentionAction.start(m.ctx, m.client, m.session, msg.String(), true)
+	if !m.attentionAction.mergeUnresolved() {
+		m.attentionAction, cmd, handled = m.attentionAction.start(m.ctx, m.client, m.session, msg.String(), true)
+	}
 	if handled {
 		m.table.SetHeight(m.tableHeight())
 		return m, cmd

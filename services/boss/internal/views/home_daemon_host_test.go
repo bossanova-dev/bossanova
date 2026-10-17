@@ -108,9 +108,9 @@ func withHostDestination(t *testing.T, destination string) {
 // TestDaemonDownRemediationNamesTheHost is the mid-session half of the --host
 // reconnect criterion: a tunnel that drops after startup never reaches the
 // startup wait screen, so this daemon-down view is what the user actually sees.
-// It must say the connection is being retried and point at the machine that
-// stopped answering — telling a --host user to run `boss daemon restart` would
-// aim them at the local daemon boss is not talking to.
+// It must say the connection is being retried and name the machine that
+// stopped answering — naming `boss daemon restart` would aim a --host user at
+// the local daemon boss is not talking to.
 func TestDaemonDownRemediationNamesTheHost(t *testing.T) {
 	withHostDestination(t, "deploy@bastion.example.com")
 
@@ -118,25 +118,22 @@ func TestDaemonDownRemediationNamesTheHost(t *testing.T) {
 	for _, want := range []string{
 		"Reconnecting to deploy@bastion.example.com",
 		"resumes automatically",
-		"ssh deploy@bastion.example.com",
-		"boss daemon status",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("remediation %q must contain %q", got, want)
 		}
 	}
-	// The local advice restarts, installs, and uninstalls the wrong machine's
-	// daemon, so none of those commands may be offered unqualified here.
-	for _, forbidden := range []string{"boss daemon restart", "boss daemon install", "\nbossd "} {
+	// The screen states what happened; it offers no commands to run.
+	for _, forbidden := range []string{"boss daemon", "ssh deploy@", "boss tail", "\nbossd "} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("remediation %q must not offer the local %q", got, forbidden)
 		}
 	}
 }
 
-// TestDaemonDownRemediationDefaultsToLocal pins that the ordinary local daemon
-// wording is unchanged when --host was never used, and that the destination
-// does not leak across runs.
+// TestDaemonDownRemediationDefaultsToLocal pins the local daemon commands
+// when --host was never used, and that the destination does not leak across
+// runs.
 func TestDaemonDownRemediationDefaultsToLocal(t *testing.T) {
 	withHostDestination(t, "")
 
@@ -146,8 +143,10 @@ func TestDaemonDownRemediationDefaultsToLocal(t *testing.T) {
 			t.Fatalf("local remediation %q must contain %q", got, want)
 		}
 	}
-	if strings.Contains(got, "ssh ") {
-		t.Fatalf("local remediation %q must not mention ssh", got)
+	for _, forbidden := range []string{"ssh ", "as soon as"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("local remediation %q must not contain %q", got, forbidden)
+		}
 	}
 }
 
@@ -309,7 +308,10 @@ func TestHostRemediationStopsPromisingARedialOnceTheSupervisorIsGone(t *testing.
 	if strings.Contains(stopped, "keeps redialling") {
 		t.Errorf("remediation %q promises a redial after the supervisor exited", stopped)
 	}
-	if !strings.Contains(stopped, "Restart boss") {
+	if !strings.Contains(stopped, "boss stopped reconnecting") {
+		t.Errorf("remediation %q must say nothing is reconnecting any more", stopped)
+	}
+	if !strings.Contains(stopped, "Restart boss to reconnect.") {
 		t.Errorf("remediation %q must tell the user the one thing that recovers it", stopped)
 	}
 	if !strings.Contains(stopped, "signal: terminated") {
@@ -340,14 +342,6 @@ func TestRenderDaemonErrorShowsTheRetainedTunnelReason(t *testing.T) {
 	rendered := normalizedRender(HomeModel{err: errForwardedSocketDial, width: 100}.renderDaemonError())
 	if !strings.Contains(rendered, "signal: terminated") {
 		t.Fatalf("home daemon error %q must report why the tunnel went down", rendered)
-	}
-	// …and where the whole history lives, since the screen only shows the last
-	// one. The source has to be named: `boss tail` alone defaults to the bossd
-	// log (cmd/tail.go resolveSources), which under --host is a local daemon
-	// boss is not talking to and never carries the supervisor's line. Pinning
-	// the bare prefix would pass against exactly that mistake.
-	if !strings.Contains(rendered, "boss tail boss") {
-		t.Fatalf("home daemon error %q must point at the boss log, not the bossd default", rendered)
 	}
 }
 

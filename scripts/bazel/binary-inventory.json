@@ -22,7 +22,6 @@
     "bossd-plugin-stub-runner": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner"
   },
   "test_fixtures": {
-    "stub-claude": "//services/bossd/internal/server/testdata/stub-claude:stub-claude",
     "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e"
   }
 }

@@ -4,6 +4,7 @@ go_library(
     name = "auth",
     srcs = [
         "devicecode.go",
+        "e2e_login.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "e2e_login_prod.go",
         "loginverify.go",
         "manager.go",

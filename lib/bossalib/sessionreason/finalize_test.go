@@ -27,6 +27,23 @@ func TestFinalizeRecovered(t *testing.T) {
 	}
 }
 
+func TestWithoutBlockedLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"run blocked: MAD-1751 implemented; awaiting review": "MAD-1751 implemented; awaiting review",
+		RunBlocked("Run blocked: unresolved P1"):             "unresolved P1",
+		"  BLOCKED:   needs a rerun  ":                       "needs a rerun",
+		"Blocked: run blocked: run blocked: twice":           "twice",
+		"finalize failed (pr_failed): blocked: boom":         "finalize failed (pr_failed): blocked: boom",
+		"blocked on a person":                                "blocked on a person",
+		" run blocked: ":                                     "run blocked:",
+		"":                                                   "",
+	} {
+		if got := WithoutBlockedLabel(in); got != want {
+			t.Errorf("WithoutBlockedLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestFixLoopExhausted(t *testing.T) {
 	if got := FixLoopExhausted(); got != "fix loop exhausted, needs human intervention" {
 		t.Fatalf("FixLoopExhausted = %q", got)

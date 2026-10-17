@@ -385,11 +385,7 @@ func runCronRunNow(cmd *cobra.Command, id string) error {
 		_, _ = fmt.Fprintf(out, "Started session %s for cron job %s\n", resp.GetSession().GetId(), id)
 		return nil
 	}
-	reason := resp.GetSkippedReason()
-	if reason == "" {
-		reason = "no reason given"
-	}
-	_, _ = fmt.Fprintf(out, "Fire skipped for cron job %s: %s\n", id, reason)
+	_, _ = fmt.Fprintf(out, "Skipped cron job %s: %s\n", id, views.RunNowSkipLabel(resp.GetSkippedReason()))
 	return nil
 }
 

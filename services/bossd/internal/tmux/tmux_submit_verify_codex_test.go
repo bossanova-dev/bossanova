@@ -236,11 +236,125 @@ func TestComposerHoldsDraft(t *testing.T) {
 		{"dim truecolor placeholder", "\x1b[1m›\x1b[0m \x1b[2;38;2;2;2;2mhint\x1b[0m\n", false},
 		{"normal intensity clears dim", "\x1b[1m›\x1b[0m \x1b[2mhint\x1b[22m typed\n", true},
 		{"no composer at all", "\x1b[1m• Working\x1b[0m\n", false},
+		// Claude Code 2.1.302 renders a placeholder as inverse(p[0]) + dim(p[1:])
+		// and its cursor as an inverse cell; these are those bytes as tmux 3.7
+		// re-encodes them under capture-pane -e.
+		{"claude placeholder behind the cursor", "────\n❯ \x1b[7mT\x1b[0;2mry \"fix typecheck errors\"\x1b[0m\n────\n", false},
+		{"claude empty composer", "────\n❯ \x1b[7m \x1b[0m\n────\n", false},
+		{"claude draft before the cursor", "────\n" + claudeGlyph + " half-written draft \x1b[7m \x1b[0m\n────\n", true},
+		{"claude draft with the cursor on its first letter", "────\n" + claudeGlyph + " \x1b[7mh\x1b[0malf-written draft\n────\n", true},
+		{"inverse is cleared by 27", claudeGlyph + " \x1b[7mT\x1b[27mry\n", true},
+		{"truecolor arguments are not read as inverse", "❯ \x1b[38;2;7;7;7mtyped\x1b[0m\n", true},
+		// Claude Code 2.1.302 draws an IDE selection as a pill in its "ide"
+		// colour ahead of the placeholder or the text.
+		{"ide pill before the placeholder", "────\n❯ \x1b[38;2;71;130;200m[⧉ 3 lines from main.go] \x1b[7;39mT\x1b[0;2mry \"fix typecheck errors\"\x1b[0m\n────\n", false},
+		{"ide pill in an ansi colour", "────\n❯ \x1b[94m[⧉ In main.go] \x1b[39;7mT\x1b[0;2mry\x1b[0m\n────\n", false},
+		{"ide pill in a 256 colour", "────\n❯ \x1b[38;5;68m[⧉ In main.go] \x1b[39;7mT\x1b[0;2mry\x1b[0m\n────\n", false},
+		{"ide pill before a draft", "────\n❯ \x1b[38;2;71;130;200m[⧉ 3 lines from main.go]\x1b[39m half-written draft\x1b[7m \x1b[0m\n────\n", true},
+		{"a pill typed in the default colour is a draft", "────\n" + claudeGlyph + " [⧉ 3 lines from main.go] \x1b[7m \x1b[0m\n────\n", true},
+		{"a pill whose colour ends early is a draft", "────\n❯ \x1b[94m[⧉ In\x1b[39m main.go] \x1b[7m \x1b[0m\n────\n", true},
+		{"a coloured bracket without the selection glyph is a draft", "────\n❯ \x1b[94m[main.go] \x1b[39;7mT\x1b[0;2mry\x1b[0m\n────\n", true},
+		{"dim carries onto a wrapped row", "────\n❯ \x1b[2mhint that\nwraps\x1b[0m\n────\n", false},
+		// Under NO_COLOR Claude keeps only the inverse cursor, so a box styled
+		// with nothing else cannot tell a placeholder from a draft.
+		{"no-colour placeholder carries no evidence", "────\n❯ \x1b[7mT\x1b[0mry \"fix typecheck errors\"\n────\n", false},
+		{"no-colour draft carries no evidence", "────\n❯ half-written draft\x1b[7m \x1b[0m\n────\n", false},
+		{"inverse styling outside the box is not evidence", "\x1b[1m⏺\x1b[0m reply\n────\n❯ \x1b[7mT\x1b[0mry\n────\n\x1b[2mfooter\x1b[0m\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := composerHoldsDraft(tc.styled); got != tc.want {
 				t.Fatalf("composerHoldsDraft = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// claudeGlyph is Claude Code 2.1.302's prompt glyph in its default colour.
+const claudeGlyph = "\x1b[38;2;153;153;153m❯\x1b[39m"
+
+// composerHoldsOnlyPayload decides whether a not-submitted send may clear the
+// composer, so it must never read an operator's text as the payload.
+func TestComposerHoldsOnlyPayload(t *testing.T) {
+	box := func(row string) string {
+		return "⏺ reply\n────\n" + claudeGlyph + " " + row + "\n────\n  footer\n"
+	}
+	const cmd = "/boss-repair"
+	const pasted = "line one\nline two\nline three"
+	cases := []struct {
+		name, styled, payload string
+		want                  bool
+	}{
+		{"the payload before the cursor", box(cmd + "\x1b[7m \x1b[0m"), cmd, true},
+		{"the payload and a dim argument hint", box(cmd + "\x1b[7m \x1b[0;2m<ticket-id>\x1b[0m"), cmd, true},
+		{"one collapsed paste", box("[Pasted text #2 +2 lines]\x1b[7m \x1b[0m"), pasted, true},
+		{"the payload wrapped over two rows", "────\n" + claudeGlyph + " line one\n  line two line three\n────\n", pasted, true},
+		{"a partial command and its unfocused completion", box("/boss-re\x1b[2mpair\x1b[0m"), cmd, false},
+		{"a partial command and its completion behind the cursor", box("/boss-re\x1b[7mp\x1b[0;2mair\x1b[0m"), cmd, false},
+		{"the cursor on the payload's last letter", box("/boss-repai\x1b[7mr\x1b[0m"), cmd, false},
+		{"text before the payload", box("half " + cmd + "\x1b[7m \x1b[0m"), cmd, false},
+		{"text after the payload", box(cmd + " now\x1b[7m \x1b[0m"), cmd, false},
+		{"two collapsed pastes", box("[Pasted text #1][Pasted text #2 +2 lines]\x1b[7m \x1b[0m"), pasted, false},
+		{"a collapsed paste and text", box("[Pasted text #2 +2 lines] and more\x1b[7m \x1b[0m"), pasted, false},
+		{"an empty composer", box("\x1b[7mT\x1b[0;2mry \"fix typecheck errors\"\x1b[0m"), cmd, false},
+		{"a codex collapsed paste above its footer", "\x1b[1m›\x1b[0m [Pasted Content 2181 chars]\n\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\n", pasted, true},
+		{"a codex draft", "\x1b[1m›\x1b[0m $boss-verify 3105\n\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\n", "$boss-verify 3106", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composerHoldsOnlyPayload(tc.styled, tc.payload); got != tc.want {
+				t.Fatalf("composerHoldsOnlyPayload(%q) = %v, want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+// Claude composers drawn into a real tmux pane with the SGR sequences Claude
+// Code 2.1.302 emits and read back with capture-pane -e
+// (testdata/panes/capture_claude_composer_styled.sh), so the draft reading is
+// pinned against tmux's own re-encoding rather than hand-written bytes.
+func TestComposerHoldsDraftOnRenderedClaudeComposers(t *testing.T) {
+	for name, want := range map[string]bool{
+		"placeholder":          false,
+		"suggestion":           false,
+		"wrapped_suggestion":   false,
+		"ide_pill_placeholder": false,
+		"draft":                true,
+		"ide_pill_draft":       true,
+		"dim_row_above_draft":  true,
+		"slash_completion":     true,
+		"no_color_placeholder": false,
+		"no_color_draft":       false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			styled := readPaneFixture(t, "claude_composer_"+name+"_styled_rendered.txt")
+			if !strings.Contains(styled, "\x1b[") {
+				t.Fatal("fixture carries no SGR; recapture with capture_claude_composer_styled.sh")
+			}
+			if got := composerHoldsDraft(styled); got != want {
+				t.Fatalf("composerHoldsDraft = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// The same rendered composers, read for whether they hold only a given
+// payload: the check a not-submitted send makes before clearing the box.
+func TestComposerHoldsOnlyPayloadOnRenderedClaudeComposers(t *testing.T) {
+	for _, tc := range []struct {
+		fixture, payload string
+		want             bool
+	}{
+		{"draft", "half-written draft", true},
+		{"ide_pill_draft", "half-written draft", false},
+		{"slash_completion", "/boss-repair", false},
+		{"slash_completion", "/boss-re", false},
+		{"placeholder", `Try "fix typecheck errors"`, false},
+	} {
+		t.Run(tc.fixture+" "+tc.payload, func(t *testing.T) {
+			styled := readPaneFixture(t, "claude_composer_"+tc.fixture+"_styled_rendered.txt")
+			if got := composerHoldsOnlyPayload(styled, tc.payload); got != tc.want {
+				t.Fatalf("composerHoldsOnlyPayload = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -270,8 +384,8 @@ func TestSendRefusesCodexComposerHoldingDraft(t *testing.T) {
 	c := NewClient(WithCommandFactory(fake.factory))
 
 	err := c.sendPlan(context.Background(), "boss-test-sess", stuckComposerPayload, codexSendOpts())
-	if OutcomeOf(err) != OutcomeComposerOccupied || !errors.Is(err, errComposerOccupied) {
-		t.Fatalf("err = %v (outcome %v); want %v carrying errComposerOccupied", err, OutcomeOf(err), OutcomeComposerOccupied)
+	if OutcomeOf(err) != OutcomeComposerOccupied || !errors.Is(err, ErrComposerOccupied) {
+		t.Fatalf("err = %v (outcome %v); want %v carrying ErrComposerOccupied", err, OutcomeOf(err), OutcomeComposerOccupied)
 	}
 	for _, call := range fake.callsCopy() {
 		if call.subcommand == "send-keys" {

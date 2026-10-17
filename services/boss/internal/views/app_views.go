@@ -45,6 +45,7 @@ type switchViewMsg struct {
 	view       View
 	sessionID  string      // used for ViewAttach and ViewChatPicker
 	resumeID   string      // Claude Code session UUID to resume (ViewAttach only)
+	chatID     string      // agent session ID of the chat to select once the list loads (ViewChatPicker only)
 	agentName  string      // optional per-chat agent override (ViewAttach only); empty = inherit session
 	armedNote  string      // what a waiting chat is parked on, shown while launching (ViewAttach only)
 	returnView View        // optional view to return to when the target view is cancelled

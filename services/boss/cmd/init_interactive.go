@@ -253,7 +253,7 @@ func (iv *initInterview) askRepo() error {
 		return iv.noteConfigLocation()
 	}
 	if o.noRegister {
-		return errors.New("repository is unregistered; re-run with --register")
+		return errors.New("repository is not registered")
 	}
 	register := o.register
 	if !register {
@@ -667,7 +667,7 @@ func (iv *initInterview) askMerge() error {
 		return err
 	}
 	if !merge {
-		return fmt.Errorf("%s already exists; left untouched. Re-run with --merge or --force", target)
+		return fmt.Errorf("%s already exists; left untouched", target)
 	}
 	iv.opts.mergeExisting = true
 	return nil
@@ -683,7 +683,7 @@ func (iv *initInterview) askCrons() error {
 		return nil
 	}
 	if projectSelectsCronsHere(iv.opts.project) {
-		iv.p.Say("Cron jobs for this daemon come from .boss-project.json; the factory cron questions are skipped.")
+		iv.p.Say("Cron jobs for this daemon come from .boss-project.json; the pipeline cron questions are skipped.")
 		return nil
 	}
 	eligibility, err := initCronAgentEligibility(iv.ctx, iv.client, newInitCronEnv().servicePath())
@@ -696,19 +696,19 @@ func (iv *initInterview) askCrons() error {
 		if e.Eligible() {
 			eligible = append(eligible, e.Name)
 		} else {
-			iv.p.Say("%s cannot run factory cron jobs: %s.", e.Name, e.reason())
+			iv.p.Say("%s cannot run pipeline cron jobs: %s.", e.Name, e.reason())
 		}
 	}
 	if len(eligible) == 0 {
-		iv.p.Say("Cron setup skipped: no agent can run factory cron jobs.")
+		iv.p.Say("Cron setup skipped: no agent can run pipeline cron jobs.")
 		return nil
 	}
 	if cron.agent == "" {
 		if len(eligible) == 1 {
-			iv.p.Say("Factory cron jobs run under %s, the only eligible agent.", eligible[0])
+			iv.p.Say("Pipeline cron jobs run under %s, the only eligible agent.", eligible[0])
 		} else {
 			for {
-				answer, err := iv.ask(fmt.Sprintf("Agent for the factory cron jobs: %s (--agent)", strings.Join(eligible, " or ")), eligible[0])
+				answer, err := iv.ask(fmt.Sprintf("Agent for the pipeline cron jobs: %s (--agent)", strings.Join(eligible, " or ")), eligible[0])
 				if err != nil {
 					return err
 				}
@@ -743,7 +743,7 @@ func (iv *initInterview) askCrons() error {
 		}
 	}
 	if len(existing) > 0 && !cron.updateConsent {
-		update, err := iv.confirm(fmt.Sprintf("%s already exist(s). Update prompt, gate and agent where they differ from the factory definition? Schedule, timezone and enabled state never change. (--update-crons)",
+		update, err := iv.confirm(fmt.Sprintf("%s already exist(s). Update prompt, gate and agent where they differ from the standard definition? Schedule, timezone and enabled state never change. (--update-crons)",
 			strings.Join(existing, ", ")), false)
 		if err != nil {
 			return err
@@ -950,7 +950,7 @@ func handleInitInterrupt(sigs <-chan os.Signal, quit <-chan struct{}, iv *initIn
 		_, _ = io.WriteString(iv.errOut, iv.steps.stoppedReport())
 		iv.mu.Unlock()
 	case <-sigs:
-		_, _ = io.WriteString(iv.errOut, "boss init interrupted again while a step was still running; that step's outcome is unknown.\nRe-run `boss init` to finish: every step converges, so a re-run completes the job.\n")
+		_, _ = io.WriteString(iv.errOut, "boss init interrupted again while a step was still running; that step's outcome is unknown.\nRe-run `boss init` to finish.\n")
 	}
 	// exit skips main's deferred teardown, so close a --host tunnel here or
 	// its ssh child and socket directory outlive the process.

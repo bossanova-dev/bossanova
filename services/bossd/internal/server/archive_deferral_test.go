@@ -247,6 +247,9 @@ func TestRequestArchive_AllChatsIdle_ArchivesImmediately(t *testing.T) {
 	if resp.GetIsDeferred() {
 		t.Error("is_deferred = true, want false")
 	}
+	if resp.GetSession().GetArchivePending() {
+		t.Error("response session archive_pending = true, want false for an archive that already ran")
+	}
 	if resp.GetBlockingAgentSessionId() != "" {
 		t.Errorf("blocking_agent_session_id = %q, want empty", resp.GetBlockingAgentSessionId())
 	}
@@ -274,10 +277,8 @@ func TestRequestArchive_WorkingChat_DefersThenArchivesOnIdle(t *testing.T) {
 	if !h.archiving() {
 		t.Error("archive_pending (DisplayTracker archiving) = false, want true while deferred")
 	}
-	hydrated := &pb.Session{Id: deferralSessionID}
-	HydrateDisplayEntry(hydrated, h.display.Get(deferralSessionID))
-	if !hydrated.GetArchivePending() {
-		t.Error("hydrated session archive_pending = false, want true while deferred")
+	if !resp.GetSession().GetArchivePending() {
+		t.Error("response session archive_pending = false, want true: the web detail page reads it to stay on a deferred archive")
 	}
 	h.exec.expectNone(t, 50*time.Millisecond)
 

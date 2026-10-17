@@ -542,8 +542,11 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("send message (delivery state: %s): %w", tmux.OutcomeComposerOccupied, err))
 		case tmux.OutcomeNotSubmitted:
-			// The payload is confirmed still sitting in the composer: a genuine
-			// failure, and one a caller can safely retry. Keep it loud, and name the
+			// The payload was confirmed unsubmitted: a genuine failure, and one a
+			// caller can safely retry. The send withdrew its payload from the
+			// composer before returning, so the retry types into an empty box; when
+			// the withdrawal could not run, the error says so and a retry is refused
+			// as composer occupied until the box is cleared. Keep it loud, and name the
 			// state in the message so the distinction survives an error-only surface
 			// (the proxied bossanova.v1 path, which does not carry delivery_state).
 			return nil, connect.NewError(connect.CodeInternal,

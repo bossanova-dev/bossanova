@@ -132,3 +132,25 @@ func TestProviderContract_GitHubOperatorRecordIsTheNewestPosted(t *testing.T) {
 		})
 	}
 }
+
+// TestProviderContract_MockVCSProviderUndatedRecordIsNotAnApproval pins the
+// fail-safe for a provider that leaves CreatedAt unset: an approval last
+// written after a send-back would decide the head if write order stood in for
+// posting order, so an undated record reads as a send-back instead.
+func TestProviderContract_MockVCSProviderUndatedRecordIsNotAnApproval(t *testing.T) {
+	base := time.Date(2026, 10, 13, 11, 0, 0, 0, time.UTC)
+	record := func(kind string, at time.Time) vcs.PRComment {
+		return vcs.PRComment{
+			Body:        "**Recorded by the operator**\n\n<!-- boss-" + kind + " head=" + contractHead + " -->",
+			AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: at,
+		}
+	}
+	p := testharness.NewMockVCSProvider()
+	p.PRComments = map[int][]vcs.PRComment{7: {
+		record("send-back", base),
+		record("approve", base.Add(time.Hour)),
+	}}
+	if !readThrough(p).SentBack("s1", contractHead) {
+		t.Fatal("SentBack = false for undated records; want the head held as sent back")
+	}
+}

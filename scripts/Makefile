@@ -128,6 +128,7 @@ lint:
 	@node check-ellipsis-consistency.mjs
 	@node check-cli-flag-parsers.mjs
 	@node check-published-core-identity.mjs
+	@node check-flaky-quarantine.mjs
 
 ## test: Run script tests
 test:

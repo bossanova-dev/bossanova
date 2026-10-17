@@ -86,6 +86,7 @@ import {
   PARK_NOTE_MARKER,
   ledgerEvidence,
   ledgerFingerprint,
+  parkCategories,
   parkNoteMarker,
 } from './verify-park-note.mjs'
 
@@ -2954,7 +2955,8 @@ test('every human reason posts needs human, adds the label and writes exactly on
     assert.deepEqual(writes[0].addLabels, ['needs-human'])
     assert.equal(writes[0].mentionCreator, true)
     assert.equal(writes[0].marker, `boss-verify head ${HEAD}`)
-    assert.match(writes[0].comment, new RegExp(code))
+    assert.ok(writes[0].comment.includes(parkCategories([code])[0]), writes[0].comment)
+    assert.ok(!writes[0].comment.includes(code), `${code} shown to people: ${writes[0].comment}`)
     assert.equal(
       w.notes().length,
       code === 'extension-failed' ? 1 : 0,
@@ -2985,7 +2987,10 @@ test('post --reason accepts a comma list, normalises its order and names the set
       target: undefined,
     },
   ])
-  assert.match(adapter.writeCalls()[0].comment, /always-human-path,human-review:ui/)
+  assert.equal(
+    adapter.writeCalls()[0].comment,
+    `PR #7 (${PR_URL}) is waiting for a person: security, UI change.`,
+  )
 
   await assert.rejects(
     post(
@@ -5125,7 +5130,7 @@ test('approve --for-merge on an unparked head records an approval that waives no
     assert.deepEqual(commentBodies(w), [
       [
         '**Approved by the operator**',
-        `Signed off for an operator merge of \`${HEAD}\` with nothing parked; it waives nothing.`,
+        `Signed off for a merge of \`${HEAD}\`; nothing was waiting, so it waives nothing.`,
         approveMarker(HEAD, []),
       ].join('\n\n'),
     ])
@@ -6467,7 +6472,10 @@ test('post --carry-record posts the visible carry record once, then the approved
   const comment = w.comments.at(-1)
   assert.ok(comment.body.endsWith(carryMarker(HEAD, ANCHOR, patch)))
   assert.ok(comment.body.includes(approved.html_url))
-  assert.ok(comment.body.includes(CARRIED))
+  assert.ok(
+    comment.body.includes(`It waives ${parkCategories(CARRIED.split(',')).join(', ')} only.`),
+  )
+  assert.ok(!comment.body.split('\n').slice(0, -1).join('\n').includes(CARRIED), comment.body)
   assert.deepEqual(
     operatorMarkers([comment]).map((m) => [m.kind, m.head, m.from, m.patch]),
     [['carry', HEAD, ANCHOR, patch]],
@@ -6734,7 +6742,7 @@ test('a ticketless factory PR parks on its status and a park note, and writes no
   for (const line of [
     'No automated build and review has passed on this commit.',
     '`## Acceptance criteria` is missing.',
-    'This PR has no tracker ticket, so verify made no tracker writes',
+    'This PR has no tracker ticket, so no ticket was updated.',
   ])
     assert.ok(note.body.includes(line), line)
 

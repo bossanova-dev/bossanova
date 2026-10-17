@@ -2763,7 +2763,8 @@ type Session struct {
 	IsReadyOverWaiting bool `protobuf:"varint,77,opt,name=is_ready_over_waiting,json=isReadyOverWaiting,proto3" json:"is_ready_over_waiting,omitempty"`
 	// The single "what does this session need from you" answer, computed from
 	// session facts by lib/bossalib/attention. Additive alongside
-	// attention_status (22), which is unchanged. Served from API version
+	// attention_status (22), which from 2026-09-23 is absent on a Blocked
+	// session whose block no longer needs the operator. Served from API version
 	// 2026-09-17; older pins receive it cleared.
 	Attention *SessionAttention `protobuf:"bytes,78,opt,name=attention,proto3" json:"attention,omitempty"`
 	// Transport-only inverse mark: the composite reads "working" only because an

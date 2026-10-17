@@ -59,6 +59,23 @@ func newHarness(t *testing.T) *clitest.Harness {
 	return h
 }
 
+// TestCLI_New_AgentFlagRegistered guards against accidental removal of the
+// `boss new --agent` flag.
+func TestCLI_New_AgentFlagRegistered(t *testing.T) {
+	h := clitest.New(t, clitest.WithRepos(testRepos()...))
+	res := h.Run("new", "--help")
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "--agent" {
+			return
+		}
+	}
+	t.Fatalf("`boss new --help` lists no --agent flag; stdout:\n%s", res.Stdout)
+}
+
 // TestCLI_New_JSONEnvelope pins the BOS-821 machine surface: `--json` emits a
 // single JSON object carrying the session id and the chat id. It asserts by
 // UNMARSHALLING rather than by substring, so a malformed object or a second

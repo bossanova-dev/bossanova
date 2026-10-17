@@ -87,6 +87,11 @@ export const UNKNOWN_CODE_WORDS = Object.freeze({
   signOff: false,
 })
 
+/** The categories `codes` fall in, deduped in code order, as a person reads them. */
+export function parkCategories(codes) {
+  return [...new Set(codes.map((code) => (PARK_CODE_WORDS[code] ?? UNKNOWN_CODE_WORDS).category))]
+}
+
 // The words of a phrase that carry meaning: lower-cased, articles dropped.
 const meaningOf = (phrase) =>
   phrase
@@ -232,14 +237,24 @@ function evidenceFor(code, facts) {
   if (code === 'extension-failed') {
     const failures = extensionFailures(facts.extensionResults)
     if (failures === null)
-      return ["This post was not given the extensions' results; the verify chat has them."]
+      return ["The extensions' results were not available when this comment was written."]
     return failures.length > 0
       ? failures
       : ['No extension in the results failed; one that ran but left no result counts as failed.']
   }
-  if (code === 'always-human-path' || code.startsWith('human-review:'))
-    return text(facts.label) ? [`Matched: ${quote(facts.label)}`] : []
   return []
+}
+
+// Whether a code's evidence is the park label: the operator's words for the paths it matched.
+const labelled = (code) => code === 'always-human-path' || code.startsWith('human-review:')
+
+/**
+ * The park label as one top-level line, or none. Every labelled code shares the one label, so it
+ * is said once, before the codes, and never under a code whose own line was dropped.
+ */
+function labelBlocks(codes, facts) {
+  if (!text(facts.label) || !codes.some(labelled)) return []
+  return [{ line: null, evidence: [`The change touches ${quote(facts.label)}.`] }]
 }
 
 /**
@@ -333,26 +348,25 @@ export const PARK_NOTE_MARKER =
  */
 export function parkNote({ codes, headSha, facts = {}, ledger = null }) {
   const wordsOf = (code) => PARK_CODE_WORDS[code] ?? UNKNOWN_CODE_WORDS
-  const categories = [...new Set(codes.map((code) => wordsOf(code).category))]
+  const categories = parkCategories(codes)
   const head = [
-    `**boss-verify parked this PR for a person** on \`${headSha.slice(0, 12)}\`: ${categories.join(', ')}.`,
+    `**This PR is waiting for a person** on \`${headSha.slice(0, 12)}\`: ${categories.join(', ')}.`,
     '',
   ]
-  const blocks = codes.map((code) => {
-    const words = wordsOf(code)
-    return {
-      line: restatesCategory(words) ? null : `- ${capitalize(words.plain)}.`,
-      evidence: evidenceFor(code, facts),
-    }
-  })
+  const blocks = labelBlocks(codes, facts).concat(
+    codes.map((code) => {
+      const words = wordsOf(code)
+      return {
+        line: restatesCategory(words) ? null : `- ${capitalize(words.plain)}.`,
+        evidence: evidenceFor(code, facts),
+      }
+    }),
+  )
   const tail = ['', ...afterMergeLines(facts.body)]
   if (facts.ticketless === true)
-    tail.push(
-      'This PR has no tracker ticket, so verify made no tracker writes: this comment and the `boss/verify` status are the whole record.',
-      '',
-    )
+    tail.push('This PR has no tracker ticket, so no ticket was updated.', '')
   tail.push(
-    `An approval waives exactly what is listed above, on this commit only. A new push is judged afresh${codes.includes('ledger-open') ? ', and a fixed checklist is judged again the next time verify runs' : ''}.`,
+    `An approval waives exactly what is listed above, on this commit only. A new push is judged afresh${codes.includes('ledger-open') ? ', and a fixed checklist is judged again at the next check' : ''}.`,
   )
   const items = codes.includes('ledger-open') ? openItemsLine(headSha, ledgerEvidence(facts)) : ''
   tail.push('', parkCodesLine(codes))
@@ -385,7 +399,7 @@ export function afterMergeNote({ headSha, body = '' }) {
   const lines = afterMergeLines(body)
   if (!lines.length) return null
   const content = [
-    `**boss-verify passed this PR** on \`${headSha.slice(0, 12)}\`. Nothing below holds the merge; it is listed so a person sees it.`,
+    `**This PR passed verification** on \`${headSha.slice(0, 12)}\`. Nothing below holds the merge.`,
     '',
     ...lines,
   ]

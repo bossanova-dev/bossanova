@@ -623,6 +623,16 @@ const V20260921 Version = "2026-09-21"
 // 2026-09-21 and older pins get the old answers back.
 const V20260922 Version = "2026-09-22"
 
+// V20260923 ships RunBlockedLabelChange: a blocked run's FIX reads "Run
+// blocked: <reason>" with the reason's own leading "run blocked:" or
+// "blocked:" labels dropped, where it read "Run blocked: run blocked:
+// <reason>". It also ships EndedBlockHintChange: a Blocked session whose block
+// no longer needs the operator (its run's own agent is working again, or its
+// non-draft PR is green and mergeable) carries no attention_status, where every
+// Blocked session carried BLOCKED_MAX_ATTEMPTS. 2026-09-22 and older pins get
+// the old answers back.
+const V20260923 Version = "2026-09-23"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -780,8 +790,9 @@ func DefaultRegistry() *Registry {
 			V20260920,
 			V20260921,
 			V20260922,
+			V20260923,
 		},
-		V20260922,
+		V20260923,
 		Baseline,
 	)
 	if err != nil {

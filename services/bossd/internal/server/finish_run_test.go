@@ -407,6 +407,50 @@ func TestFinishUnattendedRun_LateBlockedReportRefused(t *testing.T) {
 	}
 }
 
+// TestFinishUnattendedRun_BlockedRunTakesOnlyItsOwnChat: a Blocked run accepts
+// a finish or a finish --blocked from its own chat only. Another chat of the
+// session is refused and leaves nothing pending and no report.
+func TestFinishUnattendedRun_BlockedRunTakesOnlyItsOwnChat(t *testing.T) {
+	for _, tc := range []struct {
+		name, requester, reason string
+		want                    connect.Code
+	}{
+		{name: "the run's chat finishes", requester: "chat-self"},
+		{name: "the run's chat re-reports BLOCKED", requester: "chat-self", reason: "still red"},
+		{name: "another chat finishes", requester: "chat-other", want: connect.CodePermissionDenied},
+		{name: "another chat reports BLOCKED", requester: "chat-other", reason: "operator says so", want: connect.CodePermissionDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFinishHarness(t, "chat-self", "chat-other")
+			row := h.sessions.rows[deferralSessionID]
+			runChat, blockedAt := "chat-self", time.Now().Add(-time.Hour)
+			row.State, row.AgentSessionID, row.StateEnteredAt = machine.Blocked, &runChat, &blockedAt
+			h.srv.lifecycle = session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+			resp, err := h.rpc(&pb.FinishUnattendedRunRequest{
+				SessionId: deferralSessionID, RequesterAgentSessionId: tc.requester, IsBlocked: tc.reason != "", BlockedReason: tc.reason,
+			})
+			got, _ := h.sessions.Get(context.Background(), deferralSessionID)
+			if tc.want != 0 {
+				if connect.CodeOf(err) != tc.want || h.d.has(deferralSessionID) || got.RunBlockedReason != nil {
+					t.Fatalf("err=%v pending=%v run_blocked_reason=%v, want %v with nothing pending or reported",
+						err, h.d.has(deferralSessionID), got.RunBlockedReason, tc.want)
+				}
+				return
+			}
+			if err != nil || !resp.GetIsDeferred() {
+				t.Fatalf("resp=%+v err=%v, want the finish deferred", resp, err)
+			}
+			if tc.reason != "" && (got.RunBlockedReason == nil || *got.RunBlockedReason != tc.reason) {
+				t.Fatalf("run_blocked_reason = %v, want %q", got.RunBlockedReason, tc.reason)
+			}
+			if got.State != machine.Blocked {
+				t.Fatalf("state = %v, the request must not finalize the run itself", got.State)
+			}
+		})
+	}
+}
+
 // TestRunBlockedSessionDisplaysAsBlocked: once finalize has Blocked a run that
 // reported BLOCKED, its row carries the run's reason as attention and its
 // draft PR renders red, never a green ready label.
@@ -414,7 +458,7 @@ func TestRunBlockedSessionDisplaysAsBlocked(t *testing.T) {
 	reason := "run blocked: review left an unresolved P1"
 	sess := &models.Session{ID: "sess-1", RepoID: "repo-1", State: machine.Blocked, BlockedReason: &reason}
 	p := SessionToProto(sess)
-	HydrateBaseAttention(p, sess, &models.Repo{ID: "repo-1"})
+	HydrateBaseAttention(p, sess, &models.Repo{ID: "repo-1"}, nil)
 
 	if a := p.GetAttentionStatus(); !a.GetNeedsAttention() || a.GetSummary() != reason {
 		t.Fatalf("attention = %+v, want needs attention with %q", a, reason)

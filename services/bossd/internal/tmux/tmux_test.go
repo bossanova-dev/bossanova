@@ -51,9 +51,6 @@ func (m *mockCommandFactory) lastCall() []string {
 }
 
 func TestAvailable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -69,9 +66,6 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestNotAvailable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		mock.calls = append(mock.calls, append([]string{name}, args...))
@@ -86,9 +80,6 @@ func TestNotAvailable(t *testing.T) {
 }
 
 func TestNewSession_Args(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name     string
 		opts     NewSessionOpts
@@ -181,9 +172,6 @@ func TestNewSession_Args(t *testing.T) {
 }
 
 func TestNewSession_RequiredFields(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name string
 		opts NewSessionOpts
@@ -227,9 +215,6 @@ func TestNewSession_RequiredFields(t *testing.T) {
 // rather than at each call site so every pane bossd creates carries it — a
 // single unstamped spawn path would produce panes the reaper cannot attribute.
 func TestNewSession_DaemonIDStamp(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name     string
 		daemonID string
@@ -324,9 +309,6 @@ func TestNewSession_DaemonIDStamp(t *testing.T) {
 // the option behaves exactly as before, so every existing caller and test keeps
 // its argv.
 func TestNewSession_NoDaemonIDOptionIsUnstamped(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -345,9 +327,6 @@ func TestNewSession_NoDaemonIDOptionIsUnstamped(t *testing.T) {
 }
 
 func TestSessionName(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name      string
 		repoID    string
@@ -391,9 +370,6 @@ func TestSessionName(t *testing.T) {
 }
 
 func TestNewSession_ExtendedKeysAlways(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -423,9 +399,6 @@ func TestNewSession_ExtendedKeysAlways(t *testing.T) {
 }
 
 func TestNewSession_EnablesMouse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -454,9 +427,6 @@ func TestNewSession_EnablesMouse(t *testing.T) {
 }
 
 func TestNewSession_ExtendedKeysFormatCSIU(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -486,9 +456,6 @@ func TestNewSession_ExtendedKeysFormatCSIU(t *testing.T) {
 }
 
 func TestNewSession_PreservesTermProgram(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	// Set TERM_PROGRAM to simulate running under a real terminal.
 	t.Setenv("TERM_PROGRAM", "ghostty")
 
@@ -520,9 +487,6 @@ func TestNewSession_PreservesTermProgram(t *testing.T) {
 }
 
 func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	// When TERM_PROGRAM is already "tmux", we should NOT set it
 	// (that's the value we're trying to override).
 	t.Setenv("TERM_PROGRAM", "tmux")
@@ -551,9 +515,6 @@ func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
 // `set-option -t <name> remain-on-exit on` after session creation (BOS-477),
 // and that the option is omitted when the flag is unset.
 func TestNewSession_RemainOnExit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	remainOn := []string{"tmux", "set-option", "-t", "boss-test-1234", "remain-on-exit", "on"}
 
 	t.Run("armed when set", func(t *testing.T) {
@@ -600,9 +561,6 @@ func TestNewSession_RemainOnExit(t *testing.T) {
 // TestPaneDead covers the pane_dead probe: "1" → dead, "0" → alive, and a tmux
 // command failure surfaces as (false, err) rather than a false "dead" verdict.
 func TestPaneDead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	ctx := context.Background()
 
 	t.Run("dead pane reports true", func(t *testing.T) {
@@ -651,9 +609,6 @@ func TestPaneDead(t *testing.T) {
 // session-level tmux set-option commands in the expected order with the
 // expected arguments.
 func TestSetAttachOptions(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -680,9 +635,6 @@ func TestSetAttachOptions(t *testing.T) {
 // twice issues the same set of commands the second time — tmux's set-option
 // is naturally idempotent, so the wrapper just needs to not get clever.
 func TestSetAttachOptions_Idempotent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -713,9 +665,6 @@ func TestSetAttachOptions_Idempotent(t *testing.T) {
 // TestSetAttachOptions_Error verifies that a tmux invocation failure surfaces
 // as an error (not swallowed). Catches mutations like err != nil → err == nil.
 func TestSetAttachOptions_Error(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		// Simulate tmux failure.
 		return exec.CommandContext(ctx, "false")
@@ -766,9 +715,6 @@ func (f *clientListFactory) refreshTargets() []string {
 // repaint never actually fired. This test is the regression gate for that — it
 // fails if the target reverts to the session name.
 func TestRefreshClient(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &clientListFactory{clients: []string{"/dev/ttys008", "/dev/ttys011"}}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -795,9 +741,6 @@ func TestRefreshClient(t *testing.T) {
 // or cron session — there is no viewer to repaint — so it must not surface as a
 // failure on a fire-and-forget call.
 func TestRefreshClient_NoClientsIsNoOp(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &clientListFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -814,9 +757,6 @@ func TestRefreshClient_NoClientsIsNoOp(t *testing.T) {
 // refresh — does not skip the clients behind it, and that the failure is still
 // reported rather than swallowed.
 func TestRefreshClient_RefreshesEveryClientDespiteFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &clientListFactory{
 		clients:        []string{"/dev/ttys008", "/dev/ttys011", "/dev/ttys013"},
 		failRefreshFor: map[string]bool{"/dev/ttys011": true},
@@ -837,9 +777,6 @@ func TestRefreshClient_RefreshesEveryClientDespiteFailure(t *testing.T) {
 // TestRefreshClient_EmptySessionName guards the empty-name validation so
 // callers can't accidentally invoke `tmux refresh-client -t` with no target.
 func TestRefreshClient_EmptySessionName(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -859,9 +796,6 @@ func TestRefreshClient_EmptySessionName(t *testing.T) {
 // The refresh half of that contract is covered by
 // TestRefreshClient_RefreshesEveryClientDespiteFailure.
 func TestRefreshClient_Error(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "false")
 	}))
@@ -878,9 +812,6 @@ func TestRefreshClient_Error(t *testing.T) {
 // agent's stdout a non-TTY pipe; pipe-pane lives outside the agent
 // process so its PTY is unaffected.
 func TestPipePane(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -903,9 +834,6 @@ func TestPipePane(t *testing.T) {
 // raw (which would prematurely close the shell-quoted string and let
 // the rest of the path be interpreted as a shell command).
 func TestPipePane_QuotesLogPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -928,9 +856,6 @@ func TestPipePane_QuotesLogPath(t *testing.T) {
 // (which would apply pipe-pane to the most recently active tmux pane,
 // almost certainly not the chat session we meant).
 func TestPipePane_EmptySessionName(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -946,9 +871,6 @@ func TestPipePane_EmptySessionName(t *testing.T) {
 // `cat >> ”` — that would shell-error on every byte the pane wrote.
 // Better to fail loud at the call site.
 func TestPipePane_EmptyLogPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -964,9 +886,6 @@ func TestPipePane_EmptyLogPath(t *testing.T) {
 // error rather than being swallowed. Catches mutations like err != nil →
 // err == nil that would silently leave the chat with no on-disk log.
 func TestPipePane_Error(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "false")
 	}))
@@ -977,9 +896,6 @@ func TestPipePane_Error(t *testing.T) {
 }
 
 func TestHasSession(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -996,9 +912,6 @@ func TestHasSession(t *testing.T) {
 }
 
 func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	ctx := context.Background()
 
 	missing := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
@@ -1039,9 +952,6 @@ func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
 }
 
 func TestShowEnv(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	ctx := context.Background()
 
 	t.Run("returns value when the key is set", func(t *testing.T) {
@@ -1130,9 +1040,6 @@ func TestShowEnv(t *testing.T) {
 }
 
 func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	pane := strings.Join([]string{
 		"❯ /boss-repair",
 		"repair output",
@@ -1155,9 +1062,6 @@ func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
 // payload still sitting there reports true and a cleared/submitted input
 // (empty "❯") reports false.
 func TestLineStillAtPromptFindsInputBeneathChrome(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const line = "write a haiku about autumn"
 	const rule = "────────────────────────────────────────────────────────────────────────────────"
 
@@ -1192,9 +1096,6 @@ func TestLineStillAtPromptFindsInputBeneathChrome(t *testing.T) {
 // scanning past it to the echoed prompt row and reporting it as still pending
 // (which would time out waitForSubmission on an already-running command).
 func TestLineStillAtPromptStopsAtPostSubmitOutput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const line = "do the thing"
 
 	// Assistant/tool bullet output below the echoed prompt → submitted (false).
@@ -1247,9 +1148,6 @@ func TestLineStillAtPromptStopsAtPostSubmitOutput(t *testing.T) {
 // must report still-at-prompt (true) and a cleared box must report submitted
 // (false) — otherwise the verifier silently passes an unsubmitted cron prompt.
 func TestLineStillAtPromptScansThroughCustomStatusline(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const line = "implement the next ticket"
 	const rule = "────────────────────────────────────────────────────────────────────────────────"
 	statusline := []string{
@@ -1281,9 +1179,6 @@ func TestLineStillAtPromptScansThroughCustomStatusline(t *testing.T) {
 // robust composer signal: a still-visible (non-empty) input box is still-at-prompt,
 // while a cleared composer / agent activity below the marker is submitted.
 func TestLineStillAtPromptWrappedSingleLine(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 
 	// A payload comfortably wider than a pane row, so the input box wraps.
 	longLine := strings.Repeat("verify the wide single-line payload wraps and still resolves ", 3)
@@ -1343,9 +1238,6 @@ func TestLineStillAtPromptWrappedSingleLine(t *testing.T) {
 }
 
 func TestKillSession_NotExist(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name   string
 		stderr string
@@ -1389,9 +1281,6 @@ func TestKillSession_NotExist(t *testing.T) {
 }
 
 func TestKillSession_ReturnsLivenessErrorWhenFallbackCannotVerify(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		mock.calls = append(mock.calls, append([]string{name}, args...))
@@ -1421,9 +1310,6 @@ func TestKillSession_ReturnsLivenessErrorWhenFallbackCannotVerify(t *testing.T) 
 }
 
 func TestCapturePane_ScrollbackFlag(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -1442,9 +1328,6 @@ func TestCapturePane_ScrollbackFlag(t *testing.T) {
 // TestChatSessionName covers the same > 8 truncation logic as SessionName,
 // applied to the chat-id path.
 func TestChatSessionName(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tests := []struct {
 		name           string
 		repoID         string
@@ -1470,9 +1353,6 @@ func TestChatSessionName(t *testing.T) {
 // TestSessionName_NineCharBoundary covers the boundary mutation `len > 8`.
 // At exactly 9 characters, the boundary mutates differently than at 8.
 func TestSessionName_NineCharBoundary(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	// 9-char IDs must be truncated to 8.
 	got := SessionName("123456789", "abcdefghi")
 	want := "boss-12345678-abcdefgh"
@@ -1485,9 +1365,6 @@ func TestSessionName_NineCharBoundary(t *testing.T) {
 // returns the captured pane content with no error.
 // Catches mutation: err != nil → err == nil (would return error on success).
 func TestCapturePane_Success(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &captureOutputFactory{output: "pane content line 1\npane content line 2\n"}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -1503,9 +1380,6 @@ func TestCapturePane_Success(t *testing.T) {
 // TestCapturePane_Error verifies that a tmux command failure surfaces as an
 // error. Catches mutation: err != nil → err == nil (would swallow error).
 func TestCapturePane_Error(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		// Simulate command failure.
 		return exec.CommandContext(ctx, "false")
@@ -1521,9 +1395,6 @@ func TestCapturePane_Error(t *testing.T) {
 }
 
 func TestPanePID_ReturnsFirstPanePID(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &captureOutputFactory{output: "97664\n99277\n"}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -1542,9 +1413,6 @@ func TestPanePID_ReturnsFirstPanePID(t *testing.T) {
 }
 
 func TestPanePID_ErrorOnCommandFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "false")
 	}))
@@ -1554,9 +1422,6 @@ func TestPanePID_ErrorOnCommandFailure(t *testing.T) {
 }
 
 func TestPanePID_ErrorOnEmptyOutput(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	mock := &captureOutputFactory{output: ""}
 	c := NewClient(WithCommandFactory(mock.factory))
 	if _, err := c.PanePID(context.Background(), "boss-empty"); err == nil {
@@ -1768,9 +1633,6 @@ func (f *sendPlanRecordingFactory) callsCopy() []sendPlanCall {
 // TestSendPlan_HappyPath_Order verifies SendPlan issues capture-pane (poll
 // loop), load-buffer, paste-buffer, send-keys in order with the right args.
 func TestSendPlan_HappyPath_Order(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		// Marker missing on first poll, present on second — exercises the
 		// poll loop without waiting the full deadline.
@@ -1836,9 +1698,6 @@ func TestSendPlan_HappyPath_Order(t *testing.T) {
 }
 
 func TestSendPlan_CustomReadyMarker(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{
 			"Welcome to Codex\n",
@@ -1873,9 +1732,6 @@ func TestSendPlan_CustomReadyMarker(t *testing.T) {
 }
 
 func TestSendLineWithReadyMarker_UsesLiteralKeysAndEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{
 			"Welcome to Codex\n›\n",
@@ -1945,9 +1801,6 @@ func TestEscapeSendKeysLiteral(t *testing.T) {
 // actually applied on the literal send-keys argv so a single-line prompt ending
 // in ";" is delivered intact instead of being truncated by tmux's command lexer.
 func TestSendLineWithReadyMarker_EscapesTrailingSemicolon(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{
 			"Welcome to Codex\n›\n",
@@ -1972,9 +1825,6 @@ func TestSendLineWithReadyMarker_EscapesTrailingSemicolon(t *testing.T) {
 }
 
 func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	var calls []sendPlanCall
@@ -2012,9 +1862,6 @@ func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testi
 }
 
 func TestSendLineWithReadyMarker_SucceedsWhenCommandLeavesPrompt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	captureCount := 0
@@ -2081,9 +1928,6 @@ func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string
 // silent success. sendPlan verifies the payload left the prompt when
 // submitVerifyWait is set, as the public SendPlanWithReadyMarker wrapper does.
 func TestSendPlan_ReturnsErrorWhenPayloadRemainsAtPrompt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -2117,9 +1961,6 @@ func TestSendPlan_ReturnsErrorWhenPayloadRemainsAtPrompt(t *testing.T) {
 
 // When the pasted payload leaves the prompt, verification passes.
 func TestSendPlan_SucceedsWhenPayloadLeavesPrompt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	captureCount := 0
@@ -2158,9 +1999,6 @@ func TestSendPlan_SucceedsWhenPayloadLeavesPrompt(t *testing.T) {
 // box) means "still pending", so after an Enter retry against the same pane the
 // verifier errors loudly rather than reporting a silent success.
 func TestSendPlan_MultilinePayloadNeverSubmittedErrors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -2266,9 +2104,6 @@ func TestMultiLineSubmittedRejectsGlyphAbovePastedLines(t *testing.T) {
 // composer), so the verifier passes without a retry. It also asserts a
 // verification capture-pane poll ran AFTER the send-keys Enter.
 func TestSendPlan_MultiLineSubmitVerifiedFirstTry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 
 	cases := []struct {
 		name      string
@@ -2326,9 +2161,6 @@ func TestSendPlan_MultiLineSubmitVerifiedFirstTry(t *testing.T) {
 // verify window (the TUI swallowed the first Enter), then after exactly one
 // additional Enter the pane shows agent activity and the verifier passes.
 func TestSendPlan_MultiLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2385,9 +2217,6 @@ func TestSendPlan_MultiLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
 // TestSendLine_RetrySucceedsAfterSwallowedEnter is the single-line analogue:
 // the sendLine submit path must also retry the Enter once before succeeding.
 func TestSendLine_RetrySucceedsAfterSwallowedEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2448,9 +2277,6 @@ func TestSendLine_RetrySucceedsAfterSwallowedEnter(t *testing.T) {
 // composer keeps showing the wrapped payload through the first verify window, then
 // after exactly one additional Enter the pane clears with agent activity.
 func TestSendLine_LongSingleLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	// Wider than the simulated pane, so the input box wraps across rows.
@@ -2516,9 +2342,6 @@ func TestSendLine_LongSingleLineRetrySucceedsAfterSwallowedEnter(t *testing.T) {
 // multi-line delivery: the payload is pasted into the composer, but NO Enter is
 // ever sent and NO post-delivery verification capture-pane runs.
 func TestPrefillPlanWithReadyMarker_MultiLineNoEnterNoVerify(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
 	}
@@ -2533,9 +2356,6 @@ func TestPrefillPlanWithReadyMarker_MultiLineNoEnterNoVerify(t *testing.T) {
 // single-line delivery: the line is typed via send-keys -l, but NO Enter is
 // sent and NO verification capture-pane runs after it.
 func TestPrefillLineWithReadyMarker_SingleLineNoEnterNoVerify(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Codex\n›\n"},
 	}
@@ -2589,9 +2409,6 @@ func assertPrefilledNoEnterNoVerify(t *testing.T, calls []sendPlanCall) {
 // through bracketed paste, while a multi-line payload still uses paste-buffer so
 // intermediate newlines aren't treated as premature submits.
 func TestSendPlan_SingleLineUsesLiteralKeysMultilineUsesPaste(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 
 	t.Run("single-line uses send-keys -l not paste-buffer", func(t *testing.T) {
 		fake := &sendPlanRecordingFactory{
@@ -2735,9 +2552,6 @@ func TestSendPlan_SingleLineUsesLiteralKeysMultilineUsesPaste(t *testing.T) {
 // if capture-pane never returns the marker, SendPlan returns an error
 // without trying load-buffer / paste-buffer / send-keys.
 func TestSendPlan_ReadyMarkerNeverAppears_Errors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude — still loading\n"},
 	}
@@ -2773,9 +2587,6 @@ func TestSendPlan_ReadyMarkerNeverAppears_Errors(t *testing.T) {
 // only stable readiness signal in the captured pane is the input-box
 // prompt indicator (❯). SendPlan must detect that and proceed.
 func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const customStatuslinePane = ` ▐▛███▜▌   Claude Code v2.1.126
 ▝▜█████▛▘  Opus 4.7 (1M context) · Claude Max
   ▘▘ ▝▝    ~/.bossanova/worktrees/bossanova/add-a-scheduling-feature
@@ -2824,9 +2635,6 @@ func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
 // failure path was opaque ("ready marker not seen") because the daemon
 // also kills the tmux session as cleanup, leaving nothing to attach to.
 func TestSendPlan_TimeoutErrorIncludesPaneContents(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const fingerprint = "AUTH-PROMPT-VISIBLE-IN-PANE"
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude\n" + fingerprint + "\nplease re-authenticate"},
@@ -2850,9 +2658,6 @@ func TestSendPlan_TimeoutErrorIncludesPaneContents(t *testing.T) {
 // of the tmux subcommands (paste-buffer) returns non-zero. SendPlan must
 // surface that as an error.
 func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
 		failOnSubcommand: map[string]int{
@@ -2878,9 +2683,6 @@ func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
 // TestSendPlan_EmptySessionName_Errors guards the input validation so a
 // caller can't accidentally send a plan to no target.
 func TestSendPlan_EmptySessionName_Errors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient()
 	err := c.SendPlan(context.Background(), "", "plan body")
 	if err == nil {
@@ -2892,9 +2694,6 @@ func TestSendPlan_EmptySessionName_Errors(t *testing.T) {
 // the plan through tmux load-buffer's stdin (rather than as an argv).
 // We use a real shell command (`cat > tmpfile`) to capture stdin.
 func TestSendPlan_LoadBufferReceivesPlanStdin(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	tmpFile := filepath.Join(t.TempDir(), "load-buffer-stdin")
 
 	captureCalls := atomic.Int32{}
@@ -2955,9 +2754,6 @@ func countEnterSendKeys(calls []sendPlanCall) int {
 // keystrokes, presses Enter, then runs the verifier (a capture-pane poll after
 // the Enter). This is the BOS-242 Gap 1 reliable-submit path.
 func TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{
 		// Ready marker present on the first poll, then the composer drawing the
 		// typed line (Enter waits for that), then a cleared (submitted) prompt
@@ -3017,9 +2813,6 @@ func TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies(t *testing.T) {
 // a premature Enter was absorbed as a newline). This locks the ordering that
 // closes the boot race so a refactor cannot reintroduce a blind Enter.
 func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const codexMarker = "›" // chatReadyMarker("codex"), spawn_chat_tmux.go
 
 	t.Run("gates on ready marker before enter", func(t *testing.T) {
@@ -3133,9 +2926,6 @@ func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
 // lib/bossalib/bossmcp) and the daemon carries that bool here, where it becomes
 // a real tmux send-keys Enter against codex's "›" composer-ready marker.
 func TestSendMessage_CodexTarget_SubmitPressesEnterPrefillDoesNot(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	const codexMarker = "›" // chatReadyMarker("codex"), spawn_chat_tmux.go
 
 	cases := []struct {
@@ -3207,9 +2997,6 @@ func TestSendMessage_CodexTarget_SubmitPressesEnterPrefillDoesNot(t *testing.T) 
 // possible box-border rune, so a constant-only host test would miss a send path
 // that times out before typing anything.
 func TestSendMessage_OpenCodeSubmit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 
 	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{
 		"OpenCode ready\n┃ Type a message\n",
@@ -3229,9 +3016,6 @@ func TestSendMessage_OpenCodeSubmit(t *testing.T) {
 // payload shape, so a multi-line submit is no longer silently downgraded to a
 // paste-only prefill.
 func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	cases := []struct {
 		name     string
 		text     string
@@ -3329,9 +3113,6 @@ func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
 // (submit=false) path prefills a multi-line payload into the composer with NO
 // Enter — the prefill contract is unchanged by the BOS-488 collapse.
 func TestSendMessage_PrefillMultiLine_PastesNoEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n"}}
 	c := NewClient(WithCommandFactory(fake.factory))
 
@@ -3361,9 +3142,6 @@ func TestSendMessage_PrefillMultiLine_PastesNoEnter(t *testing.T) {
 // TestSendMessage_PrefillSingleLine_TypesNoEnter verifies the default
 // (submit=false) path prefills a single line into the composer with NO Enter.
 func TestSendMessage_PrefillSingleLine_TypesNoEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{"❯\n"}}
 	c := NewClient(WithCommandFactory(fake.factory))
 
@@ -3378,9 +3156,6 @@ func TestSendMessage_PrefillSingleLine_TypesNoEnter(t *testing.T) {
 }
 
 func TestSendMessage_EmptySessionName_Error(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	c := NewClient(WithCommandFactory((&mockCommandFactory{}).factory))
 	err := c.SendMessage(context.Background(), "", "hello", true, "❯")
 	if err == nil {
@@ -3738,9 +3513,6 @@ func (p *composerPane) argvOfKind(kind string) []string {
 // ordering is observable: send-keys -l (deliver) → Enter → C-u (clear) →
 // send-keys -l (re-deliver) → Enter.
 func TestSendLine_RetryClearsComposerBeforeSecondEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true}
@@ -3772,9 +3544,6 @@ func TestSendLine_RetryClearsComposerBeforeSecondEnter(t *testing.T) {
 // without a clear would concatenate a second copy of the WHOLE plan. The paste
 // path must show the same clear-then-re-deliver ordering as the literal one.
 func TestSendPlan_MultiLineRetryClearsComposerBeforeSecondEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	const plan = "line one\nline two"
@@ -3803,9 +3572,6 @@ func TestSendPlan_MultiLineRetryClearsComposerBeforeSecondEnter(t *testing.T) {
 // submit both concatenated. It presses Enter on what is already there, exactly
 // once, and succeeds.
 func TestSendLine_RetryNoOpClearSubmitsTheIntactPayloadOnce(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, clearIsNoop: true}
@@ -3840,9 +3606,6 @@ func TestSendLine_RetryNoOpClearSubmitsTheIntactPayloadOnce(t *testing.T) {
 // first look is blank — the retry must still recover: one Enter onto the intact
 // payload, no second copy typed.
 func TestSendLine_RetryTreatsAnUnreadableSnapshotAsNoEvidence(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	// Capture 3 is the baseline poll's FIRST look: the ready-marker wait takes
@@ -3878,9 +3641,6 @@ func TestSendLine_RetryTreatsAnUnreadableSnapshotAsNoEvidence(t *testing.T) {
 // submitted — delivered=true for corrupted user text, silently, with every test
 // green. Nothing is ever Entered onto a payload that could not be shown intact.
 func TestSendLine_RetryUnreadableSnapshotIsNotALicenceToEnterATruncatedPayload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	// Capture 3 is the retry's first look at the composer (see the capture count
@@ -3925,9 +3685,6 @@ func TestSendLine_RetryUnreadableSnapshotIsNotALicenceToEnterATruncatedPayload(t
 // operator gets an accurate NOT_SUBMITTED they can retry rather than a silent
 // corruption or a "may already have been submitted" they cannot act on.
 func TestSendLine_RetryPressesNoKeyWhileTheComposerStaysUnreadable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	// Captures 1 and 2 are the ready-marker wait and the first submission verify,
@@ -3968,9 +3725,6 @@ func TestSendLine_RetryPressesNoKeyWhileTheComposerStaysUnreadable(t *testing.T)
 // pressing (bounded) until the composer is provably empty, and only then
 // re-delivers and submits.
 func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep")}
@@ -3998,9 +3752,6 @@ func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing
 // surviving fragment: after a bounded number of presses it fails loudly as
 // NOT_SUBMITTED, which is precisely true.
 func TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, clearDropsOneByte: true}
@@ -4046,9 +3797,6 @@ func TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges(t *testing.T) {
 // press truncates to the kept prefix, and every later press finds nothing more
 // to kill on that line.
 func TestSendLine_RetryFailsLoudlyWhenAPartialClearThenStalls(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep"), clearIsNoop: true}
@@ -4095,9 +3843,6 @@ func TestSendLine_RetryFailsLoudlyWhenAPartialClearThenStalls(t *testing.T) {
 // The composer must instead see the continuation rows change, latch mutilated,
 // and fail loudly with no Enter at all.
 func TestSendLine_RetryNeverSubmitsAWrappedPayloadTheClearTruncated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	// Deliberately free of the prompt-marker glyphs, so no wrapped continuation
@@ -4164,9 +3909,6 @@ func TestSendLine_RetryNeverSubmitsAWrappedPayloadTheClearTruncated(t *testing.T
 // whole payload, the mutilation guard latches before a single key is pressed,
 // and this healthy send is rejected as not-submitted.
 func TestSendLine_RetrySubmitsAnIntactWrappedPayloadInPlace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	const wide = "$boss-repair fix the failing check on pull request 1754 and push the result"
@@ -4211,9 +3953,6 @@ func TestSendLine_RetrySubmitsAnIntactWrappedPayloadInPlace(t *testing.T) {
 // re-read: a reading that does not account for the whole payload is not
 // evidence the box holds it.
 func TestSendLine_RetryNeverSubmitsAPayloadThatArrivedTruncated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	const payload = "$boss-repair"
@@ -4247,9 +3986,6 @@ func TestSendLine_RetryNeverSubmitsAPayloadThatArrivedTruncated(t *testing.T) {
 // line-scoped kill leaves a fragment, so the paste path must reach the same
 // place: clear until empty, then re-PASTE (not re-type) and submit once.
 func TestSendPlan_MultiLineRetryConvergesWhenTheClearIsPartial(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	const plan = "line one\nline two"
@@ -4281,9 +4017,6 @@ func TestSendPlan_MultiLineRetryConvergesWhenTheClearIsPartial(t *testing.T) {
 // onwards, so the recorded argv must show exactly one delivery: the retry
 // presses Enter on the copy already held and never types a second.
 func TestSendLine_RetryAgentActivityIsNotEvidenceTheClearWorked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, clearIsNoop: true, activityAfterClear: true}
@@ -4321,9 +4054,6 @@ func TestSendLine_RetryAgentActivityIsNotEvidenceTheClearWorked(t *testing.T) {
 // capture. Capture 1 after the clear is the stale one the clear-verify window
 // sees; capture 2 is the re-read, and the first sight of the truth.
 func TestSendLine_RetryReReadsThePaneBeforeABareEnter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, staleCaptures: 1}
@@ -4366,9 +4096,6 @@ func TestSendLine_RetryReReadsThePaneBeforeABareEnter(t *testing.T) {
 // 1 and then survives every later press, so the run ends where a stuck partial
 // clear must — loudly, with no Enter.
 func TestSendLine_RetryLooksAgainBeforeEnteringAMutilatedRemainder(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{
@@ -4449,9 +4176,6 @@ func TestComposerClearReadsMatch(t *testing.T) {
 // pane with no input box is unknowable, not cleared: re-delivering into it
 // submits the message twice, and Entering into it is the same double-submit.
 func TestSendLine_RetryComposerVanishingOnTheReReadIsUnconfirmed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, markerGoneAfterClear: true, staleCaptures: 1}
@@ -4484,9 +4208,6 @@ func TestSendLine_RetryComposerVanishingOnTheReReadIsUnconfirmed(t *testing.T) {
 // full-screen, and re-delivering into that submits the message twice — the exact
 // double-submit this change exists to prevent. It is unknowable, not cleared.
 func TestSendLine_RetryComposerVanishingAfterClearIsUnconfirmed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	pane := &composerPane{swallowFirstEnter: true, markerGoneAfterClear: true}
@@ -4523,9 +4244,6 @@ func TestSendLine_RetryComposerVanishingAfterClearIsUnconfirmed(t *testing.T) {
 //
 // It must classify as UNCONFIRMED and send no recovery keystrokes at all.
 func TestSendPlan_MultiLineNoComposerDrawnIsUnconfirmed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -4582,9 +4300,6 @@ func TestSendPlan_MultiLineNoComposerDrawnIsUnconfirmed(t *testing.T) {
 // So each of these must name its pane and describe what was observed, and must
 // not re-state that submission could not be verified.
 func TestUnconfirmedErrorsStateTheObservationNotTheVerdict(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	tests := []struct {
@@ -4662,9 +4377,6 @@ func TestUnconfirmedErrorsStateTheObservationNotTheVerdict(t *testing.T) {
 // is actually looking at. The verifier must classify that as unconfirmed and
 // send no recovery keystrokes at all.
 func TestSendLine_UnconfirmedCaptureFailureSkipsRetry(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
-	}
 	t.Parallel()
 
 	var mu sync.Mutex

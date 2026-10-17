@@ -1,9 +1,11 @@
-package tuitest
+package harnesstest
 
 import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/recurser/boss/internal/tuitest"
 )
 
 func TestFilterProofEnvAllowsWhitelistedFamilies(t *testing.T) {
@@ -13,7 +15,7 @@ func TestFilterProofEnvAllowsWhitelistedFamilies(t *testing.T) {
 		"BOSS_AUTH_E2E_EMAIL":              "proof@example.com",
 		"BOSS_PROOF_SETTINGS_SAVE_FAILURE": "1",
 	}
-	allowed, rejected := FilterProofEnv(requested)
+	allowed, rejected := tuitest.FilterProofEnv(requested)
 	if len(rejected) != 0 {
 		t.Fatalf("no key should be rejected, got %v", rejected)
 	}
@@ -29,7 +31,7 @@ func TestFilterProofEnvRejectsNonWhitelistedSorted(t *testing.T) {
 		"PATH":                           "/bin",
 		"BOSS_CLOUD_ACCESS_E2E_SEQUENCE": "active",
 	}
-	allowed, rejected := FilterProofEnv(requested)
+	allowed, rejected := tuitest.FilterProofEnv(requested)
 	// Only the whitelisted family survives.
 	if _, ok := allowed["BOSS_CLOUD_ACCESS_E2E_SEQUENCE"]; !ok || len(allowed) != 1 {
 		t.Fatalf("allowed should contain only the whitelisted key, got %v", allowed)
@@ -46,10 +48,10 @@ func TestBaseHarnessEnvStripsSeedEnvCarrier(t *testing.T) {
 		"BOSS_PROOF_TUI_SEED_ENV={\"BOSS_AUTH_E2E_EMAIL\":\"x@y.z\"}",
 		"PATH=/bin",
 	}
-	got := BaseHarnessEnv(environ)
+	got := tuitest.BaseHarnessEnv(environ)
 	for _, e := range got {
 		if strings.HasPrefix(e, "BOSS_PROOF_TUI_SEED_ENV=") {
-			t.Fatalf("BaseHarnessEnv must strip the raw seed-env carrier, got %v", got)
+			t.Fatalf("tuitest.BaseHarnessEnv must strip the raw seed-env carrier, got %v", got)
 		}
 	}
 	// Unrelated vars survive.
@@ -60,13 +62,13 @@ func TestBaseHarnessEnvStripsSeedEnvCarrier(t *testing.T) {
 		}
 	}
 	if !sawPath {
-		t.Fatalf("BaseHarnessEnv dropped an unrelated var: %v", got)
+		t.Fatalf("tuitest.BaseHarnessEnv dropped an unrelated var: %v", got)
 	}
 }
 
 // TestBaseHarnessEnvStripsAuthE2EFamily pins that every BOSS_AUTH_E2E_* var the
 // e2e auth store reads is stripped from the ambient environ. The whitelist is a
-// prefix match, but BaseHarnessEnv strips by exact key: a var added to the store
+// prefix match, but tuitest.BaseHarnessEnv strips by exact key: a var added to the store
 // and not to this list would be inherited from the developer's shell and could
 // never be overridden per scenario. BOS-659 added NEEDS_RELOGIN; BOS-942 added LOGIN_SAVE_NOOP.
 func TestBaseHarnessEnvStripsAuthE2EFamily(t *testing.T) {
@@ -77,12 +79,12 @@ func TestBaseHarnessEnvStripsAuthE2EFamily(t *testing.T) {
 		"BOSS_AUTH_E2E_LOGOUT_ERROR=1",
 		"BOSS_AUTH_E2E_LOGIN_SAVE_NOOP=1",
 	}
-	got := BaseHarnessEnv(append([]string{"PATH=/bin"}, stripped...))
+	got := tuitest.BaseHarnessEnv(append([]string{"PATH=/bin"}, stripped...))
 	for _, want := range stripped {
 		key := strings.SplitN(want, "=", 2)[0] + "="
 		for _, e := range got {
 			if strings.HasPrefix(e, key) {
-				t.Fatalf("BaseHarnessEnv must strip %s, got %v", key, got)
+				t.Fatalf("tuitest.BaseHarnessEnv must strip %s, got %v", key, got)
 			}
 		}
 	}
@@ -100,7 +102,7 @@ func TestHostE2EFamilySurvivesFilterAndIsStripped(t *testing.T) {
 		"BOSS_HOST_E2E_RECONNECT_POLLS":  "3",
 		"BOSS_HOST_E2E_RECONNECT_REASON": "remotehost: ssh tunnel to user@build-box exited: signal: terminated",
 	}
-	allowed, rejected := FilterProofEnv(requested)
+	allowed, rejected := tuitest.FilterProofEnv(requested)
 	if len(rejected) != 0 {
 		t.Fatalf("the BOSS_HOST_E2E_ family must be forwardable, got rejected %v", rejected)
 	}
@@ -108,7 +110,7 @@ func TestHostE2EFamilySurvivesFilterAndIsStripped(t *testing.T) {
 		t.Fatalf("allowed = %v, want all requested", allowed)
 	}
 
-	got := BaseHarnessEnv([]string{
+	got := tuitest.BaseHarnessEnv([]string{
 		"PATH=/bin",
 		"BOSS_HOST_E2E_RECONNECT=ambient@example.com",
 		"BOSS_HOST_E2E_RECONNECT_POLLS=99",
@@ -116,7 +118,7 @@ func TestHostE2EFamilySurvivesFilterAndIsStripped(t *testing.T) {
 	})
 	for _, e := range got {
 		if strings.HasPrefix(e, "BOSS_HOST_E2E_") {
-			t.Fatalf("BaseHarnessEnv must strip the ambient BOSS_HOST_E2E_ family, got %v", got)
+			t.Fatalf("tuitest.BaseHarnessEnv must strip the ambient BOSS_HOST_E2E_ family, got %v", got)
 		}
 	}
 }
@@ -130,7 +132,7 @@ func TestProofEnvOrganizationFamily(t *testing.T) {
 		"BOSS_ORG_E2E_MAPPING":       "org-acme",
 		"BOSS_ORG_E2E_SET_ERROR":     "permission_denied",
 	}
-	allowed, rejected := FilterProofEnv(requested)
+	allowed, rejected := tuitest.FilterProofEnv(requested)
 	if len(rejected) != 0 {
 		t.Fatalf("the BOSS_ORG_E2E_ family must be forwardable, got rejected %v", rejected)
 	}
@@ -138,7 +140,7 @@ func TestProofEnvOrganizationFamily(t *testing.T) {
 		t.Fatalf("allowed = %v, want all requested", allowed)
 	}
 
-	got := BaseHarnessEnv([]string{
+	got := tuitest.BaseHarnessEnv([]string{
 		"PATH=/bin",
 		"BOSS_ORG_E2E_ORGANIZATIONS=org-ambient=Ambient",
 		"BOSS_ORG_E2E_MAPPING=org-ambient",
@@ -146,15 +148,15 @@ func TestProofEnvOrganizationFamily(t *testing.T) {
 	})
 	for _, e := range got {
 		if strings.HasPrefix(e, "BOSS_ORG_E2E_") {
-			t.Fatalf("BaseHarnessEnv must strip the ambient BOSS_ORG_E2E_ family, got %v", got)
+			t.Fatalf("tuitest.BaseHarnessEnv must strip the ambient BOSS_ORG_E2E_ family, got %v", got)
 		}
 	}
 }
 
 func TestProofEnvWhitelistFamilies(t *testing.T) {
 	want := []string{"BOSS_CLOUD_ACCESS_E2E_", "BOSS_GITHUB_APP_E2E_", "BOSS_AUTH_E2E_", "BOSS_HOST_E2E_", "BOSS_ORG_E2E_", "BOSS_PROOF_UPGRADE_"}
-	if !reflect.DeepEqual(ProofEnvWhitelist, want) {
-		t.Fatalf("ProofEnvWhitelist = %v, want %v", ProofEnvWhitelist, want)
+	if !reflect.DeepEqual(tuitest.ProofEnvWhitelist, want) {
+		t.Fatalf("tuitest.ProofEnvWhitelist = %v, want %v", tuitest.ProofEnvWhitelist, want)
 	}
 }
 
@@ -165,8 +167,8 @@ func TestProofEnvAllowedKeys(t *testing.T) {
 		"BOSS_PROOF_SETTINGS_SAVE_FAILURE",
 		"BOSS_PROOF_CODEX_REAUTH",
 	}
-	if !reflect.DeepEqual(ProofEnvAllowedKeys, want) {
-		t.Fatalf("ProofEnvAllowedKeys = %v, want %v", ProofEnvAllowedKeys, want)
+	if !reflect.DeepEqual(tuitest.ProofEnvAllowedKeys, want) {
+		t.Fatalf("tuitest.ProofEnvAllowedKeys = %v, want %v", tuitest.ProofEnvAllowedKeys, want)
 	}
 }
 
@@ -176,7 +178,7 @@ func TestProofSettingsAllowedKeysSurviveFilterAndFamilyIsStripped(t *testing.T) 
 		"BOSS_PROOF_SETTINGS_POSTHOG_HOST":  "https://k.bossanova.dev",
 		"BOSS_PROOF_SETTINGS_SAVE_FAILURE":  "1",
 	}
-	allowed, rejected := FilterProofEnv(requested)
+	allowed, rejected := tuitest.FilterProofEnv(requested)
 	if len(rejected) != 0 {
 		t.Fatalf("proof settings exact keys must be forwardable, got rejected %v", rejected)
 	}
@@ -184,16 +186,16 @@ func TestProofSettingsAllowedKeysSurviveFilterAndFamilyIsStripped(t *testing.T) 
 		t.Fatalf("allowed = %v, want %v", allowed, requested)
 	}
 
-	got := BaseHarnessEnv([]string{"PATH=/bin", "BOSS_PROOF_SETTINGS_SAVE_FAILURE=1"})
+	got := tuitest.BaseHarnessEnv([]string{"PATH=/bin", "BOSS_PROOF_SETTINGS_SAVE_FAILURE=1"})
 	for _, e := range got {
 		if strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") {
-			t.Fatalf("BaseHarnessEnv must strip ambient BOSS_PROOF_SETTINGS_ vars, got %v", got)
+			t.Fatalf("tuitest.BaseHarnessEnv must strip ambient BOSS_PROOF_SETTINGS_ vars, got %v", got)
 		}
 	}
 }
 
 func TestProofSettingsUnknownKeyIsRejected(t *testing.T) {
-	_, rejected := FilterProofEnv(map[string]string{"BOSS_PROOF_SETTINGS_UNREVIEWED": "1"})
+	_, rejected := tuitest.FilterProofEnv(map[string]string{"BOSS_PROOF_SETTINGS_UNREVIEWED": "1"})
 	if !reflect.DeepEqual(rejected, []string{"BOSS_PROOF_SETTINGS_UNREVIEWED"}) {
 		t.Fatalf("rejected = %v, want unknown proof settings key rejected", rejected)
 	}
@@ -207,10 +209,10 @@ func TestProofSettingsUnknownKeyIsRejected(t *testing.T) {
 // preset supplies its own value through DefaultEnv, which is appended after
 // this filter runs.
 func TestBaseHarnessEnvStripsRPCDeadline(t *testing.T) {
-	got := BaseHarnessEnv([]string{"PATH=/bin", "BOSS_RPC_DEADLINE_E2E=1ms"})
+	got := tuitest.BaseHarnessEnv([]string{"PATH=/bin", "BOSS_RPC_DEADLINE_E2E=1ms"})
 	for _, e := range got {
 		if strings.HasPrefix(e, "BOSS_RPC_DEADLINE_E2E=") {
-			t.Fatalf("BaseHarnessEnv must strip BOSS_RPC_DEADLINE_E2E, got %v", got)
+			t.Fatalf("tuitest.BaseHarnessEnv must strip BOSS_RPC_DEADLINE_E2E, got %v", got)
 		}
 	}
 }
@@ -220,8 +222,28 @@ func TestBaseHarnessEnvStripsRPCDeadline(t *testing.T) {
 // an agent-authored scenario file cannot quietly disarm — or over-tighten — the
 // client bound the ticket exists to add.
 func TestRPCDeadlineIsNotScenarioRequestable(t *testing.T) {
-	_, rejected := FilterProofEnv(map[string]string{"BOSS_RPC_DEADLINE_E2E": "1ms"})
+	_, rejected := tuitest.FilterProofEnv(map[string]string{"BOSS_RPC_DEADLINE_E2E": "1ms"})
 	if len(rejected) != 1 || rejected[0] != "BOSS_RPC_DEADLINE_E2E" {
 		t.Fatalf("BOSS_RPC_DEADLINE_E2E should be rejected as scenario env, got rejected=%v", rejected)
+	}
+}
+
+func TestBaseHarnessEnvFiltersSettingsPath(t *testing.T) {
+	env := tuitest.BaseHarnessEnv([]string{
+		"BOSS_SETTINGS_PATH=/real/settings.json",
+		"BOSS_SOCKET=/tmp/real.sock",
+		"PATH=/bin",
+	})
+
+	for _, got := range env {
+		if got == "BOSS_SETTINGS_PATH=/real/settings.json" {
+			t.Fatal("BaseHarnessEnv kept BOSS_SETTINGS_PATH; TUI tests would load real developer settings")
+		}
+		if got == "BOSS_SOCKET=/tmp/real.sock" {
+			t.Fatal("BaseHarnessEnv kept BOSS_SOCKET; TUI tests would bypass mock socket wiring")
+		}
+	}
+	if len(env) != 1 || env[0] != "PATH=/bin" {
+		t.Fatalf("BaseHarnessEnv = %v, want [PATH=/bin]", env)
 	}
 }

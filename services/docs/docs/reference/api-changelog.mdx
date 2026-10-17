@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-22**. The engineering procedure for adding a new
+The current version is **2026-09-23**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -776,7 +776,7 @@ pinned to 2026-09-20 and older. The response carries nothing that tells this
 in-progress answer apart from any other, so a transform has nothing to restore
 the old one from.
 
-### 2026-09-22 — Parks that only need a look are reviews (Current)
+### 2026-09-22 — Parks that only need a look are reviews
 
 A `no-receipt` verify park now reads "No review of the latest commit". It read
 "Built by hand, no factory review", which was false: the park fires when the PR
@@ -831,6 +831,36 @@ as a failing or conflicting PR or a blocked run. A verify park that only asks
 for a sign-off is not a failure, on a blocked or orphaned run too. Clients show the session's
 `display_label` on that row rather than "fix", as the boss TUI does. It is
 additive, so every pin receives it.
+
+### 2026-09-23 — A blocked run says "Run blocked" once, and not while its agent works (Current)
+
+A blocked run's `ATTENTION_KIND_FIX` sentence drops the reason's own leading
+"run blocked:" or "blocked:" labels, in any case, before it prefixes "Run
+blocked: ". A run that reported itself blocked read "Run blocked: run blocked:
+MAD-1751 implemented" and now reads "Run blocked: MAD-1751 implemented".
+`blocked_reason` is unchanged. Clients pinned to 2026-09-22 or older get the
+sentence built from the whole `blocked_reason` back on session-bearing unary
+responses.
+
+A Blocked session whose block no longer needs the operator now carries no
+`attention_status`. That is a run whose own agent is working on a turn the
+block did not see, or one whose non-draft PR is green and mergeable. Its
+`Session.attention` already reads `ATTENTION_KIND_IN_PROGRESS` (or
+`ATTENTION_KIND_MERGE`) for every version. Every Blocked session carried
+`ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS` before. Clients pinned to 2026-09-22 or
+older get that hint back on session-bearing unary responses, with the
+`blocked_reason` (or "blocked — needs human intervention") as its summary and
+`state_entered_at` (or `updated_at`) as its `since`.
+
+The in-progress `Session.attention` for a run whose agent works again, and the
+session timeline dropping its Blocked step for it, reach every version. A
+response carries no transcript time or head, so nothing in it tells this answer
+apart from the green-PR one, and restoring the fix would ask the operator about
+a run whose agent is already at work. The session stays
+`SESSION_STATE_BLOCKED` while its agent works. Only the run's own finish moves
+it: a plain finish readies the PR (`SESSION_STATE_READY_FOR_REVIEW`), and a
+finish that reports the run blocked again starts a new block with the new
+`blocked_reason`. That change is persisted, so every version sees it.
 
 ## Additive changes
 

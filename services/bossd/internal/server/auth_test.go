@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +29,25 @@ func clientFor(t *testing.T, socketPath string, opts ...connect.ClientOption) bo
 	return bossanovav1connect.NewDaemonServiceClient(hc, "http://localhost", opts...)
 }
 
+// shortSocketPath returns a socket path in a fresh directory of its own under
+// /tmp. The directory, not just the file name, must be unique: the daemon's
+// token file is co-located (socketauth.TokenPath = <dir>/bossd.token), so a
+// socket placed straight in /tmp shared /tmp/bossd.token with every other test
+// process that did the same, including services/boss/internal/client tests
+// that delete it. Under Bazel's process-wrapper sandbox /tmp is shared across
+// concurrent test actions, so a restart test read a token another package had
+// just deleted or regenerated. /tmp rather than t.TempDir() because the macOS
+// Unix socket path limit is 104 bytes.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "bossd-")
+	if err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "bossd.sock")
+}
+
 // startAuthedTestDaemon stands up a real DaemonService via Listen on a Unix
 // socket (so the server interceptor wired into Listen is exercised) and returns
 // the socket path, the generated token (read from the co-located token file),
@@ -38,9 +56,7 @@ func clientFor(t *testing.T, socketPath string, opts ...connect.ClientOption) bo
 func startAuthedTestDaemon(t *testing.T, socketPath string) (string, string, func()) {
 	t.Helper()
 	if socketPath == "" {
-		// Use /tmp directly — t.TempDir() paths can exceed the 104-char macOS
-		// Unix socket limit.
-		socketPath = filepath.Join("/tmp", fmt.Sprintf("bossd-auth-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+		socketPath = shortSocketPath(t)
 	}
 	s := New(Config{Repos: db.NewRepoStore(setupServerTestDB(t))})
 	if err := s.Listen(socketPath); err != nil {

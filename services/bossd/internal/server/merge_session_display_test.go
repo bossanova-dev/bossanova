@@ -120,8 +120,8 @@ func TestMergeSessionSetsMergingBeforeProviderMergeAndClearsOnError(t *testing.T
 
 // TestMergeSessionRefreshesPRAfterMergeOnlyClear pins one instance of the
 // unconditional post-merge refresh: when no polled PR-status entry existed
-// before the merge (e.g. the post-restart window), SetMerging creates a
-// merge-only entry that the deferred clear drops. Without a re-poll, recompute
+// before the merge (e.g. the post-restart window), HoldMerging creates a
+// merge-only entry that the deferred release drops. Without a re-poll, recompute
 // would downgrade the persisted PR label to "stopped"; MergeSession's
 // unconditional refresh restores the real label regardless. Exercised on the
 // failed-merge return, where the session stays active and the downgrade would
@@ -158,7 +158,7 @@ func TestMergeSessionRefreshesPRAfterMergeOnlyClear(t *testing.T) {
 // boss just performed must not need a webhook or the next display-poller tick
 // (2 minutes by default) to reflect its own action — so the defer must re-poll
 // unconditionally rather
-// than skip the refresh just because SetMerging updated an existing entry
+// than skip the refresh just because HoldMerging updated an existing entry
 // instead of creating a merge-only one. Skipping here (the pre-BOS-534
 // behaviour) meant every ordinary merge left the tracker showing the pre-merge
 // status until the next webhook or poll tick.
@@ -258,8 +258,8 @@ func TestMergeSessionRefreshSkippedWhenPRRefresherNil(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the injected merge error to propagate")
 	}
-	// The defer still ran to completion: reaching the (skipped) refresh means
-	// the Merging flag was cleared first. Without this the test would only fail
+	// The defer still ran to completion: the release comes after the (skipped)
+	// refresh, so a cleared Merging flag means the defer got past it. Without this the test would only fail
 	// on an outright panic. The entry must still exist — a seeded polled entry
 	// surviving the clear is part of what is being asserted, so a nil-tolerant
 	// check here would pass on a dropped entry too.
@@ -268,7 +268,7 @@ func TestMergeSessionRefreshSkippedWhenPRRefresherNil(t *testing.T) {
 		t.Fatal("expected the seeded polled tracker entry to survive the deferred clear")
 	}
 	if entry.Merging {
-		t.Fatal("expected the deferred SetMerging clear to run even with a nil prRefresher")
+		t.Fatal("expected the deferred merging release to run even with a nil prRefresher")
 	}
 }
 
@@ -376,5 +376,39 @@ func TestMergeSessionSetsMergingBeforeLocalMergeAndClearsOnSuccess(t *testing.T)
 	// The defer must clear the merging-only entry on the successful return.
 	if e := tracker.Get("s1"); e != nil && e.Merging {
 		t.Fatalf("expected Merging cleared on successful return, got %+v", e)
+	}
+}
+
+// TestMergeSessionHoldsMergingThroughThePostMergeRefresh pins the release
+// after the re-poll: releasing first would publish the pre-merge "✓ passing"
+// between the merge and the re-polled label.
+func TestMergeSessionHoldsMergingThroughThePostMergeRefresh(t *testing.T) {
+	tracker := status.NewDisplayTracker()
+	tracker.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	rec := &mergingRecorder{tracker: tracker}
+	tracker.SetRecomputer(rec)
+	refresher := &pollingRefresher{tracker: tracker}
+	prov := greenMergeProvider(nil, nil)
+	prov.mergeCommitSHA = "abc123"
+
+	srv := &Server{
+		sessions:       &lifecycleSessionStoreFake{session: blockedFixLoopSession()},
+		repos:          &archiveRepoStoreFake{repo: mergeDisplayRepo()},
+		provider:       prov,
+		worktrees:      &mergePolicyWorktrees{isAncestor: true},
+		displayTracker: tracker,
+		prRefresher:    refresher,
+		logger:         zerolog.Nop(),
+	}
+
+	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"})); err != nil {
+		t.Fatalf("expected a successful merge, got %v", err)
+	}
+	if refresher.calls != 1 || !refresher.mergingAfter {
+		t.Fatalf("re-poll: calls = %d, merging held after it = %v; want one re-poll under the hold", refresher.calls, refresher.mergingAfter)
+	}
+	rec.requireHeldThenReleased(t)
+	if e := tracker.Get("s1"); e == nil || e.Merging || e.Status != vcs.DisplayStatusMerged {
+		t.Fatalf("entry after the merge = %+v, want Merging cleared and the re-polled Merged status kept", e)
 	}
 }

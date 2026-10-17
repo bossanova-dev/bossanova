@@ -37,7 +37,7 @@ const minLaunchingDisplay = 1500 * time.Millisecond
 // terminal to a `tmux attach` that would print a raw "can't find session"
 // error and trap them. See BOS-108.
 var errChatSessionGone = errors.New(
-	"this chat's agent session is no longer available (it may have been interrupted during setup) — press esc to go back and start a new chat")
+	"this chat's agent session is no longer available (it may have been interrupted during setup)")
 
 // startExecMsg fires once the minLaunchingDisplay budget has elapsed.
 // It triggers the deferred tea.Exec that attaches to tmux.
@@ -894,11 +894,10 @@ func renderLaunchDiagnostic(info *pb.DescribeChatLaunchResponse, agentLabel stri
 		b.WriteString(prose.Render(fmt.Sprintf(
 			"The %s CLI exited before its pane came up. This is often a PATH or\n"+
 				"login-shell problem that only reproduces where the agent runs, but it\n"+
-				"can also be the agent itself refusing to start. Run the command to see\n"+
-				"the underlying error.", agentLabel)))
+				"can also be the agent itself refusing to start.", agentLabel)))
 		b.WriteString("\n\n")
 	}
-	b.WriteString(prose.Render("bossd ran this on " + where + ":"))
+	b.WriteString(prose.Render("The daemon ran this on " + where + ":"))
 	b.WriteString("\n\n")
 	b.WriteString(code.Render(cmd))
 	b.WriteString("\n\n")

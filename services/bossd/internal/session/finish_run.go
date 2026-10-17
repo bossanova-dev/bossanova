@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/db"
@@ -48,7 +49,8 @@ func IsUnattendedSession(sess *models.Session) bool {
 // The finalize is idempotent through its conditional transition: when the
 // sweep or the Stop-hook gate got there first the result is NoOp, which is
 // success. An archived session is NoOp too — its worktree is gone, and the
-// sweep skips archived rows for the same reason.
+// sweep skips archived rows for the same reason. A Blocked run is finalized
+// only when its own chat finished it in this block (AcceptBlockedRunFinish).
 func (l *Lifecycle) FinishUnattendedRun(ctx context.Context, sessionID string) (*FinalizeResult, error) {
 	sess, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -59,6 +61,9 @@ func (l *Lifecycle) FinishUnattendedRun(ctx context.Context, sessionID string) (
 	}
 	if sess.ArchivedAt != nil {
 		return &FinalizeResult{NoOp: true}, nil
+	}
+	if l.blockedFinish.take(sess) {
+		return l.finishBlockedRun(ctx, sess)
 	}
 	return l.finalizeSessionFrom(ctx, sessionID, finishStateInts(sess))
 }
@@ -72,6 +77,15 @@ func finishStateInts(sess *models.Session) []int {
 	return expected
 }
 
+// reportStateInts is the state set a blocked report is accepted in: the finish
+// set, or Blocked when the run's own chat finished it in this block.
+func (l *Lifecycle) reportStateInts(sess *models.Session) []int {
+	if l.blockedFinish.holds(sess) {
+		return []int{int(machine.Blocked)}
+	}
+	return finishStateInts(sess)
+}
+
 // ErrRunAlreadyFinalized is returned by ReportRunBlocked for a session whose
 // finalize has already run or started: the report can no longer change it.
 var ErrRunAlreadyFinalized = errors.New("unattended run is already finalized")
@@ -81,7 +95,8 @@ var ErrRunAlreadyFinalized = errors.New("unattended run is already finalized")
 // writer touches, so every later finalize of this run — the deferred finish,
 // the Stop-hook gate, the stranded sweep, before or after a daemon restart or a
 // usage-limit park — leaves its PR draft and Blocks the session with the
-// reason. Reporting twice rewrites the same field.
+// reason. Reporting twice rewrites the same field. A Blocked run accepts a
+// report only from its own chat's finish (AcceptBlockedRunFinish).
 func (l *Lifecycle) ReportRunBlocked(ctx context.Context, sessionID, reason string) error {
 	sess, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -90,7 +105,7 @@ func (l *Lifecycle) ReportRunBlocked(ctx context.Context, sessionID, reason stri
 	if !isUnattendedSession(sess) {
 		return ErrNotUnattendedRun
 	}
-	if !slices.Contains(finishStateInts(sess), int(sess.State)) {
+	if !slices.Contains(l.reportStateInts(sess), int(sess.State)) {
 		return fmt.Errorf("%w (state %s)", ErrRunAlreadyFinalized, sess.State)
 	}
 	reason = truncateBlockedReason(reason)

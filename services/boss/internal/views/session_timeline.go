@@ -90,7 +90,7 @@ func (m ChatPickerModel) neededQuestion() string {
 		}
 	case pb.AttentionKind_ATTENTION_KIND_FIX:
 		if len(a.GetParkCodes()) > 0 {
-			return blockedParkNeeded(m.session.GetPrNumber(), a)
+			return blockedParkNeeded(a)
 		}
 		return "How should the agent proceed after this failure?"
 	case pb.AttentionKind_ATTENTION_KIND_MERGE:
@@ -100,11 +100,10 @@ func (m ChatPickerModel) neededQuestion() string {
 	}
 }
 
-// blockedParkNeeded is what a blocked verify park asks of the operator, whose
-// row offers no merge: what keeps it blocked, in plain words (each open
-// checklist item its park note recorded, or what the park is about), then the
-// two ways forward: fix it through a chat, or override it from the CLI.
-func blockedParkNeeded(pr int32, a *pb.SessionAttention) string {
+// blockedParkNeeded is what keeps a blocked verify park from merging, in
+// plain words: each open checklist item its park note recorded, or what the
+// park is about.
+func blockedParkNeeded(a *pb.SessionAttention) string {
 	var lines []string
 	if items := a.GetOpenItems(); len(items) > 0 {
 		lines = append(lines, "Open in the PR checklist:")
@@ -114,7 +113,7 @@ func blockedParkNeeded(pr int32, a *pb.SessionAttention) string {
 	} else {
 		lines = append(lines, "Verify is blocked: "+strings.Join(attention.ParkCategories(a.GetParkCodes()), ", ")+".")
 	}
-	return strings.Join(append(lines, fmt.Sprintf("Open a chat to fix it, or run boss pr approve %d to override it; verify re-checks the PR before it merges.", pr)), "\n")
+	return strings.Join(lines, "\n")
 }
 
 // timelineSteps is the session's history, oldest first: the daemon's dated
@@ -231,7 +230,7 @@ func (m ChatPickerModel) timelineBlock() string {
 	for _, i := range candidates {
 		titleWidth = max(titleWidth, ansi.StringWidth(steps[i].GetTitle()))
 	}
-	kept, rows := foldTimelineSteps(steps, candidates, pin, time.Now(), titleWidth, m.chatPickerProseAvailWidth(), budget)
+	kept, rows := foldTimelineSteps(steps, candidates, pin, time.Now(), titleWidth, detailsWrapWidth(m.chatPickerProseAvailWidth()), budget)
 	gaps := timelineGaps(kept, len(steps))
 	lines := []string{"Timeline"}
 	for i := 0; i <= len(kept); i++ {
@@ -381,6 +380,16 @@ const timelineMaxSteps = 6
 // timelineMaxStepRows caps one step's wrapped detail. A question's full text
 // already has its own pageable block below, so the timeline only previews it.
 const timelineMaxStepRows = 3
+
+// detailsMaxWidth is the widest the timeline and the "Needed from you" answer
+// wrap, however wide the terminal: a 250-column line is too long to read.
+const detailsMaxWidth = 100
+
+// detailsWrapWidth is width capped at detailsMaxWidth. Zero, an unsized model,
+// stays zero, which leaves the lines whole.
+func detailsWrapWidth(width int) int {
+	return min(width, detailsMaxWidth)
+}
 
 // detailsReservedChats is how many chat rows the details blocks always leave
 // the chat table, beyond its header.
@@ -615,7 +624,7 @@ func (m ChatPickerModel) neededWindow() (lines []string, start, size int) {
 // A line's own leading spaces, such as a checklist bullet's, carry onto every
 // line it wraps into.
 func (m ChatPickerModel) neededLines() []string {
-	wrap := m.blockWrapWidth()
+	wrap := detailsWrapWidth(m.blockWrapWidth())
 	width := max(1, wrap-len(neededIndent))
 	var lines []string
 	for _, paragraph := range strings.Split(m.neededQuestion(), "\n") {

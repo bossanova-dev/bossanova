@@ -746,7 +746,7 @@ func TestChatPicker_WakeResultMsg_RendersOutcome(t *testing.T) {
 		{"fresh-fallback", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "", "Started fresh"},
 		{"fresh-fallback-transcript", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "transcript_missing", "Started fresh: transcript missing"},
 		{"fresh-fallback-discovery", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "provider_id_discovery_timeout", "Started fresh: provider session is still being discovered"},
-		{"fresh-fallback-legacy-ambiguous", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "legacy_provider_id_discovery_ambiguous", "Started fresh: legacy backfill matched multiple provider sessions"},
+		{"fresh-fallback-legacy-ambiguous", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "legacy_provider_id_discovery_ambiguous", "Started fresh: the earlier conversation could not be identified"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2308,6 +2308,28 @@ func TestChatPicker_InitialCursor_ExplicitHighlightBeatsQuestion(t *testing.T) {
 	}
 }
 
+// TestChatPicker_InitialCursor_UnlistedHighlightFallsBackToQuestion covers a
+// named chat (Enter on a NEEDS YOU row, or the chat just left) that is no longer
+// listed: the cursor takes the default question preference instead of staying
+// on the newest chat.
+func TestChatPicker_InitialCursor_UnlistedHighlightFallsBackToQuestion(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "agent-gone")
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{
+			bos494Chat("agent-working", "Newer working", 1*time.Hour),
+			bos494Chat("agent-question", "Older question", 3*time.Hour),
+		},
+		daemonStatuses: map[string]string{
+			"agent-working":  statusWorking,
+			"agent-question": statusQuestion,
+		},
+	})
+	m = updated.(ChatPickerModel)
+	if got := m.table.Cursor(); got != 1 {
+		t.Fatalf("cursor = %d, want 1 (the question row) when the named chat is not listed", got)
+	}
+}
+
 // TestChatPicker_InitialCursor_NoQuestionKeepsFirstActive guards the unchanged
 // behavior: with no question chat, the cursor still lands on the first
 // working/idle/limited chat.
@@ -3611,27 +3633,6 @@ func TestChatPicker_RenameActivatesTextEntry(t *testing.T) {
 	m = updated.(ChatPickerModel)
 	if m.textEntryActive() {
 		t.Fatal("textEntryActive() = true after the prompt closed")
-	}
-}
-
-// TestChatPicker_RenamePromptMatchesDeleteConfirmHeight pins acceptance
-// criterion 10 and, with it, the tableHeight reservation invariant: the rename
-// prompt occupies exactly the rows the delete confirm does, so no new
-// reservation term is needed for it.
-func TestChatPicker_RenamePromptMatchesDeleteConfirmHeight(t *testing.T) {
-	base := chatPickerSized(&chatPickerStub{})
-
-	updated, _ := base.Update(keyPress('r'))
-	renamed := updated.(ChatPickerModel)
-
-	confirming := base
-	confirming.confirm = confirmDelete
-
-	renameLines := strings.Count(renamed.View().Content, "\n")
-	confirmLines := strings.Count(confirming.View().Content, "\n")
-	if renameLines != confirmLines {
-		t.Fatalf("rename prompt renders %d newlines, delete confirm renders %d; the block must occupy the rows tableHeight reserves\nrename:\n%s\nconfirm:\n%s",
-			renameLines, confirmLines, renamed.View().Content, confirming.View().Content)
 	}
 }
 

@@ -1529,6 +1529,31 @@ func TestIsLiveActivityLabel_Classification(t *testing.T) {
 	}
 }
 
+func TestIsStateEndingLabel(t *testing.T) {
+	ready := &pb.Session{HasBuildReceipt: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}
+	for _, in := range []Input{
+		{Session: &pb.Session{DisplayMerging: true, HasBuildReceipt: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}},
+		{Session: &pb.Session{ArchivePending: true, HasBuildReceipt: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING}},
+		{Session: &pb.Session{ArchivePending: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING}, ChatStatus: pb.ChatStatus_CHAT_STATUS_IDLE},
+	} {
+		label := Compute(in).Label
+		if !IsStateEndingLabel(label) || !IsLiveActivityLabel(label) {
+			t.Errorf("Compute(%+v).Label = %q: IsStateEndingLabel = %v, IsLiveActivityLabel = %v, want both true", in.Session, label, IsStateEndingLabel(label), IsLiveActivityLabel(label))
+		}
+	}
+	for _, label := range []string{
+		Compute(Input{Session: ready}).Label,
+		Compute(Input{Session: &pb.Session{DisplaySettingUp: true}}).Label,
+		Compute(Input{Session: &pb.Session{DisplayIsRepairing: true}}).Label,
+		QuestionLabel, WaitingLabel, WorkingLabel, "usage-limited", "pending", "running 1/5",
+		"⨯ failing", labelMerged, "idle", "stopped", "",
+	} {
+		if IsStateEndingLabel(label) {
+			t.Errorf("IsStateEndingLabel(%q) = true, want false", label)
+		}
+	}
+}
+
 // TestIsLiveActivityLabel_CoversEveryCascadeLabel is the anti-rot guard: it
 // enumerates every label baseStatus, prOutput and workflowOutput can emit by
 // DRIVING them, and fails when one is classified in neither the live nor the

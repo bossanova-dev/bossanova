@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
@@ -2344,7 +2345,7 @@ func TestRestartDaemonCmdUsesCLIPathForInstalledDaemon(t *testing.T) {
 	}
 }
 
-func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
+func TestRestartDaemonCmdTimesOutWithoutAdvice(t *testing.T) {
 	oldRunBossDaemonRestart := runBossDaemonRestart
 	oldDefaultSocketPath := defaultSocketPath
 	oldSocketReachable := daemonSocketReachable
@@ -2371,8 +2372,11 @@ func TestRestartDaemonCmdTimesOutWithStatusHint(t *testing.T) {
 	if msg.err == nil {
 		t.Fatal("restartDaemonCmd error = nil, want timeout")
 	}
-	if !strings.Contains(msg.err.Error(), "boss daemon status") {
-		t.Fatalf("timeout error missing status hint: %v", msg.err)
+	if !strings.Contains(msg.err.Error(), "did not become reachable") {
+		t.Fatalf("timeout error does not say what happened: %v", msg.err)
+	}
+	if strings.Contains(msg.err.Error(), "boss daemon status") {
+		t.Fatalf("timeout error tells the user what to run: %v", msg.err)
 	}
 }
 
@@ -5221,7 +5225,8 @@ func TestHomeNeverAdvertisesTheRenameKey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content := tc.build(t).View().Content
-			if strings.Contains(strings.ToLower(content), "rename") {
+			hints := strings.NewReplacer("[", "", "]", "").Replace(strings.ToLower(ansi.Strip(content)))
+			if strings.Contains(hints, "rename") {
 				t.Fatalf("the action bar advertises the hidden shortcut:\n%s", content)
 			}
 		})

@@ -68,11 +68,16 @@ func TestRenderLaunchDiagnostic_ShowsCommandHostAndWorktree(t *testing.T) {
 		"host 'tomo'",
 		"cd /work/tree",
 		"'exec $argv' claude --session-id abc",
-		"Run it there",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("diagnostic missing %q in:\n%s", want, out)
 		}
+	}
+	if !strings.Contains(out, "Run it there to see the underlying error.") {
+		t.Fatalf("diagnostic must say how to see the underlying error:\n%s", out)
+	}
+	if strings.Contains(out, "Run the command") {
+		t.Fatalf("diagnostic gives the same advice twice:\n%s", out)
 	}
 }
 
@@ -109,7 +114,7 @@ func TestRenderLaunchDiagnostic_ShowsCapturedOutput(t *testing.T) {
 	for _, want := range []string{
 		"Claude Code reported:",
 		"Session ID abc is already in use",
-		"bossd ran this on host 'tomo':",
+		"The daemon ran this on host 'tomo':",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("diagnostic missing %q in:\n%s", want, out)

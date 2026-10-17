@@ -41,16 +41,21 @@ func (m ChatPickerModel) renderErrState() string {
 		body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + "Archiving session…")
 	case m.confirm == confirmArchive:
-		body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?") + "\n" +
+		body += "\n" + lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?") + "\n" +
 			styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
 	default:
+		// Each status line takes a blank line above it, as in the chat list's
+		// footer. A failed archive (stored in statusMsg) shows here so the user
+		// isn't dropped back to the bare error screen with no feedback.
+		var lines []string
 		if m.archiveAwaited() {
-			body += m.archiveStatusLine() + "\n"
+			lines = append(lines, m.archiveStatusLine())
 		}
-		// Surface a failed archive (stored in statusMsg) so the user isn't
-		// dropped back to the bare error screen with no feedback.
 		if m.statusMsg != "" {
-			body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg) + "\n"
+			lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+		}
+		for _, line := range lines {
+			body += "\n" + line + "\n"
 		}
 		if m.sessionID != "" {
 			body += actionBarWidth(m.width, []string{"[a]rchive"}, []string{"[esc] back"})
@@ -138,14 +143,7 @@ func (m ChatPickerModel) renderChatList() string {
 
 	b.WriteString(chatPickerContentBlock(m.table.View()))
 	b.WriteString("\n")
-
-	if prompt, handled := m.renderRenamePrompt(); handled {
-		b.WriteString(prompt)
-	} else if prompt, handled := m.renderConfirm(); handled {
-		b.WriteString(prompt)
-	} else {
-		b.WriteString(m.renderActionBar())
-	}
+	b.WriteString(m.renderFooter())
 
 	// The session timeline, account rotations included, sits at the very bottom
 	// of the view where the rotation history used to (BOS-432): below the
@@ -161,16 +159,23 @@ func (m ChatPickerModel) renderChatList() string {
 	return b.String()
 }
 
+// renderFooter renders what sits between the chat table and the timeline: the
+// rename prompt, a confirmation or in-flight line, or the steady status lines
+// and action bar. chatListOverhead reserves its height as drawn.
+func (m ChatPickerModel) renderFooter() string {
+	if prompt, handled := m.renderRenamePrompt(); handled {
+		return prompt
+	}
+	if prompt, handled := m.renderConfirm(); handled {
+		return prompt
+	}
+	return m.renderActionBar()
+}
+
 // renderRenamePrompt renders the inline [r]ename editor that stands in for the
-// action bar while the prompt is open (BOS-836). The bool reports ownership, on
-// the same contract as renderConfirm.
-//
-// The layout deliberately matches the delete confirm's line count — a blank
-// line, the prompt line, then the key hints — because tableHeight()'s
-// reservation is computed from the steady-state action bar and is not adjusted
-// for transient prompts. The "cannot be empty" complaint is therefore appended
-// to the prompt line rather than given a line of its own; a fourth line here
-// would push the table one row past its reservation.
+// action bar while the prompt is open (BOS-836): a blank line, the prompt line
+// with any "cannot be empty" complaint appended, then the key hints. The bool
+// reports ownership, on the same contract as renderConfirm.
 func (m ChatPickerModel) renderRenamePrompt() (string, bool) {
 	if !m.renaming {
 		return "", false
@@ -254,9 +259,8 @@ func (m ChatPickerModel) renderConfirm() (string, bool) {
 
 // statusFooterLines are the one-line statuses the steady-state footer stacks
 // above the action bar, in display order: the daemon archive wait, the transient
-// failure line, the last attention result, the switch-account notice and the
-// merged label. renderActionBar and statusFooterHeight both read this list, so
-// what is drawn and what the table gives up for it cannot drift apart.
+// failure line, an unanswered merge's waiting line, the last attention result,
+// the switch-account notice and the merged label.
 func (m ChatPickerModel) statusFooterLines() []string {
 	var lines []string
 	if m.archiveAwaited() && !m.archiving {
@@ -265,8 +269,10 @@ func (m ChatPickerModel) statusFooterLines() []string {
 	if m.statusMsg != "" {
 		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
 	}
-	if m.statusNote != "" {
-		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(m.statusNote)))
+	for _, note := range []string{m.attentionAction.waiting, m.statusNote} {
+		if note != "" {
+			lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(note)))
+		}
 	}
 	// Passive system/notice line for the switch-account outcome (BOS-171):
 	// the daemon's "switched to <label> — resumed/started fresh" text, or its
@@ -282,12 +288,6 @@ func (m ChatPickerModel) statusFooterLines() []string {
 		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(mergedLabel)))
 	}
 	return lines
-}
-
-// statusFooterHeight is the rows statusFooterLines occupy: each line carries
-// the blank line above it.
-func (m ChatPickerModel) statusFooterHeight() int {
-	return 2 * len(m.statusFooterLines())
 }
 
 // renderActionBar renders the steady-state footer: the status lines, each with
@@ -312,7 +312,9 @@ func (m ChatPickerModel) renderActionBar() string {
 
 func (m ChatPickerModel) chatListActionGroups() (left, middle, back []string) {
 	middle = []string{"[n]ew chat", "[s]ettings"}
-	middle = append(middle, attentionFooter(m.session, true)...)
+	if !m.attentionAction.mergeUnresolved() {
+		middle = append(middle, attentionFooter(m.session, true)...)
+	}
 	if m.newTabSupported {
 		middle = append(middle, "[t]erminal")
 	}
@@ -357,7 +359,7 @@ func wakeFreshFallbackStatus(reason string) string {
 	case "provider_id_discovery_timeout":
 		return "Started fresh: provider session is still being discovered"
 	case "legacy_provider_id_discovery_ambiguous":
-		return "Started fresh: legacy backfill matched multiple provider sessions"
+		return "Started fresh: the earlier conversation could not be identified"
 	case "provider_id_discovery_ambiguous":
 		return "Started fresh: provider session discovery matched multiple candidates"
 	default:

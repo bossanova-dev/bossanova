@@ -67,6 +67,7 @@ go_test(
     srcs = [
         "auth_test.go",
         "cap_test.go",
+        "capability_profile_registry_test.go",
         "capability_profile_test.go",
         "codex_trust_deny_test.go",
         "codex_trust_test.go",

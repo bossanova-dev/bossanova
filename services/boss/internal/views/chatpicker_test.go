@@ -3704,3 +3704,13 @@ func (s *chatPickerStub) FinishUnattendedRun(context.Context, *pb.FinishUnattend
 }
 
 func (s *chatPickerStub) SetChatPhase(context.Context, string, string, string) error { panic("unused") }
+
+func TestChatPicker_HTTPLineHostAware(t *testing.T) {
+	withHostDestination(t, "delta")
+	m := seedChatPickerForEndpoints(t)
+	m.session = &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}}}
+	line := m.httpEndpointLine()
+	if !strings.Contains(line, "\x1b]8;;http://delta:3000") || strings.Contains(line, "127.0.0.1") {
+		t.Errorf("HTTP line has wrong target: %q", line)
+	}
+}

@@ -2,7 +2,9 @@ package views
 
 import (
 	"fmt"
+	"net"
 	"strings"
+	"unicode"
 )
 
 // This file owns the single switch that tells the TUI it is driving a daemon on
@@ -55,6 +57,40 @@ func SetHostControlPath(controlPath string) { hostControlPath = controlPath }
 // invocation use this; callers that only need to know whether they are remote
 // use isRemoteHost.
 func remoteHostDestination() string { return hostDestination }
+
+// remoteHostURLHost derives a display-only browser host from the remote context.
+// Never pass this to ssh: ssh destinations stay opaque and use
+// remoteHostDestination verbatim, including user and ssh configuration aliases.
+func remoteHostURLHost() string { return urlHostFromSSHDestination(remoteHostDestination()) }
+
+// urlHostFromSSHDestination extracts only the host for browser links, without
+// resolving ssh config aliases. Plain ssh destinations have no port syntax;
+// only ssh:// destinations may carry a port to discard.
+func urlHostFromSSHDestination(destination string) string {
+	destination = strings.TrimSpace(destination)
+	isURI := strings.HasPrefix(destination, "ssh://")
+	destination = strings.TrimPrefix(destination, "ssh://")
+	if i := strings.LastIndexByte(destination, '@'); i >= 0 {
+		destination = destination[i+1:]
+	}
+	if isURI {
+		if host, _, err := net.SplitHostPort(destination); err == nil {
+			destination = host
+		}
+	}
+	if strings.HasPrefix(destination, "[") && strings.HasSuffix(destination, "]") {
+		destination = destination[1 : len(destination)-1]
+	}
+	if destination == "" || strings.HasPrefix(destination, "-") || strings.Contains(destination, "/") {
+		return ""
+	}
+	for _, r := range destination {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return ""
+		}
+	}
+	return destination
+}
 
 // remoteHostControlPath returns the tunnel's multiplexing socket, or "" when
 // uploads must open their own ssh connection.

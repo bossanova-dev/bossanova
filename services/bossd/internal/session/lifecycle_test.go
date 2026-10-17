@@ -8472,13 +8472,42 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 		return exec.CommandContext(ctx, "printf", "%s", f.listPanesOutput)
 	}
 	if subcommand == "capture-pane" {
-		out := f.capturePaneOutput
+		out := drawTypedLine(f.capturePaneOutput, f.calls)
 		if f.capturePaneFunc != nil {
 			out = f.capturePaneFunc(f.calls)
 		}
 		return exec.CommandContext(ctx, "printf", "%s", out)
 	}
 	return exec.CommandContext(ctx, "true")
+}
+
+// drawTypedLine renders a line typed with send-keys -l after the pane's last
+// composer row until an Enter or C-u follows it, the way a live composer draws
+// typed keys. A typed Claude line is entered only once the composer shows it.
+func drawTypedLine(pane string, calls []recordedTmuxCall) string {
+	typed := ""
+	for _, c := range calls {
+		if c.subcommand != "send-keys" || len(c.args) == 0 {
+			continue
+		}
+		switch last := c.args[len(c.args)-1]; {
+		case slices.Contains(c.args, "-l"):
+			typed = last
+		case last == "Enter" || last == "C-u":
+			typed = ""
+		}
+	}
+	if typed == "" {
+		return pane
+	}
+	lines := strings.Split(pane, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
+			lines[i] = strings.TrimRight(lines[i], " ") + " " + typed
+			return strings.Join(lines, "\n")
+		}
+	}
+	return pane
 }
 
 // newSessionScript answers tmux.Client.NewSession's stdin-script invocation

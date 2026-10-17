@@ -2959,9 +2959,10 @@ func TestSendMessage_SubmitSingleLine_DeliversEntersAndVerifies(t *testing.T) {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	fake := &sendPlanRecordingFactory{
-		// Ready marker present on the first poll; a cleared (submitted) prompt on
-		// the verify poll so verification passes without waiting the full budget.
-		capturePaneOutputs: []string{"❯\n", "❯\n"},
+		// Ready marker present on the first poll, then the composer drawing the
+		// typed line (Enter waits for that), then a cleared (submitted) prompt
+		// so verification passes without waiting the full budget.
+		capturePaneOutputs: []string{"❯\n", "❯ /boss-repair watch\n", "❯ /boss-repair watch\n", "❯ /boss-repair watch\n", "❯\n"},
 	}
 	c := NewClient(WithCommandFactory(fake.factory))
 
@@ -3251,7 +3252,13 @@ func TestSendMessage_Submit_DeliversEntersAndVerifies(t *testing.T) {
 			// a bare marker clears the single-line literal row AND reads as a
 			// submitted multi-line composer (empty marker row, no payload lines
 			// below).
-			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{tc.marker + "\n", tc.marker + "\n"}}
+			panes := []string{tc.marker + "\n", tc.marker + "\n"}
+			if tc.wantType && tc.marker == sendPlanReadyMarker {
+				// A typed Claude line is entered only once the composer draws it.
+				drawn := tc.marker + " " + tc.text + "\n"
+				panes = []string{tc.marker + "\n", drawn, drawn, drawn, tc.marker + "\n"}
+			}
+			fake := &sendPlanRecordingFactory{capturePaneOutputs: panes}
 			c := NewClient(WithCommandFactory(fake.factory))
 
 			if err := c.SendMessage(context.Background(), "boss-test-sess", tc.text, true, tc.marker); err != nil {

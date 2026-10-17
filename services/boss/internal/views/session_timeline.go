@@ -62,33 +62,6 @@ func (m *ChatPickerModel) syncTimeline() tea.Cmd {
 	}
 }
 
-func attentionDetailStatus(s *pb.Session) string {
-	a := s.GetAttention()
-	kind, verb := "", ""
-	switch a.GetKind() {
-	case pb.AttentionKind_ATTENTION_KIND_REVIEW:
-		kind, verb = "review", "parked"
-	case pb.AttentionKind_ATTENTION_KIND_FIX:
-		kind, verb = "fix", "failed"
-	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
-		kind, verb = "question", "asked"
-	case pb.AttentionKind_ATTENTION_KIND_MERGE:
-		kind, verb = "merge", "ready"
-	case pb.AttentionKind_ATTENTION_KIND_DONE:
-		kind = "done"
-	default:
-		kind = a.GetProgressLabel()
-	}
-	parts := []string{kind}
-	if verb != "" && a.GetSince() != nil {
-		parts = append(parts, verb+" "+RelativeTime(a.GetSince().AsTime()))
-	}
-	if sha := s.GetPrDisplayHeadSha(); sha != "" {
-		parts = append(parts, "head "+sha[:min(len(sha), shortIDLen)])
-	}
-	return strings.Join(parts, " · ")
-}
-
 func (m ChatPickerModel) neededQuestion() string {
 	a := m.session.GetAttention()
 	if !attention.NeedsYou(a.GetKind()) {

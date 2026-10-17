@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1382,6 +1383,14 @@ func TestIsHTTPEndpointURL(t *testing.T) {
 // string must never contain an OSC 8 introducer whose target carries a raw
 // ESC or BEL byte.
 func TestRenderSessionEndpoints_NeverEmitsUnsafeTarget(t *testing.T) {
+	t.Run("unsafe remote destination", func(t *testing.T) {
+		withHostDestination(t, "delta\x1b]8;;http://evil")
+		got := renderSessionEndpoints(&pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://localhost:3000"}}})
+		if strings.Contains(got, "\x1b]8;;") || !strings.Contains(got, ":3000") {
+			t.Errorf("unsafe destination produced %q", got)
+		}
+	})
+
 	hostile := []string{
 		"http://localhost:3000\x1b]8;;http://evil\x1b\\",
 		"http://localhost\x07",
@@ -2316,5 +2325,43 @@ func TestRenderDisplayStatus_VerifyRows(t *testing.T) {
 	}
 	if styled := styledPRStatus(rejected, sp); styled != styleStatusDanger.Render(sp.View()+"verifying") {
 		t.Errorf("legacy styledPRStatus with changes requested = %q", styled)
+	}
+}
+
+func TestRenderSessionEndpoints_HostAware(t *testing.T) {
+	cases := []struct {
+		name, destination, raw, target string
+		port                           uint32
+	}{
+		{"remote", "delta", "http://127.0.0.1:1234", "http://delta:1234", 1234},
+		{"https IPv6 loopback", "delta", "https://[::1]:8443", "https://delta:8443", 8443},
+		{"localhost", "delta", "http://LOCALHOST:3000", "http://delta:3000", 3000},
+		{"loopback subnet", "delta", "http://127.2.3.4:1234/path?q=1#fragment", "http://delta:1234/path?q=1#fragment", 1234},
+		{"user", "deploy@delta", "http://127.0.0.1:1234", "http://delta:1234", 1234},
+		{"ssh port", "ssh://deploy@delta:2222", "http://127.0.0.1:1234", "http://delta:1234", 1234},
+		{"IPv6 destination", "ssh://[fe80::1]:22", "http://127.0.0.1:1234", "http://[fe80::1]:1234", 1234},
+		{"non loopback", "delta", "http://10.0.0.5:1234", "http://10.0.0.5:1234", 1234},
+		{"missing URL port", "delta", "http://localhost/path", "http://delta:1234/path", 1234},
+		{"underivable", "deploy@", "http://127.0.0.1:1234", "", 1234},
+		{"local", "", "http://127.0.0.1:1234", "http://127.0.0.1:1234", 1234},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withHostDestination(t, tc.destination)
+			sess := &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: tc.port, Url: tc.raw}}}
+			label := ":" + strconv.FormatUint(uint64(tc.port), 10)
+			want := "\x1b[38;2;98;98;98m" + label + "\x1b[39m"
+			if tc.target != "" {
+				want = "\x1b]8;;" + tc.target + "\x1b\\" + "\x1b[38;2;98;98;98;58;2;98;98;98;4m" + label + "\x1b[39;59;24m" + "\x1b]8;;\x1b\\"
+			}
+			if got := renderSessionEndpoints(sess); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+			before := sessionEndpointLabels(sess)
+			SetHostDestination("")
+			if got := sessionEndpointLabels(sess); got != before {
+				t.Errorf("labels changed: remote %q, local %q", before, got)
+			}
+		})
 	}
 }

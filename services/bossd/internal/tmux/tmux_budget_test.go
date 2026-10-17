@@ -52,18 +52,19 @@ func TestSessionStartReadinessFitsStartChatRunBudget(t *testing.T) {
 					"this test reads it from the production builder so it cannot drift", opts.submitVerifyWait)
 			}
 
-			// 1. The hard invariant: the readiness wait plus the submit verifier that
-			//    follows it both run inside one StartChatRun, so together they must fit
-			//    under that RPC's ceiling.
+			// 1. The hard invariant: the readiness wait, the typed-line draw wait with
+			//    its retypes, and the submit verifier that follows them all run inside
+			//    one StartChatRun, so together they must fit under that RPC's ceiling.
 			rpcCeiling := config.StartChatRunBudgetFor(readiness)
-			needed := readiness + opts.submitVerifyWait
+			typedDraw := opts.typedDrawWait * time.Duration(opts.typedDrawAttempts)
+			needed := readiness + typedDraw + opts.submitVerifyWait
 			if needed >= rpcCeiling {
 				t.Fatalf("session-start readiness budget outgrew the host RPC ceiling for configured readiness %v: "+
-					"readiness (%v) + submitVerifyWait (%v) = %v, which is not under config.StartChatRunBudgetFor(readiness) (%v).\n"+
-					"Both run inside one StartChatRun on the repair-driven session-start path, so the RPC ceiling "+
+					"readiness (%v) + typed-line draw (%v) + submitVerifyWait (%v) = %v, which is not under config.StartChatRunBudgetFor(readiness) (%v).\n"+
+					"All run inside one StartChatRun on the repair-driven session-start path, so the RPC ceiling "+
 					"fires first and the readiness deadline silently stops taking effect there. "+
 					"Derive the StartChatRun ceiling from the configured readiness rather than pinning it to the default.",
-					readiness, readiness, opts.submitVerifyWait, needed, rpcCeiling)
+					readiness, readiness, typedDraw, opts.submitVerifyWait, needed, rpcCeiling)
 			}
 
 			// 2. Headroom, as a deliberate policy margin: the ceiling must be at least
@@ -119,6 +120,12 @@ func TestStartChatRunSubmitVerifierTailMatchesStartDeliveryOpts(t *testing.T) {
 			"StartChatRunBudgetFor sizes the plugin→host RPC around this tail from bossalib, "+
 			"which cannot import services/bossd/internal/tmux; update the shared term and this guard together.",
 			config.StartChatRunSubmitVerifierTail, opts.submitVerifyWait)
+	}
+	if typedDraw := opts.typedDrawWait * time.Duration(opts.typedDrawAttempts); typedDraw <= 0 || config.StartChatRunTypedDrawTail != typedDraw {
+		t.Fatalf("config.StartChatRunTypedDrawTail = %v, but startDeliveryOpts types a line for up to %v (%v on each of %d attempts).\n"+
+			"A composer that never draws the line spends all of it inside StartChatRun; "+
+			"update the shared term and this guard together.",
+			config.StartChatRunTypedDrawTail, typedDraw, opts.typedDrawWait, opts.typedDrawAttempts)
 	}
 }
 

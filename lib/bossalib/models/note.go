@@ -16,6 +16,13 @@ const NoteMaxTagLength = 64
 // normalisation, so case variants that fold together count once.
 const NoteMaxTags = 32
 
+// NoteTagTicketNotMoved marks the note bossd leaves when a merged PR's ticket
+// could not be moved. Home shows each one until the operator dismisses it.
+const NoteTagTicketNotMoved = "ticket-not-moved"
+
+// NoteTagSeen marks a note the operator dismissed from Home.
+const NoteTagSeen = "seen"
+
 // Note is a durable free-text record attached to a repository, optionally
 // carrying the session and chat that produced it.
 //

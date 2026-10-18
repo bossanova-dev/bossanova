@@ -1728,6 +1728,7 @@ type mockVCSProvider struct {
 	nextReviewComments []vcs.ReviewComment
 	nextOpenPRs        []vcs.PRSummary
 	allowedStrategies  []string
+	allowedErr         error
 	createPRErr        error
 	listOpenPRErr      error
 	updatePRTitleErr   error
@@ -1845,6 +1846,9 @@ func (m *mockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, prID int
 }
 
 func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	if m.allowedErr != nil {
+		return nil, m.allowedErr
+	}
 	if m.allowedStrategies != nil {
 		return m.allowedStrategies, nil
 	}

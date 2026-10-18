@@ -589,18 +589,28 @@ export function classifyChecks(options) {
     ? [...new Set(runs.runs.filter((r) => r.status !== 'COMPLETED').map((r) => r.workflow))].sort()
     : []
 
-  // The prior side's own entries, for the two facts `absent` cannot carry by name alone: which
-  // workflow each context belongs to, and whether it reported a result on the prior head.
+  // The prior side's own entries, for the fact `absent` cannot carry by name alone: whether each
+  // context reported a result on the prior head.
   const priorEntries = new Map(priorSide == null ? [] : priorSide.map((e) => [e.name, e]))
+  // Same-named contexts are read per workflow, not merged: a name that reported in any workflow and
+  // then vanished is a lost gate even when another workflow's reading of that name would discount it.
+  const priorReadings = new Map()
+  for (const reading of priorSide == null ? [] : sideReadings(priorContexts)) {
+    priorReadings.set(reading.name, [...(priorReadings.get(reading.name) ?? []), reading])
+  }
   // An empty run list cannot tell a path-filtered workflow from runs Actions has not created yet (or
   // a dropped push event), so discounting needs at least one head run as evidence the list is live.
+  // A head run of a reading's workflow that COMPLETED while the context is still missing is a
+  // genuinely lost job, so only a name none of whose workflows ran on the head is discounted.
+  // Readings that carry no workflow say nothing about which one the context belongs to.
   const notTriggered =
     runsKnown && pendingRuns.length === 0 && runs.runs.length > 0
       ? diff.absent.filter((name) => {
-          const entry = priorEntries.get(name)
-          // A head run of the context's workflow that COMPLETED while the context is still missing
-          // is a genuinely lost job, so only a workflow with no head run at all is discounted.
-          return Boolean(entry?.workflow) && !runs.runs.some((run) => sameWorkflow(entry, run))
+          const placed = (priorReadings.get(name) ?? []).filter((reading) => reading.workflow)
+          return (
+            placed.length > 0 &&
+            placed.every((reading) => !runs.runs.some((run) => sameWorkflow(reading, run)))
+          )
         })
       : []
   // A prior context that was CANCELLED never reported a verdict on that head. The usual source is a
@@ -608,13 +618,7 @@ export function classifyChecks(options) {
   // cancelled before its matrix expanded reports under its unexpanded name (`matrix.id`), which no
   // completed run ever carries. Once the head's run of the same workflow has completed, every job
   // that workflow defines for this head has reported, so waiting cannot bring the name back.
-  // Same-named contexts are read per workflow, not merged: a name that reported in any workflow and
-  // then vanished is a lost gate even when another workflow's job of that name was cancelled.
   const finishedRuns = runs.runs.filter((run) => SUPERSEDING_RUN_CONCLUSIONS.has(run.conclusion))
-  const priorReadings = new Map()
-  for (const reading of priorSide == null ? [] : sideReadings(priorContexts)) {
-    priorReadings.set(reading.name, [...(priorReadings.get(reading.name) ?? []), reading])
-  }
   const superseded =
     runsKnown && pendingRuns.length === 0
       ? diff.absent.filter((name) => {

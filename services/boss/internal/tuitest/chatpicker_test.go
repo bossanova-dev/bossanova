@@ -1,6 +1,7 @@
 package tuitest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -690,6 +691,41 @@ func TestTUI_ChatPicker_AttentionHeaderKeepsStatusAndArchiving(t *testing.T) {
 		t.Fatalf("header lost the archiving spinner: %v\n%s", err, h.Driver.Screen())
 	}
 	t.Logf("PTY archiving capture:\n%s", h.Driver.Screen())
+}
+
+// TestTUI_ChatPicker_NarrowAnswerRenders: on a terminal narrow and short
+// enough to leave the answer one or two rows, an answer with a word wider than
+// the label leaves still renders the picker instead of freezing on "Loading
+// chats", and paging reaches its last word.
+func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
+	for _, size := range [][2]int{{40, 20}, {30, 24}} {
+		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+			sessions := testSessions()[:1]
+			sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no. FINAL?"}
+			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...), tuitest.WithTerminalSize(size[0], size[1]))
+			if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.SendEnter(); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+				return strings.Contains(screen, "Needed from you") && !strings.Contains(screen, "Loading chats")
+			}); err != nil {
+				t.Fatalf("picker never rendered the answer: %v\n%s", err, h.Driver.Screen())
+			}
+			t.Logf("PTY first page at %dx%d:\n%s", size[0], size[1], h.Driver.Screen())
+			for range 30 {
+				if err := h.Driver.SendNamedKey("pgdn"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := h.Driver.WaitForText(waitTimeout, "FINAL?"); err != nil {
+				t.Fatalf("paging never reached the last word: %v\n%s", err, h.Driver.Screen())
+			}
+			t.Logf("PTY last page at %dx%d:\n%s", size[0], size[1], h.Driver.Screen())
+		})
+	}
 }
 
 func TestTUI_ChatPicker_LongQuestionScroll(t *testing.T) {

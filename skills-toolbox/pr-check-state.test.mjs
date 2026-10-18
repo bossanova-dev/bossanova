@@ -1078,6 +1078,88 @@ test('classifyChecks — a same-named cancelled job in another workflow does not
   assert.deepEqual(v.superseded, [])
 })
 
+const xyPrior = {
+  statusCheckRollup: [
+    {
+      name: 'build',
+      status: 'COMPLETED',
+      conclusion: 'SUCCESS',
+      workflowName: 'X',
+      workflowId: 30,
+    },
+    {
+      name: 'build',
+      status: 'COMPLETED',
+      conclusion: 'CANCELLED',
+      workflowName: 'Y',
+      workflowId: 31,
+    },
+  ],
+}
+
+test('classifyChecks — a run-name override does not make a completed head run look untriggered', () => {
+  // The head's run of workflow 10 completed, but REST names it after its `run-name:` (`CI for PR 7`)
+  // rather than the workflow (`CI`). Matched by id it is the prior job's own workflow, so `build`
+  // reported and then vanished.
+  const v = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: {
+      statusCheckRollup: [
+        {
+          name: 'build',
+          status: 'COMPLETED',
+          conclusion: 'SUCCESS',
+          workflowName: 'CI',
+          workflowId: 10,
+        },
+      ],
+    },
+    workflowRuns: [
+      {
+        name: 'CI for PR 7',
+        status: 'completed',
+        conclusion: 'success',
+        head_sha: HEAD,
+        workflow_id: 10,
+      },
+      run('ci', 'completed', 'success'),
+    ],
+  })
+  assert.equal(v.state, CHECK_STATES.PENDING)
+  assert.equal(v.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(v.blockingAbsent, ['build'])
+  assert.deepEqual(v.notTriggered, [])
+})
+
+test('classifyChecks — a same-named reading in an untriggered workflow does not mask a lost gate', () => {
+  // `build` passed in X (id 30) and was cancelled in Y (id 31). X completed on the head without it;
+  // Y did not run. Y's reading alone would read as not triggered, but X's job reported and vanished.
+  const v = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: xyPrior,
+    workflowRuns: [
+      { ...run('X', 'completed', 'success'), workflow_id: 30 },
+      run('ci', 'completed', 'success'),
+    ],
+  })
+  assert.equal(v.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(v.blockingAbsent, ['build'])
+  assert.deepEqual(v.notTriggered, [])
+  assert.deepEqual(v.superseded, [])
+
+  // With neither workflow on the head, the name did not trigger at all.
+  const neither = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: xyPrior,
+    workflowRuns: [run('ci', 'completed', 'success')],
+  })
+  assert.equal(neither.reason, CHECK_REASONS.OK)
+  assert.deepEqual(neither.notTriggered, ['build'])
+})
+
 test('CLI classify — --workflow-runs is read and its verdict fields are printed', () => {
   const result = runCli([
     'classify',

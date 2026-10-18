@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 
 	"github.com/recurser/bossd/internal/db"
@@ -135,7 +137,7 @@ func (s *Server) settleTrackerMerge(ctx context.Context, id string, o trackerMer
 		o.writes = trackerWritesRetrying
 		return o
 	case trackerMergeStuck:
-		s.noteTicketNotMoved(qctx, id, o.ticket)
+		s.noteTicketNotMoved(qctx, id, o)
 	case trackerMergeSettled:
 	}
 	s.clearPendingTrackerMerge(qctx, id)
@@ -151,10 +153,60 @@ func (s *Server) clearPendingTrackerMerge(ctx context.Context, id string) {
 	}
 }
 
+// ticketNotMovedBody is the note's text: the PR, the ticket when the toolbox
+// named one, and why the last attempt failed. With no ticket named (the PR
+// itself could not be read) it does not claim the PR has one.
+func ticketNotMovedBody(pr int, o trackerMergeOutcome) string {
+	body := fmt.Sprintf("PR #%d merged, but the ticket update for it was given up", pr)
+	if o.ticket != "" {
+		body = fmt.Sprintf("PR #%d merged, but its ticket %s could not be moved", pr, o.ticket)
+	}
+	return body + " (" + trackerWhyWords(o.reason()) + ")"
+}
+
+// trackerWhyPlain is the plain wording of each tracker failure reason code
+// whose detail adds nothing an operator can read.
+var trackerWhyPlain = map[string]string{
+	"issue-read-failed":    "the ticket could not be read",
+	"issue-unreadable":     "the ticket could not be read",
+	"label-read-failed":    "the ticket's labels could not be read",
+	"pr-unreadable":        "the PR could not be read",
+	"rate-limited":         "the tracker was rate limited",
+	"indeterminate":        "whether the last attempt landed could not be confirmed",
+	"failed":               "the last attempt failed",
+	"skipped":              "the last attempt failed",
+	"state":                "the state change failed",
+	"state-rejected":       "the tracker refused the state change",
+	"addLabel":             "the label change failed",
+	"addLabel-rejected":    "the tracker refused the label change",
+	"removeLabel":          "the label change failed",
+	"removeLabel-rejected": "the tracker refused the label change",
+	"comment":              "the comment failed",
+	"comment-rejected":     "the tracker refused the comment",
+}
+
+// trackerWhyWords says a tracker write's failure reason in plain words. A
+// reason it does not know is shown as reported, since it is the only clue the
+// operator has.
+func trackerWhyWords(why string) string {
+	code, detail, _ := strings.Cut(why, ": ")
+	switch code {
+	case "state-not-found":
+		return fmt.Sprintf("state %q not found", detail)
+	case "label-not-found":
+		return fmt.Sprintf("label %q not found", detail)
+	}
+	if words, ok := trackerWhyPlain[code]; ok {
+		return words
+	}
+	return why
+}
+
 // noteTicketNotMoved leaves the operator a note on the session's repo saying
-// its merged PR's ticket could not be moved. One note per session.
-func (s *Server) noteTicketNotMoved(ctx context.Context, id, ticket string) {
-	log := s.logger.With().Str("session", id).Str("ticket", ticket).Logger()
+// its merged PR's ticket could not be moved, and why. Home shows it until the
+// operator dismisses it. One note per session.
+func (s *Server) noteTicketNotMoved(ctx context.Context, id string, o trackerMergeOutcome) {
+	log := s.logger.With().Str("session", id).Str("ticket", o.ticket).Str("tracker_why", o.why).Logger()
 	if s.notes == nil {
 		log.Warn().Msg("tracker write: no note store to report a ticket that could not be moved")
 		return
@@ -164,16 +216,12 @@ func (s *Server) noteTicketNotMoved(ctx context.Context, id, ticket string) {
 		log.Warn().Err(err).Msg("tracker write: could not read the session to report a ticket that could not be moved")
 		return
 	}
-	body := fmt.Sprintf("PR #%d merged, but its ticket could not be moved", *sess.PRNumber)
-	if ticket != "" {
-		body = fmt.Sprintf("PR #%d merged, but its ticket %s could not be moved", *sess.PRNumber, ticket)
-	}
 	key := "ticket-not-moved:" + id
 	if _, err := s.notes.Create(ctx, db.CreateNoteParams{
 		RepoID:         sess.RepoID,
 		SessionID:      &id,
-		Body:           body,
-		Tags:           []string{"tracker"},
+		Body:           ticketNotMovedBody(*sess.PRNumber, o),
+		Tags:           []string{"tracker", models.NoteTagTicketNotMoved},
 		IdempotencyKey: &key,
 	}); err != nil {
 		log.Warn().Err(err).Msg("tracker write: could not note a ticket that could not be moved")
@@ -252,7 +300,7 @@ func (s *Server) retryTrackerMerge(ctx context.Context, p db.PendingTrackerMerge
 	}
 	ev := log.Info()
 	if next != trackerMergeSettled {
-		s.noteTicketNotMoved(ctx, p.SessionID, o.ticket)
+		s.noteTicketNotMoved(ctx, p.SessionID, o)
 		ev = log.Warn()
 	}
 	ev.Str("tracker_writes", o.writes).Str("tracker_why", o.why).Msg("tracker write retry: finished")

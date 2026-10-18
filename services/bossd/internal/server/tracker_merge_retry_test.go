@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -66,6 +67,9 @@ func wantTicketNote(t *testing.T, notes *notesFake, body string) {
 	if n.RepoID != "r1" || n.Body != body || n.SessionID == nil || *n.SessionID != "s1" || n.IdempotencyKey == nil || *n.IdempotencyKey != "ticket-not-moved:s1" {
 		t.Fatalf("note = %+v, want %q on r1 from s1, once per session", n, body)
 	}
+	if !slices.Contains(n.Tags, models.NoteTagTicketNotMoved) {
+		t.Fatalf("note tags = %v, want %q so Home shows it", n.Tags, models.NoteTagTicketNotMoved)
+	}
 }
 
 func TestOperatorMergeSession_TheTrackerWriteIsOwedBeforeItRuns(t *testing.T) {
@@ -108,7 +112,7 @@ func TestOperatorMergeSession_AWriteTheTrackerRefusesForGoodIsNotedNotRetried(t 
 	if len(queue.rows) != 0 {
 		t.Fatalf("queue = %+v, want nothing queued for a write no retry can land", queue.rows)
 	}
-	wantTicketNote(t, notes, "PR #42 merged, but its ticket MAD-1764 could not be moved")
+	wantTicketNote(t, notes, `PR #42 merged, but its ticket MAD-1764 could not be moved (state "Done" not found)`)
 }
 
 func TestOperatorMergeSession_AFailedTrackerWriteIsQueuedForARetry(t *testing.T) {
@@ -232,7 +236,7 @@ func TestRetryPendingTrackerMerges_ReschedulesThenGivesUp(t *testing.T) {
 	if got := len(h.verbs.targets); got != len(trackerRetryDelays) {
 		t.Fatalf("mark-merged ran %d times, want %d retries", got, len(trackerRetryDelays))
 	}
-	wantTicketNote(t, notes, "PR #42 merged, but its ticket could not be moved")
+	wantTicketNote(t, notes, "PR #42 merged, but the ticket update for it was given up (the PR could not be read)")
 }
 
 func TestRetryPendingTrackerMerges_AWriteTheTrackerRefusesForGoodIsNotedAndDropped(t *testing.T) {
@@ -252,5 +256,24 @@ func TestRetryPendingTrackerMerges_AWriteTheTrackerRefusesForGoodIsNotedAndDropp
 	if len(queue.rows) != 0 {
 		t.Fatalf("queue = %+v, want the entry dropped on the first refusal", queue.rows)
 	}
-	wantTicketNote(t, notes, "PR #42 merged, but its ticket MAD-1764 could not be moved")
+	wantTicketNote(t, notes, `PR #42 merged, but its ticket MAD-1764 could not be moved (state "Done" not found)`)
+}
+
+func TestTicketNotMovedBody_SaysWhyAndClaimsNoTicketItDidNotSee(t *testing.T) {
+	for _, tc := range []struct {
+		o    trackerMergeOutcome
+		want string
+	}{
+		{trackerMergeOutcome{writes: "permanent", why: "label-not-found: shipped", ticket: "MAD-1"}, `PR #7 merged, but its ticket MAD-1 could not be moved (label "shipped" not found)`},
+		{trackerMergeOutcome{writes: "failed", why: "issue-read-failed: socket hang up", ticket: "MAD-1"}, "PR #7 merged, but its ticket MAD-1 could not be moved (the ticket could not be read)"},
+		{trackerMergeOutcome{writes: "failed", why: "verify-gate exited non-zero"}, "PR #7 merged, but the ticket update for it was given up (verify-gate exited non-zero)"},
+		{trackerMergeOutcome{writes: "failed", why: "state-rejected", ticket: "MAD-1"}, "PR #7 merged, but its ticket MAD-1 could not be moved (the tracker refused the state change)"},
+		{trackerMergeOutcome{writes: "failed", why: "addLabel-rejected", ticket: "MAD-1"}, "PR #7 merged, but its ticket MAD-1 could not be moved (the tracker refused the label change)"},
+		{trackerMergeOutcome{writes: "failed", why: "state: Entity not found: WorkflowState", ticket: "MAD-1"}, "PR #7 merged, but its ticket MAD-1 could not be moved (the state change failed)"},
+		{trackerMergeOutcome{writes: "indeterminate", ticket: "MAD-1"}, "PR #7 merged, but its ticket MAD-1 could not be moved (whether the last attempt landed could not be confirmed)"},
+	} {
+		if got := ticketNotMovedBody(7, tc.o); got != tc.want {
+			t.Errorf("ticketNotMovedBody(%+v) = %q, want %q", tc.o, got, tc.want)
+		}
+	}
 }

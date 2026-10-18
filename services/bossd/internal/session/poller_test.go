@@ -296,8 +296,8 @@ func TestRepairableConflictBlockKeepsPlainMergeConflictWhenStrategyResolutionFai
 		Rebaseable: &rebaseable,
 	}
 
-	if !repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test") {
-		t.Fatalf("plain merge conflict was masked by strategy resolution failure")
+	if conflict, err := repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test"); err != nil || !conflict {
+		t.Fatalf("plain merge conflict was masked by strategy resolution failure: conflict=%v err=%v", conflict, err)
 	}
 }
 
@@ -951,8 +951,54 @@ func TestPollerIgnoresRebaseOnlyBlockWhenSquashCanLandIt(t *testing.T) {
 		MergeStateStatus: vcs.MergeStateStatusClean,
 	}
 
-	if repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test") {
-		t.Fatal("a rebase-only block the squash fallback lands was classified as a repairable conflict")
+	if conflict, err := repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test"); err != nil || conflict {
+		t.Fatalf("a rebase-only block the squash fallback lands was classified as a repairable conflict: conflict=%v err=%v", conflict, err)
+	}
+}
+
+// TestPollerWaitsWhenAllowedStrategiesCannotBeRead covers PR #3266's follow-up:
+// a rebase-strategy repo, a PR GitHub cannot rebase, and one failed read of the
+// allowed merge strategies. Whether squash could land it is unknown, so the
+// poller emits nothing this poll, and above all no conflict_detected that would
+// start a repair with nothing to fix.
+func TestPollerWaitsWhenAllowedStrategiesCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+
+	prNumber := 42
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo", MergeStrategy: models.MergeStrategyRebase}
+	repos.repos["repo-1"] = repo
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		PRNumber:   &prNumber,
+		State:      machine.AwaitingChecks,
+		BranchName: "feature",
+	}
+	vp.allowedErr = errors.New("gh api: secondary rate limit")
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		Mergeable:        boolPtr(true),
+		Rebaseable:       boolPtr(false),
+		MergeStateStatus: vcs.MergeStateStatusClean,
+		HeadSHA:          "abc123",
+	}
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+
+	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, zerolog.Nop())
+	ch := make(chan SessionEvent, 1)
+	poller.checkSession(ctx, ch, repo, sessions.sessions["sess-1"])
+
+	select {
+	case ev := <-ch:
+		if _, ok := ev.Event.(vcs.ConflictDetected); ok {
+			t.Fatal("one failed allowed-strategies read emitted conflict_detected")
+		}
+		t.Fatalf("emitted %T while the conflict answer was unknown, want no event until the next poll", ev.Event)
+	default:
 	}
 }
 

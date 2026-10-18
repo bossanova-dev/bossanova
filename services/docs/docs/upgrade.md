@@ -87,7 +87,9 @@ Useful flags:
 | `--no-restart`    | Do not restart the daemon after upgrading.              |
 
 Upgrade checks require a stable release build; development builds report that a
-stable version is required. Homebrew installs upgrade through the tap, so exact
+stable version is required. `boss upgrade` and `--check` always ask GitHub, so
+they fail when you are offline instead of answering from the 24-hour cache; only
+a GitHub rate limit falls back to a recent cached result. Homebrew installs upgrade through the tap, so exact
 `--version` installs are not supported there; run
 `brew upgrade bossanova-dev/tap/bossanova` instead.
 

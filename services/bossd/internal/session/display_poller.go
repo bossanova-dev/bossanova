@@ -547,6 +547,12 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		return false
 	}
 
+	conflict, err := repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "display poller")
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: classify rebase-only block; preserving previous status")
+		return false
+	}
+
 	checks := checkSet.Checks
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
 	info.HasBuildReceipt = checkSet.HasBuildReceipt
@@ -556,7 +562,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	if p.maybeCarryReceipt(ctx, repo, sess, prNumber, prStatus.HeadSHA, checkSet) {
 		info.HasBuildReceipt = true
 	}
-	if repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "display poller") {
+	if conflict {
 		info.Status = vcs.DisplayStatusConflict
 	}
 	info.HeadSHA = prStatus.HeadSHA

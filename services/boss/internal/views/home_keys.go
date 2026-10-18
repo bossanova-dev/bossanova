@@ -167,6 +167,12 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 	switch msg.String() {
 	case "/":
 		return h.startFilter()
+	case "c":
+		// Clears the ticket notice. Not "d": the upgrade banner's [d]ismiss
+		// runs first, in handleUpgradeKey, so with both shown "d" would snooze
+		// the upgrade instead. With no notice it is a no-op.
+		model, cmd := h.dismissTicketNotices()
+		return model, cmd, true
 	case "esc":
 		if h.filter.Applied() {
 			h.filter.Reset()

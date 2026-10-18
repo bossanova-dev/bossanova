@@ -141,6 +141,7 @@ func TestResolveStrategy(t *testing.T) {
 }
 
 func TestRebaseRefusalBlocksMerge(t *testing.T) {
+	errGHBoom := errors.New("gh boom")
 	cases := []struct {
 		name       string
 		configured string
@@ -153,8 +154,8 @@ func TestRebaseRefusalBlocksMerge(t *testing.T) {
 		{"rebase with no squash blocks", "rebase", []string{"merge", "rebase"}, nil, true, nil},
 		{"rebase resolved from only rebase blocks", "merge", []string{"rebase"}, nil, true, nil},
 		{"merge strategy never blocks on rebaseability", "merge", []string{"merge", "rebase"}, nil, false, nil},
-		{"query failure keeps configured rebase blocking", "rebase", nil, errors.New("gh boom"), true, nil},
-		{"query failure with merge configured does not block", "merge", nil, errors.New("gh boom"), false, nil},
+		{"query failure with rebase configured is unknown", "rebase", nil, errGHBoom, false, errGHBoom},
+		{"query failure with merge configured is unknown", "merge", nil, errGHBoom, false, errGHBoom},
 		{"none allowed errors out", "rebase", []string{}, nil, false, ErrMergeStrategyDisallowed},
 	}
 

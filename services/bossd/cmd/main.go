@@ -3071,6 +3071,12 @@ func run(opts runOpts) error {
 		})
 	}
 	displayComputer.SetOnUpdate(publishSessionUpdated)
+	// A restart-proof activity read that outlasted its caller's wait landed
+	// after the delta or snapshot that started it went out with the older
+	// value; republish so bosso and the web see it.
+	wedgeActivityCache.SetOnChange(func(sessionID string) {
+		publishSessionUpdated(context.Background(), sessionID)
+	})
 
 	// Evidence and resume ledgers can change attention without changing the
 	// display trio. Publish explicitly even when Recompute has no row to write.
@@ -3395,8 +3401,11 @@ func run(opts runOpts) error {
 				if err != nil {
 					return nil, err
 				}
+				// One shared wait for every restart-proof read the snapshot
+				// starts; reads that outlast it republish when they land.
+				wedgeCtx := wedgeActivityCache.ShareReadWait(ctx)
 				for _, s := range pbSessions {
-					hydrateSessionForStream(ctx, s)
+					hydrateSessionForStream(wedgeCtx, s)
 				}
 				return pbSessions, nil
 			},

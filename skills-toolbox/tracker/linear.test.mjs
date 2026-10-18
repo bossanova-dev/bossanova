@@ -1522,6 +1522,38 @@ test('applyIssueWrites resolves every name before writing anything', async () =>
   }
 })
 
+test('applyIssueWrites leaves an outage on any read or write open to another attempt', async () => {
+  const outage = { match: () => true, answer: () => ({ errors: [{ message: 'RATELIMITED' }] }) }
+  const down = (q) => ({ ...outage, match: q })
+  for (const [name, handlers, writes, reason] of [
+    ['issue read', [down(() => true)], { stateName: 'Done' }, /^issue-read-failed: /],
+    [
+      'label read',
+      [readHandler(), down((q) => q === APPLY_ISSUE_WRITES_LABELS_QUERY)],
+      { addLabels: ['new-label'] },
+      /^label-read-failed: /,
+    ],
+    [
+      'state write',
+      [readHandler(), down((q) => q.startsWith('mutation'))],
+      { stateName: 'Done' },
+      /^state: /,
+    ],
+  ]) {
+    const { impl } = writeFetch(handlers)
+    const result = await linearApplyIssueWrites({
+      apiKey: 'k',
+      fetchImpl: impl,
+      sleep: async () => {},
+      issueId: 'BOS-1',
+      ...writes,
+    })
+    assert.equal(result.ok, false, name)
+    assert.match(result.reason, reason, name)
+    assert.notEqual(result.permanent, true, `an outage on the ${name} must stay retryable`)
+  }
+})
+
 test('applyIssueWrites leaves a write the tracker rejected open to another attempt', async () => {
   const { impl } = writeFetch([readHandler(), mutationHandler('issueUpdate', { success: false })])
   const result = await linearApplyIssueWrites({

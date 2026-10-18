@@ -672,6 +672,302 @@ func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 	}
 }
 
+// TestChatPickerNeededFromYouLabelsEveryPage: at every width, each page of a
+// paged answer opens with the label, no answer row or pager row is truncated,
+// and the pages together show every word. Below the hang's width the later
+// pages' first lines are rewrapped to fit beside the label, and the last page
+// pads fewer blank rows than there are pages; where the hang leaves the pager
+// too little room it starts under the label, on every page.
+func TestChatPickerNeededFromYouLabelsEveryPage(t *testing.T) {
+	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
+	for _, width := range []int{30, 40, 41, 44, 45, 60} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := questionTimelineModel(width, 30, operatorQuestion)
+			m.fullQuestion = question
+			shown := map[int]string{}
+			pagerIndent := -1
+			pages := 0
+			for {
+				lines, start, size := m.neededWindow()
+				if len(lines) <= size {
+					t.Fatalf("answer did not page: %d lines in a %d-line window", len(lines), size)
+				}
+				rows := strings.Split(stripANSI(m.neededBlock()), "\n")
+				if !strings.HasPrefix(rows[0], neededLabel) {
+					t.Fatalf("page at line %d opens without the label: %q", start, rows[0])
+				}
+				pager := rows[len(rows)-1]
+				if !strings.Contains(pager, "pgup/pgdown (") || !strings.HasSuffix(pager, fmt.Sprintf("of %d)", len(strings.Split(strings.TrimRight(strings.Join(lines, "\n"), "\n"), "\n")))) {
+					t.Fatalf("pager row truncated: %q", pager)
+				}
+				if indent := len(pager) - len(strings.TrimLeft(pager, " ")); pagerIndent >= 0 && indent != pagerIndent {
+					t.Fatalf("pager moved from column %d to %d at line %d: %q", pagerIndent, indent, start, pager)
+				} else {
+					pagerIndent = indent
+				}
+				for i, row := range rows[:len(rows)-1] {
+					if strings.Contains(row, "…") {
+						t.Fatalf("answer row truncated: %q", row)
+					}
+					shown[start+i] = strings.TrimPrefix(row, neededLabel)
+				}
+				pages++
+				model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+				next := model.(ChatPickerModel)
+				if _, nextStart, _ := next.neededWindow(); nextStart == start {
+					break
+				}
+				m = next
+			}
+			order := make([]string, 0, len(shown))
+			for i := range len(shown) {
+				order = append(order, shown[i])
+			}
+			if got := strings.Join(strings.Fields(strings.Join(order, " ")), " "); got != question {
+				t.Fatalf("%d pages lost words: %q", pages, got)
+			}
+			lines, _, _ := m.neededWindow()
+			blank := 0
+			for blank < len(lines) && lines[len(lines)-1-blank] == "" {
+				blank++
+			}
+			if blank >= pages {
+				t.Fatalf("the last of %d pages pads %d blank rows", pages, blank)
+			}
+		})
+	}
+}
+
+// TestChatPickerNeededFromYouResizeKeepsPagesLabelled: a resize after paging
+// down re-pages the answer, and the page the operator lands on, like every page
+// they then reach in either direction, still opens with the label and a full
+// first line.
+func TestChatPickerNeededFromYouResizeKeepsPagesLabelled(t *testing.T) {
+	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
+	for _, tc := range []struct {
+		name                         string
+		width, height, toW, toHeight int
+	}{
+		{"30 grown 3 rows", 30, 30, 30, 33},
+		{"44 shrunk to 30", 44, 30, 30, 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := questionTimelineModel(tc.width, tc.height, operatorQuestion)
+			m.fullQuestion = question
+			model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+			model, _ = model.Update(tea.WindowSizeMsg{Width: tc.toW, Height: tc.toHeight})
+			m = model.(ChatPickerModel)
+			if m.neededOffset == 0 {
+				t.Fatal("the resize dropped the paged offset, so the test proves nothing")
+			}
+			for _, key := range []rune{tea.KeyPgDown, tea.KeyPgUp} {
+				for {
+					assertNeededPageLabelled(t, m)
+					_, start, _ := m.neededWindow()
+					model, _ := m.Update(tea.KeyPressMsg{Code: key})
+					next := model.(ChatPickerModel)
+					if _, nextStart, _ := next.neededWindow(); nextStart == start {
+						break
+					}
+					m = next
+				}
+			}
+		})
+	}
+}
+
+// assertNeededPageLabelled fails unless the answer's current page opens with
+// the label and no row of it is truncated.
+func assertNeededPageLabelled(t *testing.T, m ChatPickerModel) {
+	t.Helper()
+	_, start, _ := m.neededWindow()
+	rows := strings.Split(stripANSI(m.neededBlock()), "\n")
+	if !strings.HasPrefix(rows[0], neededLabel) {
+		t.Fatalf("page at line %d opens without the label: %q", start, rows[0])
+	}
+	for _, row := range rows {
+		if strings.Contains(row, "…") {
+			t.Fatalf("page at line %d truncates a row: %q", start, row)
+		}
+	}
+}
+
+// finishWithin runs fn and panics if it has not returned after d. A wrap
+// loop that spins grows memory without bound, so a regression must kill the
+// test binary rather than leave the spinning goroutine behind.
+func finishWithin(d time.Duration, what string, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		panic(what + " did not finish within " + d.String())
+	}
+}
+
+// TestWrapWordsEveryLineNarrowEnds: when every line is narrow, a word wider
+// than the narrow width but no wider than rest is split at the narrow width
+// instead of moving to a next line that is just as narrow, forever. A narrow
+// width too small to hold anything still takes a rune per line.
+func TestWrapWordsEveryLineNarrowEnds(t *testing.T) {
+	text := "Should we keep the implementation?"
+	for _, first := range []int{13, 1, 0, -3} {
+		t.Run(fmt.Sprint(first), func(t *testing.T) {
+			var lines []string
+			finishWithin(5*time.Second, fmt.Sprintf("wrapWords at %d with every line narrow", first), func() {
+				lines = wrapWords(text, first, 30, func(int) bool { return true })
+			})
+			for i, line := range lines {
+				if w := ansi.StringWidth(line); w > max(1, first) {
+					t.Errorf("line %d = %q is %d wide, want at most %d", i, line, w, max(1, first))
+				}
+			}
+			if got, want := strings.Join(lines, ""), strings.Join(strings.Fields(text), ""); strings.ReplaceAll(got, " ", "") != want {
+				t.Fatalf("wrap lost or repeated text: %q", lines)
+			}
+		})
+	}
+}
+
+// neededTinyAnswer carries a word wider than every width under test and one,
+// "implementation", wider than the label leaves at 30 columns.
+const neededTinyAnswer = "Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no."
+
+// TestChatPickerNeededFromYouTinyWindows: a terminal short enough to leave the
+// answer one or two rows still renders, every page fits without truncation,
+// and paging through shows every character of the answer. A two-row window
+// labels every page; a one-row window keeps the unpaged wrap and labels its
+// first page.
+func TestChatPickerNeededFromYouTinyWindows(t *testing.T) {
+	for _, width := range []int{30, 40} {
+		found := map[int]bool{}
+		for height := 6; height <= 40; height++ {
+			var m ChatPickerModel
+			var size int
+			finishWithin(5*time.Second, fmt.Sprintf("the answer at %dx%d", width, height), func() {
+				m = questionTimelineModel(width, height, operatorQuestion)
+				m.fullQuestion = neededTinyAnswer
+				_, _, size = m.neededWindow()
+			})
+			if size > 2 || found[size] {
+				continue
+			}
+			found[size] = true
+			t.Run(fmt.Sprintf("%dx%d-%d-row", width, height, size), func(t *testing.T) {
+				if lines, _, _ := m.neededWindow(); size == 1 && !slices.Equal(lines, m.neededLines(0)) {
+					t.Fatalf("a one-row window rewrapped the answer: %q", lines)
+				}
+				finishWithin(5*time.Second, "paging the answer", func() {
+					if !strings.Contains(stripANSI(m.View().Content), neededLabel) {
+						t.Errorf("view does not show the answer:\n%s", stripANSI(m.View().Content))
+					}
+					walkNeededPages(t, m, true)
+				})
+			})
+		}
+		if !found[1] || !found[2] {
+			t.Fatalf("no height at %d columns gave a one-row and a two-row window: %v", width, found)
+		}
+	}
+}
+
+// walkNeededPages pages through the answer with pgdown, failing on a wrap
+// that loses or repeats text and on an answer line no page shows. With fits it
+// also fails on a truncated row and on a page missing its label: every page
+// when the answer hangs or pages, the first page of a one-row window.
+func walkNeededPages(t *testing.T, m ChatPickerModel, fits bool) {
+	t.Helper()
+	lines, _, size := m.neededWindow()
+	labelEveryPage := m.neededHang() > 0 || size > 1
+	if got, want := strings.Join(strings.Fields(strings.Join(lines, "")), ""), strings.Join(strings.Fields(m.neededQuestion()), ""); got != want {
+		t.Errorf("%dx%d: wrap lost or repeated text: %q", m.width, m.height, lines)
+		return
+	}
+	shown := map[int]bool{}
+	for page, previous := 0, -1; ; page++ {
+		lines, start, size := m.neededWindow()
+		if start == previous {
+			break
+		}
+		previous = start
+		rows := strings.Split(stripANSI(m.neededBlock()), "\n")
+		if fits && (page == 0 || labelEveryPage) && !strings.HasPrefix(rows[0], neededLabel) {
+			t.Errorf("%dx%d: page at line %d opens without the label: %q", m.width, m.height, start, rows[0])
+		}
+		for _, row := range rows {
+			if fits && (strings.Contains(row, "…") || ansi.StringWidth(row) > m.width) {
+				t.Errorf("%dx%d: page at line %d truncates a row: %q", m.width, m.height, start, row)
+			}
+		}
+		for i := start; i < start+size; i++ {
+			shown[i] = true
+		}
+		if len(lines) <= size || page > len(lines) {
+			break
+		}
+		model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+		m = model.(ChatPickerModel)
+	}
+	lines, _, _ = m.neededWindow()
+	for i, line := range lines {
+		if line != "" && !shown[i] {
+			t.Errorf("%dx%d: answer line %d %q is on no page", m.width, m.height, i, line)
+		}
+	}
+}
+
+// TestChatPickerNeededFromYouWrapsAndPagesAtEverySize: at every width from 20
+// to 60 and height from 10 to 40, each answer renders, its wrap keeps every
+// character exactly once, and paging shows every line. The pages depend only
+// on the width and the window's size, so each size is walked once per width.
+// From 29 columns every
+// page also fits; below that the label or the pager alone is wider than the
+// prose column, as on main.
+func TestChatPickerNeededFromYouWrapsAndPagesAtEverySize(t *testing.T) {
+	answers := []string{
+		neededTinyAnswer,
+		strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 5)) + " FINAL?",
+		"First:\n  - check services/boss/internal/views/session_timeline.go\n  - implementation\n\nThen answer yes or no.",
+	}
+	for i, answer := range answers {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			t.Parallel()
+			finishWithin(2*time.Minute, "the size sweep", func() {
+				for width := 20; width <= 60; width++ {
+					m := questionTimelineModel(width, 10, operatorQuestion)
+					m.fullQuestion = answer
+					walked := map[int]bool{}
+					for height := 10; height <= 40; height++ {
+						m.height = height
+						if _, _, size := m.neededWindow(); !walked[size] {
+							walked[size] = true
+							walkNeededPages(t, m, width >= 29)
+						}
+					}
+				}
+			})
+		})
+	}
+}
+
+// TestChatPickerNeededFromYouPagedGoldens pins a later page of a paged answer
+// below the hang's width and where the pager starts under the label.
+func TestChatPickerNeededFromYouPagedGoldens(t *testing.T) {
+	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
+	for _, width := range []int{40, 44} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := questionTimelineModel(width, 30, operatorQuestion)
+			m.fullQuestion = question
+			model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+			m = model.(ChatPickerModel)
+			assertChatPickerGolden(t, fmt.Sprintf("chatpicker-timeline-needed-paged-%d", width), stripANSI(m.neededBlock()))
+		})
+	}
+}
+
 // TestChatPickerTimelineFitsShortTerminal: the answer below the timeline is
 // what the operator acts on, so a wrapped detail gets only the rows the chat
 // table and the whole answer leave. When they leave none it is cut to one line

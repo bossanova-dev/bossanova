@@ -209,6 +209,14 @@ type HomeModel struct {
 	supervisionProbedAt time.Time
 	supervisionProbeID  uint64
 
+	// Ticket notices (home_ticket_notices.go): merged PRs whose ticket bossd
+	// could not move. ticketNoticesDismissed hides a dismissed note even from a
+	// read that was in flight when it was dismissed.
+	ticketNotices          []*pb.Note
+	ticketNoticesDismissed map[string]struct{}
+	ticketNoticesFetching  bool
+	ticketNoticesFetchedAt time.Time
+
 	// logoutError holds the rendered text of a failed logout. Cleared by the
 	// next successful one. Never carries token material: Manager.Logout's
 	// errors wrap the credential-lock and keychain errors only.
@@ -263,6 +271,10 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		now:                  now,
 		archivingOverrideIDs: make(map[string]struct{}),
 		archiveInFlightIDs:   make(map[string]struct{}),
+		// Init, which every path that builds a Home calls next, issues the
+		// first read; the tick must not start a second one alongside it.
+		ticketNoticesFetching:  c != nil,
+		ticketNoticesFetchedAt: now(),
 	}
 }
 
@@ -312,6 +324,9 @@ func (h HomeModel) Init() tea.Cmd {
 	if probe := h.daemonSupervisionProbeCmd(); probe != nil {
 		cmds = append(cmds, probe)
 	}
+	if notices := fetchTicketNotices(h.client, h.ctx, h.generation); notices != nil {
+		cmds = append(cmds, notices)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -343,6 +358,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleUpgradeRun(msg)
 	case daemonRestartMsg:
 		return h.handleDaemonRestart(msg)
+	case ticketNoticesMsg:
+		return h.handleTicketNotices(msg)
+	case ticketNoticesDismissedMsg:
+		return h.handleTicketNoticesDismissed(msg)
 	case daemonSupervisionMsg:
 		return h.handleDaemonSupervision(msg)
 	case logoutMsg:
@@ -492,6 +511,9 @@ func (h HomeModel) handleTick() (tea.Model, tea.Cmd) {
 	}
 	if probe := h.tickDaemonSupervisionProbe(); probe != nil {
 		cmds = append(cmds, probe)
+	}
+	if notices := h.tickTicketNotices(); notices != nil {
+		cmds = append(cmds, notices)
 	}
 	return h, tea.Batch(cmds...)
 }

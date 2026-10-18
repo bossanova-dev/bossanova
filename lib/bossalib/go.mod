@@ -9,14 +9,14 @@ tool (
 )
 
 require (
-	connectrpc.com/connect v1.21.0
+	connectrpc.com/connect v1.21.1
 	github.com/99designs/keyring v1.2.2
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/gofrs/flock v0.13.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/posthog/posthog-go v1.34.0
+	github.com/posthog/posthog-go v1.35.0
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1

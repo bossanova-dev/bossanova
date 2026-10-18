@@ -1399,6 +1399,43 @@ func TestRunUpgradeChecksFreshDespiteFreshUpToDateCache(t *testing.T) {
 	}
 }
 
+func TestRunUpgradeSnoozeNeverSuppressesExplicitCheck(t *testing.T) {
+	snoozedUntil := time.Now().Add(upgrade.DefaultSnoozeDuration).Truncate(time.Second)
+	cachePath := stubUpgradeCache(t, func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{
+			CurrentVersion: "v1.146.2",
+			LatestVersion:  "v1.147.0",
+			ReleaseURL:     "https://example.test/v1.147.0",
+			Available:      true,
+		}, nil
+	}, upgrade.CacheEntry{
+		CheckedAt:      time.Now().Add(-time.Hour),
+		CurrentVersion: "v1.146.2",
+		LatestVersion:  "v1.147.0",
+		ReleaseURL:     "https://example.test/v1.147.0",
+		SnoozedVersion: "v1.147.0",
+		SnoozedUntil:   snoozedUntil,
+	})
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "upgrade available: v1.146.2 -> v1.147.0") || strings.Contains(got, "up to date") {
+		t.Fatalf("runUpgrade() output = %q, want the snoozed v1.147.0 still reported as available", got)
+	}
+	entry, ok, err := upgrade.ReadCache(cachePath)
+	if err != nil || !ok {
+		t.Fatalf("ReadCache() = (_, %v, %v), want the refreshed entry", ok, err)
+	}
+	if entry.SnoozedVersion != "v1.147.0" || !entry.SnoozedUntil.Equal(snoozedUntil) {
+		t.Fatalf("cache after explicit check = %+v, want the v1.147.0 snooze until %v kept", entry, snoozedUntil)
+	}
+}
+
 func TestRunUpgradeRateLimitFallsBackToFreshCache(t *testing.T) {
 	stubUpgradeCache(t, func(context.Context, string) (upgrade.CheckResult, error) {
 		return upgrade.CheckResult{}, &upgrade.RateLimitError{Resets: time.Now().Add(30 * time.Minute)}

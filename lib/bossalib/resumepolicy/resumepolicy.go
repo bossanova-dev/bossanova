@@ -192,11 +192,11 @@ func words(c FailureClass) (string, string) {
 	return w.article, w.noun
 }
 
-// Sentence renders the fix row's explanation of a run the factory stopped
-// retrying, for example:
+// Sentence renders the fix row's explanation of a run whose automatic
+// resumes gave up, for example:
 //
 //	Resumed automatically at 23:17, 23:19 and 23:27; every attempt got the same
-//	401, so the factory stopped retrying. Run claude /login on mac-mini, then
+//	401, so automatic retries stopped. Run claude /login on mac-mini, then
 //	press r.
 //
 // attempts are oldest first; times render as 15:04 in loc (UTC when nil). host
@@ -231,7 +231,7 @@ func Sentence(attempts []Attempt, host string, loc *time.Location) string {
 	default:
 		b.WriteString("; the last attempt got " + article + " " + noun)
 	}
-	b.WriteString(", so the factory stopped retrying. ")
+	b.WriteString(", so automatic retries stopped. ")
 	b.WriteString(nextStep(last, host))
 	return b.String()
 }

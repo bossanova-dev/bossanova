@@ -16,7 +16,9 @@ package server
 // subagents keep running, so tracker-idle alone would finalize a live run.
 //
 // Pending finishes are in memory only, like pending archives: a restart drops
-// them and the log-silence sweep reaps the run, as it did before this verb.
+// them. The log-silence sweep then reaps a run that was not Blocked, as it did
+// before this verb. Nothing reaps a Blocked run, so its dropped finish leaves
+// it Blocked with its old reason until its chat finishes again.
 
 import (
 	"context"
@@ -114,9 +116,12 @@ func (s *Server) FinishUnattendedRun(ctx context.Context, req *connect.Request[p
 	if sess.ArchivedAt != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("session %q is archived", id))
 	}
-	// Ownership guard: only a chat of this session may finish it. Any chat of
-	// the session qualifies, not just Session.AgentSessionID, so a chat that
-	// replaced the original after an account switch can still finish its run.
+	// Ownership guard: only a chat of this session may finish it. Outside
+	// Blocked any chat of the session qualifies, not just
+	// Session.AgentSessionID, so a chat that replaced the original after an
+	// account switch can still finish its run. A Blocked run takes only
+	// Session.AgentSessionID (AcceptBlockedRunFinish below), so that
+	// replacement is refused there.
 	chats, err := s.agentChats.ListBySession(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
@@ -143,18 +148,39 @@ func (s *Server) FinishUnattendedRun(ctx context.Context, req *connect.Request[p
 	// in its empty response (the old answer from Blocked was a deferred no-op or
 	// FailedPrecondition). See
 	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	//
+	// From Blocked a finish --blocked's reason rides on the claim and reaches
+	// the row only when the finish fires: nothing else finalizes a Blocked
+	// run, and a finish dropped before it fires must leave no reason behind.
+	//
+	// A finish of this run that is already executing has taken, or is about to
+	// take, the claim it fired on. Joining it would answer success for a claim
+	// nobody reads, so a request that disagrees with it (a finish --blocked
+	// after a plain finish, or the reverse) would vanish. It is refused instead,
+	// atomically with storing the claim, so a finish that starts afterwards
+	// takes this request's claim.
 	if sess.State == machine.Blocked {
-		if err := s.lifecycle.AcceptBlockedRunFinish(sess, requester); err != nil {
-			if errors.Is(err, session.ErrNotRunChat) {
-				return nil, connect.NewError(connect.CodePermissionDenied, err)
-			}
+		var report *string
+		if req.Msg.GetIsBlocked() {
+			reason := req.Msg.GetBlockedReason()
+			report = &reason
+		}
+		err := s.finishDeferral().unlessInFlight(id, func() error {
+			return s.lifecycle.AcceptBlockedRunFinish(sess, requester, report)
+		})
+		switch {
+		case errors.Is(err, errInFlight):
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("a finish of session %q is already running; retry once it ends", id))
+		case errors.Is(err, session.ErrNotRunChat):
+			return nil, connect.NewError(connect.CodePermissionDenied, err)
+		case err != nil:
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 		}
-	}
-	// Persist a blocked report before deferring: whichever finalize reaches
-	// the run next (this finish, the Stop-hook gate, the stranded sweep) reads
-	// it from the session row.
-	if req.Msg.GetIsBlocked() {
+	} else if req.Msg.GetIsBlocked() {
+		// Persist a blocked report before deferring: whichever finalize
+		// reaches the run next (this finish, the Stop-hook gate, the stranded
+		// sweep) reads it from the session row.
 		if err := s.lifecycle.ReportRunBlocked(ctx, id, req.Msg.GetBlockedReason()); err != nil {
 			if errors.Is(err, session.ErrRunAlreadyFinalized) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition, err)

@@ -144,66 +144,77 @@ func transcriptAdvancedSince(ctx context.Context, client agent.AgentRunnerClient
 // not the run's own chat.
 var ErrNotRunChat = errors.New("only the run's own chat can finish a blocked run")
 
-// blockedFinishes holds, per session, the block an accepted finish from Blocked
-// was made in. Like pending finishes it is in memory only: a restart drops
-// both.
-type blockedFinishes struct {
-	mu sync.Mutex
-	at map[string]time.Time
+// blockedFinishClaim is a finish the run's own chat made from Blocked: the
+// block it was made in, and the reason of a finish --blocked (nil for a plain
+// finish).
+type blockedFinishClaim struct {
+	blockedAt time.Time
+	report    *string
 }
 
-func (b *blockedFinishes) accept(sessionID string, blockedAt time.Time) {
+// blockedFinishes holds, per session, the claim an accepted finish from
+// Blocked made. Like pending finishes it is in memory only, and so is the
+// claim's reason: nothing reaches the session row until the finish fires, so a
+// restart or a new chat that drops the pending finish leaves the row as it was.
+type blockedFinishes struct {
+	mu sync.Mutex
+	at map[string]blockedFinishClaim
+}
+
+func (b *blockedFinishes) accept(sessionID string, claim blockedFinishClaim) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.at == nil {
-		b.at = map[string]time.Time{}
+		b.at = map[string]blockedFinishClaim{}
 	}
-	b.at[sessionID] = blockedAt
+	b.at[sessionID] = claim
 }
 
-// holds reports whether a finish was accepted in sess's current block.
-func (b *blockedFinishes) holds(sess *models.Session) bool {
+// take returns the claim made in sess's current block, and forgets the
+// session's claim either way.
+func (b *blockedFinishes) take(sess *models.Session) (blockedFinishClaim, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	at, ok := b.at[sess.ID]
-	return ok && sess.State == machine.Blocked && sess.StateEnteredAt != nil && at.Equal(*sess.StateEnteredAt)
-}
-
-// take is holds, and forgets the session's accepted finish either way.
-func (b *blockedFinishes) take(sess *models.Session) bool {
-	ok := b.holds(sess)
-	b.mu.Lock()
+	claim, ok := b.at[sess.ID]
 	delete(b.at, sess.ID)
-	b.mu.Unlock()
-	return ok
+	ok = ok && sess.State == machine.Blocked && sess.StateEnteredAt != nil && claim.blockedAt.Equal(*sess.StateEnteredAt)
+	return claim, ok
 }
 
 // AcceptBlockedRunFinish lets the run's own chat finish its Blocked run, in
-// this block only. The run's next finalize then starts from Blocked, as one
-// from ImplementingPlan would: a finish --blocked (ReportRunBlocked) Blocks it
-// again with the new reason and a new block time and leaves the PR draft and
-// the repair budget alone; a plain finish readies the PR and gives repair a
-// fresh budget. Nobody else can: another chat, the operator, a callback and
-// the stranded sweep all leave a Blocked run where it is.
-func (l *Lifecycle) AcceptBlockedRunFinish(sess *models.Session, requester string) error {
+// this block only. report is a finish --blocked's reason, nil for a plain
+// finish. The run's next finalize then starts from Blocked, as one from
+// ImplementingPlan would: a finish --blocked Blocks it again with the new
+// reason and a new block time and leaves the PR draft and the repair budget
+// alone; a plain finish readies the PR and gives repair a fresh budget. Nobody
+// else can: another chat, the operator, a callback and the stranded sweep all
+// leave a Blocked run where it is.
+func (l *Lifecycle) AcceptBlockedRunFinish(sess *models.Session, requester string, report *string) error {
 	if sess.AgentSessionID == nil || *sess.AgentSessionID != requester {
 		return ErrNotRunChat
 	}
 	if sess.State != machine.Blocked || isZeroOutputSession(sess) || sess.StateEnteredAt == nil {
 		return fmt.Errorf("%w (state %s)", ErrRunAlreadyFinalized, sess.State)
 	}
-	l.blockedFinish.accept(sess.ID, *sess.StateEnteredAt)
+	claim := blockedFinishClaim{blockedAt: *sess.StateEnteredAt}
+	if report != nil {
+		reason := truncateBlockedReason(*report)
+		claim.report = &reason
+	}
+	l.blockedFinish.accept(sess.ID, claim)
 	return nil
 }
 
 // finishBlockedRun finalizes a Blocked run whose own chat finished it. Blocked
 // released the PR and branch, so the move to Finalizing takes the start-path
-// lock and refuses while another live session holds them. A finalize that
-// readies the PR ends the block: the reason and the repair budget are cleared,
-// as a manual resume clears them.
-func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session) (*FinalizeResult, error) {
+// lock and refuses while another live session holds them. Once the run is
+// Finalizing, the claim's report replaces whatever run_blocked_reason the row
+// held, so the finalize Blocks the run again only on this claim's word. A
+// finalize that readies the PR ends the block: the reason and the repair budget
+// are cleared, as a manual resume clears them.
+func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session, claim blockedFinishClaim) (*FinalizeResult, error) {
 	advanced := false
-	blockedAt := *sess.StateEnteredAt
+	blockedAt := claim.blockedAt
 	_, release, ok := lockRevival(ctx, l.sessions, sess, l.logger, "blocked-run finish", func(f *models.Session) bool {
 		return f.State == machine.Blocked && f.StateEnteredAt != nil && f.StateEnteredAt.Equal(blockedAt)
 	})
@@ -217,6 +228,10 @@ func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session) 
 	}
 	if !advanced {
 		return &FinalizeResult{NoOp: true}, nil
+	}
+	report := claim.report
+	if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{RunBlockedReason: &report}); err != nil {
+		return nil, fmt.Errorf("record blocked-run finish report: %w", err)
 	}
 	res, err := l.finalizeAdvanced(ctx, sess.ID)
 	if err != nil || res.Deleted || res.Outcome != models.CronJobOutcomePRCreated {

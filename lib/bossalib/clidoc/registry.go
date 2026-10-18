@@ -953,7 +953,9 @@ func newRegistry() map[string]Prose {
 				"after the idle sweep's long log-silence window. Run it from inside the session: " +
 				"the session defaults to `BOSS_SESSION_ID` and the requesting chat to " +
 				"`BOSS_AGENT_SESSION_ID`; `--session` and `--chat` override them, and both are required " +
-				"after defaulting. The requesting chat must be one of the session's chats.\n\n" +
+				"after defaulting. The requesting chat must be one of the session's chats. A Blocked " +
+				"run accepts a finish only from its own run chat, and only for the block it is in " +
+				"now.\n\n" +
 				"The daemon records the request and runs the run's normal finalize (outcome recorded, " +
 				"session cleaned up) once every chat is idle, the requesting chat has settled, and " +
 				"every agent log of the session has been quiet for a minute. The quiet-log window is " +
@@ -962,15 +964,20 @@ func newRegistry() map[string]Prose {
 				"`finish pending (waiting on <chat>)` (or `finished`), and `--json` emits " +
 				"`{\"outcome\": \"pending\"|\"finished\", \"blocking_agent_session_id\": ...}`.\n\n" +
 				"`--blocked` reports that the run ended blocked on a person, with an optional " +
-				"one-line `--reason`. The daemon writes it to the session before deferring, so " +
-				"whichever finalize reaches the run (this finish, the Stop-hook gate, or the idle " +
-				"sweep, across a daemon restart) leaves the PR draft and moves the session to " +
-				"Blocked with that reason instead of marking the PR ready. A blocked report after " +
-				"finalize has already run is refused.\n\n" +
+				"one-line `--reason`. Finalize then leaves the PR draft and moves the session to " +
+				"Blocked with that reason instead of marking the PR ready. For a run that has not " +
+				"finalized yet, the daemon writes the report to the session before deferring, so whichever " +
+				"finalize reaches the run (this finish, the Stop-hook gate, or the idle sweep, even " +
+				"after a daemon restart) uses it. A blocked report after finalize has already run " +
+				"is refused, except from a Blocked run's own chat.\n\n" +
+				"From Blocked, a plain finish readies the PR and resets the repair budget, and " +
+				"`--blocked` blocks the run again with the new reason and keeps the PR draft. Nothing " +
+				"is written to the session until the finish runs.\n\n" +
 				"Only unattended runs can be finished. A pending finish lives in daemon memory: a new " +
-				"chat in the session cancels it, and a daemon restart drops it, in which case the idle " +
-				"sweep still reaps the run. This command requires a local daemon and returns a " +
-				"non-zero exit status on errors.",
+				"chat in the session cancels it, and a daemon restart drops it. The idle sweep then " +
+				"reaps a run that is not Blocked. Nothing reaps a Blocked run, so after a dropped " +
+				"finish it stays Blocked with its old reason; run the finish again. This command " +
+				"requires a local daemon and returns a non-zero exit status on errors.",
 			Examples: []Example{
 				{Command: "boss session finish"},
 				{Command: "boss session finish --json"},

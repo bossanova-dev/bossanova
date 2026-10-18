@@ -114,6 +114,13 @@ type MockDaemon struct {
 	// consecutive frames. Installed by SetCreateSessionScript.
 	createSessionScript     []*pb.CreateSessionResponse
 	createSessionFrameDelay time.Duration
+	// createSessionPersists makes a scripted CreateSession store the session
+	// its final SessionCreated frame carries, the way the daemon does, so the
+	// created session is readable and listed afterwards.
+	createSessionPersists bool
+
+	// dismissSessionAlertCalls records every DismissSessionAlert request.
+	dismissSessionAlertCalls []*pb.DismissSessionAlertRequest
 
 	// resurrectSetupLines / resurrectFrameDelay / resurrectSetupError script the
 	// streaming ResurrectSession response (BOS-984).
@@ -1790,11 +1797,21 @@ func (m *MockDaemon) SetCreateSessionScript(frames []*pb.CreateSessionResponse, 
 	m.createSessionFrameDelay = frameDelay
 }
 
+// SetCreateSessionPersists makes a scripted CreateSession store the session
+// its last SessionCreated frame carries, so GetSession and ListSessions serve
+// it afterwards.
+func (m *MockDaemon) SetCreateSessionPersists(persists bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createSessionPersists = persists
+}
+
 func (m *MockDaemon) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
 	m.mu.Lock()
 	m.lastCreateSession = req.Msg
 	script := m.createSessionScript
 	frameDelay := m.createSessionFrameDelay
+	persists := m.createSessionPersists
 	m.mu.Unlock()
 
 	if len(script) == 0 {
@@ -1814,12 +1831,45 @@ func (m *MockDaemon) CreateSession(ctx context.Context, req *connect.Request[pb.
 		resp := cloneMsg(frame)
 		if sc := resp.GetSessionCreated(); sc.GetSession() != nil {
 			sc.Session.Title = req.Msg.GetTitle()
+			if persists {
+				m.upsertSession(cloneMsg(sc.Session))
+			}
 		}
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// upsertSession replaces the stored session with sess's id, or appends sess.
+func (m *MockDaemon) upsertSession(sess *pb.Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, s := range m.sessions {
+		if s.Id == sess.Id {
+			m.sessions[i] = sess
+			return
+		}
+	}
+	m.sessions = append(m.sessions, sess)
+}
+
+// SetSessionAttention replaces a session's attention, as a daemon poll that
+// recomputed it would. The stored session is swapped for an edited clone rather
+// than mutated, because read handlers return stored sessions that connect
+// marshals after the lock is released.
+func (m *MockDaemon) SetSessionAttention(sessionID string, attention *pb.SessionAttention) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, s := range m.sessions {
+		if s.Id == sessionID {
+			next := cloneMsg(s)
+			next.Attention = cloneMsg(attention)
+			m.sessions[i] = next
+			return
+		}
+	}
 }
 
 // AttachSession reads events from the per-session channel populated by
@@ -2010,17 +2060,25 @@ func (m *MockDaemon) LinkSessionPR(_ context.Context, req *connect.Request[pb.Li
 // keeps no dismissal state — pb.Session carries none — so it validates like
 // the daemon and echoes the session back.
 func (m *MockDaemon) DismissSessionAlert(_ context.Context, req *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dismissSessionAlertCalls = append(m.dismissSessionAlertCalls, cloneMsg(req.Msg))
 	if req.Msg.GetSessionId() == "" || req.Msg.GetAlertKey() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id and alert_key are required"))
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	for _, s := range m.sessions {
 		if s.Id == req.Msg.GetSessionId() {
 			return connect.NewResponse(&pb.DismissSessionAlertResponse{Session: s}), nil
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.GetSessionId()))
+}
+
+// DismissSessionAlertCalls returns every DismissSessionAlert request in order.
+func (m *MockDaemon) DismissSessionAlertCalls() []*pb.DismissSessionAlertRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneMsgs(m.dismissSessionAlertCalls)
 }
 
 // SetSessionTracker records the call and links the session to the issue. The

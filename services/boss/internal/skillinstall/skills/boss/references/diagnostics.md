@@ -93,13 +93,15 @@ boss session checks abc123 --json | jq '.snapshots[0].raw.check_runs'
 
 Tell the daemon this unattended run is done
 
-Tell the daemon an unattended run is done, so it is finalized now rather than after the idle sweep's long log-silence window. Run it from inside the session: the session defaults to `BOSS_SESSION_ID` and the requesting chat to `BOSS_AGENT_SESSION_ID`; `--session` and `--chat` override them, and both are required after defaulting. The requesting chat must be one of the session's chats.
+Tell the daemon an unattended run is done, so it is finalized now rather than after the idle sweep's long log-silence window. Run it from inside the session: the session defaults to `BOSS_SESSION_ID` and the requesting chat to `BOSS_AGENT_SESSION_ID`; `--session` and `--chat` override them, and both are required after defaulting. The requesting chat must be one of the session's chats. A Blocked run accepts a finish only from its own run chat, and only for the block it is in now.
 
 The daemon records the request and runs the run's normal finalize (outcome recorded, session cleaned up) once every chat is idle, the requesting chat has settled, and every agent log of the session has been quiet for a minute. The quiet-log window is what protects background agents, which keep writing after the chat reads idle. The caller's own request is therefore always pending: the text form prints `finish pending (waiting on <chat>)` (or `finished`), and `--json` emits `{"outcome": "pending"|"finished", "blocking_agent_session_id": ...}`.
 
-`--blocked` reports that the run ended blocked on a person, with an optional one-line `--reason`. The daemon writes it to the session before deferring, so whichever finalize reaches the run (this finish, the Stop-hook gate, or the idle sweep, across a daemon restart) leaves the PR draft and moves the session to Blocked with that reason instead of marking the PR ready. A blocked report after finalize has already run is refused.
+`--blocked` reports that the run ended blocked on a person, with an optional one-line `--reason`. Finalize then leaves the PR draft and moves the session to Blocked with that reason instead of marking the PR ready. For a run that has not finalized yet, the daemon writes the report to the session before deferring, so whichever finalize reaches the run (this finish, the Stop-hook gate, or the idle sweep, even after a daemon restart) uses it. A blocked report after finalize has already run is refused, except from a Blocked run's own chat.
 
-Only unattended runs can be finished. A pending finish lives in daemon memory: a new chat in the session cancels it, and a daemon restart drops it, in which case the idle sweep still reaps the run. This command requires a local daemon and returns a non-zero exit status on errors.
+From Blocked, a plain finish readies the PR and resets the repair budget, and `--blocked` blocks the run again with the new reason and keeps the PR draft. Nothing is written to the session until the finish runs.
+
+Only unattended runs can be finished. A pending finish lives in daemon memory: a new chat in the session cancels it, and a daemon restart drops it. The idle sweep then reaps a run that is not Blocked. Nothing reaps a Blocked run, so after a dropped finish it stays Blocked with its old reason; run the finish again. This command requires a local daemon and returns a non-zero exit status on errors.
 
 **Flags:**
 

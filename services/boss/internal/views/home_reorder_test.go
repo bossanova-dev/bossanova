@@ -10,6 +10,8 @@ package views
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -176,6 +178,12 @@ func TestHomeAltDownMovesTheSelectedSessionLater(t *testing.T) {
 	h = homeFromKey(t, model)
 
 	assertSessionIDs(t, h, "sess-1", "sess-3", "sess-2")
+	left, nav, quit := h.sessionTableFooterActions()
+	for _, action := range slices.Concat(left, nav, quit) {
+		if strings.Contains(action, "alt") {
+			t.Fatalf("after a reorder the action bar advertises %q; the chords stay unadvertised", action)
+		}
+	}
 	if cmd == nil {
 		t.Fatal("alt+down scheduled no move command")
 	}

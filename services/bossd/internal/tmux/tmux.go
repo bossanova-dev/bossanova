@@ -1650,23 +1650,32 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	if singleLine {
 		pasted = trimmedPlan
 	}
+	typed := singleLine && (!opts.pasteFreeText || strings.HasPrefix(trimmedPlan, "/"))
+	if !opts.pasteFreeText {
+		pasted = plan
+	}
+	drawn := composerDrawing{
+		text:      plan,
+		collapsed: !typed && isClaudeComposer(opts.readyMarker) && claudeCollapsesPaste(pasted),
+	}
 	settle := opts.pasteFreeText && !opts.prefillOnly && opts.pasteSettleWait > 0
 	deliver := func(ctx context.Context) error {
-		if singleLine && (!opts.pasteFreeText || strings.HasPrefix(trimmedPlan, "/")) {
+		if typed {
 			return c.typeLineAwaitDrawn(ctx, sessionName, trimmedPlan, opts)
-		}
-		if !opts.pasteFreeText {
-			return c.pasteBufferNoEnter(ctx, sessionName, plan)
 		}
 		var before string
 		if settle {
 			before = c.composerRowsSnapshot(ctx, sessionName)
 		}
+		drawn.placeholder = ""
 		if err := c.pasteBufferNoEnter(ctx, sessionName, pasted); err != nil {
 			return err
 		}
 		if settle {
-			c.awaitComposerSettled(ctx, sessionName, before, opts.pasteSettleWait, opts.submitVerifyTick)
+			settled := c.awaitComposerSettled(ctx, sessionName, before, opts.pasteSettleWait, opts.submitVerifyTick)
+			if drawn.collapsed {
+				drawn.placeholder = placeholderIn(settled, drawn.text)
+			}
 		}
 		return nil
 	}
@@ -1699,7 +1708,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// TUI swallows is retried once inside verifyWithEnterRetry before erroring.
 	if opts.submitVerifyWait > 0 && trimmedPlan != "" {
 		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts, deliver); err != nil {
-			return c.withdrawUnsubmitted(ctx, sessionName, plan, err)
+			return c.withdrawUnsubmitted(ctx, sessionName, drawn, err)
 		}
 	}
 	return nil
@@ -1716,29 +1725,114 @@ const withdrawBudget = 5 * time.Second
 // text, since the callback worker marks every retry "REPEAT DELIVERY — attempt
 // N", so the box cannot be matched against the retry instead.
 //
-// It clears only a box that holds exactly this payload and nothing else
-// (composerHoldsOnlyPayload), read after the verifier gave up. Typing appends,
-// so such a box held nothing when this send typed into it, and nobody has
-// typed into it since. A box holding anything more is left as it is, and the
-// error says so. ClearComposer checks before every press that the box still
-// holds the payload.
-func (c *Client) withdrawUnsubmitted(ctx context.Context, sessionName, payload string, sendErr error) error {
+// It presses C-u only while Claude's ruled input box holds exactly what this
+// send drew (composerDrawing.fills), exactly the part of it the Enter retry's
+// presses left (composerDrawing.leftByRetry), or, after a press of its own,
+// exactly what that press leaves (pressLeft). It reads the box afresh before
+// every press. Typing appends, so such a box held nothing when this send typed
+// into it, and nobody has typed into it since the read. Anything else is left as it is, and the error says so (withdrawal). A
+// rule-less composer (Codex) is never withdrawn from: its box ends
+// at a blank row, which is also how a draft's second paragraph starts, so what
+// it holds cannot be read. Codex confirms a submit from its rollout anyway.
+func (c *Client) withdrawUnsubmitted(ctx context.Context, sessionName string, drawn composerDrawing, sendErr error) error {
 	if OutcomeOf(sendErr) != OutcomeNotSubmitted {
 		return sendErr
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), withdrawBudget)
 	defer cancel()
+	result := func(end error) error {
+		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; %w", sendErr, end))
+	}
 	styled, err := c.captureVisibleStyled(ctx, sessionName)
 	if err != nil {
-		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the composer could not be read to withdraw the payload: %v", sendErr, err))
+		return result(fmt.Errorf("%w: the composer could not be read: %v", withdrawFailed, err))
 	}
-	if !composerHoldsOnlyPayload(styled, payload) {
-		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the composer does not hold only the payload, so it was left as it is", sendErr))
+	box, ruled := ruledComposerText(styled, drawn.text)
+	switch {
+	case !ruled:
+		return result(withdrawUnruled)
+	case composerTextIsEmpty(box):
+		return result(withdrawAlreadyEmpty)
+	case !drawn.fills(box) && !drawn.leftByRetry(box, sendErr):
+		return result(withdrawHeldOther)
 	}
-	if err := c.ClearComposer(ctx, sessionName, payload); err != nil {
-		return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; withdrawing the payload from the composer failed: %v", sendErr, err))
+	return result(c.pressOutPayload(ctx, sessionName, drawn, box))
+}
+
+// withdrawal is how withdrawUnsubmitted ended. The not-submitted error wraps
+// it, so the caller's message says what became of the payload.
+type withdrawal string
+
+func (w withdrawal) Error() string { return string(w) }
+
+const (
+	withdrawn            withdrawal = "the payload was withdrawn from the composer"
+	withdrawUnruled      withdrawal = "the payload was left in the composer, because bossd withdraws only from Claude's bordered input box and found none"
+	withdrawAlreadyEmpty withdrawal = "the composer was already empty"
+	withdrawHeldOther    withdrawal = "the composer holds text other than the payload, so it was left as it is"
+	withdrawUnchanged    withdrawal = "clearing the composer changed nothing, so the payload may still be in it"
+	withdrawForeign      withdrawal = "the composer changed in a way a clear cannot explain, so it was left as it is"
+	withdrawVanished     withdrawal = "the input box disappeared while the payload was withdrawn"
+	withdrawPressCap     withdrawal = "the composer still holds part of the payload after every clear it should take"
+	withdrawFailed       withdrawal = "withdrawing the payload from the composer failed"
+)
+
+// pressOutPayload presses C-u until the composer is empty, and says how it
+// ended. box is what the composer held on the read just before the first
+// press. Each later press acts only on the read just before it, and only when
+// that read shows exactly what the press before leaves of the one before it
+// (pressLeft).
+func (c *Client) pressOutPayload(ctx context.Context, sessionName string, drawn composerDrawing, box string) error {
+	presses := drawn.pressesToEmpty(box)
+	for press := 1; ; press++ {
+		if err := c.clearComposer(ctx, sessionName); err != nil {
+			return fmt.Errorf("%w: %v", withdrawFailed, err)
+		}
+		next, ruled, err := c.awaitRuledComposerChange(ctx, sessionName, drawn.text, box)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: the composer could not be read after a clear: %v", withdrawFailed, err)
+		case !ruled:
+			return withdrawVanished
+		case composerTextIsEmpty(next):
+			return withdrawn
+		case composerShape(next) == composerShape(box):
+			return withdrawUnchanged
+		case !pressLeft(box, next):
+			return withdrawForeign
+		case press >= presses:
+			return withdrawPressCap
+		}
+		box = next
 	}
-	return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("%w; the payload was withdrawn from the composer", sendErr))
+}
+
+// awaitRuledComposerChange polls the ruled composer until its rows differ from
+// before, and returns the last reading, which is unchanged when the window ran
+// out. A frame drawn without the box is a repaint and is skipped.
+func (c *Client) awaitRuledComposerChange(ctx context.Context, sessionName, payload, before string) (string, bool, error) {
+	deadline := time.Now().Add(clearComposerCheckWindow)
+	text, ruled := before, false
+	for {
+		styled, err := c.captureVisibleStyled(ctx, sessionName)
+		if err != nil {
+			return "", false, err
+		}
+		if now, ok := ruledComposerText(styled, payload); ok {
+			text, ruled = now, true
+			if composerShape(now) != composerShape(before) {
+				return text, ruled, nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return text, ruled, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		case <-time.After(clearComposerCheckTick):
+		}
+	}
 }
 
 // sendLine is the test-injectable variant of SendLineWithReadyMarker.
@@ -1787,7 +1881,7 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 	}
 	if opts.submitVerifyWait > 0 {
 		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts, deliver); err != nil {
-			return c.withdrawUnsubmitted(ctx, sessionName, line, err)
+			return c.withdrawUnsubmitted(ctx, sessionName, composerDrawing{text: line}, err)
 		}
 	}
 	return nil

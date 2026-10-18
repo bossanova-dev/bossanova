@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf16"
 )
 
 // This file holds the submission-verification and pane-scraping heuristics used
@@ -87,7 +88,7 @@ const (
 	OutcomeBlockedByModal
 	// OutcomeComposerOccupied: the live composer already held a draft this
 	// send did not type, so the send was refused before any key or Enter
-	// (checkComposerBeforeTyping). Like OutcomeBlockedByModal, nothing was
+	// (refuseOccupiedComposer). Like OutcomeBlockedByModal, nothing was
 	// delivered: a prompt receipt seen afterwards belongs to someone else's
 	// message, and the draft must not be cleared, since it may be an operator's.
 	OutcomeComposerOccupied
@@ -344,13 +345,13 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 				// not license an Enter. It costs another press, never a stray key.
 				mutilated = true
 				if press == maxComposerClearPresses {
-					return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("command was not submitted to tmux session %q: %d composer clears left a partial payload behind, so no Enter was sent: %w", sessionName, press, errSubmissionPending))
+					return classifySubmit(OutcomeNotSubmitted, &partialPayload{held: after, err: fmt.Errorf("command was not submitted to tmux session %q: %d composer clears left a partial payload behind, so no Enter was sent: %w", sessionName, press, errSubmissionPending)})
 				}
 				if after == held {
 					// A stuck partial clear: the box holds a fragment and this press
 					// changed nothing, so it will not empty. Fail exactly as loudly as
 					// the press cap above — confirmed not submitted, no Enter sent.
-					return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("command was not submitted to tmux session %q: a composer clear left a partial payload behind and press %d changed nothing, so no Enter was sent: %w", sessionName, press, errSubmissionPending))
+					return classifySubmit(OutcomeNotSubmitted, &partialPayload{held: after, err: fmt.Errorf("command was not submitted to tmux session %q: a composer clear left a partial payload behind and press %d changed nothing, so no Enter was sent: %w", sessionName, press, errSubmissionPending)})
 				}
 				held = after
 				continue
@@ -362,7 +363,7 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 				// pre-clear pane) or because the box already held a fragment when this
 				// retry first looked. Neither is evidence the box holds the payload, so
 				// the same loud verdict as the stuck case above.
-				return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("command was not submitted to tmux session %q: the composer holds a partial payload and press %d changed nothing, so no Enter was sent: %w", sessionName, press, errSubmissionPending))
+				return classifySubmit(OutcomeNotSubmitted, &partialPayload{held: after, err: fmt.Errorf("command was not submitted to tmux session %q: the composer holds a partial payload and press %d changed nothing, so no Enter was sent: %w", sessionName, press, errSubmissionPending)})
 			}
 			// Evidenced POSITIVELY: the authoritative sample renders exactly the
 			// baseline, so the box still holds the INTACT payload. This is the
@@ -390,6 +391,21 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName, payload 
 	}
 	return nil
 }
+
+// partialPayload is how verifyWithEnterRetry ends when its C-u presses left
+// part of the payload in the composer and it sent no Enter. held is that part,
+// as the composer footprint its last read showed it (composerFootprint). It is
+// the only composer text other than the whole payload that the withdrawal may
+// clear (composerDrawing.leftByRetry): any other prefix of the payload can be
+// an operator's own message that begins the same way.
+type partialPayload struct {
+	held string
+	err  error
+}
+
+func (p *partialPayload) Error() string { return p.err.Error() }
+
+func (p *partialPayload) Unwrap() error { return p.err }
 
 // clearComposerCheckWindow / clearComposerCheckTick bound the exported
 // ClearComposer's per-press postcondition check. They are deliberately small:
@@ -702,10 +718,11 @@ func (c *Client) composerRowsSnapshot(ctx context.Context, sessionName string) s
 // no failure mode: a capture error is skipped, and when waitFor expires it
 // simply returns, so the caller proceeds to Enter and the submit verifier
 // decides what happened. Only the composer rows are compared (composerRows),
-// so a working spinner above the input box cannot hold the wait open.
-func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before string, waitFor, tickEvery time.Duration) {
+// so a working spinner above the input box cannot hold the wait open. It
+// returns the rows the composer settled on, or "" when it did not settle.
+func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before string, waitFor, tickEvery time.Duration) string {
 	if waitFor <= 0 {
-		return
+		return ""
 	}
 	if tickEvery <= 0 {
 		tickEvery = sendPlanDefaultPollInterval
@@ -724,19 +741,31 @@ func (c *Client) awaitComposerSettled(ctx context.Context, sessionName, before s
 			case !changed && rows != before:
 				changed, last = true, rows
 			case changed && rows == last:
-				return
+				return rows
 			case changed:
 				last = rows
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return ""
 		case <-deadline.C:
-			return
+			return ""
 		case <-ticker.C:
 		}
 	}
+}
+
+// placeholderIn returns the collapsed-paste placeholder that composer rows
+// (see composerRows) hold for a paste of text, such as
+// "[Pasted text #3 +4 lines]", or "" when they hold anything else.
+func placeholderIn(rows, text string) string {
+	first, rest, _ := strings.Cut(rows, "\n")
+	content, isPrompt := composerContent(strings.TrimSpace(first))
+	if !isPrompt || strings.TrimSpace(rest) != "" || !claudePlaceholderOf(content, text) {
+		return ""
+	}
+	return strings.TrimSpace(content)
 }
 
 // awaitComposerDraws polls until the live composer shows payload on two
@@ -1702,30 +1731,177 @@ func typedText(styled string) string {
 	return string(out)
 }
 
-// collapsedPasteOnlyRe matches composer content that is exactly one
-// collapsed-paste placeholder (see collapsedPastePlaceholderRe), in the forms
-// Claude Code 2.1.302 and codex-cli 0.161.0 draw.
-var collapsedPasteOnlyRe = regexp.MustCompile(`^\[(?:Pasted text #\d+(?: \+\d+ lines)?|Pasted Content \d+ chars)\]$`)
+// composerDrawing is how the agent draws a send's payload in its composer:
+// the text itself, or, for a paste the agent collapses, one placeholder.
+// placeholder is the one this send's own paste drew, read from the rows the
+// composer settled on after the paste (placeholderIn). It stays empty when
+// that read did not show one, and then nothing is withdrawn.
+type composerDrawing struct {
+	text        string
+	collapsed   bool
+	placeholder string
+}
 
-// composerHoldsOnlyPayload reports whether a styled capture shows the live
-// composer holding this send's payload and nothing else: exactly its text, or
-// exactly one collapsed-paste placeholder, which is what a long paste draws.
-// It reads typedText, so a suggestion Claude draws after what was typed is not
-// taken for part of it, and a cursor on a character fails the match. A
-// composer drawn without rules (Codex) ends at its first blank row, above the
-// footer.
-func composerHoldsOnlyPayload(styled, payload string) bool {
-	text := typedText(styled)
-	rows := typedComposerRows(text, payload)
-	if _, _, ruled := inputBoxRules(strings.Split(text, "\n")); !ruled {
-		rows, _, _ = strings.Cut(rows, "\n\n")
+// fills reports whether composer text (see ruledComposerText) is exactly the
+// drawing and nothing else. A collapsed drawing matches only the placeholder
+// its own paste drew, paste id included, because an operator's paste draws the
+// same kind of placeholder and may hold as many lines.
+func (d composerDrawing) fills(box string) bool {
+	if d.collapsed {
+		return d.placeholder != "" && strings.TrimSpace(box) == d.placeholder
 	}
-	if composerHoldsExactly(rows, payload) {
-		return true
+	want := withoutSpace(d.text)
+	return want != "" && withoutSpace(box) == want
+}
+
+// partOf reports whether composer text is what C-u presses can have left of
+// the drawing. Claude Code 2.1.302's ctrl+u kills a newline just before the
+// cursor on its own, or else the text back to the start of the cursor's
+// wrapped row, so what presses leave is a prefix of the drawing's characters,
+// compared here ignoring whitespace. Text an operator appends is not such a
+// prefix unless it repeats the payload's own next words. A placeholder is one
+// row, so nothing is left of it.
+func (d composerDrawing) partOf(box string) bool {
+	have := withoutSpace(box)
+	return !d.collapsed && have != "" && strings.HasPrefix(withoutSpace(d.text), have)
+}
+
+// leftByRetry reports whether composer text is exactly the part of the
+// drawing that the Enter retry's presses left behind, which sendErr carries
+// (partialPayload). Only that reading is taken on the withdrawal's first read:
+// a box holding some other prefix, after a retry that left the whole payload or
+// none, may hold an operator's message that begins as the payload does.
+func (d composerDrawing) leftByRetry(box string, sendErr error) bool {
+	var left *partialPayload
+	return errors.As(sendErr, &left) && d.partOf(box) && withoutSpace(box) == withoutSpace(left.held)
+}
+
+// pressLeft reports whether next, read after a C-u, is what that one press
+// leaves of prev, read before it. Claude Code 2.1.302's ctrl+u kills a newline
+// just before the cursor, which leaves the same characters on fewer rows, or
+// else the cursor's wrapped row, which leaves prev less its last row. A cursor
+// at the start of an empty last row kills back over the row above, so empty
+// last rows are dropped before the last row is. Anything else, such as a box
+// an operator cleared and typed into after the press, does not pass.
+func pressLeft(prev, next string) bool {
+	have := withoutSpace(next)
+	if have == withoutSpace(prev) {
+		return composerRowCount(next) < composerRowCount(prev)
 	}
-	first, rest, _ := strings.Cut(rows, "\n")
-	content, isPrompt := composerContent(strings.TrimSpace(first))
-	return isPrompt && collapsedPasteOnlyRe.MatchString(content) && strings.TrimSpace(rest) == ""
+	rows := strings.Split(prev, "\n")
+	for len(rows) > 1 && strings.TrimSpace(rows[len(rows)-1]) == "" {
+		rows = rows[:len(rows)-1]
+	}
+	return have == withoutSpace(strings.Join(rows[:len(rows)-1], "\n"))
+}
+
+// pressesToEmpty is how many C-u presses can empty box, the first read of a
+// composer holding the drawing: one per row it draws, and one per newline,
+// since a newline just before the cursor takes a press of its own.
+func (d composerDrawing) pressesToEmpty(box string) int {
+	if d.collapsed {
+		return composerRowCount(box)
+	}
+	return composerRowCount(box) + strings.Count(d.text, "\n")
+}
+
+// composerShape is composer text with each row's trailing blanks cut, so two
+// reads of an unchanged box compare equal while a press that kills only a
+// newline still shows as a change.
+func composerShape(text string) string {
+	rows := strings.Split(text, "\n")
+	for i, r := range rows {
+		rows[i] = strings.TrimRightFunc(r, unicode.IsSpace)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// composerRowCount is how many rows composer text spans.
+func composerRowCount(text string) int {
+	return strings.Count(text, "\n") + 1
+}
+
+// claudePastePlaceholderRe matches composer text that is exactly one
+// placeholder Claude Code 2.1.302 draws for a collapsed paste, capturing its
+// line count.
+var claudePastePlaceholderRe = regexp.MustCompile(`^\[Pasted text #\d+(?: \+(\d+) lines)?\]$`)
+
+// claudePlaceholderOf reports whether composer text is the placeholder Claude
+// draws for a paste of text: "[Pasted text #N]" for one line, else
+// "[Pasted text #N +M lines]" where M counts its newlines.
+func claudePlaceholderOf(box, text string) bool {
+	m := claudePastePlaceholderRe.FindStringSubmatch(strings.TrimSpace(box))
+	if m == nil {
+		return false
+	}
+	newlines := strings.Count(claudePasteText(text), "\n")
+	if newlines == 0 {
+		return m[1] == ""
+	}
+	return m[1] == strconv.Itoa(newlines)
+}
+
+// claudePasteText is a paste as Claude Code 2.1.302 stores it: CR and CRLF
+// become LF and a tab becomes four spaces.
+func claudePasteText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.ReplaceAll(text, "\t", "    ")
+}
+
+// claudeCollapsesPaste reports whether Claude Code 2.1.302 draws a paste of
+// text as one placeholder. It collapses a paste longer than 800 UTF-16 units
+// or holding more than min(rows-10, 2) newlines, rows being the terminal's
+// height. The height only lowers that bound, below 12 rows, so taking 2 never
+// reports a paste collapsed that Claude draws as text. Codex collapses a long
+// paste into "[Pasted Content N chars]", but a Codex composer is never
+// withdrawn from (withdrawUnsubmitted), so its rule is not modelled here.
+func claudeCollapsesPaste(text string) bool {
+	text = claudePasteText(text)
+	return len(utf16.Encode([]rune(text))) > 800 || strings.Count(text, "\n") > 2
+}
+
+// ruledComposerText returns what may be typed text in Claude's input box: the
+// rows between the bottom two rules, read through typedText, with the prompt
+// glyph cut from the first. ruled is false unless those rules bound the live
+// composer, whose first row carries the prompt glyph, or a shell-mode payload's
+// "!" row. A suggestion Claude draws after the text is dim, so it reads blank,
+// and a cursor on a character reads as unreadableCell.
+func ruledComposerText(styled, payload string) (text string, ruled bool) {
+	lines := strings.Split(typedText(styled), "\n")
+	top, bottom, ok := inputBoxRules(lines)
+	if !ok {
+		return "", false
+	}
+	if bottom-top < 2 {
+		return "", false
+	}
+	box := lines[top+1 : bottom]
+	first := strings.TrimSpace(box[0])
+	content, isPrompt := composerContent(first)
+	switch {
+	case isPrompt && composerMarkerIdx(lines) == top+1:
+	case !isPrompt && strings.HasPrefix(payload, shellModePrefix):
+		content = first
+	default:
+		return "", false
+	}
+	return strings.Join(append([]string{content}, box[1:]...), "\n"), true
+}
+
+// composerTextIsEmpty reports whether composer text holds nothing typed. An
+// empty Claude box draws its placeholder as the cursor on a first letter,
+// followed by dim text, which reads as one unreadableCell.
+func composerTextIsEmpty(text string) bool {
+	t := withoutSpace(text)
+	return t == "" || t == string(unreadableCell)
+}
+
+// composerHoldsOnlyPayload reports whether a styled capture shows Claude's
+// ruled input box holding exactly the drawing and nothing else.
+func composerHoldsOnlyPayload(styled string, drawn composerDrawing) bool {
+	box, ruled := ruledComposerText(styled, drawn.text)
+	return ruled && drawn.fills(box)
 }
 
 // afterMarkerGlyph returns a marker row's cells after its prompt glyph.

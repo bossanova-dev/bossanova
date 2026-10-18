@@ -633,6 +633,12 @@ const V20260922 Version = "2026-09-22"
 // the old answers back.
 const V20260923 Version = "2026-09-23"
 
+// V20260924 ships ResumeGaveUpSentenceChange: the FIX of a run whose automatic
+// resumes gave up says "so automatic retries stopped" where it said "so the
+// factory stopped retrying". 2026-09-23 and older pins get the old sentence
+// back.
+const V20260924 Version = "2026-09-24"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -791,8 +797,9 @@ func DefaultRegistry() *Registry {
 			V20260921,
 			V20260922,
 			V20260923,
+			V20260924,
 		},
-		V20260923,
+		V20260924,
 		Baseline,
 	)
 	if err != nil {

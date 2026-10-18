@@ -59,6 +59,7 @@ var ReleasedVersions = []Version{
 	"2026-09-20", // V20260920 — UnverifiedMergeAttentionChange, DeadBootstrapAttentionChange and ParkMergeAttentionChange.
 	"2026-09-21", // V20260921 — NoVerifyStageMergeAttentionChange (an unverified green PR is ready to merge).
 	"2026-09-22", // V20260922 — FactoryReviewParkSentenceChange, ReviewOnlyParkChange, VerifiedNotMergedChange and ParkSinceChange.
+	"2026-09-23", // V20260923 — RunBlockedLabelChange and EndedBlockHintChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

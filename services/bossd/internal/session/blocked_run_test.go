@@ -282,11 +282,9 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 	t.Run("the agent commits, then re-reports BLOCKED", func(t *testing.T) {
 		f, lc := newBlockedFinishFixture(t)
 		f.wt.commitSubjects = []string{"fix: bump the flows pin"}
-		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1"); err != nil {
+		report := "flows still red after bumping the pin"
+		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", &report); err != nil {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
-		}
-		if err := lc.ReportRunBlocked(ctx, "sess-1", "flows still red after bumping the pin"); err != nil {
-			t.Fatalf("ReportRunBlocked from Blocked: %v", err)
 		}
 		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
 		if err != nil || res.Outcome != models.CronJobOutcomeRunBlocked {
@@ -298,9 +296,21 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 		}
 	})
 
+	t.Run("the re-report keeps only its first line", func(t *testing.T) {
+		f, lc := newBlockedFinishFixture(t)
+		report := "  flows still red\nsee the CI log for the failing step  "
+		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", &report); err != nil {
+			t.Fatalf("AcceptBlockedRunFinish: %v", err)
+		}
+		if res, err := lc.FinishUnattendedRun(ctx, "sess-1"); err != nil || res.Outcome != models.CronJobOutcomeRunBlocked {
+			t.Fatalf("FinishUnattendedRun = %+v, %v; want run_blocked", res, err)
+		}
+		f.assertBlockedDraft(t, "run blocked: flows still red")
+	})
+
 	t.Run("a plain finish readies the PR", func(t *testing.T) {
 		f, lc := newBlockedFinishFixture(t)
-		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1"); err != nil {
+		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", nil); err != nil {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
 		}
 		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
@@ -319,7 +329,7 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 
 	for name, refused := range map[string]func(*testing.T, *runBlockedFixture, *Lifecycle){
 		"another chat of the session finishes": func(t *testing.T, f *runBlockedFixture, lc *Lifecycle) {
-			if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "operator-chat"); !errors.Is(err, ErrNotRunChat) {
+			if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "operator-chat", nil); !errors.Is(err, ErrNotRunChat) {
 				t.Fatalf("AcceptBlockedRunFinish = %v, want ErrNotRunChat", err)
 			}
 		},
@@ -330,14 +340,14 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 		},
 		"a claim from an earlier block": func(t *testing.T, f *runBlockedFixture, lc *Lifecycle) {
 			sess := f.sessions.sessions["sess-1"]
-			if err := lc.AcceptBlockedRunFinish(sess, "agent-1"); err != nil {
+			if err := lc.AcceptBlockedRunFinish(sess, "agent-1", nil); err != nil {
 				t.Fatalf("AcceptBlockedRunFinish: %v", err)
 			}
 			reblocked := blockedRunAt.Add(time.Hour)
 			sess.StateEnteredAt = &reblocked
 		},
 		"another live session holds the PR": func(t *testing.T, f *runBlockedFixture, lc *Lifecycle) {
-			if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1"); err != nil {
+			if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", nil); err != nil {
 				t.Fatalf("AcceptBlockedRunFinish: %v", err)
 			}
 			f.sessions.sessions["rival"] = &models.Session{ID: "rival", RepoID: "repo-1", Title: "Rival", State: machine.AwaitingChecks, PRNumber: intPtr(77), BranchName: "other"}
@@ -358,12 +368,87 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 		})
 	}
 
+	t.Run("the block moved between the claim and the lock", func(t *testing.T) {
+		f, lc := newBlockedFinishFixture(t)
+		sess := f.sessions.sessions["sess-1"]
+		reblocked := blockedRunAt.Add(time.Hour)
+		sess.StateEnteredAt = &reblocked
+		res, err := lc.finishBlockedRun(ctx, sess, blockedFinishClaim{blockedAt: blockedRunAt})
+		if err != nil || !res.NoOp {
+			t.Fatalf("finishBlockedRun = %+v, %v; want NoOp", res, err)
+		}
+		if sess.State != machine.Blocked || sess.LastRepairAttemptCount != 5 || len(f.vp.markReadyCalls) != 0 {
+			t.Fatalf("state=%v repair attempts=%d ready calls=%v, want Blocked, budget spent and the PR draft",
+				sess.State, sess.LastRepairAttemptCount, f.vp.markReadyCalls)
+		}
+	})
+
 	t.Run("a zero-output run cannot be finished from Blocked", func(t *testing.T) {
 		f, lc := newBlockedFinishFixture(t)
 		sess := f.sessions.sessions["sess-1"]
 		sess.IsQuickChat = true
-		if err := lc.AcceptBlockedRunFinish(sess, "agent-1"); !errors.Is(err, ErrRunAlreadyFinalized) {
+		if err := lc.AcceptBlockedRunFinish(sess, "agent-1", nil); !errors.Is(err, ErrRunAlreadyFinalized) {
 			t.Fatalf("AcceptBlockedRunFinish = %v, want ErrRunAlreadyFinalized", err)
+		}
+	})
+}
+
+// TestBlockedRunDroppedFinishLeavesNoReport: a finish --blocked from Blocked
+// keeps its reason with the claim until the finish fires. A daemon restart, or
+// a new chat that cancels the pending finish, drops both, so the row keeps its
+// old reason and block time and a later plain finish from the run's chat
+// readies the PR.
+func TestBlockedRunDroppedFinishLeavesNoReport(t *testing.T) {
+	ctx := context.Background()
+	for name, after := range map[string]func(*testing.T, *runBlockedFixture, *Lifecycle) *Lifecycle{
+		"a daemon restart": func(t *testing.T, f *runBlockedFixture, _ *Lifecycle) *Lifecycle {
+			return newFinalizeChatLifecycle(t, f.sessions, f.repos, f.chats, f.cron, f.wt, f.vp, zerolog.Nop())
+		},
+		"a new chat cancels the pending finish": func(_ *testing.T, _ *runBlockedFixture, lc *Lifecycle) *Lifecycle {
+			return lc
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, lc := newBlockedFinishFixture(t)
+			report := "flows still red after bumping the pin"
+			if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", &report); err != nil {
+				t.Fatalf("AcceptBlockedRunFinish: %v", err)
+			}
+			row := f.sessions.sessions["sess-1"]
+			if row.RunBlockedReason != nil || row.State != machine.Blocked || !row.StateEnteredAt.Equal(blockedRunAt) ||
+				row.BlockedReason == nil || *row.BlockedReason != "run blocked: flows CI remains red after 5 repair passes" {
+				t.Fatalf("run_blocked_reason=%v state=%v blocked at=%v reason=%v, want the row as it was",
+					row.RunBlockedReason, row.State, row.StateEnteredAt, row.BlockedReason)
+			}
+			lc = after(t, f, lc)
+			if err := lc.AcceptBlockedRunFinish(row, "agent-1", nil); err != nil {
+				t.Fatalf("AcceptBlockedRunFinish: %v", err)
+			}
+			res, err := lc.FinishUnattendedRun(ctx, "sess-1")
+			if err != nil || res.Outcome != models.CronJobOutcomePRCreated {
+				t.Fatalf("FinishUnattendedRun = %+v, %v; want pr_created", res, err)
+			}
+			got := f.sessions.sessions["sess-1"]
+			if len(f.vp.markReadyCalls) != 1 || got.State != machine.ReadyForReview || got.RunBlockedReason != nil || got.BlockedReason != nil {
+				t.Fatalf("ready calls=%v state=%v run_blocked_reason=%v reason=%v, want the PR readied and no block",
+					f.vp.markReadyCalls, got.State, got.RunBlockedReason, got.BlockedReason)
+			}
+		})
+	}
+
+	t.Run("a plain finish ignores a report an earlier daemon left on the row", func(t *testing.T) {
+		f, lc := newBlockedFinishFixture(t)
+		stale := "flows still red after bumping the pin"
+		f.sessions.sessions["sess-1"].RunBlockedReason = &stale
+		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", nil); err != nil {
+			t.Fatalf("AcceptBlockedRunFinish: %v", err)
+		}
+		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
+		if err != nil || res.Outcome != models.CronJobOutcomePRCreated {
+			t.Fatalf("FinishUnattendedRun = %+v, %v; want pr_created", res, err)
+		}
+		if got := f.sessions.sessions["sess-1"]; len(f.vp.markReadyCalls) != 1 || got.State != machine.ReadyForReview || got.RunBlockedReason != nil {
+			t.Fatalf("ready calls=%v state=%v run_blocked_reason=%v, want the PR readied", f.vp.markReadyCalls, got.State, got.RunBlockedReason)
 		}
 	})
 }

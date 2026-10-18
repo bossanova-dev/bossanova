@@ -335,8 +335,11 @@ func TestWorker_OccupiedComposerWaitsWithoutSpendingAttempts(t *testing.T) {
 		if got.State != models.GithubCallbackStateTriggered || got.AttemptCount != 0 {
 			t.Fatalf("after a refusal: state %q, attempt_count %d; want triggered with no attempt spent", got.State, got.AttemptCount)
 		}
-		if got.LastError == nil || !strings.Contains(*got.LastError, "composer") {
-			t.Fatalf("last_error = %v, want the occupied-composer refusal", got.LastError)
+		if got.LastError == nil {
+			t.Fatal("last_error is empty, want the reason the callback waits")
+		}
+		if *got.LastError != models.GithubCallbackComposerOccupiedWait {
+			t.Fatalf("last_error = %q, want the operator's sentence %q", *got.LastError, models.GithubCallbackComposerOccupiedWait)
 		}
 		clk.advance(got.NextAttemptAt.Sub(clk.now()))
 	}

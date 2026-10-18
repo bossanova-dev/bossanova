@@ -279,31 +279,77 @@ func TestComposerHoldsOnlyPayload(t *testing.T) {
 	box := func(row string) string {
 		return "⏺ reply\n────\n" + claudeGlyph + " " + row + "\n────\n  footer\n"
 	}
-	const cmd = "/boss-repair"
-	const pasted = "line one\nline two\nline three"
+	codex := func(rows string) string {
+		return "\x1b[1m›\x1b[0m " + rows + "\n\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\n"
+	}
+	cmd := composerDrawing{text: "/boss-repair"}
+	short := composerDrawing{text: "summarise the repo"}
+	threeLines := composerDrawing{text: "line one\nline two\nline three"}
+	fourLines := composerDrawing{text: "line one\nline two\nline three\nline four", collapsed: true, placeholder: "[Pasted text #2 +3 lines]"}
+	unread := composerDrawing{text: fourLines.text, collapsed: true}
 	cases := []struct {
-		name, styled, payload string
-		want                  bool
+		name, styled string
+		drawn        composerDrawing
+		want         bool
 	}{
-		{"the payload before the cursor", box(cmd + "\x1b[7m \x1b[0m"), cmd, true},
-		{"the payload and a dim argument hint", box(cmd + "\x1b[7m \x1b[0;2m<ticket-id>\x1b[0m"), cmd, true},
-		{"one collapsed paste", box("[Pasted text #2 +2 lines]\x1b[7m \x1b[0m"), pasted, true},
-		{"the payload wrapped over two rows", "────\n" + claudeGlyph + " line one\n  line two line three\n────\n", pasted, true},
+		{"the payload before the cursor", box(cmd.text + "\x1b[7m \x1b[0m"), cmd, true},
+		{"the payload and a dim argument hint", box(cmd.text + "\x1b[7m \x1b[0;2m<ticket-id>\x1b[0m"), cmd, true},
+		{"the placeholder this send's paste drew", box("[Pasted text #2 +3 lines]\x1b[7m \x1b[0m"), fourLines, true},
+		{"another paste's placeholder with the same line count", box("[Pasted text #5 +3 lines]\x1b[7m \x1b[0m"), fourLines, false},
+		{"a placeholder when this send's own was never read", box("[Pasted text #2 +3 lines]\x1b[7m \x1b[0m"), unread, false},
+		{"the payload wrapped over two rows", "────\n" + claudeGlyph + " line one\n  line two line three\n────\n", threeLines, true},
+		{"a placeholder with another line count", box("[Pasted text #2 +5 lines]\x1b[7m \x1b[0m"), fourLines, false},
+		{"a placeholder for a paste Claude draws as text", box("[Pasted text #2 +2 lines]\x1b[7m \x1b[0m"), threeLines, false},
+		{"a placeholder for a short paste", box("[Pasted text #2]\x1b[7m \x1b[0m"), short, false},
+		{"a placeholder for a typed command", box("[Pasted text #2]\x1b[7m \x1b[0m"), cmd, false},
+		{"the text of a paste Claude collapses", "────\n" + claudeGlyph + " line one\n  line two\n  line three\n  line four\n────\n", fourLines, false},
 		{"a partial command and its unfocused completion", box("/boss-re\x1b[2mpair\x1b[0m"), cmd, false},
 		{"a partial command and its completion behind the cursor", box("/boss-re\x1b[7mp\x1b[0;2mair\x1b[0m"), cmd, false},
 		{"the cursor on the payload's last letter", box("/boss-repai\x1b[7mr\x1b[0m"), cmd, false},
-		{"text before the payload", box("half " + cmd + "\x1b[7m \x1b[0m"), cmd, false},
-		{"text after the payload", box(cmd + " now\x1b[7m \x1b[0m"), cmd, false},
-		{"two collapsed pastes", box("[Pasted text #1][Pasted text #2 +2 lines]\x1b[7m \x1b[0m"), pasted, false},
-		{"a collapsed paste and text", box("[Pasted text #2 +2 lines] and more\x1b[7m \x1b[0m"), pasted, false},
+		{"text before the payload", box("half " + cmd.text + "\x1b[7m \x1b[0m"), cmd, false},
+		{"text after the payload", box(cmd.text + " now\x1b[7m \x1b[0m"), cmd, false},
+		{"the payload, a blank row and an operator's paragraph", "────\n" + claudeGlyph + " summarise the repo\n\n  my second paragraph\n────\n", short, false},
+		{"two collapsed pastes", box("[Pasted text #1][Pasted text #2 +3 lines]\x1b[7m \x1b[0m"), fourLines, false},
+		{"a collapsed paste and text", box("[Pasted text #2 +3 lines] and more\x1b[7m \x1b[0m"), fourLines, false},
 		{"an empty composer", box("\x1b[7mT\x1b[0;2mry \"fix typecheck errors\"\x1b[0m"), cmd, false},
-		{"a codex collapsed paste above its footer", "\x1b[1m›\x1b[0m [Pasted Content 2181 chars]\n\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\n", pasted, true},
-		{"a codex draft", "\x1b[1m›\x1b[0m $boss-verify 3105\n\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\n", "$boss-verify 3106", false},
+		{"a codex payload", codex(short.text), short, false},
+		{"a codex payload, a blank row and an operator's paragraph", codex(short.text + "\n\n  my second paragraph the operator typed"), short, false},
+		{"a codex collapsed paste", codex("[Pasted Content 2181 chars]"), fourLines, false},
+		{"a codex draft", codex("$boss-verify 3105"), composerDrawing{text: "$boss-verify 3106"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := composerHoldsOnlyPayload(tc.styled, tc.payload); got != tc.want {
-				t.Fatalf("composerHoldsOnlyPayload(%q) = %v, want %v", tc.payload, got, tc.want)
+			if got := composerHoldsOnlyPayload(tc.styled, tc.drawn); got != tc.want {
+				t.Fatalf("composerHoldsOnlyPayload(%+v) = %v, want %v", tc.drawn, got, tc.want)
+			}
+		})
+	}
+}
+
+// Claude Code 2.1.302 collapses a paste longer than 800 UTF-16 units or holding
+// more than two newlines, after CR and CRLF become LF and a tab four spaces.
+func TestClaudeCollapsesPaste(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text string
+		want bool
+	}{
+		"a short line":                 {"summarise the repo", false},
+		"three lines":                  {"a\nb\nc", false},
+		"four lines":                   {"a\nb\nc\nd", true},
+		"three lines and a newline":    {"a\nb\nc\n", true},
+		"CRLF lines":                   {"a\r\nb\r\nc", false},
+		"CR lines":                     {"a\rb\rc\rd", true},
+		"800 characters":               {strings.Repeat("x", 800), false},
+		"801 characters":               {strings.Repeat("x", 801), true},
+		"200 tabs":                     {strings.Repeat("\t", 200), false},
+		"201 tabs":                     {strings.Repeat("\t", 201), true},
+		"400 astral characters":        {strings.Repeat("😀", 400), false},
+		"401 astral characters":        {strings.Repeat("😀", 401), true},
+		"798 characters and two CRLFs": {strings.Repeat("x", 798) + "\r\n\r\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := claudeCollapsesPaste(tc.text); got != tc.want {
+				t.Fatalf("claudeCollapsesPaste = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -353,7 +399,7 @@ func TestComposerHoldsOnlyPayloadOnRenderedClaudeComposers(t *testing.T) {
 	} {
 		t.Run(tc.fixture+" "+tc.payload, func(t *testing.T) {
 			styled := readPaneFixture(t, "claude_composer_"+tc.fixture+"_styled_rendered.txt")
-			if got := composerHoldsOnlyPayload(styled, tc.payload); got != tc.want {
+			if got := composerHoldsOnlyPayload(styled, composerDrawing{text: tc.payload}); got != tc.want {
 				t.Fatalf("composerHoldsOnlyPayload = %v, want %v", got, tc.want)
 			}
 		})

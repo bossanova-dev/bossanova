@@ -178,7 +178,7 @@ func TestSentence_TicketExample(t *testing.T) {
 		{At: clock(23, 27), Class: FailureAuthExpired},
 	}
 	want := "Resumed automatically at 23:17, 23:19 and 23:27; every attempt got the same 401, " +
-		"so the factory stopped retrying. Run claude /login on mac-mini, then press r."
+		"so automatic retries stopped. Run claude /login on mac-mini, then press r."
 	if got := Sentence(attempts, "mac-mini", time.UTC); got != want {
 		t.Fatalf("Sentence =\n%q\nwant\n%q", got, want)
 	}
@@ -196,7 +196,7 @@ func TestSentence_Variants(t *testing.T) {
 		{
 			name:     "single disk-full attempt",
 			attempts: []Attempt{{At: clock(10, 5), Class: FailureDiskFull}},
-			want:     "Resumed automatically at 10:05; the attempt got a disk-full error, so the factory stopped retrying. Free disk space on host1, then press r.",
+			want:     "Resumed automatically at 10:05; the attempt got a disk-full error, so automatic retries stopped. Free disk space on host1, then press r.",
 		},
 		{
 			name: "mixed classes name the last",
@@ -204,13 +204,13 @@ func TestSentence_Variants(t *testing.T) {
 				{At: clock(10, 5), Class: FailureCrash},
 				{At: clock(10, 7), Class: FailureUnknown},
 			},
-			want: "Resumed automatically at 10:05 and 10:07; the last attempt got an unexplained failure, so the factory stopped retrying. Open the failed chat, then press r.",
+			want: "Resumed automatically at 10:05 and 10:07; the last attempt got an unexplained failure, so automatic retries stopped. Open the failed chat, then press r.",
 		},
 		{
 			name:     "revoked token asks for a login and honours loc",
 			attempts: []Attempt{{At: clock(1, 0), Class: FailureTokenRevoked}, {At: clock(1, 2), Class: FailureTokenRevoked}},
 			loc:      tokyo,
-			want:     "Resumed automatically at 10:00 and 10:02; every attempt got the same revoked-token error, so the factory stopped retrying. Run claude /login on host1, then press r.",
+			want:     "Resumed automatically at 10:00 and 10:02; every attempt got the same revoked-token error, so automatic retries stopped. Run claude /login on host1, then press r.",
 		},
 	}
 	for _, tc := range tests {

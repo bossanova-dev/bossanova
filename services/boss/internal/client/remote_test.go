@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -581,19 +583,21 @@ func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
 	}
 }
 
-// TestRemoteClient_DismissSessionAlertIsLocalOnly pins the refusal: the
-// dismissed key lives in the daemon's database and the orchestrator has no
-// proxy for it, so the remote client must say so rather than pretend.
-func TestRemoteClient_DismissSessionAlertIsLocalOnly(t *testing.T) {
+// TestRemoteClient_DismissSessionAlertRelaysProxyRefusal pins that a dismiss
+// goes to bosso's proxy and that the daemon's refusal comes back unchanged.
+func TestRemoteClient_DismissSessionAlertRelaysProxyRefusal(t *testing.T) {
 	t.Parallel()
-	c, _ := newTestRemote(t)
-
-	sess, err := c.DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired")
+	fake := &fakeAttentionOrchestrator{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("alert changed"))}
+	sess, err := newAttentionRemote(t, fake).DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired")
 	if sess != nil {
 		t.Errorf("DismissSessionAlert() session = %v, want nil", sess)
 	}
-	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
-		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
+	var ce *connect.Error
+	if !errors.As(err, &ce) || ce.Code() != connect.CodeFailedPrecondition || ce.Message() != "alert changed" {
+		t.Fatalf("err = %v, want the proxy's FailedPrecondition refusal unchanged", err)
+	}
+	if !proto.Equal(fake.dismissReq, &pb.ProxyDismissSessionAlertRequest{Id: "sess-1", AlertKey: "resume:auth_expired"}) {
+		t.Fatalf("dismiss request = %v", fake.dismissReq)
 	}
 }
 
@@ -864,5 +868,121 @@ func assertRemoteCronFieldsCopied(t *testing.T, source, got protoreflect.Message
 		if source.Has(sf) != got.Has(gf) || source.Get(sf).Interface() != got.Get(gf).Interface() {
 			t.Fatalf("field %s = %v (set %v), want %v (set %v)", sf.Name(), got.Get(gf), got.Has(gf), source.Get(sf), source.Has(sf))
 		}
+	}
+}
+
+// fakeAttentionOrchestrator answers the attention-action proxies: with err
+// when set, otherwise with the canned merge answer.
+type fakeAttentionOrchestrator struct {
+	bossanovav1connect.UnimplementedOrchestratorServiceHandler
+	err        error
+	mergeReq   *pb.ProxyOperatorMergeSessionRequest
+	mergeResp  *pb.ProxyOperatorMergeSessionResponse
+	dismissReq *pb.ProxyDismissSessionAlertRequest
+	resumeReq  *pb.ProxyResumeSessionRunRequest
+}
+
+func (f *fakeAttentionOrchestrator) ProxyOperatorMergeSession(_ context.Context, req *connect.Request[pb.ProxyOperatorMergeSessionRequest]) (*connect.Response[pb.ProxyOperatorMergeSessionResponse], error) {
+	f.mergeReq = req.Msg
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(f.mergeResp), nil
+}
+
+func (f *fakeAttentionOrchestrator) ProxyDismissSessionAlert(_ context.Context, req *connect.Request[pb.ProxyDismissSessionAlertRequest]) (*connect.Response[pb.ProxyDismissSessionAlertResponse], error) {
+	f.dismissReq = req.Msg
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(&pb.ProxyDismissSessionAlertResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeAttentionOrchestrator) ProxyResumeSessionRun(_ context.Context, req *connect.Request[pb.ProxyResumeSessionRunRequest]) (*connect.Response[pb.ProxyResumeSessionRunResponse], error) {
+	f.resumeReq = req.Msg
+	return connect.NewResponse(&pb.ProxyResumeSessionRunResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func newAttentionRemote(t *testing.T, fake *fakeAttentionOrchestrator) *RemoteClient {
+	t.Helper()
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return NewRemote(srv.URL, "tok")
+}
+
+func TestRemoteClient_OperatorMergeSessionProxiesPinnedMerge(t *testing.T) {
+	head := strings.Repeat("d", 40)
+	answer := &pb.ProxyOperatorMergeSessionResponse{
+		IsMerged: true, Session: &pb.Session{Id: "sess-1"}, MergeDetail: "squash",
+		Approval: &pb.VerifyApproveResult{IsApproved: true}, TrackerWrites: "permanent", TrackerWhy: "forbidden", TrackerTicket: "BOS-1",
+	}
+	fake := &fakeAttentionOrchestrator{mergeResp: answer}
+	got, err := newAttentionRemote(t, fake).OperatorMergeSession(context.Background(), "sess-1", head, true, []string{"human-review:ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReq := &pb.ProxyOperatorMergeSessionRequest{Id: "sess-1", ExpectedHeadSha: head, ShouldApprove: true, Waives: []string{"human-review:ui"}}
+	if !proto.Equal(fake.mergeReq, wantReq) {
+		t.Fatalf("request = %v, want %v", fake.mergeReq, wantReq)
+	}
+	want := &pb.OperatorMergeSessionResponse{
+		IsMerged: true, Session: answer.GetSession(), MergeDetail: "squash", Approval: answer.GetApproval(),
+		TrackerWrites: "permanent", TrackerWhy: "forbidden", TrackerTicket: "BOS-1",
+	}
+	if !proto.Equal(got, want) {
+		t.Fatalf("response = %v, want %v", got, want)
+	}
+}
+
+func TestRemoteClient_OperatorMergeSessionErrors(t *testing.T) {
+	const gate = "merge blocked: gate=ci; checks failing"
+	for _, tc := range []struct {
+		code       connect.Code
+		msg        string
+		unanswered bool
+	}{
+		// bosso stopped waiting, or lost the daemon (a drained stream included).
+		{connect.CodeDeadlineExceeded, "command timed out after 11m0s", true},
+		{connect.CodeUnavailable, "daemon disconnected before answering: stream closed", true},
+		// bossd's failures with no error code, such as GitHub refusing the merge.
+		{connect.CodeAborted, "merge PR: 405 At least 1 approving review is required", false},
+		{connect.CodeFailedPrecondition, gate, false},
+		{connect.CodeNotFound, "session not found", false},
+		{connect.CodeInvalidArgument, "expected_head_sha must be a 40-character hex commit SHA", false},
+	} {
+		t.Run(tc.code.String(), func(t *testing.T) {
+			fake := &fakeAttentionOrchestrator{err: connect.NewError(tc.code, errors.New(tc.msg))}
+			_, err := newAttentionRemote(t, fake).OperatorMergeSession(context.Background(), "sess-1", strings.Repeat("d", 40), false, nil)
+			if connect.CodeOf(err) != tc.code || !strings.Contains(err.Error(), tc.msg) {
+				t.Fatalf("err = %v, want %v carrying %q", err, tc.code, tc.msg)
+			}
+			if connect.IsWireError(err) == tc.unanswered {
+				t.Fatalf("wire error = %v, want %v: an unanswered merge must read as one bossd never answered", connect.IsWireError(err), !tc.unanswered)
+			}
+			var ce *connect.Error
+			if !tc.unanswered && (!errors.As(err, &ce) || ce.Message() != tc.msg) {
+				t.Fatalf("err = %v, want bossd's answer with its message %q unchanged", err, tc.msg)
+			}
+		})
+	}
+}
+
+func TestRemoteClient_AttentionDismissAndResumeUseProxies(t *testing.T) {
+	fake := &fakeAttentionOrchestrator{}
+	c := newAttentionRemote(t, fake)
+	if s, err := c.DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired"); err != nil || s.GetId() != "sess-1" {
+		t.Fatalf("dismiss = %v, %v", s, err)
+	}
+	if !proto.Equal(fake.dismissReq, &pb.ProxyDismissSessionAlertRequest{Id: "sess-1", AlertKey: "resume:auth_expired"}) {
+		t.Fatalf("dismiss request = %v", fake.dismissReq)
+	}
+	if s, err := c.ResumeSessionRun(context.Background(), "sess-2"); err != nil || s.GetId() != "sess-2" {
+		t.Fatalf("resume = %v, %v", s, err)
+	}
+	if fake.resumeReq.GetId() != "sess-2" {
+		t.Fatalf("resume request = %v", fake.resumeReq)
 	}
 }

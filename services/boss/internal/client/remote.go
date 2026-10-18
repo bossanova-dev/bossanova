@@ -367,8 +367,12 @@ func (c *RemoteClient) ResumeSession(ctx context.Context, id string) (*pb.Sessio
 	return resp.Msg.Session, nil
 }
 
-func (c *RemoteClient) ResumeSessionRun(context.Context, string) (*pb.Session, error) {
-	return nil, errLocalOnly("ResumeSessionRun")
+func (c *RemoteClient) ResumeSessionRun(ctx context.Context, id string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyResumeSessionRun(ctx, connect.NewRequest(&pb.ProxyResumeSessionRunRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
 }
 
 func (c *RemoteClient) RetrySession(ctx context.Context, id string) (*pb.Session, error) {
@@ -414,10 +418,27 @@ func (c *RemoteClient) ApproveSessionPR(context.Context, string, bool) (*pb.Veri
 	return nil, errLocalOnly("ApproveSessionPR")
 }
 
-// OperatorMergeSession is local-only for the same reason as ApproveSessionPR,
-// and because a head pin cannot cross the remote boundary (see MergeSession).
-func (c *RemoteClient) OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error) {
-	return nil, errLocalOnly("OperatorMergeSession")
+// OperatorMergeSession proxies the operator's merge to the owning daemon,
+// head pin included. bosso answers DeadlineExceeded when it stopped waiting,
+// and Unavailable when it lost the daemon, while bossd may still finish the
+// merge. Those come back as local errors, the same shape a local client gives a
+// call that ended without bossd's answer, so the caller waits for the outcome
+// instead of reporting a refusal. Every other error is bossd's answer.
+func (c *RemoteClient) OperatorMergeSession(ctx context.Context, id, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error) {
+	resp, err := c.rpc.ProxyOperatorMergeSession(ctx, connect.NewRequest(&pb.ProxyOperatorMergeSessionRequest{
+		Id: id, ExpectedHeadSha: head, ShouldApprove: approve, Waives: waives,
+	}))
+	if code := connect.CodeOf(err); code == connect.CodeDeadlineExceeded || code == connect.CodeUnavailable {
+		return nil, connect.NewError(code, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	r := resp.Msg
+	return &pb.OperatorMergeSessionResponse{
+		IsMerged: r.GetIsMerged(), Session: r.GetSession(), MergeDetail: r.GetMergeDetail(), Approval: r.GetApproval(),
+		TrackerWrites: r.GetTrackerWrites(), TrackerWhy: r.GetTrackerWhy(), TrackerTicket: r.GetTrackerTicket(),
+	}, nil
 }
 
 func (c *RemoteClient) RemoveSession(ctx context.Context, id string) error {
@@ -465,10 +486,14 @@ func (c *RemoteClient) SetSessionTracker(context.Context, string, string) (*pb.S
 // the orchestrator.
 func (c *RemoteClient) CanMoveSession() bool { return false }
 
-// DismissSessionAlert has no orchestrator proxy: the dismissed key lives in the
-// daemon's database and the hosted API does not expose it.
-func (c *RemoteClient) DismissSessionAlert(context.Context, string, string) (*pb.Session, error) {
-	return nil, errLocalOnly("DismissSessionAlert")
+// DismissSessionAlert dismisses the alert on the owning daemon through bosso,
+// which relays the daemon's answer.
+func (c *RemoteClient) DismissSessionAlert(ctx context.Context, id, alertKey string) (*pb.Session, error) {
+	resp, err := c.rpc.ProxyDismissSessionAlert(ctx, connect.NewRequest(&pb.ProxyDismissSessionAlertRequest{Id: id, AlertKey: alertKey}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetSession(), nil
 }
 
 // LinkSessionPR leaves WorktreeBranch empty: the orchestrator proxy relays only

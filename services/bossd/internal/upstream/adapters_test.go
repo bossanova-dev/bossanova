@@ -14,6 +14,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -22,6 +23,7 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
+	lastOperatorMergeReq       *pb.OperatorMergeSessionRequest
 	lastDismissReq             *pb.DismissSessionAlertRequest
 	lastResumeRunReq           *pb.ResumeSessionRunRequest
 	lastUpdateRepo             *pb.UpdateRepoRequest
@@ -2911,4 +2913,45 @@ func TestCommandHandlerAdapter_AttentionActions(t *testing.T) {
 			})
 		})
 	}
+}
+
+func (f *fakeSessionCommandServer) OperatorMergeSession(_ context.Context, req *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
+	f.lastOperatorMergeReq = req.Msg
+	return connect.NewResponse(&pb.OperatorMergeSessionResponse{IsMerged: true, Session: &pb.Session{Id: req.Msg.GetId()}, TrackerWrites: "ok"}), nil
+}
+func (e *errCommandServer) OperatorMergeSession(context.Context, *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error) {
+	return nil, e.err
+}
+
+func TestCommandHandlerAdapter_OperatorMergeSession(t *testing.T) {
+	req := &pb.OperatorMergeSessionRequest{Id: "merge-session", ExpectedHeadSha: strings.Repeat("b", 40), ShouldApprove: true, Waives: []string{"human-review:ui"}}
+	t.Run("forwards request and returns the daemon's answer", func(t *testing.T) {
+		fake := &fakeSessionCommandServer{}
+		resp, err := (&CommandHandlerAdapter{Commands: fake}).OperatorMergeSession(context.Background(), req)
+		if err != nil || !resp.GetIsMerged() || resp.GetSession().GetId() != "merge-session" || resp.GetTrackerWrites() != "ok" {
+			t.Fatalf("resp = %v, err = %v", resp, err)
+		}
+		if !proto.Equal(fake.lastOperatorMergeReq, req) {
+			t.Fatalf("request = %v, want %v", fake.lastOperatorMergeReq, req)
+		}
+	})
+	t.Run("preserves daemon error", func(t *testing.T) {
+		refusal := connect.NewError(connect.CodeFailedPrecondition, errors.New("HEAD_MISMATCH"))
+		_, err := (&CommandHandlerAdapter{Commands: &errCommandServer{err: refusal}}).OperatorMergeSession(context.Background(), req)
+		if !errors.Is(err, refusal) || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("empty session rejected", func(t *testing.T) {
+		_, err := (&CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}).OperatorMergeSession(context.Background(), &pb.OperatorMergeSessionRequest{})
+		if err == nil || !strings.Contains(err.Error(), "session_id required") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("missing server rejected", func(t *testing.T) {
+		_, err := (&CommandHandlerAdapter{}).OperatorMergeSession(context.Background(), req)
+		if err == nil || !strings.Contains(err.Error(), "command server not wired") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }

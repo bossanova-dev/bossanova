@@ -212,14 +212,14 @@ func TestHomeAttentionFooterAndCursor(t *testing.T) {
 	h.sessions = fixtures.AttentionSessions()
 	h.buildTableRows()
 	left, _, _ := h.sessionTableFooterActions()
-	if want := []string{"[n]ew session", "[enter] select", "[/] filter"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[enter] select", "[/] search"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("fix footer=%v", left)
 	}
 	row, _ := h.tableCursorForSessionID("attention-0")
 	h.table.SetCursor(row)
 	h.buildTableRows()
 	left, _, _ = h.sessionTableFooterActions()
-	if want := []string{"[n]ew session", "[enter] select", "[v] video", "[m] merge", "[/] filter"}; !reflect.DeepEqual(left, want) {
+	if want := []string{"[n]ew session", "[enter] select", "[v] video", "[m] merge", "[/] search"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("review footer=%v", left)
 	}
 

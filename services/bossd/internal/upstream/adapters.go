@@ -161,6 +161,7 @@ type AutomationToggler interface {
 type SessionCommandServer interface {
 	DismissSessionAlert(context.Context, *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error)
 	ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error)
+	OperatorMergeSession(context.Context, *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
 	SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
@@ -422,6 +423,22 @@ func (a *CommandHandlerAdapter) ResumeSessionRun(ctx context.Context, sessionID 
 		return nil, fmt.Errorf("resume session run: %w", err)
 	}
 	return resp.Msg.GetSession(), nil
+}
+
+// OperatorMergeSession runs the daemon's own operator merge, so a merge from
+// the web passes the same gate, approval and head pin as one from the TUI.
+func (a *CommandHandlerAdapter) OperatorMergeSession(ctx context.Context, req *pb.OperatorMergeSessionRequest) (*pb.OperatorMergeSessionResponse, error) {
+	if req.GetId() == "" {
+		return nil, errors.New("operator_merge_session: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("operator_merge_session: command server not wired")
+	}
+	resp, err := a.Commands.OperatorMergeSession(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("operator merge session: %w", err)
+	}
+	return resp.Msg, nil
 }
 
 // MergeSession implements SessionCommandHandler.MergeSession.

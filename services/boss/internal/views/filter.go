@@ -32,7 +32,7 @@ type listFilter struct {
 func newListFilter() listFilter {
 	ti := textinput.New()
 	ti.Prompt = "/"
-	ti.Placeholder = "filter"
+	ti.Placeholder = "search"
 	ti.SetWidth(60)
 
 	styles := textinput.DefaultDarkStyles()
@@ -170,5 +170,5 @@ func (f listFilter) Height() int {
 
 // ActionBar returns the action-bar group to show while the input is focused.
 func (f listFilter) ActionBar() []string {
-	return []string{"type to filter", "[↑↓] move", "[enter] accept", "[esc] clear"}
+	return []string{"type to search", "[↑↓] move", "[enter] accept", "[esc] clear"}
 }

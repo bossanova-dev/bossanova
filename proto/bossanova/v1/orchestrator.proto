@@ -280,6 +280,10 @@ service OrchestratorService {
   rpc ProxyResumeSessionRun(ProxyResumeSessionRunRequest) returns (ProxyResumeSessionRunResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
+  // ProxyOperatorMergeSession forwards DaemonService.OperatorMergeSession to the owning daemon.
+  rpc ProxyOperatorMergeSession(ProxyOperatorMergeSessionRequest) returns (ProxyOperatorMergeSessionResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
   rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
@@ -3033,3 +3037,22 @@ message ProxyDismissSessionAlertRequest { string id = 1; string alert_key = 2; }
 message ProxyDismissSessionAlertResponse { Session session = 1; }
 message ProxyResumeSessionRunRequest { string id = 1; }
 message ProxyResumeSessionRunResponse { Session session = 1; }
+
+// ProxyOperatorMergeSession mirrors OperatorMergeSession's request and response
+// field for field. Additive, so no version bump:
+// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+message ProxyOperatorMergeSessionRequest {
+  string id = 1;
+  string expected_head_sha = 2;
+  bool should_approve = 3;
+  repeated string waives = 4;
+}
+message ProxyOperatorMergeSessionResponse {
+  bool is_merged = 1;
+  Session session = 2;
+  string merge_detail = 3;
+  VerifyApproveResult approval = 4;
+  string tracker_writes = 5;
+  string tracker_why = 6;
+  string tracker_ticket = 7;
+}

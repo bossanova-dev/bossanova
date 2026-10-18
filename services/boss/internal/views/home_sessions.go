@@ -370,7 +370,7 @@ func moveSessionCmd(c client.BossClient, ctx context.Context, sessionID string, 
 // asking keeps a held-down key from issuing a round trip per repeat.
 func (h HomeModel) moveSelectedSession(direction pb.MoveDirection) (HomeModel, tea.Cmd) {
 	if h.filter.Engaged() {
-		h.status, h.statusErr = "Clear the filter to reorder sessions", true
+		h.status, h.statusErr = "Clear the search to reorder sessions", true
 		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}

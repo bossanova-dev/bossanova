@@ -12,10 +12,13 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type fakeCommandHandler struct {
+	operatorMergeReq        *pb.OperatorMergeSessionRequest
+	operatorMergeResp       *pb.OperatorMergeSessionResponse
 	dismissSessionID        string
 	dismissAlertKey         string
 	resumeRunSessionID      string
@@ -3288,4 +3291,85 @@ func TestDispatchCommand_AttentionActions(t *testing.T) {
 			})
 		})
 	}
+}
+
+func (f *fakeCommandHandler) OperatorMergeSession(_ context.Context, req *pb.OperatorMergeSessionRequest) (*pb.OperatorMergeSessionResponse, error) {
+	f.operatorMergeReq = req
+	if f.returnErr != nil {
+		return nil, f.returnErr
+	}
+	return f.operatorMergeResp, nil
+}
+
+func TestDispatchCommand_OperatorMergeSession(t *testing.T) {
+	command := &pb.OrchestratorCommand{CommandId: "operator-merge", Cmd: &pb.OrchestratorCommand_OperatorMergeSession{OperatorMergeSession: &pb.OperatorMergeSessionCommand{
+		SessionId:       "merge-session",
+		ExpectedHeadSha: strings.Repeat("a", 40),
+		ShouldApprove:   true,
+		Waives:          []string{"human-review:ui", "no-receipt"},
+	}}}
+	dispatch := func(t *testing.T, h SessionCommandHandler) *pb.CommandResult {
+		t.Helper()
+		out := make(chan *pb.DaemonEvent, 1)
+		if ev := newDispatcherClient(h, nil, nil).dispatchCommand(context.Background(), command, out); ev != nil {
+			t.Fatalf("operator merge answered on the command reader: %v", ev)
+		}
+		return recvEvent(t, out).GetResult()
+	}
+	t.Run("forwards the pinned request and returns the daemon's answer", func(t *testing.T) {
+		want := &pb.OperatorMergeSessionResponse{IsMerged: true, Session: &pb.Session{Id: "merge-session"}, TrackerWrites: "ok"}
+		h := &fakeCommandHandler{operatorMergeResp: want}
+		result := dispatch(t, h)
+		if !result.GetOk() || result.GetCommandId() != "operator-merge" || !proto.Equal(result.GetOperatorMergeSession(), want) {
+			t.Fatalf("result = %v", result)
+		}
+		wantReq := &pb.OperatorMergeSessionRequest{Id: "merge-session", ExpectedHeadSha: strings.Repeat("a", 40), ShouldApprove: true, Waives: []string{"human-review:ui", "no-receipt"}}
+		if !proto.Equal(h.operatorMergeReq, wantReq) {
+			t.Fatalf("request = %v, want %v", h.operatorMergeReq, wantReq)
+		}
+		if h.mergeCalls.Load() != 0 {
+			t.Fatal("operator merge fell back to the plain merge")
+		}
+	})
+	t.Run("refused approval keeps its answer without a session", func(t *testing.T) {
+		want := &pb.OperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved"}}
+		result := dispatch(t, &fakeCommandHandler{operatorMergeResp: want})
+		if !result.GetOk() || !proto.Equal(result.GetOperatorMergeSession(), want) || result.GetSession() != nil {
+			t.Fatalf("result = %v", result)
+		}
+	})
+	// The relayed text is the daemon's own reason, without the adapter's
+	// wrapping or the RPC code, so the web and a remote TUI show what a local
+	// TUI shows.
+	for _, refusal := range []struct {
+		code connect.Code
+		msg  string
+		want pb.CommandResult_ErrorCode
+	}{
+		{connect.CodeNotFound, "session not found", pb.CommandResult_ERROR_CODE_NOT_FOUND},
+		{connect.CodeFailedPrecondition, "merge blocked: gate=ci; checks failing", pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION},
+		{connect.CodeInvalidArgument, "expected_head_sha must be a 40-character hex commit SHA", pb.CommandResult_ERROR_CODE_INVALID_ARGUMENT},
+		{connect.CodeInternal, "merge PR: 405 At least 1 approving review is required", pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+		{connect.CodeDeadlineExceeded, "approve: verify-gate timed out", pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+	} {
+		t.Run("preserves "+refusal.code.String()+" refusal", func(t *testing.T) {
+			h := &fakeCommandHandler{returnErr: fmt.Errorf("operator merge session: %w", connect.NewError(refusal.code, errors.New(refusal.msg)))}
+			result := dispatch(t, h)
+			if result.GetOk() || result.GetCommandId() != "operator-merge" || result.GetErrorCode() != refusal.want || result.GetError() != refusal.msg {
+				t.Fatalf("result = %v, want %v carrying exactly %q", result, refusal.want, refusal.msg)
+			}
+		})
+	}
+	t.Run("relays an error with no RPC code as it reads", func(t *testing.T) {
+		result := dispatch(t, &fakeCommandHandler{returnErr: errors.New("operator_merge_session: command server not wired")})
+		if result.GetOk() || result.GetError() != "operator_merge_session: command server not wired" {
+			t.Fatalf("result = %v", result)
+		}
+	})
+	t.Run("missing handler returns error", func(t *testing.T) {
+		result := newDispatcherClient(nil, nil, nil).dispatchCommand(context.Background(), command, nil).GetResult()
+		if result.GetOk() || result.GetCommandId() != "operator-merge" || !strings.Contains(result.GetError(), "command handler not wired") {
+			t.Fatalf("result = %v", result)
+		}
+	})
 }

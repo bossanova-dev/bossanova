@@ -229,6 +229,9 @@ message OrchestratorCommand {
     RunTriggerGateCommand run_trigger_gate = 65;
     DismissSessionAlertCommand dismiss_session_alert = 68;
     ResumeSessionRunCommand resume_session_run = 69;
+    // bosso → daemon: the operator's merge. Handled asynchronously. Replies
+    // CommandResult{operator_merge_session}.
+    OperatorMergeSessionCommand operator_merge_session = 70;
   }
 }
 
@@ -517,10 +520,19 @@ message CommandResult {
     LaunchTriggerSessionResult launch_trigger_session = 42;
     // RunTriggerGate returns the verdict of a trigger gate command.
     RunTriggerGateResult run_trigger_gate = 43;
+    // OperatorMergeSession returns the daemon's answer (reuses daemon.proto
+    // type). It does not reuse session = 4: a refused approval merges nothing
+    // and carries no session.
+    OperatorMergeSessionResponse operator_merge_session = 44;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
   ErrorCode error_code = 7;
+  // Set only by bosso, on the result it answers a pending command with when
+  // the daemon's stream closed first: no daemon answered, so the command may
+  // still be running there. Daemons never set it. Lets a procedure tell a lost
+  // daemon from a daemon failure that carries no error code.
+  bool is_stream_closed = 45;
 }
 
 // TokenRefresh carries a freshly-obtained WorkOS JWT. Bosso re-verifies it
@@ -1611,3 +1623,10 @@ message TerminalServerMessage {
 
 message DismissSessionAlertCommand { string session_id = 1; string alert_key = 2; }
 message ResumeSessionRunCommand { string session_id = 1; }
+
+message OperatorMergeSessionCommand {
+  string session_id = 1;
+  string expected_head_sha = 2;
+  bool should_approve = 3;
+  repeated string waives = 4;
+}

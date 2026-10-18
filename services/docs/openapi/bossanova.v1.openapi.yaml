@@ -2974,6 +2974,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyMoveSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyOperatorMergeSession:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyOperatorMergeSession
+      description: ProxyOperatorMergeSession forwards DaemonService.OperatorMergeSession to the owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyOperatorMergeSession
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyOperatorMergeSessionRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyOperatorMergeSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyPauseSession:
     post:
       tags:
@@ -6528,6 +6564,14 @@ components:
                 Populated when ok == false. Lets bosso map structured failures
                  (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
               $ref: '#/components/schemas/bossanova.v1.CommandResult.ErrorCode'
+            isStreamClosed:
+              type: boolean
+              title: is_stream_closed
+              description: |-
+                Set only by bosso, on the result it answers a pending command with when
+                 the daemon's stream closed first: no daemon answered, so the command may
+                 still be running there. Daemons never set it. Lets a procedure tell a lost
+                 daemon from a daemon failure that carries no error code.
         - oneOf:
             - type: object
               properties:
@@ -6759,6 +6803,18 @@ components:
               title: move_session
               required:
                 - moveSession
+            - type: object
+              properties:
+                operatorMergeSession:
+                  title: operator_merge_session
+                  description: |-
+                    OperatorMergeSession returns the daemon's answer (reuses daemon.proto
+                     type). It does not reuse session = 4: a refused approval merges nothing
+                     and carries no session.
+                  $ref: '#/components/schemas/bossanova.v1.OperatorMergeSessionResponse'
+              title: operator_merge_session
+              required:
+                - operatorMergeSession
             - type: object
               properties:
                 recordChat:
@@ -12367,6 +12423,25 @@ components:
       type: object
       title: NotifyStatusChangeResponse
       additionalProperties: false
+    bossanova.v1.OperatorMergeSessionCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        shouldApprove:
+          type: boolean
+          title: should_approve
+        waives:
+          type: array
+          items:
+            type: string
+          title: waives
+      title: OperatorMergeSessionCommand
+      additionalProperties: false
     bossanova.v1.OperatorMergeSessionRequest:
       type: object
       properties:
@@ -12796,6 +12871,17 @@ components:
               title: move_session
               required:
                 - moveSession
+            - type: object
+              properties:
+                operatorMergeSession:
+                  title: operator_merge_session
+                  description: |-
+                    bosso → daemon: the operator's merge. Handled asynchronously. Replies
+                     CommandResult{operator_merge_session}.
+                  $ref: '#/components/schemas/bossanova.v1.OperatorMergeSessionCommand'
+              title: operator_merge_session
+              required:
+                - operatorMergeSession
             - type: object
               properties:
                 pause:
@@ -15323,6 +15409,55 @@ components:
       description: |-
         ProxyMoveSessionResponse is the daemon's MoveSessionResponse, returned
          unchanged.
+    bossanova.v1.ProxyOperatorMergeSessionRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        shouldApprove:
+          type: boolean
+          title: should_approve
+        waives:
+          type: array
+          items:
+            type: string
+          title: waives
+      title: ProxyOperatorMergeSessionRequest
+      additionalProperties: false
+      description: |-
+        ProxyOperatorMergeSession mirrors OperatorMergeSession's request and response
+         field for field. Additive, so no version bump:
+         docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+    bossanova.v1.ProxyOperatorMergeSessionResponse:
+      type: object
+      properties:
+        isMerged:
+          type: boolean
+          title: is_merged
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+        mergeDetail:
+          type: string
+          title: merge_detail
+        approval:
+          title: approval
+          $ref: '#/components/schemas/bossanova.v1.VerifyApproveResult'
+        trackerWrites:
+          type: string
+          title: tracker_writes
+        trackerWhy:
+          type: string
+          title: tracker_why
+        trackerTicket:
+          type: string
+          title: tracker_ticket
+      title: ProxyOperatorMergeSessionResponse
+      additionalProperties: false
     bossanova.v1.ProxyPauseSessionRequest:
       type: object
       properties:

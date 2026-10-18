@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,6 +55,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchDismissSessionAlert(ctx, cmdID, cmd.GetDismissSessionAlert())
 	case *pb.OrchestratorCommand_ResumeSessionRun:
 		return c.dispatchResumeSessionRun(ctx, cmdID, cmd.GetResumeSessionRun())
+	case *pb.OrchestratorCommand_OperatorMergeSession:
+		return c.dispatchOperatorMergeSession(ctx, cmdID, cmd.GetOperatorMergeSession(), outbound)
 	case *pb.OrchestratorCommand_Transfer:
 		return c.dispatchTransfer(ctx, cmdID, cmd.GetTransfer())
 	case *pb.OrchestratorCommand_TransferConfirmed:
@@ -232,6 +235,41 @@ func (c *StreamClient) dispatchResumeSessionRun(ctx context.Context, cmdID strin
 		return commandErrCode(cmdID, err.Error(), classifyAttentionCommandError(err))
 	}
 	return commandOK(cmdID, sess)
+}
+
+// dispatchOperatorMergeSession runs off the command reader, like dispatchMerge:
+// the daemon holds an operator merge open for up to its merge ceiling.
+func (c *StreamClient) dispatchOperatorMergeSession(ctx context.Context, cmdID string, req *pb.OperatorMergeSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		resp, err := c.commandHandler.OperatorMergeSession(ctx, &pb.OperatorMergeSessionRequest{
+			Id:              req.GetSessionId(),
+			ExpectedHeadSha: req.GetExpectedHeadSha(),
+			ShouldApprove:   req.GetShouldApprove(),
+			Waives:          req.GetWaives(),
+		})
+		if err != nil {
+			return commandErrCode(cmdID, refusalText(err), classifyAttentionCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload:   &pb.CommandResult_OperatorMergeSession{OperatorMergeSession: resp},
+		}}}
+	})
+}
+
+// refusalText is the daemon's own reason for err, without the wrapping and the
+// RPC code its error string carries, so an operator on the web or a remote TUI
+// reads what a local TUI shows.
+func refusalText(err error) string {
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		return ce.Message()
+	}
+	return err.Error()
 }
 
 func (c *StreamClient) dispatchResume(ctx context.Context, cmdID string, req *pb.ResumeSessionCommand) *pb.DaemonEvent {

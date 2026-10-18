@@ -127,7 +127,7 @@ func settleUnansweredMerge(sess *pb.Session) (status string, isErr, settled bool
 	case sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 		return fmt.Sprintf("PR #%d was closed without merging", pr), true, true
 	case !sess.GetDisplayMerging():
-		return fmt.Sprintf("PR #%d did not merge", pr), true, true
+		return fmt.Sprintf("No answer came back about merging PR #%d, and it has not merged", pr), true, true
 	}
 	return "", false, false
 }

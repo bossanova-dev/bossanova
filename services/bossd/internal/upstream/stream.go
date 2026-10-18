@@ -502,6 +502,7 @@ type SessionCommandHandler interface {
 	Resume(ctx context.Context, sessionID string) (*pb.Session, error)
 	ResumeSessionRun(ctx context.Context, sessionID string) (*pb.Session, error)
 	DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error)
+	OperatorMergeSession(ctx context.Context, req *pb.OperatorMergeSessionRequest) (*pb.OperatorMergeSessionResponse, error)
 	// WakeChat brings a stopped chat's tmux+claude back to life. Returns
 	// the chosen outcome (already_live / resumed / fresh_fallback) and the
 	// persisted tmux session name. errorCode classifies any failure so

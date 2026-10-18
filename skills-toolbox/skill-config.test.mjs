@@ -61,6 +61,7 @@ import {
   githubLabelName,
   isConfiguredForRepo,
   isConfiguredForPlanning,
+  trackerReadiness,
   scanUnmappedRoleClaims,
   planContractVersion,
   planSections,
@@ -1740,6 +1741,41 @@ test('isConfiguredForPlanning: false when a required state role is missing', () 
   assert.equal(isConfiguredForRepo(missingInReview), true)
   assert.equal(isConfiguredForPlanning(missingInReview), false)
 })
+
+for (const planning of [false, true]) {
+  test(`trackerReadiness: configured tracker is ready (planning=${planning})`, () => {
+    assert.equal(trackerReadiness(configuredFixture(), { planning }), 'ready')
+  })
+
+  test(`trackerReadiness: zero-config tracker needs a team (planning=${planning})`, () => {
+    assert.equal(trackerReadiness(withTrackerDefaults(DEFAULT_CONFIG), { planning }), 'needs-team')
+  })
+
+  test(`trackerReadiness: missing server is unconfigured (planning=${planning})`, () => {
+    const config = configuredFixture()
+    delete config.trackerConfig.demo.mcpServer
+    assert.equal(trackerReadiness(config, { planning }), 'unconfigured')
+  })
+}
+
+test('trackerReadiness: bare defaults are unconfigured', () => {
+  assert.equal(trackerReadiness(DEFAULT_CONFIG), 'unconfigured')
+})
+
+test('trackerReadiness: identity without states is ready except for planning', () => {
+  const config = configuredFixture()
+  delete config.trackerConfig.demo.states
+  assert.equal(trackerReadiness(config), 'ready')
+  assert.equal(trackerReadiness(config, { planning: true }), 'unconfigured')
+})
+
+for (const role of ['unplanned', 'planned', 'inProgress', 'inReview']) {
+  test(`trackerReadiness: planning requires the ${role} state`, () => {
+    const config = configuredFixture()
+    delete config.trackerConfig.demo.states[role]
+    assert.equal(trackerReadiness(config, { planning: true }), 'unconfigured')
+  })
+}
 
 test('trackerConfigFor / publishConfigFor resolve the selected adapter, and accept an explicit one', () => {
   const cfg = configuredFixture()

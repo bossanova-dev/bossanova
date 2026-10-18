@@ -50,6 +50,10 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchPause(ctx, cmdID, cmd.GetPause())
 	case *pb.OrchestratorCommand_Resume:
 		return c.dispatchResume(ctx, cmdID, cmd.GetResume())
+	case *pb.OrchestratorCommand_DismissSessionAlert:
+		return c.dispatchDismissSessionAlert(ctx, cmdID, cmd.GetDismissSessionAlert())
+	case *pb.OrchestratorCommand_ResumeSessionRun:
+		return c.dispatchResumeSessionRun(ctx, cmdID, cmd.GetResumeSessionRun())
 	case *pb.OrchestratorCommand_Transfer:
 		return c.dispatchTransfer(ctx, cmdID, cmd.GetTransfer())
 	case *pb.OrchestratorCommand_TransferConfirmed:
@@ -204,6 +208,28 @@ func (c *StreamClient) dispatchPause(ctx context.Context, cmdID string, req *pb.
 	sess, err := c.commandHandler.Pause(ctx, req.GetSessionId())
 	if err != nil {
 		return commandErr(cmdID, err.Error())
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchDismissSessionAlert(ctx context.Context, cmdID string, req *pb.DismissSessionAlertCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.DismissSessionAlert(ctx, req.GetSessionId(), req.GetAlertKey())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyAttentionCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchResumeSessionRun(ctx context.Context, cmdID string, req *pb.ResumeSessionRunCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.ResumeSessionRun(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyAttentionCommandError(err))
 	}
 	return commandOK(cmdID, sess)
 }
@@ -803,6 +829,14 @@ func (c *StreamClient) dispatchReportChatStatus(ctx context.Context, cmdID strin
 // original code. Codes the reverse-stream protocol doesn't model collapse to
 // UNSPECIFIED, which bosso treats as CodeAborted. Mirrors the typed-code path
 // dispatchWakeChat already uses.
+// classifyAttentionCommandError preserves validation failures for the new attention commands.
+func classifyAttentionCommandError(err error) pb.CommandResult_ErrorCode {
+	if connect.CodeOf(err) == connect.CodeInvalidArgument {
+		return pb.CommandResult_ERROR_CODE_INVALID_ARGUMENT
+	}
+	return classifyCommandError(err)
+}
+
 func classifyCommandError(err error) pb.CommandResult_ErrorCode {
 	switch connect.CodeOf(err) {
 	case connect.CodeNotFound:

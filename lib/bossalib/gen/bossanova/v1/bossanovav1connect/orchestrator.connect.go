@@ -202,6 +202,12 @@ const (
 	// OrchestratorServiceProxyLinkSessionPRProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyLinkSessionPR RPC.
 	OrchestratorServiceProxyLinkSessionPRProcedure = "/bossanova.v1.OrchestratorService/ProxyLinkSessionPR"
+	// OrchestratorServiceProxyDismissSessionAlertProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDismissSessionAlert RPC.
+	OrchestratorServiceProxyDismissSessionAlertProcedure = "/bossanova.v1.OrchestratorService/ProxyDismissSessionAlert"
+	// OrchestratorServiceProxyResumeSessionRunProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyResumeSessionRun RPC.
+	OrchestratorServiceProxyResumeSessionRunProcedure = "/bossanova.v1.OrchestratorService/ProxyResumeSessionRun"
 	// OrchestratorServiceProxyUpdateChatTitleProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyUpdateChatTitle RPC.
 	OrchestratorServiceProxyUpdateChatTitleProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateChatTitle"
@@ -555,6 +561,10 @@ type OrchestratorServiceClient interface {
 	ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error)
 	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
 	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
+	// ProxyDismissSessionAlert forwards DaemonService.DismissSessionAlert to the owning daemon.
+	ProxyDismissSessionAlert(context.Context, *connect.Request[v1.ProxyDismissSessionAlertRequest]) (*connect.Response[v1.ProxyDismissSessionAlertResponse], error)
+	// ProxyResumeSessionRun forwards DaemonService.ResumeSessionRun to the owning daemon.
+	ProxyResumeSessionRun(context.Context, *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -1194,6 +1204,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyLinkSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyDismissSessionAlert: connect.NewClient[v1.ProxyDismissSessionAlertRequest, v1.ProxyDismissSessionAlertResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDismissSessionAlertProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDismissSessionAlert")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyResumeSessionRun: connect.NewClient[v1.ProxyResumeSessionRunRequest, v1.ProxyResumeSessionRunResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyResumeSessionRunProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSessionRun")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyUpdateChatTitle: connect.NewClient[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyUpdateChatTitleProcedure,
@@ -1663,6 +1685,8 @@ type orchestratorServiceClient struct {
 	proxyUpdateSession                   *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
 	proxyMoveSession                     *connect.Client[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse]
 	proxyLinkSessionPR                   *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
+	proxyDismissSessionAlert             *connect.Client[v1.ProxyDismissSessionAlertRequest, v1.ProxyDismissSessionAlertResponse]
+	proxyResumeSessionRun                *connect.Client[v1.ProxyResumeSessionRunRequest, v1.ProxyResumeSessionRunResponse]
 	proxyUpdateChatTitle                 *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
 	proxyReportChatStatus                *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
 	proxyCreateGithubCallback            *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
@@ -2014,6 +2038,16 @@ func (c *orchestratorServiceClient) ProxyMoveSession(ctx context.Context, req *c
 // ProxyLinkSessionPR calls bossanova.v1.OrchestratorService.ProxyLinkSessionPR.
 func (c *orchestratorServiceClient) ProxyLinkSessionPR(ctx context.Context, req *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error) {
 	return c.proxyLinkSessionPR.CallUnary(ctx, req)
+}
+
+// ProxyDismissSessionAlert calls bossanova.v1.OrchestratorService.ProxyDismissSessionAlert.
+func (c *orchestratorServiceClient) ProxyDismissSessionAlert(ctx context.Context, req *connect.Request[v1.ProxyDismissSessionAlertRequest]) (*connect.Response[v1.ProxyDismissSessionAlertResponse], error) {
+	return c.proxyDismissSessionAlert.CallUnary(ctx, req)
+}
+
+// ProxyResumeSessionRun calls bossanova.v1.OrchestratorService.ProxyResumeSessionRun.
+func (c *orchestratorServiceClient) ProxyResumeSessionRun(ctx context.Context, req *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error) {
+	return c.proxyResumeSessionRun.CallUnary(ctx, req)
 }
 
 // ProxyUpdateChatTitle calls bossanova.v1.OrchestratorService.ProxyUpdateChatTitle.
@@ -2505,6 +2539,10 @@ type OrchestratorServiceHandler interface {
 	ProxyMoveSession(context.Context, *connect.Request[v1.ProxyMoveSessionRequest]) (*connect.Response[v1.ProxyMoveSessionResponse], error)
 	// ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
 	ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error)
+	// ProxyDismissSessionAlert forwards DaemonService.DismissSessionAlert to the owning daemon.
+	ProxyDismissSessionAlert(context.Context, *connect.Request[v1.ProxyDismissSessionAlertRequest]) (*connect.Response[v1.ProxyDismissSessionAlertResponse], error)
+	// ProxyResumeSessionRun forwards DaemonService.ResumeSessionRun to the owning daemon.
+	ProxyResumeSessionRun(context.Context, *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -3140,6 +3178,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyLinkSessionPR")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyDismissSessionAlertHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDismissSessionAlertProcedure,
+		svc.ProxyDismissSessionAlert,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDismissSessionAlert")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyResumeSessionRunHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyResumeSessionRunProcedure,
+		svc.ProxyResumeSessionRun,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSessionRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyUpdateChatTitleHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyUpdateChatTitleProcedure,
 		svc.ProxyUpdateChatTitle,
@@ -3662,6 +3712,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyMoveSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyLinkSessionPRProcedure:
 			orchestratorServiceProxyLinkSessionPRHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDismissSessionAlertProcedure:
+			orchestratorServiceProxyDismissSessionAlertHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyResumeSessionRunProcedure:
+			orchestratorServiceProxyResumeSessionRunHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateChatTitleProcedure:
 			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyReportChatStatusProcedure:
@@ -4029,6 +4083,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyMoveSession(context.Context,
 
 func (UnimplementedOrchestratorServiceHandler) ProxyLinkSessionPR(context.Context, *connect.Request[v1.ProxyLinkSessionPRRequest]) (*connect.Response[v1.ProxyLinkSessionPRResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyLinkSessionPR is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDismissSessionAlert(context.Context, *connect.Request[v1.ProxyDismissSessionAlertRequest]) (*connect.Response[v1.ProxyDismissSessionAlertResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDismissSessionAlert is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyResumeSessionRun(context.Context, *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyResumeSessionRun is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {

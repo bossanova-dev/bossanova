@@ -14,9 +14,9 @@ import (
 // matches the latest release.
 const DefaultSnoozeDuration = 7 * 24 * time.Hour
 
-// CacheTTL is how long an upgrade-check cache entry is considered fresh. Both
-// the TUI banner and the `boss upgrade` action reuse the same window so a check
-// made by one satisfies the other without a second network call.
+// CacheTTL is how long an upgrade-check cache entry is considered fresh for the
+// passive TUI banner. An explicit `boss upgrade` always checks GitHub and reads
+// a fresh entry only when that check is rate-limited.
 const CacheTTL = 24 * time.Hour
 
 // DefaultCachePath returns the on-disk path for the upgrade-check cache, shared
@@ -101,6 +101,25 @@ func WriteCache(path string, entry CacheEntry) error {
 	}
 
 	return nil
+}
+
+// RecordCheck writes a successful check result to the cache, carrying over an
+// active snooze for the same latest version so a refresh never discards the
+// user's dismiss. It reports whether that snooze still suppresses the banner,
+// even when the write itself fails.
+func RecordCheck(path string, result CheckResult, now time.Time) (snoozed bool, err error) {
+	entry := CacheEntry{
+		CheckedAt:      now,
+		CurrentVersion: result.CurrentVersion,
+		LatestVersion:  result.LatestVersion,
+		ReleaseURL:     result.ReleaseURL,
+	}
+	if prior, ok, _ := ReadCache(path); ok && prior.Suppressed(now, result.LatestVersion) {
+		entry.SnoozedVersion = prior.SnoozedVersion
+		entry.SnoozedUntil = prior.SnoozedUntil
+		snoozed = true
+	}
+	return snoozed, WriteCache(path, entry)
 }
 
 func (e CacheEntry) Suppressed(now time.Time, latestVersion string) bool {

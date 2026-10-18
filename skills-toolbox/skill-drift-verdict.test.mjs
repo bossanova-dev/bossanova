@@ -686,7 +686,12 @@ function vendoredCopy(core) {
   const toolbox = path.join(root, 'ns', core, 'toolbox')
   mkdirSync(toolbox, { recursive: true })
   const here = path.dirname(SCRIPT_PATH)
-  for (const file of ['skill-drift-verdict.mjs', 'main-module.mjs', 'skill-extensions.mjs']) {
+  for (const file of [
+    'skill-drift-verdict.mjs',
+    'main-module.mjs',
+    'skill-extensions.mjs',
+    'verify-contract.mjs',
+  ]) {
     copyFileSync(path.join(here, file), path.join(toolbox, file))
   }
   const skills = path.join(root, 'skills')

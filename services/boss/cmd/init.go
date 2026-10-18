@@ -150,7 +150,7 @@ func initCmd() *cobra.Command {
 			if initIsTerminal() {
 				return runInitInteractive(c, dir, force, opts)
 			}
-			opts.admin = linearAdminFromEnv(os.Getenv)
+			opts.linear, opts.mapRoles = linearAdminFromEnv(os.Getenv), true
 			return runInit(c.OutOrStdout(), dir, force, opts)
 		},
 	}
@@ -177,16 +177,14 @@ func initCmd() *cobra.Command {
 	return cmd
 }
 
-// initOptions carries the tracker-team inputs. admin is nil when no Linear
-// credential is available; it also serves as the team lister when lister is
-// nil. A lister alone resolves the team without any role mapping. Tests inject
-// fakes and never reach the network.
+// initOptions carries tracker-team inputs. linear is nil without credentials;
+// mapRoles enables role mapping and requires complete team listings.
 type initOptions struct {
 	mergeExisting     bool
 	overrides         linearOverrides
 	team              string
-	lister            teamLister
-	admin             linearAdmin
+	linear            linearAdmin
+	mapRoles          bool
 	createLabels      bool
 	validateLinearKey func(context.Context, string) (string, error)
 	command           *cobra.Command
@@ -323,10 +321,7 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 	// Resolved after the refusal and before anything is encoded, so a --team that
 	// names no visible team fails with nothing on disk.
 	ctx := context.Background()
-	if opts.lister == nil && opts.admin != nil {
-		opts.lister = opts.admin
-	}
-	tracker, err := resolveInitTracker(ctx, opts)
+	tracker, err := resolveInitTracker(ctx, bridge, opts)
 	if err != nil {
 		return err
 	}
@@ -336,9 +331,9 @@ func runInit(out io.Writer, dir string, force bool, opts initOptions) error {
 	}
 	// Role mapping needs a team the listing verified. Every mapping failure is
 	// fatal and precedes the config write, so a partial mapping never lands.
-	if opts.admin != nil && tracker.teamID != "" {
+	if opts.mapRoles && tracker.teamID != "" {
 		team := linearTeam{ID: tracker.teamID, Name: tracker.team, Key: tracker.teamKey}
-		if ov, err = runLinearMapping(ctx, out, opts.admin, team, ov, opts.createLabels, opts.applied); err != nil {
+		if ov, err = runLinearMapping(ctx, out, opts.linear, team, ov, opts.createLabels, opts.applied); err != nil {
 			return fmt.Errorf("%w; nothing written", err)
 		}
 	} else if opts.createLabels {
@@ -411,52 +406,112 @@ const autoDetectStillApplies = "the skills still auto-detect the team at run tim
 // --team that a complete listing proves absent is an error; every network
 // problem degrades to guidance. With an admin client the listing feeds role
 // mapping, so a truncated listing that does not name the team fails closed.
-func resolveInitTracker(ctx context.Context, opts initOptions) (initTracker, error) {
-	flag := strings.TrimSpace(opts.team)
-	if opts.lister == nil {
-		if flag != "" {
-			return initTracker{team: flag, source: "--team, unverified", note: "team not verified (no Linear listing available); written as given, and the skills match the exact team name"}, nil
-		}
-		return initTracker{guidance: "LINEAR_API_KEY is not set, so no Linear teams were listed and no team is pinned; " + autoDetectStillApplies}, nil
+type teamListing struct {
+	teams       []linearTeam
+	hasNextPage bool
+}
+
+type teamVerdict struct {
+	Configured *bool   `json:"configured"`
+	Team       *string `json:"team"`
+	TeamKey    *string `json:"teamKey"`
+	Source     *string `json:"source"`
+	Reason     *string `json:"reason"`
+	Message    *string `json:"message"`
+}
+
+func verdictText(value *string) string {
+	if value == nil {
+		return ""
 	}
-	teams, hasNextPage, err := opts.lister.ListTeams(ctx)
+	return *value
+}
+
+// resolveListedTeam recovers the API identity from JS's canonical verdict.
+func resolveListedTeam(bridge *nodeBridge, answer string, listing *teamListing) (teamVerdict, linearTeam, bool, error) {
+	verdict, err := bridge.resolveTeam(answer, listing)
 	if err != nil {
-		class := "listing failed"
-		class = linearErrorClass(err, class)
-		if flag != "" {
-			return initTracker{team: flag, source: "--team, unverified", note: "team not verified (no Linear listing available: " + class + "); written as given, and the skills match the exact team name"}, nil
-		}
-		return initTracker{guidance: "Linear teams could not be listed (" + class + "), so no team is pinned; " + autoDetectStillApplies}, nil
+		return teamVerdict{}, linearTeam{}, false, err
 	}
-	if flag != "" {
-		for _, t := range teams {
-			if strings.EqualFold(flag, t.Name) || (t.Key != "" && strings.EqualFold(flag, t.Key)) || flag == t.ID {
-				return initTracker{team: t.Name, teamKey: t.Key, teamID: t.ID, source: "--team"}, nil
+	if *verdict.Configured && listing != nil {
+		for _, team := range listing.teams {
+			if strings.TrimSpace(team.Name) == verdictText(verdict.Team) && (verdict.TeamKey == nil || strings.TrimSpace(team.Key) == *verdict.TeamKey) {
+				return verdict, team, true, nil
 			}
 		}
-		if hasNextPage && opts.admin != nil {
-			return initTracker{}, fmt.Errorf("%w; re-run with --team naming a team among the first %d, or unset LINEAR_API_KEY; nothing written", &linearAPIError{op: "list Linear teams", class: "truncated"}, len(teams))
-		}
-		if hasNextPage {
-			// More teams exist than one page shows, so absence from this page proves
-			// nothing: trust the operator's explicit choice, flagged as unverified.
-			return initTracker{team: flag, source: "--team, unverified", note: fmt.Sprintf("team not verified (not among the first %d of more Linear teams); written as given, and the skills match the exact team name", len(teams))}, nil
-		}
-		return initTracker{}, fmt.Errorf("%w: %q (visible: %s); nothing written", errUnknownTeam, flag, teamNames(teams, false))
 	}
-	switch {
-	case hasNextPage && opts.admin != nil:
+	return verdict, linearTeam{}, false, nil
+}
+
+func resolveInitTracker(ctx context.Context, bridge *nodeBridge, opts initOptions) (initTracker, error) {
+	flag := strings.TrimSpace(opts.team)
+	var listing *teamListing
+	var listErr error
+	if opts.linear != nil {
+		teams, hasNextPage, err := opts.linear.ListTeams(ctx)
+		listErr = err
+		if err == nil {
+			listing = &teamListing{teams: teams, hasNextPage: hasNextPage}
+		}
+	}
+	verdict, team, verified, err := resolveListedTeam(bridge, flag, listing)
+	if err != nil {
+		return initTracker{}, err
+	}
+	var teams []linearTeam
+	hasNextPage := false
+	if listing != nil {
+		teams, hasNextPage = listing.teams, listing.hasNextPage
+	}
+	truncated := func() (initTracker, error) {
 		return initTracker{}, fmt.Errorf("%w; re-run with --team naming a team among the first %d, or unset LINEAR_API_KEY; nothing written", &linearAPIError{op: "list Linear teams", class: "truncated"}, len(teams))
-	case hasNextPage || len(teams) >= 2:
+	}
+	if *verdict.Configured {
+		result := initTracker{team: verdictText(verdict.Team), teamKey: verdictText(verdict.TeamKey), source: "detected"}
+		if verdictText(verdict.Source) == "flag" {
+			result.source = "--team"
+		}
+		if verified {
+			result.teamID = team.ID
+			return result, nil
+		}
+		if hasNextPage && opts.mapRoles {
+			return truncated()
+		}
+		result.source = "--team, unverified"
+		switch {
+		case hasNextPage:
+			result.note = fmt.Sprintf("team not verified (not among the first %d of more Linear teams); written as given, and the skills match the exact team name", len(teams))
+		case listErr != nil:
+			result.note = "team not verified (no Linear listing available: " + linearErrorClass(listErr, "listing failed") + "); written as given, and the skills match the exact team name"
+		default:
+			result.note = "team not verified (no Linear listing available); written as given, and the skills match the exact team name"
+		}
+		return result, nil
+	}
+	switch verdictText(verdict.Reason) {
+	case "unknown-team":
+		return initTracker{}, fmt.Errorf("%w: %q (visible: %s); nothing written", errUnknownTeam, flag, teamNames(teams, false))
+	case "ambiguous":
+		if hasNextPage && opts.mapRoles {
+			return truncated()
+		}
 		count := strconv.Itoa(len(teams))
 		if hasNextPage {
 			count = "more than " + count
 		}
 		return initTracker{guidance: fmt.Sprintf("%s Linear teams are visible (%s) — re-run with --team <name> or set trackerConfig.linear.team", count, teamNames(teams, hasNextPage))}, nil
-	case len(teams) == 1:
-		return initTracker{team: teams[0].Name, teamKey: teams[0].Key, teamID: teams[0].ID, source: "detected"}, nil
-	default:
+	case "no-teams":
 		return initTracker{guidance: "no Linear teams are visible to LINEAR_API_KEY, so no team is pinned; re-run with --team <name> or set trackerConfig.linear.team once one exists"}, nil
+	default: // teams-unlisted
+		if opts.linear == nil {
+			return initTracker{guidance: "LINEAR_API_KEY is not set, so no Linear teams were listed and no team is pinned; " + autoDetectStillApplies}, nil
+		}
+		class := "unusable listing"
+		if listErr != nil {
+			class = linearErrorClass(listErr, "listing failed")
+		}
+		return initTracker{guidance: "Linear teams could not be listed (" + class + "), so no team is pinned; " + autoDetectStillApplies}, nil
 	}
 }
 
@@ -985,6 +1040,72 @@ process.stdout.write(JSON.stringify({ configFilename: mod.CONFIG_FILENAME, detec
 	// a detector that starts emitting one is a shape to reconcile, not to accept.
 	if result.Detected.TrackerConfig != nil {
 		return bridgeResult{}, fmt.Errorf("%w: detect repository defaults: unexpected trackerConfig (output: %s)", errDetectionShape, truncate(stdout))
+	}
+	return result, nil
+}
+
+// resolveTeam delegates matching and precedence to the embedded tracker resolver.
+func (b *nodeBridge) resolveTeam(flag string, listing *teamListing) (teamVerdict, error) {
+	type wireTeam struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	}
+	type wireListing struct {
+		Teams       []wireTeam `json:"teams"`
+		HasNextPage bool       `json:"hasNextPage"`
+	}
+	var visible *wireListing
+	if listing != nil {
+		visible = &wireListing{Teams: []wireTeam{}, HasNextPage: listing.hasNextPage}
+		for _, team := range listing.teams {
+			visible.Teams = append(visible.Teams, wireTeam(team))
+		}
+	}
+	var teamFlag *string
+	if trimmed := strings.TrimSpace(flag); trimmed != "" {
+		teamFlag = &trimmed
+	}
+	facts, err := json.Marshal(struct {
+		VisibleTeams *wireListing `json:"visibleTeams"`
+		TeamFlag     *string      `json:"teamFlag"`
+	}{visible, teamFlag})
+	if err != nil {
+		return teamVerdict{}, fmt.Errorf("encode tracker team facts: %w", err)
+	}
+	script := fmt.Sprintf(`import { pathToFileURL } from 'node:url'
+const mod = await import(pathToFileURL(%s).href)
+const facts = JSON.parse(%s)
+process.stdout.write(JSON.stringify(mod.resolveTrackerTeam(mod.DEFAULT_CONFIG, { visibleTeams: facts.visibleTeams, teamFlag: facts.teamFlag, preflight: { ok: true } })))
+`, jsString(b.module), jsString(string(facts)))
+	stdout, err := b.run(script, "resolve tracker team")
+	if err != nil {
+		return teamVerdict{}, err
+	}
+	var result teamVerdict
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&result); err != nil {
+		if permissiveErr := json.Unmarshal(stdout, new(map[string]any)); permissiveErr == nil {
+			return teamVerdict{}, fmt.Errorf("%w: resolve tracker team: %v (output: %s)", errDetectionShape, err, truncate(stdout))
+		}
+		return teamVerdict{}, fmt.Errorf("%w: resolve tracker team: %v (output: %s)", errNodeBadJSON, err, truncate(stdout))
+	}
+	if dec.More() {
+		return teamVerdict{}, fmt.Errorf("%w: resolve tracker team: trailing output after the JSON result (output: %s)", errNodeBadJSON, truncate(stdout))
+	}
+	valid := result.Configured != nil && result.Message != nil
+	if valid && *result.Configured {
+		valid = result.Reason == nil && strings.TrimSpace(verdictText(result.Team)) != "" && (verdictText(result.Source) == "flag" || verdictText(result.Source) == "detected")
+	} else if valid {
+		switch verdictText(result.Reason) {
+		case "unknown-team", "ambiguous", "no-teams", "teams-unlisted":
+		default:
+			valid = false
+		}
+	}
+	if !valid {
+		return teamVerdict{}, fmt.Errorf("%w: resolve tracker team: invalid verdict (output: %s)", errDetectionShape, truncate(stdout))
 	}
 	return result, nil
 }

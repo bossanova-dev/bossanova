@@ -83,16 +83,8 @@ type linearLabel struct {
 	ID, Name, TeamID string
 }
 
-// teamLister lists the Linear teams visible to a credential. hasNextPage is
-// true when more teams exist than were returned.
-type teamLister interface {
-	ListTeams(ctx context.Context) (teams []linearTeam, hasNextPage bool, err error)
-}
-
-// linearAdmin is everything boss init asks of Linear. It widens teamLister so
-// the team-resolution path keeps accepting either.
 type linearAdmin interface {
-	teamLister
+	ListTeams(ctx context.Context) (teams []linearTeam, hasNextPage bool, err error)
 	Viewer(ctx context.Context) (linearViewer, error)
 	// ListStates returns every workflow state of a team; a truncated page is a
 	// linearAPIError of class "truncated".
@@ -462,11 +454,7 @@ func runLinearMapping(ctx context.Context, out io.Writer, admin linearAdmin, tea
 	if err != nil {
 		return explicit, err
 	}
-	labels, err := admin.FindLabels(ctx, team.ID, linearLabelLookupNames(explicit))
-	if err != nil {
-		return explicit, err
-	}
-	mapping, err := mapLinearRoles(states, labels, explicit)
+	mapping, err := planLinearRoles(ctx, admin, team, states, explicit)
 	if err != nil {
 		return explicit, err
 	}
@@ -533,4 +521,12 @@ func teamDisplay(t linearTeam) string {
 		return t.Name + " (" + t.Key + ")"
 	}
 	return t.Name
+}
+
+func planLinearRoles(ctx context.Context, admin linearAdmin, team linearTeam, states []linearState, explicit linearOverrides) (linearRoleMapping, error) {
+	labels, err := admin.FindLabels(ctx, team.ID, linearLabelLookupNames(explicit))
+	if err != nil {
+		return linearRoleMapping{}, err
+	}
+	return mapLinearRoles(states, labels, explicit)
 }

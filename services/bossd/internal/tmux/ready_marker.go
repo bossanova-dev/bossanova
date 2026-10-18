@@ -101,8 +101,15 @@ func waitForBracketedPaste(ctx context.Context, logPath string, deadline, pollIn
 // found blank are the same string, and the operator cannot tell a slow boot from
 // a session that was never there to look at.
 func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opts sendPlanOpts) error {
-	start := time.Now()
+	start := opts.attemptStart
+	if start.IsZero() {
+		start = time.Now()
+	}
 	deadline := start.Add(opts.deadline)
+	capture := c.CapturePane
+	if opts.readinessCapture != nil {
+		capture = opts.readinessCapture
+	}
 	var lastPane string
 	// Capture accounting (BOS-892). Without it a pane that was never read and a
 	// pane that was read and found blank both leave lastPane == "" and render
@@ -110,8 +117,44 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 	// still booting" and "we never successfully looked at the pane".
 	var capturesOK, capturesFailed int
 	var lastCaptureErr error
+	budgetSpent := func() error {
+		// The loop never probed this pane: nothing composer-shaped was ever
+		// drawn on it. Ask once here so a modal that renders no marker row
+		// still refuses under its own name instead of masquerading as a
+		// slow-starting agent.
+		if lastPane != "" && paneShowsModal(ctx, opts.modalDetector, lastPane) {
+			return blockedByModalErr(sessionName, lastPane)
+		}
+		// The accounting comes BEFORE the pane snapshot deliberately: the TUI
+		// renders this string through firstLine() (services/boss/internal/
+		// views/status.go), which cuts at the first newline, and a snapshot is
+		// multi-line. Anything ordered after it is invisible to the operator
+		// who most needs it.
+		//
+		// Branch on the successful-capture count, never on the emptiness of
+		// the snapshot: a successful capture can legitimately return an empty
+		// pane, which is exactly the case this diagnostic exists to keep
+		// distinguishable. Using emptiness would rebuild the original
+		// conflation one notch over.
+		elapsed := time.Since(start).Round(time.Millisecond)
+		budget := budgetText(opts)
+		// Both returns build the SAME named type, so the retry loop can
+		// recognise "this attempt merely ran out of budget" without parsing
+		// the message. The type is constructed here and nowhere else: an
+		// error minted elsewhere would be a readiness verdict the deadline
+		// never reached, and retrying on it would be wrong.
+		if capturesOK == 0 {
+			return readyMarkerTimeoutErr(sessionName, opts.readyMarker, opts.deadline, "", fmt.Sprintf(
+				"ready marker %q not seen in pane %q within %s; capture-pane: 0 ok, %d failed in %s; no capture-pane call succeeded; last capture error: %s",
+				opts.readyMarker, sessionName, budget, capturesFailed, elapsed, captureErrText(lastCaptureErr)))
+		}
+		return readyMarkerTimeoutErr(sessionName, opts.readyMarker, opts.deadline, lastPane, fmt.Sprintf(
+			"ready marker %q not seen in pane %q within %s; capture-pane: %d ok, %d failed in %s%s; last pane (truncated): %s",
+			opts.readyMarker, sessionName, budget, capturesOK, capturesFailed, elapsed,
+			lastCaptureErrClause(capturesFailed, lastCaptureErr), truncatePaneForError(lastPane)))
+	}
 	for {
-		out, err := c.CapturePane(ctx, sessionName)
+		out, err := capture(ctx, sessionName)
 		if err == nil {
 			capturesOK++
 			lastPane = out
@@ -139,43 +182,19 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 			}
 		}
 		if time.Now().After(deadline) {
-			// The loop above never probed this pane: nothing composer-shaped was
-			// ever drawn on it. Ask once here so a modal that renders no marker
-			// row still refuses under its own name instead of masquerading as a
-			// slow-starting agent.
-			if lastPane != "" && paneShowsModal(ctx, opts.modalDetector, lastPane) {
-				return blockedByModalErr(sessionName, lastPane)
-			}
-			// The accounting comes BEFORE the pane snapshot deliberately: the TUI
-			// renders this string through firstLine() (services/boss/internal/
-			// views/status.go), which cuts at the first newline, and a snapshot is
-			// multi-line. Anything ordered after it is invisible to the operator
-			// who most needs it.
-			//
-			// Branch on the successful-capture count, never on the emptiness of
-			// the snapshot: a successful capture can legitimately return an empty
-			// pane, which is exactly the case this diagnostic exists to keep
-			// distinguishable. Using emptiness would rebuild the original
-			// conflation one notch over.
-			elapsed := time.Since(start).Round(time.Millisecond)
-			budget := budgetText(opts)
-			// Both returns build the SAME named type, so the retry loop can
-			// recognise "this attempt merely ran out of budget" without parsing
-			// the message. The type is constructed here and nowhere else: an
-			// error minted above this branch would be a readiness verdict the
-			// deadline never reached, and retrying on it would be wrong.
-			if capturesOK == 0 {
-				return readyMarkerTimeoutErr(sessionName, opts.readyMarker, opts.deadline, "", fmt.Sprintf(
-					"ready marker %q not seen in pane %q within %s; capture-pane: 0 ok, %d failed in %s; no capture-pane call succeeded; last capture error: %s",
-					opts.readyMarker, sessionName, budget, capturesFailed, elapsed, captureErrText(lastCaptureErr)))
-			}
-			return readyMarkerTimeoutErr(sessionName, opts.readyMarker, opts.deadline, lastPane, fmt.Sprintf(
-				"ready marker %q not seen in pane %q within %s; capture-pane: %d ok, %d failed in %s%s; last pane (truncated): %s",
-				opts.readyMarker, sessionName, budget, capturesOK, capturesFailed, elapsed,
-				lastCaptureErrClause(capturesFailed, lastCaptureErr), truncatePaneForError(lastPane)))
+			return budgetSpent()
 		}
 		select {
 		case <-ctx.Done():
+			// A wait asleep past both deadlines wakes to whichever case the
+			// select picks. An attempt clamped inside a deadline-bound context
+			// spent its own budget first, so it reports that budget, as it
+			// would had it woken in time to check. A cancelled context is a
+			// shutdown, and says so. A single-attempt wait is never clamped and
+			// keeps the context error it has always returned.
+			if opts.retried && errors.Is(ctx.Err(), context.DeadlineExceeded) && time.Now().After(deadline) {
+				return budgetSpent()
+			}
 			return readyMarkerContextErr(sessionName, opts, ctx.Err(), capturesOK, capturesFailed,
 				time.Since(start).Round(time.Millisecond), lastCaptureErr, lastPane)
 		case <-time.After(opts.pollInterval):
@@ -440,7 +459,8 @@ func (c *Client) waitForReadyMarkerWithAttempts(ctx context.Context, sessionName
 
 		attemptOpts := opts
 		attemptOpts.retried = true
-		attemptOpts.deadline = clampAttemptDeadline(ctx, perAttemptDeadline, opts.pollInterval)
+		attemptOpts.attemptStart = time.Now()
+		attemptOpts.deadline = clampAttemptDeadline(ctx, attemptOpts.attemptStart, perAttemptDeadline, opts.pollInterval)
 		if attemptOpts.deadline < perAttemptDeadline {
 			// Remember what was asked for, so the timeout can name both numbers
 			// rather than present the shortened one as the configured one.
@@ -520,22 +540,27 @@ func (c *Client) waitForReadyMarkerWithAttempts(ctx context.Context, sessionName
 // shorter than the poll interval — which is the regime the poll interval is
 // chosen for.
 //
-// Sizing the reserve off the sleep alone is a coin flip weighted by capture
-// cost, not an outright bug, which is why it surfaced as an intermittent CI red
-// rather than a reproducible one: the clamp still won the race most of the time.
+// No reserve is wide enough on a loaded host, where the wait can sleep through
+// both deadlines. A wait that wakes past its own deadline to an expired context
+// reports its own budget anyway (waitForReadyMarker), so the reserve only
+// decides whether one more capture lands in the window.
 //
 // When less than that remains, half of what is left is used instead. That half
-// is no longer wide enough to guarantee the catch — it is simply the most that
-// can be reserved while staying strictly ahead of the context, and still enough
-// for the first, immediate capture; readyMarkerContextErr covers what slips
-// through. A context already past its deadline is left alone: there is nothing
-// to clamp to, and attempt one still runs.
-func clampAttemptDeadline(ctx context.Context, deadline, pollInterval time.Duration) time.Duration {
+// is simply the most that can be reserved while staying strictly ahead of the
+// context, and still enough for the first, immediate capture. A context already
+// past its deadline is left alone: there is nothing to clamp to, and attempt
+// one still runs.
+//
+// now is the instant the attempt's wait counts its deadline from
+// (sendPlanOpts.attemptStart). Measuring the remaining budget from any later
+// reading would let the time between the two push the attempt's deadline past
+// the context's.
+func clampAttemptDeadline(ctx context.Context, now time.Time, deadline, pollInterval time.Duration) time.Duration {
 	d, ok := ctx.Deadline()
 	if !ok {
 		return deadline
 	}
-	remaining := time.Until(d)
+	remaining := d.Sub(now)
 	if remaining <= 0 {
 		return deadline
 	}

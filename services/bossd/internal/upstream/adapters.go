@@ -159,6 +159,8 @@ type AutomationToggler interface {
 // record-chat/delete-chat command paths need. Narrow interface avoids an
 // import cycle with the server package (same pattern as ChatWaker).
 type SessionCommandServer interface {
+	DismissSessionAlert(context.Context, *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error)
+	ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error)
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
 	SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
@@ -390,6 +392,36 @@ func (a *CommandHandlerAdapter) Resume(ctx context.Context, sessionID string) (*
 		return nil, nil
 	}
 	return a.Sessions.GetSession(ctx, sessionID)
+}
+
+// DismissSessionAlert delegates alert matching and dismissal to the daemon.
+func (a *CommandHandlerAdapter) DismissSessionAlert(ctx context.Context, sessionID, alertKey string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("dismiss_session_alert: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("dismiss_session_alert: command server not wired")
+	}
+	resp, err := a.Commands.DismissSessionAlert(ctx, connect.NewRequest(&pb.DismissSessionAlertRequest{SessionId: sessionID, AlertKey: alertKey}))
+	if err != nil {
+		return nil, fmt.Errorf("dismiss session alert: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// ResumeSessionRun restarts the run through the daemon's guarded resume handler.
+func (a *CommandHandlerAdapter) ResumeSessionRun(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("resume_session_run: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("resume_session_run: command server not wired")
+	}
+	resp, err := a.Commands.ResumeSessionRun(ctx, connect.NewRequest(&pb.ResumeSessionRunRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("resume session run: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
 }
 
 // MergeSession implements SessionCommandHandler.MergeSession.

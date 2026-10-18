@@ -587,6 +587,48 @@ func TestAttentionProgressLabelMatchesChatState(t *testing.T) {
 	}
 }
 
+// TestAttentionConflictNoRepairWillTake pins madverts-core#6672: a conflicted
+// PR on an attended session still in ImplementingPlan, which the repair plugin
+// never acts on, read IN_PROGRESS "idle". It is a FIX until its agent works on
+// it; a state repair acts on keeps reading in progress.
+func TestAttentionConflictNoRepairWillTake(t *testing.T) {
+	fix, progress := pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+	for _, tc := range []struct {
+		name  string
+		state machine.State
+		chat  pb.ChatStatus
+		want  pb.AttentionKind
+	}{
+		{"implementing, agent idle", machine.ImplementingPlan, pb.ChatStatus_CHAT_STATUS_IDLE, fix},
+		{"implementing, agent working", machine.ImplementingPlan, pb.ChatStatus_CHAT_STATUS_WORKING, progress},
+		{"ready for review, repair takes it", machine.ReadyForReview, pb.ChatStatus_CHAT_STATUS_IDLE, progress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, chatID := 6672, "chat-1"
+			row := &models.Session{ID: "s", RepoID: "r", State: tc.state, PRNumber: &n, AgentSessionID: &chatID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			chats := map[string][]*models.AgentChat{"s": {{ID: "c", SessionID: "s", AgentSessionID: chatID}}}
+			display := status.NewDisplayTracker()
+			conflicted := false
+			display.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusConflict, HeadSHA: timelineHead, Mergeable: &conflicted})
+			chatStatus := status.NewTracker()
+			chatStatus.Update(chatID, tc.chat, time.Now())
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, chats, display, chatStatus)
+			s.repos = &listSessionsRepoStoreFake{repos: map[string]*models.Repo{"r": {ID: "r", DisplayName: "repo", CanAutoRepair: true}}}
+			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := onlySession(t, resp.Msg.Sessions).GetAttention()
+			if got.GetKind() != tc.want {
+				t.Fatalf("attention = %v, want kind %v", got, tc.want)
+			}
+			if tc.want == fix && got.GetSentence() != "Merge conflict" {
+				t.Fatalf("sentence = %q, want %q", got.GetSentence(), "Merge conflict")
+			}
+		})
+	}
+}
+
 func TestAttentionBlockedRunClearsWhenPRGreen(t *testing.T) {
 	mergeable := true
 	head, oldHead := timelineHead, "old"

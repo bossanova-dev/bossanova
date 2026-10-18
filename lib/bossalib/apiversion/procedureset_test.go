@@ -19,6 +19,7 @@ func TestUnaryProceduresContainingCarrier_SessionSet(t *testing.T) {
 	want := []string{
 		bossanovav1connect.OrchestratorServiceProxyArchiveSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyCloseSessionProcedure,
+		bossanovav1connect.OrchestratorServiceProxyDismissSessionAlertProcedure,
 		bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure,
 		bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure,
@@ -27,6 +28,7 @@ func TestUnaryProceduresContainingCarrier_SessionSet(t *testing.T) {
 		bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
+		bossanovav1connect.OrchestratorServiceProxyResumeSessionRunProcedure,
 		bossanovav1connect.OrchestratorServiceProxyResurrectSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyRetrySessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyRunCronJobNowProcedure,

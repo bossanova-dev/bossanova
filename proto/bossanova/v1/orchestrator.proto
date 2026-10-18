@@ -272,6 +272,14 @@ service OrchestratorService {
   rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
+  // ProxyDismissSessionAlert forwards DaemonService.DismissSessionAlert to the owning daemon.
+  rpc ProxyDismissSessionAlert(ProxyDismissSessionAlertRequest) returns (ProxyDismissSessionAlertResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
+  // ProxyResumeSessionRun forwards DaemonService.ResumeSessionRun to the owning daemon.
+  rpc ProxyResumeSessionRun(ProxyResumeSessionRunRequest) returns (ProxyResumeSessionRunResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+  }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
   rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
@@ -3019,3 +3027,9 @@ message ClaudeTurn {
   string content = 2;
   google.protobuf.Timestamp timestamp = 3;
 }
+
+// Additive attention proxies require no version bump: docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+message ProxyDismissSessionAlertRequest { string id = 1; string alert_key = 2; }
+message ProxyDismissSessionAlertResponse { Session session = 1; }
+message ProxyResumeSessionRunRequest { string id = 1; }
+message ProxyResumeSessionRunResponse { Session session = 1; }

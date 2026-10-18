@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -288,7 +289,7 @@ func TestInitInteractiveMatchesFlagRun(t *testing.T) {
 	if len(p.asked) != len(happyScript()) {
 		t.Fatalf("asked %d questions, want %d", len(p.asked), len(happyScript()))
 	}
-	for _, want := range []string{"Summary", "registered now", "Linear key:", "stored, read back and validated", "Cron jobs:", "factory-plan: created, enabled", "Left to do:", "commit .boss-skills.json"} {
+	for _, want := range []string{"Summary", "registered now", "Linear key:", "Linear key stored (read back); validated", "Cron jobs:", "cron job factory-plan created (enabled)", "Left to do:", "commit .boss-skills.json"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary lacks %q:\n%s", want, out)
 		}
@@ -313,7 +314,7 @@ func TestInitInteractiveDefaultFactoryHasFourCrons(t *testing.T) {
 	}
 	summary := out[strings.LastIndex(out, "\nSummary\n")+1:]
 	for _, name := range names {
-		if !strings.Contains(summary, "    "+name+": created") {
+		if !strings.Contains(summary, "    cron job "+name+" created") {
 			t.Errorf("summary lacks %s:\n%s", name, summary)
 		}
 	}
@@ -457,15 +458,25 @@ func TestInitInteractiveTTYOffIsTheFlagPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boss init: %v\n%s", err, got)
 	}
-	f.removeConfig()
-
-	cmd := &cobra.Command{}
-	var want bytes.Buffer
-	if err := runInit(&want, f.dir, false, initOptions{command: cmd, overrides: linearOverrides{States: map[string]string{}, Labels: map[string]string{}}, applied: &initAppliedSteps{}}); err != nil {
-		t.Fatalf("runInit: %v", err)
+	resolved, err := filepath.EvalSymlinks(f.dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got != want.String() {
-		t.Fatalf("TTY-off output differs from runInit:\ngot:\n%s\nwant:\n%s", got, want.String())
+	got = strings.ReplaceAll(got, resolved, "<DIR>")
+	got = strings.ReplaceAll(got, f.dir, "<DIR>")
+	golden := filepath.Join("testdata", "init_tty_off_golden.txt")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal([]byte(got), want) {
+			t.Fatalf("TTY-off output drifted from %s; regenerate with UPDATE_GOLDEN=1 only for an intended change:\ngot:\n%s\nwant:\n%s", golden, got, want)
+		}
 	}
 	if strings.Contains(got, "boss init: press Enter") || strings.Contains(got, "Summary") {
 		t.Fatalf("TTY-off run interviewed:\n%s", got)
@@ -642,7 +653,7 @@ func TestInitInteractiveOffersToCreateMissingLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
 	}
-	if f.linear.createCalls != 1 || !regexp.MustCompile(`Labels created:\s+agent-question\n`).MatchString(out) {
+	if f.linear.createCalls != 1 || !regexp.MustCompile(`Labels created:\s+Linear labels created: agent-question\n`).MatchString(out) {
 		t.Fatalf("create calls %d; output:\n%s", f.linear.createCalls, out)
 	}
 }
@@ -771,5 +782,29 @@ func TestInitInterruptHandlerQuitsQuietly(t *testing.T) {
 		func() { t.Error("restored without a signal") }, func(int) { t.Error("exited without a signal") })
 	if errOut.Len() != 0 {
 		t.Fatalf("printed %q", errOut.String())
+	}
+}
+
+func TestInitInteractiveTeamKeyAndUnknownReask(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint(unknown), func(t *testing.T) {
+			f := newInterviewFixture(t)
+			f.daemon()
+			script := happyScript()
+			script[3].answer = "ex"
+			if unknown {
+				script = append(script[:3], append([]scriptStep{{match: "Linear team (--team)", answer: "Nope"}}, script[3:]...)...)
+			}
+			_, out, errOut, err := f.runInterview(script)
+			if err != nil {
+				t.Fatalf("interview: %v\n%s\n%s", err, out, errOut)
+			}
+			if unknown && !strings.Contains(out, `"Nope" is not one of the listed teams.`) {
+				t.Fatalf("missing re-ask: %s", out)
+			}
+			if !strings.Contains(string(f.config()), `"Example"`) {
+				t.Fatalf("missing canonical team: %s", f.config())
+			}
+		})
 	}
 }

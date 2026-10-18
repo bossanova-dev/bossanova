@@ -94,6 +94,9 @@ func mapLinearRoles(states []linearState, labels []linearLabel, explicit linearO
 		}
 		state, ok := pickState(states, want)
 		if !ok {
+			if explicit.seededStates[role] {
+				return m, fmt.Errorf("trackerConfig.linear.states.%s in %s is %q, which names no workflow state of this team; fix or remove it, or override it with --state; available: %s", role, initConfigFilename, want, stateNames(states))
+			}
 			if flagged {
 				return m, fmt.Errorf("--state %s=%s names no workflow state of this team; available: %s", role, want, stateNames(states))
 			}

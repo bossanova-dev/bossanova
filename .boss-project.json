@@ -30,7 +30,7 @@
   "crons": [
     {
       "name": "bs-build",
-      "agent": "claude",
+      "agent": "codex",
       "prompt": "/boss-build headless",
       "schedule": "*/30 * * * *",
       "concurrencyPolicy": "allow-concurrent",
@@ -90,7 +90,7 @@
     },
     {
       "name": "bs-sentry",
-      "agent": "claude",
+      "agent": "codex",
       "prompt": "/bs-sweep-sentry --no-dry-run",
       "schedule": "10 6 * * *",
       "gateCommand": "node .claude/skills/bs-sweep-sentry/gate/gate.mjs",
@@ -99,7 +99,7 @@
     },
     {
       "name": "bs-tidy-linear",
-      "agent": "claude",
+      "agent": "codex",
       "prompt": "/bs-sweep-tidy-linear",
       "schedule": "@hourly",
       "gateCommand": "node .claude/skills/bs-sweep-tidy-linear/gate/gate.mjs",

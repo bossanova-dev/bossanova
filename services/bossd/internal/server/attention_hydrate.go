@@ -147,7 +147,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.ChatStatus = served
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
 	}
-	in.Fix = s.attentionFix(ctx, p, d, in.StateSince)
+	in.Fix = s.attentionFix(ctx, p, d, in.StateSince, in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING)
 	p.Attention = attention.Compute(in)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
@@ -260,7 +260,7 @@ func fixTargetChat(runChatID string, chats []*models.AgentChat) string {
 	return newest.AgentSessionID
 }
 
-func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDeps, since time.Time) *attention.FixFact {
+func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDeps, since time.Time, agentWorking bool) *attention.FixFact {
 	row := d.row
 	chatID := p.GetAgentSessionId()
 	target := fixTargetChat(chatID, d.chats)
@@ -344,5 +344,29 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 			return fix("merge-conflict", "Merge conflict", since)
 		}
 	}
+	// A conflict in a state the repair plugin never acts on (madverts-core#6672:
+	// an attended session still in ImplementingPlan) has no one coming for it,
+	// so it is the operator's once the session's agent is not at work on it.
+	//
+	// No dated apiversion bump: Session.attention reaches the boss TUI, which
+	// stamps its built Current but can point at a remote daemon of another
+	// version, and the web through version-skewed bosso. A down-convert back to
+	// IN_PROGRESS would restore the "idle" row that hid this conflict, which is
+	// the defect, not a contract. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && !agentWorking && !repairActsOn(row.State) {
+		return fix("merge-conflict", "Merge conflict", since)
+	}
 	return nil
+}
+
+// repairActsOn mirrors bossd-plugin-repair's isRepairableState for a
+// conflicted PR; the plugin is a separate module, so the set is duplicated.
+func repairActsOn(state machine.State) bool {
+	switch state {
+	case machine.AwaitingChecks, machine.FixingChecks, machine.GreenDraft, machine.ReadyForReview, machine.Finalizing:
+		return true
+	default:
+		return false
+	}
 }

@@ -195,32 +195,9 @@ function addDay(date) {
 
 const sorted = (xs) => [...xs].sort()
 
-/**
- * Pure evaluation over parsed trees. `mb` is the merge-base tree; `rebased` is whether base is an
- * ancestor of HEAD. Returns {verdict, target, findings}.
- */
-export function evaluate({ head, base, production, mb, rebased }) {
-  const findings = []
-  const add = (level, code, subject, action, version) =>
-    findings.push({ level, code, subject, ...(version ? { version } : {}), action })
-
-  const baseReg = new Set(base.registry)
-  const prodAhead = production.registry.filter((v) => !baseReg.has(v))
-  for (const v of prodAhead) {
-    add(
-      'info',
-      'production-ahead',
-      v,
-      'production registers a version base does not; it is left out of the served set',
-      v,
-    )
-  }
-
-  const served = new Set([...base.released, ...production.registry.filter((v) => baseReg.has(v))])
-
-  let target
+function resolveTarget(base, production, mb, served) {
   if (!served.has(base.current)) {
-    target = { action: 'reuse', version: base.current }
+    return { action: 'reuse', version: base.current }
   } else {
     const used = new Set([
       ...base.consts.values(),
@@ -230,13 +207,19 @@ export function evaluate({ head, base, production, mb, rebased }) {
     let next = addDay(base.current)
     while (used.has(next)) next = addDay(next)
     const baseReleased = new Set(base.released)
-    target = {
+    return {
       action: 'mint',
       version: next,
       recordReleased: sorted([...served].filter((v) => !baseReleased.has(v))),
     }
   }
+}
 
+function deriveLedgerContext({ head, base, production, mb, rebased }) {
+  const baseReg = new Set(base.registry)
+  const prodAhead = production.registry.filter((v) => !baseReg.has(v))
+  const served = new Set([...base.released, ...production.registry.filter((v) => baseReg.has(v))])
+  const target = resolveTarget(base, production, mb, served)
   // dropped-*: compare head against mb, plus base once the branch has been rebased onto it.
   const refRegistry = new Set([...mb.registry, ...(rebased ? base.registry : [])])
   const refReleased = new Set([...mb.released, ...(rebased ? base.released : [])])
@@ -244,93 +227,187 @@ export function evaluate({ head, base, production, mb, rebased }) {
   const headReg = new Set(head.registry)
   const headReleased = new Set(head.released)
 
+  const newOnHead = [...head.contracts]
+    .filter(([name]) => !mb.contracts.has(name) && !base.contracts.has(name))
+    .sort()
+  const minted = head.registry.filter((v) => !baseReg.has(v))
+  const unrecorded = sorted([...served].filter((v) => !headReleased.has(v)))
+  return {
+    head,
+    base,
+    production,
+    mb,
+    rebased,
+    baseReg,
+    prodAhead,
+    served,
+    target,
+    refRegistry,
+    refReleased,
+    refContracts,
+    headReg,
+    headReleased,
+    newOnHead,
+    minted,
+    unrecorded,
+  }
+}
+
+function finding(level, code, subject, action, version) {
+  return { level, code, subject, ...(version ? { version } : {}), action }
+}
+
+function productionAhead({ prodAhead }) {
+  const findings = []
+  for (const v of prodAhead) {
+    findings.push(
+      finding(
+        'info',
+        'production-ahead',
+        v,
+        'production registers a version base does not; it is left out of the served set',
+        v,
+      ),
+    )
+  }
+
+  return findings
+}
+
+function droppedVersions({ refRegistry, headReg }) {
+  const findings = []
   for (const v of sorted(refRegistry)) {
     if (!headReg.has(v)) {
-      add(
-        'error',
-        'dropped-version',
-        v,
-        'restore it; registries are append-only and a conflict resolution must union both sides',
-        v,
+      findings.push(
+        finding(
+          'error',
+          'dropped-version',
+          v,
+          'restore it; registries are append-only and a conflict resolution must union both sides',
+          v,
+        ),
       )
     }
   }
+  return findings
+}
+
+function droppedReleased({ refReleased, headReleased }) {
+  const findings = []
   for (const v of sorted(refReleased)) {
-    if (!headReleased.has(v)) add('error', 'dropped-released', v, 'restore the ledger entry', v)
+    if (!headReleased.has(v))
+      findings.push(finding('error', 'dropped-released', v, 'restore the ledger entry', v))
   }
+  return findings
+}
+
+function droppedContracts({ refContracts, head }) {
+  const findings = []
   for (const [name, v] of [...refContracts].sort()) {
     if (!head.contracts.has(name)) {
-      add(
-        'error',
-        'dropped-contract',
-        name,
-        "union both sides' ProductionChanges / gates; never take one side",
-        v,
+      findings.push(
+        finding(
+          'error',
+          'dropped-contract',
+          name,
+          "union both sides' ProductionChanges / gates; never take one side",
+          v,
+        ),
       )
     }
   }
+  return findings
+}
+
+function retargetedContracts({ head, base, mb }) {
+  const findings = []
   for (const [name, v] of [...head.contracts].sort()) {
     const shipped = base.contracts.get(name) ?? mb.contracts.get(name)
     if (shipped && shipped !== v) {
-      add(
-        'error',
-        'retargeted-contract',
-        name,
-        `restore base's version ${shipped}; a shipped contract is never re-dated`,
-        v,
+      findings.push(
+        finding(
+          'error',
+          'retargeted-contract',
+          name,
+          `restore base's version ${shipped}; a shipped contract is never re-dated`,
+          v,
+        ),
       )
     }
   }
 
-  const newOnHead = [...head.contracts]
-    .filter(([name]) => !mb.contracts.has(name) && !base.contracts.has(name))
-    .sort()
+  return findings
+}
+
+function releasedTarget({ newOnHead, served, target }) {
+  const findings = []
   for (const [name, v] of newOnHead) {
     if (served.has(v)) {
       const record = target.recordReleased?.length
         ? ` and record ${target.recordReleased.join(', ')} in ReleasedVersions`
         : ''
-      add(
-        'error',
-        'released-target',
-        name,
-        `re-target to ${target.version} (${target.action}${record}); ${v} is already served`,
-        v,
+      findings.push(
+        finding(
+          'error',
+          'released-target',
+          name,
+          `re-target to ${target.version} (${target.action}${record}); ${v} is already served`,
+          v,
+        ),
       )
     }
   }
 
-  const minted = head.registry.filter((v) => !baseReg.has(v))
+  return findings
+}
+
+function unreleasedFork({ served, base, minted }) {
+  const findings = []
   if (!served.has(base.current)) {
     for (const v of minted) {
       if (v !== base.current) {
-        add(
-          'error',
-          'unreleased-fork',
-          v,
-          `fold your contracts into ${base.current} (the open window) and delete your const`,
-          v,
+        findings.push(
+          finding(
+            'error',
+            'unreleased-fork',
+            v,
+            `fold your contracts into ${base.current} (the open window) and delete your const`,
+            v,
+          ),
         )
       }
     }
   }
-  const unrecorded = sorted([...served].filter((v) => !headReleased.has(v)))
+  return findings
+}
+
+function unrecordedRelease({ unrecorded, minted }) {
+  const findings = []
   if (unrecorded.length && minted.length) {
-    add(
-      'error',
-      'unrecorded-release',
-      unrecorded.join(', '),
-      `append ${unrecorded.map((v) => JSON.stringify(v)).join(', ')} to ReleasedVersions`,
+    findings.push(
+      finding(
+        'error',
+        'unrecorded-release',
+        unrecorded.join(', '),
+        `append ${unrecorded.map((v) => JSON.stringify(v)).join(', ')} to ReleasedVersions`,
+      ),
     )
   } else if (unrecorded.length) {
-    add(
-      'info',
-      'ledger-lag',
-      unrecorded.join(', '),
-      'informational: production serves these but ReleasedVersions does not record them yet',
+    findings.push(
+      finding(
+        'info',
+        'ledger-lag',
+        unrecorded.join(', '),
+        'informational: production serves these but ReleasedVersions does not record them yet',
+      ),
     )
   }
 
+  return findings
+}
+
+function rebaseNeeded({ rebased, base, mb, newOnHead }) {
+  const findings = []
   if (!rebased) {
     const baseNew = [...base.contracts].filter(([name]) => !mb.contracts.has(name)).sort()
     if (baseNew.length) {
@@ -342,12 +419,34 @@ export function evaluate({ head, base, production, mb, rebased }) {
       const sw = sameWindow.length
         ? `; same-window: ${sameWindow.join(', ')} — keep both sides`
         : ''
-      add('warning', 'rebase-needed', list, `rebase onto base, then re-run${sw}`)
+      findings.push(finding('warning', 'rebase-needed', list, `rebase onto base, then re-run${sw}`))
     }
   }
 
+  return findings
+}
+
+const LEDGER_RULES = Object.freeze([
+  productionAhead,
+  droppedVersions,
+  droppedReleased,
+  droppedContracts,
+  retargetedContracts,
+  releasedTarget,
+  unreleasedFork,
+  unrecordedRelease,
+  rebaseNeeded,
+])
+
+/**
+ * Pure evaluation over parsed trees. `mb` is the merge-base tree; `rebased` is whether base is an
+ * ancestor of HEAD. Returns {verdict, target, findings}.
+ */
+export function evaluate(input) {
+  const ctx = deriveLedgerContext(input)
+  const findings = LEDGER_RULES.flatMap((rule) => rule(ctx))
   const verdict = findings.some((f) => f.level === 'error') ? 'conflict' : 'clean'
-  return { verdict, target, findings }
+  return { verdict, target: ctx.target, findings }
 }
 
 // ---- git-backed tree loading ------------------------------------------------------------------

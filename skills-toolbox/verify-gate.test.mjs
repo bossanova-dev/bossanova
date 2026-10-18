@@ -35,6 +35,7 @@ import {
   approve,
   approveMarker,
   commandReader,
+  readFailureDetail,
   candidates,
   carryMarker,
   extensionsConsulted,
@@ -64,6 +65,8 @@ import {
   PARK_LABEL_SEPARATOR,
   policySurfaceHits,
   post,
+  parsePostOptions,
+  resolveEffectiveVerdict,
   readOperatorMarkers,
   resolvePriorHead,
   rearm,
@@ -3089,6 +3092,75 @@ test('post rejects malformed input before any read', async () => {
   assert.equal(w.calls.length, 0)
 })
 
+test('resolveEffectiveVerdict preserves verdicts and downgrades only exhausted defects', () => {
+  for (const [input, expected] of [
+    [
+      { verdict: 'defect', reason: 'found', repairAttempts: 1, exhaustedAfter: 2 },
+      { effective: 'defect', reason: 'found' },
+    ],
+    [
+      { verdict: 'defect', reason: 'found', repairAttempts: 2, exhaustedAfter: 2 },
+      { effective: 'human', reason: 'repair-exhausted' },
+    ],
+    [
+      { verdict: 'defect', reason: 'found', repairAttempts: null },
+      { effective: 'defect', reason: 'found' },
+    ],
+    [
+      {
+        verdict: 'human',
+        humanCodes: ['human-review:security', 'human-review:ui'],
+        reason: 'ignored',
+      },
+      { effective: 'human', reason: 'human-review:security,human-review:ui' },
+    ],
+    [
+      { verdict: 'pass', reason: 'approved', repairAttempts: 99 },
+      { effective: 'pass', reason: 'approved' },
+    ],
+    [
+      { verdict: 'wait', reason: 'stack-busy' },
+      { effective: 'wait', reason: 'stack-busy' },
+    ],
+  ])
+    assert.deepEqual(resolveEffectiveVerdict(input), expected)
+})
+
+test('parsePostOptions preserves validation order and every invalid option diagnostic', () => {
+  const valid = { verdict: 'pass', head: HEAD }
+  for (const [options, message] of [
+    [{ verdict: 'invalid', head: 'bad' }, 'post needs --head'],
+    [{ verdict: 'invalid' }, 'post --verdict must be'],
+    [{ verdict: 'human', reason: 'invalid' }, 'post --verdict human needs --reason'],
+    [{ verdict: 'human', reason: HUMAN_REASONS.join(',') }, 'post --reason set is too long'],
+    [{ verdict: 'wait' }, 'post --verdict wait needs --reason'],
+    [{ extensionRecord: 'bad' }, 'post --extension-record takes'],
+    [{ carryRecord: 'bad' }, 'post --carry-record takes'],
+    [{ policy: 'bad' }, 'post --policy takes'],
+    [{ ledger: 'bad' }, 'post --ledger takes'],
+    [{ extensionResults: 'bad' }, 'post --extension-results takes'],
+    [
+      { verdict: 'defect', findings: '/nonexistent/findings.json' },
+      'post --verdict defect needs --findings',
+    ],
+  ])
+    assert.throws(
+      () => parsePostOptions({ ...valid, ...options }),
+      (error) => error instanceof UsageError && error.message.includes(message),
+    )
+  assert.deepEqual(parsePostOptions({ ...valid, head: HEAD.toUpperCase(), pr: 7, dryRun: true }), {
+    verdict: 'pass',
+    headSha: HEAD,
+    pr: 7,
+    dryRun: true,
+    humanCodes: null,
+    record: null,
+    carryRecord: null,
+    extensionResults: undefined,
+    findings: [],
+  })
+})
+
 // ---------------------------------------------------------------------------
 // merge.
 
@@ -4800,6 +4872,67 @@ test('approve refuses a closed or merged PR and an unreadable PR or status', asy
   assert.equal((await approve({ pr: 7, repo: REPO }, deps(blind))).reason, 'status-unreadable')
 })
 
+test('approve names why the PR read failed, as gh said it, with any token redacted', async () => {
+  // delta, PR 6671: a stale GITHUB_TOKEN in the worktree .env made every gh read a 401.
+  const w = world({ statuses: parkedHuman('ledger-open') })
+  const read = (command, args, opts) =>
+    command === 'gh' && args[0] === 'pr' && args[1] === 'view'
+      ? {
+          ok: false,
+          error: 'exit-1',
+          exit: 1,
+          output: '',
+          stderr:
+            'HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login -h github.com',
+        }
+      : w.read(command, args, opts)
+  const r = await approve({ pr: 7, repo: REPO }, deps(w, { read }))
+  assert.deepEqual(
+    [r.approved, r.reason, r.detail],
+    [false, 'pr-unreadable', 'gh: HTTP 401: Bad credentials (https://api.github.com/graphql)'],
+  )
+  assert.equal(
+    readFailureDetail('gh', { error: 'exit-1', stderr: `bad token ghp_${'a'.repeat(36)} here` }),
+    'gh: bad token ghp_REDACTED here',
+  )
+  assert.equal(readFailureDetail('gh', { error: 'ENOENT', stderr: '' }), 'gh: ENOENT')
+})
+
+test('readFailureDetail redacts every GitHub token shape and leaves a commit SHA alone', () => {
+  const tok = 'a1B2'.repeat(9)
+  const hex = '0123456789abcdef0123456789abcdef01234567'
+  for (const [stderr, want] of [
+    [`bad github_pat_${'Ab9_'.repeat(20)} here`, 'bad github_pat_REDACTED here'],
+    [`MY_ghp_${tok} set`, 'MY_ghp_REDACTED set'],
+    [`tokenghs_${tok}`, 'tokenghs_REDACTED'],
+    [`ghp_${tok}_x`, 'ghp_REDACTED_x'],
+    [`Authorization: token ${hex}`, 'Authorization: token REDACTED'],
+    [`Authorization: Bearer ${hex}`, 'Authorization: Bearer REDACTED'],
+    [`GET /user?access_token=${hex}&x=1`, 'GET /user?access_token=REDACTED&x=1'],
+    [`GITHUB_TOKEN="${hex}"`, 'GITHUB_TOKEN="REDACTED"'],
+    [
+      `https://x-access-token:${hex}@github.com/o/r`,
+      'https://x-access-token:REDACTED@github.com/o/r',
+    ],
+    [`https://${hex}@github.com/o/r`, 'https://REDACTED@github.com/o/r'],
+    [`{"token":"${hex}"}`, '{"token":"REDACTED"}'],
+    [`{"access_token": "${hex}"}`, '{"access_token": "REDACTED"}'],
+    [`{'token': '${hex}'}`, `{'token': 'REDACTED'}`],
+    [`password=${hex}`, 'password=REDACTED'],
+    [`{"password":"${hex}"}`, '{"password":"REDACTED"}'],
+    [`no commit ${hex} on main`, `no commit ${hex} on main`],
+    [`{"sha":"${hex}"}`, `{"sha":"${hex}"}`],
+    [`{"head": "${hex}", "base": "${hex}"}`, `{"head": "${hex}", "base": "${hex}"}`],
+  ])
+    assert.equal(readFailureDetail('gh', { error: 'exit-1', stderr }), `gh: ${want}`, stderr)
+})
+
+test("commandReader keeps a failed command's stderr, so a refusal can say why", () => {
+  const spawn = () => ({ status: 1, stdout: '', stderr: 'HTTP 401: Bad credentials\n' })
+  const r = commandReader({ spawn })('gh', ['pr', 'view', '7', '--json', 'state'], { json: true })
+  assert.deepEqual([r.ok, r.error, r.stderr], [false, 'exit-1', 'HTTP 401: Bad credentials'])
+})
+
 test('approve: the label removal is housekeeping, so a tracker that cannot be written never refuses', async () => {
   for (const [name, w, adapter, outcome, why] of [
     [
@@ -6136,6 +6269,61 @@ test('judge and merge hold a shrinking push whose Actions workflow ran on the he
   )
 })
 
+test('judge and merge name a conflict ahead of any CI wait', async () => {
+  const absent = { priorHead: priorPayload([priorCommit([priorAction])]) }
+  const pending = { statusCheckRollup: [{ name: 'ci', status: 'IN_PROGRESS' }] }
+  for (const opts of [
+    { ...absent, pr: { mergeStateStatus: 'DIRTY' } },
+    { pr: { ...pending, mergeStateStatus: 'DIRTY' } },
+  ]) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(world(opts)))
+    assert.equal(r.verdict, 'wait')
+    assert.equal(r.reason, 'merge-state-dirty')
+    const m = world({ ...opts, statuses: verifyStatus('success', 'verified') })
+    const merged = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
+    assert.equal(merged.merged, false)
+    assert.equal(merged.verdict, 'wait')
+    assert.equal(merged.reason, 'merge-state-dirty')
+  }
+})
+
+test('judge matches a cancelled prior job to its own workflow by id, not by a shared name', async () => {
+  // Two workflow files named `CI`: the prior job's own (id 11) ended on the head before any job
+  // attached, so the other file's completed run must not supersede it.
+  const cancelled = {
+    __typename: 'CheckRun',
+    name: 'matrix.id',
+    status: 'COMPLETED',
+    conclusion: 'CANCELLED',
+    checkSuite: { workflowRun: { workflow: { name: 'CI', databaseId: 11 } } },
+  }
+  const headRuns = (ownConclusion) => [
+    {
+      workflow_runs: [
+        {
+          name: 'CI',
+          workflow_id: 11,
+          status: 'completed',
+          conclusion: ownConclusion,
+          head_sha: HEAD,
+        },
+        { name: 'CI', workflow_id: 12, status: 'completed', conclusion: 'success', head_sha: HEAD },
+      ],
+    },
+  ]
+  const priorHead = priorPayload([priorCommit([cancelled])])
+  const held = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ priorHead, headRuns: headRuns('cancelled') })),
+  )
+  assert.equal(held.reason, 'ci-absent-gate')
+  const passed = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ priorHead, headRuns: headRuns('success') })),
+  )
+  assert.equal(passed.verdict, 'pass')
+})
+
 test('judge fails closed on failed prior and head run reads', async () => {
   for (const opts of [
     { priorHead: null },
@@ -6210,6 +6398,13 @@ test('resolvePriorHead resolves complete prior sets and rejects incomplete evide
     sha: OTHER,
     contexts: [{ ...priorAction, workflowName: 'CI' }],
   })
+  const identified = {
+    ...priorAction,
+    checkSuite: { workflowRun: { workflow: { name: 'CI', databaseId: 11 } } },
+  }
+  assert.deepEqual(resolvePriorHead(priorPayload([priorCommit([identified])]), HEAD).contexts, [
+    { ...identified, workflowName: 'CI', workflowId: 11 },
+  ])
   for (const node of [
     priorCommit([], HEAD),
     priorCommit([]),

@@ -765,32 +765,45 @@ var checkUpgrade = func(ctx context.Context, current string) (upgrade.CheckResul
 	return upgrade.Checker{Token: upgrade.ResolveGitHubToken(ctx)}.Check(ctx, current)
 }
 
-// upgradeActionCachePath resolves the shared upgrade-check cache path for the
-// `boss upgrade` action so pressing [u] reuses a fresh (<24h) banner check
-// instead of spending another (often anonymous, rate-limited) API request.
-// Indirected so tests can point it at a temp file or disable it with "".
+// upgradeActionCachePath resolves the upgrade-check cache path shared with the
+// TUI banner. Indirected so tests can point it at a temp file or disable it
+// with "".
 var upgradeActionCachePath = upgrade.DefaultCachePath
 
-// freshUpgradeResultFromCache returns a CheckResult reconstructed from a fresh
-// (<CacheTTL) cache entry matching current, letting `boss upgrade` skip the
-// network call the TUI banner already made. Snooze state is intentionally
-// ignored: the user explicitly asked to upgrade. Returns ok=false when the
-// cache is disabled, missing, stale, or for a different version.
-func freshUpgradeResultFromCache(current string) (upgrade.CheckResult, bool) {
+// checkUpgradeExplicitly always queries GitHub because the user asked: a cached
+// "up to date" can predate a release by up to CacheTTL. A successful check
+// refreshes the shared cache, preserving any snooze. Only a rate-limited check
+// falls back to a fresh cache entry, and it says so. Snooze state never
+// suppresses the result. ok=false means there is no result to act on.
+func checkUpgradeExplicitly(ctx context.Context, out io.Writer, current string) (upgrade.CheckResult, bool, error) {
 	path := upgradeActionCachePath()
+	now := time.Now()
+	result, err := checkUpgrade(ctx, current)
+	if err == nil {
+		if path != "" {
+			_, _ = upgrade.RecordCheck(path, result, now)
+		}
+		return result, true, nil
+	}
+	var rlErr *upgrade.RateLimitError
+	if !errors.As(err, &rlErr) {
+		return upgrade.CheckResult{}, false, fmt.Errorf("check upgrade: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "cannot check for upgrades: %s\n", rlErr.Error())
 	if path == "" {
-		return upgrade.CheckResult{}, false
+		return upgrade.CheckResult{}, false, nil
 	}
-	entry, ok, err := upgrade.ReadFreshCache(path, current, time.Now(), upgrade.CacheTTL)
-	if err != nil || !ok {
-		return upgrade.CheckResult{}, false
+	entry, ok, readErr := upgrade.ReadFreshCache(path, current, now, upgrade.CacheTTL)
+	if readErr != nil || !ok {
+		return upgrade.CheckResult{}, false, nil
 	}
+	_, _ = fmt.Fprintf(out, "using the result cached at %s\n", entry.CheckedAt.Local().Format("2006-01-02 15:04 MST"))
 	return upgrade.CheckResult{
 		CurrentVersion: entry.CurrentVersion,
 		LatestVersion:  entry.LatestVersion,
 		ReleaseURL:     entry.ReleaseURL,
 		Available:      upgrade.CompareStableVersions(entry.CurrentVersion, entry.LatestVersion) == upgrade.CompareOlder,
-	}, true
+	}, true, nil
 }
 
 var executablePath = os.Executable
@@ -1317,18 +1330,9 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 			return nil
 		}
 
-		result, ok := freshUpgradeResultFromCache(current)
-		if !ok {
-			var err error
-			result, err = checkUpgrade(ctx, current)
-			if err != nil {
-				var rlErr *upgrade.RateLimitError
-				if errors.As(err, &rlErr) {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "cannot check for upgrades: %s\n", rlErr.Error())
-					return nil
-				}
-				return fmt.Errorf("check upgrade: %w", err)
-			}
+		result, ok, err := checkUpgradeExplicitly(ctx, cmd.OutOrStdout(), current)
+		if err != nil || !ok {
+			return err
 		}
 		if !result.Available {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "boss is up to date (%s)\n", current)

@@ -227,6 +227,8 @@ message OrchestratorCommand {
     // session is launched (BOS-1467). Handled asynchronously. Replies
     // CommandResult{run_trigger_gate}; see RunTriggerGateCommand.
     RunTriggerGateCommand run_trigger_gate = 65;
+    DismissSessionAlertCommand dismiss_session_alert = 68;
+    ResumeSessionRunCommand resume_session_run = 69;
   }
 }
 
@@ -1606,3 +1608,6 @@ message TerminalServerMessage {
     TerminalUploadResult upload_result = 5;
   }
 }
+
+message DismissSessionAlertCommand { string session_id = 1; string alert_key = 2; }
+message ResumeSessionRunCommand { string session_id = 1; }

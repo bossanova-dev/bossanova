@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -333,6 +334,52 @@ func TestInitRepoCommandUsageBeforeConfig(t *testing.T) {
 		err := c.Execute()
 		if err == nil || strings.Contains(err.Error(), "cannot access") {
 			t.Fatal("usage validation did not precede config inspection")
+		}
+	}
+}
+
+func TestInitAppliedReportsShareEveryFact(t *testing.T) {
+	steps := &initAppliedSteps{
+		Registered: true, RepoID: "repo-id",
+		LinearStored: true, LinearVerified: true, SentryStored: true,
+		LabelsCreated: []string{"bug", "planned"}, ConfigPath: ".boss-skills.json",
+		Project: []string{"create cron \"nightly\"", "update repository settings"},
+	}
+	for _, outcome := range []initCronOutcome{cronCreated, cronDisabledByPreflight, cronUpdated, cronUnchanged, cronLeftAlone} {
+		for _, enabled := range []bool{false, true} {
+			steps.Crons = append(steps.Crons, initCronStageResult{Name: string(outcome), Outcome: outcome, Enabled: enabled})
+		}
+	}
+	want := []string{
+		"repository registered with bossd (id repo-id)",
+		"Linear key stored (read back)", "Sentry credentials stored (not read back)",
+		"Linear labels created: bug, planned", "config written: .boss-skills.json",
+		"cron job created created (disabled)", "cron job created created (enabled)",
+		"cron job disabled-by-preflight created disabled (preflight failed)",
+		"cron job disabled-by-preflight created disabled (preflight failed)",
+		"cron job updated updated (disabled)", "cron job updated updated (enabled)",
+		"project config: create cron \"nightly\"", "project config: update repository settings",
+	}
+	if got := steps.applied(); !slices.Equal(got, want) {
+		t.Fatalf("applied facts changed:\ngot: %q\nwant: %q", got, want)
+	}
+	iv := &initInterview{steps: steps, repo: &pb.Repo{Id: steps.RepoID}}
+	summary, stopped := iv.summary(), steps.stoppedReport()
+	for _, fact := range steps.applied() {
+		for name, report := range map[string]string{"summary": summary, "stopped": stopped} {
+			if !strings.Contains(report, fact) {
+				t.Errorf("%s missing applied fact %q:\n%s", name, fact, report)
+			}
+		}
+	}
+	for _, fact := range []string{"cron job unchanged already matches", "cron job left-alone differs, left untouched"} {
+		if !strings.Contains(summary, fact) || strings.Contains(stopped, fact) {
+			t.Errorf("unwritten stage %q must appear only in the summary", fact)
+		}
+	}
+	for name, report := range map[string]string{"summary": summary, "stopped": stopped} {
+		if !strings.Contains(report, "created disabled (preflight failed)") || strings.Contains(report, "created (preflight failed)") {
+			t.Errorf("%s has inconsistent preflight wording:\n%s", name, report)
 		}
 	}
 }

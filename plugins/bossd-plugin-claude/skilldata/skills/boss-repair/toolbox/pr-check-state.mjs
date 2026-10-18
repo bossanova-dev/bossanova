@@ -193,6 +193,26 @@ function workflowOf(node) {
   return ''
 }
 
+// The workflow's id: `workflowId` on a prior-head context the verify gate read, `workflow_id` on a
+// REST workflow run, `workflowDatabaseId` on a `gh run list` row. Two workflow files can share a
+// `name:`, so a context is matched to head runs by id whenever both sides carry one.
+function workflowIdOf(node) {
+  for (const key of ['workflowId', 'workflow_id', 'workflowDatabaseId']) {
+    const value = node?.[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  }
+  return ''
+}
+
+function sameWorkflow(reading, run) {
+  if (reading.workflowId && run.workflowId) return reading.workflowId === run.workflowId
+  return (
+    Boolean(reading.workflow) &&
+    (reading.workflow === run.workflow || reading.workflow === run.name)
+  )
+}
+
 // normalizeRollup reads a `gh pr view --json statusCheckRollup` payload (the object or the bare
 // array). GraphQL splits the vocabulary across `status`/`conclusion` for check runs and `state` for
 // commit statuses, so both are carried through.
@@ -208,6 +228,7 @@ export function normalizeRollup(payload) {
       conclusion: node?.conclusion ?? node?.state ?? '',
       bucket: node?.bucket ?? '',
       workflow: workflowOf(node),
+      workflowId: workflowIdOf(node),
       source: 'rollup',
     }))
     .filter((entry) => entry.name !== '')
@@ -224,6 +245,7 @@ export function normalizeBuckets(payload) {
       conclusion: node?.state ?? node?.conclusion ?? '',
       bucket: node?.bucket ?? '',
       workflow: workflowOf(node),
+      workflowId: workflowIdOf(node),
       source: 'buckets',
     }))
     .filter((entry) => entry.name !== '')
@@ -240,6 +262,7 @@ export function normalizeCheckRuns(payload) {
       conclusion: node?.conclusion ?? node?.state ?? '',
       bucket: node?.bucket ?? '',
       workflow: workflowOf(node),
+      workflowId: workflowIdOf(node),
       source: 'check-runs',
     }))
     .filter((entry) => entry.name !== '')
@@ -275,6 +298,7 @@ export function normalizeWorkflowRuns(payload, headSHA = '') {
     .map((node) => ({
       name: typeof node.name === 'string' ? node.name.trim() : '',
       workflow: workflowOf(node) || (typeof node.name === 'string' ? node.name.trim() : ''),
+      workflowId: workflowIdOf(node),
       status: upper(node.status),
       conclusion: upper(node.conclusion),
       headSha: String(node.headSha ?? node.head_sha ?? '').trim(),
@@ -293,6 +317,7 @@ function mergeEntries(sources) {
     const kind = classifyEntry(entry)
     const prior = merged.get(entry.name)
     if (prior === undefined || SEVERITY.indexOf(kind) < SEVERITY.indexOf(prior.kind)) {
+      const ref = entry.workflow ? entry : prior
       // `conclusion`/`bucket` ride along because `kind` alone cannot answer whether a gate RAN:
       // NEUTRAL, STALE and SKIPPED all classify as `skipped`, and only the last means it did not
       // run. `diffCheckSets` needs that distinction to tell a lost gate from a skipped one.
@@ -301,12 +326,14 @@ function mergeEntries(sources) {
         name: entry.name,
         conclusion: entry.conclusion ?? '',
         bucket: entry.bucket ?? '',
-        // The workflow name is a property of the context, not of the winning reading, so a payload
+        // The workflow is a property of the context, not of the winning reading, so a payload
         // that carries it is never outvoted by a more severe one that does not.
-        workflow: entry.workflow || prior?.workflow || '',
+        workflow: ref?.workflow || '',
+        workflowId: ref?.workflowId || '',
       })
     } else if (!prior.workflow && entry.workflow) {
       prior.workflow = entry.workflow
+      prior.workflowId = entry.workflowId || ''
     }
   }
   return merged
@@ -327,9 +354,9 @@ export function contextNames(payload) {
   return [...new Set(entries.map((e) => e.name))]
 }
 
-// normalizeDiffSide accepts any of the three payload shapes, a bare array of context names, or an
-// already-merged entry list, so the comparison reads the same whichever the caller has to hand.
-function normalizeDiffSide(side) {
+// sideReadings is every reading a side carries, before same-named readings are merged. A bare array
+// of context names, or an already-merged entry list, comes back as entries that need no merge.
+function sideReadings(side) {
   if (Array.isArray(side) && side.every((v) => typeof v === 'string')) {
     return side
       .map((name) => name.trim())
@@ -339,14 +366,20 @@ function normalizeDiffSide(side) {
   if (Array.isArray(side) && side.every((v) => v && typeof v === 'object' && 'kind' in v)) {
     return side
   }
-  return [
-    ...mergeEntries([
-      ...normalizeRollup(side),
-      ...normalizeCheckRuns(side),
-      ...normalizeBuckets(side),
-    ]).values(),
-  ]
+  return [...normalizeRollup(side), ...normalizeCheckRuns(side), ...normalizeBuckets(side)]
 }
+
+// normalizeDiffSide accepts any of the three payload shapes, a bare array of context names, or an
+// already-merged entry list, so the comparison reads the same whichever the caller has to hand.
+function normalizeDiffSide(side) {
+  const readings = sideReadings(side)
+  return readings.every((r) => 'kind' in r) ? readings : [...mergeEntries(readings).values()]
+}
+
+// A head run proves its workflow reported every job it defines for the head only if it ended with
+// jobs attached. A run that was cancelled, failed to start, waited on approval or was skipped may
+// have ended before any job attached; a failed run that did attach jobs fails the head on its own.
+const SUPERSEDING_RUN_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL'])
 
 // Did this prior-SHA entry attach WITHOUT running? Only a conclusion that says so may be
 // discounted from `absent`. Deliberately narrower than `kind === 'skipped'`, which also swallows
@@ -559,20 +592,45 @@ export function classifyChecks(options) {
   // The prior side's own entries, for the two facts `absent` cannot carry by name alone: which
   // workflow each context belongs to, and whether it reported a result on the prior head.
   const priorEntries = new Map(priorSide == null ? [] : priorSide.map((e) => [e.name, e]))
-  const headRunWorkflows = new Set(runs.runs.flatMap((r) => [r.workflow, r.name]))
   // An empty run list cannot tell a path-filtered workflow from runs Actions has not created yet (or
   // a dropped push event), so discounting needs at least one head run as evidence the list is live.
   const notTriggered =
     runsKnown && pendingRuns.length === 0 && runs.runs.length > 0
       ? diff.absent.filter((name) => {
-          const workflow = priorEntries.get(name)?.workflow ?? ''
+          const entry = priorEntries.get(name)
           // A head run of the context's workflow that COMPLETED while the context is still missing
           // is a genuinely lost job, so only a workflow with no head run at all is discounted.
-          return workflow !== '' && !headRunWorkflows.has(workflow)
+          return Boolean(entry?.workflow) && !runs.runs.some((run) => sameWorkflow(entry, run))
+        })
+      : []
+  // A prior context that was CANCELLED never reported a verdict on that head. The usual source is a
+  // follow-up push whose concurrency group cancelled the prior run, and a dynamic-matrix job
+  // cancelled before its matrix expanded reports under its unexpanded name (`matrix.id`), which no
+  // completed run ever carries. Once the head's run of the same workflow has completed, every job
+  // that workflow defines for this head has reported, so waiting cannot bring the name back.
+  // Same-named contexts are read per workflow, not merged: a name that reported in any workflow and
+  // then vanished is a lost gate even when another workflow's job of that name was cancelled.
+  const finishedRuns = runs.runs.filter((run) => SUPERSEDING_RUN_CONCLUSIONS.has(run.conclusion))
+  const priorReadings = new Map()
+  for (const reading of priorSide == null ? [] : sideReadings(priorContexts)) {
+    priorReadings.set(reading.name, [...(priorReadings.get(reading.name) ?? []), reading])
+  }
+  const superseded =
+    runsKnown && pendingRuns.length === 0
+      ? diff.absent.filter((name) => {
+          const readings = priorReadings.get(name) ?? []
+          return (
+            readings.length > 0 &&
+            readings.every(
+              (reading) =>
+                upper(reading.conclusion) === 'CANCELLED' &&
+                finishedRuns.some((run) => sameWorkflow(reading, run)),
+            )
+          )
         })
       : []
   const structurallyAbsent = diff.absent.filter((name) => declaredStructural.has(name))
-  const discounted = new Set([...structurallyAbsent, ...notTriggered])
+  const discounted = new Set([...structurallyAbsent, ...notTriggered, ...superseded])
   const blockingAbsent = diff.absent.filter((name) => !discounted.has(name))
 
   const verdict = {
@@ -588,6 +646,7 @@ export function classifyChecks(options) {
     blockingAbsent,
     structurallyAbsent,
     notTriggered,
+    superseded,
     // Absent names that concluded SUCCESS or NEUTRAL on the prior head; `absentGateRemedy` reads
     // it to tell a check that will not re-run from one a fresh head can restore.
     reportedOnPrior: diff.absent.filter((name) => reportedOnPriorHead(priorEntries.get(name))),

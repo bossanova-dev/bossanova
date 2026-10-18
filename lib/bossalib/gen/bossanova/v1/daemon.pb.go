@@ -3648,6 +3648,10 @@ type VerifyApproveResult struct {
 	Park          string                 `protobuf:"bytes,11,opt,name=park,proto3" json:"park,omitempty"`
 	State         string                 `protobuf:"bytes,12,opt,name=state,proto3" json:"state,omitempty"`
 	SignOff       string                 `protobuf:"bytes,13,opt,name=sign_off,json=signOff,proto3" json:"sign_off,omitempty"`
+	// Why the PR read failed, as gh said it (for example "gh: HTTP 401: Bad
+	// credentials ..."), with tokens redacted. Set only when reason is
+	// "pr-unreadable"; empty for every other reason.
+	Detail        string `protobuf:"bytes,14,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3769,6 +3773,13 @@ func (x *VerifyApproveResult) GetState() string {
 func (x *VerifyApproveResult) GetSignOff() string {
 	if x != nil {
 		return x.SignOff
+	}
+	return ""
+}
+
+func (x *VerifyApproveResult) GetDetail() string {
+	if x != nil {
+		return x.Detail
 	}
 	return ""
 }
@@ -13502,7 +13513,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"is_dry_run\x18\x02 \x01(\bR\bisDryRun\"U\n" +
 	"\x18ApproveSessionPRResponse\x129\n" +
-	"\x06result\x18\x01 \x01(\v2!.bossanova.v1.VerifyApproveResultR\x06result\"\xf7\x02\n" +
+	"\x06result\x18\x01 \x01(\v2!.bossanova.v1.VerifyApproveResultR\x06result\"\x8f\x03\n" +
 	"\x13VerifyApproveResult\x12\x1f\n" +
 	"\vis_approved\x18\x01 \x01(\bR\n" +
 	"isApproved\x12\x1d\n" +
@@ -13520,7 +13531,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	" \x01(\tR\x03why\x12\x12\n" +
 	"\x04park\x18\v \x01(\tR\x04park\x12\x14\n" +
 	"\x05state\x18\f \x01(\tR\x05state\x12\x19\n" +
-	"\bsign_off\x18\r \x01(\tR\asignOff\"\x98\x01\n" +
+	"\bsign_off\x18\r \x01(\tR\asignOff\x12\x16\n" +
+	"\x06detail\x18\x0e \x01(\tR\x06detail\"\x98\x01\n" +
 	"\x1bOperatorMergeSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12*\n" +
 	"\x11expected_head_sha\x18\x02 \x01(\tR\x0fexpectedHeadSha\x12%\n" +

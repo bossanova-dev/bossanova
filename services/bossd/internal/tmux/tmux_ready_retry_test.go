@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -955,7 +956,7 @@ func TestReadyRetry_ClampedBudgetNamesBothNumbers(t *testing.T) {
 	}
 	fake := neverReadyFactory()
 	c := NewClient(WithCommandFactory(fake.factory))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	err := c.sendPlan(ctx, "boss-test-sess", "plan body", sendPlanOpts{
 		deadline:      10 * time.Second,
@@ -969,6 +970,115 @@ func TestReadyRetry_ClampedBudgetNamesBothNumbers(t *testing.T) {
 		t.Errorf("clamped budget is reported as the configured one: %v", err)
 	}
 	assertNoDestructiveTmuxCalls(t, fake)
+}
+
+// TestReadyRetry_AWaitWokenLateNamesTheDeadlineThatEndedIt covers a loaded
+// host, where the wait sleeps through its own deadline and the caller's, then
+// wakes to whichever case its select picks. A poll interval longer than the
+// test puts every wake on the context, one capture in. The capture runs in
+// process, so it returns inside the attempt's deadline however slowly the host
+// forks: a forked fake capture outlasted that deadline on a loaded runner and
+// the wait checked its budget before it ever slept.
+func TestReadyRetry_AWaitWokenLateNamesTheDeadlineThatEndedIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing-sensitive tmux test in -short; run make test-bossd for coverage")
+	}
+	booting := func(context.Context, string) (string, error) {
+		return "Welcome to Claude — still booting\n", nil
+	}
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		deadline time.Duration
+		setup    func() (context.Context, context.CancelFunc, func(context.Context, string) (string, error))
+		check    func(t *testing.T, err error)
+	}{
+		{
+			// The clamp put the attempt's deadline inside the caller's, so the
+			// attempt's own budget ran out first, and it says so.
+			name: "clamped inside the caller's deadline", attempts: 2, deadline: 10 * time.Second,
+			setup: func() (context.Context, context.CancelFunc, func(context.Context, string) (string, error)) {
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				return ctx, cancel, booting
+			},
+			check: func(t *testing.T, err error) {
+				msg := err.Error()
+				if !strings.Contains(msg, "shortened from 10s to stay inside the caller's context") || !strings.Contains(msg, "still booting") {
+					t.Errorf("the late wake did not report the clamped budget and the pane: %v", err)
+				}
+				if strings.Contains(msg, "the caller's context ended first") && !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("the error names the caller's context but does not wrap it: %v", err)
+				}
+			},
+		},
+		{
+			// Nothing clamps against a context already past its deadline, so
+			// the attempt's own budget never ran out and the context is the
+			// whole story.
+			name: "the caller's deadline already passed", attempts: 2, deadline: 10 * time.Second,
+			setup: func() (context.Context, context.CancelFunc, func(context.Context, string) (string, error)) {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				return ctx, cancel, booting
+			},
+			check: func(t *testing.T, err error) {
+				if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "within") {
+					t.Errorf("the wait reported a budget that never ran out: %v", err)
+				}
+			},
+		},
+		{
+			// A cancel is a shutdown, even once the attempt's own budget is
+			// spent. The capture arms the cancel, so it lands after the
+			// attempt's deadline however late the attempt started.
+			name: "cancelled after the attempt's deadline", attempts: 2, deadline: 50 * time.Millisecond,
+			setup: func() (context.Context, context.CancelFunc, func(context.Context, string) (string, error)) {
+				ctx, cancel := context.WithCancel(context.Background())
+				var arm sync.Once
+				return ctx, cancel, func(ctx context.Context, name string) (string, error) {
+					arm.Do(func() { time.AfterFunc(100*time.Millisecond, cancel) })
+					return booting(ctx, name)
+				}
+			},
+			check: func(t *testing.T, err error) {
+				if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), `wait for ready marker on "boss-test-sess": context canceled`) {
+					t.Errorf("the wait did not report the cancel: %v", err)
+				}
+			},
+		},
+		{
+			// The single-attempt path is never clamped, and its message is
+			// frozen: a late wake still reports the caller's context.
+			name: "a single attempt woken late", attempts: 1, deadline: 50 * time.Millisecond,
+			setup: func() (context.Context, context.CancelFunc, func(context.Context, string) (string, error)) {
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				return ctx, cancel, booting
+			},
+			check: func(t *testing.T, err error) {
+				const want = `wait for ready marker on "boss-test-sess": context deadline exceeded`
+				if err.Error() != want || !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("the single-attempt message changed: got %v, want %s", err, want)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := neverReadyFactory()
+			c := NewClient(WithCommandFactory(fake.factory))
+			ctx, cancel, capture := tc.setup()
+			defer cancel()
+			err := c.sendPlan(ctx, "boss-test-sess", "plan body", sendPlanOpts{
+				deadline:         tc.deadline,
+				pollInterval:     time.Minute,
+				readyAttempts:    tc.attempts,
+				readinessCapture: capture,
+			})
+			if err == nil {
+				t.Fatal("expected the wait to fail, got nil")
+			}
+			tc.check(t, err)
+			assertNoDestructiveTmuxCalls(t, fake)
+		})
+	}
 }
 
 // TestReadyRetry_UnclampedBudgetSaysNothingAboutClamping is the negative half:
@@ -1143,15 +1253,10 @@ func TestClampAttemptDeadlineReservesACaptureAsWellAsASleep(t *testing.T) {
 		t.Fatal("context reports no deadline; there is nothing to clamp against")
 	}
 
-	got := clampAttemptDeadline(ctx, 10*time.Second, poll)
+	now := time.Now()
+	got := clampAttemptDeadline(ctx, now, 10*time.Second, poll)
 
-	// Measured against the context's own remaining budget rather than a
-	// literal, so the assertion does not encode the microseconds spent getting
-	// here. This read happens after the call, so it under-reports the reserve
-	// the function actually took by that same drift — hence the tolerance,
-	// which is an order of magnitude below the interval being asserted.
-	const drift = time.Millisecond
-	if reserve := time.Until(d) - got; reserve < 2*poll-drift {
-		t.Errorf("clamp reserved %v of the caller's remaining budget, want at least two poll intervals (%v): one sleep is narrower than the gap between the wait's deadline checks, so the attempt's own timeout can land after the context has expired", reserve, 2*poll)
+	if reserve := d.Sub(now) - got; reserve != 2*poll {
+		t.Errorf("clamp reserved %v of the caller's remaining budget, want exactly two poll intervals (%v): one sleep is narrower than the gap between the wait's deadline checks, so the attempt's own timeout can land after the context has expired", reserve, 2*poll)
 	}
 }

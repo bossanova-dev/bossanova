@@ -97,19 +97,19 @@ BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.isConfiguredForPlanning(c)?"yes":m.isConfiguredForPlanning(c,{team:"?"})?"team":"no")}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
-# `isConfiguredForPlanning` requires the tracker identity AND the full state role map
+CONFIGURED=$(node -e 'import(require("node:url").pathToFileURL(process.env.BOSS_PLAN_TOOLBOX+"/skill-config.mjs").href).then(m=>{const c=m.loadSkillConfig({cwd:process.cwd()});process.stdout.write(m.trackerReadiness(c,{planning:true}))}).catch(e=>{process.stderr.write("boss-plan preflight: "+(e&&e.message||e)+"\n");process.stdout.write("error")})')
+# `trackerReadiness` requires the tracker identity AND the full state role map
 # (`states.{unplanned,planned,inProgress,inReview}`), so a repo configured only for a stateless
-# core self-disables cleanly ('no') instead of running with undefined state names. 'team' means
-# all of it but the team, which is resolved after the tracker preflight below.
+# core self-disables cleanly ('unconfigured') instead of running with undefined state names.
+# 'ready' includes a configured team; 'needs-team' resolves it after the tracker preflight below.
 # Distinguish a loader failure (malformed/invalid .boss-skills.json → 'error' or empty) from a
-# valid "not planning-ready" ('no'): loadSkillConfig throws a `skill-config:` error on a present
+# valid "not planning-ready" ('unconfigured'): loadSkillConfig throws a `skill-config:` error on a present
 # but broken config, so a broken config must abort loudly, never skip silently as a clean no-op.
-if [ "$CONFIGURED" != "yes" ] && [ "$CONFIGURED" != "no" ] && [ "$CONFIGURED" != "team" ]; then
+if [ "$CONFIGURED" != "ready" ] && [ "$CONFIGURED" != "unconfigured" ] && [ "$CONFIGURED" != "needs-team" ]; then
   echo "boss-plan: .boss-skills.json is present but could not be loaded (see error above) — aborting instead of skipping." >&2
   exit 1
 fi
-if [ "$CONFIGURED" = "no" ]; then
+if [ "$CONFIGURED" = "unconfigured" ]; then
   echo "boss-plan: no configured tracker in .boss-skills.json for this repo — nothing to plan here; skipping."
   exit 0
 fi
@@ -125,8 +125,8 @@ echo "run scratch: $RUN_SCRATCH"
 ```
 
 `<RUN-SCRATCH-ID>` is the suffix of the printed `run scratch:` directory; substitute it literally
-everywhere below (it is not the sentinel `RUN_ID`). A repo with no planning config is a clean no-op
-(exit 0); a present but broken config aborts.
+everywhere below (it is not the sentinel `RUN_ID`). An `unconfigured` repo is a clean no-op (exit 0);
+`ready` and `needs-team` continue. A present but broken config aborts.
 
 Report installed-skill drift (a stale record warns; an absent capability stops):
 

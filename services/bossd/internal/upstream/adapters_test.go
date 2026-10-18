@@ -22,6 +22,8 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
+	lastDismissReq             *pb.DismissSessionAlertRequest
+	lastResumeRunReq           *pb.ResumeSessionRunRequest
 	lastUpdateRepo             *pb.UpdateRepoRequest
 	lastRecordChat             *pb.RecordChatRequest
 	lastTranscriptID           string
@@ -2847,5 +2849,66 @@ func TestCommandHandlerAdapter_UpdateRepoNeverSetsTrust(t *testing.T) {
 	}
 	if fake.lastUpdateRepo.IsTrusted != nil {
 		t.Fatalf("stream UpdateRepo set IsTrusted = %v, want unset", *fake.lastUpdateRepo.IsTrusted)
+	}
+}
+
+func (f *fakeSessionCommandServer) DismissSessionAlert(_ context.Context, req *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error) {
+	f.lastDismissReq = req.Msg
+	return connect.NewResponse(&pb.DismissSessionAlertResponse{Session: &pb.Session{Id: req.Msg.SessionId}}), nil
+}
+func (f *fakeSessionCommandServer) ResumeSessionRun(_ context.Context, req *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
+	f.lastResumeRunReq = req.Msg
+	return connect.NewResponse(&pb.ResumeSessionRunResponse{Session: &pb.Session{Id: req.Msg.SessionId}}), nil
+}
+func (e *errCommandServer) DismissSessionAlert(context.Context, *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error) {
+	return nil, e.err
+}
+func (e *errCommandServer) ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error) {
+	return nil, e.err
+}
+
+func TestCommandHandlerAdapter_AttentionActions(t *testing.T) {
+	for _, action := range []string{"dismiss", "resume run"} {
+		t.Run(action, func(t *testing.T) {
+			call := func(a *CommandHandlerAdapter, sessionID string) (*pb.Session, error) {
+				if action == "dismiss" {
+					return a.DismissSessionAlert(context.Background(), sessionID, "resume:auth_expired")
+				}
+				return a.ResumeSessionRun(context.Background(), sessionID)
+			}
+			t.Run("forwards request and returns session", func(t *testing.T) {
+				fake := &fakeSessionCommandServer{}
+				session, err := call(&CommandHandlerAdapter{Commands: fake}, "attention-session")
+				if err != nil || session.GetId() != "attention-session" {
+					t.Fatalf("session = %v, err = %v", session, err)
+				}
+				if action == "dismiss" {
+					if fake.lastDismissReq.GetSessionId() != "attention-session" || fake.lastDismissReq.GetAlertKey() != "resume:auth_expired" {
+						t.Fatalf("dismiss request = %v", fake.lastDismissReq)
+					}
+				} else if fake.lastResumeRunReq.GetSessionId() != "attention-session" {
+					t.Fatalf("resume request = %v", fake.lastResumeRunReq)
+				}
+			})
+			t.Run("preserves daemon error", func(t *testing.T) {
+				refusal := connect.NewError(connect.CodeFailedPrecondition, errors.New("alert changed"))
+				_, err := call(&CommandHandlerAdapter{Commands: &errCommandServer{err: refusal}}, "attention-session")
+				if !errors.Is(err, refusal) || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("err = %v", err)
+				}
+			})
+			t.Run("empty session rejected", func(t *testing.T) {
+				_, err := call(&CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}, "")
+				if err == nil || !strings.Contains(err.Error(), "session_id required") {
+					t.Fatalf("err = %v", err)
+				}
+			})
+			t.Run("missing server rejected", func(t *testing.T) {
+				_, err := call(&CommandHandlerAdapter{}, "attention-session")
+				if err == nil || !strings.Contains(err.Error(), "command server not wired") {
+					t.Fatalf("err = %v", err)
+				}
+			})
+		})
 	}
 }

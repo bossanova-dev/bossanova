@@ -30,7 +30,7 @@ func newInitProjectFixture(t *testing.T) *initProjectFixture {
 	}
 	f := &initProjectFixture{applyFixture: newApplyFixture(t)}
 	bin := t.TempDir()
-	node := "#!/bin/sh\ncase \"$*\" in\n  *validateConfig*) printf '%s' '{\"ok\":true}' ;;\n  *) printf '%s' '{\"configFilename\":\".boss-skills.json\",\"detected\":{\"commands\":{\"build\":\"make build\"}}}' ;;\nesac\n"
+	node := "#!/bin/sh\ncase \"$*\" in\n  *resolveTrackerTeam*) printf '%s' '{\"configured\":false,\"team\":null,\"teamKey\":null,\"source\":null,\"reason\":\"teams-unlisted\",\"message\":\"not listed\"}' ;;\n  *validateConfig*) printf '%s' '{\"ok\":true}' ;;\n  *) printf '%s' '{\"configFilename\":\".boss-skills.json\",\"detected\":{\"commands\":{\"build\":\"make build\"}}}' ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "node"), []byte(node), 0o755); err != nil {
 		t.Fatal(err)
 	}

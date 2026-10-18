@@ -210,27 +210,9 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 			}
 			continue
 		}
+		// A transition watch fires only on a satisfied reading that follows an
+		// unsatisfied one, so a state that has held since arming never fires it.
 		if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
-			if e.retirer != nil && cb.Trigger == models.GithubCallbackTriggerMerged {
-				retiring, err := e.retirer.retiresMergedBaseline(ctx, cb)
-				if err != nil {
-					e.logger.Warn().Err(err).Str("callback_id", cb.ID).Msg("callback evaluator: classify merge baseline retirement failed")
-					return fmt.Errorf("classify merge baseline retirement %s: %w", cb.ID, err)
-				}
-				if retiring {
-					continue
-				}
-			}
-			if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
-				if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
-					continue
-				}
-				e.logger.Warn().Err(err).Str("callback_id", cb.ID).
-					Msg("callback evaluator: observe satisfied baseline failed")
-				return fmt.Errorf("observe satisfied callback baseline %s: %w", cb.ID, err)
-			}
-			e.logger.Info().Str("callback_id", cb.ID).Str("trigger", string(cb.Trigger)).
-				Str("repo", rp).Int("pr", prNumber).Msg("callback evaluator: satisfied baseline observed")
 			continue
 		}
 		if _, err := e.store.TriggerGroup(ctx, cb.ID, string(cb.Trigger), now); err != nil {

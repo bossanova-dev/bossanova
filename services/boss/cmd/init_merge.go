@@ -20,6 +20,7 @@ type linearOverrides struct {
 	Team, TeamKey  string
 	States, Labels map[string]string
 	AssigneeMe     bool
+	seededStates   map[string]bool
 }
 
 func parseLinearOverrides(states, labels []string, me bool) (linearOverrides, error) {
@@ -72,16 +73,14 @@ func seedOverridesFromExisting(existing []byte, flags linearOverrides) linearOve
 	if json.Unmarshal(existing, &doc) != nil {
 		return flags
 	}
-	ov := flags
-	ov.States, ov.Labels = map[string]string{}, map[string]string{}
+	ov := linearOverrides{States: map[string]string{}, Labels: map[string]string{}, seededStates: map[string]bool{}}
 	for _, group := range []struct {
 		from     map[string]any
-		flagged  map[string]string
 		dest     map[string]string
 		defaults map[string]string
 	}{
-		{doc.TrackerConfig.Linear.States, flags.States, ov.States, linearStateDefaults},
-		{doc.TrackerConfig.Linear.Labels, flags.Labels, ov.Labels, linearLabelDefaults},
+		{doc.TrackerConfig.Linear.States, ov.States, linearStateDefaults},
+		{doc.TrackerConfig.Linear.Labels, ov.Labels, linearLabelDefaults},
 	} {
 		for role, value := range group.from {
 			name, ok := value.(string)
@@ -89,11 +88,39 @@ func seedOverridesFromExisting(existing []byte, flags linearOverrides) linearOve
 				group.dest[role] = name
 			}
 		}
-		for role, name := range group.flagged {
+	}
+	for role := range ov.States {
+		ov.seededStates[role] = true
+	}
+	return overlayOverrides(ov, flags)
+}
+
+func overlayOverrides(base, over linearOverrides) linearOverrides {
+	result := over
+	result.States, result.Labels = map[string]string{}, map[string]string{}
+	result.seededStates = map[string]bool{}
+	for role, seeded := range base.seededStates {
+		result.seededStates[role] = seeded
+	}
+	for _, group := range []struct{ from, over, dest map[string]string }{
+		{base.States, over.States, result.States},
+		{base.Labels, over.Labels, result.Labels},
+	} {
+		for role, name := range group.from {
+			group.dest[role] = name
+		}
+		for role, name := range group.over {
 			group.dest[role] = name
 		}
 	}
-	return ov
+	for role := range over.States {
+		if over.seededStates[role] {
+			result.seededStates[role] = true
+		} else {
+			delete(result.seededStates, role)
+		}
+	}
+	return result
 }
 
 func (ov linearOverrides) hasRoleOverrides() bool {

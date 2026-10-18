@@ -95,15 +95,35 @@ type ApproveResult struct {
 
 // MarkMergedResult is `verify-gate.mjs mark-merged`'s outcome: for a merged PR,
 // the post-merge tracker write the verify stage's merge makes (TrackerWrites
-// ok, none, unavailable, failed, ..., with Why when it did not happen). A PR
-// that is not merged carries Reason instead.
+// ok, none, unavailable, failed, permanent, ..., with Why when it did not
+// happen). A PR that is not merged carries Reason instead. Writes lists the
+// writes the verb attempted.
 type MarkMergedResult struct {
-	Merged        bool   `json:"merged"`
-	MergeSHA      string `json:"mergeSha,omitempty"`
-	TrackerWrites string `json:"trackerWrites,omitempty"`
-	Why           string `json:"why,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	State         string `json:"state,omitempty"`
+	Merged        bool              `json:"merged"`
+	MergeSHA      string            `json:"mergeSha,omitempty"`
+	TrackerWrites string            `json:"trackerWrites,omitempty"`
+	Why           string            `json:"why,omitempty"`
+	Reason        string            `json:"reason,omitempty"`
+	State         string            `json:"state,omitempty"`
+	Writes        []MarkMergedWrite `json:"writes,omitempty"`
+}
+
+// MarkMergedWrite is one write mark-merged attempted; a tracker write names
+// the ticket it moves in IssueID.
+type MarkMergedWrite struct {
+	Kind    string `json:"kind"`
+	IssueID string `json:"issueId,omitempty"`
+}
+
+// Ticket is the ticket the tracker write tried to move, or "" when there was
+// none.
+func (r MarkMergedResult) Ticket() string {
+	for _, w := range r.Writes {
+		if w.Kind == "tracker" && w.IssueID != "" {
+			return w.IssueID
+		}
+	}
+	return ""
 }
 
 // Bridge runs verify-gate.mjs. The zero value uses `node` from PATH, locates the

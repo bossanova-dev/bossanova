@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react()],
@@ -16,6 +16,9 @@ export default defineConfig({
     },
   },
   test: {
+    // A node:test file that reads build/, run by `pnpm test:headers` after the
+    // build (see the Makefile `test` target); `test:unit` runs before it.
+    exclude: [...configDefaults.exclude, 'scripts/headers.test.mjs'],
     environment: 'jsdom',
     globals: true,
     css: false,

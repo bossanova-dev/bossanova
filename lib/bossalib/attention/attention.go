@@ -214,7 +214,11 @@ func computeFix(in Input) *pb.SessionAttention {
 	actions := []pb.AttentionAction{
 		pb.AttentionAction_ATTENTION_ACTION_RESUME,
 		pb.AttentionAction_ATTENTION_ACTION_DISMISS,
-		pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT,
+	}
+	// With no chat to open, an older client's OPEN_CHAT would attach an empty
+	// target, which starts a brand-new chat.
+	if in.Fix.ChatID != "" {
+		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 	}
 	if in.Fix.WorktreeGone {
 		actions = []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_DISMISS}

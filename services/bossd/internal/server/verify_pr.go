@@ -142,6 +142,9 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 			return resp, target.PR, nil
 		}
 	}
+	// The merge can archive the session, which removes the worktree the
+	// tracker bookkeeping runs in; the archive waits until that is over.
+	defer s.archiveDeferral().hold(id)()
 	merged, err := s.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: pin}))
 	if err != nil {
 		if resp.Approval != nil {
@@ -152,7 +155,10 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	resp.IsMerged = true
 	resp.Session = merged.Msg.GetSession()
 	resp.MergeDetail = merged.Msg.GetDetail()
-	resp.TrackerWrites, resp.TrackerWhy = s.markMerged(ctx, verbs, target)
+	// Owed before it runs, so a daemon that dies mid-write still retries it.
+	s.owePendingTrackerMerge(ctx, id)
+	o := s.settleTrackerMerge(ctx, id, s.markMerged(ctx, verbs, target))
+	resp.TrackerWrites, resp.TrackerWhy, resp.TrackerTicket = o.writes, o.why, o.ticket
 	return resp, target.PR, nil
 }
 
@@ -171,7 +177,7 @@ func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, r
 		ev = ev.Err(err)
 	}
 	if resp.GetIsMerged() {
-		ev = ev.Str("tracker_writes", resp.GetTrackerWrites())
+		ev = ev.Str("tracker_writes", resp.GetTrackerWrites()).Str("tracker_why", resp.GetTrackerWhy())
 	}
 	ev.Msg("operator merge finished")
 }
@@ -235,20 +241,20 @@ func approvalStandsError(err error, approval *pb.VerifyApproveResult) error {
 // markMerged runs the toolbox's post-merge tracker bookkeeping on what is left
 // of the merge's detached budget, and is skipped when nothing is. A failure is
 // reported, never returned.
-func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verifybridge.Target) (writes, why string) {
+func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verifybridge.Target) trackerMergeOutcome {
 	if ctx.Err() != nil {
 		s.logger.Warn().Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: no time left for tracker bookkeeping")
-		return "failed", "no time was left to update the tracker"
+		return trackerMergeOutcome{writes: "failed", why: "no time was left to update the tracker"}
 	}
 	r, err := verbs.MarkMerged(ctx, target)
 	switch {
 	case err != nil:
 		s.logger.Warn().Err(err).Int("pr", target.PR).Str("repo", target.Repo).Msg("operator merge: tracker bookkeeping failed")
-		return "failed", err.Error()
+		return trackerMergeOutcome{writes: "failed", why: err.Error()}
 	case !r.Merged:
-		return "skipped", r.Reason
+		return trackerMergeOutcome{writes: "skipped", why: r.Reason}
 	}
-	return r.TrackerWrites, r.Why
+	return trackerMergeOutcome{writes: r.TrackerWrites, why: r.Why, ticket: r.Ticket()}
 }
 
 // verifyTarget resolves the session's PR, repo slug and worktree, and the
@@ -256,6 +262,12 @@ func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verif
 // the repo's stored secrets. The repo's LINEAR_API_KEY is what lets the verb
 // remove the needs-human label; an operator's shell rarely carries it.
 func (s *Server) verifyTarget(ctx context.Context, id string, dryRun bool) (verifybridge.Target, []string, error) {
+	return s.verifyTargetIn(ctx, id, dryRun, false)
+}
+
+// verifyTargetIn is verifyTarget; with orCheckout, a session whose worktree is
+// gone (archived since its merge) runs in the repo's own checkout instead.
+func (s *Server) verifyTargetIn(ctx context.Context, id string, dryRun, orCheckout bool) (verifybridge.Target, []string, error) {
 	if id == "" {
 		return verifybridge.Target{}, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
@@ -274,14 +286,18 @@ func (s *Server) verifyTarget(ctx context.Context, id string, dryRun bool) (veri
 	}
 	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "verify verb", s.logger)
 	var slug string
+	dir := sess.WorktreePath
 	if repo != nil {
 		slug = strings.ToLower(vcs.RepoSlug(repo.OriginURL))
+		if info, err := os.Stat(dir); orCheckout && (err != nil || !info.IsDir()) && repo.LocalPath != "" {
+			dir = repo.LocalPath
+		}
 	}
 	env := os.Environ()
-	for k, v := range dotenv.OverlayWithRepo(map[string]string{}, sess.WorktreePath, repo) {
+	for k, v := range dotenv.OverlayWithRepo(map[string]string{}, dir, repo) {
 		env = append(env, k+"="+v)
 	}
-	return verifybridge.Target{PR: *sess.PRNumber, Repo: slug, Dir: sess.WorktreePath, DryRun: dryRun}, env, nil
+	return verifybridge.Target{PR: *sess.PRNumber, Repo: slug, Dir: dir, DryRun: dryRun}, env, nil
 }
 
 // verifyBridgeError maps a bridge failure onto a connect code. A timeout stays

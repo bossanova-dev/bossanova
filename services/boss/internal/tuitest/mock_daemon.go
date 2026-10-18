@@ -2426,6 +2426,11 @@ func (m *MockDaemon) RecordChat(_ context.Context, req *connect.Request[pb.Recor
 			return connect.NewResponse(&pb.RecordChatResponse{Chat: cloneMsg(c)}), nil
 		}
 	}
+	// The daemon refuses to resume a chat it has no row for (the mock keeps no
+	// transcripts), rather than start a brand-new chat under the old id.
+	if req.Msg.Resume {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat no longer exists: %s", req.Msg.AgentSessionId))
+	}
 	chat := &pb.ClaudeChat{
 		SessionId:       req.Msg.SessionId,
 		AgentSessionId:  req.Msg.AgentSessionId,

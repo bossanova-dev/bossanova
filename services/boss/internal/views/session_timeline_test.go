@@ -222,19 +222,7 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 				m = withRotations(m)
 			}
 			screen := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: m.session, width: m.width}) + "\n" + m.View().Content)
-			path := filepath.Join("testdata", "chatpicker-timeline-"+tt.name+".golden")
-			if os.Getenv("UPDATE_GOLDEN") == "1" {
-				if err := os.WriteFile(path, []byte(screen), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want, err := chatPickerTimelineGoldens.ReadFile(filepath.ToSlash(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if screen != string(want) {
-				t.Fatalf("render differs from %s:\n%s", path, screen)
-			}
+			assertChatPickerGolden(t, "chatpicker-timeline-"+tt.name, screen)
 			if lipgloss.Height(screen) > tt.height {
 				t.Fatalf("render uses %d rows, budget %d", lipgloss.Height(screen), tt.height)
 			}
@@ -255,6 +243,25 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// assertChatPickerGolden compares screen with testdata/<name>.golden, which
+// UPDATE_GOLDEN=1 rewrites first.
+func assertChatPickerGolden(t *testing.T, name, screen string) {
+	t.Helper()
+	path := filepath.Join("testdata", name+".golden")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(path, []byte(screen), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := chatPickerTimelineGoldens.ReadFile(filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if screen != string(want) {
+		t.Fatalf("render differs from %s:\n%s", path, screen)
 	}
 }
 
@@ -282,34 +289,30 @@ func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	}
 }
 
-// TestChatPickerNeededAnswerIsEmphasised: the answer under "Needed from you"
-// is the one line the details screen asks the operator to act on, so every
-// line of it renders bold in the primary foreground, never faint, while the
-// heading stays plain.
+// TestChatPickerNeededAnswerIsEmphasised: the answer after "Needed from you:"
+// is the one thing the details screen asks the operator to act on, so every
+// line of it, wrapped continuations included, renders bold in the primary
+// foreground, never faint, while the label stays plain.
 func TestChatPickerNeededAnswerIsEmphasised(t *testing.T) {
-	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
+	m := questionTimelineModel(80, 60, operatorQuestion)
 	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 4)
-	block := m.neededBlock()
-	lines := strings.Split(block, "\n")
-	heading := -1
+	lines := strings.Split(m.neededBlock(), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("answer did not wrap:\n%s", stripANSI(m.neededBlock()))
+	}
+	hang := strings.Repeat(" ", len(neededLabel))
 	for i, line := range lines {
-		if stripANSI(line) == "Needed from you:" {
-			heading = i
+		gutter := hang
+		if i == 0 {
+			gutter = neededLabel
 		}
-	}
-	if heading < 0 || heading == len(lines)-1 {
-		t.Fatalf("no answer under the heading:\n%s", stripANSI(block))
-	}
-	if lines[heading] != "Needed from you:" {
-		t.Fatalf("heading is styled: %q", lines[heading])
-	}
-	for _, line := range lines[heading+1:] {
-		text := strings.TrimPrefix(stripANSI(line), neededIndent)
-		if want := neededIndent + styleEmphasis.Render(text); line != want {
-			t.Fatalf("answer line %q rendered %q, want bold %q", text, line, want)
+		rest, ok := strings.CutPrefix(line, gutter)
+		if !ok {
+			t.Fatalf("line %d does not open with a plain %q: %q", i, gutter, line)
 		}
-		if line == styleSubtle.Render(text) || line == text {
-			t.Fatalf("answer line %q is not emphasised: %q", text, line)
+		text := stripANSI(rest)
+		if rest != styleEmphasis.Render(text) || !strings.HasPrefix(rest, "\x1b[1") {
+			t.Fatalf("answer line %d %q rendered %q, want bold %q", i, text, rest, styleEmphasis.Render(text))
 		}
 	}
 }
@@ -417,6 +420,9 @@ func TestChatPickerLongQuestionKeepsChatsVisible(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(strings.Fields(stripANSI(m.View().Content)), " "), "Can you confirm the final choice?") {
 		t.Fatalf("cannot read end offset=%d: %s", m.neededOffset, m.View().Content)
+	}
+	if !strings.HasPrefix(stripANSI(m.neededBlock()), neededLabel) {
+		t.Fatalf("last page lost its label:\n%s", stripANSI(m.neededBlock()))
 	}
 	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = model.(ChatPickerModel)
@@ -600,32 +606,69 @@ func TestChatPickerTimelineWrapsWideCharacters(t *testing.T) {
 	}
 }
 
-// TestChatPickerNeededFromYouLabelAndIndent: the answer sits under a
-// "Needed from you:" label, set in two columns, wrapped to the block width
-// less that indent, on word boundaries.
-func TestChatPickerNeededFromYouLabelAndIndent(t *testing.T) {
-	m := questionTimelineModel(80, 60, operatorQuestion)
-	m.fullQuestion = operatorQuestion
-	block := stripANSI(m.neededBlock())
-	t.Logf("details at 80 columns:\n%s", block)
-	answer, ok := strings.CutPrefix(block, "Needed from you:\n")
-	if !ok {
-		t.Fatalf("no \"Needed from you:\" label:\n%s", block)
+// TestChatPickerNeededFromYouHangsUnderTheAnswer: the answer starts on the
+// "Needed from you:" row and its wrapped lines hang under its first word,
+// within the chat table's width, on word boundaries. A block that would leave
+// less than neededMinHangWidth beside the label wraps under the label instead.
+func TestChatPickerNeededFromYouHangsUnderTheAnswer(t *testing.T) {
+	question := operatorQuestion + " " + operatorQuestion
+	for _, tt := range []struct{ width, hang int }{
+		{300, len(neededLabel)}, {120, len(neededLabel)}, {80, len(neededLabel)}, {60, len(neededLabel)},
+		{41, len(neededLabel)}, {40, 0}, {30, 0},
+	} {
+		t.Run(fmt.Sprint(tt.width), func(t *testing.T) {
+			m := questionTimelineModel(tt.width, 60, operatorQuestion)
+			m.fullQuestion = question
+			block := stripANSI(m.neededBlock())
+			t.Logf("answer at %d columns:\n%s", tt.width, block)
+			lines := strings.Split(block, "\n")
+			first, ok := strings.CutPrefix(lines[0], neededLabel)
+			if !ok || first == "" || strings.HasPrefix(first, " ") {
+				t.Fatalf("answer does not start on the label row: %q", lines[0])
+			}
+			if len(lines) < 2 {
+				t.Fatalf("answer did not wrap at %d: %q", m.blockWrapWidth(), block)
+			}
+			for _, line := range lines[1:] {
+				if got := len(line) - len(strings.TrimLeft(line, " ")); got != tt.hang {
+					t.Errorf("continuation indented %d, want %d: %q", got, tt.hang, line)
+				}
+			}
+			for _, line := range lines {
+				if w := ansi.StringWidth(line); w > min(detailsMaxWidth, m.blockWrapWidth()) {
+					t.Errorf("line is %d wide, chat table %d: %q", w, min(detailsMaxWidth, m.blockWrapWidth()), line)
+				}
+			}
+			if got := strings.Join(strings.Fields(strings.TrimPrefix(block, neededLabel)), " "); got != question {
+				t.Fatalf("answer words lost or split: %q", got)
+			}
+		})
 	}
-	lines := strings.Split(answer, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("answer did not wrap at %d: %q", m.blockWrapWidth(), answer)
+}
+
+// TestChatPickerNeededFromYouGoldens pins the details screen with a short and a
+// long answer at 80, 100, 120 and 300 columns.
+func TestChatPickerNeededFromYouGoldens(t *testing.T) {
+	answers := map[string]string{
+		"short": "Should this PR be merged?",
+		"long":  strings.TrimSpace(strings.Repeat("Should this PR be merged? ", 7)),
 	}
-	for _, line := range lines {
-		if !strings.HasPrefix(line, neededIndent) || strings.HasPrefix(line, neededIndent+" ") {
-			t.Errorf("answer line not indented by %q: %q", neededIndent, line)
+	for _, width := range []int{80, 100, 120, 300} {
+		for name, answer := range answers {
+			t.Run(fmt.Sprintf("%s-%d", name, width), func(t *testing.T) {
+				m := questionTimelineModel(width, 40, answer)
+				m.fullQuestion = answer
+				asked := m.session.GetAttention().GetSince().AsTime().Local()
+				m.session.Attention.Since = timestamppb.New(time.Date(asked.Year(), asked.Month(), asked.Day(), 17, 20, 0, 0, time.Local))
+				screen := stripANSI(renderBanner(ViewChatPicker, bannerOpts{session: m.session, width: m.width}) + "\n" + m.View().Content)
+				assertChatPickerGolden(t, fmt.Sprintf("chatpicker-timeline-needed-%s-%d", name, width), screen)
+				for _, line := range strings.Split(screen, "\n") {
+					if lipgloss.Width(line) > m.width {
+						t.Fatalf("overwide line %q", line)
+					}
+				}
+			})
 		}
-		if w := ansi.StringWidth(line); w > m.blockWrapWidth() {
-			t.Errorf("answer line is %d wide, block width %d: %q", w, m.blockWrapWidth(), line)
-		}
-	}
-	if got := strings.Join(strings.Fields(answer), " "); got != operatorQuestion {
-		t.Fatalf("answer words lost or split: %q", got)
 	}
 }
 
@@ -643,7 +686,7 @@ func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
 		paged        bool
 	}{
 		{"long answer at 24 rows", 24, 1, long, true},
-		{"short answer at 19 rows", 19, 1, operatorQuestion, true},
+		{"short answer at 18 rows", 18, 1, operatorQuestion, true},
 		{"short answer at 24 rows", 24, 3, operatorQuestion, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -824,14 +867,14 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 		height int
 		want   []string
 	}{
-		{"fold drops the labelled step", 21, []string{
+		{"fold drops the labelled step", 20, []string{
 			"  … 2 earlier steps",
 			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
 			"         23:55  ✓ B2",
 			"  Today  00:01  ✓ C",
 			"         00:05  ● Parked for you",
 		}},
-		{"fold leaves only today", 19, []string{
+		{"fold leaves only today", 18, []string{
 			"  … 4 earlier steps",
 			"  00:01  ✓ C",
 			"  00:05  ● Parked for you",
@@ -877,7 +920,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	}
 	for _, token := range []int{59, 60} {
 		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
-			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 21)
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 20)
 			m.width = 80
 			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
 			m.timeline = []*pb.TimelineStep{
@@ -887,7 +930,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
 			}
 			block := stripANSI(m.timelineBlock())
-			t.Logf("timeline at 80x21:\n%s", block)
+			t.Logf("timeline at 80x20:\n%s", block)
 			rows := strings.Split(block, "\n")[1:]
 			want := []string{"  … 1 earlier step", "  Today  00:01  ✓ Built", strings.Repeat(" ", 18) + "x", "         00:02  ✓ CI passed", "         00:09  ● Parked for you"}
 			if len(rows) != len(want) {
@@ -1240,7 +1283,7 @@ func TestChatPickerTimelineSitsUnderTheChatList(t *testing.T) {
 // fold line and wrapped continuation included, renders in styleStatusMuted,
 // the style the rotation-history block used.
 func TestChatPickerTimelineUsesTheAccountSwapStyle(t *testing.T) {
-	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 22))
+	m := withRotations(detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 21))
 	m.timeline[3].Detail = strings.Repeat("all checks green ", 20)
 	lines := strings.Split(m.timelineBlock(), "\n")
 	if plain := stripANSI(strings.Join(lines, "\n")); !strings.Contains(plain, "earlier step") || !strings.Contains(plain, "…\n") {
@@ -1418,7 +1461,7 @@ func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 	for _, later := range []int{1, 2, 3, 6, 8, 12} {
 		for height := 16; height <= 60; height++ {
 			m := waitAmongLaterSteps(height, later)
-			if !assertTimelineFold(t, m) && height >= 19 {
+			if !assertTimelineFold(t, m) && height >= 18 {
 				t.Fatalf("%d later steps at 80x%d: no timeline:\n%s", later, height, stripANSI(m.View().Content))
 			}
 		}
@@ -1428,11 +1471,11 @@ func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 		height, later int
 		want          []string
 	}{
-		{"two later at 18 rows", 18, 2, nil},
-		{"two later at 19 rows", 19, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
-		{"two later at 20 rows", 20, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"two later at 21 rows", 21, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"three later at 20 rows", 20, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
+		{"two later at 17 rows", 17, 2, nil},
+		{"two later at 18 rows", 18, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
+		{"two later at 19 rows", 19, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"two later at 20 rows", 20, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"three later at 19 rows", 19, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
 		{"six later at 38 rows", 38, 6, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 1 later step", "  10:11  ✓ Resumed 1", "  10:12  ✓ Resumed 2", "  10:13  ✓ Resumed 3", "  10:14  ✓ Resumed 4", "  10:15  ✓ Resumed 5"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

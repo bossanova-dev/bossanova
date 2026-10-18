@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"connectrpc.com/connect"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
@@ -941,4 +942,35 @@ func (s *attachLaunchOrderStub) FinishUnattendedRun(context.Context, *pb.FinishU
 
 func (s *attachLaunchOrderStub) SetChatPhase(context.Context, string, string, string) error {
 	panic("unused")
+}
+
+// Opening a chat deleted after the list loaded says so plainly: bossd refuses
+// the resume with NotFound instead of starting a brand-new chat under its id.
+func TestAttach_ResumeOfADeletedChatSaysItNoLongerExists(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume bool
+		want   string
+	}{
+		{name: "resume", resume: true, want: "this chat no longer exists"},
+		{name: "new chat", want: "record chat:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+			m.launchID = 7
+			updated, cmd := m.Update(chatRecordedMsg{
+				session:  &pb.Session{Id: "session-1"},
+				launchID: 7,
+				resume:   tc.resume,
+				err:      connect.NewError(connect.CodeNotFound, errors.New("chat no longer exists: ce2c3b43")),
+			})
+			got := updated.(AttachModel)
+			if cmd != nil || got.pendingExec != nil {
+				t.Fatalf("a refused record still staged an attach (cmd %v, pendingExec %+v)", cmd != nil, got.pendingExec)
+			}
+			if view := got.View().Content; !strings.Contains(view, tc.want) {
+				t.Fatalf("view = %q, want it to contain %q", view, tc.want)
+			}
+		})
+	}
 }

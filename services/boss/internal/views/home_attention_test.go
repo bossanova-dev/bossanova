@@ -39,7 +39,7 @@ func TestHomeAttentionBoard(t *testing.T) {
 	}
 	h.buildTableRows()
 	screen := ansi.Strip(h.table.View())
-	for _, want := range []string{"NEEDS YOU", "IN PROGRESS", "Database migration", "building", "Finished feature"} {
+	for _, want := range []string{"NEEDS YOU", "IN PROGRESS", "Review feature", "building", "Finished feature"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("missing %q in:\n%s", want, screen)
 		}
@@ -144,11 +144,6 @@ func TestHomeAttentionGolden(t *testing.T) {
 				if len(r) != 5 {
 					t.Fatalf("expected five columns, got %d", len(r))
 				}
-				if r[0] == "" && r[1] == "" && r[3] == "" && r[4] == "" {
-					if ansi.StringWidth(r[2]) > h.attentionSentenceWidth() {
-						t.Fatalf("sentence exceeds NAME: %q", r[2])
-					}
-				}
 			}
 		})
 	}
@@ -183,19 +178,8 @@ func TestHomeAttentionOrderingAndSections(t *testing.T) {
 	}
 }
 
-func TestHomeAttentionSentenceAndLegacyHints(t *testing.T) {
+func TestHomeAttentionRowsHaveNoSentenceOrLegacyHints(t *testing.T) {
 	s := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: strings.Repeat("word ", 100)}, SetupError: "stale warning"}
-	for _, width := range []int{1, 16, 40, 60} {
-		lines := attentionSentenceLines(s, width)
-		if len(lines) != 4 || !strings.HasSuffix(lines[3], "…") {
-			t.Fatalf("width %d lines=%q", width, lines)
-		}
-		for _, line := range lines {
-			if ansi.StringWidth(line) > width {
-				t.Fatalf("width %d overflow %q", width, line)
-			}
-		}
-	}
 	if block := (ChatPickerModel{session: s}).legacyWarningBlock(); block != "" {
 		t.Fatalf("details view rendered legacy hints beside attention: %q", ansi.Strip(block))
 	}
@@ -204,14 +188,18 @@ func TestHomeAttentionSentenceAndLegacyHints(t *testing.T) {
 	h.height = 30
 	h.sessions = []*pb.Session{s}
 	h.buildTableRows()
-	if strings.Contains(ansi.Strip(h.table.View()), "stale warning") {
-		t.Fatal("attention row leaked legacy warning")
+	screen := ansi.Strip(h.table.View())
+	if strings.Contains(screen, "word") || strings.Contains(screen, "stale warning") {
+		t.Fatalf("attention row leaked sentence or legacy warning: %s", screen)
+	}
+	if len(h.table.Rows()) != 1 {
+		t.Fatalf("attention session rendered %d rows, want 1", len(h.table.Rows()))
 	}
 	// With no attention, the composite and warning remain available.
 	s.Attention = nil
 	s.DisplayLabel = "ready"
 	h.buildTableRows()
-	screen := ansi.Strip(h.table.View())
+	screen = ansi.Strip(h.table.View())
 	if !strings.Contains(screen, "stale warning") || !strings.Contains(screen, "ready") || strings.Contains(screen, "NEEDS YOU") {
 		t.Fatalf("legacy behavior: %s", screen)
 	}
@@ -611,7 +599,7 @@ func TestHomeReadyRowInARepoWithNoVerifyStage(t *testing.T) {
 	}
 }
 
-func TestHomeMergeRowDropsSentenceThatRestatesItsStatus(t *testing.T) {
+func TestHomeMergeAndReviewRowsHaveNoSentence(t *testing.T) {
 	merge := &pb.Session{Id: "merge", Title: "Merge feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_MERGE, Sentence: "Ready to merge"}}
 	review := &pb.Session{Id: "review", Title: "Review feature", Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Database migration"}}
 	h := NewHomeModel(nil, context.Background(), nil)
@@ -623,11 +611,11 @@ func TestHomeMergeRowDropsSentenceThatRestatesItsStatus(t *testing.T) {
 	if strings.Contains(screen, "Ready to merge") {
 		t.Fatalf("merge row repeats its status as a subline:\n%s", screen)
 	}
-	if !strings.Contains(screen, "Database migration") || !strings.Contains(screen, "✓ merge") {
-		t.Fatalf("review sentence or merge status missing:\n%s", screen)
+	if strings.Contains(screen, "Database migration") || !strings.Contains(screen, "✓ merge") {
+		t.Fatalf("review sentence leaked or merge status missing:\n%s", screen)
 	}
-	if got := len(h.table.Rows()); got != 3 {
-		t.Fatalf("rows = %d, want 3: two primary rows and the review subline", got)
+	if got := len(h.table.Rows()); got != 2 {
+		t.Fatalf("rows = %d, want two primary rows without sentence sublines", got)
 	}
 	if h.tableDataRowCount() != len(h.table.Rows()) {
 		t.Fatalf("height accounting %d differs from rendered rows %d", h.tableDataRowCount(), len(h.table.Rows()))
@@ -693,8 +681,8 @@ func TestHomeFixRowShowsTheStateThatNeedsFixing(t *testing.T) {
 			}
 			h.sessions = []*pb.Session{s}
 			h.buildTableRows()
-			if screen := ansi.Strip(h.table.View()); !strings.Contains(screen, "Run stopped") {
-				t.Fatalf("fix row lost the sentence that says what to do:\n%s", screen)
+			if screen := ansi.Strip(h.table.View()); strings.Contains(screen, "Run stopped") {
+				t.Fatalf("fix row leaked its attention sentence:\n%s", screen)
 			}
 		})
 	}

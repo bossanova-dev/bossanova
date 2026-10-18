@@ -38,7 +38,7 @@ func TestRoutinePRWaitingHintsHidden(t *testing.T) {
 			sess := &pb.Session{Id: "s1", Title: "parked session", DisplayLabel: displaystatus.WaitingLabel, DisplaySpinner: true, DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO}
 			updated, _ = h.Update(sessionListMsg{sessions: []*pb.Session{sess}, daemonStatuses: map[string]string{"s1": statusWaiting}, daemonWaitingReasons: map[string]string{"s1": reason}})
 			h = updated.(HomeModel)
-			if got := sessionSubRowCount(sess, reason, 60, true); got != 0 {
+			if got := sessionSubRowCount(sess, reason, true); got != 0 {
 				t.Fatalf("routine wait reserves %d sub-rows", got)
 			}
 			rendered := stripANSI(h.View().Content)
@@ -183,10 +183,10 @@ func TestHintDemoted_DemotedRowRendersTheAttentionHintBright(t *testing.T) {
 // count is the single source of truth for cursor arithmetic (BOS-474).
 func TestSessionSubRowCount_WaitingReason(t *testing.T) {
 	sess := &pb.Session{Id: "s1"}
-	if got := sessionSubRowCount(sess, "", 60, true); got != 0 {
+	if got := sessionSubRowCount(sess, "", true); got != 0 {
 		t.Fatalf("sessionSubRowCount with no reason = %d, want 0", got)
 	}
-	if got := sessionSubRowCount(sess, testWaitingReason, 60, true); got != 1 {
+	if got := sessionSubRowCount(sess, testWaitingReason, true); got != 1 {
 		t.Fatalf("sessionSubRowCount with a waiting reason = %d, want 1", got)
 	}
 }

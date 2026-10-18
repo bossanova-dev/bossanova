@@ -134,22 +134,21 @@ func (h HomeModel) statusColor() color.Color {
 	return colorSuccess
 }
 
-// statusHeight is the rendered height of the status line, or 0 when there is
-// none. tableHeight reserves it: statusLine WRAPS at statusWrapWidth, and a
-// session title is operator-supplied text of no bounded length, so a renamed-to
-// message can easily cost more than the one row an assumed literal would
-// reserve. Measured the same way sessionTableFooterLineCount measures the
+// statusHeight is the rendered height of the status line and the blank line
+// above it, or 0 when there is none. tableHeight reserves it: statusLine WRAPS
+// at statusWrapWidth, and a session title is operator-supplied text of no
+// bounded length, so a renamed-to message can easily cost more than the one row
+// an assumed literal would reserve. Measured the same way sessionTableFooterLineCount measures the
 // re-login warning, and for the same reason — an unreserved rendered row pushes
 // the board past the terminal.
 //
-// No separator to account for, unlike that warning: renderSessionTable writes
-// the status between the table's own trailing newline and the footer, so it
-// costs exactly the rows it renders.
+// The blank line is the separator renderSessionTable writes above the status,
+// the same gap the confirmation prompts leave under the table.
 func (h HomeModel) statusHeight() int {
 	if h.status == "" {
 		return 0
 	}
-	return lipgloss.Height(h.statusLine(h.statusColor(), h.status))
+	return 1 + lipgloss.Height(h.statusLine(h.statusColor(), h.status))
 }
 
 // loginAction returns the login/logout action label for the action bar,
@@ -464,6 +463,7 @@ func (h HomeModel) renderSessionTable() string {
 		b.WriteString("\n")
 	}
 	if h.status != "" {
+		b.WriteString("\n")
 		b.WriteString(h.statusLine(h.statusColor(), h.status))
 		b.WriteString("\n")
 	}

@@ -911,3 +911,35 @@ func TestNewInitializesDeferrers(t *testing.T) {
 		t.Errorf("finish budget = %v, want %v", srv.finishDeferrer.fireBudget, finishRunBudget)
 	}
 }
+
+func TestArchiveDeferrer_AHeldSessionArchivesOnlyAfterTheLastRelease(t *testing.T) {
+	h := newDeferralHarness(t, "chat-a")
+	h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+	h.run(t)
+	first := h.d.hold(deferralSessionID)
+	second := h.d.hold(deferralSessionID)
+
+	out, err := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{})
+	if err != nil || !out.Pending || out.BlockingAgentSessionID != "" {
+		t.Fatalf("outcome = %+v, err = %v, want pending with no chat blocking while held", out, err)
+	}
+	h.srv.NudgePendingArchive(deferralSessionID)
+	h.exec.expectNone(t, 50*time.Millisecond)
+
+	first()
+	first()
+	h.exec.expectNone(t, 50*time.Millisecond)
+
+	second()
+	h.exec.expectOne(t, deferralSessionID)
+}
+
+func TestArchiveDeferrer_AForcedArchiveIgnoresAHold(t *testing.T) {
+	h := newDeferralHarness(t)
+	defer h.d.hold(deferralSessionID)()
+
+	out, err := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{Force: true})
+	if err != nil || !out.Archived {
+		t.Fatalf("outcome = %+v, err = %v, want a forced archive to run while held", out, err)
+	}
+}

@@ -353,7 +353,9 @@ func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
 	changed = removeMatcherFromHookArray(hooks, "Stop", matcher) || changed
 	changed = removeCommandURLFromHookArray(hooks, "Notification", questionHookURLPrefix+agentSessionID) || changed
 	changed = removeCommandURLFromHookArray(hooks, "UserPromptSubmit", promptSubmittedHookURLPrefix+agentSessionID) || changed
-	changed = removeCommandURLFromHookArray(hooks, "Stop", turnEndedHookURLPrefix+agentSessionID) || changed
+	// The turn-ended entry stays: it belongs to the chat, not the run. The
+	// run's last Stop can record a subagent still running, and only the chat's
+	// next Stop reports it finished; maxTurnEndedHooks bounds the leftovers.
 	if !changed {
 		return nil // nothing removed — don't rewrite the file
 	}

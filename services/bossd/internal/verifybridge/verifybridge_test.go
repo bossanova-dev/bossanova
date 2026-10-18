@@ -242,6 +242,14 @@ func TestMarkMergedRunsTheVerbInTheWorktree(t *testing.T) {
 	}
 }
 
+func TestMarkMergedNamesTheTicketItTriedToMove(t *testing.T) {
+	f := newFixture(t, `{"merged":true,"mergeSha":"m1","trackerWrites":"permanent","why":"state-not-found: Done","writes":[{"kind":"tracker","issueId":"MAD-1764","stateName":"Done","removeLabels":["needs-human"]}]}`, "", 0)
+	got, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree})
+	if err != nil || got.TrackerWrites != "permanent" || got.Why != "state-not-found: Done" || got.Ticket() != "MAD-1764" {
+		t.Fatalf("MarkMerged = %+v (ticket %q), %v", got, got.Ticket(), err)
+	}
+}
+
 func TestMarkMergedNotMergedIsAResultWithAReason(t *testing.T) {
 	f := newFixture(t, `{"merged":false,"reason":"not-merged","state":"OPEN"}`, "", 0)
 	got, err := f.bridge.MarkMerged(context.Background(), Target{PR: 7, Dir: f.worktree})

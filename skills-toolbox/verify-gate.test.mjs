@@ -432,6 +432,8 @@ function fakeAdapter({
   outcome = 'ok',
   missingKey = false,
   tickets = undefined,
+  reason = undefined,
+  permanent = undefined,
 } = {}) {
   const calls = []
   const queries = []
@@ -463,6 +465,8 @@ function fakeAdapter({
         outcome: isWrite ? outcome : 'ok',
         applied: [],
         issue: { id: 'uuid', identifier: 'BOS-1', labels },
+        ...(isWrite && reason !== undefined ? { reason } : {}),
+        ...(isWrite && permanent !== undefined ? { permanent } : {}),
       }
     },
   }
@@ -5244,6 +5248,23 @@ test('mark-merged reports a ticketless PR, an unwritable tracker and a dry run',
   })
   assert.deepEqual(adapter.writeCalls(), [], 'a dry run applies nothing')
   assert.equal(w.mutating().length, 0)
+})
+
+test('mark-merged reports a write the tracker refuses for good as permanent, with the reason', async () => {
+  const cases = [
+    [{ outcome: 'failed', reason: 'state-not-found: Done', permanent: true }, 'permanent'],
+    [{ outcome: 'failed', reason: 'issue-read-failed: socket hang up' }, 'failed'],
+    [{ outcome: 'indeterminate', reason: 'removeLabel: socket hang up' }, 'indeterminate'],
+  ]
+  for (const [answer, trackerWrites] of cases) {
+    const adapter = fakeAdapter(answer)
+    const r = await markMerged({ pr: 7, repo: REPO }, deps(world({ pr: mergedPr }), { adapter }))
+    assert.deepEqual(
+      [r.merged, r.trackerWrites, r.why, r.writes[0].issueId],
+      [true, trackerWrites, answer.reason, 'BOS-1'],
+      JSON.stringify(answer),
+    )
+  }
 })
 
 test('mark-merged re-reads a PR not yet merged once, then reports it not merged or unreadable', async () => {

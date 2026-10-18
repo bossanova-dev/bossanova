@@ -110,7 +110,7 @@ func TestHomeAttentionConfirmLeavesOneBlankLine(t *testing.T) {
 		prompt  string
 		row     string
 	}{
-		{"merge", parkSession("human-review:ui"), 'm', "Merge PR #42?", "evidence video"},
+		{"merge", parkSession("human-review:ui"), 'm', "Merge PR #42?", "Parked change"},
 		{"dismiss", attentionSession(pb.AttentionAction_ATTENTION_ACTION_DISMISS), 'x', "Dismiss this alert?", "Needs review"},
 	}
 	for _, tt := range tests {
@@ -119,6 +119,19 @@ func TestHomeAttentionConfirmLeavesOneBlankLine(t *testing.T) {
 			assertOneBlankLineAbove(t, model.View().Content, tt.prompt, tt.row)
 		})
 	}
+}
+
+// TestHomeMergeResultLeavesOneBlankLine is the result line a landed merge
+// leaves on Home: one blank line under the board's last row, and one between it
+// and the action bar, the spacing the confirmation before it already has.
+func TestHomeMergeResultLeavesOneBlankLine(t *testing.T) {
+	stub := &attentionStub{mergeResp: &pb.OperatorMergeSessionResponse{IsMerged: true, TrackerWrites: "retrying", TrackerWhy: "pr-unreadable"}}
+	model, _ := attentionHome(stub, parkSession("human-review:ui")).Update(keyPress('m'))
+	model, merge := model.Update(keyPress('y'))
+	model, _ = model.Update(merge())
+	screen := model.View().Content
+	assertOneBlankLineAbove(t, screen, "Merged PR #42", "Parked change")
+	assertOneBlankLineAbove(t, screen, "[n]ew session", "Merged PR #42")
 }
 
 // TestAttentionConfirmKeepsTableOnScreen pins the row budget the extra blank

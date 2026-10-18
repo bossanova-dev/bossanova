@@ -3247,10 +3247,13 @@ type composerPane struct {
 	// clearKeepsBytes models C-u as the line-scoped kill it actually is: it leaves
 	// the first N bytes of the payload behind. What survives is MUTILATED user
 	// text, so it must never be submitted — but a second press finishes the job,
-	// which is the convergence the retry depends on.
+	// which is the convergence the retry depends on. A C-u kills one wrapped row,
+	// as Claude's does, so a test of a press keeps N bytes one row short of what
+	// it held (paneWidth); any other cut is what an operator's own edit looks like.
 	clearKeepsBytes int
 	// clearDropsOneByte models a composer that NEVER converges: every press takes
-	// one more byte and always leaves a fragment behind.
+	// one more byte and always leaves a fragment behind. With paneWidth 1 that
+	// byte is a whole row.
 	clearDropsOneByte bool
 	// markerGoneAfterClear models the input box disappearing after the clear (the
 	// agent accepted the payload and went full-screen), which must NOT be read as
@@ -3295,16 +3298,22 @@ type composerPane struct {
 	// easy case that every predicate here already catches — so the hard case
 	// silently cannot fail a test, and a wrong fix passes the suite.
 	paneWidth int
+	// operator, when set, runs just before each capture with the pane locked
+	// and may change what the composer holds, as a person typing into it
+	// would. It picks its moment from enters, clears and capturesSinceKey.
+	operator func(p *composerPane)
 
-	held          string
-	markerGone    bool
-	activityShown bool
-	stalePane     string
-	staleLeft     int
-	captures      int
-	enters        int
-	submitted     bool
-	calls         []sendPlanCall
+	held             string
+	markerGone       bool
+	activityShown    bool
+	stalePane        string
+	staleLeft        int
+	captures         int
+	capturesSinceKey int
+	enters           int
+	clears           int
+	submitted        bool
+	calls            []sendPlanCall
 }
 
 // deliver is what a delivery actually lands in the composer: the whole text,
@@ -3369,6 +3378,10 @@ func (p *composerPane) paneNow() string {
 // capture renders what capture-pane sees: the pre-clear screen while a repaint
 // is still owed, otherwise the live pane.
 func (p *composerPane) capture() string {
+	if p.operator != nil {
+		p.operator(p)
+	}
+	p.capturesSinceKey++
 	p.captures++
 	if p.captures == p.markerlessCaptureNo {
 		return "ready\n"
@@ -3401,6 +3414,8 @@ func (p *composerPane) factory(ctx context.Context, _ string, args ...string) *e
 		case "literal":
 			p.held = p.deliver(args[len(args)-1])
 		case "clear":
+			p.clears++
+			p.capturesSinceKey = 0
 			if p.staleCaptures > 0 {
 				p.stalePane, p.staleLeft = p.paneNow(), p.staleCaptures
 			}
@@ -3421,6 +3436,7 @@ func (p *composerPane) factory(ctx context.Context, _ string, args ...string) *e
 			}
 		case "enter":
 			p.enters++
+			p.capturesSinceKey = 0
 			if p.enters == 1 && p.swallowFirstEnter {
 				break
 			}
@@ -3727,7 +3743,7 @@ func TestSendLine_RetryPressesNoKeyWhileTheComposerStaysUnreadable(t *testing.T)
 func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing.T) {
 	t.Parallel()
 
-	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep")}
+	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep"), paneWidth: len("$boss-rep")}
 	c := NewClient(WithCommandFactory(pane.factory))
 	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
 		readyMarker:      "ready",
@@ -3745,6 +3761,92 @@ func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing
 	}
 }
 
+// A C-u kills one wrapped row, so a box that lost part of a row across a press
+// was edited by someone else, and the operator may be mid-message. The retry sends
+// no further key, and reports nothing as left by its presses, so the
+// withdrawal cannot take that text for its own either.
+func TestSendLine_RetryStopsWhenAPressLeavesPartOfARow(t *testing.T) {
+	t.Parallel()
+
+	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep")}
+	c := NewClient(WithCommandFactory(pane.factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 60 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+	var partial *partialPayload
+	if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, errSubmissionPending) || errors.As(err, &partial) {
+		t.Fatalf("err = %v (outcome %v); want not submitted, with nothing reported as left by the presses", err, OutcomeOf(err))
+	}
+	want := []string{"literal", "enter", "clear"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no key after a reading no press leaves)", got, want)
+	}
+}
+
+// An operator may change the box at any of the Enter retry's reads. Whatever
+// they leave, the retry presses nothing into it, types nothing after it and
+// submits nothing, and the box keeps it. Each case is one way the operator
+// sweeps (TestOperatorSweep_*) found a send erasing or submitting onto an
+// operator's text, pinned at the one read where it happened.
+func TestSendLine_RetryLeavesAnOperatorsEditAlone(t *testing.T) {
+	t.Parallel()
+
+	const foreign = "please hold off, I am reviewing"
+	const wide = "$boss-repair fix the failing check on pull request 1754 and push the result"
+	const paneWidth = 24
+	firstWindow := func(p *composerPane) bool { return p.enters == 1 && p.clears == 0 && p.capturesSinceKey == 0 }
+	baseline := func(p *composerPane) bool { return p.enters == 1 && p.clears == 0 && p.capturesSinceKey == 1 }
+	pressWindow := func(p *composerPane) bool { return p.clears == 1 && p.capturesSinceKey == 0 }
+	for _, tc := range []struct {
+		name             string
+		payload          string
+		paneWidth, keeps int
+		at               func(*composerPane) bool
+		edit             func(held string) string
+		want             []string
+	}{
+		{"a prefix typed in the first verify window", "$boss-repair", 0, 0, firstWindow,
+			func(string) string { return "$boss" }, []string{"literal", "enter"}},
+		{"other text typed before the baseline read", "$boss-repair", 0, 0, baseline,
+			func(string) string { return foreign }, []string{"literal", "enter"}},
+		{"other text typed in a press window", "$boss-repair", 0, 0, pressWindow,
+			func(string) string { return foreign }, []string{"literal", "enter", "clear"}},
+		{"two more rows cut in a press window", wide, paneWidth, 3 * paneWidth, pressWindow,
+			func(held string) string { return held[:paneWidth] }, []string{"literal", "enter", "clear"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var left string
+			pane := &composerPane{swallowFirstEnter: true, paneWidth: tc.paneWidth, clearKeepsBytes: tc.keeps}
+			pane.operator = func(p *composerPane) {
+				if left == "" && tc.at(p) {
+					left = tc.edit(p.held)
+					p.held = left
+				}
+			}
+			c := NewClient(WithCommandFactory(pane.factory))
+			err := c.sendLine(context.Background(), "boss-test-sess", tc.payload, sendPlanOpts{
+				readyMarker:      "ready",
+				submitVerifyWait: 30 * time.Millisecond,
+			})
+			if left == "" {
+				t.Fatalf("the send ended %v before the operator's read; steps %v", err, pane.submitSteps())
+			}
+			if OutcomeOf(err) != OutcomeNotSubmitted {
+				t.Fatalf("err = %v (outcome %v), want not submitted", err, OutcomeOf(err))
+			}
+			if got := pane.submitSteps(); !slices.Equal(got, tc.want) {
+				t.Fatalf("submit sequence = %v, want %v (no key into, or after, the operator's text)", got, tc.want)
+			}
+			if pane.held != left || pane.didSubmit() {
+				t.Fatalf("the composer holds %q (submitted %v), want the operator's %q kept", pane.held, pane.didSubmit(), left)
+			}
+		})
+	}
+}
+
 // TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges pins the surrender
 // branch. A composer that gives up one byte per press is still CHANGING, so the
 // no-op shortcut never fires and the payload is never intact — but it also never
@@ -3754,7 +3856,7 @@ func TestSendLine_RetryConvergesWhenTheClearOnlyKillsPartOfThePayload(t *testing
 func TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges(t *testing.T) {
 	t.Parallel()
 
-	pane := &composerPane{swallowFirstEnter: true, clearDropsOneByte: true}
+	pane := &composerPane{swallowFirstEnter: true, clearDropsOneByte: true, paneWidth: 1}
 	c := NewClient(WithCommandFactory(pane.factory))
 	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
 		readyMarker:      "ready",
@@ -3799,7 +3901,7 @@ func TestSendLine_RetryFailsLoudlyWhenTheClearNeverConverges(t *testing.T) {
 func TestSendLine_RetryFailsLoudlyWhenAPartialClearThenStalls(t *testing.T) {
 	t.Parallel()
 
-	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep"), clearIsNoop: true}
+	pane := &composerPane{swallowFirstEnter: true, clearKeepsBytes: len("$boss-rep"), clearIsNoop: true, paneWidth: len("$boss-rep")}
 	c := NewClient(WithCommandFactory(pane.factory))
 	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
 		readyMarker:      "ready",
@@ -3849,7 +3951,7 @@ func TestSendLine_RetryNeverSubmitsAWrappedPayloadTheClearTruncated(t *testing.T
 	// row can be mistaken for the marker row itself.
 	const wide = "$boss-repair fix the failing check on pull request 1754 and push the result"
 	const paneWidth = 24
-	const keepBytes = 40
+	const keepBytes = 3 * paneWidth // one C-u takes the last of its four rows
 
 	// The geometry IS the test: unless the kept prefix outruns the marker row,
 	// the truncation shows up on the marker row and this degenerates into the
@@ -3979,6 +4081,12 @@ func TestSendLine_RetryNeverSubmitsAPayloadThatArrivedTruncated(t *testing.T) {
 	if pane.didSubmit() {
 		t.Fatal("the composer submitted a payload: the truncated fragment reached the agent")
 	}
+	// The start of the payload is also what an operator who cleared the box and
+	// began their own message the same way leaves, so not even a C-u is sent.
+	want := []string{"literal", "enter"}
+	if got := pane.submitSteps(); !slices.Equal(got, want) {
+		t.Fatalf("submit sequence = %v, want %v (no key into a box holding only the start of the payload)", got, want)
+	}
 }
 
 // TestSendPlan_MultiLineRetryConvergesWhenTheClearIsPartial is the multi-line
@@ -4101,6 +4209,7 @@ func TestSendLine_RetryLooksAgainBeforeEnteringAMutilatedRemainder(t *testing.T)
 	pane := &composerPane{
 		swallowFirstEnter: true,
 		clearKeepsBytes:   len("$boss-rep"),
+		paneWidth:         len("$boss-rep"),
 		clearIsNoop:       true,
 		staleCaptures:     1,
 	}

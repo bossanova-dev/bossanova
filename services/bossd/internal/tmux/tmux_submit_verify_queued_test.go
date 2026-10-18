@@ -285,7 +285,7 @@ func TestVerifyQueuedSkipsEnterRetry(t *testing.T) {
 	c := NewClient(WithCommandFactory(f.factory))
 
 	redelivered := false
-	err := c.verifyWithEnterRetry(context.Background(), "boss-test-queued", queuedFixturePayload,
+	err := c.verifyWithEnterRetry(context.Background(), "boss-test-queued", composerDrawing{text: queuedFixturePayload},
 		sendPlanOpts{
 			submitVerifyWait: 40 * time.Millisecond,
 			submitVerifyTick: 5 * time.Millisecond,

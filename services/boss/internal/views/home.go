@@ -301,7 +301,7 @@ func (h HomeModel) hasEndpointRow(sess *pb.Session) bool {
 
 // subRowCount binds auxiliary row accounting to this model's settings and waiting reasons.
 func (h HomeModel) subRowCount(sess *pb.Session) int {
-	return sessionSubRowCount(sess, h.sessionWaitingReason(sess), h.attentionSentenceWidth(), h.settings.DisplayOpenPorts)
+	return sessionSubRowCount(sess, h.sessionWaitingReason(sess), h.settings.DisplayOpenPorts)
 }
 
 func (h HomeModel) Init() tea.Cmd {

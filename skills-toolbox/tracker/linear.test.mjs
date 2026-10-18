@@ -1517,8 +1517,23 @@ test('applyIssueWrites resolves every name before writing anything', async () =>
     })
     assert.equal(result.outcome, 'failed')
     assert.match(result.reason, reason)
+    assert.equal(result.permanent, true, 'a name the tracker lacks is not worth another attempt')
     assert.equal(mutations(calls).length, 0, JSON.stringify(writes))
   }
+})
+
+test('applyIssueWrites leaves a write the tracker rejected open to another attempt', async () => {
+  const { impl } = writeFetch([readHandler(), mutationHandler('issueUpdate', { success: false })])
+  const result = await linearApplyIssueWrites({
+    apiKey: 'k',
+    fetchImpl: impl,
+    issueId: 'BOS-1',
+    stateName: 'Done',
+  })
+  assert.deepEqual(
+    [result.outcome, result.reason, result.permanent],
+    ['failed', 'state-rejected', undefined],
+  )
 })
 
 test('applyIssueWrites classifies a dropped socket on a mutation indeterminate and never re-sends it', async () => {

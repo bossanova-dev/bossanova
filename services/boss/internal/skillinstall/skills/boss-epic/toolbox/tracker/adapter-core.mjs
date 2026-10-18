@@ -142,11 +142,13 @@
  * @property {(writes: {issueId: string, addLabels?: string[], removeLabels?: string[],
  *           comment?: string, mentionCreator?: boolean, marker?: string, stateName?: string})
  *           => Promise<{ok: boolean, applied: object[], outcome: 'ok'|'failed'|'indeterminate',
- *           reason?: string}>} [applyIssueWrites]
+ *           reason?: string, permanent?: true}>} [applyIssueWrites]
  *           OPTIONAL (OPTIONAL_TRACKER_CAPABILITIES). Applies label adds/removes, one comment
  *           (optionally @mentioning the issue's creator) and a state move, resolving every name
  *           before writing anything. A write that may have applied is `indeterminate` and is
- *           never re-sent; a `marker` makes the comment idempotent.
+ *           never re-sent; a `marker` makes the comment idempotent. A `failed` write that
+ *           another attempt would only repeat (a label or state name the tracker does not
+ *           have) carries `permanent: true`.
  */
 
 /**

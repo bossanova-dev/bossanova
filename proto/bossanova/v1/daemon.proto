@@ -847,8 +847,10 @@ message OperatorMergeSessionRequest {
 // OperatorMergeSessionResponse reports what happened. is_merged is false only
 // when the approval was refused: approval then carries the reason and nothing
 // was merged. A refused or failed merge is an error. tracker_writes is the
-// toolbox's `mark-merged` outcome (ok, none, unavailable, failed, ...) with
-// tracker_why when it did not happen; bookkeeping never fails a landed merge.
+// toolbox's `mark-merged` outcome (ok, none, unavailable, failed, permanent,
+// ...) with tracker_why when it did not happen, or retrying when the daemon
+// queued a write that did not land to be tried again; bookkeeping never fails
+// a landed merge.
 message OperatorMergeSessionResponse {
   bool is_merged = 1;
   Session session = 2;
@@ -858,6 +860,8 @@ message OperatorMergeSessionResponse {
   VerifyApproveResult approval = 4;
   string tracker_writes = 5;
   string tracker_why = 6;
+  // The ticket the tracker write tried to move, when the PR names one.
+  string tracker_ticket = 7;
 }
 
 message RemoveSessionRequest {

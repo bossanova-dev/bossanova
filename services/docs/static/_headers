@@ -1,0 +1,45 @@
+# Cloudflare Pages response headers for the docs site (BOS-1590). Docusaurus
+# copies static/ to build/ and Cloudflare Pages applies this file at the edge,
+# the same mechanism as services/web/public/_headers and
+# services/marketing/public/_headers. See static/_redirects for the sibling rule.
+#
+# CF Pages requires each header value on ONE physical line (2,000 characters at
+# most, header name included), so the CSP below is one long line.
+#
+# This one file ships to BOTH the production and staging Pages projects, whose
+# PostHog host is a build-time env (.github/workflows/perform-{production,staging}-release.yml
+# deploy-docs), so the PostHog proxy is listed for both environments.
+#
+# script-src hashes: the two inline scripts Docusaurus emits, the colour-mode
+# bootstrap on every page and the base-URL issue banner on the home page. Their
+# bytes do not depend on the build env. scripts/headers.test.mjs reads the
+# build/ that `make test` produces, hashes every inline script and fails on one
+# this CSP does not allow; the failure prints the hash to add here.
+#
+# Origins (keep in sync with what the site really loads):
+#   - 'wasm-unsafe-eval': asciinema-player (src/components/AsciinemaDemo.tsx)
+#     compiles its terminal emulator from WebAssembly.
+#   - worker-src 'self' blob:: the local search index runs in a same-origin
+#     worker (@easyops-cn/docusaurus-search-local), and Redoc builds its search
+#     worker from a blob: URL (redocusaurus, /reference/api).
+#   - cdn.redoc.ly (img-src): the "API docs by Redocly" logo on /reference/api.
+#   - k.bossanova.dev / k-staging.bossanova.dev: the first-party PostHog proxy
+#     (src/theme/Root.tsx, PUBLIC_POSTHOG_HOST), which also serves the SDK's
+#     lazy-loaded extension scripts (surveys, web vitals, dead clicks).
+#   - o4511396716871680.ingest.de.sentry.io: Sentry error ingest (src/sentry-init.ts).
+#   - www.googletagmanager.com/gtag/: the GA4 loader (src/googleTag.ts) and the
+#     /gtag/destination scripts it loads for linked destinations. A path, not
+#     the origin, so the CSP does not also allow arbitrary GTM containers.
+#   - GA4 collection: *.google-analytics.com and *.analytics.google.com (incl.
+#     the EU region1 hosts), the apex analytics.google.com and www.google.com
+#     /g/collect (Google signals), stats.g.doubleclick.net (signals beacon) and
+#     www.googletagmanager.com. www.google.com in img-src is the ga-audiences
+#     pixel; visitors routed to a country domain (www.google.co.jp, ...) are
+#     blocked, because those domains cannot all fit on one 2,000-character line.
+#   - static.cloudflareinsights.com (script) / cloudflareinsights.com (beacon):
+#     Cloudflare Web Analytics, injected at the Pages edge.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-0xt7rjlfRsoD7aukiSWSNvMBWU159Lh5cl3WNaV1g+w=' 'sha256-yjJ797QQq/UCxCa++V+5HS+UIQopKNOYVrgkv/NZ0B8=' https://static.cloudflareinsights.com https://www.googletagmanager.com/gtag/ https://k.bossanova.dev https://k-staging.bossanova.dev; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.redoc.ly https://k.bossanova.dev https://k-staging.bossanova.dev https://*.google-analytics.com https://*.googletagmanager.com https://www.google.com; font-src 'self' data:; connect-src 'self' https://k.bossanova.dev https://k-staging.bossanova.dev https://o4511396716871680.ingest.de.sentry.io https://cloudflareinsights.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://stats.g.doubleclick.net https://www.google.com https://www.googletagmanager.com; upgrade-insecure-requests

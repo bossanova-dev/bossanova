@@ -1633,6 +1633,39 @@ func TestMaybeRepair_ConflictBaseMoveRetriesAreBoundedPerHead(t *testing.T) {
 	assert.Contains(t, mock.fireEventReqs[0].GetBlockedReason(), "conflicted on abc123")
 }
 
+// TestMaybeRepair_RefusedStartsDoNotCountOneBaseMoveTwice reproduces PR #3220:
+// the base moved once, every retry on that move was refused because the last
+// repair chat still read as working, and five refusals blocked the session for
+// "5 base branch moves".
+func TestMaybeRepair_RefusedStartsDoNotCountOneBaseMoveTwice(t *testing.T) {
+	sess := conflictSessionAfterFailedRepair(0)
+	sess.LastRepairExitError = ""
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{sess}
+	mock.setBranchHead("base-2")
+	mock.startErr = grpcstatus.Error(codes.FailedPrecondition, "displace blocked: chat repair-1 is working")
+	rm := newTestMonitor(mock)
+
+	for i := 1; i <= maxRepairLoopAttempts+1; i++ {
+		rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+		waitFor(t, func() bool {
+			c, _, _, _ := mock.snapshot()
+			rm.mu.Lock()
+			defer rm.mu.Unlock()
+			return c == i && !rm.repairing["s1"]
+		}, fmt.Sprintf("retry %d on the one base move reaches the refused start", i))
+		rm.mu.Lock()
+		delete(rm.cooldowns, "s1")
+		rm.mu.Unlock()
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	for _, req := range mock.fireEventReqs {
+		assert.NotContains(t, req.GetBlockedReason(), "base branch moves", "one base move must not exhaust the base-move budget")
+	}
+}
+
 func TestMaybeRepair_RejectedAllowsSameHeadWhenReviewFingerprintChanges(t *testing.T) {
 	path := "proxy.go"
 	line := int32(164)

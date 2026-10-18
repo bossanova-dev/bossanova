@@ -2,8 +2,7 @@
   █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
   █▄█  /tmp/worktree · Unmanaged                                          
                                                                           
-  Needed from you:                 
-    Verify is blocked: UI change.  
+  Needed from you: Verify is blocked: UI change.  
 
     CHAT          AGENT   CREATED  ACTIVE  STATUS                                   
   ❯ verify        claude  1h ago   1h ago  ⣾ waiting                                

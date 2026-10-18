@@ -451,7 +451,7 @@ func (h HomeModel) renderSessionTable() string {
 	var b strings.Builder
 
 	if h.filter.Engaged() && len(h.boardSessions()) == 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No sessions match filter."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No sessions match search."))
 		b.WriteString("\n")
 	} else if len(h.sessions) > 0 {
 		// homeTableBlockPadding, not a literal 1: tableAvailWidth subtracts this
@@ -564,9 +564,9 @@ func (h HomeModel) sessionTableFooterActions() (left, nav, quit []string) {
 	}
 	left = append(left, actions...)
 	if h.filter.Applied() {
-		left = append(left, "[/] edit filter", "[esc] clear")
+		left = append(left, "[/] edit search", "[esc] clear")
 	} else if len(h.boardSessions()) > 0 {
-		left = append(left, "[/] filter")
+		left = append(left, "[/] search")
 	}
 	nav = []string{"[s]ettings"}
 	if la := h.loginAction(); la != "" {

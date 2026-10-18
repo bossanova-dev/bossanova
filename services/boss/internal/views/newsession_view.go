@@ -243,7 +243,7 @@ func prSelectActionBar(width int, f listFilter, hasItems bool) string {
 	}
 	primary := []string{"[enter] select"}
 	if hasItems {
-		primary = append(primary, "[/] filter")
+		primary = append(primary, "[/] search")
 	}
 	return actionBarWidth(width, primary, []string{"[esc] back"})
 }
@@ -254,7 +254,7 @@ func prSelectActionBarLineCount(width int, f listFilter, hasItems bool) int {
 	}
 	primary := []string{"[enter] select"}
 	if hasItems {
-		primary = append(primary, "[/] filter")
+		primary = append(primary, "[/] search")
 	}
 	return actionBarLineCount(width, primary, []string{"[esc] back"})
 }

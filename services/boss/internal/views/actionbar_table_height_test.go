@@ -49,7 +49,7 @@ func TestTableHeightsReserveWrappedActionBars(t *testing.T) {
 			name: "trash",
 			got:  (TrashModel{filteredSessions: make([]int, 100), width: width, height: height}).tableHeight(),
 			want: clampedTableHeight(100, height, bannerOverhead+1+actionBarPadY+actionBarLineCount(width,
-				[]string{"[d]elete", "[a] delete all", "[r]estore", "[/] filter"},
+				[]string{"[d]elete", "[a] delete all", "[r]estore", "[/] search"},
 				[]string{"[esc] back"},
 			)),
 		},

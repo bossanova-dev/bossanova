@@ -343,7 +343,7 @@ func TestAttentionActionFooterShowsThePlainEnter(t *testing.T) {
 	for _, action := range []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT, pb.AttentionAction_ATTENTION_ACTION_ANSWER} {
 		h := attentionHome(&attentionStub{}, attentionSession(action))
 		left, _, _ := h.sessionTableFooterActions()
-		if want := []string{"[n]ew session", "[enter] select", "[/] filter"}; !slices.Equal(left, want) {
+		if want := []string{"[n]ew session", "[enter] select", "[/] search"}; !slices.Equal(left, want) {
 			t.Fatalf("%s footer=%v, want %v", action, left, want)
 		}
 	}
@@ -745,6 +745,8 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 			"Couldn't merge PR #42: the PR has a merge conflict; your approval stays recorded, so verify may merge it once it passes", true},
 		{"rpc error", &attentionStub{mergeErr: connect.NewError(connect.CodeInternal, errors.New("the tracker refused the write"))},
 			"Couldn't merge PR #42: the tracker refused the write", true},
+		{"uncoded refusal relayed by bosso", &attentionStub{mergeErr: connect.NewWireError(connect.CodeAborted, errors.New("merge PR: 405 At least 1 approving review is required"))},
+			"Couldn't merge PR #42: merge PR: 405 At least 1 approving review is required", true},
 		{"no answer from bossd", &attentionStub{mergeErr: connect.NewError(connect.CodeUnavailable, errors.New("dial unix: connection refused"))},
 			"Waiting to hear whether PR #42 merged", false},
 	} {
@@ -977,7 +979,7 @@ func TestAttentionMergeWithNoAnswerReadsMergingUntilAPollSettlesIt(t *testing.T)
 		}{
 			{"merged", func(s *pb.Session) { s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED }, "Merged PR #42", false},
 			{"closed", func(s *pb.Session) { s.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_CLOSED }, "PR #42 was closed without merging", true},
-			{"no longer merging", func(*pb.Session) {}, "PR #42 did not merge", true},
+			{"no longer merging", func(*pb.Session) {}, "No answer came back about merging PR #42, and it has not merged", true},
 		} {
 			t.Run(errName+"/"+tc.name, func(t *testing.T) {
 				c := &attentionStub{mergeErr: noAnswer}
@@ -1134,7 +1136,7 @@ func TestAttentionMergeWithNoAnswerOffersNoActionOnTheDetailsView(t *testing.T) 
 
 			model, _ = model.Update(chatPickerRefreshMsg{session: proto.CloneOf(s)})
 			screen := ansi.Strip(model.View().Content)
-			if !strings.Contains(screen, "PR #42 did not merge") || strings.Contains(screen, "Waiting to hear") || !strings.Contains(screen, "[m]erge") {
+			if !strings.Contains(screen, "No answer came back about merging PR #42, and it has not merged") || strings.Contains(screen, "Waiting to hear") || !strings.Contains(screen, "[m]erge") {
 				t.Fatalf("after a poll showing the merge ended: want the outcome and merge on offer again:\n%s", screen)
 			}
 			model, _ = model.Update(keyPress('m'))

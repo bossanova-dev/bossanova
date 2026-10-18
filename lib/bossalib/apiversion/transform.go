@@ -1236,6 +1236,10 @@ func transformUnarySessionResponse(method string, msg any, transform func(*pb.Se
 		if m, ok := msg.(*pb.ProxyResumeSessionRunResponse); ok {
 			m.Session = transform(m.GetSession())
 		}
+	case bossanovav1connect.OrchestratorServiceProxyOperatorMergeSessionProcedure:
+		if m, ok := msg.(*pb.ProxyOperatorMergeSessionResponse); ok {
+			m.Session = transform(m.GetSession())
+		}
 	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
 		if m, ok := msg.(*pb.ProxyLinkSessionPRResponse); ok {
 			m.Session = transform(m.GetSession())

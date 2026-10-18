@@ -12,6 +12,7 @@ func TestAttentionActionSessionCarriers_VersionPins(t *testing.T) {
 	for _, procedure := range []string{
 		bossanovav1connect.OrchestratorServiceProxyDismissSessionAlertProcedure,
 		bossanovav1connect.OrchestratorServiceProxyResumeSessionRunProcedure,
+		bossanovav1connect.OrchestratorServiceProxyOperatorMergeSessionProcedure,
 	} {
 		t.Run(procedureMethod(procedure), func(t *testing.T) {
 			for _, version := range []Version{Baseline, DefaultRegistry().Current()} {
@@ -33,6 +34,19 @@ func TestAttentionActionSessionCarriers_VersionPins(t *testing.T) {
 						t.Fatal("current response changed")
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestOperatorMergeRefusal_KeepsAnswerWithoutSession(t *testing.T) {
+	for _, version := range []Version{Baseline, DefaultRegistry().Current()} {
+		t.Run(string(version), func(t *testing.T) {
+			refused := &pb.ProxyOperatorMergeSessionResponse{Approval: &pb.VerifyApproveResult{Reason: "head-moved"}, TrackerWhy: "kept"}
+			msg := proto.Clone(refused).(*pb.ProxyOperatorMergeSessionResponse)
+			ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyOperatorMergeSessionProcedure, msg, version)
+			if !proto.Equal(msg, refused) {
+				t.Fatalf("refused merge = %v, want %v", msg, refused)
 			}
 		})
 	}

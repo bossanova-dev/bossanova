@@ -535,6 +535,44 @@ func (r *archivingRefresher) RefreshPRWithoutWebhookCredit(ctx context.Context, 
 	return r.srv.RequestArchiveAutomatic(ctx, r.id)
 }
 
+// An operator who archives the session while its approval runs (the page keeps
+// Archive enabled during a merge) must not pull the worktree out from under
+// the approval, which runs in it.
+func TestOperatorMergeSession_AnArchiveDuringTheApprovalWaitsForTheMerge(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	worktree := h.srv.sessions.(*lifecycleSessionStoreFake).session.WorktreePath
+	archived := make(chan struct{})
+	h.srv.archiveDeferrer = newArchiveDeferrer(nil, nil, nil, nil, func(context.Context, string) error {
+		defer close(archived)
+		return os.RemoveAll(worktree)
+	}, zerolog.Nop())
+	h.srv.archiveDeferrer.interval = 10 * time.Millisecond
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	loopDone := h.srv.RunArchiveDeferrer(ctx, nil)
+	defer func() { stop(); <-loopDone }()
+	var approvedInWorktree bool
+	h.verbs.onApprove = func() {
+		if err := h.srv.RequestArchiveAutomatic(context.Background(), "s1"); err != nil {
+			t.Errorf("archive request: %v", err)
+		}
+		_, err := os.Stat(worktree)
+		approvedInWorktree = err == nil
+	}
+
+	if _, err := h.merge(true, "human-review:ui"); err != nil {
+		t.Fatalf("OperatorMergeSession: %v", err)
+	}
+	if !approvedInWorktree {
+		t.Fatal("the archive removed the worktree while the approval was running in it")
+	}
+	select {
+	case <-archived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the archive requested during the approval never ran after the merge")
+	}
+}
+
 // TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping reproduces
 // the delta report: on a repo that archives after merge, the post-merge re-poll
 // archived the session and removed its worktree before mark-merged ran in it,

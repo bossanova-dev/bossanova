@@ -432,6 +432,8 @@ func sessionResponse(procedure string, sess *pb.Session) (any, func(any) *pb.Ses
 		return &pb.ProxyDismissSessionAlertResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyDismissSessionAlertResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyResumeSessionRunProcedure:
 		return &pb.ProxyResumeSessionRunResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyResumeSessionRunResponse).GetSession() }
+	case bossanovav1connect.OrchestratorServiceProxyOperatorMergeSessionProcedure:
+		return &pb.ProxyOperatorMergeSessionResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyOperatorMergeSessionResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyLinkSessionPRProcedure:
 		return &pb.ProxyLinkSessionPRResponse{Session: sess}, func(msg any) *pb.Session { return msg.(*pb.ProxyLinkSessionPRResponse).GetSession() }
 	case bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure:

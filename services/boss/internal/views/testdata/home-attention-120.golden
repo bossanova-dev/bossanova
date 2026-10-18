@@ -13,4 +13,4 @@
    my-app  [BOS-1501] Improve the unattended session workflow  #2981  ⣾ building       
    my-app  [BOS-1508] Improve the unattended session workflow  #2988  ⣾ checking 4/9   
    my-app  [BOS-1509] Improve the unattended session workflow  #2989  ✓ merged         
-[n]ew session  [enter] select  [v]ideo  [m]erge  [/] filter · [s]ettings · [q]uit
+[n]ew session  [enter] select  [v]ideo  [m]erge  [/] search · [s]ettings · [q]uit

@@ -446,15 +446,15 @@ func TestTUI_NewSessionView_PRSelect_FilterActivates(t *testing.T) {
 	navigateToPRSelect(t, h)
 
 	// Before "/" is pressed, the bar advertises the feature.
-	if !strings.Contains(h.Driver.Screen(), "[/] filter") {
-		t.Fatalf("expected '[/] filter' hint in action bar; screen:\n%s", h.Driver.Screen())
+	if !strings.Contains(h.Driver.Screen(), "[/] search") {
+		t.Fatalf("expected '[/] search' hint in action bar; screen:\n%s", h.Driver.Screen())
 	}
 
 	// Press "/" — enter filter mode.
 	if err := h.Driver.SendKey('/'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "type to filter"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "type to search"); err != nil {
 		t.Fatalf("expected filter action bar; screen:\n%s", h.Driver.Screen())
 	}
 }

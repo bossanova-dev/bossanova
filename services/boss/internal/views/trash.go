@@ -537,7 +537,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				prompt := fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))
 				if m.filter.Engaged() {
 					ids = m.filteredSessionIDs()
-					prompt = fmt.Sprintf("Permanently delete %d filtered archived sessions?", len(ids))
+					prompt = fmt.Sprintf("Permanently delete %d matching archived sessions?", len(ids))
 				}
 				m.pendingDeleteIDs = ids
 				m.confirmDeleteAll = true
@@ -586,9 +586,9 @@ func (m TrashModel) tableHeight() int {
 		} else if len(m.filteredSessions) > 0 {
 			primary := []string{"[d]elete", "[a] delete all", "[r]estore"}
 			if m.filter.Applied() {
-				actionLines = actionBarLineCount(m.width, primary, []string{"[/] edit filter", "[esc] clear"})
+				actionLines = actionBarLineCount(m.width, primary, []string{"[/] edit search", "[esc] clear"})
 			} else {
-				actionLines = actionBarLineCount(m.width, append(primary, "[/] filter"), []string{"[esc] back"})
+				actionLines = actionBarLineCount(m.width, append(primary, "[/] search"), []string{"[esc] back"})
 			}
 		}
 	}
@@ -622,7 +622,7 @@ func (m TrashModel) View() tea.View {
 	}
 
 	if len(m.filteredSessions) == 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No archived sessions match filter."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No archived sessions match search."))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
@@ -686,10 +686,10 @@ func trashActionBar(width int, f listFilter, hasRows bool) string {
 		primary = []string{"[d]elete", "[a] delete all", "[r]estore"}
 	}
 	if f.Applied() {
-		return actionBarWidth(width, primary, []string{"[/] edit filter", "[esc] clear"})
+		return actionBarWidth(width, primary, []string{"[/] edit search", "[esc] clear"})
 	}
 	if hasRows {
-		primary = append(primary, "[/] filter")
+		primary = append(primary, "[/] search")
 		return actionBarWidth(width, primary, []string{"[esc] back"})
 	}
 	return actionBarWidth(width, []string{"[esc] back"})

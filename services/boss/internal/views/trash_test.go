@@ -184,7 +184,7 @@ func TestTrashModel_FilterRendersBetweenTableAndActionBar(t *testing.T) {
 
 	view := m.View().Content
 	assertAppearsBefore(t, view, "Fix checkout", "(1 of 3)")
-	assertAppearsBefore(t, view, "(1 of 3)", "type to filter")
+	assertAppearsBefore(t, view, "(1 of 3)", "type to search")
 }
 
 func TestTrashModel_FilterKeyLifecycle(t *testing.T) {
@@ -351,7 +351,7 @@ func TestTrashModel_FilteredDeleteAllDeletesOnlyMatchedSessions(t *testing.T) {
 	if !m.confirm.active {
 		t.Fatal("model should confirm filtered delete all")
 	}
-	if got := m.View().Content; !strings.Contains(got, "Permanently delete 1 filtered archived sessions?") {
+	if got := m.View().Content; !strings.Contains(got, "Permanently delete 1 matching archived sessions?") {
 		t.Fatalf("confirmation copy missing filtered scope: %q", got)
 	}
 
@@ -697,11 +697,11 @@ func TestTrashModel_ZeroMatchFilterSuppressesRowActions(t *testing.T) {
 		t.Fatalf("rows = %d, want 0", got)
 	}
 	view := m.View().Content
-	if !strings.Contains(view, "No archived sessions match filter.") {
+	if !strings.Contains(view, "No archived sessions match search.") {
 		t.Fatalf("view missing no-match state: %q", view)
 	}
-	assertAppearsBefore(t, view, "No archived sessions match filter.", "(0 of 3)")
-	assertAppearsBefore(t, view, "(0 of 3)", "type to filter")
+	assertAppearsBefore(t, view, "No archived sessions match search.", "(0 of 3)")
+	assertAppearsBefore(t, view, "(0 of 3)", "type to search")
 	if strings.Contains(view, "[d]elete") || strings.Contains(view, "[r]estore") || strings.Contains(view, "[a] delete all") {
 		t.Fatalf("view should suppress row actions with zero matches: %q", view)
 	}

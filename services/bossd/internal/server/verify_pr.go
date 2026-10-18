@@ -114,6 +114,10 @@ func (s *Server) OperatorMergeSession(ctx context.Context, req *connect.Request[
 // returns the session's PR once known, for the outcome log.
 func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSessionRequest, pin string, budget operatorMergeBudget) (*pb.OperatorMergeSessionResponse, int, error) {
 	id := req.GetId()
+	// An archive waits until the merge is over: the approval runs in the
+	// session worktree, and the merge can archive the session, which removes
+	// the worktree the tracker bookkeeping runs in.
+	defer s.archiveDeferral().hold(id)()
 	target, env, err := s.verifyTarget(ctx, id, false)
 	if err != nil {
 		return nil, 0, err
@@ -145,9 +149,6 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 			return resp, target.PR, nil
 		}
 	}
-	// The merge can archive the session, which removes the worktree the
-	// tracker bookkeeping runs in; the archive waits until that is over.
-	defer s.archiveDeferral().hold(id)()
 	merged, err := s.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: pin}))
 	if err != nil {
 		if resp.Approval != nil {

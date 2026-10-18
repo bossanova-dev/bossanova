@@ -26,6 +26,7 @@ func TestUnaryProceduresContainingCarrier_SessionSet(t *testing.T) {
 		bossanovav1connect.OrchestratorServiceProxyListSessionsAcrossOrganizationsProcedure,
 		bossanovav1connect.OrchestratorServiceProxyMergeSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyMoveSessionProcedure,
+		bossanovav1connect.OrchestratorServiceProxyOperatorMergeSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyPauseSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyResumeSessionProcedure,
 		bossanovav1connect.OrchestratorServiceProxyResumeSessionRunProcedure,

@@ -18,7 +18,7 @@ func TestHomeFilterSlashOpensInput(t *testing.T) {
 	h.buildTableRows()
 	model, _ := h.Update(keyString("/"))
 	h = model.(HomeModel)
-	if !h.textEntryActive() || !strings.Contains(h.renderSessionTable(), "type to filter") {
+	if !h.textEntryActive() || !strings.Contains(h.renderSessionTable(), "type to search") {
 		t.Fatal("slash did not open filter")
 	}
 	model, _ = h.Update(tea.KeyPressMsg{Code: 'B'})
@@ -138,7 +138,7 @@ func TestHomeFilterNoMatchAndHiddenInputs(t *testing.T) {
 	h.filter.SeedApplied("absent")
 	h.buildTableRows()
 	screen := h.renderSessionTable()
-	if !strings.Contains(screen, "No sessions match filter.") || strings.Contains(screen, "[enter] select") || strings.Contains(screen, "no active sessions") {
+	if !strings.Contains(screen, "No sessions match search.") || strings.Contains(screen, "[enter] select") || strings.Contains(screen, "no active sessions") {
 		t.Fatalf("bad no-match view: %s", screen)
 	}
 	if h.selectedSession() != nil {
@@ -172,7 +172,7 @@ func TestHomeFilterReorderRefused(t *testing.T) {
 	h.buildTableRows()
 	before := h.sessions[0]
 	h, cmd := h.moveSelectedSession(pb.MoveDirection_MOVE_DIRECTION_UP)
-	if cmd != nil || h.sessions[0] != before || h.status != "Clear the filter to reorder sessions" || !h.statusErr {
+	if cmd != nil || h.sessions[0] != before || h.status != "Clear the search to reorder sessions" || !h.statusErr {
 		t.Fatal("filtered reorder was not refused")
 	}
 }

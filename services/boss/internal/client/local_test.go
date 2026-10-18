@@ -586,10 +586,3 @@ func TestLocalClientResumeSessionRunForwardsSessionID(t *testing.T) {
 		t.Fatalf("request = %v", rpc.lastResumeRunReq)
 	}
 }
-
-func TestRemoteClientResumeSessionRunIsLocalOnly(t *testing.T) {
-	_, err := (&RemoteClient{}).ResumeSessionRun(context.Background(), "id")
-	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("err = %v, want Unimplemented", err)
-	}
-}

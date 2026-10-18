@@ -2557,8 +2557,9 @@ export async function markMerged(options, deps = {}) {
 /**
  * Moves a merged PR's ticket to the done state and drops its needs-human label: `{trackerWrites,
  * why?}`, which is `none` (why `no-ticket`) for a PR no ticket stands behind, `unavailable` (why the
- * probe's reason) when the write path is not there, and the applied outcome otherwise. A dry run
- * lists the write in `writes` and returns `{}` without applying it.
+ * probe's reason) when the write path is not there, and the applied outcome otherwise, with the
+ * adapter's reason as why. A failed write another attempt would only repeat is `permanent`. A dry
+ * run lists the write in `writes` and returns `{}` without applying it.
  */
 async function markTrackerMerged(read, deps, { repo, p, dryRun, writes }) {
   const ticket = parseLinearIssueLine(p.body)
@@ -2577,7 +2578,11 @@ async function markTrackerMerged(read, deps, { repo, p, dryRun, writes }) {
   if (!probe.available) return { trackerWrites: 'unavailable', why: probe.why }
   if (dryRun) return {}
   const applied = await adapter.applyIssueWrites(write)
-  return { trackerWrites: applied?.outcome ?? 'failed' }
+  const outcome = applied?.outcome ?? 'failed'
+  const why = text(applied?.reason) ? { why: applied.reason } : {}
+  if (outcome === 'failed' && applied?.permanent === true)
+    return { trackerWrites: 'permanent', ...why }
+  return { trackerWrites: outcome, ...why }
 }
 
 /**

@@ -8398,6 +8398,9 @@ type recordedTmuxCall struct {
 	// built, zero when it carried none. Same reason as markStartFailedCall's:
 	// it pins the budget the detached kill runs under, which ctxErr cannot.
 	deadline time.Time
+	// loaded is what a load-buffer call read on stdin, the text a paste-buffer
+	// after it pastes. It fills in when the command runs.
+	loaded *bytes.Buffer
 }
 
 // fakeTmux drives a *tmux.Client via WithCommandFactory so cron tmux tests
@@ -8477,6 +8480,13 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 			out = f.capturePaneFunc(f.calls)
 		}
 		return exec.CommandContext(ctx, "printf", "%s", out)
+	}
+	if subcommand == "load-buffer" {
+		loaded := &bytes.Buffer{}
+		f.calls[len(f.calls)-1].loaded = loaded
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdout = loaded
+		return cmd
 	}
 	return exec.CommandContext(ctx, "true")
 }

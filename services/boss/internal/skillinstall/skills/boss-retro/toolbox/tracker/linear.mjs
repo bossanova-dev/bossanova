@@ -714,14 +714,15 @@ export async function linearApplyIssueWrites({
       const pick =
         matches.find((node) => node.team?.id === issue.team.id) ??
         matches.find((node) => !node.team)
-      if (!pick) return failed(`label-not-found: ${name}`, { issue: summary })
+      if (!pick) return failed(`label-not-found: ${name}`, { issue: summary, permanent: true })
       addIds.set(name, pick.id)
     }
   }
   let stateId = null
   if (nonEmpty(stateName)) {
     const state = connectionNodes(issue.team.states).find((node) => node?.name === stateName.trim())
-    if (!nonEmpty(state?.id)) return failed(`state-not-found: ${stateName}`, { issue: summary })
+    if (!nonEmpty(state?.id))
+      return failed(`state-not-found: ${stateName}`, { issue: summary, permanent: true })
     stateId = state.id
   }
   let body = null

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -506,5 +507,60 @@ func TestOperatorMergeSession_HoldsMergingFromTheGateThroughTheBookkeeping(t *te
 				t.Errorf("entry after the merge = %+v, want the re-polled merged status kept", e)
 			}
 		})
+	}
+}
+
+// archivingRefresher stands in for MergeSession's post-merge re-poll on a repo
+// that archives sessions after merge: the re-poll lands the session on Merged,
+// which requests the archive. It requests it synchronously, the worst case of
+// the production goroutine racing the tracker bookkeeping.
+type archivingRefresher struct {
+	srv *Server
+	id  string
+}
+
+func (r *archivingRefresher) RefreshPRWithoutWebhookCredit(ctx context.Context, _ string, _ int) error {
+	return r.srv.RequestArchiveAutomatic(ctx, r.id)
+}
+
+// TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping reproduces
+// the delta report: on a repo that archives after merge, the post-merge re-poll
+// archived the session and removed its worktree before mark-merged ran in it,
+// so every gh read the toolbox made failed (ENOENT on the vanished cwd) and the
+// merge reported "the PR could not be read" with the ticket left unmoved.
+func TestOperatorMergeSession_TheArchiveWaitsForTheTrackerBookkeeping(t *testing.T) {
+	h := newOperatorMergeHarness(t, headPin)
+	worktree := h.srv.sessions.(*lifecycleSessionStoreFake).session.WorktreePath
+	archived := make(chan struct{})
+	h.srv.archiveDeferrer = newArchiveDeferrer(nil, nil, nil, nil, func(context.Context, string) error {
+		defer close(archived)
+		return os.RemoveAll(worktree)
+	}, zerolog.Nop())
+	h.srv.archiveDeferrer.interval = 10 * time.Millisecond
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	loopDone := h.srv.RunArchiveDeferrer(ctx, nil)
+	defer func() { stop(); <-loopDone }()
+	h.srv.prRefresher = &archivingRefresher{srv: h.srv, id: "s1"}
+	h.verbs.onMarkMerged = func() {
+		if _, err := os.Stat(worktree); err != nil {
+			h.verbs.markMerged = verifybridge.MarkMergedResult{Reason: "pr-unreadable"}
+		}
+	}
+
+	resp, err := h.merge(false)
+	if err != nil {
+		t.Fatalf("OperatorMergeSession: %v", err)
+	}
+	if resp.GetTrackerWrites() != "ok" {
+		t.Fatalf("tracker writes = %q (why %q), want ok: the archive removed the worktree before the bookkeeping ran in it", resp.GetTrackerWrites(), resp.GetTrackerWhy())
+	}
+	select {
+	case <-archived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the archive the merge requested never ran after the bookkeeping finished")
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still present after the archive: %v", err)
 	}
 }

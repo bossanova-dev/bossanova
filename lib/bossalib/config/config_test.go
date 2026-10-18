@@ -166,22 +166,48 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
-// TestSaveToReturnsRenameError pins the rename error branch in SaveTo
-// (config.go:678, `os.Rename(tmpName, path); err != nil`). The temp file is
-// written and fsynced successfully, then renamed into place atomically; when the
-// destination is an existing directory that final rename fails (EISDIR/ENOTDIR on
-// both Linux and macOS). SaveTo must surface that error rather than reporting a
-// write that never landed — the CONDITIONALS_NEGATION mutant drops the failure and
-// returns nil.
 func TestSaveToReturnsRenameError(t *testing.T) {
-	// A directory at the destination path forces os.Rename(file, dir) to fail.
 	target := filepath.Join(t.TempDir(), "settings-is-a-dir")
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	if err := SaveTo(target, DefaultSettings()); err == nil {
+	err := SaveTo(target, DefaultSettings())
+	if err == nil {
 		t.Fatal("SaveTo to an existing directory = nil, want a rename error")
+	}
+	if !strings.Contains(err.Error(), "replace settings") || !strings.Contains(err.Error(), target) {
+		t.Fatalf("SaveTo() error = %q, want replacement operation and settings path", err)
+	}
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) || !errors.Is(err, linkErr.Err) {
+		t.Fatalf("SaveTo() error = %v, want preserved rename error", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(target) {
+		t.Fatalf("failed save left temporary files: %v", entries)
+	}
+}
+
+func TestSaveToReturnsParentDirectoryError(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "nested", "settings.json")
+	err := SaveTo(target, DefaultSettings())
+	if err == nil {
+		t.Fatal("SaveTo with a file as parent = nil, want a directory creation error")
+	}
+	if !strings.Contains(err.Error(), "create settings directory") || !strings.Contains(err.Error(), target) {
+		t.Fatalf("SaveTo() error = %q, want directory creation operation and settings path", err)
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || !errors.Is(err, pathErr.Err) {
+		t.Fatalf("SaveTo() error = %v, want preserved filesystem error", err)
 	}
 }
 
@@ -692,7 +718,7 @@ func TestSaveToReturnsDirectorySyncError(t *testing.T) {
 	if !errors.Is(err, syncErr) {
 		t.Fatalf("saveTo() error = %v, want wrapped directory sync error", err)
 	}
-	if !strings.Contains(err.Error(), "sync settings directory") {
+	if !strings.Contains(err.Error(), "sync settings directory") || !strings.Contains(err.Error(), path) {
 		t.Fatalf("saveTo() error = %q, want directory sync context", err)
 	}
 }

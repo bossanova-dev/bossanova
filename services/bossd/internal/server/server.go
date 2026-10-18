@@ -86,17 +86,20 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos           db.RepoStore
-	sessions        db.SessionStore
-	attempts        db.AttemptStore
-	agentChats      db.AgentChatStore
-	workflows       db.WorkflowStore
-	taskMappings    db.TaskMappingStore
-	cronJobs        db.CronJobStore
-	resumeAttempts  db.ResumeAttemptStore
-	attentionCache  attentionCache
-	githubCallbacks db.GithubCallbackStore
-	telemetry       libtelemetry.Client
+	repos          db.RepoStore
+	sessions       db.SessionStore
+	attempts       db.AttemptStore
+	agentChats     db.AgentChatStore
+	workflows      db.WorkflowStore
+	taskMappings   db.TaskMappingStore
+	cronJobs       db.CronJobStore
+	resumeAttempts db.ResumeAttemptStore
+	// pendingTrackerMerges queues post-merge tracker writes that did not land,
+	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
+	pendingTrackerMerges db.PendingTrackerMergeStore
+	attentionCache       attentionCache
+	githubCallbacks      db.GithubCallbackStore
+	telemetry            libtelemetry.Client
 	// broadcasts persists broadcasts and their per-target deliveries (BOS-556);
 	// broadcastResolver turns a validated selector into the frozen audience.
 	// Both are optional (nil in tests/wiring that does not exercise the
@@ -350,6 +353,8 @@ type Config struct {
 	TaskMappings   db.TaskMappingStore
 	CronJobs       db.CronJobStore
 	ResumeAttempts db.ResumeAttemptStore
+	// PendingTrackerMerges queues post-merge tracker writes to retry. Optional.
+	PendingTrackerMerges db.PendingTrackerMergeStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
 	// May be nil in tests/contexts that do not exercise the callback surface.
 	GithubCallbacks db.GithubCallbackStore
@@ -705,16 +710,18 @@ type AccountMaterializations interface {
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	srv := &Server{
-		repos:           cfg.Repos,
-		sessions:        cfg.Sessions,
-		attempts:        cfg.Attempts,
-		agentChats:      cfg.AgentChats,
-		workflows:       cfg.Workflows,
-		taskMappings:    cfg.TaskMappings,
-		cronJobs:        cfg.CronJobs,
-		resumeAttempts:  cfg.ResumeAttempts,
-		githubCallbacks: cfg.GithubCallbacks,
-		telemetry:       cfg.Telemetry,
+		repos:          cfg.Repos,
+		sessions:       cfg.Sessions,
+		attempts:       cfg.Attempts,
+		agentChats:     cfg.AgentChats,
+		workflows:      cfg.Workflows,
+		taskMappings:   cfg.TaskMappings,
+		cronJobs:       cfg.CronJobs,
+		resumeAttempts: cfg.ResumeAttempts,
+
+		pendingTrackerMerges: cfg.PendingTrackerMerges,
+		githubCallbacks:      cfg.GithubCallbacks,
+		telemetry:            cfg.Telemetry,
 
 		broadcasts:             cfg.Broadcasts,
 		broadcastResolver:      cfg.BroadcastResolver,
@@ -4534,6 +4541,26 @@ func recordChatRole(r pb.ChatRole) models.AgentChatRole {
 	return models.AgentChatRoleOperator
 }
 
+// errResumeChatGone refuses a resume of a chat that has no row and no saved
+// conversation, usually one deleted after the caller listed it. Recording it
+// would start a brand-new agent under the old id; a caller that wants a new
+// chat records one with resume unset.
+//
+// No dated apiversion bump, and why: the old answer created that brand-new
+// chat, which is the defect, so no client can want it back. See
+// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+var errResumeChatGone = errors.New("chat no longer exists")
+
+// resumableTranscript reports whether a chat with no row still has a saved
+// conversation to resume, as when a lost chat is recorded again by its id.
+func (s *Server) resumableTranscript(ctx context.Context, agentName, sessionID, agentSessionID string) bool {
+	sess, err := s.sessions.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return false
+	}
+	return s.chatSpawnDeps().Transcripts.TranscriptExists(ctx, agentName, sess.WorktreePath, agentSessionID)
+}
+
 func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	msg := req.Msg
 	if msg.SessionId == "" {
@@ -4587,6 +4614,9 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		// every client. See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 		if err := validateAgentSessionID(agentName, msg.AgentSessionId); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if msg.GetResume() && !s.resumableTranscript(ctx, agentName, msg.SessionId, msg.AgentSessionId) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("%w: %s", errResumeChatGone, msg.AgentSessionId))
 		}
 		chat, err = s.agentChats.Create(ctx, db.CreateAgentChatParams{
 			SessionID:      msg.SessionId,
@@ -4891,24 +4921,34 @@ func (s *Server) recordInteractiveAgentRunTelemetry(ctx context.Context, sess *m
 }
 
 func tallyInteractiveAgentRunForServer(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (agenttelemetry.Counts, error) {
+	transcripts, err := interactiveTranscriptPaths(worktreePath, chat)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if chat.AgentName == "claude" {
+		return agenttelemetry.TallyClaudePathWithChildrenWindowContext(ctx, transcripts[0], filepath.Dir(transcripts[0]), chatResumeSessionIDForServer(chat), since, until)
+	}
+	return agenttelemetry.TallyCodexPathsWindowContext(ctx, transcripts, since, until)
+}
+
+// interactiveTranscriptPaths resolves the transcript files a chat's tally
+// reads: a claude chat's own transcript (its subagents' files add counts but
+// never its LastOutputAt), or every codex rollout of the chat.
+func interactiveTranscriptPaths(worktreePath string, chat *models.AgentChat) ([]string, error) {
 	if chat == nil || chat.AgentSessionID == "" {
-		return agenttelemetry.Counts{}, os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 	switch chat.AgentName {
 	case "claude":
 		transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, chatResumeSessionIDForServer(chat))
 		if err != nil {
-			return agenttelemetry.Counts{}, err
+			return nil, err
 		}
-		return agenttelemetry.TallyClaudePathWithChildrenWindowContext(ctx, transcript, filepath.Dir(transcript), chatResumeSessionIDForServer(chat), since, until)
+		return []string{transcript}, nil
 	case "codex":
-		transcripts, err := agenttelemetry.CodexTranscriptPaths(chatResumeSessionIDForServer(chat))
-		if err != nil {
-			return agenttelemetry.Counts{}, err
-		}
-		return agenttelemetry.TallyCodexPathsWindowContext(ctx, transcripts, since, until)
+		return agenttelemetry.CodexTranscriptPaths(chatResumeSessionIDForServer(chat))
 	default:
-		return agenttelemetry.Counts{}, os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 }
 

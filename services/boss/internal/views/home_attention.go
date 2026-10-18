@@ -191,35 +191,3 @@ func (h HomeModel) renderProgressStatus(label string) string {
 	}
 	return style.Render(ansi.Truncate(label, homeStatusWidth, "…"))
 }
-
-// homeAttentionSentence is the sentence Home shows under a Needs-you row. A
-// MERGE sentence only restates the row's merge status cell, so Home drops it;
-// the API still carries it for the details view and notifications.
-func homeAttentionSentence(a *pb.SessionAttention) string {
-	if !attention.NeedsYou(a.GetKind()) || a.GetKind() == pb.AttentionKind_ATTENTION_KIND_MERGE {
-		return ""
-	}
-	return strings.Join(strings.Fields(a.GetSentence()), " ")
-}
-
-func attentionSentenceLines(s *pb.Session, width int) []string {
-	text := homeAttentionSentence(s.GetAttention())
-	if text == "" {
-		return nil
-	}
-	lines := strings.Split(ansi.Hardwrap(ansi.Wrap(text, max(1, width), ""), max(1, width), false), "\n")
-	if len(lines) > 4 {
-		lines = lines[:4]
-		lines[3] = ansi.Truncate(lines[3], max(1, width)-1, "") + "…"
-	}
-	return lines
-}
-
-func (h HomeModel) attentionSentenceWidth() int {
-	for _, c := range h.table.Columns() {
-		if c.Title == "NAME" {
-			return c.Width
-		}
-	}
-	return 60
-}

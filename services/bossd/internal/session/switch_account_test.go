@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1167,35 +1168,36 @@ func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
 // capture-pane fixture cannot express, because the verifier's own clear/redeliver
 // dance has to move the pane between states for the run to reach that verdict.
 //
-// The marker row renders the notice's first word rather than the whole notice:
-// composerHoldsPayload matches a prefix in either direction, so this holds the
-// payload for the verifier without the fixture having to predict the label and
-// outcome suffix SwitchAccount composes at run time.
+// The marker row renders the whole notice, as delivered. The Enter retry
+// presses nothing into a box that holds only the start of the payload, since
+// that is also what an operator's own message beginning the same way looks
+// like.
 func stuckComposerPane(calls []recordedTmuxCall) string {
-	held := false
-	for _, c := range calls {
-		if c.subcommand == "paste-buffer" {
-			held = true
-			continue
-		}
-		if c.subcommand != "send-keys" || len(c.args) == 0 {
-			continue
-		}
-		switch c.args[len(c.args)-1] {
-		case "C-u":
-			held = false
-		case "Enter":
-			// Swallowed by the TUI — the whole point of the fixture.
-		default:
-			// A literal `send-keys -l -- <text>`, which is how sendPlan delivers
-			// a single-line payload like this notice.
-			held = true
-		}
-	}
-	if held {
-		return "Welcome to Claude\n❯ switched\n"
+	if held, _ := composedNotice(calls); held != "" {
+		return "Welcome to Claude\n❯ " + held + "\n"
 	}
 	return "Welcome to Claude\n❯\n"
+}
+
+// composedNotice replays what calls put in a composer that swallows Enter:
+// held is the last text pasted or typed with send-keys -l, until a C-u empties
+// it, and delivered is the last text delivered whatever followed.
+func composedNotice(calls []recordedTmuxCall) (held, delivered string) {
+	var loaded string
+	for _, c := range calls {
+		switch {
+		case c.subcommand == "load-buffer" && c.loaded != nil:
+			loaded = c.loaded.String()
+		case c.subcommand == "paste-buffer":
+			held, delivered = loaded, loaded
+		case c.subcommand != "send-keys" || len(c.args) == 0:
+		case c.args[len(c.args)-1] == "C-u":
+			held = ""
+		case slices.Contains(c.args, "-l"):
+			held, delivered = c.args[len(c.args)-1], c.args[len(c.args)-1]
+		}
+	}
+	return held, delivered
 }
 
 // composerHoldsNotice replays stuckComposerPane's rule over everything the fake
@@ -1423,7 +1425,8 @@ func TestSwitchAccount_UnsubmittedDeliveryOnAVanishedPaneFailsTheSwitch(t *testi
 		// empty composer would license the redelivery and a second Enter, and the
 		// dead pane would then be read after that Enter — which is the UNCONFIRMED
 		// verdict this test exists to stay out of.
-		return "Welcome to Claude\n❯ switched\n"
+		_, notice := composedNotice(calls)
+		return "Welcome to Claude\n❯ " + notice + "\n"
 	}
 
 	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{

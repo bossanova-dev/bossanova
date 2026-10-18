@@ -53,6 +53,7 @@
     "lint": "prettier --check 'docs/**/*.{md,mdx}' '*.{md,ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'scripts/**/*.mjs' 'sidebars.ts' 'docusaurus.config.ts' && pnpm run lint:prose",
     "lint:prose": "node scripts/prose-density.mjs && node scripts/prose-lint.mjs",
     "start": "docusaurus serve",
+    "test:headers": "node --test scripts/headers.test.mjs",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   }

@@ -230,6 +230,7 @@ func TestTUI_ChatPicker_MergeParkedPR(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Merged PR #597"); err != nil {
 		t.Fatalf("merge outcome not shown; screen:\n%s", h.Driver.Screen())
 	}
+	assertBlankLineAbove(t, h.Driver.Screen(), "Merged PR #597")
 	calls := h.Daemon.OperatorMergeCalls()
 	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetExpectedHeadSha() != head || !calls[0].GetShouldApprove() {
 		t.Fatalf("OperatorMergeCalls = %v, want one approving merge of sess-aaa-111 at %s", calls, head)
@@ -618,9 +619,10 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 					}
 				}
 				if kind == pb.AttentionKind_ATTENTION_KIND_REVIEW {
-					if err := h.Driver.WaitForText(waitTimeout, "Does this UI change look right in the video?"); err != nil {
+					if err := h.Driver.WaitForText(waitTimeout, "Needed from you: Does this UI change look right in the"); err != nil {
 						t.Fatal(err)
 					}
+					assertAnswerHangs(t, h.Driver.Screen(), "Does this UI change look right in the", "video?")
 				} else if err := h.Driver.WaitForText(waitTimeout, "Waiting for a fix"); err != nil {
 					t.Fatal(err)
 				}
@@ -630,6 +632,25 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 			t.Logf("PTY details capture:\n%s", h.Driver.Screen())
 		})
 	}
+}
+
+// assertAnswerHangs: the answer wraps at the chat table's width, so its last
+// word drops to the row below and starts under the answer's first word.
+func assertAnswerHangs(t *testing.T, screen, first, wrapped string) {
+	t.Helper()
+	lines := strings.Split(screen, "\n")
+	for i, line := range lines[:len(lines)-1] {
+		col := strings.Index(line, "Needed from you: "+first)
+		if col < 0 {
+			continue
+		}
+		want := strings.Repeat(" ", col+len("Needed from you: ")) + wrapped
+		if got := strings.TrimRight(lines[i+1], " "); got != want {
+			t.Fatalf("row below the label is %q, want %q:\n%s", got, want, screen)
+		}
+		return
+	}
+	t.Fatalf("no %q row with a row below it:\n%s", "Needed from you: "+first, screen)
 }
 
 // A session that needs you keeps its status in the details header, and an
@@ -681,7 +702,7 @@ func TestTUI_ChatPicker_LongQuestionScroll(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"Needed from you · pgup/pgdown", "Initial implementation", "[enter] open chat"} {
+	for _, text := range []string{"Needed from you: Should we keep", "pgup/pgdown (1–", "Initial implementation", "[enter] open chat"} {
 		if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
 			t.Fatal(err)
 		}

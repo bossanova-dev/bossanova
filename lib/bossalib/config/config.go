@@ -2105,17 +2105,17 @@ func saveTo(path string, s Settings, syncParentDir func(string) error) error {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
+		return fmt.Errorf("create settings directory %q: %w", path, err)
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal settings %q: %w", path, err)
 	}
 	data = append(data, '\n')
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create settings temporary file %q: %w", path, err)
 	}
 	tmpName := tmp.Name()
 	cleanup := true
@@ -2127,25 +2127,25 @@ func saveTo(path string, s Settings, syncParentDir func(string) error) error {
 
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("write settings temporary file %q: %w", path, err)
 	}
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("set settings temporary file permissions %q: %w", path, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("sync settings temporary file %q: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return fmt.Errorf("close settings temporary file %q: %w", path, err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return err
+		return fmt.Errorf("replace settings %q: %w", path, err)
 	}
 	cleanup = false
 	if err := syncParentDir(dir); err != nil {
-		return fmt.Errorf("sync settings directory: %w", err)
+		return fmt.Errorf("sync settings directory for %q: %w", path, err)
 	}
 	return nil
 }

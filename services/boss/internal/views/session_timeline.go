@@ -565,27 +565,34 @@ func wordWrap(text string, first, rest int) []string {
 }
 
 // neededBlock is the "Needed from you" answer above the chat table, or ""
-// when the session asks nothing of the operator.
+// when the session asks nothing of the operator. The answer starts on the
+// label's row and its wrapped lines hang under its first word. An answer too
+// long for the room pages, with the pager on the row below and the label on
+// each page's top row.
 func (m ChatPickerModel) neededBlock() string {
 	if m.neededQuestion() == "" {
 		return ""
 	}
 	lines, start, size := m.neededWindow()
-	heading := "Needed from you:"
+	hang := strings.Repeat(" ", m.neededHang())
+	rows := make([]string, 0, size+1)
+	for i, line := range lines[start : start+size] {
+		gutter := hang
+		if i == 0 && (start == 0 || hang != "") {
+			gutter = neededLabel
+		}
+		// The answer is the one thing on the screen the operator must act on,
+		// so it renders bold in the primary foreground, above the faint chrome.
+		rows = append(rows, m.fitProseLine(gutter+styleEmphasis.Render(line)))
+	}
 	if len(lines) > size {
-		heading = fmt.Sprintf("Needed from you · pgup/pgdown (%d–%d of %d):", start+1, start+size, len(lines))
+		rows = append(rows, m.fitProseLine(fmt.Sprintf("%spgup/pgdown (%d–%d of %d)", hang, start+1, start+size, len(lines))))
 	}
-	// The answer is the one thing on the screen the operator must act on, so
-	// it renders bold in the primary foreground, above the faint chrome.
-	answer := make([]string, 0, size)
-	for _, line := range lines[start : start+size] {
-		answer = append(answer, neededIndent+styleEmphasis.Render(line))
-	}
-	return m.fitProseLine(heading) + "\n" + strings.Join(answer, "\n")
+	return strings.Join(rows, "\n")
 }
 
-// neededChromeRows is the answer's heading plus the blank row below it.
-const neededChromeRows = 2
+// neededChromeRows is the blank row below the answer.
+const neededChromeRows = 1
 
 // attentionDetailsHeight is the rows the answer above the table and the
 // timeline below the action bar take. The answer's blank row is its own; the
@@ -606,26 +613,50 @@ func (m ChatPickerModel) timelineHeight() int {
 	return 0
 }
 
-// neededIndent sets the answer in from its "Needed from you:" heading.
-const neededIndent = "  "
+// neededLabel opens the answer's first row.
+const neededLabel = "Needed from you: "
+
+// neededMinHangWidth is the narrowest answer column worth hanging beside the
+// label. A narrower block wraps the answer under the label instead.
+const neededMinHangWidth = 20
+
+// neededHang is the column the answer's wrapped lines start at: under its
+// first word, after the label, unless that leaves less than
+// neededMinHangWidth, when they start under the label. An unconstrained block
+// hangs.
+func (m ChatPickerModel) neededHang() int {
+	if wrap := m.neededWrapWidth(); wrap > 0 && wrap-len(neededLabel) < neededMinHangWidth {
+		return 0
+	}
+	return len(neededLabel)
+}
+
+// neededWrapWidth is the width the answer wraps at, label included: the block
+// width, capped at detailsMaxWidth.
+func (m ChatPickerModel) neededWrapWidth() int {
+	return detailsWrapWidth(m.blockWrapWidth())
+}
 
 // neededWindow keeps the complete question available while protecting the chat
 // table and footer. Only the question scrolls; chat navigation stays independent.
+// A paged window gives a row to its pager.
 func (m ChatPickerModel) neededWindow() (lines []string, start, size int) {
 	lines = m.neededLines()
 	size = len(lines)
 	if m.height > 0 {
-		size = min(size, max(1, m.height-m.chatListOverhead()-m.timelineHeight()-neededChromeRows-m.detailsReservedTableRows()))
+		if room := m.height - m.chatListOverhead() - m.timelineHeight() - neededChromeRows - m.detailsReservedTableRows(); size > room {
+			size = max(1, room-1)
+		}
 	}
 	return lines, min(max(0, m.neededOffset), len(lines)-size), size
 }
 
-// neededLines is the answer word-wrapped to the block width less its indent.
-// A line's own leading spaces, such as a checklist bullet's, carry onto every
-// line it wraps into.
+// neededLines is the answer word-wrapped to the block width less the label on
+// its first line and less the hang on the rest. A line's own leading spaces,
+// such as a checklist bullet's, carry onto every line it wraps into.
 func (m ChatPickerModel) neededLines() []string {
-	wrap := detailsWrapWidth(m.blockWrapWidth())
-	width := max(1, wrap-len(neededIndent))
+	wrap := m.neededWrapWidth()
+	first, rest := wrap-len(neededLabel), max(1, wrap-m.neededHang())
 	var lines []string
 	for _, paragraph := range strings.Split(m.neededQuestion(), "\n") {
 		lead := paragraph[:len(paragraph)-len(strings.TrimLeft(paragraph, " "))]
@@ -633,7 +664,11 @@ func (m ChatPickerModel) neededLines() []string {
 		// paragraph stays one line.
 		wrapped := []string{strings.Join(strings.Fields(paragraph), " ")}
 		if wrap > 0 {
-			wrapped = wordWrap(paragraph, width-len(lead), width-len(lead))
+			width := rest
+			if lines == nil {
+				width = first
+			}
+			wrapped = wordWrap(paragraph, width-len(lead), rest-len(lead))
 		}
 		for _, line := range wrapped {
 			lines = append(lines, lead+line)

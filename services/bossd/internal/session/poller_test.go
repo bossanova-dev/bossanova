@@ -799,6 +799,7 @@ func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
 					Mergeable:  &mergeable,
 					Rebaseable: &rebaseable,
 				}
+				vp.allowedStrategies = []string{"merge", "rebase"}
 			},
 		},
 		{
@@ -813,6 +814,7 @@ func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
 					Mergeable:  &mergeable,
 					Rebaseable: &rebaseable,
 				}
+				vp.allowedStrategies = []string{"rebase"}
 			},
 		},
 		{
@@ -928,6 +930,29 @@ func TestPollerTreatsRebaseOnlyBlockAsConflictOnlyForRebaseStrategy(t *testing.T
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for ChecksPassed")
+	}
+}
+
+// TestPollerIgnoresRebaseOnlyBlockWhenSquashCanLandIt reproduces PR #3220: a
+// rebase-strategy repo, a PR GitHub calls mergeable but cannot rebase, and
+// squash enabled upstream. MergeSession retries a rebase refusal with squash,
+// so nothing blocks the merge and no conflict may be detected.
+func TestPollerIgnoresRebaseOnlyBlockWhenSquashCanLandIt(t *testing.T) {
+	ctx := context.Background()
+	mergeable := true
+	rebaseable := false
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo", MergeStrategy: models.MergeStrategyRebase}
+	vp := newMockVCSProvider()
+	vp.allowedStrategies = []string{"merge", "squash", "rebase"}
+	prStatus := &vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		Mergeable:        &mergeable,
+		Rebaseable:       &rebaseable,
+		MergeStateStatus: vcs.MergeStateStatusClean,
+	}
+
+	if repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test") {
+		t.Fatal("a rebase-only block the squash fallback lands was classified as a repairable conflict")
 	}
 }
 

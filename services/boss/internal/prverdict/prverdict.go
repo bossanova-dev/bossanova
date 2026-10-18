@@ -159,6 +159,13 @@ func OperatorMerged(pr int, r *pb.OperatorMergeSessionResponse) string {
 	switch r.GetTrackerWrites() {
 	case "ok", "none":
 		return merged
+	case "retrying":
+		return merged + "; the ticket update will be retried"
+	case "permanent":
+		if t := r.GetTrackerTicket(); t != "" {
+			return merged + ", but its ticket " + t + " could not be moved"
+		}
+		return merged + ", but its ticket could not be moved"
 	}
 	return merged + "; the tracker was not updated" + because(r.GetTrackerWhy())
 }

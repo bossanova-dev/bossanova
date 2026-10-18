@@ -139,8 +139,12 @@ type archiveDeferrer struct {
 	mu       sync.Mutex
 	pending  map[string]*pendingArchive
 	inflight map[string]*inflightArchive
-	seq      uint64
-	nudge    chan struct{}
+	// holds counts, per session, work that needs the worktree to outlive a
+	// merge: the operator merge's tracker bookkeeping runs in it. A held
+	// session's archive is recorded pending and fires after the last release.
+	holds map[string]int
+	seq   uint64
+	nudge chan struct{}
 }
 
 func newArchiveDeferrer(
@@ -163,6 +167,7 @@ func newArchiveDeferrer(
 		fireBudget: archiveRPCBudget,
 		pending:    map[string]*pendingArchive{},
 		inflight:   map[string]*inflightArchive{},
+		holds:      map[string]int{},
 		nudge:      make(chan struct{}, 1),
 	}
 }
@@ -204,7 +209,7 @@ func (d *archiveDeferrer) request(ctx context.Context, sessionID string, req Arc
 			d.mu.Unlock()
 			continue
 		}
-		if blocking == "" {
+		if blocking == "" && d.holds[sessionID] == 0 {
 			// Nothing is busy, including any earlier requester still pending.
 			delete(d.pending, sessionID)
 			f := d.claimLocked(sessionID)
@@ -264,6 +269,29 @@ func (d *archiveDeferrer) genLocked(sessionID string) uint64 {
 		return entry.gen
 	}
 	return 0
+}
+
+// hold keeps sessionID from being archived, except by a forced archive, until
+// release runs. A request made meanwhile is recorded pending and fires once
+// the last hold is released. nil-safe, for servers built without deferrers.
+func (d *archiveDeferrer) hold(sessionID string) (release func()) {
+	if d == nil {
+		return func() {}
+	}
+	d.mu.Lock()
+	d.holds[sessionID]++
+	d.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			d.mu.Lock()
+			if d.holds[sessionID]--; d.holds[sessionID] <= 0 {
+				delete(d.holds, sessionID)
+			}
+			d.mu.Unlock()
+			d.signal()
+		})
+	}
 }
 
 // errInFlight is returned by unlessInFlight when sessionID's request is
@@ -534,6 +562,11 @@ func (d *archiveDeferrer) sweep(ctx context.Context, track session.ArchiveWorker
 		// meanwhile (a new requester guard) or a cancel that dropped it wins;
 		// a changed entry is re-evaluated on the next pass.
 		d.mu.Lock()
+		if d.holds[id] > 0 {
+			// Releasing the last hold wakes the loop again.
+			d.mu.Unlock()
+			continue
+		}
 		entry, ok := d.pending[id]
 		if !ok || entry.gen != snaps[id].gen {
 			d.mu.Unlock()

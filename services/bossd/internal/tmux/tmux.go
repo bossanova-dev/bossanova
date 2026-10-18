@@ -1707,7 +1707,7 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	// Only the empty string is skipped (it matches any row). A first Enter the
 	// TUI swallows is retried once inside verifyWithEnterRetry before erroring.
 	if opts.submitVerifyWait > 0 && trimmedPlan != "" {
-		if err := c.verifyWithEnterRetry(ctx, sessionName, plan, opts, deliver); err != nil {
+		if err := c.verifyWithEnterRetry(ctx, sessionName, drawn, opts, deliver); err != nil {
 			return c.withdrawUnsubmitted(ctx, sessionName, drawn, err)
 		}
 	}
@@ -1730,10 +1730,11 @@ const withdrawBudget = 5 * time.Second
 // presses left (composerDrawing.leftByRetry), or, after a press of its own,
 // exactly what that press leaves (pressLeft). It reads the box afresh before
 // every press. Typing appends, so such a box held nothing when this send typed
-// into it, and nobody has typed into it since the read. Anything else is left as it is, and the error says so (withdrawal). A
-// rule-less composer (Codex) is never withdrawn from: its box ends
-// at a blank row, which is also how a draft's second paragraph starts, so what
-// it holds cannot be read. Codex confirms a submit from its rollout anyway.
+// into it, and nobody has typed into it since the read. Anything else is left
+// as it is, and the error says so (withdrawal). A rule-less composer (Codex) is
+// never withdrawn from: its box ends at a blank row, which is also how a
+// draft's second paragraph starts, so what it holds cannot be read. Codex
+// confirms a submit from its rollout anyway.
 func (c *Client) withdrawUnsubmitted(ctx context.Context, sessionName string, drawn composerDrawing, sendErr error) error {
 	if OutcomeOf(sendErr) != OutcomeNotSubmitted {
 		return sendErr
@@ -1880,8 +1881,9 @@ func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts se
 		return err
 	}
 	if opts.submitVerifyWait > 0 {
-		if err := c.verifyWithEnterRetry(ctx, sessionName, line, opts, deliver); err != nil {
-			return c.withdrawUnsubmitted(ctx, sessionName, composerDrawing{text: line}, err)
+		drawn := composerDrawing{text: line}
+		if err := c.verifyWithEnterRetry(ctx, sessionName, drawn, opts, deliver); err != nil {
+			return c.withdrawUnsubmitted(ctx, sessionName, drawn, err)
 		}
 	}
 	return nil

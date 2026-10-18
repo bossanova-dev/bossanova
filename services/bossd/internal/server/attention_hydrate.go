@@ -235,11 +235,37 @@ func deadBootstrapSentence(row *models.Session) string {
 	return "Session died before setup finished and left no worktree or chat"
 }
 
+// fixTargetChat is the chat a FIX opens: the run's own chat while it is still
+// listed, else the newest chat the session has, else none.
+//
+// No dated apiversion bump, and why: the old answer named the run chat even
+// after it was deleted, or named none, and clients older than #3238 attach
+// target_chat_id on [enter]. bossd treated that attach as a request for a
+// brand-new chat, so selecting the session launched the operator into one.
+// A down-convert restoring the dead id would restore that defect. See
+// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+func fixTargetChat(runChatID string, chats []*models.AgentChat) string {
+	if primaryChatFromSlice(chats, runChatID) != nil {
+		return runChatID
+	}
+	var newest *models.AgentChat
+	for _, c := range chats {
+		if c != nil && (newest == nil || c.CreatedAt.After(newest.CreatedAt) || c.CreatedAt.Equal(newest.CreatedAt) && c.Seq > newest.Seq) {
+			newest = c
+		}
+	}
+	if newest == nil {
+		return ""
+	}
+	return newest.AgentSessionID
+}
+
 func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDeps, since time.Time) *attention.FixFact {
 	row := d.row
 	chatID := p.GetAgentSessionId()
+	target := fixTargetChat(chatID, d.chats)
 	fix := func(key, sentence string, at time.Time) *attention.FixFact {
-		return &attention.FixFact{AlertKey: key, Sentence: sentence, ChatID: chatID, Since: at}
+		return &attention.FixFact{AlertKey: key, Sentence: sentence, ChatID: target, Since: at}
 	}
 	blockedFacts := session.BlockedAlertFacts(row, d.display)
 	// A Blocked run whose own agent is at work on a turn the block did not see

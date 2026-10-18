@@ -63,6 +63,10 @@ func ResolveStrategy(ctx context.Context, provider vcs.Provider, repoPath, confi
 		}
 		return "merge", nil
 	}
+	return resolveAllowed(allowed, configured)
+}
+
+func resolveAllowed(allowed []string, configured string) (string, error) {
 	if len(allowed) == 0 {
 		return "", ErrMergeStrategyDisallowed
 	}
@@ -77,6 +81,24 @@ func ResolveStrategy(ctx context.Context, provider vcs.Provider, repoPath, confi
 	// allowed is non-empty but contains no standard strategy — return the
 	// first one so gh can at least attempt it.
 	return allowed[0], nil
+}
+
+// RebaseRefusalBlocksMerge reports whether a PR GitHub cannot rebase is kept
+// from merging: the resolved strategy is rebase and SquashFallback has no squash
+// to retry with. With squash enabled, MergeSession lands the PR, so a rebase-only
+// block is no conflict. An unreadable allowed set fails the way ResolveStrategy
+// and SquashFallback do: the configured strategy stands and no fallback is
+// assumed.
+func RebaseRefusalBlocksMerge(ctx context.Context, provider vcs.Provider, repoPath, configured string) (bool, error) {
+	allowed, err := provider.GetAllowedMergeStrategies(ctx, repoPath)
+	if err != nil {
+		return configured == "rebase", nil
+	}
+	strategy, err := resolveAllowed(allowed, configured)
+	if err != nil {
+		return false, err
+	}
+	return strategy == "rebase" && !slices.Contains(allowed, "squash"), nil
 }
 
 // MergeCommitCounter is the narrow slice of a git manager needed to detect

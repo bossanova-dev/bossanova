@@ -261,6 +261,14 @@ go_test(
         "testdata/chatpicker-timeline-review-24.golden",
         "testdata/chatpicker-timeline-review.golden",
         "testdata/chatpicker-timeline-rotations.golden",
+        "testdata/chatpicker-timeline-needed-long-100.golden",
+        "testdata/chatpicker-timeline-needed-long-120.golden",
+        "testdata/chatpicker-timeline-needed-long-300.golden",
+        "testdata/chatpicker-timeline-needed-long-80.golden",
+        "testdata/chatpicker-timeline-needed-short-100.golden",
+        "testdata/chatpicker-timeline-needed-short-120.golden",
+        "testdata/chatpicker-timeline-needed-short-300.golden",
+        "testdata/chatpicker-timeline-needed-short-80.golden",
     ],
     shard_count = 4,  # keep: 1510 independent test funcs, 180s serial under native go test -race (four timeline and wrap property tests are 144s of it); TIMEOUT at the medium (300s) ceiling on CI
     deps = [

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -940,5 +941,65 @@ func TestRecordChat_OpenCodeDoesNotRequireUUID(t *testing.T) {
 	}
 	if chats.created == nil || chats.created.AgentSessionID != "ses_example" {
 		t.Fatalf("OpenCode id not recorded: %+v", chats.created)
+	}
+}
+
+// A resume of a chat with no row and no saved conversation (one deleted after
+// the caller listed it) must not record a row or start a brand-new agent under
+// the old id: that is how selecting a session launched the operator into a new
+// chat. A lost chat whose conversation survives can still be recorded again.
+func TestRecordChat_ResumeNeedsARowOrASavedConversation(t *testing.T) {
+	const id = "0258e22a-dff1-4a9c-81c2-731f25767b03"
+	for _, tc := range []struct {
+		name       string
+		transcript bool
+		wantCode   connect.Code
+	}{
+		{name: "deleted chat", wantCode: connect.CodeNotFound},
+		{name: "lost chat with a saved conversation", transcript: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: "claude", WorktreePath: "/work"})
+			oracle := &fakeTranscriptOracle{exists: tc.transcript}
+			srv.wakeHook.transcripts = oracle
+			_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId: "s1", AgentSessionId: id, Title: "New chat", Resume: true,
+			}))
+			if tc.wantCode != 0 {
+				if connect.CodeOf(err) != tc.wantCode {
+					t.Fatalf("RecordChat err = %v, want code %v", err, tc.wantCode)
+				}
+				if chats.created != nil {
+					t.Fatalf("recorded a new chat %+v for a resume of a deleted chat", *chats.created)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("RecordChat: %v", err)
+				}
+				if chats.created == nil {
+					t.Fatal("a lost chat with a saved conversation was not recorded")
+				}
+			}
+			if want := []transcriptCall{{agentName: "claude", workDir: "/work", agentSessionID: id}}; !slices.Equal(oracle.calls, want) {
+				t.Fatalf("transcript probes = %+v, want %+v", oracle.calls, want)
+			}
+		})
+	}
+}
+
+func TestRecordChat_NewChatSkipsTheTranscriptProbe(t *testing.T) {
+	srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: "claude", WorktreePath: "/work"})
+	oracle := &fakeTranscriptOracle{}
+	srv.wakeHook.transcripts = oracle
+	if _, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+		SessionId: "s1", AgentSessionId: "29463df3-4d75-43ff-9997-20628bbc3f0b", Title: "New chat",
+	})); err != nil {
+		t.Fatalf("RecordChat: %v", err)
+	}
+	if chats.created == nil {
+		t.Fatal("a new chat was not recorded")
+	}
+	if len(oracle.calls) != 0 {
+		t.Fatalf("a new chat probed for a transcript: %+v", oracle.calls)
 	}
 }

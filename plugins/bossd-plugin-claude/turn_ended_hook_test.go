@@ -73,8 +73,18 @@ func TestWritePromptSubmitHookConfig_NoTurnEndedHookWithoutAToken(t *testing.T) 
 	}
 }
 
-func TestRemoveRunHookConfig_RemovesOnlyThatChatsTurnEndedHook(t *testing.T) {
+// TestRemoveRunHookConfig_KeepsTheChatsTurnEndedHook pins that a run's end
+// does not take its chat's background-work channel with it. A run can end on a
+// turn whose Stop reported a running subagent; the chat outlives the run, and
+// only that chat's next Stop can report the subagent finished. Removing the
+// hook with the run pinned the chat WORKING until the report aged out (PR
+// #3220: a finished repair chat read "repairing" for hours and refused
+// displacement).
+func TestRemoveRunHookConfig_KeepsTheChatsTurnEndedHook(t *testing.T) {
 	wt := t.TempDir()
+	if err := WriteHookConfig(wt, "sess-1", "agent-1", "tok", 4242); err != nil {
+		t.Fatalf("WriteHookConfig: %v", err)
+	}
 	for _, id := range []string{"agent-1", "agent-2"} {
 		if err := WritePromptSubmitHookConfig(wt, id, 4242, turnEndedTestToken); err != nil {
 			t.Fatalf("WritePromptSubmitHookConfig: %v", err)
@@ -83,9 +93,14 @@ func TestRemoveRunHookConfig_RemovesOnlyThatChatsTurnEndedHook(t *testing.T) {
 	if err := RemoveRunHookConfig(wt, "agent-1"); err != nil {
 		t.Fatalf("RemoveRunHookConfig: %v", err)
 	}
-	bossd, _ := turnEndedEntries(t, readSettings(t, wt))
-	if len(bossd) != 1 {
-		t.Fatalf("turn-ended entries after cleanup = %d, want 1", len(bossd))
+	bossd, all := turnEndedEntries(t, readSettings(t, wt))
+	if len(bossd) != 2 {
+		t.Fatalf("turn-ended entries after the run ended = %d, want both chats' (2)", len(bossd))
 	}
-	assertCommandContains(t, bossd[0], "/hooks/turn-ended/agent-2")
+	assertCommandContains(t, bossd[0], "/hooks/turn-ended/agent-1")
+	for _, raw := range all {
+		if entryCommandContains(raw, "/hooks/agent-run-complete/agent-1") {
+			t.Fatalf("the run's own completion hook must still be removed: %#v", all)
+		}
+	}
 }

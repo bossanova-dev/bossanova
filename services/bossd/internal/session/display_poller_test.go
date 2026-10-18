@@ -94,9 +94,17 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 		wantStatus        vcs.DisplayStatus
 	}{
 		{
-			name:          "rebase strategy",
+			name:              "rebase strategy with no squash to fall back to",
+			mergeStrategy:     models.MergeStrategyRebase,
+			allowedStrategies: []string{"merge", "rebase"},
+			wantStatus:        vcs.DisplayStatusConflict,
+		},
+		{
+			// PR #3220: GitHub said MERGEABLE/CLEAN with canBeRebased=false, and
+			// MergeSession retries a rebase refusal with squash.
+			name:          "rebase strategy with squash enabled",
 			mergeStrategy: models.MergeStrategyRebase,
-			wantStatus:    vcs.DisplayStatusConflict,
+			wantStatus:    vcs.DisplayStatusPassing,
 		},
 		{
 			name:          "merge strategy",

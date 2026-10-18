@@ -111,8 +111,6 @@ func (h *HomeModel) buildTableRows() {
 		}
 		if sess.GetAttention() == nil {
 			nameWidthLabels = append(nameWidthLabels, sessionWarningHintTexts(sess)...)
-		} else if sentence := homeAttentionSentence(sess.GetAttention()); sentence != "" {
-			nameWidthLabels = append(nameWidthLabels, sentence)
 		}
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
@@ -145,12 +143,6 @@ func (h *HomeModel) buildTableRows() {
 	fitted := fitColumnsIndexed(rcols, h.tableAvailWidth())
 	cols := fittedColumns(fitted)
 	cursor := h.table.Cursor()
-	sentenceWidth := 60
-	for _, col := range cols {
-		if col.Title == "NAME" {
-			sentenceWidth = col.Width
-		}
-	}
 
 	// Project primary and auxiliary rows onto the surviving columns.
 	project := func(full table.Row) table.Row { return projectRow(fitted, full) }
@@ -206,9 +198,7 @@ func (h *HomeModel) buildTableRows() {
 			rows = append(rows, project(table.Row{"", "", renderSessionEndpoints(sess), "", ""}))
 		}
 		if sess.GetAttention() != nil {
-			for _, line := range attentionSentenceLines(sess, sentenceWidth) {
-				rows = append(rows, project(table.Row{"", "", styleSubtle.Render(line), "", ""}))
-			}
+			// The list shows no sentence; details and notifications do.
 			continue
 		}
 		// Why a session is parked on an external event (BOS-668). Informational,

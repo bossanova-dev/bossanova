@@ -140,6 +140,38 @@ func TestResolveStrategy(t *testing.T) {
 	}
 }
 
+func TestRebaseRefusalBlocksMerge(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured string
+		allowed    []string
+		allowedErr error
+		want       bool
+		wantErr    error
+	}{
+		{"rebase with squash enabled lands by squash", "rebase", []string{"merge", "squash", "rebase"}, nil, false, nil},
+		{"rebase with no squash blocks", "rebase", []string{"merge", "rebase"}, nil, true, nil},
+		{"rebase resolved from only rebase blocks", "merge", []string{"rebase"}, nil, true, nil},
+		{"merge strategy never blocks on rebaseability", "merge", []string{"merge", "rebase"}, nil, false, nil},
+		{"query failure keeps configured rebase blocking", "rebase", nil, errors.New("gh boom"), true, nil},
+		{"query failure with merge configured does not block", "merge", nil, errors.New("gh boom"), false, nil},
+		{"none allowed errors out", "rebase", []string{}, nil, false, ErrMergeStrategyDisallowed},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &stubProvider{allowed: tc.allowed, allowedErr: tc.allowedErr}
+			got, err := RebaseRefusalBlocksMerge(context.Background(), p, "owner/repo", tc.configured)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyOnBase(t *testing.T) {
 	t.Run("happy path: merge commit on base", func(t *testing.T) {
 		p := &stubProvider{mergeCommit: "deadbeef"}

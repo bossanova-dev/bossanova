@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,8 +206,7 @@ func TestRestartProofActivity_ReadsOnlyOnTheGiveUpPath(t *testing.T) {
 // reads again.
 func TestRestartProofActivity_CacheBoundsRereads(t *testing.T) {
 	now := at(30)
-	cache := NewWedgeActivityCache()
-	cache.now = func() time.Time { return now }
+	cache := clockedWedgeCache(func() time.Time { return now })
 	tally := &fakeTally{}
 	w := WedgeActivity{Tally: tally.tally, Cache: cache}
 	read := func() time.Time {
@@ -350,6 +351,8 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 		ChatStatus: status.NewTracker(),
 	})
 	srv.transcriptTally = tally.tally
+	// The read lands before the RPC answers, so one call shows its result.
+	srv.wedgeCache.readWait = time.Minute
 	return srv, sess.ID
 }
 
@@ -395,37 +398,28 @@ func TestRestartProofActivity_TimelineJudgesTheGiveUpItOpensTheIncidentOn(t *tes
 }
 
 // A read that fails (a transcript or the run list could not be read) backs
-// off for wedgeActivityTTL instead of re-reading on every poll, and a caller
-// that went away sets no backoff. A completed read is cached, a missing
-// transcript included (there is nothing to find).
+// off for wedgeActivityTTL instead of re-reading on every poll. A completed
+// read is cached, a missing transcript included (there is nothing to find).
 func TestRestartProofActivity_FailedReadsBackOff(t *testing.T) {
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
 	for name, tc := range map[string]struct {
-		ctx      context.Context
 		tallyErr error
 		runsErr  error
-		// rereadAt is when the next live-context read re-reads: 0 at once,
-		// else after that long.
-		rereadAt time.Duration
 	}{
-		"cancelled caller":          {ctx: cancelled, tallyErr: context.Canceled},
-		"transcript read failed":    {ctx: context.Background(), tallyErr: errors.New("read: input/output error"), rereadAt: wedgeActivityTTL},
-		"run list failed":           {ctx: context.Background(), runsErr: errors.New("database is locked"), rereadAt: wedgeActivityTTL},
-		"no transcript to read":     {ctx: context.Background(), tallyErr: os.ErrNotExist, rereadAt: wedgeActivityTTL},
-		"transcript read, none new": {ctx: context.Background(), rereadAt: wedgeActivityTTL},
+		"transcript read failed":    {tallyErr: errors.New("read: input/output error")},
+		"run list failed":           {runsErr: errors.New("database is locked")},
+		"no transcript to read":     {tallyErr: os.ErrNotExist},
+		"transcript read, none new": {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			now := at(30)
-			cache := NewWedgeActivityCache()
-			cache.now = func() time.Time { return now }
+			cache := clockedWedgeCache(func() time.Time { return now })
 			tally := &fakeTally{errs: map[string]error{"a": tc.tallyErr}}
 			runsErr := tc.runsErr
 			w := WedgeActivity{Tally: tally.tally, Cache: cache, Runs: func(context.Context, string) ([]db.AgentRun, error) {
 				return nil, runsErr
 			}}
 			q := WedgeQuery{SessionID: "s1", WorktreePath: "/wt", GiveUpAt: at(16), Chats: twoChats[:1]}
-			if got := w.RestartProofActivity(tc.ctx, q); !got.IsZero() {
+			if got := w.RestartProofActivity(context.Background(), q); !got.IsZero() {
 				t.Fatalf("first read: activity %v, want none", got)
 			}
 			// The session recovers; a later reader with a live context asks.
@@ -435,13 +429,7 @@ func TestRestartProofActivity_FailedReadsBackOff(t *testing.T) {
 			tally.mu.Unlock()
 			runsErr = nil
 			before := tally.calls()
-			if tc.rereadAt == 0 {
-				if got := w.RestartProofActivity(context.Background(), q); !got.Equal(at(25)) || tally.calls() == before {
-					t.Fatalf("after a cancelled read: activity %v, re-read %v; want a fresh read at once", got, tally.calls() > before)
-				}
-				return
-			}
-			now = now.Add(tc.rereadAt - time.Second)
+			now = now.Add(wedgeActivityTTL - time.Second)
 			if got := w.RestartProofActivity(context.Background(), q); !got.IsZero() || tally.calls() != before {
 				t.Fatalf("within the backoff: activity %v, re-read %v; want no re-read", got, tally.calls() > before)
 			}
@@ -463,8 +451,7 @@ func TestRestartProofActivity_KnownOutputSurvivesLaterReads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			now := at(30)
-			cache := NewWedgeActivityCache()
-			cache.now = func() time.Time { return now }
+			cache := clockedWedgeCache(func() time.Time { return now })
 			tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"recovered": {LastOutputAt: at(25)}}}
 			w := WedgeActivity{Tally: tally.tally, Cache: cache}
 			read := func(sessionID, chat string) time.Time {
@@ -499,13 +486,10 @@ func TestRestartProofActivity_KnownOutputSurvivesLaterReads(t *testing.T) {
 }
 
 // A failed persisted read is logged rather than dropped: a warning, at most
-// once per session per wedgeActivityTTL so a poll loop cannot flood the log,
-// and only a debug line when the caller went away (a cancelled request is not
-// a fault).
+// once per session per wedgeActivityTTL so a poll loop cannot flood the log.
 func TestRestartProofActivity_LogsFailedReads(t *testing.T) {
 	now := at(30)
-	cache := NewWedgeActivityCache()
-	cache.now = func() time.Time { return now }
+	cache := clockedWedgeCache(func() time.Time { return now })
 	var buf bytes.Buffer
 	tally := &fakeTally{errs: map[string]error{"a": errors.New("read: input/output error")}}
 	w := WedgeActivity{Tally: tally.tally, Cache: cache, Logger: zerolog.New(&buf).Level(zerolog.DebugLevel)}
@@ -542,17 +526,30 @@ func TestRestartProofActivity_LogsFailedReads(t *testing.T) {
 	if got := levels(); !slices.Equal(got, []string{"warn", "warn"}) {
 		t.Fatalf("a failed read after the TTL logged %v, want a second warning", got)
 	}
+}
 
-	buf.Reset()
-	now = now.Add(wedgeActivityTTL) // past the failed read's backoff
+// A caller that goes away (a superseded ListSessions poll, a reverse-stream
+// delta past its deadline) neither cancels the read nor is answered by a
+// re-read: the one read finishes in the background, logs nothing, and is
+// cached for the next caller. Abandoned reads used to restart on every poll
+// and log a line each, thousands of them, without ever finishing.
+func TestRestartProofActivity_AnAbandonedCallerLeavesTheReadToFinish(t *testing.T) {
+	cache := NewWedgeActivityCache()
+	var buf bytes.Buffer
+	tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"a": {LastOutputAt: at(25)}}}
+	w := WedgeActivity{Tally: tally.tally, Cache: cache, Logger: zerolog.New(&buf).Level(zerolog.DebugLevel)}
+	q := WedgeQuery{SessionID: "s1", WorktreePath: "/wt", GiveUpAt: at(16), Chats: twoChats[:1]}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	tally.mu.Lock()
-	tally.errs = map[string]error{"a": context.Canceled}
-	tally.mu.Unlock()
-	w.RestartProofActivity(cancelled, WedgeQuery{SessionID: "s1", WorktreePath: "/wt", GiveUpAt: at(16), Chats: twoChats[:1]})
-	if got := levels(); !slices.Equal(got, []string{"debug"}) {
-		t.Fatalf("a cancelled read logged %v, want one debug line", got)
+	for range 5 {
+		w.RestartProofActivity(cancelled, q)
+	}
+	settle(t, cache, "s1")
+	if got := w.RestartProofActivity(context.Background(), q); !got.Equal(at(25)) || tally.calls() != 1 {
+		t.Fatalf("after abandoned callers: activity %v, reads %d; want the one read's %v", got, tally.calls(), at(25))
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("abandoned callers logged %q; want nothing", buf.String())
 	}
 }
 
@@ -563,8 +560,7 @@ func TestRestartProofActivity_LogsFailedReads(t *testing.T) {
 // newer give-up asks a new question and reads at once.
 func TestRestartProofActivity_CachesFoundOutputForTheRecoveryTTL(t *testing.T) {
 	now := at(30)
-	cache := NewWedgeActivityCache()
-	cache.now = func() time.Time { return now }
+	cache := clockedWedgeCache(func() time.Time { return now })
 	tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"a": {LastOutputAt: at(25)}}}
 	w := WedgeActivity{Tally: tally.tally, Cache: cache}
 	read := func(giveUpAt time.Time) time.Time {
@@ -599,8 +595,7 @@ func TestRestartProofActivity_CachesFoundOutputForTheRecoveryTTL(t *testing.T) {
 // every session that ever gave up.
 func TestRestartProofActivity_DropsOnlyIdleSessions(t *testing.T) {
 	now := at(30)
-	cache := NewWedgeActivityCache()
-	cache.now = func() time.Time { return now }
+	cache := clockedWedgeCache(func() time.Time { return now })
 	tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"recovered": {LastOutputAt: at(25)}}}
 	w := WedgeActivity{Tally: tally.tally, Cache: cache}
 	read := func(sessionID, chat string) {
@@ -695,5 +690,189 @@ func TestRestartProofActivity_ARestartStopIsNotOutput(t *testing.T) {
 				t.Fatalf("activity = %v, want %v (never the restart time %v)", got, tc.want, at(40))
 			}
 		})
+	}
+}
+
+// codexRollout writes a codex rollout for chat id under a fresh CODEX_HOME:
+// fillerMB one-megabyte tool-output records (what makes a real rollout
+// gigabytes long), then a turn with output tokens at each of outputs, and
+// stamps the file's mtime at modTime.
+func codexRollout(t *testing.T, id string, fillerMB int, modTime time.Time, outputs ...time.Time) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	dir := filepath.Join(home, "sessions", "2026", "10", "13")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "rollout-2026-10-13T23-00-00-"+id+".jsonl")
+	var b strings.Builder
+	filler := strings.Repeat("x", 1<<20)
+	for range fillerMB {
+		fmt.Fprintf(&b, `{"timestamp":%q,"type":"response_item","payload":{"type":"function_call_output","output":%q}}`+"\n", at(17).Format(time.RFC3339Nano), filler)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendCodexOutput(t, path, modTime, outputs...)
+	return path
+}
+
+// appendCodexOutput appends a turn with output tokens at each of outputs and
+// stamps the file's mtime at modTime.
+func appendCodexOutput(t *testing.T, path string, modTime time.Time, outputs ...time.Time) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ts := range outputs {
+		fmt.Fprintf(f, `{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":42}}}}`+"\n", ts.Format(time.RFC3339Nano))
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gatedTally is the real transcript tally behind a gate: each call is counted
+// and waits for release (or its context), standing in for the 25s it takes to
+// parse the operator's 5.7 GB codex rollout.
+type gatedTally struct {
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (g *gatedTally) tally(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (agenttelemetry.Counts, error) {
+	g.calls.Add(1)
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return agenttelemetry.Counts{}, ctx.Err()
+	}
+	return tallyInteractiveAgentRunForServer(ctx, worktreePath, chat, since, until)
+}
+
+// clockedWedgeCache is a cache reading the time from now whose callers wait
+// for the background read they start, so each call shows that read's result.
+func clockedWedgeCache(now func() time.Time) *WedgeActivityCache {
+	c := NewWedgeActivityCache()
+	c.now = now
+	c.readWait = time.Minute
+	return c
+}
+
+// settle waits for sessionID's background persisted read, if one is running.
+func settle(t *testing.T, c *WedgeActivityCache, sessionID string) {
+	t.Helper()
+	c.mu.Lock()
+	r, ok := c.inflight[sessionID]
+	c.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-r.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("background persisted read never finished")
+	}
+}
+
+// A wedged session whose transcript is huge must not stall the RPCs that
+// hydrate it (ListSessions polls, reverse-stream deltas, GetSession): every
+// caller returns at once while one background read parses the rollout, and a
+// transcript is parsed once per version, not once per caller or per TTL.
+func TestRestartProofActivity_ASlowTranscriptReadNeverBlocksTheHotPath(t *testing.T) {
+	const id = "01a0bd42-3649-7122-8aee-84b8170b83d7"
+	path := codexRollout(t, id, 32, at(21), at(20))
+	chats := []*models.AgentChat{{AgentSessionID: id, AgentName: "codex"}}
+	var clock sync.Mutex
+	now := at(30)
+	advance := func(d time.Duration) {
+		clock.Lock()
+		defer clock.Unlock()
+		now = now.Add(d)
+	}
+	cache := NewWedgeActivityCache()
+	cache.now = func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		return now
+	}
+	tally := &gatedTally{release: make(chan struct{})}
+	w := WedgeActivity{Tally: tally.tally, Cache: cache}
+	hydrate := func(ctx context.Context) *pb.Session {
+		p := &pb.Session{Id: "s1", WorktreePath: "/wt", DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING, RotationEvents: giveUpEvents()}
+		HydrateRestartProofActivity(ctx, p, chats, w)
+		return p
+	}
+	activity := func() time.Time {
+		if ts := hydrate(context.Background()).GetLastAgentActivityAt(); ts != nil {
+			return ts.AsTime()
+		}
+		return time.Time{}
+	}
+
+	const callers = 32
+	var wg sync.WaitGroup
+	took := make(chan time.Duration, callers)
+	for range callers {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			start := time.Now()
+			hydrate(ctx)
+			took <- time.Since(start)
+		})
+	}
+	wg.Wait()
+	close(took)
+	var slowest time.Duration
+	for d := range took {
+		slowest = max(slowest, d)
+	}
+	if slowest > time.Second || tally.calls.Load() != 1 {
+		t.Fatalf("%d concurrent hydrations: slowest took %v, transcript parsed %d times; want each back in under 1s and one parse",
+			callers, slowest, tally.calls.Load())
+	}
+
+	close(tally.release)
+	settle(t, cache, "s1")
+	if got := activity(); !got.Equal(at(20)) || tally.calls.Load() != 1 {
+		t.Fatalf("after the read: activity %v, parses %d; want the rollout's output at %v from the one parse", got, tally.calls.Load(), at(20))
+	}
+
+	// The re-read after the recovery TTL finds the rollout unchanged.
+	advance(wedgeRecoveryTTL)
+	activity()
+	settle(t, cache, "s1")
+	if got := activity(); !got.Equal(at(20)) || tally.calls.Load() != 1 {
+		t.Fatalf("unchanged rollout re-read: activity %v, parses %d; want %v without a second parse", got, tally.calls.Load(), at(20))
+	}
+
+	// A new version of the rollout is parsed once more.
+	appendCodexOutput(t, path, at(24), at(23))
+	advance(wedgeRecoveryTTL)
+	activity()
+	settle(t, cache, "s1")
+	if got := activity(); !got.Equal(at(23)) || tally.calls.Load() != 2 {
+		t.Fatalf("grown rollout re-read: activity %v, parses %d; want %v from a second parse", got, tally.calls.Load(), at(23))
+	}
+}
+
+// A transcript not written since the give-up cannot hold output after it, so
+// it is not parsed: the operator's 5.7 GB rollout was last written ten days
+// before the give-up it was searched for on every poll.
+func TestRestartProofActivity_ATranscriptUntouchedSinceTheGiveUpIsNotParsed(t *testing.T) {
+	const id = "01a0bd42-3649-7122-8aee-84b8170b83d7"
+	codexRollout(t, id, 1, at(10), at(9))
+	tally := &gatedTally{release: make(chan struct{})}
+	close(tally.release)
+	w := WedgeActivity{Tally: tally.tally}
+	got := restartProof(w, time.Time{}, giveUpEvents(), []*models.AgentChat{{AgentSessionID: id, AgentName: "codex"}})
+	if !got.IsZero() || tally.calls.Load() != 0 {
+		t.Fatalf("activity %v, parses %d; want none and no parse", got, tally.calls.Load())
 	}
 }

@@ -331,7 +331,7 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 			if strings.Contains(before, "◌") {
 				t.Fatalf("unexpected progress glyph:\n%s", before)
 			}
-			// One down skips every wrapped sentence and lands on the oldest review.
+			// One down lands on the oldest review.
 			if err := h.Driver.SendKey('j'); err != nil {
 				t.Fatal(err)
 			}
@@ -361,6 +361,23 @@ func TestTUI_HomeView_AttentionBoard(t *testing.T) {
 	}
 }
 
+// assertBlankLineAbove checks that the first screen line containing want has
+// exactly one blank line above it, with a drawn line above that.
+func assertBlankLineAbove(t *testing.T, screen, want string) {
+	t.Helper()
+	lines := strings.Split(screen, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, want) {
+			continue
+		}
+		if i < 2 || strings.TrimSpace(lines[i-1]) != "" || strings.TrimSpace(lines[i-2]) == "" {
+			t.Fatalf("%q does not sit one blank line below the line above it:\n%s", want, screen)
+		}
+		return
+	}
+	t.Fatalf("%q not on screen:\n%s", want, screen)
+}
+
 // TestTUI_Home_AttentionReviewMerge drives [m] on a sign-off park's review
 // row through the real executable: a plain confirm, then one approving merge
 // pinned to the head the row showed.
@@ -388,6 +405,7 @@ func TestTUI_Home_AttentionReviewMerge(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Merged PR #597"); err != nil {
 		t.Fatalf("result missing: %v\n%s", err, h.Driver.Screen())
 	}
+	assertBlankLineAbove(t, h.Driver.Screen(), "Merged PR #597")
 	calls := h.Daemon.OperatorMergeCalls()
 	if len(calls) != 1 || calls[0].GetId() != "sess-aaa-111" || calls[0].GetExpectedHeadSha() != head || !calls[0].GetShouldApprove() || len(calls[0].GetWaives()) != 1 || calls[0].GetWaives()[0] != "human-review:ui" {
 		t.Fatalf("operator merge calls=%v", calls)
@@ -427,6 +445,43 @@ func TestTUI_Home_AttentionEnterSelectsTheTargetChat(t *testing.T) {
 	}
 	if err := h.Driver.WaitFor(waitTimeout, selected); err != nil {
 		t.Fatalf("details did not select the failed chat: %v\n%s", err, h.Driver.Screen())
+	}
+}
+
+// Selecting a FIX row whose chat was deleted, or that names none, opens the
+// chat list and starts nothing. Before #3238 enter attached the target, and
+// bossd turned that attach into a brand-new chat (PR #3220).
+func TestTUI_Home_AttentionEnterOnADeletedChatStartsNothing(t *testing.T) {
+	for name, target := range map[string]string{"deleted chat": "ce2c3b43-9ed1-495e-ab1f-058c51d5b76a", "no chat": ""} {
+		t.Run(name, func(t *testing.T) {
+			sessions := testSessions()
+			sessions[0].Attention = &pb.SessionAttention{
+				Kind:         pb.AttentionKind_ATTENTION_KIND_FIX,
+				Sentence:     "Run blocked: automatic repair left the PR conflicted",
+				Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_RESUME, pb.AttentionAction_ATTENTION_ACTION_DISMISS, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT},
+				TargetChatId: target,
+			}
+			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...))
+			if err := h.Driver.WaitForText(waitTimeout, "[enter] select"); err != nil {
+				t.Fatalf("home did not load: %v\n%s", err, h.Driver.Screen())
+			}
+			if err := h.Driver.SendEnter(); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+				t.Fatalf("enter did not open the chat list: %v\n%s", err, h.Driver.Screen())
+			}
+			time.Sleep(time.Second)
+			if h.Driver.ScreenContains("Launching") {
+				t.Fatalf("enter launched a chat:\n%s", h.Driver.Screen())
+			}
+			if calls := h.Daemon.RecordChatCalls(); len(calls) != 0 {
+				t.Fatalf("enter recorded %d chat(s): %v", len(calls), calls)
+			}
+			if req := h.Daemon.LastCreateSession(); req != nil {
+				t.Fatalf("enter created a session: %v", req)
+			}
+		})
 	}
 }
 

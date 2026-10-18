@@ -3849,8 +3849,10 @@ func (x *OperatorMergeSessionRequest) GetWaives() []string {
 // OperatorMergeSessionResponse reports what happened. is_merged is false only
 // when the approval was refused: approval then carries the reason and nothing
 // was merged. A refused or failed merge is an error. tracker_writes is the
-// toolbox's `mark-merged` outcome (ok, none, unavailable, failed, ...) with
-// tracker_why when it did not happen; bookkeeping never fails a landed merge.
+// toolbox's `mark-merged` outcome (ok, none, unavailable, failed, permanent,
+// ...) with tracker_why when it did not happen, or retrying when the daemon
+// queued a write that did not land to be tried again; bookkeeping never fails
+// a landed merge.
 type OperatorMergeSessionResponse struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	IsMerged bool                   `protobuf:"varint,1,opt,name=is_merged,json=isMerged,proto3" json:"is_merged,omitempty"`
@@ -3861,6 +3863,8 @@ type OperatorMergeSessionResponse struct {
 	Approval      *VerifyApproveResult `protobuf:"bytes,4,opt,name=approval,proto3" json:"approval,omitempty"`
 	TrackerWrites string               `protobuf:"bytes,5,opt,name=tracker_writes,json=trackerWrites,proto3" json:"tracker_writes,omitempty"`
 	TrackerWhy    string               `protobuf:"bytes,6,opt,name=tracker_why,json=trackerWhy,proto3" json:"tracker_why,omitempty"`
+	// The ticket the tracker write tried to move, when the PR names one.
+	TrackerTicket string `protobuf:"bytes,7,opt,name=tracker_ticket,json=trackerTicket,proto3" json:"tracker_ticket,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3933,6 +3937,13 @@ func (x *OperatorMergeSessionResponse) GetTrackerWrites() string {
 func (x *OperatorMergeSessionResponse) GetTrackerWhy() string {
 	if x != nil {
 		return x.TrackerWhy
+	}
+	return ""
+}
+
+func (x *OperatorMergeSessionResponse) GetTrackerTicket() string {
+	if x != nil {
+		return x.TrackerTicket
 	}
 	return ""
 }
@@ -13514,7 +13525,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12*\n" +
 	"\x11expected_head_sha\x18\x02 \x01(\tR\x0fexpectedHeadSha\x12%\n" +
 	"\x0eshould_approve\x18\x03 \x01(\bR\rshouldApprove\x12\x16\n" +
-	"\x06waives\x18\x04 \x03(\tR\x06waives\"\x96\x02\n" +
+	"\x06waives\x18\x04 \x03(\tR\x06waives\"\xbd\x02\n" +
 	"\x1cOperatorMergeSessionResponse\x12\x1b\n" +
 	"\tis_merged\x18\x01 \x01(\bR\bisMerged\x12/\n" +
 	"\asession\x18\x02 \x01(\v2\x15.bossanova.v1.SessionR\asession\x12!\n" +
@@ -13522,7 +13533,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\bapproval\x18\x04 \x01(\v2!.bossanova.v1.VerifyApproveResultR\bapproval\x12%\n" +
 	"\x0etracker_writes\x18\x05 \x01(\tR\rtrackerWrites\x12\x1f\n" +
 	"\vtracker_why\x18\x06 \x01(\tR\n" +
-	"trackerWhy\"&\n" +
+	"trackerWhy\x12%\n" +
+	"\x0etracker_ticket\x18\a \x01(\tR\rtrackerTicket\"&\n" +
 	"\x14RemoveSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x17\n" +
 	"\x15RemoveSessionResponse\"\xb4\x01\n" +

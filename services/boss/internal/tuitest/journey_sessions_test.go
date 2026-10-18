@@ -77,17 +77,19 @@ func TestJourney_Sessions_AC1_AC2_AC14_AC25_CreateOpenListDismiss(t *testing.T) 
 		return
 	}
 
-	if !t.Run("AC14 in part: a fix alert from the daemon turns the row into a fix row", func(t *testing.T) {
+	if !t.Run("AC14 in part: a fix alert from the daemon turns the row into a fix row without its sentence", func(t *testing.T) {
 		h.Daemon.SetSessionAttention(sessID, &pb.SessionAttention{
 			Kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
 			Sentence: "Run blocked: the tests failed twice",
 			AlertKey: alertKey,
 			Actions:  []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_DISMISS},
 		})
-		waitText(t, h, "Run blocked: the tests failed twice")
+		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool { return rowReadsFix(screen, title) }); err != nil {
+			t.Fatalf("row never read fix: %v\n%s", err, h.Driver.Screen())
+		}
 		screen := h.Driver.Screen()
-		if !strings.Contains(screen, " fix") {
-			t.Fatalf("row does not read fix:\n%s", screen)
+		if strings.Contains(screen, "Run blocked") {
+			t.Fatalf("home list shows the attention sentence:\n%s", screen)
 		}
 		if strings.Contains(screen, "[x] dismiss") {
 			t.Fatalf("home advertises the unadvertised dismiss:\n%s", screen)
@@ -110,8 +112,10 @@ func TestJourney_Sessions_AC1_AC2_AC14_AC25_CreateOpenListDismiss(t *testing.T) 
 		}
 
 		h.Daemon.SetSessionAttention(sessID, nil)
-		if err := h.Driver.WaitForNoText(waitTimeout, "Run blocked: the tests failed twice"); err != nil {
-			t.Fatalf("row kept the fix sentence after the daemon cleared the alert: %v\n%s", err, h.Driver.Screen())
+		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+			return screenRow(screen, title) != "" && !rowReadsFix(screen, title)
+		}); err != nil {
+			t.Fatalf("row kept the fix status after the daemon cleared the alert: %v\n%s", err, h.Driver.Screen())
 		}
 		if calls := h.Daemon.DismissSessionAlertCalls(); len(calls) != 1 {
 			t.Fatalf("DismissSessionAlert calls = %d after settling, want 1", len(calls))
@@ -119,6 +123,11 @@ func TestJourney_Sessions_AC1_AC2_AC14_AC25_CreateOpenListDismiss(t *testing.T) 
 	}) {
 		return
 	}
+}
+
+// rowReadsFix reports whether the home row naming title ends in the fix status.
+func rowReadsFix(screen, title string) bool {
+	return strings.HasSuffix(strings.TrimSpace(screenRow(screen, title)), " fix")
 }
 
 func waitText(t *testing.T, h *tuitest.Harness, text string) {

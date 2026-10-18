@@ -3838,6 +3838,7 @@ func run(opts runOpts) error {
 		RotationEvents:          rotationEvents,
 		Evidence:                evidenceReader,
 		ResumeAttempts:          resumeAttempts,
+		PendingTrackerMerges:    db.NewPendingTrackerMergeStore(database),
 		WedgeActivityCache:      wedgeActivityCache,
 		CronScheduler:           cronScheduler,
 		CronActivity:            cronActivity,
@@ -4074,6 +4075,9 @@ func run(opts runOpts) error {
 	// deferrer: stopped before the archive drain, its work handed to
 	// trackArchiveDone.
 	trackDone("finish-deferrer", srv.RunFinishDeferrer(pollerCtx, trackArchiveDone))
+	// Post-merge tracker writes that did not land are retried from a durable
+	// queue, so a restart does not drop them.
+	trackDone("tracker-merge-retries", srv.RunTrackerMergeRetries(pollerCtx))
 
 	// --- GitHub callback delivery worker (BOS-468) ---
 	//

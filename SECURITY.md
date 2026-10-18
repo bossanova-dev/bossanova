@@ -22,6 +22,21 @@ If private reporting is unavailable to you, contact the repository maintainer
 initial assessment (severity + remediation plan) within **10 business days**.
 Please give us a reasonable window to ship a fix before any public disclosure.
 
+## Release credentials
+
+- **One public release token.** The public mirror, the release tag, the
+  GitHub Release and the Homebrew tap all use `BOSSANOVA_PUBLIC_PR_TOKEN`: a
+  fine-grained token owned by the `bossanova-dev` organization, limited to the
+  public repository and the Homebrew tap. It is passed only to the steps that
+  push or publish, and removed from `.git/config` once the tag is pushed.
+  Separate tokens would sit in the same secret store, and the mirror and
+  release jobs need the same write access anyway, so splitting them would add
+  rotation work without narrowing exposure.
+- **Fork pull requests.** On the public repository, workflow runs from outside
+  collaborators' forks require maintainer approval (Settings → Actions →
+  General → "Require approval for all outside collaborators"). This is a
+  repository setting, not code.
+
 ## What runs, and when
 
 Security scanning lives in [`.github/workflows/security.yml`](.github/workflows/security.yml)

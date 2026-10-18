@@ -515,6 +515,47 @@ func TestAttentionDeadBootstrapOffersOnlyDismiss(t *testing.T) {
 	}
 }
 
+// TestAttentionFixTargetsALiveChat pins the PR #3220 row: a blocked run whose
+// own chat was deleted (or never recorded) named that dead chat, and a client
+// that attached the target started a brand-new chat. The FIX now names the
+// newest chat the session still has, and offers no OPEN_CHAT when it has none.
+func TestAttentionFixTargetsALiveChat(t *testing.T) {
+	now := time.Now()
+	linear := &models.AgentChat{AgentSessionID: "63e53de4-d0cf-4e0e-b808-19c7a5bd23c6", Title: "Linear issue:", CreatedAt: now.Add(-30 * time.Hour)}
+	repair := &models.AgentChat{AgentSessionID: "0c8fff08-ce89-4ce2-a7e3-95d37ddd928a", Title: "Repair: [BOS-1590]", CreatedAt: now.Add(-13 * time.Hour)}
+	for _, tc := range []struct {
+		name       string
+		runChat    string
+		chats      []*models.AgentChat
+		wantTarget string
+	}{
+		{name: "run chat deleted", runChat: "ce2c3b43-9ed1-495e-ab1f-058c51d5b76a", chats: []*models.AgentChat{linear, repair}, wantTarget: repair.AgentSessionID},
+		{name: "no run chat", chats: []*models.AgentChat{repair, linear}, wantTarget: repair.AgentSessionID},
+		{name: "run chat live", runChat: linear.AgentSessionID, chats: []*models.AgentChat{repair, linear}, wantTarget: linear.AgentSessionID},
+		{name: "no chats", runChat: "ce2c3b43-9ed1-495e-ab1f-058c51d5b76a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := "automatic repair left the PR conflicted on ba57887117c4 through 5 base branch moves; resolve the conflict by hand"
+			row := &models.Session{ID: "88b396dee7326f4f", RepoID: "r", State: machine.Blocked, BlockedReason: &reason}
+			if tc.runChat != "" {
+				row.AgentSessionID = &tc.runChat
+			}
+			p := SessionToProto(row)
+			(&Server{}).hydrateAttention(context.Background(), p, attentionDeps{row: row, chats: tc.chats})
+			a := p.GetAttention()
+			if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX {
+				t.Fatalf("kind = %v, want FIX", a.GetKind())
+			}
+			if got := a.GetTargetChatId(); got != tc.wantTarget {
+				t.Fatalf("target chat = %q, want %q", got, tc.wantTarget)
+			}
+			if got, want := slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT), tc.wantTarget != ""; got != want {
+				t.Fatalf("offers OPEN_CHAT = %v, want %v (actions %v)", got, want, a.GetActions())
+			}
+		})
+	}
+}
+
 // TestAttentionProgressLabelMatchesChatState serves a quick chat (no PR) in each
 // chat state and checks the in-progress label names that state, as the display
 // label does: a stopped chat reads "stopped", never "idle".

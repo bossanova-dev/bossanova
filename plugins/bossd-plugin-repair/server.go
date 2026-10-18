@@ -734,7 +734,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		return
 	}
 	if baseMoveRetry {
-		streak, exhausted := m.noteBaseMoveLocked(sessionID, headSHA)
+		streak, exhausted := m.noteBaseMoveLocked(sessionID, headSHA, baseSHA)
 		if exhausted {
 			m.mu.Unlock()
 			m.blockSession(repairCtx, sessionID, fmt.Sprintf("automatic repair left the PR conflicted on %s through %d base branch moves; resolve the conflict by hand",
@@ -849,28 +849,34 @@ func (m *repairMonitor) clearRefusals(sessionID string) {
 	m.mu.Unlock()
 }
 
-// baseMoveStreak counts conflict repairs retried on one head because the base
-// branch moved. A clean exit resets the persisted failure count, so an agent
-// that exits cleanly without resolving the conflict would otherwise start a
-// new chat on every base move with nothing ever escalating. Like
-// refusalStreak it is in memory: a plugin restart only delays the block.
+// baseMoveStreak counts the base tips a conflicted head was retried on. A clean
+// exit resets the persisted failure count, so an agent that exits cleanly
+// without resolving the conflict would otherwise start a new chat on every base
+// move with nothing ever escalating. Like refusalStreak it is in memory: a
+// plugin restart only delays the block.
 type baseMoveStreak struct {
 	headSHA string
+	baseSHA string
 	count   int
 }
 
-// noteBaseMoveLocked records one base-move retry on headSHA and reports whether
-// the head has already used its maxRepairLoopAttempts retries, in which case
-// the caller blocks instead of retrying. A head move starts a fresh streak.
-// Callers hold mu.
-func (m *repairMonitor) noteBaseMoveLocked(sessionID, headSHA string) (baseMoveStreak, bool) {
+// noteBaseMoveLocked records a retry of headSHA on base tip baseSHA and reports
+// whether the head has already used its maxRepairLoopAttempts base moves, in
+// which case the caller blocks instead of retrying. A head move starts a fresh
+// streak. A retry on the tip already counted is the same move: a refused start
+// records no base, so the next sweep sees the same move again. Callers hold mu.
+func (m *repairMonitor) noteBaseMoveLocked(sessionID, headSHA, baseSHA string) (baseMoveStreak, bool) {
 	streak := m.baseMoves[sessionID]
 	if streak.headSHA != headSHA {
 		streak = baseMoveStreak{headSHA: headSHA}
 	}
+	if streak.count > 0 && streak.baseSHA == baseSHA {
+		return streak, false
+	}
 	if streak.count >= maxRepairLoopAttempts {
 		return streak, true
 	}
+	streak.baseSHA = baseSHA
 	streak.count++
 	m.baseMoves[sessionID] = streak
 	return streak, false

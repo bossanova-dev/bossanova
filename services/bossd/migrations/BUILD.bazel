@@ -88,6 +88,7 @@ go_library(
         "20261015110100_agent_chats_reclaimed.sql",
         "20261016120000_last_repair_base_sha.sql",
         "20261017120000_session_check_snapshots_head_index.sql",
+        "20261018000000_pending_tracker_merges.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

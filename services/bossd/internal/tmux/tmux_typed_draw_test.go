@@ -441,8 +441,9 @@ func deleteToLineStart(text string, width int) string {
 // argument hint. Input is read as UTF-8 characters, and a read holding more
 // than two CRs or 800 UTF-16 units is drawn as one "[Pasted text #N +M lines]"
 // placeholder, as Claude draws a long paste. Text is wrapped as Claude wraps
-// it (wrapClaudeComposerLine), and C-u is deleteToLineStart. The first swallow
-// lone CRs are dropped.
+// it (wrapClaudeComposerLine), with the cursor cell wrapped as part of the
+// text, so a last row that fills the width puts the cursor on an empty row of
+// its own. C-u is deleteToLineStart. The first swallow lone CRs are dropped.
 func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int) {
 	busy, swallow := cfg.busy, cfg.swallow
 	width := claudeComposerWrapWidth(columns)
@@ -462,6 +463,9 @@ func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int)
 		var lines []string
 		for _, l := range strings.Split(composer, "\n") {
 			lines = append(lines, wrapClaudeComposerLine(l, width)...)
+		}
+		if composer != "" && cellsWide(lines[len(lines)-1]) >= width {
+			lines = append(lines, "")
 		}
 		last := len(lines) - 1
 		lines[last] += "\x1b[7m \x1b[27m"
@@ -902,6 +906,56 @@ func TestComposerDrawingPartOfIsAPrefixOfThePayload(t *testing.T) {
 	}
 }
 
+// The Enter retry presses C-u only into a box that shows this send's drawing
+// whole. A Claude paste placeholder counts only with this send's paste id, and
+// a Codex one only with the payload's character count, since an operator's own
+// paste draws the same kind of placeholder.
+func TestComposerDrawingRenderedByIsTheWholeDrawing(t *testing.T) {
+	long := pasteFixtureLongLine()
+	for _, tc := range []struct {
+		name      string
+		drawn     composerDrawing
+		footprint string
+		want      bool
+	}{
+		{"the whole text, wrapped", composerDrawing{text: "fix the build please"}, "fix the build\nplease", true},
+		{"the start of the text", composerDrawing{text: "fix the build please"}, "fix the", false},
+		{"other text", composerDrawing{text: "fix the build please"}, "please hold off, I am reviewing", false},
+		{"the text and more", composerDrawing{text: "fix the build please"}, "fix the build please, and I", false},
+		{"this send's placeholder", composerDrawing{text: long, collapsed: true, placeholder: "[Pasted text #3]"}, "[Pasted text #3]", true},
+		{"another paste's placeholder", composerDrawing{text: long, collapsed: true, placeholder: "[Pasted text #3]"}, "[Pasted text #4]", false},
+		{"a placeholder this send never read", composerDrawing{text: long, collapsed: true}, "[Pasted text #3]", false},
+		{"Codex's placeholder counting the payload", composerDrawing{text: long}, "[Pasted Content 2181 chars]", true},
+		{"Codex's placeholder counting another paste", composerDrawing{text: long}, "[Pasted Content 2180 chars]", false},
+	} {
+		if got := tc.drawn.renderedBy(tc.footprint); got != tc.want {
+			t.Errorf("%s: renderedBy(%q) = %v, want %v", tc.name, tc.footprint, got, tc.want)
+		}
+	}
+}
+
+// After a C-u empties the box, Claude and Codex draw a placeholder, which
+// reads as text in a plain capture. Only a styled capture tells it from an
+// operator's text, and a capture with no style tells nothing.
+func TestReadComposerTellsAPlaceholderFromTypedText(t *testing.T) {
+	for _, tc := range []struct {
+		name, capture string
+		want          composerReading
+	}{
+		{"Claude's placeholder", readPaneFixture(t, "claude_composer_placeholder_styled_rendered.txt"), composerPlaceholder},
+		{"Codex's placeholder", readPaneFixture(t, "codex_placeholder_styled_real.txt"), composerPlaceholder},
+		{"a Claude draft", readPaneFixture(t, "claude_composer_draft_styled_rendered.txt"), composerTyped},
+		{"Claude's placeholder under NO_COLOR", readPaneFixture(t, "claude_composer_no_color_placeholder_styled_rendered.txt"), composerUnstyled},
+		{"a plain capture of text", "────\n❯ please hold off, I am reviewing\n────\n", composerUnstyled},
+		{"a bare glyph", "────\n❯ \n────\n", composerBlank},
+		{"no composer", "⏺ working\n", composerUndrawn},
+	} {
+		if got := readComposer(tc.capture); got != tc.want {
+			t.Errorf("%s: readComposer = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A C-u kills a newline before the cursor, or the cursor's wrapped row, back
 // over an empty last row. The withdrawal takes for what a press left only what
 // one of those leaves, so an operator who clears the box after a press and
@@ -930,72 +984,334 @@ func TestPressLeftIsWhatOneCtrlULeaves(t *testing.T) {
 	}
 }
 
+// The Enter retry presses again only on a read that is the read before less
+// what one C-u removes. Claude's removes the cursor's wrapped row, so an
+// operator's trim of two rows does not pass there; Codex's removes the whole
+// logical line, which may be several wrapped rows. A box an operator emptied
+// and typed the payload's first words into passes for neither.
+func TestClearLeftIsTheReadBeforeLessWhatOneCtrlURemoves(t *testing.T) {
+	const held = "abcdefghi abcdefghi abc\ndefghi abcdefghi\nabcdefghi abcdef"
+	for _, tc := range []struct {
+		after         string
+		claude, codex bool
+	}{
+		{"abcdefghi abcdefghi abc\ndefghi abcdefghi", true, true},
+		{"abcdefghi abcdefghi abc", false, true},
+		{"abcdefghi abcdefghi abc ", false, true},
+		{"abcdefghi abc", false, false},
+		{"abcdefghi abcdefghi abc\ndefghi", false, false},
+		{held, false, false},
+		{held + "\nmine", false, false},
+		{"", false, false},
+	} {
+		for _, rule := range []struct {
+			marker string
+			want   bool
+		}{{sendPlanReadyMarker, tc.claude}, {codexReadyMarker, tc.codex}} {
+			if got := clearLeft(held, tc.after, ctrlUKillOf(rule.marker)); got != rule.want {
+				t.Errorf("clearLeft(%q, %q) under %q's C-u = %v, want %v", held, tc.after, rule.marker, got, rule.want)
+			}
+		}
+	}
+}
+
+// operatorSweepsEnv opts in to the exhaustive operator sweeps, which type
+// before every capture bossd takes and so run one real-tmux send per capture.
+// The per-PR suite keeps one named case per way they have found a send to
+// erase or submit onto an operator's text; the nightly native job runs the
+// sweeps.
+const operatorSweepsEnv = "BOSS_TMUX_OPERATOR_SWEEPS"
+
+// requireOperatorSweeps skips t unless operatorSweepsEnv is "1".
+func requireOperatorSweeps(t *testing.T) {
+	t.Helper()
+	if os.Getenv(operatorSweepsEnv) != "1" {
+		t.Skipf("exhaustive operator sweep; set %s=1 to run it", operatorSweepsEnv)
+	}
+}
+
+// operatorMoment is when an operator acts during a send: just before the
+// at-th capture bossd takes after it has sent key the nth time. An at of zero
+// never acts, which counts the captures a send takes.
+type operatorMoment struct {
+	key     string
+	nth, at int
+}
+
+// operatorSend is how one send against a slow composer ended. acted is
+// whether the operator's moment came, and changed whether the operator then
+// changed the box.
+type operatorSend struct {
+	captures int
+	acted    bool
+	changed  bool
+	rows     string
+	ran      []string
+	err      error
+}
+
+// sendWithOperator runs send against a fresh slow composer that drops its
+// first two Enters, and runs act once, at when.
+func sendWithOperator(t *testing.T, send func(context.Context, *Client, string) error, when operatorMoment, act func(tmux CommandFactory, pane string) bool) operatorSend {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+	c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+	var got operatorSend
+	keys, sent := 0, false
+	onTmux(c, func(args []string, tmux CommandFactory) {
+		if slices.Contains(args, "send-keys") && slices.Contains(args, when.key) {
+			keys++
+		}
+		if !sent && keys >= when.nth && slices.Contains(args, "capture-pane") {
+			if got.captures++; got.captures == when.at {
+				got.acted = true
+				got.changed = act(tmux, pane)
+			}
+		}
+	})
+	got.err = send(ctx, c, pane)
+	sent = true
+	screen, err := c.CapturePane(ctx, pane)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	got.rows, got.ran = composerRows(screen), ranLines(ctx, t, c, pane)
+	return got
+}
+
+// sweepOperator first counts the captures a send with no operator takes
+// from when, and hands that send to cleanOK. Then, in parallel subtests, it
+// acts before each of those captures in turn and hands check what the send
+// left. A send that ends before reaching its capture is tried twice more,
+// then skipped.
+func sweepOperator(t *testing.T, send func(context.Context, *Client, string) error, when operatorMoment, cleanOK func(*testing.T, operatorSend), act func(*testing.T, CommandFactory, string) bool, check func(*testing.T, operatorSend)) {
+	t.Helper()
+	clean := sendWithOperator(t, send, when, nil)
+	cleanOK(t, clean)
+	for at := 1; at <= clean.captures; at++ {
+		t.Run(fmt.Sprintf("typed before capture %d of %d", at, clean.captures), func(t *testing.T) {
+			parallelSlowComposer(t)
+			moment := operatorMoment{when.key, when.nth, at}
+			do := func(tmux CommandFactory, pane string) bool { return act(t, tmux, pane) }
+			got := sendWithOperator(t, send, moment, do)
+			for try := 2; !got.acted && try <= 3; try++ {
+				t.Logf("send %d took only %d captures, ending %v (outcome %v) with %q", try-1, got.captures, got.err, OutcomeOf(got.err), got.rows)
+				got = sendWithOperator(t, send, moment, do)
+			}
+			if !got.acted {
+				t.Skipf("no send reached capture %d", at)
+			}
+			check(t, got)
+		})
+	}
+}
+
+// pasteMessage sends text as a Claude chat message.
+func pasteMessage(text string) func(context.Context, *Client, string) error {
+	return func(ctx context.Context, c *Client, pane string) error {
+		return c.sendPlan(ctx, pane, text, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+	}
+}
+
+// keepsOperatorsPrefix checks that a send left the operator's text in the box
+// and ran nothing.
+func keepsOperatorsPrefix(operator string) func(*testing.T, operatorSend) {
+	return func(t *testing.T, got operatorSend) {
+		t.Helper()
+		if !strings.Contains(withoutSpace(got.rows), withoutSpace(operator)) || len(got.ran) != 0 {
+			t.Fatalf("the send ended %v (outcome %v), leaving %q and running %q; the operator's %q is gone", got.err, OutcomeOf(got.err), got.rows, got.ran, operator)
+		}
+	}
+}
+
+// keepsOperatorsMessage checks that a send left exactly the operator's text in
+// the box and ran nothing.
+func keepsOperatorsMessage(operator string) func(*testing.T, operatorSend) {
+	return func(t *testing.T, got operatorSend) {
+		t.Helper()
+		if !composerHoldsExactly(got.rows, operator) || len(got.ran) != 0 {
+			t.Fatalf("the send ended %v (outcome %v), leaving %q and running %q; want the operator's %q kept", got.err, OutcomeOf(got.err), got.rows, got.ran, operator)
+		}
+	}
+}
+
 // After the Enter retry, bossd reads the box until its wait runs out, and an
 // operator who clears bossd's text and types a message of their own that
-// begins as bossd's does may do so before any of those reads. Whichever read
-// it lands before, the send ends without erasing it. The sweep types the
-// operator's prefix before each capture bossd takes after its retry Enter.
-func TestNotSubmittedSendKeepsAnOperatorsPrefixTypedAfterTheRetryEnter(t *testing.T) {
+// begins as bossd's does may do so then. The send ends without erasing it.
+func TestNotSubmittedSendKeepsAnOperatorsPrefixTypedRightAfterTheRetryEnter(t *testing.T) {
+	parallelSlowComposer(t)
+	got := sendWithOperator(t, pasteMessage("fix the build please"), operatorMoment{"Enter", 2, 1}, func(tmux CommandFactory, pane string) bool {
+		operatorTypes(t, tmux, pane, true, "fix the")
+		return true
+	})
+	if !got.acted {
+		t.Fatalf("the send took no capture after its retry Enter, ending %v (outcome %v)", got.err, OutcomeOf(got.err))
+	}
+	keepsOperatorsPrefix("fix the")(t, got)
+}
+
+// An operator who empties the box while the Enter retry presses C-u, and
+// types a message of their own, keeps it: the retry types nothing after it and
+// presses no Enter, since the two would be submitted as one message.
+func TestNotSubmittedSendKeepsForeignTextTypedInAPressWindow(t *testing.T) {
+	parallelSlowComposer(t)
+	const foreign = "please hold off, I am reviewing"
+	got := sendWithOperator(t, pasteMessage(wrapShapes["780 characters"]), operatorMoment{"C-u", 1, 1}, func(tmux CommandFactory, pane string) bool {
+		operatorEmptiesAndTypes(t, tmux, pane, foreign)
+		return true
+	})
+	if !got.acted {
+		t.Fatalf("the send pressed no C-u, ending %v (outcome %v)", got.err, OutcomeOf(got.err))
+	}
+	keepsOperatorsMessage(foreign)(t, got)
+}
+
+// The sweep behind TestNotSubmittedSendKeepsAnOperatorsPrefixTypedRightAfterTheRetryEnter:
+// the operator's prefix lands before each capture bossd takes after its retry
+// Enter.
+func TestOperatorSweep_PrefixTypedAfterTheRetryEnter(t *testing.T) {
+	requireOperatorSweeps(t)
 	for name, tc := range map[string]struct {
 		send     func(context.Context, *Client, string) error
 		operator string
 	}{
-		"pasted message": {func(ctx context.Context, c *Client, pane string) error {
-			return c.sendPlan(ctx, pane, "fix the build please", c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
-		}, "fix the"},
+		"pasted message": {pasteMessage("fix the build please"), "fix the"},
 		"typed slash command": {func(ctx context.Context, c *Client, pane string) error {
 			return c.sendLine(ctx, pane, bareSlashCommand, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
 		}, "/boss"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			send := func(t *testing.T, typeAt int) (captures int, typed bool, rows string, ran []string, err error) {
-				t.Helper()
-				ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
-				defer cancel()
-				c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
-				enters, sent := 0, false
-				onTmux(c, func(args []string, tmux CommandFactory) {
-					if slices.Contains(args, "send-keys") && slices.Contains(args, "Enter") {
-						enters++
-					}
-					if !sent && enters >= 2 && slices.Contains(args, "capture-pane") {
-						if captures++; captures == typeAt {
-							typed = true
-							operatorTypes(t, tmux, pane, true, tc.operator)
-						}
-					}
-				})
-				err = tc.send(ctx, c, pane)
-				sent = true
-				screen, capErr := c.CapturePane(ctx, pane)
-				if capErr != nil {
-					t.Fatalf("capture: %v", capErr)
+			cleanOK := func(t *testing.T, clean operatorSend) {
+				if OutcomeOf(clean.err) != OutcomeNotSubmitted || clean.captures == 0 {
+					t.Fatalf("a send with no operator ended %v (outcome %v) after %d captures past the retry Enter, leaving %q", clean.err, OutcomeOf(clean.err), clean.captures, clean.rows)
 				}
-				return captures, typed, composerRows(screen), ranLines(ctx, t, c, pane), err
 			}
-
-			clean, _, rows, _, err := send(t, 0)
-			if OutcomeOf(err) != OutcomeNotSubmitted || clean == 0 {
-				t.Fatalf("a send with no operator ended %v (outcome %v) after %d captures past the retry Enter, leaving %q", err, OutcomeOf(err), clean, rows)
+			types := func(t *testing.T, tmux CommandFactory, pane string) bool {
+				operatorTypes(t, tmux, pane, true, tc.operator)
+				return true
 			}
-			for at := 1; at <= clean; at++ {
-				t.Run(fmt.Sprintf("typed before capture %d of %d", at, clean), func(t *testing.T) {
-					parallelSlowComposer(t)
-					captures, typed, rows, ran, err := send(t, at)
-					for try := 2; !typed && try <= 3; try++ {
-						t.Logf("send %d took only %d captures past the retry Enter, ending %v (outcome %v) with %q", try-1, captures, err, OutcomeOf(err), rows)
-						captures, typed, rows, ran, err = send(t, at)
-					}
-					if !typed {
-						t.Skipf("no send reached capture %d past the retry Enter", at)
-					}
-					if !strings.Contains(withoutSpace(rows), withoutSpace(tc.operator)) || len(ran) != 0 {
-						t.Fatalf("the send ended %v (outcome %v), leaving %q and running %q; the operator's %q is gone", err, OutcomeOf(err), rows, ran, tc.operator)
-					}
-				})
-			}
+			sweepOperator(t, tc.send, operatorMoment{"Enter", 2, 0}, cleanOK, types, keepsOperatorsPrefix(tc.operator))
 		})
 	}
+}
+
+// A payload of four or more wrapped rows takes every press the Enter retry
+// has, so the retry can end with part of it left. An operator who acts before
+// any of bossd's reads from its first Enter on, in the first verify window, at
+// the baseline read, between the retry's presses or during the withdrawal,
+// keeps what they leave: a message that begins as bossd's does, one that does
+// not, or bossd's text with two rows trimmed off. Nothing is erased, and
+// nothing is typed after it or submitted.
+func TestOperatorSweep_OperatorActsOverALongPayload(t *testing.T) {
+	requireOperatorSweeps(t)
+	const foreign = "please hold off, I am reviewing"
+	types := func(text string) func(*testing.T, CommandFactory, string) bool {
+		return func(t *testing.T, tmux CommandFactory, pane string) bool {
+			operatorEmptiesAndTypes(t, tmux, pane, text)
+			return true
+		}
+	}
+	for _, tc := range []struct {
+		name, shape string
+		act         func(*testing.T, CommandFactory, string) bool
+		check       func(*testing.T, operatorSend)
+	}{
+		{"780 characters, a prefix typed", "780 characters", types("abcdefghi abc"), keepsOperatorsMessage("abcdefghi abc")},
+		{"wide characters wrapped, a prefix typed", "wide characters wrapped", types("修复构建"), keepsOperatorsMessage("修复构建")},
+		{"780 characters, other text typed", "780 characters", types(foreign), keepsOperatorsMessage(foreign)},
+		{"780 characters, two rows trimmed", "780 characters", func(t *testing.T, tmux CommandFactory, pane string) bool { return operatorTrims(t, tmux, pane, 2) }, keepsATrimOf(wrapShapes["780 characters"])},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sweepOperator(t, pasteMessage(wrapShapes[tc.shape]), operatorMoment{"Enter", 1, 0}, leavesPartOfThePayload, tc.act, tc.check)
+		})
+	}
+}
+
+// leavesPartOfThePayload checks that a send with no operator ended with the
+// retry's presses leaving part of the payload, which is the ending a sweep
+// over a long payload reaches.
+func leavesPartOfThePayload(t *testing.T, clean operatorSend) {
+	t.Helper()
+	var partial *partialPayload
+	if OutcomeOf(clean.err) != OutcomeNotSubmitted || clean.captures == 0 || !errors.As(clean.err, &partial) {
+		t.Fatalf("a send with no operator ended %v (outcome %v) after %d captures past the first Enter, leaving %q; want the retry's presses to leave part of the payload", clean.err, OutcomeOf(clean.err), clean.captures, clean.rows)
+	}
+}
+
+// keepsATrimOf checks that a send left a non-empty leading part of payload in
+// the box and ran nothing. An operator who found nothing left to trim has
+// nothing to keep, so only the second half applies.
+func keepsATrimOf(payload string) func(*testing.T, operatorSend) {
+	return func(t *testing.T, got operatorSend) {
+		t.Helper()
+		if !got.changed {
+			if len(got.ran) != 0 {
+				t.Fatalf("the send ended %v (outcome %v), running %q", got.err, OutcomeOf(got.err), got.ran)
+			}
+			return
+		}
+		first, rest, _ := strings.Cut(got.rows, "\n")
+		content, _ := composerContent(strings.TrimSpace(first))
+		box := withoutSpace(content + " " + rest)
+		if box == "" || !strings.HasPrefix(withoutSpace(payload), box) || len(got.ran) != 0 {
+			t.Fatalf("the send ended %v (outcome %v), leaving %q and running %q; want the operator's trim of the payload kept", got.err, OutcomeOf(got.err), got.rows, got.ran)
+		}
+	}
+}
+
+// operatorEmptiesAndTypes empties the slow composer's box as an operator
+// holding C-u would, one press per wrapped row and newline, then types text.
+func operatorEmptiesAndTypes(t *testing.T, tmux CommandFactory, pane, text string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	presses := []string{"send-keys", "-t", pane}
+	for range 12 {
+		presses = append(presses, "C-u")
+	}
+	if out, err := tmux(ctx, "tmux", presses...).CombinedOutput(); err != nil {
+		t.Errorf("operator C-u: %v: %s", err, out)
+		return
+	}
+	operatorTypes(t, tmux, pane, false, text)
+}
+
+// operatorTrims presses C-u rows times in the slow composer, as an operator
+// cutting the last rows of the box would, and waits for the box to lose them.
+// It presses nothing, and reports false, when the box holds no more rows than
+// that, since the cut would empty it.
+func operatorTrims(t *testing.T, tmux CommandFactory, pane string, rows int) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	count := func() int {
+		out, err := tmux(ctx, "tmux", "capture-pane", "-p", "-t", pane).Output()
+		if err != nil {
+			return -1
+		}
+		return composerRowCount(composerRows(string(out)))
+	}
+	before := count()
+	if before <= rows {
+		return false
+	}
+	presses := []string{"send-keys", "-t", pane}
+	for range rows {
+		presses = append(presses, "C-u")
+	}
+	if out, err := tmux(ctx, "tmux", presses...).CombinedOutput(); err != nil {
+		t.Errorf("operator C-u: %v: %s", err, out)
+		return false
+	}
+	for ctx.Err() == nil {
+		if n := count(); n >= 0 && n <= before-rows {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("the composer never lost the %d rows the operator cut", rows)
+	return false
 }
 
 // onTmux wraps c's tmux command factory so hook sees each tmux command's
@@ -1148,6 +1464,7 @@ var wrapShapes = map[string]string{
 	"blank middle line":       "line one\n\nline three",
 	"trailing newline":        "line one\nline two\n",
 	"wrapped then a line":     strings.Repeat("wrap me please ", 12) + "\nshort",
+	"a line then the width":   "line one\n" + strings.Repeat("z", claudeComposerWrapWidth(slowComposerColumns)),
 }
 
 // A not-submitted send of any shape Claude draws as text ends with the

@@ -14,10 +14,12 @@ deps:
 format:
 	pnpm run format
 
-## test: Typecheck, run unit tests, and build static docs
+## test: Typecheck, run unit tests, build static docs, then check the build's
+## inline scripts against the static/_headers CSP (scripts/headers.test.mjs)
 test: typecheck
 	pnpm run test:unit
 	pnpm run build
+	pnpm run test:headers
 
 ## lint: Typecheck and prettier format check
 lint: typecheck

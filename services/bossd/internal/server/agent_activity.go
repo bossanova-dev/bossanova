@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -37,6 +39,15 @@ const wedgeRecoveryTTL = 5 * time.Minute
 // to sessions queried recently.
 const wedgeIdleTTL = time.Hour
 
+// wedgeReadBudget bounds one background persisted read. Parsing a 5.7 GB
+// codex rollout took 25s; a read past the budget fails and backs off.
+const wedgeReadBudget = 2 * time.Minute
+
+// wedgeReadWait is how long the caller that starts a read waits for it before
+// it answers with what is already known. A read that outlasts it finishes in
+// the background and serves later callers.
+const wedgeReadWait = 200 * time.Millisecond
+
 // TranscriptTallier tallies one chat's transcript over [since, until).
 type TranscriptTallier func(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (agenttelemetry.Counts, error)
 
@@ -46,9 +57,12 @@ type TranscriptTallier func(ctx context.Context, worktreePath string, chat *mode
 // give-up starts over. A read is due wedgeActivityTTL after the last attempt
 // while no output is known or after a failed attempt, and wedgeRecoveryTTL
 // after it once output is known. An entry not queried for wedgeIdleTTL is
-// dropped. Share one cache between every hydrator in the process so they hand
-// clients the same value. Safe for concurrent use; construct with
-// NewWedgeActivityCache.
+// dropped. Reads run in the background, one per session at a time, so no
+// caller's request waits on a transcript parse or starts a second one. Each
+// chat transcript's output is kept per file version, so an unchanged
+// transcript is never parsed twice. Share one cache between every hydrator in
+// the process so they hand clients the same value. Safe for concurrent use;
+// construct with NewWedgeActivityCache.
 type WedgeActivityCache struct {
 	mu      sync.Mutex
 	now     func() time.Time
@@ -56,6 +70,13 @@ type WedgeActivityCache struct {
 	// warnedAt is when a failed read of each session was last logged as a
 	// warning, so a failing read warns once per TTL.
 	warnedAt map[string]time.Time
+	// inflight is each session's running background read.
+	inflight map[string]wedgeRead
+	// transcripts is each chat's output after a give-up, per file version.
+	transcripts map[string]transcriptOutput
+	// readWait is wedgeReadWait; tests that need a read to land before the
+	// caller answers raise it.
+	readWait time.Duration
 }
 
 type wedgeActivityEntry struct {
@@ -70,21 +91,35 @@ type wedgeActivityEntry struct {
 	usedAt time.Time
 }
 
+type wedgeRead struct {
+	// done is closed once the read has recorded its result.
+	done <-chan struct{}
+}
+
+// transcriptOutput is one chat transcript's newest output after since, read
+// from the files identified by version.
+type transcriptOutput struct {
+	since   time.Time
+	version string
+	output  time.Time
+	usedAt  time.Time
+}
+
 // NewWedgeActivityCache returns an empty cache.
 func NewWedgeActivityCache() *WedgeActivityCache {
 	return &WedgeActivityCache{
-		now:      time.Now,
-		entries:  make(map[string]wedgeActivityEntry),
-		warnedAt: make(map[string]time.Time),
+		now:         time.Now,
+		entries:     make(map[string]wedgeActivityEntry),
+		warnedAt:    make(map[string]time.Time),
+		inflight:    make(map[string]wedgeRead),
+		transcripts: make(map[string]transcriptOutput),
+		readWait:    wedgeReadWait,
 	}
 }
 
 // lookup returns the output known for sessionID's give-up and whether a read
-// is due. A nil cache knows nothing and is always due.
+// is due.
 func (c *WedgeActivityCache) lookup(sessionID string, giveUpAt time.Time) (time.Time, bool) {
-	if c == nil {
-		return time.Time{}, true
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -105,15 +140,17 @@ func (c *WedgeActivityCache) lookup(sessionID string, giveUpAt time.Time) (time.
 // whether it was incomplete. The known output keeps the newer of the two.
 // Entries idle for wedgeIdleTTL are dropped.
 func (c *WedgeActivityCache) record(sessionID string, giveUpAt, found time.Time, failed bool) {
-	if c == nil {
-		return
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
 	for id, e := range c.entries {
 		if now.Sub(e.usedAt) >= wedgeIdleTTL {
 			delete(c.entries, id)
+		}
+	}
+	for id, t := range c.transcripts {
+		if now.Sub(t.usedAt) >= wedgeIdleTTL {
+			delete(c.transcripts, id)
 		}
 	}
 	e, ok := c.entries[sessionID]
@@ -125,6 +162,59 @@ func (c *WedgeActivityCache) record(sessionID string, giveUpAt, found time.Time,
 	}
 	e.readAt, e.failed, e.usedAt = now, failed, now
 	c.entries[sessionID] = e
+}
+
+// startRead runs read in the background for sessionID unless a read of the
+// session is already running, and returns the channel closed once the running
+// read finishes and whether this call started it. The read's context keeps
+// ctx's values but not its cancellation: callers that go away leave the read
+// to finish within wedgeReadBudget for whoever asks next.
+func (c *WedgeActivityCache) startRead(ctx context.Context, logger zerolog.Logger, sessionID string, read func(context.Context)) (<-chan struct{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r, ok := c.inflight[sessionID]; ok {
+		return r.done, false
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wedgeReadBudget)
+	done := safego.Go(logger, func() {
+		defer func() {
+			cancel()
+			c.mu.Lock()
+			delete(c.inflight, sessionID)
+			c.mu.Unlock()
+		}()
+		read(readCtx)
+	})
+	c.inflight[sessionID] = wedgeRead{done: done}
+	return done, true
+}
+
+// transcriptOutputAt returns chat's output after since known for the
+// transcript files identified by version.
+func (c *WedgeActivityCache) transcriptOutputAt(chatID string, since time.Time, version string) (time.Time, bool) {
+	if c == nil {
+		return time.Time{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, ok := c.transcripts[chatID]
+	if !ok || !t.since.Equal(since) || t.version != version {
+		return time.Time{}, false
+	}
+	t.usedAt = c.now()
+	c.transcripts[chatID] = t
+	return t.output, true
+}
+
+// recordTranscriptOutput stores chat's output after since read from the
+// transcript files identified by version.
+func (c *WedgeActivityCache) recordTranscriptOutput(chatID string, since time.Time, version string, output time.Time) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.transcripts[chatID] = transcriptOutput{since: since, version: version, output: output, usedAt: c.now()}
 }
 
 // shouldWarn reports whether a failed read of sessionID is due a warning:
@@ -159,11 +249,14 @@ func (c *WedgeActivityCache) shouldWarn(sessionID string) bool {
 type WedgeActivity struct {
 	// Runs lists the session's agent runs; nil reads none.
 	Runs func(ctx context.Context, sessionID string) ([]db.AgentRun, error)
-	// Tally reads one chat's transcript; nil uses tallyInteractiveAgentRunForServer.
+	// Tally reads one chat's transcript, the files interactiveTranscriptPaths
+	// resolves; nil uses tallyInteractiveAgentRunForServer.
 	Tally TranscriptTallier
-	// Cache memoises the persisted read; nil reads every time.
+	// Cache memoises the persisted read and runs it in the background; nil
+	// reads inline under the caller's context on every call.
 	Cache *WedgeActivityCache
-	// Logger records a persisted read that failed; the zero Logger discards.
+	// Logger records a persisted read that failed, at most once per session
+	// per wedgeActivityTTL; the zero Logger discards.
 	Logger zerolog.Logger
 }
 
@@ -201,30 +294,48 @@ func (w WedgeActivity) RestartProofActivity(ctx context.Context, q WedgeQuery) t
 	if q.PRDone || q.GiveUpAt.IsZero() || q.Live.After(q.GiveUpAt) {
 		return q.Live
 	}
-	output, due := w.Cache.lookup(q.SessionID, q.GiveUpAt)
-	if due {
-		found, err := w.persistedOutputAfter(ctx, q.SessionID, q.WorktreePath, q.GiveUpAt, q.Chats)
-		switch {
-		case err == nil:
-			w.Cache.record(q.SessionID, q.GiveUpAt, found, false)
-		case ctx.Err() != nil:
-			// The caller went away: not the transcript's fault, so no
-			// backoff. What the read found is still served below.
-			w.logFailedRead(ctx, q.SessionID, err)
-		default:
-			// A failed read backs off for wedgeActivityTTL rather than
-			// re-reading on every poll, and keeps the known output.
-			w.logFailedRead(ctx, q.SessionID, err)
-			w.Cache.record(q.SessionID, q.GiveUpAt, found, true)
-		}
-		if found.After(output) {
-			output = found
-		}
-	}
-	if output.After(q.Live) {
+	if output := w.persistedOutput(ctx, q); output.After(q.Live) {
 		return output
 	}
 	return q.Live
+}
+
+// persistedOutput returns the persisted output known after q's give-up. With
+// no cache it reads inline under ctx. With one it serves the cached value and,
+// when a read is due, starts one in the background and waits for it at most
+// the cache's readWait, so a slow read never holds the caller's request.
+func (w WedgeActivity) persistedOutput(ctx context.Context, q WedgeQuery) time.Time {
+	read := func(ctx context.Context) (time.Time, bool) {
+		found, err := w.persistedOutputAfter(ctx, q.SessionID, q.WorktreePath, q.GiveUpAt, q.Chats)
+		if err != nil && w.Cache.shouldWarn(q.SessionID) {
+			w.Logger.Warn().Err(err).Str("session_id", q.SessionID).Msg("restart-proof agent activity: persisted read failed; backing off")
+		}
+		return found, err != nil
+	}
+	if w.Cache == nil {
+		found, _ := read(ctx)
+		return found
+	}
+	output, due := w.Cache.lookup(q.SessionID, q.GiveUpAt)
+	if !due {
+		return output
+	}
+	done, started := w.Cache.startRead(ctx, w.Logger, q.SessionID, func(ctx context.Context) {
+		found, failed := read(ctx)
+		w.Cache.record(q.SessionID, q.GiveUpAt, found, failed)
+	})
+	if !started {
+		return output
+	}
+	wait := time.NewTimer(w.Cache.readWait)
+	defer wait.Stop()
+	select {
+	case <-done:
+		output, _ = w.Cache.lookup(q.SessionID, q.GiveUpAt)
+	case <-wait.C:
+	case <-ctx.Done():
+	}
+	return output
 }
 
 // persistedOutputAfter returns the newest persisted output strictly after
@@ -259,16 +370,12 @@ func (w WedgeActivity) persistedOutputAfter(ctx context.Context, sessionID, work
 			}
 		}
 	}
-	tally := w.Tally
-	if tally == nil {
-		tally = tallyInteractiveAgentRunForServer
-	}
 	now := time.Now()
 	for _, chat := range chats {
 		if ctx.Err() != nil {
 			break
 		}
-		counts, err := tally(ctx, worktreePath, chat, giveUpAt, now)
+		output, err := w.transcriptOutputAfter(ctx, worktreePath, chat, giveUpAt, now)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -276,8 +383,8 @@ func (w WedgeActivity) persistedOutputAfter(ctx context.Context, sessionID, work
 			errs = append(errs, fmt.Errorf("tally chat %s: %w", chat.AgentSessionID, err))
 			continue
 		}
-		if counts.LastOutputAt.After(giveUpAt) && counts.LastOutputAt.After(newest) {
-			newest = counts.LastOutputAt
+		if output.After(giveUpAt) && output.After(newest) {
+			newest = output
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -286,17 +393,57 @@ func (w WedgeActivity) persistedOutputAfter(ctx context.Context, sessionID, work
 	return newest, errors.Join(errs...)
 }
 
-// logFailedRead records an incomplete persisted read. A caller that went away
-// (its context ended) is not a fault, so it is a debug line; any other failure
-// warns, at most once per session per wedgeActivityTTL.
-func (w WedgeActivity) logFailedRead(ctx context.Context, sessionID string, err error) {
-	if ctx.Err() != nil {
-		w.Logger.Debug().Err(err).Str("session_id", sessionID).Msg("restart-proof agent activity: persisted read abandoned")
-		return
+// transcriptOutputAfter returns the newest output in chat's transcript after
+// since. Transcript files not modified since then cannot hold any, so they are
+// not read; otherwise the output read from one version of the files (their
+// paths, sizes and mtimes) is reused until they change. A chat whose files
+// cannot be resolved is tallied without either shortcut.
+func (w WedgeActivity) transcriptOutputAfter(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (time.Time, error) {
+	tally := w.Tally
+	if tally == nil {
+		tally = tallyInteractiveAgentRunForServer
 	}
-	if w.Cache.shouldWarn(sessionID) {
-		w.Logger.Warn().Err(err).Str("session_id", sessionID).Msg("restart-proof agent activity: persisted read failed; backing off")
+	version, modified, versionErr := transcriptVersion(worktreePath, chat)
+	if versionErr == nil {
+		if !modified.After(since) {
+			return time.Time{}, nil
+		}
+		if output, ok := w.Cache.transcriptOutputAt(chat.AgentSessionID, since, version); ok {
+			return output, nil
+		}
 	}
+	counts, err := tally(ctx, worktreePath, chat, since, until)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if versionErr == nil {
+		w.Cache.recordTranscriptOutput(chat.AgentSessionID, since, version, counts.LastOutputAt)
+	}
+	return counts.LastOutputAt, nil
+}
+
+// transcriptVersion identifies the bytes of chat's transcript files by their
+// paths, sizes and mtimes, and returns the newest mtime.
+func transcriptVersion(worktreePath string, chat *models.AgentChat) (string, time.Time, error) {
+	paths, err := interactiveTranscriptPaths(worktreePath, chat)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var (
+		version  strings.Builder
+		modified time.Time
+	)
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		fmt.Fprintf(&version, "%s\x00%d\x00%d\x00", path, info.Size(), info.ModTime().UnixNano())
+		if info.ModTime().After(modified) {
+			modified = info.ModTime()
+		}
+	}
+	return version.String(), modified, nil
 }
 
 // HydrateRestartProofActivity applies WedgeActivity.RestartProofActivity to

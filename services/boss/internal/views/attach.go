@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 	"github.com/recurser/boss/internal/agent"
@@ -38,6 +39,11 @@ const minLaunchingDisplay = 1500 * time.Millisecond
 // error and trap them. See BOS-108.
 var errChatSessionGone = errors.New(
 	"this chat's agent session is no longer available (it may have been interrupted during setup)")
+
+// errChatDeleted is shown when the chat being opened no longer exists, usually
+// deleted after the chat list loaded. bossd refuses the resume rather than
+// start a brand-new chat under its id.
+var errChatDeleted = errors.New("this chat no longer exists")
 
 // startExecMsg fires once the minLaunchingDisplay budget has elapsed.
 // It triggers the deferred tea.Exec that attaches to tmux.
@@ -385,6 +391,10 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		resume := msg.resume
+		if resume && connect.CodeOf(msg.err) == connect.CodeNotFound {
+			m.err = errChatDeleted
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = fmt.Errorf("record chat: %w", msg.err)
 			return m, nil

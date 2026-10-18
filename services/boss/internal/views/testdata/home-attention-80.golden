@@ -2,20 +2,11 @@
                                                                               
    ──────────────────────────────── NEEDS YOU ────────────────────────────────
    my-app  [BOS-1502] Improve the unattended session… #2982  ⨯ failing        
-           Resumed 3 times since 23:16; each attempt                          
-           lost its Claude login                                              
  ❯ my-app  [BOS-1500] Improve the unattended session… #2980  review           
-           Security change: verify gate rules (how                            
-           PRs get merged)                                                    
    my-app  [BOS-1503] Improve the unattended session… #2983  ? question       
-           Which deployment should receive the                                
-           update?                                                            
    my-app  [BOS-1504] Improve the unattended session… #2984  review           
-           Security change: billing settings                                  
    my-app  [BOS-1505] Improve the unattended session… #2985  review           
-           Database migration                                                 
    my-app  [BOS-1506] Improve the unattended session… #2986  review           
-           Security change: permission rules                                  
    my-app  [BOS-1507] Improve the unattended session… #2987  ✓ merge          
                                                                               
    ─────────────────────────────── IN PROGRESS ───────────────────────────────

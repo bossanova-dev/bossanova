@@ -107,13 +107,12 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
 }
 
-// BuildInteractiveCommand returns a no-op argv. The stub does not support
-// interactive (tmux) sessions, but returns a valid response so the daemon
-// does not crash if it calls this path.
+// BuildInteractiveCommand returns a benign argv for the tmux pane: `true`
+// (exits 0, no output) unless the worktree carries a .stub-question file, in
+// which case the pane asks that question and stays open (see question.go).
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
-	// Return a benign argv (true exits 0 and produces no output).
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: []string{"true"},
+		Argv: interactiveArgv(req.GetWorktreePath()),
 		// The stub builds no real command line, so any system-prompt suffix
 		// bossd offers is dropped. Declare that instead of staying silent.
 		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
@@ -151,9 +150,10 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
 }
 
-// HasQuestionPrompt always returns false; the stub never shows a prompt.
-func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
-	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: false}, nil
+// HasQuestionPrompt reports whether the captured pane shows the stub's own
+// question line (see question.go); every other pane is no question.
+func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: hasQuestion(req.GetPaneContent())}, nil
 }
 
 // DetectUsageLimit always returns limited=false; the stub never renders a

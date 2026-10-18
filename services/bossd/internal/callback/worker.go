@@ -294,8 +294,10 @@ var ErrComposerOccupied = errors.New("the target chat's composer holds a draft")
 // operator typing, so spending the five attempts would abandon the callback
 // within minutes while the person is still there. It waits instead, at the
 // backoff it has reached, until the draft is submitted or cleared or the
-// callback expires. last_error names the refusal, so `boss callback list`
-// shows why it is waiting.
+// callback expires. last_error holds a sentence for the operator
+// (models.GithubCallbackComposerOccupiedWait), which `boss callback list`
+// shows as the reason the callback waits. The refusal itself, redacted, goes
+// to the log.
 func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCallback, cause error) {
 	next := w.now().Add(backoffFor(cb.AttemptCount))
 	if next.After(cb.ExpiresAt) {
@@ -303,7 +305,7 @@ func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCal
 	}
 	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
 		NextAttemptAt:        next,
-		LastError:            callbackDiagnostic(cause, cb.Message),
+		LastError:            models.GithubCallbackComposerOccupiedWait,
 		LastEvent:            string(cb.Trigger),
 		PreserveAttemptCount: true,
 	}); err != nil {
@@ -312,7 +314,7 @@ func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCal
 		return
 	}
 	w.logger.Info().Str("callback_id", cb.ID).Str("chat_id", cb.TargetChatID).
-		Time("next_attempt_at", next).
+		Time("next_attempt_at", next).Str("cause", callbackDiagnostic(cause, cb.Message)).
 		Msg("callback worker: target composer holds a draft; delivery waits for it")
 }
 

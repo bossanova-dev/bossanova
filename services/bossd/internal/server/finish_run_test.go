@@ -409,7 +409,9 @@ func TestFinishUnattendedRun_LateBlockedReportRefused(t *testing.T) {
 
 // TestFinishUnattendedRun_BlockedRunTakesOnlyItsOwnChat: a Blocked run accepts
 // a finish or a finish --blocked from its own chat only. Another chat of the
-// session is refused and leaves nothing pending and no report.
+// session is refused and leaves nothing pending and no report. An accepted
+// finish --blocked writes nothing to the row before it fires, so a new chat
+// that cancels it leaves the row's reason and block time as they were.
 func TestFinishUnattendedRun_BlockedRunTakesOnlyItsOwnChat(t *testing.T) {
 	for _, tc := range []struct {
 		name, requester, reason string
@@ -441,11 +443,65 @@ func TestFinishUnattendedRun_BlockedRunTakesOnlyItsOwnChat(t *testing.T) {
 			if err != nil || !resp.GetIsDeferred() {
 				t.Fatalf("resp=%+v err=%v, want the finish deferred", resp, err)
 			}
-			if tc.reason != "" && (got.RunBlockedReason == nil || *got.RunBlockedReason != tc.reason) {
-				t.Fatalf("run_blocked_reason = %v, want %q", got.RunBlockedReason, tc.reason)
+			if got.RunBlockedReason != nil || got.State != machine.Blocked {
+				t.Fatalf("run_blocked_reason=%v state=%v, the request must not touch the row before the finish fires",
+					got.RunBlockedReason, got.State)
 			}
-			if got.State != machine.Blocked {
-				t.Fatalf("state = %v, the request must not finalize the run itself", got.State)
+			if _, err := h.srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{SessionId: deferralSessionID, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e62"})); err != nil {
+				t.Fatalf("RecordChat(new): %v", err)
+			}
+			got, _ = h.sessions.Get(context.Background(), deferralSessionID)
+			if h.d.has(deferralSessionID) || got.RunBlockedReason != nil || got.State != machine.Blocked || !got.StateEnteredAt.Equal(blockedAt) {
+				t.Fatalf("pending=%v run_blocked_reason=%v state=%v blocked at=%v, want the finish dropped and the row as it was",
+					h.d.has(deferralSessionID), got.RunBlockedReason, got.State, got.StateEnteredAt)
+			}
+		})
+	}
+}
+
+// TestFinishUnattendedRun_BlockedRunRefusesWhileAFinishRuns: a finish of a
+// Blocked run that arrives while an earlier finish of it is executing is
+// refused. Joining would report success for a claim the running finish never
+// reads, so a later finish --blocked would be dropped and the PR readied.
+func TestFinishUnattendedRun_BlockedRunRefusesWhileAFinishRuns(t *testing.T) {
+	for _, tc := range []struct{ name, reason string }{
+		{name: "finish --blocked", reason: "review found a P1"},
+		{name: "finish"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFinishHarness(t, "chat-self")
+			row := h.sessions.rows[deferralSessionID]
+			runChat, blockedAt := "chat-self", time.Now().Add(-time.Hour)
+			row.State, row.AgentSessionID, row.StateEnteredAt = machine.Blocked, &runChat, &blockedAt
+			h.srv.lifecycle = session.NewLifecycle(h.sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+			h.d.mu.Lock()
+			running := h.d.claimLocked(deferralSessionID)
+			h.d.mu.Unlock()
+			answered := make(chan error, 1)
+			go func() {
+				_, err := h.rpc(&pb.FinishUnattendedRunRequest{
+					SessionId: deferralSessionID, RequesterAgentSessionId: "chat-self", IsBlocked: tc.reason != "", BlockedReason: tc.reason,
+				})
+				answered <- err
+			}()
+			var err error
+			select {
+			case err = <-answered:
+				h.d.finish(deferralSessionID, running, nil)
+			case <-time.After(2 * time.Second):
+				h.d.finish(deferralSessionID, running, nil)
+				err = <-answered
+			}
+
+			if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+				t.Fatalf("code = %v (err=%v), want FailedPrecondition while a finish runs", got, err)
+			}
+			if h.d.has(deferralSessionID) {
+				t.Fatal("a refused finish left a pending finish")
+			}
+			if got, _ := h.sessions.Get(context.Background(), deferralSessionID); got.RunBlockedReason != nil || got.State != machine.Blocked {
+				t.Fatalf("run_blocked_reason=%v state=%v, want the row untouched", got.RunBlockedReason, got.State)
 			}
 		})
 	}

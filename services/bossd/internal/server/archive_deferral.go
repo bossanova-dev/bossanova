@@ -266,6 +266,22 @@ func (d *archiveDeferrer) genLocked(sessionID string) uint64 {
 	return 0
 }
 
+// errInFlight is returned by unlessInFlight when sessionID's request is
+// already executing.
+var errInFlight = errors.New("already running")
+
+// unlessInFlight runs fn while no request for sessionID is executing, and
+// holds d.mu so none can start until fn returns. It returns errInFlight,
+// without running fn, when one is executing.
+func (d *archiveDeferrer) unlessInFlight(sessionID string, fn func() error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.inflight[sessionID]; ok {
+		return errInFlight
+	}
+	return fn()
+}
+
 // claimLocked marks sessionID's archive in flight. Callers hold d.mu and have
 // checked that none is already in flight.
 func (d *archiveDeferrer) claimLocked(sessionID string) *inflightArchive {

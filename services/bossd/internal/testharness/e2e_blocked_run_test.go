@@ -151,6 +151,19 @@ func TestE2E_BlockedRunReadsInProgressAndMovesOnlyOnItsOwnFinish(t *testing.T) {
 	}
 	firstBlock := *r.row(t, h, ctx).StateEnteredAt
 
+	// A new chat cancels a pending finish --blocked before it fires. Its
+	// reason never reached the row, so nothing re-Blocks on it later.
+	if err := r.finish(h, ctx, r.runChat, "a report the new chat drops"); err != nil {
+		t.Fatalf("finish --blocked from the run's chat: %v", err)
+	}
+	if _, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{SessionId: r.id, AgentSessionId: "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e63"})); err != nil {
+		t.Fatalf("RecordChat(new): %v", err)
+	}
+	r.assertStillBlocked(t, h, ctx, blockedRunReason)
+	if got := r.row(t, h, ctx); got.RunBlockedReason != nil || !got.StateEnteredAt.Equal(firstBlock) {
+		t.Fatalf("run_blocked_reason=%v state_entered_at=%v, want no report and the first block (%v)", got.RunBlockedReason, got.StateEnteredAt, firstBlock)
+	}
+
 	// The deferrer fires the finish once the session settles; the test fires
 	// it directly through the same lifecycle entry.
 	if err := r.finish(h, ctx, r.runChat, "flows still red after bumping the pin"); err != nil {

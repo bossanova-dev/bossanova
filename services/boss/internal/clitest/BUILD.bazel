@@ -51,6 +51,7 @@ go_test(
     deps = [
         "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
         "//services/boss/internal/tuitest",
         "@com_connectrpc_connect//:connect",
         "@com_github_google_uuid//:uuid",

@@ -601,6 +601,11 @@ type RefMsg struct {
 // attention_status its blocked hint back. It writes only attention_status,
 // which no other change reads.
 //
+// ResumeGaveUpSentenceChange (introduced at V20260924), which restores "so the factory
+// stopped retrying" in the FIX of a run whose automatic resumes gave up. That
+// sentence is never built from blocked_reason, and every other change that
+// matches a sentence matches a different one, so the order does not matter.
+//
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -671,6 +676,7 @@ func ProductionChanges() *Changes {
 		ParkSinceChange{},
 		RunBlockedLabelChange{},
 		EndedBlockHintChange{},
+		ResumeGaveUpSentenceChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3725,6 +3731,46 @@ func downconvertEndedBlockHintSession(s *pb.Session) *pb.Session {
 // every session-bearing unary response and is a no-op elsewhere.
 func (EndedBlockHintChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertEndedBlockHintSession)
+}
+
+// ResumeGaveUpSentenceChange is the production VersionChange introduced at
+// V20260924.
+//
+// At V20260924 the FIX for a run whose automatic resumes gave up
+// (resumepolicy.Sentence) says "so automatic retries stopped" where it said
+// "so the factory stopped retrying". Older pins get the old clause back. The
+// rest of the sentence is unchanged, so the old sentence is rebuilt exactly.
+type ResumeGaveUpSentenceChange struct{}
+
+// Version implements VersionChange.
+func (ResumeGaveUpSentenceChange) Version() Version { return V20260924 }
+
+const (
+	resumeGaveUpSentencePrefix = "Resumed automatically at "
+	resumeGaveUpClause         = ", so automatic retries stopped. "
+	resumeGaveUpOldClause      = ", so the factory stopped retrying. "
+)
+
+// downconvertResumeGaveUpSentenceSession clones before writing because bosso's
+// registry path caches these pointers. Only a gave-up FIX row allocates.
+func downconvertResumeGaveUpSentenceSession(s *pb.Session) *pb.Session {
+	a := s.GetAttention()
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !strings.HasPrefix(a.GetSentence(), resumeGaveUpSentencePrefix) ||
+		strings.Count(a.GetSentence(), resumeGaveUpClause) != 1 {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.Sentence = strings.Replace(a.GetSentence(), resumeGaveUpClause, resumeGaveUpOldClause, 1)
+	return cloned
+}
+
+// TransformResponse implements VersionChange. It restores the old clause on
+// every session-bearing unary response and is a no-op elsewhere.
+func (ResumeGaveUpSentenceChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertResumeGaveUpSentenceSession)
 }
 
 // DeadBootstrapAttentionChange is the production VersionChange introduced at

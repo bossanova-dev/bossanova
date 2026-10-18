@@ -74,6 +74,12 @@ const (
 	GithubCallbackStateExpired GithubCallbackState = "expired"
 )
 
+// GithubCallbackComposerOccupiedWait is the last_error the delivery worker
+// records while a triggered callback waits for its chat's input box to empty.
+// It is written for the operator: `boss callback list` shows such a callback
+// as waiting, with this sentence as the reason.
+const GithubCallbackComposerOccupiedWait = "The chat's input box holds unsent text. It's delivered once that's sent or cleared."
+
 // GithubCallback is a durable one-shot registration that delivers a chat message
 // when a pull-request event fires. Nullable timing/diagnostic fields are pointers.
 //

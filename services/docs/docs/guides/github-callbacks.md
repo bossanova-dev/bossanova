@@ -99,6 +99,13 @@ before the daemon records `delivered` can cause redelivery, not loss; consumers
 dedup on callback id. A callback without a recorded successful delivery by its
 expiry is swept to `expired` the next time the expiry check runs.
 
+A delivery is held back when the target chat's input box already holds text
+nobody has sent, so it is never typed over a person's draft. The callback stays
+`triggered`, spends no delivery attempt, and is tried again until the box is
+sent or cleared or the callback expires. `boss callback list` shows it as
+`waiting`, with the reason in a REASON column; `last_error` carries the same
+sentence in `--json` output.
+
 **Expiry** defaults to 24 hours from creation and cannot be set beyond a 30-day
 ceiling; pass `--expires-in` to change it within that range (see
 [Using it from the CLI](#using-it-from-the-cli)).

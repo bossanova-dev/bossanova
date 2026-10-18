@@ -48,6 +48,7 @@ go_test(
         "ready_test.go",
         "released_test.go",
         "resume_actions_test.go",
+        "resume_gave_up_sentence_test.go",
         "review_only_park_pins_test.go",
         "review_only_park_test.go",
         "run_blocked_label_test.go",

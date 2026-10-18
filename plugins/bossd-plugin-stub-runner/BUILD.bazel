@@ -9,6 +9,7 @@ go_library(
     srcs = [
         "main.go",
         "plugin.go",
+        "question.go",
         "server.go",
     ],
     importpath = "github.com/recurser/bossd-plugin-stub-runner",
@@ -32,7 +33,10 @@ go_binary(
 
 go_test(
     name = "bossd-plugin-stub-runner_test",
-    srcs = ["server_test.go"],
+    srcs = [
+        "question_test.go",
+        "server_test.go",
+    ],
     embed = [":bossd-plugin-stub-runner_lib"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

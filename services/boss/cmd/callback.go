@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -315,19 +316,27 @@ func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 	states := make([]string, len(callbacks))
 	chats := make([]string, len(callbacks))
 	expiries := make([]string, len(callbacks))
+	reasons := make([]string, len(callbacks))
 	for i, cb := range callbacks {
 		ids[i] = cb.GetId()
 		prs[i] = fmt.Sprintf("%s/%s#%d", cb.GetRepoOwner(), cb.GetRepoName(), cb.GetPrNumber())
 		triggers[i] = cb.GetTrigger()
-		states[i] = cb.GetState()
+		states[i], reasons[i] = callbackListState(cb)
 		chats[i] = cb.GetTargetChatId()
 		expiries[i] = orDash(rfc3339OrEmpty(cb.GetExpiresAt()))
 	}
 
 	cols := callbackListColumns(ids, prs, triggers, states, chats, expiries)
+	waiting := slices.ContainsFunc(reasons, func(r string) bool { return r != "" })
+	if waiting {
+		cols = append(cols, table.Column{Title: "REASON", Width: views.MaxColWidth("REASON", reasons, 0)})
+	}
 	rows := make([]table.Row, len(callbacks))
 	for i := range callbacks {
 		rows[i] = table.Row{ids[i], prs[i], triggers[i], states[i], chats[i], expiries[i]}
+		if waiting {
+			rows[i] = append(rows[i], reasons[i])
+		}
 	}
 	t := table.New(
 		table.WithColumns(cols),
@@ -341,6 +350,16 @@ func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%d callbacks (complete listing)\n", len(callbacks))
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), callbackGroupSummary(callbacks))
 	return nil
+}
+
+// callbackListState returns the STATE cell for a callback row, and the reason
+// when it is waiting. A triggered callback whose delivery waits for the chat's
+// input box to empty reads "waiting"; the worker records why in last_error.
+func callbackListState(cb *pb.GithubCallback) (state, reason string) {
+	if cb.GetState() == string(models.GithubCallbackStateTriggered) && cb.GetLastError() == models.GithubCallbackComposerOccupiedWait {
+		return "waiting", cb.GetLastError()
+	}
+	return cb.GetState(), ""
 }
 
 // ungroupedListLabel names the ungrouped bucket in the list footer.

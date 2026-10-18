@@ -328,6 +328,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		}, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
 		})
+	case ResumeGaveUpSentenceChange:
+		return sessionProbes(resumeGaveUpSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetSentence() == resumeGaveUpOldSentence
+		})
 	case EndedBlockHintChange:
 		return sessionProbes(endedBlockSession, func(s *pb.Session) bool {
 			return s.GetAttentionStatus().GetReason() == pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS

@@ -7,6 +7,7 @@ import (
 
 	"github.com/recurser/boss/internal/clitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -69,6 +70,9 @@ func TestCLI_Callback_List(t *testing.T) {
 			t.Errorf("stdout missing %q\n%s", want, res.Stdout)
 		}
 	}
+	if strings.Contains(res.Stdout, "REASON") {
+		t.Errorf("a REASON column is drawn with no callback waiting\n%s", res.Stdout)
+	}
 }
 
 func TestCLI_Callback_List_Empty(t *testing.T) {
@@ -103,6 +107,44 @@ func TestCLI_Callback_List_ChatFilter(t *testing.T) {
 	}
 	if calls[0].GetTargetChatId() != "chat-2" {
 		t.Errorf("expected TargetChatId filter chat-2, got %q", calls[0].GetTargetChatId())
+	}
+}
+
+// A callback waiting for its chat's input box reads "waiting" in the table,
+// with the worker's sentence as the reason. A triggered callback retrying
+// after a failure keeps its state, and its raw error stays out of the table.
+func TestCLI_Callback_List_ShowsWhyACallbackWaits(t *testing.T) {
+	const rawChain = "send chat message: failed_precondition: send message (delivery state: not submitted)"
+	h := clitest.New(t, clitest.WithGithubCallbacks(
+		&pb.GithubCallback{
+			Id: "cb-wait", TargetChatId: "chat-1", RepoOwner: "acme", RepoName: "widgets", PrNumber: 9,
+			Trigger: "merged", State: "triggered", LastError: models.GithubCallbackComposerOccupiedWait,
+			ExpiresAt: timestamppb.New(timestampDaysAgo(-1)),
+		},
+		&pb.GithubCallback{
+			Id: "cb-retry", TargetChatId: "chat-1", RepoOwner: "acme", RepoName: "widgets", PrNumber: 10,
+			Trigger: "merged", State: "triggered", LastError: rawChain,
+			ExpiresAt: timestamppb.New(timestampDaysAgo(-1)),
+		},
+	))
+	res := h.Run("callback", "list")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+	rows := map[string]string{}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			rows[fields[0]] = line
+		}
+	}
+	if wait := rows["cb-wait"]; !strings.Contains(wait, " waiting ") || !strings.Contains(wait, models.GithubCallbackComposerOccupiedWait) {
+		t.Errorf("the waiting callback's row is %q, want state waiting and the reason %q\n%s", wait, models.GithubCallbackComposerOccupiedWait, res.Stdout)
+	}
+	if retry := rows["cb-retry"]; !strings.Contains(retry, " triggered ") {
+		t.Errorf("the retrying callback's row is %q, want state triggered\n%s", retry, res.Stdout)
+	}
+	if strings.Contains(res.Stdout, "failed_precondition") {
+		t.Errorf("the table carries the raw error chain\n%s", res.Stdout)
 	}
 }
 

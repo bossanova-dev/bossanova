@@ -1,17 +1,21 @@
 package tmux
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const typedSlashPayload = "/boss-plan --exclude-creator alice --exclude-assignee bob"
@@ -284,6 +288,24 @@ const slowComposerEnv = "BOSS_TMUX_SLOW_COMPOSER_BUSY"
 // as a Claude composer mid-render can.
 const slowComposerSwallowEnv = "BOSS_TMUX_SLOW_COMPOSER_SWALLOW"
 
+// slowComposerColumnsEnv carries the pane width, which the fake agent wraps
+// its composer text to.
+const slowComposerColumnsEnv = "BOSS_TMUX_SLOW_COMPOSER_COLUMNS"
+
+// slowComposerClearLagEnv carries how long the fake agent takes to act on a
+// C-u, so the frame read just after the press is stale.
+const slowComposerClearLagEnv = "BOSS_TMUX_SLOW_COMPOSER_CLEAR_LAG"
+
+// slowComposer configures the fake agent a real-tmux test runs in its pane.
+type slowComposer struct {
+	busy     time.Duration
+	swallow  int
+	clearLag time.Duration
+}
+
+// slowComposerColumns is the width of every pane the fake agent runs in.
+const slowComposerColumns = 120
+
 // TestSlowComposerProcess is not a test of its own: it is the agent a pane runs
 // for TestTypedSlashCommandSubmitsOnASlowStartingComposer.
 func TestSlowComposerProcess(t *testing.T) {
@@ -292,7 +314,119 @@ func TestSlowComposerProcess(t *testing.T) {
 		t.Skip("helper process for TestTypedSlashCommandSubmitsOnASlowStartingComposer")
 	}
 	swallow, _ := strconv.Atoi(os.Getenv(slowComposerSwallowEnv))
-	runSlowComposer(os.Stdin, os.Stdout, busy, swallow)
+	clearLag, _ := time.ParseDuration(os.Getenv(slowComposerClearLagEnv))
+	columns, _ := strconv.Atoi(os.Getenv(slowComposerColumnsEnv))
+	runSlowComposer(os.Stdin, os.Stdout, slowComposer{busy: busy, swallow: swallow, clearLag: clearLag}, columns)
+}
+
+// claudeComposerWrapWidth is how many columns of a pane columns wide Claude
+// Code 2.1.302 wraps its input text at. The prompt input is given the pane's
+// columns less 3, and its text measure is one narrower than that.
+func claudeComposerWrapWidth(columns int) int {
+	return columns - 4
+}
+
+// wrapClaudeComposerLine splits one line of composer text into the rows Claude
+// Code 2.1.302 draws it as: wrap-ansi with hard set and trim unset. A row
+// breaks before the word that does not fit and keeps the space before it, a
+// word wider than a row is cut, and widths are display cells, so a wide
+// character takes two. The rows joined are the line.
+func wrapClaudeComposerLine(line string, width int) []string {
+	rows := []string{""}
+	for i, word := range strings.Split(line, " ") {
+		rowWidth := cellsWide(rows[len(rows)-1])
+		if i > 0 {
+			if rowWidth >= width {
+				rows = append(rows, "")
+				rowWidth = 0
+			}
+			rows[len(rows)-1] += " "
+			rowWidth++
+		}
+		wordWidth := cellsWide(word)
+		if wordWidth > width {
+			breaksOnThisRow := 1 + (wordWidth-(width-rowWidth)-1)/width
+			breaksOnNextRow := (wordWidth - 1) / width
+			if breaksOnNextRow < breaksOnThisRow {
+				rows = append(rows, "")
+			}
+			rows = cutClaudeComposerWord(rows, word, width)
+			continue
+		}
+		if rowWidth+wordWidth > width && rowWidth > 0 && wordWidth > 0 {
+			rows = append(rows, "")
+		}
+		rows[len(rows)-1] += word
+	}
+	return rows
+}
+
+// cutClaudeComposerWord is wrap-ansi's wrapWord: it appends word to the last
+// row a character at a time, starting a new row whenever the next character
+// would pass width.
+func cutClaudeComposerWord(rows []string, word string, width int) []string {
+	visible := cellsWide(rows[len(rows)-1])
+	chars := []rune(word)
+	for i, r := range chars {
+		w := cellWidth(r)
+		if visible+w <= width {
+			rows[len(rows)-1] += string(r)
+		} else {
+			rows = append(rows, string(r))
+			visible = 0
+		}
+		visible += w
+		if visible == width && i < len(chars)-1 {
+			rows = append(rows, "")
+			visible = 0
+		}
+	}
+	if last := len(rows) - 1; visible == 0 && rows[last] != "" && last > 0 {
+		rows[last-1] += rows[last]
+		rows = rows[:last]
+	}
+	return rows
+}
+
+// cellsWide is how many terminal cells s takes.
+func cellsWide(s string) int {
+	n := 0
+	for _, r := range s {
+		n += cellWidth(r)
+	}
+	return n
+}
+
+// cellWidth is how many terminal cells r takes: none for a combining mark,
+// two for an East Asian wide or fullwidth character or an emoji, else one.
+func cellWidth(r rune) int {
+	switch {
+	case unicode.In(r, unicode.Mn, unicode.Me):
+		return 0
+	case r >= 0x1100 && r <= 0x115f, r >= 0x2e80 && r <= 0x303e, r >= 0x3041 && r <= 0x33ff,
+		r >= 0x3400 && r <= 0x4dbf, r >= 0x4e00 && r <= 0x9fff, r >= 0xa000 && r <= 0xa4cf,
+		r >= 0xac00 && r <= 0xd7a3, r >= 0xf900 && r <= 0xfaff, r >= 0xfe30 && r <= 0xfe4f,
+		r >= 0xff00 && r <= 0xff60, r >= 0xffe0 && r <= 0xffe6, r >= 0x1f300 && r <= 0x1f64f,
+		r >= 0x1f900 && r <= 0x1f9ff, r >= 0x20000 && r <= 0x3fffd:
+		return 2
+	}
+	return 1
+}
+
+// deleteToLineStart is Claude Code 2.1.302's ctrl+u with the cursor at the end
+// of the text, as its Cursor.deleteToLineStart does it: a newline just before
+// the cursor is killed on its own; otherwise the text is killed back to the
+// start of the cursor's wrapped row.
+func deleteToLineStart(text string, width int) string {
+	if strings.HasSuffix(text, "\n") {
+		return strings.TrimSuffix(text, "\n")
+	}
+	head, last := "", text
+	if i := strings.LastIndex(text, "\n"); i >= 0 {
+		head, last = text[:i+1], text[i+1:]
+	}
+	rows := wrapClaudeComposerLine(last, width)
+	return head + strings.Join(rows[:len(rows)-1], "")
 }
 
 // runSlowComposer models the Claude startup behaviour measured on Claude Code
@@ -304,10 +438,20 @@ func TestSlowComposerProcess(t *testing.T) {
 // way Claude Code 2.1.302 renders it: the prompt glyph is coloured, the cursor
 // is an inverse cell, which an empty composer puts on the first letter of its
 // dim placeholder, and a slash command followed by a space shows a dim
-// argument hint. The first swallow lone CRs are dropped.
-func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration, swallow int) {
+// argument hint. Input is read as UTF-8 characters, and a read holding more
+// than two CRs or 800 UTF-16 units is drawn as one "[Pasted text #N +M lines]"
+// placeholder, as Claude draws a long paste. Text is wrapped as Claude wraps
+// it (wrapClaudeComposerLine), and C-u is deleteToLineStart. The first swallow
+// lone CRs are dropped.
+func runSlowComposer(in io.Reader, out io.Writer, cfg slowComposer, columns int) {
+	busy, swallow := cfg.busy, cfg.swallow
+	width := claudeComposerWrapWidth(columns)
+	if columns <= 0 {
+		width = 1 << 20
+	}
 	var composer string
 	var ran []string
+	pastes := 0
 	draw := func() {
 		var b strings.Builder
 		b.WriteString("\x1b[H\x1b[2J")
@@ -315,7 +459,10 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration, swallow in
 			fmt.Fprintf(&b, "⏺ ran: %s\r\n", r)
 		}
 		b.WriteString("────────\r\n")
-		lines := strings.Split(composer, "\n")
+		var lines []string
+		for _, l := range strings.Split(composer, "\n") {
+			lines = append(lines, wrapClaudeComposerLine(l, width)...)
+		}
 		last := len(lines) - 1
 		lines[last] += "\x1b[7m \x1b[27m"
 		if composer == "" {
@@ -338,13 +485,35 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration, swallow in
 	draw()
 	time.Sleep(busy)
 	buf := make([]byte, 4096)
+	var read []byte
 	for {
 		n, err := in.Read(buf)
 		if err != nil {
 			return
 		}
-		chunk := buf[:n]
-		pasted := bytes.ContainsFunc(chunk, func(r rune) bool { return r >= ' ' })
+		read = append(read, buf[:n]...)
+		end := len(read)
+		for i := len(read) - 1; i >= 0 && i > len(read)-utf8.UTFMax; i-- {
+			if utf8.RuneStart(read[i]) {
+				if !utf8.FullRune(read[i:]) {
+					end = i
+				}
+				break
+			}
+		}
+		chunk := string(read[:end])
+		read = append([]byte(nil), read[end:]...)
+		pasted := strings.ContainsFunc(chunk, func(r rune) bool { return r >= ' ' })
+		if newlines := strings.Count(chunk, "\r"); pasted && (len(utf16.Encode([]rune(chunk))) > 800 || newlines > 2) {
+			pastes++
+			if newlines == 0 {
+				composer += fmt.Sprintf("[Pasted text #%d]", pastes)
+			} else {
+				composer += fmt.Sprintf("[Pasted text #%d +%d lines]", pastes, newlines)
+			}
+			draw()
+			continue
+		}
 		for _, ch := range chunk {
 			switch {
 			case ch == '\r' && pasted:
@@ -355,13 +524,28 @@ func runSlowComposer(in io.Reader, out io.Writer, busy time.Duration, swallow in
 				ran = append(ran, composer)
 				composer = ""
 			case ch == 0x15:
-				composer = ""
+				time.Sleep(cfg.clearLag)
+				composer = deleteToLineStart(composer, width)
 			case ch >= ' ':
 				composer += string(ch)
 			}
 		}
 		draw()
 	}
+}
+
+// slowComposerSlots bounds how many parallel subtests drive a slow composer at
+// once. Each runs a fake agent process and polls its pane, and unbounded they
+// starve this package's tests whose verify windows are milliseconds long.
+var slowComposerSlots = make(chan struct{}, 4)
+
+// parallelSlowComposer marks t parallel and waits for a slow-composer slot,
+// which it frees when t ends.
+func parallelSlowComposer(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	slowComposerSlots <- struct{}{}
+	t.Cleanup(func() { <-slowComposerSlots })
 }
 
 // startSlowComposer launches runSlowComposer in a real tmux pane that reads no
@@ -375,6 +559,13 @@ func startSlowComposer(ctx context.Context, t *testing.T, busy time.Duration) (*
 // its first swallow lone Enters.
 func startSlowComposerSwallowing(ctx context.Context, t *testing.T, busy time.Duration, swallow int) (*Client, string) {
 	t.Helper()
+	return startSlowComposerWith(ctx, t, slowComposer{busy: busy, swallow: swallow})
+}
+
+// startSlowComposerWith launches runSlowComposer, configured by cfg, in a real
+// tmux pane slowComposerColumns wide.
+func startSlowComposerWith(ctx context.Context, t *testing.T, cfg slowComposer) (*Client, string) {
+	t.Helper()
 	skipIfNoTmux(t)
 	exe, err := os.Executable()
 	if err != nil {
@@ -386,9 +577,14 @@ func startSlowComposerSwallowing(ctx context.Context, t *testing.T, busy time.Du
 		Name:    name,
 		WorkDir: t.TempDir(),
 		Command: []string{"sh", "-c", `stty raw -echo && exec "$0" -test.run='^TestSlowComposerProcess$'`, exe},
-		Env:     map[string]string{slowComposerEnv: busy.String(), slowComposerSwallowEnv: strconv.Itoa(swallow)},
-		Width:   120,
-		Height:  30,
+		Env: map[string]string{
+			slowComposerEnv:         cfg.busy.String(),
+			slowComposerSwallowEnv:  strconv.Itoa(cfg.swallow),
+			slowComposerClearLagEnv: cfg.clearLag.String(),
+			slowComposerColumnsEnv:  strconv.Itoa(slowComposerColumns),
+		},
+		Width:  slowComposerColumns,
+		Height: 30,
 	}); err != nil {
 		t.Fatalf("new session: %v", err)
 	}
@@ -534,6 +730,9 @@ func TestNotSubmittedSendWithdrawsItsPayloadForTheRetry(t *testing.T) {
 		first, retry string
 	}{
 		"pasted message":      {sendPlan, "summarise the repo", "REPEAT DELIVERY, attempt 2: summarise the repo"},
+		"two-line message":    {sendPlan, withdrawalPayloads["two lines"], "REPEAT DELIVERY, attempt 2"},
+		"wrapped message":     {sendPlan, withdrawalPayloads["wrapped line"], "REPEAT DELIVERY, attempt 2"},
+		"three-line message":  {sendPlan, withdrawalPayloads["three lines"], "REPEAT DELIVERY, attempt 2"},
 		"typed slash command": {sendLine, bareSlashCommand, bareSlashCommand},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -542,16 +741,16 @@ func TestNotSubmittedSendWithdrawsItsPayloadForTheRetry(t *testing.T) {
 			// The first send's Enter and its retry's Enter are both dropped.
 			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
 
-			err := tc.send(ctx, c, pane, tc.first)
-			if OutcomeOf(err) != OutcomeNotSubmitted {
-				t.Fatalf("first send: outcome = %v (%v), want %v while the composer drops Enter", OutcomeOf(err), err, OutcomeNotSubmitted)
+			sendErr := tc.send(ctx, c, pane, tc.first)
+			if OutcomeOf(sendErr) != OutcomeNotSubmitted {
+				t.Fatalf("first send: outcome = %v (%v), want %v while the composer drops Enter", OutcomeOf(sendErr), sendErr, OutcomeNotSubmitted)
 			}
 			styled, err := c.captureVisibleStyled(ctx, pane)
 			if err != nil {
 				t.Fatalf("capture: %v", err)
 			}
 			if composerHoldsDraft(styled) {
-				t.Fatalf("the not-submitted send left %q in the composer, want it empty", composerRows(plainText(styled)))
+				t.Fatalf("the not-submitted send (%v) left %q in the composer, want it empty", sendErr, composerRows(plainText(styled)))
 			}
 
 			if err := tc.send(ctx, c, pane, tc.retry); err != nil {
@@ -571,19 +770,15 @@ func TestWithdrawLeavesAComposerHoldingMoreThanThePayload(t *testing.T) {
 	for name, box := range map[string]string{
 		"text before the payload": "half-written " + payload,
 		"text after the payload":  payload + " and the tests",
+		"text after part of it":   "summarise the and the tests",
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 			defer cancel()
 			c, pane := startSlowComposer(ctx, t, 0)
-			if err := c.typeLiteralLineNoEnter(ctx, pane, box); err != nil {
-				t.Fatalf("type the composer text: %v", err)
-			}
-			if drawn, rows, err := c.awaitComposerDraws(ctx, pane, box, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
-				t.Fatalf("the composer never drew %q (err %v); it showed %q", box, err, rows)
-			}
+			typeComposerText(ctx, t, c, pane, box)
 
-			err := c.withdrawUnsubmitted(ctx, pane, payload, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+			err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
 			if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, errSubmissionPending) {
 				t.Fatalf("err = %v (outcome %v); want the not-submitted verdict kept", err, OutcomeOf(err))
 			}
@@ -595,6 +790,659 @@ func TestWithdrawLeavesAComposerHoldingMoreThanThePayload(t *testing.T) {
 				t.Fatalf("the composer shows %q after the withdrawal, want %q untouched", rows, box)
 			}
 		})
+	}
+}
+
+// typeComposerText types box into the slow composer's empty box and waits
+// until the box draws it.
+func typeComposerText(ctx context.Context, t *testing.T, c *Client, pane, box string) {
+	t.Helper()
+	if err := c.typeLiteralLineNoEnter(ctx, pane, box); err != nil {
+		t.Fatalf("type the composer text: %v", err)
+	}
+	if drawn, rows, err := c.awaitComposerDraws(ctx, pane, box, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
+		t.Fatalf("the composer never drew %q (err %v); it showed %q", box, err, rows)
+	}
+}
+
+// An operator who clears bossd's text and starts a message of their own that
+// begins as bossd's does leaves a box holding a prefix of the payload. A
+// not-submitted send that did not end with the Enter retry's presses leaving
+// part of the payload takes only the whole payload, so it presses nothing.
+func TestWithdrawalLeavesAnOperatorsPrefixOfThePayloadAlone(t *testing.T) {
+	for name, tc := range map[string]struct{ box, payload string }{
+		"words":               {"fix the", "fix the build please"},
+		"one letter":          {"f", "fix the build please"},
+		"part of a command":   {"/boss", bareSlashCommand},
+		"slash of a command":  {"/", bareSlashCommand},
+		"first of two lines":  {"line one of the message", withdrawalPayloads["two lines"]},
+		"first wrapped words": {"withdraw the wrapped", withdrawalPayloads["wrapped line"]},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposer(ctx, t, 0)
+			typeComposerText(ctx, t, c, pane, tc.box)
+			presses := 0
+			onTmux(c, func(args []string, _ CommandFactory) {
+				if slices.Contains(args, "send-keys") {
+					presses++
+				}
+			})
+
+			err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: tc.payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+			screen, capErr := c.CapturePane(ctx, pane)
+			if capErr != nil {
+				t.Fatalf("capture: %v", capErr)
+			}
+			if rows := composerRows(screen); !errors.Is(err, withdrawHeldOther) || presses != 0 || !composerHoldsExactly(rows, tc.box) {
+				t.Fatalf("the withdrawal ended %v after %d keys, leaving %q; want the operator's %q untouched", err, presses, rows, tc.box)
+			}
+		})
+	}
+}
+
+// When the Enter retry's presses leave part of the payload behind, the
+// withdrawal clears that part, and only while the box holds exactly it.
+func TestWithdrawalTakesOnlyThePartTheRetryLeft(t *testing.T) {
+	const payload = "fix the build please"
+	for name, tc := range map[string]struct {
+		left, box string
+		withdraws bool
+	}{
+		"the part the retry left":            {"fix the", "fix the", true},
+		"less than the retry left":           {"fix the build", "fix the", false},
+		"more than the retry left":           {"fix", "fix the", false},
+		"the retry left text past the start": {"the build", "the build", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposer(ctx, t, 0)
+			typeComposerText(ctx, t, c, pane, tc.box)
+			left := classifySubmit(OutcomeNotSubmitted, &partialPayload{held: tc.left, err: errSubmissionPending})
+
+			err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, left)
+			styled, capErr := c.captureVisibleStyled(ctx, pane)
+			if capErr != nil {
+				t.Fatalf("capture: %v", capErr)
+			}
+			rows := composerRows(plainText(styled))
+			switch {
+			case tc.withdraws && (!errors.Is(err, withdrawn) || composerHoldsDraft(styled)):
+				t.Fatalf("the withdrawal ended %v, leaving %q; want the retry's %q withdrawn", err, rows, tc.left)
+			case !tc.withdraws && (!errors.Is(err, withdrawHeldOther) || !composerHoldsExactly(rows, tc.box)):
+				t.Fatalf("the withdrawal ended %v, leaving %q; want %q untouched", err, rows, tc.box)
+			}
+		})
+	}
+}
+
+// partOf takes what C-u presses leave, which is a prefix of the payload. Text
+// from further along the payload is not that, so a press never takes it.
+func TestComposerDrawingPartOfIsAPrefixOfThePayload(t *testing.T) {
+	drawn := composerDrawing{text: withdrawalPayloads["two lines"]}
+	for box, want := range map[string]bool{
+		"line one of the message":        true,
+		"line one of the message\nline":  true,
+		"line one":                       true,
+		"of the message":                 false,
+		"message\nline two":              false,
+		"line two of the message":        false,
+		"":                               false,
+		"line one of the message, and I": false,
+	} {
+		if got := drawn.partOf(box); got != want {
+			t.Errorf("partOf(%q) = %v, want %v", box, got, want)
+		}
+	}
+	left := classifySubmit(OutcomeNotSubmitted, &partialPayload{held: "of the message", err: errSubmissionPending})
+	if drawn.leftByRetry("of the message", left) {
+		t.Error("leftByRetry took text from the middle of the payload for what the retry left")
+	}
+}
+
+// A C-u kills a newline before the cursor, or the cursor's wrapped row, back
+// over an empty last row. The withdrawal takes for what a press left only what
+// one of those leaves, so an operator who clears the box after a press and
+// types the payload's first words is not taken for it.
+func TestPressLeftIsWhatOneCtrlULeaves(t *testing.T) {
+	for _, tc := range []struct {
+		prev, next string
+		want       bool
+	}{
+		{"line one of the message\nline two of the message", "line one of the message", true},
+		{"line one of the message\n", "line one of the message", true},
+		{"line one\n\nline three", "line one\n", true},
+		{"withdraw the wrapped \npayload", "withdraw the wrapped ", true},
+		{"xxxxxxxxxx\n", "", true},
+		{"aaaa\nxxxxxxxxxx\n", "aaaa", true},
+		{"fix the build please", "fix the", false},
+		{"line one of the message\nline two of the message", "line one of the", false},
+		{"line one of the message\nline two of the message", "line one of the message\nline two", false},
+		{"line one of the message\nline two of the message", "line one of the message\nline two of the message", false},
+		{"line one of the message\nline two of the message", "line one of the message and mine", false},
+		{"line one of the message", "line one of the message\nmine", false},
+	} {
+		if got := pressLeft(tc.prev, tc.next); got != tc.want {
+			t.Errorf("pressLeft(%q, %q) = %v, want %v", tc.prev, tc.next, got, tc.want)
+		}
+	}
+}
+
+// After the Enter retry, bossd reads the box until its wait runs out, and an
+// operator who clears bossd's text and types a message of their own that
+// begins as bossd's does may do so before any of those reads. Whichever read
+// it lands before, the send ends without erasing it. The sweep types the
+// operator's prefix before each capture bossd takes after its retry Enter.
+func TestNotSubmittedSendKeepsAnOperatorsPrefixTypedAfterTheRetryEnter(t *testing.T) {
+	for name, tc := range map[string]struct {
+		send     func(context.Context, *Client, string) error
+		operator string
+	}{
+		"pasted message": {func(ctx context.Context, c *Client, pane string) error {
+			return c.sendPlan(ctx, pane, "fix the build please", c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		}, "fix the"},
+		"typed slash command": {func(ctx context.Context, c *Client, pane string) error {
+			return c.sendLine(ctx, pane, bareSlashCommand, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		}, "/boss"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			send := func(t *testing.T, typeAt int) (captures int, typed bool, rows string, ran []string, err error) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+				defer cancel()
+				c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+				enters, sent := 0, false
+				onTmux(c, func(args []string, tmux CommandFactory) {
+					if slices.Contains(args, "send-keys") && slices.Contains(args, "Enter") {
+						enters++
+					}
+					if !sent && enters >= 2 && slices.Contains(args, "capture-pane") {
+						if captures++; captures == typeAt {
+							typed = true
+							operatorTypes(t, tmux, pane, true, tc.operator)
+						}
+					}
+				})
+				err = tc.send(ctx, c, pane)
+				sent = true
+				screen, capErr := c.CapturePane(ctx, pane)
+				if capErr != nil {
+					t.Fatalf("capture: %v", capErr)
+				}
+				return captures, typed, composerRows(screen), ranLines(ctx, t, c, pane), err
+			}
+
+			clean, _, rows, _, err := send(t, 0)
+			if OutcomeOf(err) != OutcomeNotSubmitted || clean == 0 {
+				t.Fatalf("a send with no operator ended %v (outcome %v) after %d captures past the retry Enter, leaving %q", err, OutcomeOf(err), clean, rows)
+			}
+			for at := 1; at <= clean; at++ {
+				t.Run(fmt.Sprintf("typed before capture %d of %d", at, clean), func(t *testing.T) {
+					parallelSlowComposer(t)
+					captures, typed, rows, ran, err := send(t, at)
+					for try := 2; !typed && try <= 3; try++ {
+						t.Logf("send %d took only %d captures past the retry Enter, ending %v (outcome %v) with %q", try-1, captures, err, OutcomeOf(err), rows)
+						captures, typed, rows, ran, err = send(t, at)
+					}
+					if !typed {
+						t.Skipf("no send reached capture %d past the retry Enter", at)
+					}
+					if !strings.Contains(withoutSpace(rows), withoutSpace(tc.operator)) || len(ran) != 0 {
+						t.Fatalf("the send ended %v (outcome %v), leaving %q and running %q; the operator's %q is gone", err, OutcomeOf(err), rows, ran, tc.operator)
+					}
+				})
+			}
+		})
+	}
+}
+
+// onTmux wraps c's tmux command factory so hook sees each tmux command's
+// arguments as the command is made, which is just before it runs. hook acts on
+// the pane through the factory it is handed, which is not wrapped.
+func onTmux(c *Client, hook func(args []string, tmux CommandFactory)) {
+	inner := c.cmdFunc
+	c.cmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "tmux" {
+			hook(args, inner)
+		}
+		return inner(ctx, name, args...)
+	}
+}
+
+// operatorTypes types text into pane as an operator at the keyboard would,
+// after C-u when clearFirst is set, and waits for the composer to draw it.
+func operatorTypes(t *testing.T, tmux CommandFactory, pane string, clearFirst bool, text string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if clearFirst {
+		if out, err := tmux(ctx, "tmux", "send-keys", "-t", pane, "C-u").CombinedOutput(); err != nil {
+			t.Errorf("operator C-u: %v: %s", err, out)
+			return
+		}
+	}
+	if out, err := tmux(ctx, "tmux", "send-keys", "-t", pane, "-l", "--", text).CombinedOutput(); err != nil {
+		t.Errorf("operator typing: %v: %s", err, out)
+		return
+	}
+	for ctx.Err() == nil {
+		out, err := tmux(ctx, "tmux", "capture-pane", "-p", "-t", pane).Output()
+		if err == nil && strings.Contains(withoutSpace(composerRows(string(out))), withoutSpace(text)) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("the composer never drew the operator's %q", text)
+}
+
+// An operator who replaces bossd's text with a paste of their own while the
+// send waits on its retry Enter keeps the paste. The withdrawal takes a
+// placeholder only for a paste Claude collapses, and only the one its own
+// paste drew, paste id included, so an operator's placeholder is never read as
+// a short payload, a typed command, or a paste of any length.
+func TestWithdrawalLeavesAnOperatorsPasteAlone(t *testing.T) {
+	sendPlan := func(payload string) func(context.Context, *Client, string) error {
+		return func(ctx context.Context, c *Client, pane string) error {
+			return c.sendPlan(ctx, pane, payload, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		}
+	}
+	for name, tc := range map[string]struct {
+		send      func(context.Context, *Client, string) error
+		operators string
+	}{
+		"short pasted message":               {sendPlan("summarise the repo"), "[Pasted text #2]"},
+		"long pasted message":                {sendPlan("line one\nline two\nline three\nline four"), "[Pasted text #5 +5 lines]"},
+		"long pasted message, as many lines": {sendPlan("line one\nline two\nline three\nline four"), "[Pasted text #5 +3 lines]"},
+		"long single line":                   {sendPlan(strings.Repeat("a long single line ", 50)), "[Pasted text #7]"},
+		"typed slash command": {func(ctx context.Context, c *Client, pane string) error {
+			return c.sendLine(ctx, pane, bareSlashCommand, c.sendDeliveryOpts(sendPlanReadyMarker, true, nil))
+		}, "[Pasted text #2]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+			enters := 0
+			onTmux(c, func(args []string, tmux CommandFactory) {
+				if enters == 2 {
+					enters++
+					operatorTypes(t, tmux, pane, true, tc.operators)
+				}
+				if slices.Contains(args, "send-keys") && slices.Contains(args, "Enter") {
+					enters++
+				}
+			})
+
+			err := tc.send(ctx, c, pane)
+			if OutcomeOf(err) != OutcomeNotSubmitted {
+				t.Fatalf("outcome = %v (%v), want %v while the composer drops Enter", OutcomeOf(err), err, OutcomeNotSubmitted)
+			}
+			screen, err := c.CapturePane(ctx, pane)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if rows := composerRows(screen); !composerHoldsExactly(rows, tc.operators) {
+				t.Fatalf("the composer shows %q after the send, want the operator's %q untouched", rows, tc.operators)
+			}
+			if ran := ranLines(ctx, t, c, pane); len(ran) != 0 {
+				t.Fatalf("the agent ran %q, want nothing", ran)
+			}
+		})
+	}
+}
+
+// A paste Claude collapses is withdrawn by its placeholder, so the retry finds
+// an empty composer.
+func TestNotSubmittedCollapsedPasteIsWithdrawn(t *testing.T) {
+	for name, payload := range map[string]string{
+		"four lines":       "line one\nline two\nline three\nline four",
+		"long single line": strings.Repeat("a long single line ", 50),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+			opts := c.sendDeliveryOpts(sendPlanReadyMarker, true, nil)
+
+			err := c.sendPlan(ctx, pane, payload, opts)
+			if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, withdrawn) {
+				t.Fatalf("first send: %v (outcome %v), want %v with the payload withdrawn while the composer drops Enter", err, OutcomeOf(err), OutcomeNotSubmitted)
+			}
+			styled, err := c.captureVisibleStyled(ctx, pane)
+			if err != nil {
+				t.Fatalf("capture: %v", err)
+			}
+			if composerHoldsDraft(styled) {
+				t.Fatalf("the not-submitted send left %q in the composer, want it empty", composerRows(plainText(styled)))
+			}
+			if err := c.sendPlan(ctx, pane, "REPEAT DELIVERY, attempt 2:\nline one\nline two\nline three", opts); err != nil {
+				t.Fatalf("retry: %v (outcome %v); ran %q", err, OutcomeOf(err), ranLines(ctx, t, c, pane))
+			}
+			if ran := ranLines(ctx, t, c, pane); len(ran) != 1 {
+				t.Fatalf("the agent ran %q, want the retry once", ran)
+			}
+		})
+	}
+}
+
+// withdrawalPayloads are payloads Claude draws as text that C-u empties in
+// different numbers of presses: one per wrapped row and one per newline.
+var withdrawalPayloads = map[string]string{
+	"two lines":    "line one of the message\nline two of the message",
+	"wrapped line": strings.Repeat("withdraw the wrapped payload ", 7)[:189],
+	"three lines":  "line one\nline two\nline three",
+	"short line":   "summarise the repo",
+}
+
+// wrapShapes are payloads whose rows depend on where Claude wraps, at the slow
+// composer's width of slowComposerColumns less 4, in display cells.
+var wrapShapes = map[string]string{
+	"wide characters wrapped": strings.Repeat("修复构建错误", 30),
+	"780 characters":          strings.Repeat("abcdefghi ", 78),
+	"two wrapped lines":       strings.Repeat("first line words ", 9) + "\n" + strings.Repeat("second line words ", 9),
+	"exactly the width":       strings.Repeat("x", claudeComposerWrapWidth(slowComposerColumns)),
+	"one past the width":      strings.Repeat("y", claudeComposerWrapWidth(slowComposerColumns)+1),
+	"words to the width":      strings.Repeat("abc ", claudeComposerWrapWidth(slowComposerColumns)/4) + " tail",
+	"blank middle line":       "line one\n\nline three",
+	"trailing newline":        "line one\nline two\n",
+	"wrapped then a line":     strings.Repeat("wrap me please ", 12) + "\nshort",
+}
+
+// A not-submitted send of any shape Claude draws as text ends with the
+// composer empty, whether the Enter retry's presses emptied it or left part
+// of it for the withdrawal, and the retry that follows runs once.
+func TestNotSubmittedSendOfEveryShapeEndsWithAnEmptyComposer(t *testing.T) {
+	shapes := maps.Clone(wrapShapes)
+	maps.Copy(shapes, withdrawalPayloads)
+	for name, payload := range shapes {
+		t.Run(name, func(t *testing.T) {
+			parallelSlowComposer(t)
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposerSwallowing(ctx, t, 0, 2)
+			opts := c.sendDeliveryOpts(sendPlanReadyMarker, true, nil)
+
+			err := c.sendPlan(ctx, pane, payload, opts)
+			styled, capErr := c.captureVisibleStyled(ctx, pane)
+			if capErr != nil {
+				t.Fatalf("capture: %v", capErr)
+			}
+			t.Logf("%s: %v", name, err)
+			if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, withdrawn) || composerHoldsDraft(styled) {
+				t.Fatalf("the send ended %v (outcome %v), leaving %q; want it not submitted and withdrawn", err, OutcomeOf(err), composerRows(plainText(styled)))
+			}
+			const retry = "REPEAT DELIVERY, attempt 2"
+			if err := c.sendPlan(ctx, pane, retry, opts); err != nil {
+				t.Fatalf("retry: %v (outcome %v); ran %q", err, OutcomeOf(err), ranLines(ctx, t, c, pane))
+			}
+			if ran := ranLines(ctx, t, c, pane); !slices.Equal(ran, []string{retry}) {
+				t.Fatalf("the agent ran %q, want exactly the retry once", ran)
+			}
+		})
+	}
+}
+
+// fillComposer pastes payload into the slow composer's empty box and waits
+// until the box holds exactly it.
+func fillComposer(ctx context.Context, t *testing.T, c *Client, pane, payload string) {
+	t.Helper()
+	if err := c.pasteBufferNoEnter(ctx, pane, payload); err != nil {
+		t.Fatalf("paste the payload: %v", err)
+	}
+	var styled string
+	for range 100 {
+		var err error
+		if styled, err = c.captureVisibleStyled(ctx, pane); err == nil && composerHoldsOnlyPayload(styled, composerDrawing{text: payload}) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the composer never held exactly %q; it showed %q", payload, composerRows(plainText(styled)))
+}
+
+// Claude Code 2.1.302's ctrl+u kills a newline before the cursor on its own,
+// or else back to the start of the cursor's wrapped row, so a payload of
+// several rows takes several presses. The withdrawal presses until the box is
+// empty, and nothing runs.
+func TestWithdrawalEmptiesAPayloadOfSeveralRows(t *testing.T) {
+	shapes := maps.Clone(wrapShapes)
+	maps.Copy(shapes, withdrawalPayloads)
+	for name, payload := range shapes {
+		t.Run(name, func(t *testing.T) {
+			parallelSlowComposer(t)
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, pane := startSlowComposer(ctx, t, 0)
+			fillComposer(ctx, t, c, pane, payload)
+			presses := 0
+			onTmux(c, func(args []string, _ CommandFactory) {
+				if slices.Contains(args, "send-keys") && slices.Contains(args, "C-u") {
+					presses++
+				}
+			})
+
+			err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+			styled, capErr := c.captureVisibleStyled(ctx, pane)
+			if capErr != nil {
+				t.Fatalf("capture: %v", capErr)
+			}
+			t.Logf("%s: %d presses; %v", name, presses, err)
+			if !errors.Is(err, withdrawn) || composerHoldsDraft(styled) {
+				t.Fatalf("after %d presses the withdrawal ended %v, leaving %q in the composer; want it withdrawn", presses, err, composerRows(plainText(styled)))
+			}
+			if ran := ranLines(ctx, t, c, pane); len(ran) != 0 {
+				t.Fatalf("the agent ran %q, want nothing", ran)
+			}
+		})
+	}
+}
+
+// The fake agent's C-u is Claude Code 2.1.302's Cursor.deleteToLineStart with
+// the cursor at the end of the text.
+func TestSlowComposerClearsAsClaudeDoes(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		width int
+		steps []string
+	}{
+		{"A\nB", 80, []string{"A\n", "A", ""}},
+		{"aaaa bbbb cccc", 10, []string{"aaaa bbbb ", ""}},
+		{"abcdefghijklmno", 10, []string{"abcdefghij", ""}},
+	} {
+		text := tc.text
+		for _, want := range tc.steps {
+			if text = deleteToLineStart(text, tc.width); text != want {
+				t.Fatalf("C-u on %q at width %d left %q, want %q", tc.text, tc.width, text, want)
+			}
+		}
+	}
+}
+
+// The fake agent wraps as Claude Code 2.1.302 does, with wrap-ansi's hard
+// wrap and no trim. Each want is what wrap-ansi 9.0.2 returns.
+func TestSlowComposerWrapsAsClaudeDoes(t *testing.T) {
+	if got := claudeComposerWrapWidth(120); got != 116 {
+		t.Errorf("a 120-column pane wraps at %d, want 116", got)
+	}
+	for _, tc := range []struct {
+		line  string
+		width int
+		want  []string
+	}{
+		{"aaaa bbbb cccc", 10, []string{"aaaa bbbb ", "cccc"}},
+		{"aaaaaaaaaa bb", 10, []string{"aaaaaaaaaa", " bb"}},
+		{"xxxxxxxxxx", 10, []string{"xxxxxxxxxx"}},
+		{"abcdefghijklmno", 10, []string{"abcdefghij", "klmno"}},
+		{"ab cdefghijklmnopqrstu v", 10, []string{"ab ", "cdefghijkl", "mnopqrstu ", "v"}},
+		{"修复构建错误", 10, []string{"修复构建错", "误"}},
+		{"ab 修复构建错误", 10, []string{"ab 修复构", "建错误"}},
+		{"修复 构建", 4, []string{"修复", " ", "构建"}},
+	} {
+		if got := wrapClaudeComposerLine(tc.line, tc.width); !slices.Equal(got, tc.want) {
+			t.Errorf("%q at width %d wraps to %q, want %q", tc.line, tc.width, got, tc.want)
+		}
+	}
+}
+
+// Text an operator types while the withdrawal runs survives whenever it lands
+// before one of the withdrawal's reads: each read either sees it and stops, or
+// comes after a C-u that has already removed the payload. That holds for words
+// added to the box and for a box the operator clears and starts again with the
+// payload's own first word, which no press leaves. The sweep places the typing
+// before each read a clean withdrawal makes, in turn, for payloads that take
+// one press and several.
+func TestWithdrawalRereadsTheComposerBeforeEveryPress(t *testing.T) {
+	for name, payload := range withdrawalPayloads {
+		for action, op := range map[string]struct {
+			clearFirst bool
+			words      string
+		}{
+			"words added":                {false, " and my own words"},
+			"cleared, then its own word": {true, strings.Fields(payload)[0]},
+		} {
+			t.Run(name+", "+action, func(t *testing.T) {
+				withdraw := func(t *testing.T, typeAt int) (reads int, rows string, err error) {
+					t.Helper()
+					ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+					defer cancel()
+					c, pane := startSlowComposer(ctx, t, 0)
+					fillComposer(ctx, t, c, pane, payload)
+					done := false
+					onTmux(c, func(args []string, tmux CommandFactory) {
+						if !done && slices.Contains(args, "capture-pane") {
+							if reads++; reads == typeAt {
+								operatorTypes(t, tmux, pane, op.clearFirst, op.words)
+							}
+						}
+					})
+					err = c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+					done = true
+					if OutcomeOf(err) != OutcomeNotSubmitted {
+						t.Fatalf("err = %v (outcome %v); want the not-submitted verdict kept", err, OutcomeOf(err))
+					}
+					screen, capErr := c.CapturePane(ctx, pane)
+					if capErr != nil {
+						t.Fatalf("capture: %v", capErr)
+					}
+					return reads, composerRows(screen), err
+				}
+
+				clean, rows, err := withdraw(t, 0)
+				if !errors.Is(err, withdrawn) {
+					t.Fatalf("a clean withdrawal ended %v, leaving %q", err, rows)
+				}
+				for at := 1; at <= clean; at++ {
+					t.Run(fmt.Sprintf("typed before read %d of %d", at, clean), func(t *testing.T) {
+						parallelSlowComposer(t)
+						if _, rows, _ := withdraw(t, at); !strings.Contains(withoutSpace(rows), withoutSpace(op.words)) {
+							t.Fatalf("the composer shows %q after the withdrawal; the operator's %q is gone", rows, op.words)
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+// An operator who types the payload's next words after a press leaves the box
+// holding text that is still a prefix of the payload, but bigger than before
+// the press. A press can only shrink the box, so the withdrawal stops there
+// rather than erase what the operator typed.
+func TestWithdrawalStopsWhenTheBoxGrows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+	c, pane := startSlowComposer(ctx, t, 0)
+	const payload = "line one of the message\nline two of the message"
+	const words = "line two"
+	fillComposer(ctx, t, c, pane, payload)
+	presses, typed := 0, false
+	onTmux(c, func(args []string, tmux CommandFactory) {
+		switch {
+		case slices.Contains(args, "send-keys") && slices.Contains(args, "C-u"):
+			presses++
+		case slices.Contains(args, "capture-pane") && presses == 2 && !typed:
+			typed = true
+			operatorTypes(t, tmux, pane, false, words)
+		}
+	})
+
+	err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+	screen, capErr := c.CapturePane(ctx, pane)
+	if capErr != nil {
+		t.Fatalf("capture: %v", capErr)
+	}
+	if rows := composerRows(screen); !errors.Is(err, withdrawForeign) || !strings.Contains(withoutSpace(rows), withoutSpace(words)) {
+		t.Fatalf("the withdrawal ended %v after %d presses, leaving %q; want it stopped with the operator's %q kept", err, presses, rows, words)
+	}
+}
+
+// A frame read just after a C-u can still show the box as it was before the
+// press. The withdrawal waits for the press to show rather than taking that
+// stale frame for a press that changed nothing.
+func TestWithdrawalWaitsOutAStaleFrame(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+	c, pane := startSlowComposerWith(ctx, t, slowComposer{clearLag: 150 * time.Millisecond})
+	const payload = "summarise the repo"
+	fillComposer(ctx, t, c, pane, payload)
+
+	err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+	styled, capErr := c.captureVisibleStyled(ctx, pane)
+	if capErr != nil {
+		t.Fatalf("capture: %v", capErr)
+	}
+	if !errors.Is(err, withdrawn) || composerHoldsDraft(styled) {
+		t.Fatalf("the withdrawal ended %v, leaving %q in the composer; want it withdrawn", err, composerRows(plainText(styled)))
+	}
+}
+
+// A Codex composer has no rules, and a blank row ends it as it ends a draft's
+// paragraph, so a box holding the payload, a blank row and an operator's
+// paragraph is not read as the payload. The withdrawal presses nothing.
+func TestWithdrawalPressesNothingInARulelessComposer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+	defer cancel()
+	skipIfNoTmux(t)
+	const payload = "summarise the repo"
+	frame := "\x1b[1m›\x1b[0m " + payload + "\r\n\r\n  my second paragraph the operator typed\r\n\r\n  \x1b[38;2;246;226;183mGPT-6.1-Sol default\x1b[39m\r\n"
+	c, _ := newTestTmuxClient(t)
+	pane := uniqueSessionName("boss-codex-frame")
+	if err := c.NewSession(ctx, NewSessionOpts{
+		Name:    pane,
+		WorkDir: t.TempDir(),
+		Command: []string{"sh", "-c", `printf '%b' "$0"; exec sleep 600`, strings.ReplaceAll(frame, "\x1b", `\033`)},
+		Width:   120,
+		Height:  30,
+	}); err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	var drawn string
+	for range 100 {
+		styled, err := c.captureVisibleStyled(ctx, pane)
+		if err == nil && strings.Contains(styled, "GPT-6.1-Sol default") {
+			drawn = styled
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if drawn == "" {
+		t.Fatal("the pane never drew the Codex frame")
+	}
+	var keys [][]string
+	onTmux(c, func(args []string, _ CommandFactory) {
+		if slices.Contains(args, "send-keys") {
+			keys = append(keys, args)
+		}
+	})
+
+	err := c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
+	if OutcomeOf(err) != OutcomeNotSubmitted || !errors.Is(err, withdrawUnruled) {
+		t.Fatalf("err = %v (outcome %v); want the not-submitted verdict kept, saying the box has no rules to read", err, OutcomeOf(err))
+	}
+	if len(keys) != 0 {
+		t.Fatalf("the withdrawal pressed %q in a rule-less composer holding an operator's paragraph", keys)
 	}
 }
 

@@ -396,6 +396,31 @@ func TestAttentionResumeLedgerKeepsOriginalRunKey(t *testing.T) {
 	}
 }
 
+// TestAttentionResumeGaveUpNeverSaysFactory: the FIX for a run whose
+// automatic resumes gave up reaches users through bosso and the web, which
+// never say "factory". A client pinned before V20260924 still reads the
+// sentence it was served.
+func TestAttentionResumeGaveUpNeverSaysFactory(t *testing.T) {
+	run, cron := "run", "cron-job"
+	reason := "automatic resume ledger: attempt budget exhausted"
+	row := &models.Session{ID: "s", State: machine.Blocked, AgentSessionID: &run, CronJobID: &cron, Plan: "prompt", WorktreePath: "/tmp/work", BlockedReason: &reason}
+	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "disk_full"}, {AttemptedAt: at(12), FailureClass: "disk_full"}}}
+	p := SessionToProto(row)
+	p.LastAgentActivityAt = timestamppb.New(at(13))
+	(&Server{resumeAttempts: ledger}).hydrateAttention(context.Background(), p, attentionDeps{row: row})
+	got := p.GetAttention().GetSentence()
+	if p.GetAttention().GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || !strings.Contains(got, "every attempt got the same disk-full error, so automatic retries stopped. Free disk space on ") {
+		t.Fatalf("attention = %v, want the gave-up FIX", p.Attention)
+	}
+	if strings.Contains(strings.ToLower(got), "factory") {
+		t.Fatalf("sentence = %q says factory", got)
+	}
+	old := strings.Replace(got, ", so automatic retries stopped. ", ", so the factory stopped retrying. ", 1)
+	if pinned := sentenceAt(p, apiversion.V20260923); pinned != old {
+		t.Fatalf("V20260923 sentence = %q, want %q", pinned, old)
+	}
+}
+
 func TestAttentionResumeDoesNotExhaustLiveReplacement(t *testing.T) {
 	id := "third"
 	row := &models.Session{ID: "s", State: machine.ImplementingPlan, AgentSessionID: &id, Plan: "prompt", WorktreePath: "/tmp/work"}
@@ -439,8 +464,14 @@ func TestAttentionRunBlockedSaysRunBlockedOnce(t *testing.T) {
 // sentenceAtV20260922 is p's attention sentence as bosso serves it to a client
 // pinned to the last version before RunBlockedLabelChange.
 func sentenceAtV20260922(p *pb.Session) string {
+	return sentenceAt(p, apiversion.V20260922)
+}
+
+// sentenceAt is p's attention sentence as bosso serves it to a client pinned
+// to v.
+func sentenceAt(p *pb.Session, v apiversion.Version) string {
 	resp := &pb.ProxyGetSessionResponse{Session: p}
-	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, resp, apiversion.V20260922)
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, resp, v)
 	return resp.GetSession().GetAttention().GetSentence()
 }
 

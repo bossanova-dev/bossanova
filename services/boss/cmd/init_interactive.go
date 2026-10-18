@@ -69,13 +69,15 @@ type initInterview struct {
 	mu    sync.Mutex
 	steps *initAppliedSteps
 
-	client     client.BossClient // nil without a local daemon
-	repo       *pb.Repo          // nil when the repository is not registered
-	storedKey  string            // the Linear key stored before this run
-	linearKey  string            // the key this run uses; empty skips Linear
-	viewer     linearViewer
-	team       linearTeam // set when a listed team was chosen
-	skipReason string     // why registration-dependent steps are skipped
+	client        client.BossClient // nil without a local daemon
+	repo          *pb.Repo          // nil when the repository is not registered
+	storedKey     string            // the Linear key stored before this run
+	linearKey     string            // the key this run uses; empty skips Linear
+	viewer        linearViewer
+	team          linearTeam // set when a listed team was chosen
+	skipReason    string     // why registration-dependent steps are skipped
+	bridge        *nodeBridge
+	bridgeCleanup func()
 }
 
 // runInitInteractive interviews, applies the answers, and prints the summary.
@@ -99,7 +101,7 @@ func runInitInteractive(c *cobra.Command, dir string, force bool, opts initOptio
 	if info, err := os.Stat(repoDir); absErr != nil || err != nil || !info.IsDir() {
 		// Nothing to interview about: runInit reports the bad directory exactly
 		// as the flag path does.
-		opts.admin = linearAdminFromEnv(os.Getenv)
+		opts.linear, opts.mapRoles = linearAdminFromEnv(os.Getenv), true
 		return runInit(c.OutOrStdout(), dir, force, opts)
 	}
 	ctx := c.Context()
@@ -116,6 +118,11 @@ func runInitInteractive(c *cobra.Command, dir string, force bool, opts initOptio
 		p: initNewPrompter(c), getenv: os.Getenv,
 		dir: dir, repoDir: repoDir, force: force, opts: opts, steps: opts.applied,
 	}
+	defer func() {
+		if iv.bridgeCleanup != nil {
+			iv.bridgeCleanup()
+		}
+	}()
 	if iv.opts.project != nil {
 		// Asked from inside the runInit step, which holds mu: release it
 		// while the question waits, as every other question does.
@@ -150,10 +157,11 @@ func (iv *initInterview) run() error {
 	iv.opts.resolvedRepo = iv.repo
 	// Registration and credentials were applied above; runInit must not redo them.
 	iv.opts.repo = initRepoOptions{}
+	iv.opts.mapRoles = true
 	if iv.linearKey != "" {
-		iv.opts.admin = initNewLinearAdmin(iv.linearKey)
+		iv.opts.linear = initNewLinearAdmin(iv.linearKey)
 	} else {
-		iv.opts.admin = nil
+		iv.opts.linear = nil
 	}
 	if err := iv.step(func() error { return runInit(iv.out, iv.dir, iv.force, iv.opts) }); err != nil {
 		return err
@@ -443,7 +451,11 @@ func (iv *initInterview) askTeam() error {
 	if flag := strings.TrimSpace(iv.opts.team); flag != "" {
 		// --team answers the question; it still has to name a listed team for
 		// the role questions to have states and labels to offer.
-		if t, ok := matchTeamName(teams, flag); ok {
+		t, ok, err := iv.resolveTeam(flag, &teamListing{teams: teams, hasNextPage: hasNext})
+		if err != nil {
+			return err
+		}
+		if ok {
 			iv.team = t
 		}
 		return nil
@@ -469,7 +481,11 @@ func (iv *initInterview) askTeam() error {
 		if err != nil {
 			return err
 		}
-		if t, ok := matchTeam(teams, answer); ok {
+		t, ok, err := iv.matchTeam(&teamListing{teams: teams, hasNextPage: hasNext}, answer)
+		if err != nil {
+			return err
+		}
+		if ok {
 			iv.team = t
 			// Accepting the single pre-selected team is what the flag path
 			// detects on its own, so it leaves --team unset.
@@ -482,22 +498,28 @@ func (iv *initInterview) askTeam() error {
 	}
 }
 
-// matchTeam matches an answer to a listed team by list number, name, key or id.
-func matchTeam(teams []linearTeam, answer string) (linearTeam, bool) {
-	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(teams) {
-		return teams[n-1], true
+func (iv *initInterview) resolveTeam(answer string, listing *teamListing) (linearTeam, bool, error) {
+	if iv.bridge == nil {
+		bridge, cleanup, err := newNodeBridge()
+		if err != nil {
+			return linearTeam{}, false, err
+		}
+		iv.bridge, iv.bridgeCleanup = bridge, cleanup
 	}
-	return matchTeamName(teams, answer)
+	_, team, verified, err := resolveListedTeam(iv.bridge, answer, listing)
+	return team, verified, err
 }
 
-// matchTeamName matches the way resolveInitTracker matches --team.
-func matchTeamName(teams []linearTeam, answer string) (linearTeam, bool) {
-	for _, t := range teams {
-		if answer != "" && (strings.EqualFold(answer, t.Name) || (t.Key != "" && strings.EqualFold(answer, t.Key)) || answer == t.ID) {
-			return t, true
-		}
+// matchTeam handles list indices locally; JS resolves every named answer.
+func (iv *initInterview) matchTeam(listing *teamListing, answer string) (linearTeam, bool, error) {
+	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(listing.teams) {
+		return listing.teams[n-1], true, nil
 	}
-	return linearTeam{}, false
+	if strings.TrimSpace(answer) == "" {
+		return linearTeam{}, false, nil
+	}
+	team, verified, err := iv.resolveTeam(answer, listing)
+	return team, verified, err
 }
 
 // askRoles asks for each state role and each label role, with the matched
@@ -593,24 +615,8 @@ func (iv *initInterview) offerLabelCreation(admin linearAdmin, states []linearSt
 	if iv.opts.createLabels {
 		return nil
 	}
-	final := seeded
-	final.States, final.Labels = map[string]string{}, map[string]string{}
-	for _, group := range []struct{ from, over, dest map[string]string }{
-		{seeded.States, iv.opts.overrides.States, final.States},
-		{seeded.Labels, iv.opts.overrides.Labels, final.Labels},
-	} {
-		for k, v := range group.from {
-			group.dest[k] = v
-		}
-		for k, v := range group.over {
-			group.dest[k] = v
-		}
-	}
-	labels, err := admin.FindLabels(iv.ctx, iv.team.ID, linearLabelLookupNames(final))
-	if err != nil {
-		return fmt.Errorf("%w; nothing written", err)
-	}
-	mapping, err := mapLinearRoles(states, labels, final)
+	final := overlayOverrides(seeded, iv.opts.overrides)
+	mapping, err := planLinearRoles(iv.ctx, admin, iv.team, states, final)
 	if err != nil {
 		return fmt.Errorf("%w; nothing written", err)
 	}
@@ -769,16 +775,20 @@ func (iv *initInterview) summary() string {
 	case iv.repo == nil:
 		line("Repository", "not registered ("+iv.skipReason+")")
 	case s.Registered:
-		line("Repository", repoLabel(iv.repo)+" (id "+iv.repo.GetId()+"), registered now")
+		line("Repository", s.registrationText()+"; "+repoLabel(iv.repo)+", registered now")
 	default:
 		line("Repository", repoLabel(iv.repo)+" (id "+iv.repo.GetId()+"), already registered")
 	}
 
 	switch {
+	case s.LinearStored:
+		text := s.linearText()
+		if s.LinearVerified {
+			text += "; validated (" + viewerDisplay(iv.viewer) + ")"
+		}
+		line("Linear key", text)
 	case iv.linearKey == "":
 		line("Linear key", "skipped")
-	case s.LinearStored && s.LinearVerified:
-		line("Linear key", "stored, read back and validated ("+viewerDisplay(iv.viewer)+")")
 	case iv.repo != nil && iv.linearKey == iv.storedKey:
 		line("Linear key", "already stored, validated ("+viewerDisplay(iv.viewer)+")")
 	default:
@@ -786,8 +796,8 @@ func (iv *initInterview) summary() string {
 	}
 
 	switch {
-	case s.SentryStored && s.SentryVerified:
-		line("Sentry", "stored and read back (org "+iv.opts.repo.sentryOrg+")")
+	case s.SentryStored:
+		line("Sentry", s.sentryText()+" (org "+iv.opts.repo.sentryOrg+")")
 	case iv.repo.GetSentryApiKey() != "":
 		line("Sentry", "already stored (org "+iv.repo.GetSentryOrg()+")")
 	default:
@@ -796,12 +806,12 @@ func (iv *initInterview) summary() string {
 
 	line("Overrides", overridesSummary(s.Overrides))
 	if len(s.LabelsCreated) > 0 {
-		line("Labels created", strings.Join(s.LabelsCreated, ", "))
+		line("Labels created", s.labelsText())
 	} else {
 		line("Labels created", "none")
 	}
 	if s.ConfigPath != "" {
-		line("Config", "wrote "+s.ConfigPath)
+		line("Config", s.configText())
 	} else {
 		line("Config", "unchanged")
 	}
@@ -812,15 +822,17 @@ func (iv *initInterview) summary() string {
 		next := iv.nextFireTimes()
 		b.WriteString("  Cron jobs:\n")
 		for _, c := range s.Crons {
-			state := "disabled"
-			if c.Enabled {
-				state = "enabled"
-			}
 			when := "next fire time not reported by the daemon"
 			if t, ok := next[c.JobID]; ok {
 				when = "next fire " + t
 			}
-			fmt.Fprintf(&b, "    %s: %s, %s; %s\n", c.Name, cronOutcomeText(c.Outcome), state, when)
+			fmt.Fprintf(&b, "    %s; %s\n", c.appliedText(), when)
+		}
+	}
+	if len(s.Project) > 0 {
+		b.WriteString("  Project config:\n")
+		for _, change := range s.Project {
+			fmt.Fprintf(&b, "    - %s\n", projectChangeText(change))
 		}
 	}
 	if len(s.CronWarnings) > 0 {
@@ -870,22 +882,6 @@ func (iv *initInterview) nextFireTimes() map[string]string {
 		}
 	}
 	return out
-}
-
-func cronOutcomeText(o initCronOutcome) string {
-	switch o {
-	case cronCreated:
-		return "created"
-	case cronDisabledByPreflight:
-		return "created (preflight failed)"
-	case cronUpdated:
-		return "updated"
-	case cronUnchanged:
-		return "already matches"
-	case cronLeftAlone:
-		return "differs, left untouched"
-	}
-	return string(o)
 }
 
 func overridesSummary(ov linearOverrides) string {

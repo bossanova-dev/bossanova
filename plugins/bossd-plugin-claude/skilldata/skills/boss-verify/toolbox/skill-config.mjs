@@ -1600,6 +1600,25 @@ export function planStorageFor(config) {
   return { kind: 'tracker-attachment' }
 }
 
+function trackerReadinessFacts(config) {
+  const tc = trackerConfigFor(config)
+  const nonEmpty = (value) => typeof value === 'string' && value.length > 0
+  return {
+    hasServer: nonEmpty(tc?.mcpServer),
+    hasTeam: nonEmpty(tc?.team),
+    hasStates: ['unplanned', 'planned', 'inProgress', 'inReview'].every((role) =>
+      nonEmpty(tc?.states?.[role]),
+    ),
+  }
+}
+
+/** Classify tracker readiness before resolving this run's team. */
+export function trackerReadiness(config, { planning = false } = {}) {
+  const { hasServer, hasTeam, hasStates } = trackerReadinessFacts(config)
+  if (!hasServer || (planning && !hasStates)) return 'unconfigured'
+  return hasTeam ? 'ready' : 'needs-team'
+}
+
 /**
  * Is this checkout wired to a concrete tracker? True iff the selected tracker adapter has an
  * identity block with a non-empty mcpServer AND a team: the configured `team`, or else the
@@ -1611,11 +1630,9 @@ export function planStorageFor(config) {
  * one clear line and makes no tracker write.
  */
 export function isConfiguredForRepo(config, options = {}) {
-  const tc = trackerConfigFor(config)
-  if (!tc || typeof tc.mcpServer !== 'string' || tc.mcpServer.length === 0) return false
-  if (typeof tc.team === 'string' && tc.team.length > 0) return true
+  const { hasServer, hasTeam } = trackerReadinessFacts(config)
   const team = options?.team
-  return typeof team === 'string' && team.trim().length > 0
+  return hasServer && (hasTeam || (typeof team === 'string' && team.trim().length > 0))
 }
 
 /**
@@ -1629,11 +1646,9 @@ export function isConfiguredForRepo(config, options = {}) {
  * after drafting work.
  */
 export function isConfiguredForPlanning(config, options = {}) {
-  if (!isConfiguredForRepo(config, options)) return false
-  const states = (trackerConfigFor(config) || {}).states || {}
-  return ['unplanned', 'planned', 'inProgress', 'inReview'].every(
-    (role) => typeof states[role] === 'string' && states[role].length > 0,
-  )
+  const { hasServer, hasTeam, hasStates } = trackerReadinessFacts(config)
+  const team = options?.team
+  return hasServer && hasStates && (hasTeam || (typeof team === 'string' && team.trim().length > 0))
 }
 
 // --- Per-run tracker team resolution (zero-config, D11) ---------------------

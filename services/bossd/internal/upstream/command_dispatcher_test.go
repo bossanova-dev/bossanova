@@ -16,6 +16,11 @@ import (
 )
 
 type fakeCommandHandler struct {
+	dismissSessionID        string
+	dismissAlertKey         string
+	resumeRunSessionID      string
+	dismissCalls            int
+	resumeRunCalls          int
 	stopCalls               atomic.Int32
 	pauseCalls              atomic.Int32
 	resumeCalls             atomic.Int32
@@ -3220,6 +3225,67 @@ func TestSwitchCommandResultForTestUsesProductionSwitchFailure(t *testing.T) {
 			if tt.forbidText != "" && strings.Contains(got.GetError(), tt.forbidText) {
 				t.Fatalf("error = %q, did not expect %q", got.GetError(), tt.forbidText)
 			}
+		})
+	}
+}
+
+func (f *fakeCommandHandler) DismissSessionAlert(_ context.Context, sessionID, alertKey string) (*pb.Session, error) {
+	f.dismissSessionID, f.dismissAlertKey = sessionID, alertKey
+	f.dismissCalls++
+	return f.session, f.returnErr
+}
+func (f *fakeCommandHandler) ResumeSessionRun(_ context.Context, sessionID string) (*pb.Session, error) {
+	f.resumeRunSessionID = sessionID
+	f.resumeRunCalls++
+	return f.session, f.returnErr
+}
+
+func TestDispatchCommand_AttentionActions(t *testing.T) {
+	for _, action := range []string{"dismiss", "resume run"} {
+		t.Run(action, func(t *testing.T) {
+			command := &pb.OrchestratorCommand{CommandId: "attention-command"}
+			if action == "dismiss" {
+				command.Cmd = &pb.OrchestratorCommand_DismissSessionAlert{DismissSessionAlert: &pb.DismissSessionAlertCommand{SessionId: "attention-session", AlertKey: "resume:auth_expired"}}
+			} else {
+				command.Cmd = &pb.OrchestratorCommand_ResumeSessionRun{ResumeSessionRun: &pb.ResumeSessionRunCommand{SessionId: "attention-session"}}
+			}
+			t.Run("forwards request and returns session", func(t *testing.T) {
+				sess := &pb.Session{Id: "attention-session"}
+				h := &fakeCommandHandler{session: sess}
+				result := newDispatcherClient(h, nil, nil).dispatchCommand(context.Background(), command, nil).GetResult()
+				if !result.GetOk() || result.GetCommandId() != command.CommandId || result.GetSession() != sess {
+					t.Fatalf("result = %v", result)
+				}
+				if action == "dismiss" {
+					if h.dismissCalls != 1 || h.dismissSessionID != "attention-session" || h.dismissAlertKey != "resume:auth_expired" {
+						t.Fatalf("dismiss request = %q %q, calls %d", h.dismissSessionID, h.dismissAlertKey, h.dismissCalls)
+					}
+				} else if h.resumeRunCalls != 1 || h.resumeRunSessionID != "attention-session" || h.resumeCalls.Load() != 0 {
+					t.Fatalf("resume run request = %q, calls %d, automation resume calls %d", h.resumeRunSessionID, h.resumeRunCalls, h.resumeCalls.Load())
+				}
+			})
+			for _, refusal := range []struct {
+				code connect.Code
+				want pb.CommandResult_ErrorCode
+			}{
+				{connect.CodeNotFound, pb.CommandResult_ERROR_CODE_NOT_FOUND},
+				{connect.CodeFailedPrecondition, pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION},
+				{connect.CodeInvalidArgument, pb.CommandResult_ERROR_CODE_INVALID_ARGUMENT},
+			} {
+				t.Run("preserves "+refusal.code.String()+" refusal", func(t *testing.T) {
+					h := &fakeCommandHandler{returnErr: fmt.Errorf("daemon refusal: %w", connect.NewError(refusal.code, errors.New("alert changed")))}
+					result := newDispatcherClient(h, nil, nil).dispatchCommand(context.Background(), command, nil).GetResult()
+					if result.GetOk() || result.GetCommandId() != command.CommandId || result.GetErrorCode() != refusal.want || !strings.Contains(result.GetError(), "alert changed") {
+						t.Fatalf("result = %v", result)
+					}
+				})
+			}
+			t.Run("missing handler returns error", func(t *testing.T) {
+				result := newDispatcherClient(nil, nil, nil).dispatchCommand(context.Background(), command, nil).GetResult()
+				if result.GetOk() || result.GetCommandId() != command.CommandId || !strings.Contains(result.GetError(), "command handler not wired") {
+					t.Fatalf("result = %v", result)
+				}
+			})
 		})
 	}
 }

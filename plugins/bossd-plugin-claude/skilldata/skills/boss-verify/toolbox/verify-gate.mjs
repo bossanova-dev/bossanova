@@ -216,6 +216,7 @@ export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin 
     }
     const stdout = String(response?.stdout ?? '')
     const output = raw ? stdout : stdout.trim()
+    const stderr = String(response?.stderr ?? '').trim()
     let payload
     if (json) {
       try {
@@ -235,11 +236,43 @@ export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin 
         exit: response?.status ?? null,
         payload,
         output,
+        stderr,
       }
     if (json && payload === undefined)
       return { ok: false, error: 'unreadable-json', exit: 0, output }
     return { ok: true, payload, output, exit: 0 }
   }
+}
+
+// Each GitHub token shape and what replaces it. A prefixed token is redacted wherever it sits, even
+// glued to a word; a bare 40-hex classic token only where it reads as a credential (after `token`,
+// `Bearer`, `Authorization`, `access_token=` or `password`, a JSON-quoted key included, or as URL
+// userinfo), so commit SHAs survive.
+const GITHUB_TOKEN_REDACTIONS = [
+  [/github_pat_[A-Za-z0-9_]{22,255}/g, 'github_pat_REDACTED'],
+  [/(gh[pousr]_)[A-Za-z0-9]{36,255}(?![A-Za-z0-9])/g, '$1REDACTED'],
+  [
+    /((?:token|bearer|authorization|access_token|password)["']?\s*[:=]?\s*(?:(?:token|bearer)\s+)?["']?)[0-9a-f]{40}(?![0-9a-f])/gi,
+    '$1REDACTED',
+  ],
+  [/(\/\/(?:[^\s/@:]+:)?)[0-9a-f]{40}(?=@)/gi, '$1REDACTED'],
+]
+
+/**
+ * Why a read failed, in one line: `<command>: ` and the first line of its stderr (gh puts the HTTP
+ * status and GitHub's message there), else its error code, with any GitHub token redacted.
+ */
+export function readFailureDetail(command, r) {
+  const line = String(r?.stderr ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l !== '')
+  const why = GITHUB_TOKEN_REDACTIONS.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    line ?? String(r?.error ?? 'unknown'),
+  )
+  // gate-region-ok: a length cap on one already-redacted stderr line, not a text section window.
+  return `${command}: ${why.slice(0, 300)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +597,8 @@ export function decideVerdict(facts) {
   if (f.prUnreadable) return wait('pr-unreadable')
   if (f.prState !== 'OPEN') return wait('pr-not-open')
   if (f.isDraft !== false) return wait('pr-draft')
+  // No CI outcome on a conflicted head makes it mergeable, so the conflict is the wait to name.
+  if (f.eligibilityReasons?.includes('merge-state-dirty')) return wait('merge-state-dirty')
   if (f.ci?.reason === 'absent-gate') return wait('ci-absent-gate')
   if (!f.ci?.settled) return wait('ci-not-settled')
   if (!f.ci?.green) return wait('ci-not-green-on-head')
@@ -910,7 +945,7 @@ const PRIOR_CONTEXT_FIELDS = `oid statusCheckRollup { contexts(first: 100) {
   pageInfo { hasNextPage }
   nodes {
     __typename
-    ... on CheckRun { name status conclusion checkSuite { workflowRun { workflow { name } } } }
+    ... on CheckRun { name status conclusion checkSuite { workflowRun { workflow { name databaseId } } } }
     ... on StatusContext { context state }
   }
 } }`
@@ -950,8 +985,12 @@ export function resolvePriorHead(payload, headSha) {
       const name = context?.name ?? context?.context
       if (typeof name !== 'string' || !name.trim()) return unknown
       if (name.startsWith('boss/')) continue
-      const workflowName = context.checkSuite?.workflowRun?.workflow?.name
-      contexts.push({ ...context, ...(workflowName ? { workflowName } : {}) })
+      const workflow = context.checkSuite?.workflowRun?.workflow
+      contexts.push({
+        ...context,
+        ...(workflow?.name ? { workflowName: workflow.name } : {}),
+        ...(Number.isInteger(workflow?.databaseId) ? { workflowId: workflow.databaseId } : {}),
+      })
     }
     if (contexts.length) return { known: true, sha: commit.oid.toLowerCase(), contexts }
   }
@@ -2018,9 +2057,7 @@ function readRepairFacts(read, prUrl) {
   }
 }
 
-export async function post(options, deps = {}) {
-  const read = deps.read ?? commandReader(deps)
-  const now = (deps.now ?? Date.now)()
+export function parsePostOptions(options) {
   const dryRun = options.dryRun === true
   const { verdict, pr } = options
   const headSha = typeof options.head === 'string' ? options.head.toLowerCase() : ''
@@ -2095,6 +2132,21 @@ export async function post(options, deps = {}) {
         'verify-gate: post --verdict defect needs --findings <file> with ≥1 finding',
       )
   }
+  return {
+    verdict,
+    pr,
+    headSha,
+    dryRun,
+    humanCodes,
+    record,
+    carryRecord,
+    extensionResults,
+    findings,
+  }
+}
+
+function createPostContext(options, deps, parsed, read, now) {
+  const { pr, headSha, dryRun } = parsed
   const repo = repoFor(read, options.repo)
   const writes = []
   const status = (state, description, targetUrl) => {
@@ -2122,118 +2174,161 @@ export async function post(options, deps = {}) {
 
   const current = latestStatus(read, headSha, repo)
 
-  if (verdict === 'claim') {
-    if (!current.readable) return finish({ won: false, reason: 'status-unreadable' })
-    const state = claimState(current.status, { token: options.token, now })
-    if (state.kind === 'foreign') return finish({ won: false, reason: 'claim-held' })
-    const token = text(options.token) ? options.token : (deps.randomToken ?? defaultToken)()
-    const posted = runStatus(status('pending', claimDescription(token)))
-    if (state.kind === 'stale')
-      note('stale-claim-taken-over', `took over a stale verify claim ${state.token} on PR #${pr}`)
-    if (dryRun) {
-      flushNotes()
-      return finish({ won: true, token })
-    }
-    if (!posted.ok) return finish({ won: false, token, reason: 'status-post-failed' })
-    const back = latestStatus(read, headSha, repo)
-    const won = back.readable && claimState(back.status, { token, now }).kind === 'mine'
-    if (won) flushNotes()
-    return finish({ won, token })
+  return {
+    read,
+    now,
+    repo,
+    dryRun,
+    pr,
+    headSha,
+    writes,
+    notes,
+    status,
+    runStatus,
+    note,
+    flushNotes,
+    finish,
+    current,
+    deps,
   }
+}
 
-  // Before any terminal post (and a wait that holds a claim): a later claim by another run wins.
-  if (!current.readable) return finish({ verdict, posted: false, reason: 'status-unreadable' })
-  if (claimLost(current.status, options.token, now))
-    return finish({ verdict, abandoned: 'claim-lost' })
+// A needs-human label an older head's park left on the ticket goes once this head stands on a
+// verdict that parks nothing: the same housekeeping as approve, never part of the verdict.
+async function clearStaleLabel(ctx, facts, result) {
+  const { read, repo, dryRun, pr, headSha, writes, finish, deps } = ctx
+  const { ticket, names } = facts
+  if (dryRun || !result.posted) return finish(result)
+  const labelRemoval = { issueId: ticket?.id ?? '', removeLabels: [names.needsHuman] }
+  const tracker = await removeNeedsHumanLabel(
+    deps,
+    ticket,
+    labelRemoval,
+    () => stillStands(read, pr, repo, headSha, unparkedVerdict),
+    { ifPresent: true },
+  )
+  if (tracker.outcome === 'absent') return finish(result)
+  if (tracker.attempted) writes.push({ kind: 'tracker', ...labelRemoval })
+  const why = tracker.why ? { why: tracker.why } : {}
+  return finish({ ...result, staleLabel: { outcome: tracker.outcome, ...why } })
+}
 
-  if (verdict === 'wait') {
-    if (EVIDENCE_UNKNOWN_REASONS.includes(options.reason))
-      note('evidence-unknown', `verify could not read evidence on PR #${pr}: ${options.reason}`)
-    let posted = false
-    if (claimState(current.status, { token: options.token, now }).kind === 'mine') {
-      posted = runStatus(status('pending', waitingDescription(options.reason))).ok
-    }
+export function resolveEffectiveVerdict({
+  verdict,
+  humanCodes,
+  reason,
+  repairAttempts,
+  exhaustedAfter = REPAIR_EXHAUSTED_AFTER,
+}) {
+  if (verdict === 'defect' && repairAttempts !== null && repairAttempts >= exhaustedAfter)
+    return { effective: 'human', reason: 'repair-exhausted' }
+  return { effective: verdict, reason: humanCodes ? humanCodes.join(',') : reason }
+}
+
+async function postClaim(ctx, parsed, options) {
+  const {
+    read,
+    now,
+    repo,
+    dryRun,
+    pr,
+    headSha,
+    status,
+    runStatus,
+    note,
+    flushNotes,
+    finish,
+    current,
+    deps,
+  } = ctx
+  if (!current.readable) return finish({ won: false, reason: 'status-unreadable' })
+  const state = claimState(current.status, { token: options.token, now })
+  if (state.kind === 'foreign') return finish({ won: false, reason: 'claim-held' })
+  const token = text(options.token) ? options.token : (deps.randomToken ?? defaultToken)()
+  const posted = runStatus(status('pending', claimDescription(token)))
+  if (state.kind === 'stale')
+    note('stale-claim-taken-over', `took over a stale verify claim ${state.token} on PR #${pr}`)
+  if (dryRun) {
     flushNotes()
-    return finish({ verdict, reason: options.reason, posted })
+    return finish({ won: true, token })
   }
+  if (!posted.ok) return finish({ won: false, token, reason: 'status-post-failed' })
+  const back = latestStatus(read, headSha, repo)
+  const won = back.readable && claimState(back.status, { token, now }).kind === 'mine'
+  if (won) flushNotes()
+  return finish({ won, token })
+}
 
-  const view = readPr(read, pr, repo)
-  const p = view.ok ? (view.payload ?? {}) : {}
-  if (view.ok && p.headRefOid && p.headRefOid.toLowerCase() !== headSha)
-    return finish({ verdict: 'reverify', reason: 'head-moved', posted: false })
-  const ticket = parseLinearIssueLine(p.body)
-  const names = trackerNames(deps)
-  const marker = verifyMarker(headSha)
-  // A needs-human label an older head's park left on the ticket goes once this head stands on a
-  // verdict that parks nothing: the same housekeeping as approve, never part of the verdict.
-  const clearStaleLabel = async (result) => {
-    if (dryRun || !result.posted) return finish(result)
-    const labelRemoval = { issueId: ticket?.id ?? '', removeLabels: [names.needsHuman] }
-    const tracker = await removeNeedsHumanLabel(
-      deps,
-      ticket,
-      labelRemoval,
-      () => stillStands(read, pr, repo, headSha, unparkedVerdict),
-      { ifPresent: true },
-    )
-    if (tracker.outcome === 'absent') return finish(result)
-    if (tracker.attempted) writes.push({ kind: 'tracker', ...labelRemoval })
-    const why = tracker.why ? { why: tracker.why } : {}
-    return finish({ ...result, staleLabel: { outcome: tracker.outcome, ...why } })
+async function postWait(ctx, parsed, options) {
+  const { read, now, pr, status, runStatus, note, flushNotes, finish, current } = ctx
+  const { verdict } = parsed
+  if (EVIDENCE_UNKNOWN_REASONS.includes(options.reason))
+    note('evidence-unknown', `verify could not read evidence on PR #${pr}: ${options.reason}`)
+  let posted = false
+  if (claimState(current.status, { token: options.token, now }).kind === 'mine') {
+    posted = runStatus(status('pending', waitingDescription(options.reason))).ok
   }
+  flushNotes()
+  return finish({ verdict, reason: options.reason, posted })
+}
 
-  if (verdict === 'pass') {
-    // A pass a carried approval made posts its record first: a carry nobody can see does not pass.
-    let carried = {}
-    if (carryRecord) {
-      const [, from, patchId] = carryRecord
-      carried = recordCarry(read, { repo, pr, headSha, from, patchId, dryRun, writes })
-      if (carried.reason) return finish({ verdict, posted: false, reason: carried.reason })
-    }
-    const description =
-      options.reason === 'approved'
-        ? VERIFY_DESCRIPTIONS.verifiedApproved
-        : VERIFY_DESCRIPTIONS.verified
-    // The PR's `## After merge` items, listed for a person. Cosmetic, so it never holds the verdict.
-    const recordAfterMerge = () => {
-      const note = afterMergeNote({ headSha, body: p.body })
-      if (!note) return {}
-      const markers = readOperatorMarkers(read, repo, pr)
-      const args = { kind: 'after-merge', repo, pr, headSha, note, markers, dryRun, writes }
-      return { afterMerge: recordHeadNote(read, args) }
-    }
-    if (current.status?.state === 'success' && current.status.description === description)
-      return finish({
-        verdict,
-        posted: false,
-        skipped: 'already-posted',
-        ...carried,
-        ...recordAfterMerge(),
-      })
-    const posted = runStatus(status('success', description)).ok
-    flushNotes()
-    return clearStaleLabel({ verdict, posted, ...carried, ...(posted ? recordAfterMerge() : {}) })
+async function postPass(ctx, parsed, options, facts) {
+  const {
+    read,
+    repo,
+    dryRun,
+    pr,
+    headSha,
+    writes,
+    status,
+    runStatus,
+    note,
+    flushNotes,
+    finish,
+    current,
+  } = ctx
+  const { verdict, record, carryRecord } = parsed
+  const { p, reason } = facts
+  // A pass a carried approval made posts its record first: a carry nobody can see does not pass.
+  let carried = {}
+  if (carryRecord) {
+    const [, from, patchId] = carryRecord
+    carried = recordCarry(read, { repo, pr, headSha, from, patchId, dryRun, writes })
+    if (carried.reason) return finish({ verdict, posted: false, reason: carried.reason })
   }
-
-  let effective = verdict
-  // A human set is posted in its normalised order, so a re-post of the same set is a no-op.
-  let reason = humanCodes ? humanCodes.join(',') : options.reason
-  let repair = null
-  if (verdict === 'defect') {
-    repair = readRepairFacts(read, p.url)
-    if (repair.attempts !== null && repair.attempts >= REPAIR_EXHAUSTED_AFTER) {
-      effective = 'human'
-      reason = 'repair-exhausted'
-    } else if (cleanReviewBody(p.body)) {
-      note(
-        'verify-failed-after-clean-review',
-        `verify found ${findings.length} finding(s) on PR #${pr} after a clean boss-review`,
-      )
-    }
+  const description =
+    options.reason === 'approved'
+      ? VERIFY_DESCRIPTIONS.verifiedApproved
+      : VERIFY_DESCRIPTIONS.verified
+  // The PR's `## After merge` items, listed for a person. Cosmetic, so it never holds the verdict.
+  const recordAfterMerge = () => {
+    const note = afterMergeNote({ headSha, body: p.body })
+    if (!note) return {}
+    const markers = readOperatorMarkers(read, repo, pr)
+    const args = { kind: 'after-merge', repo, pr, headSha, note, markers, dryRun, writes }
+    return { afterMerge: recordHeadNote(read, args) }
   }
-  if (effective === 'human' && reason.split(',').includes('extension-failed'))
-    note('extension-failed', `a verify extension malfunctioned on PR #${pr}`)
+  if (current.status?.state === 'success' && current.status.description === description)
+    return finish({
+      verdict,
+      posted: false,
+      skipped: 'already-posted',
+      ...carried,
+      ...recordAfterMerge(),
+    })
+  const posted = runStatus(status('success', description)).ok
+  flushNotes()
+  return clearStaleLabel(ctx, facts, {
+    verdict,
+    posted,
+    ...carried,
+    ...(posted ? recordAfterMerge() : {}),
+  })
+}
 
+async function prepareParkContext(ctx, facts) {
+  const { read, deps, repo } = ctx
+  const { effective, repair, ticket, p, names, marker } = facts
   const parked = effective === 'human' || repair?.autoRepair !== true
   const adapter = resolveAdapter(deps)
   // A PR no ticket stands behind has no tracker state to write: its park or defect stands on the
@@ -2252,122 +2347,156 @@ export async function post(options, deps = {}) {
         }
       : null
 
-  if (effective === 'human') {
-    // The label names the paths the person is asked about; it rides only on a judged park, never on
-    // a defect that became human because repair gave up.
-    const derived =
-      verdict === 'human'
-        ? deriveParkLabel(read, {
-            repo,
-            pr,
-            baseRefName: p.baseRefName,
-            headSha,
-            codes: humanCodes,
-          })
-        : { label: '' }
-    const label = parkLabelText(derived.label)
-    const labelResult = { label, ...(derived.why ? { labelUnread: derived.why } : {}) }
-    const description = needsHumanDescription(reason, label)
-    let markers = null
-    const readMarkers = () => (markers ??= readOperatorMarkers(read, repo, pr))
-    // The policy a park was judged under rides beside it, so a sweep re-judges it only once the
-    // base's policy changes. Only a park that stands carries one.
-    const recordPolicy = () => {
-      if (options.policy === undefined) return {}
-      if (!readMarkers().readable) return { policyRecord: 'unknown' }
-      if (recordedPolicy(markers.markers, headSha) === options.policy)
-        return { policyRecord: 'current' }
-      const body = policyComment(headSha, options.policy)
-      writes.push({ kind: 'pr-comment', body })
-      if (dryRun) return {}
-      return { policyRecord: postPrComment(read, repo, pr, body) ? 'posted' : 'failed' }
-    }
-    // What the park means and what verify saw, for the operator: one note per head, rewritten in
-    // place only when it changes. Cosmetic, so it never holds the verdict.
-    const recordNote = () => ({
-      parkNote: recordHeadNote(read, {
-        kind: 'park-note',
-        repo,
-        pr,
-        headSha,
-        note: parkNote({
-          codes: reason.split(','),
+  return { ...facts, parked, adapter, ticketless, noTicket, probe, trackerWrite }
+}
+
+async function postHuman(ctx, parsed, options, facts) {
+  const {
+    read,
+    repo,
+    dryRun,
+    pr,
+    headSha,
+    writes,
+    status,
+    runStatus,
+    note,
+    flushNotes,
+    finish,
+    current,
+  } = ctx
+  const { verdict, humanCodes, record, extensionResults } = parsed
+  const {
+    p,
+    names,
+    effective,
+    reason,
+    repair,
+    adapter,
+    ticketless,
+    noTicket,
+    probe,
+    trackerWrite,
+  } = facts
+  // The label names the paths the person is asked about; it rides only on a judged park, never on
+  // a defect that became human because repair gave up.
+  const derived =
+    verdict === 'human'
+      ? deriveParkLabel(read, {
+          repo,
+          pr,
+          baseRefName: p.baseRefName,
           headSha,
-          facts: { title: p.title, body: p.body, label, extensionResults, ticketless },
-          ledger: options.ledger ?? null,
-        }),
-        markers: readMarkers(),
-        dryRun,
-        writes,
+          codes: humanCodes,
+        })
+      : { label: '' }
+  const label = parkLabelText(derived.label)
+  const labelResult = { label, ...(derived.why ? { labelUnread: derived.why } : {}) }
+  const description = needsHumanDescription(reason, label)
+  let markers = null
+  const readMarkers = () => (markers ??= readOperatorMarkers(read, repo, pr))
+  // The policy a park was judged under rides beside it, so a sweep re-judges it only once the
+  // base's policy changes. Only a park that stands carries one.
+  const recordPolicy = () => {
+    if (options.policy === undefined) return {}
+    if (!readMarkers().readable) return { policyRecord: 'unknown' }
+    if (recordedPolicy(markers.markers, headSha) === options.policy)
+      return { policyRecord: 'current' }
+    const body = policyComment(headSha, options.policy)
+    writes.push({ kind: 'pr-comment', body })
+    if (dryRun) return {}
+    return { policyRecord: postPrComment(read, repo, pr, body) ? 'posted' : 'failed' }
+  }
+  // What the park means and what verify saw, for the operator: one note per head, rewritten in
+  // place only when it changes. Cosmetic, so it never holds the verdict.
+  const recordNote = () => ({
+    parkNote: recordHeadNote(read, {
+      kind: 'park-note',
+      repo,
+      pr,
+      headSha,
+      note: parkNote({
+        codes: reason.split(','),
+        headSha,
+        facts: { title: p.title, body: p.body, label, extensionResults, ticketless },
+        ledger: options.ledger ?? null,
       }),
+      markers: readMarkers(),
+      dryRun,
+      writes,
+    }),
+  })
+  // A matching description already carries this code set and its derived label.
+  if (current.status?.state === 'pending' && current.status.description === description) {
+    const policyRecord = recordPolicy()
+    const noted = recordNote()
+    // A sweep that could not record the ledger re-posts the park, which counts the attempt on the
+    // head (ledgerRecordDue).
+    const counted =
+      options.ledger !== undefined &&
+      noted.parkNote === 'failed' &&
+      runStatus(status('pending', description)).ok
+    return finish({
+      verdict: effective,
+      ...labelResult,
+      reason,
+      posted: false,
+      skipped: 'already-posted',
+      ...noTicket,
+      ...policyRecord,
+      ...noted,
+      ...(counted ? { ledgerAttempt: 'counted' } : {}),
     })
-    // A matching description already carries this code set and its derived label.
-    if (current.status?.state === 'pending' && current.status.description === description) {
-      const policyRecord = recordPolicy()
-      const noted = recordNote()
-      // A sweep that could not record the ledger re-posts the park, which counts the attempt on the
-      // head (ledgerRecordDue).
-      const counted =
-        options.ledger !== undefined &&
-        noted.parkNote === 'failed' &&
-        runStatus(status('pending', description)).ok
+  }
+  if (trackerWrite) {
+    trackerWrite.comment = humanComment({ code: reason, pr, url: p.url, label })
+    writes.push({ kind: 'tracker', ...trackerWrite })
+    if (!probe.available) {
       return finish({
         verdict: effective,
         ...labelResult,
         reason,
         posted: false,
-        skipped: 'already-posted',
-        ...noTicket,
-        ...policyRecord,
-        ...noted,
-        ...(counted ? { ledgerAttempt: 'counted' } : {}),
+        trackerWrites: 'unavailable',
+        why: probe.why,
       })
     }
-    if (trackerWrite) {
-      trackerWrite.comment = humanComment({ code: reason, pr, url: p.url, label })
-      writes.push({ kind: 'tracker', ...trackerWrite })
-      if (!probe.available) {
+    if (!dryRun) {
+      const applied = await adapter.applyIssueWrites(trackerWrite)
+      if (applied?.outcome !== 'ok')
         return finish({
           verdict: effective,
           ...labelResult,
           reason,
           posted: false,
-          trackerWrites: 'unavailable',
-          why: probe.why,
+          trackerWrites: applied?.outcome ?? 'failed',
         })
-      }
-      if (!dryRun) {
-        const applied = await adapter.applyIssueWrites(trackerWrite)
-        if (applied?.outcome !== 'ok')
-          return finish({
-            verdict: effective,
-            ...labelResult,
-            reason,
-            posted: false,
-            trackerWrites: applied?.outcome ?? 'failed',
-          })
-      }
     }
-    // The record rides with the park it led to; without it an approval re-runs the extensions.
-    let extensionRecord
-    if (record) {
-      const body = extensionRecordComment(headSha, reason, options.extensionRecord)
-      writes.push({ kind: 'pr-comment', body })
-      if (!dryRun) extensionRecord = postPrComment(read, repo, pr, body) ? 'posted' : 'failed'
-    }
-    const posted = runStatus(status('pending', description)).ok
-    flushNotes()
-    return finish({
-      verdict: effective,
-      ...labelResult,
-      reason,
-      posted,
-      ...noTicket,
-      ...(extensionRecord ? { extensionRecord } : {}),
-      ...(posted ? { ...recordPolicy(), ...recordNote() } : {}),
-    })
   }
+  // The record rides with the park it led to; without it an approval re-runs the extensions.
+  let extensionRecord
+  if (record) {
+    const body = extensionRecordComment(headSha, reason, options.extensionRecord)
+    writes.push({ kind: 'pr-comment', body })
+    if (!dryRun) extensionRecord = postPrComment(read, repo, pr, body) ? 'posted' : 'failed'
+  }
+  const posted = runStatus(status('pending', description)).ok
+  flushNotes()
+  return finish({
+    verdict: effective,
+    ...labelResult,
+    reason,
+    posted,
+    ...noTicket,
+    ...(extensionRecord ? { extensionRecord } : {}),
+    ...(posted ? { ...recordPolicy(), ...recordNote() } : {}),
+  })
+}
 
+async function postDefect(ctx, parsed, options, facts) {
+  const { read, repo, dryRun, pr, headSha, writes, status, runStatus, flushNotes, finish } = ctx
+  const { verdict, findings } = parsed
+  const { p, effective, reason, repair, parked, adapter, noTicket, probe, trackerWrite } = facts
   // Defect: the PR findings comment first (its URL is the status target), then the tracker writes
   // when auto-repair will not pick it up, then the `failure` status.
   if (trackerWrite && !probe.available) {
@@ -2422,7 +2551,51 @@ export async function post(options, deps = {}) {
     autoRepair: repair?.autoRepair ?? null,
     ...noTicket,
   }
-  return parked ? finish(result) : clearStaleLabel(result)
+  return parked ? finish(result) : clearStaleLabel(ctx, facts, result)
+}
+
+export async function post(options, deps = {}) {
+  const read = deps.read ?? commandReader(deps)
+  const now = (deps.now ?? Date.now)()
+  const parsed = parsePostOptions(options)
+  const ctx = createPostContext(options, deps, parsed, read, now)
+  const { verdict, pr, headSha, humanCodes, findings } = parsed
+  const { repo, current, finish, note } = ctx
+  if (verdict === 'claim') return postClaim(ctx, parsed, options)
+  // A later claim by another run wins, including a wait that holds a claim.
+  if (!current.readable) return finish({ verdict, posted: false, reason: 'status-unreadable' })
+  if (claimLost(current.status, options.token, now))
+    return finish({ verdict, abandoned: 'claim-lost' })
+  if (verdict === 'wait') return postWait(ctx, parsed, options)
+  const view = readPr(read, pr, repo)
+  const p = view.ok ? (view.payload ?? {}) : {}
+  if (view.ok && p.headRefOid && p.headRefOid.toLowerCase() !== headSha)
+    return finish({ verdict: 'reverify', reason: 'head-moved', posted: false })
+  const facts = {
+    p,
+    ticket: parseLinearIssueLine(p.body),
+    names: trackerNames(deps),
+    marker: verifyMarker(headSha),
+  }
+  if (verdict === 'pass') return postPass(ctx, parsed, options, facts)
+  const repair = verdict === 'defect' ? readRepairFacts(read, p.url) : null
+  const resolved = resolveEffectiveVerdict({
+    verdict,
+    humanCodes,
+    reason: options.reason,
+    repairAttempts: repair?.attempts ?? null,
+  })
+  if (verdict === 'defect' && resolved.effective !== 'human' && cleanReviewBody(p.body))
+    note(
+      'verify-failed-after-clean-review',
+      `verify found ${findings.length} finding(s) on PR #${pr} after a clean boss-review`,
+    )
+  if (resolved.effective === 'human' && resolved.reason.split(',').includes('extension-failed'))
+    note('extension-failed', `a verify extension malfunctioned on PR #${pr}`)
+  const parked = await prepareParkContext(ctx, { ...facts, ...resolved, repair })
+  return resolved.effective === 'human'
+    ? postHuman(ctx, parsed, options, parked)
+    : postDefect(ctx, parsed, options, parked)
 }
 
 export async function merge(options, deps = {}) {
@@ -2471,6 +2644,9 @@ export async function merge(options, deps = {}) {
   const reasons = eligibility.reasons.filter((r) => !(approved && LEDGER_REASONS.has(r)))
   if (ci.settled && !ci.green && !reasons.includes('ci-not-green-on-head'))
     reasons.push('ci-not-green-on-head')
+  // Same order as `decideVerdict`, so judge and merge name the same wait for one PR.
+  if (reasons.includes('merge-state-dirty'))
+    return finish({ merged: false, verdict: 'wait', reason: 'merge-state-dirty', reasons })
   if (ci.verdict.reason === 'absent-gate')
     return finish({ merged: false, verdict: 'wait', reason: 'ci-absent-gate', reasons })
   if (reasons.length > 0) return finish({ merged: false, verdict: 'wait', reasons })
@@ -3035,7 +3211,8 @@ export function readOperatorDecision(
 // The open PR and its head for an operator verb, or the refusal to return.
 function operatorPr(read, pr, repo) {
   const view = readPr(read, pr, repo)
-  if (!view.ok) return { refusal: { reason: 'pr-unreadable' } }
+  if (!view.ok)
+    return { refusal: { reason: 'pr-unreadable', detail: readFailureDetail('gh', view) } }
   const p = view.payload ?? {}
   const headSha = isSha(p.headRefOid) ? p.headRefOid.toLowerCase() : ''
   if (p.state !== 'OPEN')

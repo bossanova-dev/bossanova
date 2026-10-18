@@ -1965,6 +1965,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteNoteResponse'
+  /bossanova.v1.OrchestratorService/ProxyDismissSessionAlert:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyDismissSessionAlert
+      description: ProxyDismissSessionAlert forwards DaemonService.DismissSessionAlert to the owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyDismissSessionAlert
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyDismissSessionAlertRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyDismissSessionAlertResponse'
   /bossanova.v1.OrchestratorService/ProxyEmptyTrash:
     post:
       tags:
@@ -3259,6 +3295,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyResumeSessionResponse'
+  /bossanova.v1.OrchestratorService/ProxyResumeSessionRun:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxyResumeSessionRun
+      description: ProxyResumeSessionRun forwards DaemonService.ResumeSessionRun to the owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxyResumeSessionRun
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxyResumeSessionRunRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxyResumeSessionRunResponse'
   /bossanova.v1.OrchestratorService/ProxyResurrectSession:
     post:
       tags:
@@ -8886,6 +8958,17 @@ components:
       type: object
       title: DisconnectGitHubAppRepoResponse
       additionalProperties: false
+    bossanova.v1.DismissSessionAlertCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        alertKey:
+          type: string
+          title: alert_key
+      title: DismissSessionAlertCommand
+      additionalProperties: false
     bossanova.v1.DismissSessionAlertRequest:
       type: object
       properties:
@@ -12498,6 +12581,14 @@ components:
                 - deleteNote
             - type: object
               properties:
+                dismissSessionAlert:
+                  title: dismiss_session_alert
+                  $ref: '#/components/schemas/bossanova.v1.DismissSessionAlertCommand'
+              title: dismiss_session_alert
+              required:
+                - dismissSessionAlert
+            - type: object
+              properties:
                 emptyTrash:
                   title: empty_trash
                   description: 'bosso → daemon: permanently delete archived sessions. Replies CommandResult{empty_trash}.'
@@ -12786,6 +12877,14 @@ components:
               title: resume
               required:
                 - resume
+            - type: object
+              properties:
+                resumeSessionRun:
+                  title: resume_session_run
+                  $ref: '#/components/schemas/bossanova.v1.ResumeSessionRunCommand'
+              title: resume_session_run
+              required:
+                - resumeSessionRun
             - type: object
               properties:
                 resurrectSession:
@@ -14292,6 +14391,26 @@ components:
       type: object
       title: ProxyDeleteNoteResponse
       additionalProperties: false
+    bossanova.v1.ProxyDismissSessionAlertRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        alertKey:
+          type: string
+          title: alert_key
+      title: ProxyDismissSessionAlertRequest
+      additionalProperties: false
+      description: 'Additive attention proxies require no version bump: docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff'
+    bossanova.v1.ProxyDismissSessionAlertResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyDismissSessionAlertResponse
+      additionalProperties: false
     bossanova.v1.ProxyEmptyTrashRequest:
       type: object
       properties:
@@ -15396,6 +15515,22 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyResumeSessionResponse
+      additionalProperties: false
+    bossanova.v1.ProxyResumeSessionRunRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: ProxyResumeSessionRunRequest
+      additionalProperties: false
+    bossanova.v1.ProxyResumeSessionRunResponse:
+      type: object
+      properties:
+        session:
+          title: session
+          $ref: '#/components/schemas/bossanova.v1.Session'
+      title: ProxyResumeSessionRunResponse
       additionalProperties: false
     bossanova.v1.ProxyResurrectSessionRequest:
       type: object
@@ -17054,6 +17189,14 @@ components:
           title: session
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ResumeSessionResponse
+      additionalProperties: false
+    bossanova.v1.ResumeSessionRunCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: ResumeSessionRunCommand
       additionalProperties: false
     bossanova.v1.ResumeSessionRunRequest:
       type: object
@@ -22081,6 +22224,13 @@ components:
         signOff:
           type: string
           title: sign_off
+        detail:
+          type: string
+          title: detail
+          description: |-
+            Why the PR read failed, as gh said it (for example "gh: HTTP 401: Bad
+             credentials ..."), with tokens redacted. Set only when reason is
+             "pr-unreadable"; empty for every other reason.
       title: VerifyApproveResult
       additionalProperties: false
       description: |-

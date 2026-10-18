@@ -148,6 +148,19 @@ func TestMergeRefusal(t *testing.T) {
 	}
 }
 
+// TestRefusalSaysWhyAReadFailed: delta's PR 6671 read failed on a 401, and the
+// TUI said only "the PR could not be read".
+func TestRefusalSaysWhyAReadFailed(t *testing.T) {
+	const gh = "gh: HTTP 401: Bad credentials (https://api.github.com/graphql)"
+	r := &pb.VerifyApproveResult{Reason: "pr-unreadable", Detail: gh}
+	if got, want := MergeRefusal(6671, r), "Couldn't merge PR #6671: the PR could not be read ("+gh+")"; got != want {
+		t.Errorf("TUI refusal:\ngot  %q\nwant %q", got, want)
+	}
+	if got, want := ApproveRefusal(6671, r), "PR #6671 not approved: the PR could not be read ("+gh+")"; got != want {
+		t.Errorf("CLI refusal:\ngot  %q\nwant %q", got, want)
+	}
+}
+
 func TestApproveRefusal(t *testing.T) {
 	const url = "https://github.com/acme/app/pull/7#issuecomment-9"
 	for _, tc := range []struct {

@@ -547,7 +547,7 @@ func (r *factoryCronResolver) root(agent string) (string, error) {
 // stage resolves one stage for an already-chosen agent.
 func (r *factoryCronResolver) stage(st cronStage, agent string) (prompt, gate string, failures []string) {
 	root, rootErr := r.root(agent)
-	failures = cronPreflight(st, root, rootErr, r.home, r.node, r.config, r.configErr, r.configPath, r.env)
+	failures = r.preflight(st, root, rootErr)
 	gate = r.node.command + ` "` + renderSkillRoot(root, r.home) + "/" + st.gatePath() + `"`
 	return st.prompt(agent), gate, failures
 }
@@ -576,6 +576,21 @@ func (r *factoryCronResolver) Resolve(stage, agent string) (projectconfig.Factor
 	}, nil
 }
 
+// cronSetupRun is one setupInitCron run: the inputs, the resolver every stage
+// shares, the chosen agent's skill root, the jobs listed once up front, and
+// the result the steps append to.
+type cronSetupRun struct {
+	c        client.BossClient
+	repo     *pb.Repo
+	repoDir  string
+	req      initCronRequest
+	resolver *factoryCronResolver
+	root     string
+	rootErr  error
+	existing []*pb.CronJob
+	res      initCronResult
+}
+
 // setupInitCron creates or converges the factory jobs for req.stages and
 // returns what it did. It never duplicates a stage's job, never enables a job
 // whose preflight failed, and never changes an existing job's schedule,
@@ -589,17 +604,15 @@ func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repo
 	if err != nil {
 		return initCronResult{}, err
 	}
-	res := initCronResult{Agent: agent}
-
-	home, node := resolver.home, resolver.node
-	root, rootErr := resolver.root(agent)
-	if node.note != "" {
-		res.Warnings = append(res.Warnings, node.note)
+	run := &cronSetupRun{c: c, repo: repo, repoDir: repoDir, req: req, resolver: resolver, res: initCronResult{Agent: agent}}
+	run.root, run.rootErr = resolver.root(agent)
+	if resolver.node.note != "" {
+		run.res.Warnings = append(run.res.Warnings, resolver.node.note)
 	}
 
-	existing, err := c.ListCronJobs(ctx, repo.GetId())
+	run.existing, err = c.ListCronJobs(ctx, repo.GetId())
 	if err != nil {
-		return res, errors.New("could not list the repository's cron jobs")
+		return run.res, errors.New("could not list the repository's cron jobs")
 	}
 
 	for _, stageName := range req.stages {
@@ -614,35 +627,33 @@ func setupInitCron(ctx context.Context, c client.BossClient, repo *pb.Repo, repo
 			AgentName:   agent,
 			GateCommand: gate,
 		}
-		result, err := convergeCronStage(ctx, c, st, want, existing, failures, req.updateConsent, home, &res)
+		result, err := run.convergeStage(ctx, st, want, failures)
 		if err != nil {
-			return res, err
+			return run.res, err
 		}
-		res.Stages = append(res.Stages, result)
+		run.res.Stages = append(run.res.Stages, result)
 	}
 
-	if resolver.configErr == nil && rootErr == nil && node.path != "" {
-		appendBaseBranchWarnings(ctx, &res, repo, repoDir, configPath, resolver.config, root, node, req.stages, env)
+	run.appendBaseBranchWarnings(ctx)
+	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(run.existing, mustCronStage("plan")) {
+		run.res.LeftToDo = append(run.res.LeftToDo, "the build job (factory-build) is enabled without the plan job (factory-plan): nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
 	}
-	if slices.Contains(req.stages, "build") && !slices.Contains(req.stages, "plan") && !hasEnabledStageJob(existing, mustCronStage("plan")) {
-		res.LeftToDo = append(res.LeftToDo, "the build job (factory-build) is enabled without the plan job (factory-plan): nothing reaches the planned state unless people plan tickets (or re-run with --cron plan)")
-	}
-	return res, nil
+	return run.res, nil
 }
 
-// cronPreflight checks one stage's gate in the daemon's environment and
+// preflight checks one stage's gate in the daemon's environment and
 // returns every failure found. A missing gate script or a config the installed
 // module rejects makes the gate exit 1, which reads as an ordinary `gated` skip
 // forever after; that is why it is checked before a job is enabled.
-func cronPreflight(st cronStage, root string, rootErr error, home string, node cronNode, config []byte, configErr error, configPath string, env initCronEnv) []string {
+func (r *factoryCronResolver) preflight(st cronStage, root string, rootErr error) []string {
 	var failures []string
-	if node.path == "" {
+	if r.node.path == "" {
 		failures = append(failures, "node is not on the daemon's service PATH or on your PATH")
 	}
 	if rootErr != nil {
 		return append(failures, "the agent's skill directory could not be resolved")
 	}
-	if strings.ContainsAny(renderSkillRoot(root, home), "\"`\\") || strings.Contains(strings.TrimPrefix(renderSkillRoot(root, home), "$HOME/"), "$") {
+	if strings.ContainsAny(renderSkillRoot(root, r.home), "\"`\\") || strings.Contains(strings.TrimPrefix(renderSkillRoot(root, r.home), "$HOME/"), "$") {
 		return append(failures, "the skill directory "+root+" cannot be quoted in a gate command")
 	}
 	gate := filepath.Join(root, filepath.FromSlash(st.gatePath()))
@@ -651,13 +662,13 @@ func cronPreflight(st cronStage, root string, rootErr error, home string, node c
 	}
 	module := filepath.Join(root, filepath.FromSlash(st.modulePath()))
 	switch {
-	case configErr != nil:
-		failures = append(failures, "the config "+configPath+" could not be read")
+	case r.configErr != nil:
+		failures = append(failures, "the config "+r.configPath+" could not be read")
 	case !fileExists(module):
 		failures = append(failures, "installed "+module+" is missing")
-	case node.path != "":
-		if err := env.validate(node.path, module, config, configPath); err != nil {
-			failures = append(failures, "installed "+module+" rejects "+filepath.Base(configPath)+": "+errorSummary(err))
+	case r.node.path != "":
+		if err := r.env.validate(r.node.path, module, r.config, r.configPath); err != nil {
+			failures = append(failures, "installed "+module+" rejects "+filepath.Base(r.configPath)+": "+errorSummary(err))
 		}
 	}
 	return failures
@@ -724,26 +735,26 @@ func hasEnabledStageJob(jobs []*pb.CronJob, st cronStage) bool {
 	})
 }
 
-// convergeCronStage creates the stage's job when none exists, and otherwise
+// convergeStage creates the stage's job when none exists, and otherwise
 // reconciles prompt, gate and agent only — with consent, and only when the
 // preflight passed, so an update can never point a running job at a gate that
 // is known not to work.
-func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, want *pb.CreateCronJobRequest, jobs []*pb.CronJob, failures []string, consent bool, home string, res *initCronResult) (initCronStageResult, error) {
+func (run *cronSetupRun) convergeStage(ctx context.Context, st cronStage, want *pb.CreateCronJobRequest, failures []string) (initCronStageResult, error) {
 	out := initCronStageResult{Stage: st.stage, Name: st.name}
 	if len(failures) > 0 {
 		out.PreflightFailure = strings.Join(failures, "; ")
 	}
-	job, others := findStageJob(jobs, st)
+	job, others := findStageJob(run.existing, st)
 	if len(others) > 0 {
 		names := make([]string, 0, len(others))
 		for _, o := range others {
 			names = append(names, o.GetName())
 		}
-		res.Warnings = append(res.Warnings, fmt.Sprintf("other jobs also run %s (%s); each enabled job runs the stage on its own schedule, so the stage runs more often than any one schedule", st.skill, strings.Join(names, ", ")))
+		run.res.Warnings = append(run.res.Warnings, fmt.Sprintf("other jobs also run %s (%s); each enabled job runs the stage on its own schedule, so the stage runs more often than any one schedule", st.skill, strings.Join(names, ", ")))
 	}
 
 	if job == nil {
-		created, err := c.CreateCronJob(ctx, want)
+		created, err := run.c.CreateCronJob(ctx, want)
 		if err != nil {
 			return out, fmt.Errorf("create cron job %s failed", st.name)
 		}
@@ -761,7 +772,7 @@ func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, w
 		out.Diff = append(out.Diff, "prompt: "+job.GetPrompt()+" -> "+want.Prompt)
 		update.Prompt = &want.Prompt
 	}
-	if !gatecmd.Equivalent(job.GetGateCommand(), want.GateCommand, home) {
+	if !gatecmd.Equivalent(job.GetGateCommand(), want.GateCommand, run.resolver.home) {
 		out.Diff = append(out.Diff, "gate: "+job.GetGateCommand()+" -> "+want.GateCommand)
 		update.GateCommand = &want.GateCommand
 	}
@@ -772,10 +783,10 @@ func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, w
 	switch {
 	case len(out.Diff) == 0:
 		out.Outcome = cronUnchanged
-	case !consent || len(failures) > 0:
+	case !run.req.updateConsent || len(failures) > 0:
 		out.Outcome = cronLeftAlone
 	default:
-		if _, err := c.UpdateCronJob(ctx, update); err != nil {
+		if _, err := run.c.UpdateCronJob(ctx, update); err != nil {
 			return out, fmt.Errorf("update cron job %s failed", job.GetName())
 		}
 		out.Outcome = cronUpdated
@@ -789,13 +800,16 @@ func convergeCronStage(ctx context.Context, c client.BossClient, st cronStage, w
 // carry. Cron sessions run in fresh worktrees off origin/<base>, so a config or
 // harness declaration that exists only in the working tree is invisible to
 // them. None of this ever holds a job back; it says what happens until merge.
-func appendBaseBranchWarnings(ctx context.Context, res *initCronResult, repo *pb.Repo, repoDir, configPath string, config []byte, root string, node cronNode, stages []string, env initCronEnv) {
-	branch := env.defaultBranch(ctx, repoDir, repo)
+func (run *cronSetupRun) appendBaseBranchWarnings(ctx context.Context) {
+	if run.resolver.configErr != nil || run.rootErr != nil || run.resolver.node.path == "" {
+		return
+	}
+	branch := run.resolver.env.defaultBranch(ctx, run.repoDir, run.repo)
 	ref := "origin/" + branch
-	filename := filepath.Base(configPath)
-	base, found, err := env.readRef(ctx, repoDir, ref, filename)
+	filename := filepath.Base(run.resolver.configPath)
+	base, found, err := run.resolver.env.readRef(ctx, run.repoDir, ref, filename)
 	if err != nil {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("could not compare %s with %s: %s", filename, ref, firstLine(err.Error())))
+		run.res.Warnings = append(run.res.Warnings, fmt.Sprintf("could not compare %s with %s: %s", filename, ref, firstLine(err.Error())))
 		return
 	}
 	if !found {
@@ -804,15 +818,15 @@ func appendBaseBranchWarnings(ctx context.Context, res *initCronResult, repo *pb
 
 	skewed := false
 	var mcpServer string
-	for i, stageName := range stages {
+	for i, stageName := range run.req.stages {
 		st, _ := cronStageByName(stageName)
-		module := filepath.Join(root, filepath.FromSlash(st.modulePath()))
+		module := filepath.Join(run.root, filepath.FromSlash(st.modulePath()))
 		if !fileExists(module) {
 			continue
 		}
-		working, werr := env.effective(node.path, module, config)
+		working, werr := run.resolver.env.effective(run.resolver.node.path, module, run.resolver.config)
 		if werr != nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: could not evaluate the working-tree selection: %s", st.name, errorSummary(werr)))
+			run.res.Warnings = append(run.res.Warnings, fmt.Sprintf("%s: could not evaluate the working-tree selection: %s", st.name, errorSummary(werr)))
 			continue
 		}
 		if i == 0 || mcpServer == "" {
@@ -823,27 +837,27 @@ func appendBaseBranchWarnings(ctx context.Context, res *initCronResult, repo *pb
 		if !st.selectsTickets {
 			continue // it still files tickets through the tracker MCP server above
 		}
-		baseEff, berr := env.effective(node.path, module, base)
+		baseEff, berr := run.resolver.env.effective(run.resolver.node.path, module, base)
 		if berr != nil {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: could not evaluate the selection on %s: %s", st.name, ref, errorSummary(berr)))
+			run.res.Warnings = append(run.res.Warnings, fmt.Sprintf("%s: could not evaluate the selection on %s: %s", st.name, ref, errorSummary(berr)))
 			skewed = true
 			continue
 		}
 		lines := describeSelectionSkew(st.stage, working.entry(st.stage), baseEff.entry(st.stage), ref, !found)
 		if len(lines) > 0 {
 			skewed = true
-			res.Warnings = append(res.Warnings, lines...)
+			run.res.Warnings = append(run.res.Warnings, lines...)
 		}
 	}
 	if skewed {
-		res.LeftToDo = append(res.LeftToDo, fmt.Sprintf("commit %s and merge it to %s: cron sessions run in fresh worktrees off %s and read the config there", filename, branch, ref))
+		run.res.LeftToDo = append(run.res.LeftToDo, fmt.Sprintf("commit %s and merge it to %s: cron sessions run in fresh worktrees off %s and read the config there", filename, branch, ref))
 	}
 	if mcpServer != "" {
-		if todo := checkBaseMCPDeclaration(ctx, repoDir, ref, res.Agent, mcpServer, env); todo != "" {
-			res.LeftToDo = append(res.LeftToDo, todo)
+		if todo := run.checkBaseMCPDeclaration(ctx, ref, mcpServer); todo != "" {
+			run.res.LeftToDo = append(run.res.LeftToDo, todo)
 		}
-		if todo := untrustedCodexMCPNote(repo, res.Agent, mcpServer); todo != "" {
-			res.LeftToDo = append(res.LeftToDo, todo)
+		if todo := untrustedCodexMCPNote(run.repo, run.res.Agent, mcpServer); todo != "" {
+			run.res.LeftToDo = append(run.res.LeftToDo, todo)
 		}
 	}
 }
@@ -937,9 +951,9 @@ var codexMCPTable = regexp.MustCompile(`(?m)^\s*\[\s*mcp_servers\.("([^"]+)"|'([
 // checkBaseMCPDeclaration returns a left-to-do line when the agent's harness
 // file on the base branch does not declare the tracker MCP server. The file is
 // looked up in supportedHarnesses, the table detectHarnesses reads.
-func checkBaseMCPDeclaration(ctx context.Context, repoDir, ref, agent, server string, env initCronEnv) string {
+func (run *cronSetupRun) checkBaseMCPDeclaration(ctx context.Context, ref, server string) string {
 	harnessName := "Claude Code"
-	if agent == cronAgentCodex {
+	if run.res.Agent == cronAgentCodex {
 		harnessName = "Codex"
 	}
 	var h harness
@@ -951,7 +965,7 @@ func checkBaseMCPDeclaration(ctx context.Context, repoDir, ref, agent, server st
 	if h.file == "" {
 		return ""
 	}
-	data, found, err := env.readRef(ctx, repoDir, ref, h.file)
+	data, found, err := run.resolver.env.readRef(ctx, run.repoDir, ref, h.file)
 	if err != nil {
 		return ""
 	}
@@ -977,7 +991,7 @@ func checkBaseMCPDeclaration(ctx context.Context, repoDir, ref, agent, server st
 	if declared {
 		return ""
 	}
-	return fmt.Sprintf("declare the tracker MCP server %q in %s on %s (see the declarations above): %s cron sessions read the base branch's harness file", server, h.file, ref, agent)
+	return fmt.Sprintf("declare the tracker MCP server %q in %s on %s (see the declarations above): %s cron sessions read the base branch's harness file", server, h.file, ref, run.res.Agent)
 }
 
 // --- Report and wiring ----------------------------------------------------

@@ -567,7 +567,10 @@ func startSlowComposerSwallowing(ctx context.Context, t *testing.T, busy time.Du
 }
 
 // startSlowComposerWith launches runSlowComposer, configured by cfg, in a real
-// tmux pane slowComposerColumns wide.
+// tmux pane slowComposerColumns wide, and waits for it to draw its composer.
+// Keys sent before then reach a terminal still in cooked mode, which echoes
+// them and turns a paste's CRs into the LFs the composer drops, so a
+// three-line paste draws as one row.
 func startSlowComposerWith(ctx context.Context, t *testing.T, cfg slowComposer) (*Client, string) {
 	t.Helper()
 	skipIfNoTmux(t)
@@ -592,7 +595,16 @@ func startSlowComposerWith(ctx context.Context, t *testing.T, cfg slowComposer) 
 	}); err != nil {
 		t.Fatalf("new session: %v", err)
 	}
-	return c, name
+	for {
+		if out, err := c.CapturePane(ctx, name); err == nil && composerRows(out) != "" {
+			return c, name
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the slow composer never drew its input box: %v", ctx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // ranLines returns the lines the slow composer reports it ran.
@@ -1328,7 +1340,10 @@ func onTmux(c *Client, hook func(args []string, tmux CommandFactory)) {
 }
 
 // operatorTypes types text into pane as an operator at the keyboard would,
-// after C-u when clearFirst is set, and waits for the composer to draw it.
+// after C-u when clearFirst is set, and waits until the box ends with it.
+// Waiting for the box merely to contain text returns at once when the box
+// already holds it, as bossd's payload holds its own first word, and bossd
+// then reads the box before the operator's keys have landed.
 func operatorTypes(t *testing.T, tmux CommandFactory, pane string, clearFirst bool, text string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1343,14 +1358,18 @@ func operatorTypes(t *testing.T, tmux CommandFactory, pane string, clearFirst bo
 		t.Errorf("operator typing: %v: %s", err, out)
 		return
 	}
+	var rows string
+	var readErr error
 	for ctx.Err() == nil {
 		out, err := tmux(ctx, "tmux", "capture-pane", "-p", "-t", pane).Output()
-		if err == nil && strings.Contains(withoutSpace(composerRows(string(out))), withoutSpace(text)) {
-			return
+		if readErr = err; err == nil {
+			if rows = composerRows(string(out)); strings.HasSuffix(withoutSpace(rows), withoutSpace(text)) {
+				return
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Errorf("the composer never drew the operator's %q", text)
+	t.Errorf("the composer never drew the operator's %q; it showed %q (last capture error: %v)", text, rows, readErr)
 }
 
 // An operator who replaces bossd's text with a paste of their own while the
@@ -1608,8 +1627,11 @@ func TestSlowComposerWrapsAsClaudeDoes(t *testing.T) {
 // comes after a C-u that has already removed the payload. That holds for words
 // added to the box and for a box the operator clears and starts again with the
 // payload's own first word, which no press leaves. The sweep places the typing
-// before each read a clean withdrawal makes, in turn, for payloads that take
-// one press and several.
+// before the first read, then before the first read after each press a clean
+// withdrawal makes, in turn, for payloads that take one press and several. It
+// counts presses rather than reads: a read that comes before the composer has
+// redrawn a press is followed by another, so how many reads a withdrawal takes
+// depends on how fast the composer draws.
 func TestWithdrawalRereadsTheComposerBeforeEveryPress(t *testing.T) {
 	for name, payload := range withdrawalPayloads {
 		for action, op := range map[string]struct {
@@ -1620,7 +1642,7 @@ func TestWithdrawalRereadsTheComposerBeforeEveryPress(t *testing.T) {
 			"cleared, then its own word": {true, strings.Fields(payload)[0]},
 		} {
 			t.Run(name+", "+action, func(t *testing.T) {
-				withdraw := func(t *testing.T, typeAt int) (reads int, rows string, err error) {
+				withdraw := func(t *testing.T, typeAfter int) (presses int, typed bool, rows string, err error) {
 					t.Helper()
 					ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 					defer cancel()
@@ -1628,10 +1650,13 @@ func TestWithdrawalRereadsTheComposerBeforeEveryPress(t *testing.T) {
 					fillComposer(ctx, t, c, pane, payload)
 					done := false
 					onTmux(c, func(args []string, tmux CommandFactory) {
-						if !done && slices.Contains(args, "capture-pane") {
-							if reads++; reads == typeAt {
-								operatorTypes(t, tmux, pane, op.clearFirst, op.words)
-							}
+						switch {
+						case done:
+						case slices.Contains(args, "send-keys") && slices.Contains(args, "C-u"):
+							presses++
+						case slices.Contains(args, "capture-pane") && presses == typeAfter && !typed:
+							typed = true
+							operatorTypes(t, tmux, pane, op.clearFirst, op.words)
 						}
 					})
 					err = c.withdrawUnsubmitted(ctx, pane, composerDrawing{text: payload}, classifySubmit(OutcomeNotSubmitted, errSubmissionPending))
@@ -1643,17 +1668,21 @@ func TestWithdrawalRereadsTheComposerBeforeEveryPress(t *testing.T) {
 					if capErr != nil {
 						t.Fatalf("capture: %v", capErr)
 					}
-					return reads, composerRows(screen), err
+					return presses, typed, composerRows(screen), err
 				}
 
-				clean, rows, err := withdraw(t, 0)
+				clean, _, rows, err := withdraw(t, -1)
 				if !errors.Is(err, withdrawn) {
 					t.Fatalf("a clean withdrawal ended %v, leaving %q", err, rows)
 				}
-				for at := 1; at <= clean; at++ {
-					t.Run(fmt.Sprintf("typed before read %d of %d", at, clean), func(t *testing.T) {
+				for after := 0; after <= clean; after++ {
+					t.Run(fmt.Sprintf("typed after press %d of %d", after, clean), func(t *testing.T) {
 						parallelSlowComposer(t)
-						if _, rows, _ := withdraw(t, at); !strings.Contains(withoutSpace(rows), withoutSpace(op.words)) {
+						presses, typed, rows, err := withdraw(t, after)
+						if !typed {
+							t.Fatalf("the withdrawal ended %v after %d presses, before the operator's moment after press %d", err, presses, after)
+						}
+						if !strings.HasSuffix(withoutSpace(rows), withoutSpace(op.words)) {
 							t.Fatalf("the composer shows %q after the withdrawal; the operator's %q is gone", rows, op.words)
 						}
 					})

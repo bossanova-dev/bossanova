@@ -830,6 +830,10 @@ message VerifyApproveResult {
   string park = 11;
   string state = 12;
   string sign_off = 13;
+  // Why the PR read failed, as gh said it (for example "gh: HTTP 401: Bad
+  // credentials ..."), with tokens redacted. Set only when reason is
+  // "pr-unreadable"; empty for every other reason.
+  string detail = 14;
 }
 
 message OperatorMergeSessionRequest {

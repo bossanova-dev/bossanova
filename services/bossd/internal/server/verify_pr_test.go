@@ -1,18 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/verifybridge"
 )
 
@@ -157,6 +162,125 @@ func TestApproveSessionPR_AnUnconfiguredRepoPinsTheKeyEmpty(t *testing.T) {
 	}
 	if got, ok := envValue(verbs.env, "LINEAR_API_KEY"); !ok || got != "" {
 		t.Fatalf("LINEAR_API_KEY = %q (set %v), want it pinned empty rather than the daemon's", got, ok)
+	}
+}
+
+// A worktree .env's GitHub token is the repo's agents' credential, not the
+// account boss approves and merges as: a stale one there made gh answer
+// "HTTP 401: Bad credentials" and every approve refuse pr-unreadable. HOME,
+// a proxy or a CA bundle would change gh's login or route its traffic, so the
+// verbs take only the tracker keys. The repo is trusted, so the overlay itself
+// keeps HOME and only the verb allowlist can drop it.
+func TestApproveSessionPR_RunsGhAsTheDaemonNotTheWorktreeEnv(t *testing.T) {
+	daemon := map[string]string{"GH_TOKEN": "daemon-token", "HOME": t.TempDir()}
+	for key, value := range daemon {
+		t.Setenv(key, value)
+	}
+	fromEnv := map[string]string{
+		"GITHUB_TOKEN":            "ghp_stale_repo_token",
+		"GH_TOKEN":                "ghp_other_account",
+		"GH_ENTERPRISE_TOKEN":     "ghe_enterprise_token",
+		"GITHUB_ENTERPRISE_TOKEN": "ghe_other_enterprise_token",
+		"GH_HOST":                 "ghe.example.com",
+		"GH_CONFIG_DIR":           "/elsewhere",
+		"HOME":                    "/repo-home",
+		"HTTPS_PROXY":             "http://proxy.example:3128",
+		"SSL_CERT_FILE":           "/repo/ca.pem",
+	}
+	for key := range fromEnv {
+		if _, ok := daemon[key]; !ok {
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var dotEnv strings.Builder
+	for key, value := range fromEnv {
+		fmt.Fprintf(&dotEnv, "%s=%s\n", key, value)
+	}
+	dotEnv.WriteString("LINEAR_API_KEY=lin_from_env\n")
+	sess := verifyTestSession(t)
+	if err := os.WriteFile(filepath.Join(sess.WorktreePath, ".env"), []byte(dotEnv.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verbs := &verifyVerbsFake{approve: verifybridge.ApproveResult{Reason: "no-standing-park"}}
+	srv := newVerifyTestServer(sess, &models.Repo{ID: "r1", OriginURL: "git@github.com:acme/app.git", IsTrusted: true}, verbs)
+	var logs bytes.Buffer
+	srv.logger = zerolog.New(&logs).Level(zerolog.DebugLevel)
+	if _, err := srv.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"})); err != nil {
+		t.Fatalf("ApproveSessionPR: %v", err)
+	}
+	for key := range fromEnv {
+		got, ok := envValue(verbs.env, key)
+		if want, daemonHas := daemon[key]; daemonHas {
+			if got != want {
+				t.Errorf("%s = %q, want the daemon's %q, not the worktree .env's", key, got, want)
+			}
+		} else if ok {
+			t.Errorf("%s = %q, want the worktree .env's value dropped", key, got)
+		}
+		if !strings.Contains(logs.String(), key) {
+			t.Errorf("debug log does not name the dropped key %s: %s", key, logs.String())
+		}
+		if strings.Contains(logs.String(), fromEnv[key]) {
+			t.Errorf("debug log carries the value of %s: %s", key, logs.String())
+		}
+	}
+	if got, _ := envValue(verbs.env, "LINEAR_API_KEY"); got != "lin_from_env" {
+		t.Errorf("LINEAR_API_KEY = %q, want the worktree .env's tracker key kept", got)
+	}
+}
+
+// The verbs never use a proof credential, so none may reach them: not the
+// daemon's ambient one, and not a repo .env's. An untrusted repo's .env that
+// set CLOUDFLARE_API_TOKEN=x skipped the overlay's empty pin, the allowlist
+// dropped the .env value, and the daemon's own token reached the verb.
+func TestApproveSessionPR_NoProofCredentialReachesTheVerb(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
+			var dotEnv strings.Builder
+			for _, key := range proofenv.Keys() {
+				t.Setenv(key, "ambient")
+				fmt.Fprintf(&dotEnv, "%s=x\n", key)
+			}
+			sess := verifyTestSession(t)
+			if err := os.WriteFile(filepath.Join(sess.WorktreePath, ".env"), []byte(dotEnv.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			verbs := &verifyVerbsFake{approve: verifybridge.ApproveResult{Reason: "no-standing-park"}}
+			srv := newVerifyTestServer(sess, &models.Repo{ID: "r1", OriginURL: "git@github.com:acme/app.git", IsTrusted: trusted}, verbs)
+			if _, err := srv.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"})); err != nil {
+				t.Fatalf("ApproveSessionPR: %v", err)
+			}
+			for _, key := range proofenv.Keys() {
+				if got, ok := envValue(verbs.env, key); !ok || got != "" {
+					t.Errorf("%s = %q (set %v), want it pinned empty over the daemon's and the .env's", key, got, ok)
+				}
+			}
+		})
+	}
+}
+
+// Each tracker key the verbs need must survive the allowlist from the .env.
+func TestApproveSessionPR_PassesEachTrackerKeyThrough(t *testing.T) {
+	for _, key := range []string{"TRACKER", "LINEAR_API_KEY", "LINEAR_API_ENDPOINT", "SENTRY_API_KEY", "SENTRY_ORG"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, "ambient-daemon-value")
+			want := "fabricated-" + strings.ToLower(key)
+			sess := verifyTestSession(t)
+			if err := os.WriteFile(filepath.Join(sess.WorktreePath, ".env"), []byte(key+"="+want+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			verbs := &verifyVerbsFake{approve: verifybridge.ApproveResult{Reason: "no-standing-park"}}
+			srv := newVerifyTestServer(sess, &models.Repo{ID: "r1", OriginURL: "git@github.com:acme/app.git"}, verbs)
+			if _, err := srv.ApproveSessionPR(context.Background(), connect.NewRequest(&pb.ApproveSessionPRRequest{Id: "s1"})); err != nil {
+				t.Fatalf("ApproveSessionPR: %v", err)
+			}
+			if got, _ := envValue(verbs.env, key); got != want {
+				t.Errorf("%s = %q, want the .env's %q", key, got, want)
+			}
+		})
 	}
 }
 

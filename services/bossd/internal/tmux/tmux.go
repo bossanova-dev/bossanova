@@ -1185,6 +1185,17 @@ type sendPlanOpts struct {
 	// numbers the operator is looking at.
 	clampedFrom time.Duration
 
+	// attemptStart is the one clock reading a retried attempt both clamps from
+	// and counts its deadline from (clampAttemptDeadline). Zero means the wait
+	// reads its own clock, which is the single-attempt path: it never clamps.
+	attemptStart time.Time
+
+	// readinessCapture replaces the readiness wait's capture-pane. Production
+	// leaves it nil, which means CapturePane. A test of the wait's deadlines
+	// sets it so the timing under test is the wait's own, not how long a loaded
+	// host takes to fork a fake capture command.
+	readinessCapture func(ctx context.Context, sessionName string) (string, error)
+
 	// prefillOnly delivers the payload into the composer but sends no Enter and
 	// runs no submission verification: the human (or composer owner) submits.
 	// Used by the Prefill* wrappers; the Send* wrappers leave it false so they

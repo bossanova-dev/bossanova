@@ -163,3 +163,39 @@ func TestInitRolesLookupNamesIncludeExplicitLabels(t *testing.T) {
 		t.Fatalf("names = %v", names)
 	}
 }
+
+func TestInitRolesStateMissOrigins(t *testing.T) {
+	for _, origin := range []string{"seeded", "flagged", "default"} {
+		t.Run(origin, func(t *testing.T) {
+			states := defaultRoleStates()
+			var explicit linearOverrides
+			switch origin {
+			case "seeded":
+				explicit = seedOverridesFromExisting([]byte(`{"trackerConfig":{"linear":{"states":{"planned":"Ready"}}}}`), linearOverrides{})
+			case "flagged":
+				explicit = mustOverrides(t, []string{"planned=Ready"}, nil)
+			default:
+				states = append(states[:1], states[2:]...)
+			}
+			_, err := mapLinearRoles(states, defaultRoleLabels(), explicit)
+			if err == nil {
+				t.Fatal("missing state accepted")
+			}
+			var unresolved *unresolvedRoleError
+			switch origin {
+			case "seeded":
+				if !strings.Contains(err.Error(), "trackerConfig.linear.states.planned") || strings.Contains(err.Error(), "--state planned=") || errors.As(err, &unresolved) {
+					t.Fatalf("seeded error: %v", err)
+				}
+			case "flagged":
+				if !strings.Contains(err.Error(), "--state planned=Ready names no workflow state") || errors.As(err, &unresolved) {
+					t.Fatalf("flag error: %v", err)
+				}
+			default:
+				if !errors.As(err, &unresolved) || unresolved.role != "planned" {
+					t.Fatalf("default error: %v", err)
+				}
+			}
+		})
+	}
+}

@@ -684,6 +684,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     // vendors. An installed tree carrying the gate without it is an import that cannot RESOLVE.
     'tracker/outcome.mjs',
     'tracker/preflight.mjs',
+    'verify-contract.mjs',
   ])
   assert.ok(VENDOR_MAP['boss-plan'].includes('bs-run-sentinel.mjs'))
   // Asserted BY NAME: every core that vendors skill-config.mjs must vendor its selection.mjs import,

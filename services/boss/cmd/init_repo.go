@@ -46,50 +46,88 @@ type initAppliedSteps struct {
 func (s *initAppliedSteps) applied() []string {
 	var items []string
 	if s.Registered {
-		item := "repository registered with bossd"
-		if s.RepoID != "" {
-			item += " (id " + s.RepoID + ")"
-		}
-		items = append(items, item)
-	}
-	readBack := func(ok bool) string {
-		if ok {
-			return " (read back)"
-		}
-		return " (not read back)"
+		items = append(items, s.registrationText())
 	}
 	if s.LinearStored {
-		items = append(items, "Linear key stored"+readBack(s.LinearVerified))
+		items = append(items, s.linearText())
 	}
 	if s.SentryStored {
-		items = append(items, "Sentry credentials stored"+readBack(s.SentryVerified))
+		items = append(items, s.sentryText())
 	}
 	if len(s.LabelsCreated) > 0 {
-		items = append(items, "Linear labels created: "+strings.Join(s.LabelsCreated, ", "))
+		items = append(items, s.labelsText())
 	}
 	if s.ConfigPath != "" {
-		items = append(items, "config written: "+s.ConfigPath)
+		items = append(items, s.configText())
 	}
 	for _, c := range s.Crons {
-		state := "disabled"
-		if c.Enabled {
-			state = "enabled"
-		}
 		switch c.Outcome {
-		case cronCreated:
-			items = append(items, "cron job "+c.Name+" created ("+state+")")
-		case cronDisabledByPreflight:
-			items = append(items, "cron job "+c.Name+" created disabled (preflight failed)")
-		case cronUpdated:
-			items = append(items, "cron job "+c.Name+" updated ("+state+")")
+		case cronCreated, cronDisabledByPreflight, cronUpdated:
+			items = append(items, c.appliedText())
 		case cronLeftAlone, cronUnchanged:
 			// Nothing was written for this stage.
 		}
 	}
 	for _, p := range s.Project {
-		items = append(items, "project config: "+p)
+		items = append(items, projectChangeText(p))
 	}
 	return items
+}
+
+func (s *initAppliedSteps) registrationText() string {
+	text := "repository registered with bossd"
+	if s.RepoID != "" {
+		text += " (id " + s.RepoID + ")"
+	}
+	return text
+}
+
+func readBackText(ok bool) string {
+	if ok {
+		return " (read back)"
+	}
+	return " (not read back)"
+}
+
+func (s *initAppliedSteps) linearText() string {
+	return "Linear key stored" + readBackText(s.LinearVerified)
+}
+
+func (s *initAppliedSteps) sentryText() string {
+	return "Sentry credentials stored" + readBackText(s.SentryVerified)
+}
+
+func (s *initAppliedSteps) labelsText() string {
+	return "Linear labels created: " + strings.Join(s.LabelsCreated, ", ")
+}
+
+func (s *initAppliedSteps) configText() string { return "config written: " + s.ConfigPath }
+
+func projectChangeText(change string) string { return "project config: " + change }
+
+func (c initCronStageResult) appliedText() string {
+	return "cron job " + c.Name + " " + c.outcomeText()
+}
+
+// outcomeText is shared by the closing summary and interrupted-run report.
+func (c initCronStageResult) outcomeText() string {
+	state := "disabled"
+	if c.Enabled {
+		state = "enabled"
+	}
+	switch c.Outcome {
+	case cronCreated:
+		return "created (" + state + ")"
+	case cronDisabledByPreflight:
+		return "created disabled (preflight failed)"
+	case cronUpdated:
+		return "updated (" + state + ")"
+	case cronUnchanged:
+		return "already matches"
+	case cronLeftAlone:
+		return "differs, left untouched"
+	}
+	return string(c.Outcome)
 }
 
 // stoppedReport is what an interrupted or failed run prints: what it already

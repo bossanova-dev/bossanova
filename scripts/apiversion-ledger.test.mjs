@@ -16,7 +16,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { check, FILES, parseTree, Unevaluated } from './apiversion-ledger.mjs'
+import { check, evaluate, FILES, parseTree, Unevaluated } from './apiversion-ledger.mjs'
 
 const selfPath = fileURLToPath(import.meta.url)
 const repoRoot = path.resolve(path.dirname(selfPath), '..')
@@ -451,4 +451,110 @@ test('case 12: citation gate — no line-pinned docs/api-versioning.md citations
   fs.writeFileSync(path.join(dir, 'docs/plans/old.md'), 'historical docs/api-versioning.md:246\n')
   git(dir, 'add', '-A')
   assert.deepEqual(findLineCitations(dir), ['services/x/a.go:1:// see docs/api-versioning.md:12'])
+})
+
+test('multiple ledger violations retain exact finding order and actions', () => {
+  const tree = (registry, current, released, contracts) => ({
+    registry,
+    current,
+    released,
+    contracts: new Map(contracts),
+    consts: new Map(registry.map((v) => [v, v])),
+  })
+  const mb = tree(
+    ['2026-07-01', '2026-07-02'],
+    '2026-07-02',
+    ['2026-07-01'],
+    [
+      ['Gone', '2026-07-01'],
+      ['Changed', '2026-07-02'],
+    ],
+  )
+  const base = tree(
+    ['2026-07-01', '2026-07-02'],
+    '2026-07-02',
+    ['2026-07-01'],
+    [...mb.contracts, ['BaseNew', '2026-07-02']],
+  )
+  const production = tree(['2026-07-01', '2026-07-03'], '2026-07-03', [], [])
+  const head = tree(
+    ['2026-07-02', '2026-07-04'],
+    '2026-07-04',
+    [],
+    [
+      ['Changed', '2026-07-04'],
+      ['New', '2026-07-01'],
+    ],
+  )
+  assert.deepEqual(evaluate({ head, base, production, mb, rebased: false }), {
+    verdict: 'conflict',
+    target: {
+      action: 'reuse',
+      version: '2026-07-02',
+    },
+    findings: [
+      {
+        level: 'info',
+        code: 'production-ahead',
+        subject: '2026-07-03',
+        version: '2026-07-03',
+        action: 'production registers a version base does not; it is left out of the served set',
+      },
+      {
+        level: 'error',
+        code: 'dropped-version',
+        subject: '2026-07-01',
+        version: '2026-07-01',
+        action:
+          'restore it; registries are append-only and a conflict resolution must union both sides',
+      },
+      {
+        level: 'error',
+        code: 'dropped-released',
+        subject: '2026-07-01',
+        version: '2026-07-01',
+        action: 'restore the ledger entry',
+      },
+      {
+        level: 'error',
+        code: 'dropped-contract',
+        subject: 'Gone',
+        version: '2026-07-01',
+        action: "union both sides' ProductionChanges / gates; never take one side",
+      },
+      {
+        level: 'error',
+        code: 'retargeted-contract',
+        subject: 'Changed',
+        version: '2026-07-04',
+        action: "restore base's version 2026-07-02; a shipped contract is never re-dated",
+      },
+      {
+        level: 'error',
+        code: 'released-target',
+        subject: 'New',
+        version: '2026-07-01',
+        action: 're-target to 2026-07-02 (reuse); 2026-07-01 is already served',
+      },
+      {
+        level: 'error',
+        code: 'unreleased-fork',
+        subject: '2026-07-04',
+        version: '2026-07-04',
+        action: 'fold your contracts into 2026-07-02 (the open window) and delete your const',
+      },
+      {
+        level: 'error',
+        code: 'unrecorded-release',
+        subject: '2026-07-01',
+        action: 'append "2026-07-01" to ReleasedVersions',
+      },
+      {
+        level: 'warning',
+        code: 'rebase-needed',
+        subject: 'BaseNew@2026-07-02',
+        action: 'rebase onto base, then re-run',
+      },
+    ],
+  })
 })

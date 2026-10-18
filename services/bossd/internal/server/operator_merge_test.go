@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -377,9 +378,16 @@ func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testin
 	for _, tc := range []struct {
 		name, outcome string
 		refuse        bool
+		approval      verifybridge.ApproveResult
+		want          map[string]any
 	}{
 		{name: "merged", outcome: "merged"},
 		{name: "refused", outcome: "refused", refuse: true},
+		{
+			name: "not approved", outcome: "not approved",
+			approval: verifybridge.ApproveResult{Reason: "pr-unreadable", Detail: "gh: HTTP 401: Bad credentials"},
+			want:     map[string]any{"reason": "pr-unreadable", "detail": "gh: HTTP 401: Bad credentials"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newOperatorMergeHarness(t, headPin)
@@ -390,6 +398,9 @@ func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testin
 			h.verbs.onApprove = leave
 			if tc.refuse {
 				h.verbs.err = errors.New("toolbox exploded")
+			}
+			if tc.approval.Reason != "" {
+				h.verbs.approve = tc.approval
 			}
 
 			_, _ = h.srv.OperatorMergeSession(ctx, connect.NewRequest(&pb.OperatorMergeSessionRequest{
@@ -404,6 +415,7 @@ func TestOperatorMergeSession_RecordsTheOutcomeOfAMergeTheOperatorLeft(t *testin
 				}
 			}
 			want := map[string]any{"level": "info", "session": "s1", "pr": float64(h.verbs.targets[0].PR), "outcome": tc.outcome, "operator_left": true}
+			maps.Copy(want, tc.want)
 			for k, v := range want {
 				if entry[k] != v {
 					t.Fatalf("outcome log %v: %s = %v, want %v (logs:\n%s)", entry, k, entry[k], v, logs.String())

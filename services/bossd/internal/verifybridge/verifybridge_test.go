@@ -164,12 +164,12 @@ func TestApproveReportsAFailedLabelWriteAndALiftedSendBack(t *testing.T) {
 }
 
 func TestApproveRefusalIsAResultNotAnError(t *testing.T) {
-	f := newFixture(t, `{"approved":false,"reason":"no-standing-park","headSha":"abc","writes":[]}`, "", 0)
+	f := newFixture(t, `{"approved":false,"reason":"pr-unreadable","detail":"gh: HTTP 401: Bad credentials","writes":[]}`, "", 0)
 	got, err := f.bridge.Approve(context.Background(), Target{PR: 7, Dir: f.worktree, DryRun: true}, nil)
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if got.Approved || got.Reason != "no-standing-park" {
+	if got.Approved || got.Reason != "pr-unreadable" || got.Detail != "gh: HTTP 401: Bad credentials" {
 		t.Fatalf("result = %+v", got)
 	}
 	want := []string{f.bridge.Script, "approve", "--pr=7", "--dry-run", "--json"}

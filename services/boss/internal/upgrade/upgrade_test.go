@@ -237,6 +237,46 @@ func TestSnoozeUpgradePreservesAcrossExistingEntry(t *testing.T) {
 	}
 }
 
+func TestRecordCheckPreservesSnoozeOnlyForSameLatest(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	snoozedUntil := now.Add(time.Hour)
+	for _, tc := range []struct {
+		latest      string
+		wantSnoozed bool
+	}{
+		{latest: "v1.2.4", wantSnoozed: true},
+		{latest: "v1.2.5", wantSnoozed: false},
+	} {
+		path := filepath.Join(t.TempDir(), "upgrade-cache.json")
+		if err := WriteCache(path, CacheEntry{
+			CheckedAt:      now.Add(-time.Hour),
+			CurrentVersion: "v1.2.3",
+			LatestVersion:  "v1.2.4",
+			SnoozedVersion: "v1.2.4",
+			SnoozedUntil:   snoozedUntil,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		snoozed, err := RecordCheck(path, CheckResult{CurrentVersion: "v1.2.3", LatestVersion: tc.latest, ReleaseURL: "https://example.test/" + tc.latest}, now)
+		if err != nil || snoozed != tc.wantSnoozed {
+			t.Fatalf("RecordCheck(latest %s) = (%v, %v), want (%v, nil)", tc.latest, snoozed, err, tc.wantSnoozed)
+		}
+		entry, ok, err := ReadCache(path)
+		if err != nil || !ok {
+			t.Fatalf("ReadCache() = (_, %v, %v)", ok, err)
+		}
+		if !entry.CheckedAt.Equal(now) || entry.LatestVersion != tc.latest {
+			t.Fatalf("entry = %+v, want CheckedAt %v LatestVersion %s", entry, now, tc.latest)
+		}
+		if got := entry.Suppressed(now, tc.latest); got != tc.wantSnoozed {
+			t.Fatalf("entry.Suppressed(%s) = %v, want %v", tc.latest, got, tc.wantSnoozed)
+		}
+	}
+}
+
 func TestCheckerCheckAvailable(t *testing.T) {
 	t.Parallel()
 

@@ -87,23 +87,9 @@ func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgrad
 		result, err := check(checkCtx, version)
 		available := result.Available
 		if err == nil && cachePath != "" {
-			entry := upgrade.CacheEntry{
-				CheckedAt:      now,
-				CurrentVersion: result.CurrentVersion,
-				LatestVersion:  result.LatestVersion,
-				ReleaseURL:     result.ReleaseURL,
-			}
-			// Preserve a prior snooze across the cache refresh — without
-			// this the user's dismiss is silently discarded the moment
-			// the cache TTL expires.
-			if prior, ok, _ := upgrade.ReadCache(cachePath); ok && prior.SnoozedVersion == result.LatestVersion && !prior.SnoozedUntil.IsZero() && now.Before(prior.SnoozedUntil) {
-				entry.SnoozedVersion = prior.SnoozedVersion
-				entry.SnoozedUntil = prior.SnoozedUntil
-				// An active snooze for this version suppresses the upgrade
-				// prompt regardless of the prior availability check.
+			if snoozed, _ := upgrade.RecordCheck(cachePath, result, now); snoozed {
 				available = false
 			}
-			_ = upgrade.WriteCache(cachePath, entry)
 		}
 		return upgradeCheckMsg{
 			current:   result.CurrentVersion,

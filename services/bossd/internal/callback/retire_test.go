@@ -373,8 +373,8 @@ func TestEvaluatePR_RetirementPreservesUnobservedMergeBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.State != models.GithubCallbackStateActive || !row.HasObservedBaseline {
-		t.Fatal("coordinator baseline semantics changed")
+	if row.State != models.GithubCallbackStateActive || row.TriggeredAt != nil {
+		t.Fatal("a coordinator transition watch armed on a merged PR fired without a transition")
 	}
 }
 

@@ -1338,85 +1338,88 @@ func testHomebrewExecutable(t *testing.T, dir string) string {
 	return exe
 }
 
-func TestRunUpgradeReusesFreshCacheWithoutChecking(t *testing.T) {
+func stubUpgradeCache(t *testing.T, check func(context.Context, string) (upgrade.CheckResult, error), entry upgrade.CacheEntry) string {
+	t.Helper()
 	oldCurrentVersion := upgradeCurrentVersion
 	oldCheck := checkUpgrade
 	oldActionCache := upgradeActionCachePath
-	defer func() {
+	t.Cleanup(func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		upgradeActionCachePath = oldActionCache
-	}()
-
-	upgradeCurrentVersion = func() string { return "v1.2.3" }
-	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
-		t.Fatal("runUpgrade() hit the network despite a fresh cache entry")
-		return upgrade.CheckResult{}, nil
-	}
+	})
 
 	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
-	if err := upgrade.WriteCache(cachePath, upgrade.CacheEntry{
-		CheckedAt:      time.Now(),
-		CurrentVersion: "v1.2.3",
-		LatestVersion:  "v1.2.4",
-		ReleaseURL:     "https://example.test/v1.2.4",
-	}); err != nil {
+	if err := upgrade.WriteCache(cachePath, entry); err != nil {
 		t.Fatal(err)
 	}
+	upgradeCurrentVersion = func() string { return entry.CurrentVersion }
 	upgradeActionCachePath = func() string { return cachePath }
+	checkUpgrade = check
+	return cachePath
+}
+
+func TestRunUpgradeChecksFreshDespiteFreshUpToDateCache(t *testing.T) {
+	checkCalls := 0
+	cachePath := stubUpgradeCache(t, func(context.Context, string) (upgrade.CheckResult, error) {
+		checkCalls++
+		return upgrade.CheckResult{
+			CurrentVersion: "v1.146.2",
+			LatestVersion:  "v1.147.0",
+			ReleaseURL:     "https://example.test/v1.147.0",
+			Available:      true,
+		}, nil
+	}, upgrade.CacheEntry{
+		CheckedAt:      time.Now().Add(-time.Hour),
+		CurrentVersion: "v1.146.2",
+		LatestVersion:  "v1.146.2",
+		ReleaseURL:     "https://example.test/v1.146.2",
+	})
 
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
+	beforeCheck := time.Now()
 	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
 		t.Fatalf("runUpgrade() error = %v", err)
 	}
-	if !strings.Contains(out.String(), "upgrade available: v1.2.3 -> v1.2.4") {
-		t.Fatalf("runUpgrade() output = %q, want cached upgrade-available line", out.String())
+	if checkCalls != 1 {
+		t.Fatalf("checkUpgrade calls = %d, want 1: an explicit upgrade must query GitHub even with a fresh cache", checkCalls)
+	}
+	if got := out.String(); !strings.Contains(got, "upgrade available: v1.146.2 -> v1.147.0") || strings.Contains(got, "up to date") {
+		t.Fatalf("runUpgrade() output = %q, want the fresh v1.147.0 result", got)
+	}
+	entry, ok, err := upgrade.ReadCache(cachePath)
+	if err != nil || !ok {
+		t.Fatalf("ReadCache() = (_, %v, %v), want the refreshed entry", ok, err)
+	}
+	if entry.LatestVersion != "v1.147.0" || entry.CheckedAt.Before(beforeCheck) {
+		t.Fatalf("cache after explicit check = %+v, want LatestVersion v1.147.0 checked at or after %v", entry, beforeCheck)
 	}
 }
 
-func TestRunUpgradeStaleCacheFallsThroughToCheck(t *testing.T) {
-	oldCurrentVersion := upgradeCurrentVersion
-	oldCheck := checkUpgrade
-	oldActionCache := upgradeActionCachePath
-	defer func() {
-		upgradeCurrentVersion = oldCurrentVersion
-		checkUpgrade = oldCheck
-		upgradeActionCachePath = oldActionCache
-	}()
-
-	upgradeCurrentVersion = func() string { return "v1.2.3" }
-	checkCalled := false
-	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
-		checkCalled = true
-		return upgrade.CheckResult{CurrentVersion: "v1.2.3", LatestVersion: "v1.2.5", Available: true}, nil
-	}
-
-	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
-	if err := upgrade.WriteCache(cachePath, upgrade.CacheEntry{
-		CheckedAt:      time.Now().Add(-48 * time.Hour), // stale, beyond CacheTTL
+func TestRunUpgradeRateLimitFallsBackToFreshCache(t *testing.T) {
+	stubUpgradeCache(t, func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{}, &upgrade.RateLimitError{Resets: time.Now().Add(30 * time.Minute)}
+	}, upgrade.CacheEntry{
+		CheckedAt:      time.Now().Add(-time.Hour),
 		CurrentVersion: "v1.2.3",
 		LatestVersion:  "v1.2.4",
 		ReleaseURL:     "https://example.test/v1.2.4",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	upgradeActionCachePath = func() string { return cachePath }
+	})
 
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
 	if err := runUpgrade(cmd, upgradeOptions{CheckOnly: true}); err != nil {
-		t.Fatalf("runUpgrade() error = %v", err)
+		t.Fatalf("runUpgrade() error = %v, want nil", err)
 	}
-	if !checkCalled {
-		t.Fatal("runUpgrade() did not fall through to checkUpgrade on a stale cache")
-	}
-	if !strings.Contains(out.String(), "v1.2.5") {
-		t.Fatalf("runUpgrade() output = %q, want fresh check result v1.2.5", out.String())
+	for _, want := range []string{"rate limit", "using the result cached at", "upgrade available: v1.2.3 -> v1.2.4"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("runUpgrade() output = %q, want containing %q", out.String(), want)
+		}
 	}
 }
 

@@ -76,7 +76,8 @@ type MergeApproval struct {
 // parked. TrackerWrites reports the
 // needs-human label removal that follows, which is housekeeping. A refusal
 // carries Reason, plus ApprovalURL when a record was posted that waives
-// nothing (or whose effect could not be confirmed).
+// nothing (or whose effect could not be confirmed), and Detail when a failed
+// read is behind it.
 type ApproveResult struct {
 	Approved      bool   `json:"approved"`
 	Planned       bool   `json:"planned,omitempty"`
@@ -91,6 +92,7 @@ type ApproveResult struct {
 	Park          string `json:"park,omitempty"`
 	State         string `json:"state,omitempty"`
 	SignOff       string `json:"signOff,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 // MarkMergedResult is `verify-gate.mjs mark-merged`'s outcome: for a merged PR,

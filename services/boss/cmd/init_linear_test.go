@@ -323,7 +323,7 @@ func TestInitLinearUnauthorizedKeyNeverLeaks(t *testing.T) {
 	t.Run("teams listing degrades to guidance", func(t *testing.T) {
 		f := newFakeLinear()
 		f.failOp, f.failStatus = "teams", http.StatusUnauthorized
-		report, tracker, err := runInitWithTracker(t, initOptions{admin: f.admin(t)})
+		report, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t)})
 		if err != nil {
 			t.Fatalf("a failed team listing must not fail boss init: %v", err)
 		}
@@ -338,7 +338,7 @@ func TestInitLinearUnauthorizedKeyNeverLeaks(t *testing.T) {
 	t.Run("viewer failure fails closed", func(t *testing.T) {
 		f := newFakeLinear()
 		f.failOp, f.failStatus = "viewer", http.StatusUnauthorized
-		report, _, err := runInitWithTracker(t, initOptions{admin: f.admin(t)})
+		report, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t)})
 		if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 			t.Fatalf("err = %v; want an unauthorized failure", err)
 		}
@@ -349,7 +349,7 @@ func TestInitLinearUnauthorizedKeyNeverLeaks(t *testing.T) {
 
 func TestInitLinearReportsViewerAndWorkspaceBeforeWriting(t *testing.T) {
 	f := newFakeLinear().withoutLabel("needs-human")
-	report, _, err := runInitWithTracker(t, initOptions{admin: f.admin(t), createLabels: true})
+	report, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t), createLabels: true})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestInitLinearReportsViewerAndWorkspaceBeforeWriting(t *testing.T) {
 func TestInitLinearAppViewerWarns(t *testing.T) {
 	f := newFakeLinear()
 	f.viewerApp = true
-	report, _, err := runInitWithTracker(t, initOptions{admin: f.admin(t)})
+	report, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t)})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestInitLinearTruncatedListingsFailClosed(t *testing.T) {
 			f := newFakeLinear()
 			tc.setup(f)
 			// runInitWithTracker fails the test if a config exists after an error.
-			report, _, err := runInitWithTracker(t, initOptions{admin: f.admin(t), team: tc.team})
+			report, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t), team: tc.team})
 			var apiErr *linearAPIError
 			if !errors.As(err, &apiErr) || apiErr.class != "truncated" || !strings.Contains(err.Error(), "nothing written") {
 				t.Fatalf("err = %v; want a class-only truncated failure", err)
@@ -407,7 +407,7 @@ func TestInitLinearResolvesRolesAmongFourHundredLabels(t *testing.T) {
 	for i := range 400 {
 		f.labels = append(f.labels, fakeLinearLabel{id: fmt.Sprintf("bulk-%d", i), name: fmt.Sprintf("area-%03d", i), teamID: fakeTeamID})
 	}
-	report, tracker, err := runInitWithTracker(t, initOptions{admin: f.admin(t), createLabels: true})
+	report, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t), createLabels: true})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestInitLinearResolvesRolesAmongFourHundredLabels(t *testing.T) {
 func TestInitLinearCaseDifferencesAreWritten(t *testing.T) {
 	f := newFakeLinear("Backlog", "Todo", "In progress", "In Review", "Done").setLabelName("agent-build", "Agent-Build")
 	f.states[2].Type = "started"
-	report, tracker, err := runInitWithTracker(t, initOptions{admin: f.admin(t)})
+	report, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t)})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestInitLinearCaseDifferencesAreWritten(t *testing.T) {
 }
 
 func TestInitLinearDefaultNamesWriteNoRoleOverrides(t *testing.T) {
-	report, tracker, err := runInitWithTracker(t, initOptions{admin: newFakeLinear().admin(t)})
+	report, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: newFakeLinear().admin(t)})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestInitLinearCreateLabelsOnceThenNone(t *testing.T) {
 	f := newFakeLinear().withoutLabel("needs-human")
 	admin := f.admin(t)
 
-	report, _, err := runInitWithTracker(t, initOptions{admin: admin})
+	report, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: admin})
 	if err != nil {
 		t.Fatalf("runInit without --create-labels: %v", err)
 	}
@@ -471,14 +471,14 @@ func TestInitLinearCreateLabelsOnceThenNone(t *testing.T) {
 		t.Fatalf("without consent: %d create calls; report:\n%s", f.createCalls, report)
 	}
 
-	if _, _, err := runInitWithTracker(t, initOptions{admin: admin, createLabels: true}); err != nil {
+	if _, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: admin, createLabels: true}); err != nil {
 		t.Fatalf("first --create-labels run: %v", err)
 	}
 	if f.createCalls != 1 || string(f.createInputs[0]) != `{"name":"needs-human","teamId":"team-1"}` {
 		t.Fatalf("first run: %d create calls (%s); want one team-scoped needs-human", f.createCalls, f.createInputs)
 	}
 
-	if _, _, err := runInitWithTracker(t, initOptions{admin: admin, createLabels: true}); err != nil {
+	if _, _, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: admin, createLabels: true}); err != nil {
 		t.Fatalf("second --create-labels run: %v", err)
 	}
 	if f.createCalls != 1 {
@@ -489,7 +489,7 @@ func TestInitLinearCreateLabelsOnceThenNone(t *testing.T) {
 func TestInitLinearCreateLabelPermissionErrorContinues(t *testing.T) {
 	f := newFakeLinear().withoutLabel("needs-human")
 	f.createErrCode = "FORBIDDEN"
-	report, tracker, err := runInitWithTracker(t, initOptions{admin: f.admin(t), createLabels: true})
+	report, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t), createLabels: true})
 	if err != nil {
 		t.Fatalf("a failed label create must not fail boss init: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestInitLinearExplicitStateFlagsAreChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, tracker, err := runInitWithTracker(t, initOptions{admin: f.admin(t), overrides: explicit})
+	_, tracker, err := runInitWithTracker(t, initOptions{mapRoles: true, linear: f.admin(t), overrides: explicit})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestInitLinearExplicitStateFlagsAreChecked(t *testing.T) {
 	}
 
 	typo, _ := parseLinearOverrides([]string{"planned=Redy"}, nil, false)
-	_, _, err = runInitWithTracker(t, initOptions{admin: newFakeLinear().admin(t), overrides: typo})
+	_, _, err = runInitWithTracker(t, initOptions{mapRoles: true, linear: newFakeLinear().admin(t), overrides: typo})
 	if err == nil || !strings.Contains(err.Error(), "available: Backlog, Todo, In Progress, In Review, Done") {
 		t.Fatalf("err = %v; want the typo named with the available states", err)
 	}
@@ -537,7 +537,7 @@ func TestInitLinearMergeSeedsRolesFromExistingConfig(t *testing.T) {
 	source := `{"trackerConfig":{"linear":{"states":{"planned":"Ready for Dev"},"labels":{"agentBuild":"build-me"}}}}` + "\n"
 	writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n", ".boss-skills.json": source})
 	var out bytes.Buffer
-	if err := runInit(&out, dir, false, initOptions{admin: f.admin(t), mergeExisting: true}); err != nil {
+	if err := runInit(&out, dir, false, initOptions{mapRoles: true, linear: f.admin(t), mergeExisting: true}); err != nil {
 		t.Fatalf("runInit --merge over an existing role mapping: %v", err)
 	}
 	raw, err := os.ReadFile(target)
@@ -557,5 +557,78 @@ func TestInitLinearMergeSeedsRolesFromExistingConfig(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "agent-build") {
 		t.Errorf("the default label was looked up as missing despite the existing mapping:\n%s", out.String())
+	}
+}
+
+func TestInitLinearMergeStaleSeededState(t *testing.T) {
+	for _, command := range []bool{false, true} {
+		t.Run(fmt.Sprintf("command=%t", command), func(t *testing.T) {
+			dir := initGitRepo(t)
+			const source = `{"trackerConfig":{"linear":{"team":"Example","states":{"planned":"Ready"}}}}`
+			writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n", initConfigFilename: source})
+			f := newFakeLinear()
+			var out bytes.Buffer
+			var err error
+			if command {
+				old := initNewLinearAdmin
+				t.Cleanup(func() { initNewLinearAdmin = old })
+				initNewLinearAdmin = func(string) linearAdmin { return f.admin(t) }
+				t.Setenv("LINEAR_API_KEY", fakeLinearKey)
+				cmd := initCmd()
+				cmd.SetOut(&out)
+				cmd.SetErr(&out)
+				cmd.SetArgs([]string{"--dir", dir, "--merge"})
+				err = cmd.Execute()
+			} else {
+				err = runInit(&out, dir, false, initOptions{mapRoles: true, linear: f.admin(t), mergeExisting: true})
+			}
+			if command {
+				sawStates := false
+				for _, query := range f.queries {
+					sawStates = sawStates || strings.Contains(query, "states(")
+				}
+				if !sawStates {
+					t.Fatal("Cobra command skipped role mapping")
+				}
+			}
+			if err == nil {
+				t.Fatal("stale seeded state accepted")
+			}
+			for _, want := range []string{"trackerConfig.linear.states.planned", `"Ready"`, "Todo", "nothing written"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "--state planned=") {
+				t.Errorf("seeded value reported as flag: %v", err)
+			}
+			var unresolved *unresolvedRoleError
+			if errors.As(err, &unresolved) {
+				t.Errorf("seeded miss prompts as default: %v", err)
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, initConfigFilename))
+			if readErr != nil || string(got) != source {
+				t.Fatalf("config changed: %s (%v)", got, readErr)
+			}
+			t.Logf("exit=1; config unchanged; %v", err)
+		})
+	}
+}
+
+func TestInitLinearFlagOverridesStaleSeededState(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n", initConfigFilename: `{"trackerConfig":{"linear":{"states":{"planned":"Ready"}}}}`})
+	ov := mustOverrides(t, []string{"planned=TODO"}, nil)
+	f := newFakeLinear("Backlog", "TODO", "In Progress", "In Review", "Done")
+	var out bytes.Buffer
+	if err := runInit(&out, dir, false, initOptions{linear: f.admin(t), mapRoles: true, mergeExisting: true, overrides: ov}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, initConfigFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"planned": "TODO"`) {
+		t.Fatalf("flag did not replace seeded state: %s", raw)
 	}
 }

@@ -102,6 +102,7 @@ go_library(
         "//services/bossd/internal/git",
         "//services/bossd/internal/mergepolicy",
         "//services/bossd/internal/plugin",
+        "//services/bossd/internal/proofenv",
         "//services/bossd/internal/repotrust",
         "//services/bossd/internal/rotation",
         "//services/bossd/internal/runmetrics",

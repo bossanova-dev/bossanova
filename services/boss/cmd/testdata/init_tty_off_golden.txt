@@ -1,0 +1,63 @@
+Detected build system: none
+Detected commands: none
+
+Blocks skipped (not written; the built-in defaults supply them):
+  trackerConfig
+    LINEAR_API_KEY is not set, so no Linear teams were listed and no team is
+    pinned; the skills still auto-detect the team at run time when exactly
+    one is visible to the tracker MCP server; or re-run with --team <name>
+  adapters, planStorage, planContract
+    not detectable from a repo's files; the built-in defaults supply it when
+    the config is loaded
+  review
+    which review a repo runs is an operator choice, not a property of its
+    files; the built-in review with its cross-agent second model applies
+    until an operator names a replacement review skill
+  reviewDefaults
+    not detectable from a repo's files; the built-in defaults supply it when
+    the config is loaded
+  planDependencies
+    which shared files every ticket appends to is a fact about this repo's
+    history, not its files; the built-in block is empty and the dependency
+    scan uses only its per-run payload until an operator declares them
+  epicDefaults
+    how long a child of an epic typically runs is a fact about this repo's
+    work, not about its files, so it cannot be detected; the built-in child
+    wall clock applies until an operator measures otherwise
+  notesDefaults
+    a reporting-cadence preference rather than a repository property; the
+    built-in default runs the post-terminal notes phase (and the pre-PR
+    knowledge phase) on every run, and an operator who wants fewer of them
+    declares the block and turns sampleRate down
+  extensionRoots
+    not detectable from a repo's files; the built-in defaults scan the
+    supported agent skill roots
+  env
+    describes the harness a skill runs under, not the repository; the
+    built-in headless-detection signals apply unchanged
+  publishConfig
+    empty by default and validated only per existing entry, so writing an
+    empty block would add nothing the defaults do not already supply
+
+Harness MCP declarations (not written; these files belong to the harness).
+If you add a trackerConfig, declare its MCP server to each harness you use:
+  Claude Code -> .mcp.json
+    {
+      "mcpServers": {
+        "<mcpServer>": {
+          "type": "http",
+          "url": "https://mcp.example.com/mcp",
+          "headers": { "Authorization": "Bearer ${TRACKER_API_KEY}" }
+        }
+      }
+    }
+  Codex -> .codex/config.toml
+    [mcp_servers."<mcpServer>"]
+    url = "https://mcp.example.com/mcp"
+    bearer_token_env_var = "TRACKER_API_KEY"
+    required = false
+  Use the trackerConfig.<tracker>.mcpServer name from .boss-skills.json as the server
+  key above. The skills also resolve the server under another spelling or name, as
+  long as it publishes the tracker's tools.
+
+Wrote <DIR>/.boss-skills.json

@@ -324,9 +324,6 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 	if afterFirst.State != models.GithubCallbackStateActive {
 		t.Fatalf("first state = %q, want active", afterFirst.State)
 	}
-	if !afterFirst.HasObservedBaseline {
-		t.Fatal("first evaluation should mark has_observed_baseline")
-	}
 	if afterFirst.TriggeredAt != nil {
 		t.Fatalf("first triggered_at = %v, want nil", afterFirst.TriggeredAt)
 	}
@@ -351,6 +348,46 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 	}
 	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateCanceled {
 		t.Fatalf("sibling state after trigger = %q, want canceled", got)
+	}
+}
+
+// TestEvaluatePR_TransitionRequiredHeldSatisfiedNeverFires pins the
+// madverts-core#6672 shape: a verify re-arm on a green PR that stays green woke
+// its chat on the second poll although nothing transitioned.
+func TestEvaluatePR_TransitionRequiredHeldSatisfiedNeverFires(t *testing.T) {
+	store := newStore(t)
+	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		TargetChatID:            "chat-1",
+		RepoOwner:               "acme",
+		RepoName:                "widgets",
+		PRNumber:                7,
+		Trigger:                 models.GithubCallbackTriggerChecksPassedReady,
+		Message:                 "/boss-verify 7",
+		ShouldRequireTransition: true,
+	})
+
+	prov := &scriptedProvider{}
+	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)})
+	for i := range 3 {
+		if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+			t.Fatalf("EvaluatePR %d: %v", i, err)
+		}
+		if got := getState(t, store, cb.ID); got != models.GithubCallbackStateActive {
+			t.Fatalf("evaluation %d state = %q, want active while the PR stays green", i, got)
+		}
+	}
+
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{pendingCheck("build")})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("pending EvaluatePR: %v", err)
+	}
+	prov.set(prStatus(vcs.PRStateOpen), []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)})
+	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("green again EvaluatePR: %v", err)
+	}
+	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateTriggered {
+		t.Fatalf("state after red-to-green = %q, want triggered", got)
 	}
 }
 

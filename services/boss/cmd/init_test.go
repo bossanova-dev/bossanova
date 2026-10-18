@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -285,6 +286,9 @@ func TestInitValidationIsAWriteGate(t *testing.T) {
 	writeFixture(t, dir, map[string]string{"Makefile": "build:\n\t@true\n"})
 
 	fakeNode(t, `case "$*" in
+  *resolveTrackerTeam*)
+    printf '%s' '{"configured":false,"team":null,"teamKey":null,"source":null,"reason":"teams-unlisted","message":"not listed"}'
+    ;;
   *validateConfig*)
     echo 'skill-config: invalid config from x: commands.build must be a non-empty string' >&2
     exit 1
@@ -1061,20 +1065,6 @@ func TestFindAncestorConfigAtRootReportsNoShadow(t *testing.T) {
 
 // --- Linear team resolution (BOS-1393) -------------------------------------
 
-// fakeTeamLister is the injected teamLister: no test here reaches the network,
-// and none reads LINEAR_API_KEY (only the cobra RunE does).
-type fakeTeamLister struct {
-	teams   []linearTeam
-	hasNext bool
-	err     error
-	calls   int
-}
-
-func (f *fakeTeamLister) ListTeams(context.Context) ([]linearTeam, bool, error) {
-	f.calls++
-	return f.teams, f.hasNext, f.err
-}
-
 // runInitWithTracker runs boss init over a one-target Makefile fixture and
 // returns the error, the report, and the on-disk trackerConfig (nil if absent).
 func runInitWithTracker(t *testing.T, opts initOptions) (string, map[string]any, error) {
@@ -1122,8 +1112,8 @@ func skippedSection(t *testing.T, report string) string {
 }
 
 func TestInitTrackerWritesTheSingleVisibleTeam(t *testing.T) {
-	lister := &fakeTeamLister{teams: []linearTeam{{ID: "id-1", Name: "Example", Key: "EX"}}}
-	report, tracker, err := runInitWithTracker(t, initOptions{lister: lister})
+	lister := &fakeLinear{teams: []linearTeam{{ID: "id-1", Name: "Example", Key: "EX"}}}
+	report, tracker, err := runInitWithTracker(t, initOptions{linear: lister.admin(t), mapRoles: false})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -1144,23 +1134,23 @@ func TestInitTrackerWritesTheSingleVisibleTeam(t *testing.T) {
 	if got := codexDeclarationKey(t, report); got != `"linear"` {
 		t.Errorf("Codex key = %s, want \"linear\"\n%s", got, report)
 	}
-	if lister.calls != 1 {
-		t.Errorf("lister called %d times, want 1", lister.calls)
+	if len(lister.queries) != 1 || !strings.Contains(lister.queries[0], "teams(") {
+		t.Errorf("mapping disabled but queries = %v", lister.queries)
 	}
 }
 
 func TestInitTrackerSeveralTeamsWriteNothing(t *testing.T) {
 	cases := []struct {
 		name   string
-		lister *fakeTeamLister
+		lister *fakeLinear
 		want   string
 	}{
-		{"two teams", &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}, "2 Linear teams are visible (Alpha, Beta)"},
-		{"hasNextPage", &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, hasNext: true}, "more than 1 Linear teams are visible (Alpha, …)"},
+		{"two teams", &fakeLinear{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}, "2 Linear teams are visible (Alpha, Beta)"},
+		{"hasNextPage", &fakeLinear{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, teamsHasNext: true}, "more than 1 Linear teams are visible (Alpha, …)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			report, tracker, err := runInitWithTracker(t, initOptions{lister: tc.lister})
+			report, tracker, err := runInitWithTracker(t, initOptions{linear: linearClient(t, tc.lister), mapRoles: false})
 			if err != nil {
 				t.Fatalf("runInit: %v", err)
 			}
@@ -1185,7 +1175,7 @@ func TestInitTrackerTeamFlagMatchingAListedTeam(t *testing.T) {
 	teams := []linearTeam{{ID: "id-a", Name: "Alpha", Key: "ALP"}, {ID: "id-b", Name: "Beta", Key: "BET"}}
 	for _, flag := range []string{"beta", "BET", "id-b", " Beta "} {
 		t.Run(flag, func(t *testing.T) {
-			report, tracker, err := runInitWithTracker(t, initOptions{team: flag, lister: &fakeTeamLister{teams: teams}})
+			report, tracker, err := runInitWithTracker(t, initOptions{team: flag, linear: (&fakeLinear{teams: teams}).admin(t), mapRoles: false})
 			if err != nil {
 				t.Fatalf("runInit: %v", err)
 			}
@@ -1201,8 +1191,8 @@ func TestInitTrackerTeamFlagMatchingAListedTeam(t *testing.T) {
 }
 
 func TestInitTrackerUnknownTeamFlagErrorsAndWritesNothing(t *testing.T) {
-	lister := &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}
-	_, _, err := runInitWithTracker(t, initOptions{team: "Nope", lister: lister})
+	lister := &fakeLinear{teams: []linearTeam{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}}
+	_, _, err := runInitWithTracker(t, initOptions{team: "Nope", linear: lister.admin(t), mapRoles: false})
 	if !errors.Is(err, errUnknownTeam) {
 		t.Fatalf("err = %v; want errUnknownTeam", err)
 	}
@@ -1212,8 +1202,8 @@ func TestInitTrackerUnknownTeamFlagErrorsAndWritesNothing(t *testing.T) {
 }
 
 func TestInitTrackerTeamFlagBeyondTheFirstPageIsWrittenUnverified(t *testing.T) {
-	lister := &fakeTeamLister{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, hasNext: true}
-	report, tracker, err := runInitWithTracker(t, initOptions{team: "Zeta", lister: lister})
+	lister := &fakeLinear{teams: []linearTeam{{ID: "a", Name: "Alpha"}}, teamsHasNext: true}
+	report, tracker, err := runInitWithTracker(t, initOptions{team: "Zeta", linear: lister.admin(t), mapRoles: false})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -1227,19 +1217,18 @@ func TestInitTrackerTeamFlagBeyondTheFirstPageIsWrittenUnverified(t *testing.T) 
 }
 
 func TestInitTrackerWithoutAListing(t *testing.T) {
-	const secret = "SECRET-RESPONSE-BODY"
-	listErr := &linearAPIError{op: "list Linear teams", class: "HTTP status 401", err: errors.New(secret)}
+	const secret = fakeBodyMarker
 	cases := []struct {
 		name      string
-		lister    teamLister
+		lister    *fakeLinear
 		wantGuide string
 	}{
 		{"no key", nil, "LINEAR_API_KEY is not set"},
-		{"lister error", &fakeTeamLister{err: listErr}, "could not be listed (HTTP status 401)"},
+		{"lister error", &fakeLinear{failOp: "teams", failStatus: 500}, "could not be listed (HTTP status 500)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" without --team", func(t *testing.T) {
-			report, tracker, err := runInitWithTracker(t, initOptions{lister: tc.lister})
+			report, tracker, err := runInitWithTracker(t, initOptions{linear: linearClient(t, tc.lister), mapRoles: false})
 			if err != nil {
 				t.Fatalf("a missing listing must never fail boss init: %v", err)
 			}
@@ -1255,7 +1244,7 @@ func TestInitTrackerWithoutAListing(t *testing.T) {
 			}
 		})
 		t.Run(tc.name+" with --team", func(t *testing.T) {
-			report, tracker, err := runInitWithTracker(t, initOptions{team: "Example", lister: tc.lister})
+			report, tracker, err := runInitWithTracker(t, initOptions{team: "Example", linear: linearClient(t, tc.lister), mapRoles: false})
 			if err != nil {
 				t.Fatalf("runInit: %v", err)
 			}
@@ -1275,7 +1264,7 @@ func TestInitTrackerWithoutAListing(t *testing.T) {
 }
 
 func TestInitTrackerZeroTeamsWriteNothing(t *testing.T) {
-	report, tracker, err := runInitWithTracker(t, initOptions{lister: &fakeTeamLister{}})
+	report, tracker, err := runInitWithTracker(t, initOptions{linear: (&fakeLinear{}).admin(t), mapRoles: false})
 	if err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
@@ -1469,5 +1458,144 @@ func TestInitForceWithOverridesReplacesSymlink(t *testing.T) {
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		t.Fatal("force did not replace symlink")
+	}
+}
+
+func TestInitTrackerResolverOutcomes(t *testing.T) {
+	teams := []linearTeam{{ID: "id-ex", Name: "Example", Key: "EX"}}
+	cases := []struct {
+		name, flag                 string
+		lister                     *fakeLinear
+		strict                     bool
+		team, key, text, errorText string
+		unknown                    bool
+	}{
+		{name: "unknown-team", flag: "Nope", lister: &fakeLinear{teams: teams}, errorText: `"Nope" (visible: Example); nothing written`, unknown: true},
+		{name: "ambiguous", lister: &fakeLinear{teams: append(append([]linearTeam{}, teams...), linearTeam{Name: "Other"})}, text: "2 Linear teams are visible (Example, Other)"},
+		{name: "ambiguous page", lister: &fakeLinear{teams: teams, teamsHasNext: true}, text: "more than 1 Linear teams are visible (Example, …)"},
+		{name: "ambiguous strict", lister: &fakeLinear{teams: teams, teamsHasNext: true}, strict: true, errorText: "truncated"},
+		{name: "no-teams", lister: &fakeLinear{}, text: "no Linear teams are visible to LINEAR_API_KEY"},
+		{name: "teams-unlisted", text: "LINEAR_API_KEY is not set"},
+		{name: "listing error", lister: &fakeLinear{failOp: "teams", failStatus: 500}, text: "Linear teams could not be listed (HTTP status 500)"},
+		{name: "flag unlisted", flag: "Example", team: "Example", text: "team not verified (no Linear listing available)"},
+		{name: "flag listing error", flag: "Example", lister: &fakeLinear{failOp: "teams", failStatus: 500}, team: "Example", text: "team not verified (no Linear listing available: HTTP status 500)"},
+		{name: "flag page miss", flag: "Elsewhere", lister: &fakeLinear{teams: teams, teamsHasNext: true}, team: "Elsewhere", text: "team not verified (not among the first 1 of more Linear teams)"},
+		{name: "flag strict miss", flag: "Elsewhere", lister: &fakeLinear{teams: teams, teamsHasNext: true}, strict: true, errorText: "truncated"},
+		{name: "flag name", flag: "example", lister: &fakeLinear{teams: teams}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — --team"},
+		{name: "flag key folded", flag: "ex", lister: &fakeLinear{teams: teams}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — --team"},
+		{name: "flag id", flag: "id-ex", lister: &fakeLinear{teams: teams}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — --team"},
+		{name: "flag spaces", flag: " Example ", lister: &fakeLinear{teams: teams}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — --team"},
+		{name: "unusable listing rejected by client", lister: &fakeLinear{teams: []linearTeam{{ID: "broken"}}}, text: "Linear teams could not be listed (unreadable response)"},
+		{name: "trimmed canonical identity", flag: "ex", lister: &fakeLinear{teams: []linearTeam{{ID: "id-ex", Name: " Example ", Key: " EX "}}}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — --team"},
+		{name: "detected", lister: &fakeLinear{teams: teams}, team: "Example", key: "EX", text: "Tracker team: Example (EX) — detected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := initOptions{team: tc.flag}
+			if tc.lister != nil {
+				opts.linear = tc.lister.admin(t)
+			}
+			if tc.strict {
+				opts.mapRoles = true
+			}
+			report, tracker, err := runInitWithTracker(t, opts)
+			if tc.errorText != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errorText) {
+					t.Fatalf("error = %v; want %q", err, tc.errorText)
+				}
+				if tc.unknown && !errors.Is(err, errUnknownTeam) {
+					t.Fatalf("error = %v; want errUnknownTeam", err)
+				}
+				if tracker != nil {
+					t.Fatalf("failed run wrote tracker %v", tracker)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.Join(strings.Fields(report), " "), tc.text) {
+				t.Fatalf("report missing %q: %s", tc.text, report)
+			}
+			if tc.team == "" {
+				if tracker != nil {
+					t.Fatalf("unexpected tracker %v", tracker)
+				}
+				return
+			}
+			linear, _ := tracker["linear"].(map[string]any)
+			if linear["team"] != tc.team {
+				t.Fatalf("tracker = %v", tracker)
+			}
+			if tc.key != "" && linear["teamKey"] != tc.key {
+				t.Fatalf("tracker = %v", tracker)
+			}
+		})
+	}
+}
+
+func TestInitTrackerBridgeRejectsInvalidVerdicts(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		want         error
+	}{
+		{"unknown field", `{"configured":false,"reason":"no-teams","message":"none","extra":true}`, errDetectionShape},
+		{"invalid JSON", `oops`, errNodeBadJSON},
+		{"trailing output", `{"configured":false,"reason":"no-teams","message":"none"}{}`, errNodeBadJSON},
+		{"missing configured", `{"reason":"no-teams","message":"none"}`, errDetectionShape},
+		{"missing message", `{"configured":false,"reason":"no-teams"}`, errDetectionShape},
+		{"configured reason", `{"configured":true,"team":"Example","source":"flag","reason":"ambiguous","message":""}`, errDetectionShape},
+		{"empty team", `{"configured":true,"team":"","source":"flag","reason":null,"message":""}`, errDetectionShape},
+		{"config source", `{"configured":true,"team":"Example","source":"config","reason":null,"message":""}`, errDetectionShape},
+		{"unknown reason", `{"configured":false,"reason":"no-tracker-mcp","message":"none"}`, errDetectionShape},
+		{"unconfigured null reason", `{"configured":false,"reason":null,"message":"none"}`, errDetectionShape},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeNode(t, "printf '%s' '"+tc.output+"'\n")
+			bridge := &nodeBridge{dir: t.TempDir()}
+			_, err := bridge.resolveTeam("", nil)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v; want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func linearClient(t *testing.T, f *fakeLinear) linearAdmin {
+	t.Helper()
+	if f == nil {
+		return nil
+	}
+	return f.admin(t)
+}
+
+func TestInitTrackerMapRolesControlsTruncatedListing(t *testing.T) {
+	for _, team := range []string{"", "Elsewhere"} {
+		f := newFakeLinear()
+		f.teamsHasNext = true
+		client := f.admin(t)
+		for _, mapRoles := range []bool{false, true} {
+			t.Run(fmt.Sprintf("team=%s/mapRoles=%t", team, mapRoles), func(t *testing.T) {
+				report, tracker, err := runInitWithTracker(t, initOptions{linear: client, mapRoles: mapRoles, team: team})
+				if mapRoles {
+					var apiErr *linearAPIError
+					if !errors.As(err, &apiErr) || apiErr.class != "truncated" || tracker != nil {
+						t.Fatalf("strict result: %v, %v", tracker, err)
+					}
+					assertNoLeak(t, "strict listing error", err.Error())
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := "more than 1 Linear teams are visible"
+					if team != "" {
+						want = "--team, unverified"
+					}
+					if !strings.Contains(report, want) {
+						t.Fatalf("report missing %q: %s", want, report)
+					}
+				}
+			})
+		}
 	}
 }

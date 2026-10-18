@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/dotenv"
+	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/verifybridge"
 )
@@ -64,6 +66,7 @@ func approveResultProto(r verifybridge.ApproveResult) *pb.VerifyApproveResult {
 		Park:          r.Park,
 		State:         r.State,
 		SignOff:       r.SignOff,
+		Detail:        r.Detail,
 	}
 }
 
@@ -179,6 +182,9 @@ func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, r
 	if resp.GetIsMerged() {
 		ev = ev.Str("tracker_writes", resp.GetTrackerWrites()).Str("tracker_why", resp.GetTrackerWhy())
 	}
+	if a := resp.GetApproval(); a != nil && !a.GetIsApproved() {
+		ev = ev.Str("reason", a.GetReason()).Str("detail", a.GetDetail())
+	}
 	ev.Msg("operator merge finished")
 }
 
@@ -258,9 +264,10 @@ func (s *Server) markMerged(ctx context.Context, verbs verifyVerbs, target verif
 }
 
 // verifyTarget resolves the session's PR, repo slug and worktree, and the
-// environment the verb runs under: this daemon's, then the worktree .env and
-// the repo's stored secrets. The repo's LINEAR_API_KEY is what lets the verb
-// remove the needs-human label; an operator's shell rarely carries it.
+// environment the verb runs under: this daemon's, then the tracker keys from
+// the worktree .env and the repo's stored secrets, with every proof key pinned
+// empty. The repo's LINEAR_API_KEY is what lets the verb remove the
+// needs-human label; an operator's shell rarely carries it.
 func (s *Server) verifyTarget(ctx context.Context, id string, dryRun bool) (verifybridge.Target, []string, error) {
 	return s.verifyTargetIn(ctx, id, dryRun, false)
 }
@@ -294,11 +301,33 @@ func (s *Server) verifyTargetIn(ctx context.Context, id string, dryRun, orChecko
 		}
 	}
 	env := os.Environ()
+	var dropped []string
 	for k, v := range dotenv.OverlayWithRepo(map[string]string{}, dir, repo) {
-		env = append(env, k+"="+v)
+		switch {
+		case slices.Contains(verbTrackerKeys, k):
+			env = append(env, k+"="+v)
+		case !slices.Contains(proofenv.Keys(), k):
+			dropped = append(dropped, k)
+		}
+	}
+	// The verbs never use a proof credential, so every proof key is pinned
+	// empty whatever the daemon or the repo's .env holds.
+	for _, k := range proofenv.Keys() {
+		env = append(env, k+"=")
+	}
+	if len(dropped) > 0 {
+		slices.Sort(dropped)
+		s.logger.Debug().Str("session", id).Strs("dropped_keys", dropped).Msg("verify verb: .env keys outside the tracker allowlist not passed")
 	}
 	return verifybridge.Target{PR: *sess.PRNumber, Repo: slug, Dir: dir, DryRun: dryRun}, env, nil
 }
+
+// verbTrackerKeys are the only .env and stored-secret keys the verbs take: the
+// tracker adapter's (tracker/adapter.mjs) and the repo's stored secrets. The
+// verbs run gh, git and boss as the account boss merges with, the daemon's, so
+// anything else a .env sets (a stale GITHUB_TOKEN, HOME, a proxy, GH_HOST)
+// could change who gh acts as or where its traffic goes.
+var verbTrackerKeys = []string{"TRACKER", "LINEAR_API_KEY", "LINEAR_API_ENDPOINT", "SENTRY_API_KEY", "SENTRY_ORG"}
 
 // verifyBridgeError maps a bridge failure onto a connect code. A timeout stays
 // distinguishable so the caller can say an approval may already be posted.

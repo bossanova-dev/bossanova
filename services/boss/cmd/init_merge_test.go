@@ -33,6 +33,9 @@ func TestInitRoleOverridesConcurrentCreate(t *testing.T) {
 				t.Setenv("INIT_CREATE_COMPETITOR", "")
 			}
 			fakeNode(t, `case "$*" in
+  *resolveTrackerTeam*)
+    printf '%s' '{"configured":false,"team":null,"teamKey":null,"source":null,"reason":"teams-unlisted","message":"not listed"}'
+    ;;
   *validateConfig*)
     if [ "$INIT_CREATE_COMPETITOR" = yes ]; then
       printf '%s' '{"competitor":"keep me"}' > "$INIT_COMPETITOR_TARGET"

@@ -929,6 +929,155 @@ test('classifyChecks — a prior context whose workflow has no run on the head d
   assert.deepEqual(viaRollup.notTriggered, ['guard'])
 })
 
+test('classifyChecks — a cancelled prior job its completed head run does not carry is superseded', () => {
+  // madverts-core#6672: the follow-up push cancelled the prior `api (test)` run before `select`
+  // expanded the matrix, so its two `name: ${{ matrix.id }}` jobs reported CANCELLED under the
+  // unexpanded name. The head's run completed with the expanded names instead.
+  const priorRollup = {
+    statusCheckRollup: [
+      { name: 'select', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+      {
+        name: 'matrix.id',
+        status: 'COMPLETED',
+        conclusion: 'CANCELLED',
+        workflowName: 'api (test)',
+      },
+      {
+        name: 'matrix.id',
+        status: 'COMPLETED',
+        conclusion: 'CANCELLED',
+        workflowName: 'api (test)',
+      },
+    ],
+  }
+  const headRollup = {
+    statusCheckRollup: [
+      { name: 'select', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+      { name: 'unit-1', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+      { name: 'api', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+    ],
+  }
+  const judge = (workflowRuns) =>
+    classifyChecks({ headSHA: HEAD, rollup: headRollup, priorContexts: priorRollup, workflowRuns })
+
+  const settled = judge([run('api (test)', 'completed', 'success')])
+  assert.equal(settled.state, CHECK_STATES.GREEN)
+  assert.equal(settled.reason, CHECK_REASONS.OK)
+  assert.deepEqual(settled.superseded, ['matrix.id'])
+  assert.deepEqual(settled.blockingAbsent, [])
+  assert.deepEqual(settled.absent, ['matrix.id'])
+
+  // The head run still going: the name may yet attach, so nothing is discounted.
+  const running = judge([run('api (test)', 'in_progress')])
+  assert.equal(running.reason, CHECK_REASONS.PENDING)
+  assert.deepEqual(running.superseded, [])
+
+  // No head run of that workflow, or no run evidence at all: not proof the job set is complete.
+  assert.equal(judge([run('lint', 'completed', 'success')]).reason, CHECK_REASONS.OK)
+  assert.deepEqual(judge([run('lint', 'completed', 'success')]).superseded, [])
+  assert.equal(judge(undefined).reason, CHECK_REASONS.ABSENT_GATE)
+
+  // A prior job that REPORTED and then vanished from a completed head run is still a lost gate.
+  const reported = classifyChecks({
+    headSHA: HEAD,
+    rollup: headRollup,
+    priorContexts: {
+      statusCheckRollup: [
+        { name: 'select', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+        { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'api (test)' },
+      ],
+    },
+    workflowRuns: [run('api (test)', 'completed', 'success')],
+  })
+  assert.equal(reported.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(reported.blockingAbsent, ['lint'])
+  assert.deepEqual(reported.superseded, [])
+})
+
+const cancelledPrior = (workflowName, extra = {}) => ({
+  statusCheckRollup: [
+    { name: 'matrix.id', status: 'COMPLETED', conclusion: 'CANCELLED', workflowName, ...extra },
+  ],
+})
+const greenElsewhere = {
+  statusCheckRollup: [
+    { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'ci' },
+  ],
+}
+
+test('classifyChecks — a head run that ended before any job attached does not supersede', () => {
+  for (const conclusion of ['cancelled', 'startup_failure']) {
+    const v = classifyChecks({
+      headSHA: HEAD,
+      rollup: greenElsewhere,
+      priorContexts: cancelledPrior('api'),
+      workflowRuns: [run('api', 'completed', conclusion), run('ci', 'completed', 'success')],
+    })
+    assert.equal(v.reason, CHECK_REASONS.ABSENT_GATE, conclusion)
+    assert.deepEqual(v.blockingAbsent, ['matrix.id'], conclusion)
+    assert.deepEqual(v.superseded, [], conclusion)
+  }
+  const completed = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: cancelledPrior('api'),
+    workflowRuns: [run('api', 'completed', 'success'), run('ci', 'completed', 'success')],
+  })
+  assert.equal(completed.reason, CHECK_REASONS.OK)
+  assert.deepEqual(completed.superseded, ['matrix.id'])
+})
+
+test('classifyChecks — head runs are matched to a prior context by workflow id before name', () => {
+  // Two workflow files share `name: api`. The prior job's own workflow (id 11) ended on the head
+  // before any job attached; only the other file's run (id 12) completed.
+  const workflowRuns = [
+    { ...run('api', 'completed', 'cancelled'), workflow_id: 11 },
+    { ...run('api', 'completed', 'success'), workflow_id: 12 },
+    run('ci', 'completed', 'success'),
+  ]
+  const v = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: cancelledPrior('api', { workflowId: 11 }),
+    workflowRuns,
+  })
+  assert.equal(v.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(v.blockingAbsent, ['matrix.id'])
+  assert.deepEqual(v.notTriggered, [])
+
+  // Without an id on the prior side, the name match is the fallback.
+  const byName = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: cancelledPrior('api'),
+    workflowRuns,
+  })
+  assert.deepEqual(byName.superseded, ['matrix.id'])
+})
+
+test('classifyChecks — a same-named cancelled job in another workflow does not mask a lost gate', () => {
+  // `build` passed in workflow X and was cancelled in workflow Y on the prior head; neither carries
+  // it on the completed head, so X's job reported and then vanished.
+  const v = classifyChecks({
+    headSHA: HEAD,
+    rollup: greenElsewhere,
+    priorContexts: {
+      statusCheckRollup: [
+        { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'X' },
+        { name: 'build', status: 'COMPLETED', conclusion: 'CANCELLED', workflowName: 'Y' },
+      ],
+    },
+    workflowRuns: [
+      run('X', 'completed', 'success'),
+      run('Y', 'completed', 'success'),
+      run('ci', 'completed', 'success'),
+    ],
+  })
+  assert.equal(v.reason, CHECK_REASONS.ABSENT_GATE)
+  assert.deepEqual(v.blockingAbsent, ['build'])
+  assert.deepEqual(v.superseded, [])
+})
+
 test('CLI classify — --workflow-runs is read and its verdict fields are printed', () => {
   const result = runCli([
     'classify',

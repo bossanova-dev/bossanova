@@ -69,13 +69,22 @@ func ApproveRefusal(pr int, r *pb.VerifyApproveResult) string {
 	if detail := RefusalDetail(r.GetReason()); detail != "" {
 		refusal += ": " + detail
 	}
-	return refusal + postedRecordDetail(r)
+	return refusal + readFailure(r) + postedRecordDetail(r)
 }
 
 // MergeRefusal is ApproveRefusal for the TUI's [m]erge on a review row, whose
 // approval was refused, so nothing merged.
 func MergeRefusal(pr int, r *pb.VerifyApproveResult) string {
-	return fmt.Sprintf("Couldn't merge PR #%d: %s%s", pr, MergeRefusalDetail(r.GetReason()), postedRecordDetail(r))
+	return fmt.Sprintf("Couldn't merge PR #%d: %s%s%s", pr, MergeRefusalDetail(r.GetReason()), readFailure(r), postedRecordDetail(r))
+}
+
+// readFailure adds what the failed read behind a refusal said, such as gh's
+// HTTP status, so "could not be read" names its cause.
+func readFailure(r *pb.VerifyApproveResult) string {
+	if r.GetDetail() == "" {
+		return ""
+	}
+	return " (" + r.GetDetail() + ")"
 }
 
 // waivedLines states each waived park code's issue in plain words, one

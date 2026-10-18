@@ -182,34 +182,6 @@ func (r *Retirer) OnSessionState(ctx context.Context, sessionID string, to machi
 	return err
 }
 
-// retiresMergedBaseline leaves an unobserved own-PR merge watch for the
-// post-pass to cancel. Observing it first would make reconciliation fire the
-// initially satisfied watch in the very same evaluation.
-func (r *Retirer) retiresMergedBaseline(ctx context.Context, cb *models.GithubCallback) (bool, error) {
-	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	session, err := r.sessions.Get(ctx, chat.SessionID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if session.State != machine.Merged {
-		return false, nil
-	}
-	nwo, err := r.ownPR(ctx, session)
-	if err != nil {
-		return false, err
-	}
-	return callbackOnOwnPR(cb, session, nwo), nil
-}
-
 // armedBeforeReclaim reports a watch armed by a chat that automation has since
 // replaced. Delivery would wake that chat beside its replacement, so two agents
 // would react to one PR failure in one worktree. A watch armed after the reclaim

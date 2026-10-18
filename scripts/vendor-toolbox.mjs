@@ -36,6 +36,7 @@ export const VENDOR_MAP = {
     'selection.mjs',
     'skill-config.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     'tracker/adapter-core.mjs',
     'tracker/adapter.mjs',
     'tracker/cli.mjs',
@@ -51,6 +52,7 @@ export const VENDOR_MAP = {
     'main-module.mjs',
     'release-gate.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     'pr-check-state.mjs',
     'cron-gates/boss-release.mjs',
     'stage-chain.mjs',
@@ -168,6 +170,7 @@ export const VENDOR_MAP = {
     'finalize/route-contract.mjs',
     'finalize/push-branch.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
     // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
@@ -287,6 +290,7 @@ export const VENDOR_MAP = {
     'session/adapter.mjs',
     'session/boss.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
   ],
@@ -393,6 +397,7 @@ export const VENDOR_MAP = {
     'plan-secret-scan.mjs',
     'plan-slug.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
     // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
@@ -456,6 +461,7 @@ export const VENDOR_MAP = {
     'base-drift.mjs',
     'dag-scheduler.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     // bs-record-notes.mjs backs the core's built-in `notes` extension (extensions/<core>-notes).
     'bs-record-notes.mjs',
     // notes-record.mjs buffers unexpected trigger outcomes for the terminal flush.
@@ -544,6 +550,7 @@ export const VENDOR_MAP = {
     'selection.mjs',
     'skill-config.mjs',
     'skill-extensions.mjs',
+    'verify-contract.mjs',
     'merge-eligibility.mjs',
     'pr-check-state.mjs',
     'commit-status.mjs',

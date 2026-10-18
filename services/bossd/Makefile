@@ -40,6 +40,8 @@ BOSSD_DEV_LOG ?= $(HOME)/.bossanova/logs/bossd-dev.log
 ## next start) while still streaming to the terminal. Without this, dev-mode
 ## logs vanish with the terminal and failures like a wedged chat cannot be
 ## diagnosed after the fact.
+## `tee -i` ignores SIGINT so Ctrl-C reaches bossd's graceful shutdown; a
+## plain tee dies first and bossd's next log write exits it on SIGPIPE.
 dev:
 	$(MAKE) -C ../.. generate
 	$(MAKE) -C ../mcp build
@@ -51,7 +53,7 @@ dev:
 		printf 'WARNING: hard FD limit is %s; this terminal was likely started under an old `ulimit -n` cap. bossd cannot exceed it (non-root). Start `make dev` from a fresh terminal to get the full 65536.\n' "$$hard" >&2; \
 	fi; \
 	ulimit -Sn 65536 2>/dev/null || true; \
-	$(BIN) 2>&1 | tee -a $(BOSSD_DEV_LOG)
+	$(BIN) 2>&1 | tee -i -a $(BOSSD_DEV_LOG)
 
 ## build: Build the bossd binary
 build:

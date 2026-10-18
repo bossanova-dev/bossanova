@@ -113,6 +113,7 @@ type harnessConfig struct {
 	chats                         []*pb.ClaudeChat
 	cronJobs                      []*pb.CronJob
 	githubCallbacks               []*pb.GithubCallback
+	notes                         []*pb.Note
 	prs                           map[string][]*pb.PRSummary
 	trackerIssues                 map[string][]*pb.TrackerIssue
 	agents                        []*pb.AgentInfo
@@ -290,6 +291,14 @@ func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
 	}
 }
 
+// WithNotes seeds the mock daemon with notes before the TUI starts, so Home's
+// first read sees them.
+func WithNotes(notes ...*pb.Note) Option {
+	return func(c *harnessConfig) {
+		c.notes = append(c.notes, notes...)
+	}
+}
+
 // WithTrackerIssues seeds the mock daemon with Linear/tracker issues for a repo.
 func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
 	return func(c *harnessConfig) {
@@ -449,6 +458,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, cb := range cfg.githubCallbacks {
 		daemon.AddGithubCallback(cb)
+	}
+	for _, n := range cfg.notes {
+		daemon.AddNote(n)
 	}
 	for repoID, prs := range cfg.prs {
 		daemon.AddPRs(repoID, prs)

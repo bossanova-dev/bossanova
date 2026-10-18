@@ -285,10 +285,12 @@ func wedgedPerHint(p *pb.Session) bool {
 // at 23:04 and the daemon gave up at 23:16. The server's tracker knows nothing,
 // as after a restart, and its transcripts are read through tally.
 // wedgeSetup varies wedgeFixture: extra rotation events stored after the
-// give-up, and whether the session's PR is merged.
+// give-up, whether the session's PR is merged, and how many more sessions
+// (chats agent-2, agent-3, ...) lost their login the same way.
 type wedgeSetup struct {
-	events   []db.RotationEvent
-	prMerged bool
+	events        []db.RotationEvent
+	prMerged      bool
+	extraSessions int
 }
 
 func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, string) {
@@ -300,6 +302,7 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 	chats := db.NewAgentChatStore(sqlDB)
 	runs := db.NewAgentRunStore(sqlDB)
 	events := db.NewRotationEventStore(sqlDB)
+	snapshots := db.NewCheckSnapshotStore(sqlDB)
 	repo, err := repos.Create(ctx, db.CreateRepoParams{
 		DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git",
 		DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt",
@@ -307,41 +310,47 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 	if err != nil {
 		t.Fatalf("create repo: %v", err)
 	}
-	params := db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: "feat/w", BaseBranch: "main"}
-	if setup.prMerged {
-		pr := 3033
-		params.PRNumber = &pr
-	}
-	sess, err := sessions.Create(ctx, params)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	snapshots := db.NewCheckSnapshotStore(sqlDB)
-	if setup.prMerged {
-		if err := snapshots.Insert(ctx, db.CheckSnapshot{
-			SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: at(18), RawJSON: "[]", ComputedStatus: int(vcs.DisplayStatusMerged),
-		}); err != nil {
-			t.Fatalf("insert snapshot: %v", err)
+	var first string
+	for n := 1; n <= 1+setup.extraSessions; n++ {
+		chatID := fmt.Sprintf("agent-%d", n)
+		params := db.CreateSessionParams{RepoID: repo.ID, Title: "s", BranchName: fmt.Sprintf("feat/w%d", n), BaseBranch: "main"}
+		if setup.prMerged {
+			pr := 3033
+			params.PRNumber = &pr
 		}
-	}
-	if _, err := chats.Create(ctx, db.CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: "agent-1", AgentName: "claude"}); err != nil {
-		t.Fatalf("create chat: %v", err)
-	}
-	// The run that lost the login is still the pane's run.
-	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)}); err != nil {
-		t.Fatalf("start run: %v", err)
-	}
-	giveUp := db.RotationEvent{
-		ChatID: "agent-1", Provider: "claude",
-		Trigger:   pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED.String(),
-		Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED.String(),
-		CreatedAt: at(16),
-	}
-	for i, ev := range append([]db.RotationEvent{giveUp}, setup.events...) {
-		ev.ID = fmt.Sprintf("rot-%d", i)
-		ev.SessionID = sess.ID
-		if err := events.Insert(ctx, ev); err != nil {
-			t.Fatalf("insert rotation event: %v", err)
+		sess, err := sessions.Create(ctx, params)
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		if first == "" {
+			first = sess.ID
+		}
+		if setup.prMerged {
+			if err := snapshots.Insert(ctx, db.CheckSnapshot{
+				SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: at(18), RawJSON: "[]", ComputedStatus: int(vcs.DisplayStatusMerged),
+			}); err != nil {
+				t.Fatalf("insert snapshot: %v", err)
+			}
+		}
+		if _, err := chats.Create(ctx, db.CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: chatID, AgentName: "claude"}); err != nil {
+			t.Fatalf("create chat: %v", err)
+		}
+		// The run that lost the login is still the pane's run.
+		if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: chatID, StartedAt: at(4)}); err != nil {
+			t.Fatalf("start run: %v", err)
+		}
+		giveUp := db.RotationEvent{
+			ChatID: chatID, Provider: "claude",
+			Trigger:   pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED.String(),
+			Outcome:   pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED.String(),
+			CreatedAt: at(16),
+		}
+		for i, ev := range append([]db.RotationEvent{giveUp}, setup.events...) {
+			ev.ID = fmt.Sprintf("rot-%d-%d", n, i)
+			ev.SessionID = sess.ID
+			if err := events.Insert(ctx, ev); err != nil {
+				t.Fatalf("insert rotation event: %v", err)
+			}
 		}
 	}
 	srv := New(Config{
@@ -353,7 +362,7 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 	srv.transcriptTally = tally.tally
 	// The read lands before the RPC answers, so one call shows its result.
 	srv.wedgeCache.readWait = time.Minute
-	return srv, sess.ID
+	return srv, first
 }
 
 // wedgedPerTimeline reports whether the session timeline waits on the lost
@@ -874,5 +883,172 @@ func TestRestartProofActivity_ATranscriptUntouchedSinceTheGiveUpIsNotParsed(t *t
 	got := restartProof(w, time.Time{}, giveUpEvents(), []*models.AgentChat{{AgentSessionID: id, AgentName: "codex"}})
 	if !got.IsZero() || tally.calls.Load() != 0 {
 		t.Fatalf("activity %v, parses %d; want none and no parse", got, tally.calls.Load())
+	}
+}
+
+// A transcript rewritten to the same size is a new version when its mtime
+// moved, so it is parsed again rather than served from the old parse.
+func TestRestartProofActivity_ASameSizeRewriteWithANewMtimeIsParsedAgain(t *testing.T) {
+	const id = "01a0bd42-3649-7122-8aee-84b8170b83d7"
+	path := codexRollout(t, id, 0, at(21), at(20))
+	tally := &gatedTally{release: make(chan struct{})}
+	close(tally.release)
+	now := at(30)
+	w := WedgeActivity{Tally: tally.tally, Cache: clockedWedgeCache(func() time.Time { return now })}
+	chats := []*models.AgentChat{{AgentSessionID: id, AgentName: "codex"}}
+	if got := restartProof(w, time.Time{}, giveUpEvents(), chats); !got.Equal(at(20)) || tally.calls.Load() != 1 {
+		t.Fatalf("first read: activity %v, parses %d; want %v from one parse", got, tally.calls.Load(), at(20))
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := bytes.ReplaceAll(before, []byte(at(20).Format(time.RFC3339Nano)), []byte(at(23).Format(time.RFC3339Nano)))
+	if len(after) != len(before) || bytes.Equal(after, before) {
+		t.Fatalf("rewrite changed the size (%d -> %d) or nothing", len(before), len(after))
+	}
+	if err := os.WriteFile(path, after, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at(24), at(24)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(wedgeRecoveryTTL)
+	if got := restartProof(w, time.Time{}, giveUpEvents(), chats); !got.Equal(at(23)) || tally.calls.Load() != 2 {
+		t.Fatalf("same-size rewrite: activity %v, parses %d; want %v from a second parse", got, tally.calls.Load(), at(23))
+	}
+}
+
+// ListSessions hydrates every session one after another. Twenty wedged
+// sessions whose reads are slow must cost the list one shared wait, not one
+// wait each (4s on a cold cache before the wait was shared).
+func TestRestartProofActivity_AListWaitsOnceForAllItsWedgedSessions(t *testing.T) {
+	const wedged = 20
+	ctx := context.Background()
+	srv, _ := wedgeFixture(t, &fakeTally{}, wedgeSetup{extraSessions: wedged - 1})
+	release := make(chan struct{})
+	srv.transcriptTally = func(ctx context.Context, _ string, _ *models.AgentChat, _, _ time.Time) (agenttelemetry.Counts, error) {
+		select {
+		case <-release:
+			return agenttelemetry.Counts{LastOutputAt: at(20)}, nil
+		case <-ctx.Done():
+			return agenttelemetry.Counts{}, ctx.Err()
+		}
+	}
+	srv.wedgeCache.readWait = wedgeReadWait
+
+	start := time.Now()
+	listed, err := srv.ListSessions(ctx, connect.NewRequest(&pb.ListSessionsRequest{}))
+	took := time.Since(start)
+	t.Logf("cold ListSessions over %d wedged sessions with slow reads took %v", wedged, took)
+	close(release)
+	if err != nil || len(listed.Msg.GetSessions()) != wedged {
+		t.Fatalf("ListSessions = %v, %v; want the %d sessions", listed, err, wedged)
+	}
+	for _, p := range listed.Msg.GetSessions() {
+		settle(t, srv.wedgeCache, p.GetId())
+	}
+	// A wait per session would take wedged x wedgeReadWait; five waits leave a
+	// loaded runner headroom for the rest of the list.
+	if took > 5*wedgeReadWait {
+		t.Fatalf("cold ListSessions took %v; want one shared wait of %v for the whole list", took, wedgeReadWait)
+	}
+}
+
+// A read that outlasts its caller's wait lands after that caller answered
+// with the older value, so the cache reports the session once the read
+// advances its known output, and not when a later read finds nothing new.
+func TestRestartProofActivity_AReadThatOutlastsItsWaitReportsTheChange(t *testing.T) {
+	now := at(30)
+	cache := NewWedgeActivityCache()
+	cache.now = func() time.Time { return now }
+	cache.readWait = time.Millisecond
+	var reported []string
+	var mu sync.Mutex
+	cache.SetOnChange(func(sessionID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		reported = append(reported, sessionID)
+	})
+	release := make(chan struct{})
+	w := WedgeActivity{Cache: cache, Tally: func(ctx context.Context, _ string, _ *models.AgentChat, _, _ time.Time) (agenttelemetry.Counts, error) {
+		<-release
+		return agenttelemetry.Counts{LastOutputAt: at(20)}, nil
+	}}
+	reports := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(reported)
+	}
+
+	if got := restartProof(w, time.Time{}, giveUpEvents(), twoChats[:1]); !got.IsZero() {
+		t.Fatalf("caller answered %v before the read landed; want the cold value", got)
+	}
+	if got := reports(); len(got) != 0 {
+		t.Fatalf("reported %v before the read landed", got)
+	}
+	close(release)
+	settle(t, cache, "s1")
+	if got := reports(); !slices.Equal(got, []string{"s1"}) {
+		t.Fatalf("reported %v once the read found output; want [s1]", got)
+	}
+
+	now = now.Add(wedgeRecoveryTTL)
+	restartProof(w, time.Time{}, giveUpEvents(), twoChats[:1])
+	settle(t, cache, "s1")
+	if got := reports(); !slices.Equal(got, []string{"s1"}) {
+		t.Fatalf("reported %v after a re-read found the same output; want only the first [s1]", got)
+	}
+}
+
+// Each read can keep a core busy for its whole budget, so however many
+// sessions are due at once, only wedgeConcurrentReads parse at a time, and the
+// rest still run once a slot frees.
+func TestRestartProofActivity_CapsConcurrentReads(t *testing.T) {
+	const sessions = 3 * wedgeConcurrentReads
+	cache := NewWedgeActivityCache()
+	cache.readWait = time.Millisecond
+	var (
+		mu                      sync.Mutex
+		running, peak, finished int
+	)
+	counts := func() (int, int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return running, peak, finished
+	}
+	release := make(chan struct{})
+	w := WedgeActivity{Cache: cache, Tally: func(ctx context.Context, _ string, _ *models.AgentChat, _, _ time.Time) (agenttelemetry.Counts, error) {
+		mu.Lock()
+		running++
+		peak = max(peak, running)
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		running--
+		finished++
+		mu.Unlock()
+		return agenttelemetry.Counts{}, nil
+	}}
+	q := WedgeQuery{WorktreePath: "/wt", Chats: twoChats[:1], GiveUpAt: at(16)}
+	for i := range sessions {
+		q.SessionID = fmt.Sprintf("s%d", i)
+		w.RestartProofActivity(context.Background(), q)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for r, _, _ := counts(); r < wedgeConcurrentReads && time.Now().Before(deadline); r, _, _ = counts() {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, got, _ := counts(); got != wedgeConcurrentReads {
+		t.Fatalf("%d reads parsed at once; want %d", got, wedgeConcurrentReads)
+	}
+	close(release)
+	for i := range sessions {
+		settle(t, cache, fmt.Sprintf("s%d", i))
+	}
+	if _, _, got := counts(); got != sessions {
+		t.Fatalf("%d of %d reads ran; want every queued read to run once a slot freed", got, sessions)
 	}
 }

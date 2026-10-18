@@ -61,6 +61,7 @@ go_library(
         "home_sessions.go",
         "home_supervision.go",
         "home_table.go",
+        "home_ticket_notices.go",
         "home_upgrade.go",
         "home_view.go",
         "hostcontext.go",
@@ -206,6 +207,7 @@ go_test(
         "home_reorder_test.go",
         "home_supervision_test.go",
         "home_test.go",
+        "home_ticket_notices_test.go",
         "hostcontext_test.go",
         "huhtheme_test.go",
         "login_test.go",
@@ -269,6 +271,8 @@ go_test(
         "testdata/chatpicker-timeline-needed-short-120.golden",
         "testdata/chatpicker-timeline-needed-short-300.golden",
         "testdata/chatpicker-timeline-needed-short-80.golden",
+        "testdata/chatpicker-timeline-needed-paged-40.golden",
+        "testdata/chatpicker-timeline-needed-paged-44.golden",
     ],
     shard_count = 4,  # keep: 1510 independent test funcs, 180s serial under native go test -race (four timeline and wrap property tests are 144s of it); TIMEOUT at the medium (300s) ceiling on CI
     deps = [
@@ -279,6 +283,7 @@ go_test(
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/models",
         "//lib/bossalib/sessionreason",
         "//lib/bossalib/telemetry",
         "//lib/bossalib/termnorm",

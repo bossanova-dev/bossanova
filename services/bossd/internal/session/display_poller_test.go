@@ -183,6 +183,52 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 	}
 }
 
+// TestDisplayPoller_KeepsStatusWhenAllowedStrategiesCannotBeRead covers PR
+// #3266's follow-up: a rebase-strategy repo with squash enabled shows a PR
+// GitHub cannot rebase as PASSING. One failed read of the allowed strategies
+// must keep PASSING, not flip it to CONFLICT for a poll.
+func TestDisplayPoller_KeepsStatusWhenAllowedStrategiesCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo", MergeStrategy: models.MergeStrategyRebase}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", PRNumber: &prNum}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		Mergeable:        boolPtr(true),
+		Rebaseable:       boolPtr(false),
+		MergeStateStatus: vcs.MergeStateStatusClean,
+		HeadSHA:          "abc123",
+	}
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, zerolog.Nop())
+	poller.poll(ctx)
+	if e := tracker.Get("sess-1"); e == nil || e.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("first poll: entry = %+v, want PASSING", e)
+	}
+
+	// poll() would throttle this session for the rest of the minute, so drive
+	// the failed-read poll directly.
+	vp.allowedErr = fmt.Errorf("gh api: secondary rate limit")
+	poller.pollSession(ctx, repos.repos["repo-1"], sessions.sessions["sess-1"], prNum)
+	if got := len(vp.getPRStatusPRNumbers); got != 2 {
+		t.Fatalf("GetPRStatus called %d times, want 2 (the failed-read poll never ran)", got)
+	}
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("the failed read dropped the display entry")
+	}
+	if e.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("after one failed allowed-strategies read: Status = %d, want PASSING (%d)", e.Status, vcs.DisplayStatusPassing)
+	}
+}
+
 func TestDisplayPollerDoesNotShowConflictForUnstablePR(t *testing.T) {
 	ctx := context.Background()
 	mergeable := true

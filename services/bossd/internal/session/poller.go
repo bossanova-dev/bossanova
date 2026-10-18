@@ -398,7 +398,12 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 	// Check for merge conflicts. Carry the head SHA so the dispatcher can
 	// head-SHA-gate attempt counting (BOS-235): a conflict re-observed on an
 	// unchanged commit is a free settle lap, not a fresh attempt.
-	if repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "poller") {
+	conflict, err := repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "poller")
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sess.ID).Msg("poller: classify rebase-only block; waiting for next poll")
+		return
+	}
+	if conflict {
 		emitIf(machine.ConflictDetected, vcs.ConflictDetected{PRID: prID, HeadSHA: prStatus.HeadSHA})
 		return
 	}

@@ -3,7 +3,7 @@ module github.com/recurser/bossd
 go 1.26.0
 
 require (
-	connectrpc.com/connect v1.21.0
+	connectrpc.com/connect v1.21.1
 	github.com/99designs/keyring v1.2.2
 	github.com/creack/pty/v2 v2.0.1
 	github.com/google/go-github/v76 v76.0.0
@@ -48,7 +48,7 @@ require (
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/posthog/posthog-go v1.34.0 // indirect
+	github.com/posthog/posthog-go v1.35.0 // indirect
 	github.com/pressly/goose/v3 v3.28.0 // indirect
 	github.com/qmuntal/stateless v1.8.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

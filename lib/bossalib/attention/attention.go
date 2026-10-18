@@ -217,6 +217,16 @@ func computeFix(in Input) *pb.SessionAttention {
 	}
 	// With no chat to open, an older client's OPEN_CHAT would attach an empty
 	// target, which starts a brand-new chat.
+	//
+	// No dated apiversion bump for dropping OPEN_CHAT, and why: Session.attention
+	// reaches the boss TUI, which stamps its built Current but can point at a
+	// remote daemon of another version, and the web through bosso, both
+	// version-skewed. The web never reads OPEN_CHAT. A TUI older than #3238 binds
+	// enter to OPEN_CHAT only when it is listed and otherwise opens the chat
+	// picker, and dropping a value from a repeated enum is wire-safe. A
+	// down-convert could only re-add OPEN_CHAT with the empty target, which is
+	// the brand-new-chat defect itself, so no transform is wanted. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 	if in.Fix.ChatID != "" {
 		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 	}

@@ -86,13 +86,12 @@ func resolveAllowed(allowed []string, configured string) (string, error) {
 // RebaseRefusalBlocksMerge reports whether a PR GitHub cannot rebase is kept
 // from merging: the resolved strategy is rebase and SquashFallback has no squash
 // to retry with. With squash enabled, MergeSession lands the PR, so a rebase-only
-// block is no conflict. An unreadable allowed set fails the way ResolveStrategy
-// and SquashFallback do: the configured strategy stands and no fallback is
-// assumed.
+// block is no conflict. An unreadable allowed set is an error, not a guess: one
+// failed read must not flip a PR's display status for a poll.
 func RebaseRefusalBlocksMerge(ctx context.Context, provider vcs.Provider, repoPath, configured string) (bool, error) {
 	allowed, err := provider.GetAllowedMergeStrategies(ctx, repoPath)
 	if err != nil {
-		return configured == "rebase", nil
+		return false, fmt.Errorf("read allowed merge strategies: %w", err)
 	}
 	strategy, err := resolveAllowed(allowed, configured)
 	if err != nil {

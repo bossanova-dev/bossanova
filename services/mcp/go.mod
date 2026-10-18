@@ -5,7 +5,7 @@ go 1.26.0
 replace github.com/recurser/bossalib => ../../lib/bossalib
 
 require (
-	connectrpc.com/connect v1.21.0
+	connectrpc.com/connect v1.21.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/recurser/bossalib v0.0.0
 )

@@ -45,8 +45,14 @@ const wedgeReadBudget = 2 * time.Minute
 
 // wedgeReadWait is how long the caller that starts a read waits for it before
 // it answers with what is already known. A read that outlasts it finishes in
-// the background and serves later callers.
+// the background, serves later callers and reports the change (SetOnChange).
+// Callers that hydrate many sessions share one such wait (ShareReadWait).
 const wedgeReadWait = 200 * time.Millisecond
+
+// wedgeConcurrentReads caps the background reads parsing at once across every
+// session: each can keep a core busy for a whole wedgeReadBudget on a
+// multi-gigabyte transcript. A read waits for a slot before its budget starts.
+const wedgeConcurrentReads = 2
 
 // TranscriptTallier tallies one chat's transcript over [since, until).
 type TranscriptTallier func(ctx context.Context, worktreePath string, chat *models.AgentChat, since, until time.Time) (agenttelemetry.Counts, error)
@@ -58,11 +64,12 @@ type TranscriptTallier func(ctx context.Context, worktreePath string, chat *mode
 // while no output is known or after a failed attempt, and wedgeRecoveryTTL
 // after it once output is known. An entry not queried for wedgeIdleTTL is
 // dropped. Reads run in the background, one per session at a time, so no
-// caller's request waits on a transcript parse or starts a second one. Each
-// chat transcript's output is kept per file version, so an unchanged
-// transcript is never parsed twice. Share one cache between every hydrator in
-// the process so they hand clients the same value. Safe for concurrent use;
-// construct with NewWedgeActivityCache.
+// caller's request waits on a transcript parse or starts a second one, and at
+// most wedgeConcurrentReads of them parse at a time. Each chat transcript's
+// output is kept per file version, so an unchanged transcript is never parsed
+// twice. Share one cache between every hydrator in the process so they hand
+// clients the same value. Safe for concurrent use; construct with
+// NewWedgeActivityCache.
 type WedgeActivityCache struct {
 	mu      sync.Mutex
 	now     func() time.Time
@@ -72,6 +79,10 @@ type WedgeActivityCache struct {
 	warnedAt map[string]time.Time
 	// inflight is each session's running background read.
 	inflight map[string]wedgeRead
+	// slots holds one token per background read parsing now.
+	slots chan struct{}
+	// onChange is told each session whose known output a read advanced.
+	onChange func(sessionID string)
 	// transcripts is each chat's output after a give-up, per file version.
 	transcripts map[string]transcriptOutput
 	// readWait is wedgeReadWait; tests that need a read to land before the
@@ -112,6 +123,7 @@ func NewWedgeActivityCache() *WedgeActivityCache {
 		entries:     make(map[string]wedgeActivityEntry),
 		warnedAt:    make(map[string]time.Time),
 		inflight:    make(map[string]wedgeRead),
+		slots:       make(chan struct{}, wedgeConcurrentReads),
 		transcripts: make(map[string]transcriptOutput),
 		readWait:    wedgeReadWait,
 	}
@@ -136,10 +148,43 @@ func (c *WedgeActivityCache) lookup(sessionID string, giveUpAt time.Time) (time.
 	return e.output, now.Sub(e.readAt) >= ttl
 }
 
+// SetOnChange registers fn to be told, from the read's goroutine, each session
+// whose known output a background read advanced. A caller that stopped waiting
+// for the read answered with the older value, so fn is how that value is
+// corrected where nothing polls (the reverse stream to bosso).
+func (c *WedgeActivityCache) SetOnChange(fn func(sessionID string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onChange = fn
+}
+
+type wedgeWaitDeadlineKey struct{}
+
+// ShareReadWait returns ctx carrying one read wait for every session hydrated
+// under it: a read started under the returned context is waited for only until
+// one readWait from now, so a request hydrating many sessions waits at most
+// that long in total. A nil cache returns ctx.
+func (c *WedgeActivityCache) ShareReadWait(ctx context.Context) context.Context {
+	if c == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wedgeWaitDeadlineKey{}, time.Now().Add(c.readWait))
+}
+
+// readWaitFor is how long a caller under ctx waits for the read it started.
+func (c *WedgeActivityCache) readWaitFor(ctx context.Context) time.Duration {
+	wait := c.readWait
+	if deadline, ok := ctx.Value(wedgeWaitDeadlineKey{}).(time.Time); ok {
+		wait = min(wait, time.Until(deadline))
+	}
+	return wait
+}
+
 // record stores a read of sessionID's give-up: found is what it found, failed
-// whether it was incomplete. The known output keeps the newer of the two.
-// Entries idle for wedgeIdleTTL are dropped.
-func (c *WedgeActivityCache) record(sessionID string, giveUpAt, found time.Time, failed bool) {
+// whether it was incomplete. The known output keeps the newer of the two, and
+// the returned listener is non-nil when the read advanced it. Entries idle for
+// wedgeIdleTTL are dropped.
+func (c *WedgeActivityCache) record(sessionID string, giveUpAt, found time.Time, failed bool) func(string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -157,32 +202,38 @@ func (c *WedgeActivityCache) record(sessionID string, giveUpAt, found time.Time,
 	if !ok || !e.giveUpAt.Equal(giveUpAt) {
 		e = wedgeActivityEntry{giveUpAt: giveUpAt}
 	}
+	var advanced func(string)
 	if found.After(e.output) {
 		e.output = found
+		advanced = c.onChange
 	}
 	e.readAt, e.failed, e.usedAt = now, failed, now
 	c.entries[sessionID] = e
+	return advanced
 }
 
 // startRead runs read in the background for sessionID unless a read of the
 // session is already running, and returns the channel closed once the running
-// read finishes and whether this call started it. The read's context keeps
-// ctx's values but not its cancellation: callers that go away leave the read
-// to finish within wedgeReadBudget for whoever asks next.
+// read finishes and whether this call started it. The read waits for one of
+// the cache's slots, then runs within wedgeReadBudget. Its context keeps ctx's
+// values but not its cancellation: callers that go away leave the read to
+// finish for whoever asks next.
 func (c *WedgeActivityCache) startRead(ctx context.Context, logger zerolog.Logger, sessionID string, read func(context.Context)) (<-chan struct{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if r, ok := c.inflight[sessionID]; ok {
 		return r.done, false
 	}
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wedgeReadBudget)
 	done := safego.Go(logger, func() {
 		defer func() {
-			cancel()
 			c.mu.Lock()
 			delete(c.inflight, sessionID)
 			c.mu.Unlock()
 		}()
+		c.slots <- struct{}{}
+		defer func() { <-c.slots }()
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wedgeReadBudget)
+		defer cancel()
 		read(readCtx)
 	})
 	c.inflight[sessionID] = wedgeRead{done: done}
@@ -303,7 +354,8 @@ func (w WedgeActivity) RestartProofActivity(ctx context.Context, q WedgeQuery) t
 // persistedOutput returns the persisted output known after q's give-up. With
 // no cache it reads inline under ctx. With one it serves the cached value and,
 // when a read is due, starts one in the background and waits for it at most
-// the cache's readWait, so a slow read never holds the caller's request.
+// the cache's readWait, or what is left of a wait ShareReadWait put on ctx, so
+// a slow read never holds the caller's request.
 func (w WedgeActivity) persistedOutput(ctx context.Context, q WedgeQuery) time.Time {
 	read := func(ctx context.Context) (time.Time, bool) {
 		found, err := w.persistedOutputAfter(ctx, q.SessionID, q.WorktreePath, q.GiveUpAt, q.Chats)
@@ -322,12 +374,15 @@ func (w WedgeActivity) persistedOutput(ctx context.Context, q WedgeQuery) time.T
 	}
 	done, started := w.Cache.startRead(ctx, w.Logger, q.SessionID, func(ctx context.Context) {
 		found, failed := read(ctx)
-		w.Cache.record(q.SessionID, q.GiveUpAt, found, failed)
+		if onChange := w.Cache.record(q.SessionID, q.GiveUpAt, found, failed); onChange != nil {
+			onChange(q.SessionID)
+		}
 	})
-	if !started {
+	waitFor := w.Cache.readWaitFor(ctx)
+	if !started || waitFor <= 0 {
 		return output
 	}
-	wait := time.NewTimer(w.Cache.readWait)
+	wait := time.NewTimer(waitFor)
 	defer wait.Stop()
 	select {
 	case <-done:

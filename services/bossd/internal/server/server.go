@@ -2565,11 +2565,13 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 
 	// Hydrate the liveness heartbeat + auth-failed attention overlay per session.
 	// Runs after suppressStaleConflictAttention so the auth overlay sees the
-	// final attention state (and only fills in where none exists).
+	// final attention state (and only fills in where none exists). The whole
+	// list shares one wait for the restart-proof reads it starts.
+	wedge, wedgeCtx := s.wedgeActivity(), s.wedgeCache.ShareReadWait(ctx)
 	for _, p := range pbSessions {
 		chats := chatsBySession[p.Id]
 		HydrateAgentObservabilityWithAuthCorroboration(s.chatStatus, p, chats, s.authInvalidationCorroborated(ctx, p, chats))
-		HydrateRestartProofActivity(ctx, p, chats, s.wedgeActivity())
+		HydrateRestartProofActivity(wedgeCtx, p, chats, wedge)
 		// Lowest-ranked attention: applied after the agent overlay (BOS-1382).
 		HydrateVerifyAttention(p, entries[p.Id])
 	}
@@ -4541,24 +4543,38 @@ func recordChatRole(r pb.ChatRole) models.AgentChatRole {
 	return models.AgentChatRoleOperator
 }
 
-// errResumeChatGone refuses a resume of a chat that has no row and no saved
-// conversation, usually one deleted after the caller listed it. Recording it
-// would start a brand-new agent under the old id; a caller that wants a new
-// chat records one with resume unset.
+// errResumeChatGone refuses a resume of a chat that has no row, no live pane
+// and no saved conversation, usually one deleted after the caller listed it.
+// Recording it would start a brand-new agent under the old id; a caller that
+// wants a new chat records one with resume unset.
 //
-// No dated apiversion bump, and why: the old answer created that brand-new
-// chat, which is the defect, so no client can want it back. See
+// No dated apiversion bump, and why: RecordChat's resume callers are the boss
+// TUI's attach and `boss chat` (through the local client, co-deployed with
+// bossd, or through bosso's ProxyRecordChat when the client is remote, which
+// is version-skewed), the local MCP socket backend (released with bossd), and
+// the hosted MCP gateway through bosso (version-skewed). The web only records
+// new chats (resume unset), so it never reaches this refusal. Every caller
+// already surfaces RecordChat's NotFound, which a chat under another session
+// gets. The old answer created that brand-new chat, which is the defect, so no
+// down-convert or handler gate could restore it for an older client without
+// restoring the defect. Re-adopting a live pane is the answer every client got
+// before the refusal existed. See
 // docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 var errResumeChatGone = errors.New("chat no longer exists")
 
-// resumableTranscript reports whether a chat with no row still has a saved
-// conversation to resume, as when a lost chat is recorded again by its id.
-func (s *Server) resumableTranscript(ctx context.Context, agentName, sessionID, agentSessionID string) bool {
+// resumable reports whether a chat with no row can still be resumed: its tmux
+// pane is still live (a DeleteChat whose kill failed leaves one) or it has a
+// saved conversation, as when a lost chat is recorded again by its id.
+func (s *Server) resumable(ctx context.Context, agentName, sessionID, agentSessionID string) bool {
 	sess, err := s.sessions.Get(ctx, sessionID)
 	if err != nil || sess == nil {
 		return false
 	}
-	return s.chatSpawnDeps().Transcripts.TranscriptExists(ctx, agentName, sess.WorktreePath, agentSessionID)
+	deps := s.chatSpawnDeps()
+	if deps.Tmux != nil && deps.Tmux.Available(ctx) && deps.Tmux.HasSession(ctx, tmux.ChatSessionName(sess.RepoID, agentSessionID)) {
+		return true
+	}
+	return deps.Transcripts.TranscriptExists(ctx, agentName, sess.WorktreePath, agentSessionID)
 }
 
 func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
@@ -4615,7 +4631,7 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		if err := validateAgentSessionID(agentName, msg.AgentSessionId); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		if msg.GetResume() && !s.resumableTranscript(ctx, agentName, msg.SessionId, msg.AgentSessionId) {
+		if msg.GetResume() && !s.resumable(ctx, agentName, msg.SessionId, msg.AgentSessionId) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("%w: %s", errResumeChatGone, msg.AgentSessionId))
 		}
 		chat, err = s.agentChats.Create(ctx, db.CreateAgentChatParams{

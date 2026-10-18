@@ -1003,3 +1003,105 @@ func TestRecordChat_NewChatSkipsTheTranscriptProbe(t *testing.T) {
 		t.Fatalf("a new chat probed for a transcript: %+v", oracle.calls)
 	}
 }
+
+// agentTranscriptOracle has a saved conversation only for one agent's id.
+type agentTranscriptOracle struct {
+	agentName, agentSessionID string
+}
+
+func (o agentTranscriptOracle) TranscriptExists(_ context.Context, agentName, _, agentSessionID string) bool {
+	return agentName == o.agentName && agentSessionID == o.agentSessionID
+}
+
+// The documented way to resurrect a lost codex chat records its rollout id
+// with resume set. A codex conversation is found only by the codex lookup, so
+// the probe must ask the agent the chat is recorded under, whether the
+// request names it or the session's agent supplies it.
+func TestRecordChat_ResumeOfACodexRolloutProbesCodex(t *testing.T) {
+	const rollout = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"
+	for _, tc := range []struct {
+		name         string
+		sessionAgent string
+		requestAgent *string
+	}{
+		{name: "agent named on the request", sessionAgent: "claude", requestAgent: strPtr("codex")},
+		{name: "the session's agent", sessionAgent: "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, chats := newRecordChatTestServer(&models.Session{ID: "s1", AgentName: tc.sessionAgent, WorktreePath: "/work"})
+			srv.wakeHook.transcripts = agentTranscriptOracle{agentName: "codex", agentSessionID: rollout}
+			if _, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+				SessionId: "s1", AgentSessionId: rollout, AgentName: tc.requestAgent, Title: "Lost chat", Resume: true,
+			})); err != nil {
+				t.Fatalf("RecordChat: %v; want the codex rollout resumed", err)
+			}
+			if chats.created == nil || chats.created.AgentName != "codex" {
+				t.Fatalf("recorded %+v, want the rollout recorded as a codex chat", chats.created)
+			}
+		})
+	}
+}
+
+// livePaneTmux reports exactly one tmux session alive.
+type livePaneTmux struct {
+	*fakeTmuxClient
+	live string
+}
+
+func (l livePaneTmux) HasSession(_ context.Context, name string) bool { return name == l.live }
+
+// A chat whose row is gone while its pane still runs (DeleteChat logs a failed
+// kill and deletes the row anyway) is re-adopted by a resume of its id, even
+// with no saved conversation yet; another chat's live pane does not count.
+func TestRecordChat_ResumeReadoptsALivePaneWithNoRow(t *testing.T) {
+	const id = "0258e22a-dff1-4a9c-81c2-731f25767b03"
+	for _, tc := range []struct {
+		name     string
+		paneOf   string
+		wantCode connect.Code
+	}{
+		{name: "its own pane is live", paneOf: id},
+		{name: "only another chat's pane is live", paneOf: "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f", wantCode: connect.CodeNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := setupServerTestDB(t)
+			repo, err := db.NewRepoStore(database).Create(ctx, db.CreateRepoParams{DisplayName: "pane", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/pane", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess, err := db.NewSessionStore(database).Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "Pane", WorktreePath: t.TempDir(), BranchName: "fix/pane", AgentName: "claude"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			chats := db.NewAgentChatStore(database)
+			livePane := tmux.ChatSessionName(repo.ID, tc.paneOf)
+			tmuxer := &fakeTmuxClient{available: true}
+			srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, nil)
+			srv.wakeHook.spawner = livePaneTmux{fakeTmuxClient: tmuxer, live: livePane}
+			srv.initDeferrers()
+
+			resp, err := srv.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+				SessionId: sess.ID, AgentSessionId: id, Title: "Pane", Resume: true,
+			}))
+			if tc.wantCode != 0 {
+				if connect.CodeOf(err) != tc.wantCode {
+					t.Fatalf("RecordChat err = %v, want code %v", err, tc.wantCode)
+				}
+				if _, getErr := chats.GetByAgentSessionID(ctx, id); getErr == nil {
+					t.Fatal("recorded a row for a chat with no pane and no conversation")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RecordChat: %v; want the live pane re-adopted", err)
+			}
+			if got := resp.Msg.GetChat().GetTmuxSessionName(); got != livePane {
+				t.Fatalf("tmux session = %q, want the live pane %q", got, livePane)
+			}
+			if tmuxer.createdN != 0 {
+				t.Fatalf("spawned %d new panes, want the live one re-adopted", tmuxer.createdN)
+			}
+		})
+	}
+}

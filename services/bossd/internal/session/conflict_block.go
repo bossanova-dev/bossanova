@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 
 	"github.com/rs/zerolog"
 
@@ -10,13 +11,13 @@ import (
 	"github.com/recurser/bossd/internal/mergepolicy"
 )
 
-func repairableConflictBlock(ctx context.Context, provider vcs.Provider, repo *models.Repo, prStatus *vcs.PRStatus, logger zerolog.Logger, caller string) bool {
-	return conflictBlockKind(ctx, provider, repo, prStatus, logger, caller).Repairable()
-}
-
-func conflictBlockKind(ctx context.Context, provider vcs.Provider, repo *models.Repo, prStatus *vcs.PRStatus, logger zerolog.Logger, caller string) vcs.ConflictBlockKind {
+// repairableConflictBlock reports whether the PR is blocked on a conflict that
+// repair can fix. A non-nil error means the answer is unknown this poll (the
+// allowed merge strategies could not be read), so the caller keeps its previous
+// state rather than guessing conflict or no conflict.
+func repairableConflictBlock(ctx context.Context, provider vcs.Provider, repo *models.Repo, prStatus *vcs.PRStatus, logger zerolog.Logger, caller string) (bool, error) {
 	if prStatus == nil || repo == nil {
-		return vcs.ConflictBlockNone
+		return false, nil
 	}
 
 	// First pass with rebaseStrategy=false: this classifies every
@@ -27,7 +28,7 @@ func conflictBlockKind(ctx context.Context, provider vcs.Provider, repo *models.
 	// ConflictBlockKind call below then reclassifies with that answer applied.
 	kind := prStatus.ConflictBlockKind(false)
 	if kind.Repairable() || !prStatus.HasRebaseConflictBlock() {
-		return kind
+		return kind.Repairable(), nil
 	}
 
 	// A rebase-only block is a conflict only when it keeps the PR from
@@ -42,13 +43,19 @@ func conflictBlockKind(ctx context.Context, provider vcs.Provider, repo *models.
 	// another version, and the web reaches it through version-skewed bosso. A
 	// response carries neither rebaseability nor the repo's allowed strategies,
 	// so a down-convert cannot tell this shape from any other, and restoring
-	// CONFLICT would re-show the false conflict this corrects. See
+	// CONFLICT would re-show the false conflict this corrects. The same holds
+	// for a poll whose allowed strategies cannot be read: it keeps the status
+	// the last poll served instead of showing CONFLICT. See
 	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 	blocks, err := mergepolicy.RebaseRefusalBlocksMerge(ctx, provider, repo.OriginURL, string(repo.MergeStrategy))
+	if errors.Is(err, mergepolicy.ErrMergeStrategyDisallowed) {
+		// Nothing can merge the PR, so repair has nothing to fix either.
+		logger.Warn().Err(err).Str("repo", repo.ID).Str("caller", caller).Msg("conflict classification: no merge strategy is enabled")
+		return false, nil
+	}
 	if err != nil {
-		logger.Warn().Err(err).Str("repo", repo.ID).Str("caller", caller).Msg("resolve merge strategy for conflict classification")
-		return vcs.ConflictBlockUnknown
+		return false, err
 	}
 
-	return prStatus.ConflictBlockKind(blocks)
+	return prStatus.ConflictBlockKind(blocks).Repairable(), nil
 }

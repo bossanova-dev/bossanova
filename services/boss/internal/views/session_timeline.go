@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -457,7 +458,7 @@ func (m ChatPickerModel) timelineRowBudget() int {
 	room := m.height - m.chatListOverhead() - m.detailsReservedTableRows() - 1
 	if m.neededQuestion() != "" {
 		room -= neededChromeRows + 1
-		room = min(room, max(2, room-len(m.neededLines())+1))
+		room = min(room, max(2, room-len(m.neededLines(0))+1))
 	}
 	return room
 }
@@ -534,31 +535,48 @@ func fitTimelineRows(rows [][]string, at []int, total, pin, budget int) ([]int, 
 // wide character, so the text wraps as if both widths were that much wider and
 // fitProseLine truncates the overflow.
 func wordWrap(text string, first, rest int) []string {
-	words := strings.Fields(text)
+	return wrapWords(text, first, rest, func(line int) bool { return line == 0 })
+}
+
+// wrapWords is wordWrap with first applying to every line narrow reports,
+// counted from zero, rather than only the first. An empty line that cannot
+// hold a word is left for the next line only when that line is wider and so
+// holds the word whole or takes a bigger piece; otherwise it takes as much of
+// the word as fits, and at least its first rune. Every pass therefore places
+// part of the word or moves to a wider line, so the wrap always ends.
+func wrapWords(text string, first, rest int, narrow func(line int) bool) []string {
 	if rest < 2 {
 		first, rest = first+2-rest, 2
 	}
+	width := func(line int) int {
+		if narrow(line) {
+			return first
+		}
+		return rest
+	}
 	lines := []string{""}
-	limit := first
-	for _, word := range words {
+	for _, word := range strings.Fields(text) {
 		for word != "" {
-			cur := lines[len(lines)-1]
+			at := len(lines) - 1
+			cur, limit := lines[at], width(at)
 			used := ansi.StringWidth(cur)
 			if used > 0 {
 				used++
 			}
 			if used+ansi.StringWidth(word) <= limit {
-				lines[len(lines)-1] = strings.TrimPrefix(cur+" "+word, " ")
+				lines[at] = strings.TrimPrefix(cur+" "+word, " ")
 				break
 			}
-			if cur == "" && ansi.StringWidth(word) > rest {
-				if piece := ansi.Truncate(word, max(0, limit), ""); piece != "" {
-					lines[len(lines)-1] = piece
+			if next := width(at + 1); cur == "" && ansi.StringWidth(word) > next {
+				if piece := ansi.Truncate(word, max(0, limit), ""); ansi.StringWidth(piece) > 0 {
+					lines[at] = piece
 					word = ansi.TruncateLeft(word, ansi.StringWidth(piece), "")
+				} else if next <= limit {
+					_, size := utf8.DecodeRuneInString(word)
+					lines[at], word = word[:size], word[size:]
 				}
 			}
 			lines = append(lines, "")
-			limit = rest
 		}
 	}
 	return lines
@@ -568,7 +586,8 @@ func wordWrap(text string, first, rest int) []string {
 // when the session asks nothing of the operator. The answer starts on the
 // label's row and its wrapped lines hang under its first word. An answer too
 // long for the room pages, with the pager on the row below and the label on
-// each page's top row.
+// each page's top row. The pager starts under the label when the hang leaves
+// it too little room.
 func (m ChatPickerModel) neededBlock() string {
 	if m.neededQuestion() == "" {
 		return ""
@@ -578,7 +597,9 @@ func (m ChatPickerModel) neededBlock() string {
 	rows := make([]string, 0, size+1)
 	for i, line := range lines[start : start+size] {
 		gutter := hang
-		if i == 0 && (start == 0 || hang != "") {
+		// A one-row window keeps the unpaged wrap, whose later lines are too
+		// wide to share a row with the label, so only its first page has it.
+		if i == 0 && (start == 0 || hang != "" || size > 1) {
 			gutter = neededLabel
 		}
 		// The answer is the one thing on the screen the operator must act on,
@@ -586,7 +607,18 @@ func (m ChatPickerModel) neededBlock() string {
 		rows = append(rows, m.fitProseLine(gutter+styleEmphasis.Render(line)))
 	}
 	if len(lines) > size {
-		rows = append(rows, m.fitProseLine(fmt.Sprintf("%spgup/pgdown (%d–%d of %d)", hang, start+1, start+size, len(lines))))
+		total := len(lines)
+		for total > start+1 && lines[total-1] == "" {
+			total--
+		}
+		pager := fmt.Sprintf("pgup/pgdown (%d–%d of %d)", start+1, min(start+size, total), total)
+		// The widest page's pager decides where every page's pager starts, so
+		// it stays put while paging.
+		widest := fmt.Sprintf("pgup/pgdown (%d–%d of %d)", total, total, total)
+		if avail := m.chatPickerProseAvailWidth(); avail <= 0 || len(hang)+ansi.StringWidth(widest) <= avail {
+			pager = hang + pager
+		}
+		rows = append(rows, m.fitProseLine(pager))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -639,22 +671,55 @@ func (m ChatPickerModel) neededWrapWidth() int {
 
 // neededWindow keeps the complete question available while protecting the chat
 // table and footer. Only the question scrolls; chat navigation stays independent.
-// A paged window gives a row to its pager.
+// A paged window gives a row to its pager. Without a hang, continuation lines
+// are wider than the label leaves, so the answer is rewrapped into whole pages
+// that each start at the label width, and the window always opens on a page
+// start: a resize re-pages the answer without resetting the offset. A one-row
+// window cannot fit a label-width line on every page, so it keeps the unpaged
+// wrap.
 func (m ChatPickerModel) neededWindow() (lines []string, start, size int) {
-	lines = m.neededLines()
+	lines = m.neededLines(0)
 	size = len(lines)
+	paged := false
 	if m.height > 0 {
 		if room := m.height - m.chatListOverhead() - m.timelineHeight() - neededChromeRows - m.detailsReservedTableRows(); size > room {
 			size = max(1, room-1)
+			if m.neededHang() == 0 && size > 1 {
+				lines, size = m.neededPages(size)
+				paged = true
+			}
 		}
 	}
-	return lines, min(max(0, m.neededOffset), len(lines)-size), size
+	start = min(max(0, m.neededOffset), len(lines)-size)
+	if paged {
+		start -= start % size
+	}
+	return lines, start, size
+}
+
+// neededPages is the answer rewrapped into pages of at most most lines, and
+// at least two. It takes the shortest page that keeps the page count, so the
+// blank rows padding the last page stay fewer than the pages rather than up
+// to a page.
+func (m ChatPickerModel) neededPages(most int) ([]string, int) {
+	lines := m.neededLines(most)
+	pages := len(lines) / most
+	for size := most - 1; size > 1; size-- {
+		shorter := m.neededLines(size)
+		if len(shorter)/size != pages {
+			break
+		}
+		lines, most = shorter, size
+	}
+	return lines, most
 }
 
 // neededLines is the answer word-wrapped to the block width less the label on
 // its first line and less the hang on the rest. A line's own leading spaces,
-// such as a checklist bullet's, carry onto every line it wraps into.
-func (m ChatPickerModel) neededLines() []string {
+// such as a checklist bullet's, carry onto every line it wraps into. A
+// positive page also narrows every page's first line to the label width and
+// pads the last page with blank lines.
+func (m ChatPickerModel) neededLines(page int) []string {
 	wrap := m.neededWrapWidth()
 	first, rest := wrap-len(neededLabel), max(1, wrap-m.neededHang())
 	var lines []string
@@ -664,15 +729,18 @@ func (m ChatPickerModel) neededLines() []string {
 		// paragraph stays one line.
 		wrapped := []string{strings.Join(strings.Fields(paragraph), " ")}
 		if wrap > 0 {
-			width := rest
-			if lines == nil {
-				width = first
-			}
-			wrapped = wordWrap(paragraph, width-len(lead), rest-len(lead))
+			offset := len(lines)
+			wrapped = wrapWords(paragraph, first-len(lead), rest-len(lead), func(line int) bool {
+				at := offset + line
+				return at == 0 || (page > 0 && at%page == 0)
+			})
 		}
 		for _, line := range wrapped {
 			lines = append(lines, lead+line)
 		}
+	}
+	for page > 0 && len(lines)%page != 0 {
+		lines = append(lines, "")
 	}
 	return lines
 }

@@ -796,8 +796,8 @@ func TestProxy_forgetBearer(t *testing.T) {
 	if got := ps.bearerForSession("sess-1"); got != "" {
 		t.Fatalf("sticky bearer not cleared by ForgetBearer: %q", got)
 	}
-	if sid, ok := ps.sessionForToken(tok); !ok || sid != "sess-1" {
-		t.Fatalf("path token must survive ForgetBearer: sessionForToken=%q,%v", sid, ok)
+	if sid, ok := ps.TokenTarget(tok); !ok || sid != "sess-1" {
+		t.Fatalf("path token must survive ForgetBearer: TokenTarget=%q,%v", sid, ok)
 	}
 	ps.ForgetBearer("unknown-session") // no panic for an unknown session
 }
@@ -822,10 +822,10 @@ func TestProxy_forgetAllBearers(t *testing.T) {
 	if got := ps.bearerForSession("sess-2"); got != "" {
 		t.Fatalf("sticky bearer for sess-2 not cleared: %q", got)
 	}
-	if sid, ok := ps.sessionForToken(tok1); !ok || sid != "sess-1" {
+	if sid, ok := ps.TokenTarget(tok1); !ok || sid != "sess-1" {
 		t.Fatalf("path token 1 must survive ForgetAllBearers: %q,%v", sid, ok)
 	}
-	if sid, ok := ps.sessionForToken(tok2); !ok || sid != "sess-2" {
+	if sid, ok := ps.TokenTarget(tok2); !ok || sid != "sess-2" {
 		t.Fatalf("path token 2 must survive ForgetAllBearers: %q,%v", sid, ok)
 	}
 	ps.ForgetAllBearers() // idempotent; no panic when already empty
@@ -1045,11 +1045,11 @@ func TestProxy_tokenRegistryRoundTrip(t *testing.T) {
 	if again := ps.TokenForSession("sess-1"); again != tok {
 		t.Fatalf("TokenForSession not stable: %q != %q", again, tok)
 	}
-	if sid, ok := ps.sessionForToken(tok); !ok || sid != "sess-1" {
-		t.Fatalf("sessionForToken(%q) = %q,%v want sess-1,true", tok, sid, ok)
+	if sid, ok := ps.TokenTarget(tok); !ok || sid != "sess-1" {
+		t.Fatalf("TokenTarget(%q) = %q,%v want sess-1,true", tok, sid, ok)
 	}
 	ps.Deregister("sess-1")
-	if _, ok := ps.sessionForToken(tok); ok {
+	if _, ok := ps.TokenTarget(tok); ok {
 		t.Fatalf("token still resolves after Deregister")
 	}
 }

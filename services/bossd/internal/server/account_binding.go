@@ -450,7 +450,7 @@ func (s *Server) inServiceChatAccount(ctx context.Context, sess *models.Session,
 	switch {
 	case chat.AccountID != nil && s.agentChats != nil:
 		if err := s.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
-			return "", fmt.Errorf("move chat %s to account %q: %w", chat.AgentSessionID, *next, err)
+			return "", s.lifecycle.MoveChatError(ctx, *next, err)
 		}
 		chat.AccountID = next
 	case chat.AccountID == nil && sameAgentSessionChat(sess, chat) && sess.AccountID != nil:

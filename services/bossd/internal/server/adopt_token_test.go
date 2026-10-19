@@ -52,9 +52,9 @@ func TestAdoptToken_registersExistingSessionToken(t *testing.T) {
 
 	ps.AdoptToken(tok, "sess-1")
 
-	sid, ok := ps.sessionForToken(tok)
+	sid, ok := ps.TokenTarget(tok)
 	if !ok || sid != "sess-1" {
-		t.Fatalf("sessionForToken = %q,%v want sess-1,true", sid, ok)
+		t.Fatalf("TokenTarget = %q,%v want sess-1,true", sid, ok)
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("clean adoption logged unexpectedly: %s", buf.String())
@@ -70,8 +70,8 @@ func TestAdoptToken_idempotentAndConflictSafe(t *testing.T) {
 		ps := newAdoptProxy(t, &buf)
 		ps.AdoptToken(tokA, "sess-1")
 		ps.AdoptToken(tokA, "sess-1") // sibling / re-sweep
-		if sid, ok := ps.sessionForToken(tokA); !ok || sid != "sess-1" {
-			t.Fatalf("sessionForToken = %q,%v want sess-1,true", sid, ok)
+		if sid, ok := ps.TokenTarget(tokA); !ok || sid != "sess-1" {
+			t.Fatalf("TokenTarget = %q,%v want sess-1,true", sid, ok)
 		}
 		if buf.Len() != 0 {
 			t.Fatalf("no-op re-adopt logged: %s", buf.String())
@@ -84,10 +84,10 @@ func TestAdoptToken_idempotentAndConflictSafe(t *testing.T) {
 		fresh := ps.TokenForSession("sess-1") // a live spawn minted this
 		ps.AdoptToken(tokA, "sess-1")         // stale pane's old token
 		// The fresh token still routes; the old one was NOT registered.
-		if sid, ok := ps.sessionForToken(fresh); !ok || sid != "sess-1" {
+		if sid, ok := ps.TokenTarget(fresh); !ok || sid != "sess-1" {
 			t.Fatalf("fresh token lost: %q,%v", sid, ok)
 		}
-		if _, ok := ps.sessionForToken(tokA); ok {
+		if _, ok := ps.TokenTarget(tokA); ok {
 			t.Fatalf("stale token registered over a live spawn; spawn must win")
 		}
 		if buf.Len() != 0 {
@@ -100,7 +100,7 @@ func TestAdoptToken_idempotentAndConflictSafe(t *testing.T) {
 		ps := newAdoptProxy(t, &buf)
 		ps.AdoptToken(tokA, "sess-1")
 		ps.AdoptToken(tokA, "sess-2") // same token, different session
-		if sid, ok := ps.sessionForToken(tokA); !ok || sid != "sess-1" {
+		if sid, ok := ps.TokenTarget(tokA); !ok || sid != "sess-1" {
 			t.Fatalf("first registration not kept: %q,%v", sid, ok)
 		}
 		logged := buf.String()
@@ -134,14 +134,14 @@ func TestAdoptTokenForChat_registersAndCleansUp(t *testing.T) {
 	ps.AdoptTokenForChat("sess-1", "chat-1", "acct-chat", tok)
 
 	// Resolves to the CHAT target shape (not the bare session id).
-	sid, ok := ps.sessionForToken(tok)
+	sid, ok := ps.TokenTarget(tok)
 	want := session.ProxyTargetForChat("chat-1", "acct-chat")
 	if !ok || sid != want {
-		t.Fatalf("sessionForToken = %q,%v want %q,true", sid, ok, want)
+		t.Fatalf("TokenTarget = %q,%v want %q,true", sid, ok, want)
 	}
 	// Bookkeeping is filled so Deregister tears the chat token down.
 	ps.Deregister("sess-1")
-	if _, ok := ps.sessionForToken(tok); ok {
+	if _, ok := ps.TokenTarget(tok); ok {
 		t.Fatalf("Deregister did not drop an adopted chat token; sessionHashes bookkeeping missing")
 	}
 	if buf.Len() != 0 {
@@ -157,10 +157,10 @@ func TestAdoptTokenForChat_conflictSafe(t *testing.T) {
 		ps := newAdoptProxy(t, &buf)
 		fresh := ps.TokenForChat("sess-1", "chat-1", "acct-chat")
 		ps.AdoptTokenForChat("sess-1", "chat-1", "acct-chat", tok)
-		if _, ok := ps.sessionForToken(tok); ok {
+		if _, ok := ps.TokenTarget(tok); ok {
 			t.Fatalf("stale chat token registered over a live spawn")
 		}
-		if sid, ok := ps.sessionForToken(fresh); !ok || sid != session.ProxyTargetForChat("chat-1", "acct-chat") {
+		if sid, ok := ps.TokenTarget(fresh); !ok || sid != session.ProxyTargetForChat("chat-1", "acct-chat") {
 			t.Fatalf("fresh chat token lost: %q,%v", sid, ok)
 		}
 		if buf.Len() != 0 {
@@ -173,7 +173,7 @@ func TestAdoptTokenForChat_conflictSafe(t *testing.T) {
 		ps := newAdoptProxy(t, &buf)
 		ps.AdoptTokenForChat("sess-1", "chat-1", "acct-a", tok)
 		ps.AdoptTokenForChat("sess-1", "chat-2", "acct-b", tok)
-		if sid, _ := ps.sessionForToken(tok); sid != session.ProxyTargetForChat("chat-1", "acct-a") {
+		if sid, _ := ps.TokenTarget(tok); sid != session.ProxyTargetForChat("chat-1", "acct-a") {
 			t.Fatalf("first chat registration not kept: %q", sid)
 		}
 		logged := buf.String()

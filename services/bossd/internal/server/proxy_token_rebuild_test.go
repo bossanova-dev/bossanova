@@ -129,7 +129,7 @@ func TestProxyTokenRegistry_SurvivesDaemonRestart(t *testing.T) {
 	// --- daemon B: fresh process, empty maps ---
 	var logB bytes.Buffer
 	daemonB := newRebuildProxy(t, store, &logB)
-	if got, ok := daemonB.sessionForToken(sessionToken); ok {
+	if got, ok := daemonB.TokenTarget(sessionToken); ok {
 		t.Fatalf("fresh daemon resolved a token before the rebuild: %q", got)
 	}
 	if err := daemonB.RebuildTokenRegistry(ctx); err != nil {
@@ -137,7 +137,7 @@ func TestProxyTokenRegistry_SurvivesDaemonRestart(t *testing.T) {
 	}
 
 	// AC1: the session-shaped token resolves identically on the new instance.
-	got, ok := daemonB.sessionForToken(sessionToken)
+	got, ok := daemonB.TokenTarget(sessionToken)
 	if !ok || got != wantSessionTarget {
 		t.Fatalf("session token after restart = %q,%v want %q,true", got, ok, wantSessionTarget)
 	}
@@ -147,7 +147,7 @@ func TestProxyTokenRegistry_SurvivesDaemonRestart(t *testing.T) {
 	// from the row's components through session.ProxyTargetForChat — so this is
 	// the assertion that catches a rebuild producing a plausible but different
 	// target, which would route the pane to the wrong account.
-	got, ok = daemonB.sessionForToken(chatToken)
+	got, ok = daemonB.TokenTarget(chatToken)
 	if !ok || got != wantChatTarget {
 		t.Fatalf("chat token after restart = %q,%v want %q,true", got, ok, wantChatTarget)
 	}
@@ -166,7 +166,7 @@ func TestProxyTokenRegistry_SurvivesDaemonRestart(t *testing.T) {
 
 	// A token nobody minted still 401s — the rebuild restores registrations, it
 	// does not make the proxy permissive.
-	if _, ok := daemonB.sessionForToken(strings.Repeat("f", 64)); ok {
+	if _, ok := daemonB.TokenTarget(strings.Repeat("f", 64)); ok {
 		t.Fatalf("rebuild made an unminted token resolvable")
 	}
 }
@@ -370,7 +370,7 @@ func TestProxyTokenRegistry_LiveRegistrationOutranksStoredRow(t *testing.T) {
 		t.Fatalf("RebuildTokenRegistry: %v", err)
 	}
 
-	got, ok := daemonB.sessionForToken(token)
+	got, ok := daemonB.TokenTarget(token)
 	want := session.ProxyTargetForChat("agent-session-99", "acct-new")
 	if !ok || got != want {
 		t.Fatalf("live registration lost to a stored row: got %q,%v want %q", got, ok, want)
@@ -401,7 +401,7 @@ func TestProxyTokenRegistry_RebuiltEntryIsEvictable(t *testing.T) {
 	}
 	// Both must be live first, or the eviction assertion below proves nothing.
 	for name, tok := range map[string]string{"session": sessionToken, "chat": chatToken} {
-		if _, ok := daemonB.sessionForToken(tok); !ok {
+		if _, ok := daemonB.TokenTarget(tok); !ok {
 			t.Fatalf("rebuild did not restore the %s token; the eviction check would be vacuous", name)
 		}
 	}
@@ -409,7 +409,7 @@ func TestProxyTokenRegistry_RebuiltEntryIsEvictable(t *testing.T) {
 	daemonB.Deregister(sessionID)
 
 	for name, tok := range map[string]string{"session": sessionToken, "chat": chatToken} {
-		if _, ok := daemonB.sessionForToken(tok); ok {
+		if _, ok := daemonB.TokenTarget(tok); ok {
 			t.Fatalf("Deregister left the rebuilt %s token resolvable", name)
 		}
 	}
@@ -480,7 +480,7 @@ func TestProxyTokenRegistry_PrunesExpiredRowsOnRebuild(t *testing.T) {
 	}
 
 	// The expired token no longer resolves — the bound is real, not cosmetic.
-	if target, ok := daemonB.sessionForToken(staleToken); ok {
+	if target, ok := daemonB.TokenTarget(staleToken); ok {
 		t.Fatalf("expired token still resolves after rebuild: %q", target)
 	}
 	// ...and it is gone from the table, so the registry cannot grow without end.
@@ -496,7 +496,7 @@ func TestProxyTokenRegistry_PrunesExpiredRowsOnRebuild(t *testing.T) {
 	}
 
 	// The fresh token is untouched: pruning must not revoke a live pane.
-	got, ok := daemonB.sessionForToken(freshToken)
+	got, ok := daemonB.TokenTarget(freshToken)
 	if !ok || got != sessionID {
 		t.Fatalf("fresh token after prune = %q,%v want %q,true", got, ok, sessionID)
 	}
@@ -519,7 +519,7 @@ func TestProxyTokenRegistry_PruneFailureDoesNotBlockRebuild(t *testing.T) {
 	if err := daemonB.RebuildTokenRegistry(ctx); err != nil {
 		t.Fatalf("prune failure must not fail the rebuild, got: %v", err)
 	}
-	if got, ok := daemonB.sessionForToken(token); !ok || got != "sess-prune-fail" {
+	if got, ok := daemonB.TokenTarget(token); !ok || got != "sess-prune-fail" {
 		t.Fatalf("token after failed prune = %q,%v want resolvable", got, ok)
 	}
 	if !strings.Contains(logB.String(), "pruning expired path tokens failed") {

@@ -125,11 +125,6 @@ func (h *HomeModel) settleUnansweredMerges() tea.Cmd {
 			continue
 		}
 		delete(h.mergesInFlight, id)
-		if !isErr && h.statusErr() {
-			// The row already shows the merge settled. Its outcome line would
-			// replace a failure nobody has dismissed and then time out.
-			continue
-		}
 		kind := statusOutcome
 		if isErr {
 			kind = statusFailure

@@ -56,6 +56,7 @@ func (r recordingProxyRegistrar) AdoptToken(string, string)                     
 func (r recordingProxyRegistrar) AdoptTokenForChat(string, string, string, string) {}
 func (r recordingProxyRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
 func (r recordingProxyRegistrar) RetargetChatToken(_, _, _, _ string)              {}
+func (r recordingProxyRegistrar) TokenTarget(string) (string, bool)                { return "", false }
 
 // recordingSmoke logs the TestAccount live-smoke into a shared eventRecorder.
 type recordingSmoke struct{ rec *eventRecorder }

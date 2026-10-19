@@ -111,6 +111,7 @@ go_test(
         "note_sync_wiring_test.go",
         "plugin_gate_test.go",
         "proxy_drain_test.go",
+        "relabel_shutdown_wiring_test.go",
         "rotation_auth_probe_test.go",
         "rotation_lane_log_test.go",
         "rotation_usage_cache_test.go",

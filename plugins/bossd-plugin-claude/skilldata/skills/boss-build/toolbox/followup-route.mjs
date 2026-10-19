@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-// Route each candidate follow-up by its declared source, then render the PR-body sections.
-// `## Human follow-up` and `## Open questions` park a PR at verify, so only an item about the
-// change itself may land there; host problems, stage-owned evidence and plan questions the build
-// already answered go elsewhere, and an observation only possible after merge goes under
-// `## After merge`, which verify never reads. An item the caller did not classify parks exactly as
-// before.
+// Route each candidate follow-up by its declared source, then render the PR-body sections. The
+// sections are for people reading the PR; no merge gate reads them. A plan question the build did
+// not answer is returned in `questions` and never published: the run decides it or asks it.
 // Pure apart from the CLI wrapper; nothing here fails closed except unreadable input, which must
 // never render as "no follow-ups".
 import defaultFs from 'node:fs'
@@ -13,23 +10,19 @@ import { isMainModule } from './main-module.mjs'
 
 export const FOLLOWUP_SOURCES = Object.freeze({
   'outside-worktree':
-    'A criterion of this change that cannot be checked from a worktree (production access, a deployed environment). Optional `criterion`: the acceptance criterion it checks. Parks the PR under ## Human follow-up.',
-  host: 'The build host or its environment: expired credentials, a missing tool, a review round that could not run. Optional `where`: the step or tool affected. Recorded as a host note; never parks the PR.',
+    'A criterion of this change that cannot be checked from a worktree (production access, a deployed environment). Optional `criterion`: the acceptance criterion it checks. Listed under ## Human follow-up.',
+  host: 'The build host or its environment: expired credentials, a missing tool, a review round that could not run. Optional `where`: the step or tool affected. Recorded as a host note.',
   'stage-evidence':
-    'Evidence a later pipeline stage produces (`stage`, default `verify`). Recorded as an autonomous decision; never parks the PR.',
+    'Evidence a later pipeline stage produces (`stage`, default `verify`). Recorded as an autonomous decision.',
   'plan-question':
-    'One of the plan’s open questions, with `chosen` (the option built) and `alternative` (the one not taken). With `chosen`, recorded as an autonomous decision; without it, parks the PR under ## Open questions.',
+    'One of the plan’s open questions, with `chosen` (the option built) and `alternative` (the one not taken). With `chosen`, recorded as an autonomous decision; without it, returned in `questions` for the run to decide or ask.',
   'review-finding':
-    'A serious problem the review verified in code this change did not introduce (`review-verdict.mjs followups`). Optional `where`: its file:line. Listed under ## Review follow-ups for a tracker ticket; never parks the PR.',
+    'A serious problem the review verified in code this change did not introduce (`review-verdict.mjs followups`). Optional `where`: its file:line. Listed under ## Review follow-ups for a tracker ticket.',
   'post-merge':
-    'An observation that can only happen once the change is merged (a scheduled run, a rollout, a production metric). Optional `criterion`: the plan item it observes. Listed under ## After merge; never parks the PR.',
+    'An observation that can only happen once the change is merged (a scheduled run, a rollout, a production metric). Optional `criterion`: the plan item it observes. Listed under ## After merge.',
 })
 
-const RESERVED_PHRASE = /do not merge/i
-const LEDGER_HEADINGS = Object.freeze({
-  humanFollowUp: 'Human follow-up',
-  openQuestions: 'Open questions',
-})
+const HUMAN_FOLLOW_UP = 'Human follow-up'
 
 const oneLine = (value) =>
   (typeof value === 'string' ? value : '')
@@ -54,9 +47,6 @@ function candidateList(input, warnings) {
   return []
 }
 
-// Optional fields a route interpolates into the PR body; each is checked for the reserved phrase.
-const EMITTED_FIELDS = Object.freeze(['criterion', 'where', 'stage', 'chosen', 'alternative'])
-
 // One route per FOLLOWUP_SOURCES key; the test pins that the two key sets are identical.
 export const ROUTES = Object.freeze({
   'outside-worktree': ({ candidate, text, label, routed }) => {
@@ -75,8 +65,8 @@ export const ROUTES = Object.freeze({
   'plan-question': ({ candidate, text, label, routed }) => {
     const chosen = oneLine(candidate.chosen)
     if (!chosen) {
-      routed.warnings.push(`${label}: plan question has no chosen option; left open`)
-      routed.openQuestions.push(text)
+      routed.warnings.push(`${label}: plan question has no chosen option; decide or ask it`)
+      routed.questions.push(text)
       return
     }
     const alternative = oneLine(candidate.alternative) || 'none recorded'
@@ -93,21 +83,21 @@ export const ROUTES = Object.freeze({
   },
 })
 
-function parkUnclassified({ text, label, source, routed }) {
+function unclassified({ text, label, source, routed }) {
   routed.warnings.push(
-    `${label}: ${source ? `unknown source "${source}"` : 'no source'}; routed to ## ${LEDGER_HEADINGS.humanFollowUp}`,
+    `${label}: ${source ? `unknown source "${source}"` : 'no source'}; routed to ## ${HUMAN_FOLLOW_UP}`,
   )
   routed.humanFollowUp.push(text)
 }
 
 /**
  * @param {unknown} candidates `{ text, source, criterion?, stage?, chosen?, alternative?, where? }[]`
- * @returns {{humanFollowUp: string[], openQuestions: string[], afterMerge: string[], hostNotes: {where: string, detail: string}[], reviewFollowUps: string[], decisions: string[], warnings: string[]}}
+ * @returns {{humanFollowUp: string[], questions: string[], afterMerge: string[], hostNotes: {where: string, detail: string}[], reviewFollowUps: string[], decisions: string[], warnings: string[]}}
  */
 export function routeFollowUps(candidates) {
   const routed = {
     humanFollowUp: [],
-    openQuestions: [],
+    questions: [],
     afterMerge: [],
     hostNotes: [],
     reviewFollowUps: [],
@@ -123,34 +113,25 @@ export function routeFollowUps(candidates) {
       warnings.push(`${label}: empty text; dropped`)
       continue
     }
-    const fields = [text, ...EMITTED_FIELDS.map((field) => oneLine(candidate[field]))]
-    if (fields.some((field) => RESERVED_PHRASE.test(field)))
-      warnings.push(`${label}: rephrase "do not merge"; it is reserved for the partial marker`)
     const source = normaliseSource(candidate.source)
-    const route = Object.hasOwn(ROUTES, source) ? ROUTES[source] : parkUnclassified
+    const route = Object.hasOwn(ROUTES, source) ? ROUTES[source] : unclassified
     route({ candidate, text, label, source, routed })
   }
   return routed
 }
 
-const ledgerSection = (heading, items) => [
-  `## ${heading}`,
-  ...(items.length ? items.map((item) => `- [ ] ${item}`) : ['- none']),
-  '',
-]
-
 const listOf = (value) => (Array.isArray(value) ? value : [])
 
 /**
- * Body text for `## Human follow-up`, `## Open questions` and, when non-empty, `## After merge`,
- * `## Host notes` and `## Review follow-ups`.
+ * Body text for each non-empty section: `## Human follow-up`, `## After merge`, `## Host notes` and
+ * `## Review follow-ups`.
  * @param {ReturnType<typeof routeFollowUps>} routed
  */
 export function renderFollowUpSections(routed) {
-  const lines = [
-    ...ledgerSection(LEDGER_HEADINGS.humanFollowUp, listOf(routed?.humanFollowUp)),
-    ...ledgerSection(LEDGER_HEADINGS.openQuestions, listOf(routed?.openQuestions)),
-  ]
+  const lines = []
+  const humanFollowUp = listOf(routed?.humanFollowUp)
+  if (humanFollowUp.length)
+    lines.push(`## ${HUMAN_FOLLOW_UP}`, ...humanFollowUp.map((item) => `- [ ] ${item}`), '')
   const afterMerge = listOf(routed?.afterMerge)
   if (afterMerge.length)
     lines.push('## After merge', ...afterMerge.map((item) => `- [ ] ${item}`), '')

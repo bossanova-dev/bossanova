@@ -52,6 +52,7 @@ import {
 import { classifyChildLiveness, classifyChildSettled } from './bs-epic-lib.mjs'
 import { bossCallbackPolicy } from './callback/boss.mjs'
 import { isMainModule } from './main-module.mjs'
+import { isPartial } from './merge-eligibility.mjs'
 
 /**
  * The PR triggers armed per in-flight epic child, and the one that is forbidden. Re-exported from
@@ -1087,8 +1088,9 @@ function progressStatusForTicket(state, id) {
 
 /**
  * Green admission conditions, each judged on an authoritative re-read: checks passing, PR out of
- * draft, no do-not-merge marker, child chat settled (`chatSettled`, which `reconcileEpic` computes
- * with `classifyChildSettled`). The ticket's tracker state is not one of them —
+ * draft, no PARTIAL marker in `prView.title`/`prView.body` (judged by `isPartial`, so other "do not
+ * merge" text in a body never holds), child chat settled (`chatSettled`, which `reconcileEpic`
+ * computes with `classifyChildSettled`). The ticket's tracker state is not one of them —
  * a green PR whose child forgot to move the ticket is moved by the driver, not held.
  */
 export function greenAdmissionBlockers(snapshot = {}) {
@@ -1096,8 +1098,11 @@ export function greenAdmissionBlockers(snapshot = {}) {
   if (snapshot.checkVerdict?.state !== 'passing') {
     blockers.push(`checks:${snapshot.checkVerdict?.state ?? 'unknown'}`)
   }
-  if (snapshot.prView?.isDraft !== false) blockers.push('pr:draft-or-unknown')
-  if (snapshot.partialMarker === true) blockers.push('pr:partial-marker')
+  const prView = snapshot.prView ?? {}
+  if (prView.isDraft !== false) blockers.push('pr:draft-or-unknown')
+  if (typeof prView.title !== 'string' || typeof prView.body !== 'string') {
+    blockers.push('pr:text-unknown')
+  } else if (isPartial(prView)) blockers.push('pr:partial-marker')
   if (snapshot.chatSettled !== true) blockers.push('chat:unsettled')
   return blockers
 }

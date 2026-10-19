@@ -32,7 +32,7 @@ on its own. Each PR gets one line in the gate output, then a summary:
 
 ```
 #41 merged <sha>
-#42 parked: needs human (ledger-open)
+#42 parked: needs human (partial-build)
 #43 dispatched: existing-verify-chat
 #46 dispatched: merge in flight (log /tmp/boss-verify-merge-46-….log)
 #44 skipped: wait ci-not-settled

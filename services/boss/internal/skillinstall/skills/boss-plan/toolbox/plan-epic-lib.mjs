@@ -780,10 +780,10 @@ export function specAttachmentFilename() {
 }
 
 /**
- * The spec attachment's title. It deliberately does NOT begin with
- * `Implementation plan`: `bs-epic-lib.mjs`'s `normalizeTicket` identifies a
- * ticket's PLAN attachment by exactly that prefix, so a spec attachment titled
- * that way would be mistaken for the ticket's implementation plan.
+ * The spec attachment's title. It deliberately does NOT contain the word
+ * `plan`: `selectReadablePlanAttachment` (which `bs-epic-lib.mjs`'s
+ * `normalizeTicket` uses) treats any attachment titled like a plan as the
+ * ticket's plan, so a spec attachment titled that way would be mistaken for it.
  * @param {string} issueId
  * @returns {string}
  */

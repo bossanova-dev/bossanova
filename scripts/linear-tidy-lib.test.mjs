@@ -989,7 +989,6 @@ const tk = (id, identifier, stateName, labels = [], attachments = []) => ({
 
 const RECONCILE_IDS = {
   agentPlanId: 'label-agent-plan',
-  agentBuildId: 'label-agent-build',
   todoStateId: 's-todo',
 }
 
@@ -1011,7 +1010,7 @@ test("hasImplementationPlan: accepts only the ticket's native canonical attachme
   assert.equal(hasImplementationPlan('BOS-7', undefined), false)
 })
 
-test('computePlanningReconcile: agent-build + Unplanned + no plan → drop agent-build, add agent-plan', () => {
+test('computePlanningReconcile: agent-build + Unplanned + no plan → add agent-plan, keep the human’s agent-build', () => {
   const tickets = [tk('i1', 'BOS-1', 'Unplanned', [lbl('agent-build'), lbl('bug')])]
   const r = computePlanningReconcile(tickets, RECONCILE_IDS)
   assert.deepEqual(r.toTodo, [])
@@ -1019,8 +1018,12 @@ test('computePlanningReconcile: agent-build + Unplanned + no plan → drop agent
     r.toAgentPlan.map((t) => t.identifier),
     ['BOS-1'],
   )
-  // Kept bug, dropped agent-build, added agent-plan (full replacement set).
-  assert.deepEqual(r.toAgentPlan[0].newLabelIds, ['label-bug', 'label-agent-plan'])
+  // Kept agent-build and bug, added agent-plan (full replacement set).
+  assert.deepEqual(r.toAgentPlan[0].newLabelIds, [
+    'label-agent-build',
+    'label-bug',
+    'label-agent-plan',
+  ])
   assert.deepEqual(r.escalate, [])
 })
 
@@ -1204,7 +1207,7 @@ test('runTidy: reconcile applies — planned Unplanned → Todo, no-plan → age
   // toTodo applies before toAgentPlan; the relabel sends the full replacement set.
   assert.deepEqual(writes, [
     { id: 'i-planned', stateId: 's-todo' },
-    { id: 'i-noplan', labelIds: ['label-bug', 'label-agent-plan'] },
+    { id: 'i-noplan', labelIds: ['label-agent-build', 'label-bug', 'label-agent-plan'] },
   ])
   assert.equal(result.counts.writes, 2)
   assert.deepEqual(result.escalations, [])

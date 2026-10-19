@@ -57,7 +57,7 @@ test('normalizeTicket: raw GraphQL shape uses extractBlockers + state.{name,type
     state: { name: 'Todo', type: 'unstarted' },
     labels: ['agent-build'],
     attachments: [
-      { title: 'Implementation plan (BOS-5)', url: 'https://proof.bossanova.dev/BOS-5' },
+      { title: 'Implementation plan (BOS-5)', url: 'https://uploads.linear.app/o/BOS-5' },
     ],
     inverseRelations: {
       nodes: [
@@ -79,7 +79,7 @@ test('normalizeTicket: raw GraphQL shape uses extractBlockers + state.{name,type
   assert.equal(ticket.stateName, 'Todo')
   assert.equal(ticket.stateType, 'unstarted')
   assert.deepEqual(ticket.labels, ['agent-build'])
-  assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-5')
+  assert.equal(ticket.planUrl, 'https://uploads.linear.app/o/BOS-5')
   assert.deepEqual(ticket.planAttachment, issue.attachments[0])
   assert.deepEqual(ticket.blockedBy, ['BOS-1'])
 })
@@ -94,7 +94,7 @@ test('normalizeTicket: MCP get_issue includeRelations shape uses relations.block
     statusType: 'unstarted',
     labels: ['agent-build'],
     attachments: [
-      { title: 'Implementation plan (BOS-6)', url: 'https://proof.bossanova.dev/BOS-6' },
+      { title: 'Implementation plan (BOS-6)', url: 'https://uploads.linear.app/o/BOS-6' },
     ],
     relations: {
       blockedBy: [{ identifier: 'BOS-2' }, 'BOS-3'],
@@ -105,7 +105,7 @@ test('normalizeTicket: MCP get_issue includeRelations shape uses relations.block
   assert.equal(ticket.priority, 1)
   assert.equal(ticket.stateName, 'Todo')
   assert.equal(ticket.stateType, 'unstarted')
-  assert.equal(ticket.planUrl, 'https://proof.bossanova.dev/BOS-6')
+  assert.equal(ticket.planUrl, 'https://uploads.linear.app/o/BOS-6')
   assert.deepEqual(ticket.planAttachment, issue.attachments[0])
   assert.deepEqual(ticket.blockedBy, ['BOS-2', 'BOS-3'])
 })
@@ -156,13 +156,13 @@ test('normalizeTicket: a canonical attachment takes precedence over a stale plan
       {
         id: 'attachment-id',
         title: 'Implementation plan (BOS-999)',
-        url: 'https://uploads.example/current.md',
+        url: 'https://uploads.linear.app/o/current',
         createdAt: '2026-02-01T00:00:00Z',
       },
     ],
     blockedBy: [],
   })
-  assert.equal(ticket.planUrl, 'https://uploads.example/current.md')
+  assert.equal(ticket.planUrl, 'https://uploads.linear.app/o/current')
   assert.equal(ticket.planAttachment?.id, 'attachment-id')
 })
 
@@ -180,6 +180,40 @@ test('normalizeTicket: does not accept an untitled attachment as a plan', () => 
   })
   assert.equal(ticket.planUrl, null)
   assert.equal(ticket.planAttachment, null)
+})
+
+test('normalizeTicket: a pull-request link titled like a plan is not the plan', () => {
+  const ticket = normalizeTicket({
+    id: 'ACME-7',
+    title: 'Add a pricing plan picker',
+    status: 'Todo',
+    labels: ['agent-build'],
+    attachments: [
+      {
+        id: 'gh-1',
+        title: '[ACME-7] Add a pricing plan picker',
+        url: 'https://github.com/acme/app/pull/12',
+      },
+    ],
+  })
+  assert.equal(ticket.planAttachment, null)
+})
+
+test('normalizeTicket: reads attachments from a GraphQL connection payload', () => {
+  const attachment = {
+    id: 'a',
+    title: 'Implementation plan (ACME-8)',
+    url: 'https://uploads.linear.app/o/a',
+  }
+  assert.equal(
+    normalizeTicket({ id: 'ACME-8', attachments: { nodes: [attachment] } }).planAttachment,
+    attachment,
+  )
+})
+
+test('normalizeTicket: carries the description, and null when the payload has none', () => {
+  assert.equal(normalizeTicket({ id: 'BOS-1', description: 'Do it.' }).description, 'Do it.')
+  assert.equal(normalizeTicket({ id: 'BOS-1' }).description, null)
 })
 
 test('normalizeTicket: planUrl is null when no matching attachment/link exists', () => {
@@ -203,16 +237,59 @@ test('classifyTickets: planned-state + agent-build + plan is eligible', () => {
   const { eligible } = classifyTickets([t('BOS-1')], 'Todo')
   assert.equal(eligible.length, 1)
 })
-test('classifyTickets: a legacy link-only plan is skipped for migration/replanning', () => {
-  const { eligible, skipped } = classifyTickets([t('BOS-2', { planAttachment: null })], 'Todo')
+test('classifyTickets: a child with no plan attachment is buildable from a free-form description', () => {
+  const child = normalizeTicket({
+    id: 'BOS-2',
+    title: 'Free-form child',
+    status: 'Todo',
+    statusType: 'unstarted',
+    labels: ['agent-build'],
+    attachments: [],
+    description: 'The retry button on the settings page does nothing; make it re-run the sync.',
+  })
+  const { eligible, skipped } = classifyTickets([child], 'Todo')
+  assert.deepEqual(
+    eligible.map((tk) => tk.id),
+    ['BOS-2'],
+  )
+  assert.deepEqual(skipped, [])
+})
+test('classifyTickets: a terse, title-only or non-Latin child is buildable', () => {
+  const { eligible, skipped } = classifyTickets(
+    [
+      t('BOS-5', { title: 'Bump goose', planAttachment: null, description: null }),
+      t('BOS-6', { title: 'Fix typo', planAttachment: null, description: '' }),
+      t('BOS-7', { title: '', planAttachment: null, description: 'ログイン画面の誤字を修正する' }),
+    ],
+    'Todo',
+  )
+  assert.deepEqual(
+    eligible.map((tk) => tk.id),
+    ['BOS-5', 'BOS-6', 'BOS-7'],
+  )
+  assert.deepEqual(skipped, [])
+})
+test('classifyTickets: a child with no plan attachment and no title or description text is skipped', () => {
+  const { eligible, skipped } = classifyTickets(
+    [
+      t('BOS-2', { title: '', planAttachment: null, description: '' }),
+      t('BOS-3', { title: ' ', planAttachment: null, description: '<!-- template -->' }),
+      t('BOS-4', { title: '--', planAttachment: null }),
+    ],
+    'Todo',
+  )
   assert.equal(eligible.length, 0)
-  assert.match(skipped[0].reason, /native Implementation plan attachment.*migration\/replanning/)
+  assert.deepEqual(
+    skipped.map((s) => s.ticket.id),
+    ['BOS-2', 'BOS-3', 'BOS-4'],
+  )
+  for (const s of skipped) assert.match(s.reason, /nothing to build from/)
 })
 test('classifyTickets: needs-human, missing plan, not-planned, In Progress all skip with reasons', () => {
   const { skipped } = classifyTickets(
     [
       t('BOS-1', { labels: ['needs-human'] }),
-      t('BOS-2', { planAttachment: null }),
+      t('BOS-2', { title: '', planAttachment: null }),
       t('BOS-3', { stateName: 'Unplanned' }),
       t('BOS-4', { stateName: 'In Progress' }),
     ],

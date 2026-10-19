@@ -6,7 +6,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { followUpReasons, parseFollowUps, sections } from './merge-eligibility.mjs'
+import { sections } from './merge-eligibility.mjs'
 import { renderFollowUpSections, routeFollowUps } from './followup-route.mjs'
 import * as reviewVerdict from './review-verdict.mjs'
 import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
@@ -195,13 +195,7 @@ test('the report leads with the comment marker so PR upserts find it, in every s
   }
 })
 
-test('no rendering ever spells the reserved partial-marker phrase', () => {
-  const v = verdict([finding({ title: 'Do not merge this path', evidence: 'do not merge' })])
-  for (const flag of ['--report', '--pr-section'])
-    assert.doesNotMatch(run(['render', '/v.json', flag], withVerdict(v)).out, /do not merge/i)
-})
-
-test('followups emit only serious pre-existing findings, and routing them never parks the PR', () => {
+test('followups emit only serious pre-existing findings, routed to ## Review follow-ups', () => {
   const v = verdict([
     finding({ id: 'blocker' }),
     finding({ id: 'old-p1', introduced: false, file: 'old.go', line: 4 }),
@@ -217,10 +211,8 @@ test('followups emit only serious pre-existing findings, and routing them never 
 
   const routed = routeFollowUps(candidates)
   assert.deepEqual(routed.warnings, [])
-  const body = ['## Acceptance criteria', '- [x] done', '', renderFollowUpSections(routed)].join(
-    '\n',
-  )
-  assert.deepEqual(followUpReasons(parseFollowUps(body)), [])
+  const body = renderFollowUpSections(routed)
+  assert.deepEqual(routed.humanFollowUp, [])
   assert.ok(sections(body).has('review follow-ups'))
 })
 

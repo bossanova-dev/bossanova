@@ -158,12 +158,10 @@ export function verdictStatus(input) {
   return { status, warnings, errors: [], verdict: { ...verdict, status } }
 }
 
-// `do not merge` is reserved for boss-build's PARTIAL marker, so a finding may never spell it.
 const oneLine = (value) =>
   String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/do not merge/gi, 'do-not-merge')
 const where = (f) => `\`${f.file}:${f.line}\``
 const short = (s) => (typeof s === 'string' ? s.slice(0, 12) : '?')
 const item = (f) => `**${f.severity}** ${where(f)} — ${oneLine(f.title)}`

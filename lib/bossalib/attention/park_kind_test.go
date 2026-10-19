@@ -14,8 +14,29 @@ import (
 // look, the rest report that something is wrong.
 var (
 	signOffCodes = []string{"no-receipt", "always-human-path", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven"}
-	failureCodes = []string{"repair-exhausted", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced"}
+	failureCodes = []string{"repair-exhausted", "partial-build", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced"}
 )
+
+// A PARTIAL park reports unfinished work in its own words; the retired
+// ledger-open code still renders as it did, but no approval can waive it.
+func TestPartialParkAndRetiredLedgerOpen(t *testing.T) {
+	a := attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"partial-build"}})
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || a.GetSentence() != "Partial build" {
+		t.Errorf("partial park = %v %q, want a FIX reading \"Partial build\"", a.GetKind(), a.GetSentence())
+	}
+	if got := attention.ParkCodeCategory("partial-build"); got != "partial build" {
+		t.Errorf("ParkCodeCategory(partial-build) = %q", got)
+	}
+	if !attention.IsReportedParkCode("partial-build") {
+		t.Error("IsReportedParkCode(partial-build) = false, want an approval to waive it")
+	}
+	if attention.IsReportedParkCode("ledger-open") {
+		t.Error("IsReportedParkCode(ledger-open) = true, want the retired code never waived")
+	}
+	if got := attention.ParkCodeCategory("ledger-open"); got != "open checklist items" {
+		t.Errorf("ParkCodeCategory(ledger-open) = %q, want its words kept for parks recorded before", got)
+	}
+}
 
 func TestIsSignOffPark(t *testing.T) {
 	for _, code := range signOffCodes {

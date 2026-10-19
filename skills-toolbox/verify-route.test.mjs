@@ -366,36 +366,25 @@ test('a human verdict posts needs-human and parks; tracker writes unavailable is
   )
 
   const u = world({
-    verdicts: { 1: { verdict: 'human', reason: 'ledger-open' } },
+    verdicts: { 1: { verdict: 'human', reason: 'partial-build' } },
     trackerUnavailable: true,
   })
   assert.deepEqual(lines(sweep({}, u.deps())), ['#1 skipped: tracker writes unavailable'])
 })
 
-test('a ticketless park says so on its line, and a park carries the ledger it was judged on', () => {
+test('a ticketless park says so on its line', () => {
   const w = world({
     candidates: [candidate(1), candidate(5, { ticket: null })],
     verdicts: {
-      1: { verdict: 'human', reason: 'ledger-open' },
-      5: {
-        verdict: 'human',
-        reason: 'no-receipt,ledger-open',
-        ledgerFingerprint: '0123456789abcdef',
-      },
+      1: { verdict: 'human', reason: 'partial-build' },
+      5: { verdict: 'human', reason: 'no-receipt,partial-build' },
     },
     ticketless: [5],
   })
   assert.deepEqual(lines(sweep({}, w.deps())), [
-    '#1 parked: needs human (ledger-open)',
-    '#5 parked: needs human (no-receipt,ledger-open) · no ticket',
+    '#1 parked: needs human (partial-build)',
+    '#5 parked: needs human (no-receipt,partial-build) · no ticket',
   ])
-  // The ledger the judge saw rides to the post, which records it beside the park.
-  const ledgerArgs = (post) => {
-    const at = post.indexOf('--ledger')
-    // gate-region-ok: an argv array slice (the flag and its value), not a text section.
-    return at === -1 ? [] : post.slice(at, at + 2)
-  }
-  assert.deepEqual(w.posts().map(ledgerArgs), [[], ['--ledger', '0123456789abcdef']])
 })
 
 test('the sweep leaves label derivation to the human post gate', () => {

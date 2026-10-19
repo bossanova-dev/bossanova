@@ -167,11 +167,9 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 	}
 	nowStr := sqlutil.FormatTime(now)
 
-	var groupIDVal any
+	var groupID string
 	if params.GroupID != nil {
-		if g := strings.TrimSpace(*params.GroupID); g != "" {
-			groupIDVal = g
-		}
+		groupID = strings.TrimSpace(*params.GroupID)
 	}
 
 	conn, err := beginImmediate(ctx, s.db, "github callback create")
@@ -181,7 +179,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
 
-	if groupID, ok := groupIDVal.(string); ok {
+	if groupID != "" {
 		rows, err := conn.QueryContext(ctx,
 			`SELECT trigger_event
 			 FROM github_callbacks
@@ -214,7 +212,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 		}
 	}
 
-	conflict, err := findCrossGroupConflict(ctx, conn, params, chatID, owner, name, groupIDVal, nowStr)
+	conflict, err := findCrossGroupConflict(ctx, conn, params, chatID, owner, name, groupID, nowStr)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -225,7 +223,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 			 state, message, should_require_transition, has_observed_baseline, attempt_count,
 			 expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
-		id, groupIDVal, chatID, owner, name, params.PRNumber, string(params.Trigger),
+		id, nullableText(groupID), chatID, owner, name, params.PRNumber, string(params.Trigger),
 		string(models.GithubCallbackStateActive), params.Message, boolToInt(params.ShouldRequireTransition),
 		sqlutil.FormatTime(expiresAt), nowStr, nowStr,
 	)
@@ -268,7 +266,7 @@ func findCrossGroupConflict(
 	conn *sql.Conn,
 	params CreateGithubCallbackParams,
 	chatID, owner, name string,
-	groupIDVal any,
+	groupID string,
 	nowStr string,
 ) (*GithubCallbackConflict, error) {
 	if params.IndependentWatch {
@@ -293,7 +291,7 @@ func findCrossGroupConflict(
 		string(models.GithubCallbackStateLeased),
 		nowStr,
 	}
-	if groupID, ok := groupIDVal.(string); ok {
+	if groupID != "" {
 		query += ` AND (group_id IS NULL OR group_id != ?)`
 		args = append(args, groupID)
 	}

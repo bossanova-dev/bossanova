@@ -60,3 +60,18 @@ func TestReader_OpenItemsAloneDoNotMakeEvidence(t *testing.T) {
 		t.Fatalf("OpenItems = %q", got)
 	}
 }
+
+// TestReader_SaysAParkNotesSectionHeadingsInWords reads a park note whose
+// open items name checklist sections as markdown headings: they reach the
+// session's attention in plain words.
+func TestReader_SaysAParkNotesSectionHeadingsInWords(t *testing.T) {
+	f := &fakeFinder{body: openItemsLine("## Acceptance criteria is missing.", "## Open questions appears more than once, so verify cannot read it."), found: true}
+	r, _ := newTestReader(f)
+
+	r.Observe(context.Background(), parked(headA))
+
+	want := []string{"The Acceptance criteria section is missing.", "The Open questions section appears more than once, so it cannot be read."}
+	if got := r.OpenItems("s1", headA); !slices.Equal(got, want) {
+		t.Fatalf("OpenItems = %q, want %q", got, want)
+	}
+}

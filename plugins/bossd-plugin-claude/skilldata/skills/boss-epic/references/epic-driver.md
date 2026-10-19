@@ -232,7 +232,8 @@ wake must be a no-op, which it is because every step reads authoritative state f
 ### Green admission
 
 `greenAdmissionBlockers(snapshot)` must be empty. Four conditions, each on an authoritative
-re-read: checks `passing`; the PR is **not** a draft; no partial-slice / `do not merge` marker; the
+re-read: checks `passing`; the PR is **not** a draft; no PARTIAL marker, judged by `isPartial` from
+`prView.title` and `prView.body` (a PR whose text was not read is held); the
 tracked chat has **settled** per `classifyChildSettled`, which `reconcileEpic` computes itself over
 two consecutive cycles (a caller-supplied `chatSettled` is ignored). Missing evidence is never
 admission. The ticket's tracker state is not

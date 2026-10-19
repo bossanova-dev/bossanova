@@ -9,7 +9,7 @@
 //                                                                                   never writes
 //   post     --pr <n> --head <sha> --verdict claim|wait|pass|defect|human [--reason <code>[,…]]
 //            [--findings <file>] [--extension-record <record>] [--policy <fingerprint>]
-//            [--extension-results <file>] [--ledger <fingerprint>] [--carry-record <record>]
+//            [--extension-results <file>] [--carry-record <record>]
 //            [--token <t>] [--repo o/r] [--dry-run]
 //   merge    --pr <n> --head <sha> [--token <t>] [--repo o/r] [--dry-run]
 //   observe-merge --pr <n> [--repo o/r]                                              never writes
@@ -57,7 +57,6 @@ import {
   classifyMergeResult,
   judgeCiOnHead,
   mergeArgv,
-  parseLedger,
   sectionToken,
   sections,
   sharedEligibility,
@@ -99,7 +98,6 @@ import {
   AFTER_MERGE_MARKER,
   PARK_NOTE_MARKER,
   afterMergeNote,
-  ledgerFingerprint,
   parkCategories,
   parkNote,
 } from './verify-park-note.mjs'
@@ -116,7 +114,7 @@ export const HUMAN_REASONS = Object.freeze([
   'no-receipt',
   'repair-exhausted',
   'always-human-path',
-  'ledger-open',
+  'partial-build',
   'extension-failed',
   'no-session',
   'worktree-diverged',
@@ -556,32 +554,23 @@ export function classifyApproval({
   return { approval: 'none' }
 }
 
-// Splits shared-eligibility reasons into `{wait, ledgerOpen}`: merge state, PR shape and head
-// reasons resolve by waiting (the CI reasons are judged separately, with `boss/*` excluded); an
-// open or unreadable ledger is the PR itself saying a person must look.
-const LEDGER_REASONS = new Set([
-  'criteria-unknown',
-  'criteria-unmet',
-  'do-not-merge-marker',
-  'human-follow-up-open',
-  'follow-up-section-missing',
-  'open-questions-open',
-  'open-questions-section-missing',
-])
+// Splits shared-eligibility reasons into `{wait, partial}`: merge state, PR shape and head reasons
+// resolve by waiting (the CI reasons are judged separately, with `boss/*` excluded); boss-build's
+// PARTIAL marker is the PR itself saying it is not finished.
 export function splitEligibility(reasons) {
   const wait = []
-  let ledgerOpen = false
+  let partial = false
   for (const reason of reasons ?? []) {
-    if (LEDGER_REASONS.has(reason)) ledgerOpen = true
+    if (reason === 'partial-marker') partial = true
     else if (reason !== 'ci-not-settled' && reason !== 'ci-not-green-on-head') wait.push(reason)
   }
-  return { wait, ledgerOpen }
+  return { wait, partial }
 }
 
 /**
  * The verdict decision over gathered facts. Wait reasons win over human reasons: a wait writes
  * nothing and the next tick re-judges, while a human verdict pages a person. PR-state codes
- * (`no-receipt`, `ledger-open`) park before extensions run; path codes do not, so an applicable
+ * (`no-receipt`, `partial-build`) park before extensions run; path codes do not, so an applicable
  * extension's defect reaches repair before a person is paged. `f.extensions` is the applicable
  * extension list and `f.extensionsNotApplicable` the names whose check said they do not apply.
  */
@@ -645,7 +634,7 @@ export function decideVerdict(facts) {
   }
   const stateCodes = []
   if (f.receipt !== 'success') stateCodes.push('no-receipt')
-  if (split.ledgerOpen) stateCodes.push('ledger-open')
+  if (split.partial) stateCodes.push('partial-build')
   const pathCodes = []
   if (Array.isArray(f.alwaysHumanHits) && f.alwaysHumanHits.length > 0)
     pathCodes.push('always-human-path')
@@ -1465,7 +1454,6 @@ const canonicalJson = (value) =>
       : JSON.stringify(value ?? null)
 
 export const POLICY_FINGERPRINT = /^[0-9a-f]{16}$/
-const LEDGER_FINGERPRINT = /^[0-9a-f]{16}$/
 
 /**
  * A digest of what a verdict on a head was judged under: the base's raw `verifyDefaults` block and
@@ -1686,16 +1674,12 @@ export async function judge(options, deps = {}) {
   if (waive && String(appr.headSha ?? '').toLowerCase() !== headSha.toLowerCase()) waive = null
   const ticket = parseLinearIssueLine(p.body)
   const ci = readCiOnHead(read, repo, pr, p, headSha)
-  const ledger = parseLedger(p.body)
   const eligibility = sharedEligibility({
-    criteria: ledger.criteria,
     ciWaitState: ci.settled ? 'settled' : 'pending',
     checkVerdict: ci.verdict,
     headSha,
     prView: p,
     heads: [headSha, p.headRefOid],
-    humanFollowUp: ledger.humanFollowUp,
-    openQuestions: ledger.openQuestions,
   })
   const facts = {
     prState: p.state,
@@ -1896,8 +1880,6 @@ export async function judge(options, deps = {}) {
   const out = {
     ...verdict,
     ...(fingerprint ? { policyFingerprint: fingerprint } : {}),
-    // The ledger this verdict was judged on, for `post --ledger`: a ledger-open park records it.
-    ledgerFingerprint: ledgerFingerprint({ title: p.title, body: p.body }),
     // A pass the carry made rides with its record, for `post --carry-record`.
     ...(carry?.carry && verdict.verdict === 'pass'
       ? { carryRecord: `${carry.carry.from}:${carry.carry.patchId}` }
@@ -2100,13 +2082,6 @@ export function parsePostOptions(options) {
   )
     throw new UsageError(
       'verify-gate: post --policy takes the judge output policyFingerprint, with --verdict human only',
-    )
-  if (
-    options.ledger !== undefined &&
-    (verdict !== 'human' || !LEDGER_FINGERPRINT.test(String(options.ledger)))
-  )
-    throw new UsageError(
-      'verify-gate: post --ledger takes the judge output ledgerFingerprint, with --verdict human only',
     )
   if (options.extensionResults !== undefined && verdict !== 'human')
     throw new UsageError(
@@ -2419,7 +2394,6 @@ async function postHuman(ctx, parsed, options, facts) {
         codes: reason.split(','),
         headSha,
         facts: { title: p.title, body: p.body, label, extensionResults, ticketless },
-        ledger: options.ledger ?? null,
       }),
       markers: readMarkers(),
       dryRun,
@@ -2430,12 +2404,6 @@ async function postHuman(ctx, parsed, options, facts) {
   if (current.status?.state === 'pending' && current.status.description === description) {
     const policyRecord = recordPolicy()
     const noted = recordNote()
-    // A sweep that could not record the ledger re-posts the park, which counts the attempt on the
-    // head (ledgerRecordDue).
-    const counted =
-      options.ledger !== undefined &&
-      noted.parkNote === 'failed' &&
-      runStatus(status('pending', description)).ok
     return finish({
       verdict: effective,
       ...labelResult,
@@ -2445,7 +2413,6 @@ async function postHuman(ctx, parsed, options, facts) {
       ...noTicket,
       ...policyRecord,
       ...noted,
-      ...(counted ? { ledgerAttempt: 'counted' } : {}),
     })
   }
   if (trackerWrite) {
@@ -2626,22 +2593,18 @@ export async function merge(options, deps = {}) {
     return finish({ merged: false, verdict: 'wait', reason: 'not-verified' })
 
   const ci = readCiOnHead(read, repo, options.pr, p, headSha)
-  const ledger = parseLedger(p.body)
   const eligibility = sharedEligibility({
-    criteria: ledger.criteria,
     ciWaitState: ci.settled ? 'settled' : 'pending',
     checkVerdict: ci.verdict,
     headSha,
     prView: p,
     heads: [headSha, p.headRefOid],
-    humanFollowUp: ledger.humanFollowUp,
-    openQuestions: ledger.openQuestions,
   })
   // `verified (approved)` on this head is a human's waiver of a parked code (judge --waive). The
-  // ledger reasons are the only ones a waiver can lift, so merge lets them through on that status
-  // and still enforces every merge-state, PR-shape, head and CI reason.
+  // PARTIAL marker is the only shared reason a waiver can lift, so merge lets it through on that
+  // status and still enforces every merge-state, PR-shape, head and CI reason.
   const approved = current.status?.description === VERIFY_DESCRIPTIONS.verifiedApproved
-  const reasons = eligibility.reasons.filter((r) => !(approved && LEDGER_REASONS.has(r)))
+  const reasons = eligibility.reasons.filter((r) => !(approved && r === 'partial-marker'))
   if (ci.settled && !ci.green && !reasons.includes('ci-not-green-on-head'))
     reasons.push('ci-not-green-on-head')
   // Same order as `decideVerdict`, so judge and merge name the same wait for one PR.
@@ -3043,7 +3006,7 @@ function policyComment(headSha, fingerprint) {
 /**
  * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions'|
  * 'policy'|'carry'|'park-note'|'after-merge', head, waives?, judged?, policy?, from?, patch?,
- * digest?, ledger?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
+ * digest?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
  * (readOperatorMarkers then keeps only authors with write access), and only when its last
  * non-blank line is a well-formed marker: an approve marker names a known code set or none at all
  * (`waives` is then ''), a legacy send-back marker names no codes, and an extension record parses.
@@ -3071,7 +3034,7 @@ export function operatorMarkers(comments) {
     })
     const note = last.match(PARK_NOTE_MARKER)
     if (note) {
-      out.push({ ...stamp('park-note', note[1]), digest: note[2], ledger: note[3] ?? null })
+      out.push({ ...stamp('park-note', note[1]), digest: note[2] })
       continue
     }
     const listed = last.match(AFTER_MERGE_MARKER)
@@ -3590,38 +3553,6 @@ export function linkTicketsToPrs(tickets, prs, repo) {
   return { linked, skipped }
 }
 
-/**
- * Whether a ledger-open park on `headSha` is re-judged for its ledger: `ledger-changed` when the
- * ledger the PR body holds now differs from the one its park note recorded, `ledger-unrecorded`
- * when the note recorded none (it is recorded on the re-judge), null when they match or the
- * comments cannot be read (the policy check still decides then). A re-judge only ever releases
- * the codes its fresh judge no longer raises (judge's held park), so a forged note costs a judge.
- */
-export function ledgerRejudge(markers, headSha, pr) {
-  if (!markers?.readable) return null
-  const note = newestFor(markers.markers, headSha, (kind) => kind === 'park-note')
-  if (!note?.ledger) return 'ledger-unrecorded'
-  return note.ledger === ledgerFingerprint({ title: pr?.title, body: pr?.body })
-    ? null
-    : 'ledger-changed'
-}
-
-// A sweep's re-judge that could not record its ledger re-posts the park unchanged (post), so the
-// run of identical statuses heading the head's history is the park plus one per failed attempt.
-// After LEDGER_RECORD_ATTEMPTS failures, or with the history unreadable, a `ledger-unrecorded`
-// park is no longer re-judged for its ledger; a policy change, an operator or a new head still is.
-export const LEDGER_RECORD_ATTEMPTS = 3
-export function ledgerRecordDue(nodes) {
-  if (!Array.isArray(nodes)) return false
-  const [newest, ...older] = newestVerifyFirst(nodes)
-  if (!newest) return false
-  const differs = older.findIndex(
-    (n) => n.state !== newest.state || n.description !== newest.description,
-  )
-  const failed = differs < 0 ? older.length : differs
-  return failed < LEDGER_RECORD_ATTEMPTS
-}
-
 // bossd names every cron fire's branch `cron-<slug>-<unix seconds>` (cronBranchName in
 // services/bossd/internal/cron/scheduler.go), so a PR on one was opened by an unattended cron run.
 const CRON_FIRE_BRANCH = /^cron-[a-z0-9]+(?:-[a-z0-9]+)*-\d+$/
@@ -3776,7 +3707,8 @@ function candidateQuery(config, flags, ticket) {
  * evidence is a `unknown:<what>` skip; a failed tracker read, an unloadable config or an unreadable `gh pr list` throws, so the CLI exits non-zero rather
  * than printing an empty list. A park nobody approved or sent back comes back as `rejudge`
  * (`policy-changed`, or `unrecorded` for a park with no recorded fingerprint) when the policy its
- * base would judge under now differs from the one recorded beside it. A needs-human ticket is
+ * base would judge under now differs from the one recorded beside it, and as `codes-unknown` when
+ * it names a code outside HUMAN_REASONS. A needs-human ticket is
  * skipped only while a park stands on its PR's current head (`headStandsUnparked`): the label
  * outlives the head it parked, and a later head is judged afresh. An unscoped scan also admits the
  * ticketless factory PRs (ticketlessFactoryPrs) with `ticket: null`; an unreadable session list
@@ -3891,25 +3823,22 @@ export async function candidates(options = {}, deps = {}) {
       } else if (appr.approval === 'reverify') {
         entry.approval = appr.approval
       } else {
-        const standing = head.parked === 'parked' && appr.park && appr.reason !== 'sent-back'
-        // The PR body is the PR's own input to a ledger-open park, as the base policy is to the
-        // rest: a ledger changed since the park re-judges it.
-        let ledger =
-          standing && appr.park.split(',').includes('ledger-open')
-            ? ledgerRejudge(readMarkers(), headSha, pr)
-            : null
-        if (
-          ledger === 'ledger-unrecorded' &&
-          !ledgerRecordDue(readStatusNodes(read, headSha, repo))
-        )
-          ledger = null
-        const fingerprint = standing && !ledger ? fingerprintFor(pr.baseRefName) : null
-        const recorded = fingerprint ? recordedPolicy(readMarkers().markers, headSha) : null
-        if (!ledger && (!fingerprint || recorded === fingerprint)) {
+        const standing = head.parked === 'parked' && appr.reason !== 'sent-back'
+        let rejudge = null
+        // A park naming a code outside HUMAN_REASONS (`ledger-open`, retired with the PR checklist
+        // gate) can never be approved, so it is re-judged rather than left to strand its head.
+        if (standing && !appr.park) rejudge = 'codes-unknown'
+        else if (standing) {
+          const fingerprint = fingerprintFor(pr.baseRefName)
+          const recorded = fingerprint ? recordedPolicy(readMarkers().markers, headSha) : null
+          if (fingerprint && recorded !== fingerprint)
+            rejudge = recorded ? 'policy-changed' : 'unrecorded'
+        }
+        if (!rejudge) {
           skip(head.parked)
           continue
         }
-        entry.rejudge = ledger ?? (recorded ? 'policy-changed' : 'unrecorded')
+        entry.rejudge = rejudge
       }
     }
     const labels = Array.isArray(ticket?.labels) ? ticket.labels : []
@@ -3989,7 +3918,6 @@ const FLAGS = Object.freeze({
       'policy',
       'carry-record',
       'extension-results',
-      'ledger',
     ],
     bools: ['dry-run'],
   },
@@ -4066,7 +3994,6 @@ export async function main(argv, deps = {}) {
         policy: f.policy,
         carryRecord: f['carry-record'],
         extensionResults: f['extension-results'],
-        ledger: f.ledger,
         token: f.token,
         repo: f.repo,
         dryRun: f['dry-run'] === true,

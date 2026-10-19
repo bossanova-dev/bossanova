@@ -375,20 +375,6 @@ export function baseDrift({ repo, base, head = 'HEAD', fetchFailed = false, run 
   return report
 }
 
-// `do not merge` is the merge-gate token a PR title or body is matched against, so a base commit
-// subject that happens to contain it would wedge THIS branch's PR the moment the drift note is
-// published under `## Autonomous decisions`. The note is not review text — it is quoted from other
-// people's commits — so the "rephrase the finding" rule cannot reach it; the emitter has to.
-// The replacement is deliberately NOT the hyphenated spelling: prose in these skills uses
-// `do-not-merge` as the marker's own name, so substituting it would swap the literal for its
-// documented alias inside the very section a merge gate reads. A neutral placeholder says what
-// happened and resembles nothing.
-const MERGE_GATE_TOKEN = /do(\s+)not(\s+)merge/gi
-export const MERGE_GATE_REDACTION = '[merge-gate token redacted]'
-export function redactMergeGateToken(text) {
-  return String(text ?? '').replace(MERGE_GATE_TOKEN, MERGE_GATE_REDACTION)
-}
-
 // Same reason the attributed list spells `PR 123`: a forge turns every `#N` in a pull-request body
 // into a cross-reference event on N. Quoted commit subjects are the wider path, not the narrower
 // one — a repo whose convention is `[#1234]` matches neither anchored landing pattern, so EVERY
@@ -396,12 +382,6 @@ export function redactMergeGateToken(text) {
 const CROSS_REFERENCE = /#(\d+)/g
 export function deCrossReference(text) {
   return String(text ?? '').replace(CROSS_REFERENCE, 'PR $1')
-}
-
-// Everything quoted out of a base commit goes through both: the merge-gate token would wedge this
-// PR, and a bare `#N` would write to someone else's.
-export function sanitizeQuotedSubject(subject) {
-  return deCrossReference(redactMergeGateToken(subject))
 }
 
 function attributionClause(report) {
@@ -423,9 +403,7 @@ function attributionClause(report) {
   // comment, so drop the sigil instead of hiding it.
   if (a.prs.length > 0) parts.push(`landed by ${a.prs.map((n) => `PR ${n}`).join(', ')}`)
   if (a.unattributed.length > 0) {
-    const listed = a.unattributed
-      .map((c) => `${c.sha} "${sanitizeQuotedSubject(c.subject)}"`)
-      .join('; ')
+    const listed = a.unattributed.map((c) => `${c.sha} "${deCrossReference(c.subject)}"`).join('; ')
     parts.push(`${a.unattributed.length} commit(s) carry no PR reference (${listed})`)
   }
   // The landing-lookup cap belongs HERE, not only in `notes`: the two note branches that carry this

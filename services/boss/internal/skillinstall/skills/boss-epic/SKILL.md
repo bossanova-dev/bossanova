@@ -263,8 +263,8 @@ degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening
    each id. Several roots: read **every** root and its children first (fail closed on an unreadable
    root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. Then `get_issue
 includeRelations=true` each unique child once and `normalizeTicket` it.
-2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-build`, an
-   `Implementation plan (<id>)` attachment, not `needs-human`), `done` (Done/Canceled), `skipped`
+2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-build`, not `needs-human`,
+   and something to build from: an uploaded plan attachment, or any title or description text), `done` (Done/Canceled), `skipped`
    (with reasons). Print the table. When there is work, post the initial progress comment on each
    root before anything launches.
 3. **Nothing eligible and nothing to adopt** (after Phase 2) ⇒ upsert **one** progress comment that
@@ -374,9 +374,11 @@ its `action`.
 ### 3c. Transitions
 
 - **Green** — `READY_FOR_REVIEW`, DisplayStatus `Passing`, chat settled, PR **not a draft**, and no
-  `do not merge` / partial marker in its title or body (a child that ended `PARTIAL` carries
-  `do not merge — partial: <n>/<total> acceptance criteria` and a `(partial n/total)` title suffix) ⇒
-  add to `greens`. If the ticket is not yet in the review state, move it there.
+  PARTIAL marker ⇒ add to `greens`. If the ticket is not yet in the review state, move it there.
+  The marker is a `(partial n/m)` title suffix or `do not merge — partial: n/m` as the first line
+  under `## Partial`. Put the PR's `title` and `body` in the snapshot's `prView`;
+  `greenAdmissionBlockers` judges them with `isPartial` (`toolbox/merge-eligibility.mjs`). Other
+  `do not merge` text never holds.
 - **Green but draft**, or **passing while the chat is still working** ⇒ hold and re-poll.
 - **Liveness first** — `classifyChildLiveness`: `alive/hold` re-poll; `environmental-death/resume`
   one resume; `agent-blocked/repair` a repair round; `wall-clock-expired/fail-isolate` fail-isolate
@@ -507,7 +509,7 @@ resume without the previous turn.
 
 - `merge_session` only with `confirm: true`, only in `nextToMerge` order, one at a time.
 - **A PR is merge-eligible only when all four hold**: the daemon gate is `Passing`; the build chat
-  settled with real changes; the PR is not a draft; no `do not merge` / partial marker. A PR number
+  settled with real changes; the PR is not a draft; no PARTIAL marker (`isPartial`). A PR number
   alone — especially an empty bootstrap draft — is never completion (boss-build adopts that branch
   and continues).
 - Never `stop_session` a failed ticket.
@@ -518,7 +520,8 @@ resume without the previous turn.
 
 ## Setup
 
-Plan the children first (planned, `agent-build`, a plan attachment — `boss-plan`). Then
+Put the children in the planned state with `agent-build` (a `boss-plan` plan attachment is optional;
+boss-build builds from the title and description otherwise). Then
 `/boss-epic <TICKET>` (a parent id or URL), `/boss-epic <A> <B> …` (a list), or `--epic <A> --epic
 <B>` (several roots), with optional `--parallel N`, `--agent <name>` and the `--assume-cleared*`
 overrides.

@@ -10,8 +10,8 @@ Write it to a temp file **outside** the worktree, then `gh pr create --body-file
 changed sections to a file and merge them into the live body (`gh pr view --json body -q .body`):
 `node "$BOSS_BUILD_TOOLBOX/pr-body.mjs" merge --body-file <live> --update-file <sections> --out <path>`.
 It replaces each section in place, so reruns converge on one copy. An optional section that is now
-empty (`## After merge`, `## Host notes`, `## Unapplied review findings`) gets `--drop '<heading>'`, or the merge
-keeps its stale published copy. A warning that a heading survives in several copies means the
+empty (`## Human follow-up`, `## After merge`, `## Host notes`, `## Unapplied review findings`) gets
+`--drop '<heading>'`, or the merge keeps its stale published copy. A warning that a heading survives in several copies means the
 update must render that section too. Never patch a body with
 `String#replace` or `sed`: their replacement patterns (`$'`, `&`) expand, and `-run '^X$'`
 contains one.
@@ -38,12 +38,7 @@ Linear issue: <url>
   note)
 
 ## Human follow-up
-- [ ] <anything a human must do or verify outside the worktree before merge>
-- none
-
-## Open questions
-- [ ] <unresolved plan question>
-- none
+- [ ] <anything a human must do or verify outside the worktree — optional, omitted when empty>
 
 ## After merge
 - [ ] <an observation only possible once merged — optional, non-gating, omitted when empty>
@@ -63,6 +58,8 @@ Linear issue: <url>
 ```
 
 - The first line must be `Linear issue: <url>` — downstream review keys off it.
+- Every section is for people reading the PR. The only text a merge gate reads is the review
+  sections and the PARTIAL marker below.
 - **Never omit** `## Cross-model review` or `## Review coverage`: an absent section reads as
   "passed clean" / "full coverage". Publish the token the run actually earned, never a cleaner one.
 - `## Review findings`, `## Unapplied review findings`, `## Cross-model review` and
@@ -81,20 +78,9 @@ Linear issue: <url>
   `validateLocalVerification(config, body)` (`toolbox/skill-config.mjs`) owns this grammar; fix
   findings in the body and validate again. A `gap:` entry is honest output, not a failure, and
   validator findings never change the route or yield BLOCKED.
-- Always include `## Human follow-up` and `## Open questions`. Each contains only checklist
-  items (`- [ ]` open, `- [x]` done), or a single `- none` when empty; in the template choose
-  items or `- none`, never both. Heading matching is case-insensitive and fenced blocks are ignored.
-  Any other non-blank line makes the section malformed. Run
-  `node "$BOSS_BUILD_TOOLBOX/completion-gate.mjs" followups --body-file <path>` beside the
-  evidence validator and fix its reported problems before publishing; a malformed section is
-  recoverable, not a blocker.
-- Take `## Human follow-up`, `## Open questions`, `## After merge` and `## Host notes` from the
+- Take `## Human follow-up`, `## After merge`, `## Host notes` and `## Review follow-ups` from the
   `sections` that `followup-route.mjs route` prints (SKILL.md Step 7.3); never hand-write their
-  items. `## Human follow-up` parks the PR at verify, so it holds only what a person must do before
-  merge. An observation that can only happen after merge is a `post-merge` candidate and lands
-  under `## After merge`, which verify never reads.
-- The phrase `do not merge` never appears in a title or body except as the PARTIAL marker below —
-  boss-epic's merge gate matches it. Rephrase any finding that contains it.
+  items.
 
 ## The review comment
 
@@ -156,7 +142,7 @@ BLOCKED.
 
 - Ticket comment: the count, the checklist, the reasons, the marker and the PR URL.
 - PR readied (non-draft), and the ticket **stays in `.inProgress`**.
-  boss-epic holds a PARTIAL PR twice: by the ticket state and by the marker in the title/body.
+  verify parks a PARTIAL PR as `partial-build`, and boss-epic holds it by the ticket state and the marker.
 
 ## BLOCKED
 

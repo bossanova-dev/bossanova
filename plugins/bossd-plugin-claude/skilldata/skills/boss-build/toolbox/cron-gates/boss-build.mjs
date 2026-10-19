@@ -7,9 +7,9 @@
 // blocker (a blocker whose PR is unmerged — state not Done/Canceled). This keeps
 // the cron from waking to find every candidate blocked and exiting with no work.
 //
-// Still a LOOSE superset of the skill's exact filter: it does not check for the
-// `Implementation plan (...)` link, so a rare false-positive (fires, finds no
-// plan-linked candidate, exits NO_CHANGE) is possible. It scans the same
+// Still a LOOSE superset of the skill's exact filter: it does not read descriptions,
+// so a rare false-positive (fires, finds only tickets with no readable plan attachment and
+// no title or description text, exits NO_CHANGE) is possible. It scans the same
 // candidate window the skill selects from (Step 2's `list_issues ... limit=250`),
 // so within that window it is never a false-negative — it cannot skip a run while
 // an unblocked candidate the skill would have picked exists.

@@ -16,12 +16,8 @@ import { classifyChecks, isGreen } from './pr-check-state.mjs'
 import { STAGE_SKILL, invokedSkill } from './stage-chain.mjs'
 import {
   ciReasons,
-  criteriaReasons,
-  followUpReasons,
   headReasons,
   mergeStateReasons,
-  parseFollowUps,
-  parseLedger,
   prShapeReasons,
   sectionToken,
   sections,
@@ -47,8 +43,6 @@ export const INELIGIBLE_REASONS = Object.freeze([
   'coverage-unknown',
   'cross-model-error',
   'cross-model-unknown',
-  'criteria-unmet',
-  'criteria-unknown',
   'ci-not-settled',
   'ci-not-green-on-head',
   'merge-state-unknown',
@@ -57,15 +51,11 @@ export const INELIGIBLE_REASONS = Object.freeze([
   ),
   'pr-not-open',
   'pr-draft',
-  'do-not-merge-marker',
+  'partial-marker',
   'head-mismatch',
   'head-unknown',
   'tree-changed-since-review',
   'tree-drift-unknown',
-  'human-follow-up-open',
-  'follow-up-section-missing',
-  'open-questions-open',
-  'open-questions-section-missing',
   'epic-child',
   'launch-origin-unknown',
   'foreign-pr-watcher',
@@ -92,9 +82,6 @@ export function classifyVerifyConsent({ jobs, repoId } = {}) {
   return jobs.some(consenting) ? 'present' : 'absent'
 }
 
-// The PR body parsers live in merge-eligibility.mjs; parseFollowUps stays exported from here for
-// the `followups` verb and existing importers.
-export { parseFollowUps }
 export function classifyLaunchOrigin(report) {
   const mode = typeof report === 'string' ? report : report?.mode
   if (mode === 'cron' || mode === 'managed') return 'standalone'
@@ -149,7 +136,6 @@ export function computeEligibility(inputs = {}) {
     add('coverage-not-full')
   if (!text(i.crossModelReview)) add('cross-model-unknown')
   else if (/^error:/i.test(i.crossModelReview)) add('cross-model-error')
-  reasons.push(...criteriaReasons(i.criteria))
   reasons.push(
     ...ciReasons({
       ciWaitState: i.ciWaitState,
@@ -161,9 +147,6 @@ export function computeEligibility(inputs = {}) {
   reasons.push(...prShapeReasons(i.prView))
   reasons.push(...headReasons([i.pushedHead, i.localHead, i.upstreamHead, i.prView?.headRefOid]))
   reasons.push(...driftReasons(i.treeDrift))
-  reasons.push(
-    ...followUpReasons({ humanFollowUp: i.humanFollowUp, openQuestions: i.openQuestions }),
-  )
   if (i.launchOrigin === 'epic-child') add('epic-child')
   else if (i.launchOrigin !== 'standalone') add('launch-origin-unknown')
   if (i.watchers === 'foreign-pr-watcher') add('foreign-pr-watcher')
@@ -182,13 +165,6 @@ export function computeEligibility(inputs = {}) {
   }
 }
 
-function readText(path) {
-  try {
-    return readFileSync(path, 'utf8').trim()
-  } catch {
-    return ''
-  }
-}
 function readJSON(path) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'))
@@ -241,7 +217,6 @@ export function buildEnvelope(options, deps = {}) {
           json: true,
         })
       : { ok: false }
-  const { criteria } = parseLedger(prView?.body)
   const envelope = {
     runId: options.runId,
     outcome: options.outcome,
@@ -260,7 +235,6 @@ export function buildEnvelope(options, deps = {}) {
     crossModelReview: sectionToken(prView?.body, 'cross-model review'),
     openFindings:
       reviewVerdict === 'clean' && !sections(prView?.body).has('review findings') ? 0 : null,
-    criteria,
     ciWaitState: options.ciWaitState,
     checkVerdict: options.checkVerdict,
     prView,
@@ -270,7 +244,6 @@ export function buildEnvelope(options, deps = {}) {
       reviewedHead,
       upstream.ok ? upstream.output : '',
     ),
-    ...parseFollowUps(prView?.body),
     launchOrigin: classifyLaunchOrigin(env),
     callbacksAvailable: options.callbacksAvailable,
     watchers: classifyWatchers({
@@ -460,8 +433,7 @@ export function fastPath(
 }
 
 const BOOLEAN_FLAGS = new Set(['dry-run'])
-export const USAGE =
-  'usage: completion-gate.mjs followups|envelope|fast-path --option value [--dry-run]'
+export const USAGE = 'usage: completion-gate.mjs envelope|fast-path --option value [--dry-run]'
 export function main(argv, deps = {}) {
   const [subcommand, ...args] = argv
   const opts = {}
@@ -476,7 +448,6 @@ export function main(argv, deps = {}) {
     if (args[index + 1] === undefined) throw new Error('expected --option value')
     opts[name] = args[++index]
   }
-  if (subcommand === 'followups') return parseFollowUps(readText(opts['body-file']))
   if (subcommand === 'envelope') {
     if (!opts.out || !opts['run-id']) throw new Error('envelope requires --out and --run-id')
     const result = buildEnvelope(
@@ -523,7 +494,6 @@ if (isMainModule(import.meta.url)) {
   try {
     const result = main(process.argv.slice(2))
     process.stdout.write(`${JSON.stringify(result)}\n`)
-    if (process.argv[2] === 'followups' && !result.ok) process.exitCode = 1
   } catch (error) {
     process.stderr.write(`completion-gate: ${error.message}\n`)
     process.exitCode = 1

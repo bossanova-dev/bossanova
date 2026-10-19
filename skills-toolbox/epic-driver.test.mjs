@@ -87,9 +87,15 @@ function greenSnapshot(overrides = {}) {
     spinnerPresent: false,
     sessionState: 'READY_FOR_REVIEW',
     checkVerdict: { state: 'passing' },
-    prView: { number: 10, repo: 'acme/app', url: 'https://example.test/pr/10', isDraft: false },
+    prView: {
+      number: 10,
+      repo: 'acme/app',
+      url: 'https://example.test/pr/10',
+      isDraft: false,
+      title: 'Feature',
+      body: '## Summary\nDone.\n',
+    },
     reviewStateMatches: true,
-    partialMarker: false,
     ...overrides,
   }
 }
@@ -522,11 +528,22 @@ test('green admission holds a draft, an unsettled chat and a partial marker', ()
   // The pure blocker list takes the driver-computed verdict as `chatSettled`.
   const admitted = (overrides = {}) => greenSnapshot({ chatSettled: true, ...overrides })
   assert.deepEqual(greenAdmissionBlockers(admitted()), [])
-  assert.deepEqual(greenAdmissionBlockers(admitted({ prView: { isDraft: true } })), [
-    'pr:draft-or-unknown',
-  ])
+  const pr = (changes) => ({ prView: { ...greenSnapshot().prView, ...changes } })
+  assert.deepEqual(greenAdmissionBlockers(admitted(pr({ isDraft: true }))), ['pr:draft-or-unknown'])
   assert.deepEqual(greenAdmissionBlockers(admitted({ chatSettled: false })), ['chat:unsettled'])
-  assert.deepEqual(greenAdmissionBlockers(admitted({ partialMarker: true })), ['pr:partial-marker'])
+  for (const partial of [
+    { title: 'Feature (partial 2/5)' },
+    { body: '## Partial\ndo not merge — partial: 2/5 acceptance criteria\n' },
+  ])
+    assert.deepEqual(greenAdmissionBlockers(admitted(pr(partial))), ['pr:partial-marker'])
+  // Quoted "do not merge" prose elsewhere in the body is not the PARTIAL marker.
+  const quoted = '## Unapplied review findings\n- callers do not merge the retry config\n'
+  assert.deepEqual(
+    greenAdmissionBlockers(admitted(pr({ title: 'Do not merge: wip', body: quoted }))),
+    [],
+  )
+  // A PR whose title or body was not read cannot be judged, so it is held.
+  assert.deepEqual(greenAdmissionBlockers(admitted(pr({ body: undefined }))), ['pr:text-unknown'])
   // The ticket's tracker state never holds a green PR.
   assert.deepEqual(greenAdmissionBlockers(admitted({ reviewStateMatches: false })), [])
   assert.deepEqual(greenAdmissionBlockers(admitted({ checkVerdict: { state: 'pending' } })), [
@@ -1112,7 +1129,13 @@ test('three Ready children parked WAITING are admitted on the second cycle and m
   const io = makeIo({
     readSessionSnapshot: ({ sessionId }) => {
       const snapshot = readySnapshot({
-        prView: { number: 10, repo: 'acme/app', url: `https://example.test/${sessionId}` },
+        prView: {
+          number: 10,
+          repo: 'acme/app',
+          url: `https://example.test/${sessionId}`,
+          title: 'Feature',
+          body: '',
+        },
       })
       snapshot.prView.isDraft = false
       statusesRead.push(snapshot.chatStatus)

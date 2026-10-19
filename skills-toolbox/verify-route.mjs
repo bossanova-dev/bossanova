@@ -498,7 +498,6 @@ export function sweep(options = {}, deps = {}) {
         '--reason',
         j.reason,
         ...(text(j.policyFingerprint) ? ['--policy', j.policyFingerprint] : []),
-        ...(text(j.ledgerFingerprint) ? ['--ledger', j.ledgerFingerprint] : []),
         ...repoArgs,
         ...dry,
       ])

@@ -41,6 +41,10 @@ func (lc *failingStartChatLifecycle) ReplaceBlockingChatForRepair(context.Contex
 	return session.ReclaimRepairChatResult{}, nil
 }
 
+func (lc *failingStartChatLifecycle) InServiceSpawnTarget(_ context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error) {
+	return sess, nil, nil
+}
+
 func (lc *failingStartChatLifecycle) ReclaimRepairChat(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
 	return session.ReclaimRepairChatResult{}, nil
 }

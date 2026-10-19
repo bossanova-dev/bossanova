@@ -159,7 +159,13 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 
 	// Resolve the spawn view before materializing its account env: the primary
 	// chat is the runtime authority for provider, model, and account binding.
-	spawnSess, spawnChat := l.effectiveSpawnTarget(ctx, session)
+	spawnSess, spawnChat, spawnErr := l.InServiceSpawnTarget(ctx, session)
+	if spawnErr != nil {
+		l.logger.Warn().Err(spawnErr).Str("session", session.ID).
+			Msg("orphan-resume sweep: no account can run this session; re-parking Orphaned")
+		l.releaseOrphanResumeClaim(ctx, claimStore, session.ID, orphanReason, priorAgentSession)
+		return false
+	}
 
 	// Materialize the CURRENT account's env exactly as the initial headless start
 	// does (account > proof, then the worktree .env with the repo's stored

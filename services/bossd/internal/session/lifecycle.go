@@ -2465,6 +2465,9 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// be preflighted (or launched) on the agent CLI's ambient login. The
 		// worktree already exists here, so the refusal goes through the same
 		// rollback every other post-setup preflight failure uses.
+		if _, _, err := l.InServiceSpawnTarget(ctx, session); err != nil {
+			return rollbackPreflightFailure(err)
+		}
 		preflightAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
 		if accountErr != nil {
 			return rollbackPreflightFailure(fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr)))
@@ -2611,6 +2614,9 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		// filled beneath the worktree .env (OverlayWithRepo) so the run
 		// authenticates to its own repo's Linear workspace, not the daemon's
 		// ambient one.
+		if _, _, err := l.InServiceSpawnTarget(ctx, session); err != nil {
+			return err
+		}
 		headlessAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
 		if accountErr != nil {
 			// BOS-1142: refuse rather than start the headless run on the agent
@@ -4475,8 +4481,8 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	// workspace, not the daemon's ambient one.
 	// BOS-381: the primary chat carries the authoritative provider/account/model.
 	// Resolve it so a chat whose agent/account/model diverged from the session's
-	// seed resumes under the right runner, credentials, and model.
-	spawnSess, spawnChat := l.effectiveSpawnTarget(ctx, session)
+	// seed resumes under the right runner, credentials, and model. An account
+	// disabled while the session was archived is replaced with the default.
 	// BOS-1142: a bound account whose credentials cannot be injected refuses the
 	// resurrect instead of restarting the session on the agent CLI's ambient
 	// login. The refusal shares startHeadlessReplacementRun's error path below so
@@ -4486,6 +4492,10 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	// builds its spawn view from agent_chats, so the failover token must be keyed
 	// on the chat's account, not the session's seed.
 	claudeSessionID, err := func() (string, error) {
+		spawnSess, spawnChat, spawnErr := l.InServiceSpawnTarget(ctx, session)
+		if spawnErr != nil {
+			return "", spawnErr
+		}
 		accountEnv, envErr := l.resolveAccountEnvForChat(ctx, spawnSess, spawnChat)
 		if envErr != nil {
 			return "", fmt.Errorf("resolve account env: %w", redactedInjection(envErr))

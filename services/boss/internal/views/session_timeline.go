@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -69,7 +70,7 @@ func (m ChatPickerModel) neededQuestion() string {
 	}
 	switch a.GetKind() {
 	case pb.AttentionKind_ATTENTION_KIND_QUESTION:
-		if text := strings.TrimSpace(m.fullQuestion); text != "" {
+		if text := strings.TrimSpace(m.fullQuestion); plainMarkdown(text) != "" {
 			return text
 		}
 		return strings.Trim(a.GetSentence(), "“”")
@@ -127,9 +128,11 @@ func (m ChatPickerModel) timelineSteps() []*pb.TimelineStep {
 	}
 	// The daemon's current step is replaced with the session's current
 	// attention so every kind explains its waiting point, in place and at the
-	// daemon's time: attention's since is when the session's state began, which
-	// can predate the wait by hours. A timeline fetched without a current step
-	// takes the waiting step at attention's since, still in time order.
+	// daemon's time. A question, a park and a fix carry their own since when
+	// the daemon can date them. Otherwise, and for a merge outside a factory
+	// repo, since is when the session's state began, which can predate the
+	// wait by hours. A timeline fetched without a current step takes the
+	// waiting step at attention's since, still in time order.
 	steps := slices.Clone(m.timeline)
 	if attention.NeedsYou(a.GetKind()) {
 		title := map[pb.AttentionKind]string{pb.AttentionKind_ATTENTION_KIND_FIX: "Waiting for a fix", pb.AttentionKind_ATTENTION_KIND_QUESTION: "Waiting for your answer", pb.AttentionKind_ATTENTION_KIND_REVIEW: "Parked for you", pb.AttentionKind_ATTENTION_KIND_MERGE: "Waiting for merge"}[a.GetKind()]
@@ -589,15 +592,15 @@ const neededMaxLines = 5
 // neededBlock is the "Needed from you" answer above the chat table, or ""
 // when the session asks nothing of the operator: the label on its own row,
 // then the answer indented under it. A terminal too short for the whole answer
-// cuts it, keeping at least one row.
+// gives it the rows left, at least one: a question is summarised into them.
 func (m ChatPickerModel) neededBlock() string {
-	lines := m.neededLines()
+	room := math.MaxInt
+	if m.height > 0 {
+		room = max(1, m.height-m.chatListOverhead()-m.timelineHeight()-neededChromeRows-m.detailsReservedTableRows()-1)
+	}
+	lines := m.neededLinesIn(room)
 	if len(lines) == 0 {
 		return ""
-	}
-	if m.height > 0 {
-		room := m.height - m.chatListOverhead() - m.timelineHeight() - neededChromeRows - m.detailsReservedTableRows() - 1
-		lines = cutLines(lines, max(1, room), m.neededTextWidth())
 	}
 	rows := []string{neededLabel}
 	for _, line := range lines {
@@ -608,18 +611,25 @@ func (m ChatPickerModel) neededBlock() string {
 	return strings.Join(rows, "\n")
 }
 
-// neededLines is the answer wrapped at neededTextWidth. An agent's question is
-// its message summarised as plain text in at most neededMaxLines rows; the
-// other kinds are boss's own short lines, shown whole, each keeping its leading
-// spaces, such as a checklist bullet's, on every row it wraps into.
+// neededLines is the whole answer wrapped at neededTextWidth. An agent's
+// question is its message summarised as plain text in at most neededMaxLines
+// rows; the other kinds are boss's own short lines, shown whole, each keeping
+// its leading spaces, such as a checklist bullet's, on every row it wraps into.
 func (m ChatPickerModel) neededLines() []string {
+	return m.neededLinesIn(math.MaxInt)
+}
+
+// neededLinesIn is the answer in at most rows rows. A question is summarised
+// to fit them, so a short terminal still shows its ask; boss's own lines are
+// cut after the rows that fit.
+func (m ChatPickerModel) neededLinesIn(rows int) []string {
 	text := m.neededQuestion()
 	if text == "" {
 		return nil
 	}
 	width := m.neededTextWidth()
 	if m.session.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
-		return summaryLines(text, width, neededMaxLines)
+		return summaryLines(text, width, min(rows, neededMaxLines))
 	}
 	var lines []string
 	for _, paragraph := range strings.Split(text, "\n") {
@@ -628,7 +638,7 @@ func (m ChatPickerModel) neededLines() []string {
 			lines = append(lines, lead+line)
 		}
 	}
-	return lines
+	return cutLines(lines, rows, width)
 }
 
 // neededTextWidth is the width the answer's rows wrap at after their indent:

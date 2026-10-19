@@ -601,11 +601,15 @@ func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.Probe
 	if !snap.known {
 		return unknown, nil
 	}
-	return &bossanovav1.ProbeProgressLivenessResponse{
+	resp := &bossanovav1.ProbeProgressLivenessResponse{
 		LastProgressAt: timestamppb.New(snap.lastProgressAt),
 		Phase:          snap.phase,
 		IsKnown:        true,
-	}, nil
+	}
+	if !snap.lastAssistantMessageAt.IsZero() {
+		resp.LastAssistantMessageAt = timestamppb.New(snap.lastAssistantMessageAt)
+	}
+	return resp, nil
 }
 
 // RotationCapability: claude injects its credential as an env token.

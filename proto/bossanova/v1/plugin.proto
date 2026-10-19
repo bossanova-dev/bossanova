@@ -1038,6 +1038,11 @@ message ProbeProgressLivenessResponse {
   // false = "this runner has no opinion" (unimplemented, unreadable or absent
   // transcript). The daemon MUST raise nothing when is_known=false.
   bool is_known = 3;
+  // Timestamp of the agent's own newest message when it is the last semantic
+  // record, so the turn now waiting on the operator, such as a question.
+  // Bookkeeping written after it never moves it, unlike last_progress_at.
+  // Absent when is_known=false or the last semantic record is not the agent's.
+  google.protobuf.Timestamp last_assistant_message_at = 4;
 }
 
 // AuthKind identifies how an agent's per-account credential is injected into a

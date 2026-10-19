@@ -2471,6 +2471,10 @@ func (p *ProxyServer) forward(r *http.Request, upstreamPath string, body io.Read
 	// Preserve all client headers (anthropic-beta / anthropic-version /
 	// User-Agent / Content-Type / Authorization), minus hop-by-hop headers.
 	req.Header = sanitizedHeader(r.Header)
+	// The proxy reads error bodies (the 403 suspension check), so it must see
+	// them decoded. With the client's Accept-Encoding removed, the transport
+	// negotiates compression itself and hands back plain bytes.
+	req.Header.Del("Accept-Encoding")
 	if overrideAuth != "" {
 		req.Header.Set("Authorization", "Bearer "+overrideAuth)
 		// When we supply the account's OAuth bearer, the client's sentinel

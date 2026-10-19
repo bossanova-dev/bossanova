@@ -15,6 +15,7 @@ go_library(
     importpath = "github.com/recurser/bossalib/models",
     visibility = ["//visibility:public"],
     deps = [
+        "//lib/bossalib/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
         "@org_golang_google_protobuf//types/known/timestamppb",
@@ -24,6 +25,7 @@ go_library(
 go_test(
     name = "models_test",
     srcs = [
+        "account_test.go",
         "agent_chat_role_test.go",
         "broadcast_test.go",
         "convert_test.go",

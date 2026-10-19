@@ -21,6 +21,7 @@ go_test(
     srcs = [
         "binding_test.go",
         "injection_test.go",
+        "out_of_service_test.go",
     ],
     embed = [":account"],
     deps = ["@com_github_rs_zerolog//:zerolog"],

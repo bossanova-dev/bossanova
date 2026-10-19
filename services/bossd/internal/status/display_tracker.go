@@ -57,9 +57,10 @@ type DisplayEntry struct {
 	// polls, and read by session.BlockedAlertFacts.
 	BlockedRunWorkingAt time.Time
 	UpdatedAt           time.Time
-	// restored marks an entry Restore seeded from the last persisted poll, so
-	// the first live Set reports its status as new.
-	restored bool
+	// Restored marks an entry Restore seeded from the last persisted poll and
+	// no live poll has replaced: the first live Set reports its status as new,
+	// and nothing may act on it as the PR's current state.
+	Restored bool
 }
 
 // ParkCodes returns the verify park's codes for displaystatus.Input.ParkCodes:
@@ -158,7 +159,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	// firing callbacks. The Recomputer reads via Get() which takes RLock
 	// itself — calling it while still holding the write lock would
 	// deadlock as soon as RWMutex serialises the readers.
-	statusChanged := !existed || oldEntry.restored || oldStatus != info.Status
+	statusChanged := !existed || oldEntry.Restored || oldStatus != info.Status
 	onChange := t.onChange
 	t.mu.Unlock()
 
@@ -182,6 +183,7 @@ func (t *DisplayTracker) Restore(sessionID string, info vcs.DisplayInfo, polledA
 	}
 	t.entries[sessionID] = &DisplayEntry{
 		Status:              info.Status,
+		HasBuildReceipt:     info.HasBuildReceipt,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
 		Merging:             t.mergeHolds[sessionID] > 0,
@@ -190,7 +192,7 @@ func (t *DisplayTracker) Restore(sessionID string, info vcs.DisplayInfo, polledA
 		VerifyReason:        info.VerifyReason,
 		VerifyLabel:         info.VerifyLabel,
 		UpdatedAt:           polledAt,
-		restored:            true,
+		Restored:            true,
 	}
 }
 
@@ -219,6 +221,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		VerifyLabel:         e.VerifyLabel,
 		BlockedRunWorkingAt: e.BlockedRunWorkingAt,
 		UpdatedAt:           e.UpdatedAt,
+		Restored:            e.Restored,
 	}
 }
 
@@ -249,6 +252,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			VerifyLabel:         e.VerifyLabel,
 			BlockedRunWorkingAt: e.BlockedRunWorkingAt,
 			UpdatedAt:           e.UpdatedAt,
+			Restored:            e.Restored,
 		}
 	}
 	return result

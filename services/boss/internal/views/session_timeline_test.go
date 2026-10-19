@@ -403,7 +403,7 @@ func TestChatPickerLongQuestionKeepsChatsVisible(t *testing.T) {
 			t.Fatalf("missing %q: %s", text, screen)
 		}
 	}
-	if rows := neededRows(t, m); len(rows) > summaryMaxRows || !strings.HasSuffix(rows[len(rows)-1], "…") || strings.Contains(stripANSI(screen), "pgup") {
+	if rows := neededRows(t, m); len(rows) > summaryMaxRows || !strings.HasSuffix(rows[len(rows)-1], "Can you confirm the final choice?") || strings.Contains(stripANSI(screen), "pgup") {
 		t.Fatalf("long question is not a capped summary:\n%s", stripANSI(screen))
 	}
 }
@@ -615,7 +615,8 @@ func neededRows(t *testing.T, m ChatPickerModel) []string {
 
 // TestChatPickerNeededFromYouSummarisesAMarkdownQuestion: a long markdown
 // question shows its opening as plain words under the label, wrapped at the
-// chat table's width, in at most summaryMaxRows rows that end in an ellipsis.
+// chat table's width, ending in an ellipsis, then the question it ends on, in
+// at most summaryMaxRows rows.
 func TestChatPickerNeededFromYouSummarisesAMarkdownQuestion(t *testing.T) {
 	plain := plainMarkdown(operatorMarkdownQuestion)
 	for _, width := range []int{40, 80, 120} {
@@ -638,10 +639,10 @@ func TestChatPickerNeededFromYouSummarisesAMarkdownQuestion(t *testing.T) {
 					t.Errorf("row is %d wide, want at most %d: %q", w, m.neededTextWidth(), row)
 				}
 			}
-			if !strings.HasSuffix(rows[len(rows)-1], "…") {
-				t.Fatalf("cut answer does not end in an ellipsis: %q", rows)
+			if len(rows) < 2 || rows[len(rows)-1] != "Which do you prefer?" || !strings.HasSuffix(rows[len(rows)-2], "…") {
+				t.Fatalf("cut answer is not its opening, an ellipsis, then its last question: %q", rows)
 			}
-			shown := strings.TrimSpace(strings.TrimSuffix(strings.Join(rows, " "), "…"))
+			shown := strings.TrimSpace(strings.TrimSuffix(strings.Join(rows[:len(rows)-1], " "), "…"))
 			if !strings.HasPrefix(plain, shown) || !strings.HasPrefix(shown, "Should I keep the YAML rewrite in this PR, or split it out?") {
 				t.Fatalf("answer is not the message's opening: %q", shown)
 			}
@@ -742,11 +743,20 @@ func TestChatPickerTimelineWaitIsPlainText(t *testing.T) {
 }
 
 // TestChatPickerNeededFromYouGoldens pins the details screen with a short
-// question and the long markdown one at 40, 80 and 120 columns.
+// question, the long markdown one, the question-last survey, the CJK
+// question, a closing list of questions, "?" in code words, a quoted
+// question, a heading question and a Japanese one at 40, 80 and 120 columns.
 func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 	answers := map[string]string{
-		"short":    "Should this PR be merged?",
-		"markdown": operatorMarkdownQuestion,
+		"short":        "Should this PR be merged?",
+		"markdown":     operatorMarkdownQuestion,
+		"survey":       surveyQuestion,
+		"cjk":          cjkQuestion,
+		"closing-list": closingListQuestion,
+		"code-word":    codeWordQuestion,
+		"quoted":       quotedQuestion,
+		"heading":      headingQuestion,
+		"japanese":     japaneseQuestion,
 	}
 	for _, width := range []int{40, 80, 120} {
 		for name, answer := range answers {

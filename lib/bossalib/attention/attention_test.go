@@ -599,6 +599,22 @@ func TestCompute_QuestionPrecedence(t *testing.T) {
 	}
 }
 
+// TestCompute_QuestionIsDatedFromItsAsk dates a question from when it was
+// asked, so two questions in one state differ, and from the state's start
+// when the ask time is unknown.
+func TestCompute_QuestionIsDatedFromItsAsk(t *testing.T) {
+	state := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
+	asked := state.Add(90 * time.Minute)
+	in := attention.Input{QuestionChatID: "c", QuestionText: "Which one?", StateSince: state, QuestionAt: asked}
+	if got := attention.Compute(in).GetSince().AsTime(); !got.Equal(asked) {
+		t.Errorf("since = %v, want the ask at %v", got, asked)
+	}
+	in.QuestionAt = time.Time{}
+	if got := attention.Compute(in).GetSince().AsTime(); !got.Equal(state) {
+		t.Errorf("undated question: since = %v, want the state's start %v", got, state)
+	}
+}
+
 func TestCompute_QuestionWithoutText(t *testing.T) {
 	got := attention.Compute(attention.Input{QuestionChatID: "chat-q", QuestionText: " \n "})
 	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_QUESTION {

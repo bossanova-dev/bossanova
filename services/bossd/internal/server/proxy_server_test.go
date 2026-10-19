@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -647,6 +648,56 @@ func TestProxy_403Suspension_swapsAndReplays(t *testing.T) {
 	}
 	if reqs := up.all(); len(reqs) != 2 {
 		t.Fatalf("upstream saw %d requests, want 2 (original 403 + replay)", len(reqs))
+	}
+}
+
+// TestProxy_403SuspensionGzip_swapsAndReplays covers the shape seen on a real
+// host: the agent CLI asks for compressed responses, the upstream gzips its 403,
+// and the suspension text is only readable once decoded. Every such 403 used to
+// pass through as "suspension not matched", so the account never rotated.
+func TestProxy_403SuspensionGzip_swapsAndReplays(t *testing.T) {
+	const suspended = `{"type":"error","error":{"type":"permission_error","message":"Your organization has disabled Claude subscription access for Claude Code"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer second-token" {
+			_, _ = io.WriteString(w, "pong")
+			return
+		}
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, suspended)
+			return
+		}
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, _ = io.WriteString(zw, suspended)
+		_ = zw.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	f := &fakeFailover{result: session.FailoverResult{Rotate: true, Token: "second-token", NextAccountID: "acct-2", Trigger: "ROTATION_TRIGGER_AUTH_INVALIDATED"}}
+	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
+	tok := ps.TokenForSession("sess-1")
+
+	req, err := http.NewRequest(http.MethodPost, base+"/s/"+tok+"/v1/messages", strings.NewReader(`{"prompt":"hi"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer suspended-token")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if f.prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d, want 1 (a gzipped suspension 403 must rotate)", f.prepareCalls)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "pong" {
+		t.Fatalf("status = %d body = %q, want 200 pong after the replay", resp.StatusCode, body)
 	}
 }
 

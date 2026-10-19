@@ -33,6 +33,7 @@ go_test(
         "dochan_ratchet_test.go",
         "engine_test.go",
         "fakestore_test.go",
+        "out_of_service_test.go",
         "proactive_sweep_test.go",
         "proxy_token_repair_test.go",
         "util_test.go",

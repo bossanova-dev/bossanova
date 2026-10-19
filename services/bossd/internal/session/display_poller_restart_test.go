@@ -162,3 +162,52 @@ func TestDisplayPollerRestoresWhatTheSnapshotRecorded(t *testing.T) {
 		})
 	}
 }
+
+// TestDisplayPollerRestoresTheBuildReceiptItsLabelShowed restores a green PR
+// whose row last read "✓ ready". The snapshot does not record the build
+// receipt, so without it the row would read "✓ passing" until GitHub answers.
+// A row that read anything else restores no receipt.
+func TestDisplayPollerRestoresTheBuildReceiptItsLabelShowed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		label   string
+		status  vcs.DisplayStatus
+		receipt bool
+	}{
+		{"ready and passing", "✓ ready", vcs.DisplayStatusPassing, true},
+		{"ready and approved", "✓ ready", vcs.DisplayStatusApproved, true},
+		{"passing", "✓ passing", vcs.DisplayStatusPassing, false},
+		{"ready label on a failing snapshot", "✓ ready", vcs.DisplayStatusFailing, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			pr := 7
+			sessions.sessions["s"] = &models.Session{ID: "s", RepoID: "repo-1", PRNumber: &pr, DisplayLabel: tc.label}
+			snapshots := newMockCheckSnapshotStore()
+			if err := snapshots.Insert(context.Background(), db.CheckSnapshot{SessionID: "s", PolledAt: time.Now().Add(-time.Hour), HeadSHA: "h", RawJSON: "[]", ComputedStatus: int(tc.status)}); err != nil {
+				t.Fatal(err)
+			}
+			vp := newMockVCSProvider()
+			vp.prStatusErr = errors.New("GitHub has not answered yet")
+			tracker := status.NewDisplayTracker()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			p := NewDisplayPoller(sessions, repos, vp, tracker, time.Hour, zerolog.Nop())
+			p.SetSnapshotStore(snapshots)
+			p.Run(ctx)
+			runOnePollCycle(t, p, cancel)
+
+			got := tracker.Get("s")
+			if got == nil || got.Status != tc.status {
+				t.Fatalf("restored %+v, want status %d", got, tc.status)
+			}
+			if got.HasBuildReceipt != tc.receipt {
+				t.Fatalf("a row that read %q restored the build receipt %v, want %v", tc.label, got.HasBuildReceipt, tc.receipt)
+			}
+			if !got.Restored {
+				t.Fatal("the entry is not marked restored")
+			}
+		})
+	}
+}

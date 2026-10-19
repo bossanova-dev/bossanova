@@ -97,6 +97,12 @@ type Input struct {
 
 	QuestionChatID string
 	QuestionText   string
+	// QuestionAt is when the agent asked: its own newest message in the
+	// transcript, which the bookkeeping its CLI writes while the question waits
+	// never moves. A question's attention is dated from it, so two questions
+	// one state asks differ even in the same words; zero falls back to
+	// StateSince.
+	QuestionAt time.Time
 
 	Fix               *FixFact
 	DismissedAlertKey string
@@ -248,11 +254,26 @@ func computeQuestion(in Input) *pb.SessionAttention {
 	if text := singleLine(in.QuestionText); text != "" {
 		sentence = "“" + capRunes(text, questionMaxRunes) + "”"
 	}
+	// No dated apiversion bump for dating a question from QuestionAt, and why:
+	// it was the session's state-entry time, which every question asked in one
+	// state shared. Session.attention reaches the boss TUI, which stamps its
+	// built Current but can point at a remote daemon of another version, and
+	// the web through bosso, which is version-skewed. Both remember the since
+	// of the last attention they announced and skip the same one again, so the
+	// shared date silenced a repeated question; every client reads since only
+	// for that, for ordering and for when the wait began, which all want the
+	// question's own time. A down-convert back to state_entered_at would
+	// restore the silenced repeat for older clients, so none is wanted. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	since := in.StateSince
+	if !in.QuestionAt.IsZero() {
+		since = in.QuestionAt
+	}
 	return &pb.SessionAttention{
 		Kind:         pb.AttentionKind_ATTENTION_KIND_QUESTION,
 		Sentence:     sentence,
 		Actions:      []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_ANSWER},
-		Since:        timestamp(in.StateSince),
+		Since:        timestamp(since),
 		TargetChatId: in.QuestionChatID,
 	}
 }

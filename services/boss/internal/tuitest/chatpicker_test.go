@@ -2,6 +2,7 @@ package tuitest_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -707,7 +708,8 @@ func TestTUI_ChatPicker_AttentionHeaderKeepsStatusAndArchiving(t *testing.T) {
 // TestTUI_ChatPicker_NarrowAnswerRenders: on a terminal narrow and short
 // enough to leave the answer one or two rows, an answer with a word wider than
 // the answer's column still renders the picker instead of freezing on
-// "Loading chats", and shows the answer's opening under its label.
+// "Loading chats", and shows the answer's question under its label, below as
+// much of its opening as the rows left hold.
 func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
 	for _, size := range [][2]int{{40, 20}, {30, 24}} {
 		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
@@ -728,8 +730,8 @@ func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
 			screen := h.Driver.Screen()
 			t.Logf("PTY capture at %dx%d:\n%s", size[0], size[1], screen)
 			rows := neededAnswerRows(t, screen)
-			if len(rows) == 0 || !strings.HasPrefix(rows[0], "Should we keep") || !strings.HasSuffix(rows[len(rows)-1], "…") {
-				t.Fatalf("answer rows = %q, want the cut opening of the question", rows)
+			if len(rows) == 0 || rows[len(rows)-1] != "FINAL?" || (len(rows) > 1 && (!strings.HasPrefix(rows[0], "Should we keep") || !strings.HasSuffix(rows[len(rows)-2], "…"))) {
+				t.Fatalf("answer rows = %q, want the cut opening of the message, if it fits, above its last question", rows)
 			}
 		})
 	}
@@ -740,48 +742,66 @@ func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
 // bullets, whose question sits in its opening sentences.
 const operatorMarkdownQuestion = "**Should I keep the YAML rewrite in this PR, or split it out?** The `services/boss/internal/views` change is ready, but the rewrite touches `config.yaml` in three places and doubles the diff.\n\nHere is what I found:\n\n1. **Keep it here**\n   - one review, one merge\n   - the diff grows to 900 lines\n2. **Split it out**\n   - `MAD-1745` lands first\n   - this PR rebases on it\n\n## Next steps\n\nOnce you answer I'll run the classifier, update `__init__.py`, and push. Which do you prefer?"
 
+// surveyQuestion has the shape that lost its question: background, an options
+// list, a recommendation, and the question last.
+const surveyQuestion = "I dug into the flaky `TestDeployRetry` failures on main. The fixture server in `services/bossd/internal/deploy/testdata/server.go` starts listening after the health check fires, so about one run in twenty sees a refused connection and gives up.\n\nThere are three ways to fix it:\n\n1. **Retry the health check** with a short backoff (smallest change, but it hides the race)\n2. **Wait for the listener** before the check starts (fixes the race, touches the fixture API)\n3. **Drop the health check** from the test (fastest, loses coverage)\n\nI'd go with option 2: it removes the race instead of papering over it, and the fixture change is about 30 lines.\n\nShould I go ahead with option 2 and open a PR for it?"
+
+// closingListQuestion asks its questions as a numbered list after a long
+// background and a colon-ended introduction.
+const closingListQuestion = "I looked into last night's import failures. The batch job ran out of disk on the staging host after the old staging table grew past 40 GB, and the automatic retry filled the same disk again before anyone was paged. The nightly cleanup that should have trimmed the table has been failing silently since the scheduler moved to the new cluster three weeks ago, because its service account never got the delete grant there. Last week's batches finished, but four of them wrote partial results before the disk filled.\n\nBefore I continue:\n\n1. Should I delete the old staging table?\n2. Do you want a backfill for last week's batches?"
+
 // TestTUI_ChatPicker_LongQuestionSummary drives the real binary to a session
 // whose agent asked a long markdown question, fetched from the chat's
-// transcript. The answer is a few plain rows under its own label, ending in an
-// ellipsis, with no pager, and the chats and footer stay on screen.
+// transcript. The answer is a few plain rows under its own label: the
+// message's opening ending in an ellipsis, then the question it ends on, with
+// no pager, and the chats and footer stay on screen.
 func TestTUI_ChatPicker_LongQuestionSummary(t *testing.T) {
-	for _, size := range [][2]int{{80, 30}, {120, 40}} {
-		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
-			sessions := testSessions()[:1]
-			chats := testChats()
-			sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "“Should I keep the YAML rewrite in this PR, or split it out?”", TargetChatId: chats[0].GetAgentSessionId()}
-			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(chats...), tuitest.WithTerminalSize(size[0], size[1]))
-			h.Daemon.SetChatTranscript(&pb.GetChatTranscriptResponse{FinalAssistantText: operatorMarkdownQuestion})
-			if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.Driver.SendEnter(); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-				return strings.Contains(strings.Join(strings.Fields(screen), " "), "The services/boss/internal/views change is ready")
-			}); err != nil {
-				t.Fatalf("the transcript's question never rendered: %v\n%s", err, h.Driver.Screen())
-			}
-			for _, text := range []string{"Initial implementation", "[enter] open chat", "[n]ew chat"} {
-				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
-					t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
+	for _, tt := range []struct {
+		name, text, opening, question string
+	}{
+		{"markdown", operatorMarkdownQuestion, "Should I keep the YAML rewrite", "Which do you prefer?"},
+		{"question last", surveyQuestion, "I dug into the flaky TestDeployRetry", "Should I go ahead with option 2 and open a PR for it?"},
+		{"closing list", closingListQuestion, "I looked into last night's import", "Before I continue: 1. Should I delete the old staging table? 2. Do you want a backfill for last week's batches?"},
+	} {
+		for _, size := range [][2]int{{80, 30}, {120, 40}} {
+			t.Run(fmt.Sprintf("%s/%dx%d", tt.name, size[0], size[1]), func(t *testing.T) {
+				sessions := testSessions()[:1]
+				chats := testChats()
+				sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "“" + tt.question + "”", TargetChatId: chats[0].GetAgentSessionId()}
+				h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(chats...), tuitest.WithTerminalSize(size[0], size[1]))
+				h.Daemon.SetChatTranscript(&pb.GetChatTranscriptResponse{FinalAssistantText: tt.text})
+				if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+					t.Fatal(err)
 				}
-			}
-			screen := h.Driver.Screen()
-			t.Logf("PTY capture at %dx%d:\n%s", size[0], size[1], screen)
-			rows := neededAnswerRows(t, screen)
-			if len(rows) == 0 || len(rows) > 5 || !strings.HasPrefix(rows[0], "Should I keep the YAML rewrite") || !strings.HasSuffix(rows[len(rows)-1], "…") {
-				t.Fatalf("answer rows = %q, want at most 5 rows of the question's opening ending in an ellipsis", rows)
-			}
-			for _, raw := range []string{"**", "`", "pgup", "pgdown"} {
-				if strings.Contains(screen, raw) {
-					t.Fatalf("screen shows %q:\n%s", raw, screen)
+				if err := h.Driver.SendEnter(); err != nil {
+					t.Fatal(err)
 				}
-			}
-			if lines := strings.Split(strings.TrimRight(screen, "\n"), "\n"); len(lines) > size[1] {
-				t.Fatalf("screen is %d rows, terminal %d", len(lines), size[1])
-			}
-		})
+				if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+					return strings.Contains(strings.Join(strings.Fields(screen), " "), tt.opening)
+				}); err != nil {
+					t.Fatalf("the transcript's message never rendered: %v\n%s", err, h.Driver.Screen())
+				}
+				for _, text := range []string{"Initial implementation", "[enter] open chat", "[n]ew chat"} {
+					if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+						t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
+					}
+				}
+				screen := h.Driver.Screen()
+				t.Logf("PTY capture at %dx%d:\n%s", size[0], size[1], screen)
+				rows := neededAnswerRows(t, screen)
+				opening, asked := strings.CutSuffix(strings.Join(rows, " "), " "+tt.question)
+				if len(rows) < 2 || len(rows) > 5 || !strings.HasPrefix(rows[0], tt.opening) || !asked || !strings.HasSuffix(opening, "…") || !slices.ContainsFunc(rows, func(row string) bool { return strings.HasPrefix(tt.question, row) }) {
+					t.Fatalf("answer rows = %q, want at most 5 rows: the message's opening ending in an ellipsis, then %q", rows, tt.question)
+				}
+				for _, raw := range []string{"**", "`", "pgup", "pgdown"} {
+					if strings.Contains(screen, raw) {
+						t.Fatalf("screen shows %q:\n%s", raw, screen)
+					}
+				}
+				if lines := strings.Split(strings.TrimRight(screen, "\n"), "\n"); len(lines) > size[1] {
+					t.Fatalf("screen is %d rows, terminal %d", len(lines), size[1])
+				}
+			})
+		}
 	}
 }

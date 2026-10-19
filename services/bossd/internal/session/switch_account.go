@@ -235,7 +235,16 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// tests inject l.accountSwitchBinding.
 	binding := l.accountSwitchBinding
 	if binding == nil {
-		binding = chatAccountBinding{chats: l.agentChats, agentSessionID: p.AgentSessionID}
+		chatBinding := chatAccountBinding{chats: l.agentChats, agentSessionID: p.AgentSessionID}
+		// A chat running the session's own agent also carries the session seed
+		// with it, so the session's next chat starts on the account this switch
+		// moved to rather than the one it left.
+		if sameAgentSessionChat(session, chat) {
+			chatBinding.moveSession = func(ctx context.Context, accountID string) error {
+				return l.MoveSessionAccount(ctx, session, accountID)
+			}
+		}
+		binding = chatBinding
 	}
 	if l.accountSwitchRegistry == nil {
 		return SwitchAccountResult{}, notAttempted(fmt.Errorf("account switch: account registry not configured"))
@@ -623,16 +632,18 @@ func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID
 }
 
 // chatAccountBinding adapts db.AgentChatStore to the accountBinding seam so the
-// manual switch binds the CHAT's account (agent_chats.account_id) rather than
-// the parent session's — the authority moved to the chat in BOS-381. It is
-// scoped to a single agentSessionID at construction: the sessionID argument the
-// accountBinding interface passes (RebindAndAudit forwards p.SessionID) is
-// ignored, since the write targets the chat row directly via
-// UpdateAccountIDByAgentSessionID. A present-empty account id (system-default
-// account 0) persists as a non-nil pointer to "", mirroring the session binding.
+// manual switch binds the CHAT's account (agent_chats.account_id) — the
+// authority moved to the chat in BOS-381. It is scoped to a single
+// agentSessionID at construction and writes the chat row directly via
+// UpdateAccountIDByAgentSessionID; the sessionID argument the interface passes
+// is ignored. A present-empty account id (system-default account 0) persists as
+// a non-nil pointer to "", mirroring the session binding.
 type chatAccountBinding struct {
 	chats          db.AgentChatStore
 	agentSessionID string
+	// moveSession, set for a chat running the session's own agent, moves the
+	// session to the same managed account.
+	moveSession func(ctx context.Context, accountID string) error
 }
 
 func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (string, error) {
@@ -648,7 +659,16 @@ func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (strin
 
 func (b chatAccountBinding) BindSessionAccount(ctx context.Context, _, accountID string) error {
 	acctPtr := &accountID
-	return b.chats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr)
+	if err := b.chats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr); err != nil {
+		return err
+	}
+	// The machine login never becomes the session's account. Panes started from
+	// the session's account read their bearer from it, and an empty one leaves
+	// them sending requests with no credentials.
+	if b.moveSession == nil || accountID == account.SystemDefaultAccountID {
+		return nil
+	}
+	return b.moveSession(ctx, accountID)
 }
 
 // accountRegistryAdapter adapts db.AccountStore to the accountRegistry seam,

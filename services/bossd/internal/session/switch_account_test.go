@@ -303,13 +303,13 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 	if h.findCall("kill-session") == nil {
 		t.Error("expected tmux kill-session (STOP), none recorded")
 	}
-	// REBIND persisted onto the CHAT (chat-scoped binding, BOS-381), not the
-	// session — the session's own binding is left untouched.
+	// REBIND persisted onto the CHAT (chat-scoped binding, BOS-381), and, since
+	// the chat runs the session's own agent, onto the session seed too.
 	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
 		t.Errorf("chat AccountID = %v, want acct-2", got)
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got != nil {
-		t.Errorf("session AccountID = %v, want nil (switch binds the chat, not the session)", got)
+	if got := h.sessions.sessions["sess-1"].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("session AccountID = %v, want acct-2 (a same-agent switch moves the seed)", got)
 	}
 	// RESPAWN resumed the prior id and did NOT resend the interrupted prompt.
 	last := h.agentFake.LastBuildInteractiveCommand

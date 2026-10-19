@@ -112,6 +112,9 @@ type ChatLifecycle interface {
 	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
 	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
 	ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	// InServiceSpawnTarget moves a session or its primary chat off a disabled
+	// or suspended account onto the provider's default, persisting the move.
+	InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error)
 }
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -974,8 +977,14 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 		}
 
 		for _, sess := range sessions {
-			// Hydrate with DisplayTracker status
+			// Hydrate with DisplayTracker status. A restored entry is what the
+			// daemon saw before it restarted, not the PR now: repair acting on
+			// a red it restored would start on a PR that went green meanwhile,
+			// so plugins see no status until the first live poll, as before.
 			entry := s.displayTracker.Get(sess.ID)
+			if entry != nil && entry.Restored {
+				entry = nil
+			}
 			var displayStatus vcs.DisplayStatus
 			var hasFailures bool
 			var isRepairing bool
@@ -1463,7 +1472,13 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 
 	// BOS-381: provider/account/model authority lives on the primary chat. Resolve
 	// it so a repair run dispatches under the chat's runner/credentials/model, not
-	// the session's stale seed.
+	// the session's stale seed. An out-of-service account is moved to the
+	// default first, so the view below reads the account the run will use.
+	if s.lifecycle != nil {
+		if _, _, err := s.lifecycle.InServiceSpawnTarget(ctx, sess); err != nil {
+			return nil, grpcstatus.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	sess = s.effectiveChatSession(ctx, sess)
 
 	// Route to the agent plugin matching the session's recorded AgentName.

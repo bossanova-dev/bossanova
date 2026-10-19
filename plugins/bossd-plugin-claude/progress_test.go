@@ -29,6 +29,9 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 		wantPhase bossanovav1.AgentProgressPhase
 		wantKnown bool
 		wantTS    string
+		// wantAskedTS is lastAssistantMessageAt: the last semantic record's own
+		// time when the agent wrote it, empty when a user record is last.
+		wantAskedTS string
 	}{
 		{
 			name:      "trailing tool_result means the agent owes an assistant message",
@@ -38,18 +41,20 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			wantTS:    "2026-08-03T15:12:38.921Z",
 		},
 		{
-			name:      "trailing tool_use means a tool is still executing",
-			fixture:   "trailing_tool_use.jsonl",
-			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
-			wantKnown: true,
-			wantTS:    "2026-08-03T15:11:09.507Z",
+			name:        "trailing tool_use means a tool is still executing",
+			fixture:     "trailing_tool_use.jsonl",
+			wantPhase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
+			wantKnown:   true,
+			wantTS:      "2026-08-03T15:11:09.507Z",
+			wantAskedTS: "2026-08-03T15:11:09.507Z",
 		},
 		{
-			name:      "trailing assistant text means the turn is complete",
-			fixture:   "trailing_assistant_text.jsonl",
-			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE,
-			wantKnown: true,
-			wantTS:    "2026-08-03T15:11:41.002Z",
+			name:        "trailing assistant text means the turn is complete",
+			fixture:     "trailing_assistant_text.jsonl",
+			wantPhase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE,
+			wantKnown:   true,
+			wantTS:      "2026-08-03T15:11:41.002Z",
+			wantAskedTS: "2026-08-03T15:11:41.002Z",
 		},
 		{
 			name:      "truncated final line falls back to the last complete record",
@@ -87,11 +92,12 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			// last-prompt / mode / permission-mode carry no timestamp at all in
 			// real transcripts, so the semantic record's own timestamp has to
 			// survive them rather than being lost.
-			name:      "untimestamped bookkeeping keeps the semantic timestamp",
-			fixture:   "untimestamped_bookkeeping.jsonl",
-			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
-			wantKnown: true,
-			wantTS:    "2026-08-03T15:11:09.507Z",
+			name:        "untimestamped bookkeeping keeps the semantic timestamp",
+			fixture:     "untimestamped_bookkeeping.jsonl",
+			wantPhase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
+			wantKnown:   true,
+			wantTS:      "2026-08-03T15:11:09.507Z",
+			wantAskedTS: "2026-08-03T15:11:09.507Z",
 		},
 		{
 			// The false-positive guard. A long auto-compaction emits `system`
@@ -103,6 +109,26 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL,
 			wantKnown: true,
 			wantTS:    "2026-08-03T15:40:00.000Z",
+		},
+		{
+			// The question regression from #3329's verdict. Claude keeps writing
+			// pr-link and away_summary records while a question waits. They keep
+			// the chat alive for the stall detector, so lastProgressAt follows
+			// them, but the question stays dated from the turn that asked it.
+			name:        "a waiting question keeps its ask time under later bookkeeping",
+			fixture:     "question_then_bookkeeping.jsonl",
+			wantPhase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE,
+			wantKnown:   true,
+			wantTS:      "2026-10-19T10:20:46.531Z",
+			wantAskedTS: "2026-10-19T10:15:46.531Z",
+		},
+		{
+			name:        "an AskUserQuestion call keeps its ask time under later bookkeeping",
+			fixture:     "ask_user_question_then_bookkeeping.jsonl",
+			wantPhase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_EXECUTING_TOOL,
+			wantKnown:   true,
+			wantTS:      "2026-10-19T10:20:46.531Z",
+			wantAskedTS: "2026-10-19T10:15:46.531Z",
 		},
 	}
 
@@ -119,8 +145,8 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 				t.Errorf("phase = %v, want %v", got.phase, tt.wantPhase)
 			}
 			if !tt.wantKnown {
-				if !got.lastProgressAt.IsZero() {
-					t.Errorf("lastProgressAt = %v, want zero when known=false", got.lastProgressAt)
+				if !got.lastProgressAt.IsZero() || !got.lastAssistantMessageAt.IsZero() {
+					t.Errorf("lastProgressAt = %v, lastAssistantMessageAt = %v, want both zero when known=false", got.lastProgressAt, got.lastAssistantMessageAt)
 				}
 				return
 			}
@@ -130,6 +156,15 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			}
 			if !got.lastProgressAt.Equal(want) {
 				t.Errorf("lastProgressAt = %v, want %v", got.lastProgressAt, want)
+			}
+			var wantAsked time.Time
+			if tt.wantAskedTS != "" {
+				if wantAsked, err = time.Parse(time.RFC3339Nano, tt.wantAskedTS); err != nil {
+					t.Fatalf("bad want asked timestamp: %v", err)
+				}
+			}
+			if !got.lastAssistantMessageAt.Equal(wantAsked) {
+				t.Errorf("lastAssistantMessageAt = %v, want %v", got.lastAssistantMessageAt, wantAsked)
 			}
 		})
 	}
@@ -506,6 +541,45 @@ func TestProbeProgressLiveness_ViaServer(t *testing.T) {
 	}
 	if !resp.LastProgressAt.AsTime().Equal(want) {
 		t.Errorf("LastProgressAt = %v, want %v", resp.LastProgressAt.AsTime(), want)
+	}
+	if resp.LastAssistantMessageAt != nil {
+		t.Errorf("LastAssistantMessageAt = %v, want absent when a tool_result is the last semantic record", resp.LastAssistantMessageAt.AsTime())
+	}
+}
+
+// TestProbeProgressLiveness_ViaServerDatesAQuestionFromItsAsk serves a question
+// followed by a pr-link record three minutes later and an away_summary five
+// minutes later. The answer the daemon dates the question from stays at the
+// ask, while the liveness time follows the newest write.
+func TestProbeProgressLiveness_ViaServerDatesAQuestionFromItsAsk(t *testing.T) {
+	work := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude", "projects", pathToProjectKey(work))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f"
+	srv := &Server{logger: zerolog.Nop()}
+	for _, fixture := range []string{"question_then_bookkeeping.jsonl", "ask_user_question_then_bookkeeping.jsonl"} {
+		src, err := os.ReadFile(fixturePath(fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), src, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := srv.ProbeProgressLiveness(context.Background(), &bossanovav1.ProbeProgressLivenessRequest{WorkDir: work, AgentSessionId: id})
+		if err != nil {
+			t.Fatalf("%s: ProbeProgressLiveness: %v", fixture, err)
+		}
+		asked := time.Date(2026, 10, 19, 10, 15, 46, 531_000_000, time.UTC)
+		if got := resp.GetLastAssistantMessageAt(); got == nil || !got.AsTime().Equal(asked) {
+			t.Errorf("%s: LastAssistantMessageAt = %v, want the ask at %v", fixture, got.AsTime(), asked)
+		}
+		if got, want := resp.GetLastProgressAt().AsTime(), asked.Add(5*time.Minute); !resp.GetIsKnown() || !got.Equal(want) {
+			t.Errorf("%s: LastProgressAt = %v known %v, want the away_summary at %v", fixture, got, resp.GetIsKnown(), want)
+		}
 	}
 }
 

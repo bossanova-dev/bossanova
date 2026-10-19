@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +30,9 @@ type attentionCache struct {
 	questions map[string]questionAttention
 }
 type questionAttention struct {
-	text string
-	at   time.Time
+	text    string
+	askedAt time.Time
+	at      time.Time
 }
 type factoryAttention struct {
 	value   bool
@@ -140,7 +142,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	s.attentionCache.mu.Unlock()
 	if q != nil {
 		in.QuestionChatID = q.ChatID
-		in.QuestionText = s.attentionQuestion(ctx, row.ID, q.ChatID, q.At)
+		in.QuestionText, in.QuestionAt = s.attentionQuestion(ctx, row, d.chats, q.ChatID, q.At)
 	}
 	if s.chatStatus != nil {
 		served, _, _, _ := s.chatStatusAndWaitingAggregate(ctx, d.chats, true)
@@ -203,26 +205,65 @@ func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
 	return value
 }
 
-func (s *Server) attentionQuestion(ctx context.Context, sessionID, chatID string, at time.Time) string {
+// attentionQuestion returns the words of the question chatID is asking and
+// when it asked. at is when the chat tracker last saw the pane change; it keys
+// the cache and is never served, since a restarted daemon re-seeds it.
+func (s *Server) attentionQuestion(ctx context.Context, row *models.Session, chats []*models.AgentChat, chatID string, at time.Time) (string, time.Time) {
 	c := &s.attentionCache
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if entry, ok := c.questions[chatID]; ok && entry.at.Equal(at) {
-		return entry.text
+		return entry.text, entry.askedAt
 	}
 	// A single bounded transcript read per question, including unavailable reads.
 	readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	askedAt := s.questionAskedAt(readCtx, row, chats, chatID)
 	text := ""
-	resp, err := s.GetChatTranscript(readCtx, connect.NewRequest(&pb.GetChatTranscriptRequest{SessionId: sessionID, AgentSessionId: chatID, MaxMessages: 1}))
+	resp, err := s.GetChatTranscript(readCtx, connect.NewRequest(&pb.GetChatTranscriptRequest{SessionId: row.ID, AgentSessionId: chatID, MaxMessages: 1}))
 	if err == nil {
 		text = resp.Msg.GetFinalAssistantText()
+		if msgs := resp.Msg.GetMessages(); askedAt.IsZero() && len(msgs) > 0 && msgs[len(msgs)-1].GetRole() == "assistant" {
+			askedAt, _ = time.Parse(time.RFC3339Nano, msgs[len(msgs)-1].GetTimestamp())
+		}
 	}
 	if c.questions == nil {
 		c.questions = make(map[string]questionAttention)
 	}
-	c.questions[chatID] = questionAttention{text: text, at: at}
-	return text
+	c.questions[chatID] = questionAttention{text: text, askedAt: askedAt, at: at}
+	return text, askedAt
+}
+
+// questionAskedAt is when the asking chat's agent wrote its newest message,
+// the turn that asked, read from the transcript a restart does not touch.
+// Bookkeeping the agent CLI writes while the question waits never moves it.
+// Zero when the runner cannot tell, as codex's cannot; the newest assistant
+// message then dates it.
+func (s *Server) questionAskedAt(ctx context.Context, row *models.Session, chats []*models.AgentChat, chatID string) time.Time {
+	i := slices.IndexFunc(chats, func(c *models.AgentChat) bool { return c != nil && c.AgentSessionID == chatID })
+	if i < 0 || row.WorktreePath == "" {
+		return time.Time{}
+	}
+	chat := chats[i]
+	agentName := chat.AgentName
+	if agentName == "" {
+		agentName = defaultLegacyAgent
+	}
+	prober, ok := s.agentClients[agentName].(interface {
+		ProbeProgressLiveness(context.Context, *pb.ProbeProgressLivenessRequest) (*pb.ProbeProgressLivenessResponse, error)
+	})
+	if !ok {
+		return time.Time{}
+	}
+	id := chat.AgentSessionID
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		id = *chat.ProviderSessionID
+	}
+	resp, err := prober.ProbeProgressLiveness(ctx, &pb.ProbeProgressLivenessRequest{WorkDir: row.WorktreePath, AgentSessionId: id})
+	if err != nil || !resp.GetIsKnown() || resp.GetLastAssistantMessageAt() == nil {
+		return time.Time{}
+	}
+	return resp.GetLastAssistantMessageAt().AsTime()
 }
 
 // deadBootstrapSentence explains a run reaped before setup finished. Its

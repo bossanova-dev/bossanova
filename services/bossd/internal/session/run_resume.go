@@ -301,7 +301,10 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 	if l.agentRunner == nil {
 		return nil, ErrRunNotResumable
 	}
-	spawn, chat := l.effectiveSpawnTarget(ctx, s)
+	spawn, chat, err := l.InServiceSpawnTarget(ctx, s)
+	if err != nil {
+		return nil, err
+	}
 	tmuxHosted := l.tmux != nil && ((chat != nil && chat.TmuxSessionName != nil) || isUnattendedSession(s))
 	title := s.Title
 	if chat != nil {
@@ -337,7 +340,6 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 		}
 	}
 	var newID string
-	var err error
 	if tmuxHosted {
 		// This path already checked all live chats. Preserve dead chat pointers
 		// instead of running generic stale-row cleanup, which means parked.

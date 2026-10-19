@@ -589,6 +589,21 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			modelBound = true
 		}
 	}
+	// A binding to a disabled or suspended account is stale. Launch on the
+	// provider's default instead, and when the binding came from the session
+	// seed, move the seed too so the session's next chat starts there as well.
+	inService, replaced, err := l.InServiceAccount(ctx, spawnAgentName, spawnAccountID)
+	if err != nil {
+		return "", grpcstatus.Error(codes.FailedPrecondition, err.Error())
+	}
+	if replaced {
+		spawnAccountID = inService
+		if !chatBoundAccount && spawnAgentName == sess.AgentName {
+			if err := l.MoveSessionAccount(ctx, sess, *inService); err != nil {
+				return "", err
+			}
+		}
+	}
 	// A cross-agent spawn must never inherit the SESSION's model: model ids are
 	// provider-scoped, so a codex chat under a claude session would come back up
 	// as `codex --model <claude model id>` and fail — after the account switch

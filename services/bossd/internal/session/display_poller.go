@@ -9,6 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
@@ -259,7 +260,7 @@ func (p *DisplayPoller) restore(ctx context.Context) {
 		if err != nil || len(newest) == 0 {
 			continue
 		}
-		if info, ok := restoredDisplayInfo(newest[0]); ok {
+		if info, ok := restoredDisplayInfo(newest[0], sess.DisplayLabel); ok {
 			p.tracker.Restore(sess.ID, info, newest[0].PolledAt)
 		}
 	}
@@ -269,8 +270,9 @@ func (p *DisplayPoller) restore(ctx context.Context) {
 // snapshot keeps the status, head and checks; the rest follows from them.
 // GitHub reports a PR passing, approved or awaiting review only once it is
 // mergeable, so those statuses restore it mergeable, and any other leaves it
-// unknown.
-func restoredDisplayInfo(snap db.CheckSnapshot) (vcs.DisplayInfo, bool) {
+// unknown. The snapshot omits the build receipt, so it is restored from the
+// label the session last persisted: only a receipted head reads ready.
+func restoredDisplayInfo(snap db.CheckSnapshot, label string) (vcs.DisplayInfo, bool) {
 	st := vcs.DisplayStatus(snap.ComputedStatus)
 	if st == vcs.DisplayStatusUnspecified || isTerminalDisplayStatus(st) {
 		return vcs.DisplayInfo{}, false
@@ -280,6 +282,7 @@ func restoredDisplayInfo(snap db.CheckSnapshot) (vcs.DisplayInfo, bool) {
 	case vcs.DisplayStatusPassing, vcs.DisplayStatusApproved, vcs.DisplayStatusReview:
 		mergeable := true
 		info.Mergeable = &mergeable
+		info.HasBuildReceipt = displaystatus.IsReadyLabel(label)
 	case vcs.DisplayStatusFailing:
 		info.HasFailures = true
 	case vcs.DisplayStatusRejected:

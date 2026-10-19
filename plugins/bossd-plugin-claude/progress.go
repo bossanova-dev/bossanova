@@ -54,10 +54,16 @@ var errTranscriptUnstable = errors.New("transcript changed between stat and read
 
 // progressSnapshot is the probe's answer for one transcript. The zero value is
 // the fail-open answer: no timestamp, UNKNOWN phase, known=false.
+//
+// lastAssistantMessageAt is the last semantic record's own timestamp when the
+// agent wrote it. It dates a question: bookkeeping such as pr-link and
+// away_summary records keeps landing while a question waits, and it moves
+// lastProgressAt but must not move the question.
 type progressSnapshot struct {
-	lastProgressAt time.Time
-	phase          bossanovav1.AgentProgressPhase
-	known          bool
+	lastProgressAt         time.Time
+	lastAssistantMessageAt time.Time
+	phase                  bossanovav1.AgentProgressPhase
+	known                  bool
 }
 
 // progressCacheEntry memoizes a snapshot against the (size, mtime) it was read
@@ -237,11 +243,14 @@ func readProgressTail(path string) (progressSnapshot, error) {
 			// answer without a timestamp is not an answer.
 			return unknown, nil
 		}
-		last := ts
-		if newestWrite.After(last) {
-			last = newestWrite
+		snap := progressSnapshot{lastProgressAt: ts, phase: phase, known: true}
+		if newestWrite.After(ts) {
+			snap.lastProgressAt = newestWrite
 		}
-		return progressSnapshot{lastProgressAt: last, phase: phase, known: true}, nil
+		if rec.Type == "assistant" {
+			snap.lastAssistantMessageAt = ts
+		}
+		return snap, nil
 	}
 	return unknown, nil
 }

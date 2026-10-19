@@ -4,7 +4,10 @@
                                         
   Needed from you:                     
     Should I keep the YAML rewrite in  
-    this PR, or split it out? …        
+    this PR, or split it out? The      
+    services/boss/internal/views       
+    change is ready, but the rewrite…  
+    Which do you prefer?               
 
     CHAT          
   ❯ verify        

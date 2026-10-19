@@ -399,6 +399,10 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	default:
 		accountID = defaultAccountID
 	}
+	accountID, err := s.inServiceChatAccount(ctx, sess, chat, accountID, use)
+	if err != nil {
+		return nil, err
+	}
 	resolve := s.resolver.ResolveSpawnEnv
 	if use == skipAccountUseRecord {
 		resolve = s.resolver.ResolveSpawnEnvForProbe
@@ -422,6 +426,39 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 		env = s.lifecycle.ApplyFailoverProxyEnvForChat(sess, chat, accountID, env)
 	}
 	return env, nil
+}
+
+// inServiceChatAccount replaces a chat's binding to a disabled or suspended
+// account with its provider's default, and on a real launch persists the swap
+// onto the binding it came from: the chat row when the chat carries its own,
+// otherwise the session seed. The read-only probe derives the same answer but
+// writes nothing.
+func (s *Server) inServiceChatAccount(ctx context.Context, sess *models.Session, chat *models.AgentChat, accountID string, use accountUseRecording) (string, error) {
+	if s.lifecycle == nil {
+		return accountID, nil
+	}
+	next, replaced, err := s.lifecycle.InServiceAccount(ctx, chat.AgentName, &accountID)
+	if err != nil {
+		return "", connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if !replaced {
+		return accountID, nil
+	}
+	if use == skipAccountUseRecord {
+		return *next, nil
+	}
+	switch {
+	case chat.AccountID != nil && s.agentChats != nil:
+		if err := s.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
+			return "", fmt.Errorf("move chat %s to account %q: %w", chat.AgentSessionID, *next, err)
+		}
+		chat.AccountID = next
+	case chat.AccountID == nil && sameAgentSessionChat(sess, chat) && sess.AccountID != nil:
+		if err := s.lifecycle.MoveSessionAccount(ctx, sess, *next); err != nil {
+			return "", err
+		}
+	}
+	return *next, nil
 }
 
 func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Session, chat *models.AgentChat) string {

@@ -521,12 +521,12 @@ func TestSwitchAccount_UndeliverableNoticeStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestSwitchAccount_PreservesChatScopedBinding is the BOS-1386 guard the plan
-// lists as verify-only, asserted rather than grepped: the manual switch must
-// still write ONLY agent_chats.account_id. Mirroring it onto the session would
-// "fix" the symptom by undoing the decision that a cross-agent chat cannot
-// corrupt its parent session's binding.
-func TestSwitchAccount_PreservesChatScopedBinding(t *testing.T) {
+// TestSwitchAccount_SameAgentSwitchMovesSessionSeed pins the switch's two
+// writes for a chat running the session's own agent: the chat row (BOS-1386,
+// still the authority) and the session seed, so the session's next chat starts
+// on the new account. A cross-agent chat still never touches the session; see
+// TestSwitchAccount_CrossAgentChatSucceeds.
+func TestSwitchAccount_SameAgentSwitchMovesSessionSeed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
@@ -537,8 +537,8 @@ func TestSwitchAccount_PreservesChatScopedBinding(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SwitchAccount: %v", err)
 	}
-	if got := h.sessions.sessions["sess-1"].AccountID; got == nil || *got != "acct-1" {
-		t.Errorf("session AccountID = %v, want the untouched acct-1", got)
+	if got := h.sessions.sessions["sess-1"].AccountID; got == nil || *got != "acct-2" {
+		t.Errorf("session AccountID = %v, want acct-2 so the next chat starts there", got)
 	}
 	if got := h.chats.chatsBySession["sess-1"][0].AccountID; got == nil || *got != "acct-2" {
 		t.Errorf("chat AccountID = %v, want acct-2", got)

@@ -1,0 +1,21 @@
+                                                                          
+  █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  /tmp/worktree · Unmanaged                                          
+                                                                          
+  Needed from you:                                                                    
+    我检查了部署测试失败的原因。夹具服务器在健康检查开始之后才开始监听，所以大约每二  
+    十次运行就有一次连接被拒绝并放弃重试。有三种修复方法：重试健康检查、等待监听器启  
+    动、或者完全删除健康检查。我建议等待监听器启动，因为它消除了竞争条件而不是掩盖它  
+    ，而且夹具的改动大约只有三十行代码。要我现在按第二种方法修复并提交PR吗？          
+
+    CHAT          AGENT   CREATED  ACTIVE  STATUS                                   
+  ❯ verify        claude  1h ago   1h ago  ⣾ waiting                                
+    Run bs-build  claude  1h ago   1h ago  done · standby: wakes if CI turns red    
+                                                                                                            
+  [enter] open chat  [d]elete · [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [m]erge  [a]rchive · [esc] back  
+                                                                                                            
+  Timeline                                                                                              
+    17:10  ✓ Build started                                                                              
+    17:20  ● Waiting for your answer  “我检查了部署测试失败的原因。夹具服务器在健康检查开始之后才开始   
+             监听，所以大约每二十次运行就有一次连接被拒绝并放弃重试。有三种修复方法：重试健康检查、等   
+             待监听器启动、或者完全删除健康检查。我建议等待监听器启动，因为它消除了竞争条件而不是掩盖…  

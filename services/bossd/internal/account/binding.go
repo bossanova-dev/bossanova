@@ -55,6 +55,11 @@ type AccountMeta struct {
 	// clears it.
 	AuthInvalid bool
 
+	// Suspended means the provider refused the account outright (for example
+	// the organization disabled subscription access). Like a disabled account it
+	// is never selected and never launched on.
+	Suspended bool
+
 	// Cached usage projection (from models.Account.Usage, populated by the
 	// probe/refresh paths). Read-only at bind time — the resolver never probes.
 	// A nil UsageFetchedAt means "never probed / unknown", which the selector
@@ -209,7 +214,7 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 		// (which can be a transient injection blip worth retrying), this is a
 		// confirmed provider rejection, so "least bad" must never land here.
 		// With no other candidate the loop falls through to the system default.
-		if a.AuthInvalid {
+		if a.AuthInvalid || a.Suspended {
 			continue
 		}
 		if !fallbackFound || r.moreEligibleFallback(a, fallback, now) {
@@ -500,6 +505,15 @@ func (r *Resolver) resolveSpawnEnv(
 	if acct.AuthInvalid {
 		return nil, invalidInjection(accountID, provider,
 			"credential verification reported the stored credential invalid; re-authenticate the account", nil)
+	}
+	// A disabled or suspended account is out of service. Callers replace such a
+	// binding before they get here; this refusal is the backstop that keeps any
+	// path that did not from launching on it.
+	if acct.Status == "disabled" {
+		return nil, invalidInjection(accountID, provider, "the account is disabled", nil)
+	}
+	if acct.Suspended {
+		return nil, invalidInjection(accountID, provider, "the provider has suspended the account", nil)
 	}
 
 	if r.mat == nil {

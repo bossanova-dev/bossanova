@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"github.com/recurser/bossalib/agenterr"
+)
 
 // AccountProvider identifies which coding-agent CLI an account authenticates.
 type AccountProvider string
@@ -98,6 +102,24 @@ func (c AuthCheck) IsAuthInvalid() bool { return c.Outcome == AuthCheckOutcomeAu
 // Health untouched, so any predicate that checks only status and health will
 // happily select a credential that is known to be rejected.
 func (a *Account) IsAuthInvalid() bool { return a != nil && a.AuthCheck.IsAuthInvalid() }
+
+// IsSuspended reports whether the provider refused this account outright, for
+// example because the organization disabled subscription access. The refusal is
+// recorded as failed health plus the refusal text in LastTestError.
+func (a *Account) IsSuspended() bool {
+	if a == nil || a.Health != AccountHealthFailed {
+		return false
+	}
+	_, suspended := agenterr.SuspensionReason(a.LastTestError)
+	return suspended
+}
+
+// IsOutOfService reports whether no launch may run on this account: the
+// operator disabled it, or the provider suspended it. A binding to such an
+// account is stale and must be replaced, never honoured.
+func (a *Account) IsOutOfService() bool {
+	return a != nil && (a.Status == AccountStatusDisabled || a.IsSuspended())
+}
 
 // UsageSnapshot is a cached rate-limit usage reading for one account.
 // It carries metadata only: utilization fractions, reset instants, status,

@@ -197,8 +197,9 @@ func raisesNewNeed(old, sess *pb.Session, shownPark string) bool {
 
 // attentionIdentity names one attention for rememberToldAttention: its kind,
 // when it began, the alert and park it names and the PR head it is about. A
-// question adds its chat and words, since one state can ask several. Empty for
-// a daemon that serves no attention.
+// question begins when it is asked, and adds its chat and words for an older
+// daemon that dates every question in one state alike. Empty for a daemon that
+// serves no attention.
 func attentionIdentity(sess *pb.Session) string {
 	att := sess.GetAttention()
 	if att == nil {

@@ -963,6 +963,42 @@ func TestListSessions_PopulatesPRMetadata(t *testing.T) {
 	}
 }
 
+// TestListSessions_HidesARestoredStatusUntilALivePoll covers a PR red when the
+// daemon stopped and green by the time it restarted. Until the first live poll
+// reads it, the repair sweep must see no status, not the red it restored, or
+// it starts a repair on a green PR. The live poll's status is served as ever.
+func TestListSessions_HidesARestoredStatusUntilALivePoll(t *testing.T) {
+	repoID := "repo-1"
+	prNumber := 42
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{repos: []*models.Repo{{ID: repoID}}}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{repoID: {{ID: "s", RepoID: repoID, PRNumber: &prNumber}}},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{}
+	served := func() *bossanovav1.Session {
+		resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+		if err != nil {
+			t.Fatalf("ListSessions: %v", err)
+		}
+		if len(resp.GetSessions()) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(resp.GetSessions()))
+		}
+		return resp.GetSessions()[0]
+	}
+
+	srv.displayTracker.Restore("s", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HasFailures: true, HeadSHA: "red"}, time.Now().Add(-time.Hour))
+	if s := served(); s.GetDisplayStatus() != bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED || s.GetDisplayHasFailures() || s.GetPrDisplayHeadSha() != "" {
+		t.Fatalf("a restored red served to plugins as %v failures=%v head=%q, want no status", s.GetDisplayStatus(), s.GetDisplayHasFailures(), s.GetPrDisplayHeadSha())
+	}
+
+	srv.displayTracker.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HasFailures: true, HeadSHA: "red"})
+	if s := served(); s.GetDisplayStatus() != bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING || !s.GetDisplayHasFailures() || s.GetPrDisplayHeadSha() != "red" {
+		t.Fatalf("a live red served to plugins as %v failures=%v head=%q", s.GetDisplayStatus(), s.GetDisplayHasFailures(), s.GetPrDisplayHeadSha())
+	}
+}
+
 // TestListSessions_CarriesRepairGuardInputs pins the fields the repair plugin
 // reads from this hand-built session: without BaseBranch it cannot read the
 // base tip, so a conflicted head never retries after the base moves; without
@@ -2046,6 +2082,10 @@ func (f *fakeChatLifecycle) ReclaimRepairChat(ctx context.Context, sessionID, ag
 	return session.ReclaimRepairChatResult{}, nil
 }
 
+func (f *fakeChatLifecycle) InServiceSpawnTarget(_ context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error) {
+	return sess, nil, nil
+}
+
 func (f *fakeChatLifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error) {
 	f.mu.Lock()
 	f.replaceBlockingChatForRepairReqs = append(f.replaceBlockingChatForRepairReqs, struct {
@@ -2064,6 +2104,10 @@ func (f *fakeChatLifecycle) ReplaceBlockingChatForRepair(ctx context.Context, se
 
 func (*dbWritingChatLifecycle) ReplaceBlockingChatForRepair(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
 	return session.ReclaimRepairChatResult{}, nil
+}
+
+func (*dbWritingChatLifecycle) InServiceSpawnTarget(_ context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error) {
+	return sess, nil, nil
 }
 
 func TestHostServiceReclaimRepairChat_DelegatesToLifecycle(t *testing.T) {

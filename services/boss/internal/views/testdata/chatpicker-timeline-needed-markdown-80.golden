@@ -6,6 +6,7 @@
     Should I keep the YAML rewrite in this PR, or split it out? The        
     services/boss/internal/views change is ready, but the rewrite touches  
     config.yaml in three places and doubles the diff. …                    
+    Which do you prefer?                                                   
 
     CHAT          AGENT   ACTIVE  STATUS                                   
   ❯ verify        claude  1h ago  ⣾ waiting                                

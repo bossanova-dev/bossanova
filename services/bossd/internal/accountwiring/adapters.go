@@ -240,6 +240,7 @@ func toMeta(a *models.Account) account.AccountMeta {
 		// auth failure projects here; transient/unavailable outcomes leave the
 		// account fully eligible.
 		AuthInvalid: a.AuthCheck.IsAuthInvalid(),
+		Suspended:   a.IsSuspended(),
 	}
 	if u := a.Usage; u != nil {
 		m.Util5h = u.Util5h

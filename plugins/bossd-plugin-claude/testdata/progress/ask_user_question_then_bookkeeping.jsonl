@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-10-19T10:14:02.110Z","uuid":"k-u1","message":{"role":"user","content":"migrate the settings table"}}
+{"type":"assistant","timestamp":"2026-10-19T10:15:46.204Z","uuid":"k-a1","parentUuid":"k-u1","message":{"role":"assistant","content":[{"type":"text","text":"Two ways to do this."}]}}
+{"type":"assistant","timestamp":"2026-10-19T10:15:46.531Z","uuid":"k-a2","parentUuid":"k-a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01Q","name":"AskUserQuestion","input":{"questions":[{"question":"Rebuild the table or add a column in place?","options":[{"label":"Rebuild"},{"label":"Add a column"}]}]}}]}}
+{"type":"pr-link","sessionId":"0199a3c1-7b2e-7d40-9c55-1a2b3c4d5e6f","prNumber":3329,"prUrl":"https://github.com/recurser/bossanova/pull/3329","prRepository":"recurser/bossanova","timestamp":"2026-10-19T10:18:46.531Z"}
+{"type":"system","subtype":"away_summary","timestamp":"2026-10-19T10:20:46.531Z","uuid":"k-s1","parentUuid":"k-a2","isSidechain":false,"isMeta":false,"userType":"external","entrypoint":"cli","content":"Waiting on your answer about the settings table migration."}

@@ -1,0 +1,23 @@
+                                                                          
+  █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  /tmp/worktree · Unmanaged                                          
+                                                                          
+  Needed from you:                                                           
+    I dug into the flaky TestDeployRetry failures on main. The fixture       
+    server in services/bossd/internal/deploy/testdata/server.go starts       
+    listening after the health check fires, so about one run in twenty sees  
+    a refused connection and gives up. …                                     
+    Should I go ahead with option 2 and open a PR for it?                    
+
+    CHAT          AGENT   ACTIVE  STATUS                                   
+  ❯ verify        claude  1h ago  ⣾ waiting                                
+    Run bs-build  claude  1h ago  done · standby: wakes if CI turns red    
+                                                                              
+  [enter] open chat  [d]elete                                                 
+  [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [m]erge  [a]rchive · [esc] back  
+                                                                              
+  Timeline                                                                   
+    17:10  ✓ Build started                                                   
+    17:20  ● Waiting for your answer  “I dug into the flaky TestDeployRetry  
+             failures on main. The fixture server in                         
+             services/bossd/internal/deploy/testdata/server.go starts…       

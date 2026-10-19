@@ -139,3 +139,43 @@ func TestHomeAttentionAfterDaemonRestartIsAnnouncedOnce(t *testing.T) {
 		t.Fatalf("a second restart re-announced %q", again)
 	}
 }
+
+// TestHomeEachAttentionFieldAloneIsNews leaves Needs you and comes back with
+// one part of the attention changed. Each part alone makes it a new attention
+// to announce; coming back unchanged announces nothing.
+func TestHomeEachAttentionFieldAloneIsNews(t *testing.T) {
+	merge := readySessions(1)[0]
+	fix := proto.CloneOf(merge)
+	fix.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Checks failing", AlertKey: "checks-failing", Since: merge.GetAttention().GetSince()}
+	question := proto.CloneOf(merge)
+	question.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "“Which option?”", TargetChatId: "chat-a", Since: merge.GetAttention().GetSince()}
+	later := timestamppb.New(readySince.Add(time.Hour))
+
+	for _, tc := range []struct {
+		name   string
+		told   *pb.Session
+		change func(*pb.Session)
+		news   bool
+	}{
+		{"unchanged", merge, func(*pb.Session) {}, false},
+		{"start time", merge, func(s *pb.Session) { s.Attention.Since = later }, true},
+		{"head", merge, func(s *pb.Session) { s.PrDisplayHeadSha = "pushed" }, true},
+		{"alert key", fix, func(s *pb.Session) { s.Attention.AlertKey = "merge-conflict" }, true},
+		{"question words", question, func(s *pb.Session) { s.Attention.Sentence = "“Which other option?”" }, true},
+		{"same words asked again", question, func(s *pb.Session) { s.Attention.Since = later }, true},
+		{"same question unchanged", question, func(*pb.Session) {}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.focused = false
+			pollNotifies(&h, []*pb.Session{proto.CloneOf(tc.told)})
+			pollNotifies(&h, []*pb.Session{inProgress(tc.told)})
+			back := proto.CloneOf(tc.told)
+			tc.change(back)
+			told := pollNotifies(&h, []*pb.Session{back})
+			if got := len(told) == 1; got != tc.news || len(told) > 1 {
+				t.Fatalf("coming back with the %s changed announced %q, want news=%v", tc.name, told, tc.news)
+			}
+		})
+	}
+}

@@ -8432,6 +8432,9 @@ type fakeTmux struct {
 	// list-panes exiting 0 with no output, which PanePID reports as an error —
 	// the "pane pid unavailable" degrade path.
 	listPanesOutput string
+	// bakedBaseURL is the ANTHROPIC_BASE_URL `show-environment` reports, keyed
+	// by pane name. A pane with no entry reports nothing.
+	bakedBaseURL map[string]string
 }
 
 func newFakeTmux() *fakeTmux {
@@ -8474,6 +8477,9 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 			return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"$1\" >&2; exit 1", "sh", stderr)
 		}
 		return exec.CommandContext(ctx, "false")
+	}
+	if subcommand == "show-environment" && len(args) >= 3 && f.bakedBaseURL[args[2]] != "" {
+		return exec.CommandContext(ctx, "printf", "ANTHROPIC_BASE_URL=%s\n", f.bakedBaseURL[args[2]])
 	}
 	if subcommand == "list-panes" && f.listPanesOutput != "" {
 		return exec.CommandContext(ctx, "printf", "%s", f.listPanesOutput)

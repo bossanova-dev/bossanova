@@ -278,7 +278,17 @@ func (l *Lifecycle) proxyBaseURL(sess *models.Session) string {
 	if !l.failoverProxyEnabled() {
 		return ""
 	}
-	token := l.proxyRegistrar.TokenForSession(sess.ID)
+	return l.sessionProxyURL(sess.ID)
+}
+
+// sessionProxyURL is the ANTHROPIC_BASE_URL a pane started from the session's
+// own account is given: the session token, whose bearer follows
+// sessions.account_id.
+func (l *Lifecycle) sessionProxyURL(sessionID string) string {
+	if l.proxyRegistrar == nil || l.proxyPort == 0 {
+		return ""
+	}
+	token := l.proxyRegistrar.TokenForSession(sessionID)
 	if token == "" {
 		return ""
 	}

@@ -1,0 +1,59 @@
+• turbo 2.10.12
+
+   • Packages in scope: web
+   • Running test in 1 packages
+   • Remote caching disabled, using shared worktree cache
+
+web:test: cache bypass, force executing 499928b9c334a773
+web:test: $ vitest run tests/sessionStatus.test.ts
+web:test: 
+web:test:  RUN  v5.0.3 /Users/dave/.bossanova/worktrees/bossanova/cron-bs-build-1792418405/services/web
+web:test: 
+web:test:  ❯ tests/sessionStatus.test.ts (9 tests | 1 failed) 7ms
+web:test:    ✓ computeSessionStatus reads composite display fields (2)
+web:test:      ✓ returns label, intent, spinner straight from the session 1ms
+web:test:      ✓ returns empty defaults for an unset session 0ms
+web:test:    ✓ mapIntent (6)
+web:test:      ✓ maps 1 → success 0ms
+web:test:      ✓ maps 2 → warning 0ms
+web:test:      ✓ maps 3 → danger 0ms
+web:test:      ✓ maps 5 → info 0ms
+web:test:      ✓ maps 4 → muted 0ms
+web:test:      ✓ maps 0 → muted 0ms
+web:test:    × BOS-1698 real Vitest failure fixture 3ms
+web:test: 
+web:test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+web:test: 
+web:test:  FAIL  tests/sessionStatus.test.ts > BOS-1698 real Vitest failure fixture
+web:test: AssertionError: expected 1 to be 2 // Object.is equality
+web:test: 
+web:test: - Expected
+web:test: + Received
+web:test: 
+web:test: - 2
+web:test: + 1
+web:test: 
+web:test:  ❯ tests/sessionStatus.test.ts:49:62
+web:test:      47| })
+web:test:      48|
+web:test:      49| it("BOS-1698 real Vitest failure fixture", () => { expect(1).toBe(2) })
+web:test:        |                                                              ^
+web:test:      50|
+web:test: 
+web:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+web:test: 
+web:test: 
+web:test:  Test Files  1 failed (1)
+web:test:       Tests  1 failed | 8 passed (9)
+web:test:    Start at  23:05:18
+web:test:    Duration  1.15s (environment 74%, setup 13%, transform 6%, import 5%, tests 1%, worker 1%)
+web:test: 
+web:test: [ELIFECYCLE] Test failed. See above for more details.
+web#test:  ERROR  command (/Users/dave/.bossanova/worktrees/bossanova/cron-bs-build-1792418405/services/web) /Users/dave/.nodenv/versions/22.22.2/bin/pnpm run test tests/sessionStatus.test.ts exited (1)
+
+ Tasks:    0 successful, 1 total
+Cached:    0 cached, 1 total
+  Time:    2.103s 
+Failed:    web#test
+
+ ERROR  run failed: command  exited (1)

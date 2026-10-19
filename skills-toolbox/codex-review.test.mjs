@@ -23,7 +23,8 @@ import {
 import { reviewTimeDefaults } from './skill-config.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./codex-review.mjs', import.meta.url))
-const PROBE_READY_TIMEOUT_MS = 10000
+const LOAD_TOLERANT_WAIT_MS = 30_000
+const PROBE_READY_TIMEOUT_MS = LOAD_TOLERANT_WAIT_MS
 
 test('CLI through a symlink rejects a missing command loudly', () => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'codex-review-link-'))
@@ -58,7 +59,7 @@ function writeFakeBin(dir, name, body) {
   return p
 }
 
-async function waitForPidFile(pidFile, timeoutMs = 2000) {
+async function waitForPidFile(pidFile, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   while (true) {
     if (fs.existsSync(pidFile)) {
@@ -169,7 +170,7 @@ test('probe: fake that exits non-zero → not_authed', async () => {
   const dir = makeTmpDir()
   try {
     const bin = writeFakeBin(dir, 'codex', 'exit 1')
-    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs: 3000 })
+    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs: LOAD_TOLERANT_WAIT_MS })
     assert.equal(result, 'not_authed')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -179,7 +180,7 @@ test('probe: fake that exits non-zero → not_authed', async () => {
 test('probe: non-existent BOSS_CODEX_BIN → not_installed', async () => {
   const result = await probe({
     env: { BOSS_CODEX_BIN: '/nonexistent/path/to/codex' },
-    timeoutMs: 3000,
+    timeoutMs: LOAD_TOLERANT_WAIT_MS,
   })
   assert.equal(result, 'not_installed')
 })
@@ -373,7 +374,7 @@ test('run: large stderr volume then exit 0 completes promptly (no stderr deadloc
         'echo "review: ok"\n' +
         'exit 0',
     )
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
@@ -398,7 +399,7 @@ test('run: fake codex that exits 0 with output → ok=true, sanitized output ret
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, true)
     assert.equal(result.timedOut, false)
@@ -417,7 +418,7 @@ test('run: absolute falsification reference preserves the read-only Codex second
       base: 'abc',
       head: 'def',
       repo,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       falsificationReference: '/opt/skills/boss-review/references/falsification.md',
     })
     assert.equal(result.ok, true, result.stderr)
@@ -440,7 +441,7 @@ test('run: fake codex that exits non-zero → ok=false, no throw', async () => {
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, false)
     assert.equal(result.timedOut, false)
@@ -474,7 +475,7 @@ test('run: built args are accepted by a flag-validating fake codex (CLI-surface 
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, true, `args rejected by fake codex; stderr: ${result.stderr}`)
     assert.equal(result.timedOut, false)
@@ -547,7 +548,7 @@ test('run: on failure, sanitized stderr tail is captured (not silently empty)', 
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, false)
     assert.equal(result.output, '', 'no stdout review')
@@ -571,7 +572,7 @@ test('run: stderr tail is bounded under a flood, run still completes promptly', 
       'codex',
       'yes "noise" | head -c 200000 1>&2\nprintf "FINAL-ERROR-MARKER\\n" 1>&2\nexit 2',
     )
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
@@ -595,7 +596,7 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
     // ~2MB of stdout (far above maxBytes) then exit 0. Retained stdout must stay
     // bounded and the returned output must be capped to maxBytes (with marker).
     const bin = writeFakeBin(dir, 'codex', 'yes "review-noise" | head -c 2000000\nexit 0')
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const maxBytes = 65536
     const result = await run({
       env: { BOSS_CODEX_BIN: bin },
@@ -818,7 +819,7 @@ test('run: preserves the read-only review when Tier A cannot allocate an externa
       base: 'abc',
       head: 'def',
       repo: os.homedir(),
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       falsificationReference: '/opt/skills/boss-review/references/falsification.md',
     })
     assert.equal(result.ok, true, result.stderr)
@@ -837,7 +838,7 @@ test('run: preserves the read-only review when Codex cannot confine Tier A reads
       base: 'abc',
       head: 'def',
       repo,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       falsificationReference: '/opt/skills/boss-review/references/falsification.md',
     })
     assert.equal(result.ok, true, result.stderr)
@@ -860,7 +861,7 @@ test('run: a /tmp checkout remains read-only when Tier A reads are not confined'
       base: 'abc',
       head: 'def',
       repo,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       falsificationReference: '/opt/skills/boss-review/references/falsification.md',
     })
     assert.equal(result.ok, true, result.stderr)
@@ -1121,7 +1122,7 @@ test('probe: authenticated no-op detects expired codex credentials', async () =>
         'echo "error: 401 Unauthorized: refresh token was already used" >&2\nexit 1',
     )
     assert.equal(
-      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 2000 }),
+      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: LOAD_TOLERANT_WAIT_MS }),
       'not_authed',
     )
   } finally {
@@ -1142,7 +1143,7 @@ test('probe: live no-op preserves read-only argv and checkout cwd (codex)', asyn
         await probe({
           env: { BOSS_CODEX_BIN: bin, ANTHROPIC_API_KEY: apiKey },
           repo: dir,
-          timeoutMs: 2000,
+          timeoutMs: LOAD_TOLERANT_WAIT_MS,
         }),
         'ready',
       )

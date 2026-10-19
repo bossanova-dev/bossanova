@@ -9,7 +9,8 @@
 // Awaiting means staying in the turn and re-reading through this helper; ending
 // the turn is not waiting. The in-turn hold is the `wait` verb (`awaitDispatch`):
 // one bounded foreground call that polls the sentinel and the dispatch's own
-// heartbeat, re-armed by the caller while it exits 98.
+// heartbeat, re-armed by the caller while it exits 98. Once the verdict lands, short slices
+// let the returned object arrive; a quiet worker releases after the return grace.
 //
 // Agent bindings for the neutral dispatch contract:
 // - Claude Code: issue awaited `Task` calls (for example with `subagent_type: general-purpose`);
@@ -56,6 +57,8 @@ export const DEFAULT_POLL_INTERVAL_MS = 1_000
 // One `wait` call's default budget: under Claude Code's 120 s default Bash timeout, past which an
 // untimed call is backgrounded — which would reproduce the very un-held dispatch `wait` replaces.
 export const DEFAULT_WAIT_BUDGET_MS = 110_000
+export const DEFAULT_RETURN_GRACE_MS = 120_000
+export const DEFAULT_RETURN_SLICE_MS = 10_000
 // `wait` exit codes, one per outcome. Anything else (a harness kill) is UNKNOWN and re-arms; it is
 // never read as a death class. 97 collides with `gate-run.mjs`'s `vanished` — always name the verb.
 export const WAIT_EXIT_CODES = Object.freeze({
@@ -564,6 +567,9 @@ function sentinelFileExists(ctx, name) {
  * outcome or the budget. Bounded and re-armable by construction — one call never outlives
  * `budgetMs`, so the harness never backgrounds the hold itself; the caller re-arms on `budget`.
  *
+ * With `whileLive`, a terminal verdict switches to short return slices and releases after
+ * `returnGraceMs` without a verdict write or heartbeat. Post-verdict beats extend that grace.
+ *
  * Read-only: the heartbeat is consulted through `heartbeatLiveness`, never `touchHeartbeat`, so the
  * wait cannot manufacture the liveness it measures. A provisional seed never completes the wait.
  *
@@ -574,6 +580,7 @@ function sentinelFileExists(ctx, name) {
  * @param {string} name
  * @param {{heartbeatPath?: string, dispatchedAt?: number, deadlineAt?: number, budgetMs?: number,
  *   intervalMs?: number, whileLive?: boolean, staleAfterMs?: number,
+ *   returnGraceMs?: number, returnSliceMs?: number,
  *   now?: () => number, sleep?: (ms: number) => Promise<unknown>}} [opts]
  * @returns {Promise<object>} the `classifyDispatch` result plus `outcome`, `waitedMs`, and `held`
  *   when `whileLive` kept a completed sentinel open
@@ -583,6 +590,14 @@ export async function awaitDispatch(ctx, name, opts = {}) {
   const sleep = opts.sleep ?? delay
   const budgetMs = assertPositiveNumber(opts.budgetMs ?? DEFAULT_WAIT_BUDGET_MS, 'budgetMs')
   const intervalMs = assertPositiveNumber(opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS, 'intervalMs')
+  const returnGraceMs = assertPositiveNumber(
+    opts.returnGraceMs ?? DEFAULT_RETURN_GRACE_MS,
+    'returnGraceMs',
+  )
+  const returnSliceMs = assertPositiveNumber(
+    opts.returnSliceMs ?? DEFAULT_RETURN_SLICE_MS,
+    'returnSliceMs',
+  )
   const start = clock()
   const dispatchedAt =
     opts.dispatchedAt === undefined ? undefined : assertDispatchedAt(opts.dispatchedAt, start)
@@ -605,19 +620,29 @@ export async function awaitDispatch(ctx, name, opts = {}) {
     })
     const waitedMs = Math.max(0, now - start)
     let held = null
+    let budgetRemainingMs = budgetMs - waitedMs
     if (classified.status === COMPLETED) {
       if (!opts.whileLive) return { ...classified, outcome: COMPLETED, waitedMs }
       // Artifact-ready is not dispatch-returned: hold while the worker still beats.
       const beat = heartbeatLiveness(opts.heartbeatPath, { now, staleAfterMs: opts.staleAfterMs })
       if (beat.status !== HEARTBEAT_LIVE) return { ...classified, outcome: COMPLETED, waitedMs }
-      held = 'heartbeat-live'
+      const verdictAt = statSync(ctx.sentinelPath(name)).mtimeMs
+      const quietSince = Math.max(verdictAt, beat.at)
+      if (now - quietSince >= returnGraceMs) {
+        return { ...classified, outcome: COMPLETED, released: 'return-grace', waitedMs }
+      }
+      held = 'awaiting-return'
+      budgetRemainingMs = Math.min(
+        budgetRemainingMs,
+        Math.max(start, verdictAt) + Math.min(budgetMs, returnSliceMs) - now,
+      )
     } else if (classified.status === ABANDONED || classified.status === TIMED_OUT) {
       return { ...classified, outcome: classified.status, waitedMs }
     }
-    if (waitedMs >= budgetMs) {
+    if (budgetRemainingMs <= 0) {
       return { ...classified, outcome: 'budget', waitedMs, ...(held ? { held } : {}) }
     }
-    await sleep(Math.min(intervalMs, budgetMs - waitedMs))
+    await sleep(Math.min(intervalMs, budgetRemainingMs))
   }
 }
 
@@ -773,7 +798,7 @@ function usage() {
     'usage: bs-dispatch-await.mjs <classify <dir> <runId> <name> <deadlineAtMs> [nowMs] [heartbeatPath]',
     '  | disposition <dir> <runId> <name> [--deadline <ms>] [--now <ms>] [--artifact <path>]... [--heartbeat <path>] [--dispatched-at <ms>] [--stale <ms>]',
     '  | wait <dir> <runId> <name> [--heartbeat <path>] [--dispatched-at <ms>] [--deadline <ms>] [--budget <ms>] [--interval <ms>] [--stale <ms>] [--while-live]',
-    '    (exit 0 completed | 96 timed-out | 97 abandoned | 98 budget spent, re-arm)',
+    '    (exit 0 completed | 96 timed-out | 97 abandoned | 98 budget spent or awaiting the returned object, re-arm)',
     '  | probe <path>... | guard-discard <path>...',
     '  | heartbeat <path> [note] | liveness <path> [nowMs] [staleMs]',
     '  | beat <path> [--interval <ms>] -- <command> [args...]',

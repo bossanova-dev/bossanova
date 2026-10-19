@@ -32,11 +32,36 @@ runs:
           const ref = context.ref.replace('refs/heads/', '');
           const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
           const title = `${process.env.NOTIFY_TITLE_PREFIX} on ${ref}`;
+
+          // Name the jobs and steps that failed or ran out of time. Reading the run's
+          // jobs needs `actions: read`; a caller without it still gets the issue,
+          // just without this list.
+          const bad = new Set(['failure', 'cancelled', 'timed_out']);
+          let failedSteps = [];
+          try {
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo,
+              run_id: context.runId,
+              filter: 'latest',
+              per_page: 100,
+            });
+            failedSteps = jobs
+              .filter((job) => bad.has(job.conclusion))
+              .map((job) => {
+                const steps = (job.steps || []).filter((step) => bad.has(step.conclusion));
+                const named = steps.map((step) => `\`${step.name}\` (${step.conclusion})`).join(', ');
+                return `- Job \`${job.name}\` (${job.conclusion}): ${named || 'no step reported a failure'}`;
+              });
+          } catch (e) {
+            core.warning(`Could not list the run's jobs, so the issue names no step: ${e.message}`);
+          }
+
           const body = [
             `Workflow **${context.workflow}** failed on \`${context.ref}\` (event: \`${context.eventName}\`).`,
             '',
             `- Run: ${runUrl}`,
             `- Commit: \`${context.sha}\``,
+            ...(failedSteps.length > 0 ? ['', 'Failed:', ...failedSteps] : []),
             '',
             '_Opened automatically by the workflow failure notifier. Close this issue once the failure is resolved; the next failure will open a fresh one._',
           ].join('\n');

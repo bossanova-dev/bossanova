@@ -46,8 +46,6 @@ const (
 // Plugin type names used as keys in the go-plugin PluginSet.
 const (
 	PluginTypeTaskSource  = "task_source"
-	PluginTypeEventSource = "event_source"
-	PluginTypeScheduler   = "scheduler"
 	PluginTypeWorkflow    = "workflow"
 	PluginTypeAgentRunner = "agent_runner"
 )

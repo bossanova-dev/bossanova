@@ -149,3 +149,24 @@ test('a 504 from the branch own service in a non-test gate stays a red gate', ()
     'gateway-timeout-fetch',
   )
 })
+
+test('verified Postgres failures are environmental, raw SQL failures are not', () => {
+  assert.equal(
+    classifyEnvironmentFailure(
+      'test-postgres: environment failure (connection-refused) - repair server',
+    )?.kind,
+    'test-postgres',
+  )
+  for (const text of [
+    'too many clients already',
+    'connection refused',
+    'password authentication failed',
+    'database "bosso_test" does not exist',
+  ])
+    assert.equal(classifyEnvironmentFailure(text), null)
+})
+
+test('refused disk preflight is a disk-exhaustion environment failure', async () => {
+  const { DISK_FLOOR_SIGNATURE } = await import('./disk-headroom-lib.mjs')
+  assert.equal(classifyEnvironmentFailure(`${DISK_FLOOR_SIGNATURE}: 0 GiB`).kind, 'disk-exhaustion')
+})

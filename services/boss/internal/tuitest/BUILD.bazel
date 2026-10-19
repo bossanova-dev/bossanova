@@ -28,6 +28,7 @@ go_test(
         "bugreport_test.go",
         "chatpicker_test.go",
         "cron_test.go",
+        "harness_env_test.go",
         "home_reorder_test.go",
         "home_test.go",
         "home_ticket_notice_test.go",

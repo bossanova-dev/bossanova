@@ -989,6 +989,19 @@ test('merge retries settle refused and in-flight merges using the existing obser
   assert.ok(r.records.every((r) => r.retry === true))
 })
 
+test('a merge refused for no local session says whether the PR was told', () => {
+  const w = world({
+    candidates: [],
+    mergeRetries: [candidate(1)],
+    mergeResults: {
+      1: { merged: false, verdict: 'human', reason: 'no-session', notice: 'posted' },
+    },
+  })
+  assert.deepEqual(lines(sweep({}, w.deps())), [
+    '#1 human: no-session (PR notice posted) (merge retry)',
+  ])
+})
+
 test('merge retries dry-run without mutations and defer when boss is unreachable', () => {
   const w = world({ candidates: [], mergeRetries: [candidate(1)] })
   const r = sweep({ dryRun: true }, w.deps())

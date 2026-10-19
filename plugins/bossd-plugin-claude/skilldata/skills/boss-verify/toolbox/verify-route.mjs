@@ -664,7 +664,8 @@ function settleMerges(pending, records, { readFile, sleep, remaining, gate }) {
     else if (m.abandoned === 'claim-lost') fill(p, 'skipped', 'skipped: claim lost')
     else {
       const why = m.reason ?? (Array.isArray(m.reasons) ? m.reasons.join(',') : undefined)
-      fill(p, 'skipped', `${m.verdict ?? 'merge'}: ${why ?? 'unknown'}`)
+      const notice = text(m.notice) ? ` (PR notice ${m.notice})` : ''
+      fill(p, 'skipped', `${m.verdict ?? 'merge'}: ${why ?? 'unknown'}${notice}`)
     }
     return true
   }

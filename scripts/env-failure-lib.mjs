@@ -1,10 +1,19 @@
+import { DISK_FLOOR_SIGNATURE } from './disk-headroom-lib.mjs'
+
 export const ENV_FAILURE_EXIT_CODE = 75
 
 export const LOCK_CONTENTION_SIGNATURE = 'parallel golangci-lint is running'
 export const LOCK_CONTENTION_EXHAUSTED_SIGNATURE =
   'golangci-lint: lock contention exhausted after 3 attempts (not a lint finding)'
 
+export const TEST_POSTGRES_FAILURE_SIGNATURE = 'test-postgres: environment failure'
+
 export const ENV_FAILURE_RULES = [
+  {
+    kind: 'test-postgres',
+    pattern: TEST_POSTGRES_FAILURE_SIGNATURE,
+    remedy: 'follow the test-postgres probe remedy; start Docker or repair the supplied database',
+  },
   {
     kind: 'gpg-memory-pressure',
     pattern: /gpg: signing failed: Cannot allocate memory|signing failed: Cannot allocate memory/i,
@@ -18,9 +27,9 @@ export const ENV_FAILURE_RULES = [
   },
   {
     kind: 'disk-exhaustion',
-    pattern: /No space left on device|ENOSPC/i,
+    pattern: new RegExp(`No space left on device|ENOSPC|${DISK_FLOOR_SIGNATURE}`, 'i'),
     remedy:
-      'free disk space, especially /private/var/tmp/_bazel_dave and ~/.cache/bazel-bossanova-disk',
+      'free disk space; make clean-cache evicts the Go build cache safely while builds run, and gate-run reclaims it automatically below BOSS_GATE_MIN_FREE_GIB',
   },
   {
     kind: 'gpg-signing-unavailable',

@@ -16,6 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  DRAFT_RETURN_KEYS,
   PREMISE_LIMIT,
   adoptReturnedMetadata,
   listRepoRootEntries,
@@ -83,6 +84,57 @@ test('validateDraftMetadata accepts a well-formed bounded metadata object', () =
   assert.deepEqual(result.missing, [])
   assert.deepEqual(result.invalid, [])
   assert.deepEqual(result.violations, [])
+})
+
+test('validateDraftMetadata quietly leaves returned premises in the sentinel', () => {
+  for (const premises of [[], [{ id: 'BOS-2', state: 'Done' }], 'malformed']) {
+    const result = validateDraftMetadata(metadata({ premises }))
+    assert.equal(result.ok, true)
+    assert.equal(
+      result.warnings.some((warning) => warning.field === 'premises'),
+      false,
+    )
+    assert.equal(Object.hasOwn(result.normalized, 'premises'), false)
+  }
+})
+
+test('validateDraftMetadata warns on undeclared return keys', () => {
+  const result = validateDraftMetadata(metadata({ transcript: 'x' }))
+  const warning = result.warnings.find((entry) => entry.field === 'transcript')
+  assert.match(warning.message, /dropped unknown top-level key/)
+  assert.equal(Object.hasOwn(result.normalized, 'transcript'), false)
+})
+
+test('validateDraftMetadata adopts only declared metadata and leaves sentinel keys quiet', () => {
+  const returned = metadata()
+  for (const [key, disposition] of Object.entries(DRAFT_RETURN_KEYS)) {
+    if (disposition === 'sentinel') returned[key] = [{ id: 'BOS-2', state: 'Done' }]
+  }
+  assert.deepEqual(Object.keys(returned).sort(), Object.keys(DRAFT_RETURN_KEYS).sort())
+  const result = validateDraftMetadata(returned)
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.warnings, [])
+  const adopted = Object.entries(DRAFT_RETURN_KEYS)
+    .filter(([key, disposition]) => disposition === 'adopt' && Object.hasOwn(returned, key))
+    .map(([key]) => key)
+  assert.deepEqual(Object.keys(result.normalized).sort(), adopted.sort())
+  for (const key of adopted) assert.deepEqual(result.normalized[key], returned[key])
+})
+
+test('adopt-metadata CLI quietly omits sentinel-carried premises from its file', (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-premises-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
+  const run = spawnSync(
+    process.execPath,
+    [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(metadata({ premises: [] }))],
+    { encoding: 'utf8' },
+  )
+  assert.equal(run.status, 0, run.stderr)
+  assert.doesNotMatch(run.stderr, /premises/)
+  const written = JSON.parse(readFileSync(metadataPath, 'utf8'))
+  assert.equal(Object.hasOwn(written, 'premises'), false)
+  assert.deepEqual(written, metadata())
 })
 
 test('validateDraftMetadata rejects missing descriptionSummary', () => {
@@ -1695,6 +1747,24 @@ function runDeps(dir, { payload = {}, rows, subject = 'TCK-1', outcomes } = {}) 
     env: outcomes ? { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } : process.env,
   })
 }
+
+test('deps: same-parent subject and sibling yield overlap without self-reference', () => {
+  const dir = depsRepo()
+  try {
+    const res = runDeps(dir, {
+      rows: [depsRow({ parentId: 'EP' }), depsCandidate({ parentId: 'EP' })],
+    })
+    assert.equal(res.status, 0, res.stderr)
+    const r = JSON.parse(res.stdout)
+    assert.equal(r.edges.length, 1)
+    assert.equal(r.edges[0].reason, 'file-overlap')
+    assert.equal(r.skipped.find((row) => row.identifier === 'TCK-1').reason, 'self')
+    assert.ok(r.notes.every((row) => row.candidate !== 'TCK-1'))
+    assert.equal(r.verdict.recordToDescription, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
 
 test('deps: classifies the subject from the candidates file and prints verdict and summary', () => {
   const dir = depsRepo()

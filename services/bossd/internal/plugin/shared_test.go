@@ -61,8 +61,6 @@ func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 	}
 	for _, typ := range []string{
 		sharedplugin.PluginTypeTaskSource,
-		sharedplugin.PluginTypeEventSource,
-		sharedplugin.PluginTypeScheduler,
 		sharedplugin.PluginTypeWorkflow,
 	} {
 		if _, ok := current[typ]; !ok {

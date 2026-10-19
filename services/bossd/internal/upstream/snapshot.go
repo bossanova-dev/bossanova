@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -16,8 +17,9 @@ import (
 // StreamStores interfaces (wired in T3.7).
 func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, error) {
 	snap := &pb.DaemonSnapshot{
-		DaemonId: c.daemonID,
-		Hostname: c.hostname,
+		DaemonId:               c.daemonID,
+		Hostname:               c.hostname,
+		SupportedCommandFields: daemoncaps.StreamCommands(),
 	}
 
 	if c.stores.Repos != nil {

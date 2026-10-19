@@ -13,6 +13,7 @@ import {
   resolveBuildPlan,
   selectImplementationPlanAttachment,
   selectSupersededPlanAttachments,
+  SELECTOR_USAGE_ERROR,
   USAGE_ERROR_TOKEN,
   verifyPlanAttachment,
 } from './plan-attachment.mjs'
@@ -24,7 +25,8 @@ const USAGE =
   'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
   '       plan-attachment.mjs verify <local-file> <signed-url>\n' +
   '       plan-attachment.mjs decode <in-file> <out-file>\n' +
-  '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n'
+  '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n' +
+  '       plan-attachment.mjs supersede <attachments-json-file> --issue <ISSUE-ID> --keep <attachment-id> [--just-finalized]\n'
 
 // Built by concatenation so this file is not itself a match for the scan below.
 const FORBIDDEN_GUARD = ['import', 'meta', 'main'].join('.')
@@ -50,6 +52,137 @@ function runCliAsync(args) {
     child.on('close', (status) => resolve({ status, stdout, stderr }))
   })
 }
+
+const SELECTOR_SIGNATURE =
+  'selectSupersededPlanAttachments(attachments, { issueID, keepAttachmentId, keepJustFinalized })'
+
+test('supersede selector rejects malformed calls with actionable usage errors', () => {
+  const valid = { issueID: 'X', keepAttachmentId: 'keep' }
+  const cases = [
+    [{ attachments: [], ...valid }, undefined, /first positional argument/],
+    [undefined, valid],
+    [{ nodes: [] }, valid],
+    [[], undefined],
+    [[], null],
+    [[], []],
+    [[], { keepAttachmentId: 'keep' }],
+    [[], { ...valid, issueID: '' }],
+    [[], { ...valid, issueID: 3 }],
+    [[], { issueID: 'X' }],
+    [[], { ...valid, keepAttachmentId: '' }],
+    [[], { ...valid, keepAttachmentId: 3 }],
+    [[], { ...valid, keepJustFinalized: 'true' }],
+    [[], { issueId: 'X', keepAttachmentId: 'keep' }, /issueID/],
+    [[], { IssueID: 'X', keepAttachmentId: 'keep' }, /issueID/],
+    [[], { ...valid, keepAttachmentID: 'keep' }, /keepAttachmentId/],
+    [[], { ...valid, keep: 'keep' }, /allowed keys/],
+  ]
+  for (const [attachments, options, detail] of cases) {
+    assert.throws(
+      () => selectSupersededPlanAttachments(attachments, options),
+      (error) => {
+        assert.ok(error instanceof TypeError)
+        assert.ok(error.message.startsWith(SELECTOR_USAGE_ERROR))
+        assert.ok(error.message.includes(SELECTOR_SIGNATURE))
+        if (detail) assert.match(error.message, detail)
+        return true
+      },
+    )
+  }
+})
+
+test('plan selector rejects an options object but preserves permissive missing issue matching', () => {
+  const list = [{ id: 'p', title: 'Implementation plan' }]
+  assert.throws(
+    () => selectImplementationPlanAttachment(list, { issueID: 'X' }),
+    (error) => error instanceof TypeError && error.message.startsWith(SELECTOR_USAGE_ERROR),
+  )
+  assert.equal(selectImplementationPlanAttachment(list, undefined)?.id, 'p')
+  assert.equal(selectImplementationPlanAttachment(list, null)?.id, 'p')
+})
+
+test('CLI supersede normalizes tracker lists and reports selected ids and titles', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'supersede-'))
+  const file = join(dir, 'attachments.json')
+  const list = [
+    { id: 'stale', title: 'Implementation plan (X)' },
+    { id: 'keep', title: 'Implementation plan (X)' },
+    { id: 'other', title: 'Implementation plan (Y)' },
+  ]
+  try {
+    for (const payload of [
+      list,
+      { nodes: list },
+      { attachments: list },
+      { attachments: { nodes: list } },
+    ]) {
+      writeFileSync(file, JSON.stringify(payload))
+      const result = runCli([
+        'supersede',
+        file,
+        '--issue',
+        'X',
+        '--keep',
+        'keep',
+        '--just-finalized',
+      ])
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stderr, '')
+      assert.deepEqual(JSON.parse(result.stdout), {
+        outcome: 'supersede-selected',
+        issueID: 'X',
+        keepAttachmentId: 'keep',
+        supersede: [{ id: 'stale', title: 'Implementation plan (X)' }],
+      })
+    }
+    const failed = runCli(['supersede', file, '--issue', 'X', '--keep', 'keep'])
+    assert.equal(failed.status, 1)
+    assert.equal(failed.stdout, '')
+    assert.match(failed.stderr, /unorderable supersede/)
+    const absent = runCli(['supersede', file, '--issue', 'X', '--keep', 'absent'])
+    assert.equal(absent.status, 0, absent.stderr)
+    assert.deepEqual(JSON.parse(absent.stdout), {
+      outcome: 'keep-not-listed',
+      issueID: 'X',
+      keepAttachmentId: 'absent',
+      supersede: [],
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI supersede distinguishes invalid invocation from failed list reads', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'supersede-'))
+  const file = join(dir, 'attachments.json')
+  writeFileSync(file, '[]')
+  try {
+    for (const args of [
+      ['supersede', file, '--issue-id', 'X', '--keep', 'keep'],
+      ['supersede', file, '--keep', 'keep'],
+      ['supersede', file, '--issue', 'X'],
+      ['supersede', '--issue', 'X', '--keep', 'keep'],
+      ['supersede', file, '--issue', 'X', '--keep'],
+      ['supersede', file, '--issue', '', '--keep', 'keep'],
+      ['supersede', file, 'extra', '--issue', 'X', '--keep', 'keep'],
+    ]) {
+      const result = runCli(args)
+      assert.equal(result.status, 2, JSON.stringify(args))
+      assert.equal(result.stdout, '')
+      assert.equal(result.stderr.split('\n')[0], USAGE_ERROR_TOKEN)
+    }
+    for (const content of [null, 'invalid json']) {
+      if (content === null) rmSync(file)
+      else writeFileSync(file, content)
+      const result = runCli(['supersede', file, '--issue', 'X', '--keep', 'keep'])
+      assert.equal(result.status, 1, result.stderr)
+      assert.equal(result.stdout, '')
+      assert.ok(result.stderr)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('selectImplementationPlanAttachment prefers the newest exact canonical title', () => {
   const attachment = selectImplementationPlanAttachment(

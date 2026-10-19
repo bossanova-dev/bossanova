@@ -116,6 +116,19 @@ func (a attentionActionState) mergeUnresolved() bool {
 	return a.mergeInFlight() || a.action == pb.AttentionAction_ATTENTION_ACTION_MERGE && a.waiting != ""
 }
 
+// ongoingStatus is the status line of an unresolved merge: the waiting line
+// once its call ended unanswered, else the progress line while it runs.
+func (a attentionActionState) ongoingStatus() string {
+	switch {
+	case !a.mergeUnresolved():
+		return ""
+	case a.waiting != "":
+		return a.waiting
+	default:
+		return a.progress
+	}
+}
+
 // settleUnansweredMerge reads how a poll of the session ends a merge whose call
 // went unanswered: its PR merged or closed, or bossd is no longer merging it.
 // settled is false while bossd still reports the merge running.

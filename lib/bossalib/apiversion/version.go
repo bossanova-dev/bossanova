@@ -639,6 +639,12 @@ const V20260923 Version = "2026-09-23"
 // back.
 const V20260924 Version = "2026-09-24"
 
+// V20260925 ships DaemonLacksCommandCodeChange: a command the session's daemon
+// is too old to run is answered at once with CodeUnimplemented, where it waited
+// out bosso's deadline and served CodeDeadlineExceeded. 2026-09-24 and older
+// pins get CodeDeadlineExceeded back, still at once.
+const V20260925 Version = "2026-09-25"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -798,8 +804,9 @@ func DefaultRegistry() *Registry {
 			V20260922,
 			V20260923,
 			V20260924,
+			V20260925,
 		},
-		V20260924,
+		V20260925,
 		Baseline,
 	)
 	if err != nil {

@@ -758,6 +758,8 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 			"Couldn't merge PR #42: the tracker refused the write", true},
 		{"uncoded refusal relayed by bosso", &attentionStub{mergeErr: connect.NewWireError(connect.CodeAborted, errors.New("merge PR: 405 At least 1 approving review is required"))},
 			"Couldn't merge PR #42: merge PR: 405 At least 1 approving review is required", true},
+		{"daemon too old, relayed by bosso", &attentionStub{mergeErr: connect.NewWireError(connect.CodeUnimplemented, errors.New("boss on mac-mini is too old to do this from here"))},
+			"Couldn't merge PR #42: boss on mac-mini is too old to do this from here", true},
 		{"no answer from bossd", &attentionStub{mergeErr: connect.NewError(connect.CodeUnavailable, errors.New("dial unix: connection refused"))},
 			"Waiting to hear whether PR #42 merged", false},
 	} {
@@ -968,6 +970,28 @@ func TestAttentionDismissLeftRunningIsNotShownAsMerging(t *testing.T) {
 	model, _ = model.Update(dismiss())
 	if got := model.(App); mergeRowReadsMerging(got.home) || len(got.home.mergesInFlight) != 0 {
 		t.Fatalf("after the dismiss answered: row merging %v, merges held %v; want none", mergeRowReadsMerging(got.home), got.home.mergesInFlight)
+	}
+}
+
+// TestOngoingStatusIsOnlyAnUnresolvedMergesLine: the line Home brings back
+// beside a row reading merging belongs to a merge whose outcome is not known.
+// A merge whose call has answered, or another action still running, has none,
+// whatever progress line it kept.
+func TestOngoingStatusIsOnlyAnUnresolvedMergesLine(t *testing.T) {
+	merge, dismiss := pb.AttentionAction_ATTENTION_ACTION_MERGE, pb.AttentionAction_ATTENTION_ACTION_DISMISS
+	for _, tc := range []struct {
+		name  string
+		state attentionActionState
+		want  string
+	}{
+		{"merge running", attentionActionState{action: merge, busy: true, progress: "Merging PR #42…"}, "Merging PR #42…"},
+		{"merge unanswered", awaitingMerge("session-1", "Waiting to hear whether PR #42 merged"), "Waiting to hear whether PR #42 merged"},
+		{"merge answered", attentionActionState{action: merge, progress: "Merging PR #42…"}, ""},
+		{"dismiss running", attentionActionState{action: dismiss, busy: true, progress: "Dismissing…"}, ""},
+	} {
+		if got := tc.state.ongoingStatus(); got != tc.want {
+			t.Errorf("%s: ongoing status %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

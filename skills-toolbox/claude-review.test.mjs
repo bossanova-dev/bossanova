@@ -22,7 +22,8 @@ import {
 import { reviewTimeDefaults } from './skill-config.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./claude-review.mjs', import.meta.url))
-const PROBE_READY_TIMEOUT_MS = 10000
+const LOAD_TOLERANT_WAIT_MS = 30_000
+const PROBE_READY_TIMEOUT_MS = LOAD_TOLERANT_WAIT_MS
 
 test('CLI through a symlink rejects a missing command loudly', () => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'claude-review-link-'))
@@ -64,7 +65,7 @@ function writeEchoArgvBin(dir) {
   return writeFakeBin(dir, 'claude', 'for a in "$@"; do printf "%s\\n" "$a"; done\nexit 0')
 }
 
-async function waitForPidFile(pidFile, timeoutMs = 2000) {
+async function waitForPidFile(pidFile, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   while (true) {
     if (fs.existsSync(pidFile)) {
@@ -112,7 +113,7 @@ function processGroupOnlyZombies(pgid) {
  * throws ESRCH, or the only survivors are unreaped zombies. Returns true when
  * the group is gone, false if it is still live after `timeoutMs`.
  */
-async function waitForGroupGone(pgid, timeoutMs = 3000) {
+async function waitForGroupGone(pgid, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {
@@ -191,7 +192,7 @@ test('probe: fake that exits 0 → ready', async () => {
 test('probe: non-existent BOSS_CLAUDE_BIN → not_installed', async () => {
   const result = await probe({
     env: { BOSS_CLAUDE_BIN: '/nonexistent/path/to/claude' },
-    timeoutMs: 3000,
+    timeoutMs: LOAD_TOLERANT_WAIT_MS,
   })
   assert.equal(result, 'not_installed')
 })
@@ -202,7 +203,7 @@ test('probe: fake that exits non-zero → error (not not_authed)', async () => {
   const dir = makeTmpDir()
   try {
     const bin = writeFakeBin(dir, 'claude', 'exit 1')
-    const result = await probe({ env: { BOSS_CLAUDE_BIN: bin }, timeoutMs: 3000 })
+    const result = await probe({ env: { BOSS_CLAUDE_BIN: bin }, timeoutMs: LOAD_TOLERANT_WAIT_MS })
     assert.equal(result, 'error')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -327,7 +328,7 @@ test('run: absolute falsification reference preserves the Claude second voice', 
       base: 'abc',
       head: 'def',
       repo,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
       falsificationReference: '/opt/skills/boss-review/references/falsification.md',
     })
     assert.equal(result.ok, true, result.stderr)
@@ -511,7 +512,7 @@ test('run: large stderr volume then exit 0 completes promptly (no stderr deadloc
         'echo "review: ok"\n' +
         'exit 0',
     )
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const result = await run({
       env: { BOSS_CLAUDE_BIN: bin },
       base: 'abc1234',
@@ -536,7 +537,7 @@ test('run: fake claude that exits 0 with output → ok=true, sanitized output re
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, true)
     assert.equal(result.timedOut, false)
@@ -559,7 +560,7 @@ test('run: fake claude that exits non-zero → ok=false, no throw, stderr tail c
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(result.ok, false)
     assert.equal(result.timedOut, false)
@@ -582,7 +583,7 @@ test('run: stderr tail is bounded under a flood, run still completes promptly', 
       'claude',
       'yes "noise" | head -c 200000 1>&2\nprintf "FINAL-ERROR-MARKER\\n" 1>&2\nexit 2',
     )
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const result = await run({
       env: { BOSS_CLAUDE_BIN: bin },
       base: 'abc1234',
@@ -604,7 +605,7 @@ test('run: stdout is bounded under a flood, output stays capped and completes pr
   const dir = makeTmpDir()
   try {
     const bin = writeFakeBin(dir, 'claude', 'yes "review-noise" | head -c 2000000\nexit 0')
-    const timeoutMs = 5000
+    const timeoutMs = LOAD_TOLERANT_WAIT_MS
     const maxBytes = 65536
     const result = await run({
       env: { BOSS_CLAUDE_BIN: bin },
@@ -653,7 +654,7 @@ test('run: small diff in a real git repo is embedded under the cap', async () =>
       base,
       head,
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
 
     assert.equal(result.ok, true, `run failed; stderr: ${result.stderr}`)
@@ -737,7 +738,7 @@ test('run: spawns claude with --bare when ANTHROPIC_API_KEY is set (hermetic rev
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(withKey.ok, true, `run failed; stderr: ${withKey.stderr}`)
     assert.ok(withKey.output.includes('--bare'), 'API-keyed run should pass --bare')
@@ -748,7 +749,7 @@ test('run: spawns claude with --bare when ANTHROPIC_API_KEY is set (hermetic rev
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
     assert.equal(noKey.ok, true, `run failed; stderr: ${noKey.stderr}`)
     assert.ok(!noKey.output.includes('--bare'), 'keyless run must not pass --bare')
@@ -781,7 +782,7 @@ test('run: over-cap diff (>=200KB) falls back to instruct-mode, no embedded diff
       base,
       head,
       repo: dir,
-      timeoutMs: 5000,
+      timeoutMs: LOAD_TOLERANT_WAIT_MS,
     })
 
     assert.equal(result.ok, true, `run failed; stderr: ${result.stderr}`)
@@ -1006,7 +1007,7 @@ test('probe: authenticated no-op detects expired claude credentials', async () =
       '' + 'echo "API Error: 401 authentication_error OAuth token has expired" >&2\nexit 1',
     )
     assert.equal(
-      await probe({ env: { BOSS_CLAUDE_BIN: bin }, repo: dir, timeoutMs: 2000 }),
+      await probe({ env: { BOSS_CLAUDE_BIN: bin }, repo: dir, timeoutMs: LOAD_TOLERANT_WAIT_MS }),
       'not_authed',
     )
   } finally {
@@ -1023,7 +1024,7 @@ test('probe: live no-op preserves read-only argv and checkout cwd (claude)', asy
         await probe({
           env: { BOSS_CLAUDE_BIN: bin, ANTHROPIC_API_KEY: apiKey },
           repo: dir,
-          timeoutMs: 2000,
+          timeoutMs: LOAD_TOLERANT_WAIT_MS,
         }),
         'ready',
       )

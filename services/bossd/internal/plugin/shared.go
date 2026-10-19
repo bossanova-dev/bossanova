@@ -26,8 +26,6 @@ func NewHandshake(cookieValue string) goplugin.HandshakeConfig {
 func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 	return goplugin.PluginSet{
 		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{HostService: hostService},
-		sharedplugin.PluginTypeEventSource: &EventSourceGRPCPlugin{},
-		sharedplugin.PluginTypeScheduler:   &SchedulerGRPCPlugin{},
 		sharedplugin.PluginTypeWorkflow:    &WorkflowServiceGRPCPlugin{HostService: hostService},
 		sharedplugin.PluginTypeAgentRunner: &AgentRunnerGRPCPlugin{HostService: hostService},
 	}

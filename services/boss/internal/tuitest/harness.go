@@ -1,6 +1,7 @@
 package tuitest
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 )
 
 // bossBinaryPath and bossBinaryErr are set once by BuildBoss via TestMain.
+// bossBinaryErr records only a failed build.
 var (
 	bossBinaryPath string
 	bossBinaryErr  error
@@ -54,9 +56,37 @@ func BuildBoss() (cleanup func()) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		bossBinaryErr = fmt.Errorf("build boss: %w\n%s", err, out)
+		return func() { _ = os.RemoveAll(dir) }
+	}
+
+	// The first exec of a freshly linked binary is slow on macOS (0.6s idle and
+	// up to 3.6s under load, against 0.02s after). Paying it here keeps it out
+	// of the first test's wait for boss's first screen. It only warms the
+	// binary, so a failed run is logged and the tests still run.
+	if err := warmBoss(bossBinaryPath, dir, bossWarmUpTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "tuitest: warm-up run of boss failed, continuing: %v\n", err)
 	}
 
 	return func() { _ = os.RemoveAll(dir) }
+}
+
+// bossWarmUpTimeout bounds the warm-up run, so a boss that hangs on --help
+// cannot stall the package before its first test.
+const bossWarmUpTimeout = 30 * time.Second
+
+// warmBoss runs binary --help once with home as HOME.
+func warmBoss(binary, home string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	// #nosec G204 -- test-only run of the boss binary built above, in a throwaway HOME
+	// owner=@recurser review-by=2027-01-18 issue=BOS-28
+	warm := exec.CommandContext(ctx, binary, "--help")
+	warm.Env = append(BaseHarnessEnv(os.Environ()), "HOME="+home, "BOSS_SKIP_SKILLS=1")
+	warm.WaitDelay = time.Second
+	if out, err := warm.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s --help: %w\n%s", binary, err, out)
+	}
+	return nil
 }
 
 // serviceDir returns the path to the services/boss directory.

@@ -4,15 +4,31 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
 import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
+import { evictGoCache } from './clean-go-build-cache.mjs'
+import {
+  DISK_FLOOR_SIGNATURE,
+  GiB,
+  measureHeadroom,
+  decideHeadroom,
+  parseFloorGiB,
+} from './disk-headroom-lib.mjs'
 import { gateEvidenceLine } from './gate-log-lib.mjs'
+import {
+  extractFailedTargets,
+  isolationCommandFor,
+  decideIsolationVerdict,
+  renderIsolationLines,
+  renderLoadLine,
+} from './gate-isolation-lib.mjs'
 
 export const VERDICTS = Object.freeze({
   passed: 'GATE PASSED',
+  flakyPrefix: 'GATE FLAKY-UNDER-LOAD (exit ',
   failedPrefix: 'GATE FAILED (exit ',
   environmentPrefix: 'GATE ENVIRONMENT FAILURE (exit ',
   stoppedPrefix: 'GATE STOPPED (exit ',
@@ -24,6 +40,7 @@ export const VERDICTS = Object.freeze({
 // 1 (failed), 75 (environment), 97 (vanished) and 98 (still running), so a teardown can never be
 // read as a red gate by exit code any more than by its first line.
 export const STOPPED_EXIT_CODE = 96
+export const FLAKY_EXIT_CODE = 95
 
 const DEFAULT_TIMEOUT_MS = 600_000
 const POLL_MS = 250
@@ -86,11 +103,11 @@ function emitVerdict(runDir, firstLine, exitCode, extraLines = []) {
 }
 
 // Bounded tail of the run dir's log, plus the stat facts an unknown verdict needs to name its cause.
-function readLogTail(runDir) {
+function readLogTail(runDir, limit = LOG_TAIL_LIMIT_BYTES) {
   const file = logPath(runDir)
   try {
     const stat = fs.statSync(file)
-    const start = Math.max(0, stat.size - LOG_TAIL_LIMIT_BYTES)
+    const start = Math.max(0, stat.size - limit)
     const length = stat.size - start
     const buffer = Buffer.alloc(length)
     const fd = fs.openSync(file, 'r')
@@ -167,6 +184,13 @@ function unknownCauseLine(runDir) {
     `elapsed: ${elapsed === null ? 'unknown' : `${elapsed}s`}`,
     `log last written: ${logAge === null ? 'no log' : `${logAge}s ago`}`,
   ]
+  const isolationDir = path.join(runDir, 'isolation')
+  if (fs.existsSync(isolationDir) && !fs.existsSync(path.join(runDir, 'isolation.json'))) {
+    const newest = fs
+      .readdirSync(isolationDir)
+      .reduce((latest, name) => Math.max(latest, mtimeMsOf(path.join(isolationDir, name))), 0)
+    parts.push(`phase: isolation - newest isolation log written ${ageSeconds(newest)}s ago`)
+  }
   const last = tail ? lastNonBlankLine(tail.text) : ''
   parts.push(`last log line: ${last || '(none)'}`)
   return parts.join(' - ')
@@ -242,39 +266,263 @@ function start(args) {
   process.stdout.write(`${runDir}\n${supervisor.pid}\n${logPath(runDir)}\n`)
 }
 
-function supervise(args) {
+function readJson(runDir, name) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(runDir, name), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function positiveEnv(name, fallback) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function loadSampler(load, phase, runDir) {
+  let count = 0
+  let sum = 0
+  let peak = 0
+  const sample = () => {
+    const value = os.loadavg()[0]
+    count += 1
+    sum += value
+    peak = Math.max(peak, value)
+  }
+  sample()
+  const timer = setInterval(sample, 5000)
+  return () => {
+    clearInterval(timer)
+    sample()
+    load[phase] = {
+      samples: count,
+      peak,
+      mean: sum / count,
+    }
+    writeFileAtomic(path.join(runDir, 'load.json'), JSON.stringify(load))
+  }
+}
+
+function diskPreflight(logFd) {
+  const floorBytes =
+    parseFloorGiB(process.env.BOSS_GATE_MIN_FREE_GIB, (line) => fs.writeSync(logFd, `${line}\n`)) *
+    GiB
+  if (floorBytes === 0) return null
+  let cacheDir
+  try {
+    cacheDir =
+      process.env.GOCACHE || execFileSync('go', ['env', 'GOCACHE'], { encoding: 'utf8' }).trim()
+  } catch (error) {
+    fs.writeSync(logFd, `gate-run preflight: Go cache unavailable: ${error.message}\n`)
+  }
+  const paths = [
+    os.tmpdir(),
+    process.cwd(),
+    ...(cacheDir ? [cacheDir] : []),
+    path.join(os.homedir(), '.cache'),
+  ]
+  const measure = () => measureHeadroom(paths)
+  const record = { floorBytes, preflight: measure(), reclaimedBytes: 0, refused: false, atExit: [] }
+  const reclaim = (entries) => {
+    const decision = decideHeadroom({ entries, floorBytes })
+    if (decision.verdict !== 'below-floor') return
+    try {
+      const { bytes } = evictGoCache({ dir: cacheDir, targetBytes: Number.MAX_SAFE_INTEGER })
+      const targetBytes = Math.max(0, bytes - (floorBytes - decision.lowest.freeBytes) * 1.1)
+      record.reclaimedBytes += evictGoCache({ dir: cacheDir, targetBytes }).reclaimedBytes
+    } catch (error) {
+      fs.writeSync(logFd, `gate-run preflight: reclaim unavailable: ${error.message}\n`)
+    }
+    fs.writeSync(
+      logFd,
+      `gate-run preflight: reclaimed ${(record.reclaimedBytes / GiB).toFixed(2)} GiB from Go build cache\n`,
+    )
+  }
+  reclaim(record.preflight)
+  const decision = decideHeadroom({ entries: measure(), floorBytes })
+  record.refused = decision.verdict === 'below-floor'
+  if (record.refused) {
+    fs.writeSync(
+      logFd,
+      `${DISK_FLOOR_SIGNATURE}: ${(decision.lowest.freeBytes / GiB).toFixed(2)} GiB free on ${decision.lowest.path}, floor ${(floorBytes / GiB).toFixed(2)} GiB (BOSS_GATE_MIN_FREE_GIB)\n`,
+    )
+  }
+  return { record, measure, reclaim }
+}
+
+function diskEvidenceLines(runDir, classification) {
+  if (classification.kind !== 'disk-exhaustion') return []
+  const disk = readJson(runDir, 'disk.json')
+  const before = disk?.preflight?.reduce((a, b) => (!a || b.freeBytes < a.freeBytes ? b : a), null)
+  const after = disk?.atExit?.find((entry) => entry.path === before?.path)
+  if (!before || !after) return []
+  return [
+    `disk: ${(before.freeBytes / GiB).toFixed(2)} GiB free on ${before.path} at preflight, ${(after.freeBytes / GiB).toFixed(2)} GiB at exit; reclaimed ${(disk.reclaimedBytes / GiB).toFixed(2)} GiB`,
+  ]
+}
+
+async function supervise(args) {
   const sep = args.indexOf('--')
   if (sep <= 0 || sep === args.length - 1) usage()
-
   const runDir = args[0]
   const command = args.slice(sep + 1)
   const logFd = fs.openSync(logPath(runDir), 'a')
-  const child = spawn(command[0], command.slice(1), {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-  })
-  fs.writeFileSync(path.join(runDir, 'child-pid'), `${child.pid}\n`)
-
-  let finished = false
-  const finish = (code, signal) => {
-    if (finished) return
-    finished = true
-    fs.closeSync(logFd)
-    writeFileAtomic(path.join(runDir, 'status'), `${statusCodeFromExit(code, signal)}\n`)
-    process.exit(0)
-  }
-
+  let currentChild = null
+  let interruptedSignal = null
+  let signalKillTimer = null
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
-      try {
-        process.kill(-child.pid, signal)
-      } catch {}
-      finish(null, signal)
+      interruptedSignal = signal
+      if (currentChild) {
+        const pid = currentChild.pid
+        signalChildGroup(pid, signal)
+        signalKillTimer ??= setTimeout(() => {
+          try {
+            process.kill(-pid, 'SIGKILL')
+          } catch {}
+        }, STOP_TERM_GRACE_MS)
+      }
     })
   }
-
-  child.on('error', () => finish(127, null))
-  child.on('exit', finish)
+  const load = { cpus: os.availableParallelism() }
+  const runChild = (argv, fd, timeoutMs = null) =>
+    new Promise((resolve) => {
+      const started = Date.now()
+      const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['ignore', fd, fd] })
+      currentChild = child
+      if (child.pid) writeFileAtomic(path.join(runDir, 'child-pid'), `${child.pid}\n`)
+      let timedOut = false
+      let killTimer = null
+      const timer =
+        timeoutMs === null
+          ? null
+          : setTimeout(() => {
+              timedOut = true
+              signalChildGroup(child.pid, 'SIGTERM')
+              killTimer = setTimeout(() => {
+                try {
+                  process.kill(-child.pid, 'SIGKILL')
+                } catch {}
+              }, STOP_TERM_GRACE_MS)
+            }, timeoutMs)
+      let done = false
+      const finish = async (code, signal) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        clearTimeout(signalKillTimer)
+        signalKillTimer = null
+        // A timed-out group may still contain descendants after its leader exits.
+        if (killTimer) {
+          await new Promise((r) => setTimeout(r, STOP_TERM_GRACE_MS))
+          clearTimeout(killTimer)
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {}
+        }
+        currentChild = null
+        resolve({
+          exit: statusCodeFromExit(code, signal),
+          durationMs: Date.now() - started,
+          timedOut,
+        })
+      }
+      child.once('error', () => finish(127, null))
+      child.once('exit', finish)
+    })
+  let disk = null
+  try {
+    disk = diskPreflight(logFd)
+  } catch (error) {
+    fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+  }
+  const finishGateLoad = loadSampler(load, 'gate', runDir)
+  const original =
+    wasStopped(runDir) || interruptedSignal
+      ? { exit: 128 + (os.constants.signals[interruptedSignal ?? 'SIGTERM'] ?? 15) }
+      : disk?.record.refused
+        ? { exit: ENV_FAILURE_EXIT_CODE }
+        : await runChild(command, logFd)
+  finishGateLoad()
+  try {
+    if (disk) {
+      if (
+        !disk.record.refused &&
+        original.exit !== 0 &&
+        classifyGateFailure(readLogTail(runDir)?.text ?? '')?.kind === 'disk-exhaustion'
+      ) {
+        disk.reclaim(disk.measure())
+      }
+    }
+  } catch (error) {
+    fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+  }
+  try {
+    if (
+      original.exit !== 0 &&
+      !wasStopped(runDir) &&
+      !interruptedSignal &&
+      process.env.BOSS_GATE_ISOLATE !== '0' &&
+      !classifyGateFailure(readLogTail(runDir)?.text ?? '')
+    ) {
+      const { targets, unattributed } = extractFailedTargets(
+        readLogTail(runDir, 1024 * 1024)?.text ?? '',
+        { cwd: process.cwd() },
+      )
+      const maxTargets = positiveEnv('BOSS_GATE_ISOLATE_MAX_TARGETS', 6)
+      const record = { targets, unattributed, results: [], maxTargets, budgetExhausted: false }
+      if (targets.length > 0 && targets.length <= maxTargets) {
+        const finishIsolationLoad = loadSampler(load, 'isolation', runDir)
+        try {
+          const deadline = Date.now() + positiveEnv('BOSS_GATE_ISOLATE_BUDGET_MS', 1800000)
+          fs.mkdirSync(path.join(runDir, 'isolation'))
+          for (const [index, target] of targets.entries()) {
+            if (wasStopped(runDir) || interruptedSignal) break
+            const remaining = deadline - Date.now()
+            if (remaining <= 0) {
+              record.budgetExhausted = true
+              break
+            }
+            const argv = isolationCommandFor(target, process.env)
+            const log = path.join(runDir, 'isolation', `${index + 1}.log`)
+            const fd = fs.openSync(log, 'a')
+            fs.writeSync(
+              logFd,
+              `gate-run isolation: re-running ${target.label ?? target.file} alone (${index + 1} of ${targets.length})\n`,
+            )
+            try {
+              const result = await runChild(
+                argv,
+                fd,
+                Math.min(remaining, positiveEnv('BOSS_GATE_ISOLATE_TARGET_TIMEOUT_MS', 900000)),
+              )
+              record.results.push({ target, argv, ...result, log })
+              if (Date.now() >= deadline) record.budgetExhausted = true
+            } finally {
+              fs.closeSync(fd)
+            }
+          }
+        } finally {
+          finishIsolationLoad()
+        }
+      }
+      record.decision = decideIsolationVerdict(record)
+      writeFileAtomic(path.join(runDir, 'isolation.json'), JSON.stringify(record))
+    }
+  } catch (err) {
+    fs.writeSync(logFd, `gate-run isolation unavailable: ${err.message}\n`)
+  } finally {
+    try {
+      if (disk) {
+        disk.record.atExit = disk.measure()
+        writeFileAtomic(path.join(runDir, 'disk.json'), JSON.stringify(disk.record))
+      }
+    } catch (error) {
+      fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
+    }
+    fs.closeSync(logFd)
+    writeFileAtomic(path.join(runDir, 'status'), `${original.exit}\n`)
+  }
 }
 
 async function wait(args) {
@@ -299,11 +547,24 @@ async function wait(args) {
       const classification = classifyGateFailure(readLogTail(runDir)?.text ?? '')
       if (classification) {
         emitVerdict(runDir, `${VERDICTS.environmentPrefix}${exitStatus})`, ENV_FAILURE_EXIT_CODE, [
+          renderLoadLine(readJson(runDir, 'load.json')),
           `kind: ${classification.kind}${classification.remedy ? ` - ${classification.remedy}` : ''}`,
+          ...diskEvidenceLines(runDir, classification),
           `log: ${logPath(runDir)}`,
         ])
       }
-      emitVerdict(runDir, `${VERDICTS.failedPrefix}${exitStatus})`, 1, [`log: ${logPath(runDir)}`])
+      const isolation = readJson(runDir, 'isolation.json')
+      const flaky = isolation?.decision === 'flaky-under-load'
+      emitVerdict(
+        runDir,
+        `${flaky ? VERDICTS.flakyPrefix : VERDICTS.failedPrefix}${exitStatus})`,
+        flaky ? FLAKY_EXIT_CODE : 1,
+        [
+          renderIsolationLines(isolation),
+          renderLoadLine(readJson(runDir, 'load.json')),
+          `log: ${logPath(runDir)}`,
+        ],
+      )
     }
 
     const pid = readPid(runDir)
@@ -374,7 +635,12 @@ async function pollForStatus(runDir, childPid, untilMs) {
     const status = readStatus(runDir)
     if (status !== null) return status
     if (Date.now() > untilMs) return null
-    if (Number.isInteger(childPid) && childPid > 0 && !isPidAlive(childPid)) {
+    if (
+      Number.isInteger(childPid) &&
+      childPid > 0 &&
+      !isPidAlive(childPid) &&
+      !isPidAlive(readPid(runDir))
+    ) {
       await new Promise((resolve) => setTimeout(resolve, POLL_MS))
       return readStatus(runDir)
     }
@@ -393,13 +659,19 @@ async function stop(args) {
   if (existing !== null) {
     // Already terminal: change no file (not even `verdict`), report what is there, exit 0. The
     // evidence line is a read of the log, so it stays inside that no-write guarantee.
-    process.stdout.write(
-      `${verdictLineForStatus(existing, wasStopped(runDir))}\n${evidenceLine(runDir)}\n`,
-    )
+    const stopped = wasStopped(runDir)
+    const flaky =
+      existing !== 0 &&
+      !stopped &&
+      readJson(runDir, 'isolation.json')?.decision === 'flaky-under-load'
+    const firstLine = flaky
+      ? `${VERDICTS.flakyPrefix}${existing})`
+      : verdictLineForStatus(existing, stopped)
+    process.stdout.write(`${firstLine}\n${evidenceLine(runDir)}\n`)
     process.exit(0)
   }
 
-  const childPid = readChildPid(runDir)
+  let childPid = readChildPid(runDir)
   const stopExtras = () => [`log: ${logPath(runDir)}`]
 
   // Mark the teardown before anything is signalled, so every status this stop provokes - whether
@@ -411,6 +683,7 @@ async function stop(args) {
     process.exit(1)
   }
 
+  childPid = readChildPid(runDir)
   signalChildGroup(childPid, 'SIGTERM')
   const termStatus = await pollForStatus(runDir, childPid, Date.now() + STOP_TERM_GRACE_MS)
   if (termStatus !== null)
@@ -421,6 +694,7 @@ async function stop(args) {
   // holding the worktree/bazel lock while the run dir now reads terminal, hiding it from the very
   // caller that asked for it to be reclaimed. SIGKILL is uncatchable, so confirming death after it
   // is what makes "the held lock is released" a true statement rather than a hopeful one.
+  childPid = readChildPid(runDir)
   signalChildGroup(childPid, 'SIGKILL')
   const killStatus = await pollForStatus(runDir, childPid, Date.now() + STOP_KILL_GRACE_MS)
   if (killStatus !== null)
@@ -448,7 +722,7 @@ async function stop(args) {
 if (isMainModule(import.meta.url)) {
   const [subcommand, ...args] = process.argv.slice(2)
   if (subcommand === 'start') start(args)
-  else if (subcommand === 'supervise') supervise(args)
+  else if (subcommand === 'supervise') await supervise(args)
   else if (subcommand === 'wait') await wait(args)
   else if (subcommand === 'stop') await stop(args)
   else usage()

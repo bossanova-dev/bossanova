@@ -2,8 +2,11 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { parseArgs } from 'node:util'
 
 import { isMainModule } from './main-module.mjs'
+
+export const SELECTOR_USAGE_ERROR = 'plan-attachment: selector usage-error'
 
 // A usage error means NO request was sent. That is a different fact from a request the server
 // rejected, and the two have opposite remedies: correct the call versus re-prepare and retry.
@@ -54,6 +57,11 @@ function matchesImplementationPlanAttachment(attachment, issueID, { mode }) {
  * newest Markdown attachment titled like a plan, then the newest attachment titled like a plan.
  */
 export function selectImplementationPlanAttachment(attachments, issueID) {
+  if (issueID != null && typeof issueID !== 'string') {
+    throw new TypeError(
+      `${SELECTOR_USAGE_ERROR}: selectImplementationPlanAttachment(attachments, issueID): issueID must be a string, undefined or null`,
+    )
+  }
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : []
   const exact = list.filter((attachment) =>
     matchesImplementationPlanAttachment(attachment, issueID, { mode: 'exact' }),
@@ -174,11 +182,37 @@ function buildSourceCli(issueFile, planOut) {
  * @param {{issueID: string, keepAttachmentId: string, keepJustFinalized?: boolean}} options
  * @returns {string[]} attachment ids safe to delete
  */
-export function selectSupersededPlanAttachments(
-  attachments,
-  { issueID, keepAttachmentId, keepJustFinalized = false },
-) {
-  const list = Array.isArray(attachments) ? attachments.filter(Boolean) : []
+export function selectSupersededPlanAttachments(attachments, options) {
+  const signature =
+    'selectSupersededPlanAttachments(attachments, { issueID, keepAttachmentId, keepJustFinalized })'
+  const invalid = (detail) => {
+    throw new TypeError(`${SELECTOR_USAGE_ERROR}: ${signature}: ${detail}`)
+  }
+  if (!Array.isArray(attachments))
+    invalid('the attachment list is the first positional argument and must be an array')
+  if (
+    !options ||
+    (Object.getPrototypeOf(options) !== Object.prototype && Object.getPrototypeOf(options) !== null)
+  ) {
+    invalid('the second argument must be a plain options object')
+  }
+  const allowed = ['issueID', 'keepAttachmentId', 'keepJustFinalized']
+  for (const key of Object.keys(options)) {
+    if (allowed.includes(key)) continue
+    const correct = allowed.find((name) => name.toLowerCase() === key.toLowerCase())
+    invalid(
+      `unknown option "${key}"${correct ? ` — the key is ${correct}` : ''}; allowed keys: ${allowed.join(', ')}`,
+    )
+  }
+  for (const key of ['issueID', 'keepAttachmentId']) {
+    if (typeof options[key] !== 'string' || !options[key].trim())
+      invalid(`${key} must be a non-empty string`)
+  }
+  if ('keepJustFinalized' in options && typeof options.keepJustFinalized !== 'boolean') {
+    invalid('keepJustFinalized must be a boolean')
+  }
+  const { issueID, keepAttachmentId, keepJustFinalized = false } = options
+  const list = attachments.filter(Boolean)
   const keep = list.find((attachment) => attachment.id === keepAttachmentId)
   if (!keep) return []
   const candidates = list.filter(
@@ -407,7 +441,8 @@ if (isMainModule(import.meta.url)) {
     'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
     '       plan-attachment.mjs verify <local-file> <signed-url>\n' +
     '       plan-attachment.mjs decode <in-file> <out-file>\n' +
-    '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n'
+    '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n' +
+    '       plan-attachment.mjs supersede <attachments-json-file> --issue <ISSUE-ID> --keep <attachment-id> [--just-finalized]\n'
   // Every usage exit prints the token FIRST, so `head -1` separates "no request was sent" from a
   // rejected one without parsing the rest. The retry branch documented in plan-storage.md is
   // scoped to the latter; re-preparing a signed URL cannot fix a call that never made a request.
@@ -460,6 +495,62 @@ if (isMainModule(import.meta.url)) {
       } catch (error) {
         process.stderr.write(`${error.message}\n`)
         process.exitCode = 1
+      }
+    }
+  } else if (command === 'supersede') {
+    let parsed
+    try {
+      parsed = parseArgs({
+        args,
+        strict: true,
+        allowPositionals: true,
+        options: {
+          issue: { type: 'string' },
+          keep: { type: 'string' },
+          'just-finalized': { type: 'boolean', default: false },
+        },
+      })
+      if (
+        parsed.positionals.length !== 1 ||
+        !parsed.values.issue?.trim() ||
+        !parsed.values.keep?.trim()
+      ) {
+        usageExit()
+        parsed = null
+      }
+    } catch {
+      usageExit()
+    }
+    if (parsed) {
+      try {
+        const payload = JSON.parse(readFileSync(parsed.positionals[0], 'utf8'))
+        const attachments = payload?.attachments ?? payload
+        const list = Array.isArray(attachments) ? attachments : attachments?.nodes
+        const issueID = parsed.values.issue
+        const keepAttachmentId = parsed.values.keep
+        const selected = selectSupersededPlanAttachments(list, {
+          issueID,
+          keepAttachmentId,
+          keepJustFinalized: parsed.values['just-finalized'],
+        })
+        const outcome = list.some((attachment) => attachment?.id === keepAttachmentId)
+          ? 'supersede-selected'
+          : 'keep-not-listed'
+        const supersede = selected.map((id) => {
+          const attachment = list.find((row) => row?.id === id)
+          return { id, title: attachment.title }
+        })
+        process.stdout.write(
+          `${JSON.stringify({ outcome, issueID, keepAttachmentId, supersede })}\n`,
+        )
+      } catch (error) {
+        if (error instanceof TypeError && error.message.startsWith(SELECTOR_USAGE_ERROR)) {
+          usageExit()
+          process.stderr.write(`${error.message}\n`)
+        } else {
+          process.stderr.write(`${error.message}\n`)
+          process.exitCode = 1
+        }
       }
     }
   } else if (command === 'build-source') {

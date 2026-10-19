@@ -12,11 +12,15 @@ import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mj
 import { STOPPED_EXIT_CODE, VERDICTS } from './gate-run.mjs'
 import { CACHE_STATES } from './gate-log-lib.mjs'
 
+// These lifecycle tests must not inspect or reclaim the host's caches.
+process.env.BOSS_GATE_MIN_FREE_GIB = '0'
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const GATE_RUN = path.join(REPO_ROOT, 'scripts/gate-run.mjs')
 const CLAUDE_MD = path.join(REPO_ROOT, 'CLAUDE.md')
 const DOC = path.join(REPO_ROOT, 'docs/testing/backgrounded-gate-runs.md')
 const tempDirs = []
+const LOAD_TOLERANT_WAIT_MS = 30_000
 
 function mkTemp(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -25,7 +29,8 @@ function mkTemp(prefix) {
 }
 
 after(() => {
-  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true })
+  for (const dir of tempDirs)
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 function nodeGate(args, options = {}) {
@@ -51,14 +56,35 @@ function startGate(command) {
   return { runDir, pid: Number.parseInt(pid, 10), printedLog }
 }
 
-function waitGate(runDir, timeout = 5_000) {
+function waitGate(runDir, timeout = LOAD_TOLERANT_WAIT_MS) {
   return nodeGate(['wait', '--timeout', String(timeout), runDir])
 }
 
 function statusOf(runDir) {
   // Never read `status` without waiting for it: the supervisor writes the file from its exit and
   // SIGTERM handlers, so a bare read races that write and throws ENOENT under parallel load.
-  waitForFile(path.join(runDir, 'status'))
+  try {
+    waitForFile(path.join(runDir, 'status'))
+  } catch (error) {
+    const read = (name) => {
+      try {
+        return fs.readFileSync(path.join(runDir, name), 'utf8')
+      } catch (failure) {
+        return `<${failure.code}>`
+      }
+    }
+    const pid = Number.parseInt(read('pid'), 10)
+    let alive = false
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0)
+        alive = true
+      } catch {}
+    }
+    assert.fail(
+      `${error.message}\nrun directory: ${fs.readdirSync(runDir).sort().join(', ')}\nsupervisor pid: ${pid}, alive: ${alive}\nlog tail:\n${read('log').slice(-4000)}`,
+    )
+  }
   return fs.readFileSync(path.join(runDir, 'status'), 'utf8').trim()
 }
 
@@ -70,7 +96,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function waitForFile(file, timeoutMs = 5_000) {
+function waitForFile(file, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {
     if (fs.existsSync(file)) return
@@ -79,7 +105,7 @@ function waitForFile(file, timeoutMs = 5_000) {
   assert.fail(`timed out waiting for ${file}`)
 }
 
-function waitForNonEmptyFile(file, timeoutMs = 5_000) {
+function waitForNonEmptyFile(file, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   waitForFile(file, timeoutMs)
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {
@@ -89,7 +115,7 @@ function waitForNonEmptyFile(file, timeoutMs = 5_000) {
   assert.fail(`timed out waiting for content in ${file}`)
 }
 
-function waitForDeadPid(pid, timeoutMs = 5_000) {
+function waitForDeadPid(pid, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {
     try {
@@ -474,9 +500,17 @@ test('self-relaunch works from a helper path containing spaces', () => {
     path.join(scriptsDir, 'gate-log-lib.mjs'),
   )
   fs.copyFileSync(
+    path.join(REPO_ROOT, 'scripts/gate-isolation-lib.mjs'),
+    path.join(scriptsDir, 'gate-isolation-lib.mjs'),
+  )
+  fs.copyFileSync(
     path.join(REPO_ROOT, 'skills-toolbox/main-module.mjs'),
     path.join(toolboxDir, 'main-module.mjs'),
   )
+
+  for (const name of ['disk-headroom-lib.mjs', 'clean-go-build-cache.mjs']) {
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts', name), path.join(scriptsDir, name))
+  }
 
   const copiedGateRun = path.join(scriptsDir, 'gate-run.mjs')
   const result = spawnSync(

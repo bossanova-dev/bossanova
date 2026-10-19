@@ -98,26 +98,119 @@ func TestCron_SettingsC_OpensList(t *testing.T) {
 	}
 }
 
-// advanceCronFormField sends an Enter key and waits for the form to settle
-// before continuing. huh renders all fields simultaneously, so naively waiting
-// for the next field's heading is unreliable (it is visible even when a prior
-// field is still focused). A short sleep after each advance prevents the next
-// SendString from landing in the wrong field.
+// focusedCronField returns the first row of the focused form field: its title,
+// or its buttons for the untitled save confirm, without huh's " *" error mark.
+// huh draws the focused field behind the thick gutter (views.fieldGutter) and
+// every blurred one behind a blank gutter of the same width. "" means no field
+// has focus: the form is still loading, has completed, or the frame is torn.
+func focusedCronField(screen string) string {
+	for _, line := range strings.Split(screen, "\n") {
+		if _, rest, ok := strings.Cut(line, "┃"); ok {
+			return strings.TrimSuffix(strings.TrimSpace(rest), " *")
+		}
+	}
+	return ""
+}
+
+// openCronForm presses key on the cron list and waits for the form titled
+// title to finish loading with focus on Name. Until repos and agents load, the
+// form shows "Loading…", draws no field, and drops every key but Esc, so keys
+// typed before Name has focus can be lost.
+func openCronForm(t *testing.T, h *tuitest.Harness, key byte, title string) {
+	t.Helper()
+	if err := h.Driver.SendKey(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, title) && focusedCronField(screen) == "Name"
+	}); err != nil {
+		t.Fatalf("expected %q loaded with focus on Name; screen:\n%s", title, h.Driver.Screen())
+	}
+}
+
+// waitForAnyFocusedCronField waits until some form field has focus and
+// returns it.
+func waitForAnyFocusedCronField(t *testing.T, h *tuitest.Harness) string {
+	t.Helper()
+	var focused string
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		focused = focusedCronField(screen)
+		return focused != ""
+	}); err != nil {
+		t.Fatalf("no cron form field has focus; screen:\n%s", h.Driver.Screen())
+	}
+	return focused
+}
+
+// advanceCronFormField sends Enter and waits until another field has focus.
+// huh moves focus in a command that runs after the key, so a key sent before
+// the screen shows the move lands in the field being left.
 func advanceCronFormField(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
+	advanceCronForm(t, h, h.Driver.SendEnter)
+}
+
+// advanceCronFormPrompt is advanceCronFormField for the Prompt text area,
+// where Enter types a newline and Tab advances.
+func advanceCronFormPrompt(t *testing.T, h *tuitest.Harness) {
+	t.Helper()
+	advanceCronForm(t, h, func() error { return h.Driver.SendKey('\t') })
+}
+
+func advanceCronForm(t *testing.T, h *tuitest.Harness, send func() error) {
+	t.Helper()
+	from := waitForAnyFocusedCronField(t, h)
+	if err := send(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		to := focusedCronField(screen)
+		return to != "" && to != from
+	}); err != nil {
+		t.Fatalf("focus did not move from %q to another field; screen:\n%s", from, h.Driver.Screen())
+	}
+}
+
+// submitCronForm presses Enter on the focused save confirm and waits for the
+// completed form to stop drawing fields.
+func submitCronForm(t *testing.T, h *tuitest.Harness, confirm string) {
+	t.Helper()
+	if from := waitForAnyFocusedCronField(t, h); !strings.Contains(from, confirm) {
+		t.Fatalf("expected focus on the %q confirm, got %q; screen:\n%s", confirm, from, h.Driver.Screen())
+	}
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return focusedCronField(screen) == ""
+	}); err != nil {
+		t.Fatalf("form still has a focused field after submit; screen:\n%s", h.Driver.Screen())
+	}
 }
 
-// advanceCronFormPrompt sends a Tab key (huh text-area advance) and waits.
-func advanceCronFormPrompt(t *testing.T, h *tuitest.Harness) {
+// rejectCronFormField sends a key that tries to leave a field whose value fails
+// validation, and waits for huh's error with focus kept on the field.
+func rejectCronFormField(t *testing.T, h *tuitest.Harness, send func() error, wantErr string) {
 	t.Helper()
-	if err := h.Driver.SendKey('\t'); err != nil {
+	from := waitForAnyFocusedCronField(t, h)
+	if err := send(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, wantErr) && focusedCronField(screen) == from
+	}); err != nil {
+		t.Fatalf("expected %q with focus kept on %q; screen:\n%s", wantErr, from, h.Driver.Screen())
+	}
+}
+
+// waitForFocusedCronField waits until the field titled title has focus.
+func waitForFocusedCronField(t *testing.T, h *tuitest.Harness, title string) {
+	t.Helper()
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return focusedCronField(screen) == title
+	}); err != nil {
+		t.Fatalf("field %q never took focus; screen:\n%s", title, h.Driver.Screen())
+	}
 }
 
 // TestCron_NewForm_LivePreview verifies that the form shows a live "Next fire:"
@@ -135,20 +228,7 @@ func TestCron_NewForm_LivePreview(t *testing.T) {
 
 	navigateToCronList(t, h)
 
-	// Open the new cron job form.
-	if err := h.Driver.SendKey('n'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-		t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-	}
-
-	// Wait for repos to load so the form is interactive.
-	if err := h.Driver.WaitForText(waitTimeout, "Name"); err != nil {
-		t.Fatalf("expected Name field; screen:\n%s", h.Driver.Screen())
-	}
-	// huh renders all fields at once; we must pause after each advance so that
-	// the next keystroke lands in the correct (newly-focused) field.
+	openCronForm(t, h, 'n', "New Scheduled Job")
 
 	// Field 1: Name.
 	if err := h.Driver.SendString("My Test Job"); err != nil {
@@ -192,18 +272,7 @@ func TestCron_FormValidation(t *testing.T) {
 
 		navigateToCronList(t, h)
 
-		// Open new cron form.
-		if err := h.Driver.SendKey('n'); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-			t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-		}
-
-		// Wait for Name field.
-		if err := h.Driver.WaitForText(waitTimeout, "Name"); err != nil {
-			t.Fatalf("expected Name field; screen:\n%s", h.Driver.Screen())
-		}
+		openCronForm(t, h, 'n', "New Scheduled Job")
 
 		// Field 1: Name.
 		if err := h.Driver.SendString("Bad Schedule Test"); err != nil {
@@ -223,19 +292,11 @@ func TestCron_FormValidation(t *testing.T) {
 		}
 		advanceCronFormPrompt(t, h)
 
-		// Field 4: Schedule — type an invalid expression and try to advance.
+		// Field 4: Schedule — type an invalid expression; huh rejects the advance.
 		if err := h.Driver.SendString("not-a-valid-cron"); err != nil {
 			t.Fatal(err)
 		}
-		// Try to advance past — huh should reject and show a validation error.
-		advanceCronFormField(t, h)
-
-		// Validation error should appear; "New Scheduled Job" should still be visible.
-		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-			return strings.Contains(screen, "New Scheduled Job")
-		}); err != nil {
-			t.Fatalf("expected to stay on form after bad schedule; screen:\n%s", h.Driver.Screen())
-		}
+		rejectCronFormField(t, h, h.Driver.SendEnter, `parse cron schedule "not-a-valid-cron"`)
 
 		// No CreateCronJob call should have been made.
 		if n := h.Daemon.CreateCronJobCallCount(); n != 0 {
@@ -250,16 +311,7 @@ func TestCron_FormValidation(t *testing.T) {
 
 		navigateToCronList(t, h)
 
-		// Open new cron form.
-		if err := h.Driver.SendKey('n'); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-			t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-		}
-		if err := h.Driver.WaitForText(waitTimeout, "Name"); err != nil {
-			t.Fatalf("expected Name field; screen:\n%s", h.Driver.Screen())
-		}
+		openCronForm(t, h, 'n', "New Scheduled Job")
 
 		// Field 1: Name.
 		if err := h.Driver.SendString("TZ Test Job"); err != nil {
@@ -285,18 +337,11 @@ func TestCron_FormValidation(t *testing.T) {
 		}
 		advanceCronFormField(t, h)
 
-		// Field 5: Timezone — type an invalid timezone and try to advance.
+		// Field 5: Timezone — type an invalid timezone; huh rejects the advance.
 		if err := h.Driver.SendString("Not/A/Zone"); err != nil {
 			t.Fatal(err)
 		}
-		advanceCronFormField(t, h)
-
-		// Form should remain open; "New Scheduled Job" should still be visible.
-		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-			return strings.Contains(screen, "New Scheduled Job")
-		}); err != nil {
-			t.Fatalf("expected to stay on form after bad timezone; screen:\n%s", h.Driver.Screen())
-		}
+		rejectCronFormField(t, h, h.Driver.SendEnter, `load timezone "Not/A/Zone"`)
 
 		// No CreateCronJob call should have been made.
 		if n := h.Daemon.CreateCronJobCallCount(); n != 0 {
@@ -311,16 +356,7 @@ func TestCron_FormValidation(t *testing.T) {
 
 		navigateToCronList(t, h)
 
-		// Open new cron form.
-		if err := h.Driver.SendKey('n'); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-			t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-		}
-		if err := h.Driver.WaitForText(waitTimeout, "Name"); err != nil {
-			t.Fatalf("expected Name field; screen:\n%s", h.Driver.Screen())
-		}
+		openCronForm(t, h, 'n', "New Scheduled Job")
 
 		// Field 1: Name.
 		if err := h.Driver.SendString("Empty Prompt Test"); err != nil {
@@ -334,28 +370,8 @@ func TestCron_FormValidation(t *testing.T) {
 		// Field 3: Model — free-text; leave blank and advance with Enter.
 		advanceCronFormField(t, h)
 
-		// Field 4: Prompt — leave empty; advance with Tab (empty prompt should fail validation).
-		advanceCronFormPrompt(t, h)
-
-		// Field 4: Schedule — valid expression.
-		if err := h.Driver.SendString("@daily"); err != nil {
-			t.Fatal(err)
-		}
-		advanceCronFormField(t, h)
-
-		// Field 5: Timezone — leave empty; advance.
-		advanceCronFormField(t, h)
-
-		// Field 6: Enabled — try to submit.
-		advanceCronFormField(t, h)
-
-		// Form should not have submitted — CreateCronJob must not be called.
-		// Give the TUI a moment to process any submit attempt.
-		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-			return strings.Contains(screen, "New Scheduled Job")
-		}); err != nil {
-			t.Fatalf("expected to stay on form with empty prompt; screen:\n%s", h.Driver.Screen())
-		}
+		// Field 4: Prompt — leave empty; huh rejects the Tab advance.
+		rejectCronFormField(t, h, func() error { return h.Driver.SendKey('\t') }, "prompt is required")
 
 		if n := h.Daemon.CreateCronJobCallCount(); n != 0 {
 			t.Fatalf("CreateCronJob called %d times with empty prompt, want 0", n)
@@ -375,16 +391,7 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 
 	navigateToCronList(t, h)
 
-	// Open new cron form.
-	if err := h.Driver.SendKey('n'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-		t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Name"); err != nil {
-		t.Fatalf("expected Name field; screen:\n%s", h.Driver.Screen())
-	}
+	openCronForm(t, h, 'n', "New Scheduled Job")
 
 	// Field 1: Name.
 	if err := h.Driver.SendString("Roundtrip Job"); err != nil {
@@ -431,7 +438,7 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	advanceCronFormField(t, h)
 
 	// Field 11: Save confirm — "Add Scheduled Job" is highlighted; submit.
-	advanceCronFormField(t, h)
+	submitCronForm(t, h, "Add Scheduled Job")
 
 	// After submit, the form completes and we return to the cron list.
 	// Wait for the CreateCronJob RPC to be received.
@@ -469,15 +476,7 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 
 	navigateToCronList(t, h)
 
-	if err := h.Driver.SendKey('n'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
-		t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Agent"); err != nil {
-		t.Fatalf("expected Agent field; screen:\n%s", h.Driver.Screen())
-	}
+	openCronForm(t, h, 'n', "New Scheduled Job")
 
 	if err := h.Driver.SendString("Agent Roundtrip Job"); err != nil {
 		t.Fatal(err)
@@ -488,11 +487,14 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	advanceCronFormField(t, h)
 
 	// Agent — default is daemon default; move past claude to opencode and select it.
-	if err := h.Driver.SendKey('j'); err != nil {
+	waitForFocusedCronField(t, h, "Agent")
+	if err := h.Driver.SendString("jj"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('j'); err != nil {
-		t.Fatal(err)
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(lineWithText(screen, "opencode"), "❯")
+	}); err != nil {
+		t.Fatalf("opencode never took the Agent cursor; screen:\n%s", h.Driver.Screen())
 	}
 	advanceCronFormField(t, h)
 
@@ -514,7 +516,7 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	advanceCronFormField(t, h) // Run setup command
 	advanceCronFormField(t, h) // Zero output
 	advanceCronFormField(t, h) // Enabled toggle
-	advanceCronFormField(t, h) // Save confirm — "Add Scheduled Job"
+	submitCronForm(t, h, "Add Scheduled Job")
 
 	if err := h.Driver.WaitFor(waitTimeout, func(_ string) bool {
 		return h.Daemon.CreateCronJobCallCount() >= 1
@@ -547,18 +549,12 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	// Wait for the list to be populated (a job is selected).
 	waitForCronListPopulated(t, h)
 
-	// Press 'e' to edit the selected job.
-	if err := h.Driver.SendKey('e'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Edit Scheduled Job"); err != nil {
-		t.Fatalf("expected edit form; screen:\n%s", h.Driver.Screen())
-	}
-
-	// The Name field should be pre-populated with "Daily update".
-	if err := h.Driver.WaitForText(waitTimeout, "Daily update"); err != nil {
-		t.Fatalf("expected pre-populated name in form; screen:\n%s", h.Driver.Screen())
-	}
+	// Hold the agent list back so the form sits on "Loading…", with the job's
+	// name already in its title, for longer than it takes to type. Keys sent
+	// before the form loads are dropped, so the edit below only lands if
+	// openCronForm waits for the loaded form.
+	h.Daemon.SetRPCStallFor("ListAgents", 500*time.Millisecond)
+	openCronForm(t, h, 'e', "Edit Scheduled Job")
 
 	// Clear the name field and type a new name.
 	// Ctrl+A moves cursor to start, then Ctrl+K kills to end-of-line, clearing
@@ -571,6 +567,9 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	}
 	if err := h.Driver.SendString("Weekly update"); err != nil {
 		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "┃ > Weekly update"); err != nil {
+		t.Fatalf("expected the new name in the Name input; screen:\n%s", h.Driver.Screen())
 	}
 	advanceCronFormField(t, h)
 
@@ -605,7 +604,7 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	advanceCronFormField(t, h)
 
 	// Field 11: Save confirm — "Update Scheduled Job" is highlighted; submit.
-	advanceCronFormField(t, h)
+	submitCronForm(t, h, "Update Scheduled Job")
 
 	// Wait for list to reappear.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
@@ -704,14 +703,9 @@ func TestCron_EditHighlightsEditedRow(t *testing.T) {
 		t.Fatalf("expected caret on Bravo row before edit; screen:\n%s", h.Driver.Screen())
 	}
 
-	if err := h.Driver.SendKey('e'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Edit Scheduled Job"); err != nil {
-		t.Fatalf("expected edit form; screen:\n%s", h.Driver.Screen())
-	}
-	// The form should be pre-populated with the second job's name.
-	if err := h.Driver.WaitForText(waitTimeout, "Bravo job"); err != nil {
+	openCronForm(t, h, 'e', "Edit Scheduled Job")
+	// The focused Name input is pre-populated with the second job's name.
+	if err := h.Driver.WaitForText(waitTimeout, "┃ > Bravo job"); err != nil {
 		t.Fatalf("expected pre-populated Bravo name; screen:\n%s", h.Driver.Screen())
 	}
 
@@ -737,7 +731,7 @@ func TestCron_EditHighlightsEditedRow(t *testing.T) {
 	advanceCronFormField(t, h)  // Run setup command
 	advanceCronFormField(t, h)  // Zero output
 	advanceCronFormField(t, h)  // Enabled toggle
-	advanceCronFormField(t, h)  // Save confirm — "Update Scheduled Job"
+	submitCronForm(t, h, "Update Scheduled Job")
 
 	// Wait for the list to reappear with the renamed row.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {

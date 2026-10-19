@@ -4,6 +4,7 @@ bin/
 !.claude/skills/verify/bin/
 !.codex/skills/verify/bin/
 .generate.stamp
+*.gen-tmp
 *.exe
 *.test
 *.out

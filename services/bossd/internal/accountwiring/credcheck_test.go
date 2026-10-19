@@ -1686,7 +1686,7 @@ func codexPluginNonExecutionSource(t *testing.T) string {
 // this one reads the plugin's SOURCE and compares it to the host's literals.
 //
 // Reading a source file is not a module dependency: nothing here imports the
-// plugin. The precedent is lib/bossalib/productparity, which gates copy drift
+// plugin. The precedent is services/bosso/internal/productparity, which gates copy drift
 // across four modules the same way.
 func TestRunnerUnavailableMarkersMatchPluginSource(t *testing.T) {
 	path := codexPluginNonExecutionSource(t)

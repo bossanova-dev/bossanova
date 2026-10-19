@@ -361,6 +361,55 @@ func TestHomeDirectMergeResultLeavesAnUndismissedFailure(t *testing.T) {
 	}
 }
 
+// TestHomeOngoingLineLeavesAnUndismissedFailure covers a merge that ends
+// unanswered after a rename on another row failed: the waiting line would hide
+// the failure until the merge settled, so the failure stays.
+func TestHomeOngoingLineLeavesAnUndismissedFailure(t *testing.T) {
+	timers := captureStatusTimers(t)
+	h, merge := homeMergeRunning(t, &attentionStub{mergeErr: noAnswerErrors["client deadline"]})
+	failed := connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))
+	h = homeStatusUpdate(t, h, sessionRenamedMsg{err: failed})
+
+	h = homeStatusUpdate(t, h, merge())
+	if !h.statusErr() || !strings.Contains(homeScreen(h), "Rename failed") || strings.Contains(homeScreen(h), "Waiting to hear") {
+		t.Fatalf("status %q after the merge went unanswered, want the rename failure kept:\n%s", h.status, homeScreen(h))
+	}
+	if len(timers.fired) != 0 || !h.isMerging("session-1") {
+		t.Fatalf("%d expiries, merging %v; want no timer and the row still merging", len(timers.fired), h.isMerging("session-1"))
+	}
+}
+
+// TestHomeDismissedFailureBringsBackTheMergeLine covers a failure dismissed
+// while a merge is unresolved: the line the failure held back comes back, so
+// the row that reads merging is not left beside an empty status line.
+func TestHomeDismissedFailureBringsBackTheMergeLine(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		answer     func(HomeModel, tea.Cmd) HomeModel
+	}{
+		{"unanswered", "Waiting to hear whether PR #42 merged", func(h HomeModel, merge tea.Cmd) HomeModel {
+			return homeStatusUpdate(t, h, merge())
+		}},
+		{"still running", "Merging PR #42…", func(h HomeModel, _ tea.Cmd) HomeModel { return h }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			timers := captureStatusTimers(t)
+			h, merge := homeMergeRunning(t, &attentionStub{mergeErr: noAnswerErrors["client deadline"]})
+			failed := connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))
+			h = homeStatusUpdate(t, h, sessionRenamedMsg{err: failed})
+			h = tc.answer(h, merge)
+
+			h = homeStatusUpdate(t, h, keyPress('d'))
+			if h.status != tc.line || h.statusKind != statusOngoing || !strings.Contains(homeScreen(h), tc.line) {
+				t.Fatalf("status %q (kind %d) after d, want the merge's line %q back:\n%s", h.status, h.statusKind, tc.line, homeScreen(h))
+			}
+			if len(timers.fired) != 0 || !h.isMerging("session-1") {
+				t.Fatalf("%d expiries, merging %v; want no timer and the row still merging", len(timers.fired), h.isMerging("session-1"))
+			}
+		})
+	}
+}
+
 // TestHomeDismissesAFailureOnD covers Home's own keymap: Home frees d from the
 // table's half-page binding, so on Home d is not navigation and dismisses a
 // failure. Reading the table's default keymap instead would keep the failure.

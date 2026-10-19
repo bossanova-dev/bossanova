@@ -1179,12 +1179,15 @@ func TestCronFormView_PromptGrowsWithContent(t *testing.T) {
 			grown, m.View().Content)
 	}
 
-	for i := 0; i < 40; i++ {
+	// The value grows to one line past the cap, the fewest lines an uncapped
+	// box would show more of.
+	const typedLines = 3
+	for range bossTextMaxLines + 1 - typedLines {
 		m = sendCronKey(t, m, cronPromptNewline)
 	}
 	if got := cronPromptRows(t, m.View().Content); got != bossTextMaxLines {
-		t.Fatalf("prompt renders %d rows for a 40-line value, want the %d-row cap; view:\n%s",
-			got, bossTextMaxLines, m.View().Content)
+		t.Fatalf("prompt renders %d rows for a %d-line value, want the %d-row cap; view:\n%s",
+			got, bossTextMaxLines+1, bossTextMaxLines, m.View().Content)
 	}
 }
 

@@ -348,8 +348,9 @@ deps:
 # (scripts/write-worktree-env.mjs). Everything else stays in the checkout: an agent session
 # inherits the worktree .env, so only keys agents actually need belong here. Dev-daemon keys
 # (BOSS_SETTINGS_PATH, BOSS_KEYRING_BACKEND, BOSS_WEB_PORT, BOSS_CLOUD_URL,
-# BOSSD_ORCHESTRATOR_URL) are deliberately absent (BOS-1512).
-WORKTREE_ENV_KEYS := LINEAR_API_KEY,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID,BOSSO_TEST_DATABASE_URL,BOSS_PROOF_R2_BUCKET,BOSS_PROOF_PUBLIC_BASE_URL,BOSS_PROOF_HW_ENCODE,CC
+# BOSSD_ORCHESTRATOR_URL) are deliberately absent (BOS-1512). Database URLs are
+# absent too: each worktree provisions its own test server unless explicitly exported.
+WORKTREE_ENV_KEYS := LINEAR_API_KEY,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID,BOSS_PROOF_R2_BUCKET,BOSS_PROOF_PUBLIC_BASE_URL,BOSS_PROOF_HW_ENCODE,CC
 
 ## setup-worktree: Write the WORKTREE_ENV_KEYS subset of .env and copy gitignored local files (.node-version, .bazelrc.user, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
@@ -449,7 +450,7 @@ ifneq ($(wildcard services/web/package.json),)
 GEN_DEPS += $(WEB_DEPS_STAMP)
 endif
 
-# Check before deleting generated output; preserve Gazelle metadata in the Go tree.
+# Stage generation and formatting, then sync changed files with atomic replacement.
 # An absent pin uses committed output and leaves the stamp untouched.
 $(GEN_STAMP): $(GEN_DEPS)
 	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
@@ -459,13 +460,13 @@ $(GEN_STAMP): $(GEN_DEPS)
 		*) exit $$result ;; \
 	esac; \
 	set -e; \
-	find lib/bossalib/gen -type f ! -name 'BUILD.bazel' -delete 2>/dev/null || true; \
-	find services/web/src/gen -type f -name '*_pb.ts' -delete 2>/dev/null || true; \
-	"$(BUF)" generate; \
-	changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
-	if [ -n "$$changed_go" ]; then \
-		printf '%s\n' "$$changed_go" | xargs go tool goimports -w; \
-	fi; \
+	stage=$$(mktemp -d "$${TMPDIR:-/tmp}/bossanova-gen.XXXXXX"); \
+	trap 'rm -rf "$$stage"' EXIT; \
+	"$(BUF)" generate -o "$$stage"; \
+	find "$$stage/lib/bossalib/gen" -name '*.go' -print0 | xargs -0 go tool goimports -w; \
+	node scripts/sync-generated-tree.mjs --from "$$stage/lib/bossalib/gen" --to lib/bossalib/gen --prune '**/*.go'; \
+	node scripts/sync-generated-tree.mjs --from "$$stage/services/web/src/gen" --to services/web/src/gen --prune '**/*_pb.ts'; \
+	node scripts/sync-generated-tree.mjs --from "$$stage/services/docs/openapi" --to services/docs/openapi; \
 	touch $(GEN_STAMP)
 
 ## build: Build service binaries (generates protos first if needed)
@@ -757,110 +758,71 @@ else
 	@node scripts/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif
 
-# BOS-1081: local Postgres for the bosso apply-time migration suites. Both are
-# overridable, so a developer who already runs a server can skip the container
-# entirely: `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...`.
-# The image matches the `postgres:16` service container the CI jobs pin.
-BOSSO_TEST_PG_CONTAINER ?= bossanova-test-postgres
-BOSSO_TEST_PG_PORT ?= 5432
-# Bound the readiness wait so a dead Docker or a container that crashes on boot
-# fails the target instead of hanging a developer's terminal forever.
+# A worktree owns its test container and volume. Supplied URLs remain external:
+# they are probed but never started, recreated or removed by this helper.
 BOSSO_TEST_PG_WAIT_SECONDS ?= 60
-BOSSO_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:$(BOSSO_TEST_PG_PORT)/bosso_test?sslmode=disable
+TEST_POSTGRES = node scripts/test-postgres.mjs
+TEST_POSTGRES_OPTIONS = $(if $(BOSSO_TEST_PG_CONTAINER),--name '$(BOSSO_TEST_PG_CONTAINER)',) $(if $(BOSSO_TEST_PG_PORT),--port '$(BOSSO_TEST_PG_PORT)',) --wait-seconds '$(BOSSO_TEST_PG_WAIT_SECONDS)'
 
-# Boot the throwaway container ONLY when the URL above is this file's own
-# default. `?=` leaves an inherited value alone, so `origin` separates the two
-# cases exactly: `file` means nobody supplied a server and one has to be
-# started; `environment` or `command line` means the developer already runs one.
-# Without this split the documented "point it at your own server" invocation --
-# `make test-bosso-postgres BOSSO_TEST_DATABASE_URL=postgres://...`, advertised
-# by this target's own help text and by docs/testing/test-command-manifest.md --
-# still shells out to docker and fails outright on a machine that has none.
-ifeq ($(origin BOSSO_TEST_DATABASE_URL),file)
-BOSSO_TEST_PG_PREREQS := postgres-test-up
+# Undefined means no server was supplied. Recipe-time capture keeps the selected
+# port out of make's parse phase and passes it into the gate-cache fingerprint.
+ifeq ($(filter undefined file,$(origin BOSSO_TEST_DATABASE_URL)),)
+BOSSO_TEST_PG_URL = $(BOSSO_TEST_DATABASE_URL)
 else
-BOSSO_TEST_PG_PREREQS :=
+BOSSO_TEST_PG_URL =
+endif
+ifeq ($(filter undefined file,$(origin WAREHOUSE_TEST_ADMIN_URL)),)
+WAREHOUSE_TEST_PG_URL = $(WAREHOUSE_TEST_ADMIN_URL)
+else
+WAREHOUSE_TEST_PG_URL =
 endif
 
-## test-bosso-postgres: Run the bosso suite against a local Postgres (starts a
-## throwaway docker container unless BOSSO_TEST_DATABASE_URL already points at one).
-## Without BOSSO_TEST_DATABASE_URL the Postgres legs SKIP; this passes it together
-## with BOSSO_REQUIRE_POSTGRES_TESTS=1 so an unreachable database FAILS instead of
-## skipping to a green that proved nothing. Both are passed as sub-make overrides on
-## purpose: MAKEOVERRIDES is part of the gate-cache fingerprint, so a Postgres run
-## can never read a stamp recorded by a `make test-bosso` that skipped them.
-test-bosso-postgres: $(BOSSO_TEST_PG_PREREQS)
-	$(MAKE) test-bosso BOSSO_TEST_DATABASE_URL='$(BOSSO_TEST_DATABASE_URL)' BOSSO_REQUIRE_POSTGRES_TESTS=1
+# Shared recipe pieces preserve the test status unless the post-run probe proves
+# the database broke. Silent recipes keep supplied credentials out of make output.
+define bosso-test-postgres-url
+url='$(BOSSO_TEST_PG_URL)'; \
+if [ -z "$$url" ]; then url=$$($(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS) --print bosso-url) || exit $$?; \
+else $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi
+endef
 
-## test-bosso-scale: Run the orchestrator scale smoke against a local Postgres
-## (starts the same throwaway container as test-bosso-postgres unless
-## BOSSO_TEST_DATABASE_URL already points at one). BOS-1083 moved
-## internal/loadtest off its hand-rolled SQLite schema onto the real migration
-## tree, so this suite now needs a database. It is defined below
-## BOSSO_TEST_PG_PREREQS on purpose: make expands a prerequisite list when the
-## rule is read, so a target placed above that assignment would silently get an
-## empty prerequisite. BOSSO_REQUIRE_POSTGRES_TESTS=1 is what keeps the target
-## honest -- without it an absent database makes the suite t.Skip and `go test`
-## exit 0 having executed nothing, which is a green from the one target whose
-## entire purpose is to run this smoke.
-##
-## The `-run TestOrchestratorScaleSmoke` filter this carried since BOS-382 is
-## gone for the same reason. It selected the only test the package has, so it
-## narrowed nothing -- but a rename or a move of that one test would have turned
-## it into a zero-match, and `go test -run <no match>` exits 0 after executing
-## nothing, printing only a `testing: warning: no tests to run` line to stdout
-## that make does not read. That is the identical vacuous green the
-## BOSSO_REQUIRE_POSTGRES_TESTS pin above closes on the other route, so closing
-## one and leaving the other would make this recipe's guarantee half true.
-## Running the package unfiltered cannot be vacuous: an empty package is a build
-## error, not a pass.
-test-bosso-scale: $(BOSSO_TEST_PG_PREREQS)
-	cd services/bosso && BOSSO_TEST_DATABASE_URL='$(BOSSO_TEST_DATABASE_URL)' \
-		BOSSO_REQUIRE_POSTGRES_TESTS=1 \
-		go test ./internal/loadtest -count=1
+define test-postgres-result
+status=$$?; \
+if [ $$status -ne 0 ]; then $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi; \
+exit $$status
+endef
 
-## postgres-test-up: Start (idempotently) the throwaway Postgres container the bosso
-## Postgres suites use, and wait until it accepts connections.
+## test-bosso-postgres: Run the bosso suite against healthy Postgres, provisioning
+## this worktree's server unless BOSSO_TEST_DATABASE_URL is supplied.
+## Sub-make overrides keep required Postgres runs distinct in the gate cache.
+test-bosso-postgres:
+	@$(bosso-test-postgres-url); \
+	$(MAKE) test-bosso BOSSO_TEST_DATABASE_URL="$$url" BOSSO_REQUIRE_POSTGRES_TESTS=1; \
+	$(test-postgres-result)
+
+## test-bosso-scale: Run the complete orchestrator scale smoke against this
+## worktree's Postgres, or pre-flight the supplied BOSSO_TEST_DATABASE_URL.
+test-bosso-scale:
+	@$(bosso-test-postgres-url); \
+	(cd services/bosso && BOSSO_TEST_DATABASE_URL="$$url" BOSSO_REQUIRE_POSTGRES_TESTS=1 go test ./internal/loadtest -count=1); \
+	$(test-postgres-result)
+
+## postgres-test-up: Ensure this worktree's healthy loopback Postgres; print exports
+## for eval "$$(make -s postgres-test-up)". Optional name/port overrides are respected.
 postgres-test-up:
-	@docker start $(BOSSO_TEST_PG_CONTAINER) >/dev/null 2>&1 || \
-		docker run -d --name $(BOSSO_TEST_PG_CONTAINER) \
-			-e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=bosso_test \
-			-p $(BOSSO_TEST_PG_PORT):5432 postgres:16 >/dev/null
-	@attempt=0; \
-	until docker exec $(BOSSO_TEST_PG_CONTAINER) pg_isready -U postgres -d bosso_test >/dev/null 2>&1; do \
-		attempt=$$((attempt + 1)); \
-		if [ $$attempt -ge $(BOSSO_TEST_PG_WAIT_SECONDS) ]; then \
-			echo "postgres-test-up: $(BOSSO_TEST_PG_CONTAINER) did not accept connections within $(BOSSO_TEST_PG_WAIT_SECONDS)s" >&2; \
-			docker logs --tail 20 $(BOSSO_TEST_PG_CONTAINER) >&2 2>/dev/null || true; \
-			exit 1; \
-		fi; \
-		sleep 1; \
-	done
+	@$(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS)
 
-## postgres-test-down: Remove the throwaway Postgres container started above.
+## postgres-test-down: Remove only this worktree's labelled container and volume.
 postgres-test-down:
-	@docker rm -f $(BOSSO_TEST_PG_CONTAINER) >/dev/null 2>&1 || true
+	@$(TEST_POSTGRES) down $(TEST_POSTGRES_OPTIONS)
 
-# BOS-1317: the warehouse dbt project's throwaway-Postgres run. The admin URL is
-# built exactly like BOSSO_TEST_DATABASE_URL above (same user, host and port) but
-# names the `postgres` maintenance database, because the run drops and recreates
-# its own `warehouse_test` database. Same `origin` switch as BOSSO_TEST_PG_PREREQS:
-# the container starts only when nobody supplied a server. These lines sit below
-# BOSSO_TEST_PG_PORT for the same read-time expansion reason test-bosso-scale does.
-WAREHOUSE_TEST_ADMIN_URL ?= postgres://postgres:postgres@localhost:$(BOSSO_TEST_PG_PORT)/postgres?sslmode=disable
-ifeq ($(origin WAREHOUSE_TEST_ADMIN_URL),file)
-WAREHOUSE_TEST_PG_PREREQS := postgres-test-up
-else
-WAREHOUSE_TEST_PG_PREREQS :=
-endif
-
-## test-warehouse: Run the services/warehouse dbt project against a throwaway
-## Postgres (starts the test container unless WAREHOUSE_TEST_ADMIN_URL already
-## points at a server): real goose migrations, the grant script, the warehouse-role
-## denial probes, `dbt parse`, `dbt build` and the schema-placement check. Needs
-## uv and Go. Fail-closed: the database-backed tests fail rather than skip.
-test-warehouse: $(WAREHOUSE_TEST_PG_PREREQS)
-	WAREHOUSE_TEST_ADMIN_URL='$(WAREHOUSE_TEST_ADMIN_URL)' bash services/warehouse/scripts/test.sh
+## test-warehouse: Run migrations, grants, denial probes and dbt against healthy
+## Postgres. Provision this worktree's server unless WAREHOUSE_TEST_ADMIN_URL is supplied.
+test-warehouse:
+	@url='$(WAREHOUSE_TEST_PG_URL)'; \
+	if [ -z "$$url" ]; then url=$$($(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS) --print admin-url) || exit $$?; \
+	else $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi; \
+	WAREHOUSE_TEST_ADMIN_URL="$$url" bash services/warehouse/scripts/test.sh; \
+	$(test-postgres-result)
 
 ## test-hermes-plugin: Run the Hermes plugin's standard-library unittest suite
 ## (services/boss/internal/hermes/plugin/tests) against a fake stdio MCP server:

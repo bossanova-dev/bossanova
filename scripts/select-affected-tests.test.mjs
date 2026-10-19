@@ -35,6 +35,19 @@ test('selectTargets scopes bossd Go changes to the changed package', () => {
   ])
 })
 
+test('selectTargets provisions Postgres while preserving the changed bosso package', () => {
+  assert.deepEqual(selectTargets(['services/bosso/internal/db/store.go']), [
+    {
+      kind: 'make',
+      target: 'test-bosso-postgres',
+      env: { GO_TEST_PACKAGES: './internal/db' },
+    },
+  ])
+  assert.deepEqual(selectTargets(['services/bosso/Makefile']), [
+    { kind: 'make', target: 'test-bosso-postgres', env: {} },
+  ])
+})
+
 test('selectTargets scopes sentry plugin Go changes to the changed package', () => {
   assert.deepEqual(selectTargets(['plugins/bossd-plugin-sentry/sentry.go']), [
     {
@@ -54,7 +67,7 @@ test('selectTargets runs the whole module for module Makefile changes', () => {
 test('selectTargets fans proto changes out to generated-code consumers', () => {
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ target }) => target),
-    ['test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso'],
+    ['test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres'],
   )
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ env }) => env),
@@ -267,7 +280,7 @@ test('selectTargets routes the trial-enrolment source to test-scripts as well as
   // survive: the wire-contract test the course cites lives in this package.
   assert.deepEqual(selectTargets(['services/bosso/cmd/trial_enrollment.go']), [
     { kind: 'make', target: 'test-scripts', env: {} },
-    { kind: 'make', target: 'test-bosso', env: { GO_TEST_PACKAGES: './cmd' } },
+    { kind: 'make', target: 'test-bosso-postgres', env: { GO_TEST_PACKAGES: './cmd' } },
   ])
 })
 
@@ -285,13 +298,13 @@ test('selectTargets adds test-warehouse to bosso migrations WITHOUT dropping tes
   // warehouse gate as well as the bosso suite that owns the files.
   assert.deepEqual(selectTargets(['services/bosso/migrations_postgres/000001_initial.sql']), [
     { kind: 'make', target: 'test-warehouse', env: {} },
-    { kind: 'make', target: 'test-bosso', env: {} },
+    { kind: 'make', target: 'test-bosso-postgres', env: {} },
   ])
   assert.deepEqual(
     selectTargets(['services/bosso/migrations_postgres/withheld_columns.json']).map(
       ({ target }) => target,
     ),
-    ['test-warehouse', 'test-bosso'],
+    ['test-warehouse', 'test-bosso-postgres'],
   )
 })
 
@@ -401,9 +414,17 @@ test('selectTargets does not route generated web code to the price gate', () => 
   ])
 })
 
+test('trial copy inputs select the bosso parity package and its native module', () => {
+  const file = 'services/marketing/src/pages/cloud.astro'
+  assert.deepEqual(selectBazelAffected([file]).patterns, [
+    '//services/bosso/internal/productparity/...',
+  ])
+  assert.deepEqual(selectLedgerModules([file]).modules, ['services/bosso'])
+})
+
 test('selectTargets maps marketing changes to the turbo web target', () => {
   assert.deepEqual(selectTargets(['services/marketing/src/pages/index.astro']), [
-    { kind: 'make', target: 'test-bossalib', env: {} },
+    { kind: 'make', target: 'test-bosso-postgres', env: {} },
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])

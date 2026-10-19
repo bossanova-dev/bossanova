@@ -143,7 +143,7 @@ test('make rejects a wrong-version override without overwriting it', (t) => {
 
 test('dry-run recipes resolve all buf commands to the pin, including the guarded stamp', (t) => {
   const f = fixture(t)
-  // -n is essential: these recipes delete/regenerate tracked generated output.
+  // -n keeps this recipe inspection from regenerating tracked output.
   for (const target of ['generate', 'lint', 'lint-all', 'deps', '.generate.stamp']) {
     const result = f.make(['-n', '-B', target])
     succeeded(result)
@@ -158,9 +158,19 @@ test('dry-run recipes resolve all buf commands to the pin, including the guarded
       assert.match(output, /ensure-buf\.sh.*check/)
       assert.match(output, /3\).*committed gen used/s)
       assert.match(output, /touch .*generate\.stamp/)
-      assert.ok(output.indexOf('exit 0 ;;') < output.indexOf('find lib/bossalib/gen'))
-      assert.ok(output.indexOf('*) exit $result ;;') < output.indexOf('find lib/bossalib/gen'))
-      assert.ok(output.indexOf('generate;') < output.indexOf('touch .generate.stamp'))
+      const firstSync = output.indexOf('sync-generated-tree.mjs')
+      assert.ok(firstSync >= 0)
+      assert.ok(output.indexOf('exit 0 ;;') < firstSync)
+      assert.ok(output.indexOf('*) exit $result ;;') < firstSync)
+      assert.ok(output.indexOf('generate -o') >= 0)
+      assert.ok(output.indexOf('generate -o') < firstSync)
+      assert.ok(
+        output.lastIndexOf('sync-generated-tree.mjs') < output.indexOf('touch .generate.stamp'),
+      )
+      assert.doesNotMatch(
+        output,
+        /find (?:lib\/bossalib\/gen|services\/web\/src\/gen)[^;\n]*-delete/,
+      )
     }
   }
 })

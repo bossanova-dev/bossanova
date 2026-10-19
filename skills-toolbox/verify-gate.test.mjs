@@ -76,6 +76,7 @@ import {
   extensionRunBeforePark,
   policyFingerprint,
   policyMarker,
+  remoteSessionMarker,
 } from './verify-gate.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from './skill-config.mjs'
@@ -228,9 +229,11 @@ function world(opts = {}) {
     show: pick('show', { repo_can_auto_repair: true, last_repair: null }),
     merge: opts.merge ?? { ok: true },
     race: opts.race ?? null,
-    // The PR's issue comments; comments POSTed through `…/issues/<n>/comments` are appended (as the
-    // repo owner, stamped after every seeded one), so operator-marker read-backs are real.
+    // The PR's issue comments; comments POSTed through `…/issues/<n>/comments` are appended (as
+    // `poster`, the repo owner by default, stamped after every seeded one), so operator-marker
+    // read-backs are real.
     comments: opts.comments ?? [],
+    poster: opts.poster ?? { login: 'operator', association: 'OWNER' },
     commentsReadFails: opts.commentsReadFails ?? false,
     // Every comment POST and PATCH is refused, as GitHub refuses one over its size limit.
     commentWritesFail: opts.commentWritesFail ?? false,
@@ -316,8 +319,8 @@ function world(opts = {}) {
           const comment = {
             id,
             body: fields.body ?? '',
-            author_association: 'OWNER',
-            user: { login: 'operator' },
+            author_association: w.poster.association,
+            user: { login: w.poster.login },
             created_at: new Date(NOW + w.commentPosts * 1000).toISOString(),
             html_url: `${PR_URL}#issuecomment-${id}`,
           }
@@ -1448,7 +1451,7 @@ test('judge maps every extension malfunction to human extension-failed with a no
     )
     assert.equal(r.reason, 'extension-failed')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1491,7 +1494,7 @@ test('judge: optional timeout abstains, a valid fail is a defect, clean review r
     assert.equal(r3.verdict, 'defect')
     assert.deepEqual(r3.notes, [], 'a review that already had findings is not a clean review')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1647,7 +1650,7 @@ test('judge: a re-judged extension wait waits, above a path-code park', async ()
     assert.equal(waived.verdict, 'wait')
     assert.equal(waived.reason, 'stack-busy')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1776,7 +1779,7 @@ test('judge: a malfunctioning judge with malfunctionReason parks it beside exten
     assert.equal(approved.verdict, 'pass')
     assert.equal(approved.reason, 'approved')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1796,7 +1799,7 @@ test('judge: an extension human verdict parks with its reason alongside a passin
     assert.deepEqual(r.reasons, ['human-review:security'])
     assert.equal(r.extensions.outcomes.length, 2)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1834,7 +1837,7 @@ test('judge: a path-code park asks for extensions, then parks on pass and defect
     assert.equal(failed.verdict, 'defect', 'findings go to repair before a person is paged')
     assert.deepEqual(failed.findings, [{ extension: EXT.name, title: 'nil deref' }])
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1859,7 +1862,7 @@ test('judge: a waiver lifts an extension human reason only when it names that re
     assert.equal(kept.verdict, 'human')
     assert.equal(kept.reason, 'human-review:security')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -1918,7 +1921,7 @@ test('judge: an approved park after a clean extension run settles from its recor
     }
     assert.equal(w.mutating().length, before, 'judge never writes')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2079,7 +2082,7 @@ test('judge: a malfunction parks with the path codes and extension reasons in on
     assert.equal(approved.verdict, 'pass')
     assert.equal(approved.reason, 'approved')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2108,7 +2111,7 @@ test('judge: an extension-failed waiver ignores malfunctions but keeps what ran'
     )
     assert.equal(r2.verdict, 'defect')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2235,7 +2238,7 @@ test('judge runs real applicability scripts from the repo root with the envelope
     const web = await run(['web/a.tsx'])
     assert.deepEqual(web.facts.extensionsNotApplicable, [])
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2289,7 +2292,7 @@ test('judge: a re-judge with only the applicable results never counts a skipped 
     assert.equal(r3.verdict, 'wait')
     assert.equal(r3.reason, 'changed-paths-unknown')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2382,7 +2385,7 @@ test('judge with no policy and no extensions reads no anchor, compare or diff', 
     assert.equal(r2.verdict, 'pass')
     assert.equal(second.graphqlReads().length, 0)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2819,7 +2822,7 @@ test('post clears a stale needs-human label only once the head stands on a verdi
       [[['needs-human'], undefined]],
     )
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2870,7 +2873,7 @@ test('post defect with auto-repair on: findings comment, then failure targeting 
     ])
     assert.equal(adapter.writeCalls().length, 0)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2904,7 +2907,7 @@ test('post defect with auto-repair off or unreadable also parks to a human', asy
       ])
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -2927,7 +2930,7 @@ test('post defect after repair is exhausted becomes human repair-exhausted, neve
     assert.ok(w.statusPosts().every((s) => s.state !== 'failure'))
     assert.equal(adapter.writeCalls().length, 1)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3026,7 +3029,7 @@ test('post never writes a human or defect status without its tracker writes', as
       assert.equal(noTicket.statusPosts().length, 0)
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3064,7 +3067,7 @@ test('post --dry-run plans every verdict and calls nothing mutating', async () =
       assert.ok(r.writes.length > 0, `${options.verdict} lists its planned writes`)
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -3187,16 +3190,70 @@ test('merge returns reverify on HEAD_MISMATCH and on a moved head without callin
   assert.equal(moved.calls.filter((c) => c.command === 'boss' && c.args[0] === 'merge').length, 0)
 })
 
-test('merge with no session row is human no-session and never falls back to gh pr merge', async () => {
-  const w = world({
-    statuses: verified(),
-    sessions: [{ id: 'other', pr_url: 'https://github.com/o/r/pull/8' }],
-  })
+const elsewhere = [{ id: 'other', pr_url: 'https://github.com/o/r/pull/8' }]
+const remoteNotices = (w) =>
+  w.comments.filter((c) => c.body.split('\n').at(-1) === remoteSessionMarker(HEAD))
+
+test('merge with no session row says so on the PR once per head and never merges', async () => {
+  const w = world({ statuses: verified(), sessions: elsewhere })
   const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
-  assert.equal(r.verdict, 'human')
-  assert.equal(r.reason, 'no-session')
-  assert.equal(w.mutating().length, 0)
+  assert.deepEqual(
+    [r.merged, r.verdict, r.reason, r.notice],
+    [false, 'human', 'no-session', 'posted'],
+  )
+  const [notice] = remoteNotices(w)
+  assert.equal(
+    notice.body.split('\n')[0],
+    `Verified at \`${HEAD.slice(0, 12)}\`, but this PR's session isn't on this machine, so this machine can't merge it.`,
+  )
+  assert.equal(w.mutating().length, 1, 'the one notice, and no merge or status write')
   assert.equal(w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'merge').length, 0)
+
+  // The notice stands, so a second merge on the same head posts nothing.
+  const again = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+  assert.equal(again.notice, 'standing')
+  assert.equal(w.commentPosts, 1)
+  assert.equal(remoteNotices(w).length, 1)
+
+  // A notice for an older head does not speak for this one.
+  const older = world({
+    statuses: verified(),
+    sessions: elsewhere,
+    comments: [operatorComment(remoteSessionMarker(OTHER))],
+  })
+  assert.equal((await merge({ pr: 7, head: HEAD, repo: REPO }, deps(older))).notice, 'posted')
+
+  const dry = world({ statuses: verified(), sessions: elsewhere })
+  const planned = await merge({ pr: 7, head: HEAD, repo: REPO, dryRun: true }, deps(dry))
+  assert.equal(planned.notice, 'planned')
+  assert.deepEqual(dry.mutating(), [])
+
+  const refused = world({ statuses: verified(), sessions: elsewhere, commentWritesFail: true })
+  assert.equal((await merge({ pr: 7, head: HEAD, repo: REPO }, deps(refused))).notice, 'failed')
+})
+
+test('merge with no session row posts no notice on a head that is not ready to merge', async () => {
+  const sentBack = world({
+    statuses: verified(),
+    sessions: elsewhere,
+    comments: [operatorComment(sendBackMarker(HEAD))],
+  })
+  const r1 = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(sentBack))
+  assert.deepEqual([r1.verdict, r1.reason], ['wait', 'sent-back'])
+  assert.deepEqual(sentBack.mutating(), [])
+
+  const blocked = world({
+    statuses: verified(),
+    sessions: elsewhere,
+    pr: { mergeStateStatus: 'BLOCKED' },
+  })
+  assert.equal((await merge({ pr: 7, head: HEAD, repo: REPO }, deps(blocked))).verdict, 'wait')
+  assert.deepEqual(blocked.mutating(), [])
+
+  const unread = world({ statuses: verified(), sessions: elsewhere, commentsReadFails: true })
+  const r3 = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(unread))
+  assert.deepEqual([r3.verdict, r3.reason], ['wait', 'comments-unreadable'])
+  assert.deepEqual(unread.mutating(), [])
 })
 
 test('merge re-checks eligibility and the verified status before merging', async () => {
@@ -3774,7 +3831,7 @@ test('post keeps repair-exhausted defects unlabelled', async () => {
   try {
     r = await post({ ...humanPost(''), verdict: 'defect', findings: findingsFile(dir) }, deps(w))
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
   assert.equal(r.reason, 'repair-exhausted')
   assert.equal(r.label, '')
@@ -4449,8 +4506,8 @@ test('judge discovers verify extensions from the trusted base tree, never the wo
     assert.ok(r.facts.extensionPaths[0].skillPath.startsWith(base))
     assert.ok(r.facts.extensionPaths[0].dir.startsWith(base))
   } finally {
-    rmSync(head, { recursive: true, force: true })
-    rmSync(base, { recursive: true, force: true })
+    rmSync(head, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4507,8 +4564,8 @@ test('a head-only edit to what an applies script imports changes nothing; cwd st
     assert.equal(r.verdict, 'pass')
     assert.deepEqual(r.facts.extensionsNotApplicable, [GATED.name])
   } finally {
-    rmSync(head, { recursive: true, force: true })
-    rmSync(base, { recursive: true, force: true })
+    rmSync(head, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4606,8 +4663,8 @@ test('materializeTrustedTree extracts the commit into a content-addressed path a
     // A snapshot, not a worktree: nothing is registered in the repo's worktree list.
     assert.equal(git(repo, 'worktree', 'list', '--porcelain').split('\n\n').length, 1)
   } finally {
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4623,8 +4680,8 @@ test('materializeTrustedTree reports an unfetchable commit as unavailable', () =
       why: 'no-base-sha',
     })
   } finally {
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4640,7 +4697,7 @@ test('materializeTrustedTree refuses a group/world-writable or symlinked trusted
       ok: false,
       why: 'untrusted-parent',
     })
-    rmSync(parent, { recursive: true, force: true })
+    rmSync(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     const elsewhere = join(tmpRoot, 'planted')
     mkdirSync(elsewhere, { mode: 0o700 })
     symlinkSync(elsewhere, parent)
@@ -4649,8 +4706,8 @@ test('materializeTrustedTree refuses a group/world-writable or symlinked trusted
       why: 'untrusted-parent',
     })
   } finally {
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4662,8 +4719,8 @@ test('materializeTrustedTree creates a private 0700 parent', () => {
     assert.equal(r.ok, true)
     assert.equal(statSync(trustedTreeParent(tmpRoot)).mode & 0o777, 0o700)
   } finally {
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4685,7 +4742,7 @@ test('the reaper renames a stale tree out of the prefixed namespace before delet
       'no prefixed path is left behind',
     )
   } finally {
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -4711,8 +4768,8 @@ test('the reaper removes stale trees for other bases and keeps the current one',
     assert.ok(existsSync(unrelated))
     assert.deepEqual(reapTrustedTrees({ tmpRoot, keep: current, now: NOW }), [])
   } finally {
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(tmpRoot, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -6419,7 +6476,19 @@ function carryRepo({ approved = FEATURE, rebased = FEATURE } = {}) {
   const git = (...args) => {
     const r = spawnSync(
       'git',
-      ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args],
+      [
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'commit.gpgsign=false',
+        '-c',
+        'gc.auto=0',
+        '-c',
+        'maintenance.auto=false',
+        ...args,
+      ],
       { cwd: dir, env, encoding: 'utf8' },
     )
     assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`)
@@ -6494,7 +6563,7 @@ const withCarryRepo = async (fn, shape) => {
   try {
     await fn(repo)
   } finally {
-    rmSync(repo.dir, { recursive: true, force: true })
+    rmSync(repo.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }
 
@@ -6734,7 +6803,7 @@ test('post --carry-record refuses a carry the comments no longer support and pos
 
 test('policy CLI exits non-zero for a real deferred verifyDefaults fault', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'verify-policy-deferred-'))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   writeFileSync(
     join(dir, '.boss-skills.json'),
     JSON.stringify({
@@ -6814,6 +6883,133 @@ test('candidates collect merge retries beyond the fresh limit without CI or appr
     false,
   )
   assert.equal(w.statusReads().length, 4)
+})
+
+test('candidates stop retrying a verified head whose session is elsewhere once the PR says so', async () => {
+  const old = MERGE_RETRY_AFTER_MS + 1
+  const prUrl = (n) => `https://github.com/o/r/pull/${n}`
+  const noticeOn = (sha) => [operatorComment(remoteSessionMarker(sha))]
+  const tickets = [2, 3, 4, 5, 6].map((n) => ({ identifier: `BOS-${n}`, labels: ['agent-build'] }))
+  const w = candidateWorld({
+    tickets,
+    statuses: Object.fromEntries(
+      [2, 3, 4, 5, 6].map((n) => [SHA_OF(n), verifyStatus('success', 'verified', old)]),
+    ),
+    // #2's session is here; every other PR's is not.
+    sessions: [{ id: 's2', pr_url: prUrl(2) }],
+    comments: { 2: noticeOn(SHA_OF(2)), 4: noticeOn(SHA_OF(4)), 5: noticeOn(SHA_OF(99)) },
+    commentsFail: [6],
+  })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  // #2 has its session here; #3 has no notice yet; #5's notice is for an older head; #6's comments
+  // are unreadable. Only #4, whose PR already says this machine cannot merge it, stops.
+  assert.deepEqual(
+    r.mergeRetries.map((c) => c.pr),
+    [2, 3, 5, 6],
+  )
+  assert.deepEqual(
+    r.skipped.find((s) => s.pr === 4),
+    { ticket: 'BOS-4', pr: 4, reason: 'no-session' },
+  )
+  assert.equal(w.calls.filter((c) => c.command === 'boss').length, 1, 'one session read')
+  assert.equal(
+    w.calls.some((c) => c.args[1] === 'repos/o/r/issues/2/comments?per_page=100'),
+    false,
+    'a local session needs no comment read',
+  )
+
+  const unread = candidateWorld({
+    tickets,
+    statuses: { [SHA_OF(4)]: verifyStatus('success', 'verified', old) },
+    comments: { 4: noticeOn(SHA_OF(4)) },
+  })
+  const r2 = await candidates({ repo: REPO }, candDeps(unread))
+  assert.deepEqual(
+    r2.mergeRetries.map((c) => c.pr),
+    [4],
+    'an unreadable session list keeps the retry',
+  )
+})
+
+// One PR seen by the candidates scan and by merge over `ticks` sweeps: the comments merge posts are
+// what the next scan reads. Returns the merge retries per tick and the world merge wrote to.
+async function remoteSessionSweeps(ticks, { poster, permissions = {} } = {}) {
+  const pr = world({ statuses: verified(), sessions: elsewhere, poster, permissions })
+  const tick = () =>
+    candidates(
+      { repo: REPO },
+      candDeps(
+        candidateWorld({
+          tickets: [{ identifier: 'BOS-1', labels: ['agent-build'] }],
+          prs: [{ number: 7, url: PR_URL, body: BODY, headRefOid: HEAD, isDraft: false }],
+          statuses: { [HEAD]: verifyStatus('success', 'verified', MERGE_RETRY_AFTER_MS + 1) },
+          sessions: elsewhere,
+          comments: { 7: pr.comments },
+          permissions,
+        }),
+      ),
+    )
+  const retried = []
+  for (let n = 1; n <= ticks; n++) {
+    const found = await tick()
+    retried.push(found.mergeRetries.length)
+    for (const c of found.mergeRetries)
+      await merge({ pr: c.pr, head: c.headSha, repo: REPO }, deps(pr))
+  }
+  return { retried, pr }
+}
+
+test('a verified head with its session elsewhere is retried until the PR is told, then never again', async () => {
+  const { retried, pr } = await remoteSessionSweeps(4)
+  assert.deepEqual(retried, [1, 0, 0, 0])
+  assert.equal(pr.commentPosts, 1, 'the operator is told once')
+  assert.equal(pr.calls.filter((c) => c.command === 'boss' && c.args[0] === 'merge').length, 0)
+})
+
+test('the no-session notice stands whoever the gate posts as: an app, a bot or a read-only collaborator', async () => {
+  for (const [poster, permission] of [
+    [{ login: 'gate-app', association: 'NONE' }, 'not-found'],
+    [{ login: 'ci-bot', association: 'CONTRIBUTOR' }, null],
+    [{ login: 'reader', association: 'COLLABORATOR' }, 'read'],
+  ]) {
+    const { retried, pr } = await remoteSessionSweeps(4, {
+      poster,
+      permissions: { [poster.login]: permission },
+    })
+    assert.deepEqual(retried, [1, 0, 0, 0], `${poster.login}: retried until told`)
+    assert.equal(pr.commentPosts, 1, `${poster.login}: told once`)
+  }
+})
+
+test('only a marker that is the whole last line stands for the no-session notice', async () => {
+  const marker = remoteSessionMarker(HEAD)
+  for (const [last, stands] of [
+    [marker, true],
+    [`  ${marker.replace(HEAD, HEAD.toUpperCase())}  `, true],
+    [`> ${marker}`, false],
+    [`${marker} thanks`, false],
+    [`see ${marker}`, false],
+    [marker.replace(HEAD, HEAD.slice(0, 12)), false],
+  ]) {
+    const comment = { ...operatorComment(marker), body: `Quoting the gate:\n\n${last}` }
+    const w = world({ statuses: verified(), sessions: elsewhere, comments: [comment] })
+    const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+    assert.equal(r.notice, stands ? 'standing' : 'posted', JSON.stringify(last))
+
+    const scan = await candidates(
+      { repo: REPO },
+      candDeps(
+        candidateWorld({
+          tickets: [{ identifier: 'BOS-1', labels: ['agent-build'] }],
+          prs: [{ number: 7, url: PR_URL, body: BODY, headRefOid: HEAD, isDraft: false }],
+          statuses: { [HEAD]: verifyStatus('success', 'verified', MERGE_RETRY_AFTER_MS + 1) },
+          sessions: elsewhere,
+          comments: { 7: [comment] },
+        }),
+      ),
+    )
+    assert.equal(scan.mergeRetries.length, stands ? 0 : 1, JSON.stringify(last))
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -6963,7 +7159,7 @@ test('a ticketless factory PR parks on its status and a park note, and writes no
     )
     assert.deepEqual(adapter.calls, [])
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -7163,7 +7359,7 @@ test('post --extension-results puts the failing extension and its own error in t
     )
     await assert.rejects(main(['post', ...argv, '--verdict', 'pass'], deps(world())), UsageError)
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 

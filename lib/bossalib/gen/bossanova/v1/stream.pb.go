@@ -238,6 +238,12 @@ const (
 	// Emitted for a session account switch whose caller context was cancelled
 	// (BOS-958); bosso renders it as CodeCanceled.
 	CommandResult_ERROR_CODE_CANCELED CommandResult_ErrorCode = 5
+	// The daemon does not know the command: it was built before the command
+	// existed. Re-sending it fails the same way until the daemon is updated.
+	// Emitted by a daemon for a command it has no case for, and synthesized by
+	// bosso for a command the daemon's snapshot does not list in
+	// supported_command_fields. bosso renders it as CodeUnimplemented.
+	CommandResult_ERROR_CODE_UNIMPLEMENTED CommandResult_ErrorCode = 6
 )
 
 // Enum value maps for CommandResult_ErrorCode.
@@ -249,6 +255,7 @@ var (
 		3: "ERROR_CODE_INVALID_ARGUMENT",
 		4: "ERROR_CODE_DEADLINE_EXCEEDED",
 		5: "ERROR_CODE_CANCELED",
+		6: "ERROR_CODE_UNIMPLEMENTED",
 	}
 	CommandResult_ErrorCode_value = map[string]int32{
 		"ERROR_CODE_UNSPECIFIED":         0,
@@ -257,6 +264,7 @@ var (
 		"ERROR_CODE_INVALID_ARGUMENT":    3,
 		"ERROR_CODE_DEADLINE_EXCEEDED":   4,
 		"ERROR_CODE_CANCELED":            5,
+		"ERROR_CODE_UNIMPLEMENTED":       6,
 	}
 )
 
@@ -1880,8 +1888,14 @@ type DaemonSnapshot struct {
 	// rest of the read model; steady-state changes arrive as CallbackInterestSet
 	// deltas (DaemonEvent field 10).
 	CallbackInterests []*CallbackInterest `protobuf:"bytes,7,rep,name=callback_interests,json=callbackInterests,proto3" json:"callback_interests,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// The OrchestratorCommand.cmd field numbers this daemon dispatches. bosso
+	// answers any other command itself with ERROR_CODE_UNIMPLEMENTED instead of
+	// sending it. Empty on daemons built before this field existed, which drop
+	// an unknown command without replying; bosso assumes those dispatch fields up
+	// to 65 (run_trigger_gate) and nothing newer.
+	SupportedCommandFields []int32 `protobuf:"varint,8,rep,packed,name=supported_command_fields,json=supportedCommandFields,proto3" json:"supported_command_fields,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DaemonSnapshot) Reset() {
@@ -1959,6 +1973,13 @@ func (x *DaemonSnapshot) GetStatuses() []*ChatStatusEntry {
 func (x *DaemonSnapshot) GetCallbackInterests() []*CallbackInterest {
 	if x != nil {
 		return x.CallbackInterests
+	}
+	return nil
+}
+
+func (x *DaemonSnapshot) GetSupportedCommandFields() []int32 {
+	if x != nil {
+		return x.SupportedCommandFields
 	}
 	return nil
 }
@@ -9780,7 +9801,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x03cmd\".\n" +
 	"\rCommandCancel\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\tR\tcommandId\"\xd9\x02\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\"\x93\x03\n" +
 	"\x0eDaemonSnapshot\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
@@ -9788,7 +9809,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\bsessions\x18\x04 \x03(\v2\x15.bossanova.v1.SessionR\bsessions\x126\n" +
 	"\x05chats\x18\x05 \x03(\v2 .bossanova.v1.ClaudeChatMetadataR\x05chats\x129\n" +
 	"\bstatuses\x18\x06 \x03(\v2\x1d.bossanova.v1.ChatStatusEntryR\bstatuses\x12M\n" +
-	"\x12callback_interests\x18\a \x03(\v2\x1e.bossanova.v1.CallbackInterestR\x11callbackInterests\"W\n" +
+	"\x12callback_interests\x18\a \x03(\v2\x1e.bossanova.v1.CallbackInterestR\x11callbackInterests\x128\n" +
+	"\x18supported_command_fields\x18\b \x03(\x05R\x16supportedCommandFields\"W\n" +
 	"\x10CallbackInterest\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"S\n" +
@@ -9837,7 +9859,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\x8d\x1b\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xab\x1b\n" +
 	"\rCommandResult\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
@@ -9897,14 +9919,15 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x16operator_merge_session\x18, \x01(\v2*.bossanova.v1.OperatorMergeSessionResponseH\x00R\x14operatorMergeSession\x12D\n" +
 	"\n" +
 	"error_code\x18\a \x01(\x0e2%.bossanova.v1.CommandResult.ErrorCodeR\terrorCode\x12(\n" +
-	"\x10is_stream_closed\x18- \x01(\bR\x0eisStreamClosed\"\xc1\x01\n" +
+	"\x10is_stream_closed\x18- \x01(\bR\x0eisStreamClosed\"\xdf\x01\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14ERROR_CODE_NOT_FOUND\x10\x01\x12\"\n" +
 	"\x1eERROR_CODE_FAILED_PRECONDITION\x10\x02\x12\x1f\n" +
 	"\x1bERROR_CODE_INVALID_ARGUMENT\x10\x03\x12 \n" +
 	"\x1cERROR_CODE_DEADLINE_EXCEEDED\x10\x04\x12\x17\n" +
-	"\x13ERROR_CODE_CANCELED\x10\x05B\t\n" +
+	"\x13ERROR_CODE_CANCELED\x10\x05\x12\x1c\n" +
+	"\x18ERROR_CODE_UNIMPLEMENTED\x10\x06B\t\n" +
 	"\apayload\"1\n" +
 	"\fTokenRefresh\x12!\n" +
 	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\"\xf3\x01\n" +

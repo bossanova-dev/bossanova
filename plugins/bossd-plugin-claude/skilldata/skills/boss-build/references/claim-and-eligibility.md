@@ -71,7 +71,8 @@ cap past 5 h, breaks that inequality and has to raise `STALE_SECS` in the same c
 ## Selection-Time Eligibility
 
 Step 2's ranked walk is a side-effect-free eligibility pass: it skips blocked tickets, tickets with
-no plan, `needs-human` tickets and epic parents, and runs before workspace classification, claim
+nothing to build from (no readable plan attachment and no title or description text), `needs-human` tickets and epic
+parents, and runs before workspace classification, claim
 comments, or tracker state moves.
 
 Epic parents are coordination containers, not buildable implementation targets. In the motivating
@@ -139,11 +140,11 @@ worker given the same flags scan identically: the planned state, AND the `agentB
 and exclude; flag over `stages.build` over the shared block, per slot), ANDed with the configured
 team (else `--team`); window 250. An exclude keeps a ticket with no assignee, creator or project.
 Each returned candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`,
-`labels` as plain names and `attachments` as a plain array — the inputs Step 2's ranking and
-`selectImplementationPlanAttachment` read directly.
+`labels` as plain names and `attachments` as a plain array — the inputs Step 2's ranking reads
+directly.
 
-Everything after the candidate list is unchanged on this route: the native-plan-attachment
-requirement, the rank rule, the ranked walk and the epic-parent skip all apply exactly as on the
+Everything after the candidate list is unchanged on this route: the something-to-build-from check,
+the rank rule, the ranked walk and the epic-parent skip all apply exactly as on the
 unfiltered route.
 
 ## Claim Signals

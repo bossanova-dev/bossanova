@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import {
   decodeSpecAttachmentBody,
   putPlanAttachment,
+  resolveBuildPlan,
   selectImplementationPlanAttachment,
   selectSupersededPlanAttachments,
   USAGE_ERROR_TOKEN,
@@ -22,7 +23,8 @@ const USAGE =
   `${USAGE_ERROR_TOKEN}\n` +
   'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
   '       plan-attachment.mjs verify <local-file> <signed-url>\n' +
-  '       plan-attachment.mjs decode <in-file> <out-file>\n'
+  '       plan-attachment.mjs decode <in-file> <out-file>\n' +
+  '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n'
 
 // Built by concatenation so this file is not itself a match for the scan below.
 const FORBIDDEN_GUARD = ['import', 'meta', 'main'].join('.')
@@ -114,6 +116,195 @@ test('selectImplementationPlanAttachment returns null for non-plan attachments',
     ),
     null,
   )
+})
+
+const FREE_FORM = 'The export button hangs on large workspaces.\nMake it stream rows instead.\n'
+const UPLOAD = 'https://uploads.linear.app/org/file'
+
+test('resolveBuildPlan builds from the title and a free-form description when there is no plan attachment', () => {
+  const plan = resolveBuildPlan({
+    issueID: 'ACME-1',
+    title: 'Stream the export',
+    attachments: [{ id: 'img', title: 'screenshot.png', url: 'https://uploads.example/x.png' }],
+    description: FREE_FORM,
+  })
+  assert.deepEqual(plan, { source: 'description', text: `# Stream the export\n\n${FREE_FORM}` })
+})
+
+test('resolveBuildPlan prefers the canonical uploaded plan over the description and keeps the description as fallback', () => {
+  const canonical = { id: 'att', title: 'Implementation plan (ACME-1)', url: UPLOAD }
+  const plan = resolveBuildPlan({
+    issueID: 'ACME-1',
+    title: 'Stream the export',
+    attachments: [{ id: 'other', title: 'Plan notes', url: `${UPLOAD}-2` }, canonical],
+    description: FREE_FORM,
+  })
+  assert.deepEqual(plan, {
+    source: 'attachment',
+    attachment: canonical,
+    text: `# Stream the export\n\n${FREE_FORM}`,
+  })
+})
+
+test('resolveBuildPlan never takes a linked pull request or URL as the plan, whatever its title', () => {
+  for (const url of [
+    'https://github.com/acme/app/pull/12',
+    'https://docs.example/plan',
+    undefined,
+  ]) {
+    const plan = resolveBuildPlan({
+      issueID: 'ACME-7',
+      title: 'Add a pricing plan picker',
+      attachments: [{ id: 'gh-1', title: '[ACME-7] Add a pricing plan picker', url }],
+      description: '',
+    })
+    assert.deepEqual(plan, { source: 'description', text: '# Add a pricing plan picker\n' }, url)
+  }
+  const canonicalLink = resolveBuildPlan({
+    issueID: 'ACME-7',
+    title: 'Picker',
+    attachments: [
+      {
+        id: 'link',
+        title: 'Implementation plan (ACME-7)',
+        url: 'https://github.com/a/b/blob/x.md',
+      },
+    ],
+  })
+  assert.equal(canonicalLink.source, 'description')
+})
+
+test('resolveBuildPlan reads attachments from a GraphQL connection payload', () => {
+  const canonical = { id: 'att', title: 'Implementation plan (ACME-1)', url: UPLOAD }
+  const plan = resolveBuildPlan({ issueID: 'ACME-1', attachments: { nodes: [canonical] } })
+  assert.equal(plan.attachment, canonical)
+})
+
+test('resolveBuildPlan builds a terse, title-only or non-Latin ticket', () => {
+  const cases = [
+    [{ title: 'Bump goose' }, '# Bump goose\n'],
+    [{ title: 'Fix typo', description: '' }, '# Fix typo\n'],
+    [{ title: '', description: 'Fix typo' }, 'Fix typo\n'],
+    [{ description: 'ログイン画面の誤字を修正する' }, 'ログイン画面の誤字を修正する\n'],
+    [{ title: '修复登录页面的拼写错误' }, '# 修复登录页面的拼写错误\n'],
+  ]
+  for (const [ticket, text] of cases) {
+    assert.deepEqual(
+      resolveBuildPlan({ issueID: 'ACME-1', attachments: [], ...ticket }),
+      { source: 'description', text },
+      JSON.stringify(ticket),
+    )
+  }
+})
+
+test('resolveBuildPlan refuses only a ticket with no readable attachment and no letter or digit', () => {
+  for (const ticket of [
+    {},
+    { title: '', description: '' },
+    { title: null, description: null },
+    { title: '   ', description: '   \n\t' },
+    { title: '--', description: '... !? ---\n* \n' },
+    { title: '', description: '<!-- template -->' },
+  ]) {
+    const plan = resolveBuildPlan({ issueID: 'ACME-1', attachments: [], ...ticket })
+    assert.equal(plan.source, 'none', JSON.stringify(ticket))
+    assert.match(plan.reason, /^ACME-1: nothing to build from/)
+  }
+})
+
+function issueFile(dir, issue) {
+  const file = join(dir, 'issue.json')
+  writeFileSync(file, JSON.stringify(issue))
+  return file
+}
+
+test('CLI build-source writes the title and description out as the plan and exits 0', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'build-source-'))
+  try {
+    const planFile = join(dir, 'plan.md')
+    const result = runCli([
+      'build-source',
+      issueFile(dir, { id: 'ACME-2', title: 'Stream it', description: FREE_FORM, attachments: [] }),
+      planFile,
+    ])
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      issueID: 'ACME-2',
+      source: 'description',
+      planFile,
+    })
+    assert.equal(readFileSync(planFile, 'utf8'), `# Stream it\n\n${FREE_FORM}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI build-source names the plan attachment and pre-writes the description as its fallback', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'build-source-'))
+  try {
+    const planFile = join(dir, 'plan.md')
+    const result = runCli([
+      'build-source',
+      issueFile(dir, {
+        identifier: 'ACME-3',
+        title: 'Stream it',
+        description: FREE_FORM,
+        attachments: [{ id: 'att-3', title: 'Implementation plan (ACME-3)', url: UPLOAD }],
+      }),
+      planFile,
+    ])
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      issueID: 'ACME-3',
+      source: 'attachment',
+      attachmentId: 'att-3',
+      attachmentTitle: 'Implementation plan (ACME-3)',
+      planFile,
+    })
+    assert.equal(readFileSync(planFile, 'utf8'), `# Stream it\n\n${FREE_FORM}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI build-source reports no fallback for an attachment-only ticket with no text', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'build-source-'))
+  try {
+    const planFile = join(dir, 'plan.md')
+    const result = runCli([
+      'build-source',
+      issueFile(dir, {
+        id: 'ACME-5',
+        title: '',
+        attachments: [{ id: 'att-5', title: 'Implementation plan (ACME-5)', url: UPLOAD }],
+      }),
+      planFile,
+    ])
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(JSON.parse(result.stdout).planFile, null)
+    assert.deepEqual(readdirSync(dir), ['issue.json'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI build-source refuses an empty ticket with exit 3 and a plain reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'build-source-'))
+  try {
+    const planFile = join(dir, 'plan.md')
+    const result = runCli([
+      'build-source',
+      issueFile(dir, { id: 'ACME-4', title: '', description: '', attachments: [] }),
+      planFile,
+    ])
+    assert.equal(result.status, 3)
+    const report = JSON.parse(result.stdout)
+    assert.equal(report.source, 'none')
+    assert.match(report.reason, /^ACME-4: nothing to build from/)
+    assert.deepEqual(readdirSync(dir), ['issue.json'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('selectSupersededPlanAttachments returns exact-title plans older than the kept attachment', () => {

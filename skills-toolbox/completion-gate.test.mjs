@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   computeEligibility,
-  parseFollowUps,
   classifyLaunchOrigin,
   classifyWatchers,
   classifyVerifyConsent,
@@ -24,16 +23,10 @@ import { SHARED_INELIGIBLE_REASONS, sharedEligibility } from './merge-eligibilit
 const HEAD = 'a'.repeat(40),
   MERGED = 'b'.repeat(40),
   OTHER = 'c'.repeat(40)
-const body = `## Acceptance criteria
-- [x] implementation demonstrated
-## Review coverage
+const body = `## Review coverage
 full
 ## Cross-model review
 clean
-## Human follow-up
-- none
-## Open questions
-- none
 `
 const view = () => ({
   state: 'OPEN',
@@ -58,7 +51,6 @@ function green() {
     openFindings: 0,
     reviewCoverage: 'full',
     crossModelReview: 'clean',
-    criteria: { met: 1, total: 1 },
     ciWaitState: 'settled',
     checkVerdict: { state: 'green', observedSHA: HEAD },
     prView: view(),
@@ -66,8 +58,6 @@ function green() {
     localHead: HEAD,
     upstreamHead: HEAD,
     treeDrift: 'none',
-    humanFollowUp: { status: 'ok', open: 0 },
-    openQuestions: { status: 'ok', open: 0 },
     launchOrigin: 'standalone',
     watchers: 'own-chat-only',
     archiveAfterMerge: false,
@@ -93,12 +83,9 @@ const falseCases = [
   ['openFindings', 1, 'open-findings'],
   ['reviewCoverage', 'full (skipped: round)', 'coverage-not-full'],
   ['crossModelReview', 'error: absent', 'cross-model-error'],
-  ['criteria', { met: 0, total: 1 }, 'criteria-unmet'],
   ['ciWaitState', 'timeout', 'ci-not-settled'],
   ['checkVerdict', { state: 'failing', observedSHA: HEAD }, 'ci-not-green-on-head'],
   ['treeDrift', 'changed', 'tree-changed-since-review'],
-  ['humanFollowUp', { status: 'ok', open: 1 }, 'human-follow-up-open'],
-  ['openQuestions', { status: 'ok', open: 1 }, 'open-questions-open'],
   ['launchOrigin', 'epic-child', 'epic-child'],
   ['watchers', 'foreign-pr-watcher', 'foreign-pr-watcher'],
 ]
@@ -118,12 +105,9 @@ const unknownCases = [
   ['openFindings', 'open-findings'],
   ['reviewCoverage', 'coverage-unknown'],
   ['crossModelReview', 'cross-model-unknown'],
-  ['criteria', 'criteria-unknown'],
   ['ciWaitState', 'ci-not-settled'],
   ['checkVerdict', 'ci-not-green-on-head'],
   ['treeDrift', 'tree-drift-unknown'],
-  ['humanFollowUp', 'follow-up-section-missing'],
-  ['openQuestions', 'open-questions-section-missing'],
   ['launchOrigin', 'launch-origin-unknown'],
   ['watchers', 'pr-watchers-unknown'],
 ]
@@ -143,12 +127,9 @@ for (const [field, value, reason] of [
   ['reviewVerdict', 'disabled', 'review-not-clean'],
   ['reviewCoverage', {}, 'coverage-unknown'],
   ['crossModelReview', [], 'cross-model-unknown'],
-  ['criteria', { total: '1', met: 1 }, 'criteria-unknown'],
   ['treeDrift', true, 'tree-drift-unknown'],
   ['launchOrigin', true, 'launch-origin-unknown'],
   ['watchers', true, 'pr-watchers-unknown'],
-  ['humanFollowUp', { status: 'ok', open: '0' }, 'follow-up-section-missing'],
-  ['openQuestions', { status: 'malformed', open: 0 }, 'open-questions-section-missing'],
 ]) {
   test(`eligibility rejects malformed ${field}`, () =>
     assert.deepEqual(computeEligibility({ ...green(), [field]: value }).ineligibleReasons, [
@@ -158,8 +139,12 @@ for (const [field, value, reason] of [
 for (const [field, value, reason] of [
   ['state', 'CLOSED', 'pr-not-open'],
   ['isDraft', true, 'pr-draft'],
-  ['title', 'Feature (partial scope)', 'do-not-merge-marker'],
-  ['body', body + '\nDo Not Merge', 'do-not-merge-marker'],
+  ['title', 'Feature (partial 1/3)', 'partial-marker'],
+  [
+    'body',
+    body + '\n## Partial\ndo not merge — partial: 1/3 acceptance criteria',
+    'partial-marker',
+  ],
   ['headRefOid', OTHER, 'head-mismatch'],
   ['headRefOid', undefined, 'head-unknown'],
   ['mergeStateStatus', 'BLOCKED', 'merge-state-blocked'],
@@ -168,8 +153,6 @@ for (const [field, value, reason] of [
   ['mergeStateStatus', {}, 'merge-state-unknown'],
   ['state', undefined, 'pr-not-open'],
   ['isDraft', undefined, 'pr-draft'],
-  ['title', undefined, 'do-not-merge-marker'],
-  ['body', undefined, 'do-not-merge-marker'],
 ]) {
   test(`eligibility rejects live PR ${field}=${String(value)}`, () => {
     const fixture = green()
@@ -246,36 +229,20 @@ test('the retired completion consent reasons are gone from the vocabulary and ev
 test('missing evidence never authorizes a merge', () =>
   assert.equal(computeEligibility({}).mergeAuthorized, false))
 
-test('follow-ups count open, completed and empty sections', () => {
-  const result = parseFollowUps(
-    '## Human follow-up\n- [ ] verify live\n- [x] done\n## Open questions\n- none',
-  )
-  assert.equal(result.ok, true)
-  assert.deepEqual(result.humanFollowUp, { status: 'ok', open: 1, done: 1, total: 2 })
-  assert.deepEqual(result.openQuestions, { status: 'ok', open: 0, done: 0, total: 0 })
-})
-test('follow-ups ignore fenced examples and match heading case', () => {
-  const parsed = parseFollowUps(
-    '```markdown\n## Human follow-up\n- [ ] example\n```\n## HUMAN FOLLOW-UP\n~~~\n- [ ] example\n~~~\n- [X] done\n## OPEN QUESTIONS\n- NONE',
-  )
-  assert.equal(parsed.ok, true)
-  assert.equal(parsed.humanFollowUp.open, 0)
-  assert.equal(parsed.humanFollowUp.done, 1)
-})
-for (const text of ['prose', '- [ ]', '- none\n- [ ] item', '', '### nested prose'])
-  test(`follow-up malformed content: ${JSON.stringify(text)}`, () => {
-    const parsed = parseFollowUps(`## Human follow-up\n${text}\n## Open questions\n- none`)
-    assert.equal(parsed.humanFollowUp.status, 'malformed')
-    assert.equal(parsed.ok, false)
-  })
-test('missing and duplicate follow-up headings fail closed', () => {
-  assert.equal(parseFollowUps('').humanFollowUp.status, 'missing')
-  assert.equal(
-    parseFollowUps(
-      '## Human follow-up\n- none\n## Human follow-up\n- [ ] open\n## Open questions\n- none',
-    ).ok,
-    false,
-  )
+test('a PR body with no sections, open boxes or "do not merge" prose stays eligible', () => {
+  for (const [title, prBody] of [
+    ['Feature', ''],
+    ['Feature', 'Fixes the login redirect.'],
+    ['Do not merge yet', 'Please do not merge until Friday.\n- [ ] docs\n- [ ] tests'],
+    [
+      'Feature (partial scope)',
+      '## Acceptance criteria\n- [ ] unmet\n## Open questions\n- [ ] which?',
+    ],
+  ]) {
+    const fixture = green()
+    Object.assign(fixture.prView, { title, body: prBody })
+    assert.deepEqual(computeEligibility(fixture).ineligibleReasons, [], `${title}: ${prBody}`)
+  }
 })
 for (const [mode, expected] of [
   ['cron', 'standalone'],
@@ -808,7 +775,7 @@ test('fast path: wait with a token clears the claim', (t) => {
 for (const verdict of ['pass', 'human'])
   test(`fast path: ${verdict} post with tracker writes unavailable stops without a merge`, (t) => {
     const h = fastHarness(t, {
-      judge: { verdict, reason: verdict === 'pass' ? 'verified' : 'ledger-open', headSha: HEAD },
+      judge: { verdict, reason: verdict === 'pass' ? 'verified' : 'partial-build', headSha: HEAD },
       post: { verdict, posted: false, trackerWrites: 'unavailable' },
     })
     assert.equal(h.run().reason, 'tracker-writes-unavailable')
@@ -875,15 +842,12 @@ test('fast path: --dry-run reaches post and merge and writes no record', (t) => 
   assert.equal(result.reason, 'dry-run')
   assert.equal(h.record(), null)
 })
-test('CLI: envelope persists a run-keyed record, fast-path parses bare --dry-run, followups validates', (t) => {
+test('CLI: envelope persists a run-keyed record and fast-path parses bare --dry-run', (t) => {
   const h = harness(t)
   const verdictFile = join(h.dir, 'checks.json'),
     envelopeFile = join(h.dir, 'envelope.json'),
-    out = join(h.dir, 'completion.json'),
-    bodyFile = join(h.dir, 'body.md')
+    out = join(h.dir, 'completion.json')
   writeFileSync(verdictFile, JSON.stringify(green().checkVerdict))
-  writeFileSync(bodyFile, body)
-  assert.equal(main(['followups', '--body-file', bodyFile], h.deps).ok, true)
   const envelope = main(
     [
       'envelope',
@@ -944,11 +908,11 @@ test('CLI: envelope persists a run-keyed record, fast-path parses bare --dry-run
   assert.throws(() => main(['fast-path', '--envelope', envelopeFile], h.deps), /--out/)
   assert.throws(() => main(['envelope', '--out'], h.deps), /--option value/)
 })
-for (const retired of ['merge', 'settle'])
+for (const retired of ['merge', 'settle', 'followups'])
   test(`the retired ${retired} verb is a usage error`, () =>
     assert.throws(
       () => main([retired, '--envelope', '/nonexistent', '--out', '/nonexistent']),
-      /usage: completion-gate\.mjs followups\|envelope\|fast-path/,
+      /usage: completion-gate\.mjs envelope\|fast-path/,
     ))
 test('VERIFY_GATE is the sibling verify-gate.mjs', () =>
   assert.equal(VERIFY_GATE, fileURLToPath(new URL('./verify-gate.mjs', import.meta.url))))
@@ -957,14 +921,11 @@ test('VERIFY_GATE is the sibling verify-gate.mjs', () =>
 // restated here because naming them would edit existing lines.
 function sharedFactsOf(f) {
   return {
-    criteria: f.criteria,
     ciWaitState: f.ciWaitState,
     checkVerdict: f.checkVerdict,
     headSha: f.pushedHead,
     prView: f.prView,
     heads: [f.pushedHead, f.localHead, f.upstreamHead, f.prView?.headRefOid],
-    humanFollowUp: f.humanFollowUp,
-    openQuestions: f.openQuestions,
   }
 }
 function parityFixtures() {
@@ -986,17 +947,16 @@ function parityFixtures() {
       ['reviewVerdict', {}],
       ['reviewCoverage', {}],
       ['crossModelReview', []],
-      ['criteria', { total: '1', met: 1 }],
       ['treeDrift', true],
       ['launchOrigin', true],
       ['watchers', true],
-      ['humanFollowUp', { status: 'ok', open: '0' }],
-      ['openQuestions', { status: 'malformed', open: 0 }],
     ].map(([field, value]) => [`malformed ${field}`, { ...green(), [field]: value }]),
     ...[
       ['state', 'CLOSED'],
       ['isDraft', true],
+      ['title', 'Feature (partial 1/3)'],
       ['title', 'Feature (partial scope)'],
+      ['body', body + '\n## Partial\ndo not merge — partial: 1/3 acceptance criteria'],
       ['body', body + '\nDo Not Merge'],
       ['headRefOid', OTHER],
       ['headRefOid', undefined],
@@ -1023,12 +983,14 @@ function parityFixtures() {
     [
       'several shared reasons at once',
       {
-        ...withPr({ isDraft: true, mergeStateStatus: 'BEHIND', headRefOid: OTHER }),
-        criteria: { met: 0, total: 2 },
+        ...withPr({
+          isDraft: true,
+          mergeStateStatus: 'BEHIND',
+          headRefOid: OTHER,
+          title: 'Feature (partial 1/2)',
+        }),
         ciWaitState: 'timeout',
         treeDrift: 'changed',
-        humanFollowUp: { status: 'ok', open: 1 },
-        openQuestions: undefined,
       },
     ],
   ]

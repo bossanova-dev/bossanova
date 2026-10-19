@@ -12,7 +12,7 @@ import {
   renderFollowUpSections,
   routeFollowUps,
 } from './followup-route.mjs'
-import { followUpReasons, parseFollowUps, sections } from './merge-eligibility.mjs'
+import { sections } from './merge-eligibility.mjs'
 import { addTrigger } from './notes-record.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -22,9 +22,6 @@ function bodyWith(rendered) {
   return [
     'Issue: https://tracker.example/ISSUE-1',
     '',
-    '## Acceptance criteria',
-    '- [x] the change works',
-    '',
     rendered,
     '## Review coverage',
     'full',
@@ -32,11 +29,8 @@ function bodyWith(rendered) {
   ].join('\n')
 }
 
-const reasonsFor = (candidates) =>
-  followUpReasons(parseFollowUps(bodyWith(renderFollowUpSections(routeFollowUps(candidates)))))
-
-// The three items that parked a finished PR: stage-owned evidence, a host credential problem, and
-// a plan open question whose chosen option the build already implemented.
+// Stage-owned evidence, a host credential problem, and a plan open question whose chosen option
+// the build already implemented: none of them is a person's to act on.
 const PARKED_PR_ITEMS = [
   { text: 'Publish or review the live-drive evidence for this change.', source: 'stage-evidence' },
   {
@@ -90,20 +84,18 @@ test('vocabulary is frozen and closed', () => {
     assert.equal(typeof description, 'string')
 })
 
-test('the three parked-PR items route to zero ledger items', () => {
+test('items no person acts on route to no human follow-up or question', () => {
   const routed = routeFollowUps(PARKED_PR_ITEMS)
   assert.deepEqual(routed.humanFollowUp, [])
-  assert.deepEqual(routed.openQuestions, [])
+  assert.deepEqual(routed.questions, [])
   assert.equal(routed.hostNotes.length, 1)
   assert.equal(routed.decisions.length, 2)
   assert.deepEqual(routed.warnings, [])
 
-  const rendered = renderFollowUpSections(routed)
-  const parsed = sections(bodyWith(rendered))
-  assert.deepEqual(parsed.get('human follow-up').filter(Boolean), ['- none'])
-  assert.deepEqual(parsed.get('open questions').filter(Boolean), ['- none'])
+  const parsed = sections(bodyWith(renderFollowUpSections(routed)))
+  assert.equal(parsed.has('human follow-up'), false)
+  assert.equal(parsed.has('open questions'), false)
   assert.ok(parsed.has('host notes'))
-  assert.deepEqual(followUpReasons(parseFollowUps(bodyWith(rendered))), [])
 })
 
 test('stage evidence names its stage, defaulting to verify', () => {
@@ -122,7 +114,7 @@ test('a resolved plan question records the question, the choice and the alternat
   assert.ok(decision.includes(PARKED_PR_ITEMS[2].alternative))
 })
 
-test('outside-worktree criteria still park the PR', () => {
+test('outside-worktree criteria are listed under ## Human follow-up', () => {
   const candidates = [
     {
       text: 'Confirm the dashboard loads against production data',
@@ -133,11 +125,13 @@ test('outside-worktree criteria still park the PR', () => {
   const routed = routeFollowUps(candidates)
   assert.equal(routed.humanFollowUp.length, 1)
   assert.deepEqual(routed.warnings, [])
-  assert.match(renderFollowUpSections(routed), /^- \[ \] Confirm the dashboard loads/m)
-  assert.deepEqual(reasonsFor(candidates), ['human-follow-up-open'])
+  assert.deepEqual(sections(bodyWith(renderFollowUpSections(routed))).get('human follow-up'), [
+    '- [ ] Confirm the dashboard loads against production data (criterion: dashboard renders live totals)',
+    '',
+  ])
 })
 
-test('a post-merge observation is listed under ## After merge and never parks the PR', () => {
+test('a post-merge observation is listed under ## After merge', () => {
   const candidates = [
     {
       text: 'Observe the nightly build run on its configured schedule',
@@ -155,31 +149,29 @@ test('a post-merge observation is listed under ## After merge and never parks th
   assert.deepEqual(parsed.get('after merge').filter(Boolean), [
     '- [ ] Observe the nightly build run on its configured schedule (criterion: scheduled build cadence)',
   ])
-  assert.deepEqual(parsed.get('human follow-up').filter(Boolean), ['- none'])
-  assert.deepEqual(reasonsFor(candidates), [])
+  assert.equal(parsed.has('human follow-up'), false)
   assert.equal(
     sections(bodyWith(renderFollowUpSections(routeFollowUps([])))).has('after merge'),
     false,
   )
 })
 
-test('a pre-existing review finding is listed for a ticket and never parks the PR', () => {
+test('a pre-existing review finding is listed for a ticket', () => {
   const candidates = [{ text: 'P1 a.go:3 — nil map write: m is nil', source: 'review-finding' }]
   const routed = routeFollowUps(candidates)
   assert.deepEqual(routed.reviewFollowUps, ['P1 a.go:3 — nil map write: m is nil'])
   assert.deepEqual(routed.humanFollowUp, [])
   assert.deepEqual(routed.warnings, [])
   assert.ok(sections(bodyWith(renderFollowUpSections(routed))).has('review follow-ups'))
-  assert.deepEqual(reasonsFor(candidates), [])
 })
 
-test('outside-worktree without a criterion still parks, with a warning', () => {
+test('outside-worktree without a criterion is still listed, with a warning', () => {
   const routed = routeFollowUps([{ text: 'Check the deployed env', source: 'outside-worktree' }])
   assert.deepEqual(routed.humanFollowUp, ['Check the deployed env'])
   assert.equal(routed.warnings.length, 1)
 })
 
-test('missing or unknown source defaults to the human follow-up ledger with a warning', () => {
+test('missing or unknown source defaults to ## Human follow-up with a warning', () => {
   for (const candidate of [
     { text: 'Something unclassified' },
     { text: 'Something unclassified', source: 'weather' },
@@ -188,17 +180,15 @@ test('missing or unknown source defaults to the human follow-up ledger with a wa
     const routed = routeFollowUps([candidate])
     assert.deepEqual(routed.humanFollowUp, ['Something unclassified'])
     assert.equal(routed.warnings.length, 1)
-    assert.deepEqual(reasonsFor([candidate]), ['human-follow-up-open'])
   }
 })
 
-test('a plan question without a chosen option parks under open questions, with a warning', () => {
-  const candidates = [{ text: 'Which cache to use?', source: 'plan-question' }]
-  const routed = routeFollowUps(candidates)
-  assert.deepEqual(routed.openQuestions, ['Which cache to use?'])
+test('a plan question without a chosen option is returned to decide or ask, never published', () => {
+  const routed = routeFollowUps([{ text: 'Which cache to use?', source: 'plan-question' }])
+  assert.deepEqual(routed.questions, ['Which cache to use?'])
   assert.deepEqual(routed.decisions, [])
   assert.equal(routed.warnings.length, 1)
-  assert.deepEqual(reasonsFor(candidates), ['open-questions-open'])
+  assert.doesNotMatch(renderFollowUpSections(routed), /cache/)
 })
 
 test('empty text is dropped with a warning', () => {
@@ -213,9 +203,10 @@ test('empty text is dropped with a warning', () => {
 test('text is collapsed to one line and a leading checklist marker is stripped', () => {
   const routed = routeFollowUps([{ text: '- [ ] Verify\n  the\r\nrollout ', source: 'bogus' }])
   assert.deepEqual(routed.humanFollowUp, ['Verify the rollout'])
-  assert.deepEqual(reasonsFor([{ text: '- [ ] a\n## Open questions\n- none', source: 'x' }]), [
-    'human-follow-up-open',
-  ])
+  const injected = renderFollowUpSections(
+    routeFollowUps([{ text: '- [ ] a\n## Open questions\n- none', source: 'x' }]),
+  )
+  assert.equal(sections(injected).has('open questions'), false)
 })
 
 test('source spelling is normalised, not rejected', () => {
@@ -225,29 +216,6 @@ test('source spelling is normalised, not rejected', () => {
   ])
   assert.equal(routed.hostNotes.length, 1)
   assert.equal(routed.decisions.length, 1)
-})
-
-test('the reserved partial-marker phrase earns a warning', () => {
-  const routed = routeFollowUps([{ text: 'Do not merge until the host is fixed', source: 'host' }])
-  assert.equal(routed.hostNotes.length, 1)
-  assert.equal(routed.warnings.length, 1)
-})
-
-test('the reserved phrase in any emitted field earns a warning', () => {
-  for (const extra of [
-    { source: 'plan-question', chosen: 'a', alternative: 'do not merge until verified' },
-    { source: 'plan-question', chosen: 'Do Not Merge yet' },
-    { source: 'outside-worktree', criterion: 'do not merge before prod check' },
-    { source: 'host', where: 'do not merge step' },
-    { source: 'stage-evidence', stage: 'do not merge' },
-  ]) {
-    const routed = routeFollowUps([{ text: 'An item', ...extra }])
-    assert.equal(
-      routed.warnings.filter((w) => /do not merge/.test(w)).length,
-      1,
-      JSON.stringify(extra),
-    )
-  }
 })
 
 test('every declared source has its own route', () => {
@@ -262,11 +230,9 @@ test('non-array input is normalised', () => {
   assert.equal(empty.warnings.length, 1)
 })
 
-test('empty routing renders both ledger sections as none and omits host notes', () => {
-  const rendered = renderFollowUpSections(routeFollowUps([]))
-  assert.equal(sections(rendered).has('host notes'), false)
-  assert.deepEqual(followUpReasons(parseFollowUps(rendered)), [])
-  assert.deepEqual(followUpReasons(parseFollowUps(renderFollowUpSections(undefined))), [])
+test('empty routing renders no section at all', () => {
+  assert.equal(renderFollowUpSections(routeFollowUps([])), '')
+  assert.equal(renderFollowUpSections(undefined), '')
 })
 
 test('host notes render as a plain list with no checkboxes', () => {
@@ -295,7 +261,7 @@ test('route CLI prints the routed result with sections and writes notes-out', ()
   const result = JSON.parse(out)
   assert.equal(result.hostNotes.length, 1)
   assert.equal(typeof result.sections, 'string')
-  assert.deepEqual(followUpReasons(parseFollowUps(bodyWith(result.sections))), [])
+  assert.equal(sections(result.sections).has('human follow-up'), false)
 
   const notes = JSON.parse(memFs.files.get('/notes.json'))
   assert.deepEqual(notes, result.hostNotes)
@@ -333,7 +299,7 @@ test('notes-out feeds notes-record add --from: one buffered line per host note',
   )
 })
 
-test('unreadable candidates fail without rendering empty ledger sections', () => {
+test('unreadable candidates fail without rendering any sections', () => {
   for (const setup of [() => {}, (memFs) => memFs.files.set('/in.json', '{not json')]) {
     const memFs = memoryFs()
     setup(memFs)

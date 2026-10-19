@@ -9,12 +9,12 @@ Read the one whose trigger fired; the SKILL.md body carries the decision rule.
 The body's Safety rails state the gate; this is the rationale and the read for
 each condition. A ticket is merge-eligible only when **all four** hold:
 
-| #   | Condition               | How to read it                                                                                                    |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| 1   | daemon merge gate clear | `get_session` / the display status reports `gate 1` / `Passing` — **authoritative**                               |
-| 2   | build chat SETTLED      | settled per `classifyChildSettled` (§5), real changed files                                                       |
-| 3   | PR is not a draft       | `gh pr view <n> --json isDraft -q .isDraft` → `false`                                                             |
-| 4   | no do-not-merge marker  | `gh pr view <n> --json title,body` carries no partial-slice / `do not merge` marker (a `PARTIAL` child writes it) |
+| #   | Condition               | How to read it                                                                                                     |
+| --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1   | daemon merge gate clear | `get_session` / the display status reports `gate 1` / `Passing` — **authoritative**                                |
+| 2   | build chat SETTLED      | settled per `classifyChildSettled` (§5), real changed files                                                        |
+| 3   | PR is not a draft       | `gh pr view <n> --json isDraft -q .isDraft` → `false`                                                              |
+| 4   | no PARTIAL marker       | `gh pr view <n> --json title,body` into the snapshot's `prView`; `isPartial` decides (a `PARTIAL` child writes it) |
 
 Why each is load-bearing:
 
@@ -40,7 +40,7 @@ do not merge — partial: <satisfied>/<total> acceptance criteria
 ```
 
 and appends ` (partial <satisfied>/<total>)` to the PR title. Either alone is a
-hold, and both together survive an edit to one — which is why condition (5) reads
+hold, and both together survive an edit to one — which is why condition (4) reads
 `title,body` rather than one of them. This is the same literal `boss-build`'s
 publish reference specifies under its PARTIAL section; the two are
 byte-identical by contract, so never reword one side. (Named without a path on

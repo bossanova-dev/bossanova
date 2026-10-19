@@ -54,6 +54,12 @@
       "signOff": false,
       "restates": false
     },
+    "partial-build": {
+      "plain": "only part of the ticket was finished, so the PR is held",
+      "category": "partial build",
+      "signOff": false,
+      "restates": false
+    },
     "repair-exhausted": {
       "plain": "automatic repair gave up on this PR",
       "category": "repair exhausted",
@@ -83,6 +89,7 @@
     "no-receipt",
     "repair-exhausted",
     "always-human-path",
+    "partial-build",
     "ledger-open",
     "extension-failed",
     "no-session",

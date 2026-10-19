@@ -17,12 +17,15 @@ const humanReviewPrefix = "human-review:"
 // humanReasonsOrder is the verify gate's closed park-code vocabulary in its
 // report order. It mirrors HUMAN_REASONS in skills-toolbox/verify-gate.mjs
 // (whose human-review categories come from VERIFY_HUMAN_REVIEW_CATEGORIES in
-// skills-toolbox/skill-config.mjs); keep the two in step. Codes outside it are
-// still reviewed, ordered after these.
+// skills-toolbox/skill-config.mjs); keep the two in step. It also keeps the
+// retired ParkCodeLedgerOpen in its old place, so a park recorded before it
+// was retired is ordered as it was served. Codes outside it are still
+// reviewed, ordered after these.
 var humanReasonsOrder = []string{
 	"no-receipt",
 	"repair-exhausted",
 	"always-human-path",
+	ParkCodePartial,
 	ParkCodeLedgerOpen,
 	"extension-failed",
 	"no-session",
@@ -34,10 +37,10 @@ var humanReasonsOrder = []string{
 	"human-review:unproven",
 }
 
-// IsReportedParkCode reports whether code is in the verify gate's closed
-// park-code vocabulary (humanReasonsOrder), the codes an approval can waive.
+// IsReportedParkCode reports whether verify can raise code, so an approval
+// can waive it: a code in humanReasonsOrder other than a retired one.
 func IsReportedParkCode(code string) bool {
-	return slices.Contains(humanReasonsOrder, code)
+	return code != ParkCodeLedgerOpen && slices.Contains(humanReasonsOrder, code)
 }
 
 // Park codes that are not the operator's to act on: the verify stage is
@@ -96,11 +99,15 @@ type sentenceTemplate struct {
 	withoutEvidence string
 }
 
-// ParkCodeLedgerOpen is the verify park code for a PR whose own checklist (the
-// "ledger" in verify's vocabulary, never in operator-facing words) is open or
-// unreadable: an unmet acceptance criterion, an open human follow-up or
-// question, a do-not-merge marker, or one of those sections missing, repeated
-// or not a checklist. Review findings are not part of it.
+// ParkCodePartial is the verify park code for a PR that boss-build marked
+// PARTIAL: it finished only part of the ticket and says so in the title or the
+// first line of its ## Partial section.
+const ParkCodePartial = "partial-build"
+
+// ParkCodeLedgerOpen is the retired verify park code for a PR whose own
+// checklist was open or unreadable. Verify no longer raises it and an approval
+// cannot waive it, but parks recorded before it was retired still name it and
+// render with its words.
 const ParkCodeLedgerOpen = "ledger-open"
 
 // parkCodeInfo is what one known park code renders.
@@ -159,6 +166,11 @@ var knownParkCodes = map[string]parkCodeInfo{
 		category: "unproven checks",
 		signOff:  true,
 		plain:    "some checks have no evidence that they pass",
+	},
+	ParkCodePartial: {
+		sentence: &sentenceTemplate{format: "Partial build"},
+		category: "partial build",
+		plain:    "only part of the ticket was finished, so the PR is held",
 	},
 	ParkCodeLedgerOpen: {
 		sentence: &sentenceTemplate{slot: slotOpenItems},

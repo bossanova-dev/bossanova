@@ -20,6 +20,7 @@ export {
   nextToMerge,
 } from './dag-scheduler.mjs'
 import { mergeBlockedExternalBlockers as mergeBlockedExternalBlockersPure } from './dag-scheduler.mjs'
+import { selectReadablePlanAttachment, ticketPlanText } from './plan-attachment.mjs'
 import { DEFAULT_TRACKER_STATES } from './skill-config.mjs'
 import { hasSelectionFlags, matchIssue, parseSelectionFlags } from './selection.mjs'
 
@@ -38,34 +39,13 @@ function extractBlockers(issue) {
 export { BLOCKER_CLEARED_STATE_TYPES }
 
 // First `{title, url}` entry whose title starts with "Implementation plan",
-// or null. Retained for display compatibility only: eligibility below requires
-// a native attachment, never a link.
+// or null. Retained for display compatibility only.
 function firstPlanUrl(entries) {
   if (!Array.isArray(entries)) return null
   const match = entries.find(
     (entry) => typeof entry?.title === 'string' && entry.title.startsWith('Implementation plan'),
   )
   return match?.url ?? null
-}
-
-// A native tracker attachment is the only implementation-plan artifact that an
-// epic can hand to boss-build. Keep links in planUrl for callers that display
-// legacy metadata, but never let one launch a child session.
-function canonicalPlanAttachment(attachments, issueID) {
-  if (!Array.isArray(attachments)) return null
-  const id = String(issueID ?? '').toLowerCase()
-  const isPlan = (title) => {
-    const lower = String(title ?? '').toLowerCase()
-    return lower.startsWith('implementation plan') && (id === '' || lower.includes(id))
-  }
-  return attachments
-    .filter((attachment) => isPlan(attachment?.title))
-    .reduce((newest, attachment) => {
-      if (!newest || Date.parse(attachment.createdAt || '') > Date.parse(newest.createdAt || '')) {
-        return attachment
-      }
-      return newest
-    }, null)
 }
 
 function normalizeLabels(labels) {
@@ -93,7 +73,7 @@ function normalizeBlockedBy(issue) {
  * Flattens a Linear issue payload into the plain ticket shape every other
  * function in this module consumes:
  * `{id, title, priority, createdAt, stateName, stateType, labels, planUrl,
- * planAttachment, blockedBy: [ids]}`.
+ * planAttachment, description, blockedBy: [ids]}`.
  *
  * Accepts three issue shapes and normalizes each field independently:
  *   - raw GraphQL (`issue.inverseRelations`, `issue.state.{name,type}`)
@@ -127,8 +107,9 @@ export function normalizeTicket(issue) {
     labels: normalizeLabels(issue.labels),
     planUrl: firstPlanUrl(issue.attachments) ?? firstPlanUrl(issue.links) ?? issue.planUrl ?? null,
     planAttachment:
-      canonicalPlanAttachment(issue.attachments, id) ??
+      selectReadablePlanAttachment(issue.attachments, id) ??
       (issue.planAttachment?.title === `Implementation plan (${id})` ? issue.planAttachment : null),
+    description: typeof issue.description === 'string' ? issue.description : null,
     blockedBy: normalizeBlockedBy(issue),
     assigneeId: relationIdOf(issue, ['assigneeId'], 'assignee'),
     creatorId: relationIdOf(issue, ['creatorId', 'createdById'], 'creator'),
@@ -198,12 +179,13 @@ export function resolvePlannedState({ adapterStates, trackerConfigStates } = {})
  * `trackerConfigFor(config).states.planned`) — the one workflow-state word this
  * pure module refuses to bake in, so the published core stays project-agnostic:
  *   - `eligible`: stateName is the planned state AND labels include
- *     `agent-build` AND a canonical native `planAttachment` present AND NOT
- *     `needs-human`. A legacy link-only plan is skipped for migration/replanning.
+ *     `agent-build` AND NOT `needs-human` AND there is something to build from:
+ *     a readable `planAttachment`, or any title or description text (any shape —
+ *     boss-build reads it as the plan).
  *   - `done`: state is Done/Canceled (`stateType` in BLOCKER_CLEARED_STATE_TYPES)
  *     — counts as already merged for scheduling purposes.
  *   - `skipped`: everything else (`{ticket, reason}`), e.g. not-yet-planned,
- *     In Progress, In Review, missing plan, `needs-human`.
+ *     In Progress, In Review, `needs-human`, nothing to build from.
  *
  * `plannedState` must be a non-empty string (the caller resolves it from the
  * tracker adapter config); an unresolved value throws rather than silently
@@ -249,10 +231,10 @@ export function classifyTickets(
       skipped.push({ ticket, reason: `${ticket.id}: needs-human label present` })
       continue
     }
-    if (!ticket.planAttachment) {
+    if (!ticket.planAttachment && !ticketPlanText(ticket)) {
       skipped.push({
         ticket,
-        reason: `${ticket.id}: missing native Implementation plan attachment (migration/replanning required)`,
+        reason: `${ticket.id}: nothing to build from (no readable plan attachment, and no title or description)`,
       })
       continue
     }

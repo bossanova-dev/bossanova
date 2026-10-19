@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/recurser/bossalib v0.0.0
 	github.com/rs/zerolog v1.35.1
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )

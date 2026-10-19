@@ -3,13 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import {
-  criteriaReasons,
-  followUpReasons,
-  parseLedger,
-  prShapeReasons,
-} from './merge-eligibility.mjs'
-import { HUMAN_REASONS, splitEligibility } from './verify-gate.mjs'
+import { HUMAN_REASONS } from './verify-gate.mjs'
 import {
   AFTER_MERGE_MARKER,
   NOTE_CHAR_LIMIT,
@@ -17,150 +11,22 @@ import {
   UNKNOWN_CODE_WORDS,
   PARK_NOTE_MARKER,
   PARK_CODES_LINE,
-  OPEN_ITEMS_MAX,
   afterMergeItems,
   afterMergeNote,
   extensionFailures,
-  ledgerEvidence,
-  ledgerFingerprint,
-  openItemsLine,
   parkNote,
   restatesCategory,
 } from './verify-park-note.mjs'
 
 const HEAD = 'a'.repeat(40)
 
-const ledger = ({ criteria = ['- [x] it works'], followUp = ['- none'], questions = ['- none'] }) =>
-  [
-    '## Acceptance criteria',
-    ...criteria,
-    '',
-    '## Human follow-up',
-    ...followUp,
-    '',
-    '## Open questions',
-    ...questions,
-    '',
-  ].join('\n')
+const PARTIAL = (met = 2, total = 5) =>
+  `## Summary\nHalf of it.\n\n## Partial\ndo not merge — partial: ${met}/${total} acceptance criteria\n`
 
-// A finalize that re-appended its sections, as PR #3141's body did.
-const DUPLICATED = [
-  ledger({}),
-  '## Human follow-up',
-  '- none',
-  '',
-  '## Open questions',
-  '- none',
-].join('\n')
+// A debt-sweep PR: prose and no sections, as PR #3137's body is.
+const PROSE = 'The cron branch pruner used the wrong path.\n\nFiles changed:\n- `scripts/a.mjs`\n'
 
-// A debt-sweep PR: prose, no ledger at all, as PR #3137's body is.
-const NO_LEDGER =
-  'The cron branch pruner used the wrong path.\n\nFiles changed:\n- `scripts/a.mjs`\n'
-
-const UNAPPLIED_P2 = [
-  ledger({}),
-  '## Unapplied review findings',
-  '- [ ] **P2** `web/Sessions.tsx:1025` — reorder moves against the ungrouped list',
-].join('\n')
-
-const POST_MERGE =
-  '- [ ] Observe the scheduled build cadence. This is the post-merge observation, not a merge gate.'
-const AFTER_MERGE = [ledger({}), '## After merge', '- [ ] Observe the nightly run'].join('\n')
-
-// Does verify count a ledger reason on this PR? The same checks judge runs.
-function ledgerOpen({ title, body }) {
-  const l = parseLedger(body)
-  const reasons = [
-    ...criteriaReasons(l.criteria),
-    ...prShapeReasons({ state: 'OPEN', isDraft: false, title, body }),
-    ...followUpReasons(l),
-  ]
-  return splitEligibility(reasons).ledgerOpen
-}
-
-test('ledgerEvidence lists exactly what makes ledger-open fire, and is empty exactly when it does not', () => {
-  const cases = [
-    ['a closed ledger', { title: 't', body: ledger({}) }, []],
-    [
-      'sections appended twice',
-      { title: 't', body: DUPLICATED },
-      [
-        '`## Human follow-up` appears more than once, so verify cannot read it.',
-        '`## Open questions` appears more than once, so verify cannot read it.',
-      ],
-    ],
-    [
-      'no ledger at all',
-      { title: 't', body: NO_LEDGER },
-      [
-        '`## Acceptance criteria` is missing.',
-        '`## Human follow-up` is missing.',
-        '`## Open questions` is missing.',
-      ],
-    ],
-    [
-      'unchecked items',
-      {
-        title: 't',
-        body: ledger({
-          criteria: ['- [x] done', '- [ ] the export works'],
-          followUp: ['- [ ] rotate the key'],
-          questions: ['- [x] answered'],
-        }),
-      },
-      ['Unmet acceptance criterion: the export works', 'Open human follow-up: rotate the key'],
-    ],
-    [
-      'a section that is not a checklist',
-      { title: 't', body: ledger({ followUp: ['nothing to do'] }) },
-      ['`## Human follow-up` is not a checklist of `- [ ]` / `- [x]` items (or `- none`).'],
-    ],
-    [
-      'a do-not-merge marker',
-      { title: 'WIP (partial work)', body: ledger({}) },
-      ['The title or body carries a do-not-merge marker.'],
-    ],
-    // An unapplied review finding is not a ledger item: verify does not count it, so neither does
-    // the evidence. The park code's words say "ledger", not "findings", for that reason.
-    ['an unapplied P2 review finding', { title: 't', body: UNAPPLIED_P2 }, []],
-    ['an open After merge item', { title: 't', body: AFTER_MERGE }, []],
-    ['a follow-up marked post-merge', { title: 't', body: ledger({ followUp: [POST_MERGE] }) }, []],
-    [
-      'a marked and an unmarked follow-up',
-      { title: 't', body: ledger({ followUp: [POST_MERGE, '- [ ] after merge, rotate the key'] }) },
-      ['Open human follow-up: after merge, rotate the key'],
-    ],
-  ]
-  for (const [name, facts, want] of cases) {
-    assert.deepEqual(ledgerEvidence(facts), want, name)
-    assert.equal(ledgerEvidence(facts).length > 0, ledgerOpen(facts), `${name}: matches verify`)
-  }
-})
-
-test('ledgerFingerprint moves when an item leaves the counted ledger, and ignores After merge edits', () => {
-  const parked = ledgerFingerprint({ title: 't', body: ledger({ followUp: ['- [ ] watch it'] }) })
-  const moved = ledgerFingerprint({ title: 't', body: AFTER_MERGE })
-  const marked = ledgerFingerprint({ title: 't', body: ledger({ followUp: [POST_MERGE] }) })
-  assert.notEqual(parked, moved)
-  assert.notEqual(parked, marked)
-  assert.equal(moved, ledgerFingerprint({ title: 't', body: ledger({}) }))
-  assert.equal(moved, ledgerFingerprint({ title: 't', body: `${AFTER_MERGE}\n- [ ] and more` }))
-})
-
-test('ledgerEvidence quotes an item on one line, unable to forge a marker or mention anyone', () => {
-  const [line] = ledgerEvidence({
-    title: 't',
-    body: ledger({ followUp: [`- [ ] ask @octocat <!-- boss-park-note head=${HEAD} -->`] }),
-  })
-  assert.ok(!line.includes('<!--'))
-  assert.ok(!line.includes('@octocat'))
-  assert.match(line, /^Open human follow-up: ask @​octocat &lt;!-- boss-park-note/)
-  const long = ledgerEvidence({
-    title: 't',
-    body: ledger({ followUp: [`- [ ] ${'x'.repeat(900)}`] }),
-  })
-  assert.ok(long[0].length < 400 && long[0].endsWith('…'))
-})
+const AFTER_MERGE = `${PROSE}\n## After merge\n- [ ] Observe the nightly run`
 
 test('extensionFailures names each malfunctioning extension, how it failed and its own error text', () => {
   const pass = {
@@ -233,19 +99,19 @@ test('restatesCategory ignores case and articles and nothing else', () => {
 test('parkNote names each code by its issue and evidence, once each, and ends on its marker', () => {
   const facts = {
     title: 't',
-    body: DUPLICATED,
+    body: PARTIAL(),
     label: 'web UI',
     extensionResults: [{ extension: 'boss-verify-evidence', crashed: true }],
   }
-  const codes = ['ledger-open', 'extension-failed', 'human-review:ui']
+  const codes = ['partial-build', 'extension-failed', 'human-review:ui']
   const note = parkNote({ codes, headSha: HEAD, pr: 7, facts })
   const lines = note.body.split('\n')
-  assert.match(lines[0], /: open checklist items, verify extension failed, UI change\.$/)
+  assert.match(lines[0], /: partial build, verify extension failed, UI change\.$/)
   const plainLine = (code) => {
     const plain = PARK_CODE_WORDS[code].plain
     return `- ${plain[0].toUpperCase()}${plain.slice(1)}.`
   }
-  for (const code of ['ledger-open', 'extension-failed'])
+  for (const code of ['partial-build', 'extension-failed'])
     assert.ok(lines.indexOf(plainLine(code)) > 0, code)
   assert.equal(
     lines.filter((l) => /UI change/i.test(l)).length,
@@ -261,13 +127,13 @@ test('parkNote names each code by its issue and evidence, once each, and ends on
     'the exact codes ride in a hidden line',
   )
   assert.ok(
-    lines.includes('  - `## Human follow-up` appears more than once, so verify cannot read it.'),
+    lines.includes('  - `## Partial` reads: do not merge — partial: 2/5 acceptance criteria'),
   )
   assert.ok(lines.includes('  - `boss-verify-evidence` crashed or returned nothing'))
   assert.ok(lines.includes('- The change touches web UI.'), 'the UI change keeps its evidence')
   assert.ok(
     lines.includes(
-      'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh, and a fixed checklist is judged again at the next check.',
+      'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh.',
     ),
   )
   assert.ok(!note.body.includes('boss pr approve'), 'no instruction to the reader')
@@ -282,7 +148,7 @@ test('parkNote says the park label once, as its own line before the codes', () =
   const both = parkNote({
     codes: ['human-review:security', 'human-review:ui'],
     headSha: HEAD,
-    facts: { title: 't', body: NO_LEDGER, label: 'web/src/x.tsx' },
+    facts: { title: 't', body: PROSE, label: 'web/src/x.tsx' },
   }).body.split('\n')
   assert.equal(
     both.filter((l) => l.includes('web/src/x.tsx')).length,
@@ -292,26 +158,24 @@ test('parkNote says the park label once, as its own line before the codes', () =
   assert.equal(both.indexOf(touches), 2, both.join('\n'))
   assert.ok(both.includes('- A security-sensitive change for a person to review.'), both.join('\n'))
 
-  const withChecklist = parkNote({
-    codes: ['ledger-open', 'human-review:ui'],
+  const withPartial = parkNote({
+    codes: ['partial-build', 'human-review:ui'],
     headSha: HEAD,
-    facts: { title: 't', body: ledger({ followUp: ['- [ ] rotate the key'] }), label: 'web/a' },
+    facts: { title: 'Feature (partial 1/2)', body: PROSE, label: 'web/a' },
   }).body.split('\n')
-  const label = withChecklist.indexOf('- The change touches web/a.')
-  const checklist = withChecklist.findIndex((l) =>
-    l.startsWith('- The PR checklist has open items'),
-  )
-  const item = withChecklist.indexOf('  - Open human follow-up: rotate the key')
+  const label = withPartial.indexOf('- The change touches web/a.')
+  const partial = withPartial.findIndex((l) => l.startsWith('- Only part of the ticket'))
+  const evidence = withPartial.indexOf('  - The title reads: Feature (partial 1/2)')
   assert.ok(
-    label > 0 && label < checklist && checklist < item,
-    `the label sits under the checklist:\n${withChecklist.join('\n')}`,
+    label > 0 && label < partial && partial < evidence,
+    `the label sits above the partial code:\n${withPartial.join('\n')}`,
   )
-  assert.equal(withChecklist.filter((l) => l.includes('web/a')).length, 1)
+  assert.equal(withPartial.filter((l) => l.includes('web/a')).length, 1)
 
   const unlabelled = parkNote({
-    codes: ['ledger-open'],
+    codes: ['partial-build'],
     headSha: HEAD,
-    facts: { title: 't', body: NO_LEDGER, label: 'web/a' },
+    facts: { title: 't', body: PARTIAL(), label: 'web/a' },
   }).body
   assert.ok(!unlabelled.includes('web/a'), 'a park with no labelled code shows no label')
 })
@@ -321,7 +185,7 @@ test('parkNote says when no ticket stands behind the PR and when it was not give
     codes: ['no-receipt', 'extension-failed'],
     headSha: HEAD,
     pr: 3,
-    facts: { title: 't', body: NO_LEDGER, ticketless: true },
+    facts: { title: 't', body: PROSE, ticketless: true },
   })
   assert.ok(note.body.includes('No automated build and review has passed on this commit.'))
   assert.ok(!note.body.includes('boss/build'), 'no status context named to people')
@@ -332,10 +196,9 @@ test('parkNote says when no ticket stands behind the PR and when it was not give
 })
 
 test('parkNote digests its content: the same facts give the same note, changed evidence another', () => {
-  const at = (body) => parkNote({ codes: ['ledger-open'], headSha: HEAD, pr: 7, facts: { body } })
-  const open = ledger({ followUp: ['- [ ] rotate the key'] })
-  assert.equal(at(open).body, at(open).body)
-  assert.notEqual(at(open).digest, at(ledger({ followUp: ['- [x] rotate the key'] })).digest)
+  const at = (body) => parkNote({ codes: ['partial-build'], headSha: HEAD, pr: 7, facts: { body } })
+  assert.equal(at(PARTIAL()).body, at(PARTIAL()).body)
+  assert.notEqual(at(PARTIAL(2, 5)).digest, at(PARTIAL(3, 5)).digest)
   const unknown = parkNote({ codes: ['made-up'], headSha: HEAD, pr: 7 })
   assert.equal(
     unknown.body.split('an issue this version of boss does not recognise').length - 1,
@@ -346,15 +209,15 @@ test('parkNote digests its content: the same facts give the same note, changed e
   assert.ok(!unknown.body.includes('park code'), unknown.body)
 })
 
-test('a park note lists the After merge items for a person without counting them as ledger', () => {
+test('a park note lists the After merge items for a person', () => {
   const body = [
-    ledger({ followUp: ['- [ ] rotate the key'] }),
+    PARTIAL(),
     '## After merge',
     '- [ ] Observe the nightly run',
     '- [x] Already watched',
     '- [ ] Ping @ops <!-- x -->',
   ].join('\n')
-  const note = parkNote({ codes: ['ledger-open'], headSha: HEAD, pr: 7, facts: { body } })
+  const note = parkNote({ codes: ['partial-build'], headSha: HEAD, pr: 7, facts: { body } })
   const lines = note.body.split('\n')
   const at = lines.indexOf('**After merge, check:**')
   assert.ok(at > 0, 'the heading is there')
@@ -364,16 +227,11 @@ test('a park note lists the After merge items for a person without counting them
     '',
   ])
   assert.ok(at < lines.findIndex((l) => l.startsWith('An approval waives')))
-  assert.deepEqual(ledgerEvidence({ body }), ['Open human follow-up: rotate the key'])
-  assert.equal(
-    ledgerFingerprint({ body }),
-    ledgerFingerprint({ body: ledger({ followUp: ['- [ ] rotate the key'] }) }),
-  )
   const without = parkNote({
-    codes: ['ledger-open'],
+    codes: ['partial-build'],
     headSha: HEAD,
     pr: 7,
-    facts: { body: ledger({ followUp: ['- [ ] rotate the key'] }) },
+    facts: { body: PARTIAL() },
   })
   assert.equal(without.body.includes('After merge'), false)
 })
@@ -393,34 +251,33 @@ test('afterMergeNote lists the unchecked After merge items, and is null when the
   assert.deepEqual([marker?.[1], marker?.[2]], [HEAD, note.digest])
   assert.equal(afterMergeNote({ headSha: HEAD, body }).digest, note.digest)
   assert.notEqual(afterMergeNote({ headSha: HEAD, body: AFTER_MERGE }).digest, note.digest)
-  assert.equal(afterMergeNote({ headSha: HEAD, body: ledger({}) }), null)
+  assert.equal(afterMergeNote({ headSha: HEAD, body: PROSE }), null)
   assert.equal(
-    afterMergeNote({ headSha: HEAD, body: `${ledger({})}\n## After merge\n- [x] done` }),
+    afterMergeNote({ headSha: HEAD, body: `${PROSE}\n## After merge\n- [x] done` }),
     null,
   )
-  const many = [
-    ledger({}),
-    '## After merge',
-    ...Array.from({ length: 25 }, (_, i) => `- [ ] o${i}`),
-  ]
+  const many = [PROSE, '## After merge', ...Array.from({ length: 25 }, (_, i) => `- [ ] o${i}`)]
   const capped = afterMergeNote({ headSha: HEAD, body: many.join('\n') }).body.split('\n')
   assert.equal(capped.filter((l) => /^- o\d+$/.test(l)).length, 20)
   assert.ok(capped.includes('- …and 5 more in the PR description.'))
 })
 
 test('parkNote stays under the comment size limit, cutting evidence with a count of what it left out', () => {
-  const items = Array.from({ length: 3000 }, (_, i) => `- [ ] item ${i} ${'x'.repeat(40)}`)
+  const failed = Array.from({ length: 3000 }, (_, i) => ({
+    extension: `ext-${i}-${'x'.repeat(40)}`,
+    crashed: true,
+  }))
   const note = parkNote({
-    codes: ['ledger-open', 'no-receipt'],
+    codes: ['extension-failed', 'no-receipt'],
     headSha: HEAD,
     pr: 7,
-    facts: { body: ledger({ criteria: items }) },
+    facts: { body: PROSE, extensionResults: failed },
   })
   assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
   const lines = note.body.split('\n')
-  const shown = lines.filter((line) => line.startsWith('  - Unmet acceptance criterion: ')).length
-  assert.ok(shown > 0 && shown < items.length, `${shown} shown`)
-  assert.ok(lines.includes(`  - …and ${items.length - shown} more.`))
+  const shown = lines.filter((line) => /^ {2}- `ext-\d+-x+` crashed/.test(line)).length
+  assert.ok(shown > 0 && shown < failed.length, `${shown} shown`)
+  assert.ok(lines.includes(`  - …and ${failed.length - shown} more.`))
   const words = PARK_CODE_WORDS['no-receipt']
   const receipt = lines.indexOf(`- ${words.plain[0].toUpperCase()}${words.plain.slice(1)}.`)
   assert.ok(receipt > 0, 'every code keeps its line')
@@ -429,55 +286,30 @@ test('parkNote stays under the comment size limit, cutting evidence with a count
   assert.match(lines.at(-1), PARK_NOTE_MARKER)
 
   const small = parkNote({
-    codes: ['ledger-open'],
+    codes: ['extension-failed'],
     headSha: HEAD,
     pr: 7,
-    facts: { body: ledger({ criteria: items.slice(0, 3) }) },
+    facts: { body: PROSE, extensionResults: failed.slice(0, 3) },
   })
   assert.equal(small.body.includes('more.'), false)
 })
 
-const OPEN_ITEMS = /^<!-- boss-open-items: (.*) -->$/
-
-test('an open-checklist park note carries its open items as one machine-readable line before its marker', () => {
-  const body = ledger({ followUp: ['- [ ] watch the `rollout` --> then <b>ship</b>'] })
+test('a park note carries no open-items line and its marker no ledger', () => {
   const note = parkNote({
-    codes: ['human-review:ui', 'ledger-open'],
+    codes: ['partial-build'],
     headSha: HEAD,
     pr: 7,
-    facts: { body },
+    facts: { body: PARTIAL() },
   })
-  const lines = note.body.split('\n')
-  const line = lines.at(-3)
-  const payload = line.match(OPEN_ITEMS)?.[1]
-  assert.ok(payload, line)
-  assert.ok(!payload.includes('<') && !payload.includes('>'), payload)
-  assert.deepEqual(JSON.parse(payload), {
-    head: HEAD,
-    items: ['Open human follow-up: watch the rollout --> then <b>ship</b>'],
-  })
-  assert.match(lines.at(-1), PARK_NOTE_MARKER)
+  assert.ok(!note.body.includes('boss-open-items'), note.body)
+  assert.ok(!note.body.includes('ledger='), note.body)
 })
 
-test('a park note with nothing open in its checklist carries no open-items line', () => {
-  const closed = parkNote({
-    codes: ['ledger-open'],
-    headSha: HEAD,
-    pr: 7,
-    facts: { body: ledger({}) },
-  })
-  const other = parkNote({
-    codes: ['human-review:ui'],
-    headSha: HEAD,
-    pr: 7,
-    facts: { body: ledger({ followUp: ['- [ ] x'] }) },
-  })
-  for (const note of [closed, other]) assert.ok(!note.body.includes('boss-open-items'), note.body)
-  assert.equal(openItemsLine(HEAD, []), '')
-})
-
-test('the open-items line keeps at most OPEN_ITEMS_MAX items', () => {
-  const items = Array.from({ length: OPEN_ITEMS_MAX + 5 }, (_, i) => `item ${i}`)
-  const payload = JSON.parse(openItemsLine(HEAD, items).match(OPEN_ITEMS)[1])
-  assert.equal(payload.items.length, OPEN_ITEMS_MAX)
+test('a note written under the retired checklist gate still reads as its head note', () => {
+  const old = `<!-- boss-park-note head=${HEAD} digest=${'0'.repeat(16)} ledger=${'1'.repeat(16)} -->`
+  const marker = old.match(PARK_NOTE_MARKER)
+  assert.deepEqual([marker?.[1], marker?.[2]], [HEAD, '0'.repeat(16)])
+  const note = parkNote({ codes: ['ledger-open'], headSha: HEAD, pr: 7, facts: { body: PROSE } })
+  assert.match(note.body, /: open checklist items\.$/m)
+  assert.ok(!note.body.includes('an issue this version of boss does not recognise'), note.body)
 })

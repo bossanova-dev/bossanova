@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -66,11 +67,43 @@ func parseOpenItemsPayload(payload string) (OpenItems, bool) {
 	var items []string
 	for _, item := range w.Items {
 		if flat := strings.Join(strings.Fields(item), " "); flat != "" && len(items) < MaxOpenItems {
-			items = append(items, flat)
+			items = append(items, PlainOpenItem(flat))
 		}
 	}
 	if head == "" || len(items) == 0 {
 		return OpenItems{}, false
 	}
 	return OpenItems{Head: head, Items: items}, true
+}
+
+var (
+	// headingSectionItem is an open item a park note recorded for a checklist
+	// section it named as a markdown heading, such as
+	// "## Acceptance criteria is missing.". The name leaves out a trailing
+	// "section", and may be empty.
+	headingSectionItem = regexp.MustCompile("^`?#{1,6}(?:[ \t]+(.+?)(?i:[ \t]+section)?)?`?[ \t]+(is missing\\.|appears more than once\\b.*|is not a checklist\\b.*)$")
+	// leadingHeading is any other leading markdown heading, with the
+	// backticks that may surround it.
+	leadingHeading = regexp.MustCompile("^(?:`#{1,6}[ \t]+([^`]*)`|#{1,6}[ \t]+)")
+)
+
+// PlainOpenItem says an open item in plain words, so no client shows the
+// operator a markdown heading: a checklist section a park note named as one
+// reads "The Acceptance criteria section is missing.", and any other leading
+// heading marker is dropped. Every other item is returned unchanged.
+func PlainOpenItem(item string) string {
+	if m := headingSectionItem.FindStringSubmatch(item); m != nil {
+		problem := m[2]
+		switch {
+		case strings.HasPrefix(problem, "appears more than once"):
+			problem = "appears more than once, so it cannot be read."
+		case strings.HasPrefix(problem, "is not a checklist"):
+			problem = "is not a checklist."
+		}
+		if m[1] == "" {
+			return "A section with no name " + problem
+		}
+		return "The " + m[1] + " section " + problem
+	}
+	return leadingHeading.ReplaceAllString(item, "$1")
 }

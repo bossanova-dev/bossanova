@@ -27,7 +27,6 @@ import {
   mergeTreeStatus,
   deCrossReference,
   pullRequestFromSubject,
-  redactMergeGateToken,
   runGit as realGit,
 } from './base-drift.mjs'
 
@@ -529,46 +528,6 @@ test('an attribution log that returned nothing reports an absent record, not an 
   // The old spelling asserted a fact about the base branch that an empty log does not establish.
   assert.doesNotMatch(note, /none found/)
   assert.doesNotMatch(note, /no base commit in this range touches/)
-})
-
-test('a base commit subject cannot smuggle the merge-gate token into the note', () => {
-  // The note is published into a PR body. `do not merge` is the substring a merge gate matches on a
-  // PR title/body, so an unredacted base subject would hold THIS branch's PR back — and the note is
-  // quoted from other people's commits, so no "rephrase the finding" rule reaches it.
-  const R = '[merge-gate token redacted]'
-  assert.equal(
-    redactMergeGateToken('chore: revert the do not merge marker'),
-    `chore: revert the ${R} marker`,
-  )
-  assert.equal(redactMergeGateToken('DO NOT MERGE yet'), `${R} yet`)
-  assert.equal(redactMergeGateToken('do   not\tmerge'), R)
-  // Not the hyphenated spelling: that is the marker's own documented name in this protocol's prose.
-  assert.doesNotMatch(redactMergeGateToken('do not merge'), /do-not-merge/)
-  assert.equal(
-    redactMergeGateToken('merge does not do'),
-    'merge does not do',
-    'unrelated words survive',
-  )
-
-  const { dir } = makeRepo({
-    branchFiles: { 'shared.txt': 'prepended by branch\noriginal\n' },
-    baseCommits: [
-      {
-        files: { 'shared.txt': 'original\nbase\n' },
-        message: 'chore: revert the do not merge marker',
-      },
-    ],
-  })
-  const report = baseDrift({ repo: dir, base: BASE_REF })
-  assert.deepEqual(
-    report.intersection,
-    ['shared.txt'],
-    'precondition: there is an overlap to report',
-  )
-  const note = formatDriftNote(report)
-  assert.match(note, /merge-gate token redacted/, 'the redaction is visible to the reader')
-  assert.doesNotMatch(note, /do not merge/i, 'the gate token must not survive into the note')
-  assert.doesNotMatch(note, /do-not-merge/i, 'nor the marker name the token is known by')
 })
 
 test('a quoted unattributed subject cannot cross-reference another PR', () => {

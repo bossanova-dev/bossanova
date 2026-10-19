@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto'
 
-import { checklist, isPostMergeItem, sections } from './merge-eligibility.mjs'
+import { sectionToken, sections } from './merge-eligibility.mjs'
 import { classifyVerifyOutcome } from './skill-extensions.mjs'
 
 // The issue each park code names in plain words, the category a person reads it as, and whether it
@@ -33,6 +33,13 @@ export const PARK_CODE_WORDS = Object.freeze({
     category: 'security',
     signOff: true,
   },
+  'partial-build': {
+    plain: 'only part of the ticket was finished, so the PR is held',
+    category: 'partial build',
+    signOff: false,
+  },
+  // Retired with the PR checklist gate: verify no longer raises it, but parks recorded before then
+  // still name it.
   'ledger-open': {
     plain:
       'the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section',
@@ -122,56 +129,6 @@ function quote(value) {
   return flat.length > LINE_CAP ? `${flat.slice(0, LINE_CAP - 1).trimEnd()}…` : flat
 }
 
-// The ledger sections `splitEligibility` reads, with the reason each raises when open or unreadable.
-const LEDGER_SECTIONS = Object.freeze([
-  { heading: 'acceptance criteria', allowNone: false, open: 'Unmet acceptance criterion' },
-  {
-    heading: 'human follow-up',
-    allowNone: true,
-    exempt: isPostMergeItem,
-    open: 'Open human follow-up',
-  },
-  { heading: 'open questions', allowNone: true, open: 'Open question' },
-])
-
-/**
- * What makes `ledger-open` fire on this PR, one line each: every ledger section that is missing,
- * duplicated or not a checklist, every unchecked item in one, and a do-not-merge marker. These are
- * exactly the ledger reasons verify counts (merge-eligibility.mjs criteria and follow-up checks plus
- * the do-not-merge marker); no other section, `## After merge` and an unapplied review finding
- * included, is counted, nor is a follow-up item that marks itself post-merge (isPostMergeItem).
- */
-export function ledgerEvidence({ title = '', body = '' } = {}) {
-  const parsed = sections(body)
-  const out = []
-  for (const { heading, allowNone, exempt, open } of LEDGER_SECTIONS) {
-    const name = `\`## ${heading.replace(/^./, (c) => c.toUpperCase())}\``
-    if (!parsed.has(heading)) {
-      out.push(`${name} is missing.`)
-      continue
-    }
-    const lines = parsed.get(heading)
-    if (lines === null) {
-      out.push(`${name} appears more than once, so verify cannot read it.`)
-      continue
-    }
-    const list = checklist(lines, allowNone, exempt)
-    if (list.status !== 'ok') {
-      out.push(
-        `${name} is not a checklist of \`- [ ]\` / \`- [x]\` items${allowNone ? ' (or `- none`)' : ''}.`,
-      )
-      continue
-    }
-    for (const line of lines) {
-      const item = line.trim().match(/^- \[ \]\s+(\S.*)$/)
-      if (item && !exempt?.(item[1])) out.push(`${open}: ${quote(item[1])}`)
-    }
-  }
-  if (/do not merge/i.test(`${title}\n${body}`) || /\(partial\s/i.test(title))
-    out.push('The title or body carries a do-not-merge marker.')
-  return out
-}
-
 const AFTER_MERGE_SHOWN = 20
 
 /**
@@ -232,7 +189,12 @@ export function extensionFailures(results) {
 
 /** The evidence lines for one park code. */
 function evidenceFor(code, facts) {
-  if (code === 'ledger-open') return ledgerEvidence(facts)
+  if (code === 'partial-build') {
+    const line = sectionToken(facts.body, 'partial')
+    return [
+      line ? `\`## Partial\` reads: ${quote(line)}` : `The title reads: ${quote(facts.title)}`,
+    ]
+  }
   if (code === 'no-receipt') return ['No automated build and review has passed on this commit.']
   if (code === 'extension-failed') {
     const failures = extensionFailures(facts.extensionResults)
@@ -255,18 +217,6 @@ const labelled = (code) => code === 'always-human-path' || code.startsWith('huma
 function labelBlocks(codes, facts) {
   if (!text(facts.label) || !codes.some(labelled)) return []
   return [{ line: null, evidence: [`The change touches ${quote(facts.label)}.`] }]
-}
-
-/**
- * The fingerprint of a PR's ledger as verify counts it (ledgerEvidence): equal for two bodies that
- * differ only outside the ledger, different once an item is ticked or a section repaired. A
- * `ledger-open` park records the one it was judged on, so a ledger fixed after the park re-judges it.
- */
-export function ledgerFingerprint({ title = '', body = '' } = {}) {
-  return createHash('sha256')
-    .update(JSON.stringify(ledgerEvidence({ title, body })))
-    .digest('hex')
-    .slice(0, 16)
 }
 
 // GitHub refuses a comment over 65,536 characters; the note stays under NOTE_CHAR_LIMIT, with room
@@ -302,24 +252,6 @@ function fitEvidence(blocks, used) {
   return out
 }
 
-// The most open items the machine-readable line carries; the note itself lists them all.
-export const OPEN_ITEMS_MAX = 20
-
-/**
- * The machine-readable line naming what keeps the PR checklist open on `headSha`, for clients that
- * show it without reading the PR (lib/bossalib/evidence ParseOpenItems): one plain line per item,
- * backticks dropped, at most OPEN_ITEMS_MAX. `<` and `>` are escaped so no item can close the
- * comment early. '' when there is nothing open.
- */
-export function openItemsLine(headSha, items) {
-  const plain = items.slice(0, OPEN_ITEMS_MAX).map((item) => item.replace(/`/g, ''))
-  if (plain.length === 0) return ''
-  const json = JSON.stringify({ head: headSha, items: plain })
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-  return `<!-- boss-open-items: ${json} -->`
-}
-
 /**
  * The machine-readable line naming the park's codes exactly, for readers of the comment that need
  * them; the note itself names each code by its category. `<` and `>` are escaped so no code can
@@ -332,21 +264,22 @@ export function parkCodesLine(codes) {
 
 export const PARK_CODES_LINE = /^<!-- boss-park-codes: (\[.*\]) -->$/
 
-export function parkNoteMarker(headSha, digest, ledger = null) {
-  return `<!-- boss-park-note head=${headSha} digest=${digest}${ledger ? ` ledger=${ledger}` : ''} -->`
+export function parkNoteMarker(headSha, digest) {
+  return `<!-- boss-park-note head=${headSha} digest=${digest} -->`
 }
 
+// A note written while the PR checklist gate existed may carry a `ledger=` fingerprint; it still
+// reads as that head's note.
 export const PARK_NOTE_MARKER =
-  /^<!-- boss-park-note head=([0-9a-fA-F]{40}) digest=([0-9a-f]{16})(?: ledger=([0-9a-f]{16}))? -->$/
+  /^<!-- boss-park-note head=([0-9a-fA-F]{40}) digest=([0-9a-f]{16})(?: ledger=[0-9a-f]{16})? -->$/
 
 /**
  * The park note for `codes` on `headSha`: `{body, digest}`. `facts` carries `title`, `body` (the
  * PR's), `label` (the derived park label), `extensionResults` (the parsed results array, or
  * undefined when the post was not given one) and `ticketless` (no tracker ticket behind the PR).
- * `ledger` is the ledgerFingerprint the park was judged on, carried in the marker when known. The
- * digest covers the note and that fingerprint, so an unchanged note is never rewritten.
+ * The digest covers the note, so an unchanged note is never rewritten.
  */
-export function parkNote({ codes, headSha, facts = {}, ledger = null }) {
+export function parkNote({ codes, headSha, facts = {} }) {
   const wordsOf = (code) => PARK_CODE_WORDS[code] ?? UNKNOWN_CODE_WORDS
   const categories = parkCategories(codes)
   const head = [
@@ -366,21 +299,16 @@ export function parkNote({ codes, headSha, facts = {}, ledger = null }) {
   if (facts.ticketless === true)
     tail.push('This PR has no tracker ticket, so no ticket was updated.', '')
   tail.push(
-    `An approval waives exactly what is listed above, on this commit only. A new push is judged afresh${codes.includes('ledger-open') ? ', and a fixed checklist is judged again at the next check' : ''}.`,
+    'An approval waives exactly what is listed above, on this commit only. A new push is judged afresh.',
   )
-  const items = codes.includes('ledger-open') ? openItemsLine(headSha, ledgerEvidence(facts)) : ''
   tail.push('', parkCodesLine(codes))
-  if (items) tail.push(items)
   const content = [
     ...head,
     ...fitEvidence(blocks, [...head, ...tail].join('\n').length + MARKER_RESERVE),
     ...tail,
   ].join('\n')
-  const digest = createHash('sha256')
-    .update(`${content}\n${ledger ?? ''}`)
-    .digest('hex')
-    .slice(0, 16)
-  return { body: `${content}\n\n${parkNoteMarker(headSha, digest, ledger)}`, digest }
+  const digest = createHash('sha256').update(content).digest('hex').slice(0, 16)
+  return { body: `${content}\n\n${parkNoteMarker(headSha, digest)}`, digest }
 }
 
 function afterMergeMarker(headSha, digest) {

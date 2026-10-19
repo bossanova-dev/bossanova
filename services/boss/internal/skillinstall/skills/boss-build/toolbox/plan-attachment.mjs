@@ -66,6 +66,88 @@ export function selectImplementationPlanAttachment(attachments, issueID) {
   return newest(markdown.length > 0 ? markdown : planLike)
 }
 
+// Only a file the tracker hosts can be read back as a plan. Everything else on an issue is a link
+// (a pull request, a doc URL) that the attachment read refuses, however its title reads: a ticket
+// titled "Add a pricing plan picker" gets its PR attached as "[<ID>] Add a pricing plan picker".
+const TRACKER_UPLOAD_HOSTS = new Set(['uploads.linear.app'])
+
+function isUploadedFile(attachment) {
+  if (attachment?.contentType || attachment?.mimeType || attachment?.filename) return true
+  try {
+    return TRACKER_UPLOAD_HOSTS.has(new URL(attachment?.url).hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+/** The plan attachment a build can read: the same choice as above, among uploaded files only. */
+export function selectReadablePlanAttachment(attachments, issueID) {
+  const list = Array.isArray(attachments) ? attachments : (attachments?.nodes ?? [])
+  return selectImplementationPlanAttachment(list.filter(isUploadedFile), issueID)
+}
+
+const hasLettersOrDigits = (text) =>
+  typeof text === 'string' && /[\p{L}\p{N}]/u.test(text.replace(/<!--[\s\S]*?-->/g, ''))
+
+/**
+ * The ticket's own words as a plan: `# <title>` and the description, or null when neither holds a
+ * letter or digit. The planned state plus `agent-build` is the consent to build; a short or terse
+ * ticket is the build agent's to interpret, so no length or format is required.
+ */
+export function ticketPlanText({ title, description } = {}) {
+  const parts = []
+  if (hasLettersOrDigits(title)) parts.push(`# ${title.trim()}\n`)
+  if (hasLettersOrDigits(description))
+    parts.push(description.endsWith('\n') ? description : `${description}\n`)
+  return parts.length > 0 ? parts.join('\n') : null
+}
+
+/**
+ * What a build works from: a readable plan attachment when the ticket has one, otherwise the
+ * ticket's title and description in whatever shape they take. `text` is that title-and-description
+ * plan, and it is also the fallback when the attachment cannot be read. `none` only when there is
+ * no readable attachment and no letter or digit in the title or description.
+ *
+ * @returns {{source: 'attachment', attachment: object, text: string|null}
+ *   | {source: 'description', text: string}
+ *   | {source: 'none', reason: string}}
+ */
+export function resolveBuildPlan({ issueID, title, attachments, description } = {}) {
+  const text = ticketPlanText({ title, description })
+  const attachment = selectReadablePlanAttachment(attachments, issueID)
+  if (attachment) return { source: 'attachment', attachment, text }
+  if (text) return { source: 'description', text }
+  return {
+    source: 'none',
+    reason: `${issueID || 'ticket'}: nothing to build from (no readable plan attachment, and no title or description)`,
+  }
+}
+
+function buildSourceCli(issueFile, planOut) {
+  const issue = JSON.parse(readFileSync(issueFile, 'utf8'))
+  const issueID = issue?.identifier ?? issue?.id
+  const plan = resolveBuildPlan({
+    issueID,
+    title: issue?.title,
+    attachments: issue?.attachments,
+    description: issue?.description,
+  })
+  const report = { issueID: issueID ?? null, source: plan.source }
+  if (plan.source === 'none') {
+    report.reason = plan.reason
+  } else {
+    if (plan.source === 'attachment') {
+      report.attachmentId = plan.attachment.id ?? null
+      report.attachmentTitle = plan.attachment.title ?? null
+    }
+    const written = Boolean(planOut && plan.text)
+    if (written) writeFileAtomic(planOut, plan.text)
+    report.planFile = written ? planOut : null
+  }
+  process.stdout.write(`${JSON.stringify(report)}\n`)
+  return plan.source === 'none' ? 3 : 0
+}
+
 /**
  * Select duplicate canonical implementation plan attachments that are safe to
  * delete after a newer attachment for the same issue has been read back.
@@ -324,7 +406,8 @@ if (isMainModule(import.meta.url)) {
   const usage =
     'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +
     '       plan-attachment.mjs verify <local-file> <signed-url>\n' +
-    '       plan-attachment.mjs decode <in-file> <out-file>\n'
+    '       plan-attachment.mjs decode <in-file> <out-file>\n' +
+    '       plan-attachment.mjs build-source <issue-json-file> [<plan-out-file>]\n'
   // Every usage exit prints the token FIRST, so `head -1` separates "no request was sent" from a
   // rejected one without parsing the rest. The retry branch documented in plan-storage.md is
   // scoped to the latter; re-preparing a signed URL cannot fix a call that never made a request.
@@ -374,6 +457,18 @@ if (isMainModule(import.meta.url)) {
     } else {
       try {
         writeFileAtomic(outFile, decodeSpecAttachmentBody(readFileSync(inFile, 'utf8')))
+      } catch (error) {
+        process.stderr.write(`${error.message}\n`)
+        process.exitCode = 1
+      }
+    }
+  } else if (command === 'build-source') {
+    const [issueFile, planOut] = args
+    if (!issueFile) {
+      usageExit()
+    } else {
+      try {
+        process.exitCode = buildSourceCli(issueFile, planOut)
       } catch (error) {
         process.stderr.write(`${error.message}\n`)
         process.exitCode = 1

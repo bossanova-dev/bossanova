@@ -964,7 +964,7 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
           {
             id: 'att_1',
             title: 'Implementation plan (ACME-7)',
-            url: 'https://uploads.example/plan.md',
+            url: 'https://uploads.linear.app/org/plan',
             createdAt: '2026-01-02T00:00:00.000Z',
           },
         ],

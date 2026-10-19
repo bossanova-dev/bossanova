@@ -22,9 +22,9 @@ blocker** (a blocker whose
 state is not `Done`/`Canceled` — i.e. its PR is unmerged), and non-zero (skip) otherwise. This
 keeps the cron from waking to a fully-blocked backlog and burning a run that only exits
 `NO_CHANGE`. It is still a deliberately **loose superset** of Step 2's exact selection: the
-gate does not check for the `Implementation plan (...)` link, so it can occasionally let a run
-fire that then exits `NO_CHANGE` — a rare false-positive in exchange for one cheap query, never
-a false-negative. Step 2's filter remains the source of truth. The gate is **fail-closed**: a
+gate does not read descriptions, so a ticket with nothing to build from (no readable plan
+attachment and no title or description text) can occasionally let a run fire that then exits `NO_CHANGE` — a rare
+false-positive in exchange for one cheap query, never a false-negative. Step 2's filter remains the source of truth. The gate is **fail-closed**: a
 missing `LINEAR_API_KEY` (injected into the gate environment by bossd), network failure, or API
 error exits non-zero with a one-line reason on stderr, captured in the scheduler's `gate_output`
 log. The blocking-aware query + the single blocker-clearing rule (cleared iff `Done`/`Canceled`)

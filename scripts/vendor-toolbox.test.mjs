@@ -667,6 +667,8 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',
     'main-module.mjs',
+    'merge-eligibility.mjs',
+    'plan-attachment.mjs',
     'pr-check-state.mjs',
     'progress-comment.mjs',
     // selection.mjs (BOS-1378) is imported by skill-config.mjs, linear-gate-lib.mjs and

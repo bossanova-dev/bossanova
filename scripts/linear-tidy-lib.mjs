@@ -276,10 +276,9 @@ export function computeRollups(parents) {
 
 // --- Behaviour 3: planning-queue reconcile ---------------------------------
 
-// True when an issue carries a native boss-plan implementation-plan attachment.
-// Keep this legacy URL rejection only for migration/replanning: a link-only historical
-// artifact is queued for agent-plan instead of being promoted to Todo, where boss-build
-// would reject it for lacking a native attachment.
+// True when an issue carries a native boss-plan implementation-plan attachment. A
+// link-only historical artifact is not one, so its ticket is queued for boss-plan rather
+// than promoted to Todo as though boss-plan had already planned it.
 export function hasImplementationPlan(identifier, attachments) {
   const expectedTitle = `Implementation plan (${String(identifier ?? '')})`
   return (Array.isArray(attachments) ? attachments : []).some((a) => {
@@ -297,17 +296,19 @@ const hasLabel = (ticket, name) =>
 //   has an implementation plan  → move Unplanned → Todo (anomaly recovery: boss-plan
 //                                 normally moves atomically, so this only fires on a
 //                                 partial-failure or a manual reopen).
-//   no plan                     → drop `agent-build`, add `agent-plan` so the
-//                                 global boss-plan queue claims it. `newLabelIds` is
-//                                 the full replacement set (current − agent-build
-//                                 + agent-plan).
+//   no plan                     → add `agent-plan` so the global boss-plan queue
+//                                 claims it, keeping `agent-build`: that label is a
+//                                 human's request to build, and boss-build accepts a
+//                                 ticket with or without a plan once it is planned.
+//                                 `newLabelIds` is the full replacement set
+//                                 (current + agent-plan).
 // Excludes `needs-human` (must never auto-plan), an already-`agent-plan` ticket
 // (no-op), and any identifier in `blockedIdentifiers` (an epic parent with children —
 // don't auto-plan an epic). Config gaps are escalated, never guessed: a no-plan case
 // with no resolvable `agentPlanId`, or a has-plan case with no `todoStateId`.
 export function computePlanningReconcile(
   tickets,
-  { agentPlanId, agentBuildId, todoStateId, blockedIdentifiers } = {},
+  { agentPlanId, todoStateId, blockedIdentifiers } = {},
 ) {
   const toTodo = []
   const toAgentPlan = []
@@ -343,12 +344,10 @@ export function computePlanningReconcile(
       })
       continue
     }
-    // Full replacement set: keep every current label except agent-build, add
-    // agent-plan (dedup in case it somehow co-exists). Drop null/undefined ids.
-    const currentIds = (Array.isArray(ticket.labels) ? ticket.labels : [])
+    // Full replacement set: every current label plus agent-plan. Drop null/undefined ids.
+    const kept = (Array.isArray(ticket.labels) ? ticket.labels : [])
       .map((l) => l?.id)
-      .filter((id) => id != null)
-    const kept = currentIds.filter((id) => id !== agentBuildId && id !== agentPlanId)
+      .filter((id) => id != null && id !== agentPlanId)
     toAgentPlan.push({
       id: ticket.id,
       identifier: ticket.identifier,
@@ -407,7 +406,7 @@ const MOVE_MUTATION = `
 
 // Full-set label replace for the planning-queue reconcile. Linear's issueUpdate
 // `labelIds` replaces the issue's entire label set, so the caller computes the new
-// set (drop agent-build, add agent-plan) and sends it whole — the same semantics
+// set (current labels plus agent-plan) and sends it whole — the same semantics
 // as the Linear MCP `save_issue labels`.
 const LABELS_MUTATION = `
   mutation TidyRelabel($id: String!, $labelIds: [String!]!) {
@@ -559,7 +558,6 @@ export async function runTidy({
     escalate: reconcileEscalate,
   } = computePlanningReconcile(tickets, {
     agentPlanId: labelIdsByName.get(LABEL_NAMES.agentPlan),
-    agentBuildId: labelIdsByName.get(LABEL_NAMES.agentBuild),
     todoStateId,
     blockedIdentifiers: blockedFromClose,
   })

@@ -119,9 +119,9 @@ test('a merge still in flight at the deadline is dispatched with its log, and ex
 })
 
 test('a human verdict posts and exits 1', () => {
-  const w = world({ verdict: 'human', reason: 'ledger-open' })
+  const w = world({ verdict: 'human', reason: 'partial-build' })
   const { exitCode, lines } = gate(w)
-  assert.equal(lines[0], '#1 parked: needs human (ledger-open)')
+  assert.equal(lines[0], '#1 parked: needs human (partial-build)')
   assert.equal(exitCode, 1)
 })
 

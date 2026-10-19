@@ -231,6 +231,9 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'bs-epic-lib.mjs',
     'dag-scheduler.mjs',
+    // bs-epic-lib.mjs decides whether a child has anything to build from with the same
+    // plan-attachment.mjs helper boss-build uses, so it ships wherever bs-epic-lib.mjs does.
+    'plan-attachment.mjs',
     'progress-comment.mjs',
     // epic-driver.mjs (BOS-1271) is the executable lifecycle authority the SKILL body now calls
     // instead of re-deriving the loop from prose: the persisted JSON state, the non-terminal
@@ -240,6 +243,9 @@ export const VENDOR_MAP = {
     // `./callback/boss.mjs` and `./main-module.mjs` imports all already ship in this entry. Its
     // test file stays in skills-toolbox/ only (test files are never vendored).
     'epic-driver.mjs',
+    // epic-driver.mjs judges the PARTIAL hold with merge-eligibility.mjs `isPartial`; its one
+    // import, pr-check-state.mjs, already ships here.
+    'merge-eligibility.mjs',
     // The tracker seam is executable in a consuming repo, so ship its
     // descriptor, helpers, and config dependency beside the epic driver.
     // adapter-core.mjs is the tracker-agnostic contract adapter.mjs and linear.mjs
@@ -561,6 +567,8 @@ export const VENDOR_MAP = {
     'linear-claim.mjs',
     'bs-epic-lib.mjs',
     'dag-scheduler.mjs',
+    // bs-epic-lib.mjs imports plan-attachment.mjs.
+    'plan-attachment.mjs',
     'tracker/adapter.mjs',
     'tracker/adapter-core.mjs',
     'tracker/linear.mjs',

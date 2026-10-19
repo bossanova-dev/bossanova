@@ -2,18 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   SHARED_INELIGIBLE_REASONS,
-  checklist,
   ciReasons,
   classifyMergeResult,
-  criteriaReasons,
-  followUpReasons,
   headReasons,
-  isPostMergeItem,
+  isPartial,
   judgeCiOnHead,
   mergeArgv,
   mergeStateReasons,
-  parseFollowUps,
-  parseLedger,
   prShapeReasons,
   sectionToken,
   sections,
@@ -22,14 +17,14 @@ import {
 
 const HEAD = 'a'.repeat(40),
   OTHER = 'c'.repeat(40)
-const body = `## Acceptance criteria
-- [x] implementation demonstrated
-## Review coverage
+const body = `## Review coverage
 full
-## Human follow-up
-- none
-## Open questions
-- none
+`
+const PARTIAL_BODY = `## Summary
+Half of it.
+
+## Partial
+do not merge — partial: 2/5 acceptance criteria
 `
 const view = (changes = {}) => ({
   state: 'OPEN',
@@ -41,31 +36,12 @@ const view = (changes = {}) => ({
   ...changes,
 })
 const facts = (changes = {}) => ({
-  criteria: { met: 1, total: 1 },
   ciWaitState: 'settled',
   checkVerdict: { state: 'green', observedSHA: HEAD },
   headSha: HEAD,
   prView: view(),
   heads: [HEAD, HEAD],
-  humanFollowUp: { status: 'ok', open: 0 },
-  openQuestions: { status: 'ok', open: 0 },
   ...changes,
-})
-
-test('criteriaReasons: met, unmet, and malformed fail closed', () => {
-  assert.deepEqual(criteriaReasons({ met: 2, total: 2 }), [])
-  assert.deepEqual(criteriaReasons({ met: 1, total: 2 }), ['criteria-unmet'])
-  for (const bad of [
-    null,
-    undefined,
-    {},
-    { met: 1, total: 0 },
-    { met: '1', total: 1 },
-    { met: 1.5, total: 2 },
-    { met: -1, total: 1 },
-    { met: 3, total: 2 },
-  ])
-    assert.deepEqual(criteriaReasons(bad), ['criteria-unknown'], JSON.stringify(bad))
 })
 
 test('ciReasons: settled green on the head passes; every other reading fails', () => {
@@ -112,17 +88,41 @@ test('mergeStateReasons: allow-list, blocking states, and malformed input', () =
   assert.deepEqual(mergeStateReasons(undefined), ['merge-state-unknown'])
 })
 
-test('prShapeReasons: open non-draft unmarked passes; each marker fires', () => {
+test('prShapeReasons: open, non-draft and not partial passes; each fires on its own', () => {
   assert.deepEqual(prShapeReasons(view()), [])
   assert.deepEqual(prShapeReasons(view({ state: 'CLOSED' })), ['pr-not-open'])
   assert.deepEqual(prShapeReasons(view({ isDraft: true })), ['pr-draft'])
   assert.deepEqual(prShapeReasons(view({ isDraft: undefined })), ['pr-draft'])
-  assert.deepEqual(prShapeReasons(view({ title: 'Do not merge: wip' })), ['do-not-merge-marker'])
-  assert.deepEqual(prShapeReasons(view({ title: 'Feature (partial scope)' })), [
-    'do-not-merge-marker',
+  assert.deepEqual(prShapeReasons(view({ body: PARTIAL_BODY })), ['partial-marker'])
+  assert.deepEqual(prShapeReasons(view({ title: '[T-1] Feature (partial 2/5)' })), [
+    'partial-marker',
   ])
-  assert.deepEqual(prShapeReasons(view({ body: undefined })), ['do-not-merge-marker'])
-  assert.deepEqual(prShapeReasons(undefined), ['pr-not-open', 'pr-draft', 'do-not-merge-marker'])
+  assert.deepEqual(prShapeReasons(undefined), ['pr-not-open', 'pr-draft'])
+})
+
+test("only boss-build's PARTIAL marker holds; other PR text never does", () => {
+  for (const held of [
+    { body: PARTIAL_BODY },
+    { body: '## partial\n\nDo Not Merge - partial: 1/3 acceptance criteria' },
+    { body: '## Partial\ndo not merge – partial: 0/2' },
+    { title: 'Feature (partial 3/4)' },
+    { title: 'Feature (PARTIAL 3 / 4)' },
+  ])
+    assert.equal(isPartial(held), true, JSON.stringify(held))
+  for (const free of [
+    { title: 'Do not merge: wip', body: 'do not merge' },
+    { title: 'Feature (partial scope)' },
+    { title: 'Feature (partial n/m)' },
+    { body: 'do not merge — partial: 2/5 acceptance criteria' },
+    { body: '## Notes\ndo not merge — partial: 2/5 acceptance criteria' },
+    { body: '## Partial\nShipped in two slices.\ndo not merge — partial: 2/5' },
+    { body: '## Partial\ndo not merge — partial: most of it' },
+    { body: '## Partial\nNote: do not merge — partial: 2/5 was the old marker' },
+    { body: '```\n## Partial\ndo not merge — partial: 2/5\n```' },
+    { body: '## Acceptance criteria\n- [ ] unmet\n## Open questions\n- [ ] which way?' },
+    {},
+  ])
+    assert.equal(isPartial(free), false, JSON.stringify(free))
 })
 
 test('headReasons: every head 40-hex and equal', () => {
@@ -135,48 +135,27 @@ test('headReasons: every head 40-hex and equal', () => {
   assert.deepEqual(headReasons(undefined), ['head-unknown'])
 })
 
-test('followUpReasons: open, missing, and malformed counts', () => {
-  const ok = { status: 'ok', open: 0 }
-  assert.deepEqual(followUpReasons({ humanFollowUp: ok, openQuestions: ok }), [])
-  assert.deepEqual(
-    followUpReasons({
-      humanFollowUp: { status: 'ok', open: 2 },
-      openQuestions: { status: 'ok', open: 1 },
-    }),
-    ['human-follow-up-open', 'open-questions-open'],
-  )
-  assert.deepEqual(
-    followUpReasons({
-      humanFollowUp: { status: 'ok', open: '0' },
-      openQuestions: { status: 'missing' },
-    }),
-    ['follow-up-section-missing', 'open-questions-section-missing'],
-  )
-  assert.deepEqual(followUpReasons(), [
-    'follow-up-section-missing',
-    'open-questions-section-missing',
-  ])
-})
-
 test('sharedEligibility: green facts pass and many reasons keep the documented order', () => {
   assert.deepEqual(sharedEligibility(facts()), { eligible: true, reasons: [] })
   const result = sharedEligibility(
     facts({
-      criteria: { met: 0, total: 1 },
       ciWaitState: 'pending',
-      prView: view({ mergeStateStatus: 'BEHIND', isDraft: true, headRefOid: OTHER }),
+      prView: view({
+        mergeStateStatus: 'BEHIND',
+        isDraft: true,
+        headRefOid: OTHER,
+        body: PARTIAL_BODY,
+      }),
       heads: [HEAD, OTHER],
-      openQuestions: { status: 'ok', open: 3 },
     }),
   )
   assert.equal(result.eligible, false)
   assert.deepEqual(result.reasons, [
-    'criteria-unmet',
     'ci-not-settled',
     'merge-state-behind',
     'pr-draft',
+    'partial-marker',
     'head-mismatch',
-    'open-questions-open',
   ])
   const empty = sharedEligibility(null)
   assert.equal(empty.eligible, false)
@@ -189,96 +168,25 @@ test('sharedEligibility: green facts pass and many reasons keep the documented o
   )
 })
 
-test('parseLedger reads criteria and follow-ups, ignoring fenced examples', () => {
-  assert.deepEqual(parseLedger(body).criteria, { met: 1, total: 1 })
-  const fenced = parseLedger(
-    '```\n## Acceptance criteria\n- [ ] example\n```\n## Acceptance criteria\n- [x] a\n- [ ] b\n## Human follow-up\n- [ ] check live\n## Open questions\n- none',
-  )
-  assert.deepEqual(fenced.criteria, { met: 1, total: 2 })
-  assert.equal(fenced.humanFollowUp.open, 1)
-  assert.deepEqual(fenced.openQuestions, { status: 'ok', open: 0, done: 0, total: 0 })
+test('sharedEligibility: a body with no sections, open boxes or "do not merge" prose passes', () => {
+  for (const prBody of [
+    '',
+    'Fixes the login redirect.',
+    '## What\nA change.\n\n## Checklist\n- [ ] tests\n- [ ] docs',
+    '## Acceptance criteria\n- [ ] unmet\n## Human follow-up\n- [ ] check prod\n## Open questions\n- [ ] which?',
+    'Please do not merge until Friday.',
+  ])
+    assert.deepEqual(
+      sharedEligibility(facts({ prView: view({ title: 'Do not merge yet', body: prBody }) })),
+      { eligible: true, reasons: [] },
+      prBody,
+    )
 })
 
-test('parseLedger: duplicate heading, `- none` criteria and a malformed checkbox are null', () => {
-  assert.equal(
-    parseLedger('## Acceptance criteria\n- [x] a\n## Acceptance criteria\n- [x] b').criteria,
-    null,
-  )
-  assert.equal(parseLedger('## Acceptance criteria\n- none').criteria, null)
-  assert.equal(parseLedger('## Acceptance criteria\n- [x]\n').criteria, null)
-  assert.equal(parseLedger('## Acceptance criteria\n- [y] typo\n').criteria, null)
-  assert.equal(parseLedger('').criteria, null)
-  assert.equal(parseLedger(undefined).humanFollowUp.status, 'missing')
-})
-
-test('parseFollowUps and the raw parsers keep their completion-gate behaviour', () => {
-  assert.equal(parseFollowUps(body).ok, true)
+test('sections reads headings outside fences and leaves a repeated one undecidable', () => {
   assert.equal(sections('## A\nx\n## A\ny').get('a'), null)
-  assert.deepEqual(checklist(['- [ ] a', '- [x] b']), { status: 'ok', open: 1, done: 1, total: 2 })
-  assert.equal(checklist(['- none']).status, 'malformed')
-  assert.equal(checklist(['- none'], true).status, 'ok')
-})
-
-test('a follow-up is post-merge only when it says so and says it is not a merge gate', () => {
-  const exempt = [
-    'Observe the scheduled run. This is the plan’s post-merge observation, not a merge gate.',
-    'After merge, watch the nightly job (not a merge gate)',
-    'Post merge: check the dashboard; NOT A MERGE GATE',
-    'After the merge lands, confirm the rollout; this is not a merge gate',
-  ]
-  const parks = [
-    'After merge, rotate the production key',
-    'Post-merge observation of scheduled build cadence',
-    'Rotate the key; this is not a merge gate',
-    'Merge the docs PR first; not a merge gate for this one',
-    'Confirm the dashboard loads against production data',
-  ]
-  for (const text of exempt) assert.equal(isPostMergeItem(text), true, text)
-  for (const text of parks) assert.equal(isPostMergeItem(text), false, text)
-
-  const followUp = (...items) =>
-    parseFollowUps(`## Human follow-up\n${items.join('\n')}\n## Open questions\n- none\n`)
-  const marked = `- [ ] ${exempt[0]}`
-  assert.deepEqual(followUp(marked).humanFollowUp, { status: 'ok', open: 0, done: 0, total: 0 })
-  assert.deepEqual(followUp(marked, '- [ ] rotate the key').humanFollowUp, {
-    status: 'ok',
-    open: 1,
-    done: 0,
-    total: 1,
-  })
-  assert.equal(followUp(marked, 'prose').humanFollowUp.status, 'malformed')
-  assert.equal(followUp(`- [x] ${exempt[0]}`).humanFollowUp.done, 1)
-  assert.deepEqual(followUpReasons(followUp(marked)), [])
-  assert.deepEqual(followUpReasons(followUp(`- [ ] ${parks[0]}`)), ['human-follow-up-open'])
-  // Only the Human follow-up section honours the marker, and `## After merge` is never read.
-  assert.equal(
-    parseFollowUps(`## Human follow-up\n- none\n## Open questions\n${marked}\n`).openQuestions.open,
-    1,
-  )
-  assert.equal(parseLedger(`${body}\n## After merge\n- [ ] watch it\n`).humanFollowUp.open, 0)
-})
-
-test('a post-merge follow-up that also asks for something before merge still parks', () => {
-  const preMerge = [
-    'Rotate the production key before merging (the post-merge dashboard check is not a merge gate)',
-    'Post-merge cleanup needed before merge — not a merge gate',
-    'Confirm the migration ran before merge; post-merge, nothing else. This is not a merge gate.',
-    'Run the pre-merge smoke test; the post-merge dashboard is not a merge gate',
-    'Prior to merge, back up the table; post-merge checks are not a merge gate',
-    'BEFORE THE MERGE, warn support; after merge watch errors (not a merge gate)',
-  ]
-  for (const text of preMerge) assert.equal(isPostMergeItem(text), false, text)
-  assert.equal(
-    isPostMergeItem(
-      'After merge and a trusted skills install, observe a planning run starting no build session. This is the plan’s post-merge observation, not a merge gate. (criterion: Post-merge observation of scheduled build cadence)',
-    ),
-    true,
-    'the #3157 item stays exempt',
-  )
-  const followUp = parseFollowUps(
-    `## Human follow-up\n- [ ] ${preMerge[0]}\n## Open questions\n- none\n`,
-  )
-  assert.deepEqual(followUpReasons(followUp), ['human-follow-up-open'])
+  assert.equal(sections('```\n## A\n```\n## B\nb').has('a'), false)
+  assert.deepEqual(sections('```\n## A\n```\n## B\nb').get('b'), ['b'])
 })
 
 test('sectionToken returns the first non-blank line, or empty', () => {

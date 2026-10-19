@@ -1,4 +1,4 @@
-// The PR-side merge-eligibility facts every merge path shares: the PR body ledger parsers, the six
+// The PR-side merge-eligibility facts every merge path shares: the PR body section reader, the four
 // shared ineligibility checks, CI-on-head for the verify stage, and the one pinned merge argv.
 //
 // Pure and offline by contract: no subprocess, no filesystem, no `process` reads. Session facts
@@ -27,25 +27,19 @@ const MERGE_STATES = [
   'UNKNOWN',
 ]
 
-// Every reason the six shared checks can emit, in `sharedEligibility` order.
+// Every reason the shared checks can emit, in `sharedEligibility` order.
 export const SHARED_INELIGIBLE_REASONS = Object.freeze([
-  'criteria-unknown',
-  'criteria-unmet',
   'ci-not-settled',
   'ci-not-green-on-head',
   ...MERGE_STATES.map((state) => `merge-state-${state.toLowerCase()}`),
   'pr-not-open',
   'pr-draft',
-  'do-not-merge-marker',
+  'partial-marker',
   'head-unknown',
   'head-mismatch',
-  'human-follow-up-open',
-  'follow-up-section-missing',
-  'open-questions-open',
-  'open-questions-section-missing',
 ])
 
-// Ignore fenced examples before recognizing headings or checkboxes.
+// Ignore fenced examples before recognizing headings.
 export function sections(body) {
   const result = new Map()
   if (typeof body !== 'string') return result
@@ -67,7 +61,7 @@ export function sections(body) {
     const heading = line.match(/^\s{0,3}##\s+(.+?)\s*#*\s*$/)
     if (heading) {
       current = heading[1].trim().toLowerCase()
-      // Duplicate sections are undecidable, rather than silently dropping open items.
+      // A repeated section is undecidable, so a reader never takes one copy over another.
       if (result.has(current)) result.set(current, null)
       else result.set(current, [])
     } else if (current && result.get(current)) result.get(current).push(line)
@@ -75,75 +69,10 @@ export function sections(body) {
   return result
 }
 
-// A `## Human follow-up` item written before `## After merge` existed that marks itself as a
-// post-merge observation. Both phrases are required, so an item only mentioning merge still parks,
-// and an item that also asks for something before merge parks whatever else it says.
-const POST_MERGE = /\b(?:post[- ]?merge|after (?:the )?merg(?:e|ing))\b/i
-const NOT_A_GATE = /\bnot a merge gate\b/i
-const PRE_MERGE = /\b(?:pre[- ]?merge|(?:before|prior to) (?:the )?merg(?:e|ing))\b/i
-export const isPostMergeItem = (text) =>
-  POST_MERGE.test(text) && NOT_A_GATE.test(text) && !PRE_MERGE.test(text)
-
-// `exempt(text)` marks an unchecked item that counts as neither open nor done.
-export function checklist(lines, allowNone = false, exempt = null) {
-  if (!Array.isArray(lines)) return { status: 'missing', open: null, done: null, total: null }
-  const items = lines.map((line) => line.trim()).filter(Boolean)
-  if (allowNone && items.length === 1 && /^- none$/i.test(items[0]))
-    return { status: 'ok', open: 0, done: 0, total: 0 }
-  let open = 0,
-    done = 0
-  for (const line of items) {
-    const item = line.match(/^- \[([ xX])\]\s+(\S.*)$/)
-    if (!item) return { status: 'malformed', open: null, done: null, total: null }
-    if (item[1] === ' ' && exempt?.(item[2])) continue
-    if (item[1] === ' ') open++
-    else done++
-  }
-  if (!items.length) return { status: 'malformed', open: null, done: null, total: null }
-  return { status: 'ok', open, done, total: open + done }
-}
-
-export function parseFollowUps(body) {
-  const parsed = sections(body)
-  const humanFollowUp = checklist(parsed.get('human follow-up'), true, isPostMergeItem)
-  const openQuestions = checklist(parsed.get('open questions'), true)
-  return {
-    humanFollowUp,
-    openQuestions,
-    ok: humanFollowUp.status === 'ok' && openQuestions.status === 'ok',
-  }
-}
-
-// The PR body ledger: acceptance criteria as `{met, total}` (or null when the section is missing,
-// duplicated or malformed) plus the two follow-up checklists. `## After merge` is never read.
-export function parseLedger(body) {
-  const criteria = checklist(sections(body).get('acceptance criteria'))
-  const { humanFollowUp, openQuestions } = parseFollowUps(body)
-  return {
-    criteria: criteria.status === 'ok' ? { met: criteria.done, total: criteria.total } : null,
-    humanFollowUp,
-    openQuestions,
-  }
-}
-
 // The first non-blank line of a `## <heading>` section, or '' when it is absent or undecidable.
 export function sectionToken(body, heading) {
   const lines = sections(body).get(heading)
   return lines?.map((s) => s.trim()).find(Boolean) ?? ''
-}
-
-export function criteriaReasons(criteria) {
-  const c = criteria
-  if (
-    !c ||
-    !Number.isInteger(c.total) ||
-    c.total < 1 ||
-    !Number.isInteger(c.met) ||
-    c.met < 0 ||
-    c.met > c.total
-  )
-    return ['criteria-unknown']
-  return c.met !== c.total ? ['criteria-unmet'] : []
 }
 
 export function ciReasons({ ciWaitState, checkVerdict, headSha } = {}) {
@@ -170,17 +99,23 @@ export function mergeStateReasons(prView) {
   return []
 }
 
+// boss-build's PARTIAL marker, the one explicit hold a PR body or title carries: the first line of
+// `## Partial` reads `do not merge — partial: n/m …`, or the title carries `(partial n/m)`. Nothing
+// else in a PR's own text holds a merge.
+const PARTIAL_LINE = /^do not merge\s*[—–-]+\s*partial:\s*\d+\s*\/\s*\d+/i
+const PARTIAL_TITLE = /\(partial\s+\d+\s*\/\s*\d+\)/i
+export function isPartial({ title, body } = {}) {
+  return (
+    (typeof title === 'string' && PARTIAL_TITLE.test(title)) ||
+    PARTIAL_LINE.test(sectionToken(body, 'partial'))
+  )
+}
+
 export function prShapeReasons(prView) {
   const reasons = []
   if (prView?.state !== 'OPEN') reasons.push('pr-not-open')
   if (prView?.isDraft !== false) reasons.push('pr-draft')
-  if (
-    typeof prView?.title !== 'string' ||
-    typeof prView?.body !== 'string' ||
-    /do not merge/i.test(`${prView.title}\n${prView.body}`) ||
-    /\(partial\s/i.test(prView.title)
-  )
-    reasons.push('do-not-merge-marker')
+  if (isPartial(prView ?? {})) reasons.push('partial-marker')
   return reasons
 }
 
@@ -192,29 +127,14 @@ export function headReasons(heads) {
   return new Set(heads).size !== 1 ? ['head-mismatch'] : []
 }
 
-export function followUpReasons({ humanFollowUp, openQuestions } = {}) {
-  const reasons = []
-  for (const [value, openReason, unknownReason] of [
-    [humanFollowUp, 'human-follow-up-open', 'follow-up-section-missing'],
-    [openQuestions, 'open-questions-open', 'open-questions-section-missing'],
-  ]) {
-    if (value?.status !== 'ok' || !Number.isInteger(value.open) || value.open < 0)
-      reasons.push(unknownReason)
-    else if (value.open !== 0) reasons.push(openReason)
-  }
-  return reasons
-}
-
-// The six shared checks in their `computeEligibility` relative order.
+// The shared checks in their `computeEligibility` relative order.
 export function sharedEligibility(facts = {}) {
   const f = facts ?? {}
   const reasons = [
-    ...criteriaReasons(f.criteria),
     ...ciReasons({ ciWaitState: f.ciWaitState, checkVerdict: f.checkVerdict, headSha: f.headSha }),
     ...mergeStateReasons(f.prView),
     ...prShapeReasons(f.prView),
     ...headReasons(f.heads),
-    ...followUpReasons({ humanFollowUp: f.humanFollowUp, openQuestions: f.openQuestions }),
   ]
   return { eligible: reasons.length === 0, reasons }
 }

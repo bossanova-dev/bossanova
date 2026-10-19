@@ -33,8 +33,8 @@ summary (cost extraction matches a line-leading token).
   finding at `file:line` in that comment and in the PR's `## Review findings`, and still upserts the
   `<!-- bs-review -->` comment ([`references/publish.md`](references/publish.md)). An unmet
   criterion alone is not BLOCKED.
-- `NO_CHANGE` — no eligible candidate, claim lost with no runner-up, a foreign branch carrying other
-  work, a peer already holding the worktree lock, or nothing committable after claiming (ticket
+- `NO_CHANGE` — no eligible candidate, a named ticket with nothing to build from, claim lost with
+  no runner-up, a foreign branch carrying other work, a peer already holding the worktree lock, or nothing committable after claiming (ticket
   restored to its entry state).
 
 An existing PR/branch (bossd's bootstrap draft, an empty PR, or a prior run's work) is **adopted and
@@ -52,8 +52,9 @@ resumed**, not a stop condition.
   classified with `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" classify-outcome --observed "<err>" --operation read|write`
   and its action line followed, never the error body's own retry advice.
 - Priority numeric: `1=Urgent, 2=High, 3=Medium, 4=Low, 0=None`.
-- **Plan**: an attachment titled like a plan (`Implementation plan (<ISSUE-ID>)` preferred);
-  `selectImplementationPlanAttachment(ticket.attachments, issueID)` picks it.
+- **Plan**: the uploaded plan attachment when the ticket has one (`Implementation plan (<ISSUE-ID>)`
+  preferred; a linked PR or URL never counts), otherwise the ticket title and description, whatever
+  their shape or length. `build-source` decides which, and refuses only a ticket with neither.
 - **Waiting on CI/PR state**: arm one-shot callbacks via `resolveCallbackAdapter(env)`
   (`toolbox/callback/adapter.mjs`) when `callbacksAvailable(env)` is true, and back every wait with
   the bounded poll either way — [`references/callback-watches.md`](references/callback-watches.md)
@@ -76,7 +77,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Who owns this worktree?                             | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`            |
 | Who won the ticket claim?                           | `node tracker/cli.mjs claim-verdict …`                                      |
 | Which PR belongs to this branch?                    | `node pr-ownership.mjs number --pr-json <json>`                             |
-| Which plan attachment?                              | `selectImplementationPlanAttachment` in `plan-attachment.mjs`               |
+| What does this ticket build from?                   | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`           |
 | Which repo-local extensions exist?                  | `node skill-extensions.mjs discover --core boss-build --role <role> --json` |
 | Did the base move under me?                         | `node base-drift.mjs check …`                                               |
 | Push the branch, with retry and a rescue ref        | `node finalize/push-branch.mjs --branch <name>`                             |
@@ -87,7 +88,6 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | May this head be readied / receipted?               | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)       |
 | Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
 | Where does a follow-up go?                          | `node followup-route.mjs route --candidates <file> --notes-out <file>`      |
-| Are follow-up sections well-formed?                 | `node completion-gate.mjs followups --body-file <path>`                     |
 | Update a published PR body without duplicating it   | `node pr-body.mjs merge --body-file <live> --update-file <sections>`        |
 | Is the local-verification record well-formed?       | `validateLocalVerification(config, body)` in `skill-config.mjs`             |
 | Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
@@ -97,16 +97,16 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 ## Rules
 
 1. **One ticket per run.** No batching. Headless runs never ask questions: decide, record the
-   decision and its rationale under `## Autonomous decisions` in the PR body, continue.
+   decision and its rationale under `## Autonomous decisions` in the PR body, continue. An
+   interactive run asks the operator a question it cannot decide; neither writes it into the PR.
 2. **Follow the plan.** Implement what it says — migrations, schema changes, configuration,
    dependency changes, whatever it calls for. Judging whether the work is wise is the planner's and
    the reviewer's job, not this run's. Where the ticket was edited after the plan, the ticket wins.
    Where a premise no longer holds, build what the plan is for against the code as it is and record
    the departure. Where a criterion cannot be checked from a worktree (production access, a deployed
    environment), implement the change and pass what a human must verify to Step 7.3 as an
-   `outside-worktree` follow-up candidate, never as a hand-written ledger line. An observation only
-   possible after merge (the plan's `## After merge`, a scheduled run, a rollout) is a `post-merge`
-   candidate: it is published under `## After merge`, which never parks the PR. Never print
+   `outside-worktree` follow-up candidate. An observation only possible after merge (the plan's
+   `## After merge`, a scheduled run, a rollout) is a `post-merge` candidate. Never print
    or commit secret values.
 3. **Commit per task, never leave work behind.** Tagless conventional commits with a scope
    (`feat(scope): …`), path-scoped (`git commit --only -m "…" -- <files>`), never `git add -A`. Leave
@@ -247,8 +247,7 @@ credentials/network).
 for `selectPlanned` and pass `--team <team>` to `list-planned`.
 
 Also require, before any tracker write, that `trackerConfigFor(config).states` resolves all three
-roles to non-empty names and that the adapter exposes `readPlanAttachment`; otherwise stop
-`NO_CHANGE` naming what is missing.
+roles to non-empty names; otherwise stop `NO_CHANGE` naming what is missing.
 
 **Boss transport.** This run's own session operations go through the `boss` CLI or the boss MCP
 tools. Read `boss env --json` (`.capabilities.cli`, `.capabilities.mcp`) and compare against:
@@ -303,7 +302,8 @@ and 8).
   blocked-by skips:
   `WARNING: <ID> is labelled needs-human — implementing only because it was named explicitly` /
   `WARNING: <ID> is blocked by <BLOCKER-IDS> (unmerged) — implementing only because it was named explicitly`.
-  It still needs a plan attachment; without one stop `NO_CHANGE` with no claim or state move.
+  It needs something to build from: when `build-source` exits 3 (no readable plan attachment and no
+  title or description text), stop `NO_CHANGE` quoting its `reason`, with no claim or state move.
 - **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
   `--exclude-` forms) are filters, never ticket ids: classify arguments with
   `node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <args>`. With a named ticket they are
@@ -311,11 +311,11 @@ and 8).
 - **Otherwise**: candidates from `selectPlanned` (resolved team, planned state, limit 250) — or, when
   `trackerConfigFor(config).selection` is set or `selectionArgs` is non-empty, from
   `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned --team <team> <selectionArgs>` (a
-  non-zero exit stops `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call). Keep `agent-build` tickets with a plan attachment, drop `needs-human`, rank by
+  non-zero exit stops `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call). Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, rank by
   priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking and take
   the first ticket that is unblocked (`readDependencies` / `isUnblocked`), not an epic parent, and
-  has a plan. None ⇒ `NO_CHANGE` (`all agent-build planned tickets are blocked, ineligible, epic
-parents, or missing plans`).
+  has something to build from (`build-source` on its `getIssue` payload does not exit 3). None ⇒
+  `NO_CHANGE` (`all agent-build planned tickets are blocked, epic parents, or empty`).
 
 `agent-question` never blocks selection. Build the option the plan chose for each open question
 (when it recorded none, decide per Rule 1) and pass each to Step 7.3 as a `plan-question` candidate
@@ -385,17 +385,23 @@ node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comment
 
 ## Step 4: Read the plan
 
-Select the plan attachment and read it with `readPlanAttachment` (by attachment **id**). The plan is
-whatever it contains — no particular headings are required; work out what needs building and what
-"done" means. Stop `BLOCKED` with a ticket comment only when there is no readable plan (nothing
-selected, empty, or over 1 MiB). Save it outside the worktree — the plan lives in the tracker, never
-in the repo:
+Save the `getIssue` payload as `$ISSUE_JSON`. The plan lives in the tracker, never the repo:
 
 ```bash
+BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox"
+if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 PLAN_FILE="$(git rev-parse --git-dir)/boss-build/plan.md"
 mkdir -p "$(dirname "$PLAN_FILE")"
-# write the fetched plan bytes to "$PLAN_FILE"; hand its path to every subagent that needs it
+node "$BOSS_BUILD_TOOLBOX/plan-attachment.mjs" build-source "$ISSUE_JSON" "$PLAN_FILE"
 ```
+
+`build-source` writes the title and description to `$PLAN_FILE` (`planFile`). `source: attachment`:
+write the `readPlanAttachment` bytes (by `attachmentId`) over it. A failed, empty or over-1 MiB read,
+or no such capability, keeps the title-and-description plan (say so in the PR body); only with
+`planFile: null` is there nothing to fall back to, which stops `NO_CHANGE`. Exit 3 stops `NO_CHANGE`
+quoting `reason`.
+The plan is whatever it contains: no headings and no boss-plan description format are required.
+Work out what needs building and what "done" means, and hand `$PLAN_FILE` to every subagent.
 
 When the ticket description contains images (markdown images, `<img>`, attachment URLs), view them
 with `extractImages` — reading `![](url)` as text shows no pixels. Best-effort.
@@ -413,8 +419,8 @@ recovery for a restarted orchestrator.
 Before Step 5, on every run: resolve the plan's cited `path:line`s by their **symbol**, re-derive
 claimed sets, read the symbols it says are missing. A moved line whose symbol is still there is
 drift — note the corrected location. A premise that genuinely no longer holds is handled by rule 2.
-When the plan states no acceptance criteria, derive them from what it says done looks like. Ignore
-the ticket's `## Original notes` (that is pre-planning history). An empty search result may be a
+When the plan states no acceptance criteria, derive them from what it says done looks like. When the
+plan is an attachment, ignore the ticket's `## Original notes` (that is pre-planning history). An empty search result may be a
 shell hook's fabrication; confirm absence by reading the file.
 
 ## Step 5: Implement
@@ -626,15 +632,11 @@ Every route from Step 6 comes through here.
    `stage-evidence`, `plan-question`, `review-finding`, `post-merge`) to a JSON file — including every candidate
    `review-verdict.mjs followups <verdict>` prints — and run
    `node "$BOSS_BUILD_TOOLBOX/followup-route.mjs" route --candidates <file> --notes-out <notes-file>`.
-   Paste its `sections` (`## Human follow-up`, `## Open questions`, and `## After merge` /
-   `## Host notes` / `## Review follow-ups` when present)
-   into the body and append its `decisions` to `## Autonomous decisions`; each `warnings` entry names
-   an item it parked or dropped for being unclassified or incomplete. When the notes file holds any
+   Paste its `sections` into the body, append its `decisions` to `## Autonomous decisions`, and
+   settle each of its `questions` per Rule 1; each `warnings` entry names an item it rerouted or
+   dropped for being unclassified or incomplete. When the notes file holds any
    entry, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger host-environment --from <notes-file>`
-   (never fatal). Run `completion-gate.mjs followups --body-file <path>` alongside the evidence
-   validators and fix malformed sections before publishing. Never put the
-   phrase `do not merge` in a title or body except through the PARTIAL marker (boss-epic's merge
-   gate matches it).
+   (never fatal). Only the PARTIAL marker in the body or title holds a merge.
 
 4. **Review comment.** Upsert exactly one `<!-- bs-review -->` comment: the review report
    (`$(git rev-parse --git-dir)/boss-build/review-report.md`, rendered by Step 6 — it reports an

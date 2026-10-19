@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
@@ -20,9 +19,7 @@ import { join } from 'node:path'
 
 import {
   CLAIM_STALE_AFTER_MS,
-  LEDGER_RECORD_ATTEMPTS,
   MERGE_RETRY_AFTER_MS,
-  ledgerRecordDue,
   FOREIGN_BASE_EVENTS,
   HUMAN_REASONS,
   HUMAN_REVIEW_CATEGORIES,
@@ -87,8 +84,6 @@ import { discoverExtensions, validateVerifyContext } from './skill-extensions.mj
 import {
   AFTER_MERGE_MARKER,
   PARK_NOTE_MARKER,
-  ledgerEvidence,
-  ledgerFingerprint,
   parkCategories,
   parkNoteMarker,
 } from './verify-park-note.mjs'
@@ -107,23 +102,14 @@ const PR_URL = 'https://github.com/o/r/pull/7'
 const BODY = [
   'Linear issue: https://linear.app/acme/issue/BOS-1/some-title',
   '',
-  '## Acceptance criteria',
-  '',
-  '- [x] it works',
-  '',
-  '## Human follow-up',
-  '',
-  '- none',
-  '',
-  '## Open questions',
-  '',
-  '- none',
-  '',
   '## Review coverage',
   '',
   'full (3 lenses)',
   '',
 ].join('\n')
+
+// boss-build's PARTIAL marker, the one explicit hold a PR body carries.
+const PARTIAL_BODY = `${BODY}\n## Partial\n\ndo not merge — partial: 2/5 acceptance criteria\n`
 
 const green = [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }]
 
@@ -512,7 +498,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'no-receipt',
     'repair-exhausted',
     'always-human-path',
-    'ledger-open',
+    'partial-build',
     'extension-failed',
     'no-session',
     'worktree-diverged',
@@ -561,7 +547,7 @@ test('claimState tells mine, a fresh foreign claim, a stale one, waiting and ter
 // ---------------------------------------------------------------------------
 // judge.
 
-test('judge passes a green, receipted, clean-ledger head and writes nothing', async () => {
+test('judge passes a green, receipted, clean head and writes nothing', async () => {
   const w = world()
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.verdict, 'pass')
@@ -936,17 +922,24 @@ test('judge routes a missing receipt to a human and an unreadable one to a wait'
   assert.equal(r3.reason, 'receipt-unknown')
 })
 
-test('judge routes an open ledger or a do-not-merge marker to a human ledger-open', async () => {
-  for (const body of [
-    BODY.replace('- [x] it works', '- [ ] it works'),
-    BODY.replace('## Human follow-up\n\n- none', '## Human follow-up\n\n- [ ] check prod'),
-    BODY.replace('## Open questions\n\n- none\n', ''),
-    `${BODY}\nDO NOT MERGE\n`,
+test("judge parks boss-build's PARTIAL marker, in the body or the title, as partial", async () => {
+  for (const pr of [{ body: PARTIAL_BODY }, { title: '[BOS-1] Some title (partial 2/5)' }]) {
+    const r = await judge({ pr: 7, repo: REPO }, deps(world({ pr })))
+    assert.deepEqual([r.verdict, r.reason], ['human', 'partial-build'], JSON.stringify(pr))
+  }
+})
+
+test('judge passes a body with no checklist sections, unchecked boxes or "do not merge" prose', async () => {
+  for (const pr of [
+    { body: BODY },
+    {
+      body: `${BODY}\n## Acceptance criteria\n\n- [ ] it works\n\n## Human follow-up\n\n- [ ] check prod\n\n## Open questions\n\n- [ ] which way?\n`,
+    },
+    { title: 'Do not merge yet', body: `${BODY}\nPlease DO NOT MERGE before Friday.\n` },
+    { title: 'Feature (partial scope)', body: BODY },
   ]) {
-    const w = world({ pr: { body } })
-    const r = await judge({ pr: 7, repo: REPO }, deps(w))
-    assert.equal(r.verdict, 'human')
-    assert.equal(r.reason, 'ledger-open')
+    const r = await judge({ pr: 7, repo: REPO }, deps(world({ pr })))
+    assert.deepEqual([r.verdict, r.reason], ['pass', 'verified'], JSON.stringify(pr))
   }
 })
 
@@ -1171,8 +1164,8 @@ test('parseHumanReasonList validates every code and normalises to HUMAN_REASONS 
     'human-review:ui',
   ])
   assert.deepEqual(parseHumanReasonList(' no-receipt , no-receipt '), ['no-receipt'])
-  assert.deepEqual(parseHumanReasonList(['human-review:ui', 'ledger-open']), [
-    'ledger-open',
+  assert.deepEqual(parseHumanReasonList(['human-review:ui', 'partial-build']), [
+    'partial-build',
     'human-review:ui',
   ])
   for (const bad of ['', ',', 'human-review:ux', 'no-receipt,bogus', null, undefined, 3])
@@ -1252,22 +1245,22 @@ test('judge: a state code and a path code park together and one waiver covers bo
 })
 
 test('the worst-case judged set description fits the commit-status limit', () => {
-  // A state code (no-receipt, ledger-open) parks before extensions run, so extension-failed never
+  // A state code (no-receipt, partial) parks before extensions run, so extension-failed never
   // joins one; the widest judged set is every state and path code, plus unproven on top of it.
   const worst = [
     'no-receipt',
     'always-human-path',
-    'ledger-open',
+    'partial-build',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
     'human-review:unproven',
   ]
   const description = needsHumanDescription(parseHumanReasonList(worst).join(','))
-  assert.equal(description.length, 135)
+  assert.equal(description.length, 137)
   assert.ok(description.length <= DESCRIPTION_LIMIT)
   // The widest set an extension run can park: a malfunction plus every path code and category.
-  const withExtensions = HUMAN_REASONS.filter((c) => !['no-receipt', 'ledger-open'].includes(c))
+  const withExtensions = HUMAN_REASONS.filter((c) => !['no-receipt', 'partial-build'].includes(c))
     .filter(
       (c) =>
         !['repair-exhausted', 'no-session', 'worktree-diverged', 'worktree-unsynced'].includes(c),
@@ -2341,16 +2334,13 @@ test('judge --waive lifts only that code and still refuses on red CI', async () 
   assert.equal(r1.verdict, 'pass')
   assert.equal(r1.reason, 'approved')
 
-  const two = world({
-    statuses: [],
-    pr: { body: BODY.replace('- [x] it works', '- [ ] it works') },
-  })
+  const two = world({ statuses: [], pr: { body: PARTIAL_BODY } })
   const r2 = await judge(
     { pr: 7, repo: REPO, waive: 'no-receipt' },
     deps(approving(two, 'no-receipt')),
   )
   assert.equal(r2.verdict, 'human')
-  assert.equal(r2.reason, 'ledger-open', 'only the waived code is lifted')
+  assert.equal(r2.reason, 'partial-build', 'only the waived code is lifted')
 
   const red = world({
     statuses: [],
@@ -2819,7 +2809,7 @@ test('post clears a stale needs-human label only once the head stands on a verdi
     const parked = world()
     const parkAdapter = fakeAdapter()
     const park = await post(
-      { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO },
+      { pr: 7, head: HEAD, verdict: 'human', reason: 'partial-build', repo: REPO },
       deps(parked, { adapter: parkAdapter }),
     )
     assert.equal(park.posted, true)
@@ -3060,7 +3050,7 @@ test('post --dry-run plans every verdict and calls nothing mutating', async () =
       { verdict: 'wait', reason: 'base-ci-unknown' },
       { verdict: 'pass' },
       { verdict: 'defect', findings: findingsFile(dir) },
-      { verdict: 'human', reason: 'ledger-open' },
+      { verdict: 'human', reason: 'partial-build' },
     ]) {
       const w = world({ show: { repo_can_auto_repair: false } })
       const adapter = fakeAdapter()
@@ -3137,7 +3127,6 @@ test('parsePostOptions preserves validation order and every invalid option diagn
     [{ extensionRecord: 'bad' }, 'post --extension-record takes'],
     [{ carryRecord: 'bad' }, 'post --carry-record takes'],
     [{ policy: 'bad' }, 'post --policy takes'],
-    [{ ledger: 'bad' }, 'post --ledger takes'],
     [{ extensionResults: 'bad' }, 'post --extension-results takes'],
     [
       { verdict: 'defect', findings: '/nonexistent/findings.json' },
@@ -3236,8 +3225,8 @@ test('merge re-checks eligibility and the verified status before merging', async
   assert.equal(r3.abandoned, 'claim-lost')
 })
 
-test('merge honours an approved ledger waiver but still enforces merge state', async () => {
-  const openBody = BODY.replace('- [x] it works', '- [ ] it works')
+test('merge honours an approved partial waiver but still enforces merge state', async () => {
+  const openBody = PARTIAL_BODY
   const approvedStatuses = () => [
     { ...verified()[0], description: 'verified (approved)' },
     ...verified().slice(1),
@@ -3256,7 +3245,7 @@ test('merge honours an approved ledger waiver but still enforces merge state', a
   const unwaived = world({ statuses: verified(), pr: { body: openBody } })
   const r2 = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(unwaived))
   assert.equal(r2.verdict, 'wait')
-  assert.ok(r2.reasons.includes('criteria-unmet'))
+  assert.ok(r2.reasons.includes('partial-marker'))
   assert.equal(unwaived.mutating().length, 0)
 
   const blocked = world({
@@ -3419,14 +3408,14 @@ test('standingPark: the newest park survives a later wait or claim, not a later 
     description,
     updated_at: iso(msAgo),
   })
-  const park = v('pending', 'needs human: ledger-open', 3000)
+  const park = v('pending', 'needs human: partial-build', 3000)
   assert.deepEqual(standingPark([v('pending', 'waiting: stack-busy', 1000), park, receipt()]), {
     state: 'pending',
-    description: 'needs human: ledger-open',
+    description: 'needs human: partial-build',
   })
   assert.equal(
     standingPark([v('pending', 'verifying… abc', 1000), park]).description,
-    'needs human: ledger-open',
+    'needs human: partial-build',
   )
   assert.equal(standingPark([v('success', 'verified', 1000), park]), null)
   assert.equal(standingPark([v('failure', 'defect: x', 1000), park]), null)
@@ -3442,9 +3431,9 @@ test('approval and judge: an approved park survives a stack-busy wait', async ()
       description: 'waiting: stack-busy',
       updated_at: iso(500),
     },
-    ...parkedHuman('ledger-open'),
+    ...parkedHuman('partial-build'),
   ]
-  const comments = () => [operatorComment(approveMarker(HEAD, ['ledger-open']))]
+  const comments = () => [operatorComment(approveMarker(HEAD, ['partial-build']))]
   const approved = () =>
     deps(world({ statuses, comments: comments() }), {
       adapter: fakeAdapter({ labels: ['agent-build'] }),
@@ -3452,43 +3441,41 @@ test('approval and judge: an approved park survives a stack-busy wait', async ()
   const r = await approval({ pr: 7, repo: REPO }, approved())
   assert.deepEqual(
     { approval: r.approval, waive: r.waive, via: r.via },
-    { approval: 'policy-park-approved', waive: 'ledger-open', via: 'operator-approved' },
+    { approval: 'policy-park-approved', waive: 'partial-build', via: 'operator-approved' },
   )
 
   // The run re-entering after the wait passes no --waive; it must not re-park on the approved code.
-  const openLedger = {
-    body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n`,
-  }
-  const reentered = deps(world({ statuses, pr: openLedger, comments: comments() }), {
+  const partialPr = { body: PARTIAL_BODY }
+  const reentered = deps(world({ statuses, pr: partialPr, comments: comments() }), {
     adapter: fakeAdapter({ labels: ['agent-build'] }),
   })
   const j = await judge({ pr: 7, repo: REPO }, reentered)
-  assert.notEqual(j.reason, 'ledger-open')
+  assert.notEqual(j.reason, 'partial-build')
   assert.notEqual(j.verdict, 'human')
 
   // Without the approval record the same re-entry parks again, label or no label.
-  const unapproved = deps(world({ statuses, pr: openLedger }), {
+  const unapproved = deps(world({ statuses, pr: partialPr }), {
     adapter: fakeAdapter({ labels: ['agent-build'] }),
   })
   const u = await judge({ pr: 7, repo: REPO }, unapproved)
   assert.equal(u.verdict, 'human')
-  assert.match(u.reason, /ledger-open/)
+  assert.match(u.reason, /partial/)
 })
 
 test('approval: a review approval counts, a human merge counts, otherwise none', async () => {
   const approved = world({
-    statuses: parkedHuman('ledger-open'),
+    statuses: parkedHuman('partial-build'),
     pr: { reviewDecision: 'APPROVED' },
   })
   const r1 = await approval({ pr: 7, repo: REPO }, deps(approved))
   assert.equal(r1.approval, 'policy-park-approved')
   assert.equal(r1.via, 'review-approved')
-  assert.equal(r1.waive, 'ledger-open')
+  assert.equal(r1.waive, 'partial-build')
 
   const merged = world({ pr: { state: 'MERGED', mergeCommit: { oid: MERGED_SHA } } })
   assert.equal((await approval({ pr: 7, repo: REPO }, deps(merged))).approval, 'merged-by-human')
 
-  const still = world({ statuses: parkedHuman('ledger-open') })
+  const still = world({ statuses: parkedHuman('partial-build') })
   assert.equal((await approval({ pr: 7, repo: REPO }, deps(still))).approval, 'none')
 })
 
@@ -3590,15 +3577,15 @@ test('judge drops the labels of a waived code and keeps those still parked', asy
 
 test('needsHumanDescription appends the label after the separator and never truncates codes', () => {
   assert.equal(PARK_LABEL_SEPARATOR, ' · ')
-  assert.equal(needsHumanDescription('ledger-open'), 'needs human: ledger-open')
-  assert.equal(needsHumanDescription('ledger-open', '  '), 'needs human: ledger-open')
+  assert.equal(needsHumanDescription('partial-build'), 'needs human: partial-build')
+  assert.equal(needsHumanDescription('partial-build', '  '), 'needs human: partial-build')
   assert.equal(
     needsHumanDescription('human-review:security', 'verify gate rules'),
     'needs human: human-review:security · verify gate rules',
   )
   assert.equal(
-    needsHumanDescription('ledger-open', 'two\nlines'),
-    'needs human: ledger-open · two lines',
+    needsHumanDescription('partial-build', 'two\nlines'),
+    'needs human: partial-build · two lines',
     'whitespace runs collapse to one space',
   )
   const codes = 'always-human-path,human-review:security'
@@ -3835,7 +3822,7 @@ test('approval of a labelled park waives exactly its codes, never the label', as
     description,
     updated_at: iso(msAgo),
   })
-  const park = v('pending', 'needs human: ledger-open · verify gate rules', 3000)
+  const park = v('pending', 'needs human: partial-build · verify gate rules', 3000)
   assert.equal(
     standingPark([v('pending', 'waiting: stack-busy', 1000), park]).description,
     park.description,
@@ -3957,9 +3944,6 @@ test('main dispatches verbs and rejects usage errors before any read', async () 
 
 const SHA_OF = (n) => n.toString(16).padStart(40, '0')
 const ticketBody = (id) => `Linear issue: https://linear.app/acme/issue/${id}/t\n\nbody`
-// The park note a ledger-open park on PR n left, recording the ledger its body holds now.
-const recordedLedger = (n, body = ticketBody(`BOS-${n}`)) =>
-  operatorComment(parkNoteMarker(SHA_OF(n), '0'.repeat(16), ledgerFingerprint({ body })))
 
 /** A validated config whose tracker adapter carries the given `selection` value (or none). */
 function candidateConfig(selection) {
@@ -4232,7 +4216,7 @@ test('candidates: a parked needs-human head is excluded unless approval hands it
   const w = candidateWorld({
     tickets: [nh(1), nh(2), nh(3), nh(4)],
     statuses: {
-      [SHA_OF(2)]: verifyStatus('pending', 'needs human: ledger-open'),
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: partial-build'),
       [SHA_OF(3)]: verifyStatus('failure', 'defect: 2 finding(s), needs human'),
       [SHA_OF(4)]: verifyStatus('pending', 'needs human: no-receipt'),
     },
@@ -4245,7 +4229,7 @@ test('candidates: a parked needs-human head is excluded unless approval hands it
     r.candidates.map((c) => ({ pr: c.pr, approval: c.approval, waive: c.waive })),
     [
       { pr: 1, approval: undefined, waive: undefined },
-      { pr: 2, approval: 'policy-park-approved', waive: 'ledger-open' },
+      { pr: 2, approval: 'policy-park-approved', waive: 'partial-build' },
       { pr: 3, approval: 'reverify', waive: undefined },
     ],
   )
@@ -4274,8 +4258,8 @@ test('candidates: needs-human holds only a head its own park stands on', async (
     tickets: [1, 2, 3, 4, 5, 6].map(nh),
     statuses: {
       // BOS-1: a new head with no verify status. BOS-2: the park sits on an older head only.
-      [SHA_OF(102)]: verifyStatus('pending', 'needs human: ledger-open'),
-      [SHA_OF(3)]: verifyStatus('pending', 'needs human: ledger-open'),
+      [SHA_OF(102)]: verifyStatus('pending', 'needs human: partial-build'),
+      [SHA_OF(3)]: verifyStatus('pending', 'needs human: partial-build'),
       [SHA_OF(4)]: verifyNodes(
         ['pending', 'waiting: stack-busy', 1000],
         ['pending', 'needs human: no-receipt', 5000],
@@ -4289,7 +4273,6 @@ test('candidates: needs-human holds only a head its own park stands on', async (
         ['failure', 'defect: 2 finding(s), needs human', 3_700_000],
       ),
     },
-    comments: { 3: [recordedLedger(3)] },
   })
   const r = await candidates({ repo: REPO }, candDeps(w))
   assert.deepEqual(
@@ -4759,13 +4742,13 @@ test('approve removes exactly the needs-human label for a standing, fully known 
   assert.ok(body.trimEnd().endsWith(approveMarker(HEAD, ['always-human-path', 'human-review:ui'])))
   assert.equal(r.approvalUrl, `${PR_URL}#issuecomment-99`)
   assert.equal(
-    approveMarker(HEAD, ['ledger-open']),
-    `<!-- boss-approve head=${HEAD} waives=ledger-open -->`,
+    approveMarker(HEAD, ['partial-build']),
+    `<!-- boss-approve head=${HEAD} waives=partial-build -->`,
   )
 })
 
 test('approve uses the configured needs-human label name', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const adapter = fakeAdapter({ labels: ['agent-parked'] })
   const r = await approve(
     { pr: 7, repo: REPO },
@@ -4789,12 +4772,12 @@ test('approve judges the park beneath a later wait or claim', async () => {
       description: 'waiting: stack-busy',
       updated_at: iso(500),
     },
-    ...parkedHuman('ledger-open'),
+    ...parkedHuman('partial-build'),
   ]
   const adapter = fakeAdapter()
   const r = await approve({ pr: 7, repo: REPO }, deps(world({ statuses }), { adapter }))
   assert.equal(r.approved, true)
-  assert.equal(r.waives, 'ledger-open')
+  assert.equal(r.waives, 'partial-build')
 })
 
 test('approve refuses with no park, a superseded park, an older-head park or an unknown code', async () => {
@@ -4810,7 +4793,7 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
             description: 'verified',
             updated_at: iso(10),
           },
-          ...parkedHuman('ledger-open'),
+          ...parkedHuman('partial-build'),
         ],
       }),
       'no-standing-park',
@@ -4819,14 +4802,14 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
       'the park stands on an older head',
       (() => {
         const w = world({ statuses: [receipt()] })
-        w.statuses[OTHER] = parkedHuman('ledger-open')
+        w.statuses[OTHER] = parkedHuman('partial-build')
         return w
       })(),
       'no-standing-park',
     ],
     [
       'the park names a code outside the vocabulary',
-      world({ statuses: parkedHuman('ledger-open,human-review:ux') }),
+      world({ statuses: parkedHuman('partial-build,human-review:ux') }),
       'park-codes-unknown',
     ],
   ]
@@ -4841,14 +4824,14 @@ test('approve refuses with no park, a superseded park, an older-head park or an 
 })
 
 test('approve posts nothing for a head pushed after it read the park', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const read = w.read
   let views = 0
   w.read = (command, args, opts) => {
     // approve reads HEAD and its park; the push lands before its pre-post check.
     if (command === 'gh' && args[0] === 'pr' && args[1] === 'view' && ++views === 2) {
       w.pr.headRefOid = OTHER
-      w.statuses[OTHER] = parkedHuman('ledger-open,human-review:ui')
+      w.statuses[OTHER] = parkedHuman('partial-build,human-review:ui')
     }
     return read(command, args, opts)
   }
@@ -4861,20 +4844,20 @@ test('approve posts nothing for a head pushed after it read the park', async () 
 
 test('approve refuses a closed or merged PR and an unreadable PR or status', async () => {
   const merged = world({
-    statuses: parkedHuman('ledger-open'),
+    statuses: parkedHuman('partial-build'),
     pr: { state: 'MERGED', mergeCommit: { oid: MERGED_SHA } },
   })
   assert.equal((await approve({ pr: 7, repo: REPO }, deps(merged))).reason, 'pr-not-open')
   const unreadable = world({ pr: null })
   unreadable.pr = null
   assert.equal((await approve({ pr: 7, repo: REPO }, deps(unreadable))).reason, 'pr-unreadable')
-  const blind = world({ statuses: parkedHuman('ledger-open'), statusReadFails: true })
+  const blind = world({ statuses: parkedHuman('partial-build'), statusReadFails: true })
   assert.equal((await approve({ pr: 7, repo: REPO }, deps(blind))).reason, 'status-unreadable')
 })
 
 test('approve names why the PR read failed, as gh said it, with any token redacted', async () => {
   // delta, PR 6671: a stale GITHUB_TOKEN in the worktree .env made every gh read a 401.
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const read = (command, args, opts) =>
     command === 'gh' && args[0] === 'pr' && args[1] === 'view'
       ? {
@@ -4970,7 +4953,7 @@ test('approve: the label removal is housekeeping, so a tracker that cannot be wr
 test('approve refuses, posting nothing, when the account it runs as cannot write to the repo', async () => {
   // A park to approve, and a send-back of a verified head to lift: both need a writer's record.
   const heads = {
-    park: { statuses: parkedHuman('ledger-open') },
+    park: { statuses: parkedHuman('partial-build') },
     // The send-back is a writer's; only the account approve runs as varies.
     lift: {
       statuses: verified(),
@@ -4996,9 +4979,9 @@ test('approve refuses, posting nothing, when the account it runs as cannot write
 })
 
 test('judge waits, never re-parks, when the approval read cannot be read', async () => {
-  const openLedger = { body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n` }
-  for (const waive of [undefined, 'ledger-open']) {
-    const w = approving(world({ pr: openLedger }), 'ledger-open')
+  const partialPr = { body: PARTIAL_BODY }
+  for (const waive of [undefined, 'partial-build']) {
+    const w = approving(world({ pr: partialPr }), 'partial-build')
     w.commentsReadFails = true
     const j = await judge({ pr: 7, repo: REPO, ...(waive ? { waive } : {}) }, deps(w))
     assert.deepEqual([j.verdict, j.reason], ['wait', 'approval-unreadable'], String(waive))
@@ -5010,8 +4993,8 @@ test('judge waits, never re-parks, when the approval read cannot be read', async
 })
 
 test('judge waits when the park beneath a claim cannot be read', async () => {
-  const openLedger = { body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n` }
-  const w = approving(world({ pr: openLedger }), 'ledger-open')
+  const partialPr = { body: PARTIAL_BODY }
+  const w = approving(world({ pr: partialPr }), 'partial-build')
   // The run claimed the approved park, so the park is judged beneath the claim.
   w.statuses[HEAD].unshift({
     context: 'boss/verify',
@@ -5033,7 +5016,7 @@ test('judge waits when the park beneath a claim cannot be read', async () => {
 
 test('approve reports the precise reason a head stopped standing', async () => {
   // A PR read that fails after the record settled: the label stays, and the reason says so.
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const probe = fakeAdapter()
   const adapter = {
     ...probe,
@@ -5046,7 +5029,7 @@ test('approve reports the precise reason a head stopped standing', async () => {
   assert.deepEqual([r.approved, r.trackerWrites, r.why], [true, 'unavailable', 'pr-unreadable'])
 
   // A PR closed while the record is posted: nothing that stands is approved.
-  const closing = world({ statuses: parkedHuman('ledger-open') })
+  const closing = world({ statuses: parkedHuman('partial-build') })
   const read = closing.read
   closing.read = (command, args, opts) => {
     const out = read(command, args, opts)
@@ -5058,7 +5041,7 @@ test('approve reports the precise reason a head stopped standing', async () => {
 
   // A PR or status read that fails right after the post leaves the record's effect unknown.
   for (const fail of [(w) => (w.pr = null), (w) => (w.statusReadFails = true)]) {
-    const blind = world({ statuses: parkedHuman('ledger-open') })
+    const blind = world({ statuses: parkedHuman('partial-build') })
     const inner = blind.read
     blind.read = (command, args, opts) => {
       const out = inner(command, args, opts)
@@ -5076,7 +5059,7 @@ test('approve reports the precise reason a head stopped standing', async () => {
 })
 
 test('approve keeps the label when the head cannot be re-read after the tracker probe', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const probe = fakeAdapter()
   const adapter = {
     ...probe,
@@ -5092,7 +5075,7 @@ test('approve keeps the label when the head cannot be re-read after the tracker 
 })
 
 test('approve keeps the label of a head pushed while the tracker is probed, and lists only the writes it made', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const probe = fakeAdapter()
   const adapter = {
     ...probe,
@@ -5100,7 +5083,7 @@ test('approve keeps the label of a head pushed while the tracker is probed, and 
       // The record has settled on HEAD; a push lands while the tracker is probed.
       if (!('removeLabels' in writes)) {
         w.pr.headRefOid = OTHER
-        w.statuses[OTHER] = parkedHuman('ledger-open')
+        w.statuses[OTHER] = parkedHuman('partial-build')
       }
       return probe.applyIssueWrites(writes)
     },
@@ -5117,7 +5100,7 @@ test('approve keeps the label of a head pushed while the tracker is probed, and 
   )
 
   // A refusal lists the record it posted and no label write; an unavailable tracker lists none.
-  const moved = world({ statuses: parkedHuman('ledger-open') })
+  const moved = world({ statuses: parkedHuman('partial-build') })
   const read = moved.read
   moved.read = (command, args, opts) => {
     const out = read(command, args, opts)
@@ -5126,7 +5109,7 @@ test('approve keeps the label of a head pushed while the tracker is probed, and 
   }
   const m = await approve({ pr: 7, repo: REPO }, deps(moved))
   assert.deepEqual([m.reason, m.writes.map((x) => x.kind)], ['head-moved', ['pr-comment']])
-  const bare = world({ statuses: parkedHuman('ledger-open'), pr: { body: 'no ticket line' } })
+  const bare = world({ statuses: parkedHuman('partial-build'), pr: { body: 'no ticket line' } })
   const b = await approve({ pr: 7, repo: REPO }, deps(bare))
   assert.deepEqual(
     [b.approved, b.trackerWrites, b.writes.map((x) => x.kind)],
@@ -5135,18 +5118,18 @@ test('approve keeps the label of a head pushed while the tracker is probed, and 
 })
 
 test('approve --dry-run plans the record and the removal and writes nothing', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const adapter = fakeAdapter()
   const r = await approve({ pr: 7, repo: REPO, dryRun: true }, deps(w, { adapter }))
   assert.equal(r.dryRun, true)
   assert.equal(r.approved, false)
   assert.equal(r.planned, true)
-  assert.equal(r.waives, 'ledger-open')
+  assert.equal(r.waives, 'partial-build')
   assert.deepEqual(
     r.writes.map((x) => x.kind),
     ['pr-comment', 'tracker'],
   )
-  assert.ok(r.writes[0].body.endsWith(approveMarker(HEAD, ['ledger-open'])))
+  assert.ok(r.writes[0].body.endsWith(approveMarker(HEAD, ['partial-build'])))
   assert.deepEqual(r.writes[1], {
     kind: 'tracker',
     issueId: 'BOS-1',
@@ -5157,7 +5140,7 @@ test('approve --dry-run plans the record and the removal and writes nothing', as
 })
 
 test('approve through the waiver path: the next verify run waives exactly the parked codes', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const r = await approve({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.approved, true)
   // The record is on the PR; approval (what the verify run reads) waives exactly that set, whatever
@@ -5177,7 +5160,7 @@ const commentBodies = (w) =>
 
 test('approve --head refuses a head other than the one pinned, before any read past the PR or any write', async () => {
   for (const dryRun of [false, true]) {
-    const w = world({ statuses: parkedHuman('ledger-open') })
+    const w = world({ statuses: parkedHuman('partial-build') })
     const adapter = fakeAdapter()
     const r = await approve({ pr: 7, repo: REPO, head: OTHER, dryRun }, deps(w, { adapter }))
     assert.deepEqual(
@@ -5195,17 +5178,21 @@ test('approve --head refuses a head other than the one pinned, before any read p
     assert.deepEqual(adapter.calls, [], 'no tracker probe or write')
   }
   // The pinned head is compared without regard to case.
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const r = await approve({ pr: 7, repo: REPO, head: HEAD.toUpperCase() }, deps(w))
-  assert.deepEqual([r.approved, r.waives], [true, 'ledger-open'])
+  assert.deepEqual([r.approved, r.waives], [true, 'partial-build'])
 })
 
 test('approve --waives refuses unless exactly the pinned codes stand, before any write', async () => {
   const cases = [
-    ['another park stands', parkedHuman('ledger-open,human-review:ui'), 'ledger-open'],
-    ['a park stands where none was pinned', parkedHuman('ledger-open'), ''],
-    ['the pinned park is gone', verified(), 'ledger-open'],
-    ['the park names a code outside the vocabulary', parkedHuman('human-review:ux'), 'ledger-open'],
+    ['another park stands', parkedHuman('partial-build,human-review:ui'), 'partial-build'],
+    ['a park stands where none was pinned', parkedHuman('partial-build'), ''],
+    ['the pinned park is gone', verified(), 'partial-build'],
+    [
+      'the park names a code outside the vocabulary',
+      parkedHuman('human-review:ux'),
+      'partial-build',
+    ],
   ]
   for (const [name, statuses, waives] of cases)
     for (const forMerge of [false, true]) {
@@ -5225,15 +5212,15 @@ test('approve --waives refuses unless exactly the pinned codes stand, before any
       assert.deepEqual(adapter.calls, [], name)
     }
   // The pinned codes standing: a plain approval of the park, label removal included.
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const adapter = fakeAdapter()
   const r = await approve(
-    { pr: 7, repo: REPO, head: HEAD, waives: 'ledger-open', forMerge: true },
+    { pr: 7, repo: REPO, head: HEAD, waives: 'partial-build', forMerge: true },
     deps(w, { adapter }),
   )
   assert.deepEqual(
     [r.approved, r.waives, r.trackerWrites, r.signOff, r.lifted],
-    [true, 'ledger-open', 'ok', undefined, undefined],
+    [true, 'partial-build', 'ok', undefined, undefined],
   )
   assert.deepEqual(trackerRemovals(adapter), [{ issueId: 'BOS-1', removeLabels: ['needs-human'] }])
 })
@@ -5296,7 +5283,7 @@ test('approve --for-merge refuses a non-writer, and a park raised before the pos
   w.read = (command, args, opts) => {
     // A park lands on the head between approve's read and its pre-post check.
     if (command === 'gh' && args[0] === 'pr' && args[1] === 'view' && ++views === 2)
-      w.statuses[HEAD] = parkedHuman('ledger-open')
+      w.statuses[HEAD] = parkedHuman('partial-build')
     return read(command, args, opts)
   }
   const r = await approve(pins, deps(w))
@@ -5455,14 +5442,14 @@ ${sendBackMarker(head)}`,
 const mergeCalls = (w) => w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'merge')
 
 test('race: a head pushed and parked while approve writes its record is never waived', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const read = w.read
   // The push lands after approve's last pre-write check, while the record POST is in flight.
   w.read = (command, args, opts) => {
     const r = read(command, args, opts)
     if (command === 'gh' && args[2] === 'POST' && /\/comments$/.test(args[3])) {
       w.pr.headRefOid = OTHER
-      w.statuses[OTHER] = parkedHuman('ledger-open')
+      w.statuses[OTHER] = parkedHuman('partial-build')
     }
     return r
   }
@@ -5483,9 +5470,9 @@ test('race: a head pushed and parked while approve writes its record is never wa
 })
 
 test("race: a head pushed between judge's approval read and its own read gets no waiver", async () => {
-  const openLedger = { body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n` }
-  for (const waive of [undefined, 'ledger-open']) {
-    const w = approving(world({ pr: openLedger }), 'ledger-open')
+  const partialPr = { body: PARTIAL_BODY }
+  for (const waive of [undefined, 'partial-build']) {
+    const w = approving(world({ pr: partialPr }), 'partial-build')
     w.statuses[OTHER] = [receipt()]
     const read = w.read
     let views = 0
@@ -5498,32 +5485,32 @@ test("race: a head pushed between judge's approval read and its own read gets no
     const j = await judge({ pr: 7, repo: REPO, ...(waive ? { waive } : {}) }, deps(w))
     assert.deepEqual(
       [j.verdict, j.reason, j.headSha],
-      ['human', 'ledger-open', OTHER],
+      ['human', 'partial-build', OTHER],
       String(waive),
     )
   }
 })
 
 test('judge: a waiver handed over for one head is dropped when another head is judged', async () => {
-  const openLedger = { body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n` }
-  const w = approving(world({ pr: openLedger }), 'ledger-open')
+  const partialPr = { body: PARTIAL_BODY }
+  const w = approving(world({ pr: partialPr }), 'partial-build')
   // The router read HEAD's approval; a push lands before the judge runs.
   w.pr.headRefOid = OTHER
   w.statuses[OTHER] = [receipt()]
-  const j = await judge({ pr: 7, repo: REPO, waive: 'ledger-open' }, deps(w))
-  assert.deepEqual([j.verdict, j.reason], ['human', 'ledger-open'])
+  const j = await judge({ pr: 7, repo: REPO, waive: 'partial-build' }, deps(w))
+  assert.deepEqual([j.verdict, j.reason], ['human', 'partial-build'])
 
   // On the approved head the same waiver stands; a waiver wider than the approval does not.
-  const ok = approving(world({ pr: openLedger }), 'ledger-open')
-  const k = await judge({ pr: 7, repo: REPO, waive: 'ledger-open' }, deps(ok))
+  const ok = approving(world({ pr: partialPr }), 'partial-build')
+  const k = await judge({ pr: 7, repo: REPO, waive: 'partial-build' }, deps(ok))
   assert.deepEqual([k.verdict, k.reason], ['pass', 'approved'])
-  const wide = approving(world({ pr: openLedger }), 'ledger-open')
-  const x = await judge({ pr: 7, repo: REPO, waive: 'ledger-open,no-receipt' }, deps(wide))
+  const wide = approving(world({ pr: partialPr }), 'partial-build')
+  const x = await judge({ pr: 7, repo: REPO, waive: 'partial-build,no-receipt' }, deps(wide))
   assert.equal(x.verdict, 'human')
 })
 
 test('approval: a record binds to its head, the exact parked codes and a trusted author', async () => {
-  const run = async (comments, statuses = parkedHuman('ledger-open')) => {
+  const run = async (comments, statuses = parkedHuman('partial-build')) => {
     const w = world({ statuses, comments })
     const r = await approval(
       { pr: 7, repo: REPO },
@@ -5532,29 +5519,29 @@ test('approval: a record binds to its head, the exact parked codes and a trusted
     return r.approval
   }
   assert.equal(
-    await run([operatorComment(approveMarker(HEAD, ['ledger-open']))]),
+    await run([operatorComment(approveMarker(HEAD, ['partial-build']))]),
     'policy-park-approved',
   )
-  assert.equal(await run([operatorComment(approveMarker(OTHER, ['ledger-open']))]), 'none')
+  assert.equal(await run([operatorComment(approveMarker(OTHER, ['partial-build']))]), 'none')
   assert.equal(
-    await run([operatorComment(approveMarker(HEAD, ['ledger-open', 'human-review:ui']))]),
+    await run([operatorComment(approveMarker(HEAD, ['partial-build', 'human-review:ui']))]),
     'none',
   )
   assert.equal(
-    await run([operatorComment(approveMarker(HEAD, ['ledger-open']), { association: 'NONE' })]),
+    await run([operatorComment(approveMarker(HEAD, ['partial-build']), { association: 'NONE' })]),
     'none',
   )
   assert.equal(
     await run([
-      operatorComment(approveMarker(HEAD, ['ledger-open']), { association: 'CONTRIBUTOR' }),
+      operatorComment(approveMarker(HEAD, ['partial-build']), { association: 'CONTRIBUTOR' }),
     ]),
     'none',
   )
 })
 
 test('race: a legacy send-back after an approval revokes it until a later approve of the same head', async () => {
-  const openLedger = { body: `${BODY}\n\n## Human follow-up\n- [ ] optional dev-host check\n` }
-  const w = world({ statuses: parkedHuman('ledger-open'), pr: openLedger })
+  const partialPr = { body: PARTIAL_BODY }
+  const w = world({ statuses: parkedHuman('partial-build'), pr: partialPr })
   const unlabelled = () => deps(w, { adapter: fakeAdapter({ labels: ['agent-build'] }) })
   assert.equal((await approve({ pr: 7, repo: REPO }, deps(w))).approved, true)
   assert.equal(
@@ -5567,12 +5554,12 @@ test('race: a legacy send-back after an approval revokes it until a later approv
     approval: 'none',
     reason: 'sent-back',
     headSha: HEAD,
-    park: 'ledger-open',
+    park: 'partial-build',
   })
   // The verify run re-entering with no --waive re-parks the rejected head.
   const j = await judge({ pr: 7, repo: REPO }, unlabelled())
   assert.equal(j.verdict, 'human')
-  assert.match(j.reason, /ledger-open/)
+  assert.match(j.reason, /partial/)
   // A review approval of the same head does not override the send-back either.
   w.pr.reviewDecision = 'APPROVED'
   assert.equal((await approval({ pr: 7, repo: REPO }, unlabelled())).reason, 'sent-back')
@@ -5588,9 +5575,9 @@ test('race: a legacy send-back after an approval revokes it until a later approv
 
 test('approval: an untrusted send-back marker revokes nothing; a parked defect still re-judges', async () => {
   const w = world({
-    statuses: parkedHuman('ledger-open'),
+    statuses: parkedHuman('partial-build'),
     comments: [
-      operatorComment(approveMarker(HEAD, ['ledger-open']), { msAgo: 60_000 }),
+      operatorComment(approveMarker(HEAD, ['partial-build']), { msAgo: 60_000 }),
       operatorComment(sendBackMarker(HEAD), { association: 'NONE', msAgo: 1000 }),
     ],
   })
@@ -5643,7 +5630,7 @@ test('merge refuses a sent-back head, whatever verdict it carries, until a later
     prAfterMerge: after,
     comments: [
       operatorComment(sendBackMarker(HEAD), { msAgo: 60_000 }),
-      operatorComment(approveMarker(HEAD, ['ledger-open']), { msAgo: 1000 }),
+      operatorComment(approveMarker(HEAD, ['partial-build']), { msAgo: 1000 }),
     ],
   })
   assert.equal((await merge({ pr: 7, head: HEAD, repo: REPO }, deps(reapproved))).merged, true)
@@ -5651,7 +5638,7 @@ test('merge refuses a sent-back head, whatever verdict it carries, until a later
 
 test('an unreadable comment read is unknown: approval none, merge waits, never empty', async () => {
   const blind = world({
-    statuses: parkedHuman('ledger-open'),
+    statuses: parkedHuman('partial-build'),
     pr: { reviewDecision: 'APPROVED' },
     commentsReadFails: true,
   })
@@ -5678,12 +5665,12 @@ test('candidates: a park is handed back only by a record for its own head', asyn
   const w = candidateWorld({
     tickets: [nh(2), nh(3), nh(4), nh(5)],
     statuses: Object.fromEntries(
-      [2, 3, 4, 5].map((n) => [SHA_OF(n), verifyStatus('pending', 'needs human: ledger-open')]),
+      [2, 3, 4, 5].map((n) => [SHA_OF(n), verifyStatus('pending', 'needs human: partial-build')]),
     ),
     reviews: { 5: 'APPROVED' },
     comments: {
-      2: [operatorComment(approveMarker(SHA_OF(2), ['ledger-open']))],
-      3: [operatorComment(approveMarker(OTHER, ['ledger-open'])), recordedLedger(3)],
+      2: [operatorComment(approveMarker(SHA_OF(2), ['partial-build']))],
+      3: [operatorComment(approveMarker(OTHER, ['partial-build']))],
       5: [operatorComment(sendBackMarker(SHA_OF(5)))],
     },
     commentsFail: [4],
@@ -5691,7 +5678,7 @@ test('candidates: a park is handed back only by a record for its own head', asyn
   const r = await candidates({ repo: REPO }, candDeps(w))
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.approval, c.waive]),
-    [[2, 'policy-park-approved', 'ledger-open']],
+    [[2, 'policy-park-approved', 'partial-build']],
   )
   assert.deepEqual(
     r.skipped.map((x) => [x.ticket, x.reason]),
@@ -5718,7 +5705,7 @@ test('approve: a failed post approves nothing and writes nothing else; a lost re
   const adapter = fakeAdapter()
   const r = await approve(
     { pr: 7, repo: REPO },
-    deps(failing(world({ statuses: parkedHuman('ledger-open') })), { adapter }),
+    deps(failing(world({ statuses: parkedHuman('partial-build') })), { adapter }),
   )
   assert.deepEqual(
     [r.approved, r.reason, r.approvalUrl],
@@ -5727,7 +5714,7 @@ test('approve: a failed post approves nothing and writes nothing else; a lost re
   assert.deepEqual(adapter.writeCalls(), [], 'the label is never touched')
 
   // GitHub took the comment but the response was lost: the read-back finds the record.
-  const landed = failing(world({ statuses: parkedHuman('ledger-open') }), { lands: true })
+  const landed = failing(world({ statuses: parkedHuman('partial-build') }), { lands: true })
   const l = await approve({ pr: 7, repo: REPO }, deps(landed))
   assert.deepEqual(
     [l.approved, l.approvalUrl, l.trackerWrites],
@@ -5736,7 +5723,7 @@ test('approve: a failed post approves nothing and writes nothing else; a lost re
 })
 
 test('approve: an unreadable settle is unconfirmed, and a send-back racing the record supersedes it', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const read = w.read
   w.read = (command, args, opts) => {
     const r = read(command, args, opts)
@@ -5751,7 +5738,7 @@ test('approve: an unreadable settle is unconfirmed, and a send-back racing the r
   )
   assert.deepEqual(adapter.writeCalls(), [])
 
-  const raced = world({ statuses: parkedHuman('ledger-open') })
+  const raced = world({ statuses: parkedHuman('partial-build') })
   const inner = raced.read
   raced.read = (command, args, opts) => {
     const out = inner(command, args, opts)
@@ -5802,9 +5789,9 @@ test('approve lifts a send-back of a head verify passed outright, and only then'
 })
 
 test('approval: only markers by an author with write access count', async () => {
-  const run = async (permissions, marker = approveMarker(HEAD, ['ledger-open'])) => {
+  const run = async (permissions, marker = approveMarker(HEAD, ['partial-build'])) => {
     const w = world({
-      statuses: parkedHuman('ledger-open'),
+      statuses: parkedHuman('partial-build'),
       comments: [operatorComment(marker, { association: 'MEMBER', login: 'someone' })],
       permissions,
     })
@@ -5823,9 +5810,9 @@ test('approval: only markers by an author with write access count', async () => 
   )
   // A read-only account's send-back revokes nothing either.
   const w = world({
-    statuses: parkedHuman('ledger-open'),
+    statuses: parkedHuman('partial-build'),
     comments: [
-      operatorComment(approveMarker(HEAD, ['ledger-open']), { msAgo: 60_000 }),
+      operatorComment(approveMarker(HEAD, ['partial-build']), { msAgo: 60_000 }),
       operatorComment(sendBackMarker(HEAD), { login: 'reader', msAgo: 1000 }),
     ],
     permissions: { reader: 'read' },
@@ -5844,23 +5831,23 @@ test('operatorMarkers keeps only well-formed trusted last-line markers; operator
     ...extra,
   })
   const markers = operatorMarkers([
-    c(approveMarker(HEAD, ['human-review:ui', 'ledger-open'])),
+    c(approveMarker(HEAD, ['human-review:ui', 'partial-build'])),
     c(sendBackMarker(OTHER), { author_association: 'COLLABORATOR' }),
     c(approveMarker(HEAD, [])),
-    c(`${approveMarker(HEAD, ['ledger-open'])}\n\nquoted afterwards`),
-    c(approveMarker(HEAD, ['ledger-open']), { author_association: 'NONE' }),
-    c(approveMarker(HEAD, ['ledger-open']), { user: null }),
-    c(approveMarker(HEAD, ['ledger-open', 'human-review:ux'])),
+    c(`${approveMarker(HEAD, ['partial-build'])}\n\nquoted afterwards`),
+    c(approveMarker(HEAD, ['partial-build']), { author_association: 'NONE' }),
+    c(approveMarker(HEAD, ['partial-build']), { user: null }),
+    c(approveMarker(HEAD, ['partial-build', 'human-review:ux'])),
     c(`<!-- boss-approve head=${HEAD} waives= -->`),
-    c(`<!-- boss-send-back head=${HEAD} waives=ledger-open -->`),
-    c(`<!-- boss-approve head=${HEAD.slice(1)} waives=ledger-open -->`),
+    c(`<!-- boss-send-back head=${HEAD} waives=partial-build -->`),
+    c(`<!-- boss-approve head=${HEAD.slice(1)} waives=partial-build -->`),
     c(null),
     null,
   ])
   assert.deepEqual(
     markers.map((m) => [m.kind, m.head, m.waives, m.login]),
     [
-      ['approve', HEAD, 'ledger-open,human-review:ui', 'op'],
+      ['approve', HEAD, 'partial-build,human-review:ui', 'op'],
       ['send-back', OTHER, undefined, 'op'],
       ['approve', HEAD, '', 'op'],
     ],
@@ -5869,16 +5856,16 @@ test('operatorMarkers keeps only well-formed trusted last-line markers; operator
 
   const m = (kind, head, at, id, waives) => ({ kind, head, at, id, waives, url: `u${id}` })
   assert.deepEqual(
-    operatorDecision([m('approve', HEAD, 1, 1, 'ledger-open')], HEAD.toUpperCase()),
-    { decision: 'approved', waives: 'ledger-open', url: 'u1' },
+    operatorDecision([m('approve', HEAD, 1, 1, 'partial-build')], HEAD.toUpperCase()),
+    { decision: 'approved', waives: 'partial-build', url: 'u1' },
   )
   assert.deepEqual(
-    operatorDecision([m('send-back', HEAD, 2, 1), m('approve', HEAD, 1, 9, 'ledger-open')], HEAD),
+    operatorDecision([m('send-back', HEAD, 2, 1), m('approve', HEAD, 1, 9, 'partial-build')], HEAD),
     { decision: 'sent-back', url: 'u1' },
   )
   assert.deepEqual(
-    operatorDecision([m('approve', HEAD, 2, 2, 'ledger-open'), m('send-back', HEAD, 2, 1)], HEAD),
-    { decision: 'approved', waives: 'ledger-open', url: 'u2' },
+    operatorDecision([m('approve', HEAD, 2, 2, 'partial-build'), m('send-back', HEAD, 2, 1)], HEAD),
+    { decision: 'approved', waives: 'partial-build', url: 'u2' },
     'the larger id breaks a timestamp tie',
   )
   assert.deepEqual(operatorDecision([m('send-back', OTHER, 9, 9)], HEAD), { decision: null })
@@ -5921,7 +5908,7 @@ test('readOperatorMarkers: a failed or malformed read is unreadable, never an em
 })
 
 test('main wires approve and mark-merged, accepts --json and rejects stray flags', async () => {
-  const w = world({ statuses: parkedHuman('ledger-open') })
+  const w = world({ statuses: parkedHuman('partial-build') })
   const a = await main(['approve', '--pr', '7', '--repo', REPO, '--dry-run', '--json'], deps(w))
   assert.equal(a.planned, true)
   const merged = world({ pr: mergedPr })
@@ -5950,8 +5937,8 @@ test('main passes the approve pins through, an empty --waives= included', async 
   )
   assert.deepEqual([r.approved, r.waives, r.signOff], [true, '', 'merge'])
   const moved = await main(
-    ['approve', '--pr', '7', '--repo', REPO, '--head', OTHER, '--waives', 'ledger-open'],
-    deps(world({ statuses: parkedHuman('ledger-open') })),
+    ['approve', '--pr', '7', '--repo', REPO, '--head', OTHER, '--waives', 'partial-build'],
+    deps(world({ statuses: parkedHuman('partial-build') })),
   )
   assert.equal(moved.reason, 'head-moved')
   await assert.rejects(main(['approve', '--pr=7', '--dry-run=yes'], deps(world())), UsageError)
@@ -6166,8 +6153,8 @@ test('parkStillRaised attributes each code to the zero-token judge, a recorded e
     ['worktree sync failed', ['worktree-unsynced'], { extensionsRan: false }, true],
     [
       'one stale code releases',
-      [ui, 'ledger-open'],
-      { fresh: ['ledger-open'], extensionsRan: false },
+      [ui, 'partial-build'],
+      { fresh: ['partial-build'], extensionsRan: false },
       false,
     ],
   ]
@@ -6224,7 +6211,7 @@ test('candidates leaves a park standing when the policy it would be re-judged un
 test('post --policy goes with a human verdict and a well-formed fingerprint only', async () => {
   for (const options of [
     { verdict: 'pass', policy: OLD_POLICY },
-    { verdict: 'human', reason: 'ledger-open', policy: 'not-a-print' },
+    { verdict: 'human', reason: 'partial-build', policy: 'not-a-print' },
   ])
     await assert.rejects(
       post({ pr: 7, head: HEAD, repo: REPO, ...options }, deps(world())),
@@ -6940,7 +6927,8 @@ test('a ticketless factory PR parks on its status and a park note, and writes no
   const adapter = fakeAdapter({ tickets: [] })
   const judged = await judge({ pr: 7, repo: REPO }, deps(w, { adapter }))
   assert.equal(judged.verdict, 'human')
-  assert.equal(judged.reason, 'no-receipt,ledger-open')
+  // A factory PR written without boss-build's sections parks only for the missing review.
+  assert.equal(judged.reason, 'no-receipt')
   const r = await post(
     { pr: 7, head: HEAD, verdict: 'human', reason: judged.reason, repo: REPO },
     deps(w, { adapter }),
@@ -6952,12 +6940,11 @@ test('a ticketless factory PR parks on its status and a park note, and writes no
   assert.deepEqual(adapter.calls, [], 'no probe and no write')
   assert.deepEqual(
     w.statusPosts().map((s) => s.description),
-    ['needs human: no-receipt,ledger-open'],
+    ['needs human: no-receipt'],
   )
   const [note] = parkNotes(w)
   for (const line of [
     'No automated build and review has passed on this commit.',
-    '`## Acceptance criteria` is missing.',
     'This PR has no tracker ticket, so no ticket was updated.',
   ])
     assert.ok(note.body.includes(line), line)
@@ -7118,34 +7105,31 @@ test('post and merge share the discovery predicate: a PR some ticket may stand b
 // The park note: what each code means, what verify saw, and what to do next.
 
 test('post: one park note per head, left alone while it holds and rewritten in place when it changes', async () => {
-  const openBody = BODY.replace(
-    '## Human follow-up\n\n- none',
-    '## Human follow-up\n\n- [ ] rotate the key',
-  )
+  const openBody = PARTIAL_BODY
   const w = world({ pr: { body: openBody } })
   const human = () =>
-    post({ pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO }, deps(w))
+    post({ pr: 7, head: HEAD, verdict: 'human', reason: 'partial-build', repo: REPO }, deps(w))
 
   const first = await human()
   assert.deepEqual([first.posted, first.parkNote], [true, 'posted'])
   assert.equal(parkNotes(w).length, 1)
-  assert.ok(parkNotes(w)[0].body.includes('Open human follow-up: rotate the key'))
+  assert.ok(parkNotes(w)[0].body.includes('partial: 2/5 acceptance criteria'))
 
   const again = await human()
   assert.deepEqual([again.skipped, again.parkNote], ['already-posted', 'current'])
   assert.equal(w.comments.length, 1, 'the standing note is the only comment')
 
-  w.pr.body = openBody.replace('- [ ] rotate the key', '- [ ] rotate the key\n- [ ] tell support')
+  w.pr.body = openBody.replace('partial: 2/5', 'partial: 3/5')
   const edited = await human()
   assert.equal(edited.parkNote, 'updated')
   assert.equal(parkNotes(w).length, 1)
-  assert.ok(parkNotes(w)[0].body.includes('Open human follow-up: tell support'))
+  assert.ok(parkNotes(w)[0].body.includes('partial: 3/5 acceptance criteria'))
   const patches = w.calls.filter((c) => c.args[0] === 'api' && c.args[2] === 'PATCH')
   assert.equal(patches.length, 1)
 
   const dry = world({ pr: { body: openBody } })
   const planned = await post(
-    { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO, dryRun: true },
+    { pr: 7, head: HEAD, verdict: 'human', reason: 'partial-build', repo: REPO, dryRun: true },
     deps(dry),
   )
   assert.equal(planned.parkNote, 'planned')
@@ -7184,238 +7168,96 @@ test('post --extension-results puts the failing extension and its own error in t
 })
 
 // ---------------------------------------------------------------------------
-// A ledger-open park is re-judged when the PR body's ledger changes.
+// Parks recorded under the retired PR checklist gate name `ledger-open`.
 
-const ledgerBody = (id, followUp) =>
-  [
-    ticketBody(id),
-    '',
-    '## Acceptance criteria',
-    '- [x] it works',
-    '',
-    '## Human follow-up',
-    followUp,
-    '',
-    '## Open questions',
-    '- none',
-    '',
-  ].join('\n')
-
-test('candidates: a ledger-open park re-judges when its ledger changed or was never recorded, not for other edits', async () => {
-  const open = (n) => ledgerBody(`BOS-${n}`, '- [ ] rotate the key')
-  const ticked = (n) => ledgerBody(`BOS-${n}`, '- [x] rotate the key')
-  const pr = (n, body) => ({
+test('candidates: a standing park naming the retired ledger-open code is re-judged, not stranded', async () => {
+  const pr = (n) => ({
     number: n,
     url: `https://github.com/o/r/pull/${n}`,
-    body,
+    body: ticketBody(`BOS-${n}`),
     headRefOid: SHA_OF(n),
     isDraft: false,
   })
-  const ids = [1, 2, 3, 4]
   const w = candidateWorld({
-    tickets: ids.map((n) => ({ identifier: `BOS-${n}`, labels: ['agent-build'], attachments: [] })),
-    prs: [
-      pr(1, ticked(1)),
-      pr(2, open(2).replace('\n\nbody\n', '\n\nbody, with a paragraph added after the park\n')),
-      pr(3, open(3)),
-      pr(4, ticked(4)),
-    ],
+    tickets: [1, 2, 3].map((n) => ({
+      identifier: `BOS-${n}`,
+      labels: ['agent-build'],
+      attachments: [],
+    })),
+    prs: [pr(1), pr(2), pr(3)],
     statuses: {
       [SHA_OF(1)]: verifyStatus('pending', 'needs human: ledger-open'),
-      [SHA_OF(2)]: verifyStatus('pending', 'needs human: ledger-open'),
-      [SHA_OF(3)]: verifyStatus('pending', 'needs human: ledger-open'),
-      [SHA_OF(4)]: verifyStatus('pending', 'needs human: human-review:ui'),
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: no-receipt,ledger-open'),
+      [SHA_OF(3)]: verifyStatus('pending', 'needs human: partial-build'),
     },
     comments: {
-      1: [recordedLedger(1, open(1))],
-      2: [recordedLedger(2, open(2))],
-      3: [operatorComment(parkNoteMarker(SHA_OF(3), '0'.repeat(16)))],
-      4: [recordedLedger(4, open(4))],
+      1: [
+        operatorComment(
+          parkNoteMarker(SHA_OF(1), '0'.repeat(16)).replace(
+            ' -->',
+            ` ledger=${'1'.repeat(16)} -->`,
+          ),
+        ),
+      ],
     },
   })
   const r = await candidates({ repo: REPO }, candDeps(w))
   assert.deepEqual(
     r.candidates.map((c) => [c.pr, c.rejudge]),
     [
-      [1, 'ledger-changed'],
-      [3, 'ledger-unrecorded'],
+      [1, 'codes-unknown'],
+      [2, 'codes-unknown'],
     ],
   )
   assert.deepEqual(
     r.skipped.map((s) => [s.pr, s.reason]),
-    [
-      [2, 'parked'],
-      [4, 'parked'],
-    ],
+    [[3, 'parked']],
   )
 })
 
-test('a ledger the sweep cannot record is re-judged at most LEDGER_RECORD_ATTEMPTS times on a head', async () => {
-  const openBody = ledgerBody('BOS-1', '- [ ] rotate the key')
-  const park = {
-    context: 'boss/verify',
-    state: 'pending',
-    description: 'needs human: ledger-open',
-    updated_at: iso(60_000),
-  }
-  const w = world({ pr: { body: openBody }, statuses: [park, receipt()], commentWritesFail: true })
-  const sweepPost = (ledger) =>
-    post(
-      { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO, ledger },
-      deps(w),
-    )
-  const fingerprint = ledgerFingerprint({ body: openBody, title: w.pr.title })
-  const due = []
-  for (let attempt = 0; attempt < LEDGER_RECORD_ATTEMPTS; attempt++) {
-    due.push(ledgerRecordDue(w.statuses[HEAD]))
-    const r = await sweepPost(fingerprint)
-    assert.deepEqual(
-      [r.skipped, r.parkNote, r.ledgerAttempt],
-      ['already-posted', 'failed', 'counted'],
-    )
-  }
-  due.push(ledgerRecordDue(w.statuses[HEAD]))
-  assert.deepEqual(due, [true, true, true, false])
-  assert.ok(
-    w.statusPosts().every((s) => s.state === 'pending' && s.description === park.description),
-    'each attempt re-posts the standing park unchanged',
-  )
-
-  // A chat post records no ledger, so its failed note counts nothing; an unreadable history is
-  // never due.
-  const chat = world({
-    pr: { body: openBody },
-    statuses: [park, receipt()],
-    commentWritesFail: true,
-  })
-  const r = await post(
-    { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO },
-    deps(chat),
-  )
-  assert.deepEqual(
-    [r.parkNote, r.ledgerAttempt, chat.statusPosts().length],
-    ['failed', undefined, 0],
-  )
-  assert.equal(ledgerRecordDue(null), false)
-
-  // candidates stops re-judging that head for its ledger once the attempts are spent.
-  const stack = (n) =>
-    Array.from(
-      { length: n },
-      (_, i) => verifyStatus('pending', 'needs human: ledger-open', 1000 + i)[0],
-    )
-  const cw = (n) =>
-    candidateWorld({
-      prs: [
-        {
-          number: 3,
-          url: 'https://github.com/o/r/pull/3',
-          body: ledgerBody('BOS-3', '- [ ] rotate the key'),
-          headRefOid: SHA_OF(3),
-          isDraft: false,
-        },
-      ],
-      tickets: [{ identifier: 'BOS-3', labels: ['agent-build'], attachments: [] }],
-      statuses: { [SHA_OF(3)]: stack(n) },
-      comments: { 3: [operatorComment(parkNoteMarker(SHA_OF(3), '0'.repeat(16)))] },
-    })
-  const rejudged = async (n) => {
-    const out = await candidates({ repo: REPO }, candDeps(cw(n)))
-    return [out.candidates.map((c) => c.rejudge), out.skipped.map((s) => s.reason)]
-  }
-  assert.deepEqual(await rejudged(LEDGER_RECORD_ATTEMPTS), [['ledger-unrecorded'], []])
-  assert.deepEqual(await rejudged(LEDGER_RECORD_ATTEMPTS + 1), [[], ['parked']])
-})
-
-// PR #3157's only open item: an observation that can happen only after the merge it would gate.
-const POST_MERGE_ITEM =
-  '- [ ] After merge and a trusted skills install, observe a planning run starting no build session. This is the plan’s post-merge observation, not a merge gate. (criterion: Post-merge observation of scheduled build cadence)'
-
-const parkedLedgerWorld = (body) =>
+const parkedWorld = (description, pr) =>
   world({
-    pr: { body },
-    statuses: [
-      { context: 'boss/verify', state: 'pending', description: 'needs human: ledger-open' },
-      receipt(),
-    ],
+    pr,
+    statuses: [{ context: 'boss/verify', state: 'pending', description }, receipt()],
   })
 
-test('judge: post-merge observations never hold a ledger-open park; any other open follow-up does', async () => {
-  const judged = async (body) => {
-    const w = parkedLedgerWorld(body)
-    const r = await judge({ pr: 7, repo: REPO }, deps(w))
-    return [r.verdict, r.reason, ledgerEvidence({ title: w.pr.title, body })]
-  }
-  const afterMerge = `${ledgerBody('BOS-1', '- none')}\n## After merge\n- [ ] Observe the nightly run\n`
-  assert.deepEqual(await judged(afterMerge), ['pass', 'verified', []], 'the After merge section')
-  assert.deepEqual(
-    await judged(ledgerBody('BOS-1', POST_MERGE_ITEM)),
-    ['pass', 'verified', []],
-    'a follow-up marked post-merge and not a merge gate',
+test('judge: a re-judged ledger-open park passes unless the PR carries the PARTIAL marker', async () => {
+  const released = await judge(
+    { pr: 7, repo: REPO },
+    deps(parkedWorld('needs human: ledger-open', { body: BODY })),
   )
-  const unmarked = [
-    '- [ ] After merge, rotate the production key',
-    '- [ ] Rotate the key; this is not a merge gate',
-    '- [ ] Confirm the dashboard loads against production data',
-  ]
-  for (const item of unmarked)
-    assert.deepEqual(
-      await judged(ledgerBody('BOS-1', item)),
-      ['human', 'ledger-open', [`Open human follow-up: ${item.slice(6)}`]],
-      item,
-    )
+  assert.deepEqual([released.verdict, released.reason], ['pass', 'verified'])
+  const partial = await judge(
+    { pr: 7, repo: REPO },
+    deps(parkedWorld('needs human: ledger-open', { body: PARTIAL_BODY })),
+  )
   assert.deepEqual(
-    await judged(ledgerBody('BOS-1', `${POST_MERGE_ITEM}\n- [ ] rotate the key`)),
-    ['human', 'ledger-open', ['Open human follow-up: rotate the key']],
-    'a mixed follow-up parks on its real item only',
+    [partial.verdict, partial.reason, partial.held],
+    ['human', 'partial-build', undefined],
   )
 })
 
-test('candidates: a park judged while a post-merge observation still counted is re-judged and released', async () => {
-  const body = ledgerBody('BOS-5', POST_MERGE_ITEM)
-  // The fingerprint verify recorded before the item was exempt: its evidence named the item.
-  const stale = createHash('sha256')
-    .update(JSON.stringify([`Open human follow-up: ${POST_MERGE_ITEM.slice(6)}`]))
-    .digest('hex')
-    .slice(0, 16)
-  const rejudge = async (fingerprint) => {
-    const note = fingerprint
-      ? [operatorComment(parkNoteMarker(SHA_OF(5), '0'.repeat(16), fingerprint))]
-      : []
-    const w = candidateWorld({
-      tickets: [{ identifier: 'BOS-5', labels: ['agent-build'], attachments: [] }],
-      prs: [
-        {
-          number: 5,
-          url: 'https://github.com/o/r/pull/5',
-          body,
-          headRefOid: SHA_OF(5),
-          isDraft: false,
-        },
-      ],
-      statuses: { [SHA_OF(5)]: verifyStatus('pending', 'needs human: ledger-open') },
-      comments: { 5: note },
-    })
-    const r = await candidates({ repo: REPO }, candDeps(w))
-    return [r.candidates.map((c) => c.rejudge), r.skipped.map((s) => s.reason)]
-  }
-  assert.deepEqual(await rejudge(stale), [['ledger-changed'], []])
-  // #3157's own park left no note, so its ledger was never recorded.
-  assert.deepEqual(await rejudge(null), [['ledger-unrecorded'], []])
-  assert.deepEqual(await rejudge(ledgerFingerprint({ body })), [[], ['parked']])
-
-  const released = await judge({ pr: 7, repo: REPO }, deps(parkedLedgerWorld(body)))
+test('judge: a standing partial park is held while the marker stands and released once it goes', async () => {
+  const held = await judge(
+    { pr: 7, repo: REPO },
+    deps(parkedWorld('needs human: partial-build', { body: PARTIAL_BODY })),
+  )
+  assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'partial-build', true])
+  assert.equal('ledgerFingerprint' in held, false)
+  const released = await judge(
+    { pr: 7, repo: REPO },
+    deps(parkedWorld('needs human: partial-build', { body: BODY })),
+  )
   assert.deepEqual([released.verdict, released.reason], ['pass', 'verified'])
 })
 
 test("post rewrites only a park note verify itself wrote, and posts fresh beside anyone else's", async () => {
-  const openBody = ledgerBody('BOS-1', '- [ ] rotate the key')
   const forged = (login) => operatorComment(parkNoteMarker(HEAD, '0'.repeat(16)), { login, id: 41 })
   const run = async ({ login, user = 'operator' }) => {
-    const w = world({ pr: { body: openBody }, comments: [forged(login)], user })
+    const w = world({ pr: { body: PARTIAL_BODY }, comments: [forged(login)], user })
     const before = w.comments[0].body
     const r = await post(
-      { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', repo: REPO },
+      { pr: 7, head: HEAD, verdict: 'human', reason: 'partial-build', repo: REPO },
       deps(w),
     )
     const patched = w.calls.some((c) => c.args[0] === 'api' && c.args[2] === 'PATCH')
@@ -7426,41 +7268,23 @@ test("post rewrites only a park note verify itself wrote, and posts fresh beside
   assert.deepEqual(await run({ login: 'operator', user: null }), ['posted', false, true, 2])
 })
 
-test('judge: a re-judged ledger-open park is released once its ledger closes, and held while it is open', async () => {
-  const parkedOn = (followUp) =>
-    world({
-      pr: { body: ledgerBody('BOS-1', followUp) },
-      statuses: [
-        { context: 'boss/verify', state: 'pending', description: 'needs human: ledger-open' },
-        receipt(),
-      ],
-    })
-  const held = await judge({ pr: 7, repo: REPO }, deps(parkedOn('- [ ] rotate the key')))
-  assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'ledger-open', true])
-  const released = await judge({ pr: 7, repo: REPO }, deps(parkedOn('- [x] rotate the key')))
-  assert.deepEqual([released.verdict, released.reason], ['pass', 'verified'])
-
-  // The judge reports the ledger it saw; a human post records it in the park note's marker.
-  const w = parkedOn('- [ ] rotate the key')
-  assert.equal(held.ledgerFingerprint, ledgerFingerprint({ body: w.pr.body, title: w.pr.title }))
-  const posted = await post(
-    {
-      pr: 7,
-      head: HEAD,
-      verdict: 'human',
-      reason: 'ledger-open',
-      ledger: held.ledgerFingerprint,
-      repo: REPO,
-    },
-    deps(w),
-  )
-  assert.deepEqual([posted.skipped, posted.parkNote], ['already-posted', 'posted'])
-  const marker = parkNotes(w)[0].body.split('\n').at(-1).match(PARK_NOTE_MARKER)
-  assert.equal(marker?.[3], held.ledgerFingerprint)
+test('post no longer takes --ledger', async () => {
   await assert.rejects(
-    post(
-      { pr: 7, head: HEAD, verdict: 'human', reason: 'ledger-open', ledger: 'nope', repo: REPO },
-      deps(w),
+    main(
+      [
+        'post',
+        '--pr',
+        '7',
+        '--head',
+        HEAD,
+        '--verdict',
+        'human',
+        '--reason',
+        'partial-build',
+        '--ledger',
+        '0123456789abcdef',
+      ],
+      deps(world()),
     ),
     UsageError,
   )

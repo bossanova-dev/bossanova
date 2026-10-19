@@ -951,6 +951,10 @@ message ArchiveSessionResponse {
   // The agent session id of the chat the deferred archive is waiting on. Empty
   // when the archive ran immediately.
   string blocking_agent_session_id = 3;
+  // How long the blocking chat has been flagged as making no progress, in
+  // seconds. 0 when it is still making progress or the archive ran
+  // immediately.
+  int32 blocking_chat_stalled_seconds = 4;
 }
 
 message FinishUnattendedRunRequest {

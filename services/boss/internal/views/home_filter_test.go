@@ -172,7 +172,7 @@ func TestHomeFilterReorderRefused(t *testing.T) {
 	h.buildTableRows()
 	before := h.sessions[0]
 	h, cmd := h.moveSelectedSession(pb.MoveDirection_MOVE_DIRECTION_UP)
-	if cmd != nil || h.sessions[0] != before || h.status != "Clear the search to reorder sessions" || !h.statusErr {
+	if cmd != nil || h.sessions[0] != before || h.status != "Clear the search to reorder sessions" || !h.statusErr() {
 		t.Fatal("filtered reorder was not refused")
 	}
 }

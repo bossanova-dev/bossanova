@@ -3145,6 +3145,38 @@ func TestTmuxStatusPoller_ProgressStallPerPhaseThresholds(t *testing.T) {
 	}
 }
 
+// TestTmuxStatusPoller_TurnEndingInAPIRequest drives the poller with the
+// answer the claude runner gives for the tail every live turn writes after a
+// tool result (`tool_result, api-request-blob, api-request`): AWAITING_MODEL,
+// dated by the api-request. Before the runner learned that record it answered
+// known=false for this tail, and no stall could ever be raised.
+func TestTmuxStatusPoller_TurnEndingInAPIRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
+	tests := []struct {
+		name        string
+		requestAge  time.Duration
+		wantStalled bool
+	}{
+		{name: "a request the model never answered is stalled", requestAge: 6 * time.Minute, wantStalled: true},
+		{name: "a request still inside its round-trip is not stalled", requestAge: 30 * time.Second, wantStalled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &progressProbeClient{}
+			client.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Now().Add(-tt.requestAge), true)
+			tracker, poller, _ := newStallPoller(client)
+
+			poller.pollOnce(context.Background())
+
+			if got := tracker.Stalled(stallChatID); got != tt.wantStalled {
+				t.Fatalf("Stalled = %v, want %v", got, tt.wantStalled)
+			}
+		})
+	}
+}
+
 // TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall asserts the
 // FAIL-OPEN direction: every way the progress signal can be unavailable must
 // leave the chat unflagged. The name and the assertion agree deliberately —

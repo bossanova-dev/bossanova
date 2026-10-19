@@ -111,8 +111,8 @@ func TestHomeTicketNotice_DismissTagsSeenAndAFailureBringsItBack(t *testing.T) {
 	}
 
 	h = applyNotices(t, h, result)
-	if !h.statusErr || !strings.Contains(h.status, "could not be dismissed") {
-		t.Fatalf("status = %q (err %v), want the failed dismissal said", h.status, h.statusErr)
+	if !h.statusErr() || !strings.Contains(h.status, "could not be dismissed") {
+		t.Fatalf("status = %q (err %v), want the failed dismissal said", h.status, h.statusErr())
 	}
 	h = applyNotices(t, h, ticketNoticesMsg{homeGeneration: 7, notes: []*pb.Note{ticketNote("a", "PR #6660 merged", "tracker")}})
 	if !strings.Contains(h.ticketNoticeLine(), "PR #6660") {

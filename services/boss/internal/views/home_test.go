@@ -4955,19 +4955,18 @@ func TestHomeRenameLeavesThePublishedSessionPointerAlone(t *testing.T) {
 // daemon's reply. The write still landed, so reporting only on a matched row
 // would make a successful rename look like it was swallowed.
 func TestHomeRenameAcknowledgesASessionThatLeftTheBoard(t *testing.T) {
+	timers := captureStatusTimers(t)
 	h := renameKeyHome(t)
 
 	model, cmd := h.Update(sessionRenamedMsg{session: &pb.Session{Id: "sess-gone", Title: "Renamed elsewhere"}})
 	h = homeFromKey(t, model)
 
-	if cmd != nil {
-		t.Fatal("adopting a rename response scheduled a command")
-	}
+	timers.expiryFrom(t, cmd)
 	content := h.View().Content
 	if !strings.Contains(content, "Renamed session to Renamed elsewhere") {
 		t.Fatalf("a rename whose session left the board went unacknowledged:\n%s", content)
 	}
-	if h.statusErr {
+	if h.statusErr() {
 		t.Fatal("a successful rename was recorded as a failure")
 	}
 	// The absent session must not be adopted onto the board either: the reply
@@ -5029,8 +5028,8 @@ func TestHomeRenameStartClearsThePreviousOutcome(t *testing.T) {
 	if !h.rename.Active() {
 		t.Fatal("r did not reopen the rename editor")
 	}
-	if h.status != "" || h.statusErr {
-		t.Fatalf("reopening the editor kept the previous outcome %q (statusErr=%v)", h.status, h.statusErr)
+	if h.status != "" || h.statusErr() {
+		t.Fatalf("reopening the editor kept the previous outcome %q (statusErr=%v)", h.status, h.statusErr())
 	}
 	if content := h.View().Content; strings.Contains(content, "Rename failed") {
 		t.Fatalf("the stale failure is still on screen:\n%s", content)

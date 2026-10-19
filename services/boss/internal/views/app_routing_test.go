@@ -377,7 +377,7 @@ func TestAppRoutesRenameFailureToHomeWhileTheChatPickerIsOpen(t *testing.T) {
 	if !strings.Contains(got.home.status, "Rename failed") {
 		t.Fatalf("home.status = %q, want the rename failure waiting on the board", got.home.status)
 	}
-	if !got.home.statusErr {
+	if !got.home.statusErr() {
 		t.Fatal("the rename failure was not recorded as a failure")
 	}
 }

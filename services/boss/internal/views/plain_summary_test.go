@@ -2,10 +2,12 @@ package views
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
@@ -44,6 +46,43 @@ const quotedQuestion = importBackground + "\n\nThe vendor's ticket asks \"can yo
 // headingQuestion asks its question as a heading.
 const headingQuestion = "I finished the migration and pushed it to the branch. The schema change adds two columns and backfills them from the existing rows.\n\n## Should I open the PR?"
 
+// signOffQuestion asks its closing list and then signs off.
+const signOffQuestion = closingListQuestion + "\n\nLet me know how you'd like to proceed."
+
+// thanksQuestion asks its closing list and then thanks you.
+const thanksQuestion = closingListQuestion + "\n\nThanks!"
+
+// reportHeading opens with a heading written as a question and asks nothing.
+const reportHeading = "## Why did the import fail?\n\n" + importBackground + "\n\nThe retry made it worse, because it reused the full disk.\n\n## What's next\n\nI'll rerun the batches tonight once the alert is merged."
+
+// midReportHeading puts a heading written as a question in the middle of a
+// report that asks nothing.
+const midReportHeading = importBackground + "\n\n## Why did nobody notice?\n\nThe alert for the cleanup job pointed at the old cluster, so its failures paged nobody. I moved it to the new one this morning and it fired on the next failed run."
+
+// closingTable ends in a table one of whose cells ends in a question mark.
+const closingTable = importBackground + "\n\n| Batch | Rerun? |\n|---|---|\n| 1 | yes |\n| 2 | no |"
+
+// codePadding writes code with spaces inside its backticks.
+const codePadding = "Run` make test `now and tell me if it passes."
+
+// closingHeadingQuestion asks in a heading after more than the summary's
+// rows hold.
+const closingHeadingQuestion = importBackground + "\n\n## Should I open the PR?"
+
+// headingListQuestion asks in a heading that introduces a closing list
+// asking nothing.
+const headingListQuestion = importBackground + "\n\n## Should I open the PR?\n\n- The cleanup grant is fixed.\n- The four partial batches are rerun."
+
+// retractedQuestion asks its closing list, then withdraws it.
+const retractedQuestion = closingListQuestion + "\n\nNever mind, I found the answer and fixed it."
+
+// curlyQuotedQuestion asks nothing: its only question is quoted in curly
+// quotes inside a statement.
+const curlyQuotedQuestion = importBackground + "\n\nThe vendor's ticket asks “can you accept both encodings?” and I think we can. The change is on the branch and CI is green."
+
+// headingCloser asks in a heading closed with hashes.
+const headingCloser = "I finished the migration and pushed it to the branch. The schema change adds two columns and backfills them from the existing rows.\n\n## Should I open the PR? ##"
+
 // japaneseQuestion's first sentence fills a 40-column answer row, so its full
 // stop wraps onto a row of its own.
 const japaneseQuestion = "夜間インポートの失敗を調査しました。ステージング環境のディスクが古いステージングテーブルで一杯になり再試行も同じディスクを使い切ったため処理が止まっていました。古いテーブルを削除してから再実行してもよいですか？"
@@ -79,6 +118,16 @@ func TestChatPickerNeededFromYouKeepsTheQuestion(t *testing.T) {
 		{"quoted question", quotedQuestion, "I looked into last night's import", "", "encodings?"},
 		{"heading question", headingQuestion, "I finished the migration", "Should I open the PR?", ""},
 		{"Japanese question", japaneseQuestion, "夜間インポートの失敗を調査しました", "古いテーブルを削除してから再実行してもよいですか？", ""},
+		{"closing list then a sign-off", signOffQuestion, "I looked into last night's import", "1. Should I delete the old staging table? 2. Do you want a backfill for last week's batches?", ""},
+		{"closing list then thanks", thanksQuestion, "I looked into last night's import", "Before I continue: 1. Should I delete the old staging table? 2. Do you want a backfill for last week's batches?", ""},
+		{"report opening with a heading question", reportHeading, "Why did the import fail? I looked into last night's import failures.", "", ""},
+		{"heading question mid-report", midReportHeading, "I looked into last night's import", "", "Why did nobody notice?"},
+		{"closing table with a question mark", closingTable, "I looked into last night's import", "", "Rerun?"},
+		{"heading question with closing hashes", headingCloser, "I finished the migration", "Should I open the PR?", "#"},
+		{"heading question closing a long message", closingHeadingQuestion, "I looked into last night's import", "Should I open the PR?", ""},
+		{"heading question introducing a closing list", headingListQuestion, "I looked into last night's import", "Should I open the PR?", ""},
+		{"closing list then a retraction", retractedQuestion, "", "Never mind, I found the answer and fixed it.", ""},
+		{"curly-quoted question", curlyQuotedQuestion, "I looked into last night's import", "", "encodings?"},
 	} {
 		for _, width := range []int{40, 80, 120} {
 			t.Run(fmt.Sprintf("%s/%d", tt.name, width), func(t *testing.T) {
@@ -253,6 +302,11 @@ func TestSummaryLinesPicksTheAsk(t *testing.T) {
 		{"a closing bracket keeps a question", "I staged the cleanup fix behind a flag. (Should I turn the flag on tonight?)", "(Should I turn the flag on tonight?)", ""},
 		{"a question quoted mid-sentence asks nothing", "The user asked \"should I retry?\" and I did.", "", "retry?"},
 		{"a question in a closing list asks it", "Before I continue:\n\n- Should I delete the old staging table?", "Should I delete the old staging table?", ""},
+		{"a closing list asks when only its first item asks", "Before I continue:\n\n1. Should I delete the old staging table?\n2. I will backfill last week's batches.", "backfill last week's batches.", ""},
+		{"a question mark right after code ends a sentence", "Did you mean `parseLegacy`?", "Did you mean parseLegacy?", ""},
+		{"a question mark ending a www address ends no sentence", "The notes are at www.example.com/search? for the docs.", "", "search?"},
+		{"a number ending a bracketed statement ends the run of questions", "Should I retry the batches? (The count is 4.) Can you confirm the grant is in place?", "Can you confirm the grant is in place?", "count is 4"},
+		{"a long closing line ends the closing list", "Before I continue:\n\n1. Should I delete the old staging table?\n2. Do you want a backfill for last week's batches?\n\nI will start on the alert for the cleanup job in the meantime, since it is needed either way.", "", "Should I delete"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rows := summaryLines(importBackground+"\n\n"+tt.tail, width, most)
@@ -267,6 +321,50 @@ func TestSummaryLinesPicksTheAsk(t *testing.T) {
 				t.Errorf("summary shows %q: %q", tt.absent, rows)
 			}
 		})
+	}
+}
+
+// TestSummaryLinesLeavesTheOpeningARow: a run of questions that would fill
+// every row keeps only as many of its last sentences as leave the opening a
+// row.
+func TestSummaryLinesLeavesTheOpeningARow(t *testing.T) {
+	text := importBackground + " Should I retry the four batches now? Or do you want me to wait for the grant to land on the new cluster first?"
+	want := []string{"I looked into last night's import…", "Or do you want me to wait for the grant", "to land on the new cluster first?"}
+	if got := summaryLines(text, 40, 3); !slices.Equal(got, want) {
+		t.Fatalf("summaryLines = %q, want %q", got, want)
+	}
+}
+
+// TestViewsSweep_PlainSummaryTimeGrowsLinearly: reading a message sixteen
+// times longer takes at most four times sixteen as long for shapes whose
+// stops once each scanned back over the whole message, which took about 256
+// times. Those scans allocated nothing and ran in the standard library, so
+// only time shows them, and a timing check is no per-PR gate: it runs with
+// the nightly sweeps.
+func TestViewsSweep_PlainSummaryTimeGrowsLinearly(t *testing.T) {
+	requireViewsSweeps(t)
+	const ceiling = 64
+	elapsed := func(text string) time.Duration {
+		best := time.Duration(math.MaxInt64)
+		for range 3 {
+			start := time.Now()
+			newPlainSummary(text)
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	for name, shape := range map[string]struct{ prefix, unit string }{
+		"run of periods with no spaces":           {"", "a."},
+		"run of question marks with no spaces":    {"", "a?"},
+		"one opening quote and many closing ones": {"He said “", "x?” "},
+	} {
+		small := shape.prefix + strings.Repeat(shape.unit, 2000/len(shape.unit))
+		large := shape.prefix + strings.Repeat(shape.unit, 32000/len(shape.unit))
+		growth := float64(elapsed(large)) / float64(elapsed(small))
+		t.Logf("%s: %d bytes took %.1f times as long as %d bytes", name, len(large), growth, len(small))
+		if growth > ceiling {
+			t.Errorf("reading a %s of %d bytes took %.1f times as long as %d bytes, want at most %d", name, len(large), growth, len(small), ceiling)
+		}
 	}
 }
 
@@ -324,6 +422,13 @@ func TestPlainMarkdownEdgeCases(t *testing.T) {
 		{"```\n```", ""},
 		{"****", ""},
 		{"**`config.yaml`** is `**raw**`", "config.yaml is **raw**"},
+		{"Run `make  test` now", "Run make test now"},
+		{codePadding, "Run make test now and tell me if it passes."},
+		{"keep` `apart and `x` and ` y`.", "keep apart and x and y."},
+		{"# Status ##\n\n## Done ###", "Status Done"},
+		{"“Done.\n## Should I open the PR? ##”", "“Done. Should I open the PR?”"},
+		{"Run *` make test `* now", "Run make test now"},
+		{"Use __` x `__ here", "Use x here"},
 	} {
 		if got := plainMarkdown(tt.in); got != tt.want {
 			t.Errorf("plainMarkdown(%q) = %q, want %q", tt.in, got, tt.want)

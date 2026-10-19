@@ -128,7 +128,7 @@ func (h HomeModel) statusLine(fg color.Color, text string) string {
 // conditional at the render site, so the next status producer cannot render an
 // error in the success colour by forgetting the branch.
 func (h HomeModel) statusColor() color.Color {
-	if h.statusErr {
+	if h.statusErr() {
 		return colorDanger
 	}
 	return colorSuccess

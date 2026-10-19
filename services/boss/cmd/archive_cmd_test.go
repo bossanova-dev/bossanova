@@ -61,6 +61,31 @@ func TestRunArchive_PendingHumanOutput(t *testing.T) {
 	}
 }
 
+func TestRunArchive_PendingOnStalledChatSaysForHowLong(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds int32
+		want    string
+	}{
+		{name: "twelve minutes", seconds: 12*60 + 40, want: "chat chat-build-1 has had no progress for over 12 minutes"},
+		{name: "under a minute", seconds: 20, want: "chat chat-build-1 has had no progress for over 1 minute"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newArchiveTestDaemon(t)
+			d.SetArchiveDeferredStalled("chat-build-1", tc.seconds)
+			out, err := runArchiveAgainst(t, d, nil)
+			if err != nil {
+				t.Fatalf("a pending archive must exit 0, got %v", err)
+			}
+			want := "Session " + archiveTestSessionID + " archive pending: " + tc.want + ".\n"
+			if out != want {
+				t.Fatalf("stdout = %q, want %q", out, want)
+			}
+		})
+	}
+}
+
 func TestRunArchive_JSONEnvelope(t *testing.T) {
 	decode := func(t *testing.T, out string) map[string]any {
 		t.Helper()

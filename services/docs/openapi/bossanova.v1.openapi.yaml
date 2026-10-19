@@ -5185,6 +5185,14 @@ components:
           description: |-
             The agent session id of the chat the deferred archive is waiting on. Empty
              when the archive ran immediately.
+        blockingChatStalledSeconds:
+          type: integer
+          title: blocking_chat_stalled_seconds
+          format: int32
+          description: |-
+            How long the blocking chat has been flagged as making no progress, in
+             seconds. 0 when it is still making progress or the archive ran
+             immediately.
       title: ArchiveSessionResponse
       additionalProperties: false
     bossanova.v1.AttachScope:

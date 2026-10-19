@@ -62,6 +62,13 @@ type LivenessObservation struct {
 	Present                   bool
 }
 
+// stallMark is one chat's stall marker: when the current unbroken stall was
+// first observed, and when the poller last re-observed it.
+type stallMark struct {
+	since time.Time
+	seen  time.Time
+}
+
 type authFailedMarker struct {
 	observedAt  time.Time
 	effectiveAt time.Time
@@ -104,7 +111,7 @@ type Tracker struct {
 	// flagging without anyone having to clear it. This fails toward NOT flagging:
 	// a false "your session is dead" banner on a healthy long build burns
 	// operator trust faster than the missed detection does.
-	stalled map[string]time.Time // agent_session_id -> last observed stalled
+	stalled map[string]stallMark // agent_session_id -> when the stall was first and last observed
 
 	// liveness holds, per agent session ID, the spinner-aware liveness signals the
 	// tmux poller derives from each captured pane (BOS-805): whether a live
@@ -251,7 +258,7 @@ func NewTracker() *Tracker {
 		entries:           make(map[string]*Entry),
 		authFailed:        make(map[string]authFailedMarker),
 		transientAPIError: make(map[string]time.Time),
-		stalled:           make(map[string]time.Time),
+		stalled:           make(map[string]stallMark),
 		liveness:          make(map[string]*livenessMarker),
 		waiting:           make(map[string]string),
 		phases:            make(map[string]string),
@@ -559,10 +566,15 @@ func (t *Tracker) TransientAPIError(agentSessionID string) bool {
 // SessionDeltas. Exactly the SetAuthFailed shape.
 func (t *Tracker) SetStalled(agentSessionID string, stalled bool) {
 	t.mu.Lock()
-	prevAt, had := t.stalled[agentSessionID]
-	wasStalled := had && time.Since(prevAt) <= StaleThreshold
+	prev, had := t.stalled[agentSessionID]
+	wasStalled := had && time.Since(prev.seen) <= StaleThreshold
 	if stalled {
-		t.stalled[agentSessionID] = time.Now()
+		now := time.Now()
+		mark := stallMark{since: now, seen: now}
+		if wasStalled {
+			mark.since = prev.since
+		}
+		t.stalled[agentSessionID] = mark
 	} else {
 		delete(t.stalled, agentSessionID)
 	}
@@ -582,13 +594,22 @@ func (t *Tracker) SetStalled(agentSessionID string, stalled bool) {
 // answering — is treated as absent so the flag clears itself and never sticks.
 // This fails toward NOT flagging.
 func (t *Tracker) Stalled(agentSessionID string) bool {
+	_, ok := t.StalledSince(agentSessionID)
+	return ok
+}
+
+// StalledSince reports when the chat's current stall was first observed, and
+// whether it is stalled at all (the same answer Stalled gives). The time resets
+// whenever the stall clears or its marker goes stale, so it measures one
+// unbroken stall as the poller saw it.
+func (t *Tracker) StalledSince(agentSessionID string) (time.Time, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	at, ok := t.stalled[agentSessionID]
-	if !ok {
-		return false
+	mark, ok := t.stalled[agentSessionID]
+	if !ok || time.Since(mark.seen) > StaleThreshold {
+		return time.Time{}, false
 	}
-	return time.Since(at) <= StaleThreshold
+	return mark.since, true
 }
 
 // SetPhase records a working stage; an empty phase clears it.
@@ -994,8 +1015,8 @@ func (t *Tracker) Cleanup() {
 		}
 	}
 	var clearedStalledMarkers []string
-	for id, at := range t.stalled {
-		if now.Sub(at) > StaleThreshold {
+	for id, mark := range t.stalled {
+		if now.Sub(mark.seen) > StaleThreshold {
 			delete(t.stalled, id)
 			clearedStalledMarkers = append(clearedStalledMarkers, id)
 		}

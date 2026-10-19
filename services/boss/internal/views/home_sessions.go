@@ -82,9 +82,10 @@ func (h HomeModel) isMerging(sessionID string) bool {
 	return h.mergesInFlight[sessionID].mergeUnresolved()
 }
 
-// showActionResult puts an action's outcome on the status line. A merge's row
-// stops reading "merging", unless the merge's outcome is not known yet.
-func (h *HomeModel) showActionResult(msg attentionActionResultMsg) {
+// showActionResult puts an action's outcome on the status line and returns the
+// timer that clears it. A merge's row stops reading "merging", unless the
+// merge's outcome is not known yet: then the line says so until it settles.
+func (h *HomeModel) showActionResult(msg attentionActionResultMsg) tea.Cmd {
 	if msg.action == pb.AttentionAction_ATTENTION_ACTION_MERGE {
 		if msg.unsettled {
 			h.markMerging(awaitingMerge(msg.sessionID, msg.text))
@@ -92,16 +93,21 @@ func (h *HomeModel) showActionResult(msg attentionActionResultMsg) {
 			delete(h.mergesInFlight, msg.sessionID)
 		}
 	}
-	h.status, h.statusErr = msg.text, msg.err != nil
-	if msg.err != nil {
-		h.status = rpcStatusDetail(msg.err)
+	switch {
+	case msg.err != nil:
+		return h.setStatus(rpcStatusDetail(msg.err), statusFailure)
+	case msg.unsettled:
+		return h.setStatus(msg.text, statusOngoing)
+	default:
+		return h.setStatus(msg.text, statusOutcome)
 	}
 }
 
 // settleUnansweredMerges ends each unanswered merge the poll shows has ended.
 // A session gone from the list takes its waiting line with it: Home does not
 // list archived sessions, so the poll cannot say whether it merged.
-func (h *HomeModel) settleUnansweredMerges() {
+func (h *HomeModel) settleUnansweredMerges() tea.Cmd {
+	var expire tea.Cmd
 	for id, m := range h.mergesInFlight {
 		if m.waiting == "" {
 			continue
@@ -109,7 +115,7 @@ func (h *HomeModel) settleUnansweredMerges() {
 		sess := sessionByID(h.sessions, id)
 		if sess == nil {
 			if h.status == m.waiting {
-				h.status, h.statusErr = "", false
+				h.clearStatus()
 			}
 			delete(h.mergesInFlight, id)
 			continue
@@ -118,9 +124,19 @@ func (h *HomeModel) settleUnansweredMerges() {
 		if !settled {
 			continue
 		}
-		h.status, h.statusErr = status, isErr
 		delete(h.mergesInFlight, id)
+		if !isErr && h.statusErr() {
+			// The row already shows the merge settled. Its outcome line would
+			// replace a failure nobody has dismissed and then time out.
+			continue
+		}
+		kind := statusOutcome
+		if isErr {
+			kind = statusFailure
+		}
+		expire = h.setStatus(status, kind)
 	}
+	return expire
 }
 
 func (h *HomeModel) reconcileArchivingSessions() {
@@ -343,12 +359,11 @@ func renameSessionCmd(c client.BossClient, ctx context.Context, sessionID, title
 // retained for it the way applyMergedOptimisticOverride retains merge state.
 //
 // A failure leaves every title untouched — nothing was written optimistically —
-// and reports it on the status line in the failure colour, where the next poll
-// will not clear it. The next rename does: handleRenameStartKey drops the
-// previous outcome as the editor opens.
+// and reports it on the status line in the failure colour, where it stays until
+// the operator's next key.
 func (h HomeModel) handleSessionRenamed(msg sessionRenamedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
-		h.status, h.statusErr = rpcStatusMessage("Rename failed", msg.err), true
+		h.setStatus(rpcStatusMessage("Rename failed", msg.err), statusFailure)
 		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}
@@ -382,9 +397,9 @@ func (h HomeModel) handleSessionRenamed(msg sessionRenamedMsg) (tea.Model, tea.C
 	// filter, between the keystroke and the response. Reporting only on a
 	// matched row would make exactly that case look like the rename was
 	// swallowed.
-	h.status, h.statusErr = "Renamed session to "+renamed.GetTitle(), false
+	expire := h.setStatus("Renamed session to "+renamed.GetTitle(), statusOutcome)
 	h.table.SetHeight(h.tableHeight())
-	return h, nil
+	return h, expire
 }
 
 // moveSessionCmd asks the daemon to move one session up or down relative to its
@@ -414,7 +429,7 @@ func moveSessionCmd(c client.BossClient, ctx context.Context, sessionID string, 
 // asking keeps a held-down key from issuing a round trip per repeat.
 func (h HomeModel) moveSelectedSession(direction pb.MoveDirection) (HomeModel, tea.Cmd) {
 	if h.filter.Engaged() {
-		h.status, h.statusErr = "Clear the search to reorder sessions", true
+		h.setStatus("Clear the search to reorder sessions", statusFailure)
 		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}
@@ -424,7 +439,7 @@ func (h HomeModel) moveSelectedSession(direction pb.MoveDirection) (HomeModel, t
 		// a hard Unimplemented, so swapping the slice first would reorder the
 		// board, report a failure, and revert on the next poll — one honest
 		// message beats a flicker plus that message.
-		h.status, h.statusErr = "Reordering sessions is only available against a local daemon", true
+		h.setStatus("Reordering sessions is only available against a local daemon", statusFailure)
 		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}
@@ -543,7 +558,7 @@ func (h HomeModel) handleSessionMoved(msg sessionMovedMsg) (tea.Model, tea.Cmd) 
 		// authority.
 		h.movePending = nil
 		h.moveOverrideOrder = nil
-		h.status, h.statusErr = rpcStatusMessage("Move failed", msg.err), true
+		h.setStatus(rpcStatusMessage("Move failed", msg.err), statusFailure)
 		h.table.SetHeight(h.tableHeight())
 		return h, nil
 	}
@@ -888,11 +903,11 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 	h.sessionReadFailures = msg.sessionReadFailures
 	h.applyMergedOptimisticOverride()
 	h.reconcileArchivingSessions()
-	h.settleUnansweredMerges()
+	expire := h.settleUnansweredMerges()
 	h = h.dismissInputsIfHidden()
 	h.buildTableRows()
 	h.restoreTableCursor(selectedID)
-	return h, notifyCmd
+	return h, tea.Batch(notifyCmd, expire)
 }
 
 // notifyNewNeedsYou returns the OS-notification command for sessions that just

@@ -47,6 +47,17 @@ import (
 // lag lets a self-archive kill its own caller (the BOS-1372 hazard).
 const requesterSettle = 10 * time.Second
 
+// stallReleasesArchiveAfter is how long the tracker must have seen a chat's
+// stall without a break before the stall stops that chat blocking an archive.
+// The stall flag itself is advisory and fires after 5 minutes of awaiting the
+// model, but healthy model replies and compactions both run past 5 minutes (up
+// to 10 in the measured data, and a few replies arrived normally after 17 to 21
+// minutes), and archiving kills the chat's panes. So a stall releases an
+// archive only once nothing has happened for 35 minutes in all. Time the
+// machine spends asleep does not count: either the monotonic clock skips it or
+// the marker goes stale across it and the stall's start resets on wake.
+const stallReleasesArchiveAfter = 30 * time.Minute
+
 // archiveDeferralInterval is the fallback re-evaluation tick. Not every
 // transition that frees a session fires the chat-status hook (a deleted chat,
 // a tracker entry going stale, a requester's settle window elapsing), so the
@@ -75,6 +86,9 @@ type ArchiveOutcome struct {
 	Pending bool
 	// BlockingAgentSessionID names the chat a pending archive is waiting on.
 	BlockingAgentSessionID string
+	// BlockingStalledFor is how long that chat has been flagged as making no
+	// progress, or zero when it is not stalled.
+	BlockingStalledFor time.Duration
 }
 
 // archiveChatLister is the slice of db.AgentChatStore the deferrer reads.
@@ -236,8 +250,21 @@ func (d *archiveDeferrer) request(ctx context.Context, sessionID string, req Arc
 			Str("session", sessionID).
 			Str("blocking_agent_session_id", blocking).
 			Msg("request deferred until every chat settles")
-		return ArchiveOutcome{Pending: true, BlockingAgentSessionID: blocking}, nil
+		return ArchiveOutcome{Pending: true, BlockingAgentSessionID: blocking, BlockingStalledFor: d.stalledFor(blocking, d.now())}, nil
 	}
+}
+
+// stalledFor reports how long the tracker has seen id stalled without a break,
+// or zero when it is not stalled.
+func (d *archiveDeferrer) stalledFor(id string, now time.Time) time.Duration {
+	if d.tracker == nil {
+		return 0
+	}
+	since, stalled := d.tracker.StalledSince(id)
+	if !stalled {
+		return 0
+	}
+	return now.Sub(since)
 }
 
 // requestersLocked returns the pending entry's gen (0 when there is none) and
@@ -396,7 +423,7 @@ func (d *archiveDeferrer) blockingChat(ctx context.Context, sessionID string, re
 			}
 			continue
 		}
-		if d.chatBusy(id, entries[id]) {
+		if d.chatBusy(id, entries[id], now) {
 			return id, nil
 		}
 	}
@@ -405,24 +432,30 @@ func (d *archiveDeferrer) blockingChat(ctx context.Context, sessionID string, re
 
 // chatBusy reports whether a chat is mid-turn: its RAW tracker status (before
 // PromoteWaiting, so a WAITING chat promoted from WORKING still counts) is
-// WORKING or LIMITED and the tracker does not flag it stalled. A stale entry
-// already reads STOPPED and a chat with no entry is not busy.
-func (d *archiveDeferrer) chatBusy(id string, e *status.Entry) bool {
+// WORKING or LIMITED and it has not been stalled for stallReleasesArchiveAfter.
+// A stale entry already reads STOPPED and a chat with no entry is not busy.
+func (d *archiveDeferrer) chatBusy(id string, e *status.Entry, now time.Time) bool {
 	if e == nil {
 		return false
 	}
 	if e.Status != pb.ChatStatus_CHAT_STATUS_WORKING && e.Status != pb.ChatStatus_CHAT_STATUS_LIMITED {
 		return false
 	}
-	return d.tracker == nil || !d.tracker.Stalled(id)
+	return !d.stalledTooLong(id, now)
+}
+
+// stalledTooLong reports whether the tracker has seen the chat stalled, without
+// a break, for at least stallReleasesArchiveAfter.
+func (d *archiveDeferrer) stalledTooLong(id string, now time.Time) bool {
+	return d.stalledFor(id, now) >= stallReleasesArchiveAfter
 }
 
 // requesterBusy reports whether the requesting chat still counts as busy. It
 // does until the tracker records a non-WORKING, non-LIMITED status for it
 // received at least requesterSettle after the request was accepted. After the
 // settle window a chat the tracker has no live reading for (no entry, or a
-// STOPPED one) is not observed by anything and does not block; a stalled
-// requester does not block either.
+// STOPPED one) is not observed by anything and does not block; nor does a
+// requester stalled for stallReleasesArchiveAfter.
 func (d *archiveDeferrer) requesterBusy(id string, e *status.Entry, acceptedAt, now time.Time) bool {
 	settledAt := acceptedAt.Add(requesterSettle)
 	if now.Before(settledAt) {
@@ -431,7 +464,7 @@ func (d *archiveDeferrer) requesterBusy(id string, e *status.Entry, acceptedAt, 
 	if e == nil || e.Status == pb.ChatStatus_CHAT_STATUS_STOPPED {
 		return false
 	}
-	if d.tracker != nil && d.tracker.Stalled(id) {
+	if d.stalledTooLong(id, now) {
 		return false
 	}
 	if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING || e.Status == pb.ChatStatus_CHAT_STATUS_LIMITED {

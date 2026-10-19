@@ -305,7 +305,7 @@ func (a *App) newHomeModel() HomeModel {
 	home.archiveInFlightIDs = cloneSessionIDSet(a.home.archiveInFlightIDs)
 	home.mergesInFlight = maps.Clone(a.home.mergesInFlight)
 	if a.home.statusUnseen {
-		home.status, home.statusErr = a.home.status, a.home.statusErr
+		home.status, home.statusKind = a.home.status, a.home.statusKind
 	}
 	// Same reason for the reorder override (BOS-1231): home.sessions above
 	// already carries the optimistically swapped order, so dropping the

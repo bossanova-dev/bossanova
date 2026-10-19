@@ -311,7 +311,7 @@ func TestAttentionActionMissingMergeHeadRefuses(t *testing.T) {
 	h = model.(HomeModel)
 	model, _ = h.Update(cmd())
 	h = model.(HomeModel)
-	if len(c.calls) != 0 || !h.statusErr || h.status != "Couldn't merge PR #42: its latest commit is not known yet" {
+	if len(c.calls) != 0 || !h.statusErr() || h.status != "Couldn't merge PR #42: its latest commit is not known yet" {
 		t.Fatalf("calls=%v status=%s", c.calls, h.status)
 	}
 }
@@ -565,8 +565,8 @@ func TestAttentionMergeRefusesAMovedHead(t *testing.T) {
 			model, cmd := model.Update(keyPress('y'))
 			model, _ = model.Update(cmd())
 			h = model.(HomeModel)
-			if !h.statusErr || h.status != "PR #42 changed since you opened it, so nothing was merged" {
-				t.Fatalf("status = %q (error %v), want the moved-head refusal", h.status, h.statusErr)
+			if !h.statusErr() || h.status != "PR #42 changed since you opened it, so nothing was merged" {
+				t.Fatalf("status = %q (error %v), want the moved-head refusal", h.status, h.statusErr())
 			}
 			if len(c.merges) != 1 {
 				t.Fatalf("merges = %d, want the one refused request", len(c.merges))
@@ -767,8 +767,8 @@ func TestAttentionMergeAlwaysEndsOnAResultLine(t *testing.T) {
 			model, cmd := model.Update(keyPress('y'))
 			model, refresh := model.Update(cmd())
 			h = model.(HomeModel)
-			if h.status != tc.want || h.statusErr != tc.wantErr {
-				t.Fatalf("result line = %q (error %v), want %q (error %v)", h.status, h.statusErr, tc.want, tc.wantErr)
+			if h.status != tc.want || h.statusErr() != tc.wantErr {
+				t.Fatalf("result line = %q (error %v), want %q (error %v)", h.status, h.statusErr(), tc.want, tc.wantErr)
 			}
 			if h.attentionAction.active() {
 				t.Fatal("the merge is still showing its spinner after the result landed")
@@ -829,8 +829,8 @@ func TestAttentionMergeEscLeavesAndHomeShowsTheOutcome(t *testing.T) {
 			if len(c.merges) != 1 {
 				t.Fatalf("merges = %+v, want the one merge the operator confirmed", c.merges)
 			}
-			if !strings.Contains(got.home.status, tc.want) || got.home.statusErr != (tc.err != nil) {
-				t.Fatalf("Home status = %q (err %v), want %q", got.home.status, got.home.statusErr, tc.want)
+			if !strings.Contains(got.home.status, tc.want) || got.home.statusErr() != (tc.err != nil) {
+				t.Fatalf("Home status = %q (err %v), want %q", got.home.status, got.home.statusErr(), tc.want)
 			}
 			if row := ansi.Strip(got.home.renderSessionStatus(got.home.sessions[0])); strings.Contains(row, "merging") {
 				t.Fatalf("Home row = %q after the merge answered, want it to stop reading merging", row)
@@ -997,8 +997,8 @@ func TestAttentionMergeWithNoAnswerReadsMergingUntilAPollSettlesIt(t *testing.T)
 				h, merge := homeMergeRunning(t, c)
 				model, refresh := h.Update(merge())
 				h = model.(HomeModel)
-				if h.status != "Waiting to hear whether PR #42 merged" || h.statusErr || refresh == nil {
-					t.Fatalf("status %q (err %v), re-read %v: want the waiting line and a session re-read", h.status, h.statusErr, refresh != nil)
+				if h.status != "Waiting to hear whether PR #42 merged" || h.statusErr() || refresh == nil {
+					t.Fatalf("status %q (err %v), re-read %v: want the waiting line and a session re-read", h.status, h.statusErr(), refresh != nil)
 				}
 				for _, banned := range []string{"Couldn't merge", "deadline", "daemon", "connection"} {
 					if screen := ansi.Strip(h.View().Content); strings.Contains(screen, banned) {
@@ -1018,8 +1018,8 @@ func TestAttentionMergeWithNoAnswerReadsMergingUntilAPollSettlesIt(t *testing.T)
 				tc.settled(settled)
 				model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{settled}})
 				h = model.(HomeModel)
-				if mergeRowReadsMerging(h) || h.status != tc.want || h.statusErr != tc.wantErr {
-					t.Fatalf("row merging %v, status %q (err %v); want %q (err %v)", mergeRowReadsMerging(h), h.status, h.statusErr, tc.want, tc.wantErr)
+				if mergeRowReadsMerging(h) || h.status != tc.want || h.statusErr() != tc.wantErr {
+					t.Fatalf("row merging %v, status %q (err %v); want %q (err %v)", mergeRowReadsMerging(h), h.status, h.statusErr(), tc.want, tc.wantErr)
 				}
 			})
 		}
@@ -1180,8 +1180,8 @@ func TestAttentionMergeWithNoAnswerEndsWhenTheSessionLeavesTheList(t *testing.T)
 			}
 			model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{{Id: "session-2", Title: "Quiet"}}})
 			h = model.(HomeModel)
-			if h.status != tc.want || h.statusErr || h.isMerging("session-1") || len(h.mergesInFlight) != 0 {
-				t.Fatalf("after the poll without session-1: status %q (err %v), merging %v, held %v; want status %q and nothing held", h.status, h.statusErr, h.isMerging("session-1"), h.mergesInFlight, tc.want)
+			if h.status != tc.want || h.statusErr() || h.isMerging("session-1") || len(h.mergesInFlight) != 0 {
+				t.Fatalf("after the poll without session-1: status %q (err %v), merging %v, held %v; want status %q and nothing held", h.status, h.statusErr(), h.isMerging("session-1"), h.mergesInFlight, tc.want)
 			}
 			if screen := ansi.Strip(h.View().Content); strings.Contains(screen, "Waiting to hear") {
 				t.Fatalf("Home still shows the waiting line:\n%s", screen)

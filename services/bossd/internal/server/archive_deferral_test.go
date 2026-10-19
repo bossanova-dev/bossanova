@@ -298,7 +298,7 @@ func TestRequestArchive_WorkingChat_DefersThenArchivesOnIdle(t *testing.T) {
 	}
 }
 
-func TestRequestArchive_LimitedBlocks_StalledDoesNot(t *testing.T) {
+func TestRequestArchive_LimitedBlocks(t *testing.T) {
 	t.Run("limited blocks", func(t *testing.T) {
 		h := newDeferralHarness(t, "chat-a")
 		h.tracker.UpdateLimited("chat-a", time.Time{}, time.Now())
@@ -311,18 +311,6 @@ func TestRequestArchive_LimitedBlocks_StalledDoesNot(t *testing.T) {
 		}
 		if h.exec.count() != 0 {
 			t.Fatal("a LIMITED chat must defer the archive")
-		}
-	})
-	t.Run("stalled working chat does not block", func(t *testing.T) {
-		h := newDeferralHarness(t, "chat-a")
-		h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
-		h.tracker.SetStalled("chat-a", true)
-		out, err := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !out.Archived {
-			t.Fatalf("outcome = %+v, want archived (stalled chat is exempt)", out)
 		}
 	})
 	t.Run("stopped and untracked chats do not block", func(t *testing.T) {
@@ -363,6 +351,115 @@ func TestRequestArchive_IdlePromotedWaitingDoesNotBlock(t *testing.T) {
 			t.Fatalf("outcome = %+v, want pending (raw status is WORKING)", out)
 		}
 	})
+}
+
+// awaitingModelStallFlag is when the poller first flags a chat that is waiting
+// on the model (config.StallDetectionConfig's default), so a wait of w minutes
+// has been flagged stalled for w-5 of them.
+const awaitingModelStallFlag = 5 * time.Minute
+
+// stallWaits are how long a chat has gone without writing anything, each a
+// shape measured in real transcripts. Every one ended normally except the hung
+// chat.
+var stallWaits = []struct {
+	name    string
+	wait    time.Duration
+	release bool
+}{
+	{name: "healthy 6-minute model reply", wait: 6*time.Minute + 24*time.Second},
+	{name: "10-minute compaction", wait: 10 * time.Minute},
+	{name: "21-minute slow reply that ended normally", wait: 21*time.Minute + 24*time.Second},
+	{name: "chat hung past the release window", wait: awaitingModelStallFlag + stallReleasesArchiveAfter, release: true},
+}
+
+// stallFor marks id stalled as the poller does once a wait passes the flag
+// threshold, keeps re-observing it, and moves the deferrer's clock to the
+// moment the wait has lasted wait.
+func (h *deferralHarness) stallFor(t *testing.T, id string, wait time.Duration) {
+	t.Helper()
+	h.tracker.SetStalled(id, true)
+	since, ok := h.tracker.StalledSince(id)
+	if !ok {
+		t.Fatal("SetStalled(true) recorded no stall")
+	}
+	h.clock.set(since.Add(wait - awaitingModelStallFlag))
+	h.tracker.SetStalled(id, true)
+}
+
+// TestArchiveDeferrer_StallReleasesOnlyAfterWindow pins that a stall alone
+// does not release an archive, which kills the chat's panes, until the stall
+// has stood for stallReleasesArchiveAfter.
+func TestArchiveDeferrer_StallReleasesOnlyAfterWindow(t *testing.T) {
+	for _, tc := range stallWaits {
+		t.Run("pending archive/"+tc.name, func(t *testing.T) {
+			h := newDeferralHarness(t, "chat-a")
+			h.run(t)
+			h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+			if out, _ := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{}); !out.Pending {
+				t.Fatalf("outcome = %+v, want pending on the working chat", out)
+			}
+
+			h.stallFor(t, "chat-a", tc.wait)
+			h.srv.NudgePendingArchive(deferralSessionID)
+			if tc.release {
+				h.exec.expectOne(t, deferralSessionID)
+				return
+			}
+			h.exec.expectNone(t, 100*time.Millisecond)
+			if !h.d.has(deferralSessionID) {
+				t.Fatal("the pending archive was dropped while the chat was still working")
+			}
+		})
+		t.Run("new request/"+tc.name, func(t *testing.T) {
+			h := newDeferralHarness(t, "chat-a")
+			h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+			h.stallFor(t, "chat-a", tc.wait)
+			out, err := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Archived != tc.release || out.Pending == tc.release {
+				t.Fatalf("outcome = %+v, want archived=%v", out, tc.release)
+			}
+		})
+		t.Run("self-archive/"+tc.name, func(t *testing.T) {
+			h := newDeferralHarness(t, "chat-self")
+			h.run(t)
+			h.tracker.Update("chat-self", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+			if out, _ := h.srv.RequestArchive(context.Background(), deferralSessionID, ArchiveRequest{RequesterAgentSessionID: "chat-self"}); !out.Pending {
+				t.Fatalf("outcome = %+v, want pending on the requester", out)
+			}
+
+			h.stallFor(t, "chat-self", tc.wait)
+			h.srv.NudgePendingArchive(deferralSessionID)
+			if tc.release {
+				h.exec.expectOne(t, deferralSessionID)
+				return
+			}
+			h.exec.expectNone(t, 100*time.Millisecond)
+		})
+	}
+}
+
+// TestArchiveSession_ReportsHowLongTheBlockingChatHasStalled pins that a
+// deferred archive tells the caller how long its blocking chat has made no
+// progress, so the CLI can say why the archive is still waiting.
+func TestArchiveSession_ReportsHowLongTheBlockingChatHasStalled(t *testing.T) {
+	h := newDeferralHarness(t, "chat-a")
+	h.tracker.Update("chat-a", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	if got := h.rpc(t, &pb.ArchiveSessionRequest{}).GetBlockingChatStalledSeconds(); got != 0 {
+		t.Fatalf("blocking_chat_stalled_seconds = %d for a chat making progress, want 0", got)
+	}
+
+	h.stallFor(t, "chat-a", awaitingModelStallFlag+12*time.Minute)
+	resp := h.rpc(t, &pb.ArchiveSessionRequest{})
+	if !resp.GetIsDeferred() || resp.GetBlockingAgentSessionId() != "chat-a" {
+		t.Fatalf("response = %+v, want deferred on chat-a", resp)
+	}
+	if got, want := resp.GetBlockingChatStalledSeconds(), int32(12*60); got != want {
+		t.Fatalf("blocking_chat_stalled_seconds = %d, want %d", got, want)
+	}
 }
 
 // TestRequestArchive_RequesterGuard pins the self-archive guard. The tracker

@@ -2693,12 +2693,30 @@ func runArchive(cmd *cobra.Command, sessionID string) error {
 	}
 	line := fmt.Sprintf("Session %s archived (%s).\n", sess.GetId(), sess.GetTitle())
 	if resp.GetIsDeferred() {
-		line = fmt.Sprintf("Session %s archive pending (chat %s working).\n", sess.GetId(), resp.GetBlockingAgentSessionId())
+		line = archivePendingLine(sess.GetId(), resp)
 	}
 	if _, err := io.WriteString(cmd.OutOrStdout(), line); err != nil {
 		return fmt.Errorf("write archive output: %w", err)
 	}
 	return nil
+}
+
+// archivePendingLine says which chat a deferred archive is waiting on and, when
+// that chat has stopped making progress, for how long. The daemon counts from
+// when it flagged the chat, which is already some minutes into the silence, so
+// the figure is a lower bound.
+func archivePendingLine(sessionID string, resp *pb.ArchiveSessionResponse) string {
+	chat := resp.GetBlockingAgentSessionId()
+	stalled := resp.GetBlockingChatStalledSeconds()
+	if stalled <= 0 {
+		return fmt.Sprintf("Session %s archive pending (chat %s working).\n", sessionID, chat)
+	}
+	minutes := max(stalled/60, 1)
+	unit := "minutes"
+	if minutes == 1 {
+		unit = "minute"
+	}
+	return fmt.Sprintf("Session %s archive pending: chat %s has had no progress for over %d %s.\n", sessionID, chat, minutes, unit)
 }
 
 // Archive outcomes reported by `boss archive --json`.

@@ -415,7 +415,7 @@ func TestHomeReorderAtTheBoundaryIsANoop(t *testing.T) {
 			if got.status != "" {
 				t.Fatalf("a boundary move reported %q on the status line; it is a successful no-op, not an error", got.status)
 			}
-			if got.statusErr {
+			if got.statusErr() {
 				t.Fatal("a boundary move set the failure colour on the status line")
 			}
 		})
@@ -495,7 +495,7 @@ func TestHomeReorderSurvivesThePoll(t *testing.T) {
 		if h.moveOverrideOrder != nil {
 			t.Fatalf("moveOverrideOrder = %v after a failed move, want nil", h.moveOverrideOrder)
 		}
-		if !h.statusErr {
+		if !h.statusErr() {
 			t.Fatal("a failed move was not coloured as a failure on the status line")
 		}
 		if h.status == "" {
@@ -518,7 +518,7 @@ func TestHomeReorderSurvivesThePoll(t *testing.T) {
 		if h.moveOverrideOrder != nil {
 			t.Fatalf("moveOverrideOrder = %v after is_moved=false, want nil", h.moveOverrideOrder)
 		}
-		if h.status != "" || h.statusErr {
+		if h.status != "" || h.statusErr() {
 			t.Fatalf("is_moved=false surfaced %q as an error; it is a successful boundary no-op", h.status)
 		}
 	})
@@ -639,7 +639,7 @@ func TestHomeReorderKeepsTheOverrideWhileAnotherMoveIsOutstanding(t *testing.T) 
 		model, next := h.Update(first())
 		h = homeFromKey(t, model)
 
-		if !h.statusErr || h.status == "" {
+		if !h.statusErr() || h.status == "" {
 			t.Fatal("a failed move must still be reported on the status line")
 		}
 		if next != nil {
@@ -778,9 +778,9 @@ func TestHomeReorderRefusesBeforePaintingWhenTheClientCannotMove(t *testing.T) {
 			if got.moveOverrideOrder != nil {
 				t.Fatalf("moveOverrideOrder = %v; nothing was reordered, so nothing needs defending", got.moveOverrideOrder)
 			}
-			if got.status == "" || !got.statusErr {
+			if got.status == "" || !got.statusErr() {
 				t.Fatalf("the refusal reported %q (err=%v); the user is owed one message saying why",
-					got.status, got.statusErr)
+					got.status, got.statusErr())
 			}
 			if id := got.selectedSessionID(); id != "sess-2" {
 				t.Fatalf("cursor landed on %q, want sess-2; the refused chord must not navigate either", id)

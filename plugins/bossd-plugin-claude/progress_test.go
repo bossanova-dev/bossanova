@@ -64,15 +64,6 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			wantTS:    "2026-08-03T15:12:38.921Z",
 		},
 		{
-			// The record type here is deliberately one no Claude version emits:
-			// an UNRECOGNISED shape must stop the walk, unlike the known
-			// bookkeeping types exercised below.
-			name:      "unclassifiable tail record is not a confident phase",
-			fixture:   "trailing_unclassified.jsonl",
-			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
-			wantKnown: false,
-		},
-		{
 			// The recall regression. Real transcripts almost never end on a
 			// semantic record — `…assistant, system, last-prompt` is the most
 			// common tail by a wide margin — so a walk that stopped at the
@@ -100,10 +91,9 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 			wantAskedTS: "2026-08-03T15:11:09.507Z",
 		},
 		{
-			// The false-positive guard. A long auto-compaction emits `system`
-			// records for minutes while the last semantic record ages past the
-			// AWAITING_MODEL threshold. Reporting the stale semantic timestamp
-			// would flag a healthy chat as dead, so the newest write wins.
+			// The false-positive guard. Records still landing after the last
+			// semantic one show the process is alive while that record ages
+			// past the AWAITING_MODEL threshold, so the newest write wins.
 			name:      "bookkeeping still landing keeps the chat off the stall threshold",
 			fixture:   "bookkeeping_still_writing.jsonl",
 			wantPhase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL,
@@ -170,6 +160,128 @@ func TestReadProgressTailPhaseMapping(t *testing.T) {
 	}
 }
 
+// TestReadProgressTailWalksPastUnlistedRecordTypes pins the probe against the
+// record types Claude keeps adding. Only user, assistant and api-request
+// records say what the agent is doing; every other type is walked past, so a
+// new one can never blind the probe again. The four real types below are
+// synthesised with the shape Claude writes (cost-state, atis-latch and
+// api-request-blob carry no timestamp; api-request does), and foo-bar stands in
+// for whatever Claude adds next.
+func TestReadProgressTailWalksPastUnlistedRecordTypes(t *testing.T) {
+	const (
+		prompt     = `{"type":"user","timestamp":"2026-10-19T10:00:00.000Z","message":{"role":"user","content":"run the build"}}` + "\n"
+		toolUse    = `{"type":"assistant","timestamp":"2026-10-19T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01A","name":"Bash","input":{"command":"make build"}}]}}` + "\n"
+		toolResult = `{"type":"user","timestamp":"2026-10-19T10:01:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A","content":"build ok"}]}}` + "\n"
+		answer     = `{"type":"assistant","timestamp":"2026-10-19T10:00:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}` + "\n"
+
+		costState  = `{"type":"cost-state","sessionId":"s1","totalCostUSD":0.5,"totalAPIDuration":1000,"totalAPIDurationWithoutRetries":1000,"totalToolDuration":10,"totalLinesAdded":1,"totalLinesRemoved":0,"totalDuration":2000,"startTime":1792404000000,"modelUsage":{},"hasUnknownModelCost":false}` + "\n"
+		atisLatch  = `{"type":"atis-latch","atis":"","sessionId":"s1"}` + "\n"
+		blob       = `{"type":"api-request-blob","sessionId":"s1","hash":"h1","message":{"role":"user","content":[{"type":"text","text":"x"}]}}` + "\n"
+		apiRequest = `{"type":"api-request","sessionId":"s1","id":"r1","timestamp":"2026-10-19T10:01:00.040Z","version":"2.9.0","querySource":"repl_main_thread","shapeHash":"h2","params":{"model":"m","max_tokens":1},"keep":1,"tail":[],"cacheControl":[],"requestDigest":"h3"}` + "\n"
+		thinking   = `{"type":"assistant","timestamp":"2026-10-19T10:01:04.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":""}]}}` + "\n"
+		fooBar     = `{"type":"foo-bar","sessionId":"s1","timestamp":"2026-10-19T10:01:30.000Z"}` + "\n"
+		fooBarNoTS = `{"type":"foo-bar","sessionId":"s1"}` + "\n"
+		// Written after prompt but dated 23 minutes before it, a shape seen in
+		// a real transcript.
+		earlierAttachment = `{"type":"attachment","sessionId":"s1","timestamp":"2026-10-19T09:37:00.000Z","attachment":{"type":"file","filename":"notes.md"}}` + "\n"
+	)
+	const (
+		awaiting  = bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL
+		idle      = bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE
+		liveTurn  = prompt + toolUse + toolResult
+		doneTurn  = prompt + answer
+		resultTS  = "2026-10-19T10:01:00.000Z"
+		answerTS  = "2026-10-19T10:00:30.000Z"
+		requestTS = "2026-10-19T10:01:00.040Z"
+	)
+
+	tests := []struct {
+		name      string
+		content   string
+		wantPhase bossanovav1.AgentProgressPhase
+		wantTS    string
+		// wantAskedTS is lastAssistantMessageAt, empty when a user or
+		// api-request record is the last semantic one.
+		wantAskedTS string
+	}{
+		{name: "live turn ending in cost-state", content: liveTurn + costState, wantPhase: awaiting, wantTS: resultTS},
+		{name: "live turn ending in atis-latch", content: liveTurn + atisLatch, wantPhase: awaiting, wantTS: resultTS},
+		{name: "live turn ending in api-request-blob", content: liveTurn + blob, wantPhase: awaiting, wantTS: resultTS},
+		{
+			// The shape every live turn writes after a tool result. The request
+			// is in flight from its own timestamp, so a model that never answers
+			// is measured from the moment it was asked.
+			name: "live turn ending in api-request", content: liveTurn + blob + apiRequest,
+			wantPhase: awaiting, wantTS: requestTS,
+		},
+		{
+			// A thinking block is the model answering. If the stream dies after
+			// it, the agent still owes the rest of the message.
+			name: "live turn ending in a thinking-only block", content: liveTurn + blob + apiRequest + thinking,
+			wantPhase: awaiting, wantTS: "2026-10-19T10:01:04.000Z",
+		},
+		{
+			name: "live turn ending in an unknown future type", content: liveTurn + blob + apiRequest + fooBar,
+			wantPhase: awaiting, wantTS: "2026-10-19T10:01:30.000Z",
+		},
+		{name: "finished turn ending in cost-state", content: doneTurn + costState, wantPhase: idle, wantTS: answerTS, wantAskedTS: answerTS},
+		{name: "finished turn ending in atis-latch", content: doneTurn + atisLatch, wantPhase: idle, wantTS: answerTS, wantAskedTS: answerTS},
+		{name: "finished turn ending in api-request-blob", content: doneTurn + blob, wantPhase: idle, wantTS: answerTS, wantAskedTS: answerTS},
+		{
+			// Claude sends a request after a finished answer only to start a new
+			// one, for a queued prompt or a blocking Stop hook. The agent owes
+			// that answer.
+			name: "finished turn followed by api-request starts a new request", content: doneTurn + blob + apiRequest,
+			wantPhase: awaiting, wantTS: requestTS,
+		},
+		{
+			// Dated from the attachment, a turn that just started would read
+			// as 23 minutes without progress and stalled at once.
+			name: "a later record dated before the prompt does not move progress earlier", content: prompt + earlierAttachment + costState,
+			wantPhase: awaiting, wantTS: "2026-10-19T10:00:00.000Z",
+		},
+		{
+			name: "finished turn ending in an untimestamped unknown type", content: doneTurn + fooBarNoTS + costState,
+			wantPhase: idle, wantTS: answerTS, wantAskedTS: answerTS,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "transcript.jsonl")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := readProgressTail(path)
+			if err != nil {
+				t.Fatalf("readProgressTail: %v", err)
+			}
+			if !got.known {
+				t.Fatal("known = false, want true: an unlisted record type blinded the probe")
+			}
+			if got.phase != tt.wantPhase {
+				t.Errorf("phase = %v, want %v", got.phase, tt.wantPhase)
+			}
+			want, err := time.Parse(time.RFC3339Nano, tt.wantTS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.lastProgressAt.Equal(want) {
+				t.Errorf("lastProgressAt = %v, want %v", got.lastProgressAt, want)
+			}
+			var wantAsked time.Time
+			if tt.wantAskedTS != "" {
+				if wantAsked, err = time.Parse(time.RFC3339Nano, tt.wantAskedTS); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !got.lastAssistantMessageAt.Equal(wantAsked) {
+				t.Errorf("lastAssistantMessageAt = %v, want %v", got.lastAssistantMessageAt, wantAsked)
+			}
+		})
+	}
+}
+
 // TestReadProgressTailFailsOpen asserts the open direction by name: every
 // unreadable shape must yield known=false so the daemon raises NOTHING. A
 // false "your session is dead" banner is worse than a missed detection.
@@ -192,13 +304,15 @@ func TestReadProgressTailFailsOpen(t *testing.T) {
 	if err := os.WriteFile(onlyTruncated, []byte(`{"type":"assis`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Bookkeeping records are walked past, but a window containing NOTHING
-	// else must not be answered from — skipping them may never turn into
-	// inventing a phase.
+	// Bookkeeping and unknown records are walked past, but a window containing
+	// NOTHING else must not be answered from — skipping them may never turn
+	// into inventing a phase.
 	onlyBookkeeping := filepath.Join(dir, "only_bookkeeping.jsonl")
 	if err := os.WriteFile(onlyBookkeeping, []byte(
 		`{"type":"system","timestamp":"2026-08-03T15:12:39.100Z","content":"hook ok"}`+"\n"+
-			`{"type":"last-prompt","prompt":"go"}`+"\n"), 0o600); err != nil {
+			`{"type":"foo-bar","timestamp":"2026-08-03T15:12:40.000Z"}`+"\n"+
+			`{"type":"last-prompt","prompt":"go"}`+"\n"+
+			`{"type":"cost-state","sessionId":"s1","totalCostUSD":0.5}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -389,8 +503,8 @@ func TestProgressProbeEvictsOneEntryAtTheCap(t *testing.T) {
 // re-read and re-parsed on every 3 s tick.
 func TestProgressProbeDoesNotCacheReadFailures(t *testing.T) {
 	const classifiable = `{"type":"user","timestamp":"2026-08-03T15:12:38.921Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"aa"}]}}` + "\n"
-	// A shape no Claude version emits: read fine, classified as nothing.
-	const unclassifiable = `{"type":"mystery-shape","timestamp":"2026-08-03T15:12:38.921Z","message":{"role":"user","content":"hi"}}` + "\n"
+	// Read fine, but the semantic record has no timestamp to answer with.
+	const unclassifiable = `{"type":"user","message":{"role":"user","content":"hi"}}` + "\n"
 
 	tests := []struct {
 		name string

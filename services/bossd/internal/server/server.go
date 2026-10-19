@@ -3896,9 +3896,10 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	resp := &pb.ArchiveSessionResponse{
-		Session:                &pb.Session{Id: req.Msg.Id},
-		IsDeferred:             outcome.Pending,
-		BlockingAgentSessionId: outcome.BlockingAgentSessionID,
+		Session:                    &pb.Session{Id: req.Msg.Id},
+		IsDeferred:                 outcome.Pending,
+		BlockingAgentSessionId:     outcome.BlockingAgentSessionID,
+		BlockingChatStalledSeconds: int32(outcome.BlockingStalledFor / time.Second),
 	}
 	if sess, err := s.sessions.Get(ctx, req.Msg.Id); err == nil {
 		resp.Session = s.sessionProtoWithRepo(ctx, sess)

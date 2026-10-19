@@ -395,7 +395,7 @@ func TestHomeHiddenTrackerAndGitHubKeys(t *testing.T) {
 			if !slices.Equal(opened, []string{want}) {
 				t.Errorf("%s: %c opened %v, want %s", kind, key, opened, want)
 			}
-			if got := model.(HomeModel); got.statusErr {
+			if got := model.(HomeModel); got.statusErr() {
 				t.Errorf("%s: %c reported an error: %s", kind, key, got.status)
 			}
 		}

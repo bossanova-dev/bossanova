@@ -1,0 +1,22 @@
+                                                                          
+  █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  /tmp/worktree · Unmanaged                                          
+                                                                          
+  Needed from you:                                                           
+    Why did the import fail? I looked into last night's import failures.     
+    The batch job ran out of disk on the staging host after the old staging  
+    table grew past 40 GB, and the automatic retry filled the same disk      
+    again before anyone was paged. …                                         
+
+    CHAT          AGENT   ACTIVE  STATUS                                   
+  ❯ verify        claude  1h ago  ⣾ waiting                                
+    Run bs-build  claude  1h ago  done · standby: wakes if CI turns red    
+                                                                              
+  [enter] open chat  [d]elete                                                 
+  [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [m]erge  [a]rchive · [esc] back  
+                                                                              
+  Timeline                                                                      
+    17:10  ✓ Build started                                                      
+    17:20  ● Waiting for your answer  “## Why did the import fail? I looked     
+             into last night's import failures. The batch job ran out of disk   
+             on the staging host after the old staging table grew past 40 GB,…  

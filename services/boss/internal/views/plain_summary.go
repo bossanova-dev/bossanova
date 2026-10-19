@@ -17,6 +17,9 @@ var (
 	markdownNumbered    = regexp.MustCompile(`^\s*\d+[.)]\s`)
 	markdownFence       = regexp.MustCompile("^\\s*(`{3,}|~{3,})")
 	markdownTableRule   = regexp.MustCompile(`^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$`)
+	// markdownHeadingCloser is a heading's closing hashes and any quotes or
+	// brackets after them.
+	markdownHeadingCloser = regexp.MustCompile(`\s+#+(["'”’)\]」』）]*)\s*$`)
 	// markdownEmphasis pairs, longest delimiter first so "***x***" is one pair.
 	markdownEmphasis = []*regexp.Regexp{
 		regexp.MustCompile(`\*\*\*(\S(?:.*?\S)?)\*\*\*`),
@@ -32,18 +35,40 @@ const (
 	sentenceStops     = ".?!。？！"
 	sentenceClosers   = `"'”’)]」』）`
 	questionMarks     = "?？"
+	quoteOpenerRunes  = `"“「『`
 	ellipsisDangling  = " ,;:—-•"
 	codeSpanCharStart = 0xE000
+	// signOffMaxWidth is the widest a closing line after the ask can be, such
+	// as "Let me know how you'd like to proceed."
+	signOffMaxWidth = 60
 )
 
 // plainParagraph is one blank-line-separated paragraph of a markdown message
-// as plain words. A list is a paragraph that opens with a bullet or a number,
-// or a table.
+// as plain words.
 type plainParagraph struct {
 	text string
-	list bool
+	kind paragraphKind
 	// code is where each inline code span sits in text, in order.
 	code []byteRange
+}
+
+type paragraphKind int
+
+const (
+	proseParagraph paragraphKind = iota
+	// listParagraph opens with a bullet or a number.
+	listParagraph
+	tableParagraph
+	// headingParagraph is a heading that ends in a question mark.
+	headingParagraph
+)
+
+// signOff reports whether p is short running text that may close a message
+// after its ask, such as "Thanks!" or "Never mind, I fixed it." It does not
+// end the message for the ask, and it shows with an ask that ends just
+// before it, so a line that withdraws the questions is never hidden.
+func (p plainParagraph) signOff() bool {
+	return p.kind == proseParagraph && ansi.StringWidth(p.text) <= signOffMaxWidth
 }
 
 // byteRange is text[from:to].
@@ -69,10 +94,10 @@ func plainMarkdown(text string) string {
 func plainParagraphs(text string) []plainParagraph {
 	var paragraphs []plainParagraph
 	var headings, words []string
-	list := false
+	kind := proseParagraph
 	flush := func() {
 		if plain, code := plainInline(strings.Join(words, " ")); plain != "" {
-			paragraphs = append(paragraphs, plainParagraph{plain, list, code})
+			paragraphs = append(paragraphs, plainParagraph{plain, kind, code})
 		}
 		words = nil
 	}
@@ -95,25 +120,28 @@ func plainParagraphs(text string) []plainParagraph {
 		}
 		if cells, ok := tableCells(line); ok {
 			if len(words) == 0 {
-				list = true
+				kind = tableParagraph
 			}
 			words = append(words, "•", strings.Join(cells, ", "))
 			continue
 		}
 		marker := markdownBlockMarker.FindString(line)
 		if strings.Contains(marker, "#") {
-			heading := strings.Fields(line[len(marker):])
+			heading := strings.Fields(markdownHeadingCloser.ReplaceAllString(line[len(marker):], "$1"))
 			headings = append(headings, heading...)
 			if len(heading) > 0 && strings.ContainsAny(lastRune(strings.TrimRight(heading[len(heading)-1], sentenceClosers)), questionMarks) {
 				flush()
-				words, list = heading, false
+				words, kind = heading, headingParagraph
 				flush()
 			}
 			continue
 		}
 		bullet := strings.ContainsAny(marker, "-*+")
 		if len(words) == 0 {
-			list = bullet || markdownNumbered.MatchString(line)
+			kind = proseParagraph
+			if bullet || markdownNumbered.MatchString(line) {
+				kind = listParagraph
+			}
 		}
 		if bullet {
 			words = append(words, "•")
@@ -122,7 +150,7 @@ func plainParagraphs(text string) []plainParagraph {
 	}
 	flush()
 	if len(paragraphs) == 0 {
-		words, list = headings, false
+		words, kind = headings, proseParagraph
 		if len(words) == 0 {
 			for _, line := range lines {
 				if !markdownFence.MatchString(line) && !markdownRule.MatchString(line) {
@@ -162,19 +190,25 @@ func tableCells(line string) ([]string, bool) {
 }
 
 // plainInline drops emphasis's asterisks and underscores and code's
-// backticks, leaving the text inside backticks as written, and collapses runs
-// of spaces. An emphasis pair counts only outside a word, so __init__.py and
-// *.go stay; a stray "**" goes. code is where each code span sits in the text.
+// backticks, leaving the text inside backticks as written and a space where
+// the backticks held one, and collapses runs of spaces. An emphasis pair
+// counts only outside a word, so __init__.py and *.go stay; a stray "**"
+// goes. code is where each code span sits in the text.
 func plainInline(text string) (string, []byteRange) {
 	spans := strings.Split(text, "`")
-	var code []string
+	var code []codeSpan
 	var b strings.Builder
 	for i, span := range spans {
 		if i%2 == 1 && i != len(spans)-1 {
-			if span = strings.Join(strings.Fields(span), " "); span != "" {
-				b.WriteRune(rune(codeSpanCharStart + len(code)))
-				code = append(code, span)
+			words := strings.Join(strings.Fields(span), " ")
+			if words == "" {
+				if span != "" {
+					b.WriteByte(' ')
+				}
+				continue
 			}
+			b.WriteRune(rune(codeSpanCharStart + len(code)))
+			code = append(code, codeSpan{words, strings.HasPrefix(span, " "), strings.HasSuffix(span, " ")})
 			continue
 		}
 		b.WriteString(span)
@@ -186,18 +220,36 @@ func plainInline(text string) (string, []byteRange) {
 	return expandCodeSpans(strings.Join(strings.Fields(strings.ReplaceAll(plain, "**", "")), " "), code)
 }
 
+// codeSpan is an inline code span's words, and whether a space stood inside
+// its opening or closing backtick.
+type codeSpan struct {
+	words       string
+	lead, trail bool
+}
+
 // expandCodeSpans puts each code span back where its placeholder rune stands,
-// and says where each now sits.
-func expandCodeSpans(text string, code []string) (string, []byteRange) {
+// with a space for the padding inside its backticks unless one is there
+// already, and says where each now sits. The padding stays out of the text
+// until now so emphasis around the backticks still pairs.
+func expandCodeSpans(text string, code []codeSpan) (string, []byteRange) {
 	if len(code) == 0 {
 		return text, nil
 	}
 	var b strings.Builder
 	var at []byteRange
+	pad := false
 	for _, r := range text {
+		if pad && r != ' ' {
+			b.WriteByte(' ')
+		}
+		pad = false
 		if i := int(r) - codeSpanCharStart; i >= 0 && i < len(code) {
-			at = append(at, byteRange{b.Len(), b.Len() + len(code[i])})
-			b.WriteString(code[i])
+			if s := b.String(); code[i].lead && s != "" && !strings.HasSuffix(s, " ") {
+				b.WriteByte(' ')
+			}
+			at = append(at, byteRange{b.Len(), b.Len() + len(code[i].words)})
+			b.WriteString(code[i].words)
+			pad = code[i].trail
 			continue
 		}
 		b.WriteRune(r)
@@ -242,10 +294,13 @@ type plainSummary struct {
 	text string
 	cuts []summaryCut
 	// asks are where each sentence starts in the run of questions that ends at
-	// askEnd, the message's last question mark outside a list. A message that
-	// ends in a list asking a question asks that list instead, from the
-	// colon-ended introduction just before it when it has one. A message that
-	// asks nothing has none.
+	// askEnd, the message's last question mark outside a list or table. A
+	// message that ends in a list asking a question asks that list instead,
+	// from the colon-ended introduction just before it when it has one, and a
+	// heading that asks counts only when it ends the message or introduces
+	// its closing list. A short closing line does not end a message for
+	// either, and askEnd takes it in when the ask ends just before it. A
+	// message that asks nothing has none.
 	asks   []int
 	askEnd int
 }
@@ -256,7 +311,8 @@ type summaryCut struct {
 	// sentence: text[:at] ends a sentence.
 	sentence bool
 	// paragraph: text[:at] ends a paragraph that can close a summary, one
-	// that is neither a list nor a colon-ended introduction to what follows.
+	// that is neither a list, a table, a heading nor a colon-ended
+	// introduction to what follows.
 	paragraph bool
 }
 
@@ -264,7 +320,16 @@ func newPlainSummary(markdown string) plainSummary {
 	var s plainSummary
 	var b strings.Builder
 	paragraphs := plainParagraphs(markdown)
-	introduction := -1
+	last := len(paragraphs) - 1
+	if last > 0 && paragraphs[last].signOff() {
+		last--
+	}
+	// A heading question asks when it ends the message or introduces the
+	// closing list.
+	headingAsks := func(n int) bool {
+		return n == last || n == last-1 && paragraphs[last].kind == listParagraph
+	}
+	introduction, lastEnd := -1, 0
 	for n, p := range paragraphs {
 		if n > 0 {
 			b.WriteByte(' ')
@@ -282,10 +347,10 @@ func newPlainSummary(markdown string) plainSummary {
 				s.cuts = append(s.cuts, summaryCut{at: start + i, sentence: sentence})
 			}
 		}
-		s.cuts = append(s.cuts, summaryCut{at: b.Len(), sentence: next < len(ends), paragraph: !p.list && !strings.HasSuffix(p.text, ":")})
+		s.cuts = append(s.cuts, summaryCut{at: b.Len(), sentence: next < len(ends), paragraph: p.kind == proseParagraph && !strings.HasSuffix(p.text, ":")})
 		from, asking, listAsks := start, false, false
 		for _, end := range ends {
-			question := end.question && !p.list
+			question := end.question && (p.kind == proseParagraph || p.kind == headingParagraph && headingAsks(n))
 			listAsks = listAsks || end.question
 			if question {
 				if !asking {
@@ -296,18 +361,24 @@ func newPlainSummary(markdown string) plainSummary {
 			asking = question
 			from = start + end.at + len(p.text[end.at:]) - len(strings.TrimLeft(p.text[end.at:], " "))
 		}
-		if p.list && listAsks && n == len(paragraphs)-1 {
+		if p.kind == listParagraph && listAsks && n == last {
 			s.asks, s.askEnd = []int{start}, b.Len()
 			if introduction >= 0 {
 				s.asks = []int{introduction, start}
 			}
 		}
 		introduction = -1
-		if !p.list && strings.HasSuffix(p.text, ":") {
+		if p.kind == proseParagraph && strings.HasSuffix(p.text, ":") {
 			introduction = from
+		}
+		if n == last {
+			lastEnd = b.Len()
 		}
 	}
 	s.text = b.String()
+	if len(s.asks) > 0 && s.askEnd == lastEnd {
+		s.askEnd = len(s.text)
+	}
 	return s
 }
 
@@ -335,8 +406,30 @@ var quoteOpeners = map[rune]rune{'"': '"', '”': '“', '」': '「', '』': '�
 // it ends a URL.
 func sentenceEnds(text string, code []byteRange) []sentenceEnd {
 	var ends []sentenceEnd
-	start := 0
+	// wordStart is where the word at i starts, firstWord the first word rune
+	// at or after start, and opened where each quote opener last stood.
+	start, wordStart, firstWord := 0, 0, -1
+	opened := map[rune]int{}
+	// quotedMidSentence reports whether the stop that closers follow sits
+	// inside a quotation opened after a word of the sentence.
+	quotedMidSentence := func(closers string) bool {
+		for _, r := range closers {
+			if open, ok := quoteOpeners[r]; ok {
+				at := opened[open]
+				return at > start && firstWord >= start && firstWord < at
+			}
+		}
+		return false
+	}
 	for i, r := range text {
+		switch {
+		case r == ' ':
+			wordStart = i + 1
+		case strings.ContainsRune(quoteOpenerRunes, r):
+			opened[r] = i
+		case firstWord < start && i >= start && isWordRune(r):
+			firstWord = i
+		}
 		for len(code) > 0 && code[0].to <= i {
 			code = code[1:]
 		}
@@ -349,30 +442,18 @@ func sentenceEnds(text string, code []byteRange) []sentenceEnd {
 		}
 		closers := text[end : len(text)-len(strings.TrimLeft(text[end:], sentenceClosers))]
 		end += len(closers)
-		word := text[strings.LastIndexByte(text[:i], ' ')+1 : i]
+		word := text[wordStart:i]
 		switch {
 		case r < utf8.RuneSelf && end < len(text) && text[end] != ' ':
 		case r == '.' && strings.Trim(word, "0123456789.") == "" && closers == "":
 		case r == '?' && (word == "" || strings.Contains(word, "://") || strings.HasPrefix(word, "www.")):
-		case quotedMidSentence(text[start:i], closers):
+		case quotedMidSentence(closers):
 		default:
 			ends = append(ends, sentenceEnd{end, strings.ContainsRune(questionMarks, r)})
 			start = end + len(text[end:]) - len(strings.TrimLeft(text[end:], " "))
 		}
 	}
 	return ends
-}
-
-// quotedMidSentence reports whether the stop that ends sentence, followed by
-// closers, sits inside a quotation opened after a word of the sentence.
-func quotedMidSentence(sentence, closers string) bool {
-	for _, r := range closers {
-		if open, ok := quoteOpeners[r]; ok {
-			at := strings.LastIndex(sentence, string(open))
-			return at > 0 && strings.IndexFunc(sentence[:at], isWordRune) >= 0
-		}
-	}
-	return false
 }
 
 func lastRune(text string) string {

@@ -4653,8 +4653,12 @@ type ArchiveSessionResponse struct {
 	// The agent session id of the chat the deferred archive is waiting on. Empty
 	// when the archive ran immediately.
 	BlockingAgentSessionId string `protobuf:"bytes,3,opt,name=blocking_agent_session_id,json=blockingAgentSessionId,proto3" json:"blocking_agent_session_id,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// How long the blocking chat has been flagged as making no progress, in
+	// seconds. 0 when it is still making progress or the archive ran
+	// immediately.
+	BlockingChatStalledSeconds int32 `protobuf:"varint,4,opt,name=blocking_chat_stalled_seconds,json=blockingChatStalledSeconds,proto3" json:"blocking_chat_stalled_seconds,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *ArchiveSessionResponse) Reset() {
@@ -4706,6 +4710,13 @@ func (x *ArchiveSessionResponse) GetBlockingAgentSessionId() string {
 		return x.BlockingAgentSessionId
 	}
 	return ""
+}
+
+func (x *ArchiveSessionResponse) GetBlockingChatStalledSeconds() int32 {
+	if x != nil {
+		return x.BlockingChatStalledSeconds
+	}
+	return 0
 }
 
 type FinishUnattendedRunRequest struct {
@@ -13598,12 +13609,13 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x15ArchiveSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fshould_force\x18\x02 \x01(\bR\vshouldForce\x12;\n" +
-	"\x1arequester_agent_session_id\x18\x03 \x01(\tR\x17requesterAgentSessionId\"\xa5\x01\n" +
+	"\x1arequester_agent_session_id\x18\x03 \x01(\tR\x17requesterAgentSessionId\"\xe8\x01\n" +
 	"\x16ArchiveSessionResponse\x12/\n" +
 	"\asession\x18\x01 \x01(\v2\x15.bossanova.v1.SessionR\asession\x12\x1f\n" +
 	"\vis_deferred\x18\x02 \x01(\bR\n" +
 	"isDeferred\x129\n" +
-	"\x19blocking_agent_session_id\x18\x03 \x01(\tR\x16blockingAgentSessionId\"\xbe\x01\n" +
+	"\x19blocking_agent_session_id\x18\x03 \x01(\tR\x16blockingAgentSessionId\x12A\n" +
+	"\x1dblocking_chat_stalled_seconds\x18\x04 \x01(\x05R\x1ablockingChatStalledSeconds\"\xbe\x01\n" +
 	"\x1aFinishUnattendedRunRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12;\n" +

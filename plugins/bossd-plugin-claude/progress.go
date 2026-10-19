@@ -139,10 +139,7 @@ func (p *progressProbe) forget(path string) {
 // and classifies the last COMPLETE record that says something about what the
 // agent is doing. Two kinds of line are walked past on the way back: a partial
 // JSON object (the poller can read the file mid-write, so the final line is
-// often truncated) and a known bookkeeping record (see
-// isInertProgressRecord) — real transcripts nearly always end in a run of
-// those, so stopping at the first one would answer known=false for most live
-// chats. An unrecognised record type still stops the walk and fails open.
+// often truncated) and any record classifyProgressPhase does not list.
 //
 // Both outcomes fail open, but they are NOT interchangeable to the caller: a
 // non-nil error means the file could not be read (or changed under us), so the
@@ -196,12 +193,15 @@ func readProgressTail(path string) (progressSnapshot, error) {
 		data = data[nl+1:]
 	}
 
-	// newestWrite is the timestamp of the most recent BOOKKEEPING record walked
-	// past on the way back to the last semantic one. It is a liveness signal
-	// even though it is not a phase signal: something in the process is still
-	// appending, so the turn is not silently dead. Keeping it is what stops a
-	// long auto-compaction — which emits `system` records for minutes while the
-	// last semantic record ages — from reading as a stall.
+	// newestWrite is the timestamp of the last-written record walked past on
+	// the way back to the last semantic one. It is a liveness signal even
+	// though it is not a phase signal: something in the process is still
+	// appending, so the turn is not silently dead.
+	//
+	// It does not cover auto-compaction. A compaction writes nothing while it
+	// runs (its records all land in the second it finishes), so for its whole
+	// run the tail is the tool result before it, AWAITING_MODEL, aging like a
+	// slow model reply.
 	var newestWrite time.Time
 
 	lines := bytes.Split(data, []byte{'\n'})
@@ -220,19 +220,14 @@ func readProgressTail(path string) (progressSnapshot, error) {
 
 		phase, ok := classifyProgressPhase(rec)
 		if !ok {
-			if !isInertProgressRecord(rec.Type) {
-				// A shape a future Claude version adds, and we have no idea
-				// what it leaves the agent doing. Fail open rather than guess.
-				return unknown, nil
-			}
-			// Known bookkeeping. Real transcripts almost always end in a run of
-			// these (`…assistant, system, system, last-prompt` is the single
-			// most common tail), so bailing here would make the probe answer
-			// known=false for most live chats. Walk past it to the last record
-			// that actually says what the agent is doing.
+			// Says nothing about what the agent is doing. Real transcripts
+			// almost always end in a run of these (`…assistant, last-prompt,
+			// cost-state` is the most common tail), and Claude adds new types
+			// without notice, so the walk skips every one rather than stopping.
 			//
 			// Walking backwards means the first timestamped one we see is the
-			// newest.
+			// last written, though its timestamp can be older than records
+			// before it.
 			if tsErr == nil && newestWrite.IsZero() {
 				newestWrite = ts
 			}
@@ -244,6 +239,9 @@ func readProgressTail(path string) (progressSnapshot, error) {
 			return unknown, nil
 		}
 		snap := progressSnapshot{lastProgressAt: ts, phase: phase, known: true}
+		// Only ever move later: an attachment written after a prompt can carry
+		// a time from before it, which would date a turn that just started as
+		// long stalled.
 		if newestWrite.After(ts) {
 			snap.lastProgressAt = newestWrite
 		}
@@ -255,43 +253,17 @@ func readProgressTail(path string) (progressSnapshot, error) {
 	return unknown, nil
 }
 
-// inertProgressRecordTypes are the transcript record types that carry no
-// information about what the agent is doing. They are bookkeeping the CLI
-// appends around the semantic conversation — the prompt echo, the mode banner,
-// attachment manifests, queue operations, title/PR metadata, file-history
-// entries — and every one of them was observed trailing real transcripts.
-//
-// This is an ALLOWLIST on purpose: an unrecognised type still fails open. The
-// cost of guessing wrong about a type we have never seen is a false "your
-// session is dead" banner, which the whole design is built to avoid.
-var inertProgressRecordTypes = map[string]struct{}{
-	"agent-name":            {},
-	"ai-title":              {},
-	"attachment":            {},
-	"custom-title":          {},
-	"file-history-delta":    {},
-	"file-history-snapshot": {},
-	"last-prompt":           {},
-	"mode":                  {},
-	"permission-mode":       {},
-	"pr-link":               {},
-	"queue-operation":       {},
-	"summary":               {},
-	"system":                {},
-}
-
-// isInertProgressRecord reports whether recType is known bookkeeping that the
-// backwards walk may skip on its way to the last semantic record.
-func isInertProgressRecord(recType string) bool {
-	_, ok := inertProgressRecordTypes[recType]
-	return ok
-}
-
 // classifyProgressPhase maps a transcript record to the phase it leaves the
-// agent in. ok=false means "this record maps to no phase" — the caller then
-// walks past it if it is known bookkeeping, and fails open if it is not.
+// agent in. It is the allowlist of records that say what the agent is doing:
+// ok=false means "this record maps to no phase", and the caller walks past it
+// whatever its type.
 func classifyProgressPhase(rec transcriptLineWithTS) (bossanovav1.AgentProgressPhase, bool) {
 	switch rec.Type {
+	case "api-request":
+		// Claude's record of a model request it just sent, written right after
+		// each tool result and prompt. The agent owes the answer from this
+		// moment, so it dates a model that never replies.
+		return bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, true
 	case "user":
 		// Claude logs tool results as type:"user" entries carrying
 		// tool_result blocks. Both those and a genuine user turn leave the
@@ -308,7 +280,8 @@ func classifyProgressPhase(rec transcriptLineWithTS) (bossanovav1.AgentProgressP
 			return bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_IDLE, true
 		}
 		// An assistant record with neither text nor a tool call (e.g. a
-		// thinking-only block) says nothing about liveness.
+		// thinking-only block) leaves the phase where the record before it
+		// put it; the walk counts only its timestamp.
 		return bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN, false
 	}
 	return bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN, false

@@ -52,17 +52,16 @@ type HomeModel struct {
 	sessionReadFailures []*pb.OrganizationSessionReadFailure
 	table               table.Model
 	err                 error
-	status              string
-	// statusErr marks status as a failure so renderSessionTable colours it as
-	// one. Without it every status reads as success, and a red-on-green
-	// "Rename failed" is worse than no colour at all — it says the opposite of
-	// what happened. Named to match AccountsListModel/CronListModel, which
-	// carry the same pair.
-	statusErr bool
-	loading   bool
-	width     int
-	height    int
-	repoCount int // number of registered repos (for empty state guidance)
+	// status is the line under the board. Write it only through setStatus:
+	// statusKind decides its colour and how long it stays, and statusSeq stops
+	// an older outcome's timer from clearing it.
+	status     string
+	statusKind homeStatusKind
+	statusSeq  uint64
+	loading    bool
+	width      int
+	height     int
+	repoCount  int // number of registered repos (for empty state guidance)
 
 	// pollFailures counts consecutive failed session polls. The "Cannot
 	// connect to daemon" screen is only shown once it reaches
@@ -331,6 +330,9 @@ func (h HomeModel) Init() tea.Cmd {
 	if notices := fetchTicketNotices(h.client, h.ctx, h.generation); notices != nil {
 		cmds = append(cmds, notices)
 	}
+	if expire := h.statusExpiry(); expire != nil {
+		cmds = append(cmds, expire)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -380,15 +382,17 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.attentionAction.sessionID == msg.sessionID && h.attentionAction.action == msg.action {
 			h.attentionAction = attentionActionState{}
 		}
-		h.showActionResult(msg)
+		expire := h.showActionResult(msg)
 		h.table.SetHeight(h.tableHeight())
 		if msg.action == pb.AttentionAction_ATTENTION_ACTION_MERGE && msg.err == nil {
 			// Re-read now so the merged row leaves NEEDS YOU without waiting
 			// for the next poll.
 			h.nextSessionPollID++
-			return h, fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID, h.settings.DisplayOpenPorts)
+			return h, tea.Batch(expire, fetchSessions(h.client, h.ctx, h.generation, h.nextSessionPollID, h.settings.DisplayOpenPorts))
 		}
-		return h, nil
+		return h, expire
+	case homeStatusExpiredMsg:
+		return h.handleStatusExpired(msg)
 	case sessionRenamedMsg:
 		return h.handleSessionRenamed(msg)
 	case sessionMovedMsg:

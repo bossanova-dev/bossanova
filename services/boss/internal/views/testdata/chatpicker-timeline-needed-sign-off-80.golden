@@ -1,0 +1,23 @@
+                                                                          
+  █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
+  █▄█  /tmp/worktree · Unmanaged                                          
+                                                                          
+  Needed from you:                                                          
+    I looked into last night's import failures. The batch job ran out of    
+    disk on the staging host after the old staging table grew past 40 GB…   
+    Before I continue: 1. Should I delete the old staging table? 2. Do you  
+    want a backfill for last week's batches? Let me know how you'd like to  
+    proceed.                                                                
+
+    CHAT          AGENT   ACTIVE  STATUS                                   
+  ❯ verify        claude  1h ago  ⣾ waiting                                
+    Run bs-build  claude  1h ago  done · standby: wakes if CI turns red    
+                                                                              
+  [enter] open chat  [d]elete                                                 
+  [n]ew chat  [s]ettings  [g]ithub  [v]ideo  [m]erge  [a]rchive · [esc] back  
+                                                                              
+  Timeline                                                                      
+    17:10  ✓ Build started                                                      
+    17:20  ● Waiting for your answer  “I looked into last night's import        
+             failures. The batch job ran out of disk on the staging host after  
+             the old staging table grew past 40 GB, and the automatic retry…    

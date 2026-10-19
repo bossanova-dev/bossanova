@@ -745,7 +745,10 @@ func TestChatPickerTimelineWaitIsPlainText(t *testing.T) {
 // TestChatPickerNeededFromYouGoldens pins the details screen with a short
 // question, the long markdown one, the question-last survey, the CJK
 // question, a closing list of questions, "?" in code words, a quoted
-// question, a heading question and a Japanese one at 40, 80 and 120 columns.
+// question, a heading question, a Japanese one, a closing list then a
+// sign-off, a report opening with a heading question, a closing table, code
+// with spaces inside its backticks and a heading question closed with hashes
+// at 40, 80 and 120 columns.
 func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 	answers := map[string]string{
 		"short":        "Should this PR be merged?",
@@ -757,6 +760,11 @@ func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 		"quoted":       quotedQuestion,
 		"heading":      headingQuestion,
 		"japanese":     japaneseQuestion,
+		"sign-off":     signOffQuestion,
+		"report":       reportHeading,
+		"table":        closingTable,
+		"code-padding": codePadding,
+		"heading-hash": headingCloser,
 	}
 	for _, width := range []int{40, 80, 120} {
 		for name, answer := range answers {
@@ -793,37 +801,100 @@ func finishWithin(d time.Duration, what string, fn func()) {
 	}
 }
 
-// TestChatPickerNeededFromYouFitsAtEverySize: at every width from 20 to 60 and
-// height from 10 to 40 each answer renders, opens with the label on its own
-// row and keeps to summaryMaxRows rows. From 29 columns, as before the answer
-// was capped, no row is wider than the terminal, and from 18 rows the whole
-// view fits it; narrower, the footer's own key hints overflow.
-func TestChatPickerNeededFromYouFitsAtEverySize(t *testing.T) {
-	answers := []string{
-		operatorMarkdownQuestion,
-		"Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no.",
-		"确认这个改动是否可以安全地合并到主分支并且不影响现有的部署流程以及回滚步骤 🚀 请检查数据库迁移 ✅ 然后回复",
+// viewsSweepsEnv opts in to the exhaustive and timing checks of this package.
+// The per-PR suite keeps one named case per failure mode they have found; the
+// nightly native job runs them.
+const viewsSweepsEnv = "BOSS_VIEWS_SWEEPS"
+
+// requireViewsSweeps skips t unless viewsSweepsEnv is "1".
+func requireViewsSweeps(t *testing.T) {
+	t.Helper()
+	if os.Getenv(viewsSweepsEnv) != "1" {
+		t.Skipf("exhaustive views sweep; set %s=1 to run it", viewsSweepsEnv)
 	}
-	for i, answer := range answers {
+}
+
+// neededSizeAnswers are a markdown question, one with a word wider than a
+// narrow terminal, and a CJK one with emoji.
+var neededSizeAnswers = []string{
+	operatorMarkdownQuestion,
+	"Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no.",
+	"确认这个改动是否可以安全地合并到主分支并且不影响现有的部署流程以及回滚步骤 🚀 请检查数据库迁移 ✅ 然后回复",
+}
+
+// assertNeededFits renders answer at width x height and checks that it opens
+// with the label on its own row and keeps to summaryMaxRows rows. From 29
+// columns, as before the answer was capped, no row is wider than the terminal,
+// and from 18 rows the whole view fits it; narrower, the footer's own key
+// hints overflow. It returns the answer's rows.
+func assertNeededFits(t *testing.T, answer string, width, height int) []string {
+	t.Helper()
+	m := questionTimelineModel(width, height, operatorQuestion)
+	m.fullQuestion = answer
+	rows := neededRows(t, m)
+	if len(rows) > summaryMaxRows {
+		t.Fatalf("%dx%d: %d rows, want at most %d", width, height, len(rows), summaryMaxRows)
+	}
+	screen := m.View().Content
+	for _, line := range strings.Split(stripANSI(screen), "\n") {
+		if ansi.StringWidth(line) > width && width >= 29 {
+			t.Fatalf("%dx%d: overwide line %q", width, height, line)
+		}
+	}
+	if got := lipgloss.Height(screen) + bannerOverhead; width >= 29 && height >= 18 && got > height {
+		t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, stripANSI(screen))
+	}
+	return rows
+}
+
+// TestChatPickerNeededFromYouFitsAtNamedSizes: each answer fits at the sizes
+// where the exhaustive sweep and its paging predecessor found faults: one- and
+// two-row answer windows below 41 columns, where a word wider than the label
+// width froze the wrap, 40x20 and 30x24, the 29 to 31 column edge where rows
+// must stop overflowing, the old pager's 41 and 45 column edges, and the
+// sweep's corners. windowRows, when set, is the answer rows the size must
+// give, so a layout change that moves the window fails here rather than
+// leaving the case testing a different size.
+func TestChatPickerNeededFromYouFitsAtNamedSizes(t *testing.T) {
+	for _, tt := range []struct {
+		width, height, windowRows int
+	}{
+		{20, 10, 1},
+		{30, 18, 1},
+		{30, 19, 2},
+		{40, 20, 1},
+		{40, 21, 2},
+		{30, 24, 0},
+		{29, 24, 0},
+		{31, 24, 0},
+		{41, 24, 0},
+		{45, 24, 0},
+		{60, 40, 0},
+	} {
+		t.Run(fmt.Sprintf("%dx%d", tt.width, tt.height), func(t *testing.T) {
+			for i, answer := range neededSizeAnswers {
+				finishWithin(time.Minute, fmt.Sprintf("answer %d at %dx%d", i, tt.width, tt.height), func() {
+					if rows := assertNeededFits(t, answer, tt.width, tt.height); tt.windowRows > 0 && len(rows) != tt.windowRows {
+						t.Fatalf("answer %d at %dx%d shows %d rows, want the %d-row window: %q", i, tt.width, tt.height, len(rows), tt.windowRows, rows)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestViewsSweep_NeededFromYouFitsAtEverySize runs assertNeededFits at every
+// width from 20 to 60 and height from 10 to 40. It takes about a minute per
+// answer under -race, so it runs nightly, not per PR.
+func TestViewsSweep_NeededFromYouFitsAtEverySize(t *testing.T) {
+	requireViewsSweeps(t)
+	for i, answer := range neededSizeAnswers {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			t.Parallel()
-			finishWithin(2*time.Minute, "the size sweep", func() {
+			finishWithin(10*time.Minute, "the size sweep", func() {
 				for width := 20; width <= 60; width++ {
 					for height := 10; height <= 40; height++ {
-						m := questionTimelineModel(width, height, operatorQuestion)
-						m.fullQuestion = answer
-						if rows := neededRows(t, m); len(rows) > summaryMaxRows {
-							t.Fatalf("%dx%d: %d rows, want at most %d", width, height, len(rows), summaryMaxRows)
-						}
-						screen := m.View().Content
-						for _, line := range strings.Split(stripANSI(screen), "\n") {
-							if ansi.StringWidth(line) > width && width >= 29 {
-								t.Fatalf("%dx%d: overwide line %q", width, height, line)
-							}
-						}
-						if got := lipgloss.Height(screen) + bannerOverhead; width >= 29 && height >= 18 && got > height {
-							t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, stripANSI(screen))
-						}
+						assertNeededFits(t, answer, width, height)
 					}
 				}
 			})

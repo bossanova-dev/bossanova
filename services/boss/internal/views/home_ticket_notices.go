@@ -139,7 +139,7 @@ func (h HomeModel) handleTicketNoticesDismissed(msg ticketNoticesDismissedMsg) (
 	for _, id := range msg.failed {
 		delete(h.ticketNoticesDismissed, id)
 	}
-	h.status, h.statusErr = rpcStatusMessage("The ticket notice could not be dismissed", msg.err), true
+	h.setStatus(rpcStatusMessage("The ticket notice could not be dismissed", msg.err), statusFailure)
 	return h, h.startTicketNoticesFetch()
 }
 

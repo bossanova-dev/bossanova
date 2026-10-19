@@ -47,7 +47,7 @@ func (h HomeModel) startFilter() (HomeModel, tea.Cmd, bool) {
 		return h, nil, true
 	}
 	cmd := h.filter.Activate()
-	h.status, h.statusErr = "", false
+	h.clearStatus()
 	h.table.SetHeight(h.tableHeight())
 	return h, cmd, true
 }

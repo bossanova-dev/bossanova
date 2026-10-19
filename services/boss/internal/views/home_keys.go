@@ -97,6 +97,7 @@ func notifyAuthChange(ctx context.Context, c client.BossClient, action string, t
 // one. A declining handler that ever needs to schedule work must batch it here
 // rather than rely on this.
 func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	h.clearFailureOnKey(msg)
 	if h.attentionAction.active() {
 		var cmd tea.Cmd
 		h.attentionAction, cmd = h.attentionAction.update(msg)
@@ -104,7 +105,7 @@ func (h HomeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// A confirmed merge runs on without the operator: its row reads
 			// merging and Home stays usable, as on the details view.
 			h.markMerging(h.attentionAction)
-			h.status, h.statusErr = h.attentionAction.progress, false
+			h.setStatus(h.attentionAction.progress, statusOngoing)
 			h.attentionAction = attentionActionState{}
 		}
 		h.table.SetHeight(h.tableHeight())
@@ -160,7 +161,7 @@ func (h HomeModel) handleActionKey(msg tea.KeyMsg) (HomeModel, tea.Cmd, bool) {
 		h.attentionAction, cmd, handled = h.attentionAction.start(h.ctx, h.client, sel, msg.String(), false)
 	}
 	if handled {
-		h.status, h.statusErr = "", false
+		h.clearStatus()
 		h.table.SetHeight(h.tableHeight())
 		return h, cmd, true
 	}
@@ -242,10 +243,9 @@ func (h HomeModel) handleRenameStartKey() (HomeModel, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	h.rename, cmd = newRenamePrompt(sess.GetId(), sess.GetTitle())
-	// Drop the previous rename's outcome. Nothing else clears the status line,
-	// and a stale "Rename failed" sitting above a freshly opened editor reads
-	// as a complaint about the edit in progress.
-	h.status, h.statusErr = "", false
+	// Drop the previous rename's outcome: a "Renamed session to …" still on
+	// screen above a freshly opened editor reads as the edit already landing.
+	h.clearStatus()
 	// The prompt replaces the action bar, which is one line shorter than the
 	// editor, so the table has to give a row back or the board overflows. The
 	// cleared status may free another; tableHeight reads both.

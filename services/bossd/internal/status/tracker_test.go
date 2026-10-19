@@ -879,7 +879,7 @@ func TestSetStalled_StaleMarkerCountsAsTransition(t *testing.T) {
 	tr.SetStalled("chat-1", true) // fire 1 (absent → fresh)
 
 	tr.mu.Lock()
-	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.stalled["chat-1"] = staleStallMark()
 	tr.mu.Unlock()
 
 	tr.SetStalled("chat-1", true) // fire 2 (stale/effectively-absent → fresh)
@@ -904,7 +904,7 @@ func TestSetStalled_FalseClearsStaleMarkerWithStalledChange(t *testing.T) {
 
 	tr.SetStalled("chat-1", true)
 	tr.mu.Lock()
-	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.stalled["chat-1"] = staleStallMark()
 	tr.mu.Unlock()
 
 	tr.SetStalled("chat-1", false) // fire 2 (stale marker removed)
@@ -922,7 +922,7 @@ func TestStalled_Stale(t *testing.T) {
 	tr.SetStalled("chat-1", true)
 
 	tr.mu.Lock()
-	tr.stalled["chat-1"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.stalled["chat-1"] = staleStallMark()
 	tr.mu.Unlock()
 
 	if tr.Stalled("chat-1") {
@@ -965,8 +965,13 @@ func TestCleanup_RemovesStaleStalled(t *testing.T) {
 	tr := NewTracker()
 	tr.SetStalled("fresh", true)
 	tr.SetStalled("stale", true)
+	longSince := time.Now().Add(-20 * time.Minute)
 	tr.mu.Lock()
-	tr.stalled["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.stalled["stale"] = staleStallMark()
+	// A stall that started long ago but is still being re-observed must
+	// survive: aging it by its start would end every stall within
+	// StaleThreshold, and a hung chat would never release its archive.
+	tr.stalled["long"] = stallMark{since: longSince, seen: time.Now()}
 	tr.mu.Unlock()
 
 	tr.Cleanup()
@@ -974,9 +979,13 @@ func TestCleanup_RemovesStaleStalled(t *testing.T) {
 	tr.mu.RLock()
 	_, freshOK := tr.stalled["fresh"]
 	_, staleOK := tr.stalled["stale"]
+	long, longOK := tr.stalled["long"]
 	tr.mu.RUnlock()
 	if !freshOK {
 		t.Error("Cleanup removed a fresh stalled marker")
+	}
+	if !longOK || !long.since.Equal(longSince) {
+		t.Errorf("Cleanup dropped or moved a long-running stall still being observed (kept=%v, since=%v)", longOK, long.since)
 	}
 	if staleOK {
 		t.Error("Cleanup kept a stale stalled marker")
@@ -996,7 +1005,7 @@ func TestCleanup_FiresOnStalledChangeForRemovedStaleMarkers(t *testing.T) {
 	tr.SetStalled("fresh", true)
 	tr.SetStalled("stale", true)
 	tr.mu.Lock()
-	tr.stalled["stale"] = time.Now().Add(-StaleThreshold - time.Second)
+	tr.stalled["stale"] = staleStallMark()
 	tr.mu.Unlock()
 
 	tr.Cleanup()
@@ -1382,4 +1391,48 @@ func TestEvictionHookFiresOutsideMutex(t *testing.T) {
 	}, func(tr *Tracker) {
 		tr.Remove("chat-1")
 	})
+}
+
+func staleStallMark() stallMark {
+	at := time.Now().Add(-StaleThreshold - time.Second)
+	return stallMark{since: at, seen: at}
+}
+
+func TestStalledSince_DatesTheUnbrokenStall(t *testing.T) {
+	tr := NewTracker()
+	if _, ok := tr.StalledSince("chat-1"); ok {
+		t.Fatal("StalledSince on an unmarked chat reported a stall")
+	}
+
+	tr.SetStalled("chat-1", true)
+	first, ok := tr.StalledSince("chat-1")
+	if !ok {
+		t.Fatal("StalledSince after SetStalled(true) reported no stall")
+	}
+	earlier := first.Add(-20 * time.Minute)
+	tr.mu.Lock()
+	tr.stalled["chat-1"] = stallMark{since: earlier, seen: time.Now()}
+	tr.mu.Unlock()
+
+	tr.SetStalled("chat-1", true)
+	if got, _ := tr.StalledSince("chat-1"); !got.Equal(earlier) {
+		t.Fatalf("a re-observed stall moved its start to %v, want %v", got, earlier)
+	}
+
+	tr.SetStalled("chat-1", false)
+	tr.SetStalled("chat-1", true)
+	if got, _ := tr.StalledSince("chat-1"); !got.After(earlier) {
+		t.Fatalf("a stall that cleared and returned kept its old start %v", got)
+	}
+
+	tr.mu.Lock()
+	tr.stalled["chat-1"] = stallMark{since: earlier, seen: time.Now().Add(-StaleThreshold - time.Second)}
+	tr.mu.Unlock()
+	if _, ok := tr.StalledSince("chat-1"); ok {
+		t.Fatal("StalledSince on a stale marker reported a stall")
+	}
+	tr.SetStalled("chat-1", true)
+	if got, _ := tr.StalledSince("chat-1"); !got.After(earlier) {
+		t.Fatalf("a stall re-observed after its marker went stale kept its old start %v", got)
+	}
 }

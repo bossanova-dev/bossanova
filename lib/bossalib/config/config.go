@@ -156,8 +156,10 @@ func (c RepairConfig) SkillName() string {
 // grown in N minutes" signal false-positives on every long tool call:
 //
 //   - AWAITING_MODEL — the agent owes an assistant message, so a model request is
-//     in flight. Nothing but the round-trip should be happening; the threshold is
-//     tight.
+//     in flight, or an auto-compaction is running, which writes nothing until it
+//     finishes. The threshold is tight, so a slow reply or a long compaction can
+//     cross it; that is why a stall alone only releases a pending archive after
+//     it has stood much longer (bossd's stallReleasesArchiveAfter).
 //   - EXECUTING_TOOL — a tool is running and legitimately writes nothing to the
 //     transcript until it returns (a `make test-all` can run for a quarter of an
 //     hour). The threshold is generous.

@@ -295,6 +295,9 @@ type MockDaemon struct {
 	// archive is reported deferred on that chat, the session gains
 	// archive_pending, and nothing is archived — unless should_force is set.
 	archiveDeferBlockingID string
+	// archiveDeferStalledSeconds is the blocking chat's no-progress time a
+	// deferred ArchiveSession reports.
+	archiveDeferStalledSeconds int32
 	// archiveRequests records every ArchiveSession request, in order.
 	archiveRequests []*pb.ArchiveSessionRequest
 	chatListDelay   time.Duration
@@ -1231,9 +1234,10 @@ func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.A
 			if m.archiveDeferBlockingID != "" && !req.Msg.GetShouldForce() {
 				s.ArchivePending = true
 				return connect.NewResponse(&pb.ArchiveSessionResponse{
-					Session:                cloneMsg(s),
-					IsDeferred:             true,
-					BlockingAgentSessionId: m.archiveDeferBlockingID,
+					Session:                    cloneMsg(s),
+					IsDeferred:                 true,
+					BlockingAgentSessionId:     m.archiveDeferBlockingID,
+					BlockingChatStalledSeconds: m.archiveDeferStalledSeconds,
 				}), nil
 			}
 			s.ArchivedAt = timestamppb.Now()
@@ -1250,6 +1254,15 @@ func (m *MockDaemon) SetArchiveDeferred(blockingAgentSessionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.archiveDeferBlockingID = blockingAgentSessionID
+}
+
+// SetArchiveDeferredStalled is SetArchiveDeferred with the blocking chat
+// reported as having made no progress for stalledSeconds.
+func (m *MockDaemon) SetArchiveDeferredStalled(blockingAgentSessionID string, stalledSeconds int32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.archiveDeferBlockingID = blockingAgentSessionID
+	m.archiveDeferStalledSeconds = stalledSeconds
 }
 
 // ArchiveSessionRequests returns a copy of every ArchiveSession request seen.

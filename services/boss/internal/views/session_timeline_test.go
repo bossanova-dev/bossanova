@@ -126,7 +126,6 @@ func TestChatPickerTimelineRefreshesQuestion(t *testing.T) {
 				t.Fatal("initial full question missing")
 			}
 			oldResponse := sessionTimelineMsg{key: m.timelineKey, question: c.question}
-			m.neededOffset = 10
 			if change == "target" {
 				s.Attention.TargetChatId = "second"
 			} else {
@@ -136,8 +135,8 @@ func TestChatPickerTimelineRefreshesQuestion(t *testing.T) {
 			c.question = "Second full question?"
 			model, cmd = m.Update(chatPickerRefreshMsg{session: s})
 			m = model.(ChatPickerModel)
-			if m.fullQuestion != "" || m.neededOffset != 0 || m.neededQuestion() != s.Attention.Sentence {
-				t.Fatalf("old question retained while fetching: %q, offset %d", m.neededQuestion(), m.neededOffset)
+			if m.fullQuestion != "" || m.neededQuestion() != s.Attention.Sentence {
+				t.Fatalf("old question retained while fetching: %q", m.neededQuestion())
 			}
 			m = applyTimelineCmd(m, cmd)
 			if c.calls != 2 || c.target != s.Attention.TargetChatId || m.neededQuestion() != c.question {
@@ -267,11 +266,6 @@ func assertChatPickerGolden(t *testing.T, name, screen string) {
 
 func TestChatPickerAttentionDetailsContracts(t *testing.T) {
 	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_QUESTION, 40)
-	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 10)
-	block := stripANSI(m.neededBlock())
-	if strings.Join(strings.Fields(block[strings.Index(block, "Needed from you:")+len("Needed from you:"):]), " ") != strings.TrimSpace(m.fullQuestion) {
-		t.Fatal("full question truncated")
-	}
 	m.session.Attention.Kind = pb.AttentionKind_ATTENTION_KIND_REVIEW
 	m.session.Attention.ParkCodes = []string{"human-review:security"}
 	if m.neededQuestion() != "Is this safe to merge?" {
@@ -297,18 +291,13 @@ func TestChatPickerNeededAnswerIsEmphasised(t *testing.T) {
 	m := questionTimelineModel(80, 60, operatorQuestion)
 	m.fullQuestion = strings.Repeat("Should I retain this behavior across all supported platforms? ", 4)
 	lines := strings.Split(m.neededBlock(), "\n")
-	if len(lines) < 3 {
-		t.Fatalf("answer did not wrap:\n%s", stripANSI(m.neededBlock()))
+	if len(lines) < 3 || lines[0] != neededLabel {
+		t.Fatalf("answer did not wrap under a plain label:\n%q", lines)
 	}
-	hang := strings.Repeat(" ", len(neededLabel))
-	for i, line := range lines {
-		gutter := hang
-		if i == 0 {
-			gutter = neededLabel
-		}
-		rest, ok := strings.CutPrefix(line, gutter)
+	for i, line := range lines[1:] {
+		rest, ok := strings.CutPrefix(line, neededIndent)
 		if !ok {
-			t.Fatalf("line %d does not open with a plain %q: %q", i, gutter, line)
+			t.Fatalf("line %d does not open with a plain %q: %q", i, neededIndent, line)
 		}
 		text := stripANSI(rest)
 		if rest != styleEmphasis.Render(text) || !strings.HasPrefix(rest, "\x1b[1") {
@@ -409,25 +398,13 @@ func TestChatPickerLongQuestionKeepsChatsVisible(t *testing.T) {
 	if got := lipgloss.Height(screen) + bannerOverhead; got > 24 {
 		t.Fatalf("long question uses %d rows, want <=24", got)
 	}
-	for _, text := range []string{"verify", "Run bs-build", "[enter] open chat", "[n]ew chat", "pgup/pgdown"} {
+	for _, text := range []string{"verify", "Run bs-build", "[enter] open chat", "[n]ew chat"} {
 		if !strings.Contains(screen, text) {
 			t.Fatalf("missing %q: %s", text, screen)
 		}
 	}
-	for range 100 {
-		model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-		m = model.(ChatPickerModel)
-	}
-	if !strings.Contains(strings.Join(strings.Fields(stripANSI(m.View().Content)), " "), "Can you confirm the final choice?") {
-		t.Fatalf("cannot read end offset=%d: %s", m.neededOffset, m.View().Content)
-	}
-	if !strings.HasPrefix(stripANSI(m.neededBlock()), neededLabel) {
-		t.Fatalf("last page lost its label:\n%s", stripANSI(m.neededBlock()))
-	}
-	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
-	m = model.(ChatPickerModel)
-	if strings.Contains(strings.Join(strings.Fields(stripANSI(m.View().Content)), " "), "Can you confirm the final choice?") {
-		t.Fatal("page up did not scroll question")
+	if rows := neededRows(t, m); len(rows) > summaryMaxRows || !strings.HasSuffix(rows[len(rows)-1], "…") || strings.Contains(stripANSI(screen), "pgup") {
+		t.Fatalf("long question is not a capped summary:\n%s", stripANSI(screen))
 	}
 }
 
@@ -538,7 +515,7 @@ func TestChatPickerDetailsWrapAtAReadableWidth(t *testing.T) {
 	fix.session.Attention.Sentence = operatorFixSentence
 	fix.buildTableRows()
 	question := questionTimelineModel(width, height, operatorQuestion)
-	question.fullQuestion = strings.Repeat("Should we keep the behavior for every supported platform? ", 8) + "FINAL?"
+	question.fullQuestion = strings.Repeat("Should we keep the behavior for every supported platform? ", 6) + "FINAL?"
 	for name, tt := range map[string]struct {
 		m     ChatPickerModel
 		block string
@@ -606,54 +583,172 @@ func TestChatPickerTimelineWrapsWideCharacters(t *testing.T) {
 	}
 }
 
-// TestChatPickerNeededFromYouHangsUnderTheAnswer: the answer starts on the
-// "Needed from you:" row and its wrapped lines hang under its first word,
-// within the chat table's width, on word boundaries. A block that would leave
-// less than neededMinHangWidth beside the label wraps under the label instead.
-func TestChatPickerNeededFromYouHangsUnderTheAnswer(t *testing.T) {
-	question := operatorQuestion + " " + operatorQuestion
-	for _, tt := range []struct{ width, hang int }{
-		{300, len(neededLabel)}, {120, len(neededLabel)}, {80, len(neededLabel)}, {60, len(neededLabel)},
-		{41, len(neededLabel)}, {40, 0}, {30, 0},
-	} {
-		t.Run(fmt.Sprint(tt.width), func(t *testing.T) {
-			m := questionTimelineModel(tt.width, 60, operatorQuestion)
-			m.fullQuestion = question
-			block := stripANSI(m.neededBlock())
-			t.Logf("answer at %d columns:\n%s", tt.width, block)
-			lines := strings.Split(block, "\n")
-			first, ok := strings.CutPrefix(lines[0], neededLabel)
-			if !ok || first == "" || strings.HasPrefix(first, " ") {
-				t.Fatalf("answer does not start on the label row: %q", lines[0])
+// operatorMarkdownQuestion has the shape of the operator's report: a long
+// agent message with bold, inline code, and a numbered list with nested
+// bullets, whose question sits in its opening sentences.
+const operatorMarkdownQuestion = "**Should I keep the YAML rewrite in this PR, or split it out?** The `services/boss/internal/views` change is ready, but the rewrite touches `config.yaml` in three places and doubles the diff.\n\nHere is what I found:\n\n1. **Keep it here**\n   - one review, one merge\n   - the diff grows to 900 lines\n2. **Split it out**\n   - `MAD-1745` lands first\n   - this PR rebases on it\n\n## Next steps\n\nOnce you answer I'll run the classifier, update `__init__.py`, and push. Which do you prefer?"
+
+// summaryMaxRows is the most rows the answer may take under its label. It is
+// the operator's contract, a few lines, kept apart from neededMaxLines so a
+// change to the code's cap fails the tests rather than moving them with it.
+const summaryMaxRows = 5
+
+// neededRows is the answer's rows under the "Needed from you:" label, which
+// must sit alone on the block's first row, with the indent cut off each row.
+func neededRows(t *testing.T, m ChatPickerModel) []string {
+	t.Helper()
+	block := stripANSI(m.neededBlock())
+	rows := strings.Split(block, "\n")
+	if rows[0] != neededLabel {
+		t.Fatalf("block opens with %q, want the label alone:\n%s", rows[0], block)
+	}
+	var texts []string
+	for _, row := range rows[1:] {
+		text, ok := strings.CutPrefix(row, neededIndent)
+		if !ok || strings.TrimSpace(text) == "" {
+			t.Fatalf("row %q is not indented text under the label:\n%s", row, block)
+		}
+		texts = append(texts, text)
+	}
+	return texts
+}
+
+// TestChatPickerNeededFromYouSummarisesAMarkdownQuestion: a long markdown
+// question shows its opening as plain words under the label, wrapped at the
+// chat table's width, in at most summaryMaxRows rows that end in an ellipsis.
+func TestChatPickerNeededFromYouSummarisesAMarkdownQuestion(t *testing.T) {
+	plain := plainMarkdown(operatorMarkdownQuestion)
+	for _, width := range []int{40, 80, 120} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := questionTimelineModel(width, 40, operatorQuestion)
+			m.fullQuestion = operatorMarkdownQuestion
+			rows := neededRows(t, m)
+			t.Logf("answer at %d columns:\n%s", width, stripANSI(m.neededBlock()))
+			if len(rows) == 0 || len(rows) > summaryMaxRows {
+				t.Fatalf("answer shows %d rows, want 1 to %d", len(rows), summaryMaxRows)
 			}
-			if len(lines) < 2 {
-				t.Fatalf("answer did not wrap at %d: %q", m.blockWrapWidth(), block)
+			if wrap := min(detailsMaxWidth, m.blockWrapWidth()); m.neededTextWidth() != wrap-len(neededIndent) {
+				t.Fatalf("answer wraps at %d, want the chat table's %d less the indent", m.neededTextWidth(), wrap)
 			}
-			for _, line := range lines[1:] {
-				if got := len(line) - len(strings.TrimLeft(line, " ")); got != tt.hang {
-					t.Errorf("continuation indented %d, want %d: %q", got, tt.hang, line)
+			for _, row := range rows {
+				if strings.Contains(row, "**") || strings.Contains(row, "`") || strings.Contains(row, "__") {
+					t.Errorf("raw markdown in %q", row)
+				}
+				if w := ansi.StringWidth(row); w > m.neededTextWidth() {
+					t.Errorf("row is %d wide, want at most %d: %q", w, m.neededTextWidth(), row)
 				}
 			}
-			for _, line := range lines {
-				if w := ansi.StringWidth(line); w > min(detailsMaxWidth, m.blockWrapWidth()) {
-					t.Errorf("line is %d wide, chat table %d: %q", w, min(detailsMaxWidth, m.blockWrapWidth()), line)
-				}
+			if !strings.HasSuffix(rows[len(rows)-1], "…") {
+				t.Fatalf("cut answer does not end in an ellipsis: %q", rows)
 			}
-			if got := strings.Join(strings.Fields(strings.TrimPrefix(block, neededLabel)), " "); got != question {
-				t.Fatalf("answer words lost or split: %q", got)
+			shown := strings.TrimSpace(strings.TrimSuffix(strings.Join(rows, " "), "…"))
+			if !strings.HasPrefix(plain, shown) || !strings.HasPrefix(shown, "Should I keep the YAML rewrite in this PR, or split it out?") {
+				t.Fatalf("answer is not the message's opening: %q", shown)
 			}
 		})
 	}
 }
 
-// TestChatPickerNeededFromYouGoldens pins the details screen with a short and a
-// long answer at 80, 100, 120 and 300 columns.
+// TestChatPickerNeededFromYouShowsAShortQuestionWhole: a question that fits
+// summaryMaxRows shows every word, with no ellipsis.
+func TestChatPickerNeededFromYouShowsAShortQuestionWhole(t *testing.T) {
+	for _, question := range []string{"Should this PR be merged?", "Is the **`config.yaml`** change safe to ship?", operatorQuestion} {
+		m := questionTimelineModel(80, 40, operatorQuestion)
+		m.fullQuestion = question
+		rows := neededRows(t, m)
+		if got := strings.Join(rows, " "); got != plainMarkdown(question) || strings.Contains(got, "…") {
+			t.Fatalf("answer = %q, want %q whole", got, plainMarkdown(question))
+		}
+	}
+}
+
+// TestChatPickerBlockedParkNeededUnderItsLabel: a blocked park's open items
+// sit under the label, one bullet per row, like every other kind's answer.
+// The checklist is boss's own, so it is never cut to the question's summary
+// length while the terminal has room for it.
+func TestChatPickerBlockedParkNeededUnderItsLabel(t *testing.T) {
+	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 40)
+	m.session.Attention.OpenItems = []string{"The Acceptance criteria section is missing.", "Open question: which region first?"}
+	want := []string{"Open in the PR checklist:", "  • The Acceptance criteria section is missing.", "  • Open question: which region first?"}
+	if rows := neededRows(t, m); !slices.Equal(rows, want) {
+		t.Fatalf("blocked park answer = %q, want %q", rows, want)
+	}
+	m = detailFixture(pb.AttentionKind_ATTENTION_KIND_FIX, 60)
+	want = []string{"Open in the PR checklist:"}
+	for i := range summaryMaxRows + 2 {
+		item := fmt.Sprintf("Item %d is open.", i+1)
+		m.session.Attention.OpenItems = append(m.session.Attention.OpenItems, item)
+		want = append(want, "  • "+item)
+	}
+	if rows := neededRows(t, m); !slices.Equal(rows, want) {
+		t.Fatalf("long checklist = %q, want every item %q", rows, want)
+	}
+}
+
+// TestSummaryLinesCutsAtAParagraphSentenceOrWord: a summary too long for its
+// lines ends in an ellipsis after the last whole paragraph that fits, never
+// after a list or a paragraph that only introduces one; failing that, at the
+// last sentence end when that keeps at least half the words that fit, else
+// after the last word that leaves room for the ellipsis.
+func TestSummaryLinesCutsAtAParagraphSentenceOrWord(t *testing.T) {
+	for _, tt := range []struct {
+		name, text  string
+		width, most int
+		want        []string
+	}{
+		{"sentence", "Is this ready to merge? I checked the docs and the tests.", 30, 1, []string{"Is this ready to merge? …"}},
+		{"word", "One two. Three four five six seven eight nine ten.", 20, 2, []string{"One two. Three four", "five six seven…"}},
+		{"fits", "Is this ready to merge?", 30, 1, []string{"Is this ready to merge?"}},
+		{"list after the question", "Is this ready to merge?\n\n1. **Yes**\n   - ship it", 30, 1, []string{"Is this ready to merge? …"}},
+		{"second paragraph", "I'm stuck on the build.\n\nShould I pin the version?\n\n- details one two three", 30, 2, []string{"I'm stuck on the build. Should", "I pin the version? …"}},
+		{"never ends on a list", "Should I ship it?\n\n- one review\n- one merge\n\nThe rest of the reasons follow here at length.", 30, 2, []string{"Should I ship it? …"}},
+		{"never ends introducing", "Two ways forward:\n\n- keep the cache\n- drop it", 20, 1, []string{"Two ways forward…"}},
+		{"heading first", "## Question\n\nIs this ready to merge?", 30, 3, []string{"Is this ready to merge?"}},
+		{"list number", "Pick one: 1. keep the cache 2. drop it entirely and move on", 20, 2, []string{"Pick one: 1. keep", "the cache 2. drop…"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := summaryLines(tt.text, tt.width, tt.most); !slices.Equal(got, tt.want) {
+				t.Fatalf("summaryLines(%q, %d, %d) = %q, want %q", tt.text, tt.width, tt.most, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPlainMarkdown: the markers a terminal would show raw are gone, bullets
+// read as "•", and the words stay in order.
+func TestPlainMarkdown(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"**Keep** the `cache`?", "Keep the cache?"},
+		{"## Next steps\n\n1. **Keep it**\n   - one review\n   * two merges\n2. Split", "1. Keep it • one review • two merges 2. Split"},
+		{"> quoted\n\n---\n\n```go\nx := 1\n```\nupdate `__init__.py` and __bold__", "quoted update __init__.py and bold"},
+		{"## Done", "Done"},
+		{"a **b** `c", "a b c"},
+		{"plain words\nacross lines", "plain words across lines"},
+	} {
+		if got := plainMarkdown(tt.in); got != tt.want {
+			t.Errorf("plainMarkdown(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestChatPickerTimelineWaitIsPlainText: the timeline's "Waiting for your
+// answer" step previews the question without raw markdown, like the answer.
+func TestChatPickerTimelineWaitIsPlainText(t *testing.T) {
+	m := questionTimelineModel(80, 40, "**Keep** the `cache` or drop it?")
+	block := stripANSI(m.timelineBlock())
+	if !strings.Contains(block, "“Keep the cache or drop it?”") || strings.Contains(block, "**") || strings.Contains(block, "`") {
+		t.Fatalf("waiting step is not plain text:\n%s", block)
+	}
+}
+
+// TestChatPickerNeededFromYouGoldens pins the details screen with a short
+// question and the long markdown one at 40, 80 and 120 columns.
 func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 	answers := map[string]string{
-		"short": "Should this PR be merged?",
-		"long":  strings.TrimSpace(strings.Repeat("Should this PR be merged? ", 7)),
+		"short":    "Should this PR be merged?",
+		"markdown": operatorMarkdownQuestion,
 	}
-	for _, width := range []int{80, 100, 120, 300} {
+	for _, width := range []int{40, 80, 120} {
 		for name, answer := range answers {
 			t.Run(fmt.Sprintf("%s-%d", name, width), func(t *testing.T) {
 				m := questionTimelineModel(width, 40, answer)
@@ -668,126 +763,6 @@ func TestChatPickerNeededFromYouGoldens(t *testing.T) {
 					}
 				}
 			})
-		}
-	}
-}
-
-// TestChatPickerNeededFromYouLabelsEveryPage: at every width, each page of a
-// paged answer opens with the label, no answer row or pager row is truncated,
-// and the pages together show every word. Below the hang's width the later
-// pages' first lines are rewrapped to fit beside the label, and the last page
-// pads fewer blank rows than there are pages; where the hang leaves the pager
-// too little room it starts under the label, on every page.
-func TestChatPickerNeededFromYouLabelsEveryPage(t *testing.T) {
-	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
-	for _, width := range []int{30, 40, 41, 44, 45, 60} {
-		t.Run(fmt.Sprint(width), func(t *testing.T) {
-			m := questionTimelineModel(width, 30, operatorQuestion)
-			m.fullQuestion = question
-			shown := map[int]string{}
-			pagerIndent := -1
-			pages := 0
-			for {
-				lines, start, size := m.neededWindow()
-				if len(lines) <= size {
-					t.Fatalf("answer did not page: %d lines in a %d-line window", len(lines), size)
-				}
-				rows := strings.Split(stripANSI(m.neededBlock()), "\n")
-				if !strings.HasPrefix(rows[0], neededLabel) {
-					t.Fatalf("page at line %d opens without the label: %q", start, rows[0])
-				}
-				pager := rows[len(rows)-1]
-				if !strings.Contains(pager, "pgup/pgdown (") || !strings.HasSuffix(pager, fmt.Sprintf("of %d)", len(strings.Split(strings.TrimRight(strings.Join(lines, "\n"), "\n"), "\n")))) {
-					t.Fatalf("pager row truncated: %q", pager)
-				}
-				if indent := len(pager) - len(strings.TrimLeft(pager, " ")); pagerIndent >= 0 && indent != pagerIndent {
-					t.Fatalf("pager moved from column %d to %d at line %d: %q", pagerIndent, indent, start, pager)
-				} else {
-					pagerIndent = indent
-				}
-				for i, row := range rows[:len(rows)-1] {
-					if strings.Contains(row, "…") {
-						t.Fatalf("answer row truncated: %q", row)
-					}
-					shown[start+i] = strings.TrimPrefix(row, neededLabel)
-				}
-				pages++
-				model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-				next := model.(ChatPickerModel)
-				if _, nextStart, _ := next.neededWindow(); nextStart == start {
-					break
-				}
-				m = next
-			}
-			order := make([]string, 0, len(shown))
-			for i := range len(shown) {
-				order = append(order, shown[i])
-			}
-			if got := strings.Join(strings.Fields(strings.Join(order, " ")), " "); got != question {
-				t.Fatalf("%d pages lost words: %q", pages, got)
-			}
-			lines, _, _ := m.neededWindow()
-			blank := 0
-			for blank < len(lines) && lines[len(lines)-1-blank] == "" {
-				blank++
-			}
-			if blank >= pages {
-				t.Fatalf("the last of %d pages pads %d blank rows", pages, blank)
-			}
-		})
-	}
-}
-
-// TestChatPickerNeededFromYouResizeKeepsPagesLabelled: a resize after paging
-// down re-pages the answer, and the page the operator lands on, like every page
-// they then reach in either direction, still opens with the label and a full
-// first line.
-func TestChatPickerNeededFromYouResizeKeepsPagesLabelled(t *testing.T) {
-	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
-	for _, tc := range []struct {
-		name                         string
-		width, height, toW, toHeight int
-	}{
-		{"30 grown 3 rows", 30, 30, 30, 33},
-		{"44 shrunk to 30", 44, 30, 30, 30},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := questionTimelineModel(tc.width, tc.height, operatorQuestion)
-			m.fullQuestion = question
-			model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-			model, _ = model.Update(tea.WindowSizeMsg{Width: tc.toW, Height: tc.toHeight})
-			m = model.(ChatPickerModel)
-			if m.neededOffset == 0 {
-				t.Fatal("the resize dropped the paged offset, so the test proves nothing")
-			}
-			for _, key := range []rune{tea.KeyPgDown, tea.KeyPgUp} {
-				for {
-					assertNeededPageLabelled(t, m)
-					_, start, _ := m.neededWindow()
-					model, _ := m.Update(tea.KeyPressMsg{Code: key})
-					next := model.(ChatPickerModel)
-					if _, nextStart, _ := next.neededWindow(); nextStart == start {
-						break
-					}
-					m = next
-				}
-			}
-		})
-	}
-}
-
-// assertNeededPageLabelled fails unless the answer's current page opens with
-// the label and no row of it is truncated.
-func assertNeededPageLabelled(t *testing.T, m ChatPickerModel) {
-	t.Helper()
-	_, start, _ := m.neededWindow()
-	rows := strings.Split(stripANSI(m.neededBlock()), "\n")
-	if !strings.HasPrefix(rows[0], neededLabel) {
-		t.Fatalf("page at line %d opens without the label: %q", start, rows[0])
-	}
-	for _, row := range rows {
-		if strings.Contains(row, "…") {
-			t.Fatalf("page at line %d truncates a row: %q", start, row)
 		}
 	}
 }
@@ -808,143 +783,36 @@ func finishWithin(d time.Duration, what string, fn func()) {
 	}
 }
 
-// TestWrapWordsEveryLineNarrowEnds: when every line is narrow, a word wider
-// than the narrow width but no wider than rest is split at the narrow width
-// instead of moving to a next line that is just as narrow, forever. A narrow
-// width too small to hold anything still takes a rune per line.
-func TestWrapWordsEveryLineNarrowEnds(t *testing.T) {
-	text := "Should we keep the implementation?"
-	for _, first := range []int{13, 1, 0, -3} {
-		t.Run(fmt.Sprint(first), func(t *testing.T) {
-			var lines []string
-			finishWithin(5*time.Second, fmt.Sprintf("wrapWords at %d with every line narrow", first), func() {
-				lines = wrapWords(text, first, 30, func(int) bool { return true })
-			})
-			for i, line := range lines {
-				if w := ansi.StringWidth(line); w > max(1, first) {
-					t.Errorf("line %d = %q is %d wide, want at most %d", i, line, w, max(1, first))
-				}
-			}
-			if got, want := strings.Join(lines, ""), strings.Join(strings.Fields(text), ""); strings.ReplaceAll(got, " ", "") != want {
-				t.Fatalf("wrap lost or repeated text: %q", lines)
-			}
-		})
-	}
-}
-
-// neededTinyAnswer carries a word wider than every width under test and one,
-// "implementation", wider than the label leaves at 30 columns.
-const neededTinyAnswer = "Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no."
-
-// TestChatPickerNeededFromYouTinyWindows: a terminal short enough to leave the
-// answer one or two rows still renders, every page fits without truncation,
-// and paging through shows every character of the answer. A two-row window
-// labels every page; a one-row window keeps the unpaged wrap and labels its
-// first page.
-func TestChatPickerNeededFromYouTinyWindows(t *testing.T) {
-	for _, width := range []int{30, 40} {
-		found := map[int]bool{}
-		for height := 6; height <= 40; height++ {
-			var m ChatPickerModel
-			var size int
-			finishWithin(5*time.Second, fmt.Sprintf("the answer at %dx%d", width, height), func() {
-				m = questionTimelineModel(width, height, operatorQuestion)
-				m.fullQuestion = neededTinyAnswer
-				_, _, size = m.neededWindow()
-			})
-			if size > 2 || found[size] {
-				continue
-			}
-			found[size] = true
-			t.Run(fmt.Sprintf("%dx%d-%d-row", width, height, size), func(t *testing.T) {
-				if lines, _, _ := m.neededWindow(); size == 1 && !slices.Equal(lines, m.neededLines(0)) {
-					t.Fatalf("a one-row window rewrapped the answer: %q", lines)
-				}
-				finishWithin(5*time.Second, "paging the answer", func() {
-					if !strings.Contains(stripANSI(m.View().Content), neededLabel) {
-						t.Errorf("view does not show the answer:\n%s", stripANSI(m.View().Content))
-					}
-					walkNeededPages(t, m, true)
-				})
-			})
-		}
-		if !found[1] || !found[2] {
-			t.Fatalf("no height at %d columns gave a one-row and a two-row window: %v", width, found)
-		}
-	}
-}
-
-// walkNeededPages pages through the answer with pgdown, failing on a wrap
-// that loses or repeats text and on an answer line no page shows. With fits it
-// also fails on a truncated row and on a page missing its label: every page
-// when the answer hangs or pages, the first page of a one-row window.
-func walkNeededPages(t *testing.T, m ChatPickerModel, fits bool) {
-	t.Helper()
-	lines, _, size := m.neededWindow()
-	labelEveryPage := m.neededHang() > 0 || size > 1
-	if got, want := strings.Join(strings.Fields(strings.Join(lines, "")), ""), strings.Join(strings.Fields(m.neededQuestion()), ""); got != want {
-		t.Errorf("%dx%d: wrap lost or repeated text: %q", m.width, m.height, lines)
-		return
-	}
-	shown := map[int]bool{}
-	for page, previous := 0, -1; ; page++ {
-		lines, start, size := m.neededWindow()
-		if start == previous {
-			break
-		}
-		previous = start
-		rows := strings.Split(stripANSI(m.neededBlock()), "\n")
-		if fits && (page == 0 || labelEveryPage) && !strings.HasPrefix(rows[0], neededLabel) {
-			t.Errorf("%dx%d: page at line %d opens without the label: %q", m.width, m.height, start, rows[0])
-		}
-		for _, row := range rows {
-			if fits && (strings.Contains(row, "…") || ansi.StringWidth(row) > m.width) {
-				t.Errorf("%dx%d: page at line %d truncates a row: %q", m.width, m.height, start, row)
-			}
-		}
-		for i := start; i < start+size; i++ {
-			shown[i] = true
-		}
-		if len(lines) <= size || page > len(lines) {
-			break
-		}
-		model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-		m = model.(ChatPickerModel)
-	}
-	lines, _, _ = m.neededWindow()
-	for i, line := range lines {
-		if line != "" && !shown[i] {
-			t.Errorf("%dx%d: answer line %d %q is on no page", m.width, m.height, i, line)
-		}
-	}
-}
-
-// TestChatPickerNeededFromYouWrapsAndPagesAtEverySize: at every width from 20
-// to 60 and height from 10 to 40, each answer renders, its wrap keeps every
-// character exactly once, and paging shows every line. The pages depend only
-// on the width and the window's size, so each size is walked once per width.
-// From 29 columns every
-// page also fits; below that the label or the pager alone is wider than the
-// prose column, as on main.
-func TestChatPickerNeededFromYouWrapsAndPagesAtEverySize(t *testing.T) {
+// TestChatPickerNeededFromYouFitsAtEverySize: at every width from 20 to 60 and
+// height from 10 to 40 each answer renders, opens with the label on its own
+// row and keeps to summaryMaxRows rows. From 29 columns, as before the answer
+// was capped, no row is wider than the terminal, and from 18 rows the whole
+// view fits it; narrower, the footer's own key hints overflow.
+func TestChatPickerNeededFromYouFitsAtEverySize(t *testing.T) {
 	answers := []string{
-		neededTinyAnswer,
-		strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 5)) + " FINAL?",
-		"First:\n  - check services/boss/internal/views/session_timeline.go\n  - implementation\n\nThen answer yes or no.",
+		operatorMarkdownQuestion,
+		"Should we keep the implementation? It touches services/boss/internal/views and supercalifragilisticexpialidociousness-everywhere-on-every-platform, so say yes or no.",
+		"确认这个改动是否可以安全地合并到主分支并且不影响现有的部署流程以及回滚步骤 🚀 请检查数据库迁移 ✅ 然后回复",
 	}
 	for i, answer := range answers {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			t.Parallel()
 			finishWithin(2*time.Minute, "the size sweep", func() {
 				for width := 20; width <= 60; width++ {
-					m := questionTimelineModel(width, 10, operatorQuestion)
-					m.fullQuestion = answer
-					walked := map[int]bool{}
 					for height := 10; height <= 40; height++ {
-						m.height = height
-						if _, _, size := m.neededWindow(); !walked[size] {
-							walked[size] = true
-							walkNeededPages(t, m, width >= 29)
+						m := questionTimelineModel(width, height, operatorQuestion)
+						m.fullQuestion = answer
+						if rows := neededRows(t, m); len(rows) > summaryMaxRows {
+							t.Fatalf("%dx%d: %d rows, want at most %d", width, height, len(rows), summaryMaxRows)
+						}
+						screen := m.View().Content
+						for _, line := range strings.Split(stripANSI(screen), "\n") {
+							if ansi.StringWidth(line) > width && width >= 29 {
+								t.Fatalf("%dx%d: overwide line %q", width, height, line)
+							}
+						}
+						if got := lipgloss.Height(screen) + bannerOverhead; width >= 29 && height >= 18 && got > height {
+							t.Fatalf("%dx%d: view uses %d rows:\n%s", width, height, got, stripANSI(screen))
 						}
 					}
 				}
@@ -953,35 +821,21 @@ func TestChatPickerNeededFromYouWrapsAndPagesAtEverySize(t *testing.T) {
 	}
 }
 
-// TestChatPickerNeededFromYouPagedGoldens pins a later page of a paged answer
-// below the hang's width and where the pager starts under the label.
-func TestChatPickerNeededFromYouPagedGoldens(t *testing.T) {
-	question := strings.TrimSpace(strings.Repeat("Should we keep the behavior for every supported platform? ", 12)) + " FINAL?"
-	for _, width := range []int{40, 44} {
-		t.Run(fmt.Sprint(width), func(t *testing.T) {
-			m := questionTimelineModel(width, 30, operatorQuestion)
-			m.fullQuestion = question
-			model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
-			m = model.(ChatPickerModel)
-			assertChatPickerGolden(t, fmt.Sprintf("chatpicker-timeline-needed-paged-%d", width), stripANSI(m.neededBlock()))
-		})
-	}
-}
-
 // TestChatPickerTimelineFitsShortTerminal: the answer below the timeline is
 // what the operator acts on, so a wrapped detail gets only the rows the chat
 // table and the whole answer leave. When they leave none it is cut to one line
 // ending in an ellipsis, the chats and footer stay on screen, and an answer
-// that still does not fit pages as before. A tall terminal still caps a step at timelineMaxStepRows.
+// that still does not fit is cut to the rows left, ending in an ellipsis. A
+// tall terminal still caps a step at timelineMaxStepRows.
 func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
 	long := strings.Repeat("Should we keep the behavior for every supported platform? ", 12) + "FINAL?"
 	for _, tt := range []struct {
 		name         string
 		height, rows int
 		question     string
-		paged        bool
+		cut          bool
 	}{
-		{"long answer at 24 rows", 24, 1, long, true},
+		{"long answer at 24 rows", 24, 3, long, false},
 		{"short answer at 18 rows", 18, 1, operatorQuestion, true},
 		{"short answer at 24 rows", 24, 3, operatorQuestion, false},
 	} {
@@ -1010,8 +864,9 @@ func TestChatPickerTimelineFitsShortTerminal(t *testing.T) {
 			if cut := strings.HasSuffix(rows[len(rows)-1], "…"); cut != (tt.rows == 1) {
 				t.Fatalf("ellipsis = %v, want %v:\n%s", cut, tt.rows == 1, strings.Join(rows, "\n"))
 			}
-			if lines, _, size := m.neededWindow(); (len(lines) > size) != tt.paged || strings.Contains(screen, "pgup/pgdown") != tt.paged {
-				t.Fatalf("answer paged = %v, want %v: %d lines in a %d-line window", len(lines) > size, tt.paged, len(lines), size)
+			shown, whole := neededRows(t, m), m.neededLines()
+			if cut := len(shown) < len(whole); cut != tt.cut || (cut && !strings.HasSuffix(shown[len(shown)-1], "…")) {
+				t.Fatalf("answer cut = %v, want %v: %d of %d rows shown:\n%s", cut, tt.cut, len(shown), len(whole), strings.Join(shown, "\n"))
 			}
 		})
 	}
@@ -1163,14 +1018,14 @@ func TestChatPickerTimelineDatesStepsLeftAfterFold(t *testing.T) {
 		height int
 		want   []string
 	}{
-		{"fold drops the labelled step", 20, []string{
+		{"fold drops the labelled step", 21, []string{
 			"  … 2 earlier steps",
 			"  " + day(1, 0, 0).Format("Jan _2") + " 23:50  ✓ B",
 			"         23:55  ✓ B2",
 			"  Today  00:01  ✓ C",
 			"         00:05  ● Parked for you",
 		}},
-		{"fold leaves only today", 18, []string{
+		{"fold leaves only today", 19, []string{
 			"  … 4 earlier steps",
 			"  00:01  ✓ C",
 			"  00:05  ● Parked for you",
@@ -1216,7 +1071,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 	}
 	for _, token := range []int{59, 60} {
 		t.Run(fmt.Sprintf("token %d", token), func(t *testing.T) {
-			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 20)
+			m := detailFixture(pb.AttentionKind_ATTENTION_KIND_REVIEW, 21)
 			m.width = 80
 			m.session.Attention.Since = timestamppb.New(day(0, 0, 9))
 			m.timeline = []*pb.TimelineStep{
@@ -1226,7 +1081,7 @@ func TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail(t *testing.T) {
 				{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT},
 			}
 			block := stripANSI(m.timelineBlock())
-			t.Logf("timeline at 80x20:\n%s", block)
+			t.Logf("timeline at 80x21:\n%s", block)
 			rows := strings.Split(block, "\n")[1:]
 			want := []string{"  … 1 earlier step", "  Today  00:01  ✓ Built", strings.Repeat(" ", 18) + "x", "         00:02  ✓ CI passed", "         00:09  ● Parked for you"}
 			if len(rows) != len(want) {
@@ -1757,7 +1612,7 @@ func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 	for _, later := range []int{1, 2, 3, 6, 8, 12} {
 		for height := 16; height <= 60; height++ {
 			m := waitAmongLaterSteps(height, later)
-			if !assertTimelineFold(t, m) && height >= 18 {
+			if !assertTimelineFold(t, m) && height >= 19 {
 				t.Fatalf("%d later steps at 80x%d: no timeline:\n%s", later, height, stripANSI(m.View().Content))
 			}
 		}
@@ -1767,11 +1622,11 @@ func TestChatPickerTimelineKeepsTheWaitAmongLaterSteps(t *testing.T) {
 		height, later int
 		want          []string
 	}{
-		{"two later at 17 rows", 17, 2, nil},
-		{"two later at 18 rows", 18, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
-		{"two later at 19 rows", 19, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"two later at 20 rows", 20, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
-		{"three later at 19 rows", 19, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
+		{"two later at 18 rows", 18, 2, nil},
+		{"two later at 19 rows", 19, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps"}},
+		{"two later at 20 rows", 20, 2, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"two later at 21 rows", 21, 2, []string{"  … 3 earlier steps", "  10:04  ✓ Repair started", "  10:05  ● Waiting for a fix", "  10:10  ✓ Resumed 0", "  10:11  ✓ Resumed 1"}},
+		{"three later at 20 rows", 20, 3, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 2 later steps", "  10:12  ✓ Resumed 2"}},
 		{"six later at 38 rows", 38, 6, []string{"  … 4 earlier steps", "  10:05  ● Waiting for a fix", "  … 1 later step", "  10:11  ✓ Resumed 1", "  10:12  ✓ Resumed 2", "  10:13  ✓ Resumed 3", "  10:14  ✓ Resumed 4", "  10:15  ✓ Resumed 5"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -92,6 +92,10 @@ type HomeModel struct {
 	// id (rememberShownParks). It lets a cleared fix alert that reveals an
 	// already-shown park stay silent.
 	shownParks map[string]string
+	// toldAttention is the last Needs you attention each session's row showed,
+	// by session id (rememberToldAttention); nil until the first poll. It keeps
+	// an attention the operator already knows about from being announced again.
+	toldAttention map[string]string
 
 	// mergedOptimisticID is set when the user returns from a successful merge
 	// in the chat picker. While set, the matching session's DisplayStatus

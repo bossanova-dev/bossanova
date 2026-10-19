@@ -6,7 +6,9 @@ package views
 
 import (
 	"context"
+	"maps"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
@@ -146,9 +148,12 @@ func sessionNeedsAttention(sess *pb.Session) bool {
 }
 
 // newlyNeedsYouSessions identifies Needs you rising edges and changed fix alerts
-// between successful polls. The first poll includes existing Needs you sessions.
-// shownParks is rememberShownParks over the polls before incoming.
-func newlyNeedsYouSessions(previous, incoming []*pb.Session, shownParks map[string]string) []*pb.Session {
+// between successful polls. shownParks is rememberShownParks over the polls
+// before incoming, and told is rememberToldAttention over them: a session whose
+// attention the operator was already told about is not news again, however
+// many polls in between showed it in progress, as a restarted daemon does
+// until it has read every PR.
+func newlyNeedsYouSessions(previous, incoming []*pb.Session, shownParks, told map[string]string) []*pb.Session {
 	previousNeedsYou := make(map[string]*pb.Session, len(previous))
 	for _, sess := range previous {
 		if sessionNeedsAttention(sess) {
@@ -158,7 +163,8 @@ func newlyNeedsYouSessions(previous, incoming []*pb.Session, shownParks map[stri
 
 	newlyNeedsYou := make([]*pb.Session, 0)
 	for _, sess := range incoming {
-		if sessionNeedsAttention(sess) && raisesNewNeed(previousNeedsYou[sess.GetId()], sess, shownParks[sess.GetId()]) {
+		if sessionNeedsAttention(sess) && raisesNewNeed(previousNeedsYou[sess.GetId()], sess, shownParks[sess.GetId()]) &&
+			!alreadyTold(told, sess) {
 			newlyNeedsYou = append(newlyNeedsYou, sess)
 		}
 	}
@@ -187,6 +193,43 @@ func raisesNewNeed(old, sess *pb.Session, shownPark string) bool {
 		return parkKey(att) != shownPark
 	}
 	return att.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX
+}
+
+// attentionIdentity names one attention for rememberToldAttention: its kind,
+// when it began, the alert and park it names and the PR head it is about. A
+// question adds its chat and words, since one state can ask several. Empty for
+// a daemon that serves no attention.
+func attentionIdentity(sess *pb.Session) string {
+	att := sess.GetAttention()
+	if att == nil {
+		return ""
+	}
+	parts := []string{att.GetKind().String(), att.GetSince().AsTime().UTC().Format(time.RFC3339Nano), att.GetAlertKey(), parkKey(att), sess.GetPrDisplayHeadSha()}
+	if att.GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		parts = append(parts, att.GetTargetChatId(), att.GetSentence())
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func alreadyTold(told map[string]string, sess *pb.Session) bool {
+	id := attentionIdentity(sess)
+	return id != "" && told[sess.GetId()] == id
+}
+
+// rememberToldAttention returns, by session id, the identity of the last Needs
+// you attention each session's row showed. A row that leaves Needs you keeps
+// it, so the same attention coming back is not announced again.
+func rememberToldAttention(told map[string]string, incoming []*pb.Session) map[string]string {
+	next := maps.Clone(told)
+	if next == nil {
+		next = make(map[string]string, len(incoming))
+	}
+	for _, sess := range incoming {
+		if sessionNeedsAttention(sess) {
+			next[sess.GetId()] = attentionIdentity(sess)
+		}
+	}
+	return next
 }
 
 // parkKey identifies the verify park an attention shows; empty when none.
@@ -854,13 +897,17 @@ func (h HomeModel) applySessionList(msg sessionListMsg) (tea.Model, tea.Cmd) {
 // notifyNewNeedsYou returns the OS-notification command for sessions that just
 // entered Needs you, and records the most recent one when boss is in
 // the background. Called before h.sessions is replaced, so it compares the
-// previous poll against the incoming one.
+// previous poll against the incoming one. The first poll only records what is
+// already waiting: the board shows it, and announcing it again on every boss
+// launch is noise.
 func (h *HomeModel) notifyNewNeedsYou(incoming []*pb.Session) tea.Cmd {
 	var notifyCmd tea.Cmd
 	shownParks := h.shownParks
 	h.shownParks = rememberShownParks(shownParks, incoming)
-	if config.NotificationsEnabled(h.settings) {
-		if newlyNeedsYou := newlyNeedsYouSessions(h.sessions, incoming, shownParks); len(newlyNeedsYou) > 0 {
+	told := h.toldAttention
+	h.toldAttention = rememberToldAttention(told, incoming)
+	if told != nil && config.NotificationsEnabled(h.settings) {
+		if newlyNeedsYou := newlyNeedsYouSessions(h.sessions, incoming, shownParks, told); len(newlyNeedsYou) > 0 {
 			notifyCmd = notifyForSessions(newlyNeedsYou)
 			// Remember the most recent Needs you session only when boss is in the
 			// background, so a subsequent focus (e.g. the user clicking the OS

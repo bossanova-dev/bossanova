@@ -179,6 +179,11 @@ type DriftReport struct {
 	Entries   []DriftEntry
 }
 
+// SourceDriftReportFS compares an installed tree against a frozen payload FS.
+func SourceDriftReportFS(dir string, fsys fs.FS) (DriftReport, error) {
+	return driftReport(dir, fsys)
+}
+
 // Paths projects the report onto the sorted slash-separated path slice that
 // SourceDriftPaths has always returned. The projection is the only producer of
 // that slice, so the two cannot disagree.
@@ -194,7 +199,7 @@ func (r DriftReport) Paths() []string {
 // skill sources at srcRoot, carrying the kind of each difference. It reports an
 // uninstalled tree as Installed false with no entries.
 func SourceDriftReport(dir, srcRoot string) (DriftReport, error) {
-	return driftReport(dir, os.DirFS(srcRoot))
+	return SourceDriftReportFS(dir, os.DirFS(srcRoot))
 }
 
 // SourceDriftPaths reports the installed paths that differ from the canonical
@@ -799,11 +804,7 @@ func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 		// the filename heuristic plus a shebang probe — extensionless helper
 		// scripts (e.g. support/.../scripts/review-package) are invoked directly
 		// by skill prose and would otherwise hit "permission denied".
-		mode := os.FileMode(0o644)
-		if executableSkillFile(path) || hasShebang(data) {
-			mode = 0o755
-		}
-		return os.WriteFile(destPath, data, mode)
+		return os.WriteFile(destPath, data, skillFileMode(path, data))
 	}); err != nil {
 		return err
 	}
@@ -829,4 +830,11 @@ func extract(dir string, fsys fs.FS, record *PayloadRecord) error {
 		return writePayloadRecord(dir, *record)
 	}
 	return nil
+}
+
+func skillFileMode(path string, data []byte) os.FileMode {
+	if executableSkillFile(path) || hasShebang(data) {
+		return 0o755
+	}
+	return 0o644
 }

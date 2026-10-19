@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildClaudeArgs,
+  CLAUDE_AUTH_SIGNATURES,
   classifyProbe,
   probe,
   resolveClaudeBin,
@@ -992,6 +993,134 @@ test('run: no explicit timeoutMs applies the leg-fit clamp and says so on stderr
     )
   } finally {
     process.stderr.write = originalWrite
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe: authenticated no-op detects expired claude credentials', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'claude',
+      '' + 'echo "API Error: 401 authentication_error OAuth token has expired" >&2\nexit 1',
+    )
+    assert.equal(
+      await probe({ env: { BOSS_CLAUDE_BIN: bin }, repo: dir, timeoutMs: 2000 }),
+      'not_authed',
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe: live no-op preserves read-only argv and checkout cwd (claude)', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'claude', '' + 'pwd > cwd\nprintf "%s\\n" "$@" > args\necho OK')
+    for (const apiKey of ['', 'test-key']) {
+      assert.equal(
+        await probe({
+          env: { BOSS_CLAUDE_BIN: bin, ANTHROPIC_API_KEY: apiKey },
+          repo: dir,
+          timeoutMs: 2000,
+        }),
+        'ready',
+      )
+      const args = fs.readFileSync(path.join(dir, 'args'), 'utf8').trim().split('\n')
+      assert.equal(
+        fs.realpathSync(fs.readFileSync(path.join(dir, 'cwd'), 'utf8').trim()),
+        fs.realpathSync(dir),
+      )
+      assert.ok(args.includes('-p'))
+      assert.equal(args[args.indexOf('--permission-mode') + 1], 'plan')
+      assert.equal(args[args.indexOf('--max-turns') + 1], '1')
+      assert.equal(args.includes('--bare'), apiKey !== '')
+      assert.equal(args.at(-1), 'Reply with exactly: OK')
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI: auth diagnostics preserve probe tokens and run failure status (claude)', () => {
+  const dir = makeTmpDir()
+  try {
+    for (const [output, code, token] of [
+      ['API Error: 401 authentication_error OAuth token has expired', 1, 'not_authed'],
+      ['API Error: 401 authentication_error OAuth token has expired', 0, 'not_authed'],
+      ['OK', 0, 'ready'],
+      ['unexpected argument -x found', 1, 'error'],
+    ]) {
+      const bin = writeFakeBin(dir, 'claude', '' + `echo "${output}"\nexit ${code}`)
+      const env = { ...process.env, BOSS_CLAUDE_BIN: bin }
+      const res = spawnSync(process.execPath, [SCRIPT_PATH, 'probe'], {
+        env,
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 5000,
+      })
+      assert.equal(res.status, 0)
+      assert.equal(res.stdout, `${token}\n`)
+      if (token !== 'ready')
+        assert.ok(res.stderr.startsWith(`claude-review: ${token}:`), res.stderr)
+      const review = spawnSync(
+        process.execPath,
+        [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
+        { env, encoding: 'utf8', timeout: 5000 },
+      )
+      assert.equal(review.status, code)
+      if (code !== 0)
+        assert.ok(
+          review.stderr.startsWith(
+            token === 'not_authed'
+              ? 'claude-review: not_authed:'
+              : 'claude-review: claude -p failed',
+          ),
+          review.stderr,
+        )
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('claude auth signatures cover OAuth and API-key rejection', () => {
+  for (const output of [
+    'OAuth token expired',
+    'OAuth token has expired',
+    'OAuth session expired and could not be refreshed',
+    'authentication_error',
+    'Please run /login',
+    'Invalid API key',
+    '401 Unauthorized',
+    '401 authentication failed',
+  ]) {
+    assert.equal(
+      classifyProbe({
+        status: 1,
+        output,
+        authSignatures: CLAUDE_AUTH_SIGNATURES,
+        nonZeroStatus: 'error',
+      }),
+      'not_authed',
+      output,
+    )
+  }
+})
+
+test('CLI: exit-zero empty review keeps generic failure despite auth stderr (claude)', () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'claude', 'echo "401 Unauthorized" >&2\nexit 0')
+    const res = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
+      { env: { ...process.env, BOSS_CLAUDE_BIN: bin }, encoding: 'utf8', timeout: 5000 },
+    )
+    assert.equal(res.status, 1)
+    assert.ok(res.stderr.startsWith('claude-review: claude -p failed'), res.stderr)
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })

@@ -80,13 +80,15 @@ func TestHomeRecordsPendingOnlyWhenBackgrounded(t *testing.T) {
 
 	blurred := NewHomeModel(nil, context.Background(), nil)
 	blurred.focused = false
-	updated, _ := blurred.Update(sessionListMsg{sessions: []*pb.Session{q}})
+	seeded, _ := blurred.Update(sessionListMsg{})
+	updated, _ := seeded.(HomeModel).Update(sessionListMsg{sessions: []*pb.Session{q}})
 	if got := updated.(HomeModel).pendingAttentionSessionID; got != "s1" {
 		t.Errorf("blurred: pending = %q, want s1", got)
 	}
 
 	focused := NewHomeModel(nil, context.Background(), nil) // focused defaults true
-	updated, _ = focused.Update(sessionListMsg{sessions: []*pb.Session{q}})
+	seeded, _ = focused.Update(sessionListMsg{})
+	updated, _ = seeded.(HomeModel).Update(sessionListMsg{sessions: []*pb.Session{q}})
 	if got := updated.(HomeModel).pendingAttentionSessionID; got != "" {
 		t.Errorf("focused: pending = %q, want empty", got)
 	}

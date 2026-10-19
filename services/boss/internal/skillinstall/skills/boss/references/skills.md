@@ -41,6 +41,7 @@ Check installed boss skills against this binary and checkout sources
 
 - `--agent` — Restrict to one agent: claude, codex or hermes (default: all on PATH)
 - `--gate` — Fail only when installed skills drift from checkout source for paths not edited by this branch
+- `--heal` — With gate, repair unedited lossless or behind drift from authenticated default-branch bytes
 
 ### `boss skills install [flags]`
 

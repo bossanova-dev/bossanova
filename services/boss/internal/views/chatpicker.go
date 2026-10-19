@@ -64,7 +64,6 @@ type ChatPickerModel struct {
 	timelineKey       timelineKey
 	timelineRequested bool
 	fullQuestion      string
-	neededOffset      int
 
 	showOpenPorts bool
 	session       *pb.Session

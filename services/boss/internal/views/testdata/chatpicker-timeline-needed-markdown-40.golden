@@ -1,0 +1,22 @@
+                                        
+  █▄▄  #2979 [BOS-1522] Change the col… 
+  █▄█  /tmp/worktree · Unmanaged        
+                                        
+  Needed from you:                     
+    Should I keep the YAML rewrite in  
+    this PR, or split it out? …        
+
+    CHAT          
+  ❯ verify        
+    Run bs-build  
+                                    
+  [enter] open chat  [d]elete       
+  [n]ew chat  [s]ettings  [g]ithub  
+  [v]ideo  [m]erge  [a]rchive       
+  [esc] back                        
+                                    
+  Timeline                            
+    17:10  ✓ Build started            
+    17:20  ● Waiting for your answer  
+             “Should I keep the YAML  
+             rewrite in this PR, or…  

@@ -620,10 +620,12 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 					}
 				}
 				if kind == pb.AttentionKind_ATTENTION_KIND_REVIEW {
-					if err := h.Driver.WaitForText(waitTimeout, "Needed from you: Does this UI change look right in the"); err != nil {
+					if err := h.Driver.WaitForText(waitTimeout, "Does this UI change look right in the video?"); err != nil {
 						t.Fatal(err)
 					}
-					assertAnswerHangs(t, h.Driver.Screen(), "Does this UI change look right in the", "video?")
+					if rows := neededAnswerRows(t, h.Driver.Screen()); len(rows) != 1 || rows[0] != "Does this UI change look right in the video?" {
+						t.Fatalf("answer rows = %q, want the question on one row under the label", rows)
+					}
 				} else if err := h.Driver.WaitForText(waitTimeout, "Waiting for a fix"); err != nil {
 					t.Fatal(err)
 				}
@@ -635,23 +637,32 @@ func TestTUI_ChatPicker_AttentionTimeline(t *testing.T) {
 	}
 }
 
-// assertAnswerHangs: the answer wraps at the chat table's width, so its last
-// word drops to the row below and starts under the answer's first word.
-func assertAnswerHangs(t *testing.T, screen, first, wrapped string) {
+// neededAnswerRows is the answer under the "Needed from you:" label, which
+// must sit alone on its row, up to the blank row below the answer. Each answer
+// row must start two columns right of the label.
+func neededAnswerRows(t *testing.T, screen string) []string {
 	t.Helper()
 	lines := strings.Split(screen, "\n")
-	for i, line := range lines[:len(lines)-1] {
-		col := strings.Index(line, "Needed from you: "+first)
-		if col < 0 {
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "Needed from you:" {
 			continue
 		}
-		want := strings.Repeat(" ", col+len("Needed from you: ")) + wrapped
-		if got := strings.TrimRight(lines[i+1], " "); got != want {
-			t.Fatalf("row below the label is %q, want %q:\n%s", got, want, screen)
+		indent := strings.Repeat(" ", strings.Index(line, "Needed from you:")+2)
+		var rows []string
+		for _, row := range lines[i+1:] {
+			if strings.TrimSpace(row) == "" {
+				return rows
+			}
+			text, ok := strings.CutPrefix(strings.TrimRight(row, " "), indent)
+			if !ok || strings.HasPrefix(text, " ") {
+				t.Fatalf("answer row %q does not start under the label's indent:\n%s", row, screen)
+			}
+			rows = append(rows, text)
 		}
-		return
+		return rows
 	}
-	t.Fatalf("no %q row with a row below it:\n%s", "Needed from you: "+first, screen)
+	t.Fatalf("no row holding only %q:\n%s", "Needed from you:", screen)
+	return nil
 }
 
 // A session that needs you keeps its status in the details header, and an
@@ -695,8 +706,8 @@ func TestTUI_ChatPicker_AttentionHeaderKeepsStatusAndArchiving(t *testing.T) {
 
 // TestTUI_ChatPicker_NarrowAnswerRenders: on a terminal narrow and short
 // enough to leave the answer one or two rows, an answer with a word wider than
-// the label leaves still renders the picker instead of freezing on "Loading
-// chats", and paging reaches its last word.
+// the answer's column still renders the picker instead of freezing on
+// "Loading chats", and shows the answer's opening under its label.
 func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
 	for _, size := range [][2]int{{40, 20}, {30, 24}} {
 		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
@@ -710,52 +721,67 @@ func TestTUI_ChatPicker_NarrowAnswerRenders(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-				return strings.Contains(screen, "Needed from you") && !strings.Contains(screen, "Loading chats")
+				return strings.Contains(screen, "Needed from you:") && !strings.Contains(screen, "Loading chats")
 			}); err != nil {
 				t.Fatalf("picker never rendered the answer: %v\n%s", err, h.Driver.Screen())
 			}
-			t.Logf("PTY first page at %dx%d:\n%s", size[0], size[1], h.Driver.Screen())
-			for range 30 {
-				if err := h.Driver.SendNamedKey("pgdn"); err != nil {
-					t.Fatal(err)
-				}
+			screen := h.Driver.Screen()
+			t.Logf("PTY capture at %dx%d:\n%s", size[0], size[1], screen)
+			rows := neededAnswerRows(t, screen)
+			if len(rows) == 0 || !strings.HasPrefix(rows[0], "Should we keep") || !strings.HasSuffix(rows[len(rows)-1], "…") {
+				t.Fatalf("answer rows = %q, want the cut opening of the question", rows)
 			}
-			if err := h.Driver.WaitForText(waitTimeout, "FINAL?"); err != nil {
-				t.Fatalf("paging never reached the last word: %v\n%s", err, h.Driver.Screen())
-			}
-			t.Logf("PTY last page at %dx%d:\n%s", size[0], size[1], h.Driver.Screen())
 		})
 	}
 }
 
-func TestTUI_ChatPicker_LongQuestionScroll(t *testing.T) {
-	sessions := testSessions()[:1]
-	sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: strings.Repeat("Should we keep the behavior for every supported platform? ", 40) + "FINAL QUESTION?"}
-	h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(testChats()...), tuitest.WithTerminalSize(100, 24))
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
+// operatorMarkdownQuestion has the shape of the operator's report: a long
+// agent message with bold, inline code, and a numbered list with nested
+// bullets, whose question sits in its opening sentences.
+const operatorMarkdownQuestion = "**Should I keep the YAML rewrite in this PR, or split it out?** The `services/boss/internal/views` change is ready, but the rewrite touches `config.yaml` in three places and doubles the diff.\n\nHere is what I found:\n\n1. **Keep it here**\n   - one review, one merge\n   - the diff grows to 900 lines\n2. **Split it out**\n   - `MAD-1745` lands first\n   - this PR rebases on it\n\n## Next steps\n\nOnce you answer I'll run the classifier, update `__init__.py`, and push. Which do you prefer?"
+
+// TestTUI_ChatPicker_LongQuestionSummary drives the real binary to a session
+// whose agent asked a long markdown question, fetched from the chat's
+// transcript. The answer is a few plain rows under its own label, ending in an
+// ellipsis, with no pager, and the chats and footer stay on screen.
+func TestTUI_ChatPicker_LongQuestionSummary(t *testing.T) {
+	for _, size := range [][2]int{{80, 30}, {120, 40}} {
+		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+			sessions := testSessions()[:1]
+			chats := testChats()
+			sessions[0].Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_QUESTION, Sentence: "“Should I keep the YAML rewrite in this PR, or split it out?”", TargetChatId: chats[0].GetAgentSessionId()}
+			h := tuitest.New(t, tuitest.WithRepos(testRepos()...), tuitest.WithSessions(sessions...), tuitest.WithChats(chats...), tuitest.WithTerminalSize(size[0], size[1]))
+			h.Daemon.SetChatTranscript(&pb.GetChatTranscriptResponse{FinalAssistantText: operatorMarkdownQuestion})
+			if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.SendEnter(); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+				return strings.Contains(strings.Join(strings.Fields(screen), " "), "The services/boss/internal/views change is ready")
+			}); err != nil {
+				t.Fatalf("the transcript's question never rendered: %v\n%s", err, h.Driver.Screen())
+			}
+			for _, text := range []string{"Initial implementation", "[enter] open chat", "[n]ew chat"} {
+				if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
+					t.Fatalf("missing %q: %v\n%s", text, err, h.Driver.Screen())
+				}
+			}
+			screen := h.Driver.Screen()
+			t.Logf("PTY capture at %dx%d:\n%s", size[0], size[1], screen)
+			rows := neededAnswerRows(t, screen)
+			if len(rows) == 0 || len(rows) > 5 || !strings.HasPrefix(rows[0], "Should I keep the YAML rewrite") || !strings.HasSuffix(rows[len(rows)-1], "…") {
+				t.Fatalf("answer rows = %q, want at most 5 rows of the question's opening ending in an ellipsis", rows)
+			}
+			for _, raw := range []string{"**", "`", "pgup", "pgdown"} {
+				if strings.Contains(screen, raw) {
+					t.Fatalf("screen shows %q:\n%s", raw, screen)
+				}
+			}
+			if lines := strings.Split(strings.TrimRight(screen, "\n"), "\n"); len(lines) > size[1] {
+				t.Fatalf("screen is %d rows, terminal %d", len(lines), size[1])
+			}
+		})
 	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	for _, text := range []string{"Needed from you: Should we keep", "pgup/pgdown (1–", "Initial implementation", "[enter] open chat"} {
-		if err := h.Driver.WaitForText(waitTimeout, text); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// More pages than this question needs; the final page clamps to its end.
-	for range 30 {
-		if err := h.Driver.SendNamedKey("pgdn"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "FINAL QUESTION?"); err != nil {
-		t.Fatal(err)
-	}
-	for _, text := range []string{"Initial implementation", "[enter] open chat", "[n]ew chat"} {
-		if !h.Driver.ScreenContains(text) {
-			t.Fatalf("lost %q after scrolling: %s", text, h.Driver.Screen())
-		}
-	}
-	t.Logf("PTY long question capture:\n%s", h.Driver.Screen())
 }

@@ -1320,8 +1320,8 @@ func TestAppHomeRebuildKeepsShownParks(t *testing.T) {
 		name  string
 		steps []step
 	}{
-		{"dismissed in the chat picker", []step{poll(false, true), poll(true, true), visit(ViewChatPicker), poll(false, false)}},
-		{"dismissed on Home after a sub-view", []step{poll(false, true), poll(true, true), visit(ViewRepoList), poll(true, false), poll(false, false)}},
+		{"dismissed in the chat picker", []step{poll(false, false), poll(true, true), visit(ViewChatPicker), poll(false, false)}},
+		{"dismissed on Home after a sub-view", []step{poll(false, false), poll(true, true), visit(ViewRepoList), poll(true, false), poll(false, false)}},
 	} {
 		for name, park := range parks {
 			t.Run(sc.name+"/"+name, func(t *testing.T) {

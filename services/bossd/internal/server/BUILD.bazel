@@ -136,6 +136,7 @@ go_test(
         "agent_resolution_test.go",
         "archive_deferral_test.go",
         "attention_hydrate_test.go",
+        "attention_restart_test.go",
         "attention_since_test.go",
         "auth_state_test.go",
         "auth_test.go",

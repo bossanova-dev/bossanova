@@ -297,6 +297,7 @@ func (a *App) newHomeModel() HomeModel {
 	// revealed by dismissing an alert would notify again. Sharing the map is
 	// safe: rememberShownParks builds a fresh one on every poll.
 	home.shownParks = a.home.shownParks
+	home.toldAttention = a.home.toldAttention
 	// Preserve all optimistic archive state across rebuilds without sharing map
 	// storage with the prior model. Both lingering success overrides and active
 	// RPCs must survive until the next poll or result reconciles each session.

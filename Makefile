@@ -43,8 +43,12 @@ GOLANGCI_LINT_VERSION := v2.11.4
 # and `bufbuild/buf-action` step in .github/workflows/*.yml). The
 # scripts/gen-pin-drift.test.mjs test asserts those workflow `version:` values
 # equal this pin. Bumping requires re-running `make generate` and committing any
-# regen drift.
+# regen drift. Recipes use the shared versioned cache, never a PATH buf.
 BUF_VERSION := 1.66.1
+BUF_CACHE_DIR ?= $(HOME)/.cache/bossanova-tools
+BUF ?= $(BUF_CACHE_DIR)/buf-$(BUF_VERSION)/buf
+# A bare relative override still names a file in this directory, never PATH.
+override BUF := $(if $(findstring /,$(BUF)),$(BUF),./$(BUF))
 
 # Technical-debt scanner tools used by `make debt-*` (the bs-sweep-debt skill).
 # These are non-blocking, informational detectors (CI runs them continue-on-error,
@@ -296,7 +300,7 @@ deps:
 	@echo "==> Installing build dependencies via Homebrew"
 	@# buf is intentionally NOT installed via brew here — brew can't pin to an
 	@# exact version, and the pin ($(BUF_VERSION)) is enforced by
-	@# buf-check-version. buf is installed from a GitHub release below instead.
+	@# buf-check-version. buf is cached from a GitHub release below instead.
 	@# bazelisk provides the `bazel` launcher the test facade delegates to (BOS-339);
 	@# `command -v bazelisk` is the right presence check (brew installs it as bazelisk).
 	@for pkg in go jq gh pnpm bazelisk vale; do \
@@ -307,22 +311,9 @@ deps:
 			brew install $$pkg; \
 		fi; \
 	done
-	@# buf: install the pinned version from GitHub releases (brew can't pin).
-	@# Best-effort: a download failure warns but does not abort `make deps`.
-	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
-	want="$(BUF_VERSION)"; \
-	if command -v buf >/dev/null 2>&1 && buf --version 2>/dev/null | grep -Eq "^v?$${want#v}$$"; then \
-		echo "    buf: $$want already installed"; \
-	else \
-		echo "    buf: installing $$want from GitHub releases..."; \
-		mkdir -p "$$gobin"; \
-		url="https://github.com/bufbuild/buf/releases/download/v$${want#v}/buf-$$(uname -s)-$$(uname -m)"; \
-		if curl -sSfL "$$url" -o "$$gobin/buf" && chmod +x "$$gobin/buf"; then \
-			echo "    buf: installed $$want to $$gobin/buf"; \
-		else \
-			echo "    (warning: failed to download buf $$want from $$url — install it manually)"; \
-		fi; \
-	fi
+	@# Best-effort pinned cache provisioning; never replace a host buf.
+	@sh scripts/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" \
+		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# golangci-lint: enforce pinned version so local runs match CI.
 	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
 	want="$(GOLANGCI_LINT_VERSION)"; \
@@ -367,6 +358,8 @@ setup-worktree:
 		exit 1; \
 	fi
 	@node "$$WORKTREE_DIR/scripts/setup-worktree-copy.mjs" --repo-dir "$$REPO_DIR" --worktree-dir "$$WORKTREE_DIR" --env-keys "$(WORKTREE_ENV_KEYS)"
+	@sh "$$WORKTREE_DIR/scripts/ensure-buf.sh" install "$(BUF_VERSION)" "$(BUF)" \
+		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# Install JS deps so EVERY worktree (cron included) has node_modules and the
 	@# husky git hooks (`pnpm install` runs the `prepare: husky` script). This is
 	@# what keeps the commit-msg / pre-commit guardrails active in agent worktrees
@@ -447,7 +440,8 @@ gen-skill:
 	$(MAKE) copy-skills
 
 ## generate: Run buf generate to produce Go code from proto definitions
-generate: buf-check-version $(GEN_STAMP)
+generate: buf-check-version
+	$(MAKE) --no-print-directory $(GEN_STAMP)
 
 # Make web deps and buf conditional — public repo has committed gen code and no web/
 GEN_DEPS := $(PROTO_SOURCES) $(OPENAPI_SOURCES)
@@ -455,22 +449,24 @@ ifneq ($(wildcard services/web/package.json),)
 GEN_DEPS += $(WEB_DEPS_STAMP)
 endif
 
+# Check before deleting generated output; preserve Gazelle metadata in the Go tree.
+# An absent pin uses committed output and leaves the stamp untouched.
 $(GEN_STAMP): $(GEN_DEPS)
-ifneq ($(shell command -v buf 2>/dev/null),)
-	# Remove buf's generated Go output (stale files from renamed/removed protos) but
-	# preserve committed Gazelle BUILD.bazel package files, which buf does not own —
-	# `rm -rf lib/bossalib/gen` would delete them and trip the generate drift gate.
-	find lib/bossalib/gen -type f ! -name 'BUILD.bazel' -delete 2>/dev/null || true
-	# Same for the web stubs, so the drift gate also catches a committed *_pb.ts no proto produces
-	# (verify's approval carry leaves these paths out of the patch-id on that proof).
-	find services/web/src/gen -type f -name '*_pb.ts' -delete 2>/dev/null || true
-	buf generate
-	@changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
+	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
+	case $$result in \
+		0) ;; \
+		3) echo "pinned buf absent — committed gen used (run 'make generate' to provision)"; exit 0 ;; \
+		*) exit $$result ;; \
+	esac; \
+	set -e; \
+	find lib/bossalib/gen -type f ! -name 'BUILD.bazel' -delete 2>/dev/null || true; \
+	find services/web/src/gen -type f -name '*_pb.ts' -delete 2>/dev/null || true; \
+	"$(BUF)" generate; \
+	changed_go=$$(git diff --name-only -- lib/bossalib/gen | grep '\.go$$' || true); \
 	if [ -n "$$changed_go" ]; then \
 		printf '%s\n' "$$changed_go" | xargs go tool goimports -w; \
-	fi
-endif
-	@touch $(GEN_STAMP)
+	fi; \
+	touch $(GEN_STAMP)
 
 ## build: Build service binaries (generates protos first if needed)
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
@@ -945,21 +941,15 @@ coverage-bosso:
 	$(MAKE) -C services/bosso test-all
 endif
 
-## buf-check-version: Fail if an installed buf does not match $(BUF_VERSION).
-## Soft-passes when buf is absent so the public mirror's bufless path (committed
-## gen code, no buf) stays green — only a PRESENT-but-mismatched buf is fatal.
+## buf-check-version: Provision absent pinned buf and reject wrong-version overrides.
 buf-check-version:
-	@if ! command -v buf >/dev/null 2>&1; then \
-		echo "buf not installed — skipping version check (committed gen used; run 'make deps' to install the pinned buf)"; \
-	else \
-		want="$(BUF_VERSION)"; \
-		if ! buf --version 2>/dev/null | grep -Eq "^v?$${want#v}$$"; then \
-			echo "buf version mismatch: want $$want"; \
-			echo "  got: $$(buf --version 2>/dev/null)"; \
-			echo "  run 'make deps' to install the pinned version"; \
-			exit 1; \
-		fi; \
-	fi
+	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
+	case $$result in \
+		0) ;; \
+		3) sh scripts/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" || exit $$? ;; \
+		*) exit $$result ;; \
+	esac
+	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"
 
 ## deps-golangci: Install ONLY the pinned golangci-lint (no Homebrew/full deps) — for CI lint jobs
 deps-golangci:
@@ -994,7 +984,7 @@ lint-check-version:
 ## (lint-docs-affected). Fast is the
 ## default (BOS-371); the exhaustive whole-tree markdown pass is `make lint-all`.
 lint: buf-check-version lint-check-version $(GEN_STAMP)
-	node scripts/run-gate.mjs --label "buf lint" -- buf lint
+	node scripts/run-gate.mjs --label "buf lint" -- "$(BUF)" lint
 	node scripts/run-gate.mjs --label "make lint-scripts" -- $(MAKE) lint-scripts
 	@node scripts/run-gate.mjs --label "lint-affected" -- node scripts/lint-affected.mjs
 	node scripts/run-gate.mjs --label "make lint-go-fmt" -- $(MAKE) lint-go-fmt
@@ -1014,7 +1004,7 @@ lint: buf-check-version lint-check-version $(GEN_STAMP)
 ## but with the whole-tree `prettier --check` over ALL markdown (was `make lint`).
 ## CI/release gate.
 lint-all: buf-check-version lint-check-version $(GEN_STAMP)
-	buf lint
+	"$(BUF)" lint
 	$(MAKE) lint-scripts
 	@node scripts/lint-affected.mjs
 	$(MAKE) lint-go-fmt
@@ -1035,14 +1025,14 @@ lint-go-fmt:
 	@node scripts/check-go-format.mjs
 
 ## Per-module lint targets
-lint-proto:
-	buf lint
+lint-proto: buf-check-version
+	"$(BUF)" lint
 
 BUF_BREAKING_BASE ?= .git\#branch=origin/main
 
 ## lint-proto-breaking: Check proto wire compatibility against the base branch.
-lint-proto-breaking:
-	buf breaking --against '$(BUF_BREAKING_BASE)'
+lint-proto-breaking: buf-check-version
+	"$(BUF)" breaking --against '$(BUF_BREAKING_BASE)'
 
 ## apiversion-check: Reconcile this branch's API-version contracts against origin/main and
 ## origin/production, then run the apiversion ledger/registry/OpenAPI/web/changelog sync tests.

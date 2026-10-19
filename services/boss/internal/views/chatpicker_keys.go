@@ -95,18 +95,6 @@ func (m ChatPickerModel) handleErrModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // every key reachable once no overlay is up and no RPC is in flight. Unhandled
 // keys fall through to the table's own navigation bindings.
 func (m ChatPickerModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.neededQuestion() != "" && (msg.String() == "pgdown" || msg.String() == "pgup") {
-		lines, start, size := m.neededWindow()
-		if len(lines) > size {
-			if msg.String() == "pgdown" {
-				m.neededOffset = min(start+size, len(lines)-size)
-			} else {
-				m.neededOffset = max(0, start-size)
-			}
-			return m, nil
-		}
-	}
-
 	var cmd tea.Cmd
 	var handled bool
 	if !m.attentionAction.mergeUnresolved() {

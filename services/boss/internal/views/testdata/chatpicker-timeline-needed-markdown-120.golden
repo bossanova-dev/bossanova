@@ -2,9 +2,10 @@
   █▄▄  #2979 [BOS-1522] Change the color of needs-human alerts in the TUI 
   █▄█  /tmp/worktree · Unmanaged                                          
                                                                           
-  Needed from you: Should this PR be merged? Should this PR be merged? Should this    
-                   PR be merged? Should this PR be merged? Should this PR be merged?  
-                   Should this PR be merged? Should this PR be merged?                
+  Needed from you:                                                         
+    Should I keep the YAML rewrite in this PR, or split it out? The        
+    services/boss/internal/views change is ready, but the rewrite touches  
+    config.yaml in three places and doubles the diff. …                    
 
     CHAT          AGENT   CREATED  ACTIVE  STATUS                                   
   ❯ verify        claude  1h ago   1h ago  ⣾ waiting                                
@@ -14,6 +15,6 @@
                                                                                                             
   Timeline                                                                                              
     17:10  ✓ Build started                                                                              
-    17:20  ● Waiting for your answer  “Should this PR be merged? Should this PR be merged? Should this  
-             PR be merged? Should this PR be merged? Should this PR be merged? Should this PR be        
-             merged? Should this PR be merged?”                                                         
+    17:20  ● Waiting for your answer  “Should I keep the YAML rewrite in this PR, or split it out? The  
+             services/boss/internal/views change is ready, but the rewrite touches config.yaml in       
+             three places and doubles the diff. Here is what I found: 1. Keep it here • one review,…    

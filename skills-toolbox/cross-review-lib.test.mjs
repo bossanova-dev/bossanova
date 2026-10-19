@@ -11,6 +11,8 @@ import {
   boundedStderrTail,
   buildExecArgv,
   classifyProbe,
+  matchesAuthFailure,
+  describeProbe,
   createTierAProbeRoot,
   CROSS_REVIEW_LEG_RESERVE_MS,
   fitTimeoutToLeg,
@@ -493,4 +495,58 @@ test('resolveLegFitTimeout: names both numbers only when it clamps', () => {
     timeoutMs: 120_000,
     note: null,
   })
+})
+
+test('auth classification preserves liveness and legacy outcomes', () => {
+  const authSignatures = [
+    /401.*Unauthorized/i,
+    /refresh_token_reused/i,
+    /access token could not be refreshed/i,
+    /authentication_error/i,
+  ]
+  for (const output of [
+    'error: 401 Unauthorized: refresh token already used',
+    'refresh_token_reused',
+    'access token could not be refreshed',
+    '401 Unauthorized on workspace routing discovery',
+    'API Error: 401 authentication_error OAuth token has expired',
+  ]) {
+    for (const status of [0, 1])
+      assert.equal(
+        classifyProbe({ status, output, authSignatures, nonZeroStatus: 'error' }),
+        'not_authed',
+      )
+    assert.equal(
+      classifyProbe({ status: null, signal: 'SIGKILL', output, authSignatures }),
+      'error',
+    )
+    assert.equal(
+      classifyProbe({ status: null, spawnError: { code: 'ETIMEDOUT' }, output, authSignatures }),
+      'error',
+    )
+    assert.equal(classifyProbe({ status: 0, output }), 'ready')
+  }
+  assert.equal(classifyProbe({ status: 0, output: 'OK', authSignatures }), 'ready')
+  assert.equal(
+    classifyProbe({
+      status: 1,
+      output: "unexpected argument '-x' found",
+      authSignatures,
+      nonZeroStatus: 'error',
+    }),
+    'error',
+  )
+  assert.equal(classifyProbe({ status: null, output: '401 Unauthorized', authSignatures }), 'error')
+  assert.equal(
+    classifyProbe({ spawnError: { code: 'ENOENT' }, output: '401 Unauthorized', authSignatures }),
+    'not_installed',
+  )
+  assert.equal(matchesAuthFailure('\x1b[31m401 Unauthorized\x1b[0m', authSignatures), true)
+  for (const output of ['', null, undefined, 1, 'OK'])
+    assert.equal(matchesAuthFailure(output, authSignatures), false)
+  for (const agent of ['codex', 'claude'])
+    for (const token of ['ready', 'not_authed', 'not_installed', 'error']) {
+      assert.ok(describeProbe(agent, token).startsWith(token))
+      assert.equal(describeProbe(agent, token).includes('\n'), false)
+    }
 })

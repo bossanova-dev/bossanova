@@ -133,7 +133,11 @@ Report installed-skill drift (a stale record warns; an absent capability stops):
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
 if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
-  if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
+  if O="$("$BOSS_BIN" skills check --gate --heal 2>&1)" ||
+    { case "$O" in
+        *"unknown flag: --heal"*) O="$("$BOSS_BIN" skills check --gate 2>&1)" ;;
+        *) false ;;
+      esac; }; then
     if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
   else
     case "$O" in

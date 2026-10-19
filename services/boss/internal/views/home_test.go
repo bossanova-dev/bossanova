@@ -73,6 +73,7 @@ func TestHomeQuestionNotifications(t *testing.T) {
 		{
 			name: "persistent question does not re-notify",
 			polls: []sessionListMsg{
+				{sessions: []*pb.Session{notQuestion("s1")}},
 				{sessions: []*pb.Session{question("s1")}},
 				{sessions: []*pb.Session{question("s1")}},
 			},
@@ -81,12 +82,13 @@ func TestHomeQuestionNotifications(t *testing.T) {
 		{
 			name:     "disabled notifications suppresses question",
 			settings: config.Settings{NotificationsEnabled: boolPtr(false)},
-			polls:    []sessionListMsg{{sessions: []*pb.Session{question("s1")}}},
+			polls:    []sessionListMsg{{sessions: []*pb.Session{notQuestion("s1")}}, {sessions: []*pb.Session{question("s1")}}},
 			want:     0, wantCmds: 0,
 		},
 		{
 			name: "leaving and re-entering question notifies again",
 			polls: []sessionListMsg{
+				{sessions: []*pb.Session{notQuestion("s1")}},
 				{sessions: []*pb.Session{question("s1")}},
 				{sessions: []*pb.Session{notQuestion("s1")}},
 				{sessions: []*pb.Session{question("s1")}},
@@ -94,15 +96,16 @@ func TestHomeQuestionNotifications(t *testing.T) {
 			want: 2, wantCmds: 2,
 		},
 		{
-			name: "first successful poll notifies waiting question",
+			name: "first successful poll records a waiting question silently",
 			polls: []sessionListMsg{
 				{sessions: []*pb.Session{question("s1")}},
 			},
-			want: 1, wantCmds: 1,
+			want: 0, wantCmds: 0,
 		},
 		{
 			name: "transient poll error retains prior question state",
 			polls: []sessionListMsg{
+				{sessions: []*pb.Session{notQuestion("s1")}},
 				{sessions: []*pb.Session{question("s1")}},
 				{err: errors.New("temporary daemon error")},
 				{sessions: []*pb.Session{question("s1")}},

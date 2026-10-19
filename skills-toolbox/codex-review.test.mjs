@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildCodexArgs,
+  CODEX_AUTH_SIGNATURES,
   canonicalizeCheckoutRoot,
   classifyProbe,
   createCodexTierAProbeRoot,
@@ -1106,6 +1107,167 @@ test('run: no explicit timeoutMs applies the leg-fit clamp and says so on stderr
     )
   } finally {
     process.stderr.write = originalWrite
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe: authenticated no-op detects expired codex credentials', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'codex',
+      'if [ "$1" = login ]; then exit 0; fi\n' +
+        'echo "error: 401 Unauthorized: refresh token was already used" >&2\nexit 1',
+    )
+    assert.equal(
+      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 2000 }),
+      'not_authed',
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe: live no-op preserves read-only argv and checkout cwd (codex)', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'codex',
+      'if [ "$1" = login ]; then exit 0; fi\n' + 'pwd > cwd\nprintf "%s\\n" "$@" > args\necho OK',
+    )
+    for (const apiKey of ['', 'test-key']) {
+      assert.equal(
+        await probe({
+          env: { BOSS_CODEX_BIN: bin, ANTHROPIC_API_KEY: apiKey },
+          repo: dir,
+          timeoutMs: 2000,
+        }),
+        'ready',
+      )
+      const args = fs.readFileSync(path.join(dir, 'args'), 'utf8').trim().split('\n')
+      assert.equal(
+        fs.realpathSync(fs.readFileSync(path.join(dir, 'cwd'), 'utf8').trim()),
+        fs.realpathSync(dir),
+      )
+      assert.equal(args[args.indexOf('-s') + 1], 'read-only')
+      assert.equal(args[args.indexOf('-C') + 1], dir)
+      assert.equal(args.includes('-c'), false)
+      assert.equal(args.at(-1), 'Reply with exactly: OK')
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI: auth diagnostics preserve probe tokens and run failure status (codex)', () => {
+  const dir = makeTmpDir()
+  try {
+    for (const [output, code, token] of [
+      ['error: 401 Unauthorized: refresh token was already used', 1, 'not_authed'],
+      ['error: 401 Unauthorized: refresh token was already used', 0, 'not_authed'],
+      ['OK', 0, 'ready'],
+      ['unexpected argument -x found', 1, 'error'],
+    ]) {
+      const bin = writeFakeBin(
+        dir,
+        'codex',
+        'if [ "$1" = login ]; then exit 0; fi\n' + `echo "${output}"\nexit ${code}`,
+      )
+      const env = { ...process.env, BOSS_CODEX_BIN: bin }
+      const res = spawnSync(process.execPath, [SCRIPT_PATH, 'probe'], {
+        env,
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 5000,
+      })
+      assert.equal(res.status, 0)
+      assert.equal(res.stdout, `${token}\n`)
+      if (token !== 'ready') assert.ok(res.stderr.startsWith(`codex-review: ${token}:`), res.stderr)
+      const review = spawnSync(
+        process.execPath,
+        [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
+        { env, encoding: 'utf8', timeout: 5000 },
+      )
+      assert.equal(review.status, code)
+      if (code !== 0)
+        assert.ok(
+          review.stderr.startsWith(
+            token === 'not_authed'
+              ? 'codex-review: not_authed:'
+              : 'codex-review: codex exec failed',
+          ),
+          review.stderr,
+        )
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe: login rejection skips exec and live stage shares the deadline', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'codex',
+      'if [ "$1" = login ]; then exit 1; fi\necho invoked > exec-called',
+    )
+    assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir }), 'not_authed')
+    assert.equal(fs.existsSync(path.join(dir, 'exec-called')), false)
+    writeFakeBin(
+      dir,
+      'codex',
+      'if [ "$1" = login ]; then /bin/sleep 0.1; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep 30',
+    )
+    const started = Date.now()
+    assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 300 }), 'error')
+    assert.ok(Date.now() - started < 1500)
+    assert.equal(fs.existsSync(path.join(dir, 'exec-called')), true)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('codex auth signatures cover rejected refresh credentials', () => {
+  for (const output of [
+    'refresh token already used',
+    'refresh token was already used',
+    'refresh token reused',
+    'refresh token expired',
+    'refresh token invalid',
+    'refresh_token_reused',
+    'access token could not be refreshed',
+    '401 Unauthorized on workspace routing discovery',
+    'not logged in',
+    'run codex login',
+  ]) {
+    assert.equal(
+      classifyProbe({
+        status: 1,
+        output,
+        authSignatures: CODEX_AUTH_SIGNATURES,
+        nonZeroStatus: 'error',
+      }),
+      'not_authed',
+      output,
+    )
+  }
+})
+
+test('CLI: exit-zero empty review keeps generic failure despite auth stderr (codex)', () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'codex', 'echo "401 Unauthorized" >&2\nexit 0')
+    const res = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, 'run', '--base', 'abc', '--head', 'def', '--repo', dir],
+      { env: { ...process.env, BOSS_CODEX_BIN: bin }, encoding: 'utf8', timeout: 5000 },
+    )
+    assert.equal(res.status, 1)
+    assert.ok(res.stderr.startsWith('codex-review: codex exec failed'), res.stderr)
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })

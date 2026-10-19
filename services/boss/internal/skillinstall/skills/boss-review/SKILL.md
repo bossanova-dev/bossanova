@@ -99,7 +99,7 @@ candidates in the shape the briefs define, quoting the line it is about.
 
 **Second model** (on unless `review.secondModel` is `false`): the other agent reviews the same range —
 Codex when you are Claude, Claude when you are Codex. Probe it; on anything but `ready`, record
-`secondModel: {ran: false, reason: "<probe result>"}` and continue. Otherwise start
+`secondModel: {ran: false, reason: "<helper stderr line>"}` and continue; for a non-ready probe or failed run, use the helper’s stderr reason, which carries the cause and recovery action. Otherwise start
 `node "$BOSS_REVIEW_TOOLBOX/<agent>-review.mjs" run --base "$BASE_SHA" --head "$HEAD_SHA"` in the
 background alongside the finders and await it; its own timeout already sits inside the hang guard.
 Turn its prose into candidates with `source: "second-model"` — they are verified like any other. A

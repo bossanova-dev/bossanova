@@ -257,7 +257,7 @@ func TestHomeAttentionNotificationEdges(t *testing.T) {
 		{"CI progress", progress, progress, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := len(newlyNeedsYouSessions([]*pb.Session{tc.before}, []*pb.Session{tc.after}, nil)); got != tc.want {
+			if got := len(newlyNeedsYouSessions([]*pb.Session{tc.before}, []*pb.Session{tc.after}, nil, nil)); got != tc.want {
 				t.Fatalf("got %d want %d", got, tc.want)
 			}
 		})
@@ -285,6 +285,8 @@ func TestHomeAttentionNotifiesAParkOnlyIfTheBoardHasNotShownIt(t *testing.T) {
 	park := func(codes ...string) []*pb.Session {
 		return session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Review left must-fix findings open · send it back to fix them", ParkCodes: codes})
 	}
+	returnedPark := park("ledger-open")
+	returnedPark[0].Attention.Since = timestamppb.New(time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC))
 	signOff := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Sentence: "Watch the evidence video, then approve", ParkCodes: []string{"human-review:ui"}})
 	repairFailed := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_FIX, Sentence: "Automatic repair failed", AlertKey: "repair:failed"})
 	progress := session(&pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS})
@@ -298,13 +300,13 @@ func TestHomeAttentionNotifiesAParkOnlyIfTheBoardHasNotShownIt(t *testing.T) {
 		name  string
 		polls []poll
 	}{
-		{"dismissing a repair failure on a parked PR", []poll{{park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open"), false}}},
-		{"a question cleared over a parked PR", []poll{{park("ledger-open"), true}, {question, false}, {repairFailed, true}, {park("ledger-open"), false}}},
+		{"dismissing a repair failure on a parked PR", []poll{{progress, false}, {park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open"), false}}},
+		{"a question cleared over a parked PR", []poll{{progress, false}, {park("ledger-open"), true}, {question, false}, {repairFailed, true}, {park("ledger-open"), false}}},
 		{"a park that arose under the alert", []poll{{progress, false}, {repairFailed, true}, {park("ledger-open"), true}}},
 		{"a sign-off that arose under the alert", []poll{{progress, false}, {repairFailed, true}, {signOff, true}}},
-		{"the park cleared and returned under the alert", []poll{{park("ledger-open"), true}, {progress, false}, {repairFailed, true}, {park("ledger-open"), true}}},
-		{"a different park under the alert", []poll{{park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open", "no-receipt"), true}}},
-		{"the park changing while it stays shown", []poll{{park("ledger-open"), true}, {park("ledger-open", "no-receipt"), false}}},
+		{"the park cleared and returned under the alert", []poll{{progress, false}, {park("ledger-open"), true}, {progress, false}, {repairFailed, true}, {returnedPark, true}}},
+		{"a different park under the alert", []poll{{progress, false}, {park("ledger-open"), true}, {repairFailed, true}, {park("ledger-open", "no-receipt"), true}}},
+		{"the park changing while it stays shown", []poll{{progress, false}, {park("ledger-open"), true}, {park("ledger-open", "no-receipt"), false}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHomeModel(nil, context.Background(), nil)

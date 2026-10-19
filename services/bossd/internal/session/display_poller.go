@@ -213,9 +213,10 @@ func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, 
 	}
 }
 
-// Run starts the polling loop in a background goroutine. It stops when the
-// context is cancelled.
+// Run restores each session's last persisted status, then starts the polling
+// loop in a background goroutine. It stops when the context is cancelled.
 func (p *DisplayPoller) Run(ctx context.Context) {
+	p.restore(ctx)
 	safego.Go(p.logger, func() {
 		defer close(p.done)
 
@@ -234,6 +235,65 @@ func (p *DisplayPoller) Run(ctx context.Context) {
 			}
 		}
 	})
+}
+
+// restore seeds the tracker from each open PR's newest snapshot. Without it a
+// restarted daemon serves every session with no PR status until the poll reads
+// it again, one PR at a time, and every client shows each one in progress until
+// then. A merged or closed PR is left to the poll: its terminal reconcile is
+// what a restart retries.
+func (p *DisplayPoller) restore(ctx context.Context) {
+	if p.snapshots == nil {
+		return
+	}
+	sessions, err := p.sessions.ListActive(ctx, "")
+	if err != nil {
+		p.logger.Warn().Err(err).Msg("display poller: list sessions to restore statuses")
+		return
+	}
+	for _, sess := range sessions {
+		if sess.PRNumber == nil {
+			continue
+		}
+		newest, err := p.snapshots.RecentBySession(ctx, sess.ID, 1)
+		if err != nil || len(newest) == 0 {
+			continue
+		}
+		if info, ok := restoredDisplayInfo(newest[0]); ok {
+			p.tracker.Restore(sess.ID, info, newest[0].PolledAt)
+		}
+	}
+}
+
+// restoredDisplayInfo rebuilds what a snapshot's poll set on the tracker. The
+// snapshot keeps the status, head and checks; the rest follows from them.
+// GitHub reports a PR passing, approved or awaiting review only once it is
+// mergeable, so those statuses restore it mergeable, and any other leaves it
+// unknown.
+func restoredDisplayInfo(snap db.CheckSnapshot) (vcs.DisplayInfo, bool) {
+	st := vcs.DisplayStatus(snap.ComputedStatus)
+	if st == vcs.DisplayStatusUnspecified || isTerminalDisplayStatus(st) {
+		return vcs.DisplayInfo{}, false
+	}
+	info := vcs.DisplayInfo{Status: st, HeadSHA: snap.HeadSHA}
+	switch st {
+	case vcs.DisplayStatusPassing, vcs.DisplayStatusApproved, vcs.DisplayStatusReview:
+		mergeable := true
+		info.Mergeable = &mergeable
+	case vcs.DisplayStatusFailing:
+		info.HasFailures = true
+	case vcs.DisplayStatusRejected:
+		info.HasChangesRequested = true
+	case vcs.DisplayStatusNeedsHuman:
+		var checks []vcs.CheckResult
+		if snap.RawJSON != "" && json.Unmarshal([]byte(snap.RawJSON), &checks) == nil {
+			verify := vcs.ClassifyVerify(checks)
+			info.VerifyReason, info.VerifyLabel = verify.Reason, verify.Label
+		}
+	case vcs.DisplayStatusUnspecified, vcs.DisplayStatusIdle, vcs.DisplayStatusChecking, vcs.DisplayStatusConflict,
+		vcs.DisplayStatusMerged, vcs.DisplayStatusClosed, vcs.DisplayStatusDraft, vcs.DisplayStatusVerifying:
+	}
+	return info, true
 }
 
 // Done returns a channel closed when Run's goroutine exits.

@@ -8,6 +8,10 @@ import {
   assemblePrompt,
   boundedStderrTail,
   classifyProbe,
+  describeProbe,
+  matchesAuthFailure,
+  PROBE_PROMPT,
+  PROBE_TIMEOUT_MS,
   interpretResult,
   removeTierAProbeRoot,
   resolveLegFitTimeout,
@@ -24,9 +28,8 @@ import {
 // this file is the thin claude adapter + the CLI entrypoint.
 //
 // Pinned surface: claude-cli 2.x (`claude -p "<prompt>"`).
-// `claude --version` exits 0 when the CLI is runnable — a cheap readiness
-// signal. Claude has no separate `login status` subcommand, so auth failures
-// surface later as a run skip (the non-fatal contract), which is fine.
+// Readiness exercises the same authenticated print-mode path as review,
+// so stale credentials are classified before promising a second voice.
 //
 // Unlike codex, claude has NO `-C <dir>` flag: the working directory is set via
 // the spawn `cwd` option, not an argv element. So buildExecArgv (which hard-codes
@@ -229,65 +232,78 @@ function bestEffortDiff(repo, base, head, timeoutMs) {
 }
 
 // ---------------------------------------------------------------------------
-// probe({ env, timeoutMs }) → Promise<string>
-//
-// Resolves the claude binary, then runs `claude --version` with a short timeout
-// and discarded stdio. Returns a classification string via classifyProbe.
-// Never throws; ambiguous results → 'error'. (claude has no `login status`
-// equivalent, so version-exit-0 ⇒ ready is the right cheap readiness signal.)
+// A bounded authenticated no-op, using the same environment and cwd as review.
 // ---------------------------------------------------------------------------
-export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
-  const bin = resolveClaudeBin(env)
-  if (bin === null) {
-    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null })
-  }
+export const CLAUDE_AUTH_SIGNATURES = [
+  /OAuth (?:token|session)(?: has)? expired/i,
+  /authentication_error/i,
+  /Please run \/login|Invalid API key/i,
+  /401[^\n]*(?:Unauthorized|authentication)|(?:Unauthorized|authentication)[^\n]*401/i,
+]
 
+export function buildClaudeProbeArgs(env = process.env) {
+  return [...bareModeArgs(env), '-p', '--permission-mode', 'plan', '--max-turns', '1', PROBE_PROMPT]
+}
+
+export async function probe({
+  env = process.env,
+  repo = process.cwd(),
+  timeoutMs = PROBE_TIMEOUT_MS,
+} = {}) {
+  const bin = resolveClaudeBin(env)
+  if (bin === null) return 'not_installed'
+  return probeStage(bin, buildClaudeProbeArgs(env), {
+    env,
+    repo,
+    timeoutMs,
+    nonZeroStatus: 'error',
+    authSignatures: CLAUDE_AUTH_SIGNATURES,
+  })
+}
+
+function probeStage(bin, args, { env, repo, timeoutMs, nonZeroStatus, authSignatures }) {
   return new Promise((resolve) => {
     let settled = false
     let timer = null
-
+    const stdout = boundedStderrTail(4096)
+    const stderr = boundedStderrTail(4096)
     const settle = (result) => {
       if (settled) return
       settled = true
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
+      if (timer) clearTimeout(timer)
       resolve(result)
     }
-
     let child
     try {
-      // We only need the exit code. Discard stdout/stderr entirely — piping and
-      // not draining stderr would deadlock a chatty claude past the ~64KB pipe
-      // buffer until the timeout fires.
-      child = spawn(bin, ['--version'], {
-        stdio: ['ignore', 'ignore', 'ignore'],
+      child = spawn(bin, args, {
+        env,
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       })
-    } catch (err) {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+    } catch (spawnError) {
+      settle(classifyProbe({ spawnError }))
       return
     }
-
-    child.on('error', (err) => {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
-    })
-
-    child.on('close', (code, sig) => {
-      // `claude --version` has no auth semantics: a non-zero exit is a broken
-      // CLI, not "not authenticated" (codex's meaning), so classify it 'error'.
-      settle(classifyProbe({ spawnError: null, status: code, signal: sig, nonZeroStatus: 'error' }))
-    })
-
+    child.stdout.on('data', (chunk) => stdout.push(chunk))
+    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    child.on('error', (spawnError) => settle(classifyProbe({ spawnError })))
+    child.on('close', (status, signal) =>
+      settle(
+        classifyProbe({
+          status,
+          signal,
+          nonZeroStatus,
+          authSignatures,
+          output: `${stdout.tail()}\n${stderr.tail()}`,
+        }),
+      ),
+    )
     timer = setTimeout(() => {
-      // Timed out — kill the whole process group. ESRCH (group already gone)
-      // and any other kill error are intentionally swallowed: we are tearing
-      // down and will resolve 'error' regardless.
       try {
         process.kill(-child.pid, 'SIGKILL')
       } catch {
-        // intentionally ignored during teardown
+        /* process group already gone */
       }
       settle('error')
     }, timeoutMs)
@@ -426,7 +442,7 @@ export async function run({
       const output = sanitizeOutput(raw, { maxBytes })
       // interpretResult is the single source of truth for ok/skip detection.
       const verdict = interpretResult({ code, signal, stdout: output, timedOut })
-      settle({ ok: verdict.ok, output, stderr: stderrTail.tail(), timedOut })
+      settle({ ok: verdict.ok, output, stderr: stderrTail.tail(), timedOut, exitCode: code })
     })
 
     timer = setTimeout(() => {
@@ -481,6 +497,8 @@ async function main(argv) {
   if (cmd === 'probe') {
     const result = await probe({ env: process.env })
     process.stdout.write(`${result}\n`)
+    if (result !== 'ready')
+      process.stderr.write(`claude-review: ${describeProbe('claude', result)}\n`)
     return
   }
 
@@ -500,7 +518,13 @@ async function main(argv) {
       // Surface the diagnostic tail (CLI-surface errors, auth failures, etc.) so
       // a failed run is debuggable instead of silently empty. Goes to stderr to
       // keep stdout review-text-only.
-      const reason = result.timedOut ? 'timed out' : 'claude -p failed'
+      const reason = result.timedOut
+        ? 'timed out'
+        : typeof result.exitCode === 'number' &&
+            result.exitCode !== 0 &&
+            matchesAuthFailure(`${result.stderr}\n${result.output}`, CLAUDE_AUTH_SIGNATURES)
+          ? describeProbe('claude', 'not_authed')
+          : 'claude -p failed'
       const tail = result.stderr ? `\n${result.stderr}` : ''
       process.stderr.write(`claude-review: ${reason}${tail}\n`)
       process.exitCode = 1

@@ -191,7 +191,11 @@ export BOSS_SKILLS_HOME BOSS_BUILD_TOOLBOX
 # capability stops. Without a boss CLI, use the warning helper so drift is not
 # called clean.
 if BOSS_BIN="$(command -v boss 2>/dev/null)"; then
-  if O="$("$BOSS_BIN" skills check --gate 2>&1)"; then
+  if O="$("$BOSS_BIN" skills check --gate --heal 2>&1)" ||
+    { case "$O" in
+        *"unknown flag: --heal"*) O="$("$BOSS_BIN" skills check --gate 2>&1)" ;;
+        *) false ;;
+      esac; }; then
     if [ -n "$O" ]; then printf '%s\n' "$O" >&2; fi
   else
     case "$O" in

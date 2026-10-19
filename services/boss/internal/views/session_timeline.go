@@ -41,7 +41,6 @@ func (m *ChatPickerModel) syncTimeline() tea.Cmd {
 	m.timelineKey = key
 	m.timeline = nil
 	m.fullQuestion = ""
-	m.neededOffset = 0
 	if m.session.GetAttention() == nil {
 		return nil
 	}
@@ -137,6 +136,8 @@ func (m ChatPickerModel) timelineSteps() []*pb.TimelineStep {
 		detail := a.GetSentence()
 		if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
 			detail, _ = attention.ParkCategory(a.GetParkCodes())
+		} else if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
+			detail = plainMarkdown(detail)
 		}
 		wait := &pb.TimelineStep{At: a.GetSince(), Title: title, Detail: detail, State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT}
 		if i := slices.IndexFunc(steps, func(s *pb.TimelineStep) bool {
@@ -378,8 +379,8 @@ func timelineStepRows(steps []*pb.TimelineStep, days []string, titleWidth, avail
 // are what the operator came to the screen for.
 const timelineMaxSteps = 6
 
-// timelineMaxStepRows caps one step's wrapped detail. A question's full text
-// already has its own pageable block below, so the timeline only previews it.
+// timelineMaxStepRows caps one step's wrapped detail. A question's summary
+// already has its own block above the chats, so the timeline only previews it.
 const timelineMaxStepRows = 3
 
 // detailsMaxWidth is the widest the timeline and the "Needed from you" answer
@@ -446,19 +447,19 @@ func timelineDayLabels(steps []*pb.TimelineStep, now time.Time, dated bool) []st
 // timelineRowBudget is how many rows the timeline may use below its heading.
 // The chat table and the answer above it are what the operator acts on, so the
 // timeline gets only the rows the footer, the table's reserved rows and the
-// whole answer leave, matching what neededWindow and tableHeight then
-// subtract. A long answer pages rather than squeeze the timeline below two
-// rows, its newest step and the fold line, but the table's reserved rows are
-// never given up: the budget can fall below that, and timelineBlock then
-// renders nothing.
+// whole answer leave, matching what neededBlock and tableHeight then
+// subtract. A short terminal cuts the answer rather than squeeze the timeline
+// below two rows, its newest step and the fold line, and the answer keeps its
+// label and a row, but the table's reserved rows are never given up: the
+// budget can fall below that, and timelineBlock then renders nothing.
 func (m ChatPickerModel) timelineRowBudget() int {
 	if m.height <= 0 {
 		return (timelineMaxSteps + 1) * timelineMaxStepRows
 	}
 	room := m.height - m.chatListOverhead() - m.detailsReservedTableRows() - 1
-	if m.neededQuestion() != "" {
+	if lines := m.neededLines(); len(lines) > 0 {
 		room -= neededChromeRows + 1
-		room = min(room, max(2, room-len(m.neededLines(0))+1))
+		room = min(room-1, max(2, room-len(lines)))
 	}
 	return room
 }
@@ -533,23 +534,16 @@ func fitTimelineRows(rows [][]string, at []int, total, pin, budget int) ([]int, 
 // does not fit the first line starts the second whole, so a path never splits
 // where a continuation line would hold it. A rest below two cells cannot hold a
 // wide character, so the text wraps as if both widths were that much wider and
-// fitProseLine truncates the overflow.
+// fitProseLine truncates the overflow. An empty line that cannot hold a word
+// takes as much of it as fits, and at least its first rune, unless the next
+// line is wider, so every pass places part of the word or moves to a wider
+// line and the wrap always ends.
 func wordWrap(text string, first, rest int) []string {
-	return wrapWords(text, first, rest, func(line int) bool { return line == 0 })
-}
-
-// wrapWords is wordWrap with first applying to every line narrow reports,
-// counted from zero, rather than only the first. An empty line that cannot
-// hold a word is left for the next line only when that line is wider and so
-// holds the word whole or takes a bigger piece; otherwise it takes as much of
-// the word as fits, and at least its first rune. Every pass therefore places
-// part of the word or moves to a wider line, so the wrap always ends.
-func wrapWords(text string, first, rest int, narrow func(line int) bool) []string {
 	if rest < 2 {
 		first, rest = first+2-rest, 2
 	}
 	width := func(line int) int {
-		if narrow(line) {
+		if line == 0 {
 			return first
 		}
 		return rest
@@ -582,45 +576,70 @@ func wrapWords(text string, first, rest int, narrow func(line int) bool) []strin
 	return lines
 }
 
+// neededLabel is the answer's heading row.
+const neededLabel = "Needed from you:"
+
+// neededIndent opens each of the answer's rows under the label.
+const neededIndent = "  "
+
+// neededMaxLines is the most rows the answer takes under its label. The answer
+// is a summary: the whole message is one [enter] away in the chat.
+const neededMaxLines = 5
+
 // neededBlock is the "Needed from you" answer above the chat table, or ""
-// when the session asks nothing of the operator. The answer starts on the
-// label's row and its wrapped lines hang under its first word. An answer too
-// long for the room pages, with the pager on the row below and the label on
-// each page's top row. The pager starts under the label when the hang leaves
-// it too little room.
+// when the session asks nothing of the operator: the label on its own row,
+// then the answer indented under it. A terminal too short for the whole answer
+// cuts it, keeping at least one row.
 func (m ChatPickerModel) neededBlock() string {
-	if m.neededQuestion() == "" {
+	lines := m.neededLines()
+	if len(lines) == 0 {
 		return ""
 	}
-	lines, start, size := m.neededWindow()
-	hang := strings.Repeat(" ", m.neededHang())
-	rows := make([]string, 0, size+1)
-	for i, line := range lines[start : start+size] {
-		gutter := hang
-		// A one-row window keeps the unpaged wrap, whose later lines are too
-		// wide to share a row with the label, so only its first page has it.
-		if i == 0 && (start == 0 || hang != "" || size > 1) {
-			gutter = neededLabel
-		}
+	if m.height > 0 {
+		room := m.height - m.chatListOverhead() - m.timelineHeight() - neededChromeRows - m.detailsReservedTableRows() - 1
+		lines = cutLines(lines, max(1, room), m.neededTextWidth())
+	}
+	rows := []string{neededLabel}
+	for _, line := range lines {
 		// The answer is the one thing on the screen the operator must act on,
 		// so it renders bold in the primary foreground, above the faint chrome.
-		rows = append(rows, m.fitProseLine(gutter+styleEmphasis.Render(line)))
-	}
-	if len(lines) > size {
-		total := len(lines)
-		for total > start+1 && lines[total-1] == "" {
-			total--
-		}
-		pager := fmt.Sprintf("pgup/pgdown (%d–%d of %d)", start+1, min(start+size, total), total)
-		// The widest page's pager decides where every page's pager starts, so
-		// it stays put while paging.
-		widest := fmt.Sprintf("pgup/pgdown (%d–%d of %d)", total, total, total)
-		if avail := m.chatPickerProseAvailWidth(); avail <= 0 || len(hang)+ansi.StringWidth(widest) <= avail {
-			pager = hang + pager
-		}
-		rows = append(rows, m.fitProseLine(pager))
+		rows = append(rows, m.fitProseLine(neededIndent+styleEmphasis.Render(line)))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// neededLines is the answer wrapped at neededTextWidth. An agent's question is
+// its message summarised as plain text in at most neededMaxLines rows; the
+// other kinds are boss's own short lines, shown whole, each keeping its leading
+// spaces, such as a checklist bullet's, on every row it wraps into.
+func (m ChatPickerModel) neededLines() []string {
+	text := m.neededQuestion()
+	if text == "" {
+		return nil
+	}
+	width := m.neededTextWidth()
+	if m.session.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_QUESTION {
+		return summaryLines(text, width, neededMaxLines)
+	}
+	var lines []string
+	for _, paragraph := range strings.Split(text, "\n") {
+		lead := paragraph[:len(paragraph)-len(strings.TrimLeft(paragraph, " "))]
+		for _, line := range wordWrap(paragraph, width-len(lead), width-len(lead)) {
+			lines = append(lines, lead+line)
+		}
+	}
+	return lines
+}
+
+// neededTextWidth is the width the answer's rows wrap at after their indent:
+// the chat table's width capped at detailsMaxWidth, which is also what an
+// unsized model wraps at.
+func (m ChatPickerModel) neededTextWidth() int {
+	wrap := detailsWrapWidth(m.blockWrapWidth())
+	if wrap <= 0 {
+		wrap = detailsMaxWidth
+	}
+	return wrap - len(neededIndent)
 }
 
 // neededChromeRows is the blank row below the answer.
@@ -643,104 +662,4 @@ func (m ChatPickerModel) timelineHeight() int {
 		return lipgloss.Height(block)
 	}
 	return 0
-}
-
-// neededLabel opens the answer's first row.
-const neededLabel = "Needed from you: "
-
-// neededMinHangWidth is the narrowest answer column worth hanging beside the
-// label. A narrower block wraps the answer under the label instead.
-const neededMinHangWidth = 20
-
-// neededHang is the column the answer's wrapped lines start at: under its
-// first word, after the label, unless that leaves less than
-// neededMinHangWidth, when they start under the label. An unconstrained block
-// hangs.
-func (m ChatPickerModel) neededHang() int {
-	if wrap := m.neededWrapWidth(); wrap > 0 && wrap-len(neededLabel) < neededMinHangWidth {
-		return 0
-	}
-	return len(neededLabel)
-}
-
-// neededWrapWidth is the width the answer wraps at, label included: the block
-// width, capped at detailsMaxWidth.
-func (m ChatPickerModel) neededWrapWidth() int {
-	return detailsWrapWidth(m.blockWrapWidth())
-}
-
-// neededWindow keeps the complete question available while protecting the chat
-// table and footer. Only the question scrolls; chat navigation stays independent.
-// A paged window gives a row to its pager. Without a hang, continuation lines
-// are wider than the label leaves, so the answer is rewrapped into whole pages
-// that each start at the label width, and the window always opens on a page
-// start: a resize re-pages the answer without resetting the offset. A one-row
-// window cannot fit a label-width line on every page, so it keeps the unpaged
-// wrap.
-func (m ChatPickerModel) neededWindow() (lines []string, start, size int) {
-	lines = m.neededLines(0)
-	size = len(lines)
-	paged := false
-	if m.height > 0 {
-		if room := m.height - m.chatListOverhead() - m.timelineHeight() - neededChromeRows - m.detailsReservedTableRows(); size > room {
-			size = max(1, room-1)
-			if m.neededHang() == 0 && size > 1 {
-				lines, size = m.neededPages(size)
-				paged = true
-			}
-		}
-	}
-	start = min(max(0, m.neededOffset), len(lines)-size)
-	if paged {
-		start -= start % size
-	}
-	return lines, start, size
-}
-
-// neededPages is the answer rewrapped into pages of at most most lines, and
-// at least two. It takes the shortest page that keeps the page count, so the
-// blank rows padding the last page stay fewer than the pages rather than up
-// to a page.
-func (m ChatPickerModel) neededPages(most int) ([]string, int) {
-	lines := m.neededLines(most)
-	pages := len(lines) / most
-	for size := most - 1; size > 1; size-- {
-		shorter := m.neededLines(size)
-		if len(shorter)/size != pages {
-			break
-		}
-		lines, most = shorter, size
-	}
-	return lines, most
-}
-
-// neededLines is the answer word-wrapped to the block width less the label on
-// its first line and less the hang on the rest. A line's own leading spaces,
-// such as a checklist bullet's, carry onto every line it wraps into. A
-// positive page also narrows every page's first line to the label width and
-// pads the last page with blank lines.
-func (m ChatPickerModel) neededLines(page int) []string {
-	wrap := m.neededWrapWidth()
-	first, rest := wrap-len(neededLabel), max(1, wrap-m.neededHang())
-	var lines []string
-	for _, paragraph := range strings.Split(m.neededQuestion(), "\n") {
-		lead := paragraph[:len(paragraph)-len(strings.TrimLeft(paragraph, " "))]
-		// A zero blockWrapWidth leaves the block unconstrained, so each
-		// paragraph stays one line.
-		wrapped := []string{strings.Join(strings.Fields(paragraph), " ")}
-		if wrap > 0 {
-			offset := len(lines)
-			wrapped = wrapWords(paragraph, first-len(lead), rest-len(lead), func(line int) bool {
-				at := offset + line
-				return at == 0 || (page > 0 && at%page == 0)
-			})
-		}
-		for _, line := range wrapped {
-			lines = append(lines, lead+line)
-		}
-	}
-	for page > 0 && len(lines)%page != 0 {
-		lines = append(lines, "")
-	}
-	return lines
 }

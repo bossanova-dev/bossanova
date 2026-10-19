@@ -116,6 +116,7 @@ go_test(
         "detached_cleanup_test.go",
         "dispatcher_test.go",
         "display_poller_evidence_test.go",
+        "display_poller_restart_test.go",
         "display_poller_test.go",
         "dochan_ratchet_test.go",
         "duplicate_pr_test.go",

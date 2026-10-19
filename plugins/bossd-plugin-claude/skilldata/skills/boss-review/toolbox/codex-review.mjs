@@ -11,6 +11,10 @@ import {
   boundedStderrTail,
   buildExecArgv,
   classifyProbe,
+  describeProbe,
+  matchesAuthFailure,
+  PROBE_PROMPT,
+  PROBE_TIMEOUT_MS,
   interpretResult,
   removeTierAProbeRoot,
   resolveLegFitTimeout,
@@ -232,62 +236,91 @@ export function resolveCodexBin(env) {
 }
 
 // ---------------------------------------------------------------------------
-// probe({ env, timeoutMs }) → Promise<string>
-//
-// Resolves the codex binary, then runs `codex login status` with a short
-// timeout and captured stdio.  Returns a classification string.  Never throws;
-// ambiguous results → 'error'.
+// A bounded authenticated no-op, using the same environment and cwd as review.
 // ---------------------------------------------------------------------------
-export async function probe({ env = process.env, timeoutMs = 5000 } = {}) {
-  const bin = resolveCodexBin(env)
-  if (bin === null) {
-    return classifyProbe({ spawnError: { code: 'ENOENT' }, status: null, signal: null })
-  }
+export const CODEX_AUTH_SIGNATURES = [
+  /refresh[ _]token[^\n]*(?:already (?:been )?used|reused|expired|invalid)/i,
+  /access token could not be refreshed/i,
+  /401[^\n]*Unauthorized|Unauthorized[^\n]*401/i,
+  /not logged in|run [`"']?codex login/i,
+]
 
+export function buildCodexProbeArgs({ repo }) {
+  return buildExecArgv(
+    { subcommand: 'exec', flags: ['-s', 'read-only'] },
+    { repo, prompt: PROBE_PROMPT },
+  )
+}
+
+export async function probe({
+  env = process.env,
+  repo = process.cwd(),
+  timeoutMs = PROBE_TIMEOUT_MS,
+} = {}) {
+  const bin = resolveCodexBin(env)
+  if (bin === null) return 'not_installed'
+  const deadline = Date.now() + timeoutMs
+  const login = await probeStage(bin, ['login', 'status'], {
+    env,
+    repo,
+    timeoutMs: Math.min(timeoutMs, 5000),
+    nonZeroStatus: 'not_authed',
+  })
+  if (login !== 'ready') return login
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) return 'error'
+  return probeStage(bin, buildCodexProbeArgs({ repo }), {
+    env,
+    repo,
+    timeoutMs: remainingMs,
+    nonZeroStatus: 'error',
+    authSignatures: CODEX_AUTH_SIGNATURES,
+  })
+}
+
+function probeStage(bin, args, { env, repo, timeoutMs, nonZeroStatus, authSignatures }) {
   return new Promise((resolve) => {
     let settled = false
     let timer = null
-
+    const stdout = boundedStderrTail(4096)
+    const stderr = boundedStderrTail(4096)
     const settle = (result) => {
       if (settled) return
       settled = true
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
+      if (timer) clearTimeout(timer)
       resolve(result)
     }
-
     let child
     try {
-      // We only need the exit code. Discard stdout/stderr entirely — piping and
-      // not draining stderr would deadlock a chatty codex past the ~64KB pipe
-      // buffer until the timeout fires.
-      child = spawn(bin, ['login', 'status'], {
-        stdio: ['ignore', 'ignore', 'ignore'],
+      child = spawn(bin, args, {
+        env,
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       })
-    } catch (err) {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
+    } catch (spawnError) {
+      settle(classifyProbe({ spawnError }))
       return
     }
-
-    child.on('error', (err) => {
-      settle(classifyProbe({ spawnError: err, status: null, signal: null }))
-    })
-
-    child.on('close', (code, sig) => {
-      settle(classifyProbe({ spawnError: null, status: code, signal: sig }))
-    })
-
+    child.stdout.on('data', (chunk) => stdout.push(chunk))
+    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    child.on('error', (spawnError) => settle(classifyProbe({ spawnError })))
+    child.on('close', (status, signal) =>
+      settle(
+        classifyProbe({
+          status,
+          signal,
+          nonZeroStatus,
+          authSignatures,
+          output: `${stdout.tail()}\n${stderr.tail()}`,
+        }),
+      ),
+    )
     timer = setTimeout(() => {
-      // Timed out — kill the whole process group. ESRCH (group already gone)
-      // and any other kill error are intentionally swallowed: we are tearing
-      // down and will resolve 'error' regardless.
       try {
         process.kill(-child.pid, 'SIGKILL')
       } catch {
-        // intentionally ignored during teardown
+        /* process group already gone */
       }
       settle('error')
     }, timeoutMs)
@@ -542,7 +575,7 @@ export async function run({
       const output = sanitizeOutput(raw, { maxBytes })
       // interpretResult is the single source of truth for ok/skip detection.
       const verdict = interpretResult({ code, signal, stdout: output, timedOut })
-      settle({ ok: verdict.ok, output, stderr: stderrTail.tail(), timedOut })
+      settle({ ok: verdict.ok, output, stderr: stderrTail.tail(), timedOut, exitCode: code })
     })
 
     timer = setTimeout(() => {
@@ -597,6 +630,8 @@ async function main(argv) {
   if (cmd === 'probe') {
     const result = await probe({ env: process.env })
     process.stdout.write(`${result}\n`)
+    if (result !== 'ready')
+      process.stderr.write(`codex-review: ${describeProbe('codex', result)}\n`)
     return
   }
 
@@ -616,7 +651,13 @@ async function main(argv) {
       // Surface the diagnostic tail (CLI-surface errors, auth failures, etc.) so
       // a failed run is debuggable instead of silently empty. Goes to stderr to
       // keep stdout review-text-only.
-      const reason = result.timedOut ? 'timed out' : 'codex exec failed'
+      const reason = result.timedOut
+        ? 'timed out'
+        : typeof result.exitCode === 'number' &&
+            result.exitCode !== 0 &&
+            matchesAuthFailure(`${result.stderr}\n${result.output}`, CODEX_AUTH_SIGNATURES)
+          ? describeProbe('codex', 'not_authed')
+          : 'codex exec failed'
       const tail = result.stderr ? `\n${result.stderr}` : ''
       process.stderr.write(`codex-review: ${reason}${tail}\n`)
       process.exitCode = 1

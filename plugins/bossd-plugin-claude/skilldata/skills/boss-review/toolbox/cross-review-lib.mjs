@@ -159,33 +159,55 @@ export function resolveAgentBin(env, { overrideVar, binName } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// classifyProbe({ spawnError, status, signal, nonZeroStatus }) →
-//   'ready' | 'not_installed' | 'not_authed' | 'error'
-//
-// Pure classifier based on spawn-result shape. Does NOT inspect stderr prose.
-// Rules:
-//   • spawnError.code === 'ENOENT'              → not_installed
-//   • status === 0                              → ready
-//   • status non-zero, no signal, no spawnError → nonZeroStatus
-//   • signal, timeout, or any other spawnError  → error
-//   • ambiguous (null status, no signal, no err)→ error
-//
-// `nonZeroStatus` is adapter-specific because a non-zero exit means different
-// things per probe command. Codex probes `codex login status`, which exits
-// non-zero iff unauthenticated → 'not_authed' (the default). Claude probes
-// `claude --version`, which has no auth semantics, so a non-zero exit is a
-// broken CLI → callers pass 'error'.
+// Classify spawn results, optionally matching sanitized adapter auth diagnostics.
+// Spawn errors and signals take precedence over output; callers without signatures
+// retain the legacy exit-status classification.
 // ---------------------------------------------------------------------------
-export function classifyProbe({ spawnError, status, signal, nonZeroStatus = 'not_authed' }) {
+export const PROBE_PROMPT = 'Reply with exactly: OK'
+export const PROBE_TIMEOUT_MS = 60_000
+
+export function matchesAuthFailure(text, signatures = []) {
+  const output = sanitizeOutput(text)
+  return (
+    output !== '' &&
+    signatures.some((signature) => {
+      // Clone to avoid changing lastIndex on a caller's global/sticky expression.
+      return new RegExp(signature.source, signature.flags).test(output)
+    })
+  )
+}
+
+export function classifyProbe({
+  spawnError,
+  status,
+  signal,
+  nonZeroStatus = 'not_authed',
+  output,
+  authSignatures,
+}) {
   if (spawnError) {
     if (spawnError.code === 'ENOENT') return 'not_installed'
     return 'error'
   }
   if (signal) return 'error'
+  if (typeof status === 'number' && matchesAuthFailure(output, authSignatures)) return 'not_authed'
   if (status === 0) return 'ready'
   if (typeof status === 'number') return nonZeroStatus
-  // null status, no signal, no error — ambiguous
   return 'error'
+}
+
+export function describeProbe(agent, classification) {
+  if (classification === 'ready') return 'ready'
+  if (classification === 'not_authed') {
+    const recovery =
+      agent === 'codex'
+        ? 'the codex CLI login is expired or its refresh token was rejected — run `codex login`'
+        : 'the Claude Code session is expired or was rejected — run `claude auth login` (or /login in an interactive claude)'
+    return `not_authed: ${recovery} on this host, then re-run the review`
+  }
+  if (classification === 'not_installed')
+    return `not_installed: install ${agent} or set BOSS_${agent.toUpperCase()}_BIN to its executable`
+  return 'error: the readiness check failed or timed out; check the CLI on this host, then re-run the review'
 }
 
 // ---------------------------------------------------------------------------

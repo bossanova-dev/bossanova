@@ -57,6 +57,9 @@ type DisplayEntry struct {
 	// polls, and read by session.BlockedAlertFacts.
 	BlockedRunWorkingAt time.Time
 	UpdatedAt           time.Time
+	// restored marks an entry Restore seeded from the last persisted poll, so
+	// the first live Set reports its status as new.
+	restored bool
 }
 
 // ParkCodes returns the verify park's codes for displaystatus.Input.ParkCodes:
@@ -155,7 +158,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	// firing callbacks. The Recomputer reads via Get() which takes RLock
 	// itself — calling it while still holding the write lock would
 	// deadlock as soon as RWMutex serialises the readers.
-	statusChanged := !existed || oldStatus != info.Status
+	statusChanged := !existed || oldEntry.restored || oldStatus != info.Status
 	onChange := t.onChange
 	t.mu.Unlock()
 
@@ -163,6 +166,32 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 		go onChange(sessionID, oldEntry, newEntry)
 	}
 	t.scheduleRecompute(sessionID)
+}
+
+// Restore seeds a session's entry with the status the daemon last persisted,
+// dated when it was polled, so a restarted daemon serves what it last saw
+// rather than nothing until the PR is read again. It never replaces an entry a
+// live writer already set, and it neither reports a change nor recomputes:
+// nothing changed. The first live Set reports the status as new, as it would
+// on an empty tracker.
+func (t *DisplayTracker) Restore(sessionID string, info vcs.DisplayInfo, polledAt time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.entries[sessionID]; ok {
+		return
+	}
+	t.entries[sessionID] = &DisplayEntry{
+		Status:              info.Status,
+		HasFailures:         info.HasFailures,
+		HasChangesRequested: info.HasChangesRequested,
+		Merging:             t.mergeHolds[sessionID] > 0,
+		HeadSHA:             info.HeadSHA,
+		Mergeable:           info.Mergeable,
+		VerifyReason:        info.VerifyReason,
+		VerifyLabel:         info.VerifyLabel,
+		UpdatedAt:           polledAt,
+		restored:            true,
+	}
 }
 
 // Get returns a copy of the cached entry for the given session ID, or nil if not found.

@@ -162,17 +162,22 @@ func skillsCmd() *cobra.Command {
 
 	var checkAgent string
 	var gate bool
+	var heal bool
 	check := &cobra.Command{
 		Use:   "check",
 		Short: "Check installed boss skills against this binary and checkout sources",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
+			if heal && !gate {
+				return fmt.Errorf("heal requires the gate option")
+			}
 			if gate {
-				return runSkillGate(c.OutOrStdout(), checkAgent)
+				return runSkillGateWithHeal(c.OutOrStdout(), checkAgent, heal)
 			}
 			return runSkillCheck(c.OutOrStdout(), checkAgent)
 		},
 	}
+	check.Flags().BoolVar(&heal, "heal", false, "With gate, repair unedited lossless or behind drift from authenticated default-branch bytes")
 	check.Flags().BoolVar(&gate, "gate", false, "Fail only when installed skills drift from checkout source for paths not edited by this branch")
 	check.Flags().StringVar(&checkAgent, "agent", "", "Restrict to one agent: "+skillInstallAgentChoices()+" (default: all on PATH)")
 
@@ -443,6 +448,10 @@ func joinOr(names []string) string {
 }
 
 func runSkillGate(out io.Writer, only string) error {
+	return runSkillGateWithHeal(out, only, false)
+}
+
+func runSkillGateWithHeal(out io.Writer, only string, heal bool) error {
 	if err := validateSkillAgentFilter(only); err != nil {
 		return err
 	}
@@ -457,6 +466,19 @@ func runSkillGate(out io.Writer, only string) error {
 	}
 
 	payload := selectedSkillPayload{srcRoot: srcRoot, fromSource: true}
+	var healRecord libskillinstall.PayloadRecord
+	if heal {
+		before := skillPayloadRecord(payload, libskillinstall.WriterUnattended)
+		frozen, err := snapshotCheckoutSkillFSReadOnly(srcRoot)
+		if err != nil {
+			return err
+		}
+		payload.fsys = frozen
+		healRecord = skillPayloadRecord(payload, libskillinstall.WriterUnattended)
+		if before != healRecord {
+			healRecord.Dirty = true
+		}
+	}
 	repoRoot := repoRootFromSourceRoot(srcRoot)
 	var gateErr error
 	behindHeaderDone := false
@@ -468,7 +490,12 @@ func runSkillGate(out io.Writer, only string) error {
 		if err != nil {
 			return fmt.Errorf("%s skills dir: %w", target.command, err)
 		}
-		report, err := libskillinstall.SourceDriftReport(dir, srcRoot)
+		var report libskillinstall.DriftReport
+		if heal {
+			report, err = healSkillGateTree(out, target.command, dir, payload, healRecord)
+		} else {
+			report, err = libskillinstall.SourceDriftReport(dir, srcRoot)
+		}
 		if err != nil {
 			gateErr = errors.Join(gateErr, fmt.Errorf("check %s skills: %w", target.command, err))
 			continue
@@ -747,6 +774,10 @@ func resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath string) skill
 	if err != nil || blob == "" {
 		return skillDriftUnknown
 	}
+	return resolveSkillDriftBlobAncestry(repoRoot, blob, sourcePath)
+}
+
+func resolveSkillDriftBlobAncestry(repoRoot, blob, sourcePath string) skillDriftDirection {
 	found, commits, err := skillDriftHistoryHasBlob(repoRoot, blob, "HEAD", sourcePath)
 	if err != nil {
 		return skillDriftUnknown

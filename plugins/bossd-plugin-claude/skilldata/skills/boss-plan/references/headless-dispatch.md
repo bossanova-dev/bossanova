@@ -67,13 +67,13 @@ output file (a symlink or a stub whose mtime and size never move), and never thr
 3. **Route on the `wait` exit code.** Each re-arm is also the tool-call boundary at which the
    dispatch's returned object can arrive; once it is in hand, stop re-arming and run step 4.
 
-| `wait` exit | Meaning                                                                                   | Next                                                                  |
-| ----------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `98`        | budget spent: the draft is still open, or its sentinel landed and the drafter still beats | re-arm                                                                |
-| `0`         | a non-provisional sentinel landed and the drafter stopped beating                         | step 4 with the returned object; without it, the transport-death rule |
-| `96` / `97` | timed out / abandoned (a stale clock and no live beat)                                    | step 4 — its `disposition` classifies the dispatch failure            |
-| `2`         | the call itself is wrong (a missing, empty or future clock; a bad flag)                   | fix the call; never read it as a death                                |
-| any other   | the harness killed the call                                                               | unknown — re-arm; never read it as a death class                      |
+| `wait` exit | Meaning                                                                                                                  | Next                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `98`        | budget spent: the draft is still open, or its sentinel landed and the returned object has not arrived yet (short slices) | re-arm                                                                |
+| `0`         | a non-provisional sentinel landed and the drafter stopped beating or went quiet for the return grace                     | step 4 with the returned object; without it, the transport-death rule |
+| `96` / `97` | timed out / abandoned (a stale clock and no live beat)                                                                   | step 4 — its `disposition` classifies the dispatch failure            |
+| `2`         | the call itself is wrong (a missing, empty or future clock; a bad flag)                                                  | fix the call; never read it as a death                                |
+| any other   | the harness killed the call                                                                                              | unknown — re-arm; never read it as a death class                      |
 
 Step 4's `disposition` passes the same `--dispatched-at`, so it cannot re-classify a draft `wait`
 called abandoned as a resumable timeout. Under Codex, `wait_agent` is the hold; call `wait` once

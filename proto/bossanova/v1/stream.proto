@@ -262,6 +262,12 @@ message DaemonSnapshot {
   // rest of the read model; steady-state changes arrive as CallbackInterestSet
   // deltas (DaemonEvent field 10).
   repeated CallbackInterest callback_interests = 7;
+  // The OrchestratorCommand.cmd field numbers this daemon dispatches. bosso
+  // answers any other command itself with ERROR_CODE_UNIMPLEMENTED instead of
+  // sending it. Empty on daemons built before this field existed, which drop
+  // an unknown command without replying; bosso assumes those dispatch fields up
+  // to 65 (run_trigger_gate) and nothing newer.
+  repeated int32 supported_command_fields = 8;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub
@@ -422,6 +428,12 @@ message CommandResult {
     // Emitted for a session account switch whose caller context was cancelled
     // (BOS-958); bosso renders it as CodeCanceled.
     ERROR_CODE_CANCELED = 5;
+    // The daemon does not know the command: it was built before the command
+    // existed. Re-sending it fails the same way until the daemon is updated.
+    // Emitted by a daemon for a command it has no case for, and synthesized by
+    // bosso for a command the daemon's snapshot does not list in
+    // supported_command_fields. bosso renders it as CodeUnimplemented.
+    ERROR_CODE_UNIMPLEMENTED = 6;
   }
 
   string command_id = 1;

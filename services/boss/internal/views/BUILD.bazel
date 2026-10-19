@@ -150,6 +150,9 @@ go_library(
     ],
 )
 
+# Unsharded: 49s under --config=race on an M-series laptop, against a 300s
+# medium ceiling (scripts/race-budgets.json). The seeded sweeps run a prefix per
+# PR; the native-nightly job runs them whole with BOSS_VIEWS_SWEEPS=1.
 go_test(
     name = "views_test",
     srcs = [
@@ -311,7 +314,6 @@ go_test(
         "testdata/chatpicker-timeline-needed-table-40.golden",
         "testdata/chatpicker-timeline-needed-table-80.golden",
     ],
-    shard_count = 4,  # keep: 1510 independent test funcs, 180s serial under native go test -race (four timeline and wrap property tests are 144s of it); TIMEOUT at the medium (300s) ceiling on CI
     deps = [
         "//lib/bossalib/agentcred",
         "//lib/bossalib/attention",

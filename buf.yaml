@@ -50,3 +50,14 @@ modules:
           - proto/bossanova/v1/daemon.proto
         FIELD_NO_DELETE:
           - proto/bossanova/v1/daemon.proto
+        # plugin.proto is the bossd<->plugin contract; both sides ship from
+        # this repo in lockstep. NewVersionedPluginMap in
+        # services/bossd/internal/plugin/shared.go refuses a plugin whose
+        # ProtocolVersion differs. Service/message deletion fails loudly
+        # (unimplemented or a compile error), never by misparsing a message.
+        # FIELD_NO_DELETE, renumbering and retyping remain enforced here;
+        # orchestrator.proto retains FILE at full strength.
+        SERVICE_NO_DELETE:
+          - proto/bossanova/v1/plugin.proto
+        MESSAGE_NO_DELETE:
+          - proto/bossanova/v1/plugin.proto

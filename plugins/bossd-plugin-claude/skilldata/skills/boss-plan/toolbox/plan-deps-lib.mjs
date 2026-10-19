@@ -130,7 +130,7 @@ export const DEPENDENCY_REASONS = Object.freeze([
   'excluded',
   // Rung 2 — the candidate is not a valid blocker.
   'epic-parent',
-  'same-epic-member',
+  'subject-parent',
   'candidate-not-schedulable',
   // Rung 3 — no basis was established.
   'no-areas',
@@ -1146,6 +1146,11 @@ export function classifyDependencyEdge(input = {}) {
     })
   }
 
+  const parent = epicParentKey(subject)
+  if (parent !== '' && issueAliases(candidate).includes(parent)) {
+    return result({ ...base, reason: 'subject-parent' })
+  }
+
   // Caller-supplied tuning is spread defensively: this module's header promises
   // nothing throws, and `new Set(undefined-ish)`/`[...notAnArray]` breaks that.
   const cleared = new Set(
@@ -1394,33 +1399,6 @@ function epicParentKey(issue) {
     .toLowerCase()
 }
 
-function sameEpicMember(subject, candidate) {
-  const parent = epicParentKey(subject)
-  if (parent === '') return false
-  if (issueAliases(candidate).includes(parent)) return true
-  return epicParentKey(candidate) === parent
-}
-
-/**
- * The ONE planning note every same-epic member shares, as a zero- or one-element
- * array. Names the members in the sorted order `skipped` already holds.
- */
-function sameEpicNote(subject, skipped) {
-  const names = skipped
-    .filter((entry) => entry.reason === 'same-epic-member')
-    .map((entry) => entry.identifier || entry.id || entry.key)
-  if (names.length === 0) return []
-  return [
-    note(
-      'info',
-      'planning',
-      names.join(', '),
-      'same-epic-member',
-      `${names.join(', ')} share${names.length === 1 ? 's' : ''} ${issueLabel(subject)}'s epic parent or ${names.length === 1 ? 'is' : 'are'} that parent, so the external dependency linker records this one planning note instead of adding edges inside the epic. Intra-epic ordering belongs to the epic DAG.`,
-    ),
-  ]
-}
-
 /**
  * Classify a whole candidate set against one subject.
  *
@@ -1451,10 +1429,10 @@ function sameEpicNote(subject, skipped) {
  *   behaviour for a hand-built set.
  * @returns {{edges: object[], skipped: object[], notes: object[], questions: object[], compared: number,
  *   candidatesWithoutAreas: number, candidateSetComplete: boolean}}
- *   `candidatesWithoutAreas` counts the classified candidates (same-epic members and
- *   rung-1 rejections excluded) that contributed no area; when it equals every
+ *   `candidatesWithoutAreas` counts the classified candidates (rung-1
+ *   rejections excluded) that contributed no area; when it equals every
  *   classified candidate, a `no-candidate-areas` warning says the scan could not
- *   evaluate. Same-epic members share ONE consolidated `same-epic-member` note.
+ *   evaluate. Siblings are ordinary candidates in the same classifier ladder.
  *   `compared` is a LOWER BOUND on the candidates actually evaluated — rung-1
  *   rejections (the subject itself, a caller-excluded id) are not counted — so a
  *   set holding nothing else reports "could not evaluate" (compared 0, plus a
@@ -1548,9 +1526,8 @@ export function planDependencyEdges(input = {}) {
   const edges = []
   let compared = 0
   const comparedReasons = []
-  // Candidates that reached the classifier (same-epic and rung-1 rejections never
-  // do) and how many of them contributed no area. All of them arealess is a scan
-  // that could not evaluate overlap at all — see `no-candidate-areas` below.
+  // Candidates beyond rung-1 identity rejections, and how many contributed no area.
+  // All of them arealess means overlap could not be evaluated — see `no-candidate-areas`.
   let classifiedCount = 0
   let candidatesWithoutAreas = 0
   for (let index = 0; index < queue.length; index += 1) {
@@ -1562,27 +1539,6 @@ export function planDependencyEdges(input = {}) {
       aliases.includes(key.trim().toLowerCase()),
     )
     const logicalDependency = verdictKey === undefined ? null : verdicts[verdictKey]
-    if (sameEpicMember(subject, issue)) {
-      compared += 1
-      comparedReasons.push('same-epic-member')
-      // No per-record note: every same-epic member shares ONE consolidated planning
-      // note (`sameEpicNote`), so N siblings no longer record N near-identical lines.
-      skipped.push({
-        id: text(issue?.id).trim() || null,
-        identifier: text(issue?.identifier).trim() || null,
-        key: sortKey(issue),
-        edge: 'none',
-        basis: null,
-        source: aliases.some((alias) => declared.has(alias)) ? 'declared-related' : 'backlog-scan',
-        shared: [],
-        reason: 'same-epic-member',
-        note: null,
-        question: null,
-        write: null,
-        expandChildren: false,
-      })
-      continue
-    }
     const classified = classifyDependencyEdge({
       ...input,
       subject,
@@ -1621,10 +1577,7 @@ export function planDependencyEdges(input = {}) {
       return {
         edges: [],
         skipped,
-        notes: [
-          ...skipped.map((entry) => entry.note).filter(Boolean),
-          ...sameEpicNote(subject, skipped),
-        ],
+        notes: skipped.map((entry) => entry.note).filter(Boolean),
         questions: [],
         compared,
         candidatesWithoutAreas,
@@ -1699,10 +1652,7 @@ export function planDependencyEdges(input = {}) {
   reconcileDeclared()
   edges.sort(compareByKey)
   skipped.sort(compareByKey)
-  const notes = [
-    ...[...edges, ...skipped].map((entry) => entry.note).filter(Boolean),
-    ...sameEpicNote(subject, skipped),
-  ]
+  const notes = [...edges, ...skipped].map((entry) => entry.note).filter(Boolean)
   const questions = [...edges, ...skipped].map((entry) => entry.question).filter(Boolean)
   if (compared === 0) {
     // A complete candidate set that held nothing but the subject is an empty
@@ -1890,9 +1840,9 @@ export function validateDependencyScanInput(input) {
   const payload = input && typeof input === 'object' ? input : {}
   const known = new Set()
   // A supplied epic child owes a candidate's checks — except the parent field: its
-  // parent is its childrenByParentId key, and a parent sharing the subject's epic is
-  // skipped before it is expanded. EVERY supplied child is checked, including ones
-  // expansion never reaches (same-epic or depth-capped parent, unmatched key): a
+  // parent is its childrenByParentId key; labelled parents expand through rung 2.
+  // EVERY supplied child is checked, including ones expansion never reaches
+  // (depth-capped parent, unmatched key): a
   // deliberate over-approximation, since only planDependencyEdges' own ladder knows
   // what expands, and the cost is a re-read. A child that is also a candidate was
   // already checked under the stricter rule.
@@ -1968,9 +1918,8 @@ export function validateDependencyScanInput(input) {
  *   could-not-evaluate unless the result says `candidateSetComplete`: then it is
  *   `no-candidates` — a clean empty backlog with nothing to record — provided no
  *   other could-not-evaluate reason (an unresolved or arealess subject) is
- *   present. `recordToDescription` is false when nothing but the consolidated
- *   same-epic planning note came back — that note alone does not earn a second
- *   description save.
+ *   present. `recordToDescription` is true whenever an edge, question, or note needs
+ *   persisting; every returned note earns a description save.
  */
 export function dependencyScanVerdict(result) {
   const r = result && typeof result === 'object' ? result : {}
@@ -1997,16 +1946,13 @@ export function dependencyScanVerdict(result) {
           : relatedTo > 0
             ? 'related-only'
             : 'no-dependencies'
-  const substantive = notes.some(
-    (entry) => !(entry.reason === 'same-epic-member' && entry.severity === 'info'),
-  )
   return {
     verdict,
     compared,
     edges: edges.length,
     relatedTo,
     reasons: [...reasons].sort(),
-    recordToDescription: edges.length > 0 || questions.length > 0 || substantive,
+    recordToDescription: edges.length > 0 || questions.length > 0 || notes.length > 0,
   }
 }
 

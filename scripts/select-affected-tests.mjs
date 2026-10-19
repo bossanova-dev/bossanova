@@ -6,7 +6,7 @@ export const moduleRules = [
   { root: 'lib/bossalib/', target: 'test-bossalib' },
   { root: 'services/boss/', target: 'test-boss' },
   { root: 'services/bossd/', target: 'test-bossd' },
-  { root: 'services/bosso/', target: 'test-bosso' },
+  { root: 'services/bosso/', target: 'test-bosso-postgres' },
   { root: 'services/mcp/', target: 'test-mcp' },
   { root: 'services/mcp-gateway/', target: 'test-mcp-gateway' },
   { root: 'plugins/bossd-plugin-claude/', target: 'test-claude' },
@@ -19,7 +19,7 @@ export const moduleRules = [
   { root: 'plugins/bossd-plugin-stub-runner/', target: 'test-stub-runner' },
 ]
 
-const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso']
+const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres']
 
 // BOS-370: Go-bazel-target selection for the PR fast tier (bazel.yml go-test).
 // This is a SEPARATE map from the make `moduleRules` above: it maps a changed
@@ -90,7 +90,7 @@ export const externalInputRules = [
     ledgerModules: ['lib/bossalib'],
   },
   {
-    // //lib/bossalib/productparity:productparity_test `data` deps; trial_test.go reads these
+    // //services/bosso/internal/productparity:productparity_test `data` deps; trial_test.go reads these
     // cross-surface sources to keep checkout, web, marketing, and TUI trial copy in sync.
     match: (f) =>
       f.startsWith('services/boss/internal/views/') ||
@@ -99,7 +99,7 @@ export const externalInputRules = [
       f.startsWith('services/marketing/src/pages/') ||
       f.startsWith('services/web/src/pages/'),
     samplePath: 'services/web/src/pages/Billing.tsx',
-    patterns: ['//lib/bossalib/...'],
+    patterns: ['//services/bosso/internal/productparity/...'],
     ledgerModules: [],
   },
   {
@@ -291,10 +291,12 @@ export function selectBazelAffected(files) {
   return { full: false, patterns: [...patterns].sort(), reason: 'affected' }
 }
 
-// Ledger module roots, derived from the same bazel module rules so the two
-// selections can never drift: `//services/boss/...` -> `services/boss`.
+// Map both module-wide and package-specific patterns to their owning module for
+// native targets and ledger rows.
 function patternToModuleRoot(pattern) {
-  return pattern.replace(/^\/\//, '').replace(/\/\.\.\.$/, '')
+  const root = pattern.replace(/^\/\//, '').replace(/\/\.\.\.$/, '')
+  const owner = bazelGoModuleRules.find(({ root: moduleRoot }) => `${root}/`.startsWith(moduleRoot))
+  return owner ? normalizeModuleRoot(owner.root) : root
 }
 
 // selectLedgerModules maps a changed-file list to the ledger `module` values whose

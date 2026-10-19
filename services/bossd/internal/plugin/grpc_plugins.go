@@ -17,9 +17,9 @@ import (
 // bound can extend ctx with an explicit deadline — this timeout is applied as
 // a ceiling on top of the caller's ctx, so the shorter of the two wins.
 //
-// No daemon → plugin RPC is server-streaming today. If one is added (e.g. a
-// future EventSourceService.StreamEvents wiring), its client method must
-// bypass invokePluginUnary to avoid a premature 30s cutoff on the stream.
+// No daemon → plugin RPC is server-streaming today. If a server-streaming RPC
+// is added, its client method must bypass invokePluginUnary to avoid a
+// premature 30s cutoff on the stream.
 const defaultPluginRPCTimeout = 30 * time.Second
 
 // pollTasksRPCTimeout is the looser ceiling for TaskSourceService.PollTasks.
@@ -57,18 +57,6 @@ type TaskSource interface {
 	PollTasks(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error)
 	UpdateTaskStatus(ctx context.Context, externalID string, status bossanovav1.TaskItemStatus, details string) error
 	ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error)
-}
-
-// EventSource is the host-side interface for EventSourceService plugins.
-type EventSource interface {
-	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
-}
-
-// Scheduler is the host-side interface for SchedulerService plugins.
-type Scheduler interface {
-	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
-	GetSchedule(ctx context.Context) ([]*bossanovav1.ScheduledJob, error)
-	ExecuteJob(ctx context.Context, jobID string) (*bossanovav1.JobAction, error)
 }
 
 // WorkflowService is the host-side interface for WorkflowService plugins.
@@ -112,34 +100,6 @@ func (p *TaskSourceGRPCPlugin) GRPCClient(_ context.Context, broker *goplugin.GR
 // HostService. Exported for integration testing.
 func NewTaskSourceGRPCPlugin(hostService *HostServiceServer) *TaskSourceGRPCPlugin {
 	return &TaskSourceGRPCPlugin{HostService: hostService}
-}
-
-// EventSourceGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the EventSourceService.
-type EventSourceGRPCPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-}
-
-func (p *EventSourceGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *EventSourceGRPCPlugin) GRPCClient(_ context.Context, _ *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	return &eventSourceGRPCClient{conn: conn}, nil
-}
-
-// SchedulerGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the SchedulerService.
-type SchedulerGRPCPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-}
-
-func (p *SchedulerGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *SchedulerGRPCPlugin) GRPCClient(_ context.Context, _ *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	return &schedulerGRPCClient{conn: conn}, nil
 }
 
 // WorkflowServiceGRPCPlugin implements go-plugin's GRPCPlugin interface for
@@ -217,47 +177,6 @@ func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOrig
 	return resp.GetIssues(), nil
 }
 
-type eventSourceGRPCClient struct {
-	conn *grpc.ClientConn
-}
-
-func (c *eventSourceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.EventSourceServiceGetInfoResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.EventSourceService/GetInfo", &bossanovav1.EventSourceServiceGetInfoRequest{}, resp); err != nil {
-		return nil, err
-	}
-	return resp.GetInfo(), nil
-}
-
-type schedulerGRPCClient struct {
-	conn *grpc.ClientConn
-}
-
-func (c *schedulerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.SchedulerServiceGetInfoResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/GetInfo", &bossanovav1.SchedulerServiceGetInfoRequest{}, resp); err != nil {
-		return nil, err
-	}
-	return resp.GetInfo(), nil
-}
-
-func (c *schedulerGRPCClient) GetSchedule(ctx context.Context) ([]*bossanovav1.ScheduledJob, error) {
-	resp := &bossanovav1.GetScheduleResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/GetSchedule", &bossanovav1.GetScheduleRequest{}, resp); err != nil {
-		return nil, err
-	}
-	return resp.GetJobs(), nil
-}
-
-func (c *schedulerGRPCClient) ExecuteJob(ctx context.Context, jobID string) (*bossanovav1.JobAction, error) {
-	req := &bossanovav1.ExecuteJobRequest{JobId: jobID}
-	resp := &bossanovav1.ExecuteJobResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/ExecuteJob", req, resp); err != nil {
-		return nil, err
-	}
-	return resp.GetAction(), nil
-}
-
 type workflowServiceGRPCClient struct {
 	conn *grpc.ClientConn
 }
@@ -327,7 +246,5 @@ func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sess
 // Compile-time interface checks.
 var (
 	_ TaskSource      = (*taskSourceGRPCClient)(nil)
-	_ EventSource     = (*eventSourceGRPCClient)(nil)
-	_ Scheduler       = (*schedulerGRPCClient)(nil)
 	_ WorkflowService = (*workflowServiceGRPCClient)(nil)
 )

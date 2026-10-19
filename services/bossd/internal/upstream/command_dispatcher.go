@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/safego"
 )
@@ -30,10 +31,8 @@ var asyncCancelTombstoneTTL = 5 * time.Minute
 // — subsequent chunks flow via outbound as DaemonEvent_AttachChunk
 // events correlated back via the shared command_id.
 //
-// Unknown oneof values (from a newer bosso) log and return nil. No
-// CommandResult is emitted, matching the forward-compat contract in
-// the design doc: the daemon MUST NOT invent a failure for commands
-// it doesn't understand — bosso will time out its own waiter.
+// Unknown oneof values (from a newer bosso) log and answer
+// ERROR_CODE_UNIMPLEMENTED, so bosso fails the command at once.
 func (c *StreamClient) dispatchCommand(
 	ctx context.Context,
 	cmd *pb.OrchestratorCommand,
@@ -181,12 +180,12 @@ func (c *StreamClient) dispatchCommand(
 		c.cancelAsyncCommand(cmd.GetCommandCancel().GetCommandId())
 		return nil
 	default:
-		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
-		// CommandResult; bosso will time out the correlation slot.
+		// A command from a newer bosso. Answering it, rather than dropping it,
+		// lets bosso fail it in seconds instead of waiting out its deadline.
 		c.logger.Warn().
 			Str("command_id", cmdID).
 			Msgf("unknown orchestrator command: %T", cmd.GetCmd())
-		return nil
+		return commandErrCode(cmdID, daemoncaps.UnsupportedCommandText(c.hostname), pb.CommandResult_ERROR_CODE_UNIMPLEMENTED)
 	}
 }
 

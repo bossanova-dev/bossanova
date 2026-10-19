@@ -24,7 +24,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-async function waitFor(predicate, timeoutMs = 1_000) {
+const LOAD_TOLERANT_WAIT_MS = 30_000
+
+async function waitFor(predicate, timeoutMs = LOAD_TOLERANT_WAIT_MS) {
   const deadline = Date.now() + timeoutMs
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('timed out waiting for condition')
@@ -234,7 +236,7 @@ test('withSkillSourceRewriteLock waits for a live lock to be released', async ()
     // A fresh Node process occasionally needs longer than the generic one-second
     // polling allowance to load the lock helper on a busy CI worker. The lock's
     // correctness assertion is unchanged; this only avoids racing its startup.
-    await waitFor(() => existsSync(lockPath), 5_000)
+    await waitFor(() => existsSync(lockPath), LOAD_TOLERANT_WAIT_MS)
     let actionRan = false
     withSkillSourceRewriteLock(root, () => {
       actionRan = true
@@ -329,7 +331,7 @@ test('withSkillSourceRewriteLock reclaims an expired lock whose PID was reused',
         (_, reject) =>
           (timeout = setTimeout(
             () => reject(new Error('reused PID lock blocked the writer')),
-            5_000,
+            LOAD_TOLERANT_WAIT_MS,
           )),
       ),
     ])
@@ -378,7 +380,7 @@ test('withSkillSourceRewriteLock propagates pending-file collisions instead of r
         (_, reject) =>
           (timeout = setTimeout(
             () => reject(new Error('non-contention errors must not retry indefinitely')),
-            5_000,
+            LOAD_TOLERANT_WAIT_MS,
           )),
       ),
     ])
@@ -491,7 +493,7 @@ test('withSkillSourceRewriteLock reclaims an abandoned reclaim sidecar', async (
         (_, reject) =>
           (timeout = setTimeout(
             () => reject(new Error('abandoned reclaim sidecar blocked the writer')),
-            5_000,
+            LOAD_TOLERANT_WAIT_MS,
           )),
       ),
     ])

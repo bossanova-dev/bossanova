@@ -214,7 +214,13 @@ func BaseHarnessEnv(environ []string) []string {
 			strings.HasPrefix(e, "BOSS_ORG_E2E_SESSION_READ_FAILURE=") ||
 			strings.HasPrefix(e, "BOSS_PROOF_SETTINGS_") ||
 			strings.HasPrefix(e, "HOME=") ||
-			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
+			// The XDG base directories default to paths under HOME, which every
+			// caller replaces with a throwaway one. An ambient value would send
+			// boss's log file, state and cache into the developer's real ones.
+			strings.HasPrefix(e, "XDG_CONFIG_HOME=") ||
+			strings.HasPrefix(e, "XDG_STATE_HOME=") ||
+			strings.HasPrefix(e, "XDG_CACHE_HOME=") ||
+			strings.HasPrefix(e, "XDG_DATA_HOME=") {
 			continue
 		}
 		env = append(env, e)

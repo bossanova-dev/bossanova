@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-24'
+  version: '2026-09-25'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -6981,6 +6981,7 @@ components:
         - ERROR_CODE_INVALID_ARGUMENT
         - ERROR_CODE_DEADLINE_EXCEEDED
         - ERROR_CODE_CANCELED
+        - ERROR_CODE_UNIMPLEMENTED
       description: |-
         ErrorCode is a typed channel for failure-mode signalling so bosso can
          map daemon errors back to ConnectRPC codes without parsing the human-
@@ -7640,24 +7641,6 @@ components:
       title: CreatePROpts
       additionalProperties: false
       description: CreatePROpts contains options for creating a new pull request.
-    bossanova.v1.CreateSessionAction:
-      type: object
-      properties:
-        title:
-          type: string
-          title: title
-        plan:
-          type: string
-          title: plan
-        repoOriginUrl:
-          type: string
-          title: repo_origin_url
-        baseBranch:
-          type: string
-          title: base_branch
-      title: CreateSessionAction
-      additionalProperties: false
-      description: CreateSessionAction tells the daemon to create a new session.
     bossanova.v1.CreateSessionCommand:
       type: object
       properties:
@@ -8536,6 +8519,18 @@ components:
              on the snapshot so a (re)connect reconciles interests atomically with the
              rest of the read model; steady-state changes arrive as CallbackInterestSet
              deltas (DaemonEvent field 10).
+        supportedCommandFields:
+          type: array
+          items:
+            type: integer
+            format: int32
+          title: supported_command_fields
+          description: |-
+            The OrchestratorCommand.cmd field numbers this daemon dispatches. bosso
+             answers any other command itself with ERROR_CODE_UNIMPLEMENTED instead of
+             sending it. Empty on daemons built before this field existed, which drop
+             an unknown command without replying; bosso assumes those dispatch fields up
+             to 65 (run_trigger_gate) and nothing newer.
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -9181,36 +9176,6 @@ components:
       title: EventNotification
       additionalProperties: false
       description: EventNotification wraps all possible plugin events in a oneof.
-    bossanova.v1.EventSourceServiceGetInfoRequest:
-      type: object
-      title: EventSourceServiceGetInfoRequest
-      additionalProperties: false
-    bossanova.v1.EventSourceServiceGetInfoResponse:
-      type: object
-      properties:
-        info:
-          title: info
-          $ref: '#/components/schemas/bossanova.v1.PluginInfo'
-      title: EventSourceServiceGetInfoResponse
-      additionalProperties: false
-    bossanova.v1.ExecuteJobRequest:
-      type: object
-      properties:
-        jobId:
-          type: string
-          title: job_id
-          description: The job ID to execute.
-      title: ExecuteJobRequest
-      additionalProperties: false
-    bossanova.v1.ExecuteJobResponse:
-      type: object
-      properties:
-        action:
-          title: action
-          description: The action the daemon should take.
-          $ref: '#/components/schemas/bossanova.v1.JobAction'
-      title: ExecuteJobResponse
-      additionalProperties: false
     bossanova.v1.ExternalCheckEvent:
       type: object
       properties:
@@ -9852,20 +9817,6 @@ components:
           $ref: '#/components/schemas/bossanova.v1.RunCostBackfillSummary'
       title: GetRunCostResponse
       additionalProperties: false
-    bossanova.v1.GetScheduleRequest:
-      type: object
-      title: GetScheduleRequest
-      additionalProperties: false
-    bossanova.v1.GetScheduleResponse:
-      type: object
-      properties:
-        jobs:
-          type: array
-          items:
-            $ref: '#/components/schemas/bossanova.v1.ScheduledJob'
-          title: jobs
-      title: GetScheduleResponse
-      additionalProperties: false
     bossanova.v1.GetSessionRequest:
       type: object
       properties:
@@ -10479,28 +10430,6 @@ components:
         IssueAttachTokenResponse carries the freshly-minted attach JWT and its
          expiry. The browser sends `token` as the second value of the
          `Sec-WebSocket-Protocol` header on the /ws/attach handshake.
-    bossanova.v1.JobAction:
-      type: object
-      oneOf:
-        - type: object
-          properties:
-            createSession:
-              title: create_session
-              $ref: '#/components/schemas/bossanova.v1.CreateSessionAction'
-          title: create_session
-          required:
-            - createSession
-        - type: object
-          properties:
-            noOp:
-              title: no_op
-              $ref: '#/components/schemas/bossanova.v1.NoOpAction'
-          title: no_op
-          required:
-            - noOp
-      title: JobAction
-      additionalProperties: false
-      description: JobAction wraps the possible outcomes of a scheduled job execution.
     bossanova.v1.LastTurnIsUserRequest:
       type: object
       properties:
@@ -12150,15 +12079,6 @@ components:
         NewsletterConsent is the caller's recorded in-app newsletter opt-in. It is
          written only after Loops accepted the form submission; the subscription is
          still pending until the user clicks the double opt-in confirmation link.
-    bossanova.v1.NoOpAction:
-      type: object
-      properties:
-        reason:
-          type: string
-          title: reason
-      title: NoOpAction
-      additionalProperties: false
-      description: NoOpAction indicates the job ran but no action is needed.
     bossanova.v1.Note:
       type: object
       properties:
@@ -17906,56 +17826,6 @@ components:
       description: |-
         RunTriggerGateResult is the reply to RunTriggerGateCommand
          (run_trigger_gate = 43).
-    bossanova.v1.ScheduledJob:
-      type: object
-      properties:
-        id:
-          type: string
-          title: id
-          description: Unique ID for this job within the plugin.
-        name:
-          type: string
-          title: name
-          description: Human-readable name.
-        cronExpr:
-          type: string
-          title: cron_expr
-          description: Cron expression (eg. "0 9 * * MON").
-        repoOriginUrl:
-          type: string
-          title: repo_origin_url
-          description: Repo origin URL this job targets.
-        isEnabled:
-          type: boolean
-          title: is_enabled
-          description: Whether this job is currently enabled.
-        lastRun:
-          oneOf:
-            - $ref: '#/components/schemas/google.protobuf.Timestamp'
-            - type: "null"
-          title: last_run
-          description: When this job last ran.
-        nextRun:
-          oneOf:
-            - $ref: '#/components/schemas/google.protobuf.Timestamp'
-            - type: "null"
-          title: next_run
-          description: When this job is next scheduled to run.
-      title: ScheduledJob
-      additionalProperties: false
-      description: ScheduledJob describes a recurring job managed by the scheduler plugin.
-    bossanova.v1.SchedulerServiceGetInfoRequest:
-      type: object
-      title: SchedulerServiceGetInfoRequest
-      additionalProperties: false
-    bossanova.v1.SchedulerServiceGetInfoResponse:
-      type: object
-      properties:
-        info:
-          title: info
-          $ref: '#/components/schemas/bossanova.v1.PluginInfo'
-      title: SchedulerServiceGetInfoResponse
-      additionalProperties: false
     bossanova.v1.SecretAction:
       type: string
       title: SecretAction
@@ -19744,26 +19614,6 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: StopSessionResponse
       additionalProperties: false
-    bossanova.v1.StreamEventsRequest:
-      type: object
-      properties:
-        repoOriginUrls:
-          type: array
-          items:
-            type: string
-          title: repo_origin_urls
-          description: 'Optional filter: only stream events for these repo origin URLs.'
-      title: StreamEventsRequest
-      additionalProperties: false
-    bossanova.v1.StreamEventsResponse:
-      type: object
-      properties:
-        notification:
-          title: notification
-          $ref: '#/components/schemas/bossanova.v1.EventNotification'
-      title: StreamEventsResponse
-      additionalProperties: false
-      description: StreamEventsResponse wraps a single event notification from a plugin.
     bossanova.v1.SubscribeToNewsletterRequest:
       type: object
       properties:

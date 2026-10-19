@@ -606,6 +606,10 @@ type RefMsg struct {
 // sentence is never built from blocked_reason, and every other change that
 // matches a sentence matches a different one, so the order does not matter.
 //
+// DaemonLacksCommandCodeChange (introduced at V20260925), which restores
+// CodeDeadlineExceeded for a command the session's daemon is too old to run. It
+// touches only errors carrying its own marker.
+//
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -677,6 +681,7 @@ func ProductionChanges() *Changes {
 		RunBlockedLabelChange{},
 		EndedBlockHintChange{},
 		ResumeGaveUpSentenceChange{},
+		DaemonLacksCommandCodeChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3784,6 +3789,28 @@ func downconvertResumeGaveUpSentenceSession(s *pb.Session) *pb.Session {
 func (ResumeGaveUpSentenceChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertResumeGaveUpSentenceSession)
 }
+
+// DaemonLacksCommandCodeChange is the production VersionChange introduced at
+// V20260925.
+//
+// Before V20260925 a command the session's daemon was too old to run went
+// unanswered: the daemon dropped it and bosso served CodeDeadlineExceeded once
+// its own wait ran out, eleven minutes later for an operator merge. From
+// V20260925 bosso answers it at once with CodeUnimplemented, and an operator
+// merge that needs no approval falls back to the plain merge instead.
+//
+// A client pinned to an older version treats CodeDeadlineExceeded as "no answer
+// yet" and settles the outcome from the session, so for those pins this change
+// restores CodeDeadlineExceeded with the message preserved. It still arrives at
+// once.
+//
+// It matches the marker, not the procedure: any relayed command can meet a daemon
+// too old for it, and no other path serves the marker. TransformResponse is a
+// no-op.
+type DaemonLacksCommandCodeChange struct{}
+
+// Version implements VersionChange.
+func (DaemonLacksCommandCodeChange) Version() Version { return V20260925 }
 
 // DeadBootstrapAttentionChange is the production VersionChange introduced at
 // V20260920.

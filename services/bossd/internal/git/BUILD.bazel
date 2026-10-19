@@ -37,7 +37,7 @@ go_test(
         "worktree_test.go",
     ],
     embed = [":git"],
-    shard_count = 4,  # keep: 209s serial under --config=race; these worktree tests each build a scratch repo and are independent
+    shard_count = 4,  # keep: 89s unsharded under --config=race on an M-series laptop, about 220s with the 2.5x laptop-to-CI headroom scripts/race-budgets.json budgets for, too close to the medium (300s) ceiling
     deps = [
         "//lib/bossalib/gitremote",
         "@com_github_rs_zerolog//:zerolog",

@@ -119,5 +119,18 @@ func (h *HomeModel) clearFailureOnKey(msg tea.KeyMsg) {
 		return
 	}
 	h.clearStatus()
+	h.restoreMergeStatus()
 	h.table.SetHeight(h.tableHeight())
+}
+
+// restoreMergeStatus shows the line of a merge that is still unresolved. The
+// failure held that line back, and without it a row reading merging would sit
+// beside an empty status line.
+func (h *HomeModel) restoreMergeStatus() {
+	for _, s := range h.sessions {
+		if line := h.mergesInFlight[s.GetId()].ongoingStatus(); line != "" {
+			h.writeStatus(line, statusOngoing)
+			return
+		}
+	}
 }

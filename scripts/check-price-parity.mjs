@@ -47,7 +47,7 @@
 // is the bar for adding another: quoting history, not illustrating a rule.
 //
 // A sibling gate owns adjacent ground; check it before extending this one:
-//   - lib/bossalib/productparity (Go, Bazel data deps) gates the trial length
+//   - services/bosso/internal/productparity (Go, Bazel data deps) gates the trial length
 //     ("14-day") across these same files plus the Stripe checkout policy and
 //     the TUI. Trial length is deliberately NOT duplicated here, and price is
 //     deliberately not gated there.

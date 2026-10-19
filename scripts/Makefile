@@ -129,6 +129,7 @@ lint:
 	@node check-cli-flag-parsers.mjs
 	@node check-published-core-identity.mjs
 	@node check-flaky-quarantine.mjs
+	@node check-fixture-rm-retries.mjs
 
 ## test: Run script tests
 test:

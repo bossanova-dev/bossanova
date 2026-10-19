@@ -1,0 +1,41 @@
+Starting local Bazel server (8.7.0) and connecting to it...
+INFO: Invocation ID: e1b19231-36ba-4107-8cfe-7869dc7c5158
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Loading: 0 packages loaded
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (1 packages loaded, 0 targets configured)
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (1 packages loaded, 0 targets configured)
+
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (77 packages loaded, 2459 targets configured)
+
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (77 packages loaded, 2459 targets configured)
+
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (77 packages loaded, 2459 targets configured)
+
+Analyzing: target //lib/bossalib/buildinfo:buildinfo_test (84 packages loaded, 2518 targets configured)
+
+INFO: Analyzed target //lib/bossalib/buildinfo:buildinfo_test (88 packages loaded, 10695 targets configured).
+[6 / 19] [Prepa] GoToolchainBinaryBuild external/rules_go++go_sdk+main___download_0_darwin_arm64/builder [for tool]
+[15 / 19] GoCompilePkg lib/bossalib/buildinfo/buildinfo_test.internal.a; 0s disk-cache, darwin-sandbox
+[18 / 19] GoLink lib/bossalib/buildinfo/buildinfo_test_/buildinfo_test; 0s disk-cache, darwin-sandbox
+INFO: From GoLink lib/bossalib/buildinfo/buildinfo_test_/buildinfo_test:
+ld: warning: ignoring duplicate libraries: '-lm'
+FAIL: //lib/bossalib/buildinfo:buildinfo_test (Exit 1) (see /private/var/tmp/_bazel_dave/3470473fd2da8aa3fba5d78d6edd3175/execroot/_main/bazel-out/darwin_arm64-fastbuild/testlogs/lib/bossalib/buildinfo/buildinfo_test/test.log)
+[19 / 20] 1 / 1 tests, 1 failed; Testing //lib/bossalib/buildinfo:buildinfo_test; 0s darwin-sandbox
+INFO: From Testing //lib/bossalib/buildinfo:buildinfo_test:
+==================== Test output for //lib/bossalib/buildinfo:buildinfo_test:
+--- FAIL: TestGateIsolationFixture (0.00s)
+    buildinfo_test.go:49: BOS-1698 real Bazel failure fixture
+FAIL
+================================================================================
+INFO: Found 1 test target...
+Target //lib/bossalib/buildinfo:buildinfo_test up-to-date:
+  bazel-bin/lib/bossalib/buildinfo/buildinfo_test_/buildinfo_test
+INFO: Elapsed time: 15.215s, Critical Path: 3.45s
+INFO: 20 processes: 5 disk cache hit, 9 internal, 6 darwin-sandbox.
+INFO: Build completed, 1 test FAILED, 20 total actions
+//lib/bossalib/buildinfo:buildinfo_test                                  FAILED in 0.5s
+  /private/var/tmp/_bazel_dave/3470473fd2da8aa3fba5d78d6edd3175/execroot/_main/bazel-out/darwin_arm64-fastbuild/testlogs/lib/bossalib/buildinfo/buildinfo_test/test.log
+
+Executed 1 out of 1 test: 1 fails locally.

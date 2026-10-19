@@ -1516,40 +1516,85 @@ test('epic children re-enter at rung 1, and the depth cap stops a parent/child c
   assert.equal(capped.skipped.filter((entry) => entry.identifier === 'TCK-P').length, 1)
 })
 
-test('same-epic siblings and the epic parent are planning notes, not external edges', () => {
-  const result = planDependencyEdges({
-    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
-    candidates: [
-      {
-        ...candidate({ id: 'uuid-sibling', identifier: 'TCK-S', priority: 1 }),
-        epicParentId: 'uuid-epic',
-        areas: ['app/api'],
-      },
-      {
-        ...candidate({ id: 'uuid-epic', identifier: 'TCK-P', priority: 1 }),
-        areas: ['app/api'],
-      },
-    ],
-    stateRoles: STATE_ROLES,
-    epicLabel: 'Epic',
-  })
-  assert.equal(result.edges.length, 0)
-  assert.equal(result.skipped.length, 2)
-  assert.deepEqual(
-    result.skipped.map((entry) => entry.reason),
-    ['same-epic-member', 'same-epic-member'],
-  )
-  // BOS-1327: the per-candidate records stay, but they share ONE consolidated note
-  // naming every member in sorted order — N siblings used to record N near-identical lines.
-  assert.equal(result.notes.length, 1)
-  const [only] = result.notes
-  assert.equal(only.destination, 'planning')
-  assert.equal(only.severity, 'info')
-  assert.equal(only.reason, 'same-epic-member')
-  assert.ok(
-    only.text.startsWith('TCK-P, TCK-S ') && only.text.includes('epic'),
-    'internal epic coordination must surface as ONE planning note naming every member, not a dependency write',
-  )
+test('BOS-1705: subject in its same-parent candidate set is self, never a sibling', () => {
+  const own = { ...subject({ parentId: 'uuid-epic' }), areas: ['app/api/x.go'] }
+  const r = planDependencyEdges({ subject: own, candidates: [own], candidateSetComplete: true })
+  assert.equal(r.skipped[0].reason, 'self')
+  assert.equal(r.compared, 0)
+  assert.deepEqual(r.notes, [])
+})
+
+test('BOS-1705: same-parent siblings reach file and directory overlap and logical ordering', () => {
+  for (const parentField of ['parentId', 'epicParentId']) {
+    const own = { ...subject({ [parentField]: 'uuid-epic' }), areas: ['app/api/x.go'] }
+    for (const [areas, logical, reason, edge, write] of [
+      [['app/api/x.go'], null, 'file-overlap', 'relatedTo', null],
+      [['app/api'], null, 'directory-overlap', 'relatedTo', null],
+      [
+        ['app/api/x.go'],
+        { direction: 'blockedBy' },
+        'oriented-by-logical',
+        'blockedBy',
+        { id: 'uuid-subject', blockedBy: ['uuid-candidate'] },
+      ],
+    ]) {
+      const r = planDependencyEdges({
+        subject: own,
+        candidates: [{ ...candidate({ [parentField]: 'uuid-epic' }), areas }],
+        logicalDependencies: { 'TCK-2': logical },
+        stateRoles: STATE_ROLES,
+        epicLabel: 'Epic',
+      })
+      assert.equal(r.edges.length, 1)
+      assert.equal(r.edges[0].reason, reason)
+      assert.equal(r.edges[0].edge, edge)
+      assert.deepEqual(r.edges[0].write, write)
+      assert.equal(r.compared, 1)
+      if (!logical) assert.equal(r.notes[0].reason, reason)
+    }
+    const started = planDependencyEdges({
+      subject: own,
+      candidates: [
+        {
+          ...candidate({
+            [parentField]: 'uuid-epic',
+            stateName: 'In Progress',
+            stateType: 'started',
+          }),
+          areas: ['app/api/x.go'],
+        },
+      ],
+      logicalDependencies: { 'TCK-2': { direction: 'blocks' } },
+      stateRoles: STATE_ROLES,
+    })
+    assert.equal(started.edges[0].reason, 'downgraded-candidate-started')
+    assert.equal(started.edges[0].write, null)
+  }
+})
+
+test('BOS-1705: own parent is skipped, with labelled parents expanded in-set', () => {
+  for (const labelled of [true, false]) {
+    const own = { ...subject({ parentId: 'TCK-P' }), areas: ['app/api/x.go'] }
+    const r = planDependencyEdges({
+      subject: own,
+      candidates: [
+        own,
+        {
+          ...candidate({ identifier: 'TCK-P', labels: labelled ? ['Epic'] : [] }),
+          areas: ['app/api/x.go'],
+        },
+      ],
+      candidateSetComplete: true,
+      stateRoles: STATE_ROLES,
+      epicLabel: 'Epic',
+    })
+    const parent = r.skipped.find((row) => row.identifier === 'TCK-P')
+    assert.equal(parent.reason, labelled ? 'epic-parent' : 'subject-parent')
+    assert.equal(parent.note, null)
+    if (labelled) assert.equal(parent.expansion, 'in-set')
+    assert.deepEqual(r.edges, [])
+    assert.deepEqual(r.notes, [])
+  }
 })
 
 test('an unrecognized state on the BLOCKER downgrades too, not only on the blocked side', () => {
@@ -1780,6 +1825,7 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
       classify({ subject: subject({ labels: ['Epic'] }) }),
       classify({ candidate: candidate({ id: 'uuid-subject', identifier: 'TCK-1' }) }),
       classify({ excludeIds: ['TCK-2'] }),
+      classify({ subject: subject({ parentId: 'TCK-2' }) }),
       classify({
         subject: subject({ priority: 3 }),
         candidate: {
@@ -1856,7 +1902,6 @@ test('every reason produced across the whole table is a member of DEPENDENCY_REA
     'subject-unresolved-areas',
     'no-candidate-areas',
     'all-pairs-downgraded-unknown-state',
-    'same-epic-member',
   ]
   const expected = DEPENDENCY_REASONS.filter((reason) => !SET_LEVEL_REASONS.includes(reason))
   assert.deepEqual(
@@ -2575,29 +2620,35 @@ test('BOS-1327 no-candidate-areas stands down when one candidate has areas or a 
   assert.equal(dependencyScanVerdict(logical).verdict, 'linked')
 })
 
-test('BOS-1327 same-epic: three siblings produce exactly one note, and no second save', () => {
-  const siblings = ['TCK-C', 'TCK-A', 'TCK-B'].map((identifier) => ({
-    ...candidate({ id: `uuid-${identifier}`, identifier }),
-    epicParentId: 'uuid-epic',
-    areas: ['app/api'],
-  }))
-  const result = planDependencyEdges({
-    subject: { ...subject({ epicParentId: 'uuid-epic' }), areas: ['app/api'] },
-    candidates: siblings,
+test('BOS-1705: non-overlapping siblings need no note or description save', () => {
+  const r = planDependencyEdges({
+    subject: { ...subject({ parentId: 'EP' }), areas: ['app/api'] },
+    candidates: [{ ...candidate({ parentId: 'EP' }), areas: ['app/web'] }],
     stateRoles: STATE_ROLES,
-    epicLabel: 'Epic',
   })
-  assert.equal(result.skipped.filter((entry) => entry.reason === 'same-epic-member').length, 3)
-  const sameEpic = result.notes.filter((entry) => entry.reason === 'same-epic-member')
-  assert.equal(sameEpic.length, 1)
-  assert.equal(result.notes.length, 1)
-  assert.ok(
-    sameEpic[0].text.startsWith('TCK-A, TCK-B, TCK-C share '),
-    'members named in sorted order',
-  )
-  const verdict = dependencyScanVerdict(result)
-  assert.equal(verdict.verdict, 'no-dependencies')
-  assert.equal(verdict.recordToDescription, false, 'the consolidated note alone earns no save')
+  assert.equal(r.skipped[0].reason, 'no-overlap')
+  assert.deepEqual(r.notes, [])
+  assert.equal(dependencyScanVerdict(r).recordToDescription, false)
+})
+
+test('BOS-1705: every returned note earns a description save', () => {
+  for (const reason of DEPENDENCY_REASONS) {
+    for (const severity of ['info', 'warning']) {
+      assert.equal(
+        dependencyScanVerdict({ compared: 1, notes: [{ reason, severity }] }).recordToDescription,
+        true,
+        reason,
+      )
+    }
+  }
+  const r = planDependencyEdges({
+    subject: { ...subject({ parentId: 'EP' }), areas: ['app/api'] },
+    candidates: [candidate({ parentId: 'EP' })],
+    stateRoles: STATE_ROLES,
+  })
+  assert.equal(r.candidatesWithoutAreas, 1)
+  assert.ok(r.notes.some((row) => row.reason === 'no-candidate-areas'))
+  assert.equal(dependencyScanVerdict(r).recordToDescription, true)
 })
 
 test('BOS-1327 landed: a started candidate with merged-PR evidence writes no blocking edge', () => {
@@ -2744,7 +2795,10 @@ test('BOS-1327 transitive warnings: upstream reproduces the blocked-side rule', 
 })
 
 test('BOS-1327 transitive warnings: a cleared or canceled intermediate produces nothing', () => {
-  const base = { subjectId: 'TCK-1', writes: [{ id: 'TCK-1', blockedBy: ['TCK-2'] }] }
+  const base = {
+    subjectId: 'TCK-1',
+    writes: [{ id: 'uuid-subject', blockedBy: ['uuid-candidate'] }],
+  }
   assert.deepEqual(
     transitiveBlockWarnings({
       ...base,

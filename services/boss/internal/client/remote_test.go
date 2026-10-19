@@ -952,6 +952,8 @@ func TestRemoteClient_OperatorMergeSessionErrors(t *testing.T) {
 		{connect.CodeFailedPrecondition, gate, false},
 		{connect.CodeNotFound, "session not found", false},
 		{connect.CodeInvalidArgument, "expected_head_sha must be a 40-character hex commit SHA", false},
+		// bosso's answer for a daemon too old to run the merge.
+		{connect.CodeUnimplemented, "boss on mac-mini is too old to do this from here", false},
 	} {
 		t.Run(tc.code.String(), func(t *testing.T) {
 			fake := &fakeAttentionOrchestrator{err: connect.NewError(tc.code, errors.New(tc.msg))}

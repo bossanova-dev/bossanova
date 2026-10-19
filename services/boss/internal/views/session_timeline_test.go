@@ -1192,16 +1192,60 @@ func randomWrapText(r *rand.Rand) string {
 	return strings.Join(words, " ")
 }
 
-// TestWordWrapWiderFirstLineNeverAddsLines: a wider first line never yields
-// more lines, every width keeps the text and stays within its limits once rest
-// holds a wide character, and a word no wider than rest is never split. A
-// wider rest can add a line, since a word it stops overflowing moves whole off
-// the first line; foldTimelineSteps carries the fold invariant that used to
-// lean on rest monotonicity.
+// logSweepCase names the case of a seeded sweep that failed or panicked, so a
+// defect the nightly sweep finds can be brought into the per-PR prefix. A
+// panic is still unwinding when this runs, before the test counts as failed.
+func logSweepCase(t *testing.T, c *int) {
+	if p := recover(); p != nil {
+		t.Logf("panicked at case %d of the seeded sequence", *c)
+		panic(p)
+	}
+	if t.Failed() {
+		t.Logf("failed at case %d of the seeded sequence", *c)
+	}
+}
+
+// The per-PR suite runs a prefix of each seeded sweep below, and the nightly
+// job runs the whole sequence with viewsSweepsEnv set. Each prefix reaches the
+// first failing case of every defect injected into its code when the count was
+// set: the word wrap's by case 10, the fold's by case 32 and the timeline's by
+// case 54. Two later ones have named tests instead: a fold that drops a step on
+// relabelling (case 1176, TestChatPickerTimelineKeepsStepsWhenUndatingWidensDetail)
+// and a timeline given one row too many beside the answer (case 83,
+// TestChatPickerLongTimelineKeepsChatsVisible).
+const (
+	wordWrapPerPRCases     = 20
+	wordWrapSweepCases     = 500
+	foldPerPRCases         = 40
+	foldSweepCases         = 4000
+	timelineWaitPerPRCases = 60
+	timelineWaitSweepCases = 3000
+)
+
+// TestWordWrapWiderFirstLineNeverAddsLines runs a prefix of
+// sweepWordWrapWiderFirstLine.
 func TestWordWrapWiderFirstLineNeverAddsLines(t *testing.T) {
+	sweepWordWrapWiderFirstLine(t, wordWrapPerPRCases)
+}
+
+func TestViewsSweep_WordWrapWiderFirstLineNeverAddsLines(t *testing.T) {
+	requireViewsSweeps(t)
+	t.Parallel()
+	sweepWordWrapWiderFirstLine(t, wordWrapSweepCases)
+}
+
+// sweepWordWrapWiderFirstLine: a wider first line never yields more lines,
+// every width keeps the text and stays within its limits once rest holds a
+// wide character, and a word no wider than rest is never split. A wider rest
+// can add a line, since a word it stops overflowing moves whole off the first
+// line; foldTimelineSteps carries the fold invariant that used to lean on rest
+// monotonicity.
+func sweepWordWrapWiderFirstLine(t *testing.T, cases int) {
 	r := rand.New(rand.NewPCG(3185, 1))
 	strip := func(s string) string { return strings.Join(strings.Fields(s), "") }
-	for range 500 {
+	var c int
+	defer logSweepCase(t, &c)
+	for c = 0; c < cases; c++ {
 		text := randomWrapText(r)
 		widths := map[string]int{}
 		for _, word := range strings.Fields(text) {
@@ -1250,13 +1294,26 @@ func TestWordWrapWiderFirstLineNeverAddsLines(t *testing.T) {
 	}
 }
 
-// TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept: relabelling the steps a
-// fold keeps never costs one of them, at any width or budget, wherever the
-// pinned step sits.
+// TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept runs a prefix of
+// sweepFoldKeepsTheFirstFold.
 func TestFoldTimelineStepsKeepsEveryStepTheFirstFoldKept(t *testing.T) {
+	sweepFoldKeepsTheFirstFold(t, foldPerPRCases)
+}
+
+func TestViewsSweep_FoldTimelineStepsKeepsEveryStepTheFirstFoldKept(t *testing.T) {
+	requireViewsSweeps(t)
+	t.Parallel()
+	sweepFoldKeepsTheFirstFold(t, foldSweepCases)
+}
+
+// sweepFoldKeepsTheFirstFold: relabelling the steps a fold keeps never costs
+// one of them, at any width or budget, wherever the pinned step sits.
+func sweepFoldKeepsTheFirstFold(t *testing.T, cases int) {
 	r := rand.New(rand.NewPCG(3185, 2))
 	now := time.Now()
-	for range 4000 {
+	var c int
+	defer logSweepCase(t, &c)
+	for c = 0; c < cases; c++ {
 		steps := make([]*pb.TimelineStep, 1+r.IntN(9))
 		yesterday, titleWidth := r.IntN(len(steps)), 0
 		for i := range steps {
@@ -1624,12 +1681,15 @@ var (
 // fold line counts the run of steps it stands for and says "earlier" only
 // ahead of the first step row, and the rows and folds account for every step.
 // It reports whether the timeline shows, and fails if it shows without the
-// waiting step.
+// waiting step or takes a row the chat table reserves.
 func assertTimelineFold(t *testing.T, m ChatPickerModel) bool {
 	t.Helper()
 	block := stripANSI(m.timelineBlock())
 	if block == "" {
 		return false
+	}
+	if got, want := m.tableHeight(), m.detailsReservedTableRows(); got < want {
+		t.Fatalf("%dx%d: the chat table keeps %d rows beside the timeline, want its %d reserved rows:\n%s", m.width, m.height, got, want, stripANSI(m.View().Content))
 	}
 	steps := m.timelineSteps()
 	next, current, seenStep := 0, 0, false
@@ -1770,21 +1830,40 @@ func TestChatPickerTimelineWaitWithoutTheDaemonsStepKeepsTimeOrder(t *testing.T)
 	}
 }
 
-// A random sweep over timelines, waiting positions, rotations, kinds and
-// terminal sizes: whenever the timeline shows, it shows the waiting step, its
-// rows keep time order, its folds account for every step, and the view stays
-// within the terminal.
+// TestChatPickerTimelineAlwaysShowsTheWait runs a prefix of
+// sweepTimelineShowsTheWait.
 func TestChatPickerTimelineAlwaysShowsTheWait(t *testing.T) {
+	sweepTimelineShowsTheWait(t, timelineWaitPerPRCases)
+}
+
+func TestViewsSweep_ChatPickerTimelineAlwaysShowsTheWait(t *testing.T) {
+	requireViewsSweeps(t)
+	t.Parallel()
+	sweepTimelineShowsTheWait(t, timelineWaitSweepCases)
+}
+
+// sweepTimelineShowsTheWait is a random sweep over timelines, waiting
+// positions, rotations, kinds and terminal sizes: whenever the timeline shows,
+// it shows the waiting step, its rows keep time order, its folds account for
+// every step, and the view stays within the terminal.
+func sweepTimelineShowsTheWait(t *testing.T, cases int) {
 	r := rand.New(rand.NewPCG(3200, 1))
 	kinds := []pb.AttentionKind{pb.AttentionKind_ATTENTION_KIND_FIX, pb.AttentionKind_ATTENTION_KIND_REVIEW, pb.AttentionKind_ATTENTION_KIND_QUESTION, pb.AttentionKind_ATTENTION_KIND_MERGE}
+	// A fixed day, never today, gives every case the same rows at any hour and
+	// in any time zone.
+	day := time.Date(2026, time.March, 2, 0, 0, 0, 0, time.Local)
 	shown := 0
-	for range 3000 {
+	var c int
+	defer logSweepCase(t, &c)
+	for c = 0; c < cases; c++ {
 		height, width := 14+r.IntN(50), 40+r.IntN(111)
 		m := detailFixture(kinds[r.IntN(len(kinds))], height)
 		m.width = width
-		day := m.session.GetAttention().GetSince().AsTime().Local()
 		n := 1 + r.IntN(14)
 		current := r.IntN(n + 1)
+		// The steps sit at 09:00 and every two minutes after it, and the wait
+		// begins before, at, between or after them.
+		m.session.Attention.Since = timestamppb.New(time.Date(day.Year(), day.Month(), day.Day(), 9, r.IntN(2*n+3)-1, 0, 0, time.Local))
 		m.timeline = nil
 		for i := range n {
 			d := day.AddDate(0, 0, -r.IntN(2)*(n-i)/n)
@@ -1830,8 +1909,8 @@ func TestChatPickerTimelineAlwaysShowsTheWait(t *testing.T) {
 			}
 		}
 	}
-	if shown < 1500 {
-		t.Fatalf("the timeline showed in only %d of 3000 cases", shown)
+	if 2*shown < cases {
+		t.Fatalf("the timeline showed in only %d of %d cases", shown, cases)
 	}
-	t.Logf("the timeline showed in %d of 3000 cases", shown)
+	t.Logf("the timeline showed in %d of %d cases", shown, cases)
 }

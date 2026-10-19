@@ -13,6 +13,8 @@ import {
   DEFAULT_OPEN_DISPATCH_STALE_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_WAIT_BUDGET_MS,
+  DEFAULT_RETURN_GRACE_MS,
+  DEFAULT_RETURN_SLICE_MS,
   DISPATCH_AWAIT_RESULTS,
   HEARTBEAT_ABSENT,
   HEARTBEAT_LIVE,
@@ -994,13 +996,22 @@ test('awaitDispatch: a provisional seed keeps waiting until it is upgraded', asy
   assert.equal(result.kind, 'clean')
 })
 
-test('wait: a never-upgraded provisional seed exits 98 at budget (caller re-arms)', () => {
+test('wait: a never-upgraded provisional seed exits 98 at budget (caller re-arms)', async () => {
   const ctx = context()
   writeSentinel(ctx, 'review', 'blocked', { provisional: true })
-  const res = waitCli(ctx, 'review', ['--budget', '60', '--interval', '10'])
-  assert.equal(res.status, 98)
-  assert.equal(res.json.status, STILL_RUNNING)
-  assert.ok(res.json.waitedMs >= 60)
+  const clock = fakeTime()
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: clock.now() })
+  const result = await awaitDispatch(ctx, 'review', {
+    heartbeatPath: hb,
+    whileLive: true,
+    now: clock.now,
+    sleep: clock.sleep,
+  })
+  assert.equal(waitExitCode(result), 98)
+  assert.equal(result.status, STILL_RUNNING)
+  assert.equal(result.waitedMs, DEFAULT_WAIT_BUDGET_MS)
+  assert.equal(result.held, undefined)
 })
 
 test('wait --while-live holds a completed sentinel while the heartbeat is live (exit 98, held)', () => {
@@ -1019,7 +1030,7 @@ test('wait --while-live holds a completed sentinel while the heartbeat is live (
   ])
   assert.equal(res.status, 98)
   assert.equal(res.json.status, COMPLETED)
-  assert.equal(res.json.held, 'heartbeat-live')
+  assert.equal(res.json.held, 'awaiting-return')
 })
 
 test('wait --while-live releases a completed sentinel once the heartbeat is stale or absent', () => {
@@ -1044,23 +1055,94 @@ test('awaitDispatch --while-live releases the hold when the worker stops beating
   const ctx = context()
   writeSentinel(ctx, 'review', 'clean', { provisional: false })
   const hb = join(ctx.dir, 'review.heartbeat')
-  const clock = fakeTime()
+  const clock = fakeTime(statSync(ctx.sentinelPath('review')).mtimeMs)
   touchHeartbeat(hb, { now: clock.now() })
-  let sleeps = 0
   const result = await awaitDispatch(ctx, 'review', {
     heartbeatPath: hb,
     whileLive: true,
     budgetMs: 10 * DEFAULT_OPEN_DISPATCH_STALE_MS,
+    returnSliceMs: 10 * DEFAULT_OPEN_DISPATCH_STALE_MS,
     intervalMs: 60_000,
     now: clock.now,
-    sleep: async (ms) => {
-      sleeps += 1
-      await clock.sleep(ms)
-    },
+    sleep: clock.sleep,
   })
   assert.equal(result.outcome, 'completed')
-  assert.ok(result.waitedMs >= DEFAULT_OPEN_DISPATCH_STALE_MS, 'held until the beat went stale')
-  assert.ok(sleeps > 1)
+  assert.equal(result.released, 'return-grace')
+  assert.ok(result.waitedMs >= DEFAULT_RETURN_GRACE_MS)
+  assert.ok(result.waitedMs < DEFAULT_OPEN_DISPATCH_STALE_MS)
+})
+
+test('awaitDispatch --while-live bounds post-verdict re-arms and releases a quiet worker', async () => {
+  const ctx = context()
+  const clock = fakeTime(1_700_000_000_000)
+  const startedAt = clock.now()
+  const hb = join(ctx.dir, 'review.heartbeat')
+  touchHeartbeat(hb, { now: startedAt })
+  let verdictAt
+  let result
+  do {
+    const callStart = clock.now()
+    result = await awaitDispatch(ctx, 'review', {
+      dispatchedAt: startedAt,
+      heartbeatPath: hb,
+      whileLive: true,
+      now: clock.now,
+      sleep: async (ms) => {
+        await clock.sleep(ms)
+        if (verdictAt === undefined) {
+          verdictAt = clock.now()
+          writeSentinel(ctx, 'review', 'clean', {})
+          const landing = new Date(verdictAt)
+          utimesSync(ctx.sentinelPath('review'), landing, landing)
+        }
+      },
+    })
+    if (result.outcome === 'budget') {
+      assert.equal(waitExitCode(result), 98)
+      assert.ok(
+        clock.now() - Math.max(callStart, verdictAt) <= DEFAULT_RETURN_SLICE_MS,
+        'post-verdict holds use short slices',
+      )
+      assert.equal(result.held, 'awaiting-return')
+      assert.ok(callStart < verdictAt + DEFAULT_RETURN_GRACE_MS)
+    }
+  } while (result.outcome === 'budget')
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.released, 'return-grace')
+  assert.equal(waitExitCode(result), 0)
+  assert.ok(clock.now() - verdictAt >= DEFAULT_RETURN_GRACE_MS)
+  assert.ok(clock.now() - verdictAt < DEFAULT_RETURN_GRACE_MS + DEFAULT_RETURN_SLICE_MS)
+})
+
+test('awaitDispatch --while-live post-verdict beats keep the hold until one grace after the last beat', async () => {
+  const ctx = context()
+  writeSentinel(ctx, 'review', 'clean', {})
+  const verdictAt = statSync(ctx.sentinelPath('review')).mtimeMs
+  const clock = fakeTime(verdictAt)
+  const hb = join(ctx.dir, 'review.heartbeat')
+  const lastBeatAt = verdictAt + 180_000
+  touchHeartbeat(hb, { now: verdictAt })
+  let result
+  do {
+    result = await awaitDispatch(ctx, 'review', {
+      heartbeatPath: hb,
+      whileLive: true,
+      now: clock.now,
+      sleep: async (ms) => {
+        await clock.sleep(ms)
+        if (clock.now() <= lastBeatAt && (clock.now() - verdictAt) % 30_000 === 0) {
+          touchHeartbeat(hb, { now: clock.now() })
+        }
+      },
+    })
+    if (clock.now() < lastBeatAt + DEFAULT_RETURN_GRACE_MS) {
+      assert.equal(result.outcome, 'budget')
+      assert.equal(result.held, 'awaiting-return')
+    }
+  } while (result.outcome === 'budget')
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.released, 'return-grace')
+  assert.equal(clock.now(), lastBeatAt + DEFAULT_RETURN_GRACE_MS)
 })
 
 test('wait: abandoned exit 97 on a stale seed and a stale or absent heartbeat', () => {

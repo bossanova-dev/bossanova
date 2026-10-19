@@ -171,6 +171,13 @@ export const PLAN_SCRATCH_FAMILIES = [
     '^SEG\\.attachment-headers-SEG\\.json$',
   ),
   fam(
+    'attachment-list',
+    '<ISSUE-ID>.attachment-list-<n>.json',
+    'the fresh attachment list one plan-attachment supersede selection reads',
+    ({ issueId, n }) => `${issueId}.attachment-list-${n}.json`,
+    '^SEG\\.attachment-list-SEG\\.json$',
+  ),
+  fam(
     'child-precheck',
     '<ISSUE-ID>.child-<CHILD-ID>.precheck.json',
     "a fanned-out child's post-settle payload the idempotence check reads",

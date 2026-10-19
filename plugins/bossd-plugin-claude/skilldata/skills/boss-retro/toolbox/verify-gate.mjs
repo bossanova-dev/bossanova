@@ -2617,15 +2617,26 @@ export async function merge(options, deps = {}) {
   const session = readSessionRow(read, p.url)
   if (!session.readable)
     return finish({ merged: false, verdict: 'wait', reason: 'sessions-unreadable' })
-  if (!session.row || !text(session.row.id))
-    return finish({ merged: false, verdict: 'human', reason: 'no-session' })
   // A legacy send-back marker on this head revokes whatever verdict it carries, until a later
   // approve record.
-  const operator = readOperatorDecision(read, repo, options.pr, headSha)
+  const markers = readOperatorMarkers(read, repo, options.pr)
+  const operator = readOperatorDecision(read, repo, options.pr, headSha, () => markers)
   if (!operator.readable)
     return finish({ merged: false, verdict: 'wait', reason: 'comments-unreadable' })
   if (operator.decision === 'sent-back')
     return finish({ merged: false, verdict: 'wait', reason: 'sent-back' })
+  // Only the machine holding the PR's session can merge it. Say so on the PR once per head;
+  // candidates stops retrying once that comment stands.
+  if (!session.row || !text(session.row.id)) {
+    let notice = 'standing'
+    if (!remoteSessionNoted(markers.markers, headSha)) {
+      const body = remoteSessionComment(headSha)
+      writes.push({ kind: 'pr-comment', body })
+      if (dryRun) notice = 'planned'
+      else notice = postPrComment(read, repo, options.pr, body) ? 'posted' : 'failed'
+    }
+    return finish({ merged: false, verdict: 'human', reason: 'no-session', notice })
+  }
   const argv = mergeArgv({ sessionId: session.row.id, headSha })
   writes.push({ kind: 'merge', argv })
   if (dryRun) return done({ merged: false, planned: true })
@@ -2961,6 +2972,30 @@ export function carryMarker(headSha, from, patchId) {
 const CARRY_MARKER =
   /^<!-- boss-approval-carry head=([0-9a-fA-F]{40}) from=([0-9a-fA-F]{40}) patch=([0-9a-f]{40}) -->$/
 
+/**
+ * The hidden last line of the PR comment a merge leaves when `headSha` is verified and ready but
+ * this machine holds no session for the PR, so it cannot merge it. candidates reads it back to stop
+ * retrying that merge; a forged one only spares a retry this machine could not complete anyway, so
+ * it counts whoever wrote it (ANY_AUTHOR_MARKERS). The gate's own account may be an app, a bot or
+ * a read-only collaborator, and a trust filter would discard its notice and re-post it every sweep.
+ */
+export function remoteSessionMarker(headSha) {
+  return `<!-- boss-remote-session head=${headSha} -->`
+}
+
+const REMOTE_SESSION_MARKER = /^<!-- boss-remote-session head=([0-9a-fA-F]{40}) -->$/
+
+function remoteSessionComment(headSha) {
+  return [
+    `Verified at \`${headSha.slice(0, 12)}\`, but this PR's session isn't on this machine, so this machine can't merge it.`,
+    remoteSessionMarker(headSha),
+  ].join('\n\n')
+}
+
+// Has a comment already said that this machine cannot merge `headSha`?
+const remoteSessionNoted = (markers, headSha) =>
+  markers.some((m) => m.kind === 'remote-session' && m.head === headSha)
+
 // The judge output `carryRecord`: `<approved head>:<patch-id>`.
 const CARRY_RECORD = /^([0-9a-f]{40}):([0-9a-f]{40})$/
 
@@ -3005,17 +3040,16 @@ function policyComment(headSha, fingerprint) {
 
 /**
  * The head-bound records on a PR's issue comments: `[{kind: 'approve'|'send-back'|'extensions'|
- * 'policy'|'carry'|'park-note'|'after-merge', head, waives?, judged?, policy?, from?, patch?,
- * digest?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
- * (readOperatorMarkers then keeps only authors with write access), and only when its last
- * non-blank line is a well-formed marker: an approve marker names a known code set or none at all
+ * 'policy'|'carry'|'park-note'|'after-merge'|'remote-session', head, waives?, judged?, policy?,
+ * from?, patch?, digest?, at, id, login, url}]`. Only a comment by an owner, member or collaborator is a candidate
+ * (readOperatorMarkers then keeps only authors with write access), except for ANY_AUTHOR_MARKERS,
+ * and only when its last non-blank line is a well-formed marker: an approve marker names a known code set or none at all
  * (`waives` is then ''), a legacy send-back marker names no codes, and an extension record parses.
  */
 export function operatorMarkers(comments) {
   const out = []
   for (const comment of Array.isArray(comments) ? comments : []) {
-    if (!plainObject(comment) || !ANCHOR_REVIEW_ASSOCIATIONS.has(comment.author_association))
-      continue
+    if (!plainObject(comment)) continue
     const login = comment.user?.login
     if (!text(login)) continue
     const lines = typeof comment.body === 'string' ? comment.body.split('\n') : []
@@ -3032,6 +3066,12 @@ export function operatorMarkers(comments) {
       login,
       url: text(comment.html_url) ? comment.html_url : '',
     })
+    const remote = last.match(REMOTE_SESSION_MARKER)
+    if (remote) {
+      out.push(stamp('remote-session', remote[1]))
+      continue
+    }
+    if (!ANCHOR_REVIEW_ASSOCIATIONS.has(comment.author_association)) continue
     const note = last.match(PARK_NOTE_MARKER)
     if (note) {
       out.push({ ...stamp('park-note', note[1]), digest: note[2] })
@@ -3108,6 +3148,9 @@ function newestFor(markers, headSha, wanted) {
   return newest
 }
 
+// Marker kinds that count whoever wrote them, because a forged one cannot change a decision.
+const ANY_AUTHOR_MARKERS = new Set(['remote-session'])
+
 // The repository permissions whose holder's markers count: a decision on a park is as strong as
 // a merge, so read-only collaborators and org members without access to this repo do not count.
 const OPERATOR_PERMISSIONS = new Set(['admin', 'write'])
@@ -3128,7 +3171,8 @@ function canWrite(read, repo, login) {
 
 /**
  * Reads the PR's issue comments once and returns `{readable: true, markers}` — operatorMarkers,
- * kept only for authors with write access (one permission read per author) — or `{readable:
+ * kept only for authors with write access (one permission read per author) unless the kind is in
+ * ANY_AUTHOR_MARKERS — or `{readable:
  * false}` for a failed or malformed read, never an empty list. A comment without a readable
  * `created_at` is malformed (the order of the operator's decisions would be unknown), and so is an
  * author whose permission cannot be read.
@@ -3146,13 +3190,17 @@ export function readOperatorMarkers(read, repo, pr) {
   if (comments.some((c) => !plainObject(c) || epochMs(c.created_at) === null))
     return { readable: false }
   const candidates = operatorMarkers(comments)
+  const anyAuthor = (marker) => ANY_AUTHOR_MARKERS.has(marker.kind)
   const writers = new Map()
-  for (const login of new Set(candidates.map((marker) => marker.login))) {
+  for (const login of new Set(candidates.filter((m) => !anyAuthor(m)).map((m) => m.login))) {
     const verdict = canWrite(read, repo, login)
     if (verdict === null) return { readable: false }
     writers.set(login, verdict)
   }
-  return { readable: true, markers: candidates.filter((marker) => writers.get(marker.login)) }
+  return {
+    readable: true,
+    markers: candidates.filter((marker) => anyAuthor(marker) || writers.get(marker.login)),
+  }
 }
 
 /**
@@ -3710,7 +3758,9 @@ function candidateQuery(config, flags, ticket) {
  * base would judge under now differs from the one recorded beside it, and as `codes-unknown` when
  * it names a code outside HUMAN_REASONS. A needs-human ticket is
  * skipped only while a park stands on its PR's current head (`headStandsUnparked`): the label
- * outlives the head it parked, and a later head is judged afresh. An unscoped scan also admits the
+ * outlives the head it parked, and a later head is judged afresh. A verified head is a merge retry
+ * unless this machine holds no session for its PR and the PR already carries the comment merge
+ * leaves for that head; it is then a `no-session` skip. An unscoped scan also admits the
  * ticketless factory PRs (ticketlessFactoryPrs) with `ticket: null`; an unreadable session list
  * skips only those, never the ticketed ones.
  */
@@ -3763,6 +3813,7 @@ export async function candidates(options = {}, deps = {}) {
     throw new Error(`verify-gate candidates: gh pr list failed (${list.error ?? 'unreadable'})`)
   const linkedSet = linkTicketsToPrs(tickets, list.payload, repo)
   skipped.push(...linkedSet.skipped)
+  const sessions = once(() => readSessionRows(read))
   // A factory PR no ticket names is judged too, but only by an unscoped scan: a named ticket or an
   // include filter asks about tickets, which such a PR is not.
   const ticketless =
@@ -3770,7 +3821,7 @@ export async function candidates(options = {}, deps = {}) {
       ? { prs: [], skipped: [] }
       : await ticketlessFactoryPrs(list.payload, {
           claimed: () => claimedPrNumbers(adapter, config, repo),
-          sessions: () => readSessionRows(read),
+          sessions,
         })
   skipped.push(...ticketless.skipped)
   const work = [...linkedSet.linked, ...ticketless.prs.map((pr) => ({ ticket: null, pr }))].sort(
@@ -3783,6 +3834,16 @@ export async function candidates(options = {}, deps = {}) {
     if (!fingerprints.has(baseRefName))
       fingerprints.set(baseRefName, currentPolicyFingerprint(read, repo, baseRefName, deps))
     return fingerprints.get(baseRefName)
+  }
+  // A merge retry for a head whose session this machine does not hold only repeats merge's
+  // refusal, so it stops once the PR says so, until a session for the PR shows up here. An
+  // unreadable session list or comment read keeps the retry, and merge decides.
+  const cannotMergeHere = (pr, headSha) => {
+    const rows = sessions()
+    if (!Array.isArray(rows)) return false
+    if (rows.some((row) => text(pr.url) && row?.pr_url === pr.url && text(row?.id))) return false
+    const markers = readOperatorMarkers(read, repo, pr.number)
+    return markers.readable && remoteSessionNoted(markers.markers, headSha)
   }
   const out = []
   const mergeRetries = []
@@ -3801,9 +3862,12 @@ export async function candidates(options = {}, deps = {}) {
     }
     const head = classifyHeadStatus(read1.contexts?.[VERIFY_CONTEXT] ?? null, now)
     if (head.skip) {
-      if (head.mergeRetry)
-        mergeRetries.push({ ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo })
-      skip(head.skip)
+      if (head.mergeRetry && cannotMergeHere(pr, headSha)) skip('no-session')
+      else {
+        if (head.mergeRetry)
+          mergeRetries.push({ ticket: id, pr: pr.number, url: pr.url ?? '', headSha, repo })
+        skip(head.skip)
+      }
       continue
     }
     // Keep scanning statuses for retries after the judge list fills; avoid further CI/approval reads.

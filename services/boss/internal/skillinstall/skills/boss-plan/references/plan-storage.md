@@ -79,18 +79,18 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    branch. Delete only on a confirmed-unreadable read — never on a transport error, which would
    destroy a healthy artifact.
 6. **Supersede stale duplicate plan attachments only after verified read-back.** After the
-   read-back succeeds, take a **single fresh** attachment list and call
-   `selectSupersededPlanAttachments` with the freshly finalized id as `keepAttachmentId`, **and with
-   `keepJustFinalized: true`** — this run finalized that id moments ago, which is knowledge no field
-   on the attachment payload carries. Delete
-   each returned exact-title attachment id with `deletePlanAttachment`. **The selector throws rather
-   than returning an empty set** when it is handed exact-title candidates it cannot order and the
-   declaration is absent: an empty array and "nothing is stale" are the same value, so a selector
-   that quietly returned one let a stale duplicate survive under a clean report. A thrown selector is
-   a **failed supersede list** and takes the SAFE branch below — it is not a reason to delete
-   anything, and it never rolls back the verified publish. A failed supersede list takes
-   the SAFE branch: no plan metadata/state write, no deletes from stale state, and it does not roll
-   back the successful publish. Retry each failed `deletePlanAttachment` once; if it still fails,
+   read-back succeeds, write a **single fresh** attachment list (the tracker's issue read, as
+   returned) to `.linear-plans/run-<RUN-SCRATCH-ID>/<RUN-ISSUE-ID>.attachment-list-<n>.json`.
+   After the toolbox preamble, run `node "$BOSS_PLAN_TOOLBOX/plan-attachment.mjs" supersede <that file>
+--issue <ISSUE-ID> --keep <finalized-id> --just-finalized`. This run just finalized that id, which
+   is knowledge no field on the attachment payload carries. On exit 0, delete each `supersede[].id`
+   with `deletePlanAttachment`, logging and reporting its `title`; `keep-not-listed` means no deletes:
+   report it in the completion report and continue. Exit 2 with the usage-error token is a caller
+   error: fix the invocation and re-run, never take the SAFE branch. Exit 1 is a **failed supersede
+   list** and takes the SAFE branch: no plan metadata/state write, no deletes from stale state,
+   and no rollback of the verified publish. Code callers use the export from
+   `plan-attachment.mjs`: `selectSupersededPlanAttachments(attachments, { issueID, keepAttachmentId, keepJustFinalized })`.
+   Retry each failed `deletePlanAttachment` once; if it still fails,
    report the surviving duplicate attachment id in the completion report and continue with the
    retained attachment as canonical. Every successful supersede deletion logs the deleted attachment
    id and exact title to stderr and carries both into the completion report next to the retained id.

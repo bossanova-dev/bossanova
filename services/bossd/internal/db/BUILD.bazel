@@ -117,7 +117,6 @@ go_test(
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":db"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
-    shard_count = 8,  # keep: split the 170 independent in-memory store tests so per-shard wall-clock stays low under --config=race (~580s serial)
     deps = [
         "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/config",

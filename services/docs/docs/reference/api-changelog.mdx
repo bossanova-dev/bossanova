@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-24**. The engineering procedure for adding a new
+The current version is **2026-09-25**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/api-versioning.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
 
@@ -862,7 +862,7 @@ it: a plain finish readies the PR (`SESSION_STATE_READY_FOR_REVIEW`), and a
 finish that reports the run blocked again starts a new block with the new
 `blocked_reason`. That change is persisted, so every version sees it.
 
-### 2026-09-24 — A run whose automatic resumes gave up says so plainly (Current)
+### 2026-09-24 — A run whose automatic resumes gave up says so plainly
 
 The `ATTENTION_KIND_FIX` sentence for a run whose automatic resumes gave up
 ends its first clause with "so automatic retries stopped", where it said "so
@@ -870,6 +870,18 @@ the factory stopped retrying". The rest of the sentence, which names the
 attempt times, the failure and the next step, is unchanged. Clients pinned to
 2026-09-23 or older get the old clause back on session-bearing unary
 responses.
+
+### 2026-09-25 — A command the daemon is too old for fails at once (Current)
+
+A daemon now lists the stream commands it runs when it connects. A command its
+daemon does not run, such as `ProxyOperatorMergeSession`,
+`ProxyDismissSessionAlert` or `ProxyResumeSessionRun` sent to a daemon built
+before them, fails at once with `CodeUnimplemented` and a message that names
+the machine. It used to wait out bosso's deadline, eleven minutes for a merge,
+and fail with `CodeDeadlineExceeded`. A `ProxyOperatorMergeSession` that
+records no approval falls back to the plain merge on such a daemon, which skips
+the ticket update. Clients pinned to 2026-09-24 or older get
+`CodeDeadlineExceeded` with the same message, still at once.
 
 ## Additive changes
 

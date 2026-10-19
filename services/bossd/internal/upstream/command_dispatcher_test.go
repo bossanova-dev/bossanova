@@ -1609,19 +1609,6 @@ func TestDispatchCommand_Webhook_FailureAckWithError(t *testing.T) {
 	}
 }
 
-func TestDispatchCommand_UnknownOneof_LogsAndSkips(t *testing.T) {
-	// Nil oneof is the only portable "unknown" we can construct here —
-	// a zero-initialized OrchestratorCommand has no Cmd set and so
-	// exercises the default branch of dispatchCommand.
-	client := newDispatcherClient(nil, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
-		&pb.OrchestratorCommand{CommandId: "c-u"},
-		make(chan *pb.DaemonEvent, 4))
-	if ev != nil {
-		t.Fatalf("expected nil DaemonEvent for unknown command, got %+v", ev)
-	}
-}
-
 func TestDispatchCommand_AttachSession_StreamsChunksUntilClose(t *testing.T) {
 	// The attacher fires two chunks and then closes its channel. The
 	// dispatcher returns an immediate ok CommandResult (handshake)

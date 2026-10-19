@@ -48,15 +48,17 @@ export const PREMISE_LIMIT = 10
 
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
-const ALLOWED_METADATA_KEYS = new Set([
-  'planPath',
-  'labels',
-  'agentBuild',
-  'estimate',
-  'priority',
-  'openQuestions',
-  'descriptionSummary',
-])
+export const DRAFT_RETURN_KEYS = Object.freeze({
+  planPath: 'adopt',
+  labels: 'adopt',
+  agentBuild: 'adopt',
+  estimate: 'adopt',
+  priority: 'adopt',
+  openQuestions: 'adopt',
+  descriptionSummary: 'adopt',
+  // The sentinel payload carries premises; Phase 2 step 4 reads them there.
+  premises: 'sentinel',
+})
 
 const VALID_ESTIMATES = new Set([0, 1, 2, 3, 5])
 
@@ -165,7 +167,7 @@ export function validateDraftMetadata(
   // finished plan is worth far more than any one cosmetic field the drafter got slightly wrong.
   const normalized = {}
   for (const key of Object.keys(object)) {
-    if (!ALLOWED_METADATA_KEYS.has(key)) warn(key, `dropped unknown top-level key "${key}"`)
+    if (!Object.hasOwn(DRAFT_RETURN_KEYS, key)) warn(key, `dropped unknown top-level key "${key}"`)
   }
 
   if (typeof object.planPath === 'string' && object.planPath.trim() !== '') {

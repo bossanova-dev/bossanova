@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,22 +34,29 @@ import (
 
 const switchProxyPort = 45671
 
-// targetRecordingRegistrar is a proxyTokenRegistrar whose minted token ENCODES
-// the resolution target it registered, so a test can tell a session-scoped token
-// from a chat-scoped one by looking at the URL alone. The real registrar hides
-// the target behind an opaque random token, which is exactly the distinction
-// this ticket turns on.
+// targetRecordingRegistrar is a proxyTokenRegistrar whose minted token is a
+// pure function of the resolution target it registered, so a test can tell a
+// session-scoped token from a chat-scoped one by computing the URL it expects.
+// The real registrar hides the target behind an opaque random token, which is
+// exactly the distinction this ticket turns on. Tokens keep the canonical
+// 64-hex shape so they parse like real ones.
 type targetRecordingRegistrar struct {
 	mu           sync.Mutex
 	chatTargets  []string
 	sessionCalls []string
 }
 
+// recordedToken is the token targetRecordingRegistrar mints for target.
+func recordedToken(target string) string {
+	sum := sha256.Sum256([]byte(target))
+	return hex.EncodeToString(sum[:])
+}
+
 func (r *targetRecordingRegistrar) TokenForSession(sessionID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessionCalls = append(r.sessionCalls, sessionID)
-	return "sessiontok-" + url.QueryEscape(sessionID)
+	return recordedToken(sessionID)
 }
 
 func (r *targetRecordingRegistrar) TokenForChat(_, agentSessionID, fallbackAccountID string) string {
@@ -55,7 +64,20 @@ func (r *targetRecordingRegistrar) TokenForChat(_, agentSessionID, fallbackAccou
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.chatTargets = append(r.chatTargets, target)
-	return "chattok-" + url.QueryEscape(target)
+	return recordedToken(target)
+}
+
+// TokenTarget answers for every target this registrar ever minted for, the way
+// the real digest index does.
+func (r *targetRecordingRegistrar) TokenTarget(token string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, target := range append(append([]string(nil), r.chatTargets...), r.sessionCalls...) {
+		if recordedToken(target) == token {
+			return target, true
+		}
+	}
+	return "", false
 }
 
 func (r *targetRecordingRegistrar) ForgetBearer(string)                              {}
@@ -74,15 +96,15 @@ func (r *targetRecordingRegistrar) targets() []string {
 
 // wantChatProxyURL is the ANTHROPIC_BASE_URL a CHAT-scoped spawn must carry.
 func wantChatProxyURL(agentSessionID, accountID string) string {
-	return "http://127.0.0.1:" + strconv.Itoa(switchProxyPort) + "/s/chattok-" +
-		url.QueryEscape(ProxyTargetForChat(agentSessionID, accountID))
+	return "http://127.0.0.1:" + strconv.Itoa(switchProxyPort) + "/s/" +
+		recordedToken(ProxyTargetForChat(agentSessionID, accountID))
 }
 
 // wantSessionProxyURL is the ANTHROPIC_BASE_URL a SESSION-scoped spawn carries —
 // the shape the ticket's site used to produce and the two session-authority
 // sites must keep producing.
 func wantSessionProxyURL(sessionID string) string {
-	return "http://127.0.0.1:" + strconv.Itoa(switchProxyPort) + "/s/sessiontok-" + url.QueryEscape(sessionID)
+	return "http://127.0.0.1:" + strconv.Itoa(switchProxyPort) + "/s/" + recordedToken(sessionID)
 }
 
 // accountKeyedEnvResolver materializes a bearer NAMED for the account it was
@@ -775,6 +797,11 @@ func (r *retargetableRegistrar) ForgetAllBearers()                              
 func (r *retargetableRegistrar) AdoptToken(string, string)                        {}
 func (r *retargetableRegistrar) AdoptTokenForChat(string, string, string, string) {}
 func (r *retargetableRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
+
+func (r *retargetableRegistrar) TokenTarget(token string) (string, bool) {
+	target := r.targetFor(token)
+	return target, target != ""
+}
 
 // targetFor resolves a token exactly as the proxy's hashToTarget index does.
 func (r *retargetableRegistrar) targetFor(token string) string {

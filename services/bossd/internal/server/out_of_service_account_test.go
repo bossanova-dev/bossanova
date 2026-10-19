@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -112,5 +113,35 @@ func TestResolveChatAccountEnvForSpawn_DisabledChatAccountMovesToDefault(t *test
 	}
 	if chats.updateAccountCalls != 1 || chats.lastAccountID == nil || *chats.lastAccountID != good.Id {
 		t.Fatalf("chat binding writes = %d (last %v), want one write to %s", chats.updateAccountCalls, chats.lastAccountID, good.Id)
+	}
+}
+
+// When the chat cannot be moved off its disabled account, the launch fails
+// with the target account's label and the cause, and no ids.
+func TestResolveChatAccountEnvForSpawn_FailedChatMoveReadsPlainly(t *testing.T) {
+	ctx := context.Background()
+	s, accts := newAccountServer(t, newFakeCredStore(), nil)
+	old := mustAddClaude(t, s, "devops", []byte("old-blob"))
+	mustAddClaude(t, s, "hello", []byte("good-blob"))
+	disabled := string(models.AccountStatusDisabled)
+	if _, err := s.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
+		t.Fatalf("UpdateAccount: %v", err)
+	}
+	mat := &fakeMaterializer{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
+	resolver := account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
+	s.resolver = resolver
+	lc := &session.Lifecycle{}
+	lc.SetAccountGetter(accts.Get)
+	lc.SetDefaultAccountResolver(resolver.DefaultAccountID)
+	lc.SetAccountSwitchDeps(accts, nil, nil)
+	s.lifecycle = lc
+	s.agentChats = &accountEnvChatStoreFake{updateAccountErr: errors.New("database is locked")}
+
+	bound := old.Id
+	chat := &models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-1", AgentName: "claude", AccountID: &bound}
+	_, err := s.resolveChatAccountEnvForSpawn(ctx, &models.Session{ID: "sess-1", AgentName: "claude"}, chat, "", recordAccountUse)
+	const want = "could not move this chat to hello: database is locked"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
 	}
 }

@@ -42,15 +42,28 @@ type homeStatusExpiredMsg struct {
 }
 
 // setStatus replaces the status line and returns the timer that clears an
-// outcome. Every status write goes through here so each one bumps statusSeq.
+// outcome. Only another failure replaces a failure the operator has not
+// dismissed: an outcome from another row would hide it and then time out, and
+// an ongoing line would hide it until something replaced that.
 func (h *HomeModel) setStatus(text string, kind homeStatusKind) tea.Cmd {
-	h.statusSeq++
-	h.status, h.statusKind = text, kind
+	if kind != statusFailure && h.statusErr() {
+		return nil
+	}
+	h.writeStatus(text, kind)
 	return h.statusExpiry()
 }
 
+// clearStatus empties the status line, a failure included. Callers clear on a
+// deliberate act by the operator.
 func (h *HomeModel) clearStatus() {
-	h.setStatus("", statusOutcome)
+	h.writeStatus("", statusOutcome)
+}
+
+// writeStatus is the one place the status line changes, so every change bumps
+// statusSeq and no older timer can clear it.
+func (h *HomeModel) writeStatus(text string, kind homeStatusKind) {
+	h.statusSeq++
+	h.status, h.statusKind = text, kind
 }
 
 func (h HomeModel) statusErr() bool {

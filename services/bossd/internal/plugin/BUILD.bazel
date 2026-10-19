@@ -80,6 +80,7 @@ go_test(
         "repair_failed_start_reap_test.go",
         "repair_workflow_integration_test.go",
         "shared_test.go",
+        "start_agent_run_account_test.go",
         "test_helpers_test.go",
     ],
     data = glob(["testdata/**"]) + [

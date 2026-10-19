@@ -856,6 +856,15 @@ func (t *Tracker) Get(agentSessionID string) *Entry {
 	return e
 }
 
+// Running reports whether the chat has a fresh heartbeat that is not STOPPED.
+// The tmux poller writes one for every chat with a live pane each tick, and
+// STOPPED for a pane that went away, so this answers "is its pane up" without
+// asking tmux.
+func (t *Tracker) Running(agentSessionID string) bool {
+	e := t.Get(agentSessionID)
+	return e != nil && e.Status != pb.ChatStatus_CHAT_STATUS_STOPPED
+}
+
 // GetBatch returns entries for multiple claude IDs. Stale entries are
 // returned as stopped.
 func (t *Tracker) GetBatch(agentSessionIDs []string) map[string]*Entry {

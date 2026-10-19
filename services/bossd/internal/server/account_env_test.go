@@ -51,13 +51,15 @@ type accountEnvChatStoreFake struct {
 	updateAccountCalls int
 	lastAgentSessionID string
 	lastAccountID      *string
+	// updateAccountErr, when set, fails every account write.
+	updateAccountErr error
 }
 
 func (f *accountEnvChatStoreFake) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
 	f.updateAccountCalls++
 	f.lastAgentSessionID = agentSessionID
 	f.lastAccountID = accountID
-	return nil
+	return f.updateAccountErr
 }
 
 func (m *fakeMaterializer) SupportsRotation(_ context.Context, _ string) (bool, error) {
@@ -101,6 +103,7 @@ func (s *serverStubRegistrar) AdoptToken(string, string)                        
 func (s *serverStubRegistrar) AdoptTokenForChat(string, string, string, string) {}
 func (s *serverStubRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
 func (s *serverStubRegistrar) RetargetChatToken(_, _, _, _ string)              {}
+func (s *serverStubRegistrar) TokenTarget(string) (string, bool)                { return "", false }
 
 // TestResolveAccountEnv_BoundVsAccountZero proves the Fix #1 attach-path account
 // env resolution: a bound session materializes its account's spawn env, while an

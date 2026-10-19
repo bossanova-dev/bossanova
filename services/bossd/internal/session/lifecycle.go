@@ -286,6 +286,18 @@ type Lifecycle struct {
 	// auth-failed.
 	chatAuthFailed func(agentSessionID string) bool
 
+	// chatRunning reports whether the chat status tracker holds a fresh,
+	// not-stopped heartbeat for a chat: the poller's own view of which panes are
+	// up. Rewriting the rows that follow a session's account reads it instead of
+	// asking tmux about every row the session ever had. nil treats every chat
+	// as running, so rows still follow a move when the probe is not wired.
+	chatRunning func(agentSessionID string) bool
+
+	// relabels tracks the rewrites of the chat rows that follow a session's
+	// account: one at a time per session, the later move's account winning,
+	// and the background ones joined at shutdown.
+	relabels relabelRuns
+
 	// chatStatus records WORKING/STOPPED for headless runs (codex exec /
 	// claude --print), which have no tmux pane for TmuxStatusPoller and no
 	// finalize hook. nil leaves headless chats statusless (the pre-fix
@@ -760,6 +772,12 @@ func (l *Lifecycle) SetSessionLiveness(c sessionLiveness) {
 // then ever treated as auth-failed, which is the prior behaviour.
 func (l *Lifecycle) SetChatAuthFailedProbe(probe func(agentSessionID string) bool) {
 	l.chatAuthFailed = probe
+}
+
+// SetChatRunningProbe wires the chat status tracker's Running, the cheap
+// liveness read that decides which chat rows an account move rewrites.
+func (l *Lifecycle) SetChatRunningProbe(probe func(agentSessionID string) bool) {
+	l.chatRunning = probe
 }
 
 // SessionChatAuthFailed reports whether sess's agent chat is auth-failed per the

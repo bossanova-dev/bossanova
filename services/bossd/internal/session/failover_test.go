@@ -891,3 +891,4 @@ func (s stubRegistrar) AdoptToken(string, string)                        {}
 func (s stubRegistrar) AdoptTokenForChat(string, string, string, string) {}
 func (s stubRegistrar) RebuildTokenRegistry(context.Context) error       { return nil }
 func (s stubRegistrar) RetargetChatToken(_, _, _, _ string)              {}
+func (s stubRegistrar) TokenTarget(string) (string, bool)                { return "", false }

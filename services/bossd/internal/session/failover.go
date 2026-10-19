@@ -149,6 +149,11 @@ type proxyTokenRegistrar interface {
 	// registered token is a no-op, which is also what a disabled proxy looks
 	// like. Secret; never logged.
 	RetargetChatToken(sessionID, priorAgentSessionID, newAgentSessionID, accountID string)
+	// TokenTarget reports the target a path token resolves to: the session id
+	// for a session token, a chat target for a chat token. It reads the digest
+	// index, so it answers for a token minted by a previous daemon. Never mints.
+	// Secret; never logged.
+	TokenTarget(token string) (string, bool)
 }
 
 // rebuildProxyTokenRegistry restores the failover proxy's path-token registry
@@ -489,14 +494,13 @@ type RebindAndAuditParams struct {
 // defaults to the db-backed one. Never logs credential values.
 func (l *Lifecycle) RebindAndAudit(ctx context.Context, binding accountBinding, p RebindAndAuditParams) error {
 	if binding == nil {
-		binding = sessionAccountBinding{sessions: l.sessions}
+		binding = sessionAccountBinding{lc: l}
 	}
+	// The binding's error is shown to the operator as is, so it carries no ids.
 	if err := binding.BindSessionAccount(ctx, p.SessionID, p.BindAccountID); err != nil {
-		return fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.BindAccountID, err)
+		return err
 	}
-	// Recorder.Record is nil-receiver safe and swallows insert errors, so an
-	// unwired recorder or a failed audit never fails the rebind.
-	l.rotationRecorder.Record(ctx, rotation.AuditEvent{
+	l.recordRotationAudit(ctx, rotation.AuditEvent{
 		SessionID:   p.SessionID,
 		ChatID:      p.ChatID,
 		Provider:    p.Provider,
@@ -507,6 +511,20 @@ func (l *Lifecycle) RebindAndAudit(ctx context.Context, binding accountBinding, 
 		Detail:      p.Detail,
 	})
 	return nil
+}
+
+// rotationAuditTimeout bounds one rotation audit insert.
+const rotationAuditTimeout = 5 * time.Second
+
+// recordRotationAudit writes one rotation audit row on its own deadline,
+// detached from ctx, so a binding write that spent the caller's deadline cannot
+// drop the rotation from history. Recorder.Record is nil-receiver safe and
+// swallows insert errors, so an unwired recorder or a failed audit never fails
+// the rebind.
+func (l *Lifecycle) recordRotationAudit(ctx context.Context, ev rotation.AuditEvent) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rotationAuditTimeout)
+	defer cancel()
+	l.rotationRecorder.Record(ctx, ev)
 }
 
 // FailoverResult carries a proxy failover decision from PrepareFailover to the
@@ -978,6 +996,7 @@ func (l *Lifecycle) CommitFailover(ctx context.Context, sessionID string, r Fail
 	}); err != nil {
 		return err
 	}
+	l.relabelSessionTokenChatsInBackground(sessionID)
 	l.captureFailoverRotation(ctx, r)
 	return nil
 }
@@ -1004,6 +1023,7 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 		}); err != nil {
 			return err
 		}
+		l.relabelSessionTokenChatsInBackground(cb.SessionID)
 		l.captureFailoverRotation(ctx, r)
 		return nil
 	}
@@ -1014,7 +1034,7 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 	if err := l.agentChats.UpdateAccountIDByAgentSessionID(ctx, agentSessionID, &accountID); err != nil {
 		return fmt.Errorf("commit chat failover: bind chat %s to account %q: %w", agentSessionID, accountID, err)
 	}
-	l.rotationRecorder.Record(ctx, rotation.AuditEvent{
+	l.recordRotationAudit(ctx, rotation.AuditEvent{
 		SessionID:   cb.SessionID,
 		ChatID:      agentSessionID,
 		Provider:    r.Provider,

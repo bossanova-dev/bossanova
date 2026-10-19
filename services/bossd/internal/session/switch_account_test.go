@@ -144,7 +144,7 @@ func TestAccountRegistryAdapter_OKHealthActive(t *testing.T) {
 func TestSessionAccountBinding_SystemDefaultPersistsPresentEmpty(t *testing.T) {
 	sessions := newMockSessionStore()
 	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1"}
-	binding := sessionAccountBinding{sessions: sessions}
+	binding := sessionAccountBinding{lc: &Lifecycle{sessions: sessions, logger: zerolog.Nop()}}
 
 	if err := binding.BindSessionAccount(context.Background(), "sess-1", ""); err != nil {
 		t.Fatalf("BindSessionAccount system default: %v", err)

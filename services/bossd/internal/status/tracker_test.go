@@ -52,6 +52,26 @@ func TestGet_Stale(t *testing.T) {
 	}
 }
 
+// Running is true only for a fresh heartbeat that is not STOPPED: an idle pane
+// is up, a stopped or silent one is not.
+func TestRunning(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	tr.Update("idle", pb.ChatStatus_CHAT_STATUS_IDLE, now)
+	tr.Update("working", pb.ChatStatus_CHAT_STATUS_WORKING, now)
+	tr.Update("stopped", pb.ChatStatus_CHAT_STATUS_STOPPED, now)
+	tr.Update("stale", pb.ChatStatus_CHAT_STATUS_WORKING, now)
+	tr.mu.Lock()
+	tr.entries["stale"].ReceivedAt = now.Add(-StaleThreshold - time.Second)
+	tr.mu.Unlock()
+
+	for id, want := range map[string]bool{"idle": true, "working": true, "stopped": false, "stale": false, "unknown": false} {
+		if got := tr.Running(id); got != want {
+			t.Errorf("Running(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 func TestGetBatch_Mixed(t *testing.T) {
 	tr := NewTracker()
 	now := time.Now()

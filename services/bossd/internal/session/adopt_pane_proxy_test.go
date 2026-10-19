@@ -93,6 +93,7 @@ func (r *recordingRegistrar) TokenForSession(string) string              { retur
 func (r *recordingRegistrar) TokenForChat(string, string, string) string { return "" }
 func (r *recordingRegistrar) ForgetBearer(string)                        {}
 func (r *recordingRegistrar) ForgetAllBearers()                          {}
+func (r *recordingRegistrar) TokenTarget(string) (string, bool)          { return "", false }
 func (r *recordingRegistrar) RebuildTokenRegistry(context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

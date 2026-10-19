@@ -235,7 +235,7 @@ type ProxyServer struct {
 	// (a bare sessionID, or the chat-shaped string session.ProxyTargetForChat
 	// builds). It is keyed by the DIGEST rather than the token because that is
 	// the only key a restart can rebuild — the raw token is a secret and is
-	// never persisted (BOS-979). See sessionForToken for why hashing away the
+	// never persisted (BOS-979). See TokenTarget for why hashing away the
 	// raw key keeps the timing property the old constant-time scan had.
 	hashToTarget map[string]string
 	// sessionHashes is sessionID → the set of digests that session owns, across
@@ -1044,7 +1044,7 @@ func (p *ProxyServer) ForgetAllBearers() {
 // before BOS-979 rather than stalling a session spawn.
 //
 // It is deliberately SHORT. These writes happen while the caller holds p.mu for
-// writing, and sessionForToken takes p.mu for reading on every proxied request,
+// writing, and TokenTarget takes p.mu for reading on every proxied request,
 // so the timeout is the worst-case stall this imposes on ALL proxy resolution —
 // not just on the mint that hit the wedged lock. A sub-millisecond write that
 // has not completed in half a second is not going to complete usefully, and the
@@ -1915,7 +1915,7 @@ func (p *ProxyServer) rememberBearer(sessionID, token string) {
 	p.sessionBearer[sessionID] = token
 }
 
-// sessionForToken resolves a path token to its proxy target through a single
+// TokenTarget resolves a path token to its proxy target through a single
 // hash-keyed map lookup on hex(sha256(token)).
 //
 // This replaced an O(n) subtle.ConstantTimeCompare scan over every registered
@@ -1933,7 +1933,7 @@ func (p *ProxyServer) rememberBearer(sessionID, token string) {
 // walked back into a near-miss token. Meanwhile the old scan's real cost was
 // unbounded: it hashed nothing but touched every live registration on every
 // request, including 401 probes.
-func (p *ProxyServer) sessionForToken(token string) (string, bool) {
+func (p *ProxyServer) TokenTarget(token string) (string, bool) {
 	hash := proxyTokenHash(token)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -1975,7 +1975,7 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	sessionID, ok := p.sessionForToken(token)
+	sessionID, ok := p.TokenTarget(token)
 	if !ok {
 		// Self-identifying 401 (BOS-483): name the proxy and the most likely cause
 		// (a pane whose baked token predates a daemon restart) instead of an opaque

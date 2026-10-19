@@ -235,7 +235,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// tests inject l.accountSwitchBinding.
 	binding := l.accountSwitchBinding
 	if binding == nil {
-		chatBinding := chatAccountBinding{chats: l.agentChats, agentSessionID: p.AgentSessionID}
+		chatBinding := chatAccountBinding{lc: l, agentSessionID: p.AgentSessionID}
 		// A chat running the session's own agent also carries the session seed
 		// with it, so the session's next chat starts on the account this switch
 		// moved to rather than the one it left.
@@ -383,7 +383,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// target, so auditing the rebind reflects what actually happened.
 	if p.Auto {
 		if err := binding.BindSessionAccount(ctx, p.SessionID, p.TargetAccountID); err != nil {
-			l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
+			l.stampSwitchStartError(ctx, p.AgentSessionID, err.Error())
 			return SwitchAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
 		}
 	} else if err := l.RebindAndAudit(ctx, binding, RebindAndAuditParams{
@@ -401,7 +401,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		Outcome:       "ROTATION_OUTCOME_ROTATED",
 		Detail:        outcomeDetail,
 	}); err != nil {
-		l.stampSwitchStartError(ctx, p.AgentSessionID, "rebind account failed: "+err.Error())
+		l.stampSwitchStartError(ctx, p.AgentSessionID, err.Error())
 		return SwitchAccountResult{}, err
 	}
 
@@ -606,16 +606,18 @@ func coolingUntilText(until *time.Time) string {
 
 // --- Production adapters over BOS-170 / status / plugin seams ---
 
-// sessionAccountBinding adapts db.SessionStore to the accountBinding seam:
-// SessionAccount reads Session.AccountID; BindSessionAccount persists the
-// rebind via UpdateSessionParams.AccountID (nullable-string double pointer,
-// present-empty ⇒ system-default account 0).
+// sessionAccountBinding adapts the session's account to the accountBinding
+// seam for the failover proxy: SessionAccount reads Session.AccountID;
+// BindSessionAccount writes it and nothing else, because it runs before the
+// replayed response streams. CommitFailover rewrites the rows of the panes that
+// follow the session afterwards, off that path. A present-empty account id
+// persists as the system-default account 0.
 type sessionAccountBinding struct {
-	sessions db.SessionStore
+	lc *Lifecycle
 }
 
 func (b sessionAccountBinding) SessionAccount(ctx context.Context, sessionID string) (string, error) {
-	s, err := b.sessions.Get(ctx, sessionID)
+	s, err := b.lc.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return "", err
 	}
@@ -626,9 +628,7 @@ func (b sessionAccountBinding) SessionAccount(ctx context.Context, sessionID str
 }
 
 func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID, accountID string) error {
-	acctPtr := &accountID
-	_, err := b.sessions.Update(ctx, sessionID, db.UpdateSessionParams{AccountID: &acctPtr})
-	return err
+	return b.lc.writeSessionAccount(ctx, sessionID, accountID)
 }
 
 // chatAccountBinding adapts db.AgentChatStore to the accountBinding seam so the
@@ -639,7 +639,7 @@ func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID
 // is ignored. A present-empty account id (system-default account 0) persists as
 // a non-nil pointer to "", mirroring the session binding.
 type chatAccountBinding struct {
-	chats          db.AgentChatStore
+	lc             *Lifecycle
 	agentSessionID string
 	// moveSession, set for a chat running the session's own agent, moves the
 	// session to the same managed account.
@@ -647,7 +647,7 @@ type chatAccountBinding struct {
 }
 
 func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (string, error) {
-	chat, err := b.chats.GetByAgentSessionID(ctx, b.agentSessionID)
+	chat, err := b.lc.agentChats.GetByAgentSessionID(ctx, b.agentSessionID)
 	if err != nil {
 		return "", err
 	}
@@ -659,8 +659,8 @@ func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (strin
 
 func (b chatAccountBinding) BindSessionAccount(ctx context.Context, _, accountID string) error {
 	acctPtr := &accountID
-	if err := b.chats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr); err != nil {
-		return err
+	if err := b.lc.agentChats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr); err != nil {
+		return b.lc.MoveChatError(ctx, accountID, err)
 	}
 	// The machine login never becomes the session's account. Panes started from
 	// the session's account read their bearer from it, and an empty one leaves

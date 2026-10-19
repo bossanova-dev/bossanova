@@ -935,6 +935,12 @@ type runOpts struct {
 	// assert shutdown actually waits on it.
 	onArchiveTrackerSeamsWired func(live bool, track func(string, <-chan struct{}))
 
+	// onRelabelShutdownProbe, if non-nil, fires on the startup path with a probe
+	// that reports whether the lifecycle's background chat row rewrites have
+	// been stopped. A test reads it after run returns to pin that shutdown
+	// calls StopBackgroundRelabels.
+	onRelabelShutdownProbe func(stopped func() bool)
+
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
@@ -2373,6 +2379,7 @@ func run(opts runOpts) error {
 	}
 	lifecycle.SetAgentRunStore(agentRuns)
 	lifecycle.SetChatStatus(chatStatusTracker)
+	lifecycle.SetChatRunningProbe(chatStatusTracker.Running)
 	// An auth-failed (login-required) chat looks idle-and-finished to the
 	// stranded-cron sweep and the completion gate; this probe lets them block it
 	// rather than finalize a PR for a build that died on auth (BOS-1530).
@@ -2692,6 +2699,9 @@ func run(opts runOpts) error {
 	})
 	if opts.onRotationSeamsWired != nil {
 		opts.onRotationSeamsWired(lifecycle.HasLiveRotationSeams())
+	}
+	if opts.onRelabelShutdownProbe != nil {
+		opts.onRelabelShutdownProbe(lifecycle.BackgroundRelabelsStopped)
 	}
 	// Operator-facing startup diagnostic (BOS-315): report whether the
 	// auto-rotation lane can actually fire — the wired seams, the boot-time
@@ -4986,6 +4996,14 @@ func run(opts runOpts) error {
 	}
 	draftPRCancel()
 	lifecycle.CancelBackgroundDraftPRs()
+
+	// A failover during the proxy drain above can leave a chat row rewrite
+	// running. Cancel it and wait for it here, before the database closes.
+	relabelCtx, relabelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if !lifecycle.StopBackgroundRelabels(relabelCtx) {
+		log.Warn().Msg("shutting down while a chat row rewrite is still running; some chat rows may still show the previous account")
+	}
+	relabelCancel()
 
 	// Clean up socket file.
 	_ = os.Remove(socketPath)

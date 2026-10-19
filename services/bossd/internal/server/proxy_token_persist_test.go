@@ -209,7 +209,7 @@ func TestTokenForChat_existingTokenRefreshPersistsAccount(t *testing.T) {
 	// The refreshed row must reassemble to the target the live map holds, or
 	// the rebuild resolves the pane differently from the running daemon.
 	wantTarget := session.ProxyTargetForChat(rec.AgentSessionID, rec.AccountID)
-	if got, _ := ps.sessionForToken(tok); got != wantTarget {
+	if got, _ := ps.TokenTarget(tok); got != wantTarget {
 		t.Errorf("live target = %q, persisted target = %q", got, wantTarget)
 	}
 }
@@ -395,8 +395,8 @@ func TestPersistFailureStillMintsUsableToken(t *testing.T) {
 	if tok == "" {
 		t.Fatal("mint failed when persistence failed")
 	}
-	if sid, ok := ps.sessionForToken(tok); !ok || sid != "sess-1" {
-		t.Fatalf("sessionForToken = %q,%v want sess-1,true", sid, ok)
+	if sid, ok := ps.TokenTarget(tok); !ok || sid != "sess-1" {
+		t.Fatalf("TokenTarget = %q,%v want sess-1,true", sid, ok)
 	}
 	if !strings.Contains(buf.String(), "disk on fire") {
 		t.Errorf("persistence failure was not logged: %s", buf.String())
@@ -477,7 +477,7 @@ func TestRetargetChatToken_movesTheLiveTargetAndTheRow(t *testing.T) {
 		t.Errorf("TokenForChat after retarget minted a new token %q, want the pane's own %q", again, tok)
 	}
 	wantTarget := session.ProxyTargetForChat("agent-new", "acct-1")
-	if got, ok := ps.sessionForToken(tok); !ok || got != wantTarget {
+	if got, ok := ps.TokenTarget(tok); !ok || got != wantTarget {
 		t.Errorf("live target = %q (ok=%v), want %q", got, ok, wantTarget)
 	}
 	// The durable row has to agree, or a restart rebuild resolves the pane to

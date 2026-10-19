@@ -856,6 +856,7 @@ type mockAgentChatStore struct {
 	chatsWithTmux            []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr                error
 	updateTmuxNameErr        error
+	updateAccountIDErr       error // when non-nil, UpdateAccountIDByAgentSessionID returns it and writes nothing
 	rebindErr                error
 	deleteErr                error
 	listBySessionErr         error // when non-nil, ListBySession returns it
@@ -1045,6 +1046,9 @@ func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, agentSes
 func (m *mockAgentChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.updateAccountIDErr != nil {
+		return m.updateAccountIDErr
+	}
 	m.accountIDUpdates = append(m.accountIDUpdates, accountIDUpdate{agentSessionID: agentSessionID, accountID: accountID})
 	for _, chats := range m.chatsBySession {
 		for _, chat := range chats {

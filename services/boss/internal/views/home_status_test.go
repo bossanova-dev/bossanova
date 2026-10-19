@@ -340,6 +340,53 @@ func TestHomeSettledMergeLeavesAnUndismissedFailure(t *testing.T) {
 	}
 }
 
+// TestHomeDirectMergeResultLeavesAnUndismissedFailure covers a merge on one row
+// that answers after a rename on another row failed: "Merged PR" would replace
+// the failure and then time out, so the failure stays.
+func TestHomeDirectMergeResultLeavesAnUndismissedFailure(t *testing.T) {
+	timers := captureStatusTimers(t)
+	h, merge := homeMergeRunning(t, &attentionStub{})
+	failed := connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))
+	h = homeStatusUpdate(t, h, sessionRenamedMsg{err: failed})
+
+	h = homeStatusUpdate(t, h, merge())
+	if !h.statusErr() || !strings.Contains(homeScreen(h), "Rename failed") || strings.Contains(homeScreen(h), "Merged PR #42") {
+		t.Fatalf("status %q after the merge answered, want the rename failure kept:\n%s", h.status, homeScreen(h))
+	}
+	if len(timers.fired) != 0 {
+		t.Fatalf("scheduled %d expiries after the merge answered, want none over a failure", len(timers.fired))
+	}
+	if h.isMerging("session-1") {
+		t.Fatal("the answered merge still reads merging")
+	}
+}
+
+// TestHomeDismissesAFailureOnD covers Home's own keymap: Home frees d from the
+// table's half-page binding, so on Home d is not navigation and dismisses a
+// failure. Reading the table's default keymap instead would keep the failure.
+func TestHomeDismissesAFailureOnD(t *testing.T) {
+	captureStatusTimers(t)
+	failed := connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))
+	h := homeStatusUpdate(t, renameKeyHome(t), sessionRenamedMsg{err: failed})
+	h = homeStatusUpdate(t, h, keyPress('d'))
+	if h.status != "" || strings.Contains(homeScreen(h), "Rename failed") {
+		t.Fatalf("status %q after d, want the failure gone", h.status)
+	}
+}
+
+// TestHomeKeyReleaseLeavesAFailure covers a terminal that reports key releases.
+// A failure that lands while a key is held must survive that key's release:
+// the operator has not pressed anything with the failure on screen.
+func TestHomeKeyReleaseLeavesAFailure(t *testing.T) {
+	captureStatusTimers(t)
+	failed := connect.NewError(connect.CodeUnavailable, errors.New("daemon unreachable"))
+	h := homeStatusUpdate(t, renameKeyHome(t), sessionRenamedMsg{err: failed})
+	h = homeStatusUpdate(t, h, tea.KeyReleaseMsg{Code: 'z', Text: "z"})
+	if !h.statusErr() || !strings.Contains(homeScreen(h), "Rename failed") {
+		t.Fatalf("status %q after a key release, want the failure kept", h.status)
+	}
+}
+
 func TestHomeKeyLeavesAnOutcomeToItsTimer(t *testing.T) {
 	captureStatusTimers(t)
 	h := homeStatusUpdate(t, renameKeyHome(t), sessionRenamedMsg{session: &pb.Session{Id: "sess-1", Title: "New name"}})

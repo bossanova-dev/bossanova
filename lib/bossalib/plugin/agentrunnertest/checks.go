@@ -43,7 +43,7 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 		}
 		return out
 	}
-	if row.name == "StartRun" {
+	if row.name == "StartAgentRun" {
 		return checkLifecycle(ctx, r, e)
 	}
 	var before map[string]bool
@@ -250,16 +250,16 @@ func filesIn(root string) (map[string]bool, error) {
 
 func checkLifecycle(parent context.Context, r Runner, e Env) []Violation {
 	var out []Violation
-	fail := func(problem string) { out = append(out, Violation{Method: "StartRun", Problem: problem}) }
+	fail := func(problem string) { out = append(out, Violation{Method: "StartAgentRun", Problem: problem}) }
 	request := &v1.StartAgentRunRequest{WorkDir: e.WorkDir, LogPath: e.LogPath, SessionId: "conformance-run", Plan: "Conformance"}
-	if r.StartRun != nil {
-		request = r.StartRun(e)
+	if r.StartAgentRun != nil {
+		request = r.StartAgentRun(e)
 	}
 	if request == nil {
-		fail("Runner.StartRun returned no request")
+		fail("Runner.StartAgentRun returned no request")
 		return out
 	}
-	response, err := r.Client.StartRun(parent, request)
+	response, err := r.Client.StartAgentRun(parent, request)
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			fail("supported RPC returns Unimplemented")

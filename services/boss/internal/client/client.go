@@ -146,8 +146,8 @@ type BossClient interface {
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
 
 	// Claude chat tracking
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error)
-	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.AgentChat, error)
+	ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
 	// DeleteChat removes a chat by agent_session_id. reason states why, because
 	// the daemon cannot discover it (no peer, no headers, no identity in the

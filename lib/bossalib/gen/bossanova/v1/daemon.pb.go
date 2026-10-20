@@ -5237,7 +5237,7 @@ func (x *RecordChatRequest) GetRole() ChatRole {
 
 type RecordChatResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chat          *ClaudeChat            `protobuf:"bytes,1,opt,name=chat,proto3" json:"chat,omitempty"`
+	Chat          *AgentChat             `protobuf:"bytes,1,opt,name=chat,proto3" json:"chat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5272,7 +5272,7 @@ func (*RecordChatResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{78}
 }
 
-func (x *RecordChatResponse) GetChat() *ClaudeChat {
+func (x *RecordChatResponse) GetChat() *AgentChat {
 	if x != nil {
 		return x.Chat
 	}
@@ -5325,7 +5325,7 @@ func (x *ListChatsRequest) GetSessionId() string {
 
 type ListChatsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chats         []*ClaudeChat          `protobuf:"bytes,1,rep,name=chats,proto3" json:"chats,omitempty"`
+	Chats         []*AgentChat           `protobuf:"bytes,1,rep,name=chats,proto3" json:"chats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5360,7 +5360,7 @@ func (*ListChatsResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{80}
 }
 
-func (x *ListChatsResponse) GetChats() []*ClaudeChat {
+func (x *ListChatsResponse) GetChats() []*AgentChat {
 	if x != nil {
 		return x.Chats
 	}
@@ -8386,17 +8386,17 @@ func (x *DeleteGithubCallbackResponse) GetOutcome() string {
 // re-parse to the same selector.
 type BroadcastSelectorClause struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
-	ChatIds    []string               `protobuf:"bytes,1,rep,name=chat_ids,json=chatIds,proto3" json:"chat_ids,omitempty"`          // ClaudeChat.agent_session_id
+	ChatIds    []string               `protobuf:"bytes,1,rep,name=chat_ids,json=chatIds,proto3" json:"chat_ids,omitempty"`          // AgentChat.agent_session_id
 	SessionIds []string               `protobuf:"bytes,2,rep,name=session_ids,json=sessionIds,proto3" json:"session_ids,omitempty"` // Session.id
 	RepoIds    []string               `protobuf:"bytes,3,rep,name=repo_ids,json=repoIds,proto3" json:"repo_ids,omitempty"`          // Session.repo_id
-	AgentNames []string               `protobuf:"bytes,4,rep,name=agent_names,json=agentNames,proto3" json:"agent_names,omitempty"` // ClaudeChat.agent_name
-	// No wire message carries a chat's account today (ClaudeChat has no
+	AgentNames []string               `protobuf:"bytes,4,rep,name=agent_names,json=agentNames,proto3" json:"agent_names,omitempty"` // AgentChat.agent_name
+	// No wire message carries a chat's account today (AgentChat has no
 	// account_id), so this dimension is resolved daemon-side from the
 	// agent_chats.account_id column. The delivery child either keeps resolving it
-	// there or adds account_id to ClaudeChat. The "" default account is not
+	// there or adds account_id to AgentChat. The "" default account is not
 	// addressable.
 	AccountIds    []string `protobuf:"bytes,5,rep,name=account_ids,json=accountIds,proto3" json:"account_ids,omitempty"`
-	DaemonIds     []string `protobuf:"bytes,6,rep,name=daemon_ids,json=daemonIds,proto3" json:"daemon_ids,omitempty"` // ClaudeChat.daemon_id (the "" local daemon is not addressable)
+	DaemonIds     []string `protobuf:"bytes,6,rep,name=daemon_ids,json=daemonIds,proto3" json:"daemon_ids,omitempty"` // AgentChat.daemon_id (the "" local daemon is not addressable)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8528,8 +8528,8 @@ type Broadcast struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Selector *BroadcastSelector     `protobuf:"bytes,2,opt,name=selector,proto3" json:"selector,omitempty"`
-	// ClaudeChat.agent_session_id — the same identifier BroadcastSelectorClause
-	// .chat_ids carries, NOT ClaudeChat.id. Spelled out because ClaudeChat has
+	// AgentChat.agent_session_id — the same identifier BroadcastSelectorClause
+	// .chat_ids carries, NOT AgentChat.id. Spelled out because AgentChat has
 	// both, and a delivery child storing the row id here would produce records
 	// that cannot be joined against a selector.
 	OriginChatId string `protobuf:"bytes,3,opt,name=origin_chat_id,json=originChatId,proto3" json:"origin_chat_id,omitempty"` // chat that sent it; empty = not chat-originated
@@ -8630,7 +8630,7 @@ func (x *Broadcast) GetExpiresAt() *timestamppb.Timestamp {
 type BroadcastDelivery struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	BroadcastId   string                 `protobuf:"bytes,1,opt,name=broadcast_id,json=broadcastId,proto3" json:"broadcast_id,omitempty"`
-	TargetChatId  string                 `protobuf:"bytes,2,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"` // ClaudeChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
+	TargetChatId  string                 `protobuf:"bytes,2,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"` // AgentChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
 	State         string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`                                     // per-target delivery state; stable lowercase strings, defined by the delivery child
 	AttemptCount  int32                  `protobuf:"varint,4,opt,name=attempt_count,json=attemptCount,proto3" json:"attempt_count,omitempty"`
 	LastError     string                 `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"` // delivery diagnostic; empty = none. NEVER the message body.
@@ -8716,7 +8716,7 @@ type SendBroadcastRequest struct {
 	// Audience to resolve. Required, and must carry at least one clause: an
 	// empty selector is rejected rather than treated as "everyone".
 	Selector *BroadcastSelector `protobuf:"bytes,1,opt,name=selector,proto3" json:"selector,omitempty"`
-	// Chat this broadcast is issued from (ClaudeChat.agent_session_id). Empty =
+	// Chat this broadcast is issued from (AgentChat.agent_session_id). Empty =
 	// operator-issued from the CLI or MCP with no originating chat, which is why
 	// this is a plain string rather than a required id.
 	OriginChatId string `protobuf:"bytes,2,opt,name=origin_chat_id,json=originChatId,proto3" json:"origin_chat_id,omitempty"`
@@ -10002,7 +10002,7 @@ type BroadcastSubscription struct {
 	// subscription may outlive the session it watches, and expiry — not a
 	// referential cascade — retires one whose session will never settle.
 	OwnerSessionId string `protobuf:"bytes,2,opt,name=owner_session_id,json=ownerSessionId,proto3" json:"owner_session_id,omitempty"`
-	// Chat that registered it (ClaudeChat.agent_session_id), as in
+	// Chat that registered it (AgentChat.agent_session_id), as in
 	// BroadcastSelectorClause.chat_ids. Empty = operator-issued with no
 	// registering chat.
 	//
@@ -10148,7 +10148,7 @@ type CreateBroadcastSubscriptionRequest struct {
 	// one clause: an empty selector is rejected rather than treated as
 	// "everyone".
 	Selector *BroadcastSelector `protobuf:"bytes,3,opt,name=selector,proto3" json:"selector,omitempty"`
-	// Chat registering this subscription (ClaudeChat.agent_session_id). Empty =
+	// Chat registering this subscription (AgentChat.agent_session_id). Empty =
 	// operator-issued from the CLI or MCP with no originating chat. It records
 	// who asked; address it by naming it in the selector, which is honoured
 	// (there is no self-exclusion on a fired subscription).
@@ -13652,14 +13652,14 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"agent_name\x18\x05 \x01(\tH\x00R\tagentName\x88\x01\x01\x12*\n" +
 	"\x04role\x18\x06 \x01(\x0e2\x16.bossanova.v1.ChatRoleR\x04roleB\r\n" +
-	"\v_agent_name\"B\n" +
-	"\x12RecordChatResponse\x12,\n" +
-	"\x04chat\x18\x01 \x01(\v2\x18.bossanova.v1.ClaudeChatR\x04chat\"1\n" +
+	"\v_agent_name\"A\n" +
+	"\x12RecordChatResponse\x12+\n" +
+	"\x04chat\x18\x01 \x01(\v2\x17.bossanova.v1.AgentChatR\x04chat\"1\n" +
 	"\x10ListChatsRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"C\n" +
-	"\x11ListChatsResponse\x12.\n" +
-	"\x05chats\x18\x01 \x03(\v2\x18.bossanova.v1.ClaudeChatR\x05chats\"X\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"B\n" +
+	"\x11ListChatsResponse\x12-\n" +
+	"\x05chats\x18\x01 \x03(\v2\x17.bossanova.v1.AgentChatR\x05chats\"X\n" +
 	"\x16UpdateChatTitleRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"\x19\n" +
@@ -14699,7 +14699,7 @@ var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(SessionState)(0),                           // 224: bossanova.v1.SessionState
 	(SessionEvent)(0),                           // 225: bossanova.v1.SessionEvent
 	(ChatRole)(0),                               // 226: bossanova.v1.ChatRole
-	(*ClaudeChat)(nil),                          // 227: bossanova.v1.ClaudeChat
+	(*AgentChat)(nil),                           // 227: bossanova.v1.AgentChat
 	(*MCPServerReport)(nil),                     // 228: bossanova.v1.MCPServerReport
 	(*ChatMessage)(nil),                         // 229: bossanova.v1.ChatMessage
 	(ChatStatus)(0),                             // 230: bossanova.v1.ChatStatus
@@ -14762,8 +14762,8 @@ var file_bossanova_v1_daemon_proto_depIdxs = []int32{
 	218, // 47: bossanova.v1.SessionResurrected.session:type_name -> bossanova.v1.Session
 	220, // 48: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
 	226, // 49: bossanova.v1.RecordChatRequest.role:type_name -> bossanova.v1.ChatRole
-	227, // 50: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
-	227, // 51: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
+	227, // 50: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.AgentChat
+	227, // 51: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.AgentChat
 	2,   // 52: bossanova.v1.DeleteChatRequest.reason:type_name -> bossanova.v1.DeleteChatRequest.DeletionReason
 	3,   // 53: bossanova.v1.WakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResponse.Outcome
 	228, // 54: bossanova.v1.DescribeChatMCPResponse.servers:type_name -> bossanova.v1.MCPServerReport

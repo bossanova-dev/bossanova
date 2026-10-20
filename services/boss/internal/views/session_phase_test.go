@@ -35,7 +35,7 @@ func TestHomeSessionPhase(t *testing.T) {
 
 func TestChatPickerPhase(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "s", "")
-	chats := []*pb.ClaudeChat{{AgentSessionId: "working", Title: "Live chat", CreatedAt: timestamppb.Now()}, {AgentSessionId: "idle", Title: "Resting chat", CreatedAt: timestamppb.New(time.Now().Add(-time.Hour))}}
+	chats := []*pb.AgentChat{{AgentSessionId: "working", Title: "Live chat", CreatedAt: timestamppb.Now()}, {AgentSessionId: "idle", Title: "Resting chat", CreatedAt: timestamppb.New(time.Now().Add(-time.Hour))}}
 	updated, _ := m.Update(chatsListedMsg{chats: chats, daemonStatuses: map[string]string{"working": statusWorking, "idle": statusIdle}, daemonPhases: map[string]string{"working": "reviewing", "idle": "building"}})
 	m = updated.(ChatPickerModel)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
@@ -70,8 +70,8 @@ func TestChatPickerPhase(t *testing.T) {
 // Phase polling uses real additive status entries, rather than model-only seeds.
 type phasePollingStub struct{ chatPickerStub }
 
-func (s *phasePollingStub) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
-	return []*pb.ClaudeChat{{AgentSessionId: "working", CreatedAt: timestamppb.Now()}}, nil
+func (s *phasePollingStub) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
+	return []*pb.AgentChat{{AgentSessionId: "working", CreatedAt: timestamppb.Now()}}, nil
 }
 
 func (s *phasePollingStub) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error) {

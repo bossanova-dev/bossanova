@@ -153,7 +153,7 @@ type HostServiceServer struct {
 	panePIDResolver func(ctx context.Context, tmuxSessionName string) (int, error)
 
 	// agentLogsDir is the bossd-owned directory where the agent plugin
-	// writes per-session NDJSON log files. Forwarded into StartRun.LogPath.
+	// writes per-session NDJSON log files. Forwarded into StartAgentRun.LogPath.
 	agentLogsDir string
 	agentRuns    db.AgentRunStore
 
@@ -1297,7 +1297,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	repo := session.RepoForSessionEnv(ctx, s.repoStore, sess.RepoID, sess.ID, "repair run", log.Logger)
 	// BOS-1142: a bound account whose credentials cannot be injected refuses the
 	// repair run rather than dispatching it on the agent CLI's ambient login.
-	// Unlocks on the way out, mirroring the StartRun failure below — the run was
+	// Unlocks on the way out, mirroring the StartAgentRun failure below — the run was
 	// never recorded, so there is nothing else to undo.
 	accountEnv, accountErr := s.resolveAccountEnv(ctx, sess)
 	if accountErr != nil {
@@ -1317,7 +1317,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
 	}
 	startedAt := time.Now()
-	startResp, err := client.StartRun(context.Background(), startReq)
+	startResp, err := client.StartAgentRun(context.Background(), startReq)
 	if err != nil {
 		s.runMu.Unlock()
 		return nil, grpcstatus.Errorf(codes.Internal, "start agent: %v", err)

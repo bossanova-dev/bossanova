@@ -26,11 +26,11 @@ func (f *fakeSessionReader) SnapshotSessions(_ context.Context) ([]*pb.Session, 
 }
 
 type fakeChatReader struct {
-	chats []*pb.ClaudeChatMetadata
+	chats []*pb.AgentChatMetadata
 	err   error
 }
 
-func (f *fakeChatReader) SnapshotChats(_ context.Context) ([]*pb.ClaudeChatMetadata, error) {
+func (f *fakeChatReader) SnapshotChats(_ context.Context) ([]*pb.AgentChatMetadata, error) {
 	return f.chats, f.err
 }
 
@@ -145,7 +145,7 @@ func TestBuildSnapshot_ChatMetadataHasPreviewNotFullBody(t *testing.T) {
 		t.Fatalf("TruncatePreview length = %d, want %d", len([]rune(clamped)), DefaultPreviewChars)
 	}
 
-	chat := &pb.ClaudeChatMetadata{
+	chat := &pb.AgentChatMetadata{
 		Id:                 "c1",
 		SessionId:          "s1",
 		AgentSessionId:     "claude-1",
@@ -153,7 +153,7 @@ func TestBuildSnapshot_ChatMetadataHasPreviewNotFullBody(t *testing.T) {
 	}
 
 	client := newTestClient(StreamStores{
-		Chats: &fakeChatReader{chats: []*pb.ClaudeChatMetadata{chat}},
+		Chats: &fakeChatReader{chats: []*pb.AgentChatMetadata{chat}},
 	})
 
 	snap, err := client.buildSnapshot(context.Background())
@@ -204,10 +204,10 @@ func TestBuildSnapshot_SizeUnder100KBWithRealisticLoad(t *testing.T) {
 		}
 	}
 
-	chats := make([]*pb.ClaudeChatMetadata, totalChats)
+	chats := make([]*pb.AgentChatMetadata, totalChats)
 	preview := strings.Repeat("x", DefaultPreviewChars)
 	for i := range chats {
-		chats[i] = &pb.ClaudeChatMetadata{
+		chats[i] = &pb.AgentChatMetadata{
 			Id:                 fmt.Sprintf("c-%d", i),
 			SessionId:          fmt.Sprintf("s-%d", i%numSessions),
 			AgentSessionId:     fmt.Sprintf("claude-%d", i),

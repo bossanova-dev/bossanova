@@ -23,7 +23,7 @@ func (s *stubAgentRunner) GetInfo(context.Context) (*bossanovav1.PluginInfo, err
 func (s *stubAgentRunner) PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
 	return &bossanovav1.PreflightHeadlessRunResponse{}, nil
 }
-func (s *stubAgentRunner) StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (s *stubAgentRunner) StartAgentRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{}, nil
 }
 func (s *stubAgentRunner) StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {

@@ -1863,7 +1863,7 @@ func run(opts runOpts) error {
 		streamBus.Publish(upstream.StreamEvent{
 			Chat: &upstream.ChatEvent{
 				Kind: pbKind,
-				Chat: &bossanovav1.ClaudeChatMetadata{
+				Chat: &bossanovav1.AgentChatMetadata{
 					Id:             chat.ID,
 					SessionId:      chat.SessionID,
 					AgentSessionId: chat.AgentSessionID,
@@ -3452,7 +3452,7 @@ func run(opts runOpts) error {
 		snapshotInterests := upstream.NewCallbackInterestReader(func(ctx context.Context) ([]*bossanovav1.CallbackInterest, error) {
 			return callback.DeriveInterests(ctx, githubCallbacks)
 		})
-		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
+		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.AgentChatMetadata, error) {
 			// Routable (not tmux-only): headless runs have no tmux session
 			// name, so the old ListWithTmuxSession snapshot dropped them and
 			// bosso's FindDaemonForChat 404'd remote send/transcript calls
@@ -3461,9 +3461,9 @@ func run(opts runOpts) error {
 			if err != nil {
 				return nil, err
 			}
-			out := make([]*bossanovav1.ClaudeChatMetadata, 0, len(chats))
+			out := make([]*bossanovav1.AgentChatMetadata, 0, len(chats))
 			for _, c := range chats {
-				out = append(out, &bossanovav1.ClaudeChatMetadata{
+				out = append(out, &bossanovav1.AgentChatMetadata{
 					Id:             c.ID,
 					SessionId:      c.SessionID,
 					AgentSessionId: c.AgentSessionID,

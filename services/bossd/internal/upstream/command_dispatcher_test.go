@@ -55,7 +55,7 @@ type fakeCommandHandler struct {
 	updateChatTitleAgentID  string                 // last agentSessionID passed to UpdateChatTitle
 	updateChatTitleValue    string                 // last title passed to UpdateChatTitle
 	reportChatStatusReports []*pb.ChatStatusReport // last reports passed to ReportChatStatus
-	recordChatResult        *pb.ClaudeChat
+	recordChatResult        *pb.AgentChat
 	listReposResult         *pb.ListReposResponse
 	listAgentsResult        *pb.ListAgentsResponse
 	listAccountsResult      *pb.ListAccountsResponse
@@ -234,7 +234,7 @@ func (f *fakeCommandHandler) LinkSessionPR(_ context.Context, sessionID, pr stri
 	f.linkPR = pr
 	return f.linkSession, f.returnErr
 }
-func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ bool, _ string) (*pb.ClaudeChat, error) {
+func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ bool, _ string) (*pb.AgentChat, error) {
 	f.recordChatCalls.Add(1)
 	return f.recordChatResult, f.returnErr
 }
@@ -2165,7 +2165,7 @@ func TestDispatchCommand_EmptyTrash_CallsHandler(t *testing.T) {
 }
 
 func TestDispatchCommand_RecordChat_CallsHandler(t *testing.T) {
-	chat := &pb.ClaudeChat{Id: "chat-1"}
+	chat := &pb.AgentChat{Id: "chat-1"}
 	handler := &fakeCommandHandler{recordChatResult: chat}
 	client := newDispatcherClient(handler, nil, nil)
 	ev := client.dispatchCommand(context.Background(),

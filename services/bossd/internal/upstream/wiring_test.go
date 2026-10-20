@@ -111,8 +111,8 @@ func TestBossd_StartsStreamAfterRegister(t *testing.T) {
 		Repos: NewRepoSnapshotReader(func(_ context.Context) ([]string, error) {
 			return []string{"repo-1"}, nil
 		}),
-		Chats: NewChatSnapshotReader(func(_ context.Context) ([]*pb.ClaudeChatMetadata, error) {
-			return []*pb.ClaudeChatMetadata{{Id: "c-1", CreatedAt: timestamppb.Now()}}, nil
+		Chats: NewChatSnapshotReader(func(_ context.Context) ([]*pb.AgentChatMetadata, error) {
+			return []*pb.AgentChatMetadata{{Id: "c-1", CreatedAt: timestamppb.Now()}}, nil
 		}),
 		Statuses: NewStatusSnapshotReader(func(_ context.Context) ([]*pb.ChatStatusEntry, error) {
 			return nil, nil

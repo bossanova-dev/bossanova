@@ -331,7 +331,7 @@ type chatNewChatJSON struct {
 	TmuxSessionName string `json:"tmux_session_name"`
 }
 
-func newChatJSON(chat *pb.ClaudeChat) chatNewJSON {
+func newChatJSON(chat *pb.AgentChat) chatNewJSON {
 	return chatNewJSON{Chat: chatNewChatJSON{
 		AgentSessionID:  chat.GetAgentSessionId(),
 		SessionID:       chat.GetSessionId(),

@@ -543,7 +543,7 @@ type SessionCommandHandler interface {
 	RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error)
 	// LinkSessionPR attaches an existing PR to a session and returns the updated row.
 	LinkSessionPR(ctx context.Context, sessionID, pr string) (*pb.Session, error)
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.AgentChat, error)
 	// DeleteChat removes a chat by agent_session_id. sessionID, when non-empty,
 	// scopes the delete: the handler rejects the request if the chat does not
 	// belong to that session (so bosso's session-level authz is enforced
@@ -771,11 +771,11 @@ type SessionSnapshotReader interface {
 	SnapshotSessions(ctx context.Context) ([]*pb.Session, error)
 }
 
-// ChatSnapshotReader returns the ClaudeChat metadata projection (no
+// ChatSnapshotReader returns the AgentChat metadata projection (no
 // transcripts — just the preview). Kept separate from SessionSnapshot so
 // the two calls can run in parallel if that ever becomes a hotspot.
 type ChatSnapshotReader interface {
-	SnapshotChats(ctx context.Context) ([]*pb.ClaudeChatMetadata, error)
+	SnapshotChats(ctx context.Context) ([]*pb.AgentChatMetadata, error)
 }
 
 // RepoSnapshotReader lists the repos the daemon is currently managing.
@@ -846,7 +846,7 @@ type SessionEvent struct {
 // ChatEvent describes a chat lifecycle change.
 type ChatEvent struct {
 	Kind pb.ChatDelta_Kind
-	Chat *pb.ClaudeChatMetadata
+	Chat *pb.AgentChatMetadata
 }
 
 // StatusEvent is a raw chat-status heartbeat, pre-coalescing. The

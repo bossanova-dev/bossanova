@@ -457,7 +457,7 @@ func TestUntrustCodexWorktreeAbsentAccountHomeIsNoop(t *testing.T) {
 	}
 }
 
-// TestStartRunHonoursProjectTrustDecision pins the headless half of BOS-1562:
+// TestStartAgentRunHonoursProjectTrustDecision pins the headless half of BOS-1562:
 // `codex exec` has no trust prompt but still loads a worktree's
 // .codex/config.toml when its Codex home trusts the worktree, so a headless
 // run bossd marks untrusted (REVOKE) must clear a stale trusted entry from both
@@ -466,7 +466,7 @@ func TestUntrustCodexWorktreeAbsentAccountHomeIsNoop(t *testing.T) {
 // after the spawn reds here too. GRANT leaves the trusted entry trusted (GRANT
 // over an "untrusted" entry is TestHeadlessGrantRestoresTrustAfterRevoke's)
 // and UNSPECIFIED changes nothing.
-func TestStartRunHonoursProjectTrustDecision(t *testing.T) {
+func TestStartAgentRunHonoursProjectTrustDecision(t *testing.T) {
 	for _, tc := range []struct {
 		decision    bossanovav1.ProjectTrustDecision
 		wantTrusted bool
@@ -491,7 +491,7 @@ func TestStartRunHonoursProjectTrustDecision(t *testing.T) {
 			r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t,
 				`if grep -q 'trust_level = "trusted"' "$CODEX_HOME/config.toml"; then echo "stale codex trust visible at start"; exit 3; fi`)))
 			srv := &Server{logger: zerolog.Nop(), runner: r}
-			start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+			start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 				WorkDir:      workDir,
 				SessionId:    "sid-trust",
 				LogPath:      filepath.Join(t.TempDir(), "agent.log"),
@@ -499,7 +499,7 @@ func TestStartRunHonoursProjectTrustDecision(t *testing.T) {
 				ProjectTrust: tc.decision,
 			})
 			if err != nil {
-				t.Fatalf("StartRun: %v", err)
+				t.Fatalf("StartAgentRun: %v", err)
 			}
 			exit := waitExit(t, srv, start.GetSessionId())
 
@@ -527,9 +527,9 @@ type headlessTrustRPC struct {
 }
 
 var headlessTrustRPCs = []headlessTrustRPC{
-	{name: "StartRun", call: func(t *testing.T, srv *Server, workDir string, decision bossanovav1.ProjectTrustDecision, profile bossanovav1.HeadlessCapabilityProfile) error {
+	{name: "StartAgentRun", call: func(t *testing.T, srv *Server, workDir string, decision bossanovav1.ProjectTrustDecision, profile bossanovav1.HeadlessCapabilityProfile) error {
 		t.Helper()
-		start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+		start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 			WorkDir:                   workDir,
 			SessionId:                 "sid-" + decision.String(),
 			LogPath:                   filepath.Join(t.TempDir(), "agent.log"),
@@ -593,7 +593,7 @@ func TestHeadlessGrantRestoresTrustAfterRevoke(t *testing.T) {
 
 // TestHeadlessRevokeFailureRefusesLaunch pins the fail-closed half of a
 // headless REVOKE: when the revoke cannot be applied (an inline projects
-// table cannot be edited safely), StartRun and PreflightHeadlessRun return an
+// table cannot be edited safely), StartAgentRun and PreflightHeadlessRun return an
 // error and start nothing — no capability probe, no codex process — rather
 // than run an untrusted repo while its stale trust is still in force. The
 // config is left as it was.

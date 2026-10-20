@@ -32,14 +32,18 @@ const (
 	// security-bearing fields v3 protects and silently ignores them.
 	ProtocolVersionV2 = 2
 
-	// ProtocolVersion is bumped whenever host/plugin wire semantics change in a
-	// way an older binary cannot safely ignore. Version 3 protects the
+	// ProtocolVersionV3 protects the
 	// repo-trust fields (BOS-1562): project_trust on BuildInteractiveCommand,
 	// StartAgentRun, PreflightHeadlessRun and DescribeMCPSurface, and
 	// SuggestPRTitleRequest.extra_env. A v2 plugin drops them unread, so an
 	// untrusted repo's worktree would keep a stale Codex trust entry and a
 	// PR-title one-shot would run under the daemon's ambient environment.
-	ProtocolVersion = 3
+	ProtocolVersionV3 = 3
+
+	// ProtocolVersion 4 renames the AgentRunnerService start RPC to
+	// StartAgentRun. A v3 counterpart must fail at the handshake rather than
+	// returning Unimplemented for every session start.
+	ProtocolVersion = 4
 	MagicCookieKey  = "BOSSANOVA_PLUGIN"
 )
 

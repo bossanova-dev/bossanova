@@ -52,7 +52,7 @@ type smokeClient struct {
 	logText   string
 }
 
-func (c *smokeClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (c *smokeClient) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	c.startReqs = append(c.startReqs, req)
 	if c.logText != "" {
 		if err := os.WriteFile(req.GetLogPath(), []byte(c.logText), 0o600); err != nil {
@@ -105,14 +105,14 @@ func TestSmokeRunnerClaudeStartsLiveRunWithAccountEnv(t *testing.T) {
 	}
 
 	if len(client.startReqs) != 1 {
-		t.Fatalf("StartRun calls = %d, want 1", len(client.startReqs))
+		t.Fatalf("StartAgentRun calls = %d, want 1", len(client.startReqs))
 	}
 	req := client.startReqs[0]
 	if got := req.GetExtraEnv()["CLAUDE_CODE_OAUTH_TOKEN"]; got != "sk-ant-oat01-secret" {
 		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN = %q, want stored token", got)
 	}
 	if req.GetWorkDir() == "" || req.GetLogPath() == "" || req.GetPlan() == "" {
-		t.Fatalf("smoke StartRun missing required fields: %+v", req)
+		t.Fatalf("smoke StartAgentRun missing required fields: %+v", req)
 	}
 	if _, err := uuid.Parse(req.GetSessionId()); err != nil {
 		t.Fatalf("smoke session id = %q, want UUID: %v", req.GetSessionId(), err)
@@ -134,7 +134,7 @@ func TestSmokeRunnerCodexWritesAuthJSONAndSetsCodeXHome(t *testing.T) {
 	}
 
 	if len(client.startReqs) != 1 {
-		t.Fatalf("StartRun calls = %d, want 1", len(client.startReqs))
+		t.Fatalf("StartAgentRun calls = %d, want 1", len(client.startReqs))
 	}
 	home := client.startReqs[0].GetExtraEnv()["CODEX_HOME"]
 	if home == "" {
@@ -262,8 +262,8 @@ type refreshingSmokeClient struct {
 	refreshed []byte
 }
 
-func (c *refreshingSmokeClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	resp, err := c.smokeClient.StartRun(ctx, req)
+func (c *refreshingSmokeClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	resp, err := c.smokeClient.StartAgentRun(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -355,8 +355,8 @@ type replacingSmokeClient struct {
 	replacement []byte
 }
 
-func (c *replacingSmokeClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	resp, err := c.refreshingSmokeClient.StartRun(ctx, req)
+func (c *replacingSmokeClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	resp, err := c.refreshingSmokeClient.StartAgentRun(ctx, req)
 	if err != nil {
 		return nil, err
 	}

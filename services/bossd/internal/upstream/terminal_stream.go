@@ -336,7 +336,7 @@ type chatLookup interface {
 	GetByAgentSessionID(ctx context.Context, agentSessionID string) (chatRow, error)
 }
 
-// chatRow is the thin projection of models.ClaudeChat the client cares
+// chatRow is the thin projection of models.AgentChat the client cares
 // about. Just the persisted tmux session name. Defined as a local struct
 // so tests don't depend on bossalib/models.
 type chatRow struct {

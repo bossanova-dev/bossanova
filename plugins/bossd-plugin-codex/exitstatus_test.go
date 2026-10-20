@@ -44,9 +44,9 @@ func TestExitStatusPropagatesUsageLimited(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t, "echo 'stream error: usage_limit_reached, resets at 15:00'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-cap", LogPath: logPath})
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-cap", LogPath: logPath})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	exit := waitExit(t, srv, start.SessionId)
 
@@ -68,7 +68,7 @@ func TestExitStatusUsageLimitedUnparseableResetOmitsResetAt(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t, "echo 'stream error: usage_limit_reached, try again later'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-cap2", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-cap2", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != "usage_exhausted" {
@@ -85,7 +85,7 @@ func TestExitStatusPropagatesAuthInvalidated(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t, "echo 'HTTP error: 401 Unauthorized'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != "auth_invalidated" {
@@ -105,7 +105,7 @@ func TestExitStatusCleanExitLeavesNewFieldsUnset(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t, "echo done; exit 0")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.FailureClass != nil {

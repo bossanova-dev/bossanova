@@ -205,11 +205,11 @@ func TestMutatingTools(t *testing.T) {
 		{
 			tool: "record_chat",
 			args: map[string]any{"session_id": "s1", "agent_session_id": "a1", "title": "T", "agent_name": "claude", "resume": true},
-			backend: &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.ClaudeChat, error) {
+			backend: &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.AgentChat, error) {
 				if sid != "s1" || aid != "a1" || title != "T" || agent != "claude" || !resume {
 					t.Errorf("record_chat args not forwarded: %q %q %q %q %v", sid, aid, title, agent, resume)
 				}
-				return &pb.ClaudeChat{Id: "chat-rc"}, nil
+				return &pb.AgentChat{Id: "chat-rc"}, nil
 			}},
 			sentinel: "chat-rc",
 		},
@@ -911,10 +911,10 @@ func TestCreateSessionToolDescriptionIsolatesTheZeroChangeGuidance(t *testing.T)
 func TestStartChatToolMintsUUIDAndCallsRecordChat(t *testing.T) {
 	var gotSID, gotAID, gotTitle, gotAgent string
 	var gotResume bool
-	backend := &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.ClaudeChat, error) {
+	backend := &fakeBackend{recordChat: func(_ context.Context, sid, aid, title, agent string, resume bool) (*pb.AgentChat, error) {
 		gotSID, gotAID, gotTitle, gotAgent, gotResume = sid, aid, title, agent, resume
 		// A live spawn populates tmux_session_name; start_chat requires it.
-		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid, TmuxSessionName: "boss-chat-" + aid}, nil
+		return &pb.AgentChat{Id: "chat-sc", AgentSessionId: aid, TmuxSessionName: "boss-chat-" + aid}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 
@@ -950,9 +950,9 @@ func TestStartChatToolMintsUUIDAndCallsRecordChat(t *testing.T) {
 // tmux_session_name). Otherwise a caller would be told to send_chat_message to a
 // chat with no pane behind it.
 func TestStartChatToolRejectsWhenNoLiveTmux(t *testing.T) {
-	backend := &fakeBackend{recordChat: func(_ context.Context, _, aid, _, _ string, _ bool) (*pb.ClaudeChat, error) {
+	backend := &fakeBackend{recordChat: func(_ context.Context, _, aid, _, _ string, _ bool) (*pb.AgentChat, error) {
 		// No TmuxSessionName: the daemon's spawn step no-oped (no tmux).
-		return &pb.ClaudeChat{Id: "chat-sc", AgentSessionId: aid}, nil
+		return &pb.AgentChat{Id: "chat-sc", AgentSessionId: aid}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 

@@ -2,7 +2,7 @@
 //
 // The stub is designed exclusively for E2E tests: it satisfies the full
 // AgentRunnerService contract without launching any real agent subprocess.
-// StartRun returns immediately with the resolved session ID and marks the
+// StartAgentRun returns immediately with the resolved session ID and marks the
 // run as complete so bossd's WaitAgentRun path (ExitStatus polling) sees a
 // clean exit. No tmux, no external process, no network.
 package main
@@ -53,10 +53,10 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 	}, nil
 }
 
-// StartRun records the session as immediately complete (clean exit).
+// StartAgentRun records the session as immediately complete (clean exit).
 // No subprocess is spawned. If req.SessionId is empty, a deterministic
 // placeholder is generated. The resolved session ID is returned.
-func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	sid := req.SessionId
 	if sid == "" {
 		sid = fmt.Sprintf("stub-%d", stubSeq())
@@ -64,7 +64,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	s.mu.Lock()
 	s.sessions[sid] = &sessionState{complete: true}
 	s.mu.Unlock()
-	s.logger.Info().Str("session_id", sid).Msg("stub: StartRun — session recorded as complete")
+	s.logger.Info().Str("session_id", sid).Msg("stub: StartAgentRun — session recorded as complete")
 	return &bossanovav1.StartAgentRunResponse{SessionId: sid}, nil
 }
 
@@ -74,7 +74,7 @@ func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest
 	return &bossanovav1.StopAgentRunResponse{}, nil
 }
 
-// IsRunning always returns false; stub runs complete synchronously in StartRun.
+// IsRunning always returns false; stub runs complete synchronously in StartAgentRun.
 func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	return &bossanovav1.IsAgentRunningResponse{Running: false}, nil
 }

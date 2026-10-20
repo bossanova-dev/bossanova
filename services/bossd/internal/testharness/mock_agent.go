@@ -55,7 +55,7 @@ func (m *MockAgentClient) GetInfo(_ context.Context) (*bossanovav1.PluginInfo, e
 	return &bossanovav1.PluginInfo{Name: m.name(), Version: "test"}, nil
 }
 
-func (*MockAgentClient) StartRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (*MockAgentClient) StartAgentRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{SessionId: "fake"}, nil
 }
 

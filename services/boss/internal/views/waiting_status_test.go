@@ -45,7 +45,7 @@ func TestRoutinePRWaitingHintsHidden(t *testing.T) {
 			if strings.Contains(rendered, reason) || !strings.Contains(rendered, stripANSI(h.spinner.View())+displaystatus.WaitingLabel) {
 				t.Fatalf("expected waiting spinner without hint: %s", rendered)
 			}
-			m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a", Title: "verify"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": reason}}
+			m := ChatPickerModel{session: sess, chats: []*pb.AgentChat{{AgentSessionId: "a", Title: "verify"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": reason}}
 			if got, want := firstArmedLine(m), "verify · "+reason; got != want {
 				t.Fatalf("chat picker routine wait = %q, want %q", got, want)
 			}
@@ -229,7 +229,7 @@ func TestHome_WaitingReasonSubRow(t *testing.T) {
 // reason verbatim, with no "waiting" label prefix (BOS-863).
 func TestChatPicker_ArmedLineCarriesReasonVerbatim(t *testing.T) {
 	m := ChatPickerModel{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{AgentSessionId: "a", AgentName: "claude"},
 			{AgentSessionId: "b", AgentName: "claude"},
 		},
@@ -247,7 +247,7 @@ func TestChatPicker_ArmedLineCarriesReasonVerbatim(t *testing.T) {
 // carries no armed line.
 func TestChatPicker_ArmedLine_EmptyWhenNoneWaiting(t *testing.T) {
 	m := ChatPickerModel{
-		chats:          []*pb.ClaudeChat{{AgentSessionId: "a", AgentName: "claude"}},
+		chats:          []*pb.AgentChat{{AgentSessionId: "a", AgentName: "claude"}},
 		daemonStatuses: map[string]string{"a": statusWorking},
 	}
 	if got := firstArmedLine(m); got != "" {
@@ -262,7 +262,7 @@ func TestChatPicker_WaitingRendersBadgeNotReason(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{SessionId: "session-1", AgentSessionId: "agent-working", Title: "implementing", AgentName: "claude", CreatedAt: timestamppb.Now()},
 			{SessionId: "session-1", AgentSessionId: "agent-waiting", Title: "awaiting CI", AgentName: "claude", CreatedAt: timestamppb.Now()},
 		},
@@ -296,7 +296,7 @@ func TestReadyWaitingHints(t *testing.T) {
 	if !waitingBadgeSuperseded(sess) {
 		t.Fatal("Ready must restore the waiting antecedent")
 	}
-	m := ChatPickerModel{session: sess, chats: []*pb.ClaudeChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": testWaitingReason}}
+	m := ChatPickerModel{session: sess, chats: []*pb.AgentChat{{AgentSessionId: "a"}}, daemonStatuses: map[string]string{"a": statusWaiting}, daemonWaitingReasons: map[string]string{"a": testWaitingReason}}
 	if got := firstArmedLine(m); got != "New chat · waiting: "+testWaitingReason {
 		t.Fatalf("Ready chat picker hint = %q", got)
 	}

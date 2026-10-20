@@ -174,7 +174,7 @@ func TestSubscribeDeltas_ChatCreated_EmitsChatDelta(t *testing.T) {
 	src := &staticEventSource{events: []StreamEvent{{
 		Chat: &ChatEvent{
 			Kind: pb.ChatDelta_KIND_CREATED,
-			Chat: &pb.ClaudeChatMetadata{Id: "c1", SessionId: "s1"},
+			Chat: &pb.AgentChatMetadata{Id: "c1", SessionId: "s1"},
 		},
 	}}}
 	got := drainFor(t, newForwarderClient(t, src, 0), 200*time.Millisecond)

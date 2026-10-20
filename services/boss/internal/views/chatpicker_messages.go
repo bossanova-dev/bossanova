@@ -30,7 +30,7 @@ type chatPickerErrMsg struct {
 // chatsListedMsg carries the result of listing chats via RPC,
 // along with daemon-side heartbeat statuses for cross-instance display.
 type chatsListedMsg struct {
-	chats            []*pb.ClaudeChat
+	chats            []*pb.AgentChat
 	daemonStatuses   map[string]string    // agent_session_id → status string
 	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time
 	// daemonWaitingReasons maps agent_session_id → why the chat is parked on an

@@ -431,7 +431,7 @@ func (b *Backend) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (in
 
 // --- Chats ---
 
-func (b *Backend) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error) {
+func (b *Backend) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.AgentChat, error) {
 	req := &pb.RecordChatRequest{
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
@@ -448,7 +448,7 @@ func (b *Backend) RecordChat(ctx context.Context, sessionID, agentSessionID, tit
 	return resp.Msg.GetChat(), nil
 }
 
-func (b *Backend) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+func (b *Backend) ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error) {
 	resp, err := b.rpc.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{SessionId: sessionID}))
 	if err != nil {
 		return nil, err

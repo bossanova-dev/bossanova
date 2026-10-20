@@ -41,7 +41,7 @@ type Option func(*harnessConfig)
 type harnessConfig struct {
 	repos           []*pb.Repo
 	sessions        []*pb.Session
-	chats           []*pb.ClaudeChat
+	chats           []*pb.AgentChat
 	cronJobs        []*pb.CronJob
 	githubCallbacks []*pb.GithubCallback
 	accounts        []*pb.Account
@@ -63,7 +63,7 @@ func WithSessions(sessions ...*pb.Session) Option {
 }
 
 // WithChats seeds the mock daemon with claude chats.
-func WithChats(chats ...*pb.ClaudeChat) Option {
+func WithChats(chats ...*pb.AgentChat) Option {
 	return func(c *harnessConfig) { c.chats = append(c.chats, chats...) }
 }
 

@@ -32,9 +32,9 @@ func TestExitStatusPropagatesUsageLimited(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo 'Claude usage limit reached. resets at 15:00'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-cap", LogPath: logPath})
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-cap", LogPath: logPath})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	exit := waitExit(t, srv, start.SessionId)
 
@@ -56,9 +56,9 @@ func TestExitStatusPropagatesRateLimited(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo 'API Error: Request rejected (429) · This request would exceed your account'\\''s rate limit.'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-rate", LogPath: logPath})
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-rate", LogPath: logPath})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	exit := waitExit(t, srv, start.SessionId)
 
@@ -81,7 +81,7 @@ func TestExitStatusUsageLimitedUnparseableResetOmitsResetAt(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo 'Claude usage limit reached. try again later'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-cap2", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-cap2", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != "usage_exhausted" {
@@ -101,7 +101,7 @@ func TestExitStatusAuthTailLeavesNewFieldsUnset(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo 'authentication token has been invalidated, please sign in again'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.FailureClass != nil {
@@ -118,7 +118,7 @@ func TestExitStatusCleanExitLeavesNewFieldsUnset(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "echo done; exit 0")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true, WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.FailureClass != nil {

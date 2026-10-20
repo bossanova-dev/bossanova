@@ -604,7 +604,7 @@ var WorkflowService_ServiceDesc = grpc.ServiceDesc{
 const (
 	AgentRunnerService_GetInfo_FullMethodName                     = "/bossanova.v1.AgentRunnerService/GetInfo"
 	AgentRunnerService_PreflightHeadlessRun_FullMethodName        = "/bossanova.v1.AgentRunnerService/PreflightHeadlessRun"
-	AgentRunnerService_StartRun_FullMethodName                    = "/bossanova.v1.AgentRunnerService/StartRun"
+	AgentRunnerService_StartAgentRun_FullMethodName               = "/bossanova.v1.AgentRunnerService/StartAgentRun"
 	AgentRunnerService_StopRun_FullMethodName                     = "/bossanova.v1.AgentRunnerService/StopRun"
 	AgentRunnerService_IsRunning_FullMethodName                   = "/bossanova.v1.AgentRunnerService/IsRunning"
 	AgentRunnerService_ExitStatus_FullMethodName                  = "/bossanova.v1.AgentRunnerService/ExitStatus"
@@ -647,10 +647,7 @@ type AgentRunnerServiceClient interface {
 	// makes the agent resume that session. session_id is an optional requested
 	// ID; the plugin may generate its own. The caller must use the returned
 	// session ID for subsequent run operations.
-	// Legacy name: retain the existing request and response wire names.
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	StartRun(ctx context.Context, in *StartAgentRunRequest, opts ...grpc.CallOption) (*StartAgentRunResponse, error)
+	StartAgentRun(ctx context.Context, in *StartAgentRunRequest, opts ...grpc.CallOption) (*StartAgentRunResponse, error)
 	// Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
 	// Legacy name: retain the existing request and response wire names.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
@@ -812,10 +809,10 @@ func (c *agentRunnerServiceClient) PreflightHeadlessRun(ctx context.Context, in 
 	return out, nil
 }
 
-func (c *agentRunnerServiceClient) StartRun(ctx context.Context, in *StartAgentRunRequest, opts ...grpc.CallOption) (*StartAgentRunResponse, error) {
+func (c *agentRunnerServiceClient) StartAgentRun(ctx context.Context, in *StartAgentRunRequest, opts ...grpc.CallOption) (*StartAgentRunResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartAgentRunResponse)
-	err := c.cc.Invoke(ctx, AgentRunnerService_StartRun_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, AgentRunnerService_StartAgentRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1051,10 +1048,7 @@ type AgentRunnerServiceServer interface {
 	// makes the agent resume that session. session_id is an optional requested
 	// ID; the plugin may generate its own. The caller must use the returned
 	// session ID for subsequent run operations.
-	// Legacy name: retain the existing request and response wire names.
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	StartRun(context.Context, *StartAgentRunRequest) (*StartAgentRunResponse, error)
+	StartAgentRun(context.Context, *StartAgentRunRequest) (*StartAgentRunResponse, error)
 	// Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
 	// Legacy name: retain the existing request and response wire names.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
@@ -1202,8 +1196,8 @@ func (UnimplementedAgentRunnerServiceServer) GetInfo(context.Context, *AgentRunn
 func (UnimplementedAgentRunnerServiceServer) PreflightHeadlessRun(context.Context, *PreflightHeadlessRunRequest) (*PreflightHeadlessRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreflightHeadlessRun not implemented")
 }
-func (UnimplementedAgentRunnerServiceServer) StartRun(context.Context, *StartAgentRunRequest) (*StartAgentRunResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method StartRun not implemented")
+func (UnimplementedAgentRunnerServiceServer) StartAgentRun(context.Context, *StartAgentRunRequest) (*StartAgentRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartAgentRun not implemented")
 }
 func (UnimplementedAgentRunnerServiceServer) StopRun(context.Context, *StopAgentRunRequest) (*StopAgentRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopRun not implemented")
@@ -1325,20 +1319,20 @@ func _AgentRunnerService_PreflightHeadlessRun_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AgentRunnerService_StartRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AgentRunnerService_StartAgentRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartAgentRunRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AgentRunnerServiceServer).StartRun(ctx, in)
+		return srv.(AgentRunnerServiceServer).StartAgentRun(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AgentRunnerService_StartRun_FullMethodName,
+		FullMethod: AgentRunnerService_StartAgentRun_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentRunnerServiceServer).StartRun(ctx, req.(*StartAgentRunRequest))
+		return srv.(AgentRunnerServiceServer).StartAgentRun(ctx, req.(*StartAgentRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1737,8 +1731,8 @@ var AgentRunnerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentRunnerService_PreflightHeadlessRun_Handler,
 		},
 		{
-			MethodName: "StartRun",
-			Handler:    _AgentRunnerService_StartRun_Handler,
+			MethodName: "StartAgentRun",
+			Handler:    _AgentRunnerService_StartAgentRun_Handler,
 		},
 		{
 			MethodName: "StopRun",

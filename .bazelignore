@@ -28,9 +28,8 @@ services/web/node_modules
 services/marketing/node_modules
 services/docs/node_modules
 
-# Worktree-local `.config` tree. `make setup-worktree` copies the gitignored
-# `/.config/` dir (see .gitignore) into EVERY worktree, including agent and cron
-# ones, and it holds materialized agent homes under `.config/accounts/`. A
+# Worktree-local `.config` tree. Worktrees provisioned before setup-worktree
+# excluded `.config/accounts/` may still hold materialized agent homes there. A
 # projected codex home ships the `Codex Computer Use.app` bundle, whose
 # `Contents/Resources/BUILD.bazel` loads `@build_bazel_rules_swift` — a repo we
 # do not depend on. `bazel //...` therefore aborts while LOADING packages

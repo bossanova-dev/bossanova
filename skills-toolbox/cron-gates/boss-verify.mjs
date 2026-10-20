@@ -13,10 +13,14 @@
 //      handed to a detached `verify-gate merge` and settled inside that budget; one still running
 //      at the deadline is `dispatched: merge in flight (log …)` and finishes on its own.
 //   2. Print one line per PR plus a summary line, so `gated` cron history stays readable.
+//   3. Skip unchanged ticks: the gate runs the sweep with `skipUnchanged`, so a tick whose open PRs,
+//      in-review tickets and sessions match the last quiet tick ends after one batched GitHub read
+//      and prints `unchanged` (state in `<git common dir>/boss-verify/sweep-state.json`).
 //
 // Exit codes:
 //   1  nothing to do, or every candidate handled (merged / parked / dispatched / skipped / deferred)
-//   1  fail closed: a tracker, config or `gh pr list` failure, a refused argument, any thrown error
+//   1  nothing changed since the last quiet tick (`unchanged`)
+//   1  fail closed: a tracker, config or open-PR read failure, a refused argument, any thrown error
 //   1  --dry-run, always: a dry-run gate never fires a session
 //   1  --local-sessions-only with `boss` or its session list unreadable: that mode never hands off to
 //      a session, whose sweep would route the other machine's PRs too
@@ -58,12 +62,13 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
   }
   let result
   try {
-    result = sweep(options, { ...deps, env })
+    result = sweep({ ...options, skipUnchanged: true }, { ...deps, env })
   } catch (error) {
     return { exitCode: 1, lines: [`${PREFIX}: ${error?.message ?? String(error)}`] }
   }
   const lines = result.records.map((r) => r.line)
   if (result.idle) lines.push(`${PREFIX}: idle: ${result.idle}`)
+  if (result.unchanged) lines.push(`${PREFIX}: unchanged since the last quiet tick`)
   if (result.undispatchable)
     lines.push(
       `undispatchable: ${result.undispatchable}${result.dryRun ? '' : ' — exit 0 hands this run to a /boss-verify session'}`,

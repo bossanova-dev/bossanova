@@ -169,7 +169,7 @@ func cronTestHarness(t *testing.T) (*testharness.Harness, *testharness.CronReady
 //
 // Assertions:
 //   - last_run_outcome == "pr_created"
-//   - exactly one ClaudeChat row exists (the cron chat; no finalize chat)
+//   - exactly one AgentChat row exists (the cron chat; no finalize chat)
 //   - the worktree directory still exists (preserved after PR)
 func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	h, fake := cronTestHarness(t)
@@ -277,7 +277,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 		t.Fatalf("list claude chats: %v", err)
 	}
 	if len(chats) != 1 {
-		t.Errorf("expected exactly 1 ClaudeChat row (no finalize chat) after pr_created, got %d", len(chats))
+		t.Errorf("expected exactly 1 AgentChat row (no finalize chat) after pr_created, got %d", len(chats))
 	}
 
 	// Assert: worktree directory is still present.

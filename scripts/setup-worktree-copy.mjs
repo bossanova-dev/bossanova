@@ -44,8 +44,33 @@ function inspectPath(root, relative) {
   return stat
 }
 
-function inspectTree(root, relative) {
-  const stat = inspectPath(root, relative)
+/**
+ * @param {string} root
+ * @param {string} relative
+ * @param {{ prune?: (relative: string) => boolean, skipUnsafe?: boolean, warn?: (message: string) => void }} options
+ */
+function inspectTree(
+  root,
+  relative,
+  { prune = () => false, skipUnsafe = false, warn = () => {} } = {},
+) {
+  if (prune(relative)) return []
+  // The root and ancestors have already been checked. Only nested source config
+  // entries may be skipped; destination paths always use the strict inspection.
+  let stat
+  if (skipUnsafe) {
+    try {
+      stat = fs.lstatSync(path.join(root, relative))
+    } catch (err) {
+      if (err.code === 'ENOENT') return []
+      throw err
+    }
+    if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+      const kind = stat.isSymbolicLink() ? 'symlink' : 'non-regular entry'
+      warn(`warning: skipping ${kind} in source .config: ${relative}`)
+      return []
+    }
+  } else stat = inspectPath(root, relative)
   if (!stat) return []
   if (stat.isFile()) return [{ relative, directory: false }]
   if (!stat.isDirectory())
@@ -54,7 +79,7 @@ function inspectTree(root, relative) {
     { relative, directory: true },
     ...fs
       .readdirSync(path.join(root, relative))
-      .flatMap((name) => inspectTree(root, path.join(relative, name))),
+      .flatMap((name) => inspectTree(root, path.join(relative, name), { prune, skipUnsafe, warn })),
   ]
 }
 
@@ -86,8 +111,10 @@ export function copyWorktreeLocalFiles({ repoDir, worktreeDir, envKeys }, io = {
   const repo = path.resolve(repoDir)
   const worktree = path.resolve(worktreeDir)
   const filesystemRoot = path.parse(repo).root
-  // Source roots may themselves be reached through a symlinked parent.
+  // Both roots may themselves be reached through a symlinked parent.
   inspectPath(filesystemRoot, path.relative(filesystemRoot, repo))
+  const worktreeFilesystemRoot = path.parse(worktree).root
+  inspectPath(worktreeFilesystemRoot, path.relative(worktreeFilesystemRoot, worktree))
   const pending = []
   // Validate the whole copy set first, so a refusal cannot leave partial local secrets.
   for (const relative of LOCAL_FILES) {
@@ -102,9 +129,16 @@ export function copyWorktreeLocalFiles({ repoDir, worktreeDir, envKeys }, io = {
     if (relative === '.config' && !source.isDirectory()) {
       throw new Error(`not a directory: ${path.join(repo, relative)}`)
     }
-    const entries = inspectTree(repo, relative)
+    const prune = (entry) => entry === path.join('.config', 'accounts')
+    if (relative === '.config')
+      log('Skipping .config/accounts (managed agent credential homes) — not copied')
+    const entries = inspectTree(repo, relative, {
+      prune,
+      skipUnsafe: relative === '.config',
+      warn: log,
+    })
     // Existing config entries are checked too, even if the source does not replace them.
-    inspectTree(worktree, relative)
+    inspectTree(worktree, relative, { prune })
     for (const entry of entries) {
       const destination = inspectPath(worktree, entry.relative)
       if (destination && (entry.directory ? !destination.isDirectory() : !destination.isFile())) {

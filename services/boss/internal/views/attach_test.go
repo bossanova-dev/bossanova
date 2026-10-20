@@ -202,8 +202,8 @@ type attachTelemetryStub struct {
 	stubClient
 }
 
-func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
-	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
+func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
+	return &pb.AgentChat{TmuxSessionName: "boss-test-chat"}, nil
 }
 
 // blockingRecordChatStub stands in for a wedged daemon: RecordChat parks until
@@ -223,9 +223,9 @@ func newBlockingRecordChatStub(t *testing.T) *blockingRecordChatStub {
 	return s
 }
 
-func (s *blockingRecordChatStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
+func (s *blockingRecordChatStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
 	<-s.release
-	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
+	return &pb.AgentChat{TmuxSessionName: "boss-test-chat"}, nil
 }
 
 // updateWithin runs Update on a goroutine and fails the test if it has not
@@ -353,7 +353,7 @@ func TestAttach_StaleChatRecordedMsgIsDropped(t *testing.T) {
 
 	updated, cmd := m.Update(chatRecordedMsg{
 		session:  &pb.Session{Id: "session-1"},
-		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-for-the-abandoned-chat"},
+		chat:     &pb.AgentChat{TmuxSessionName: "tmux-for-the-abandoned-chat"},
 		launchID: 6,
 	})
 	got := updated.(AttachModel)
@@ -403,7 +403,7 @@ func TestAttach_UnstagedModelDropsAnyChatRecordedMsg(t *testing.T) {
 
 	updated, cmd := m.Update(chatRecordedMsg{
 		session:  &pb.Session{Id: "session-1"},
-		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-from-some-other-attach"},
+		chat:     &pb.AgentChat{TmuxSessionName: "tmux-from-some-other-attach"},
 		launchID: 1,
 	})
 	got := updated.(AttachModel)
@@ -427,7 +427,7 @@ func TestAttach_ChatRecordedMsgIsDroppedAfterDetach(t *testing.T) {
 
 	updated, cmd := m.Update(chatRecordedMsg{
 		session:  &pb.Session{Id: "session-1"},
-		chat:     &pb.ClaudeChat{TmuxSessionName: "tmux-1"},
+		chat:     &pb.AgentChat{TmuxSessionName: "tmux-1"},
 		launchID: 3,
 	})
 	got := updated.(AttachModel)
@@ -466,7 +466,7 @@ func TestAttach_AbandonedResultCannotReprimeAConsumedLaunch(t *testing.T) {
 
 	launched, _ := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
-		chats:   []*pb.ClaudeChat{{}}, // non-empty: no prefill path
+		chats:   []*pb.AgentChat{{}}, // non-empty: no prefill path
 	})
 	if launched.pendingExec == nil {
 		t.Fatal("precondition: the launch did not prime pendingExec, so the assertions below would hold vacuously")
@@ -482,7 +482,7 @@ func TestAttach_AbandonedResultCannotReprimeAConsumedLaunch(t *testing.T) {
 	// different launch.
 	updated, cmd := afterExec.Update(chatRecordedMsg{
 		session:  &pb.Session{Id: "session-1"},
-		chat:     &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"},
+		chat:     &pb.AgentChat{TmuxSessionName: "boss-test-chat"},
 		launchID: afterExec.launchID - 1,
 		resume:   true,
 	})
@@ -789,7 +789,7 @@ func TestAttach_ResumeMissingTmuxSessionShowsDismissableError(t *testing.T) {
 
 	got, cmd := driveAttachReady(t, m, attachReadyMsg{
 		session: &pb.Session{Id: "session-1"},
-		chats:   []*pb.ClaudeChat{{}}, // non-empty so no prefill path is taken
+		chats:   []*pb.AgentChat{{}}, // non-empty so no prefill path is taken
 	})
 
 	if cmd != nil {

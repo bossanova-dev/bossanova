@@ -66,7 +66,7 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 }
 
 // TruncatePreview clamps a string to at most maxChars runes. Exposed for
-// the store adapters that build ClaudeChatMetadata — keeping the clamp
+// the store adapters that build AgentChatMetadata — keeping the clamp
 // in this package means every caller enforces the same cap and the
 // 100KB snapshot budget has one owner, not five.
 func TruncatePreview(s string, maxChars int) string {

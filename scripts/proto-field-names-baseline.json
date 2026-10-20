@@ -61,7 +61,7 @@
   "proto/bossanova/v1/models.proto:SessionAttention.since",
   "proto/bossanova/v1/models.proto:UsageSnapshot.reset_5h",
   "proto/bossanova/v1/models.proto:UsageSnapshot.reset_7d",
-  "proto/bossanova/v1/orchestrator.proto:ClaudeTurn.timestamp",
+  "proto/bossanova/v1/orchestrator.proto:AgentTurn.timestamp",
   "proto/bossanova/v1/orchestrator.proto:CloudAccessStatus.checkout_started",
   "proto/bossanova/v1/orchestrator.proto:DaemonInfo.active_sessions",
   "proto/bossanova/v1/orchestrator.proto:DaemonInfo.online",

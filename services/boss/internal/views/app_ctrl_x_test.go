@@ -145,7 +145,7 @@ func TestCtrlXMatchesEscapeForBackNavigation(t *testing.T) {
 				a.activeView = ViewChatPicker
 				m := NewChatPickerModel(nil, a.ctx, "sess-1", "")
 				m.loading = false
-				m.chats = []*pb.ClaudeChat{{
+				m.chats = []*pb.AgentChat{{
 					SessionId:      "sess-1",
 					AgentSessionId: "agent-1",
 					Title:          "Initial implementation",
@@ -626,7 +626,7 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				a.activeView = ViewChatPicker
 				m := NewChatPickerModel(nil, a.ctx, "sess-1", "")
 				m.loading = false
-				m.chats = []*pb.ClaudeChat{{
+				m.chats = []*pb.AgentChat{{
 					SessionId:      "sess-1",
 					AgentSessionId: "agent-1",
 					Title:          "Initial implementation",

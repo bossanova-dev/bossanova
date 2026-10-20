@@ -61,7 +61,7 @@ func (f *fakeDaemonRPC) ListRepoPRs(_ context.Context, _ *connect.Request[pb.Lis
 
 func (f *fakeDaemonRPC) ListChats(_ context.Context, _ *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
 	return sessionResp(f, func() *pb.ListChatsResponse {
-		return &pb.ListChatsResponse{Chats: []*pb.ClaudeChat{{AgentSessionId: "agent-1"}}}
+		return &pb.ListChatsResponse{Chats: []*pb.AgentChat{{AgentSessionId: "agent-1"}}}
 	})
 }
 

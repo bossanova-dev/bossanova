@@ -4314,7 +4314,7 @@ type chatJSON struct {
 }
 
 // newChatsJSON left-joins the statuses onto the chats by agent_session_id.
-func newChatsJSON(chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntry) chatsJSON {
+func newChatsJSON(chats []*pb.AgentChat, statuses map[string]*pb.ChatStatusEntry) chatsJSON {
 	out := chatsJSON{Chats: make([]chatJSON, 0, len(chats))}
 	for _, chat := range chats {
 		st := statuses[chat.GetAgentSessionId()]
@@ -4381,7 +4381,7 @@ func chatLivenessCell(st *pb.ChatStatusEntry) string {
 // printChatsTable renders the human table. statusAvailable false means the
 // status read failed: STATUS and LAST OUTPUT render "?" so no cell can be
 // mistaken for a settled chat.
-func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat, statuses map[string]*pb.ChatStatusEntry, statusAvailable bool) {
+func printChatsTable(cmd *cobra.Command, chats []*pb.AgentChat, statuses map[string]*pb.ChatStatusEntry, statusAvailable bool) {
 	ids := make([]string, len(chats))
 	titles := make([]string, len(chats))
 	createds := make([]string, len(chats))

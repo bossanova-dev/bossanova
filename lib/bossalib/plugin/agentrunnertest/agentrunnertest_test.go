@@ -24,7 +24,7 @@ func (*referenceCore) GetInfo(_ context.Context, _ *v1.AgentRunnerServiceGetInfo
 func (*referenceCore) PreflightHeadlessRun(_ context.Context, _ *v1.PreflightHeadlessRunRequest) (*v1.PreflightHeadlessRunResponse, error) {
 	return &v1.PreflightHeadlessRunResponse{}, nil
 }
-func (*referenceCore) StartRun(_ context.Context, _ *v1.StartAgentRunRequest) (*v1.StartAgentRunResponse, error) {
+func (*referenceCore) StartAgentRun(_ context.Context, _ *v1.StartAgentRunRequest) (*v1.StartAgentRunResponse, error) {
 	return &v1.StartAgentRunResponse{SessionId: "provider-session"}, nil
 }
 func (*referenceCore) StopRun(_ context.Context, _ *v1.StopAgentRunRequest) (*v1.StopAgentRunResponse, error) {

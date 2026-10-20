@@ -17,8 +17,8 @@ func (s *perSessionPickerStub) GetSession(_ context.Context, id string, _ client
 	return &pb.Session{Id: id, Title: "title of " + id}, nil
 }
 
-func (s *perSessionPickerStub) ListChats(_ context.Context, id string) ([]*pb.ClaudeChat, error) {
-	return []*pb.ClaudeChat{{SessionId: id, AgentSessionId: "chat-of-" + id, CreatedAt: timestamppb.Now()}}, nil
+func (s *perSessionPickerStub) ListChats(_ context.Context, id string) ([]*pb.AgentChat, error) {
+	return []*pb.AgentChat{{SessionId: id, AgentSessionId: "chat-of-" + id, CreatedAt: timestamppb.Now()}}, nil
 }
 
 // TestChatPicker_DropsRepliesFetchedForAnotherSession pins the cross-session

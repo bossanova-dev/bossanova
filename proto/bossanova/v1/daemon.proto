@@ -1055,7 +1055,7 @@ message RecordChatRequest {
 }
 
 message RecordChatResponse {
-  ClaudeChat chat = 1;
+  AgentChat chat = 1;
 }
 
 message ListChatsRequest {
@@ -1063,7 +1063,7 @@ message ListChatsRequest {
 }
 
 message ListChatsResponse {
-  repeated ClaudeChat chats = 1;
+  repeated AgentChat chats = 1;
 }
 
 message UpdateChatTitleRequest {
@@ -1646,17 +1646,17 @@ message DeleteGithubCallbackResponse {
 // "+" or "," separators either, since the canonical selector string must
 // re-parse to the same selector.
 message BroadcastSelectorClause {
-  repeated string chat_ids    = 1;   // ClaudeChat.agent_session_id
+  repeated string chat_ids    = 1;   // AgentChat.agent_session_id
   repeated string session_ids = 2;   // Session.id
   repeated string repo_ids    = 3;   // Session.repo_id
-  repeated string agent_names = 4;   // ClaudeChat.agent_name
-  // No wire message carries a chat's account today (ClaudeChat has no
+  repeated string agent_names = 4;   // AgentChat.agent_name
+  // No wire message carries a chat's account today (AgentChat has no
   // account_id), so this dimension is resolved daemon-side from the
   // agent_chats.account_id column. The delivery child either keeps resolving it
-  // there or adds account_id to ClaudeChat. The "" default account is not
+  // there or adds account_id to AgentChat. The "" default account is not
   // addressable.
   repeated string account_ids = 5;
-  repeated string daemon_ids  = 6;   // ClaudeChat.daemon_id (the "" local daemon is not addressable)
+  repeated string daemon_ids  = 6;   // AgentChat.daemon_id (the "" local daemon is not addressable)
 }
 
 // BroadcastSelector is a disjunction of clauses: a candidate chat is in the
@@ -1673,8 +1673,8 @@ message BroadcastSelector {
 message Broadcast {
   string            id             = 1;
   BroadcastSelector selector       = 2;
-  // ClaudeChat.agent_session_id — the same identifier BroadcastSelectorClause
-  // .chat_ids carries, NOT ClaudeChat.id. Spelled out because ClaudeChat has
+  // AgentChat.agent_session_id — the same identifier BroadcastSelectorClause
+  // .chat_ids carries, NOT AgentChat.id. Spelled out because AgentChat has
   // both, and a delivery child storing the row id here would produce records
   // that cannot be joined against a selector.
   string            origin_chat_id = 3;   // chat that sent it; empty = not chat-originated
@@ -1693,7 +1693,7 @@ message Broadcast {
 // chat the selector resolved to.
 message BroadcastDelivery {
   string broadcast_id   = 1;
-  string target_chat_id = 2;   // ClaudeChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
+  string target_chat_id = 2;   // AgentChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
   string state          = 3;   // per-target delivery state; stable lowercase strings, defined by the delivery child
   int32  attempt_count  = 4;
   string last_error     = 5;   // delivery diagnostic; empty = none. NEVER the message body.
@@ -1704,7 +1704,7 @@ message SendBroadcastRequest {
   // Audience to resolve. Required, and must carry at least one clause: an
   // empty selector is rejected rather than treated as "everyone".
   BroadcastSelector selector = 1;
-  // Chat this broadcast is issued from (ClaudeChat.agent_session_id). Empty =
+  // Chat this broadcast is issued from (AgentChat.agent_session_id). Empty =
   // operator-issued from the CLI or MCP with no originating chat, which is why
   // this is a plain string rather than a required id.
   string origin_chat_id = 2;
@@ -1941,7 +1941,7 @@ message BroadcastSubscription {
   // subscription may outlive the session it watches, and expiry — not a
   // referential cascade — retires one whose session will never settle.
   string owner_session_id = 2;
-  // Chat that registered it (ClaudeChat.agent_session_id), as in
+  // Chat that registered it (AgentChat.agent_session_id), as in
   // BroadcastSelectorClause.chat_ids. Empty = operator-issued with no
   // registering chat.
   //
@@ -1977,7 +1977,7 @@ message CreateBroadcastSubscriptionRequest {
   // one clause: an empty selector is rejected rather than treated as
   // "everyone".
   BroadcastSelector selector = 3;
-  // Chat registering this subscription (ClaudeChat.agent_session_id). Empty =
+  // Chat registering this subscription (AgentChat.agent_session_id). Empty =
   // operator-issued from the CLI or MCP with no originating chat. It records
   // who asked; address it by naming it in the selector, which is honoured
   // (there is no self-exclusion on a fired subscription).

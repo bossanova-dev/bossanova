@@ -3,7 +3,7 @@
 // The guard registry check. Fails, one line per problem, when a registered guard:
 //   1. has a malformed record, or names a command script, make target or workflow that does not
 //      exist;
-//   2. names a proof test that is not a tracked `.test.mjs` / `_test.go` file declaring that test;
+//   2. names a proof test that is not a tracked `.test.mjs` / `_test.go` / `test_*.py` file declaring that test;
 //   3. has a `scans` glob matching zero tracked files (each glob on its own);
 //   4. scans a tracked file its CI workflow's push `paths:` filter misses;
 //   5. has a baseline that fails the shared format (baseline.mjs);
@@ -19,7 +19,8 @@
 // of the files it names (command, proof.file, scans), so the link cannot drop from either side.
 //
 // The proof check is static: it confirms the test exists and is named. The proof tests run in
-// `make test-scripts`; scripts/prove-red.mjs is the manual tool to show one is not vacuous.
+// `make test-scripts` (node), the Go suites, or `make test-warehouse` (Python).
+// scripts/prove-red.mjs is the manual tool to show a node proof is not vacuous.
 
 // guard-id: guard-registry
 
@@ -101,6 +102,8 @@ function makeTargets(repoRoot) {
 
 function declaresTest(text, file, name) {
   if (file.endsWith('_test.go')) return new RegExp(`func ${escapeRegExp(name)}\\(`).test(text)
+  if (file.endsWith('.py'))
+    return new RegExp(`^\\s*def ${escapeRegExp(name)}\\s*\\(`, 'm').test(text)
   return ["'", '"', '`'].some((quote) => text.includes(`${quote}${name}${quote}`))
 }
 
@@ -149,8 +152,11 @@ export async function checkRegistry({ repoRoot = REPO_ROOT } = {}) {
 
     // 2. Proof.
     const { file: proofFile, test: proofTest } = record.proof
-    if (!/(?:\.test\.mjs|_test\.go)$/.test(proofFile)) {
-      fail(`proof.file ${proofFile} must be a .test.mjs or _test.go file`)
+    if (
+      !/(?:\.test\.mjs|_test\.go)$/.test(proofFile) &&
+      !/(?:^|\/)test_[^/]+\.py$/.test(proofFile)
+    ) {
+      fail(`proof.file ${proofFile} must be a .test.mjs or _test.go file, or a test_*.py file`)
     } else if (!trackedSet.has(proofFile)) {
       fail(`proof.file ${proofFile} is not a tracked file`)
     } else if (!declaresTest(readText(repoRoot, proofFile) ?? '', proofFile, proofTest)) {

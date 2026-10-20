@@ -15,7 +15,7 @@ import (
 type AgentRunner interface {
 	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
 	PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
-	StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
+	StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	StopRun(ctx context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error)
 	IsRunning(ctx context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
 	ExitStatus(ctx context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error)
@@ -65,8 +65,8 @@ func (c *agentRunnerGRPCClient) PreflightHeadlessRun(ctx context.Context, req *b
 	return resp, nil
 }
 
-func (c *agentRunnerGRPCClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	resp, err := invokePluginUnary(ctx, c.client.StartRun, req)
+func (c *agentRunnerGRPCClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	resp, err := invokePluginUnary(ctx, c.client.StartAgentRun, req)
 	if err != nil {
 		return nil, err
 	}

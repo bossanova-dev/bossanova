@@ -109,11 +109,11 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 }
 
 // runtimeTarget describes the Codex runtime a capability-profile check should
-// inspect. Both PreflightHeadlessRun and the real StartRun build their target
+// inspect. Both PreflightHeadlessRun and the real StartAgentRun build their target
 // here, so for the same request inputs the early check profiles the same
 // runtime the real run launches. Keeping this in one place means a field added
 // to codexRuntimeTarget cannot be populated on only one of the two paths;
-// TestPreflightAndStartRunInspectIdenticalRuntimeTarget is the ratchet that
+// TestPreflightAndStartAgentRunInspectIdenticalRuntimeTarget is the ratchet that
 // enforces it.
 //
 // The four inputs the two RPCs now reconcile:
@@ -149,7 +149,7 @@ func (s *Server) runtimeTarget(reqModel, reqEffort, workDir string, extraEnv map
 // applyCodexProjectTrust applies bossd's project-trust decision for workDir
 // (BOS-1562) and returns the per-process `-c` override, if any, that every
 // codex process the request starts must carry. It is the one place every RPC
-// that starts codex in workDir — BuildInteractiveCommand, StartRun,
+// that starts codex in workDir — BuildInteractiveCommand, StartAgentRun,
 // PreflightHeadlessRun, DescribeMCPSurface — applies the decision, so it means
 // the same on every path. GRANT records workDir trusted (so a GRANT after a
 // REVOKE restores trust) and REVOKE records it explicitly untrusted, in every
@@ -196,7 +196,7 @@ func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.Pref
 	// The probe starts `codex app-server` in the work dir, which loads the
 	// worktree's .codex/config.toml (and spawns its MCP commands) whenever the
 	// Codex home trusts it, so the launch's trust decision is applied before
-	// probing, exactly as StartRun does before its own preflight (BOS-1562).
+	// probing, exactly as StartAgentRun does before its own preflight (BOS-1562).
 	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorkDir(), req.GetExtraEnv())
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -206,7 +206,7 @@ func (s *Server) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.Pref
 	return s.preflightHeadlessCapabilityProfile(ctx, req.GetHeadlessCapabilityProfile(), target)
 }
 
-func (s *Server) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (s *Server) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	var resume *string
 	if req.ResumeId != nil {
 		resume = req.ResumeId

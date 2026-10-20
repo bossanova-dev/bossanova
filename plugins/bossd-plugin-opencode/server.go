@@ -6,7 +6,7 @@
 // small remaining reads are constants for opencode: ListIgnoredDirtyFiles is
 // the single BOS-486 question-hook path, ConfigureFinalizeHook reports
 // unsupported, and HasQuestionPrompt is a conservative false. The run/launch
-// RPCs (StartRun, StopRun, IsRunning, ExitStatus) are implemented here on top of
+// RPCs (StartAgentRun, StopRun, IsRunning, ExitStatus) are implemented here on top of
 // runner.go; the remaining chat-control RPCs report unsupported because opencode
 // has no interactive pane to drive.
 package main
@@ -84,7 +84,7 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 
 // --- Run / launch path ---
 
-// StartRun spawns a headless `opencode run` subprocess for the session and
+// StartAgentRun spawns a headless `opencode run` subprocess for the session and
 // returns opencode's own echoed session id (see sessionIDFromOutput). It detaches
 // the process from the RPC handler's context: the gRPC framework cancels the
 // per-call ctx as soon as we return, which would propagate to the runner's
@@ -92,7 +92,7 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 // runner owns subprocess lifecycle via its own Stop()/cancel paths. Mirrors the
 // codex twin (plugins/bossd-plugin-codex/server.go).
 //
-// Before the subprocess starts, StartRun injects the question-signal event hook
+// Before the subprocess starts, StartAgentRun injects the question-signal event hook
 // (BOS-486) into the worktree when the request's ExtraEnv carries the loopback
 // hook context. Injection is best-effort: a write failure is logged and the run
 // proceeds without a question signal, because a missing "? question" label is
@@ -100,7 +100,7 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 // the run-end goroutine armed below — which, on the headless path, is the only
 // inverse that actually fires; see RemoveAgentRunHook for why that RPC is not
 // the safety net it appears to be.
-func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (s *Server) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	var resume *string
 	if req.ResumeId != nil {
 		resume = req.ResumeId
@@ -319,14 +319,14 @@ func (s *Server) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscript
 // flag (agentClientHookSupport → services/bossd/internal/agent/poll_fallback.go):
 // claiming support switches the daemon from ExitStatus polling to waiting for a
 // Stop-hook POST that opencode never sends, so finalize would hang forever. The
-// BOS-486 question hook is injected on the StartRun path instead (see
+// BOS-486 question hook is injected on the StartAgentRun path instead (see
 // installQuestionHook) precisely so it does not have to travel through this RPC.
 // TestConfigureFinalizeHookStaysUnsupported pins the invariant.
 func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
-// RemoveAgentRunHook removes the BOS-486 question-signal plugin that StartRun
+// RemoveAgentRunHook removes the BOS-486 question-signal plugin that StartAgentRun
 // injected into the worktree.
 //
 // REACHABILITY (do not assume this is the safety net it looks like): bossd's
@@ -334,7 +334,7 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 // HostServiceServer.WaitChatRun — the tmux StartChatRun path — and resolves the
 // session through runSessionByID, which only StartChatRun populates. A headless
 // opencode run, the only shape that injects today, never registers there and so
-// never receives this RPC. The run-end goroutine armed in StartRun is the SOLE
+// never receives this RPC. The run-end goroutine armed in StartAgentRun is the SOLE
 // production inverse; this is a correct, idempotent second one that opencode is
 // not currently wired to receive.
 //
@@ -351,7 +351,7 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 
 // ListIgnoredDirtyFiles returns the non-nil set of worktree paths bossd must
 // not treat as agent-authored. For opencode that is exactly one entry — the
-// BOS-486 question hook StartRun injects — and the rationale plus the
+// BOS-486 question hook StartAgentRun injects — and the rationale plus the
 // shadow-git / .opencode/ / GIT_INDEX_FILE caveats are documented in
 // dirty_files.go. The daemon type-asserts on Paths length, so this must always
 // be non-nil, even when the list is empty.

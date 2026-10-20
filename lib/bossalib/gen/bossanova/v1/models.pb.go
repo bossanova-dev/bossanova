@@ -4736,8 +4736,8 @@ func (x *MergeBlock) GetDisplayStatus() DisplayStatus {
 	return DisplayStatus_DISPLAY_STATUS_UNSPECIFIED
 }
 
-// ClaudeChat represents a Claude Code conversation associated with a session.
-type ClaudeChat struct {
+// AgentChat represents an agent conversation associated with a session.
+type AgentChat struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SessionId       string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -4772,20 +4772,20 @@ type ClaudeChat struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ClaudeChat) Reset() {
-	*x = ClaudeChat{}
+func (x *AgentChat) Reset() {
+	*x = AgentChat{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ClaudeChat) String() string {
+func (x *AgentChat) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ClaudeChat) ProtoMessage() {}
+func (*AgentChat) ProtoMessage() {}
 
-func (x *ClaudeChat) ProtoReflect() protoreflect.Message {
+func (x *AgentChat) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -4797,103 +4797,103 @@ func (x *ClaudeChat) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ClaudeChat.ProtoReflect.Descriptor instead.
-func (*ClaudeChat) Descriptor() ([]byte, []int) {
+// Deprecated: Use AgentChat.ProtoReflect.Descriptor instead.
+func (*AgentChat) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{24}
 }
 
-func (x *ClaudeChat) GetId() string {
+func (x *AgentChat) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetSessionId() string {
+func (x *AgentChat) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetAgentSessionId() string {
+func (x *AgentChat) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetTitle() string {
+func (x *AgentChat) GetTitle() string {
 	if x != nil {
 		return x.Title
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetDaemonId() string {
+func (x *AgentChat) GetDaemonId() string {
 	if x != nil {
 		return x.DaemonId
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetCreatedAt() *timestamppb.Timestamp {
+func (x *AgentChat) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return nil
 }
 
-func (x *ClaudeChat) GetTmuxSessionName() string {
+func (x *AgentChat) GetTmuxSessionName() string {
 	if x != nil {
 		return x.TmuxSessionName
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetAgentName() string {
+func (x *AgentChat) GetAgentName() string {
 	if x != nil {
 		return x.AgentName
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetProviderSessionId() string {
+func (x *AgentChat) GetProviderSessionId() string {
 	if x != nil {
 		return x.ProviderSessionId
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetStartError() string {
+func (x *AgentChat) GetStartError() string {
 	if x != nil {
 		return x.StartError
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetOwnerUserId() string {
+func (x *AgentChat) GetOwnerUserId() string {
 	if x != nil {
 		return x.OwnerUserId
 	}
 	return ""
 }
 
-func (x *ClaudeChat) GetRole() ChatRole {
+func (x *AgentChat) GetRole() ChatRole {
 	if x != nil {
 		return x.Role
 	}
 	return ChatRole_CHAT_ROLE_UNSPECIFIED
 }
 
-func (x *ClaudeChat) GetReclaimedAt() *timestamppb.Timestamp {
+func (x *AgentChat) GetReclaimedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ReclaimedAt
 	}
 	return nil
 }
 
-func (x *ClaudeChat) GetReclaimReason() string {
+func (x *AgentChat) GetReclaimReason() string {
 	if x != nil {
 		return x.ReclaimReason
 	}
@@ -7298,9 +7298,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\rGATE_CONFLICT\x10\x05\x12\x12\n" +
 	"\x0eGATE_BASE_SYNC\x10\x06\x12\x0e\n" +
 	"\n" +
-	"GATE_DRAFT\x10\a\"\xa5\x04\n" +
-	"\n" +
-	"ClaudeChat\x12\x0e\n" +
+	"GATE_DRAFT\x10\a\"\xa4\x04\n" +
+	"\tAgentChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12(\n" +
@@ -7824,7 +7823,7 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*AttentionStatus)(nil),          // 50: bossanova.v1.AttentionStatus
 	(*SessionAttention)(nil),         // 51: bossanova.v1.SessionAttention
 	(*MergeBlock)(nil),               // 52: bossanova.v1.MergeBlock
-	(*ClaudeChat)(nil),               // 53: bossanova.v1.ClaudeChat
+	(*AgentChat)(nil),                // 53: bossanova.v1.AgentChat
 	(*CronJob)(nil),                  // 54: bossanova.v1.CronJob
 	(*GithubCallback)(nil),           // 55: bossanova.v1.GithubCallback
 	(*Account)(nil),                  // 56: bossanova.v1.Account
@@ -7902,9 +7901,9 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	73,  // 52: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
 	28,  // 53: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
 	17,  // 54: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	73,  // 55: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	21,  // 56: bossanova.v1.ClaudeChat.role:type_name -> bossanova.v1.ChatRole
-	73,  // 57: bossanova.v1.ClaudeChat.reclaimed_at:type_name -> google.protobuf.Timestamp
+	73,  // 55: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
+	21,  // 56: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
+	73,  // 57: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
 	73,  // 58: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
 	73,  // 59: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
 	73,  // 60: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp

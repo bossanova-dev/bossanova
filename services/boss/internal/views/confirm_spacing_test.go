@@ -18,7 +18,7 @@ func listedChats(n int) chatsListedMsg {
 	msg := chatsListedMsg{daemonStatuses: map[string]string{}}
 	for i := range n {
 		id := "agent-" + strings.Repeat("x", i)
-		msg.chats = append(msg.chats, &pb.ClaudeChat{SessionId: "session-1", AgentSessionId: id, Title: id, CreatedAt: timestamppb.Now()})
+		msg.chats = append(msg.chats, &pb.AgentChat{SessionId: "session-1", AgentSessionId: id, Title: id, CreatedAt: timestamppb.Now()})
 		msg.daemonStatuses[id] = statusStopped
 	}
 	return msg

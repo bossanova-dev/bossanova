@@ -248,7 +248,7 @@ func (r *SmokeRunner) Verify(ctx context.Context, accountID, provider string, _ 
 
 	sessionID := smokeSessionID()
 	logPath := filepath.Join(logDir, sessionID+".log")
-	if _, err := client.StartRun(ctx, &bossanovav1.StartAgentRunRequest{
+	if _, err := client.StartAgentRun(ctx, &bossanovav1.StartAgentRunRequest{
 		WorkDir:   workDir,
 		Plan:      smokePrompt,
 		SessionId: sessionID,

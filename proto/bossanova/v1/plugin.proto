@@ -292,10 +292,7 @@ service AgentRunnerService {
   // makes the agent resume that session. session_id is an optional requested
   // ID; the plugin may generate its own. The caller must use the returned
   // session ID for subsequent run operations.
-  // Legacy name: retain the existing request and response wire names.
-  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-  rpc StartRun(StartAgentRunRequest) returns (StartAgentRunResponse);
+  rpc StartAgentRun(StartAgentRunRequest) returns (StartAgentRunResponse);
 
   // Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
   // Legacy name: retain the existing request and response wire names.

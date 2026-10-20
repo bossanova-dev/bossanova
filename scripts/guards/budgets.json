@@ -1,1 +1,11 @@
-{}
+{
+  "warehouse-file-size": {
+    "default": 400,
+    "subjects": {
+      "services/warehouse/scripts/load_ga4_export.py": 539
+    }
+  },
+  "warehouse-test-file-size": {
+    "default": 1500
+  }
+}

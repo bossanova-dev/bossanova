@@ -360,10 +360,11 @@ test('selectTargets routes the trial-enrolment source to test-scripts as well as
   ])
 })
 
-test('selectTargets routes the warehouse dbt project to test-warehouse alone', () => {
+test('selectTargets routes the warehouse dbt project and static guards', () => {
   // BOS-1317: services/warehouse is a uv/dbt project, not a Go module, so without this
   // rule it fell through to the whole-repo test-smoke fallback and never ran its own gate.
   assert.deepEqual(selectTargets(['services/warehouse/dbt_project.yml']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-warehouse', env: {} },
   ])
 })

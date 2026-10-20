@@ -82,9 +82,9 @@ func TestHomeTableHeightReservesFoldedFooter(t *testing.T) {
 }
 
 func TestChatPickerTableHeightReservesFoldedFooter(t *testing.T) {
-	chats := make([]*pb.ClaudeChat, 100)
+	chats := make([]*pb.AgentChat, 100)
 	for i := range chats {
-		chats[i] = &pb.ClaudeChat{AgentSessionId: "stopped"}
+		chats[i] = &pb.AgentChat{AgentSessionId: "stopped"}
 	}
 	picker := ChatPickerModel{
 		chats:           chats,

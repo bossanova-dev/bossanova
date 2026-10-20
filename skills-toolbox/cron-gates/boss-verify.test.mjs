@@ -25,6 +25,7 @@ function world({
   mergeRetries,
   sessions = [],
   lsFail,
+  fingerprint,
 } = {}) {
   const w = { calls: [], spawns: [], merges: {}, clock: 0 }
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
@@ -36,7 +37,11 @@ function world({
       if (verb === 'candidates') {
         if (candidatesFail)
           return { ok: false, error: 'exit-1', exit: 1, output: 'gh pr list failed (exit-1)' }
+        const quiet = args.indexOf('--quiet-fingerprint')
+        if (fingerprint && quiet !== -1 && args[quiet + 1] === fingerprint)
+          return ok({ candidates: [], skipped: [], mergeRetries: [], unchanged: true, fingerprint })
         return ok({
+          ...(fingerprint ? { fingerprint, skippable: true } : {}),
           candidates: candidates.map((n) => ({
             ticket: `BOS-${n}`,
             pr: n,
@@ -144,6 +149,31 @@ test('a human verdict posts and exits 1', () => {
   assert.equal(exitCode, 1)
 })
 
+test('an unchanged tick after a quiet one says so, judges nothing and exits 1', () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'boss-verify-state-')), 'sweep-state.json')
+  const quiet = world({ candidates: [], fingerprint: 'a'.repeat(64) })
+  const first = evaluateBossVerifyGate({ argv: [], env: ENV, deps: { ...quiet.deps, stateFile } })
+  assert.deepEqual(first.lines, [
+    'boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0',
+  ])
+  const w = world({ candidates: [1], fingerprint: 'a'.repeat(64) })
+  const { exitCode, lines } = evaluateBossVerifyGate({
+    argv: [],
+    env: ENV,
+    deps: { ...w.deps, stateFile },
+  })
+  assert.deepEqual(lines, [
+    'boss-verify gate: unchanged since the last quiet tick',
+    'boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0',
+  ])
+  assert.equal(exitCode, 1)
+  assert.deepEqual(
+    w.calls.filter((c) => c.cmd === NODE).map((c) => c.args[1]),
+    ['candidates'],
+  )
+  assert.equal(w.writes().length, 0)
+})
+
 test('nothing to do exits 1 with only the summary line', () => {
   const { exitCode, lines } = gate(world({ candidates: [] }))
   assert.deepEqual(lines, ['boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0'])
@@ -158,9 +188,13 @@ test('an idle run says why before the summary and exits 1', () => {
     'boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0',
   ])
   assert.equal(exitCode, 1)
+  // It reads nothing from GitHub; the one other call finds the unchanged-tick state to drop its entry.
   assert.deepEqual(
-    w.calls.map((c) => c.cmd),
-    [BOSS],
+    w.calls.map((c) => [c.cmd, ...c.args.slice(0, 2)]),
+    [
+      [BOSS, 'ls', '--json'],
+      ['git', 'rev-parse', '--git-common-dir'],
+    ],
   )
 })
 

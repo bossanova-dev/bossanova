@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -23,6 +23,13 @@ import {
   timedRunner,
   verifyMessage,
   MIN_QUOTA_SHARE,
+  SWEEP_STATE_VERSION,
+  forgetQuietFingerprint,
+  readQuietFingerprint,
+  storeQuietFingerprint,
+  sweepScopeKey,
+  sweepStatePath,
+  tickWasQuiet,
 } from './verify-route.mjs'
 
 const BOSS = '/fake/bin/boss'
@@ -73,14 +80,33 @@ function world(opts = {}) {
       const [, verb, ...rest] = args
       const flag = (name) => rest[rest.indexOf(`--${name}`) + 1]
       const pr = Number(flag('pr'))
-      if (verb === 'candidates')
-        return opts.candidatesFail
-          ? fail()
-          : ok({
-              candidates: opts.candidates ?? [candidate(1)],
-              skipped: opts.skipped ?? [],
-              ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
-            })
+      if (verb === 'candidates') {
+        if (opts.candidatesFail) return fail()
+        // The tick fingerprint verify-gate would report, and the early `unchanged` answer to a
+        // matching --quiet-fingerprint on a skippable tick.
+        const tick =
+          opts.fingerprint === undefined
+            ? {}
+            : { fingerprint: opts.fingerprint, skippable: opts.skippable ?? true }
+        if (
+          tick.skippable &&
+          rest.includes('--quiet-fingerprint') &&
+          flag('quiet-fingerprint') === opts.fingerprint
+        )
+          return ok({
+            candidates: [],
+            skipped: [],
+            mergeRetries: [],
+            unchanged: true,
+            fingerprint: opts.fingerprint,
+          })
+        return ok({
+          candidates: opts.candidates ?? [candidate(1)],
+          skipped: opts.skipped ?? [],
+          ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
+          ...tick,
+        })
+      }
       if (verb === 'judge') {
         const v = verdicts[pr] ?? { verdict: 'pass', reason: 'verified' }
         return ok({ headSha: sha(pr), ...v })
@@ -1230,4 +1256,313 @@ test('local-sessions-only: an unreadable session list throws before discovery, w
   // Without the flag the same unreachable boss is the old undispatchable hand-off.
   const w = world({ verdicts: { 1: EXT }, boss: { ok: false, path: null, reason: 'x' } })
   assert.equal(sweep({}, w.deps()).undispatchable, 'x')
+})
+
+// ---------------------------------------------------------------------------
+// Unchanged ticks: the cron gate's sweep stores a quiet tick's fingerprint and skips a match.
+
+const FP = 'f'.repeat(64)
+const SKIP = { skipUnchanged: true }
+const stateDir = () => mkdtempSync(join(tmpdir(), 'verify-route-state-'))
+const stateIn = (dir) => join(dir, 'boss-verify', 'sweep-state.json')
+const KEY = sweepScopeKey({})
+const storedFp = (file, key = KEY) => readQuietFingerprint(file, key)
+// A quiet tick's discovery: nothing to judge, only steady skips.
+const quietSkips = [
+  { ticket: 'BOS-1', pr: 1, reason: 'parked' },
+  { ticket: 'BOS-2', pr: 2, reason: 'claimed' },
+  { ticket: 'BOS-3', pr: 3, reason: 'verified' },
+  { ticket: 'BOS-4', pr: 4, reason: 'remote-session' },
+  { ticket: null, pr: 5, reason: 'no-session' },
+  { ticket: 'BOS-6', pr: 6, reason: 'ci-red' },
+]
+const quietWorld = (opts = {}) =>
+  world({ candidates: [], skipped: quietSkips, fingerprint: FP, ...opts })
+const candidatesArgs = (w) => w.verbs().filter((v) => v[0] === 'candidates')
+
+test('a quiet tick stores its fingerprint, and each unchanged tick after it judges, posts and merges nothing', () => {
+  const file = stateIn(stateDir())
+  const first = quietWorld()
+  const r = sweep(SKIP, first.deps({ stateFile: file }))
+  assert.equal(r.unchanged, undefined)
+  assert.equal(storedFp(file), FP)
+  assert.equal(candidatesArgs(first)[0].includes('--quiet-fingerprint'), false)
+  const state = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(state.version, SWEEP_STATE_VERSION)
+  assert.match(state.entries[KEY].at, /^\d{4}-\d{2}-\d{2}T/)
+
+  for (let tick = 0; tick < 3; tick++) {
+    const w = quietWorld({ candidates: [candidate(9)], mergeRetries: [candidate(8)] })
+    const u = sweep(SKIP, w.deps({ stateFile: file }))
+    assert.equal(u.unchanged, true, `tick ${tick}`)
+    assert.deepEqual([u.records, u.undispatchable], [[], null])
+    assert.deepEqual(
+      w.verbs().map((v) => v[0]),
+      ['candidates'],
+      'one candidates verb and no judge, post or merge',
+    )
+    const args = candidatesArgs(w)[0]
+    assert.equal(args[args.indexOf('--quiet-fingerprint') + 1], FP)
+    assert.deepEqual(
+      w.calls.filter((c) => c.cmd !== NODE).map((c) => [c.cmd, ...c.args]),
+      [['gh', 'api', 'rate_limit']],
+      'plus the free rate-limit read',
+    )
+    assert.equal(w.spawns.length, 0)
+    assert.equal(storedFp(file), FP, 'the entry stands')
+  }
+})
+
+test('a tick that is not quiet removes the stored fingerprint, or never stores one', () => {
+  const merged = { 1: { merged: true, mergeSha: sha(901), writes: [{ kind: 'merge' }] } }
+  const cases = [
+    ['dispatched', { candidates: [candidate(1)], verdicts: { 1: EXT } }],
+    ['merged', { candidates: [candidate(1)], mergeResults: merged }],
+    ['in flight', { candidates: [candidate(1)], mergeDelay: { 1: Infinity } }],
+    [
+      'parked',
+      {
+        candidates: [candidate(1)],
+        verdicts: { 1: { verdict: 'human', reason: 'partial-build' } },
+      },
+    ],
+    [
+      'waited',
+      {
+        candidates: [candidate(1)],
+        verdicts: { 1: { verdict: 'wait', reason: 'ci-not-settled' } },
+      },
+    ],
+    [
+      'an unknown skip',
+      { skipped: [...quietSkips, { ticket: 'BOS-7', pr: 7, reason: 'unknown:status' }] },
+    ],
+    ['an incomplete discovery', { skippable: false }],
+    ['a retry that merged', { mergeRetries: [candidate(1)], mergeResults: merged }],
+    [
+      'a retry that waited on an unreadable read',
+      {
+        mergeRetries: [candidate(1)],
+        mergeResults: {
+          1: { merged: false, verdict: 'wait', reason: 'pr-unreadable', writes: [] },
+        },
+      },
+    ],
+    // Reasons-only and CI waits may rest on CI evidence the fingerprint does not hash.
+    ...[
+      ['ci-not-green-on-head'],
+      ['ci-not-settled'],
+      ['merge-state-unknown'],
+      ['ci-not-settled', 'ci-not-green-on-head'],
+    ].map((reasons) => [
+      `a retry that waited on ${reasons.join(',')}`,
+      {
+        mergeRetries: [candidate(1)],
+        mergeResults: { 1: { merged: false, verdict: 'wait', reasons, writes: [] } },
+      },
+    ]),
+    [
+      'a retry that waited on an absent gate',
+      {
+        mergeRetries: [candidate(1)],
+        mergeResults: {
+          1: {
+            merged: false,
+            verdict: 'wait',
+            reason: 'ci-absent-gate',
+            reasons: ['ci-absent-gate'],
+            writes: [],
+          },
+        },
+      },
+    ],
+    [
+      'a retry that told the PR',
+      {
+        mergeRetries: [candidate(1)],
+        mergeResults: {
+          1: {
+            merged: false,
+            verdict: 'human',
+            reason: 'no-session',
+            notice: 'posted',
+            writes: [{ kind: 'pr-comment' }],
+          },
+        },
+      },
+    ],
+    [
+      'an undispatchable retry',
+      { mergeRetries: [candidate(1)], boss: { ok: false, path: null, reason: 'x' } },
+    ],
+  ]
+  for (const [name, opts] of cases) {
+    const file = stateIn(stateDir())
+    storeQuietFingerprint(file, KEY, 'e'.repeat(64), 'then')
+    sweep(SKIP, quietWorld(opts).deps({ stateFile: file }))
+    assert.equal(storedFp(file), null, name)
+  }
+
+  // Deferred by budget: 5 candidates with batch 3 never leave a stored fingerprint, tick after tick.
+  const file = stateIn(stateDir())
+  for (let tick = 0; tick < 3; tick++) {
+    const w = quietWorld({
+      candidates: [1, 2, 3, 4, 5].map((n) => candidate(n)),
+      verdicts: Object.fromEntries(
+        [1, 2, 3, 4, 5].map((n) => [n, { verdict: 'human', reason: 'partial-build' }]),
+      ),
+    })
+    const r = sweep({ ...SKIP, batch: 3 }, w.deps({ stateFile: file }))
+    assert.ok(r.records.some((x) => x.outcome === 'deferred'))
+    assert.equal(storedFp(file), null, `tick ${tick}`)
+  }
+
+  // A retry that settled as a write-free wait is quiet: the merge state in the fingerprint reopens it.
+  const waiting = stateIn(stateDir())
+  sweep(
+    SKIP,
+    quietWorld({
+      mergeRetries: [candidate(1)],
+      mergeResults: {
+        1: {
+          merged: false,
+          verdict: 'wait',
+          reason: 'merge-state-dirty',
+          reasons: ['merge-state-dirty'],
+          writes: [],
+        },
+      },
+    }).deps({ stateFile: waiting }),
+  )
+  assert.equal(storedFp(waiting), FP)
+})
+
+test('a dry run and a hand-run sweep never pass --quiet-fingerprint and never touch the state', () => {
+  for (const options of [{ ...SKIP, dryRun: true }, {}, { dryRun: true }]) {
+    const file = stateIn(stateDir())
+    storeQuietFingerprint(file, KEY, FP, 'then')
+    const before = readFileSync(file, 'utf8')
+    for (const opts of [{}, { candidates: [candidate(1)], verdicts: { 1: EXT } }]) {
+      const w = quietWorld(opts)
+      const r = sweep(options, w.deps({ stateFile: file }))
+      assert.equal(r.unchanged, undefined, JSON.stringify(options))
+      assert.equal(candidatesArgs(w)[0].includes('--quiet-fingerprint'), false)
+    }
+    assert.equal(readFileSync(file, 'utf8'), before, JSON.stringify(options))
+  }
+})
+
+test('missing, corrupt, other-version or unwritable state runs a full tick and never throws', () => {
+  const corrupt = (file, text) => {
+    storeQuietFingerprint(file, KEY, 'x', 'then')
+    writeFileSync(file, text)
+  }
+  const cases = [
+    ['missing', () => {}],
+    ['corrupt', (file) => corrupt(file, '{not json')],
+    [
+      'other version',
+      (file) =>
+        corrupt(file, JSON.stringify({ version: 2, entries: { [KEY]: { fingerprint: FP } } })),
+    ],
+    [
+      'entries not an object',
+      (file) => corrupt(file, JSON.stringify({ version: 1, entries: [FP] })),
+    ],
+    [
+      'another scope only',
+      (file) => storeQuietFingerprint(file, sweepScopeKey({ localSessionsOnly: true }), FP, 'then'),
+    ],
+  ]
+  for (const [name, seed] of cases) {
+    const file = stateIn(stateDir())
+    seed(file)
+    const w = quietWorld({
+      candidates: [candidate(1)],
+      verdicts: { 1: { verdict: 'wait', reason: 'x' } },
+    })
+    sweep(SKIP, w.deps({ stateFile: file }))
+    assert.equal(candidatesArgs(w)[0].includes('--quiet-fingerprint'), false, name)
+    assert.equal(
+      w.verbs().some((v) => v[0] === 'judge'),
+      true,
+      name,
+    )
+  }
+  // A directory that cannot be created: the tick runs and nothing throws, quiet or not.
+  const blocked = join(stateDir(), 'file')
+  writeFileSync(blocked, '')
+  const file = join(blocked, 'boss-verify', 'sweep-state.json')
+  const r = sweep(SKIP, quietWorld().deps({ stateFile: file }))
+  assert.deepEqual(r.summary, { merged: 0, parked: 0, dispatched: 0, skipped: 1, deferred: 0 })
+  assert.equal(existsSync(file), false)
+  assert.doesNotThrow(() =>
+    sweep(
+      SKIP,
+      quietWorld({ candidates: [candidate(1)], verdicts: { 1: EXT } }).deps({ stateFile: file }),
+    ),
+  )
+})
+
+test('each selection and --local-sessions-only scope keeps its own entry', () => {
+  const file = stateIn(stateDir())
+  const scopes = [
+    {},
+    { selectionArgs: ['--label', 'backend'] },
+    { selectionArgs: ['--label', 'frontend'] },
+    { localSessionsOnly: true },
+  ]
+  assert.equal(new Set(scopes.map(sweepScopeKey)).size, scopes.length)
+  scopes.forEach((scope, i) => storeQuietFingerprint(file, sweepScopeKey(scope), String(i), 'then'))
+  scopes.forEach((scope, i) =>
+    assert.equal(readQuietFingerprint(file, sweepScopeKey(scope)), String(i)),
+  )
+  assert.equal(forgetQuietFingerprint(file, sweepScopeKey(scopes[1])), true)
+  assert.deepEqual(
+    scopes.map((scope) => readQuietFingerprint(file, sweepScopeKey(scope))),
+    ['0', null, '2', '3'],
+  )
+
+  // The sweep passes only its own scope's fingerprint.
+  storeQuietFingerprint(file, sweepScopeKey({ selectionArgs: ['--label', 'backend'] }), FP, 'then')
+  const other = quietWorld()
+  sweep({ ...SKIP, selectionArgs: ['--label', 'frontend'] }, other.deps({ stateFile: file }))
+  assert.equal(candidatesArgs(other)[0].includes(FP), false)
+  const own = quietWorld()
+  const u = sweep({ ...SKIP, selectionArgs: ['--label', 'backend'] }, own.deps({ stateFile: file }))
+  assert.equal(u.unchanged, true)
+})
+
+test('the state file lives under the git common dir', () => {
+  const run = (out) => (cmd, args) =>
+    cmd === 'git' && args.join(' ') === 'rev-parse --git-common-dir'
+      ? { ok: true, output: out, exit: 0 }
+      : { ok: false, error: 'x', exit: 1, output: '' }
+  assert.equal(
+    sweepStatePath(run('.git'), '/repo', 1000),
+    '/repo/.git/boss-verify/sweep-state.json',
+  )
+  assert.equal(
+    sweepStatePath(run('/main/.git'), '/repo/wt', 1000),
+    '/main/.git/boss-verify/sweep-state.json',
+  )
+  assert.equal(
+    sweepStatePath(() => ({ ok: false, error: 'x' }), '/repo', 1000),
+    null,
+  )
+  // No state file: nothing is read or written, and the tick runs in full.
+  assert.equal(readQuietFingerprint(null, KEY), null)
+  assert.equal(storeQuietFingerprint(null, KEY, FP, 'then'), false)
+})
+
+test('tickWasQuiet needs a complete discovery with nothing to judge, and only quiet records', () => {
+  const payload = { candidates: [], skipped: quietSkips, fingerprint: FP, skippable: true }
+  assert.equal(tickWasQuiet(payload, [], null), true)
+  assert.equal(tickWasQuiet(payload, [{ remote: true }, { quiet: true }], null), true)
+  assert.equal(tickWasQuiet({ ...payload, skippable: false }, [], null), false)
+  assert.equal(tickWasQuiet({ ...payload, fingerprint: undefined }, [], null), false)
+  assert.equal(tickWasQuiet({ ...payload, candidates: [candidate(1)] }, [], null), false)
+  assert.equal(tickWasQuiet({ ...payload, skipped: [{ reason: 'unknown:ci' }] }, [], null), false)
+  assert.equal(tickWasQuiet(payload, [{ outcome: 'skipped' }], null), false)
+  assert.equal(tickWasQuiet(payload, [], 'boss unreachable'), false)
 })

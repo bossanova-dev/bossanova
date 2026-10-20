@@ -61,6 +61,11 @@ const (
 	// ClearRunWorking: a blocked run's own agent is working on a turn the
 	// block did not see. It lasts only while the agent works.
 	ClearRunWorking ClearReason = "run-working"
+	// ClearCIPending: the PR's checks are running with nothing failed yet, so
+	// whether the block still needs the operator is not known. It lasts only
+	// while they run: a failure or a settled PR that is not green and
+	// mergeable makes the alert current again.
+	ClearCIPending ClearReason = "ci-pending"
 )
 
 // RepairAlertResolution returns why the repair alert described by f has ended,
@@ -92,15 +97,18 @@ type BlockedFacts struct {
 }
 
 // BlockedResolution returns why a blocked alert has ended. A working agent
-// suspends it; a head move retains the existing escape hatch; otherwise only
-// settled, mergeable, non-draft PRs clear it. Unknown facts keep the alert
-// current.
+// suspends it, and so do checks still running with nothing failed; a head move
+// retains the existing escape hatch; otherwise only settled, mergeable,
+// non-draft PRs clear it. Unknown facts keep the alert current.
 func BlockedResolution(f BlockedFacts) ClearReason {
 	if f.RunWorking {
 		return ClearRunWorking
 	}
 	if f.AttemptHeadSHA != "" && f.CurrentHeadSHA != "" && !strings.EqualFold(f.AttemptHeadSHA, f.CurrentHeadSHA) {
 		return ClearHeadMoved
+	}
+	if f.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CHECKING && !f.HasFailures && !f.HasChangesRequested {
+		return ClearCIPending
 	}
 	if f.Mergeable == nil || !*f.Mergeable || f.HasFailures || f.HasChangesRequested {
 		return ""

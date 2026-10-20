@@ -647,6 +647,7 @@ export function selectTargets(files) {
     // it; `make test-warehouse` (migrate, grant, deny-probe, dbt parse/build) is its whole
     // gate. Terminal: nothing else reads these files.
     if (file.startsWith('services/warehouse/')) {
+      selectWholeTarget(selections, 'test-scripts')
       selectWholeTarget(selections, 'test-warehouse')
       selectedPrimaryTarget = true
       continue

@@ -253,8 +253,8 @@ message DaemonSnapshot {
   repeated string repo_ids = 3;
   // Slim: no full transcripts, just session state + display fields.
   repeated Session sessions = 4;
-  // Metadata only — see ClaudeChatMetadata.
-  repeated ClaudeChatMetadata chats = 5;
+  // Metadata only — see AgentChatMetadata.
+  repeated AgentChatMetadata chats = 5;
   // Live chat statuses keyed by agent_session_id (reuses ChatStatusEntry from daemon.proto).
   repeated ChatStatusEntry statuses = 6;
   // The daemon's GitHub callback interests at connect time (repo + PR). Carried
@@ -315,7 +315,7 @@ message SessionDelta {
   uint64 seq = 3;
 }
 
-// ChatDelta is a single ClaudeChatMetadata lifecycle change.
+// ChatDelta is a single AgentChatMetadata lifecycle change.
 message ChatDelta {
   // Kind names are prefixed with KIND_ to satisfy buf STANDARD lint.
   enum Kind {
@@ -326,7 +326,7 @@ message ChatDelta {
   }
   Kind kind = 1;
   // On CREATE/UPDATE: full metadata. On DELETE: id only.
-  ClaudeChatMetadata chat = 2;
+  AgentChatMetadata chat = 2;
 }
 
 // ChatStatusDelta reports the live status of a Claude Code chat process.
@@ -348,10 +348,10 @@ message ChatStatusDelta {
 
 // --- Slim metadata types ---
 
-// ClaudeChatMetadata is the slim, snapshot-sized view of a Claude chat.
+// AgentChatMetadata is the slim, snapshot-sized view of an agent chat.
 // NO full transcripts — last_message_preview is a short summary only.
 // Full transcripts are fetched on demand via AttachSessionCommand.
-message ClaudeChatMetadata {
+message AgentChatMetadata {
   string id = 1;
   string session_id = 2;
   string agent_session_id = 3;
@@ -449,7 +449,7 @@ message CommandResult {
     // WakeChat returns the Outcome enum + the persisted tmux session name.
     WakeChatResult wake_chat = 6;
     // RecordChat returns the created/resumed chat.
-    ClaudeChat record_chat = 8;
+    AgentChat record_chat = 8;
     // ListRepos returns the daemon's full Repo set (reuses daemon.proto type).
     ListReposResponse list_repos = 9;
     // ListAgents returns the daemon's installed agents (reuses daemon.proto type).
@@ -894,7 +894,7 @@ message RunTriggerGateResult {
 }
 
 // RecordChatCommand asks the daemon to record or resume a chat.
-// Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
+// Replies with CommandResult carrying an AgentChat payload (record_chat = 8).
 message RecordChatCommand {
   string session_id = 1;
   string agent_session_id = 2;
@@ -1360,7 +1360,7 @@ message BroadcastEgress {
   // broadcast. Carried so the ingress side can drop its own echo — see the loop
   // guard on BroadcastCommand.origin_daemon_id.
   string origin_daemon_id = 3;
-  // Chat the broadcast was issued from (ClaudeChat.agent_session_id), on the
+  // Chat the broadcast was issued from (AgentChat.agent_session_id), on the
   // origin daemon. Empty = operator-issued with no originating chat.
   string origin_chat_id = 4;
   // Broadcast body. SECRET — see the rule on Broadcast.message in daemon.proto:

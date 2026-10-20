@@ -30,6 +30,14 @@ The GitHub token is the user's and shared with every other tool, so each run fir
 rate_limit` (which costs nothing). While the core or GraphQL quota has under a quarter left, the run
 reads nothing more, prints `idle: GitHub <core|graphql> quota low (…)` and exits `1`.
 
+Discovery reads every open PR's head, `boss/verify` status and CI in one GraphQL query per 100 PRs.
+After a quiet tick (nothing to judge, only standing parks, live claims, red or unsettled CI,
+verified heads and merge retries that waited without writing), the gate stores that tick's
+fingerprint in `<git common dir>/boss-verify/sweep-state.json`. While the next tick's PRs, review
+tickets and sessions still match it, the tick ends after that one query, prints `unchanged since
+the last quiet tick` and exits `1`. Any other tick clears the entry; a hand-run `/boss-verify`
+sweep always scans in full.
+
 ## This gate dispatches
 
 Unlike the other cron gates, this one does the work itself, because a cron fire always creates a new

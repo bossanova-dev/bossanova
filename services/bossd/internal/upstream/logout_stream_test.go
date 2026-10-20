@@ -21,7 +21,7 @@ func (emptySnapshotStores) SnapshotSessions(context.Context) ([]*pb.Session, err
 	return nil, nil
 }
 
-func (emptySnapshotStores) SnapshotChats(context.Context) ([]*pb.ClaudeChatMetadata, error) {
+func (emptySnapshotStores) SnapshotChats(context.Context) ([]*pb.AgentChatMetadata, error) {
 	return nil, nil
 }
 

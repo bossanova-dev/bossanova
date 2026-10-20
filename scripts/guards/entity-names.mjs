@@ -201,19 +201,10 @@ export function checkEntityNames({
     if (exceptions && isExcepted(exceptions, decl.line)) return
     for (const entity of config.entities)
       for (const ban of entity.bans) {
-        if (
-          !ban.layers.includes(layer) ||
-          !matchesBan(
-            decl.name,
-            ban,
-            config.verbs,
-            layer === 'table' ? `services/${file}/migrations/` : file,
-          )
-        )
-          continue
+        if (!ban.layers.includes(layer) || !matchesBan(decl.name, ban, config.verbs, file)) continue
         const id =
           layer === 'table'
-            ? `table:${file}:${decl.name}`
+            ? `table:${decl.service}:${decl.modelName ?? decl.name}`
             : `${layer}:${file}:${decl.kind ? `${decl.kind} ` : ''}${decl.name}`
         offenders.set(
           id,
@@ -222,6 +213,16 @@ export function checkEntityNames({
       }
   }
   for (const file of files) {
+    if (file.startsWith('services/warehouse/models/') && file.endsWith('.sql')) {
+      const modelName = path.basename(file, '.sql')
+      const name = file.startsWith('services/warehouse/models/growth/')
+        ? modelName
+        : modelName.includes('__')
+          ? modelName.slice(modelName.lastIndexOf('__') + 2)
+          : modelName.replace(/^mart_/, '')
+      inspect('table', file, { name, modelName, service: 'warehouse' })
+      continue
+    }
     let layer
     if (file.endsWith('.go') && !file.endsWith('_test.go') && !file.split('/').includes('gen'))
       layer = 'go'
@@ -248,7 +249,7 @@ export function checkEntityNames({
         .filter((f) => f.startsWith(dir) && f.endsWith('.sql'))
         .map((f) => fs.readFileSync(path.join(repoRoot, f), 'utf8')),
     ))
-      inspect('table', service, { name })
+      inspect('table', dir, { name, service })
   }
   if (writeBaseline && !failures.length)
     fs.writeFileSync(path.resolve(repoRoot, baselinePath), formatBaseline(offenders.keys()))

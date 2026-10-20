@@ -1427,7 +1427,7 @@ func TestCreate_IgnoresBossdManagedPatterns(t *testing.T) {
 		".boss/",
 		".claude/settings.local.json",
 		// BOS-486: the opencode question-signal hook the plugin injects at
-		// StartRun and removes at run end. A crashed run can leave it behind.
+		// StartAgentRun and removes at run end. A crashed run can leave it behind.
 		".opencode/plugins/bossd-question.js",
 	}
 	for _, pattern := range want {

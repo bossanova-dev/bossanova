@@ -907,8 +907,8 @@ enum ChatStatus {
   CHAT_STATUS_WAITING = 6;
 }
 
-// ClaudeChat represents a Claude Code conversation associated with a session.
-message ClaudeChat {
+// AgentChat represents an agent conversation associated with a session.
+message AgentChat {
   string id = 1;
   string session_id = 2;
   string agent_session_id = 3;   // Agent session UUID

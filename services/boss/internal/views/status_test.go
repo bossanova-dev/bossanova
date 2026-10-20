@@ -628,10 +628,10 @@ func TestSessionWarningHintsIncludesSetupError_FirstLineOnly(t *testing.T) {
 // TestChatStartErrorHintFromChats verifies that a chat with a non-empty
 // StartError (a tmux launch failure stamped by the daemon) surfaces a
 // "chat failed to start" hint truncated to the error's first line.
-// ClaudeChat.StartError is a plain proto3 string field (not a pointer), so
+// AgentChat.StartError is a plain proto3 string field (not a pointer), so
 // it is set directly via a struct literal rather than via proto.String.
 func TestChatStartErrorHintFromChats(t *testing.T) {
-	chats := []*pb.ClaudeChat{
+	chats := []*pb.AgentChat{
 		{StartError: "missing or unsuitable terminal: xterm-ghostty\nfull tmux stderr here"},
 	}
 	got := chatStartErrorHint(chats)
@@ -653,7 +653,7 @@ func TestChatStartErrorHintEmptyWhenNoStartError(t *testing.T) {
 	if got := chatStartErrorHint(nil); got != "" {
 		t.Errorf("chatStartErrorHint(nil) = %q, want empty", got)
 	}
-	chats := []*pb.ClaudeChat{nil, {AgentSessionId: "sess-1"}}
+	chats := []*pb.AgentChat{nil, {AgentSessionId: "sess-1"}}
 	if got := chatStartErrorHint(chats); got != "" {
 		t.Errorf("chatStartErrorHint = %q, want empty for chats with no StartError", got)
 	}
@@ -664,7 +664,7 @@ func TestChatStartErrorHintEmptyWhenNoStartError(t *testing.T) {
 // session-level hints such as SetupError.
 func TestSelectedSessionWarningBlock_ChatStartError(t *testing.T) {
 	sess := &pb.Session{SetupError: "npm install failed: ENOENT"}
-	chats := []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
+	chats := []*pb.AgentChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
 	got := selectedSessionWarningBlock(sess, chats, 80)
 	if !strings.Contains(got, "setup script failed") {
 		t.Errorf("block missing setup-error hint: %q", got)
@@ -760,7 +760,7 @@ func TestSelectedSessionWarningBlock_NilSession(t *testing.T) {
 // nil session paired with a chat-level StartError produces a non-empty hint
 // set that reaches the styling branch — which must not dereference nil.
 func TestSelectedSessionWarningBlock_NilSessionWithChatStartError(t *testing.T) {
-	chats := []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
+	chats := []*pb.AgentChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}}
 	got := selectedSessionWarningBlock(nil, chats, 80)
 	if !strings.Contains(got, "chat failed to start: missing or unsuitable terminal: xterm-ghostty") {
 		t.Errorf("block missing chat start-error hint for nil session: %q", got)
@@ -1505,7 +1505,7 @@ func TestWarningHintStyle_ExemptHintsStayLoud(t *testing.T) {
 	tests := []struct {
 		name     string
 		sess     *pb.Session
-		chats    []*pb.ClaudeChat
+		chats    []*pb.AgentChat
 		contains string
 	}{
 		{
@@ -1549,7 +1549,7 @@ func TestWarningHintStyle_ExemptHintsStayLoud(t *testing.T) {
 		{
 			name:     "chat start error",
 			sess:     &pb.Session{DisplayLabel: "working"},
-			chats:    []*pb.ClaudeChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}},
+			chats:    []*pb.AgentChat{{StartError: "missing or unsuitable terminal: xterm-ghostty"}},
 			contains: "chat failed to start",
 		},
 	}

@@ -47,11 +47,27 @@ modules:
         # plugin.proto is the bossd<->plugin contract; both sides ship from
         # this repo in lockstep. NewVersionedPluginMap in
         # services/bossd/internal/plugin/shared.go refuses a plugin whose
-        # ProtocolVersion differs. Service/message deletion fails loudly
+        # ProtocolVersion differs at the handshake. Service/message/RPC deletion fails loudly
         # (unimplemented or a compile error), never by misparsing a message.
         # FIELD_NO_DELETE, renumbering and retyping remain enforced here;
         # orchestrator.proto retains FILE at full strength.
+        RPC_NO_DELETE:
+          - proto/bossanova/v1/plugin.proto
         SERVICE_NO_DELETE:
           - proto/bossanova/v1/plugin.proto
         MESSAGE_NO_DELETE:
           - proto/bossanova/v1/plugin.proto
+          # rename-transient, BOS-1728 chat: binary- and JSON-wire-identical,
+          # only the type name changes; the next PR that touches buf.yaml after
+          # this merges removes them. Covers the three MESSAGE_NO_DELETE entries
+          # below and the whole FIELD_SAME_TYPE key that follows
+          # (ClaudeChat -> AgentChat, ClaudeChatMetadata -> AgentChatMetadata,
+          # ClaudeTurn -> AgentTurn; pinned by
+          # lib/bossalib/models/agent_chat_wire_test.go).
+          - proto/bossanova/v1/models.proto
+          - proto/bossanova/v1/orchestrator.proto
+          - proto/bossanova/v1/stream.proto
+        FIELD_SAME_TYPE:
+          - proto/bossanova/v1/daemon.proto
+          - proto/bossanova/v1/orchestrator.proto
+          - proto/bossanova/v1/stream.proto

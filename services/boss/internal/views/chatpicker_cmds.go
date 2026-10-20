@@ -156,7 +156,7 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	if isRemoteHost() {
 		return nil
 	}
-	var needsUpdate []*pb.ClaudeChat
+	var needsUpdate []*pb.AgentChat
 	for _, c := range m.chats {
 		if isPlaceholderChatTitle(c.Title) {
 			needsUpdate = append(needsUpdate, c)

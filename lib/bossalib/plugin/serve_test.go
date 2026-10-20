@@ -1,8 +1,13 @@
 package plugin
 
 import (
+	"context"
 	"net/rpc"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
@@ -76,6 +81,9 @@ func TestServePluginServesTheGivenPluginUnderTheNegotiatedProtocol(t *testing.T)
 		t.Errorf("Plugins = %v, want nil; setting it alongside VersionedPlugins makes go-plugin ignore the versioned map", got.Plugins)
 	}
 
+	if len(got.VersionedPlugins) != 1 {
+		t.Fatalf("offered protocols = %v, want only protocol %d", got.VersionedPlugins, ProtocolVersion)
+	}
 	set, ok := got.VersionedPlugins[ProtocolVersion]
 	if !ok {
 		t.Fatalf("VersionedPlugins has no entry for protocol %d, only %v", ProtocolVersion, got.VersionedPlugins)
@@ -105,5 +113,35 @@ func TestServePluginPassesTheCallersLogger(t *testing.T) {
 
 	if seen.GetLevel() != want.GetLevel() {
 		t.Errorf("arm received a different logger level: %v vs %v", seen.GetLevel(), want.GetLevel())
+	}
+}
+
+// TestServePluginRejectsV3Handshake uses a real subprocess handshake so an old
+// plugin cannot negotiate successfully and fail later at its first RPC.
+func TestServePluginRejectsV3Handshake(t *testing.T) {
+	if os.Getenv("BOSS_TEST_V3_PLUGIN") == "1" {
+		handshake := NewHandshakeForPlugin()
+		handshake.ProtocolVersion = 3
+		goplugin.Serve(&goplugin.ServeConfig{
+			HandshakeConfig:  handshake,
+			VersionedPlugins: map[int]goplugin.PluginSet{3: {PluginTypeWorkflow: &fakePlugin{}}},
+		})
+		return
+	}
+	t.Setenv(MagicCookieKey, "test-protocol-mismatch")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestServePluginRejectsV3Handshake$")
+	cmd.Env = append(os.Environ(), "BOSS_TEST_V3_PLUGIN=1")
+	cmd.WaitDelay = time.Second
+	client := goplugin.NewClient(&goplugin.ClientConfig{
+		HandshakeConfig:  NewHandshakeForPlugin(),
+		VersionedPlugins: map[int]goplugin.PluginSet{ProtocolVersion: {PluginTypeWorkflow: &fakePlugin{}}},
+		Cmd:              cmd,
+	})
+	defer client.Kill()
+	_, err := client.Client()
+	if err == nil || !strings.Contains(err.Error(), "incompatible API version") {
+		t.Fatalf("handshake error = %v, want incompatible API version", err)
 	}
 }

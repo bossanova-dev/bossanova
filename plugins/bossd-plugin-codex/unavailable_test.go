@@ -110,11 +110,11 @@ func TestExitStatusReportsNonExecution(t *testing.T) {
 			r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeCodexShell(t, tc.script)))
 			srv := &Server{logger: zerolog.Nop(), runner: r}
 
-			start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+			start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 				WorkDir: dir, SessionId: "sid-" + tc.name, LogPath: logPath,
 			})
 			if err != nil {
-				t.Fatalf("StartRun: %v", err)
+				t.Fatalf("StartAgentRun: %v", err)
 			}
 			exit := waitExit(t, srv, start.SessionId)
 
@@ -152,11 +152,11 @@ func TestNonExecutionWinsOverAnAuthShapedTail(t *testing.T) {
 		fakeCodexShell(t, "echo 'HTTP error: 401 Unauthorized'; exit 127")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, SessionId: "sid-nonexec-auth", LogPath: logPath,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	exit := waitExit(t, srv, start.SessionId)
 
@@ -178,11 +178,11 @@ func TestOrdinaryFailureKeepsItsClassification(t *testing.T) {
 		fakeCodexShell(t, "echo 'HTTP error: 401 Unauthorized'; exit 1")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, SessionId: "sid-ordinary", LogPath: logPath,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	exit := waitExit(t, srv, start.SessionId)
 

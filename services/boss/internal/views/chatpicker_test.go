@@ -214,10 +214,10 @@ func (s *chatPickerStub) ResurrectSession(context.Context, string) (client.Resur
 func (s *chatPickerStub) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
+func (s *chatPickerStub) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	panic("unused")
 }
 
@@ -389,7 +389,7 @@ func (s *chatPickerStub) ListPlugins(context.Context) ([]*pb.InstalledPlugin, er
 // given daemon status. Tests can press 'w' against the resulting model.
 func seedChatPicker(c client.BossClient, status string) ChatPickerModel {
 	m := NewChatPickerModel(c, context.Background(), "session-1", "")
-	chat := &pb.ClaudeChat{
+	chat := &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-1",
 		Title:          "Test chat",
@@ -400,7 +400,7 @@ func seedChatPicker(c client.BossClient, status string) ChatPickerModel {
 		statuses["agent-1"] = status
 	}
 	updated, _ := m.Update(chatsListedMsg{
-		chats:          []*pb.ClaudeChat{chat},
+		chats:          []*pb.AgentChat{chat},
 		daemonStatuses: statuses,
 	})
 	return updated.(ChatPickerModel)
@@ -410,7 +410,7 @@ func TestChatPickerBuildTableRows_ShowsAgentAfterChatWhenMultipleAgentsEnabled(t
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	m.agents = []client.AgentInfo{{Name: "claude"}, {Name: "codex"}}
 	now := timestamppb.Now()
-	m.chats = []*pb.ClaudeChat{
+	m.chats = []*pb.AgentChat{
 		{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-1",
@@ -448,7 +448,7 @@ func responsiveChatPickerModel(width int, multipleAgents bool) ChatPickerModel {
 		m.agents = append(m.agents, client.AgentInfo{Name: "codex"})
 	}
 	now := timestamppb.Now()
-	m.chats = []*pb.ClaudeChat{{
+	m.chats = []*pb.AgentChat{{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-1",
 		AgentName:      "claude-enter",
@@ -802,7 +802,7 @@ func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
 	stub := &chatPickerStub{}
 	const repairTitle = "Repair: broken session"
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
-	chat := &pb.ClaudeChat{
+	chat := &pb.AgentChat{
 		SessionId:       "session-1",
 		AgentSessionId:  "agent-repair-1",
 		Title:           repairTitle,
@@ -810,7 +810,7 @@ func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
 		CreatedAt:       timestamppb.Now(),
 	}
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{chat},
+		chats: []*pb.AgentChat{chat},
 		daemonStatuses: map[string]string{
 			"agent-repair-1": statusWorking,
 		},
@@ -839,7 +839,7 @@ func TestChatPicker_SurfacesLimitedProviderLine(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{{
+		chats: []*pb.AgentChat{{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-1",
 			Title:          "A chat",
@@ -864,7 +864,7 @@ func TestChatPicker_SurfacesLimitedProviderLine(t *testing.T) {
 // omitted.
 func TestChatPicker_LimitedProviderLine(t *testing.T) {
 	m := ChatPickerModel{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{AgentSessionId: "a", AgentName: "claude"},
 			{AgentSessionId: "b", AgentName: "codex"},
 			{AgentSessionId: "c", AgentName: "claude"},
@@ -891,7 +891,7 @@ func TestChatPicker_LimitedProviderLine(t *testing.T) {
 // stays silent (and callers skip the line) when no chat is limited.
 func TestChatPicker_LimitedProviderLine_EmptyWhenNoneLimited(t *testing.T) {
 	m := ChatPickerModel{
-		chats:          []*pb.ClaudeChat{{AgentSessionId: "a", AgentName: "claude"}},
+		chats:          []*pb.AgentChat{{AgentSessionId: "a", AgentName: "claude"}},
 		daemonStatuses: map[string]string{"a": statusWorking},
 	}
 	if got := m.limitedProviderLine(); got != "" {
@@ -907,7 +907,7 @@ func renderChatPickerWith(t *testing.T, session *pb.Session) string {
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{{
+		chats: []*pb.AgentChat{{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-1",
 			Title:          "A chat",
@@ -1064,7 +1064,7 @@ func TestChatPicker_WarningBlockHeightMatchesRenderedRows(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{{
+		chats: []*pb.AgentChat{{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-1",
 			Title:          "A chat",
@@ -1652,7 +1652,7 @@ func TestChatPicker_G_IsNoOpWithGitHubLinkButNoPR(t *testing.T) {
 	m := seedChatPicker(stub, statusWorking)
 	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
 	// session has no pr_number — canOpenGitHub must return false.
-	m.chats = append(m.chats, &pb.ClaudeChat{
+	m.chats = append(m.chats, &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Second chat",
@@ -1688,7 +1688,7 @@ func TestChatPicker_G_SwallowedWithoutGitHubAction(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	// No repo web link at all — canOpenGitHub is false.
-	m.chats = append(m.chats, &pb.ClaudeChat{
+	m.chats = append(m.chats, &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Second chat",
@@ -2077,7 +2077,7 @@ func TestChatPicker_L_IsNoOpWithNoTrackerURL(t *testing.T) {
 	m := seedChatPicker(stub, statusWorking)
 	// session has no TrackerUrl — l must be a no-op.
 	m.session = &pb.Session{Id: "session-1"}
-	m.chats = append(m.chats, &pb.ClaudeChat{
+	m.chats = append(m.chats, &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Second chat",
@@ -2128,7 +2128,7 @@ func TestChatPicker_L_IsNoOpWithNoSession(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusWorking)
 	m.session = nil
-	m.chats = append(m.chats, &pb.ClaudeChat{
+	m.chats = append(m.chats, &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Second chat",
@@ -2219,8 +2219,8 @@ func (s *chatPickerStub) switchCallsSnapshot() []*pb.SwitchSessionAccountRequest
 // bos494Chat builds a chat with an explicit created-at offset so the tests can
 // control both list order (the picker sorts newest-first) and the
 // chatLastActive fallback used for the longest-waiting tie-break.
-func bos494Chat(agentID, title string, createdAgo time.Duration) *pb.ClaudeChat {
-	return &pb.ClaudeChat{
+func bos494Chat(agentID, title string, createdAgo time.Duration) *pb.AgentChat {
+	return &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: agentID,
 		Title:          title,
@@ -2235,7 +2235,7 @@ func bos494Chat(agentID, title string, createdAgo time.Duration) *pb.ClaudeChat 
 func TestChatPicker_InitialCursor_PrefersQuestionOverNewerWorking(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			bos494Chat("agent-working", "Newer working", 1*time.Hour),
 			bos494Chat("agent-question", "Older question", 3*time.Hour),
 		},
@@ -2262,7 +2262,7 @@ func TestChatPicker_InitialCursor_LongestWaitingQuestionWins(t *testing.T) {
 	now := time.Now()
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			// Newer CreatedAt but the OLDEST LastOutputAt — longest-waiting.
 			bos494Chat("q-win", "Longest waiting", 1*time.Hour),
 			// Older CreatedAt but a RECENT LastOutputAt — not waiting as long.
@@ -2292,7 +2292,7 @@ func TestChatPicker_InitialCursor_LongestWaitingQuestionWins(t *testing.T) {
 func TestChatPicker_InitialCursor_ExplicitHighlightBeatsQuestion(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "agent-working")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			bos494Chat("agent-working", "Newer working", 1*time.Hour),
 			bos494Chat("agent-question", "Older question", 3*time.Hour),
 		},
@@ -2315,7 +2315,7 @@ func TestChatPicker_InitialCursor_ExplicitHighlightBeatsQuestion(t *testing.T) {
 func TestChatPicker_InitialCursor_UnlistedHighlightFallsBackToQuestion(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "agent-gone")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			bos494Chat("agent-working", "Newer working", 1*time.Hour),
 			bos494Chat("agent-question", "Older question", 3*time.Hour),
 		},
@@ -2336,7 +2336,7 @@ func TestChatPicker_InitialCursor_UnlistedHighlightFallsBackToQuestion(t *testin
 func TestChatPicker_InitialCursor_NoQuestionKeepsFirstActive(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			bos494Chat("agent-working", "Newer working", 1*time.Hour),
 			bos494Chat("agent-idle", "Older idle", 3*time.Hour),
 		},
@@ -2357,7 +2357,7 @@ func TestChatPicker_InitialCursor_NoQuestionKeepsFirstActive(t *testing.T) {
 func TestChatPicker_InitialCursor_NilStatusesLeavesRowZero(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			bos494Chat("agent-a", "Chat A", 1*time.Hour),
 			bos494Chat("agent-b", "Chat B", 2*time.Hour),
 		},
@@ -2386,11 +2386,11 @@ func seedChatPickerSized(t *testing.T, chatCount, termHeight int) ChatPickerMode
 	stub := &chatPickerStub{}
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	m.SetShowOpenPorts(true)
-	chats := make([]*pb.ClaudeChat, 0, chatCount)
+	chats := make([]*pb.AgentChat, 0, chatCount)
 	statuses := make(map[string]string, chatCount)
 	for i := range chatCount {
 		id := fmt.Sprintf("agent-%d", i)
-		chats = append(chats, &pb.ClaudeChat{
+		chats = append(chats, &pb.AgentChat{
 			SessionId:      "session-1",
 			AgentSessionId: id,
 			Title:          fmt.Sprintf("Chat %d", i),
@@ -2749,7 +2749,7 @@ func seedChatPickerForWrapAt(t *testing.T, session *pb.Session, width int) ChatP
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	m.session = session
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{{
+		chats: []*pb.AgentChat{{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-1",
 			// Long enough that the table's content width clears
@@ -3018,7 +3018,7 @@ func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	m.SetShowOpenPorts(true)
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{
 				SessionId:      "session-1",
 				AgentSessionId: "agent-1",
@@ -3221,11 +3221,11 @@ func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
 		{
 			name: "usage-limited hint",
 			seed: func(width int) (ChatPickerModel, string) {
-				chats := make([]*pb.ClaudeChat, 0, len(longAgents))
+				chats := make([]*pb.AgentChat, 0, len(longAgents))
 				statuses := make(map[string]string, len(longAgents))
 				for i, agent := range longAgents {
 					id := fmt.Sprintf("agent-%d", i)
-					chats = append(chats, &pb.ClaudeChat{
+					chats = append(chats, &pb.AgentChat{
 						SessionId: "session-1", AgentSessionId: id,
 						Title: "Limited chat", AgentName: agent, CreatedAt: timestamppb.Now(),
 					})
@@ -3259,7 +3259,7 @@ func TestChatPicker_SingleLineHintsNeverOverhangTheTerminal(t *testing.T) {
 }
 
 // seedChatPickerHint builds a sized chat picker showing one status hint.
-func seedChatPickerHint(width int, chats []*pb.ClaudeChat, statuses, reasons map[string]string) ChatPickerModel {
+func seedChatPickerHint(width int, chats []*pb.AgentChat, statuses, reasons map[string]string) ChatPickerModel {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
 		chats:                chats,
@@ -3419,7 +3419,7 @@ func TestChatPicker_RenameCommitsAgainstTheCapturedChat(t *testing.T) {
 	m = updated.(ChatPickerModel)
 
 	// A poll lands mid-edit and puts a different chat under the cursor.
-	m.chats = append([]*pb.ClaudeChat{{
+	m.chats = append([]*pb.AgentChat{{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Newer chat",
@@ -3574,7 +3574,7 @@ func TestChatPicker_RKey_RenameSwallowedWithEmptyChatList(t *testing.T) {
 func TestChatPicker_RKey_RenameSwallowedWhileDeleteInFlight(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := chatPickerSized(stub)
-	m.chats = append(m.chats, &pb.ClaudeChat{
+	m.chats = append(m.chats, &pb.AgentChat{
 		SessionId:      "session-1",
 		AgentSessionId: "agent-2",
 		Title:          "Second chat",

@@ -32,7 +32,7 @@ func TestParseChatRole(t *testing.T) {
 }
 
 func TestChatsJSONCarriesRole(t *testing.T) {
-	chats := []*pb.ClaudeChat{
+	chats := []*pb.AgentChat{
 		{AgentSessionId: "v", Title: "再確認する PR #3100", Role: pb.ChatRole_CHAT_ROLE_VERIFY},
 		{AgentSessionId: "legacy", Title: "verify"},
 		{AgentSessionId: "future", Role: pb.ChatRole(99)},

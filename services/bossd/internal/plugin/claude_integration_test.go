@@ -2,8 +2,11 @@ package plugin_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
 
@@ -102,29 +105,54 @@ func TestE2E_Claude_ListIgnoredDirtyFiles(t *testing.T) {
 	}
 }
 
-// TestE2E_Claude_StartRun_RequiresCLI verifies that StartRun returns an error
+// TestE2E_Claude_StartAgentRun_RequiresCLI verifies that StartAgentRun returns an error
 // (rather than panicking or hanging) when the claude CLI is not installed. When
-// the CLI is present in PATH the test is skipped — the StartRun → NDJSON path
+// the CLI is present in PATH the test is skipped — the StartAgentRun → NDJSON path
 // is already exercised by the plugin's own unit tests in
 // plugins/bossd-plugin-claude/runner_test.go where the command factory can be
 // faked.
-func TestE2E_Claude_StartRun_RequiresCLI(t *testing.T) {
+func TestE2E_Claude_StartAgentRun_RequiresCLI(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err == nil {
-		t.Skip("claude CLI is installed; StartRun unit-test coverage sufficient — skipping RPC error path")
+		t.Skip("claude CLI is installed; StartAgentRun unit-test coverage sufficient — skipping RPC error path")
 	}
 
 	h := newClaudeHarness(t)
 
-	_, err := h.AgentRunner.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	_, err := h.AgentRunner.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		SessionId: "test-session-id",
 		WorkDir:   t.TempDir(),
 		Plan:      "hello",
 	})
-	// StartRun should return an error because the claude binary does not exist.
+	// StartAgentRun should return an error because the claude binary does not exist.
 	// We accept any non-nil error — the exact message is an implementation
 	// detail. What we're asserting is that the gRPC plumbing round-trips the
 	// error back to the host rather than hanging or panicking.
 	if err == nil {
-		t.Error("StartRun succeeded without claude installed; expected an error")
+		t.Error("StartAgentRun succeeded without claude installed; expected an error")
+	}
+}
+
+// Exercise the renamed RPC without depending on an installed or authenticated CLI.
+func TestE2E_Claude_StartAgentRun(t *testing.T) {
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	h := newClaudeHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	response, err := h.AgentRunner.StartAgentRun(ctx, &bossanovav1.StartAgentRunRequest{
+		SessionId:                "renamed-rpc",
+		WorkDir:                  t.TempDir(),
+		Plan:                     "hello",
+		LogPath:                  filepath.Join(t.TempDir(), "run.log"),
+		ShouldTrustProjectConfig: true,
+	})
+	if err != nil {
+		t.Fatalf("StartAgentRun: %v", err)
+	}
+	if response.GetSessionId() != "renamed-rpc" {
+		t.Fatalf("session id = %q, want renamed-rpc", response.GetSessionId())
 	}
 }

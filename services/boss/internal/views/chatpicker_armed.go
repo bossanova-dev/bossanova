@@ -272,7 +272,7 @@ func (m ChatPickerModel) progressCallback(listed listedCallbacks) *pb.GithubCall
 // statusCallback is the callback a progress wait's STATUS cell names: the one
 // the daemon's reason describes, or, when that reason is the session's own PR
 // merging or closing, the progress callback that keeps the chat waiting.
-func (m ChatPickerModel) statusCallback(chat *pb.ClaudeChat) *pb.GithubCallback {
+func (m ChatPickerModel) statusCallback(chat *pb.AgentChat) *pb.GithubCallback {
 	id := chat.GetAgentSessionId()
 	if m.reasonWait(m.daemonWaitingReasons[id]) != waitDone {
 		return m.armedCallback(chat)
@@ -378,7 +378,7 @@ func (m ChatPickerModel) handleArmedCallbacks(msg armedCallbacksMsg) (tea.Model,
 // armedCallback returns the known callback chat is parked on, or nil when the
 // chat is not waiting, the fetch has not answered, or the callback has since
 // stopped matching the daemon's reason or expired.
-func (m ChatPickerModel) armedCallback(chat *pb.ClaudeChat) *pb.GithubCallback {
+func (m ChatPickerModel) armedCallback(chat *pb.AgentChat) *pb.GithubCallback {
 	id := chat.GetAgentSessionId()
 	if !m.isWaitingWithReason(id) {
 		return nil
@@ -404,7 +404,7 @@ func armedParkSummary(sess *pb.Session) string {
 // the expiry so a truncated line drops the expiry first. A standby reason is
 // prefixed "standby: " (never "waiting: "), so the line never presents a
 // contingency watch as what the chat is waiting on (BOS-1531).
-func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
+func (m ChatPickerModel) armedLine(chat *pb.AgentChat) string {
 	id := chat.GetAgentSessionId()
 	if !m.isWaitingWithReason(id) {
 		return ""
@@ -427,7 +427,7 @@ func (m ChatPickerModel) armedLine(chat *pb.ClaudeChat) string {
 }
 
 // chatDisplayTitle is the title a chat row shows.
-func chatDisplayTitle(chat *pb.ClaudeChat) string {
+func chatDisplayTitle(chat *pb.AgentChat) string {
 	if t := chat.GetTitle(); t != "" {
 		return t
 	}

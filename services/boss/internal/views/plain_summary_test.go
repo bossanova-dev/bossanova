@@ -240,7 +240,7 @@ func TestChatPickerPageKeysMoveTheTableWhileAQuestionShows(t *testing.T) {
 	m.fullQuestion = surveyQuestion
 	base := m.chats[0]
 	for i := range 30 {
-		m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: fmt.Sprintf("chat-%d", i), Title: fmt.Sprintf("Chat %d", i), CreatedAt: base.GetCreatedAt(), AgentName: "claude"})
+		m.chats = append(m.chats, &pb.AgentChat{AgentSessionId: fmt.Sprintf("chat-%d", i), Title: fmt.Sprintf("Chat %d", i), CreatedAt: base.GetCreatedAt(), AgentName: "claude"})
 	}
 	m.buildTableRows()
 	m.table.SetHeight(m.tableHeight())

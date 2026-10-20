@@ -27,6 +27,14 @@ import {
   REPAIR_EXHAUSTED_AFTER,
   UsageError,
   VERIFY_DESCRIPTIONS,
+  OPEN_PRS_QUERY,
+  mapOpenPrs,
+  tickFingerprint,
+  EVIDENCE_UNKNOWN_REASONS,
+  classifyReadCall,
+  writeAwareReader,
+  fingerprintSalt,
+  classifyHeadCi,
   aggregateExtensions,
   approval,
   approve,
@@ -83,7 +91,7 @@ import {
 } from './verify-gate.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from './skill-config.mjs'
-import { DESCRIPTION_LIMIT } from './commit-status.mjs'
+import { DESCRIPTION_LIMIT, classifyRead } from './commit-status.mjs'
 import { discoverExtensions, validateVerifyContext } from './skill-extensions.mjs'
 import {
   AFTER_MERGE_MARKER,
@@ -4023,6 +4031,116 @@ function candidateConfig(selection) {
   return config
 }
 
+// The batched open-PR read (OPEN_PRS_QUERY), answered from the same fixtures the per-head REST
+// routes serve, so a test world stays one source of truth. `statusesOf(sha)` is the head's REST
+// status list, `rollupOf(pr)` its `gh pr view` rollup. `malformed: {status, rollup}` and `gaps:
+// {head, contexts}` list PR numbers whose node is broken that way; `errors` are GraphQL errors.
+const isOpenPrsRead = (command, args) =>
+  command === 'gh' &&
+  args[0] === 'api' &&
+  args[1] === 'graphql' &&
+  args.some((a) => a.includes('pullRequests(states: OPEN'))
+function graphqlContext(c) {
+  if (typeof c?.context === 'string')
+    return {
+      __typename: 'StatusContext',
+      context: c.context,
+      state: c.state,
+      targetUrl: c.targetUrl ?? '',
+      createdAt: c.startedAt ?? '',
+    }
+  return {
+    __typename: 'CheckRun',
+    name: c.name,
+    status: c.status || null,
+    conclusion: c.conclusion || null,
+    startedAt: c.startedAt || null,
+    completedAt: c.completedAt || null,
+    detailsUrl: c.detailsUrl || null,
+    checkSuite: c.workflowName ? { workflowRun: { workflow: { name: c.workflowName } } } : null,
+  }
+}
+function openPrsNode(pr, { statuses, rollup, baseTip, mergeStateStatus, updatedAt, broken = {} }) {
+  const latest = classifyRead({
+    exit: 0,
+    stdout: JSON.stringify([statuses ?? []]),
+    context: 'boss/verify',
+  }).contexts?.['boss/verify']
+  const head = String(pr.headRefOid ?? '')
+  return {
+    number: pr.number,
+    url: pr.url,
+    title: pr.title ?? '',
+    body: pr.body,
+    headRefOid: pr.headRefOid,
+    headRefName: pr.headRefName ?? `feat/${pr.number}`,
+    isDraft: pr.isDraft,
+    baseRefName: pr.baseRefName ?? 'main',
+    mergeStateStatus: mergeStateStatus ?? 'CLEAN',
+    updatedAt: updatedAt ?? '2026-10-06T11:00:00Z',
+    baseRef: { target: { oid: baseTip ?? BASE } },
+    commits: {
+      nodes: [
+        {
+          commit: {
+            oid: broken.head ? OTHER : head,
+            status: broken.status
+              ? { context: { state: 7 } }
+              : latest
+                ? {
+                    context: {
+                      state: latest.state.toUpperCase(),
+                      description: latest.description,
+                      createdAt: latest.updatedAt,
+                    },
+                  }
+                : null,
+            statusCheckRollup: broken.rollup
+              ? { contexts: 'unreadable' }
+              : {
+                  contexts: {
+                    pageInfo: { hasNextPage: broken.contexts === true },
+                    nodes: (rollup ?? []).map(graphqlContext),
+                  },
+                },
+          },
+        },
+      ],
+    },
+  }
+}
+// One page of the batched read for `nodes`, honouring the request's cursor (an offset).
+function openPrsPage(args, nodes, { errors } = {}) {
+  const cursorArg = args.find((a) => a.startsWith('cursor='))
+  const from = cursorArg ? Number(cursorArg.slice('cursor='.length)) : 0
+  // gate-region-ok: pages the fake PR list by the request's cursor; not a text section window.
+  const page = nodes.slice(from, from + 100)
+  const payload = {
+    data: {
+      repository: {
+        pullRequests: {
+          pageInfo: {
+            hasNextPage: from + 100 < nodes.length,
+            endCursor: String(from + page.length),
+          },
+          nodes: page,
+        },
+      },
+    },
+    ...(errors ? { errors } : {}),
+  }
+  return { ok: true, payload, output: JSON.stringify(payload), exit: 0 }
+}
+const openPrsReads = (w) => w.calls.filter((c) => isOpenPrsRead(c.command, c.args))
+const rollupViews = (w) =>
+  w.calls.filter(
+    (c) =>
+      c.args[0] === 'pr' &&
+      c.args[1] === 'view' &&
+      c.args.at(-1) === 'headRefOid,statusCheckRollup',
+  )
+const prListReads = (w) => w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'list')
+
 // One open PR per ticket by default: PR n carries ticket BOS-n in its body, head SHA_OF(n).
 function candidateWorld(opts = {}) {
   const tickets = opts.tickets ?? [
@@ -4060,7 +4178,26 @@ function candidateWorld(opts = {}) {
       return opts.sessions === undefined ? fail() : ok({ sessions: opts.sessions })
     if (command !== 'gh') return fail()
     if (args[0] === 'repo') return ok({ nameWithOwner: REPO })
-    if (args[0] === 'pr' && args[1] === 'list') return opts.listFails ? fail() : ok(prs)
+    if (isOpenPrsRead(command, args)) {
+      if (opts.listFails) return fail()
+      const has = (kind, n) => opts.malformed?.[kind]?.includes(n) || opts.gaps?.[kind]?.includes(n)
+      const nodes = prs.map((pr) =>
+        openPrsNode(pr, {
+          statuses: opts.statuses?.[pr.headRefOid],
+          rollup: opts.rollups?.[pr.number] ?? green,
+          baseTip: opts.baseTips?.[pr.baseRefName ?? 'main'],
+          mergeStateStatus: opts.mergeStates?.[pr.number],
+          updatedAt: opts.updatedAt?.[pr.number],
+          broken: {
+            status: has('status', pr.number),
+            rollup: has('rollup', pr.number),
+            head: has('head', pr.number),
+            contexts: has('contexts', pr.number),
+          },
+        }),
+      )
+      return openPrsPage(args, nodes, { errors: opts.batchErrors })
+    }
     if (args[0] === 'pr' && args[1] === 'view') {
       const n = Number(args[2])
       const pr = prs.find((p) => p.number === n)
@@ -4158,7 +4295,9 @@ test('candidates: the selection matrix pins state to inReview, requires the buil
 
 test('candidates: a clean head is a candidate with its PR, head, repo and claim none', async () => {
   const w = candidateWorld()
-  const r = await candidates({ repo: REPO }, candDeps(w))
+  const { fingerprint, skippable, ...r } = await candidates({ repo: REPO }, candDeps(w))
+  assert.match(fingerprint, /^[0-9a-f]{64}$/)
+  assert.equal(skippable, true)
   assert.deepEqual(r, {
     candidates: [
       {
@@ -4339,13 +4478,12 @@ test('candidates: warmed reads give the unwarmed answer, never cost more reads, 
   assert.deepEqual(r, want)
   const perPr = (args) =>
     (args[0] === 'pr' && args[1] === 'view') || /\/(statuses|comments)\?/.test(String(args[1]))
+  // The rollups of the heads approval hands back come from the batched read, so every per-PR read
+  // the loop makes was warmed.
   assert.deepEqual(
     sync.filter(perPr).map((args) => [args[2], args.at(-1)]),
-    [
-      ['2', 'headRefOid,statusCheckRollup'],
-      ['3', 'headRefOid,statusCheckRollup'],
-    ],
-    'only the rollups of the heads approval hands back are read outside the warm',
+    [],
+    'no per-PR read is made outside the warm',
   )
   const key = (args) => JSON.stringify(args)
   assert.equal(new Set(warmed.map(key)).size, warmed.length, 'each read warmed once')
@@ -4377,8 +4515,9 @@ test('candidates: --pr-urls skips every other PR as remote-session before any re
   )
   const named = (n) =>
     w.calls.filter((c) => c.args.includes(String(n)) || c.args.some((a) => a.includes(SHA_OF(n))))
-  assert.deepEqual([named(1), named(3)], [[], []])
-  assert.equal(named(2).length > 0, true)
+  // The batched read carries the listed PR's status and rollup too, so no PR costs a read of its own.
+  assert.deepEqual([named(1), named(2), named(3)], [[], [], []])
+  assert.equal(openPrsReads(w).length, 1)
 })
 
 test('candidates: --pr-urls parses a comma list and drops empty entries', () => {
@@ -4465,6 +4604,8 @@ test("candidates: a needs-human head's park check reuses the head's one statuses
   assert.equal(statusReads, 1)
 })
 
+// Restated for the batched read (KTD-2): the per-head statuses and rollup reads this test once failed
+// are no longer made, so the unreadable evidence is a malformed node in the batch instead.
 test('candidates: unreadable per-head evidence is unknown:<what>, never a candidate', async () => {
   const w = candidateWorld({
     tickets: [1, 2].map((n) => ({
@@ -4472,8 +4613,7 @@ test('candidates: unreadable per-head evidence is unknown:<what>, never a candid
       labels: ['agent-build'],
       attachments: [],
     })),
-    statusFails: [SHA_OF(1)],
-    viewFails: [2],
+    malformed: { status: [1], rollup: [2] },
   })
   const r = await candidates({ repo: REPO }, candDeps(w))
   assert.deepEqual(r.candidates, [])
@@ -4481,16 +4621,590 @@ test('candidates: unreadable per-head evidence is unknown:<what>, never a candid
     r.skipped.map((s) => s.reason),
     ['unknown:status', 'unknown:rollup'],
   )
+  assert.deepEqual([w.statusReads(), rollupViews(w)], [[], []])
 })
 
-test('candidates: a failed tracker read or gh pr list throws, never an empty list', async () => {
+test('candidates: a PR the batch cannot stand for reads its own status and rollup, with the old outcomes', async () => {
+  const tickets = [1, 2, 3, 4].map((n) => ({
+    identifier: `BOS-${n}`,
+    labels: ['agent-build'],
+    attachments: [],
+  }))
+  const scan = (opts) =>
+    candidateWorld({
+      tickets,
+      rollups: { 3: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }] },
+      ...opts,
+    })
+  const want = await candidates({ repo: REPO }, candDeps(scan()))
+  for (const [name, opts, gapped] of [
+    [
+      'an error under one PR',
+      {
+        batchErrors: [
+          { message: 'timeout', path: ['repository', 'pullRequests', 'nodes', 2, 'commits'] },
+        ],
+      },
+      3,
+    ],
+    ['more contexts than one page', { gaps: { contexts: [2] } }, 2],
+    ['a last commit that is not the head', { gaps: { head: [4] } }, 4],
+  ]) {
+    const w = scan(opts)
+    const r = await candidates({ repo: REPO }, candDeps(w))
+    assert.deepEqual(
+      { candidates: r.candidates, skipped: r.skipped, mergeRetries: r.mergeRetries },
+      { candidates: want.candidates, skipped: want.skipped, mergeRetries: want.mergeRetries },
+      name,
+    )
+    assert.deepEqual(
+      w.statusReads(),
+      [`repos/o/r/commits/${SHA_OF(gapped)}/statuses?per_page=100`],
+      name,
+    )
+    assert.deepEqual(
+      rollupViews(w).map((c) => c.args[2]),
+      [String(gapped)],
+      name,
+    )
+  }
+  // The fallback keeps today's failure paths: an unreadable statuses or rollup read on that PR.
+  const failed = await candidates(
+    { repo: REPO },
+    candDeps(scan({ gaps: { head: [1, 2] }, statusFails: [SHA_OF(1)], viewFails: [2] })),
+  )
+  assert.deepEqual(
+    failed.skipped.map((s) => [s.pr, s.reason]),
+    [
+      [1, 'unknown:status'],
+      [2, 'unknown:rollup'],
+      [3, 'ci-red'],
+    ],
+  )
+})
+
+test('candidates: one batched read serves discovery; only parked and needs-human-under-claim heads read their own', async () => {
+  const ticket = (n, labels = ['agent-build']) => ({
+    identifier: `BOS-${n}`,
+    labels,
+    attachments: [],
+  })
+  const w = candidateWorld({
+    tickets: [
+      ticket(1),
+      ticket(2, ['agent-build', 'needs-human']),
+      ticket(3),
+      ticket(4),
+      ticket(5, ['agent-build', 'needs-human']),
+      ticket(6),
+    ],
+    statuses: {
+      [SHA_OF(1)]: verifyStatus('success', 'verified'),
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: partial-build'),
+      [SHA_OF(3)]: verifyStatus('pending', 'waiting: ci-not-settled'),
+      [SHA_OF(4)]: verifyStatus('pending', 'verifying… t1', 60_000),
+      [SHA_OF(5)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['pending', 'needs human: no-receipt', 5000],
+      ),
+    },
+    labels: { 'BOS-2': ['needs-human'], 'BOS-5': ['needs-human'] },
+  })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pr, c.claim]),
+    [
+      [3, 'waiting'],
+      [6, 'none'],
+    ],
+  )
+  assert.deepEqual(
+    r.skipped.map((s) => [s.pr, s.reason]),
+    [
+      [1, 'verified'],
+      [2, 'parked'],
+      [4, 'claimed'],
+      [5, 'needs-human'],
+    ],
+  )
+  assert.equal(openPrsReads(w).length, 1, 'one GraphQL discovery read')
+  assert.deepEqual([prListReads(w), rollupViews(w)], [[], []])
+  assert.deepEqual(w.statusReads().sort(), [
+    `repos/o/r/commits/${SHA_OF(2)}/statuses?per_page=100`,
+    `repos/o/r/commits/${SHA_OF(5)}/statuses?per_page=100`,
+  ])
+  const views = w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view')
+  assert.deepEqual(
+    views.map((c) => c.args[2]),
+    ['2'],
+    'the parked head reads its PR once',
+  )
+  assert.deepEqual(
+    w.calls.filter((c) => /\/comments\?/.test(String(c.args[1]))).map((c) => c.args[1]),
+    ['repos/o/r/issues/2/comments?per_page=100'],
+  )
+})
+
+test('candidates: the batched read pages newest first by cursor and stops at the 200-PR cap', async () => {
+  const prsOf = (count) =>
+    Array.from({ length: count }, (_, i) => {
+      const n = count - i
+      return {
+        number: n,
+        url: `https://github.com/o/r/pull/${n}`,
+        body: ticketBody(`BOS-${n}`),
+        headRefOid: SHA_OF(n),
+        isDraft: false,
+      }
+    })
+  const ticket = (n) => ({ identifier: `BOS-${n}`, labels: ['agent-build'], attachments: [] })
+
+  const w = candidateWorld({ tickets: [ticket(1), ticket(150)], prs: prsOf(150) })
+  const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.deepEqual(
+    r.candidates.map((c) => c.pr),
+    [1, 150],
+  )
+  const pages = openPrsReads(w)
+  assert.equal(pages.length, 2)
+  assert.equal(
+    pages[0].args.some((a) => a.startsWith('cursor=')),
+    false,
+  )
+  assert.equal(pages[1].args.includes('cursor=100'), true)
+  assert.match(OPEN_PRS_QUERY, /orderBy: \{field: CREATED_AT, direction: DESC\}/)
+  assert.match(OPEN_PRS_QUERY, /first: 100/)
+
+  // The 50 oldest of 250 open PRs are past the cap: BOS-1's PR is not seen at all.
+  const capped = candidateWorld({ tickets: [ticket(1), ticket(250)], prs: prsOf(250) })
+  const c = await candidates({ repo: REPO }, candDeps(capped))
+  assert.equal(openPrsReads(capped).length, 2)
+  assert.deepEqual(
+    c.candidates.map((x) => x.pr),
+    [250],
+  )
+  assert.deepEqual(c.skipped, [{ ticket: 'BOS-1', reason: 'no-open-pr' }])
+})
+
+test('mapOpenPrs maps a page into the per-head reads’ shapes', () => {
+  const pr = {
+    number: 3,
+    url: 'u3',
+    body: ticketBody('BOS-3'),
+    headRefOid: SHA_OF(3),
+    isDraft: false,
+    title: 't',
+    headRefName: 'feat/x',
+    baseRefName: 'main',
+  }
+  const rollup = [
+    { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', workflowName: 'CI' },
+    { context: 'boss/verify', state: 'PENDING', startedAt: iso(1000) },
+    { context: 'ext/ci', state: 'SUCCESS', targetUrl: 'https://x', startedAt: iso(2000) },
+  ]
+  const node = openPrsNode(pr, {
+    statuses: verifyStatus('pending', 'waiting: ci-not-settled', 5000),
+    rollup,
+    baseTip: OTHER,
+    mergeStateStatus: 'BLOCKED',
+    updatedAt: iso(10),
+  })
+  const page = (nodes, extra = {}) => ({
+    data: {
+      repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: 'x' }, nodes } },
+    },
+    ...extra,
+  })
+  const { rows, hasNextPage } = mapOpenPrs(page([node]))
+  assert.equal(hasNextPage, false)
+  const [row] = rows
+  assert.deepEqual(row.pr, {
+    number: 3,
+    url: 'u3',
+    title: 't',
+    body: ticketBody('BOS-3'),
+    headRefOid: SHA_OF(3),
+    headRefName: 'feat/x',
+    isDraft: false,
+    baseRefName: 'main',
+  })
+  assert.deepEqual(
+    [row.mergeStateStatus, row.updatedAt, row.baseTip, row.gap],
+    ['BLOCKED', iso(10), OTHER, null],
+  )
+  // State lower-cased and createdAt read as updatedAt, as the REST status read gives it.
+  assert.deepEqual(row.status, {
+    state: 'pending',
+    description: 'waiting: ci-not-settled',
+    updatedAt: iso(5000),
+  })
+  assert.deepEqual(classifyHeadStatus(row.status, NOW), { claim: 'waiting' })
+  // The rollup in `gh pr view` form; boss/* is still excluded by classifyHeadCi, so this is green.
+  assert.deepEqual(row.view.statusCheckRollup, [
+    {
+      __typename: 'CheckRun',
+      name: 'ci',
+      status: 'COMPLETED',
+      conclusion: 'SUCCESS',
+      startedAt: '',
+      completedAt: '',
+      detailsUrl: '',
+      workflowName: 'CI',
+    },
+    {
+      __typename: 'StatusContext',
+      context: 'boss/verify',
+      state: 'PENDING',
+      targetUrl: '',
+      startedAt: iso(1000),
+    },
+    {
+      __typename: 'StatusContext',
+      context: 'ext/ci',
+      state: 'SUCCESS',
+      targetUrl: 'https://x',
+      startedAt: iso(2000),
+    },
+  ])
+  assert.equal(classifyHeadCi(row.view, SHA_OF(3)), null)
+
+  // No boss/verify status is no claim; no rollup at all is an empty one.
+  const bare = mapOpenPrs(page([openPrsNode(pr, {})])).rows[0]
+  assert.equal(bare.status, null)
+  assert.deepEqual(classifyHeadStatus(bare.status, NOW), { claim: 'none' })
+  const noRollup = structuredClone(node)
+  noRollup.commits.nodes[0].commit.statusCheckRollup = null
+  assert.deepEqual(mapOpenPrs(page([noRollup])).rows[0].view.statusCheckRollup, [])
+
+  // Malformed nodes are unknown, never "none" or green.
+  const broken = mapOpenPrs(page([openPrsNode(pr, { broken: { status: true, rollup: true } })]))
+    .rows[0]
+  assert.deepEqual([broken.status, broken.view, broken.gap], [undefined, null, null])
+
+  // Gaps: an error under one PR, a last commit that is not the head, contexts past one page.
+  const errored = mapOpenPrs(
+    page([node, node], {
+      errors: [{ message: 'x', path: ['repository', 'pullRequests', 'nodes', 1, 'commits'] }],
+    }),
+  ).rows
+  assert.deepEqual(
+    errored.map((x) => x.gap),
+    [null, 'error'],
+  )
+  assert.equal(mapOpenPrs(page([openPrsNode(pr, { broken: { head: true } })])).rows[0].gap, 'head')
+  assert.equal(
+    mapOpenPrs(page([openPrsNode(pr, { broken: { contexts: true } })])).rows[0].gap,
+    'contexts',
+  )
+
+  // The whole page is unreadable: no data, an error naming no single PR, a null PR, no page info.
+  for (const payload of [
+    null,
+    'text',
+    { errors: [{ message: 'boom' }] },
+    page([node], { errors: [{ message: 'x', path: ['repository'] }] }),
+    page([null]),
+    { data: { repository: { pullRequests: { nodes: [] } } } },
+  ])
+    assert.throws(() => mapOpenPrs(payload), /open-PR read is unreadable/, JSON.stringify(payload))
+})
+
+// ---------------------------------------------------------------------------
+// The tick fingerprint.
+
+const fpRows = (nodes) =>
+  mapOpenPrs({
+    data: { repository: { pullRequests: { pageInfo: { hasNextPage: false }, nodes } } },
+  }).rows
+const fpPr = (n, extra = {}) => ({
+  number: n,
+  url: `https://github.com/o/r/pull/${n}`,
+  body: ticketBody(`BOS-${n}`),
+  headRefOid: SHA_OF(n),
+  isDraft: false,
+  ...extra,
+})
+const fpTicket = (n, extra = {}) => ({
+  identifier: `BOS-${n}`,
+  labels: ['agent-build'],
+  attachments: [],
+  ...extra,
+})
+// Three heads: a waiting one with pending CI, a parked one on main, a verified one on release.
+const fpNodes = (over = {}) => [
+  openPrsNode(fpPr(1, over.pr1), {
+    statuses: verifyStatus('pending', 'waiting: ci-not-settled'),
+    rollup: [
+      { name: 'ci', status: 'IN_PROGRESS', conclusion: '' },
+      { context: 'boss/verify', state: 'PENDING', startedAt: iso(1000) },
+    ],
+    ...over.node1,
+  }),
+  openPrsNode(fpPr(2), {
+    statuses: verifyStatus('pending', 'needs human: partial-build'),
+    rollup: green,
+    baseTip: BASE,
+    ...over.node2,
+  }),
+  openPrsNode(fpPr(3, { baseRefName: 'release' }), {
+    statuses: verifyStatus('success', 'verified'),
+    rollup: green,
+    baseTip: OTHER,
+    ...over.node3,
+  }),
+]
+const fpInput = (over = {}) => ({
+  tickets: [fpTicket(1), fpTicket(2), fpTicket(3)],
+  rows: fpRows(fpNodes()),
+  sessions: [{ id: 's1', pr_url: 'https://github.com/o/r/pull/1' }],
+  claimed: 'unread',
+  repo: REPO,
+  salt: 'salt-1',
+  now: NOW,
+  ...over,
+})
+
+test('tickFingerprint moves with every signal a verdict rests on, and only with those', () => {
+  const base = tickFingerprint(fpInput())
+  assert.match(base, /^[0-9a-f]{64}$/)
+  assert.equal(tickFingerprint(fpInput()), base, 'deterministic')
+  const changes = [
+    ['a ticket enters review', { tickets: [fpTicket(1), fpTicket(2), fpTicket(3), fpTicket(4)] }],
+    ['a ticket leaves review', { tickets: [fpTicket(1), fpTicket(2)] }],
+    [
+      'a label changes',
+      {
+        tickets: [
+          fpTicket(1, { labels: ['agent-build', 'needs-human'] }),
+          fpTicket(2),
+          fpTicket(3),
+        ],
+      },
+    ],
+    [
+      'an attached PR changes',
+      {
+        tickets: [
+          fpTicket(1, { attachments: [{ url: 'https://github.com/o/r/pull/9' }] }),
+          fpTicket(2),
+          fpTicket(3),
+        ],
+      },
+    ],
+    ['a head moves', { rows: fpRows(fpNodes({ pr1: { headRefOid: SHA_OF(11) } })) }],
+    ['updatedAt moves', { rows: fpRows(fpNodes({ node1: { updatedAt: iso(5) } })) }],
+    [
+      'the merge state changes',
+      { rows: fpRows(fpNodes({ node1: { mergeStateStatus: 'DIRTY' } })) },
+    ],
+    [
+      'the verify state changes',
+      {
+        rows: fpRows(
+          fpNodes({ node1: { statuses: verifyStatus('failure', 'waiting: ci-not-settled') } }),
+        ),
+      },
+    ],
+    [
+      'the verify description changes',
+      {
+        rows: fpRows(
+          fpNodes({ node1: { statuses: verifyStatus('pending', 'waiting: stack-busy') } }),
+        ),
+      },
+    ],
+    [
+      'the parked head’s base tip moves',
+      { rows: fpRows(fpNodes({ node2: { baseTip: MERGED_SHA } })) },
+    ],
+    [
+      'a live session appears',
+      {
+        sessions: [
+          { id: 's1', pr_url: 'https://github.com/o/r/pull/1' },
+          { id: 's2', pr_url: 'https://github.com/o/r/pull/2' },
+        ],
+      },
+    ],
+    ['a live session disappears', { sessions: [] }],
+    ['the session list turns unreadable', { sessions: null }],
+    ['the version salt changes', { salt: 'salt-2' }],
+  ]
+  for (const [name, over] of changes) assert.notEqual(tickFingerprint(fpInput(over)), base, name)
+
+  // CI settling under a pending `waiting:` status: the raw rollup state counts boss/verify and stays
+  // PENDING, but the CI class (boss/* excluded) moves, and so does the fingerprint.
+  const settled = fpNodes({
+    node1: {
+      rollup: [
+        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { context: 'boss/verify', state: 'PENDING', startedAt: iso(1000) },
+      ],
+    },
+  })
+  const [before] = fpRows(fpNodes())
+  const [after] = fpRows(settled)
+  assert.deepEqual(
+    [classifyHeadCi(before.view, SHA_OF(1)), classifyHeadCi(after.view, SHA_OF(1))],
+    ['ci-unsettled', null],
+  )
+  assert.notEqual(tickFingerprint(fpInput({ rows: fpRows(settled) })), base, 'CI class moves')
+
+  // A base no parked head stands on is not part of it.
+  assert.equal(
+    tickFingerprint(fpInput({ rows: fpRows(fpNodes({ node3: { baseTip: MERGED_SHA } })) })),
+    base,
+    'an unparked head’s base tip moving changes nothing',
+  )
+
+  // Time alone: a live claim going stale, a verified head coming due for a merge retry.
+  const claim = (now) =>
+    tickFingerprint(
+      fpInput({
+        rows: fpRows(
+          fpNodes({ node1: { statuses: verifyStatus('pending', 'verifying… t1', 60_000) } }),
+        ),
+        now,
+      }),
+    )
+  assert.equal(claim(NOW + 1000), claim(NOW), 'a live claim still live')
+  assert.notEqual(
+    claim(NOW + CLAIM_STALE_AFTER_MS),
+    claim(NOW),
+    'a claim crossing CLAIM_STALE_AFTER_MS',
+  )
+  const verified = (now) => tickFingerprint(fpInput({ now }))
+  assert.notEqual(
+    verified(NOW + MERGE_RETRY_AFTER_MS),
+    verified(NOW),
+    'a verified head due a merge retry',
+  )
+
+  // Order does not matter.
+  const shuffled = fpInput()
+  shuffled.rows = [...shuffled.rows].reverse()
+  shuffled.tickets = [...shuffled.tickets].reverse()
+  shuffled.tickets[0] = {
+    ...shuffled.tickets[0],
+    labels: [...shuffled.tickets[0].labels].reverse(),
+  }
+  assert.equal(tickFingerprint(shuffled), base)
+})
+
+test('fingerprintSalt moves with the config and the scan scope', () => {
+  const salt = fingerprintSalt({ config: { a: 1 }, query: { state: 'In Review' }, limit: 25 })
+  assert.equal(
+    fingerprintSalt({ config: { a: 1 }, query: { state: 'In Review' }, limit: 25 }),
+    salt,
+  )
+  assert.notEqual(
+    fingerprintSalt({ config: { a: 2 }, query: { state: 'In Review' }, limit: 25 }),
+    salt,
+  )
+  assert.notEqual(fingerprintSalt({ config: { a: 1 }, query: { state: 'Done' }, limit: 25 }), salt)
+  assert.notEqual(
+    fingerprintSalt({ config: { a: 1 }, query: { state: 'In Review' }, limit: 3 }),
+    salt,
+  )
+})
+
+// A world whose tick would otherwise make per-PR reads: a parked head and a needs-human head under a
+// wait, plus a verified head due a merge retry.
+const quietWorld = (opts = {}) =>
+  candidateWorld({
+    tickets: [
+      fpTicket(1),
+      fpTicket(2, { labels: ['agent-build', 'needs-human'] }),
+      fpTicket(3, { labels: ['agent-build', 'needs-human'] }),
+      fpTicket(4),
+    ],
+    statuses: {
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: partial-build'),
+      [SHA_OF(3)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['pending', 'needs human: no-receipt', 5000],
+      ),
+      [SHA_OF(4)]: verifyStatus('success', 'verified', MERGE_RETRY_AFTER_MS + 1),
+    },
+    rollups: { 1: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }] },
+    ...opts,
+  })
+
+test('candidates --quiet-fingerprint: a matching tick ends after the batched read, with no per-PR read', async () => {
+  const first = quietWorld()
+  const full = await candidates({}, candDeps(first))
+  assert.equal(full.skippable, true)
+  assert.match(full.fingerprint, /^[0-9a-f]{64}$/)
+  assert.ok(first.calls.filter((c) => c.command === 'gh').length > 2, 'a full tick reads per PR')
+
+  const w = quietWorld()
+  const r = await main(['candidates', '--quiet-fingerprint', full.fingerprint], candDeps(w))
+  assert.deepEqual(r, {
+    candidates: [],
+    skipped: [],
+    mergeRetries: [],
+    unchanged: true,
+    fingerprint: full.fingerprint,
+  })
+  const gh = w.calls.filter((c) => c.command === 'gh')
+  assert.deepEqual(
+    gh.map((c) => (isOpenPrsRead(c.command, c.args) ? 'graphql' : c.args.slice(0, 2).join(' '))),
+    ['repo view', 'graphql'],
+    'repo view plus one GraphQL page',
+  )
+
+  // Anything else is a full tick: a stale fingerprint, or a change since.
+  const stale = await candidates({ quietFingerprint: 'f'.repeat(64) }, candDeps(quietWorld()))
+  assert.equal(stale.unchanged, undefined)
+  assert.deepEqual(stale.skipped, full.skipped)
+  const moved = await candidates(
+    { quietFingerprint: full.fingerprint },
+    candDeps(quietWorld({ mergeStates: { 1: 'DIRTY' } })),
+  )
+  assert.equal(moved.unchanged, undefined)
+  assert.notEqual(moved.fingerprint, full.fingerprint)
+})
+
+test('candidates --quiet-fingerprint: a gap, a truncated list or a named ticket never skips', async () => {
+  const gapped = (opts) => quietWorld({ gaps: { contexts: [1] }, ...opts })
+  const first = await candidates({}, candDeps(gapped()))
+  assert.equal(first.skippable, false)
+  const again = await candidates({ quietFingerprint: first.fingerprint }, candDeps(gapped()))
+  assert.equal(again.unchanged, undefined)
+  assert.deepEqual([again.skippable, again.skipped], [false, first.skipped])
+
+  const prs = Array.from({ length: 250 }, (_, i) => fpPr(250 - i))
+  const capped = await candidates({}, candDeps(candidateWorld({ tickets: [fpTicket(250)], prs })))
+  assert.equal(capped.skippable, false, 'a truncated list is never complete')
+
+  const ticketScan = await candidates(
+    { ticket: 'BOS-1', quietFingerprint: first.fingerprint },
+    candDeps(quietWorld()),
+  )
+  assert.equal(ticketScan.unchanged, undefined)
+  assert.equal('fingerprint' in ticketScan, false)
+  assert.deepEqual(
+    ticketScan.skipped.map((s) => s.reason),
+    ['ci-red'],
+  )
+})
+
+test('candidates: a failed tracker read or open-PR read throws, never an empty list', async () => {
   await assert.rejects(
     candidates({ repo: REPO }, candDeps(candidateWorld({ trackerThrows: true }))),
     /linear unreachable/,
   )
   await assert.rejects(
     candidates({ repo: REPO }, candDeps(candidateWorld({ listFails: true }))),
-    /gh pr list failed/,
+    /open-PR read failed/,
+  )
+  // A GraphQL error that names no single PR fails the whole page.
+  await assert.rejects(
+    candidates(
+      { repo: REPO },
+      candDeps(candidateWorld({ batchErrors: [{ message: 'something went wrong' }] })),
+    ),
+    /open-PR read is unreadable/,
   )
   // Through the CLI: an ordinary Error (exit 1), not a UsageError (exit 2).
   const err = await main(
@@ -4515,10 +5229,8 @@ test('candidates: --limit bounds fresh CI reads while status discovery continues
     r.candidates.map((c) => c.pr),
     [1, 2],
   )
-  assert.equal(
-    w.statusReads().some((path) => path.includes(SHA_OF(3))),
-    true,
-  )
+  // Status discovery is the batched read, which covers #3 too; no head reads its own statuses.
+  assert.deepEqual([openPrsReads(w).length, w.statusReads()], [1, []])
   assert.equal(
     w.calls.some((c) => c.args[0] === 'pr' && c.args[1] === 'view' && c.args[2] === '3'),
     false,
@@ -5136,6 +5848,182 @@ test('cachedReader runs each distinct read once and serves warmed reads without 
   assert.equal(cold('gh', ['z']).output, 'sync z')
 })
 
+// ---------------------------------------------------------------------------
+// The write-aware reader judge and post read through.
+
+test('classifyReadCall caches gh reads, clears on any other gh call and passes everything else', () => {
+  const cases = [
+    [['gh', ['pr', 'view', '7', '--json', 'headRefOid']], 'cached'],
+    [['gh', ['repo', 'view', '--json', 'nameWithOwner']], 'cached'],
+    [
+      ['gh', ['api', 'repos/o/r/commits/abc/statuses?per_page=100', '--paginate', '--slurp']],
+      'cached',
+    ],
+    [['gh', ['api', 'repos/o/r/commits/main', '--method', 'GET']], 'cached'],
+    [['gh', ['api', '-X', 'GET', 'repos/o/r/issues', '-f', 'state=open']], 'cached'],
+    [['gh', ['api', '-H', 'Accept: x', 'repos/o/r/pulls/7/files']], 'cached'],
+    [['gh', ['api', 'graphql', '-f', 'query=query { viewer { login } }']], 'cached'],
+    [['gh', ['api', 'graphql', '-f', `query=${OPEN_PRS_QUERY}`, '-f', 'owner=o']], 'cached'],
+    [['gh', ['api', 'repos/o/r/statuses/abc', '-f', 'state=success']], 'invalidating'],
+    [['gh', ['api', 'repos/o/r/issues/7/comments', '--raw-field', 'body=x']], 'invalidating'],
+    [
+      ['gh', ['api', '--method', 'POST', 'repos/o/r/statuses/abc', '-f', 'state=pending']],
+      'invalidating',
+    ],
+    [
+      ['gh', ['api', '--method=PATCH', 'repos/o/r/issues/comments/9', '-f', 'body=x']],
+      'invalidating',
+    ],
+    [['gh', ['api', 'repos/o/r/x', '--input', 'body.json']], 'invalidating'],
+    [['gh', ['api', 'graphql', '-f', 'query=mutation { addComment { id } }']], 'invalidating'],
+    [['gh', ['api', 'graphql', '-f', 'query=  mutation X { y }']], 'invalidating'],
+    [['gh', ['pr', 'merge', '7']], 'invalidating'],
+    [['gh', ['pr', 'comment', '7', '--body', 'x']], 'invalidating'],
+    [['git', ['cat-file', '-e', 'abc^{commit}']], 'pass'],
+    [['git', ['fetch', '--no-tags', 'origin', 'abc']], 'pass'],
+    [['tar', ['-xf', 'a.tar']], 'pass'],
+    [['boss', ['ls', '--json']], 'pass'],
+    [[process.execPath, ['notes-record.mjs', 'add']], 'pass'],
+  ]
+  for (const [[command, args], want] of cases)
+    assert.equal(classifyReadCall(command, args), want, `${command} ${args.join(' ')}`)
+})
+
+test('writeAwareReader reads each GET once until a write, and never caches or clears on a non-gh call', () => {
+  const answers = { n: 0 }
+  const calls = []
+  const read = (command, args) => {
+    calls.push([command, ...args].join(' '))
+    answers.n++
+    return { ok: answers.n % 2 === 1, output: String(answers.n), exit: 0 }
+  }
+  const r = writeAwareReader(read)
+  assert.equal(writeAwareReader(r), r, 'wrapping twice is the same reader')
+  const cached = cachedReader(read)
+  assert.equal(writeAwareReader(cached), cached, 'a cachedReader is left as it is')
+  const get = ['api', 'repos/o/r/commits/abc/statuses?per_page=100']
+  const first = r('gh', get)
+  assert.equal(r('gh', get), first, 'a second GET is the cached answer')
+  // A failed GET is cached for the run too.
+  const failing = r('gh', ['pr', 'view', '7'])
+  assert.equal(failing.ok, false)
+  assert.equal(r('gh', ['pr', 'view', '7']), failing)
+  // Non-gh calls run every time and leave the cache alone.
+  r('git', ['cat-file', '-e', 'x'])
+  r('git', ['cat-file', '-e', 'x'])
+  assert.equal(r('gh', get), first)
+  // A write clears everything, the failed read included.
+  r('gh', ['api', '--method', 'POST', 'repos/o/r/statuses/abc', '-f', 'state=pending'])
+  assert.notEqual(r('gh', get), first)
+  assert.notEqual(r('gh', ['pr', 'view', '7']), failing)
+  assert.deepEqual(
+    calls.filter((c) => c.startsWith('git')),
+    ['git cat-file -e x', 'git cat-file -e x'],
+  )
+
+  // ensureCommit's check, fetch, re-check: the re-check is a fresh read that finds the fetched commit.
+  let fetched = false
+  const git = writeAwareReader((command, args) => {
+    if (args[0] === 'fetch') fetched = true
+    return { ok: args[0] !== 'cat-file' || fetched, output: '', exit: 0 }
+  })
+  assert.equal(git('git', ['cat-file', '-e', 'x^{commit}']).ok, false)
+  git('git', ['fetch', '--no-tags', '--quiet', 'origin', 'x'])
+  assert.equal(git('git', ['cat-file', '-e', 'x^{commit}']).ok, true)
+})
+
+const statusListReads = (w) =>
+  w.calls.filter(
+    (c) => c.command === 'gh' && /commits\/[0-9a-f]{40}\/statuses/.test(String(c.args[1])),
+  )
+const prFieldViews = (w) =>
+  w.calls.filter(
+    (c) =>
+      c.args[0] === 'pr' &&
+      c.args[1] === 'view' &&
+      String(c.args.at(-1)).includes('reviewDecision'),
+  )
+// The same reader without the cache, for an uncached run in the same world.
+const uncached = (w) => Object.assign((...a) => w.read(...a), { writeAware: true })
+
+test('judge reads its head’s statuses and its PR view once, and judges as an uncached run would', async () => {
+  const parkedUnderClaim = () => {
+    const w = world({ pr: { body: PARTIAL_BODY } })
+    w.statuses[HEAD] = [
+      {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'verifying… t1',
+        updated_at: iso(100),
+      },
+      {
+        context: 'boss/verify',
+        state: 'pending',
+        description: 'needs human: partial-build',
+        updated_at: iso(500),
+      },
+      receipt(),
+    ]
+    return w
+  }
+  const w = parkedUnderClaim()
+  const j = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.equal(statusListReads(w).length, 1, 'one statuses read')
+  assert.equal(prFieldViews(w).length, 1, 'one PR view')
+
+  const cold = parkedUnderClaim()
+  const want = await judge({ pr: 7, repo: REPO }, deps(cold, { read: uncached(cold) }))
+  assert.ok(statusListReads(cold).length > 1, 'the uncached run reads the statuses more than once')
+  assert.deepEqual(j, want)
+})
+
+test('post reads each GET once before its first write', async () => {
+  const w = world({ pr: { body: PARTIAL_BODY } })
+  await post({ pr: 7, head: HEAD, verdict: 'human', reason: 'partial-build', repo: REPO }, deps(w))
+  const firstWrite = w.calls.findIndex(
+    (c) => classifyReadCall(c.command, c.args) === 'invalidating',
+  )
+  assert.ok(firstWrite > 0)
+  const gets = w.calls
+    .slice(0, firstWrite)
+    .filter((c) => classifyReadCall(c.command, c.args) === 'cached')
+    .map((c) => JSON.stringify(c.args))
+  assert.ok(
+    gets.some((g) => g.includes('"view"')),
+    'the PR view is read',
+  )
+  assert.equal(new Set(gets).size, gets.length, `a GET repeated: ${gets.join('\n')}`)
+})
+
+test('post observes its own writes: the claim read-back and the stale-label clear', async () => {
+  // The claim: the read-back after the POST must see the new claim.
+  const w = world()
+  const claim = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w))
+  assert.deepEqual([claim.won, claim.token], [true, 'feedf00d'])
+  const naive = world()
+  const lost = await post(
+    { pr: 7, head: HEAD, verdict: 'claim', repo: REPO },
+    deps(naive, { read: cachedReader(naive.read) }),
+  )
+  assert.equal(lost.won, false, 'a naive cache hides the claim it just posted')
+
+  // The pass: clearStaleLabel's re-read must see the success it just posted, and remove the label.
+  const adapter = fakeAdapter()
+  const p = world()
+  const passed = await post(
+    { pr: 7, head: HEAD, verdict: 'pass', repo: REPO },
+    deps(p, { adapter }),
+  )
+  assert.deepEqual([passed.posted, passed.staleLabel], [true, { outcome: 'ok' }])
+  assert.deepEqual(adapter.writeCalls(), [{ issueId: 'BOS-1', removeLabels: ['needs-human'] }])
+  const stale = world()
+  const naivePass = await post(
+    { pr: 7, head: HEAD, verdict: 'pass', repo: REPO },
+    deps(stale, { read: cachedReader(stale.read), adapter: fakeAdapter() }),
+  )
+  assert.notDeepEqual(naivePass.staleLabel, { outcome: 'ok' }, 'a naive cache leaves the label')
+})
+
 test('approve: the label removal is housekeeping, so a tracker that cannot be written never refuses', async () => {
   for (const [name, w, adapter, outcome, why] of [
     [
@@ -5212,6 +6100,8 @@ test('judge waits, never re-parks, when the approval read cannot be read', async
   }
 })
 
+// Restated for the write-aware reader (R7): the newest-status read and the full list the park is
+// found in are one statuses read now, so they can no longer disagree; an unreadable list is unknown.
 test('judge waits when the park beneath a claim cannot be read', async () => {
   const partialPr = { body: PARTIAL_BODY }
   const w = approving(world({ pr: partialPr }), 'partial-build')
@@ -5225,13 +6115,16 @@ test('judge waits when the park beneath a claim cannot be read', async () => {
   const read = w.read
   let statusReads = 0
   w.read = (command, args, opts) => {
-    // The newest-status read succeeds; the full list the park is found in does not.
-    if (command === 'gh' && /commits\/[0-9a-f]{40}\/statuses/.test(String(args[1])))
-      if (++statusReads === 2) return { ok: false, error: 'exit-1', exit: 1, output: '' }
+    if (command === 'gh' && /commits\/[0-9a-f]{40}\/statuses/.test(String(args[1]))) {
+      statusReads++
+      return { ok: false, error: 'exit-1', exit: 1, output: '' }
+    }
     return read(command, args, opts)
   }
   const j = await judge({ pr: 7, repo: REPO }, deps(w))
-  assert.deepEqual([j.verdict, j.reason], ['wait', 'approval-unreadable'])
+  assert.equal(j.verdict, 'wait')
+  assert.ok(EVIDENCE_UNKNOWN_REASONS.includes(j.reason), j.reason)
+  assert.equal(statusReads, 1, 'one statuses read, shared by the approval and the judge')
 })
 
 test('approve reports the precise reason a head stopped standing', async () => {
@@ -5689,7 +6582,10 @@ test('race: a head pushed and parked while approve writes its record is never wa
   assert.notEqual(j.reason, 'approved', 'the new head is judged on its own merits, unwaived')
 })
 
-test("race: a head pushed between judge's approval read and its own read gets no waiver", async () => {
+// Restated for the write-aware reader (R7, KTD-8): judge shares one PR read with its approval read,
+// so a push can no longer land between them; the waiver and the verdict bind to the head that one
+// read saw. A push before it is judged afresh, with no waiver.
+test("race: judge's approval read and its own read are one read, so a waiver binds to the head judged", async () => {
   const partialPr = { body: PARTIAL_BODY }
   for (const waive of [undefined, 'partial-build']) {
     const w = approving(world({ pr: partialPr }), 'partial-build')
@@ -5697,14 +6593,24 @@ test("race: a head pushed between judge's approval read and its own read gets no
     const read = w.read
     let views = 0
     w.read = (command, args, opts) => {
-      // The approval read sees HEAD; the push lands before judge reads the PR itself.
+      // A push lands after the first PR read; a second read would see it.
       if (command === 'gh' && args[0] === 'pr' && args[1] === 'view' && ++views === 2)
         w.pr.headRefOid = OTHER
       return read(command, args, opts)
     }
     const j = await judge({ pr: 7, repo: REPO, ...(waive ? { waive } : {}) }, deps(w))
     assert.deepEqual(
-      [j.verdict, j.reason, j.headSha],
+      [j.verdict, j.reason, j.headSha, views],
+      ['pass', 'approved', HEAD, 1],
+      String(waive),
+    )
+
+    const pushed = approving(world({ pr: partialPr }), 'partial-build')
+    pushed.statuses[OTHER] = [receipt()]
+    pushed.pr.headRefOid = OTHER
+    const k = await judge({ pr: 7, repo: REPO, ...(waive ? { waive } : {}) }, deps(pushed))
+    assert.deepEqual(
+      [k.verdict, k.reason, k.headSha],
       ['human', 'partial-build', OTHER],
       String(waive),
     )
@@ -6182,11 +7088,14 @@ function sweepWorld(opts = {}) {
   const w = world(opts)
   const read = w.read
   w.read = (command, args, o) => {
-    if (command === 'gh' && args[0] === 'pr' && args[1] === 'list') {
+    if (isOpenPrsRead(command, args)) {
       w.calls.push({ command, args: [...args] })
-      const { number, url, body, headRefOid, isDraft, baseRefName } = w.pr
-      const pr = { number, url, body, headRefOid, isDraft, baseRefName }
-      return { ok: true, payload: [pr], output: JSON.stringify([pr]), exit: 0 }
+      const node = openPrsNode(w.pr, {
+        statuses: w.statuses[w.pr.headRefOid],
+        rollup: w.pr.statusCheckRollup,
+        mergeStateStatus: w.pr.mergeStateStatus,
+      })
+      return openPrsPage(args, [node])
     }
     return read(command, args, o)
   }
@@ -7037,15 +7946,16 @@ test('candidates collect merge retries beyond the fresh limit without CI or appr
     r.skipped,
     [2, 3, 4].map((n) => ({ ticket: `BOS-${n}`, pr: n, reason: 'verified' })),
   )
+  // #1's rollup and every head's status come from the batched read: no per-PR view or statuses read.
   assert.deepEqual(
     w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view').map((c) => c.args[2]),
-    ['1'],
+    [],
   )
   assert.equal(
     w.calls.some((c) => /comments/.test(c.args[1])),
     false,
   )
-  assert.equal(w.statusReads().length, 4)
+  assert.deepEqual([openPrsReads(w).length, w.statusReads().length], [1, 0])
 })
 
 test('candidates stop retrying a verified head whose session is elsewhere once the PR says so', async () => {

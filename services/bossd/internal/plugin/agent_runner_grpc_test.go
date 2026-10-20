@@ -8,7 +8,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 )
 
-func TestAgentRunner_StartRun_RoutesToCorrectMethod(t *testing.T) {
+func TestAgentRunner_StartAgentRun_RoutesToCorrectMethod(t *testing.T) {
 	t.Skip("integration-style — verified end-to-end in Task 25")
 	// Placeholder for now; the full smoke test happens in the integration
 	// test that spins up a real plugin process. The agentRunnerGRPCClient

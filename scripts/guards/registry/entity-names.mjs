@@ -9,6 +9,7 @@ export default {
     'proto/**/*.proto',
     'services/bossd/migrations/*.sql',
     'services/bosso/migrations_postgres/*.sql',
+    'services/warehouse/models/**/*.sql',
     'services/web/src/**/*.ts',
     'services/web/src/**/*.tsx',
   ],

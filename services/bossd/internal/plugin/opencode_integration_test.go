@@ -86,7 +86,7 @@ func TestE2E_Opencode_GetInfo(t *testing.T) {
 // TestE2E_Opencode_ListIgnoredDirtyFiles verifies that the opencode plugin's
 // ignored-dirty-files RPC survives the real gRPC round-trip and reports the one
 // worktree file bossd itself writes for opencode: the BOS-486 question-signal
-// hook the plugin injects at StartRun
+// hook the plugin injects at StartAgentRun
 // (plugins/bossd-plugin-opencode/questionhook.go). This is a pure plugin RPC
 // that does not require the opencode CLI to be installed.
 //
@@ -210,30 +210,30 @@ func TestE2E_Opencode_DispatcherRoutesByName(t *testing.T) {
 	})
 }
 
-// TestE2E_Opencode_StartRun_RequiresCLI verifies that StartRun returns an error
+// TestE2E_Opencode_StartAgentRun_RequiresCLI verifies that StartAgentRun returns an error
 // (rather than panicking or hanging) when the opencode CLI is not installed.
 // When the CLI is present in PATH the test is skipped — live end-to-end runs
 // against the real binary are part 5's scope, not this slice's. What we assert
 // here is that the gRPC plumbing round-trips the error back to the host.
 //
-// In this slice StartRun is still codes.Unimplemented (the run/launch path lands
+// In this slice StartAgentRun is still codes.Unimplemented (the run/launch path lands
 // in a later slice — see plugins/bossd-plugin-opencode/server.go), so today this
 // assertion proves the gRPC error round-trip rather than a genuine CLI-absence
-// failure. It is forward-compatible: once StartRun is wired to the real runner,
+// failure. It is forward-compatible: once StartAgentRun is wired to the real runner,
 // the same assertion becomes a true "requires CLI" check on the no-binary path.
-func TestE2E_Opencode_StartRun_RequiresCLI(t *testing.T) {
+func TestE2E_Opencode_StartAgentRun_RequiresCLI(t *testing.T) {
 	if _, err := exec.LookPath("opencode"); err == nil {
 		t.Skip("opencode CLI is installed; live-binary runs are part 5 — skipping RPC error path")
 	}
 
 	h := newOpencodeHarness(t)
 
-	_, err := h.AgentRunner.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	_, err := h.AgentRunner.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		SessionId: "test-session-id",
 		WorkDir:   t.TempDir(),
 		Plan:      "hello",
 	})
 	if err == nil {
-		t.Error("StartRun succeeded without opencode installed; expected an error")
+		t.Error("StartAgentRun succeeded without opencode installed; expected an error")
 	}
 }

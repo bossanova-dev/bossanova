@@ -1228,7 +1228,7 @@ var platformSuffixes = []string{
 //
 // bossd-plugin-opencode was excluded through the BOS-433..436 epic slices while
 // its run/launch RPCs returned codes.Unimplemented; BOS-437 wired and
-// live-validated the launch path (StartRun/StopRun/IsRunning/ExitStatus drive a
+// live-validated the launch path (StartAgentRun/StopRun/IsRunning/ExitStatus drive a
 // real opencode session), so the binary is now a functional agent runner and is
 // discovered like claude/codex. It is intentionally NO LONGER listed here.
 var nonDiscoverablePlugins = []string{

@@ -43,7 +43,7 @@ func (c *timelineClient) GetSessionTimeline(context.Context, string) ([]*pb.Time
 	return c.steps, c.err
 }
 
-func (c *timelineClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (c *timelineClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	return nil, errors.New("unneeded")
 }
 func (c *timelineClient) GetChatTranscript(_ context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
@@ -188,7 +188,7 @@ func detailFixture(kind pb.AttentionKind, height int) ChatPickerModel {
 	m.width = 100
 	m.height = height
 	m.session = &pb.Session{Id: "s", Title: "[BOS-1522] Change the color of needs-human alerts in the TUI", PrNumber: new(int32(2979)), PrDisplayHeadSha: "2bbaede9000", WorktreePath: "/tmp/worktree", LastRepairRunnerError: "STALE ERROR", Attention: &pb.SessionAttention{Kind: kind, Since: timestamppb.New(now), Sentence: "Failed after 3 attempts on this machine", ParkCodes: []string{"human-review:ui"}, Actions: []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB, pb.AttentionAction_ATTENTION_ACTION_VIDEO, pb.AttentionAction_ATTENTION_ACTION_MERGE}, EvidenceUrl: "https://example.com/proof", TargetChatId: "verify"}}
-	m.chats = []*pb.ClaudeChat{{AgentSessionId: "verify", Title: "verify", CreatedAt: timestamppb.New(now), AgentName: "claude"}, {AgentSessionId: "build", Title: "Run bs-build", CreatedAt: timestamppb.New(now), AgentName: "claude"}}
+	m.chats = []*pb.AgentChat{{AgentSessionId: "verify", Title: "verify", CreatedAt: timestamppb.New(now), AgentName: "claude"}, {AgentSessionId: "build", Title: "Run bs-build", CreatedAt: timestamppb.New(now), AgentName: "claude"}}
 	m.agents = []client.AgentInfo{{Name: "claude"}, {Name: "codex"}}
 	m.daemonStatuses = map[string]string{"verify": statusWaiting, "build": statusWaiting}
 	m.daemonWaitingReasons = map[string]string{"build": armedTestReason("checks_failed")}
@@ -972,7 +972,7 @@ func TestChatPickerTimelineCapsLongHistory(t *testing.T) {
 			}
 			m.timeline = append(m.timeline, &pb.TimelineStep{Title: "Parked", State: pb.TimelineStepState_TIMELINE_STEP_STATE_CURRENT})
 			for _, id := range []string{"third", "fourth"} {
-				m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+				m.chats = append(m.chats, &pb.AgentChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
 				m.daemonStatuses[id] = statusWaiting
 			}
 			m.buildTableRows()
@@ -1633,7 +1633,7 @@ func TestChatPickerLongTimelineKeepsChatsVisible(t *testing.T) {
 				m.session.RotationEvents = append([]*pb.RotationEvent{{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "a@x", ToAccount: "b@x", CreatedAt: stamp(2*i + 1)}}, m.session.RotationEvents...)
 			}
 			for _, id := range []string{"third", "fourth", "fifth"} {
-				m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+				m.chats = append(m.chats, &pb.AgentChat{AgentSessionId: id, Title: id + " chat", CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
 				m.daemonStatuses[id] = statusWaiting
 			}
 			m.buildTableRows()
@@ -1884,7 +1884,7 @@ func sweepTimelineShowsTheWait(t *testing.T, cases int) {
 		slices.SortFunc(m.session.RotationEvents, func(a, b *pb.RotationEvent) int { return b.GetCreatedAt().AsTime().Compare(a.GetCreatedAt().AsTime()) })
 		for i := range r.IntN(4) {
 			id := fmt.Sprintf("chat-%d", i)
-			m.chats = append(m.chats, &pb.ClaudeChat{AgentSessionId: id, Title: id, CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
+			m.chats = append(m.chats, &pb.AgentChat{AgentSessionId: id, Title: id, CreatedAt: m.chats[0].GetCreatedAt(), AgentName: "claude"})
 			m.daemonStatuses[id] = statusWaiting
 		}
 		m.buildTableRows()

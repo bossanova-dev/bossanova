@@ -39,8 +39,8 @@ type fakeBackend struct {
 	archiveSession       func(ctx context.Context, id string) (*pb.Session, error)
 	resurrectSession     func(ctx context.Context, id string) (*pb.Session, error)
 	emptyTrash           func(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
-	recordChat           func(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
-	listChats            func(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
+	recordChat           func(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.AgentChat, error)
+	listChats            func(ctx context.Context, sessionID string) ([]*pb.AgentChat, error)
 	updateChatTitle      func(ctx context.Context, agentSessionID, title string) error
 	deleteChat           func(ctx context.Context, agentSessionID string) error
 	wakeChat             func(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)
@@ -280,14 +280,14 @@ func (f *fakeBackend) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 	return 0, errNotImpl
 }
 
-func (f *fakeBackend) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error) {
+func (f *fakeBackend) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.AgentChat, error) {
 	if f.recordChat != nil {
 		return f.recordChat(ctx, sessionID, agentSessionID, title, agentName, resume)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+func (f *fakeBackend) ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error) {
 	if f.listChats != nil {
 		return f.listChats(ctx, sessionID)
 	}

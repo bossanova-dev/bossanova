@@ -124,10 +124,10 @@ func (s *stubSessionSettingsClient) ResurrectSession(context.Context, string) (c
 func (s *stubSessionSettingsClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
+func (s *stubSessionSettingsClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (s *stubSessionSettingsClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) UpdateChatTitle(context.Context, string, string) error {

@@ -90,7 +90,7 @@ func (f *fakeAgentForLifecycle) GetInfo(_ context.Context) (*bossanovav1.PluginI
 	return &bossanovav1.PluginInfo{Name: "fake"}, nil
 }
 
-func (f *fakeAgentForLifecycle) StartRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (f *fakeAgentForLifecycle) StartAgentRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{SessionId: "fake"}, nil
 }
 

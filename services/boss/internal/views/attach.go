@@ -168,7 +168,7 @@ type launchDescribedMsg struct {
 // daemon-side prefill that was removed in PR #179).
 type attachReadyMsg struct {
 	session *pb.Session
-	chats   []*pb.ClaudeChat
+	chats   []*pb.AgentChat
 }
 
 // chatRecordedMsg carries the result of the RecordChat RPC, which runs inside
@@ -195,7 +195,7 @@ type attachReadyMsg struct {
 // attempt's prefillPlan to a resume that had deliberately gated prefill off.
 type chatRecordedMsg struct {
 	session     *pb.Session
-	chat        *pb.ClaudeChat
+	chat        *pb.AgentChat
 	launchID    uint64
 	prefillPlan string
 	resume      bool

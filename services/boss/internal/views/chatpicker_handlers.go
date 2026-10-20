@@ -60,7 +60,7 @@ func (m ChatPickerModel) handleChatsListed(msg chatsListedMsg) (tea.Model, tea.C
 	m.buildTableRows()
 	// Highlight the chat the caller named (the chat the user just left, or the
 	// attention target); when it is no longer listed, use the default cursor.
-	target := slices.IndexFunc(m.chats, func(c *pb.ClaudeChat) bool {
+	target := slices.IndexFunc(m.chats, func(c *pb.AgentChat) bool {
 		return m.highlightID != "" && c.AgentSessionId == m.highlightID
 	})
 	if target == -1 {

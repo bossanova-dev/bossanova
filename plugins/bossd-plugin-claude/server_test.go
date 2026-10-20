@@ -182,9 +182,9 @@ func TestGetInfoIncludesDangerouslySkipPermissionsSetting(t *testing.T) {
 	}
 }
 
-func TestServer_StartRun_SubprocessSurvivesHandlerContextCancel(t *testing.T) {
+func TestServer_StartAgentRun_SubprocessSurvivesHandlerContextCancel(t *testing.T) {
 	// Regression: bossd's host_service uses context.Background() when calling
-	// StartRun, but gRPC servers still create a per-call context for the
+	// StartAgentRun, but gRPC servers still create a per-call context for the
 	// handler. If the handler hands that ctx to the runner, the spawned
 	// claude subprocess gets SIGTERM the instant the handler returns and
 	// the gRPC framework cancels the per-call ctx — every repair attempt
@@ -195,11 +195,11 @@ func TestServer_StartRun_SubprocessSurvivesHandlerContextCancel(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
 	handlerCtx, cancelHandler := context.WithCancel(context.Background())
-	startResp, err := srv.StartRun(handlerCtx, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	startResp, err := srv.StartAgentRun(handlerCtx, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-survive", LogPath: logPath,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 
 	// Simulate gRPC tearing down the per-call ctx after the handler returns.
@@ -231,14 +231,14 @@ func TestServer_StopRun_RoundTrip(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "sleep 5")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	startResp, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	startResp, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-stop", LogPath: logPath,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	if startResp.SessionId != "sid-stop" {
-		t.Fatalf("StartRun.SessionId = %q, want caller-provided sid-stop", startResp.SessionId)
+		t.Fatalf("StartAgentRun.SessionId = %q, want caller-provided sid-stop", startResp.SessionId)
 	}
 
 	runningResp, err := srv.IsRunning(context.Background(), &bossanovav1.IsAgentRunningRequest{SessionId: startResp.SessionId})
@@ -262,11 +262,11 @@ func TestServer_ExitStatus(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "exit 7")))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	startResp, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	startResp, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-exit", LogPath: logPath,
 	})
 	if startResp.SessionId != "sid-exit" {
-		t.Fatalf("StartRun.SessionId = %q, want caller-provided sid-exit", startResp.SessionId)
+		t.Fatalf("StartAgentRun.SessionId = %q, want caller-provided sid-exit", startResp.SessionId)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -856,8 +856,8 @@ func grpcInvoke(t *testing.T, conn *grpc.ClientConn, method string, in, out any)
 	return conn.Invoke(context.Background(), method, in, out)
 }
 
-// TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns is the
-// production-fidelity regression test for the SIGTERM bug: when StartRun
+// TestGRPCRoundTrip_StartAgentRun_SubprocessSurvivesAfterRPCReturns is the
+// production-fidelity regression test for the SIGTERM bug: when StartAgentRun
 // passed the gRPC handler's per-call ctx to runner.Start, the spawned
 // subprocess died the instant the RPC response went on the wire. The
 // in-process *Server unit test catches this only because we manually cancel
@@ -865,9 +865,9 @@ func grpcInvoke(t *testing.T, conn *grpc.ClientConn, method string, in, out any)
 // because the gRPC framework itself does the cancelling.
 //
 // If anyone re-introduces the bug (passing ctx instead of context.Background()
-// in StartRun), the IsRunning probe below will flip to false within
+// in StartAgentRun), the IsRunning probe below will flip to false within
 // milliseconds and the test will fail.
-func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) {
+func TestGRPCRoundTrip_StartAgentRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeClaude(t, "sleep 5")))
@@ -875,13 +875,13 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartAgentRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-grpc-survive", LogPath: logPath,
 	}, startResp); err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	if startResp.SessionId == "" {
-		t.Fatal("StartRun returned empty SessionId")
+		t.Fatal("StartAgentRun returned empty SessionId")
 	}
 
 	// Poll for ~500ms — production saw the SIGTERM hit in <1s, so any
@@ -895,7 +895,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 			t.Fatalf("IsRunning: %v", err)
 		}
 		if !runResp.Running {
-			t.Fatal("subprocess died after gRPC StartRun returned — gRPC per-call ctx must not gate subprocess lifetime")
+			t.Fatal("subprocess died after gRPC StartAgentRun returned — gRPC per-call ctx must not gate subprocess lifetime")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -909,7 +909,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 }
 
 // TestGRPCRoundTrip_ConcurrentSessions_AllSurvive verifies that the per-RPC
-// ctx-detachment fix works under concurrency. Three independent StartRun
+// ctx-detachment fix works under concurrency. Three independent StartAgentRun
 // RPCs fire in parallel; every spawned subprocess must outlive its
 // originating RPC. A regression where ctx is reattached for any subset of
 // sessions (e.g. the first one wins, the rest get SIGTERMed) would leave at
@@ -929,7 +929,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer startWG.Done()
-			startErrs[i] = grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+			startErrs[i] = grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartAgentRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 				WorkDir:   dir,
 				SessionId: sessionIDs[i],
 				LogPath:   filepath.Join(dir, sessionIDs[i]+".log"),
@@ -939,7 +939,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 	startWG.Wait()
 	for i, err := range startErrs {
 		if err != nil {
-			t.Fatalf("StartRun[%d]: %v", i, err)
+			t.Fatalf("StartAgentRun[%d]: %v", i, err)
 		}
 	}
 
@@ -953,7 +953,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 				t.Fatalf("IsRunning[%s]: %v", sid, err)
 			}
 			if !runResp.Running {
-				t.Fatalf("session %s died after concurrent StartRun returned", sid)
+				t.Fatalf("session %s died after concurrent StartAgentRun returned", sid)
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -969,7 +969,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 
 // TestGRPCRoundTrip_StopRun_TerminatesSubprocess verifies the explicit
 // teardown path is independent of the (now-removed) ctx-driven path. After
-// the bug fix, the subprocess is no longer tied to the StartRun RPC ctx, so
+// the bug fix, the subprocess is no longer tied to the StartAgentRun RPC ctx, so
 // the only remaining way to kill a healthy subprocess is StopRun. If a
 // future refactor breaks the runner's per-process cancel/Stop wiring, this
 // test will hang then fail rather than silently leaking processes.
@@ -980,10 +980,10 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartAgentRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-stop-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 
 	// Confirm it really is running before we ask for shutdown.
@@ -1031,10 +1031,10 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartAgentRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-exit-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)

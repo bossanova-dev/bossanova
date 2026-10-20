@@ -48,7 +48,7 @@ func chatWaitHarness(t *testing.T, status *pb.ChatStatusEntry) *clitest.Harness 
 			AgentSessionId: proto.String(waitChatID),
 			State:          pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
 		}),
-		clitest.WithChats(&pb.ClaudeChat{
+		clitest.WithChats(&pb.AgentChat{
 			Id: "chat-w", SessionId: waitSessionID, AgentSessionId: waitChatID, Title: "Never settles",
 		}),
 	)

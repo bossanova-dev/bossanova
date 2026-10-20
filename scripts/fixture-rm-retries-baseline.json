@@ -62,7 +62,6 @@
   "scripts/public-history.test.mjs": 2,
   "scripts/review-feedback-probe.test.mjs": 1,
   "scripts/run-nontap-gates.test.mjs": 1,
-  "scripts/setup-worktree-copy.test.mjs": 1,
   "scripts/size-ratchet-lib.test.mjs": 5,
   "scripts/skill-parity/capture-baseline.test.mjs": 2,
   "scripts/skill-parity/parity-gate.test.mjs": 5,

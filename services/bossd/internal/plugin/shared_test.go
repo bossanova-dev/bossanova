@@ -59,6 +59,9 @@ func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 	if _, ok := m[sharedplugin.ProtocolVersionV2]; ok {
 		t.Fatalf("legacy ProtocolVersion=%d must not negotiate: it ignores the repo-trust fields", sharedplugin.ProtocolVersionV2)
 	}
+	if _, ok := m[sharedplugin.ProtocolVersionV3]; ok {
+		t.Fatal("v3 must not negotiate: it uses the retired runner start RPC")
+	}
 	for _, typ := range []string{
 		sharedplugin.PluginTypeTaskSource,
 		sharedplugin.PluginTypeWorkflow,

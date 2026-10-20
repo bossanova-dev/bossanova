@@ -249,7 +249,7 @@ func TestProjectIsolationSupportFailsClosed(t *testing.T) {
 	}
 }
 
-func TestStartRunPropagatesProjectConfigurationTrust(t *testing.T) {
+func TestStartAgentRunPropagatesProjectConfigurationTrust(t *testing.T) {
 	for _, trusted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
 			var launchArgs []string
@@ -264,7 +264,7 @@ func TestStartRunPropagatesProjectConfigurationTrust(t *testing.T) {
 			}
 			srv := newServer(nil, zerolog.Nop(), WithCommandFactory(factory))
 			dir := t.TempDir()
-			resp, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, Plan: "plan", SessionId: "sid", LogPath: filepath.Join(dir, "log"), ShouldTrustProjectConfig: trusted})
+			resp, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, Plan: "plan", SessionId: "sid", LogPath: filepath.Join(dir, "log"), ShouldTrustProjectConfig: trusted})
 			if err != nil {
 				t.Fatal(err)
 			}

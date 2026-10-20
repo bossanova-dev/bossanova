@@ -71,10 +71,10 @@ func chatsHarness(t *testing.T) *clitest.Harness {
 		clitest.WithRepos(testRepos()...),
 		clitest.WithSessions(testSessions()...),
 		clitest.WithChats(
-			&pb.ClaudeChat{Id: "chat-1", SessionId: chatsSessionID, AgentSessionId: idleChatID, Title: "Implement the parser", CreatedAt: timestamppb.New(timestampDaysAgo(2))},
-			&pb.ClaudeChat{Id: "chat-2", SessionId: chatsSessionID, AgentSessionId: workingChatID, Title: "Fix the flake", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
-			&pb.ClaudeChat{Id: "chat-3", SessionId: chatsSessionID, AgentSessionId: waitingChatID, Title: "Wait on CI", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
-			&pb.ClaudeChat{Id: "chat-4", SessionId: chatsSessionID, AgentSessionId: unknownChatID, Title: "No heartbeat yet", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
+			&pb.AgentChat{Id: "chat-1", SessionId: chatsSessionID, AgentSessionId: idleChatID, Title: "Implement the parser", CreatedAt: timestamppb.New(timestampDaysAgo(2))},
+			&pb.AgentChat{Id: "chat-2", SessionId: chatsSessionID, AgentSessionId: workingChatID, Title: "Fix the flake", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
+			&pb.AgentChat{Id: "chat-3", SessionId: chatsSessionID, AgentSessionId: waitingChatID, Title: "Wait on CI", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
+			&pb.AgentChat{Id: "chat-4", SessionId: chatsSessionID, AgentSessionId: unknownChatID, Title: "No heartbeat yet", CreatedAt: timestamppb.New(timestampDaysAgo(1))},
 		),
 	)
 	h.Daemon.AddChatStatus(&pb.ChatStatusEntry{

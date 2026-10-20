@@ -32,7 +32,7 @@ func sp(s string) *string { return &s }
 type World struct {
 	Repos        []*pb.Repo
 	Sessions     []*pb.Session
-	Chats        []*pb.ClaudeChat
+	Chats        []*pb.AgentChat
 	ChatStatuses []*pb.ChatStatusEntry
 	// SessionStatuses carries the daemon's aggregate per-session heartbeat. Only
 	// presets that need it seed it — notably waiting-callback, where the home
@@ -183,8 +183,8 @@ func ArchivedSessions() []*pb.Session {
 // Chats returns conversations for the first active session, newest first. All
 // five reference sess-aaa-111 so the chat picker for that session is fully
 // populated; chat-1 ("Initial implementation") stays first as the proof anchor.
-func Chats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func Chats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-1", AgentSessionId: "claude-111", SessionId: "sess-aaa-111", Title: "Initial implementation", CreatedAt: ts(-1 * time.Hour)},
 		{Id: "chat-2", AgentSessionId: "claude-222", SessionId: "sess-aaa-111", Title: "Follow-up review", CreatedAt: ts(-2 * time.Hour)},
 		{Id: "chat-3", AgentSessionId: "claude-333", SessionId: "sess-aaa-111", Title: "Address review comments", CreatedAt: ts(-3 * time.Hour)},
@@ -483,8 +483,8 @@ func ArchiveSignalSessions() []*pb.Session {
 
 // ArchiveSignalChats returns one chat per ArchiveSignal session so both
 // chatpickers render populated (not "Loading chats…").
-func ArchiveSignalChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func ArchiveSignalChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-425-r", AgentSessionId: "claude-425-r", SessionId: "sess-425-resurrected", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 		{Id: "chat-425-a", AgentSessionId: "claude-425-a", SessionId: "sess-425-archiving", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
 	}
@@ -541,8 +541,8 @@ func RotationHistorySessions() []*pb.Session {
 
 // RotationHistoryChats returns the single chat for the BOS-432 session so the
 // chat-picker renders a populated table and the full action bar.
-func RotationHistoryChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func RotationHistoryChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-432", AgentSessionId: "claude-432", SessionId: "sess-432-rotation", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 	}
 }
@@ -602,8 +602,8 @@ func RespawnHistorySessions() []*pb.Session {
 
 // RespawnHistoryChats returns the single chat for the BOS-482 session so the
 // chat-picker renders a populated table and the full action bar.
-func RespawnHistoryChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func RespawnHistoryChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-482", AgentSessionId: "claude-482", SessionId: "sess-482-respawn", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 	}
 }
@@ -641,8 +641,8 @@ func QuestionRowSessions() []*pb.Session {
 // QuestionRowChats returns the BOS-494 chats. The picker sorts newest-first, so
 // the working chat (created more recently) renders on row 0 and the question
 // chat on row 1 — the arrangement the fix must override by preselecting row 1.
-func QuestionRowChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func QuestionRowChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-494-working", AgentSessionId: "claude-494-working", SessionId: "sess-494-question", Title: "Build the daily health sweep", CreatedAt: ts(-30 * time.Minute)},
 		{Id: "chat-494-question", AgentSessionId: "claude-494-question", SessionId: "sess-494-question", Title: "Wire up web notifications", CreatedAt: ts(-2 * time.Hour)},
 	}
@@ -728,8 +728,8 @@ func WaitingCallbackSessions() []*pb.Session {
 // WaitingCallbackChats returns one chat per session, so each session's aggregate
 // is unambiguous and the chat picker for the parked session shows a single
 // waiting row plus its reason line.
-func WaitingCallbackChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func WaitingCallbackChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-668-waiting", AgentSessionId: "claude-668-waiting", SessionId: "sess-668-waiting", Title: "Ship the release checklist", CreatedAt: ts(-3 * time.Hour)},
 		{Id: "chat-668-working", AgentSessionId: "claude-668-working", SessionId: "sess-668-working", Title: "Rebuild the search index", CreatedAt: ts(-90 * time.Minute)},
 	}
@@ -831,7 +831,7 @@ func ArmedVerifyWorld() World {
 		Sessions: []*pb.Session{sess},
 		// verify is the newer chat, so it sorts first and the picker's cursor
 		// lands on it.
-		Chats: []*pb.ClaudeChat{
+		Chats: []*pb.AgentChat{
 			{Id: "chat-1517-verify", AgentSessionId: verifyID, SessionId: sessID, Title: "verify", CreatedAt: ts(-30 * time.Minute)},
 			{Id: "chat-1517-build", AgentSessionId: buildID, SessionId: sessID, Title: "Implement the ledger reconcile", CreatedAt: ts(-4 * time.Hour)},
 		},
@@ -904,7 +904,7 @@ func BuildHandoffStandbyWorld() World {
 	return World{
 		Repos:    Repos(),
 		Sessions: []*pb.Session{sess},
-		Chats: []*pb.ClaudeChat{
+		Chats: []*pb.AgentChat{
 			{Id: "chat-1531-verify", AgentSessionId: verifyID, SessionId: sessID, Title: "verify", CreatedAt: ts(-20 * time.Minute)},
 			{Id: "chat-1531-build", AgentSessionId: buildID, SessionId: sessID, Title: BuildHandoffBuildChatTitle, CreatedAt: ts(-3 * time.Hour)},
 		},
@@ -1008,8 +1008,8 @@ func ErroredStatusSessions() []*pb.Session {
 
 // ErroredStatusChats returns one chat per ErroredStatus session so both
 // chatpickers render populated (not "Loading chats…").
-func ErroredStatusChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func ErroredStatusChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-430-o", AgentSessionId: "claude-430-o", SessionId: "sess-430-orphaned", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 		{Id: "chat-430-b", AgentSessionId: "claude-430-b", SessionId: "sess-430-blocked", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
 	}
@@ -1114,8 +1114,8 @@ func LivePastFailureSessions() []*pb.Session {
 
 // LivePastFailureChats returns one chat per LivePastFailure session so every
 // chatpicker renders populated (not "Loading chats…").
-func LivePastFailureChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func LivePastFailureChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-855-l", AgentSessionId: "claude-855-l", SessionId: "sess-855-live", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 		{Id: "chat-855-q", AgentSessionId: "claude-855-q", SessionId: "sess-855-quiet", Title: "Implement the change", CreatedAt: ts(-3 * time.Hour)},
 		{Id: "chat-855-s", AgentSessionId: "claude-855-s", SessionId: "sess-855-stalled", Title: "Rebuild the search index", CreatedAt: ts(-90 * time.Minute)},
@@ -1225,8 +1225,8 @@ func TransientPRFailureSessions() []*pb.Session {
 
 // TransientPRFailureChats returns one chat per TransientPRFailure session so both
 // chat pickers render populated (not "Loading chats…").
-func TransientPRFailureChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func TransientPRFailureChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-877-t", AgentSessionId: "claude-877-t", SessionId: "sess-877-transient", Title: "Set up the project", CreatedAt: ts(-25 * time.Minute)},
 		{Id: "chat-877-x", AgentSessionId: "claude-877-x", SessionId: "sess-877-terminal", Title: "Implement the change", CreatedAt: ts(-40 * time.Minute)},
 	}
@@ -1275,8 +1275,8 @@ func HTTPEndpointsSessions() []*pb.Session {
 
 // HTTPEndpointsChats returns one chat per HTTPEndpoints session so both chat
 // pickers render a populated table rather than "Loading chats…".
-func HTTPEndpointsChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func HTTPEndpointsChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-474-eps", AgentSessionId: "claude-474-eps", SessionId: "sess-474-endpoints", Title: "Run the dev servers", CreatedAt: ts(-80 * time.Minute)},
 		{Id: "chat-474-plain", AgentSessionId: "claude-474-plain", SessionId: "sess-474-plain", Title: "Implement the change", CreatedAt: ts(-2 * time.Hour)},
 	}
@@ -1658,8 +1658,8 @@ func BoxedApprovalSessions() []*pb.Session {
 }
 
 // BoxedApprovalChats returns the single chat sitting on the approval menu.
-func BoxedApprovalChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func BoxedApprovalChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-1266-approval", AgentSessionId: "claude-1266-approval", SessionId: "sess-1266-approval", Title: "Rebuild after clearing artifacts", CreatedAt: ts(-80 * time.Minute)},
 	}
 }
@@ -1779,8 +1779,8 @@ func WaitingDemotedSessions() []*pb.Session {
 
 // WaitingDemotedChats returns one chat per session, so each session's aggregate
 // is unambiguous and each chat picker shows a single parked row.
-func WaitingDemotedChats() []*pb.ClaudeChat {
-	return []*pb.ClaudeChat{
+func WaitingDemotedChats() []*pb.AgentChat {
+	return []*pb.AgentChat{
 		{Id: "chat-1269-idle", AgentSessionId: "claude-1269-idle", SessionId: "sess-1269-idle", Title: "Tidy the changelog entries", CreatedAt: ts(-4 * time.Hour)},
 		{Id: "chat-1269-working", AgentSessionId: "claude-1269-working", SessionId: "sess-1269-working", Title: "Split the importer module", CreatedAt: ts(-2 * time.Hour)},
 	}
@@ -1879,7 +1879,7 @@ func ReadyHandoffWorld() World {
 		sess.IsWaitingDemoted = displaystatus.WasWaitingDemoted(in, out)
 		sess.IsReadyOverWaiting = displaystatus.WasReadyOverWaiting(in, out)
 		w.Sessions = append(w.Sessions, sess)
-		w.Chats = append(w.Chats, &pb.ClaudeChat{Id: "chat-" + id, AgentSessionId: agentID, SessionId: id, Title: title, CreatedAt: sess.CreatedAt})
+		w.Chats = append(w.Chats, &pb.AgentChat{Id: "chat-" + id, AgentSessionId: agentID, SessionId: id, Title: title, CreatedAt: sess.CreatedAt})
 		w.ChatStatuses = append(w.ChatStatuses, &pb.ChatStatusEntry{AgentSessionId: agentID, Status: chatStatus, WaitingReason: reason, LastOutputAt: ts(-36 * time.Minute)})
 		w.SessionStatuses = append(w.SessionStatuses, &pb.SessionStatusEntry{SessionId: id, Status: chatStatus, WaitingReason: reason})
 	}

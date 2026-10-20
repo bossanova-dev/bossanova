@@ -17,7 +17,7 @@ import (
 )
 
 // fakeOpencodeShell runs /bin/sh -c "$script" instead of the real opencode
-// binary so the run-lifecycle RPCs (StartRun → ExitStatus) can be driven through
+// binary so the run-lifecycle RPCs (StartAgentRun → ExitStatus) can be driven through
 // the real runner + PostExit hook without opencode installed. It mirrors the
 // codex twin's fakeCodexShell.
 func fakeOpencodeShell(t *testing.T, script string) agentruntime.CommandFactory {
@@ -41,25 +41,25 @@ func waitExit(t *testing.T, s *Server, sid string) *bossanovav1.AgentExitStatusR
 	return nil
 }
 
-// TestStartRunReturnsDiscoveredSessionID proves the wired StartRun spawns the
+// TestStartAgentRunReturnsDiscoveredSessionID proves the wired StartAgentRun spawns the
 // runner and returns opencode's own echoed `sessionID` (via SessionIDFromOutput)
 // rather than the caller-provided hint — the session-id capture seam BOS-437
 // live validation exercises end-to-end.
-func TestStartRunReturnsDiscoveredSessionID(t *testing.T) {
+func TestStartAgentRunReturnsDiscoveredSessionID(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeOpencodeShell(t,
 		`printf '%s\n' '{"type":"step_start","sessionID":"ses_wired0001abcd","part":{"type":"step-start"}}'; exit 0`)))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, SessionId: "caller-hint-ignored", LogPath: logPath,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	if start.SessionId != "ses_wired0001abcd" {
-		t.Errorf("StartRun.SessionId = %q, want the echoed ses_wired0001abcd (not the caller hint)", start.SessionId)
+		t.Errorf("StartAgentRun.SessionId = %q, want the echoed ses_wired0001abcd (not the caller hint)", start.SessionId)
 	}
 	waitExit(t, srv, start.SessionId)
 	hintExit, err := srv.ExitStatus(context.Background(), &bossanovav1.AgentExitStatusRequest{SessionId: "caller-hint-ignored"})
@@ -78,7 +78,7 @@ func TestExitStatusPropagatesAuthInvalidated(t *testing.T) {
 		`printf '%s\n' '{"type":"error","sessionID":"ses_x","error":{"statusCode":401,"message":"unauthorized"}}'; exit 1`)))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-auth", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != agenterr.KindAuthInvalidated.String() {
@@ -100,7 +100,7 @@ func TestExitStatusPropagatesRateLimited(t *testing.T) {
 		`printf '%s\n' '{"type":"error","sessionID":"ses_x","error":{"statusCode":429,"message":"rate limit exceeded, please retry"}}'; exit 1`)))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-rate", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-rate", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != agenterr.KindRateLimited.String() {
@@ -119,7 +119,7 @@ func TestExitStatusPropagatesUsageLimited(t *testing.T) {
 		`printf '%s\n' '{"type":"error","sessionID":"ses_x","error":{"statusCode":429,"message":"usage_limit_reached, resets at 15:00"}}'; exit 1`)))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-usage", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-usage", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.GetFailureClass() != agenterr.KindUsageExhausted.String() {
@@ -137,7 +137,7 @@ func TestExitStatusCleanExitLeavesFailureFieldsUnset(t *testing.T) {
 		`printf '%s\n' '{"type":"step_finish","sessionID":"ses_x","part":{"type":"step-finish"}}'; exit 0`)))
 	srv := &Server{logger: zerolog.Nop(), runner: r}
 
-	start, _ := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
+	start, _ := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{WorkDir: dir, SessionId: "sid-clean", LogPath: logPath})
 	exit := waitExit(t, srv, start.SessionId)
 
 	if exit.FailureClass != nil {

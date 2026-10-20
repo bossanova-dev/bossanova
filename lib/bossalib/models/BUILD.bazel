@@ -27,15 +27,19 @@ go_test(
     srcs = [
         "account_test.go",
         "agent_chat_role_test.go",
+        "agent_chat_wire_test.go",
         "broadcast_test.go",
         "convert_test.go",
         "cron_job_test.go",
         "merge_strategy_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":models"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

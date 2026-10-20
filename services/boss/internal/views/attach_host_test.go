@@ -943,7 +943,7 @@ type chatMutationSpy struct {
 	// chats is the stored chat list the detach path's fresh stored-title read
 	// answers with (BOS-869). Additive: a zero-valued spy returns no chats,
 	// which is itself one of the fail-closed cases.
-	chats []*pb.ClaudeChat
+	chats []*pb.AgentChat
 	// listChatsErr makes that read fail — the other fail-closed half.
 	listChatsErr error
 	// listChatsCalls proves the read happens only inside the title-write branch:
@@ -970,7 +970,7 @@ func (s *chatMutationSpy) DeleteChat(_ context.Context, _ string, reason pb.Dele
 }
 
 // ListChats answers the detach path's fresh stored-title read (BOS-869).
-func (s *chatMutationSpy) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (s *chatMutationSpy) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	s.listChatsCalls++
 	if s.listChatsErr != nil {
 		return nil, s.listChatsErr
@@ -1031,8 +1031,8 @@ func attachModelForTranscriptTest(client *chatMutationSpy) AttachModel {
 func TestAttach_DetachWritesDerivedTitleOnlyOverAPlaceholder(t *testing.T) {
 	const derived = "First user prompt"
 
-	storedChat := func(title string) []*pb.ClaudeChat {
-		return []*pb.ClaudeChat{{AgentSessionId: "agent-1", Title: title}}
+	storedChat := func(title string) []*pb.AgentChat {
+		return []*pb.AgentChat{{AgentSessionId: "agent-1", Title: title}}
 	}
 
 	tests := []struct {
@@ -1042,7 +1042,7 @@ func TestAttach_DetachWritesDerivedTitleOnlyOverAPlaceholder(t *testing.T) {
 		derivedTitle     string
 		transcriptAbsent bool
 		// chats / listChatsErr configure the fresh stored-title read.
-		chats        []*pb.ClaudeChat
+		chats        []*pb.AgentChat
 		listChatsErr error
 
 		wantTitleUpdates   int
@@ -1087,7 +1087,7 @@ func TestAttach_DetachWritesDerivedTitleOnlyOverAPlaceholder(t *testing.T) {
 		{
 			name:               "no chat matching the agent session fails closed",
 			derivedTitle:       derived,
-			chats:              []*pb.ClaudeChat{{AgentSessionId: "agent-2", Title: "New chat"}},
+			chats:              []*pb.AgentChat{{AgentSessionId: "agent-2", Title: "New chat"}},
 			wantTitleUpdates:   0,
 			wantListChatsCalls: 1,
 		},
@@ -1538,7 +1538,7 @@ func TestAttach_CodexExitPreservesChatWithoutClaudeTranscript(t *testing.T) {
 	m := attachModelForTranscriptTest(client)
 	m.session.AgentName = "claude"
 	updated, _ := m.Update(chatRecordedMsg{
-		chat: &pb.ClaudeChat{AgentName: "codex", TmuxSessionName: "boss-test-chat"},
+		chat: &pb.AgentChat{AgentName: "codex", TmuxSessionName: "boss-test-chat"},
 	})
 	m = updated.(AttachModel)
 	runAttachCmdGraph(t, m.updateChatTitle(), func(tea.Msg) {})

@@ -86,7 +86,7 @@ func TestMockDaemonUpdateChatTitlePersists(t *testing.T) {
 	d := tuitest.NewMockDaemon(t)
 	ctx := context.Background()
 
-	d.AddChat(&pb.ClaudeChat{
+	d.AddChat(&pb.AgentChat{
 		SessionId:      "sess-1",
 		AgentSessionId: "agent-1",
 		Title:          "Initial implementation",
@@ -138,7 +138,7 @@ func TestMockDaemonUpdateChatTitleCallLogIsObservable(t *testing.T) {
 	d := tuitest.NewMockDaemon(t)
 	ctx := context.Background()
 
-	d.AddChat(&pb.ClaudeChat{
+	d.AddChat(&pb.AgentChat{
 		SessionId:      "sess-1",
 		AgentSessionId: "agent-1",
 		Title:          "Initial implementation",

@@ -351,8 +351,8 @@ func suppressStaleConflictAttention(p *pb.Session) {
 }
 
 // agentChatToProto converts a domain AgentChat to its protobuf representation.
-func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
-	out := &pb.ClaudeChat{
+func agentChatToProto(c *models.AgentChat) *pb.AgentChat {
+	out := &pb.AgentChat{
 		Id:             protoString(c.ID),
 		SessionId:      protoString(c.SessionID),
 		AgentSessionId: protoString(c.AgentSessionID),

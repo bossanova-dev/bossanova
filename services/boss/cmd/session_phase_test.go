@@ -86,7 +86,7 @@ func TestSessionPhaseRegistered(t *testing.T) {
 	}
 }
 func TestChatJSONPhaseAlwaysEmitted(t *testing.T) {
-	chats := []*pb.ClaudeChat{{AgentSessionId: "phased"}, {AgentSessionId: "plain"}}
+	chats := []*pb.AgentChat{{AgentSessionId: "phased"}, {AgentSessionId: "plain"}}
 	statuses := map[string]*pb.ChatStatusEntry{"phased": {Status: pb.ChatStatus_CHAT_STATUS_WORKING, Phase: "reviewing"}}
 	raw, err := json.Marshal(newChatsJSON(chats, statuses))
 	if err != nil {

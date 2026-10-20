@@ -789,10 +789,10 @@ func (s *stubRepoClient) ResurrectSession(context.Context, string) (client.Resur
 func (s *stubRepoClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
+func (s *stubRepoClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }

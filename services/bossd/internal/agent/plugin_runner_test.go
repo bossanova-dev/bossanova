@@ -36,7 +36,7 @@ type fakeAgentClient struct {
 func (f *fakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
 	return &bossanovav1.PluginInfo{Name: "fake"}, nil
 }
-func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (f *fakeAgentClient) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.startReq.Store(req)
 	if f.startFn != nil {
 		return f.startFn(context.Background(), req)
@@ -191,7 +191,7 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	}
 	got := fc.startReq.Load()
 	if got == nil {
-		t.Fatal("StartRun req not recorded")
+		t.Fatal("StartAgentRun req not recorded")
 	}
 	if got.WorkDir != "/work" || got.Plan != "plan" || got.SessionId != "explicit-sid" {
 		t.Errorf("unexpected req: %+v", got)
@@ -348,7 +348,7 @@ func TestPluginRunner_StartWithHeadlessLaunchOptionsRecordsBossSessionID(t *test
 		t.Fatalf("recorded agent name = %q, want codex", runs.starts[0].AgentName)
 	}
 	if runs.starts[0].StartedAt.After(startReturningAt) {
-		t.Fatalf("recorded start = %s, want no later than StartRun return %s", runs.starts[0].StartedAt, startReturningAt)
+		t.Fatalf("recorded start = %s, want no later than StartAgentRun return %s", runs.starts[0].StartedAt, startReturningAt)
 	}
 }
 
@@ -636,7 +636,7 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 	}
 	got := fc.startReq.Load()
 	if got == nil {
-		t.Fatal("StartRun req not recorded")
+		t.Fatal("StartAgentRun req not recorded")
 	}
 	if got.GetExtraEnv()["PROOF_ANTHROPIC_API_KEY"] != "secret-value" {
 		t.Errorf("ExtraEnv secret not forwarded: %v", got.GetExtraEnv())
@@ -655,7 +655,7 @@ func TestPluginRunner_StartCarriesModelAndEffort(t *testing.T) {
 	}
 	got := fc.startReq.Load()
 	if got == nil {
-		t.Fatal("StartRun req not recorded")
+		t.Fatal("StartAgentRun req not recorded")
 	}
 	if got.GetModel() != "opus" || got.GetEffort() != "high" {
 		t.Fatalf("target fields = model=%q effort=%q, want opus/high", got.GetModel(), got.GetEffort())
@@ -674,7 +674,7 @@ func TestPluginRunner_StartWithHeadlessCapabilityProfileCarriesProfile(t *testin
 	}
 	got := fc.startReq.Load()
 	if got == nil {
-		t.Fatal("StartRun req not recorded")
+		t.Fatal("StartAgentRun req not recorded")
 	}
 	if got.GetHeadlessCapabilityProfile() != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
 		t.Fatalf("HeadlessCapabilityProfile = %s, want tracker-plan-attachment-v1", got.GetHeadlessCapabilityProfile())

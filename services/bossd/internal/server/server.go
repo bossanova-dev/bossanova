@@ -5164,7 +5164,7 @@ func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChat
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
 	}
 
-	pbChats := make([]*pb.ClaudeChat, len(chats))
+	pbChats := make([]*pb.AgentChat, len(chats))
 	for i, c := range chats {
 		pbChats[i] = agentChatToProto(c)
 	}

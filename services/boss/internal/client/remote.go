@@ -574,13 +574,13 @@ func (c *RemoteClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest
 
 // --- Claude Chat Tracking (local only) ---
 
-func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ pb.ChatRole, _ bool) (*pb.ClaudeChat, error) {
+func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ pb.ChatRole, _ bool) (*pb.AgentChat, error) {
 	return nil, errLocalOnly("RecordChat")
 }
 
 // ListChats proxies a session's chat list through the orchestrator, which routes
 // by session_id to the owning daemon and enforces the session-level authz check.
-func (c *RemoteClient) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+func (c *RemoteClient) ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error) {
 	resp, err := c.rpc.ProxyListChats(ctx, connect.NewRequest(&pb.ProxyListChatsRequest{SessionId: sessionID}))
 	if err != nil {
 		return nil, err

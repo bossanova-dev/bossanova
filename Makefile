@@ -344,13 +344,19 @@ deps:
 # absent too: each worktree provisions its own test server unless explicitly exported.
 WORKTREE_ENV_KEYS := LINEAR_API_KEY,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID,BOSS_PROOF_R2_BUCKET,BOSS_PROOF_PUBLIC_BASE_URL,BOSS_PROOF_HW_ENCODE,CC
 
-## setup-worktree: Write the WORKTREE_ENV_KEYS subset of .env and copy gitignored local files (.node-version, .bazelrc.user, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
+## setup-worktree: Write the WORKTREE_ENV_KEYS subset of .env and copy gitignored local files (.node-version, .bazelrc.user, .config excluding .config/accounts, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
 	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
 		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
 		exit 1; \
 	fi
-	@node "$$WORKTREE_DIR/scripts/setup-worktree-copy.mjs" --repo-dir "$$REPO_DIR" --worktree-dir "$$WORKTREE_DIR" --env-keys "$(WORKTREE_ENV_KEYS)"
+	@copy_status=0; \
+		node "$$WORKTREE_DIR/scripts/setup-worktree-copy.mjs" --repo-dir "$$REPO_DIR" --worktree-dir "$$WORKTREE_DIR" --env-keys "$(WORKTREE_ENV_KEYS)" || copy_status=$$?; \
+		$(MAKE) --no-print-directory -f "$(firstword $(MAKEFILE_LIST))" setup-worktree-provision; \
+		exit $$copy_status
+
+.PHONY: setup-worktree-provision
+setup-worktree-provision:
 	@sh "$$WORKTREE_DIR/scripts/ensure-buf.sh" install "$(BUF_VERSION)" "$(BUF)" \
 		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# Install JS deps so EVERY worktree (cron included) has node_modules and the

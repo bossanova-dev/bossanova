@@ -177,7 +177,7 @@ var denyPaths = []denyPath{
 		}
 		return [][]string{resp.GetArgv()}
 	}},
-	{name: "StartRun", run: func(t *testing.T, workDir, accountHome string, decision bossanovav1.ProjectTrustDecision) [][]string {
+	{name: "StartAgentRun", run: func(t *testing.T, workDir, accountHome string, decision bossanovav1.ProjectTrustDecision) [][]string {
 		t.Helper()
 		isolateCaptureDir(t)
 		rec := &argvRecorder{}
@@ -186,7 +186,7 @@ var denyPaths = []denyPath{
 			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 0")
 		}))
 		srv := &Server{logger: zerolog.Nop(), runner: r}
-		start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+		start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 			WorkDir:      workDir,
 			SessionId:    "sid-deny",
 			LogPath:      filepath.Join(t.TempDir(), "agent.log"),
@@ -194,12 +194,12 @@ var denyPaths = []denyPath{
 			ProjectTrust: decision,
 		})
 		if err != nil {
-			t.Fatalf("StartRun: %v", err)
+			t.Fatalf("StartAgentRun: %v", err)
 		}
 		waitExit(t, srv, start.GetSessionId())
 		return rec.all(t)
 	}},
-	{name: "StartRun resume with preflight", run: func(t *testing.T, workDir, accountHome string, decision bossanovav1.ProjectTrustDecision) [][]string {
+	{name: "StartAgentRun resume with preflight", run: func(t *testing.T, workDir, accountHome string, decision bossanovav1.ProjectTrustDecision) [][]string {
 		t.Helper()
 		isolateCaptureDir(t)
 		rec := &argvRecorder{}
@@ -211,7 +211,7 @@ var denyPaths = []denyPath{
 		resume := "019e068c-9ade-7cf0-be8c-3b21977576d0"
 		// The fake app-server reports no Linear server, so the profile's
 		// preflight refuses the run; what matters is the probe's argv.
-		_, _ = srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+		_, _ = srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 			WorkDir:                   workDir,
 			ResumeId:                  &resume,
 			SessionId:                 "sid-deny",

@@ -150,7 +150,7 @@ const earlyOutputCap = 8 * 1024
 
 // earlyOutputTimeout bounds how long Runner.Start waits for the early
 // output buffer to produce a discoverable session ID. Five seconds still keeps
-// StartRun responsive while avoiding false misses on loaded machines where
+// StartAgentRun responsive while avoiding false misses on loaded machines where
 // process startup and stdout copy scheduling can take multiple seconds.
 const earlyOutputTimeout = 5 * time.Second
 

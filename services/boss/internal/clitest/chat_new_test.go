@@ -113,7 +113,7 @@ func TestCLI_ChatNew(t *testing.T) {
 		// The real daemon persists this row on a host with no tmux: a chat with
 		// nothing listening behind it. Handing that id back as a success is the
 		// failure this command exists to prevent.
-		h.Daemon.SetRecordChatResponse(&pb.ClaudeChat{
+		h.Daemon.SetRecordChatResponse(&pb.AgentChat{
 			SessionId:      "sess-aaa-111",
 			AgentSessionId: "11111111-2222-3333-4444-555555555555",
 			Title:          "no agent",
@@ -142,7 +142,7 @@ func TestCLI_ChatNew(t *testing.T) {
 
 	t.Run("empty tmux session name is rejected without --json too", func(t *testing.T) {
 		h := newChatHarness(t)
-		h.Daemon.SetRecordChatResponse(&pb.ClaudeChat{
+		h.Daemon.SetRecordChatResponse(&pb.AgentChat{
 			SessionId:      "sess-aaa-111",
 			AgentSessionId: "11111111-2222-3333-4444-555555555555",
 		})

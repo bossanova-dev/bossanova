@@ -15,14 +15,14 @@ import (
 )
 
 // TestLiveOpencodeFreshThenResume is the BOS-437 live-validation harness: it
-// drives the REAL opencode CLI through the plugin's Server.StartRun → runner path
+// drives the REAL opencode CLI through the plugin's Server.StartAgentRun → runner path
 // (the exact code bossd's gRPC dispatch invokes) across two sessions — one FRESH,
 // one RESUME-by-`ses_*`-id — and asserts the fragile seams hold against the
 // installed binary:
 //
 //   - argv: buildArgv's version-aware permission flag actually runs (a rejected
 //     flag would make opencode print usage and produce no session id);
-//   - session-id capture: StartRun returns opencode's echoed `ses_*` id;
+//   - session-id capture: StartAgentRun returns opencode's echoed `ses_*` id;
 //   - resume continuity: session #2, resumed by that id, recalls a codeword only
 //     stated in session #1 (proving it continues the prior conversation, not a
 //     fresh one);
@@ -52,14 +52,14 @@ func TestLiveOpencodeFreshThenResume(t *testing.T) {
 
 	// --- Session #1: FRESH ---
 	log1 := filepath.Join(logDir, "run1.log")
-	fresh, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	fresh, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir:   dir,
 		Plan:      "Remember this codeword for later: " + codeword + ". Reply with exactly the word OK and nothing else.",
 		SessionId: "live-fresh-hint",
 		LogPath:   log1,
 	})
 	if err != nil {
-		t.Fatalf("fresh StartRun: %v", err)
+		t.Fatalf("fresh StartAgentRun: %v", err)
 	}
 	if !strings.HasPrefix(fresh.SessionId, "ses_") {
 		t.Fatalf("fresh SessionId = %q, want an echoed ses_* id", fresh.SessionId)
@@ -73,14 +73,14 @@ func TestLiveOpencodeFreshThenResume(t *testing.T) {
 
 	// --- Session #2: RESUME by ses_* id ---
 	log2 := filepath.Join(logDir, "run2.log")
-	resume, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	resume, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir:  dir,
 		Plan:     "What codeword did I ask you to remember? Reply with only the codeword.",
 		ResumeId: &fresh.SessionId,
 		LogPath:  log2,
 	})
 	if err != nil {
-		t.Fatalf("resume StartRun: %v", err)
+		t.Fatalf("resume StartAgentRun: %v", err)
 	}
 	t.Logf("resume session id: %s", resume.SessionId)
 	exit2 := waitLiveExit(t, srv, resume.SessionId)

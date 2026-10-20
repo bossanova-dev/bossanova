@@ -205,7 +205,7 @@ func chatPickerAwaitingBackfill() ChatPickerModel {
 func chatPickerHoldingChatTitled(title string) ChatPickerModel {
 	m := NewChatPickerModel(&chatPickerHostStub{}, context.Background(), "session-1", "")
 	m.session = &pb.Session{Id: "session-1", WorktreePath: "/home/deploy/worktrees/feature"}
-	m.chats = []*pb.ClaudeChat{{AgentSessionId: "agent-1", Title: title}}
+	m.chats = []*pb.AgentChat{{AgentSessionId: "agent-1", Title: title}}
 	return m
 }
 

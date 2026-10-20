@@ -175,9 +175,9 @@ func TestAppSessionSettingsReturnHighlight(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := NewApp(nil, nil)
 			cp := NewChatPickerModel(nil, a.ctx, "sid", "")
-			chats := make([]*pb.ClaudeChat, len(tt.agentIDs))
+			chats := make([]*pb.AgentChat, len(tt.agentIDs))
 			for i, id := range tt.agentIDs {
-				chats[i] = &pb.ClaudeChat{AgentSessionId: id}
+				chats[i] = &pb.AgentChat{AgentSessionId: id}
 			}
 			cp.chats = chats
 			cp.buildTableRows()

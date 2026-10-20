@@ -351,7 +351,11 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	// so a down-convert cannot tell the old head-moved rule from the green leg,
 	// and restoring it would re-show the false FIX this corrects. The FIX
 	// sentence's single "Run blocked:" label is versioned by
-	// apiversion.RunBlockedLabelChange. See
+	// apiversion.RunBlockedLabelChange. The same holds for a blocked run whose
+	// checks are still running with nothing failed (alertstate.ClearCIPending):
+	// it reads in progress until they settle, and a down-convert restoring FIX
+	// would re-show "needs you" on a row with nothing yet to act on, the defect
+	// this corrects, as with the run-working leg above. See
 	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
 	staleBlocked := !alertstate.BlockedAlertCurrent(blockedFacts)
 	if row.State == machine.Blocked && sessionreason.IsBootstrapStranded(row.BlockedReason) {

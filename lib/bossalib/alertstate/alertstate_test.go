@@ -250,6 +250,11 @@ func TestBlockedResolution(t *testing.T) {
 		{"changes requested", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_APPROVED, Mergeable: &yes, HasChangesRequested: true}, ""},
 		{"run working on a draft", BlockedFacts{RunWorking: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_DRAFT}, ClearRunWorking},
 		{"run working with CI failing", BlockedFacts{RunWorking: true, DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING, HasFailures: true}, ClearRunWorking},
+		{"checks running", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, Mergeable: &yes}, ClearCIPending},
+		{"checks running, mergeability unknown", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING}, ClearCIPending},
+		{"checks running, not mergeable", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, Mergeable: &no}, ClearCIPending},
+		{"checks running with one failed", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, Mergeable: &yes, HasFailures: true}, ""},
+		{"checks running with changes requested", BlockedFacts{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CHECKING, Mergeable: &yes, HasChangesRequested: true}, ""},
 	}
 	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_PASSING, pb.DisplayStatus_DISPLAY_STATUS_APPROVED, pb.DisplayStatus_DISPLAY_STATUS_REVIEW, pb.DisplayStatus_DISPLAY_STATUS_VERIFYING, pb.DisplayStatus_DISPLAY_STATUS_NEEDS_HUMAN} {
 		tests = append(tests, struct {
@@ -258,7 +263,7 @@ func TestBlockedResolution(t *testing.T) {
 			want  ClearReason
 		}{status.String(), BlockedFacts{DisplayStatus: status, Mergeable: &yes}, ClearCIGreen})
 	}
-	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_CHECKING, pb.DisplayStatus_DISPLAY_STATUS_DRAFT, pb.DisplayStatus_DISPLAY_STATUS_FAILING, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, pb.DisplayStatus_DISPLAY_STATUS_IDLE, pb.DisplayStatus_DISPLAY_STATUS_MERGED, pb.DisplayStatus_DISPLAY_STATUS_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED} {
+	for _, status := range []pb.DisplayStatus{pb.DisplayStatus_DISPLAY_STATUS_DRAFT, pb.DisplayStatus_DISPLAY_STATUS_FAILING, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, pb.DisplayStatus_DISPLAY_STATUS_REJECTED, pb.DisplayStatus_DISPLAY_STATUS_IDLE, pb.DisplayStatus_DISPLAY_STATUS_MERGED, pb.DisplayStatus_DISPLAY_STATUS_CLOSED, pb.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED} {
 		tests = append(tests, struct {
 			name  string
 			facts BlockedFacts

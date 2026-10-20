@@ -161,7 +161,7 @@ type claudeFakeClient struct {
 func (c *claudeFakeClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
 	return &pb.PluginInfo{Name: "claude"}, nil
 }
-func (c *claudeFakeClient) StartRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
+func (c *claudeFakeClient) StartAgentRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
 	return &pb.StartAgentRunResponse{}, nil
 }
 func (c *claudeFakeClient) StopRun(context.Context, *pb.StopAgentRunRequest) (*pb.StopAgentRunResponse, error) {
@@ -2595,7 +2595,7 @@ type recordingAgentClient struct {
 func (c *recordingAgentClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
 	return &pb.PluginInfo{Name: c.name}, nil
 }
-func (c *recordingAgentClient) StartRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
+func (c *recordingAgentClient) StartAgentRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
 	return &pb.StartAgentRunResponse{}, nil
 }
 func (c *recordingAgentClient) StopRun(context.Context, *pb.StopAgentRunRequest) (*pb.StopAgentRunResponse, error) {

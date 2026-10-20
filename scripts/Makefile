@@ -156,6 +156,9 @@ lint:
 	@node guards/store-verbs.mjs
 	@node guards/store-only-sql.mjs --check
 	@node guards/entity-names.mjs
+	@cd .. && node scripts/guards/file-size.mjs
+	@cd .. && node scripts/guards/warehouse-model-names.mjs
+	@cd .. && node scripts/guards/warehouse-mart-tests.mjs
 	@node guards/glossary.mjs --check
 # check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/
 # against a shrink-only baseline; unstamped (~4 s), since a stamp would hash the same files.

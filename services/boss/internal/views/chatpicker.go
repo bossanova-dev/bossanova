@@ -67,7 +67,7 @@ type ChatPickerModel struct {
 
 	showOpenPorts bool
 	session       *pb.Session
-	chats         []*pb.ClaudeChat
+	chats         []*pb.AgentChat
 	table         table.Model
 	spinner       spinner.Model
 	loading       bool
@@ -300,7 +300,7 @@ func (m ChatPickerModel) textEntryActive() bool {
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
-func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
+func (m ChatPickerModel) selectedChat() *pb.AgentChat {
 	idx := m.table.Cursor()
 	if idx < 0 || idx >= len(m.chats) {
 		return nil

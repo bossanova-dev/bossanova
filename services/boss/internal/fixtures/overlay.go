@@ -181,7 +181,7 @@ func (r OverlayRepo) Build() (*pb.Repo, error) {
 	}, nil
 }
 
-// OverlayChat is the minimal display shape of a pb.ClaudeChat.
+// OverlayChat is the minimal display shape of a pb.AgentChat.
 type OverlayChat struct {
 	ID                string `json:"id"`
 	SessionID         string `json:"sessionId"`
@@ -190,8 +190,8 @@ type OverlayChat struct {
 	CreatedOffsetMins int    `json:"createdOffsetMins,omitempty"`
 }
 
-// Build validates required fields and maps onto a *pb.ClaudeChat.
-func (c OverlayChat) Build() (*pb.ClaudeChat, error) {
+// Build validates required fields and maps onto a *pb.AgentChat.
+func (c OverlayChat) Build() (*pb.AgentChat, error) {
 	if c.ID == "" {
 		return nil, fmt.Errorf("chat: id is required")
 	}
@@ -201,7 +201,7 @@ func (c OverlayChat) Build() (*pb.ClaudeChat, error) {
 	if c.Title == "" {
 		return nil, fmt.Errorf("chat %q: title is required", c.ID)
 	}
-	return &pb.ClaudeChat{
+	return &pb.AgentChat{
 		Id:             c.ID,
 		SessionId:      c.SessionID,
 		Title:          c.Title,
@@ -400,7 +400,7 @@ func ParseOverlay(data []byte) (Overlay, error) {
 type overlayTarget interface {
 	AddRepo(*pb.Repo)
 	AddSession(*pb.Session)
-	AddChat(*pb.ClaudeChat)
+	AddChat(*pb.AgentChat)
 	AddCronJob(*pb.CronJob)
 	AddPRs(repoID string, prs []*pb.PRSummary)
 	AddTrackerIssues(repoID string, issues []*pb.TrackerIssue)

@@ -42,7 +42,7 @@ func (f *fakePollAgentClient) ExitStatus(_ context.Context, _ *bossanovav1.Agent
 	return resp, nil
 }
 
-func (f *fakePollAgentClient) StartRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (f *fakePollAgentClient) StartAgentRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{}, nil
 }
 func (f *fakePollAgentClient) StopRun(_ context.Context, _ *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {

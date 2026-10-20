@@ -48,7 +48,7 @@ const sixDaysOut = 6*24*time.Hour + time.Hour
 
 // armedPicker lists chats into a sized picker and delivers whatever armed fetch
 // that issued, the way a running program would.
-func armedPicker(t *testing.T, stub *chatPickerStub, sess *pb.Session, chats []*pb.ClaudeChat, statuses, reasons map[string]string) ChatPickerModel {
+func armedPicker(t *testing.T, stub *chatPickerStub, sess *pb.Session, chats []*pb.AgentChat, statuses, reasons map[string]string) ChatPickerModel {
 	t.Helper()
 	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
@@ -82,8 +82,8 @@ func firstArmedLine(m ChatPickerModel) string {
 	return ""
 }
 
-func verifyChat(id, title string) *pb.ClaudeChat {
-	return &pb.ClaudeChat{SessionId: "session-1", AgentSessionId: id, Title: title, AgentName: "claude", CreatedAt: timestamppb.Now()}
+func verifyChat(id, title string) *pb.AgentChat {
+	return &pb.AgentChat{SessionId: "session-1", AgentSessionId: id, Title: title, AgentName: "claude", CreatedAt: timestamppb.Now()}
 }
 
 func TestArmedCallbackFor(t *testing.T) {
@@ -204,7 +204,7 @@ func TestChatPicker_ArmedStatusCellShowsTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", tc.trigger)}}
 			m := armedPicker(t, stub, tc.sess,
-				[]*pb.ClaudeChat{verifyChat("agent-armed", "verify"), verifyChat("agent-unknown", "other")},
+				[]*pb.AgentChat{verifyChat("agent-armed", "verify"), verifyChat("agent-unknown", "other")},
 				map[string]string{"agent-armed": statusWaiting, "agent-unknown": statusWaiting},
 				map[string]string{"agent-armed": armedTestReason(tc.trigger), "agent-unknown": armedTestReason("checks_passed")})
 			m.buildTableRows()
@@ -277,7 +277,7 @@ func TestChatPicker_ProgressCallbackOutranksADoneReason(t *testing.T) {
 					sess.Attention = &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, TargetChatId: "agent-v", ParkCodes: []string{"human-review:ui"}}
 				}
 				m := armedPicker(t, stub, sess,
-					[]*pb.ClaudeChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")},
+					[]*pb.AgentChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")},
 					map[string]string{"agent-armed": statusWaiting},
 					map[string]string{"agent-armed": armedTestReason("merged")})
 				m.buildTableRows()
@@ -298,7 +298,7 @@ func TestChatPicker_ProgressCallbackOutranksADoneReason(t *testing.T) {
 // and then takes it back. The session-details attention view agrees.
 func TestChatPicker_DoneWaitsForTheCallbackList(t *testing.T) {
 	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
-	chats := []*pb.ClaudeChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")}
+	chats := []*pb.AgentChat{verifyChat("agent-armed", "build"), verifyChat("agent-v", "verify")}
 	statuses := map[string]string{"agent-armed": statusWaiting, "agent-v": statusWaiting}
 	reasons := map[string]string{"agent-armed": armedTestReason("merged")}
 
@@ -349,7 +349,7 @@ func TestChatPicker_ArmedLineNamesTitleReasonAndExpiry(t *testing.T) {
 			stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", trigger)}}
 			reason := armedTestReason(trigger)
 			m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-				[]*pb.ClaudeChat{verifyChat("agent-armed", "verify")},
+				[]*pb.AgentChat{verifyChat("agent-armed", "verify")},
 				map[string]string{"agent-armed": statusWaiting},
 				map[string]string{"agent-armed": reason})
 			want := "verify · " + reason + " · expires in 6d"
@@ -385,7 +385,7 @@ func TestChatPicker_ArmedLineCarriesNeedsHumanPark(t *testing.T) {
 			stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "checks_passed_ready")}}
 			sess := &pb.Session{Id: "session-1", DisplayStatus: tc.status, AttentionStatus: park}
 			m := armedPicker(t, stub, sess,
-				[]*pb.ClaudeChat{verifyChat("agent-armed", "verify")},
+				[]*pb.AgentChat{verifyChat("agent-armed", "verify")},
 				map[string]string{"agent-armed": statusWaiting},
 				map[string]string{"agent-armed": reason})
 			got := firstArmedLine(m)
@@ -407,7 +407,7 @@ func TestChatPicker_ArmedLineCarriesNeedsHumanPark(t *testing.T) {
 func TestChatPicker_ArmedFetchIsKeyDiffed(t *testing.T) {
 	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "checks_passed_ready")}}
 	reason := armedTestReason("checks_passed_ready")
-	chats := []*pb.ClaudeChat{verifyChat("agent-armed", "verify"), verifyChat("agent-busy", "busy")}
+	chats := []*pb.AgentChat{verifyChat("agent-armed", "verify"), verifyChat("agent-busy", "busy")}
 	statuses := map[string]string{"agent-armed": statusWaiting, "agent-busy": statusWorking}
 	reasons := map[string]string{"agent-armed": reason}
 	m := armedPicker(t, stub, &pb.Session{Id: "session-1"}, chats, statuses, reasons)
@@ -462,7 +462,7 @@ func TestChatPicker_ArmedFetchErrorFallsBack(t *testing.T) {
 	stub := &chatPickerStub{callbacksErr: errors.New("unimplemented")}
 	reason := armedTestReason("checks_passed_ready")
 	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-		[]*pb.ClaudeChat{verifyChat("agent-armed", "verify")},
+		[]*pb.AgentChat{verifyChat("agent-armed", "verify")},
 		map[string]string{"agent-armed": statusWaiting},
 		map[string]string{"agent-armed": reason})
 
@@ -486,7 +486,7 @@ func TestChatPicker_ArmedFetchErrorRetriedOnce(t *testing.T) {
 	statuses := map[string]string{"agent-armed": statusWaiting}
 	reasons := map[string]string{"agent-armed": reason}
 	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-		[]*pb.ClaudeChat{verifyChat("agent-armed", "verify")}, statuses, reasons)
+		[]*pb.AgentChat{verifyChat("agent-armed", "verify")}, statuses, reasons)
 	if got := len(stub.listCallbackCalls()); got != 1 {
 		t.Fatalf("ListGithubCallbacks calls = %d, want 1", got)
 	}
@@ -528,7 +528,7 @@ func TestChatPicker_OpenChatCarriesArmedNote(t *testing.T) {
 	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-1", "checks_passed_ready")}}
 	reason := armedTestReason("checks_passed_ready")
 	m := armedPicker(t, stub, &pb.Session{Id: "session-1"},
-		[]*pb.ClaudeChat{verifyChat("agent-armed", "verify"), verifyChat("agent-busy", "busy")},
+		[]*pb.AgentChat{verifyChat("agent-armed", "verify"), verifyChat("agent-busy", "busy")},
 		map[string]string{"agent-armed": statusWaiting, "agent-busy": statusWorking},
 		map[string]string{"agent-armed": reason})
 	// A narrow terminal truncates the picker line; the note must stay whole.
@@ -663,7 +663,7 @@ func TestChatPicker_ArmedVerifyFixture(t *testing.T) {
 // re-listed by the timer.
 func TestChatPicker_DoneIsReListedOnASlowTimer(t *testing.T) {
 	sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
-	chats := []*pb.ClaudeChat{verifyChat("agent-armed", "build")}
+	chats := []*pb.AgentChat{verifyChat("agent-armed", "build")}
 	statuses := map[string]string{"agent-armed": statusWaiting}
 	reasons := map[string]string{"agent-armed": armedTestReason("merged")}
 	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{armedTestCallback("cb-merged", "merged")}}

@@ -134,7 +134,7 @@ func (f *fakeSessionCommandServer) LinkSessionPR(_ context.Context, req *connect
 func (f *fakeSessionCommandServer) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	f.lastRecordChat = req.Msg
 	return connect.NewResponse(&pb.RecordChatResponse{
-		Chat: &pb.ClaudeChat{Id: "chat1"},
+		Chat: &pb.AgentChat{Id: "chat1"},
 	}), nil
 }
 

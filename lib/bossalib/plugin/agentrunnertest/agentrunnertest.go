@@ -20,8 +20,8 @@ type Runner struct {
 	Name        string
 	Client      v1.AgentRunnerServiceClient
 	Unsupported []string
-	// StartRun overrides the lifecycle request; nil uses the isolated Env paths.
-	StartRun func(Env) *v1.StartAgentRunRequest
+	// StartAgentRun overrides the lifecycle request; nil uses the isolated Env paths.
+	StartAgentRun func(Env) *v1.StartAgentRunRequest
 }
 
 // Env contains isolated paths and an ID that has never run.

@@ -487,14 +487,14 @@ func firstLine(s string) string {
 
 // chatStartErrorHint returns a short "chat failed to start: <reason>" hint
 // for the first chat in chats whose StartError is non-empty — a tmux launch
-// failure stamped by the daemon (ClaudeChat.StartError; see
+// failure stamped by the daemon (AgentChat.StartError; see
 // renderChatStartFailed for the per-row badge this mirrors at the session
 // level). Empty when chats is nil/empty or no chat has a StartError. Mirrors
 // setupErrorHint's firstLine truncation so a verbose tmux/daemon error
 // string can't blow out the warning block. Deliberately NOT folded into
 // sessionWarningHints: that function is shared with the home-list call
 // sites, which have no chats slice to inspect — see selectedSessionWarningBlock.
-func chatStartErrorHint(chats []*pb.ClaudeChat) string {
+func chatStartErrorHint(chats []*pb.AgentChat) string {
 	for _, chat := range chats {
 		if chat == nil {
 			continue
@@ -806,7 +806,7 @@ func shortDuration(d time.Duration) string {
 // with chats-less home-list callers, so that iteration lives here instead.
 // Returns "" when the session has no hints, so callers can skip rendering
 // entirely (no empty block, no layout shift).
-func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.ClaudeChat, width int) string {
+func selectedSessionWarningBlock(sess *pb.Session, chats []*pb.AgentChat, width int) string {
 	hints := sessionWarningHints(sess)
 	// A tmux launch failure is the row's only carrier of that state, so it is
 	// exempt from the recessive treatment.

@@ -4753,6 +4753,115 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Account'
       title: AddAccountResponse
       additionalProperties: false
+    bossanova.v1.AgentChat:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        sessionId:
+          type: string
+          title: session_id
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: Agent session UUID
+        title:
+          type: string
+          title: title
+          description: First user prompt or "New chat"
+        daemonId:
+          type: string
+          title: daemon_id
+          description: Originating daemon (empty = local)
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        tmuxSessionName:
+          type: string
+          title: tmux_session_name
+          description: Empty if no tmux session is hosting this chat
+        agentName:
+          type: string
+          title: agent_name
+          description: Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+        providerSessionId:
+          type: string
+          title: provider_session_id
+          description: |-
+            Provider-owned resume/session UUID. Empty when provider uses agent_session_id
+             directly or the value has not been discovered yet.
+        startError:
+          type: string
+          title: start_error
+          description: |-
+            Short human-readable reason the agent never came up for this chat
+             (e.g. "send plan failed: ready marker ❯ not seen within 5s").
+             Empty on the happy path; non-empty rows are preserved as
+             "attempted but never came up" entries so the chat list can show a
+             (failed to start) badge instead of silently swallowing the
+             attempt.
+        ownerUserId:
+          type: string
+          title: owner_user_id
+        role:
+          title: role
+          description: |-
+            The purpose the chat was created for. UNSPECIFIED is a legacy chat created
+             before roles existed. Unlike title, which agents and operators rename, the
+             role is set once at creation and is what automation keys on.
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
+        reclaimedAt:
+          title: reclaimed_at
+          description: |-
+            Set when automation replaced this chat (repair reclaiming an idle build,
+             repair or verify chat). A replaced chat did run, so start_error stays
+             empty; reclaim_reason says why it was replaced.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        reclaimReason:
+          type: string
+          title: reclaim_reason
+      title: AgentChat
+      additionalProperties: false
+      description: AgentChat represents an agent conversation associated with a session.
+    bossanova.v1.AgentChatMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        sessionId:
+          type: string
+          title: session_id
+        agentSessionId:
+          type: string
+          title: agent_session_id
+        title:
+          type: string
+          title: title
+        daemonId:
+          type: string
+          title: daemon_id
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        lastMessagePreview:
+          type: string
+          title: last_message_preview
+          description: First ~200 characters of the last message. NOT the full message.
+        agentName:
+          type: string
+          title: agent_name
+          description: Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+      title: AgentChatMetadata
+      additionalProperties: false
+      description: |-
+        AgentChatMetadata is the slim, snapshot-sized view of an agent chat.
+         NO full transcripts — last_message_preview is a short summary only.
+         Full transcripts are fetched on demand via AttachSessionCommand.
     bossanova.v1.AgentExitStatusRequest:
       type: object
       properties:
@@ -5074,6 +5183,22 @@ components:
           title: value
       title: ConfigEntry
       additionalProperties: false
+    bossanova.v1.AgentTurn:
+      type: object
+      properties:
+        role:
+          type: string
+          title: role
+          description: '"user" or "assistant".'
+        content:
+          type: string
+          title: content
+        timestamp:
+          title: timestamp
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: AgentTurn
+      additionalProperties: false
+      description: AgentTurn is a single turn from a recent agent conversation.
     bossanova.v1.AggregatedRepo:
       type: object
       properties:
@@ -5460,8 +5585,8 @@ components:
           type: string
           title: origin_chat_id
           description: |-
-            ClaudeChat.agent_session_id — the same identifier BroadcastSelectorClause
-             .chat_ids carries, NOT ClaudeChat.id. Spelled out because ClaudeChat has
+            AgentChat.agent_session_id — the same identifier BroadcastSelectorClause
+             .chat_ids carries, NOT AgentChat.id. Spelled out because AgentChat has
              both, and a delivery child storing the row id here would produce records
              that cannot be joined against a selector. chat that sent it; empty = not chat-originated
         message:
@@ -5554,7 +5679,7 @@ components:
         targetChatId:
           type: string
           title: target_chat_id
-          description: ClaudeChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
+          description: AgentChat.agent_session_id, as in BroadcastSelectorClause.chat_ids
         state:
           type: string
           title: state
@@ -5601,7 +5726,7 @@ components:
           type: string
           title: origin_chat_id
           description: |-
-            Chat the broadcast was issued from (ClaudeChat.agent_session_id), on the
+            Chat the broadcast was issued from (AgentChat.agent_session_id), on the
              origin daemon. Empty = operator-issued with no originating chat.
         message:
           type: string
@@ -5646,7 +5771,7 @@ components:
           items:
             type: string
           title: chat_ids
-          description: ClaudeChat.agent_session_id
+          description: AgentChat.agent_session_id
         sessionIds:
           type: array
           items:
@@ -5664,24 +5789,24 @@ components:
           items:
             type: string
           title: agent_names
-          description: ClaudeChat.agent_name
+          description: AgentChat.agent_name
         accountIds:
           type: array
           items:
             type: string
           title: account_ids
           description: |-
-            No wire message carries a chat's account today (ClaudeChat has no
+            No wire message carries a chat's account today (AgentChat has no
              account_id), so this dimension is resolved daemon-side from the
              agent_chats.account_id column. The delivery child either keeps resolving it
-             there or adds account_id to ClaudeChat. The "" default account is not
+             there or adds account_id to AgentChat. The "" default account is not
              addressable.
         daemonIds:
           type: array
           items:
             type: string
           title: daemon_ids
-          description: ClaudeChat.daemon_id (the "" local daemon is not addressable)
+          description: AgentChat.daemon_id (the "" local daemon is not addressable)
       title: BroadcastSelectorClause
       additionalProperties: false
       description: |-
@@ -5713,7 +5838,7 @@ components:
           type: string
           title: origin_chat_id
           description: |-
-            Chat that registered it (ClaudeChat.agent_session_id), as in
+            Chat that registered it (AgentChat.agent_session_id), as in
              BroadcastSelectorClause.chat_ids. Empty = operator-issued with no
              registering chat.
 
@@ -5990,10 +6115,10 @@ components:
         chat:
           title: chat
           description: 'On CREATE/UPDATE: full metadata. On DELETE: id only.'
-          $ref: '#/components/schemas/bossanova.v1.ClaudeChatMetadata'
+          $ref: '#/components/schemas/bossanova.v1.AgentChatMetadata'
       title: ChatDelta
       additionalProperties: false
-      description: ChatDelta is a single ClaudeChatMetadata lifecycle change.
+      description: ChatDelta is a single AgentChatMetadata lifecycle change.
     bossanova.v1.ChatDelta.Kind:
       type: string
       title: Kind
@@ -6259,131 +6384,6 @@ components:
           format: int32
       title: ChecksPassedEvent
       additionalProperties: false
-    bossanova.v1.ClaudeChat:
-      type: object
-      properties:
-        id:
-          type: string
-          title: id
-        sessionId:
-          type: string
-          title: session_id
-        agentSessionId:
-          type: string
-          title: agent_session_id
-          description: Agent session UUID
-        title:
-          type: string
-          title: title
-          description: First user prompt or "New chat"
-        daemonId:
-          type: string
-          title: daemon_id
-          description: Originating daemon (empty = local)
-        createdAt:
-          title: created_at
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        tmuxSessionName:
-          type: string
-          title: tmux_session_name
-          description: Empty if no tmux session is hosting this chat
-        agentName:
-          type: string
-          title: agent_name
-          description: Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
-        providerSessionId:
-          type: string
-          title: provider_session_id
-          description: |-
-            Provider-owned resume/session UUID. Empty when provider uses agent_session_id
-             directly or the value has not been discovered yet.
-        startError:
-          type: string
-          title: start_error
-          description: |-
-            Short human-readable reason the agent never came up for this chat
-             (e.g. "send plan failed: ready marker ❯ not seen within 5s").
-             Empty on the happy path; non-empty rows are preserved as
-             "attempted but never came up" entries so the chat list can show a
-             (failed to start) badge instead of silently swallowing the
-             attempt.
-        ownerUserId:
-          type: string
-          title: owner_user_id
-        role:
-          title: role
-          description: |-
-            The purpose the chat was created for. UNSPECIFIED is a legacy chat created
-             before roles existed. Unlike title, which agents and operators rename, the
-             role is set once at creation and is what automation keys on.
-          $ref: '#/components/schemas/bossanova.v1.ChatRole'
-        reclaimedAt:
-          title: reclaimed_at
-          description: |-
-            Set when automation replaced this chat (repair reclaiming an idle build,
-             repair or verify chat). A replaced chat did run, so start_error stays
-             empty; reclaim_reason says why it was replaced.
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        reclaimReason:
-          type: string
-          title: reclaim_reason
-      title: ClaudeChat
-      additionalProperties: false
-      description: ClaudeChat represents a Claude Code conversation associated with a session.
-    bossanova.v1.ClaudeChatMetadata:
-      type: object
-      properties:
-        id:
-          type: string
-          title: id
-        sessionId:
-          type: string
-          title: session_id
-        agentSessionId:
-          type: string
-          title: agent_session_id
-        title:
-          type: string
-          title: title
-        daemonId:
-          type: string
-          title: daemon_id
-        createdAt:
-          title: created_at
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        updatedAt:
-          title: updated_at
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        lastMessagePreview:
-          type: string
-          title: last_message_preview
-          description: First ~200 characters of the last message. NOT the full message.
-        agentName:
-          type: string
-          title: agent_name
-          description: Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
-      title: ClaudeChatMetadata
-      additionalProperties: false
-      description: |-
-        ClaudeChatMetadata is the slim, snapshot-sized view of a Claude chat.
-         NO full transcripts — last_message_preview is a short summary only.
-         Full transcripts are fetched on demand via AttachSessionCommand.
-    bossanova.v1.ClaudeTurn:
-      type: object
-      properties:
-        role:
-          type: string
-          title: role
-          description: '"user" or "assistant".'
-        content:
-          type: string
-          title: content
-        timestamp:
-          title: timestamp
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-      title: ClaudeTurn
-      additionalProperties: false
-      description: ClaudeTurn is a single turn from a recent Claude conversation.
     bossanova.v1.ClearRepoOrganizationRequest:
       type: object
       properties:
@@ -6828,7 +6828,7 @@ components:
                 recordChat:
                   title: record_chat
                   description: RecordChat returns the created/resumed chat.
-                  $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+                  $ref: '#/components/schemas/bossanova.v1.AgentChat'
               title: record_chat
               required:
                 - recordChat
@@ -7118,7 +7118,7 @@ components:
           type: string
           title: origin_chat_id
           description: |-
-            Chat registering this subscription (ClaudeChat.agent_session_id). Empty =
+            Chat registering this subscription (AgentChat.agent_session_id). Empty =
              operator-issued from the CLI or MCP with no originating chat. It records
              who asked; address it by naming it in the selector, which is honoured
              (there is no self-exclusion on a fired subscription).
@@ -8500,9 +8500,9 @@ components:
         chats:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.ClaudeChatMetadata'
+            $ref: '#/components/schemas/bossanova.v1.AgentChatMetadata'
           title: chats
-          description: Metadata only — see ClaudeChatMetadata.
+          description: Metadata only — see AgentChatMetadata.
         statuses:
           type: array
           items:
@@ -10852,7 +10852,7 @@ components:
         chats:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+            $ref: '#/components/schemas/bossanova.v1.AgentChat'
           title: chats
       title: ListChatsResponse
       additionalProperties: false
@@ -13952,7 +13952,7 @@ components:
         chats:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.ClaudeChatMetadata'
+            $ref: '#/components/schemas/bossanova.v1.AgentChatMetadata'
           title: chats
         statuses:
           type: array
@@ -14768,7 +14768,7 @@ components:
         chats:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+            $ref: '#/components/schemas/bossanova.v1.AgentChat'
           title: chats
       title: ProxyListChatsResponse
       additionalProperties: false
@@ -15435,7 +15435,7 @@ components:
       properties:
         chat:
           title: chat
-          $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+          $ref: '#/components/schemas/bossanova.v1.AgentChat'
       title: ProxyRecordChatResponse
       additionalProperties: false
     bossanova.v1.ProxyRefreshAccountRequest:
@@ -16282,7 +16282,7 @@ components:
       additionalProperties: false
       description: |-
         RecordChatCommand asks the daemon to record or resume a chat.
-         Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
+         Replies with CommandResult carrying an AgentChat payload (record_chat = 8).
     bossanova.v1.RecordChatRequest:
       type: object
       properties:
@@ -16328,7 +16328,7 @@ components:
       properties:
         chat:
           title: chat
-          $ref: '#/components/schemas/bossanova.v1.ClaudeChat'
+          $ref: '#/components/schemas/bossanova.v1.AgentChat'
       title: RecordChatResponse
       additionalProperties: false
     bossanova.v1.RecordRepairOutcomeRequest:
@@ -17134,7 +17134,7 @@ components:
         recentTurns:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.ClaudeTurn'
+            $ref: '#/components/schemas/bossanova.v1.AgentTurn'
           title: recent_turns
           description: Optionally populated — most recent Claude turns, if available.
       title: ReportContext
@@ -17867,7 +17867,7 @@ components:
           type: string
           title: origin_chat_id
           description: |-
-            Chat this broadcast is issued from (ClaudeChat.agent_session_id). Empty =
+            Chat this broadcast is issued from (AgentChat.agent_session_id). Empty =
              operator-issued from the CLI or MCP with no originating chat, which is why
              this is a plain string rather than a required id.
         message:

@@ -378,7 +378,7 @@ func TestQuestionRowWorldSeedsMixedStatuses(t *testing.T) {
 	}
 	// The question chat must be the older one (created before the working chat),
 	// so the picker sorts it below the working chat and the fix is exercised.
-	var working, question *pb.ClaudeChat
+	var working, question *pb.AgentChat
 	for _, c := range w.Chats {
 		switch c.GetAgentSessionId() {
 		case qAgent:

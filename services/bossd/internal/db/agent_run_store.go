@@ -33,7 +33,7 @@ const (
 	AgentRunTerminalUnrecorded  = ""
 )
 
-// AgentRun is one daemon-observed AgentRunner.StartRun lifecycle.
+// AgentRun is one daemon-observed AgentRunner.StartAgentRun lifecycle.
 type AgentRun struct {
 	ID                   string
 	SessionID            string

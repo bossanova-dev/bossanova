@@ -150,7 +150,7 @@ func renderChatReplaced() string {
 //
 // A wait on a PR other than the session's own names that PR, because nothing
 // else on the screen says which PR the chat is parked on.
-func (m ChatPickerModel) statusDetail(chat *pb.ClaudeChat) string {
+func (m ChatPickerModel) statusDetail(chat *pb.AgentChat) string {
 	id := chat.GetAgentSessionId()
 	switch m.daemonStatuses[id] {
 	case statusWorking:
@@ -468,7 +468,7 @@ func (m ChatPickerModel) limitedLineHeight() int {
 
 // chatLastActive returns the most recent activity time for a chat.
 // Prefers daemon-reported output time, then created_at.
-func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
+func (m ChatPickerModel) chatLastActive(chat *pb.AgentChat) time.Time {
 	if t, ok := m.daemonLastOutput[chat.AgentSessionId]; ok && !t.IsZero() {
 		return t
 	}
@@ -504,7 +504,7 @@ func (m ChatPickerModel) legacyWarningBlock() string {
 	return selectedSessionWarningBlock(m.session, m.chats, m.blockWrapWidth())
 }
 
-func (m ChatPickerModel) detailChatStatus(chat *pb.ClaudeChat) string {
+func (m ChatPickerModel) detailChatStatus(chat *pb.AgentChat) string {
 	a := m.session.GetAttention()
 	if a == nil {
 		return ""

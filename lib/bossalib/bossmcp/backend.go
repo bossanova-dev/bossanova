@@ -66,8 +66,8 @@ type Backend interface {
 
 	// Chats (agent chats; positional RecordChat / scalar-return mutators mirror
 	// the boss client surface exactly).
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
-	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.AgentChat, error)
+	ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
 	DeleteChat(ctx context.Context, agentSessionID string) error
 	WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)

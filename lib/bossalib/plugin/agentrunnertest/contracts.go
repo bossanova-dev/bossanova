@@ -24,8 +24,8 @@ var contracts = []contract{
 		}
 		return c.PreflightHeadlessRun(ctx, q)
 	}},
-	{"StartRun", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
-		return c.StartRun(ctx, &v1.StartAgentRunRequest{})
+	{"StartAgentRun", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		return c.StartAgentRun(ctx, &v1.StartAgentRunRequest{})
 	}},
 	{"StopRun", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
 		q := &v1.StopAgentRunRequest{}

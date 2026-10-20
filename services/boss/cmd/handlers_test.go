@@ -2129,7 +2129,7 @@ func TestListRenderersEmitFullIDs(t *testing.T) {
 		cmd := &cobra.Command{}
 		var buf bytes.Buffer
 		cmd.SetOut(&buf)
-		printChatsTable(cmd, []*pb.ClaudeChat{{AgentSessionId: fullAgentID}}, nil, true)
+		printChatsTable(cmd, []*pb.AgentChat{{AgentSessionId: fullAgentID}}, nil, true)
 		if !strings.Contains(buf.String(), fullAgentID) {
 			t.Fatalf("chats table truncated the id; got:\n%s", buf.String())
 		}
@@ -3092,7 +3092,7 @@ func TestPrintChatsTable_PinnedFromBothCommands(t *testing.T) {
 	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	lastOutput := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
 
-	chats := []*pb.ClaudeChat{{
+	chats := []*pb.AgentChat{{
 		AgentSessionId: agentID,
 		Title:          "Fix the renderer",
 		CreatedAt:      timestamppb.New(created),

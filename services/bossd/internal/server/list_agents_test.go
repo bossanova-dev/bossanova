@@ -27,7 +27,7 @@ func (c *listAgentsFakeClient) GetInfo(context.Context) (*bossanovav1.PluginInfo
 	}
 	return c.info, nil
 }
-func (c *listAgentsFakeClient) StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (c *listAgentsFakeClient) StartAgentRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{}, nil
 }
 func (c *listAgentsFakeClient) StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {

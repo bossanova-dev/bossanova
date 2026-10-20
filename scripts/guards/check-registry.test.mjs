@@ -134,6 +134,29 @@ test('checkRegistry finds a Go proof test by its func declaration', async () => 
   assert.match(absent.join('\n'), /declares no test named "TestFixtureGuard"/)
 })
 
+test('checkRegistry finds a Python proof test by its def declaration', async () => {
+  const found = await failuresFor({
+    records: [record({ proof: { file: 'scripts/test_fixture.py', test: 'test_fixture_guard' } })],
+    files: {
+      'scripts/test_fixture.py':
+        'class GuardTest:\n    def test_fixture_guard(self):\n        pass\n',
+    },
+  })
+  assert.deepEqual(found, [])
+})
+
+test('checkRegistry fails a Python proof file that declares no such test', async () => {
+  const failures = await failuresFor({
+    records: [record({ proof: { file: 'scripts/test_fixture.py', test: 'test_fixture_guard' } })],
+    files: {
+      'scripts/test_fixture.py': '# def test_fixture_guard(self):\nname = "test_fixture_guard"\n',
+    },
+  })
+  assert.deepEqual(failures, [
+    'fixture-guard: proof.file scripts/test_fixture.py declares no test named "test_fixture_guard"',
+  ])
+})
+
 test('checkRegistry fails a seeded record whose scans glob matches zero tracked files', async () => {
   const failures = await failuresFor({
     records: [record({ scans: ['scripts/*.mjs', 'scripts/nothing-here/**'] })],
@@ -376,7 +399,7 @@ test('scannedFiles resolves globs against tracked files only', () => {
   assert.deepEqual(scannedFiles('/unused', ['a/*.go'], { tracked }), ['a/b.go'])
 })
 
-test('the real scripts workflow push paths cover Go-only, golangci and rules-doc edits', () => {
+test('the real scripts workflow push paths cover Go-only, golangci, rules-doc and warehouse edits', () => {
   const text = fs.readFileSync(path.join(repoRoot, '.github/workflows/test-scripts.yml'), 'utf8')
   const { paths } = pushPaths(text)
   assert.ok(Array.isArray(paths) && paths.length > 0, 'test-scripts.yml must have push paths')
@@ -388,6 +411,7 @@ test('the real scripts workflow push paths cover Go-only, golangci and rules-doc
   const patterns = paths.map(globToRegExp)
   for (const file of [
     'services/bosso/internal/server/example.go',
+    'services/warehouse/models/growth/example.sql',
     '.golangci.yml',
     'docs/philosophy/rules.md',
     'scripts/guards/registry/guard-registry.mjs',

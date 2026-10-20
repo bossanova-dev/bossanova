@@ -639,22 +639,29 @@ func TestAttentionBlockedRunClearsWhenPRGreen(t *testing.T) {
 		attempt   *string
 		status    vcs.DisplayStatus
 		mergeable *bool
+		failures  bool
+		changes   bool
 		want      pb.AttentionKind
 	}{
-		{"green without recorded attempt", nil, vcs.DisplayStatusPassing, &mergeable, progress},
-		{"green on attempt head", &head, vcs.DisplayStatusPassing, &mergeable, progress},
-		{"draft without recorded attempt", nil, vcs.DisplayStatusDraft, &mergeable, fix},
-		{"draft on attempt head", &head, vcs.DisplayStatusDraft, &mergeable, fix},
-		{"checking", &head, vcs.DisplayStatusChecking, &mergeable, fix},
-		{"unknown mergeability", &head, vcs.DisplayStatusPassing, nil, fix},
-		{"failing", &head, vcs.DisplayStatusFailing, &mergeable, fix},
-		{"head moved", &oldHead, vcs.DisplayStatusPassing, &mergeable, progress},
+		{"green without recorded attempt", nil, vcs.DisplayStatusPassing, &mergeable, false, false, progress},
+		{"green on attempt head", &head, vcs.DisplayStatusPassing, &mergeable, false, false, progress},
+		{"draft without recorded attempt", nil, vcs.DisplayStatusDraft, &mergeable, false, false, fix},
+		{"draft on attempt head", &head, vcs.DisplayStatusDraft, &mergeable, false, false, fix},
+		// Checks still running: whether the block needs the operator is not
+		// known until they settle.
+		{"checking", &head, vcs.DisplayStatusChecking, &mergeable, false, false, progress},
+		{"checking, mergeability unknown", &head, vcs.DisplayStatusChecking, nil, false, false, progress},
+		{"checking with a check failed", &head, vcs.DisplayStatusChecking, &mergeable, true, false, fix},
+		{"checking with changes requested", &head, vcs.DisplayStatusChecking, &mergeable, false, true, fix},
+		{"unknown mergeability", &head, vcs.DisplayStatusPassing, nil, false, false, fix},
+		{"failing", &head, vcs.DisplayStatusFailing, &mergeable, true, false, fix},
+		{"head moved", &oldHead, vcs.DisplayStatusPassing, &mergeable, false, false, progress},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 1
 			row := &models.Session{ID: "s", RepoID: "r", State: machine.Blocked, PRNumber: &n, BlockedReason: &reason, LastAttemptHeadSHA: tc.attempt}
 			tracker := status.NewDisplayTracker()
-			tracker.Set(row.ID, vcs.DisplayInfo{Status: tc.status, HeadSHA: head, Mergeable: tc.mergeable})
+			tracker.Set(row.ID, vcs.DisplayInfo{Status: tc.status, HeadSHA: head, Mergeable: tc.mergeable, HasFailures: tc.failures, HasChangesRequested: tc.changes})
 			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
 			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
 			if err != nil {

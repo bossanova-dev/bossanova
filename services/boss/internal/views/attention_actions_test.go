@@ -380,11 +380,11 @@ func TestAttentionEnterOpensDetailsWithTheTargetChatSelected(t *testing.T) {
 				t.Fatalf("activeView=%v, want the chat list", a.activeView)
 			}
 			now := time.Now()
-			chat := func(id string, age time.Duration) *pb.ClaudeChat {
-				return &pb.ClaudeChat{SessionId: "session-1", AgentSessionId: id, Title: id, CreatedAt: timestamppb.New(now.Add(-age))}
+			chat := func(id string, age time.Duration) *pb.AgentChat {
+				return &pb.AgentChat{SessionId: "session-1", AgentSessionId: id, Title: id, CreatedAt: timestamppb.New(now.Add(-age))}
 			}
 			model, _ = a.Update(chatsListedMsg{
-				chats:          []*pb.ClaudeChat{chat("newest-chat", time.Minute), chat("target-chat", time.Hour), chat("asking-chat", 2*time.Hour)},
+				chats:          []*pb.AgentChat{chat("newest-chat", time.Minute), chat("target-chat", time.Hour), chat("asking-chat", 2*time.Hour)},
 				daemonStatuses: map[string]string{"newest-chat": statusWorking, "target-chat": statusStopped, "asking-chat": statusQuestion},
 			})
 			a = model.(App)

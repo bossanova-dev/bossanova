@@ -516,7 +516,7 @@ func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 
 // --- Claude Chat Tracking ---
 
-func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.ClaudeChat, error) {
+func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, role pb.ChatRole, resume bool) (*pb.AgentChat, error) {
 	req := &pb.RecordChatRequest{
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
@@ -554,7 +554,7 @@ func (c *LocalClient) DescribeChatMCP(ctx context.Context, agentSessionID string
 	return resp.Msg, nil
 }
 
-func (c *LocalClient) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+func (c *LocalClient) ListChats(ctx context.Context, sessionID string) ([]*pb.AgentChat, error) {
 	resp, err := c.rpc.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
 		SessionId: sessionID,
 	}))

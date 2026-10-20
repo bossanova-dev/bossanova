@@ -51,11 +51,11 @@ func (a *sessionSnapshotAdapter) SnapshotSessions(ctx context.Context) ([]*pb.Se
 	return a.lister.ListSessions(ctx)
 }
 
-// ChatListFn returns slim ClaudeChatMetadata protos — the per-chat
+// ChatListFn returns slim AgentChatMetadata protos — the per-chat
 // projection used by the snapshot path. Wired via a function type
 // (rather than an interface) so cmd/main.go can inline the join query
 // without defining a new type for a one-call-site contract.
-type ChatListFn func(ctx context.Context) ([]*pb.ClaudeChatMetadata, error)
+type ChatListFn func(ctx context.Context) ([]*pb.AgentChatMetadata, error)
 
 // chatSnapshotAdapter adapts a ChatListFn to ChatSnapshotReader.
 type chatSnapshotAdapter struct {
@@ -67,7 +67,7 @@ func NewChatSnapshotReader(fn ChatListFn) ChatSnapshotReader {
 	return &chatSnapshotAdapter{fn: fn}
 }
 
-func (a *chatSnapshotAdapter) SnapshotChats(ctx context.Context) ([]*pb.ClaudeChatMetadata, error) {
+func (a *chatSnapshotAdapter) SnapshotChats(ctx context.Context) ([]*pb.AgentChatMetadata, error) {
 	if a.fn == nil {
 		return nil, nil
 	}
@@ -621,7 +621,7 @@ func (a *CommandHandlerAdapter) LinkSessionPR(ctx context.Context, sessionID, pr
 }
 
 // RecordChat implements SessionCommandHandler.RecordChat.
-func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error) {
+func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.AgentChat, error) {
 	if a.Commands == nil {
 		return nil, errors.New("record_chat: command server not wired")
 	}

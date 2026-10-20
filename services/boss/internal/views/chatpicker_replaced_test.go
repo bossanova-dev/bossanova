@@ -12,7 +12,7 @@ import (
 
 func TestChatPicker_ReplacedChatReadsAsReplacedNotFailed(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
-	updated, _ := m.Update(chatsListedMsg{chats: []*pb.ClaudeChat{
+	updated, _ := m.Update(chatsListedMsg{chats: []*pb.AgentChat{
 		{
 			SessionId:      "session-1",
 			AgentSessionId: "agent-replaced",
@@ -57,7 +57,7 @@ func TestChatPicker_ReplacedChatReadsAsReplacedNotFailed(t *testing.T) {
 func TestChatPicker_WorkingChatShowsWorkingOverAStaleFailedOrReplacedMark(t *testing.T) {
 	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 	updated, _ := m.Update(chatsListedMsg{
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{SessionId: "session-1", AgentSessionId: "agent-resumed", Title: "Resumed after restart", CreatedAt: timestamppb.Now(), StartError: "daemon restarted mid-run"},
 			{SessionId: "session-1", AgentSessionId: "agent-revived", Title: "Revived by a wake", CreatedAt: timestamppb.Now(), ReclaimedAt: timestamppb.Now()},
 			{SessionId: "session-1", AgentSessionId: "agent-stopped", Title: "Still failed", CreatedAt: timestamppb.Now(), StartError: "daemon restarted mid-run"},

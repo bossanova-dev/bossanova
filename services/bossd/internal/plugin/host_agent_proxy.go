@@ -65,12 +65,12 @@ func (p *agentRunnerProxy) PreflightHeadlessRun(ctx context.Context, req *bossan
 	return r.PreflightHeadlessRun(ctx, req)
 }
 
-func (p *agentRunnerProxy) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (p *agentRunnerProxy) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	r, err := p.resolve()
 	if err != nil {
 		return nil, err
 	}
-	return r.StartRun(ctx, req)
+	return r.StartAgentRun(ctx, req)
 }
 
 func (p *agentRunnerProxy) StopRun(ctx context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {

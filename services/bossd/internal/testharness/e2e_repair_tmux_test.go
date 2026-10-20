@@ -66,8 +66,8 @@ func (f *repairFakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInf
 	return &bossanovav1.PluginInfo{Name: "codex", Capabilities: []string{"agent_runner"}}, nil
 }
 
-func (f *repairFakeAgentClient) StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	return nil, fmt.Errorf("repair E2E must use StartChatRun, not StartRun")
+func (f *repairFakeAgentClient) StartAgentRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	return nil, fmt.Errorf("repair E2E must use StartChatRun, not StartAgentRun")
 }
 
 func (f *repairFakeAgentClient) StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {

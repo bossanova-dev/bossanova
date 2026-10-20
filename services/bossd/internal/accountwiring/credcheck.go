@@ -1091,7 +1091,7 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (models.Aut
 	// the claude plugin's usage-probe endpoint contract; the errors reaching
 	// this function come from the agent-runner smoke path, where no plugin
 	// reserves that code for a suspension. A transport-level PermissionDenied
-	// from StartRun/ExitStatus therefore stays transient.
+	// from StartAgentRun/ExitStatus therefore stays transient.
 
 	signal := smokeUnderlying(err)
 	if signal == nil {

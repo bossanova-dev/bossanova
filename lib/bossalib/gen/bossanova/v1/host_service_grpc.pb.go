@@ -66,7 +66,7 @@ type HostServiceClient interface {
 	// resolves the worktree path and bossd-owned log path internally and
 	// forwards to the loaded AgentRunner plugin. Returns the resolved
 	// session ID. Names use the "Host" suffix to avoid clashing with
-	// AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+	// AgentRunnerService.StartAgentRun's StartAgentRunRequest in plugin.proto.
 	// Legacy name: retain the existing request and response wire names.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -317,7 +317,7 @@ type HostServiceServer interface {
 	// resolves the worktree path and bossd-owned log path internally and
 	// forwards to the loaded AgentRunner plugin. Returns the resolved
 	// session ID. Names use the "Host" suffix to avoid clashing with
-	// AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+	// AgentRunnerService.StartAgentRun's StartAgentRunRequest in plugin.proto.
 	// Legacy name: retain the existing request and response wire names.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

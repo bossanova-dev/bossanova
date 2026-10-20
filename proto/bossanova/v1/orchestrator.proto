@@ -1045,7 +1045,7 @@ message ProxyRecordChatRequest {
   bool resume = 4;
   string agent_name = 5;
 }
-message ProxyRecordChatResponse { ClaudeChat chat = 1; }
+message ProxyRecordChatResponse { AgentChat chat = 1; }
 
 message ProxyDeleteChatRequest {
   string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
@@ -1949,7 +1949,7 @@ message ProxyChatListEvent {
 message ProxyChatListSnapshot {
   string session_id = 1;
   string daemon_id = 2;
-  repeated ClaudeChatMetadata chats = 3;
+  repeated AgentChatMetadata chats = 3;
   repeated ChatStatusEntry statuses = 4;
 }
 
@@ -2897,7 +2897,7 @@ message ReportContext {
   string bossd_log_tail = 10;
 
   // Optionally populated — most recent Claude turns, if available.
-  repeated ClaudeTurn recent_turns = 11;
+  repeated AgentTurn recent_turns = 11;
 }
 
 // --- Read-tier MCP gateway parity (BOS-401) ---
@@ -2907,7 +2907,7 @@ message ReportContext {
 // ProxyListChatsRequest reads a session's chats. session_id routes to the owning
 // daemon (FindSessionDaemon) and scopes authz.
 message ProxyListChatsRequest { string session_id = 1; }
-message ProxyListChatsResponse { repeated ClaudeChat chats = 1; }
+message ProxyListChatsResponse { repeated AgentChat chats = 1; }
 
 // ProxyGetChatStatusesRequest reads a session's per-chat statuses. session_id
 // routes to the owning daemon (FindSessionDaemon) and scopes authz, matching
@@ -3032,8 +3032,8 @@ message SessionSummary {
   google.protobuf.Timestamp updated_at = 7;
 }
 
-// ClaudeTurn is a single turn from a recent Claude conversation.
-message ClaudeTurn {
+// AgentTurn is a single turn from a recent agent conversation.
+message AgentTurn {
   // "user" or "assistant".
   string role = 1;
   string content = 2;

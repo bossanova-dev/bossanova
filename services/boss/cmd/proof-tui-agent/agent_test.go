@@ -19,7 +19,7 @@ import (
 type fakeDaemon struct {
 	repos    []*pb.Repo
 	sessions []*pb.Session
-	chats    []*pb.ClaudeChat
+	chats    []*pb.AgentChat
 	crons    []*pb.CronJob
 	prs      map[string][]*pb.PRSummary
 	issues   map[string][]*pb.TrackerIssue
@@ -58,7 +58,7 @@ type pushedEnded struct {
 
 func (d *fakeDaemon) AddRepo(r *pb.Repo)       { d.repos = append(d.repos, r) }
 func (d *fakeDaemon) AddSession(s *pb.Session) { d.sessions = append(d.sessions, s) }
-func (d *fakeDaemon) AddChat(c *pb.ClaudeChat) { d.chats = append(d.chats, c) }
+func (d *fakeDaemon) AddChat(c *pb.AgentChat)  { d.chats = append(d.chats, c) }
 func (d *fakeDaemon) AddCronJob(j *pb.CronJob) { d.crons = append(d.crons, j) }
 func (d *fakeDaemon) AddPRs(repoID string, prs []*pb.PRSummary) {
 	if d.prs == nil {

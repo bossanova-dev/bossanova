@@ -1879,8 +1879,8 @@ type DaemonSnapshot struct {
 	RepoIds  []string               `protobuf:"bytes,3,rep,name=repo_ids,json=repoIds,proto3" json:"repo_ids,omitempty"`
 	// Slim: no full transcripts, just session state + display fields.
 	Sessions []*Session `protobuf:"bytes,4,rep,name=sessions,proto3" json:"sessions,omitempty"`
-	// Metadata only — see ClaudeChatMetadata.
-	Chats []*ClaudeChatMetadata `protobuf:"bytes,5,rep,name=chats,proto3" json:"chats,omitempty"`
+	// Metadata only — see AgentChatMetadata.
+	Chats []*AgentChatMetadata `protobuf:"bytes,5,rep,name=chats,proto3" json:"chats,omitempty"`
 	// Live chat statuses keyed by agent_session_id (reuses ChatStatusEntry from daemon.proto).
 	Statuses []*ChatStatusEntry `protobuf:"bytes,6,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	// The daemon's GitHub callback interests at connect time (repo + PR). Carried
@@ -1956,7 +1956,7 @@ func (x *DaemonSnapshot) GetSessions() []*Session {
 	return nil
 }
 
-func (x *DaemonSnapshot) GetChats() []*ClaudeChatMetadata {
+func (x *DaemonSnapshot) GetChats() []*AgentChatMetadata {
 	if x != nil {
 		return x.Chats
 	}
@@ -2159,12 +2159,12 @@ func (x *SessionDelta) GetSeq() uint64 {
 	return 0
 }
 
-// ChatDelta is a single ClaudeChatMetadata lifecycle change.
+// ChatDelta is a single AgentChatMetadata lifecycle change.
 type ChatDelta struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Kind  ChatDelta_Kind         `protobuf:"varint,1,opt,name=kind,proto3,enum=bossanova.v1.ChatDelta_Kind" json:"kind,omitempty"`
 	// On CREATE/UPDATE: full metadata. On DELETE: id only.
-	Chat          *ClaudeChatMetadata `protobuf:"bytes,2,opt,name=chat,proto3" json:"chat,omitempty"`
+	Chat          *AgentChatMetadata `protobuf:"bytes,2,opt,name=chat,proto3" json:"chat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2206,7 +2206,7 @@ func (x *ChatDelta) GetKind() ChatDelta_Kind {
 	return ChatDelta_KIND_UNSPECIFIED
 }
 
-func (x *ChatDelta) GetChat() *ClaudeChatMetadata {
+func (x *ChatDelta) GetChat() *AgentChatMetadata {
 	if x != nil {
 		return x.Chat
 	}
@@ -2298,10 +2298,10 @@ func (x *ChatStatusDelta) GetWaitingReason() string {
 	return ""
 }
 
-// ClaudeChatMetadata is the slim, snapshot-sized view of a Claude chat.
+// AgentChatMetadata is the slim, snapshot-sized view of an agent chat.
 // NO full transcripts — last_message_preview is a short summary only.
 // Full transcripts are fetched on demand via AttachSessionCommand.
-type ClaudeChatMetadata struct {
+type AgentChatMetadata struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SessionId      string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2318,20 +2318,20 @@ type ClaudeChatMetadata struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ClaudeChatMetadata) Reset() {
-	*x = ClaudeChatMetadata{}
+func (x *AgentChatMetadata) Reset() {
+	*x = AgentChatMetadata{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ClaudeChatMetadata) String() string {
+func (x *AgentChatMetadata) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ClaudeChatMetadata) ProtoMessage() {}
+func (*AgentChatMetadata) ProtoMessage() {}
 
-func (x *ClaudeChatMetadata) ProtoReflect() protoreflect.Message {
+func (x *AgentChatMetadata) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2343,68 +2343,68 @@ func (x *ClaudeChatMetadata) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ClaudeChatMetadata.ProtoReflect.Descriptor instead.
-func (*ClaudeChatMetadata) Descriptor() ([]byte, []int) {
+// Deprecated: Use AgentChatMetadata.ProtoReflect.Descriptor instead.
+func (*AgentChatMetadata) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *ClaudeChatMetadata) GetId() string {
+func (x *AgentChatMetadata) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetSessionId() string {
+func (x *AgentChatMetadata) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetAgentSessionId() string {
+func (x *AgentChatMetadata) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetTitle() string {
+func (x *AgentChatMetadata) GetTitle() string {
 	if x != nil {
 		return x.Title
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetDaemonId() string {
+func (x *AgentChatMetadata) GetDaemonId() string {
 	if x != nil {
 		return x.DaemonId
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetCreatedAt() *timestamppb.Timestamp {
+func (x *AgentChatMetadata) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return nil
 }
 
-func (x *ClaudeChatMetadata) GetUpdatedAt() *timestamppb.Timestamp {
+func (x *AgentChatMetadata) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
 	}
 	return nil
 }
 
-func (x *ClaudeChatMetadata) GetLastMessagePreview() string {
+func (x *AgentChatMetadata) GetLastMessagePreview() string {
 	if x != nil {
 		return x.LastMessagePreview
 	}
 	return ""
 }
 
-func (x *ClaudeChatMetadata) GetAgentName() string {
+func (x *AgentChatMetadata) GetAgentName() string {
 	if x != nil {
 		return x.AgentName
 	}
@@ -2624,7 +2624,7 @@ func (x *CommandResult) GetWakeChat() *WakeChatResult {
 	return nil
 }
 
-func (x *CommandResult) GetRecordChat() *ClaudeChat {
+func (x *CommandResult) GetRecordChat() *AgentChat {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_RecordChat); ok {
 			return x.RecordChat
@@ -2992,7 +2992,7 @@ type CommandResult_WakeChat struct {
 
 type CommandResult_RecordChat struct {
 	// RecordChat returns the created/resumed chat.
-	RecordChat *ClaudeChat `protobuf:"bytes,8,opt,name=record_chat,json=recordChat,proto3,oneof"`
+	RecordChat *AgentChat `protobuf:"bytes,8,opt,name=record_chat,json=recordChat,proto3,oneof"`
 }
 
 type CommandResult_ListRepos struct {
@@ -4991,7 +4991,7 @@ func (x *RunTriggerGateResult) GetOutput() string {
 }
 
 // RecordChatCommand asks the daemon to record or resume a chat.
-// Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
+// Replies with CommandResult carrying an AgentChat payload (record_chat = 8).
 type RecordChatCommand struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -8040,7 +8040,7 @@ type BroadcastEgress struct {
 	// broadcast. Carried so the ingress side can drop its own echo — see the loop
 	// guard on BroadcastCommand.origin_daemon_id.
 	OriginDaemonId string `protobuf:"bytes,3,opt,name=origin_daemon_id,json=originDaemonId,proto3" json:"origin_daemon_id,omitempty"`
-	// Chat the broadcast was issued from (ClaudeChat.agent_session_id), on the
+	// Chat the broadcast was issued from (AgentChat.agent_session_id), on the
 	// origin daemon. Empty = operator-issued with no originating chat.
 	OriginChatId string `protobuf:"bytes,4,opt,name=origin_chat_id,json=originChatId,proto3" json:"origin_chat_id,omitempty"`
 	// Broadcast body. SECRET — see the rule on Broadcast.message in daemon.proto:
@@ -9801,13 +9801,13 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x03cmd\".\n" +
 	"\rCommandCancel\x12\x1d\n" +
 	"\n" +
-	"command_id\x18\x01 \x01(\tR\tcommandId\"\x93\x03\n" +
+	"command_id\x18\x01 \x01(\tR\tcommandId\"\x92\x03\n" +
 	"\x0eDaemonSnapshot\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
 	"\brepo_ids\x18\x03 \x03(\tR\arepoIds\x121\n" +
-	"\bsessions\x18\x04 \x03(\v2\x15.bossanova.v1.SessionR\bsessions\x126\n" +
-	"\x05chats\x18\x05 \x03(\v2 .bossanova.v1.ClaudeChatMetadataR\x05chats\x129\n" +
+	"\bsessions\x18\x04 \x03(\v2\x15.bossanova.v1.SessionR\bsessions\x125\n" +
+	"\x05chats\x18\x05 \x03(\v2\x1f.bossanova.v1.AgentChatMetadataR\x05chats\x129\n" +
 	"\bstatuses\x18\x06 \x03(\v2\x1d.bossanova.v1.ChatStatusEntryR\bstatuses\x12M\n" +
 	"\x12callback_interests\x18\a \x03(\v2\x1e.bossanova.v1.CallbackInterestR\x11callbackInterests\x128\n" +
 	"\x18supported_command_fields\x18\b \x03(\x05R\x16supportedCommandFields\"W\n" +
@@ -9824,10 +9824,10 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_CREATED\x10\x01\x12\x10\n" +
 	"\fKIND_UPDATED\x10\x02\x12\x10\n" +
-	"\fKIND_DELETED\x10\x03\"\xc7\x01\n" +
+	"\fKIND_DELETED\x10\x03\"\xc6\x01\n" +
 	"\tChatDelta\x120\n" +
-	"\x04kind\x18\x01 \x01(\x0e2\x1c.bossanova.v1.ChatDelta.KindR\x04kind\x124\n" +
-	"\x04chat\x18\x02 \x01(\v2 .bossanova.v1.ClaudeChatMetadataR\x04chat\"R\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1c.bossanova.v1.ChatDelta.KindR\x04kind\x123\n" +
+	"\x04chat\x18\x02 \x01(\v2\x1f.bossanova.v1.AgentChatMetadataR\x04chat\"R\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_CREATED\x10\x01\x12\x10\n" +
@@ -9839,8 +9839,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12@\n" +
 	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\x12(\n" +
 	"\x10agent_session_id\x18\x04 \x01(\tR\x0eagentSessionId\x12%\n" +
-	"\x0ewaiting_reason\x18\x05 \x01(\tR\rwaitingReason\"\xe7\x02\n" +
-	"\x12ClaudeChatMetadata\x12\x0e\n" +
+	"\x0ewaiting_reason\x18\x05 \x01(\tR\rwaitingReason\"\xe6\x02\n" +
+	"\x11AgentChatMetadata\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12(\n" +
@@ -9859,7 +9859,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xab\x1b\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xaa\x1b\n" +
 	"\rCommandResult\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
@@ -9867,8 +9867,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x121\n" +
 	"\asession\x18\x04 \x01(\v2\x15.bossanova.v1.SessionH\x00R\asession\x12P\n" +
 	"\x12transfer_confirmed\x18\x05 \x01(\v2\x1f.bossanova.v1.TransferConfirmedH\x00R\x11transferConfirmed\x12;\n" +
-	"\twake_chat\x18\x06 \x01(\v2\x1c.bossanova.v1.WakeChatResultH\x00R\bwakeChat\x12;\n" +
-	"\vrecord_chat\x18\b \x01(\v2\x18.bossanova.v1.ClaudeChatH\x00R\n" +
+	"\twake_chat\x18\x06 \x01(\v2\x1c.bossanova.v1.WakeChatResultH\x00R\bwakeChat\x12:\n" +
+	"\vrecord_chat\x18\b \x01(\v2\x17.bossanova.v1.AgentChatH\x00R\n" +
 	"recordChat\x12@\n" +
 	"\n" +
 	"list_repos\x18\t \x01(\v2\x1f.bossanova.v1.ListReposResponseH\x00R\tlistRepos\x12C\n" +
@@ -10520,7 +10520,7 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*SessionDelta)(nil),                 // 11: bossanova.v1.SessionDelta
 	(*ChatDelta)(nil),                    // 12: bossanova.v1.ChatDelta
 	(*ChatStatusDelta)(nil),              // 13: bossanova.v1.ChatStatusDelta
-	(*ClaudeChatMetadata)(nil),           // 14: bossanova.v1.ClaudeChatMetadata
+	(*AgentChatMetadata)(nil),            // 14: bossanova.v1.AgentChatMetadata
 	(*WebhookAck)(nil),                   // 15: bossanova.v1.WebhookAck
 	(*CommandResult)(nil),                // 16: bossanova.v1.CommandResult
 	(*TokenRefresh)(nil),                 // 17: bossanova.v1.TokenRefresh
@@ -10621,7 +10621,7 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*ChatStatusEntry)(nil),              // 112: bossanova.v1.ChatStatusEntry
 	(ChatStatus)(0),                      // 113: bossanova.v1.ChatStatus
 	(*timestamppb.Timestamp)(nil),        // 114: google.protobuf.Timestamp
-	(*ClaudeChat)(nil),                   // 115: bossanova.v1.ClaudeChat
+	(*AgentChat)(nil),                    // 115: bossanova.v1.AgentChat
 	(*ListReposResponse)(nil),            // 116: bossanova.v1.ListReposResponse
 	(*ListAgentsResponse)(nil),           // 117: bossanova.v1.ListAgentsResponse
 	(*ListRepoPRsResponse)(nil),          // 118: bossanova.v1.ListRepoPRsResponse
@@ -10746,22 +10746,22 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	108, // 76: bossanova.v1.OrchestratorCommand.resume_session_run:type_name -> bossanova.v1.ResumeSessionRunCommand
 	109, // 77: bossanova.v1.OrchestratorCommand.operator_merge_session:type_name -> bossanova.v1.OperatorMergeSessionCommand
 	111, // 78: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
-	14,  // 79: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.ClaudeChatMetadata
+	14,  // 79: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.AgentChatMetadata
 	112, // 80: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	9,   // 81: bossanova.v1.DaemonSnapshot.callback_interests:type_name -> bossanova.v1.CallbackInterest
 	9,   // 82: bossanova.v1.CallbackInterestSet.interests:type_name -> bossanova.v1.CallbackInterest
 	1,   // 83: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
 	111, // 84: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
 	2,   // 85: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
-	14,  // 86: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.ClaudeChatMetadata
+	14,  // 86: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.AgentChatMetadata
 	113, // 87: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
 	114, // 88: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
-	114, // 89: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
-	114, // 90: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
+	114, // 89: bossanova.v1.AgentChatMetadata.created_at:type_name -> google.protobuf.Timestamp
+	114, // 90: bossanova.v1.AgentChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
 	111, // 91: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
 	85,  // 92: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
 	27,  // 93: bossanova.v1.CommandResult.wake_chat:type_name -> bossanova.v1.WakeChatResult
-	115, // 94: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.ClaudeChat
+	115, // 94: bossanova.v1.CommandResult.record_chat:type_name -> bossanova.v1.AgentChat
 	116, // 95: bossanova.v1.CommandResult.list_repos:type_name -> bossanova.v1.ListReposResponse
 	117, // 96: bossanova.v1.CommandResult.list_agents:type_name -> bossanova.v1.ListAgentsResponse
 	118, // 97: bossanova.v1.CommandResult.list_repo_prs:type_name -> bossanova.v1.ListRepoPRsResponse

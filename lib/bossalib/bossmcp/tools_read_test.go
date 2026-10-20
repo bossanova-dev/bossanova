@@ -86,11 +86,11 @@ func TestReadTools(t *testing.T) {
 		{
 			tool: "list_chats",
 			args: map[string]any{"session_id": "s1"},
-			backend: &fakeBackend{listChats: func(_ context.Context, sid string) ([]*pb.ClaudeChat, error) {
+			backend: &fakeBackend{listChats: func(_ context.Context, sid string) ([]*pb.AgentChat, error) {
 				if sid != "s1" {
 					t.Errorf("session_id not forwarded: %q", sid)
 				}
-				return []*pb.ClaudeChat{{AgentSessionId: "chat-lc"}}, nil
+				return []*pb.AgentChat{{AgentSessionId: "chat-lc"}}, nil
 			}},
 			sentinel: "chat-lc",
 		},

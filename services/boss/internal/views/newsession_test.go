@@ -207,10 +207,10 @@ func (s *stubClient) ResurrectSession(context.Context, string) (client.Resurrect
 func (s *stubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.ClaudeChat, error) {
+func (s *stubClient) RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error) {
 	panic("unused")
 }
-func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+func (s *stubClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	panic("unused")
 }
 func (s *stubClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }

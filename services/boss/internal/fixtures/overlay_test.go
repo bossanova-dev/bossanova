@@ -14,7 +14,7 @@ import (
 type fakeOverlayTarget struct {
 	repos    []*pb.Repo
 	sessions []*pb.Session
-	chats    []*pb.ClaudeChat
+	chats    []*pb.AgentChat
 	crons    []*pb.CronJob
 	prs      map[string][]*pb.PRSummary
 	issues   map[string][]*pb.TrackerIssue
@@ -29,7 +29,7 @@ func newFakeTarget() *fakeOverlayTarget {
 
 func (f *fakeOverlayTarget) AddRepo(r *pb.Repo)       { f.repos = append(f.repos, r) }
 func (f *fakeOverlayTarget) AddSession(s *pb.Session) { f.sessions = append(f.sessions, s) }
-func (f *fakeOverlayTarget) AddChat(c *pb.ClaudeChat) { f.chats = append(f.chats, c) }
+func (f *fakeOverlayTarget) AddChat(c *pb.AgentChat)  { f.chats = append(f.chats, c) }
 func (f *fakeOverlayTarget) AddCronJob(j *pb.CronJob) { f.crons = append(f.crons, j) }
 func (f *fakeOverlayTarget) AddPRs(repoID string, prs []*pb.PRSummary) {
 	f.prs[repoID] = append(f.prs[repoID], prs...)

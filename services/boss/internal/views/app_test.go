@@ -652,11 +652,11 @@ func sizedToastApp(t *testing.T, v View, n, width, height int) App {
 	a := NewApp(nil, nil)
 	a.activeView = v
 	sessions := make([]*pb.Session, 0, n)
-	chats := make([]*pb.ClaudeChat, 0, n)
+	chats := make([]*pb.AgentChat, 0, n)
 	for i := range n {
 		id := fmt.Sprintf("zq%02d", i)
 		sessions = append(sessions, &pb.Session{Id: id, Title: id})
-		chats = append(chats, &pb.ClaudeChat{SessionId: "zqsess", AgentSessionId: id, Title: id})
+		chats = append(chats, &pb.AgentChat{SessionId: "zqsess", AgentSessionId: id, Title: id})
 	}
 	a.home.sessions = sessions
 	a.home.loading = false
@@ -955,7 +955,7 @@ func TestApplyReservedTableHeightsCoversEveryHeightDerivedTable(t *testing.T) {
 	}
 
 	sessions := make([]*pb.Session, rows)
-	chats := make([]*pb.ClaudeChat, rows)
+	chats := make([]*pb.AgentChat, rows)
 	repos := make([]*pb.Repo, rows)
 	jobs := make([]*pb.CronJob, rows)
 	accounts := make([]*pb.Account, rows)
@@ -963,7 +963,7 @@ func TestApplyReservedTableHeightsCoversEveryHeightDerivedTable(t *testing.T) {
 	for i := range rows {
 		id := fmt.Sprintf("zq%02d", i)
 		sessions[i] = &pb.Session{Id: id, Title: id}
-		chats[i] = &pb.ClaudeChat{AgentSessionId: id, Title: id}
+		chats[i] = &pb.AgentChat{AgentSessionId: id, Title: id}
 		repos[i] = &pb.Repo{Id: id, DisplayName: id}
 		jobs[i] = &pb.CronJob{Id: id, Name: id}
 		accounts[i] = &pb.Account{Id: id, Label: id}

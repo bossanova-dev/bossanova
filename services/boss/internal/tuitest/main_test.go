@@ -31,6 +31,6 @@ func testSessions() []*pb.Session {
 	return fixtures.ActiveSessions()
 }
 
-func testChats() []*pb.ClaudeChat {
+func testChats() []*pb.AgentChat {
 	return fixtures.Chats()
 }

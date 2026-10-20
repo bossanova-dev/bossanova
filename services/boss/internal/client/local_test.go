@@ -175,7 +175,7 @@ func (f *fakeDaemonRPC) ListTrackerIssues(_ context.Context, req *connect.Reques
 func (f *fakeDaemonRPC) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	f.lastRecordReq = req.Msg
 	return sessionResp(f, func() *pb.RecordChatResponse {
-		return &pb.RecordChatResponse{Chat: &pb.ClaudeChat{AgentSessionId: "agent-1"}}
+		return &pb.RecordChatResponse{Chat: &pb.AgentChat{AgentSessionId: "agent-1"}}
 	})
 }
 

@@ -25,7 +25,7 @@ import (
 // it out without spinning up a real plugin subprocess.
 type RunnerClient interface {
 	GetInfo(context.Context) (*bossanovav1.PluginInfo, error)
-	StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
+	StartAgentRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error)
 	IsRunning(context.Context, *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
 	ExitStatus(context.Context, *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error)
@@ -170,9 +170,9 @@ func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan s
 		ProjectTrust:              options.ProjectTrust,
 		ShouldTrustProjectConfig:  options.ShouldTrustProjectConfig,
 	}
-	resp, err := r.client.StartRun(ctx, req)
+	resp, err := r.client.StartAgentRun(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("plugin StartRun: %w", err)
+		return "", fmt.Errorf("plugin StartAgentRun: %w", err)
 	}
 	if r.runs != nil {
 		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)

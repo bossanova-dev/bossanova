@@ -33,7 +33,7 @@ type tui interface {
 type daemonMutator interface {
 	AddRepo(*pb.Repo)
 	AddSession(*pb.Session)
-	AddChat(*pb.ClaudeChat)
+	AddChat(*pb.AgentChat)
 	AddCronJob(*pb.CronJob)
 	AddPRs(repoID string, prs []*pb.PRSummary)
 	AddTrackerIssues(repoID string, issues []*pb.TrackerIssue)

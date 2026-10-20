@@ -919,7 +919,7 @@ func TestIsRunningReportsRunnerState(t *testing.T) {
 }
 
 // TestExitStatusUnknownHeadlessRunnerSessionIsComplete documents the
-// headless StartRun polling contract. Interactive tmux chats are launched via
+// headless StartAgentRun polling contract. Interactive tmux chats are launched via
 // BuildInteractiveCommand and must not use this runner status as proof of chat
 // completion.
 func TestExitStatusUnknownHeadlessRunnerSessionIsComplete(t *testing.T) {

@@ -140,7 +140,7 @@ const (
 type harnessConfig struct {
 	repos                         []*pb.Repo
 	sessions                      []*pb.Session
-	chats                         []*pb.ClaudeChat
+	chats                         []*pb.AgentChat
 	cronJobs                      []*pb.CronJob
 	githubCallbacks               []*pb.GithubCallback
 	notes                         []*pb.Note
@@ -291,7 +291,7 @@ func WithChatListError(message string) Option {
 }
 
 // WithChats seeds the mock daemon with claude chats.
-func WithChats(chats ...*pb.ClaudeChat) Option {
+func WithChats(chats ...*pb.AgentChat) Option {
 	return func(c *harnessConfig) {
 		c.chats = append(c.chats, chats...)
 	}

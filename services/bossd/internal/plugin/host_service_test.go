@@ -377,7 +377,7 @@ func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, sessionID string)
 	return nil
 }
 
-// fakeAgentClient records StartRun calls and lets tests script IsRunning /
+// fakeAgentClient records StartAgentRun calls and lets tests script IsRunning /
 // ExitStatus responses per session ID. Mirrors agent.RunnerClient just
 // enough for the host RPC tests; the methods we don't exercise return zero
 // values.
@@ -424,7 +424,7 @@ func (f *fakeAgentClient) GetInfo(_ context.Context) (*bossanovav1.PluginInfo, e
 	return &bossanovav1.PluginInfo{Name: "claude"}, nil
 }
 
-func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+func (f *fakeAgentClient) StartAgentRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCall.workDir = req.GetWorkDir()
@@ -615,7 +615,7 @@ func TestStartAgentRun_RejectsBossRepairPrompt(t *testing.T) {
 		t.Fatalf("error = %q, want StartChatRun guidance", err.Error())
 	}
 	if client.startCall.plan != "" {
-		t.Fatalf("StartRun plan = %q, want no headless repair launch", client.startCall.plan)
+		t.Fatalf("StartAgentRun plan = %q, want no headless repair launch", client.startCall.plan)
 	}
 }
 
@@ -769,10 +769,10 @@ func TestStartAgentRun_RoutesByAgentName(t *testing.T) {
 		t.Errorf("AgentSessionId = %q, want opencode-1", resp.GetAgentSessionId())
 	}
 	if openCodeClient.startCall.workDir == "" {
-		t.Error("expected opencode StartRun to be called")
+		t.Error("expected opencode StartAgentRun to be called")
 	}
 	if claudeClient.startCall.workDir != "" {
-		t.Error("did not expect claude StartRun to be called")
+		t.Error("did not expect claude StartAgentRun to be called")
 	}
 	if got := srv.agentSessionByID["opencode-1"]; got != "opencode" {
 		t.Errorf("reverse index = %q, want opencode", got)

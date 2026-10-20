@@ -74,7 +74,7 @@ type MockDaemon struct {
 	mu              sync.RWMutex
 	repos           []*pb.Repo
 	sessions        []*pb.Session
-	chats           []*pb.ClaudeChat
+	chats           []*pb.AgentChat
 	chatStatuses    map[string]*pb.ChatStatusEntry    // keyed by agent_session_id
 	sessionStatuses map[string]*pb.SessionStatusEntry // keyed by session_id
 	cronJobs        map[string]*pb.CronJob            // keyed by cron job ID
@@ -372,7 +372,7 @@ type MockDaemon struct {
 	// with no live agent behind it on a host without tmux, and the mock's
 	// unconditional backfill below cannot express that, so a test asserting the
 	// CLI rejects it would only be agreeing with the mock.
-	recordChatResponse *pb.ClaudeChat
+	recordChatResponse *pb.AgentChat
 	// sendChatMessageCalls records every SendChatMessage request, which is the
 	// only place the wake/submit flags are observable — the response says
 	// nothing about them.
@@ -598,7 +598,7 @@ func (m *MockDaemon) AddSession(sess *pb.Session) {
 }
 
 // AddChat adds a claude chat to the mock daemon's in-memory store.
-func (m *MockDaemon) AddChat(c *pb.ClaudeChat) {
+func (m *MockDaemon) AddChat(c *pb.AgentChat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.chats = append(m.chats, c)
@@ -1364,7 +1364,7 @@ func (m *MockDaemon) ListChats(_ context.Context, req *connect.Request[pb.ListCh
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var out []*pb.ClaudeChat
+	var out []*pb.AgentChat
 	for _, c := range m.chats {
 		if req.Msg.SessionId == "" || c.SessionId == req.Msg.SessionId {
 			// Cloned, not shared: connect marshals this response after RUnlock,
@@ -2388,7 +2388,7 @@ func (m *MockDaemon) OperatorMergeSession(_ context.Context, req *connect.Reques
 // minting a row. Pass a chat whose TmuxSessionName is empty to reproduce the
 // real daemon's "row persisted, no live agent" outcome; pass nil to restore the
 // default minting behaviour.
-func (m *MockDaemon) SetRecordChatResponse(chat *pb.ClaudeChat) {
+func (m *MockDaemon) SetRecordChatResponse(chat *pb.AgentChat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.recordChatResponse = chat
@@ -2444,7 +2444,7 @@ func (m *MockDaemon) RecordChat(_ context.Context, req *connect.Request[pb.Recor
 	if req.Msg.Resume {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat no longer exists: %s", req.Msg.AgentSessionId))
 	}
-	chat := &pb.ClaudeChat{
+	chat := &pb.AgentChat{
 		SessionId:       req.Msg.SessionId,
 		AgentSessionId:  req.Msg.AgentSessionId,
 		Title:           req.Msg.Title,

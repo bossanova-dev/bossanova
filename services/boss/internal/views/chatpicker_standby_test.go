@@ -38,7 +38,7 @@ func standbyPicker(t *testing.T, sess *pb.Session, buildReason, verifyReason str
 		reasons["agent-zzz"] = verifyReason
 	}
 	return armedPicker(t, stub, sess,
-		[]*pb.ClaudeChat{verifyChat("agent-aaa", "build"), verifyChat("agent-zzz", "verify")},
+		[]*pb.AgentChat{verifyChat("agent-aaa", "build"), verifyChat("agent-zzz", "verify")},
 		statuses, reasons)
 }
 
@@ -85,7 +85,7 @@ func TestChatPicker_StandbyStatusCell(t *testing.T) {
 
 	// No callback known yet: still standby, because the reason decides it.
 	m := ChatPickerModel{
-		chats:                []*pb.ClaudeChat{{AgentSessionId: "a", Title: "build"}},
+		chats:                []*pb.AgentChat{{AgentSessionId: "a", Title: "build"}},
 		daemonStatuses:       map[string]string{"a": statusWaiting},
 		daemonWaitingReasons: map[string]string{"a": armedTestReason("checks_failed")},
 	}

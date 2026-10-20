@@ -280,27 +280,27 @@ func TestEmbeddedQuestionHookAsset(t *testing.T) {
 	}
 }
 
-// TestStartRunInjectsAndCleansUpQuestionHook drives the real StartRun → run-end
+// TestStartAgentRunInjectsAndCleansUpQuestionHook drives the real StartAgentRun → run-end
 // path with a fake opencode shell: the asset must exist while the run is being
 // launched and be gone once the process exits.
-func TestStartRunInjectsAndCleansUpQuestionHook(t *testing.T) {
+func TestStartAgentRunInjectsAndCleansUpQuestionHook(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	// Echo a session id so SessionIDFromOutput re-keys the process, then sleep
-	// briefly so the asset is still on disk when StartRun returns.
+	// briefly so the asset is still on disk when StartAgentRun returns.
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeOpencodeShell(t,
 		`printf '%s\n' '{"type":"step_start","sessionID":"ses_hook0001abcd"}'; sleep 0.2; exit 0`)))
 	onCleanup, awaitCleanup := hookCleanupWatcher(t, "ses_hook0001abcd")
 	srv := &Server{logger: zerolog.Nop(), runner: r, onHookCleanup: onCleanup}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, LogPath: logPath, ExtraEnv: hookEnv(),
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	if start.SessionId != "ses_hook0001abcd" {
-		t.Fatalf("StartRun.SessionId = %q, want ses_hook0001abcd", start.SessionId)
+		t.Fatalf("StartAgentRun.SessionId = %q, want ses_hook0001abcd", start.SessionId)
 	}
 	if _, err := os.Stat(questionHookPath(dir)); err != nil {
 		t.Fatalf("asset not injected before the run: %v", err)
@@ -312,9 +312,9 @@ func TestStartRunInjectsAndCleansUpQuestionHook(t *testing.T) {
 	}
 }
 
-// TestStartRunWithoutHookEnvWritesNothing proves an opencode run with no
+// TestStartAgentRunWithoutHookEnvWritesNothing proves an opencode run with no
 // loopback context still starts and leaves the worktree untouched.
-func TestStartRunWithoutHookEnvWritesNothing(t *testing.T) {
+func TestStartAgentRunWithoutHookEnvWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	r := NewRunner(zerolog.Nop(), WithCommandFactory(fakeOpencodeShell(t,
@@ -322,11 +322,11 @@ func TestStartRunWithoutHookEnvWritesNothing(t *testing.T) {
 	var cleanupFired atomic.Bool
 	srv := &Server{logger: zerolog.Nop(), runner: r, onHookCleanup: func(string) { cleanupFired.Store(true) }}
 
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, LogPath: logPath, ExtraEnv: map[string]string{"UNRELATED": "1"},
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	waitExit(t, srv, start.SessionId)
 
@@ -336,7 +336,7 @@ func TestStartRunWithoutHookEnvWritesNothing(t *testing.T) {
 	awaitHookCleanupAbsent(t, &cleanupFired)
 }
 
-// TestStartRunSweepsAnAssetItCouldNotRewrite covers the install-FAILURE path,
+// TestStartAgentRunSweepsAnAssetItCouldNotRewrite covers the install-FAILURE path,
 // which is the one place stale or broken asset bytes can outlive the run.
 //
 // installQuestionHook returns injected=false on a write error, which arms
@@ -349,7 +349,7 @@ func TestStartRunWithoutHookEnvWritesNothing(t *testing.T) {
 // The failure is forced through the real code path rather than by faking a
 // return value: a read-only asset file makes the O_WRONLY open fail before it
 // truncates, so the stale bytes are intact when the sweep runs.
-func TestStartRunSweepsAnAssetItCouldNotRewrite(t *testing.T) {
+func TestStartAgentRunSweepsAnAssetItCouldNotRewrite(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "agent.log")
 	path := questionHookPath(dir)
@@ -373,11 +373,11 @@ func TestStartRunSweepsAnAssetItCouldNotRewrite(t *testing.T) {
 
 	// The run must still start: a hook that cannot be written is a degradation,
 	// never a reason to fail the session.
-	start, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	start, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir: dir, LogPath: logPath, ExtraEnv: hookEnv(),
 	})
 	if err != nil {
-		t.Fatalf("StartRun failed on an un-writable hook path: %v", err)
+		t.Fatalf("StartAgentRun failed on an un-writable hook path: %v", err)
 	}
 	waitExit(t, srv, start.SessionId)
 
@@ -418,7 +418,7 @@ func TestRemoveAgentRunHookDeletesAsset(t *testing.T) {
 // (agentClientHookSupport → services/bossd/internal/agent/poll_fallback.go):
 // claiming support stops ExitStatus polling and makes the daemon wait for a
 // Stop-hook POST that headless opencode never sends, hanging finalize forever.
-// BOS-486's question hook is injected on the StartRun path precisely so this can
+// BOS-486's question hook is injected on the StartAgentRun path precisely so this can
 // stay false. Do NOT "fix" this test by flipping the expectation.
 func TestConfigureFinalizeHookStaysUnsupported(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop()}

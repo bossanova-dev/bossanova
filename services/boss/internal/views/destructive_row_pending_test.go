@@ -12,7 +12,7 @@ func TestChatPickerBuildTableRows_ShowsDeletingStatusForMatchingChat(t *testing.
 	m := ChatPickerModel{
 		spinner:                newStatusSpinner(),
 		deletingAgentSessionID: "agent-1",
-		chats: []*pb.ClaudeChat{
+		chats: []*pb.AgentChat{
 			{AgentSessionId: "agent-1", Title: "first", CreatedAt: timestamppb.Now()},
 			{AgentSessionId: "agent-2", Title: "second", CreatedAt: timestamppb.Now()},
 		},

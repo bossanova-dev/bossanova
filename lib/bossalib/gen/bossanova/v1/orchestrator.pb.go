@@ -2655,7 +2655,7 @@ func (x *ProxyRecordChatRequest) GetAgentName() string {
 
 type ProxyRecordChatResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chat          *ClaudeChat            `protobuf:"bytes,1,opt,name=chat,proto3" json:"chat,omitempty"`
+	Chat          *AgentChat             `protobuf:"bytes,1,opt,name=chat,proto3" json:"chat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2690,7 +2690,7 @@ func (*ProxyRecordChatResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{35}
 }
 
-func (x *ProxyRecordChatResponse) GetChat() *ClaudeChat {
+func (x *ProxyRecordChatResponse) GetChat() *AgentChat {
 	if x != nil {
 		return x.Chat
 	}
@@ -9130,7 +9130,7 @@ type ProxyChatListSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	DaemonId      string                 `protobuf:"bytes,2,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"`
-	Chats         []*ClaudeChatMetadata  `protobuf:"bytes,3,rep,name=chats,proto3" json:"chats,omitempty"`
+	Chats         []*AgentChatMetadata   `protobuf:"bytes,3,rep,name=chats,proto3" json:"chats,omitempty"`
 	Statuses      []*ChatStatusEntry     `protobuf:"bytes,4,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9180,7 +9180,7 @@ func (x *ProxyChatListSnapshot) GetDaemonId() string {
 	return ""
 }
 
-func (x *ProxyChatListSnapshot) GetChats() []*ClaudeChatMetadata {
+func (x *ProxyChatListSnapshot) GetChats() []*AgentChatMetadata {
 	if x != nil {
 		return x.Chats
 	}
@@ -15764,7 +15764,7 @@ type ReportContext struct {
 	BossLogTail  string `protobuf:"bytes,9,opt,name=boss_log_tail,json=bossLogTail,proto3" json:"boss_log_tail,omitempty"`
 	BossdLogTail string `protobuf:"bytes,10,opt,name=bossd_log_tail,json=bossdLogTail,proto3" json:"bossd_log_tail,omitempty"`
 	// Optionally populated — most recent Claude turns, if available.
-	RecentTurns   []*ClaudeTurn `protobuf:"bytes,11,rep,name=recent_turns,json=recentTurns,proto3" json:"recent_turns,omitempty"`
+	RecentTurns   []*AgentTurn `protobuf:"bytes,11,rep,name=recent_turns,json=recentTurns,proto3" json:"recent_turns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -15869,7 +15869,7 @@ func (x *ReportContext) GetBossdLogTail() string {
 	return ""
 }
 
-func (x *ReportContext) GetRecentTurns() []*ClaudeTurn {
+func (x *ReportContext) GetRecentTurns() []*AgentTurn {
 	if x != nil {
 		return x.RecentTurns
 	}
@@ -15924,7 +15924,7 @@ func (x *ProxyListChatsRequest) GetSessionId() string {
 
 type ProxyListChatsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chats         []*ClaudeChat          `protobuf:"bytes,1,rep,name=chats,proto3" json:"chats,omitempty"`
+	Chats         []*AgentChat           `protobuf:"bytes,1,rep,name=chats,proto3" json:"chats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -15959,7 +15959,7 @@ func (*ProxyListChatsResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{252}
 }
 
-func (x *ProxyListChatsResponse) GetChats() []*ClaudeChat {
+func (x *ProxyListChatsResponse) GetChats() []*AgentChat {
 	if x != nil {
 		return x.Chats
 	}
@@ -17201,8 +17201,8 @@ func (x *SessionSummary) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-// ClaudeTurn is a single turn from a recent Claude conversation.
-type ClaudeTurn struct {
+// AgentTurn is a single turn from a recent agent conversation.
+type AgentTurn struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// "user" or "assistant".
 	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
@@ -17212,20 +17212,20 @@ type ClaudeTurn struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ClaudeTurn) Reset() {
-	*x = ClaudeTurn{}
+func (x *AgentTurn) Reset() {
+	*x = AgentTurn{}
 	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[277]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ClaudeTurn) String() string {
+func (x *AgentTurn) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ClaudeTurn) ProtoMessage() {}
+func (*AgentTurn) ProtoMessage() {}
 
-func (x *ClaudeTurn) ProtoReflect() protoreflect.Message {
+func (x *AgentTurn) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[277]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -17237,26 +17237,26 @@ func (x *ClaudeTurn) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ClaudeTurn.ProtoReflect.Descriptor instead.
-func (*ClaudeTurn) Descriptor() ([]byte, []int) {
+// Deprecated: Use AgentTurn.ProtoReflect.Descriptor instead.
+func (*AgentTurn) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{277}
 }
 
-func (x *ClaudeTurn) GetRole() string {
+func (x *AgentTurn) GetRole() string {
 	if x != nil {
 		return x.Role
 	}
 	return ""
 }
 
-func (x *ClaudeTurn) GetContent() string {
+func (x *AgentTurn) GetContent() string {
 	if x != nil {
 		return x.Content
 	}
 	return ""
 }
 
-func (x *ClaudeTurn) GetTimestamp() *timestamppb.Timestamp {
+func (x *AgentTurn) GetTimestamp() *timestamppb.Timestamp {
 	if x != nil {
 		return x.Timestamp
 	}
@@ -17790,9 +17790,9 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x05title\x18\x03 \x01(\tR\x05title\x12\x16\n" +
 	"\x06resume\x18\x04 \x01(\bR\x06resume\x12\x1d\n" +
 	"\n" +
-	"agent_name\x18\x05 \x01(\tR\tagentName\"G\n" +
-	"\x17ProxyRecordChatResponse\x12,\n" +
-	"\x04chat\x18\x01 \x01(\v2\x18.bossanova.v1.ClaudeChatR\x04chat\"a\n" +
+	"agent_name\x18\x05 \x01(\tR\tagentName\"F\n" +
+	"\x17ProxyRecordChatResponse\x12+\n" +
+	"\x04chat\x18\x01 \x01(\v2\x17.bossanova.v1.AgentChatR\x04chat\"a\n" +
 	"\x16ProxyDeleteChatRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
@@ -18316,12 +18316,12 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\fstatus_delta\x18\x03 \x01(\v2\x1d.bossanova.v1.ChatStatusDeltaH\x00R\vstatusDelta\x12A\n" +
 	"\rsession_delta\x18\x04 \x01(\v2\x1a.bossanova.v1.SessionDeltaH\x00R\fsessionDelta\x12D\n" +
 	"\x0edaemon_offline\x18\x05 \x01(\v2\x1b.bossanova.v1.DaemonOfflineH\x00R\rdaemonOfflineB\a\n" +
-	"\x05event\"\xc6\x01\n" +
+	"\x05event\"\xc5\x01\n" +
 	"\x15ProxyChatListSnapshot\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1b\n" +
-	"\tdaemon_id\x18\x02 \x01(\tR\bdaemonId\x126\n" +
-	"\x05chats\x18\x03 \x03(\v2 .bossanova.v1.ClaudeChatMetadataR\x05chats\x129\n" +
+	"\tdaemon_id\x18\x02 \x01(\tR\bdaemonId\x125\n" +
+	"\x05chats\x18\x03 \x03(\v2\x1f.bossanova.v1.AgentChatMetadataR\x05chats\x129\n" +
 	"\bstatuses\x18\x04 \x03(\v2\x1d.bossanova.v1.ChatStatusEntryR\bstatuses\"D\n" +
 	"\rDaemonOffline\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x16\n" +
@@ -18797,7 +18797,7 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\acomment\x18\x01 \x01(\tR\acomment\x125\n" +
 	"\acontext\x18\x02 \x01(\v2\x1b.bossanova.v1.ReportContextR\acontext\"0\n" +
 	"\x11ReportBugResponse\x12\x1b\n" +
-	"\treport_id\x18\x01 \x01(\tR\breportId\"\xb1\x04\n" +
+	"\treport_id\x18\x01 \x01(\tR\breportId\"\xb0\x04\n" +
 	"\rReportContext\x12!\n" +
 	"\fboss_version\x18\x01 \x01(\tR\vbossVersion\x12\x1f\n" +
 	"\vboss_commit\x18\x02 \x01(\tR\n" +
@@ -18810,16 +18810,16 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x0fdaemon_statuses\x18\b \x03(\v2/.bossanova.v1.ReportContext.DaemonStatusesEntryR\x0edaemonStatuses\x12\"\n" +
 	"\rboss_log_tail\x18\t \x01(\tR\vbossLogTail\x12$\n" +
 	"\x0ebossd_log_tail\x18\n" +
-	" \x01(\tR\fbossdLogTail\x12;\n" +
-	"\frecent_turns\x18\v \x03(\v2\x18.bossanova.v1.ClaudeTurnR\vrecentTurns\x1aA\n" +
+	" \x01(\tR\fbossdLogTail\x12:\n" +
+	"\frecent_turns\x18\v \x03(\v2\x17.bossanova.v1.AgentTurnR\vrecentTurns\x1aA\n" +
 	"\x13DaemonStatusesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"6\n" +
 	"\x15ProxyListChatsRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"H\n" +
-	"\x16ProxyListChatsResponse\x12.\n" +
-	"\x05chats\x18\x01 \x03(\v2\x18.bossanova.v1.ClaudeChatR\x05chats\"<\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"G\n" +
+	"\x16ProxyListChatsResponse\x12-\n" +
+	"\x05chats\x18\x01 \x03(\v2\x17.bossanova.v1.AgentChatR\x05chats\"<\n" +
 	"\x1bProxyGetChatStatusesRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"Y\n" +
@@ -18899,9 +18899,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
-	"\a_pr_url\"t\n" +
-	"\n" +
-	"ClaudeTurn\x12\x12\n" +
+	"\a_pr_url\"s\n" +
+	"\tAgentTurn\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x128\n" +
 	"\ttimestamp\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\"N\n" +
@@ -19391,7 +19390,7 @@ var file_bossanova_v1_orchestrator_proto_goTypes = []any{
 	(*ProxyEmptyTrashResponse)(nil),                      // 280: bossanova.v1.ProxyEmptyTrashResponse
 	(*OrganizationTrashDeletion)(nil),                    // 281: bossanova.v1.OrganizationTrashDeletion
 	(*SessionSummary)(nil),                               // 282: bossanova.v1.SessionSummary
-	(*ClaudeTurn)(nil),                                   // 283: bossanova.v1.ClaudeTurn
+	(*AgentTurn)(nil),                                    // 283: bossanova.v1.AgentTurn
 	(*ProxyDismissSessionAlertRequest)(nil),              // 284: bossanova.v1.ProxyDismissSessionAlertRequest
 	(*ProxyDismissSessionAlertResponse)(nil),             // 285: bossanova.v1.ProxyDismissSessionAlertResponse
 	(*ProxyResumeSessionRunRequest)(nil),                 // 286: bossanova.v1.ProxyResumeSessionRunRequest
@@ -19408,7 +19407,7 @@ var file_bossanova_v1_orchestrator_proto_goTypes = []any{
 	(*SessionEnded)(nil),                       // 297: bossanova.v1.SessionEnded
 	(*TrackerIssue)(nil),                       // 298: bossanova.v1.TrackerIssue
 	(WakeChatResult_Outcome)(0),                // 299: bossanova.v1.WakeChatResult.Outcome
-	(*ClaudeChat)(nil),                         // 300: bossanova.v1.ClaudeChat
+	(*AgentChat)(nil),                          // 300: bossanova.v1.AgentChat
 	(*ChatMessage)(nil),                        // 301: bossanova.v1.ChatMessage
 	(SendChatMessageResponse_DeliveryState)(0), // 302: bossanova.v1.SendChatMessageResponse.DeliveryState
 	(*AgentInfo)(nil),                          // 303: bossanova.v1.AgentInfo
@@ -19427,7 +19426,7 @@ var file_bossanova_v1_orchestrator_proto_goTypes = []any{
 	(*ChatDelta)(nil),                          // 316: bossanova.v1.ChatDelta
 	(*ChatStatusDelta)(nil),                    // 317: bossanova.v1.ChatStatusDelta
 	(*SessionDelta)(nil),                       // 318: bossanova.v1.SessionDelta
-	(*ClaudeChatMetadata)(nil),                 // 319: bossanova.v1.ClaudeChatMetadata
+	(*AgentChatMetadata)(nil),                  // 319: bossanova.v1.AgentChatMetadata
 	(*ChatStatusEntry)(nil),                    // 320: bossanova.v1.ChatStatusEntry
 	(*TriggerCatalog)(nil),                     // 321: bossanova.v1.TriggerCatalog
 	(*Trigger)(nil),                            // 322: bossanova.v1.Trigger
@@ -19476,7 +19475,7 @@ var file_bossanova_v1_orchestrator_proto_depIdxs = []int32{
 	299, // 22: bossanova.v1.ProxyWakeChatResponse.outcome:type_name -> bossanova.v1.WakeChatResult.Outcome
 	293, // 23: bossanova.v1.ProxyMergeSessionResponse.session:type_name -> bossanova.v1.Session
 	293, // 24: bossanova.v1.ProxyArchiveSessionResponse.session:type_name -> bossanova.v1.Session
-	300, // 25: bossanova.v1.ProxyRecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
+	300, // 25: bossanova.v1.ProxyRecordChatResponse.chat:type_name -> bossanova.v1.AgentChat
 	301, // 26: bossanova.v1.ProxyGetChatTranscriptResponse.messages:type_name -> bossanova.v1.ChatMessage
 	302, // 27: bossanova.v1.ProxySendChatMessageResponse.delivery_state:type_name -> bossanova.v1.SendChatMessageResponse.DeliveryState
 	51,  // 28: bossanova.v1.AggregatedRepo.daemons:type_name -> bossanova.v1.DaemonRepoRef
@@ -19547,7 +19546,7 @@ var file_bossanova_v1_orchestrator_proto_depIdxs = []int32{
 	317, // 93: bossanova.v1.ProxyChatListEvent.status_delta:type_name -> bossanova.v1.ChatStatusDelta
 	318, // 94: bossanova.v1.ProxyChatListEvent.session_delta:type_name -> bossanova.v1.SessionDelta
 	144, // 95: bossanova.v1.ProxyChatListEvent.daemon_offline:type_name -> bossanova.v1.DaemonOffline
-	319, // 96: bossanova.v1.ProxyChatListSnapshot.chats:type_name -> bossanova.v1.ClaudeChatMetadata
+	319, // 96: bossanova.v1.ProxyChatListSnapshot.chats:type_name -> bossanova.v1.AgentChatMetadata
 	320, // 97: bossanova.v1.ProxyChatListSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	2,   // 98: bossanova.v1.IssueAttachTokenRequest.scope:type_name -> bossanova.v1.AttachScope
 	292, // 99: bossanova.v1.IssueAttachTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
@@ -19630,8 +19629,8 @@ var file_bossanova_v1_orchestrator_proto_depIdxs = []int32{
 	293, // 176: bossanova.v1.ReportContext.current_session:type_name -> bossanova.v1.Session
 	282, // 177: bossanova.v1.ReportContext.sessions:type_name -> bossanova.v1.SessionSummary
 	290, // 178: bossanova.v1.ReportContext.daemon_statuses:type_name -> bossanova.v1.ReportContext.DaemonStatusesEntry
-	283, // 179: bossanova.v1.ReportContext.recent_turns:type_name -> bossanova.v1.ClaudeTurn
-	300, // 180: bossanova.v1.ProxyListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
+	283, // 179: bossanova.v1.ReportContext.recent_turns:type_name -> bossanova.v1.AgentTurn
+	300, // 180: bossanova.v1.ProxyListChatsResponse.chats:type_name -> bossanova.v1.AgentChat
 	320, // 181: bossanova.v1.ProxyGetChatStatusesResponse.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	331, // 182: bossanova.v1.ProxyGetSessionStatusesResponse.statuses:type_name -> bossanova.v1.SessionStatusEntry
 	332, // 183: bossanova.v1.ProxyListCheckSnapshotsResponse.snapshots:type_name -> bossanova.v1.CheckSnapshot
@@ -19651,7 +19650,7 @@ var file_bossanova_v1_orchestrator_proto_depIdxs = []int32{
 	281, // 197: bossanova.v1.ProxyEmptyTrashResponse.deletions:type_name -> bossanova.v1.OrganizationTrashDeletion
 	294, // 198: bossanova.v1.SessionSummary.state:type_name -> bossanova.v1.SessionState
 	292, // 199: bossanova.v1.SessionSummary.updated_at:type_name -> google.protobuf.Timestamp
-	292, // 200: bossanova.v1.ClaudeTurn.timestamp:type_name -> google.protobuf.Timestamp
+	292, // 200: bossanova.v1.AgentTurn.timestamp:type_name -> google.protobuf.Timestamp
 	293, // 201: bossanova.v1.ProxyDismissSessionAlertResponse.session:type_name -> bossanova.v1.Session
 	293, // 202: bossanova.v1.ProxyResumeSessionRunResponse.session:type_name -> bossanova.v1.Session
 	293, // 203: bossanova.v1.ProxyOperatorMergeSessionResponse.session:type_name -> bossanova.v1.Session

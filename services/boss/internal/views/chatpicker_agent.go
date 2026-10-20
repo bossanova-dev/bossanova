@@ -11,7 +11,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
+func (m *ChatPickerModel) chatAgentName(chat *pb.AgentChat) string {
 	if chat.GetAgentName() != "" {
 		return chat.GetAgentName()
 	}

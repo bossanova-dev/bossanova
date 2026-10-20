@@ -396,7 +396,7 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 	}
 }
 
-func TestClaudeChatToProto(t *testing.T) {
+func TestAgentChatToProto(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	providerSessionID := "provider-resume-1"
 	chat := &models.AgentChat{

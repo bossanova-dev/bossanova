@@ -186,7 +186,7 @@ func TestPreflightHeadlessRunUsesDefaultCodexHomeWhenAmbientHomeIsUnset(t *testi
 }
 
 // TestPreflightHeadlessRunResolvesConfiguredRunnerModel pins that the
-// pre-worktree preflight profiles the runtime StartRun will actually launch: an
+// pre-worktree preflight profiles the runtime StartAgentRun will actually launch: an
 // empty request model must fall back to the plugin-configured default
 // (BOSS_PLUGIN_model), because the registry passes the model to
 // `codex app-server` as `-c model="…"` and would otherwise enumerate a
@@ -231,22 +231,22 @@ func TestPreflightHeadlessRunRequestModelOverridesRunnerModel(t *testing.T) {
 	}
 }
 
-// TestPreflightAndStartRunInspectIdenticalRuntimeTarget is the drift guard: the
+// TestPreflightAndStartAgentRunInspectIdenticalRuntimeTarget is the drift guard: the
 // two paths must build their codexRuntimeTarget through the same helper, so a
 // field added to the target can never be populated on only one of them.
-func TestPreflightAndStartRunInspectIdenticalRuntimeTarget(t *testing.T) {
+func TestPreflightAndStartAgentRunInspectIdenticalRuntimeTarget(t *testing.T) {
 	home := t.TempDir()
 	// Two distinct map instances holding identical content: handing both RPCs
 	// the *same* map would make the reflect.DeepEqual below compare one map
 	// against itself, blind to a future path that injects into its own ExtraEnv.
 	preflightEnv := map[string]string{"CODEX_HOME": home, "CODEX_EXTRA": "shared"}
 	startEnv := map[string]string{"CODEX_HOME": home, "CODEX_EXTRA": "shared"}
-	// One work dir sent on BOTH requests. Sending it only on StartRun (as this
+	// One work dir sent on BOTH requests. Sending it only on StartAgentRun (as this
 	// test did before WorkDir joined codexRuntimeTarget) is exactly the BOS-865
 	// divergence, and the DeepEqual below is what refuses it.
 	workDir := t.TempDir()
 	// Guard against a real `codex` subprocess: if the profile check ever stops
-	// rejecting, StartRun would otherwise fall through to runner.Start with the
+	// rejecting, StartAgentRun would otherwise fall through to runner.Start with the
 	// production command factory and leak a detached process out of this test.
 	var runnerStarted atomic.Bool
 	srv := newTestServer(t, WithModel("codex-default"), WithCommandFactory(func(context.Context, string, ...string) *exec.Cmd {
@@ -268,7 +268,7 @@ func TestPreflightAndStartRunInspectIdenticalRuntimeTarget(t *testing.T) {
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("PreflightHeadlessRun code = %s, want FailedPrecondition", status.Code(err))
 	}
-	if _, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	if _, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   workDir,
 		Plan:                      "must not start",
 		SessionId:                 "drift-guard",
@@ -276,21 +276,21 @@ func TestPreflightAndStartRunInspectIdenticalRuntimeTarget(t *testing.T) {
 		ExtraEnv:                  startEnv,
 		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("StartRun code = %s, want FailedPrecondition", status.Code(err))
+		t.Fatalf("StartAgentRun code = %s, want FailedPrecondition", status.Code(err))
 	}
 	if runnerStarted.Load() {
-		t.Fatal("StartRun spawned the codex runner; the profile check must reject before any run side effect")
+		t.Fatal("StartAgentRun spawned the codex runner; the profile check must reject before any run side effect")
 	}
 
 	if len(targets) != 2 {
 		t.Fatalf("registry calls = %d, want 2", len(targets))
 	}
 	if !reflect.DeepEqual(targets[0], targets[1]) {
-		t.Fatalf("preflight target %+v != StartRun target %+v", targets[0], targets[1])
+		t.Fatalf("preflight target %+v != StartAgentRun target %+v", targets[0], targets[1])
 	}
 }
 
-func TestStartRunTrackerPlanAttachmentRejectsRestrictedRuntimeBeforeRunnerStart(t *testing.T) {
+func TestStartAgentRunTrackerPlanAttachmentRejectsRestrictedRuntimeBeforeRunnerStart(t *testing.T) {
 	var started atomic.Bool
 	home := t.TempDir()
 	srv := newServer(nil, zerolog.Nop(), WithCommandFactory(func(context.Context, string, ...string) *exec.Cmd {
@@ -308,7 +308,7 @@ func TestStartRunTrackerPlanAttachmentRejectsRestrictedRuntimeBeforeRunnerStart(
 		}, nil
 	})
 
-	_, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	_, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   t.TempDir(),
 		Plan:                      "actual work prompt must not start",
 		SessionId:                 "capability-reduced",
@@ -317,7 +317,7 @@ func TestStartRunTrackerPlanAttachmentRejectsRestrictedRuntimeBeforeRunnerStart(
 		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("StartRun code = %s, want FailedPrecondition; err=%v", status.Code(err), err)
+		t.Fatalf("StartAgentRun code = %s, want FailedPrecondition; err=%v", status.Code(err), err)
 	}
 	if started.Load() {
 		t.Fatal("reduced runtime must not invoke the actual runner")
@@ -343,7 +343,7 @@ func TestStartRunTrackerPlanAttachmentRejectsRestrictedRuntimeBeforeRunnerStart(
 	}
 }
 
-func TestStartRunTrackerPlanAttachmentStartsOnceWithProjectedHomeAndModel(t *testing.T) {
+func TestStartAgentRunTrackerPlanAttachmentStartsOnceWithProjectedHomeAndModel(t *testing.T) {
 	var starts atomic.Int32
 	home := t.TempDir()
 	srv := newServer(nil, zerolog.Nop(), WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
@@ -364,7 +364,7 @@ func TestStartRunTrackerPlanAttachmentStartsOnceWithProjectedHomeAndModel(t *tes
 		}}}, nil
 	})
 
-	resp, err := srv.StartRun(context.Background(), &bossanovav1.StartAgentRunRequest{
+	resp, err := srv.StartAgentRun(context.Background(), &bossanovav1.StartAgentRunRequest{
 		WorkDir:                   t.TempDir(),
 		Plan:                      "actual work prompt",
 		SessionId:                 "capability-full",
@@ -374,7 +374,7 @@ func TestStartRunTrackerPlanAttachmentStartsOnceWithProjectedHomeAndModel(t *tes
 		HeadlessCapabilityProfile: bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
 	})
 	if err != nil {
-		t.Fatalf("StartRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
 	if resp.GetSessionId() != "profiled-thread" {
 		t.Fatalf("SessionId = %q, want profiled-thread", resp.GetSessionId())

@@ -146,3 +146,40 @@ test('baseline round trips and rejects new and stale offenders', (t) => {
   fs.writeFileSync(path.join(root, 'x.go'), 'package x\ntype AgentChatThing int')
   assert.match(check(root).failures.join('\n'), /no longer occurs/)
 })
+test('entity-names fails a seeded warehouse attempts model and names fix_attempts', (t) => {
+  const result = check(
+    fixture(t, {
+      'services/warehouse/models/staging/bossd/stg_bossd__attempts.sql': 'select 1',
+    }),
+  )
+  assert.deepEqual(result.offenders, ['table:warehouse:stg_bossd__attempts'])
+  assert.match(result.failures.join('\n'), /table:warehouse:stg_bossd__attempts:.*fix_attempts/)
+})
+test('warehouse entity names use the final entity segment across model layers', (t) => {
+  const result = check(
+    fixture(t, {
+      'services/warehouse/models/intermediate/bossd/int_bossd__attempts.sql': 'select 1',
+      'services/warehouse/models/marts/bossd/mart_bossd__attempts.sql': 'select 1',
+      'services/warehouse/models/marts/mart_attempts.sql': 'select 1',
+      'services/warehouse/models/growth/attempts.sql': 'select 1',
+    }),
+  )
+  assert.deepEqual(result.offenders, [
+    'table:warehouse:attempts',
+    'table:warehouse:int_bossd__attempts',
+    'table:warehouse:mart_attempts',
+    'table:warehouse:mart_bossd__attempts',
+  ])
+})
+test('warehouse entity names preserve path scope and allow qualified canonical names', (t) => {
+  const result = check(
+    fixture(t, {
+      'services/warehouse/models/staging/bossd/stg_bossd__accounts.sql': 'select 1',
+      'services/warehouse/models/marts/mart_fix_attempts.sql': 'select 1',
+      'services/warehouse/models/growth/growth_attempts.sql': 'select 1',
+      'services/warehouse/models/growth/growth__attempts.sql': 'select 1',
+      'services/bossd/migrations/001.sql': 'CREATE TABLE accounts(id int);',
+    }),
+  )
+  assert.deepEqual(result.offenders, ['table:bossd:accounts'])
+})

@@ -3,7 +3,7 @@ package main
 // ignoredDirtyFiles enumerates files in an opencode-managed worktree that bossd
 // writes itself and that must NOT be treated as agent-authored changes.
 //
-// It holds exactly one entry, the BOS-486 question-signal hook that StartRun
+// It holds exactly one entry, the BOS-486 question-signal hook that StartAgentRun
 // injects (see questionhook.go). bossd's finalize path calls
 // ListIgnoredDirtyFiles and exact-matches the results against `git status
 // --porcelain` lines (stripBossdManagedFilesWith), so that a "changed nothing"
